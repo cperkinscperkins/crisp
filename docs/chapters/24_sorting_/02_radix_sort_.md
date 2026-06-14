@@ -357,8 +357,8 @@ kernels and the hoisting example code will walk through everything.
     ;; and finally end up with the sorted output-vec.
 
     (let ((histogram_pass_kernel (gen-histogram_pass T A "histogram_pass_kernel"))
-          (buffer-A (make-hoist-vector histogram_pass_kernel::input-vec))
-          (buffer-B (make-hoist-vector histogram_pass_kernel::input-vec :empty T)))
+          (buffer-A (allocate-tensor histogram_pass_kernel::input-vec))
+          (buffer-B (allocate-tensor histogram_pass_kernel::input-vec)))
 
       (let ((num-passes (/ (* (sizeof T) 8) 8)) ;; why is this not just sizeof T?
             (N (* num-passes 8)))

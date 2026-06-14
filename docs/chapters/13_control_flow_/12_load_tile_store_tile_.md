@@ -117,6 +117,7 @@ If stretched tiles are so fast to load, why do algorithms like Matrix Multiplica
 
 Because in MatMul, the bottleneck isn't just loading the data; it is reusing the data. A `16x16` tile loaded into `:local` memory allows the workgroup to perform 256 math operations without returning to global memory. A stretched `2x128` tile might load faster, but it provides far less mathematical reuse for the algorithm.
 
+-->
 
-<!-- Next is the new workgroup-stride API.  The old one follows it and is commetnd out -->
+
 

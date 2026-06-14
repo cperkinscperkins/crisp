@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-06-03T07:02:23.006278Z
+Generated on 2026-06-14T02:47:55.178170Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -91,7 +91,7 @@ Generated on 2026-06-03T07:02:23.006278Z
 ### DEFUN `ANALYZE-LOAD-TILE-COORDS-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).  >    Rejects placement inside a thread-divergent conditional, then delegates  >    codegen via %expand-load-tile-coords-form.
+  > Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-coords-form.
 
 
 ---
@@ -99,6 +99,13 @@ Generated on 2026-06-03T07:02:23.006278Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzer for (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).  >    Rejects placement inside a thread-divergent conditional, then delegates  >    codegen via %expand-store-tile-coords-form.
+
+
+---
+### DEFUN `ANALYZE-AWAIT-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.
 
 
 ---
@@ -334,48 +341,6 @@ Generated on 2026-06-03T07:02:23.006278Z
 
 
 ---
-### DEFUN `%TILE-HELPER-NAME-P`
-- **Args**: `(SYM)`
-
-  > Returns :indices if SYM is the tile-indices helper macro name, else NIL.  >    tile-coords and tensor-coords were removed in endeavor 111 Phase 0.
-
-
----
-### DEFUN `%TILE-HELPER-BUILD-COORDS`
-- **Args**: `(ARG-FORMS TILE-SIZE-FN CL-PKG)`
-
-  > Builds (mod arg_k TILE_k) forms for tile-coords.
-
-
----
-### DEFUN `%TILE-HELPER-BUILD-INDICES`
-- **Args**: `(ARG-FORMS TILE-SIZE-FN CL-PKG)`
-
-  > Builds (/ arg_k TILE_k) forms for tile-indices.
-
-
----
-### DEFUN `%TILE-HELPER-BUILD-TENSOR-COORDS`
-- **Args**: `(IDX-FORMS T-FORMS TILE-SIZE-FN CL-PKG)`
-
-  > Builds (+ (* idx_k TILE_k) t_k) forms for tensor-coords.
-
-
----
-### DEFUN `%TILE-HELPER-CALL-EXPANSION`
-- **Args**: `(HELPER-KIND HELPER-ARGS TILE-SIZE-FN N-TILE CL-PKG)`
-
-  > Returns a list of N expansion forms for a tile-indices helper call.  >    Only :indices is supported under outer-loop tile-stride semantics.
-
-
----
-### DEFUN `%TILE-HELPERS-REWRITE`
-- **Args**: `(BODY-FORMS N-TILE TILE-SIZE-FN)`
-
-  > Walks BODY-FORMS and rewrites tile-coords / tile-indices / tensor-coords  >    calls.  Multi-value uses in let-bindings (flat MVB form) become multiple  >    single-value bindings; standalone single-value uses are replaced inline.  >    N-TILE is the stride/tile arity; TILE-SIZE-FN takes dim index k and  >    returns a Crisp form for that dim's tile size.
-
-
----
 ### DEFUN `%EXPAND-TILE-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
@@ -401,27 +366,6 @@ Generated on 2026-06-03T07:02:23.006278Z
 - **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
 
   > Linear-flatten expansion for hardware-stride :warp-idx.  Always 1 binding.
-
-
----
-### DEFUN `%REWRITE-BARE-TILE-IN-FORM`
-- **Args**: `(FORM ORIGIN-BINDING-SYMS CL-PKG)`
-
-  > Rewrites bare (load-tile ...) / (store-tile ...) inside FORM into their  >    -coords equivalents using ORIGIN-BINDING-SYMS as the origin list.  Does  >    NOT recurse into nested tile-stride / hardware-stride / workgroup-stride  >    forms — those manage their own body rewrites.  >    Endeavor 113 Phase 2: also handles bare (request-load-tile ...).
-
-
----
-### DEFUN `%REWRITE-BARE-LOAD-STORE-TILE-IN-BODY`
-- **Args**: `(BODY-FORMS ORIGIN-BINDING-SYMS CL-PKG)`
-
-  > Walks BODY-FORMS top-down and rewrites bare load-tile / store-tile to  >    their -coords equivalents.  Used by tile-stride and hardware-stride  >    :workgroup-idx body expansion.
-
-
----
-### DEFUN `%DETECT-BARE-LOAD-STORE-TILE-IN-FORM`
-- **Args**: `(FORM PATH)`
-
-  > Recursively walks FORM and signals a compile error if a bare (load-tile ...)  >    or (store-tile ...) call appears.  PATH is the context name used in the  >    error message (e.g. "hardware-stride :warp-idx").  >    Endeavor 113 Phase 2: also detects bare (request-load-tile ...).
 
 
 ---
@@ -468,20 +412,6 @@ Generated on 2026-06-03T07:02:23.006278Z
 
 
 ---
-### DEFUN `ANALYZE-LOAD-TILE-EXPRESSION`
-- **Args**: `(EXPR ENV CONTEXT LOCATION)`
-
-  > Bare (load-tile SRC TILE &key ...) outside a stride context — compile  >    error pointing the user to load-tile-coords.
-
-
----
-### DEFUN `ANALYZE-STORE-TILE-EXPRESSION`
-- **Args**: `(EXPR ENV CONTEXT LOCATION)`
-
-  > Bare (store-tile TILE DEST &key ...) outside a stride context — compile  >    error pointing the user to store-tile-coords.
-
-
----
 ### DEFUN `%EXPAND-LOAD-TILE-COORDS-BWD-FORM`
 - **Args**: `(EXPR LOCATION)`
 
@@ -510,39 +440,36 @@ Generated on 2026-06-03T07:02:23.006278Z
 
 
 ---
-### DEFUN `%EXPAND-REQUEST-LOAD-TILE-COORDS-FORM`
-- **Args**: `(EXPR LOCATION)`
-
-  > Phase 1a: degrade-to-sync.  Expand to (PROGN <sync-load-tile-coords> 0)  >    so the result has a ulong-typed phantom token for the surrounding let.
-
+### DEFUN `%REWRITE-BARE-TILE-IN-FORM`
+- **Args**: `(FORM ORIGIN-BINDING-SYMS CL-PKG)`
 
 ---
-### DEFUN `%EXPAND-REQUEST-STORE-TILE-COORDS-FORM`
-- **Args**: `(EXPR LOCATION)`
-
-  > Phase 3 fallback: degrade-to-sync.  Expand to  >    (PROGN <sync-store-tile-coords> 0) — same phantom-token shape as the  >    load side.  Real async store (where hardware supports it) lands in  >    114 Phase E.
-
+### DEFUN `%REWRITE-BARE-LOAD-STORE-TILE-IN-BODY`
+- **Args**: `(BODY-FORMS ORIGIN-BINDING-SYMS CL-PKG)`
 
 ---
-### DEFUN `ANALYZE-REQUEST-LOAD-TILE-COORDS-EXPRESSION`
+### DEFUN `%DETECT-BARE-LOAD-STORE-TILE-IN-FORM`
+- **Args**: `(FORM PATH)`
+
+---
+### DEFUN `ANALYZE-LOAD-TILE-AT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > 114 Phase B: emit semantic-nvvm-cp-async-tile-copy on :ptx target;  >    fall back to sync expansion elsewhere (including :spirv, which is  >    blocked — see 114 Phase A notes).
-
-
 ---
-### DEFUN `ANALYZE-REQUEST-STORE-TILE-COORDS-EXPRESSION`
+### DEFUN `ANALYZE-STORE-TILE-AT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Phase 3 analyzer for request-store-tile-coords.  Same divergence guard  >    as the sync form, then delegates to the fallback expansion.
-
-
 ---
-### DEFUN `ANALYZE-AWAIT-REQUEST-EXPRESSION`
+### DEFUN `ANALYZE-LOAD-TILE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > 114 Phase B: emit semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.
+---
+### DEFUN `ANALYZE-STORE-TILE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
+---
+### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
@@ -1680,10 +1607,25 @@ Generated on 2026-06-03T07:02:23.006278Z
 
 
 ---
+### DEFUN `%IS-TENSOR-ALIAS`
+- **Args**: `(SYM)`
+
+---
+### DEFUN `%HAS-EXPLICIT-N`
+- **Args**: `(ARGS)`
+
+---
+### DEFUN `%PROMOTE-SCRATCH-INIT-FOR-AD`
+- **Args**: `(INIT)`
+
+  > Promotes the type in a make-scratch-* form to its float adjoint equivalent.  >    E.g., (make-scratch-vector ulong 4) -> (make-scratch-vector double 4).
+
+
+---
 ### DEFUN `%AUGMENT-SCRATCH-ADJ-BINDINGS`
 - **Args**: `(BINDINGS KERNEL-PKG)`
 
-  > For each binding (var (make-scratch-X ...)), inject a paired  >    (var_ADJ (make-scratch-X ...)) binding right after.  For other bindings,  >    pass through unchanged.  Phase 1c initial: assumes same-element-type  >    adjoint (no ulong→double promotion yet).
+  > For each binding (var (make-scratch-X ...)), inject a paired  >    (var_ADJ (make-scratch-X ...)) binding right after.  For other bindings,  >    pass through unchanged.  Promotes element type (e.g., ulong -> double)  >    so gradients use correct FP precision.
 
 
 ---
@@ -4201,6 +4143,51 @@ Generated on 2026-06-03T07:02:23.006278Z
 
 
 ---
+### DEFMACRO `MAKE-ASYNC-BARRIER`
+
+  > Creates an async barrier locally. For compilation analysis, returns a stub value.
+
+
+---
+### DEFMACRO `AWAIT`
+- **Args**: `(BARRIER)`
+
+  > Awaits an async barrier.
+
+
+---
+### DEFUN `%CHECK-BARRIER-TRANSFORMF`
+- **Args**: `(KEY-ARGS)`
+
+---
+### DEFMACRO `LOAD-TILE-AT`
+- **Args**: `(SRC TILE GRID-LIST &REST KEY-ARGS)`
+
+  > Macro wrapper to forward coordinates to the primitive, without stripping :barrier.
+
+
+---
+### DEFMACRO `STORE-TILE-AT`
+- **Args**: `(TILE DEST GRID-LIST &REST KEY-ARGS)`
+
+  > Macro wrapper to forward coordinates to the primitive, without stripping :barrier.
+
+
+---
+### DEFMACRO `LOAD-TILE`
+- **Args**: `(SRC TILE GRID-LIST &REST KEY-ARGS)`
+
+  > Helper macro to automatically compute grid index offsets dynamically  >    by scaling the incoming grid-coords by the extents of the tile.
+
+
+---
+### DEFMACRO `STORE-TILE`
+- **Args**: `(TILE DEST GRID-LIST &REST KEY-ARGS)`
+
+  > Helper macro to automatically compute grid index offsets dynamically  >    by scaling the incoming grid-coords by the extents of the tile.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp\src\main.lisp`
 
 ### DEFUN `PRINT-COMPILER-ERROR`
@@ -5131,12 +5118,6 @@ Generated on 2026-06-03T07:02:23.006278Z
 ### DEFSTRUCT `GENERIC-FUNCTION-DEF`
 
 ---
-### DEFSTRUCT `CRISP-STRUCT-DEFINITION`
-
-  > Stores the definition of a user-defined struct.
-
-
----
 ### DEFSTRUCT `SEMANTIC-FUNCTION`
 
 ---
@@ -5364,6 +5345,32 @@ Generated on 2026-06-03T07:02:23.006278Z
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp\src\struct-definitions.lisp`
+
+### DEFSTRUCT `CRISP-STRUCT-DEFINITION`
+
+  > Stores the definition of a user-defined struct.
+
+
+---
+### DEFSTRUCT `BRAND-DEFINITION`
+
+  > Stores the definition of a branded type declared inside a struct/record.
+
+
+---
+### DEFSTRUCT `TYPE-NODE`
+
+  > Represents a type in the derivation hierarchy (DAG).  >    Used for both 'real' types (scalars, structs) and derived types.
+
+
+---
+### DEFSTRUCT `TEMPLATE-DATA`
+
+  > Stores the definition of a template function.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp\src\structs.lisp`
 
 ### DEFUN `%STRUCT-NATIVE-ALIGNMENT`
@@ -5464,12 +5471,6 @@ Generated on 2026-06-03T07:02:23.006278Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp\src\templates.lisp`
 
-### DEFSTRUCT `TEMPLATE-DATA`
-
-  > Stores the definition of a template function.
-
-
----
 ### DEFVAR `*PARTIAL-TEMPLATE-INSTANTIATIONS*`
 
   > Maps template name symbols to lists of partial instantiation plists.  >    Each plist has keys:  >      :partial-mangled-name - symbol for the partial concrete type (e.g. FAKE-CELL_INT)  >      :data-members         - ordered data-member specs (excluding brand forms)
@@ -5760,12 +5761,6 @@ Generated on 2026-06-03T07:02:23.006278Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp\src\types\hierarchy.lisp`
 
-### DEFSTRUCT `TYPE-NODE`
-
-  > Represents a type in the derivation hierarchy (DAG).  >    Used for both 'real' types (scalars, structs) and derived types.
-
-
----
 ### DEFVAR `*TYPE-DERIVATION-GRAPH*`
 
   > Maps type-name (symbol) -> type-node for all types (real and derived).
@@ -5968,12 +5963,6 @@ Generated on 2026-06-03T07:02:23.006278Z
 ### DEFVAR `*BRAND-DEFINITIONS*`
 
   > Maps (brand-name . struct-type) to brand-definition records.  >    Populated when def-struct / def-record with brand declarations are processed.
-
-
----
-### DEFSTRUCT `BRAND-DEFINITION`
-
-  > Stores the definition of a branded type declared inside a struct/record.
 
 
 ---

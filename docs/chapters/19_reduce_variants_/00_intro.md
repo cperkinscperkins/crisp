@@ -401,11 +401,11 @@ Possible Implementation
                                        (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup))) 
    (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
    (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-   `(let-kernel ((continuation-k  (l-s-v g-s-v result-vec)
+   `(let-kernel ((continuation-k  (l-s-v g-s-v result-cell)
                   (declare (kernel-name ,continuation-kernel-name)
                            (type l-s-v (scratch-vec-type (type-of ,someVar)))
                            (type g-s-v (scratch-vec-type (type-of ,someVar) :global))
-                           (type result-vec (single-result (type-of ,someVar)))
+                           (type result-cell (cell (type-of ,someVar)))
                            (local-size :derive-from g-s-v :msg (string-concat ,continuation-kernel-name "requires a local_work_size at least as big as the global-scratch-vector")))
                       (let ((num-items (length~ g-s-v))
                             (local-id (get-local-id))
@@ -421,7 +421,7 @@ Possible Implementation
                         ;; The final result is now in 'val' of all wg threads.
                         ;; To avoid contention, only thread 0 writes the final result to the output vector.
                         (when (= local-id 0)
-                          (set! (~ result-vec 0) val))) ))
+                          (set! (~ result-cell) val))) ))
 
       (declare (grid-level))
       ; after reduce-to-workgroup the globalScratchVec will one value per group.
@@ -429,7 +429,7 @@ Possible Implementation
       
        ;; this isn't a real invocation. It just demonstrates to the hoisting code 
        ;; HOW this function expects the "continuation" kernel to be called.
-      (launch-kernel (continuation-k ,globalScratchVec ,localScratchVec (make-hoist-vector (type-of ,someVar) 1)))))  
+      (launch-kernel (continuation-k ,globalScratchVec ,localScratchVec (allocate-cell (type-of ,someVar)))))  
       
 ```
 

@@ -7,7 +7,7 @@
 ;; and global-size (4 4), origins are { (0,0), (0,2), (2,0), (2,2) } — same
 ;; pattern as tile-stride with tile (2 2).
 ;;
-;; Leader thread writes the column tile-index into M[row-orig][col-orig].
+;; Leader thread writes the column tile-index into M[row-grid-y][col-grid-x].
 
 (def-type mat-t (matrix ulong :address-space :global :align :compact))
 
@@ -15,7 +15,6 @@
   (declare #'(&out mat-t => nil)
            (global-size :set-to '(4 4))
            (local-size  :set-to '(2 2)))
-  (hardware-stride M :workgroup-idx (row-orig col-orig)
+  (hardware-stride M :workgroup-idx (row-grid-y col-grid-x)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (let ((idx-y idx-x (tile-indices row-orig col-orig)))
-        (set! (~ M row-orig col-orig) idx-x)))))
+      (set! (~ M (* row-grid-y (to-ulong 2)) (* col-grid-x (to-ulong 2))) col-grid-x))))

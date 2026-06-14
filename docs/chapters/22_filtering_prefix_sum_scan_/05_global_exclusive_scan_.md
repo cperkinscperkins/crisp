@@ -61,11 +61,11 @@ What could be simpler?
     (let ((upsweep-kernel (gen-global-exclusive-scan-upsweep T A "${M}_upsweep_${T}"))
           (downsweep-kernel (gen-global-exclusive-scan-downsweep T A "${M}_downsweep_${T}"))
           (ex-scan-wg-kernel (gen-ex_scan_wg_kernel T A "${M}_ex_scan_kernel_${T}"))
-          (IN (make-hoist-vector upsweep-kernel::input-vec))
-          (OUT (make-hoist-vector upsweep-kernel::output-vec))
-          (BLOCK-SUMS-1 (make-hoist-vector upsweep-kernel::block-sums))
-          (SCRATCH (make-hoist-vector upsweep-kernel::output-vec))
-          (BLOCK-SUMS-2 (make-hoist-vector ex-scan-wg-kernel::in-vec)))
+          (IN (allocate-tensor upsweep-kernel::input-vec))
+          (OUT (allocate-tensor upsweep-kernel::output-vec))
+          (BLOCK-SUMS-1 (allocate-tensor upsweep-kernel::block-sums))
+          (SCRATCH (allocate-tensor upsweep-kernel::output-vec))
+          (BLOCK-SUMS-2 (allocate-tensor ex-scan-wg-kernel::in-vec)))
       ;; we will sometimes pass a vector as BOTH input and output to modify it in place.
       (launch-sequential
         (upsweep-kernel IN OUT BLOCK-SUMS-1)

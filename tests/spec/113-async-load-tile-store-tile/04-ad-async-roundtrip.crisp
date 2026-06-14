@@ -2,15 +2,14 @@
 ;; TEST-WITH[--ir-target=spv --differentiate]
 ;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=1.0 output-vec=4
 
-;; Phase 4: end-to-end AD coverage of the async request-* / await-request
+;; Phase 4: end-to-end AD coverage of the async load/store
 ;; family.  Mirror of 111/14-ad-identity-via-tile-1d.crisp with
-;; load-tile-coords / store-tile-coords swapped for their request-* variants.
+;; load-tile-coords / store-tile-coords swapped for their async barrier variants.
 ;;
 ;; Forward: C = A (copy through a local tile, async at the source level).
 ;; Backward: df/dA[k] = 1.0 for each k, exactly as in 111/14 — because
-;; the AD pre-rewrite normalises request-load-tile-coords ->
-;; load-tile-coords, request-store-tile-coords -> store-tile-coords,
-;; and await-request -> nil.  The backward walker emits the same
+;; the AD pre-rewrite normalises load-tile-coords with barriers to standard sync
+;; and await -> nil.  The backward walker emits the same
 ;; %load-tile-coords-bwd / %store-tile-coords-bwd as the sync case.
 ;;
 ;; This test confirms that endeavor 112's L0 AD machinery handles the
@@ -18,12 +17,14 @@
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 
-(def-kernel ad_identity_via_request_tile_1d (A &out C)
+(def-kernel ad_identity_via_async_tile_1d (A &out C)
   (declare #'(vec-t &out vec-t => nil)
            (global-size :set-to 4)
            (local-size  :set-to 4))
-  (let ((tile (make-scratch-vector float 4)))
-    (let ((tok-l (request-load-tile-coords A tile (0))))
-      (await-request tok-l)
-      (let ((tok-s (request-store-tile-coords tile C (0))))
-        (await-request tok-s)))))
+  (let ((tile (make-scratch-vector float 4))
+        (barrier-l (make-async-barrier))
+        (barrier-s (make-async-barrier)))
+    (load-tile-at A tile (0) :barrier barrier-l)
+    (await barrier-l)
+    (store-tile-at tile C (0) :barrier barrier-s)
+    (await barrier-s)))

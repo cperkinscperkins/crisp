@@ -7,8 +7,7 @@ The hoisting code that Crisp outputs demonstrates the following:
   be it IR or binary
 - commented out code that demonstrates how to perform profiling
 - then for each kernel in the output
-- - allocating and preparing all the side channel memory. Using 
-    Unified Memory if requested by the `--hoist-unified-memory` flag.
+- - allocating and preparing all the side channel memory. 
 - - allocating and preparing the explicit memory in the kernel arguments.
 - - setting the kernel arguments
 - - enqueuing the kernel

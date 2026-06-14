@@ -10,6 +10,6 @@
 
 (def-kernel ten_tile_origin_sentinel_3d (&out T3)
   (declare #'(&out ten3-t => nil))
-  (tile-stride T3 (2 2 2) (z-orig y-orig x-orig)
+  (tile-stride T3 (2 2 2) (z-grid y-grid x-grid)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (set! (~ T3 z-orig y-orig x-orig) z-orig))))
+      (set! (~ T3 z-grid y-grid x-grid) z-grid))))

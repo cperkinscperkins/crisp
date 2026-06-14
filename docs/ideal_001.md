@@ -2754,6 +2754,10 @@ be hoisted, plus a pointer to a unsigned long array.
       ...))
 ```
 
+<!-- 
+OUTDATED AND REMOVED
+SEE topology.md for latest API.
+
 
 ### Async Memory Operations 📝
 
@@ -2763,10 +2767,10 @@ to fetch data in the background while the Execution Units (EUs) continue process
 These operations are non-blocking. They return a `request-token`. You MUST eventually wait on this
 token using `await-request` before accessing the destination memory.
 
-#### `request-load-local`
-`(request-load-local global-vec local-vec &key identity) => request-token`
+#### `load-local` with `:barrier`
+`(load-local global-vec local-vec &key identity barrier)`
 
-Initiates a copy from global memory to local memory. Returns a token representing the inflight operation.
+Initiates an asynchronous copy from global memory to local memory.
 
 IMPORTANT: accessing `global-vec` or `local-vec` before the request completes will result in BAD THINGS.  
 In C++ lingo this is called "Undefined Behavior". In other languages it is referred to as "C++-like behavior".
@@ -2803,7 +2807,7 @@ the hardware choices that actually support this are limited. Your kernel may fai
 ```
 There are async variants for the tile scratch helpers as well.
 
-
+-->
 
 
 ### Tensors & Matrices ✅
@@ -4704,8 +4708,8 @@ It is how you tell Crisp to "Forget about physical memory for a second. Just gen
 (tile-stride <tensor> <layout-tag> (<size-list>) (<bindings>) ...)
 (tile-stride <tensor> <layout-tag> <tile-tensor> (<bindings>) ...)
 
-(tile-stride someMatrix (8 4) (tile-orig-row-y tile-orig-col-x)
-  (let ((idx-y idx-x  (tile-indices tile-orig-row-y tile-orig-col-x))) ;; which of the tiles is it?
+(tile-stride someMatrix (8 4) (grid-y grid-x) ;; grid-y/x denote nth tile
+  (let ((y x (tensor-coords grid-y grid-x))) ;; which pixel/element in the matrix is it exactly
         
     ...))
 
@@ -4716,8 +4720,8 @@ of the `<tensor>` that would act as the tiles origin.
 
 For example, let's say tile-stride is used with a source vector length 30 and a tile length 10.
 Then in
-`(tile-stride source tile (tile-orig-x) ...)`
-The body will execute three times, with `tile-orig-x` bound to 0, 10 and 20.
+`(tile-stride source tile (grid-x) ...)`
+The body will execute three times, with `grid-x` bound to 0, 1 and 2.
 
 
 The arity of the `<size-list>` must match the arity of the `tensor` and the `<bindings>`. Compilation error otherwise.
@@ -4739,15 +4743,15 @@ is how you communicate your tiling expections out to the metadata or hoisting co
 (hardware-stride <tensor> <layout-tag> <hw-tag> (<bindings>) ...)
 
 ;; examples
-(hardware-stride someMatrix :row-major :workgroup-idx (wg-orig-y wg-orig-x) ...)
+(hardware-stride someMatrix :row-major :workgroup-idx (grid-y grid-x) ...)
    
-(hardware-stride someVector  :warp-idx (warp-orig-x) ...)
+(hardware-stride someVector  :warp-idx (grid-x) ...)
 
 ```
 
 `hardware-stride` takes a `<hw-tag>` argument and chunks the problem space by the physical hardware enqueue dimensions. For "strict", provide a `<layout-tag>`.
 
-Just like `tile-stride`, `hardware-stride` acts as an **outer loop**. Its body executes once per hardware chunk, and the `<bindings>` represent the global origin coordinate of that chunk within the tensor. The key difference is that you do not provide a `<size-list>`; the chunk size is implicitly derived from the hardware environment.
+Just like `tile-stride`, `hardware-stride` acts as an **outer loop**. Its body executes once per hardware chunk, and the `<bindings>` represent the index of that chunk within the tensor. The key difference is that you do not provide a `<size-list>`; the chunk size is implicitly derived from the hardware environment.
 
 There are two choices for `<hw-tag>`: `:workgroup-idx` and `:warp-idx`.
 
@@ -4757,8 +4761,8 @@ With `:workgroup-idx`, the tensor is chunked by the workgroup dimensions. The ar
 
 ```lisp
 ;; 2D enqueue
-(hardware-stride someMatrix :row-major :workgroup-idx (wg-orig-y wg-orig-x) 
-   (let ((idx-y idx-x (tile-indices wg-orig-y wg-orig-x)))  ;; which workgroup chunk is this?
+(hardware-stride someMatrix :row-major :workgroup-idx (grid-y grid-x) ;; which workgroup chunk is this?
+   (let ((y x (tensor-coords grid-y grid-x)))  ;; which pixel of someMatrix is at its upper-left 
        
        ;; body executes once per workgroup cooperatively
        (load-tile ...) 
@@ -4776,11 +4780,9 @@ Also note that `load-tile` and `store-tile` (and their async counterparts) are n
 from within a `:warp-idx` hardware-stride.  
 
 ```
-(hardware-stride someVector :warp-idx (warp-orig-x) 
-  (let ((which-warp (tile-indices warp-orig-x)))
-      
+(hardware-stride someVector :warp-idx (grid-x) 
       ;; body executes once per warp cooperatively
-      ...))
+      ...)
 
 ```
 
@@ -4792,7 +4794,7 @@ The helper macros map the tensor coordinates to the other spaces.  These helper 
 available when using the `tile-stride` and `hardware-stride` stride macros.
 
 <!-- 
-TILE-COORDS REMOVED
+REMOVED FOR NOW
 ##### `tile-coords`
 `tile-coords` always has the same arity as the binding and returns that same number of argumetns.
 These coordinates are within the tile `<size-list>`/`<tile-tensor>`
@@ -4801,14 +4803,17 @@ These coordinates are within the tile `<size-list>`/`<tile-tensor>`
 (let ((t-z t-y t-x (tile-coords cube-z cube-y cube-x))) ...)
 ```
 -->
-
+<!-- REMOVED FOR NOW 
 ##### `tile-indices` ✅
 `tile-indices` also matches arity. It returns the index coordinates of the tile
-
+-->
 
 <!-- 
-TENSOR-COORDS REMOVED
+ REMOVED FOR NOW 
 ##### `tensor-coords` 
+```
+(tensor-coords (<grid-indices>) &optional (<tile-coords>))
+```
 `tensor-coords` macro takes two arguments. A list of the tile indices followed by a list of the tile coordinates.
 It returns mapping coordinates into the problem space tensor.
 
@@ -4816,11 +4821,13 @@ It returns mapping coordinates into the problem space tensor.
 (let ((row-y col-x (tensor-coords (idx-y idx-x) (t-y t-x)))))
 ```
 -->
+<!-- 
+HELPERS REMOVED
 
 ##### `load-tile` / `store-tile` ✅
 There are two other helper functions that are present when doing "tileed" striding.  
 They have their own section of the docs below.
-
+-->
 <!--  
 
 NOTE: I'm temporarily setting the stride-subview helper function aside
@@ -4845,7 +4852,7 @@ If you are wanting fast chunk access use `load-chunk` / `store-chunk` below to t
 
 
 
-
+<!--
 
 ### Load Tile / Store Tile ✅
 
@@ -4965,8 +4972,9 @@ If stretched tiles are so fast to load, why do algorithms like Matrix Multiplica
 
 Because in MatMul, the bottleneck isn't just loading the data; it is reusing the data. A `16x16` tile loaded into `:local` memory allows the workgroup to perform 256 math operations without returning to global memory. A stretched `2x128` tile might load faster, but it provides far less mathematical reuse for the algorithm.
 
+-->
 
-<!-- Next is the new workgroup-stride API.  The old one follows it and is commetnd out -->
+
 
 ### workgroup-stride ✅
 ```
@@ -4974,7 +4982,7 @@ Because in MatMul, the bottleneck isn't just loading the data; it is reusing the
 ```
 `workgroup-stride` is the primary workhorse for computations within a single workgroup. It is designed to walk the coordinates of a `:local` or `:private` tensor (a "tile") using the full parallel resources of the workgroup. 
 
-
+<!--
 #### The "One Coordinate" Binding
 The `<bindings>` always represent the local coordinates within the `<tile-tensor>`. If you are striding a $16 \times 16$ tile, the bindings will range from $(0,0)$ to $(15,15)$. The macro ensures that:
 - Coalesced Access: The contiguous dimension of the tile is automatically mapped to the fastest hardware dimension (the warp lane) to prevent bank conflicts.
@@ -4992,6 +5000,7 @@ Example: Simple cooperative increment
        
     (store-tile my-tile big-matrix)))
 ```
+-->
 
 #### Hardware Context Helpers ✅
 
@@ -5021,55 +5030,7 @@ This pattern is useful for algorithms where only one "representative" thread per
 - Arity Consistency: The number of `<bindings>` must match the arity of the `<tile-tensor>`.
 - Scope: The bindings `(ly lx)` represent the position within the tile, while any bindings from an outer tile-stride (e.g., y x) remain available for calculating positions relative to the global problem space.
 
-<-- 
 
-OLD WORKGROUP STRIDE API 
-
-### Workgroup Stride ✅
-
-Whereas the other stride macros bend all available threads to their wicked purposes, `workgroup-stride` is 
-used to just set up a stride across a worksgroup. This makes it one of the very few "workplace level" 
-macros that Crisp provdes.  This CAN be nested in a grid level operation (such as `tile-stride`)
-
-```
-(workgroup-stride <tensor> (<bindings>) ...)
-(workgroup-stride <tensor> <tile-tag> (<bindings>) ...)
-```
-
-The `<tensor>` can be any arity, but because this operates at the workgroup level, it should represent a small problem space (typically a `:local` memory tile). Do not use `workgroup-stride` to walk massive global matrices.
-
-
-`tile-tag` 
-- `:local-size` (normal grid stride, could be 1D, 2D, or 3D) 
-- `:warp-idx`  1D only
-- a small 1D vector, 2D matrix or 3D tensor
-- small sizes: `(w)`, `(w h)`, or `(w h d)`
-
-`bindings`
-- `(x)`, `(x y)`, `(x y z)`
-
-The `problem-space` can be anything or any size. But whatever it is, it should have
-been divided among all workgroups. Don't use `workgroup-stride` to stride something
-really big. Ideally, something small and using `:local` memory.
-
-`:local-size` - each thread in the workgroup starts with its own local id
-and each time through the stride increments the binding by the number of threads
-in the workgroup. 
-
-`:warp-idx` - every thread in a warp will get the same binding, striding by the 
-  number of warps in a workgroup.
-
-#### coordinate conversion
-
-These functions operate analagously to their `thread-stride` counterparts.
-
-```
-(wg-problem-space-coords) => (x ...)
-
-(wg-tile-coords) => (x ...)
-```
-
--->
                      
 
 #### `ceil-pow2` 📝

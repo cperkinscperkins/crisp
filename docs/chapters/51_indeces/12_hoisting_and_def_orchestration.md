@@ -3,10 +3,9 @@
 - def-orchestration
 - launch-sequential
 - launch-parallel
-- launch-interleaved
 - launch-kernel
 - +wg-size+  ; constant in def-orchestration (only)
-- make-hoist-vector 
-- swap-refs (kludgy?)
+- `allocate-cell`
+- `allocate-tensor`
 
 

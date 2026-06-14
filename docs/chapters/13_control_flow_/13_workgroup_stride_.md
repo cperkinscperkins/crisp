@@ -5,7 +5,7 @@
 ```
 `workgroup-stride` is the primary workhorse for computations within a single workgroup. It is designed to walk the coordinates of a `:local` or `:private` tensor (a "tile") using the full parallel resources of the workgroup. 
 
-
+<!--
 #### The "One Coordinate" Binding
 The `<bindings>` always represent the local coordinates within the `<tile-tensor>`. If you are striding a $16 \times 16$ tile, the bindings will range from $(0,0)$ to $(15,15)$. The macro ensures that:
 - Coalesced Access: The contiguous dimension of the tile is automatically mapped to the fastest hardware dimension (the warp lane) to prevent bank conflicts.
@@ -23,6 +23,7 @@ Example: Simple cooperative increment
        
     (store-tile my-tile big-matrix)))
 ```
+-->
 
 #### Hardware Context Helpers ✅
 
@@ -52,7 +53,22 @@ This pattern is useful for algorithms where only one "representative" thread per
 - Arity Consistency: The number of `<bindings>` must match the arity of the `<tile-tensor>`.
 - Scope: The bindings `(ly lx)` represent the position within the tile, while any bindings from an outer tile-stride (e.g., y x) remain available for calculating positions relative to the global problem space.
 
-<-- 
 
-OLD WORKGROUP STRIDE API 
+                     
+
+#### `ceil-pow2` 📝
+
+For certain operations, like warp reductions, it is imperative that certain activities
+fit completely in a warp and are not "split" across warp divide. 
+
+If the argument to `ceil-pow2` is a power of 2, it'll be returns. But if not, then the
+next hightest power of 2 will be returned. This can be very handy in loops
+or for making sure tile strides don't split work across the warp boundary. 
+
+```
+(ceil-pow2 4) => 4
+(ceil-pow2 5) => 8
+```
+
+
 

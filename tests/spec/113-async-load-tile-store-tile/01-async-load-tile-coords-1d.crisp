@@ -1,6 +1,6 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD pre-rewrite for request-* lands in phase 1"
+;; SKIP-WITH[--differentiate]: "AD pre-rewrite for load-tile-coords lands in phase 1"
 
 ;; Async counterpart of 111/01-load-tile-coords-1d.crisp.  Cooperatively
 ;; loads 4 elements from a global vector starting at origin 0 into a
@@ -9,9 +9,9 @@
 ;; Expected: OUT == V (same as 111/01).
 ;;
 ;; Phase 0 smoke target.  Drives Phase 1 implementation of
-;;   - request-load-tile-coords analyzer (both SPV and PTX lowering)
-;;   - await-request analyzer
-;;   - phantom-token scope table
+;;   - load-tile-coords analyzer with :barrier (both SPV and PTX lowering)
+;;   - await analyzer
+;;   - barrier scope table
 ;;   - SPV codegen: async_work_group_copy + wait_group_events
 ;;   - PTX codegen: cp.async + commit_group + wait_group
 
@@ -22,8 +22,9 @@
   (declare #'(vec-t &out vec-t => nil)
            (global-size :set-to 4)
            (local-size  :set-to 4))
-  (let ((tile (make-scratch-vector ulong 4)))
-    (let ((tok (request-load-tile-coords V tile (0))))
-      (await-request tok)
-      (workgroup-stride tile (lx)
-        (set! (~ OUT lx) (~ tile lx))))))
+  (let ((tile (make-scratch-vector ulong 4))
+        (barrier (make-async-barrier)))
+    (load-tile-at V tile (0) :barrier barrier)
+    (await barrier)
+    (workgroup-stride tile (lx)
+      (set! (~ OUT lx) (~ tile lx)))))

@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "load-tile: origin must be a non-empty list of grid coords"
+
+;; load-tile now needs grid coords as explicit arg.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel ltc_no_context (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (load-tile V tile)))

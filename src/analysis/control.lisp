@@ -42,8 +42,6 @@
                (error "Branch type mismatch in IF expression. Then: ~a, Else: ~a" t-type e-type))))))))
 
 
-
-
 ;; These are the "explicit coords" variants of load-tile / store-tile.  They
 ;; expand into a workgroup-stride-shaped cooperative loop with bounds
 ;; checking and an implicit local-barrier.
@@ -83,7 +81,7 @@
    DEFAULT if absent.  Phase 1a helper for load-tile-coords / store-tile-coords
    keyword parsing."
   (loop for (k v) on key-args by #'cddr
-        when (eq k keyword) return v
+          when (eq k keyword) return v
         finally (cl:return default)))
 
 
@@ -93,29 +91,29 @@
    combinations.  Phase 1a: only NIL and T are supported; explicit permutation
    lists are deferred."
   (cond
-    ((null transpose-form) nil)
-    ((or (eq transpose-form t)
-         (and (symbolp transpose-form)
-              (string-equal (symbol-name transpose-form) "T")))
+   ((null transpose-form) nil)
+   ((or (eq transpose-form t)
+        (and (symbolp transpose-form)
+             (string-equal (symbol-name transpose-form) "T")))
      (when (< n 2)
-       (error 'crisp-compiler-error
-              :message ":transpose t requires tensor arity >= 2 (1D tensors have nothing to transpose)"
-              :source-location location))
+           (error 'crisp-compiler-error
+             :message ":transpose t requires tensor arity >= 2 (1D tensors have nothing to transpose)"
+             :source-location location))
      ;; Swap innermost two dims of the identity permutation.
      (let ((p (loop for i from 0 below n collect i)))
        (rotatef (nth (- n 2) p) (nth (- n 1) p))
        p))
-    (t
+   (t
      (error 'crisp-compiler-error
-            :message (format nil
-                             ":transpose ~S not supported in Phase 1a (only nil and t are accepted)"
-                             transpose-form)
-            :source-location location))))
+       :message (format nil
+                    ":transpose ~S not supported in Phase 1a (only nil and t are accepted)"
+                  transpose-form)
+       :source-location location))))
 
 
 (defun %tlc-coop-loop-skeleton (n tile-sym local-bindings tile-coord-syms
-                                tile-extent-syms lid-syms lws-syms inner-form
-                                cl-pkg)
+                                  tile-extent-syms lid-syms lws-syms inner-form
+                                  cl-pkg)
   "Builds the cooperative N-dim workgroup-strided nest used by
    load-tile-coords and store-tile-coords.  At each level:
      (dotimes (K_k TE_k LWS_k)
@@ -127,27 +125,27 @@
    Tile-coord-syms / tile-extent-syms / lid-syms / lws-syms must be lists of
    length n."
   (declare (ignore tile-sym local-bindings))
-  (let ((let-sym     (intern "LET" cl-pkg))
+  (let ((let-sym (intern "LET" cl-pkg))
         (dotimes-sym (intern "DOTIMES" cl-pkg))
-        (when-sym    (intern "WHEN" cl-pkg))
-        (plus-sym    (intern "+" cl-pkg))
-        (lt-sym      (intern "<" cl-pkg))
-        (k-syms      (loop for i from 0 below n collect (gensym (format nil "K~A" i))))
+        (when-sym (intern "WHEN" cl-pkg))
+        (plus-sym (intern "+" cl-pkg))
+        (lt-sym (intern "<" cl-pkg))
+        (k-syms (loop for i from 0 below n collect (gensym (format nil "K~A" i))))
         (acc inner-form))
     (loop for i from (1- n) downto 0
-          for tc-sym  = (nth i tile-coord-syms)
-          for te-sym  = (nth i tile-extent-syms)
+          for tc-sym = (nth i tile-coord-syms)
+          for te-sym = (nth i tile-extent-syms)
           for lid-sym = (nth i lid-syms)
           for lws-sym = (nth i lws-syms)
-          for k-sym   = (nth i k-syms)
+          for k-sym = (nth i k-syms)
           do (setf acc
-                   (list dotimes-sym
-                         (list k-sym te-sym lws-sym)
-                         (list let-sym
-                               (list (list tc-sym (list plus-sym k-sym lid-sym)))
-                               (list when-sym
-                                     (list lt-sym tc-sym te-sym)
-                                     acc)))))
+               (list dotimes-sym
+                     (list k-sym te-sym lws-sym)
+                     (list let-sym
+                           (list (list tc-sym (list plus-sym k-sym lid-sym)))
+                           (list when-sym
+                                 (list lt-sym tc-sym te-sym)
+                                 acc)))))
     acc))
 
 
@@ -161,7 +159,7 @@
 
 
 (defun %tlc-all-in-bounds-form (n src-coord-exprs global-extent-syms
-                                lt-sym and-sym)
+                                  lt-sym and-sym)
   "Builds an AND of per-dim bounds checks: (and (< src-coord[k] ge[k]) ...).
    For N=1, returns just the single comparison."
   (let ((tests (loop for k from 0 below n
@@ -174,79 +172,79 @@
   "Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).
    Returns a let/dotimes/when nest that cooperatively loads the tile, ending
    with (local-barrier)."
-  (let* ((src-form     (second expr))
-         (tile-form    (third expr))
-         (origin-list  (fourth expr))
-         (key-args     (nthcdr 4 expr)))
+  (let* ((src-form (second expr))
+         (tile-form (third expr))
+         (origin-list (fourth expr))
+         (key-args (nthcdr 4 expr)))
     (unless (and (listp origin-list)
                  (>= (length origin-list) 1))
       (error 'crisp-compiler-error
-             :message "load-tile-coords: origin must be a non-empty list of coord forms"
-             :source-location location))
-    (let* ((identity-form  (%extract-key-arg key-args :identity 0))
+        :message "load-tile-coords: origin must be a non-empty list of coord forms"
+        :source-location location))
+    (let* ((identity-form (%extract-key-arg key-args :identity 0))
            (transpose-form (%extract-key-arg key-args :transpose nil))
-           (n              (length origin-list))
-           (perm           (%tlc-transpose-permutation n transpose-form location))
-           (cl-pkg         (find-package :crisp-language))
-           (let-sym             (intern "LET" cl-pkg))
-           (progn-sym           (intern "PROGN" cl-pkg))
-           (if-sym              (intern "IF" cl-pkg))
-           (set-sym             (intern "SET!" cl-pkg))
-           (aref-sym            (intern "~" cl-pkg))
-           (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
-           (get-local-id-sym    (intern "GET-LOCAL-ID" cl-pkg))
-           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
-           (local-barrier-sym   (intern "LOCAL-BARRIER" cl-pkg))
-           (to-ulong-sym        (intern "TO-ULONG" cl-pkg))
-           (plus-sym            (intern "+" cl-pkg))
-           (lt-sym              (intern "<" cl-pkg))
-           (and-sym             (intern "AND" cl-pkg))
-           (src-sym  (gensym "SRC"))
+           (n (length origin-list))
+           (perm (%tlc-transpose-permutation n transpose-form location))
+           (cl-pkg (find-package :crisp-language))
+           (let-sym (intern "LET" cl-pkg))
+           (progn-sym (intern "PROGN" cl-pkg))
+           (if-sym (intern "IF" cl-pkg))
+           (set-sym (intern "SET!" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (local-barrier-sym (intern "LOCAL-BARRIER" cl-pkg))
+           (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+           (plus-sym (intern "+" cl-pkg))
+           (lt-sym (intern "<" cl-pkg))
+           (and-sym (intern "AND" cl-pkg))
+           (src-sym (gensym "SRC"))
            (tile-sym (gensym "TILE"))
            (ident-sym (gensym "IDENT"))
-           (origin-syms       (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
-           (tile-coord-syms   (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
-           (tile-extent-syms  (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
+           (origin-syms (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
+           (tile-coord-syms (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
+           (tile-extent-syms (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
            (global-extent-syms (loop for i from 0 below n collect (gensym (format nil "GE~A" i))))
-           (lid-syms          (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
-           (lws-syms          (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
+           (lid-syms (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
            ;; Source coord expressions: src[k] = origin[k] + tile-coord[perm[k]]
-           (src-coord-exprs   (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
+           (src-coord-exprs (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
            ;; The innermost body:  (if (and-bounds) (set! tile = src[..]) (set! tile = identity))
-           (tile-aref         (cons aref-sym (cons tile-sym tile-coord-syms)))
-           (src-aref          (cons aref-sym (cons src-sym src-coord-exprs)))
-           (bounds-form       (%tlc-all-in-bounds-form n src-coord-exprs
-                                                       global-extent-syms lt-sym and-sym))
-           (inner-body        (list if-sym
-                                    bounds-form
-                                    (list set-sym tile-aref src-aref)
-                                    (list set-sym tile-aref ident-sym)))
+           (tile-aref (cons aref-sym (cons tile-sym tile-coord-syms)))
+           (src-aref (cons aref-sym (cons src-sym src-coord-exprs)))
+           (bounds-form (%tlc-all-in-bounds-form n src-coord-exprs
+                                                 global-extent-syms lt-sym and-sym))
+           (inner-body (list if-sym
+                             bounds-form
+                             (list set-sym tile-aref src-aref)
+                             (list set-sym tile-aref ident-sym)))
            (loop-nest (%tlc-coop-loop-skeleton n tile-sym nil tile-coord-syms
                                                tile-extent-syms lid-syms lws-syms
                                                inner-body cl-pkg))
            (outer-bindings
             (append
-             (list (list src-sym src-form)
-                   (list tile-sym tile-form)
-                   (list ident-sym identity-form))
-             ;; Origin coords are wrapped in (to-ulong ...) so that the inner
-             ;; arithmetic (+ origin tile-coord) is type-consistent regardless
-             ;; of whether the user passed int literals or already-ulong values.
-             (loop for i from 0 below n
-                   for o-sym in origin-syms
-                   collect (list o-sym (list to-ulong-sym (nth i origin-list))))
-             (loop for i from 0 below n
-                   for te-sym in tile-extent-syms
-                   collect (list te-sym (list aref-sym (list extents-tilde-sym tile-sym) i)))
-             (loop for i from 0 below n
-                   for ge-sym in global-extent-syms
-                   collect (list ge-sym (list aref-sym (list extents-tilde-sym src-sym) i)))
-             (loop for i from 0 below n
-                   for lid-sym in lid-syms
-                   collect (list lid-sym (list get-local-id-sym i)))
-             (loop for i from 0 below n
-                   for lws-sym in lws-syms
-                   collect (list lws-sym (list get-lws-sym i))))))
+              (list (list src-sym src-form)
+                    (list tile-sym tile-form)
+                    (list ident-sym identity-form))
+              ;; Origin coords are wrapped in (to-ulong ...) so that the inner
+              ;; arithmetic (+ origin tile-coord) is type-consistent regardless
+              ;; of whether the user passed int literals or already-ulong values.
+              (loop for i from 0 below n
+                    for o-sym in origin-syms
+                    collect (list o-sym (list to-ulong-sym (nth i origin-list))))
+              (loop for i from 0 below n
+                    for te-sym in tile-extent-syms
+                    collect (list te-sym (list aref-sym (list extents-tilde-sym tile-sym) i)))
+              (loop for i from 0 below n
+                    for ge-sym in global-extent-syms
+                    collect (list ge-sym (list aref-sym (list extents-tilde-sym src-sym) i)))
+              (loop for i from 0 below n
+                    for lid-sym in lid-syms
+                    collect (list lid-sym (list get-local-id-sym i)))
+              (loop for i from 0 below n
+                    for lws-sym in lws-syms
+                    collect (list lws-sym (list get-lws-sym i))))))
       (list let-sym outer-bindings
             (list progn-sym
                   loop-nest
@@ -258,48 +256,48 @@
   "Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).
    Returns a let/progn nest with (local-barrier) BEFORE and AFTER the
    cooperative store loop.  TransformF is applied per-element (unary)."
-  (let* ((tile-form    (second expr))
-         (dest-form    (third expr))
-         (origin-list  (fourth expr))
-         (key-args     (nthcdr 4 expr)))
+  (let* ((tile-form (second expr))
+         (dest-form (third expr))
+         (origin-list (fourth expr))
+         (key-args (nthcdr 4 expr)))
     (unless (and (listp origin-list)
                  (>= (length origin-list) 1))
       (error 'crisp-compiler-error
-             :message "store-tile-coords: origin must be a non-empty list of coord forms"
-             :source-location location))
+        :message "store-tile-coords: origin must be a non-empty list of coord forms"
+        :source-location location))
     (let* ((transformF-form (%extract-key-arg key-args :transformF nil))
-           (transpose-form  (%extract-key-arg key-args :transpose nil))
-           (n               (length origin-list))
-           (perm            (%tlc-transpose-permutation n transpose-form location))
-           (cl-pkg          (find-package :crisp-language))
-           (let-sym             (intern "LET" cl-pkg))
-           (progn-sym           (intern "PROGN" cl-pkg))
-           (when-sym            (intern "WHEN" cl-pkg))
-           (set-sym             (intern "SET!" cl-pkg))
-           (funcall-sym         (intern "FUNCALL" cl-pkg))
-           (aref-sym            (intern "~" cl-pkg))
-           (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
-           (get-local-id-sym    (intern "GET-LOCAL-ID" cl-pkg))
-           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
-           (local-barrier-sym   (intern "LOCAL-BARRIER" cl-pkg))
-           (to-ulong-sym        (intern "TO-ULONG" cl-pkg))
-           (plus-sym            (intern "+" cl-pkg))
-           (lt-sym              (intern "<" cl-pkg))
-           (and-sym             (intern "AND" cl-pkg))
+           (transpose-form (%extract-key-arg key-args :transpose nil))
+           (n (length origin-list))
+           (perm (%tlc-transpose-permutation n transpose-form location))
+           (cl-pkg (find-package :crisp-language))
+           (let-sym (intern "LET" cl-pkg))
+           (progn-sym (intern "PROGN" cl-pkg))
+           (when-sym (intern "WHEN" cl-pkg))
+           (set-sym (intern "SET!" cl-pkg))
+           (funcall-sym (intern "FUNCALL" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (local-barrier-sym (intern "LOCAL-BARRIER" cl-pkg))
+           (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+           (plus-sym (intern "+" cl-pkg))
+           (lt-sym (intern "<" cl-pkg))
+           (and-sym (intern "AND" cl-pkg))
            (tile-sym (gensym "TILE"))
            (dest-sym (gensym "DEST"))
-           (origin-syms       (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
-           (tile-coord-syms   (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
-           (tile-extent-syms  (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
+           (origin-syms (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
+           (tile-coord-syms (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
+           (tile-extent-syms (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
            (global-extent-syms (loop for i from 0 below n collect (gensym (format nil "GE~A" i))))
-           (lid-syms          (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
-           (lws-syms          (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
+           (lid-syms (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
            ;; Dest coord expressions: dest[k] = origin[k] + tile-coord[perm[k]]
-           (dest-coord-exprs  (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
-           (tile-aref         (cons aref-sym (cons tile-sym tile-coord-syms)))
-           (dest-aref         (cons aref-sym (cons dest-sym dest-coord-exprs)))
-           (bounds-form       (%tlc-all-in-bounds-form n dest-coord-exprs
-                                                       global-extent-syms lt-sym and-sym))
+           (dest-coord-exprs (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
+           (tile-aref (cons aref-sym (cons tile-sym tile-coord-syms)))
+           (dest-aref (cons aref-sym (cons dest-sym dest-coord-exprs)))
+           (bounds-form (%tlc-all-in-bounds-form n dest-coord-exprs
+                                                 global-extent-syms lt-sym and-sym))
            ;; Value to store: transformF(tile[..]) if transformF supplied, else tile[..]
            (value-form (if transformF-form
                            (list funcall-sym transformF-form tile-aref)
@@ -313,28 +311,28 @@
                                                inner-body cl-pkg))
            (outer-bindings
             (append
-             (list (list tile-sym tile-form)
-                   (list dest-sym dest-form))
-             (loop for i from 0 below n
-                   for o-sym in origin-syms
-                   collect (list o-sym (list to-ulong-sym (nth i origin-list))))
-             (loop for i from 0 below n
-                   for te-sym in tile-extent-syms
-                   collect (list te-sym (list aref-sym (list extents-tilde-sym tile-sym) i)))
-             (loop for i from 0 below n
-                   for ge-sym in global-extent-syms
-                   collect (list ge-sym (list aref-sym (list extents-tilde-sym dest-sym) i)))
-             (loop for i from 0 below n
-                   for lid-sym in lid-syms
-                   collect (list lid-sym (list get-local-id-sym i)))
-             (loop for i from 0 below n
-                   for lws-sym in lws-syms
-                   collect (list lws-sym (list get-lws-sym i))))))
+              (list (list tile-sym tile-form)
+                    (list dest-sym dest-form))
+              (loop for i from 0 below n
+                    for o-sym in origin-syms
+                    collect (list o-sym (list to-ulong-sym (nth i origin-list))))
+              (loop for i from 0 below n
+                    for te-sym in tile-extent-syms
+                    collect (list te-sym (list aref-sym (list extents-tilde-sym tile-sym) i)))
+              (loop for i from 0 below n
+                    for ge-sym in global-extent-syms
+                    collect (list ge-sym (list aref-sym (list extents-tilde-sym dest-sym) i)))
+              (loop for i from 0 below n
+                    for lid-sym in lid-syms
+                    collect (list lid-sym (list get-local-id-sym i)))
+              (loop for i from 0 below n
+                    for lws-sym in lws-syms
+                    collect (list lws-sym (list get-lws-sym i))))))
       (list let-sym outer-bindings
             (list progn-sym
-                  (list local-barrier-sym)   ; barrier BEFORE
+                  (list local-barrier-sym) ; barrier BEFORE
                   loop-nest
-                  (list local-barrier-sym))))))   ; barrier AFTER
+                  (list local-barrier-sym)))))) ; barrier AFTER
 
 
 ;; load-tile-coords / store-tile-coords (and the bare load-tile / store-tile
@@ -352,7 +350,7 @@
 ;; branch before analysis, so no runtime divergence is introduced.
 
 (defvar *in-divergent-conditional* nil
-  "T when the analyzer is currently inside a thread-divergent if/when/unless/cond
+        "T when the analyzer is currently inside a thread-divergent if/when/unless/cond
    branch (i.e. the conditional's test was not constant-folded).  Used by the
    load-tile-coords / store-tile-coords analyzers to reject placement that
    would deadlock at their internal local-barriers.
@@ -400,20 +398,39 @@
   "Signals a clear compile error if (op-name) appears inside a thread-divergent
    conditional.  Call from load-tile-coords / store-tile-coords analyzers."
   (when *in-divergent-conditional*
-    (error 'crisp-compiler-error
-           :message (format nil
-                            "~A cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It contains an internal local-barrier that would deadlock when only some threads enter the branch.  Compile-time conditionals (if+ / when+ / unless+) are safe.  If you need a guarded copy, use a non-divergent condition (e.g. one based on get-workgroup-id, not get-local-id) or restructure the kernel."
-                            op-name)
-           :source-location location)))
+        (error 'crisp-compiler-error
+          :message (format nil
+                       "~A cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It contains an internal local-barrier that would deadlock when only some threads enter the branch.  Compile-time conditionals (if+ / when+ / unless+) are safe.  If you need a guarded copy, use a non-divergent condition (e.g. one based on get-workgroup-id, not get-local-id) or restructure the kernel."
+                     op-name)
+          :source-location location)))
 
 
 (defun analyze-load-tile-coords-expression (expr env context location)
-  "Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).
-   Rejects placement inside a thread-divergent conditional, then delegates
+  "Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
+   Rejects placement inside a thread-divergent conditional. If :barrier is provided
+   and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
    codegen via %expand-load-tile-coords-form."
   (%tlc-check-not-divergent "load-tile-coords" location)
-  (analyze-expression (%expand-load-tile-coords-form expr location)
-                      env context location))
+  (let* ((key-args (nthcdr 4 expr))
+         (barrier-form (%extract-key-arg key-args :barrier nil)))
+    (if (and barrier-form (eq *target-backend* :ptx))
+        (let* ((src-form (second expr))
+               (tile-form (third expr))
+               (origin-list (fourth expr))
+               (src-node (analyze-expression src-form env context (append location '(1))))
+               (tile-node (analyze-expression tile-form env context (append location '(2))))
+               (origin-nodes (loop for o in origin-list for i from 0
+                                   collect (analyze-expression
+                                            o env context
+                                            (append location (list 3 i))))))
+          (make-semantic-nvvm-cp-async-tile-copy
+           :src-node src-node
+           :tile-node tile-node
+           :origin-nodes origin-nodes
+           :type 'ulong
+           :source-location location))
+        (analyze-expression (%expand-load-tile-coords-form expr location)
+                            env context location))))
 
 
 (defun analyze-store-tile-coords-expression (expr env context location)
@@ -423,6 +440,20 @@
   (%tlc-check-not-divergent "store-tile-coords" location)
   (analyze-expression (%expand-store-tile-coords-form expr location)
                       env context location))
+
+(defun analyze-await-expression (expr env context location)
+  "Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message (format nil "await: expected (await BARRIER), got ~S" expr)
+      :source-location location))
+  (case *target-backend*
+    (:ptx
+     (make-semantic-nvvm-cp-async-wait
+      :type 'ulong
+      :source-location location))
+    (t
+     (analyze-expression nil env context location))))
 
 (defun analyze-if-expression-impl (expr env context location &key enforce-constant)
   (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
@@ -492,7 +523,6 @@
     (analyze-static-if-expression `(if ,cond nil ,body) env context location)))
 
 
-
 (defun %strip-execution-context-declares (body-forms)
   "Strips leading (declare ...) forms from BODY-FORMS.
    Returns (values remaining-body all-decl-specs).
@@ -501,10 +531,9 @@
                           while (and (listp f)
                                      (symbolp (car f))
                                      (string-equal (symbol-name (car f)) "DECLARE"))
-                          collect f))
-        )
+                          collect f)))
     (values (nthcdr (length decl-forms) body-forms)
-            (loop for d in decl-forms append (rest d)))))
+      (loop for d in decl-forms append (rest d)))))
 
 (defun %check-context-declarations (decl-specs location)
   "Checks DECL-SPECS for (grid-level) and (workgroup-level) declarations.
@@ -513,27 +542,27 @@
    - (workgroup-level) cannot be nested inside another workgroup-level context.
    Returns (values has-grid-level has-workgroup-level)."
   (let ((has-grid-level (find "GRID-LEVEL" decl-specs
-                              :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                              :test #'string-equal))
+                          :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                          :test #'string-equal))
         (has-workgroup-level (find "WORKGROUP-LEVEL" decl-specs
-                                   :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                   :test #'string-equal)))
+                               :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                               :test #'string-equal)))
 
     (when has-grid-level
-      (unless *in-dispatch-context*
-        (error 'crisp-compiler-error
-          :message "Grid-level context cannot appear in a thread-level function. A dispatch context (def-kernel or def-grid-function) is required."
-          :source-location location))
-      (when *in-grid-level-context*
-        (error 'crisp-compiler-error
-          :message "Grid-level contexts cannot be nested. Sequential usage is allowed but nesting is not."
-          :source-location location)))
+          (unless *in-dispatch-context*
+            (error 'crisp-compiler-error
+              :message "Grid-level context cannot appear in a thread-level function. A dispatch context (def-kernel or def-grid-function) is required."
+              :source-location location))
+          (when *in-grid-level-context*
+                (error 'crisp-compiler-error
+                  :message "Grid-level contexts cannot be nested. Sequential usage is allowed but nesting is not."
+                  :source-location location)))
 
     (when has-workgroup-level
-      (when *in-workgroup-level-context*
-        (error 'crisp-compiler-error
-          :message "Workgroup-level contexts cannot be nested inside another workgroup-level context."
-          :source-location location)))
+          (when *in-workgroup-level-context*
+                (error 'crisp-compiler-error
+                  :message "Workgroup-level contexts cannot be nested inside another workgroup-level context."
+                  :source-location location)))
 
     (values has-grid-level has-workgroup-level)))
 
@@ -904,9 +933,6 @@
         (make-semantic-literal :value-type 'int :value 0 :source-location location))))
 
 
-
-
-
 (defun analyze-length-tilde-expression (expr env context location)
   "Analyzes (length~ arr).
    For (array T N): returns compile-time constant N as ulong literal.
@@ -914,22 +940,22 @@
    Signals crisp-compiler-error if argument is none of the above."
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error
-           :message "length~ expects exactly 1 argument: (length~ arr)"
-           :source-location location))
-  (let* ((arg-node  (analyze-expression (second expr) env context location))
-         (raw-type  (semantic-node-type arg-node))
-         (arg-type  (resolve-type-alias
-                     (if (and (listp raw-type) (= (length raw-type) 1) (listp (first raw-type)))
-                         (first raw-type)
-                         raw-type)))
+      :message "length~ expects exactly 1 argument: (length~ arr)"
+      :source-location location))
+  (let* ((arg-node (analyze-expression (second expr) env context location))
+         (raw-type (semantic-node-type arg-node))
+         (arg-type (resolve-type-alias
+                    (if (and (listp raw-type) (= (length raw-type) 1) (listp (first raw-type)))
+                        (first raw-type)
+                        raw-type)))
          ;; Expand vector/matrix sugar so we can inspect the canonical form
-         (expanded  (expand-storage-handle-type-specifier (resolve-type-alias arg-type)))
+         (expanded (expand-storage-handle-type-specifier (resolve-type-alias arg-type)))
          ;; A type is tensor-like if it's a mangled tensor symbol, a canonical (tensor ...) list,
          ;; or if expanding it yields a (tensor ...) list (i.e. vector/matrix sugar).
          (is-tensor (let ((resolved (resolve-type-alias arg-type)))
                       (or (and (symbolp resolved)
                                (let* ((parts (unmangle-template-struct-name resolved))
-                                      (base  (first parts)))
+                                      (base (first parts)))
                                  (and base (string-equal (symbol-name base) "TENSOR"))))
                           (and (listp resolved)
                                (symbolp (first resolved))
@@ -941,24 +967,24 @@
     (cond
      ;; Tensor / vector / matrix: delegate to the runtime length~ accessor
      (is-tensor
-      (log:info "length~~: tensor/vector/matrix type ~a -> delegating to runtime accessor" arg-type)
-      (analyze-function-call 'length~ expr env context location))
+       (log:info "length~~: tensor/vector/matrix type ~a -> delegating to runtime accessor" arg-type)
+       (analyze-function-call 'length~ expr env context location))
      ;; Fixed-size array: compile-time constant
      ((%array-type-p arg-type)
-      (let* ((n-raw (third arg-type))
-             (n     (etypecase n-raw
-                      (integer n-raw)
-                      (symbol  (parse-integer (symbol-name n-raw))))))
-        (log:info "length~~: array type ~a -> N=~a" arg-type n)
-        (make-semantic-literal :value-type 'ulong
-                               :value      (coerce n '(unsigned-byte 64))
-                               :source-location location)))
+       (let* ((n-raw (third arg-type))
+              (n (etypecase n-raw
+                   (integer n-raw)
+                   (symbol (parse-integer (symbol-name n-raw))))))
+         (log:info "length~~: array type ~a -> N=~a" arg-type n)
+         (make-semantic-literal :value-type 'ulong
+                                :value (coerce n '(unsigned-byte 64))
+                                :source-location location)))
      ;; Neither: error
      (t
-      (error 'crisp-compiler-error
-             :message (format nil "length~~ requires an (array T N), tensor, vector, or matrix type, got ~a"
-                              arg-type)
-             :source-location location)))))
+       (error 'crisp-compiler-error
+         :message (format nil "length~~ requires an (array T N), tensor, vector, or matrix type, got ~a"
+                    arg-type)
+         :source-location location)))))
 
 
 (defun analyze-dotimes-expression (expr env context location)
@@ -968,28 +994,28 @@
    Returns a semantic-dotimes node (type void)."
   (unless (and (>= (length expr) 2) (listp (second expr)) (>= (length (second expr)) 2))
     (error 'crisp-compiler-error
-           :message "Malformed dotimes: expected (dotimes (var limit [stride]) body...)"
-           :source-location location))
-  (let* ((binding    (second expr))
-         (var-name   (first binding))
+      :message "Malformed dotimes: expected (dotimes (var limit [stride]) body...)"
+      :source-location location))
+  (let* ((binding (second expr))
+         (var-name (first binding))
          (limit-form (second binding))
-         (stride-form (third binding))   ;; NIL when omitted
+         (stride-form (third binding)) ;; NIL when omitted
          (body-forms (cddr expr))
          ;; Analyze limit
          (limit-node (analyze-expression limit-form env context (append location '(0))))
          (limit-type (get-single-value-type limit-node))
-         (limit-ct   (gethash limit-type *crisp-types*)))
+         (limit-ct (gethash limit-type *crisp-types*)))
     ;; Validate: limit must be a registered integer type
     (unless (and limit-ct (member (crisp-type-category limit-ct)
                                   '(:signed-int :unsigned-int)))
       (error 'crisp-compiler-error
-             :message (format nil "dotimes limit must be an integer type, got ~a" limit-type)
-             :source-location location))
+        :message (format nil "dotimes limit must be an integer type, got ~a" limit-type)
+        :source-location location))
     ;; Analyze stride if provided
     (let ((stride-node (when stride-form
-                         (analyze-expression stride-form env context (append location '(0 1))))))
+                             (analyze-expression stride-form env context (append location '(0 1))))))
       ;; Extend env: bind var as the limit's type
-      (let* ((body-env  (cons (make-parameter-def :name var-name :type limit-type :kind :local) env))
+      (let* ((body-env (cons (make-parameter-def :name var-name :type limit-type :kind :local) env))
              (body-nodes (analyze-body-expressions body-forms body-env context (append location '(1)))))
         (make-semantic-dotimes :type 'void
                                :var-name var-name
@@ -997,8 +1023,6 @@
                                :stride-node stride-node
                                :body body-nodes
                                :source-location location)))))
-
-
 
 
 ;; ==========================================================================
@@ -1095,14 +1119,14 @@
 
    The outer (>= start len) guard short-circuits the (len - 1 - start)
    ulong underflow when start >= len or len = 0."
-  (let ((if-sym       (intern "IF" cl-pkg))
-        (ge-sym       (intern ">=" cl-pkg))
-        (plus-sym     (intern "+" cl-pkg))
-        (minus-sym    (intern "-" cl-pkg))
-        (div-sym      (intern "/" cl-pkg))
+  (let ((if-sym (intern "IF" cl-pkg))
+        (ge-sym (intern ">=" cl-pkg))
+        (plus-sym (intern "+" cl-pkg))
+        (minus-sym (intern "-" cl-pkg))
+        (div-sym (intern "/" cl-pkg))
         (to-ulong-sym (intern "TO-ULONG" cl-pkg)))
     (let ((zero (list to-ulong-sym 0))
-          (one  (list to-ulong-sym 1)))
+          (one (list to-ulong-sym 1)))
       (list if-sym
             (list ge-sym start-sym len-sym)
             zero
@@ -1122,39 +1146,39 @@
    CT agreement and tensor-arity checks are the caller's job.
 
    New shape: exact-iter-count + simple dotimes (no per-iter bounds check)."
-  (let* ((strict-p   (keywordp (third expr)))
-         (bindings   (if strict-p (fourth expr) (third expr)))
+  (let* ((strict-p (keywordp (third expr)))
+         (bindings (if strict-p (fourth expr) (third expr)))
          (body-forms (if strict-p (cddddr expr) (cdddr expr)))
          (tensor-form (second expr)))
     (unless (and bindings (listp bindings) (every #'symbolp bindings)
                  (>= (length bindings) 1))
       (error 'crisp-compiler-error
-             :message (if strict-p
-                          "Malformed tensor-stride: expected (tensor-stride TENSOR LAYOUT-TAG (BINDING ...) BODY...)"
-                          "Malformed tensor-stride: expected (tensor-stride TENSOR (BINDING ...) BODY...)")
-             :source-location location))
-    (let* ((n           (length bindings))
-           (t-sym       (gensym "T"))
-           (gid-sym     (gensym "GID"))
-           (gsize-sym   (gensym "GSIZE"))
-           (len-sym     (gensym "LEN"))
-           (iters-sym   (gensym "ITERS"))
-           (k-sym       (gensym "K"))
-           (flat-sym    (gensym "FLAT"))
+        :message (if strict-p
+                     "Malformed tensor-stride: expected (tensor-stride TENSOR LAYOUT-TAG (BINDING ...) BODY...)"
+                     "Malformed tensor-stride: expected (tensor-stride TENSOR (BINDING ...) BODY...)")
+        :source-location location))
+    (let* ((n (length bindings))
+           (t-sym (gensym "T"))
+           (gid-sym (gensym "GID"))
+           (gsize-sym (gensym "GSIZE"))
+           (len-sym (gensym "LEN"))
+           (iters-sym (gensym "ITERS"))
+           (k-sym (gensym "K"))
+           (flat-sym (gensym "FLAT"))
            (extents-syms (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
-           (cl-pkg          (find-package :crisp-language))
-           (let-sym         (intern "LET"                 cl-pkg))
-           (declare-sym     (intern "DECLARE"             cl-pkg))
-           (grid-level-sym  (intern "GRID-LEVEL"          cl-pkg))
-           (dotimes-sym     (intern "DOTIMES"             cl-pkg))
-           (progn-sym       (intern "PROGN"               cl-pkg))
-           (get-gid-sym     (intern "GET-GLOBAL-ID"        cl-pkg))
-           (get-gsize-sym   (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
-           (len-tilde-sym   (intern "LENGTH~"             cl-pkg))
-           (extents-tilde   (intern "EXTENTS~"            cl-pkg))
-           (aref-sym        (intern "~"                   cl-pkg))
-           (plus-sym        (intern "+"                   cl-pkg))
-           (mul-sym         (intern "*"                   cl-pkg))
+           (cl-pkg (find-package :crisp-language))
+           (let-sym (intern "LET" cl-pkg))
+           (declare-sym (intern "DECLARE" cl-pkg))
+           (grid-level-sym (intern "GRID-LEVEL" cl-pkg))
+           (dotimes-sym (intern "DOTIMES" cl-pkg))
+           (progn-sym (intern "PROGN" cl-pkg))
+           (get-gid-sym (intern "GET-GLOBAL-ID" cl-pkg))
+           (get-gsize-sym (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+           (len-tilde-sym (intern "LENGTH~" cl-pkg))
+           (extents-tilde (intern "EXTENTS~" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (plus-sym (intern "+" cl-pkg))
+           (mul-sym (intern "*" cl-pkg))
            (extent-bindings
             (loop for esym in extents-syms
                   for i from 0
@@ -1186,14 +1210,14 @@
                             dotimes-form))
            (outer-let
             (list* let-sym
-                   (append (list (list t-sym     tensor-form)
-                                 (list gid-sym   (list get-gid-sym 0))
-                                 (list gsize-sym (list get-gsize-sym 0))
-                                 (list len-sym   (list len-tilde-sym t-sym)))
-                           extent-bindings
-                           stride-bindings)
-                   (list (list declare-sym (list grid-level-sym))
-                         iters-let))))
+              (append (list (list t-sym tensor-form)
+                            (list gid-sym (list get-gid-sym 0))
+                            (list gsize-sym (list get-gsize-sym 0))
+                            (list len-sym (list len-tilde-sym t-sym)))
+                extent-bindings
+                stride-bindings)
+              (list (list declare-sym (list grid-level-sym))
+                    iters-let))))
       outer-let)))
 
 (defun %expand-grid-stride-form (expr location)
@@ -1207,36 +1231,36 @@
                (>= (length (second expr)) 1)
                (= (length (second expr)) (length (third expr))))
     (error 'crisp-compiler-error
-           :message "Malformed grid-stride: expected (grid-stride (SIZE ...) (BINDING ...) BODY...) with size and binding arity matching and >= 1"
-           :source-location location))
-  (let* ((size-forms     (second expr))
-         (bindings       (third expr))
-         (body-forms     (cdddr expr))
-         (n              (length bindings))
-         (cl-pkg          (find-package :crisp-language))
-         (let-sym         (intern "LET"                 cl-pkg))
-         (declare-sym     (intern "DECLARE"             cl-pkg))
-         (grid-level-sym  (intern "GRID-LEVEL"          cl-pkg))
-         (dotimes-sym     (intern "DOTIMES"             cl-pkg))
-         (progn-sym       (intern "PROGN"               cl-pkg))
-         (get-gid-sym     (intern "GET-GLOBAL-ID"        cl-pkg))
-         (get-gsize-sym   (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
-         (plus-sym        (intern "+"                   cl-pkg))
-         (mul-sym         (intern "*"                   cl-pkg))
-         (to-ulong-sym    (intern "TO-ULONG"            cl-pkg))
-         (gid-sym         (gensym "GID"))
-         (gsize-sym       (gensym "GSIZE"))
-         (len-sym         (gensym "LEN"))
-         (iters-sym       (gensym "ITERS"))
-         (k-sym           (gensym "K"))
-         (flat-sym        (gensym "FLAT"))
-         (extents-syms    (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
-         (size-bindings   (loop for esym in extents-syms
-                                for form in size-forms
-                                collect (list esym (list to-ulong-sym form))))
-         (len-form        (if (= n 1)
-                              (first extents-syms)
-                              (reduce (lambda (a b) (list mul-sym a b)) extents-syms)))
+      :message "Malformed grid-stride: expected (grid-stride (SIZE ...) (BINDING ...) BODY...) with size and binding arity matching and >= 1"
+      :source-location location))
+  (let* ((size-forms (second expr))
+         (bindings (third expr))
+         (body-forms (cdddr expr))
+         (n (length bindings))
+         (cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (declare-sym (intern "DECLARE" cl-pkg))
+         (grid-level-sym (intern "GRID-LEVEL" cl-pkg))
+         (dotimes-sym (intern "DOTIMES" cl-pkg))
+         (progn-sym (intern "PROGN" cl-pkg))
+         (get-gid-sym (intern "GET-GLOBAL-ID" cl-pkg))
+         (get-gsize-sym (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+         (plus-sym (intern "+" cl-pkg))
+         (mul-sym (intern "*" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+         (gid-sym (gensym "GID"))
+         (gsize-sym (gensym "GSIZE"))
+         (len-sym (gensym "LEN"))
+         (iters-sym (gensym "ITERS"))
+         (k-sym (gensym "K"))
+         (flat-sym (gensym "FLAT"))
+         (extents-syms (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
+         (size-bindings (loop for esym in extents-syms
+                              for form in size-forms
+                              collect (list esym (list to-ulong-sym form))))
+         (len-form (if (= n 1)
+                       (first extents-syms)
+                       (reduce (lambda (a b) (list mul-sym a b)) extents-syms)))
          (stride-bindings (%ts-build-stride-bindings extents-syms :last))
          (decode-bindings (if (= n 1)
                               (list (list (first bindings) flat-sym))
@@ -1262,13 +1286,13 @@
                           dotimes-form))
          (outer-let
           (list* let-sym
-                 (append (list (list gid-sym   (list get-gid-sym 0))
-                               (list gsize-sym (list get-gsize-sym 0)))
-                         size-bindings
-                         (list (list len-sym len-form))
-                         stride-bindings)
-                 (list (list declare-sym (list grid-level-sym))
-                       iters-let))))
+            (append (list (list gid-sym (list get-gid-sym 0))
+                          (list gsize-sym (list get-gsize-sym 0)))
+              size-bindings
+              (list (list len-sym len-form))
+              stride-bindings)
+            (list (list declare-sym (list grid-level-sym))
+                  iters-let))))
     outer-let))
 
 
@@ -1282,44 +1306,44 @@
                (= (length (third expr)) 1)
                (symbolp (first (third expr))))
     (error 'crisp-compiler-error
-           :message "Malformed loop-vector-stride: expected (loop-vector-stride VEC (VAR) BODY...)"
-           :source-location location))
-  (let* ((vec-form        (second expr))
-         (var-name        (first (third expr)))
-         (body-forms      (cdddr expr))
-         (gid-sym         (gensym "GID"))
-         (gsize-sym       (gensym "GSIZE"))
-         (len-sym         (gensym "LEN"))
-         (iters-sym       (gensym "ITERS"))
-         (k-sym           (gensym "K"))
-         (cl-pkg          (find-package :crisp-language))
-         (let-sym         (intern "LET"                 cl-pkg))
-         (declare-sym     (intern "DECLARE"             cl-pkg))
-         (grid-level-sym  (intern "GRID-LEVEL"          cl-pkg))
-         (dotimes-sym     (intern "DOTIMES"             cl-pkg))
-         (progn-sym       (intern "PROGN"               cl-pkg))
-         (get-gid-sym     (intern "GET-GLOBAL-ID"        cl-pkg))
-         (get-gsize-sym   (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
-         (len-tilde-sym   (intern "LENGTH~"             cl-pkg))
-         (plus-sym        (intern "+"                   cl-pkg))
-         (mul-sym         (intern "*"                   cl-pkg))
-         (i-binding       (list var-name
-                                (list plus-sym gid-sym
-                                      (list mul-sym k-sym gsize-sym))))
+      :message "Malformed loop-vector-stride: expected (loop-vector-stride VEC (VAR) BODY...)"
+      :source-location location))
+  (let* ((vec-form (second expr))
+         (var-name (first (third expr)))
+         (body-forms (cdddr expr))
+         (gid-sym (gensym "GID"))
+         (gsize-sym (gensym "GSIZE"))
+         (len-sym (gensym "LEN"))
+         (iters-sym (gensym "ITERS"))
+         (k-sym (gensym "K"))
+         (cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (declare-sym (intern "DECLARE" cl-pkg))
+         (grid-level-sym (intern "GRID-LEVEL" cl-pkg))
+         (dotimes-sym (intern "DOTIMES" cl-pkg))
+         (progn-sym (intern "PROGN" cl-pkg))
+         (get-gid-sym (intern "GET-GLOBAL-ID" cl-pkg))
+         (get-gsize-sym (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+         (len-tilde-sym (intern "LENGTH~" cl-pkg))
+         (plus-sym (intern "+" cl-pkg))
+         (mul-sym (intern "*" cl-pkg))
+         (i-binding (list var-name
+                          (list plus-sym gid-sym
+                                (list mul-sym k-sym gsize-sym))))
          (inner-body (if (= (length body-forms) 1)
                          (first body-forms)
                          (cons progn-sym body-forms)))
-         (inner-let   (list let-sym (list i-binding) inner-body))
+         (inner-let (list let-sym (list i-binding) inner-body))
          (dotimes-form (list dotimes-sym (list k-sym iters-sym) inner-let))
-         (iters-let   (list let-sym
-                            (list (list iters-sym
-                                        (%build-exact-iter-count-form
-                                         gid-sym gsize-sym len-sym cl-pkg)))
-                            dotimes-form))
+         (iters-let (list let-sym
+                          (list (list iters-sym
+                                      (%build-exact-iter-count-form
+                                       gid-sym gsize-sym len-sym cl-pkg)))
+                          dotimes-form))
          (expansion (list let-sym
-                          (list (list gid-sym   (list get-gid-sym   0))
+                          (list (list gid-sym (list get-gid-sym 0))
                                 (list gsize-sym (list get-gsize-sym 0))
-                                (list len-sym   (list len-tilde-sym vec-form)))
+                                (list len-sym (list len-tilde-sym vec-form)))
                           (list declare-sym (list grid-level-sym))
                           iters-let)))
     expansion))
@@ -1329,7 +1353,6 @@
    %expand-loop-vector-stride-form."
   (analyze-expression (%expand-loop-vector-stride-form expr location)
                       env context location))
-
 
 
 ;; ==========================================================================
@@ -1360,11 +1383,11 @@
 
    For CT :last:  i0 = flat/s0; rem1 = flat - i0*s0; i1 = rem1/s1; ...; i_{N-1} = rem_{N-1}
    For CT :first: i_{N-1} = flat/s_{N-1}; rem1 = flat - i_{N-1}*s_{N-1}; ...; i_0 = rem_{N-1}"
-  (let* ((cl-pkg  (find-package :crisp-language))
-         (div-sym (intern "/"  cl-pkg))
-         (sub-sym (intern "-"  cl-pkg))
-         (mul-sym (intern "*"  cl-pkg))
-         (n       (length binding-syms))
+  (let* ((cl-pkg (find-package :crisp-language))
+         (div-sym (intern "/" cl-pkg))
+         (sub-sym (intern "-" cl-pkg))
+         (mul-sym (intern "*" cl-pkg))
+         (n (length binding-syms))
          (ordered-bindings (if (eq ct :first)
                                (reverse binding-syms)
                                binding-syms)))
@@ -1374,13 +1397,13 @@
           (current-flat flat-sym))
       (loop for k from 0 below (1- n)
             for bsym = (nth k ordered-bindings)
-            for s    = (nth k stride-syms)
+            for s = (nth k stride-syms)
             for next-rem = (gensym "REM")
             do (push (list bsym (list div-sym current-flat s)) bindings)
-               (push (list next-rem (list sub-sym current-flat
-                                          (list mul-sym bsym s)))
-                     bindings)
-               (setf current-flat next-rem))
+              (push (list next-rem (list sub-sym current-flat
+                                         (list mul-sym bsym s)))
+                    bindings)
+              (setf current-flat next-rem))
       ;; Last binding takes the final remainder
       (push (list (nth (1- n) ordered-bindings) current-flat) bindings)
       (nreverse bindings))))
@@ -1393,12 +1416,12 @@
    For CT :first: s_k = product(E_0     .. E_{k-1})  but iteration uses these
                   in reverse, so we build s_{N-1} .. s_1 instead.
    Returned bindings have the same indexing convention as %ts-build-decode-bindings."
-  (let* ((cl-pkg  (find-package :crisp-language))
+  (let* ((cl-pkg (find-package :crisp-language))
          (mul-sym (intern "*" cl-pkg))
-         (n       (length extents-syms))
-         (result  nil))
+         (n (length extents-syms))
+         (result nil))
     (when (= n 1)
-      (return-from %ts-build-stride-bindings nil))
+          (return-from %ts-build-stride-bindings nil))
     (case ct
       (:last
        ;; ordered-bindings[k] corresponds to dim k; needs s_k = E_{k+1} * .. * E_{N-1}
@@ -1431,21 +1454,21 @@
                        (first resolved)
                        resolved))
          (canon (cond
-                  ((and (listp resolved)
-                        (symbolp (first resolved))
-                        (string-equal (symbol-name (first resolved)) "TENSOR"))
+                 ((and (listp resolved)
+                       (symbolp (first resolved))
+                       (string-equal (symbol-name (first resolved)) "TENSOR"))
                    resolved)
-                  ((symbolp resolved)
+                 ((symbolp resolved)
                    (let ((u (unmangle-template-struct-name resolved)))
                      (if (and (listp u) (symbolp (first u))
                               (string-equal (symbol-name (first u)) "TENSOR"))
                          u nil)))
-                  ((and (listp resolved)
-                        (symbolp (first resolved))
-                        (member (symbol-name (first resolved))
-                                '("VECTOR" "MATRIX") :test #'string-equal))
+                 ((and (listp resolved)
+                       (symbolp (first resolved))
+                       (member (symbol-name (first resolved))
+                               '("VECTOR" "MATRIX") :test #'string-equal))
                    (canonicalize-type-specifier resolved))
-                  (t nil))))
+                 (t nil))))
     canon))
 
 (defun %ts-layout-tag-to-ct (tag n location)
@@ -1455,23 +1478,21 @@
     (:row-major
      (unless (= n 2)
        (error 'crisp-compiler-error
-              :message (format nil "tensor-stride :row-major requires a 2D tensor, got ~A bindings" n)
-              :source-location location))
+         :message (format nil "tensor-stride :row-major requires a 2D tensor, got ~A bindings" n)
+         :source-location location))
      :last)
     (:col-major
      (unless (= n 2)
        (error 'crisp-compiler-error
-              :message (format nil "tensor-stride :col-major requires a 2D tensor, got ~A bindings" n)
-              :source-location location))
+         :message (format nil "tensor-stride :col-major requires a 2D tensor, got ~A bindings" n)
+         :source-location location))
      :first)
-    (:contiguous-last  :last)
+    (:contiguous-last :last)
     (:contiguous-first :first)
     (otherwise
      (error 'crisp-compiler-error
-            :message (format nil "tensor-stride: unknown layout-tag ~S (expected :row-major, :col-major, :contiguous-last, or :contiguous-first)" tag)
-            :source-location location))))
-
-
+       :message (format nil "tensor-stride: unknown layout-tag ~S (expected :row-major, :col-major, :contiguous-last, or :contiguous-first)" tag)
+       :source-location location))))
 
 
 (defun analyze-tensor-stride-expression (expr env context location)
@@ -1483,10 +1504,10 @@
          (env-resolver
           (lambda (sym)
             (when (symbolp sym)
-              (handler-case
-                  (let ((node (analyze-expression sym env context (append location '(1)))))
-                    (semantic-node-type node))
-                (error () nil)))))
+                  (handler-case
+                      (let ((node (analyze-expression sym env context (append location '(1)))))
+                        (semantic-node-type node))
+                    (error () nil)))))
          (static-ct (%resolve-tensor-form-ct tensor-form env-resolver))
          ;; Strict variant validation reuses %tensor-stride-resolve-ct.  For the
          ;; safe variant fall back to %tensor-stride-resolve-ct's default chain.
@@ -1500,14 +1521,14 @@
                      (let ((ty (funcall env-resolver tensor-form)))
                        (and ty (%ts-canonicalize-tensor-type ty)))))
          (declared-n (when (and (listp canon) (>= (length canon) 3))
-                       (third canon))))
+                           (third canon))))
     (declare (ignore static-ct))
     (when (and (integerp declared-n) (/= declared-n n))
-      (error 'crisp-compiler-error
-             :message (format nil
-                              "tensor-stride: tensor has ~A dimension(s) but ~A binding(s) provided"
-                              declared-n n)
-             :source-location location))
+          (error 'crisp-compiler-error
+            :message (format nil
+                         "tensor-stride: tensor has ~A dimension(s) but ~A binding(s) provided"
+                       declared-n n)
+            :source-location location))
     (analyze-expression (%expand-tensor-stride-form expr ct location)
                         env context location)))
 
@@ -1525,7 +1546,6 @@
    %expand-grid-stride-form."
   (analyze-expression (%expand-grid-stride-form expr location)
                       env context location))
-
 
 
 ;; ============================================================================
@@ -1551,31 +1571,28 @@
    for a tile-stride EXPR.  TILE-SPEC-KIND is one of :size-list or :tile-tensor.
    Form-shape validation only — does not check arity vs tensor."
   (let* ((tensor-form (second expr))
-         (third       (third expr))
-         (strict-p    (keywordp third))
-         (layout-tag  (when strict-p third))
-         (tile-pos    (if strict-p 3 2))
-         (tile-spec   (nth tile-pos expr))
-         (bind-pos    (1+ tile-pos))
-         (bindings    (nth bind-pos expr))
-         (body-forms  (nthcdr (1+ bind-pos) expr))
+         (third (third expr))
+         (strict-p (keywordp third))
+         (layout-tag (when strict-p third))
+         (tile-pos (if strict-p 3 2))
+         (tile-spec (nth tile-pos expr))
+         (bind-pos (1+ tile-pos))
+         (bindings (nth bind-pos expr))
+         (body-forms (nthcdr (1+ bind-pos) expr))
          (tile-spec-kind
           (cond
-            ((and (listp tile-spec)
-                  (>= (length tile-spec) 1)
-                  (every #'integerp tile-spec))
+           ((and (listp tile-spec)
+                 (>= (length tile-spec) 1)
+                 (every #'integerp tile-spec))
              :size-list)
-            ((or (symbolp tile-spec)
-                 (and (consp tile-spec) (symbolp (car tile-spec))))
+           ((or (symbolp tile-spec)
+                (and (consp tile-spec) (symbolp (car tile-spec))))
              :tile-tensor)
-            (t
+           (t
              (error 'crisp-compiler-error
-                    :message (format nil "tile-stride: tile spec must be a size-list of integers or a tile-tensor reference, got ~S" tile-spec)
-                    :source-location nil)))))
+               :message (format nil "tile-stride: tile spec must be a size-list of integers or a tile-tensor reference, got ~S" tile-spec)
+               :source-location nil)))))
     (values strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)))
-
-
-
 
 
 (defun %expand-hw-workgroup-idx-form (tensor-form bindings body-forms location)
@@ -1587,16 +1604,9 @@
          (get-local-size-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
          (ts-syms (loop for i from 0 below n
                         collect (gensym (format nil "LS~A" i))))
-         (size-expr-fn (lambda (k) (list get-local-size-sym k)))
-         ;; Phase 1b rewrite (before helper rewrite).
-         (body-with-load-store-rewritten
-          (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg))
-         (rewritten-body (%tile-helpers-rewrite body-with-load-store-rewritten n
-                                                 (lambda (k) (nth k ts-syms)))))
+         (size-expr-fn (lambda (k) (list get-local-size-sym k))))
     (%expand-workgroup-strided-outer-loop-with-ts-syms
-     tensor-form n bindings rewritten-body ts-syms size-expr-fn location)))
-
-
+     tensor-form n bindings body-forms ts-syms size-expr-fn location)))
 
 
 (defun %expand-hw-warp-idx-form (tensor-form bindings body-forms location)
@@ -1610,42 +1620,38 @@
   (declare (ignore location))
   (dolist (f body-forms)
     (%detect-bare-load-store-tile-in-form f "hardware-stride :warp-idx"))
-  (let* ((cl-pkg              (find-package :crisp-language))
-         (let-sym             (intern "LET"                    cl-pkg))
-         (declare-sym         (intern "DECLARE"                cl-pkg))
-         (grid-level-sym      (intern "GRID-LEVEL"             cl-pkg))
-         (dotimes-sym         (intern "DOTIMES"                cl-pkg))
-         (progn-sym           (intern "PROGN"                  cl-pkg))
-         (to-ulong-sym        (intern "TO-ULONG"               cl-pkg))
-         (len-tilde-sym       (intern "LENGTH~"                cl-pkg))
-         (get-glid-sym        (intern "GET-GLOBAL-LINEAR-ID"   cl-pkg))
-         (get-glsize-sym      (intern "GET-GLOBAL-LINEAR-SIZE" cl-pkg))
-         (plus-sym            (intern "+"                      cl-pkg))
-         (mul-sym             (intern "*"                      cl-pkg))
-         (div-sym             (intern "/"                      cl-pkg))
-         (t-sym         (gensym "T"))
-         (ws-sym        (gensym "WSIZE"))
-         (len-sym       (gensym "LEN"))
-         (glid-sym      (gensym "GLID"))
-         (glsize-sym    (gensym "GLSIZE"))
-         (mywarp-sym    (gensym "MYWARP"))
-         (numwarps-sym  (gensym "NUMWARPS"))
-         (start-sym     (gensym "WSTART"))
-         (stride-sym    (gensym "WSTRIDE"))
-         (iters-sym     (gensym "ITERS"))
-         (k-sym         (gensym "K"))
-         (var-name      (first bindings))
-         (rewritten-body (%tile-helpers-rewrite body-forms 1
-                                                (lambda (k)
-                                                  (declare (ignore k))
-                                                  ws-sym)))
-         (inner-body (if (= (length rewritten-body) 1)
-                         (first rewritten-body)
-                         (cons progn-sym rewritten-body)))
+  (let* ((cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (declare-sym (intern "DECLARE" cl-pkg))
+         (grid-level-sym (intern "GRID-LEVEL" cl-pkg))
+         (dotimes-sym (intern "DOTIMES" cl-pkg))
+         (progn-sym (intern "PROGN" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+         (len-tilde-sym (intern "LENGTH~" cl-pkg))
+         (get-glid-sym (intern "GET-GLOBAL-LINEAR-ID" cl-pkg))
+         (get-glsize-sym (intern "GET-GLOBAL-LINEAR-SIZE" cl-pkg))
+         (plus-sym (intern "+" cl-pkg))
+         (mul-sym (intern "*" cl-pkg))
+         (div-sym (intern "/" cl-pkg))
+         (t-sym (gensym "T"))
+         (ws-sym (gensym "WSIZE"))
+         (len-sym (gensym "LEN"))
+         (glid-sym (gensym "GLID"))
+         (glsize-sym (gensym "GLSIZE"))
+         (mywarp-sym (gensym "MYWARP"))
+         (numwarps-sym (gensym "NUMWARPS"))
+         (start-sym (gensym "WSTART"))
+         (stride-sym (gensym "WSTRIDE"))
+         (iters-sym (gensym "ITERS"))
+         (k-sym (gensym "K"))
+         (var-name (first bindings))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
          (var-let (list let-sym
                         (list (list var-name
-                                    (list plus-sym start-sym
-                                          (list mul-sym k-sym stride-sym))))
+                                    (list plus-sym mywarp-sym
+                                          (list mul-sym k-sym numwarps-sym))))
                         inner-body))
          (dotimes-form (list dotimes-sym
                              (list k-sym iters-sym)
@@ -1656,175 +1662,18 @@
                                        start-sym stride-sym len-sym cl-pkg)))
                           dotimes-form))
          (outer-let (list let-sym
-                          (list (list t-sym        tensor-form)
-                                (list ws-sym       (list to-ulong-sym 32))
-                                (list len-sym      (list len-tilde-sym t-sym))
-                                (list glid-sym     (list get-glid-sym))
-                                (list glsize-sym   (list get-glsize-sym))
-                                (list mywarp-sym   (list div-sym glid-sym ws-sym))
+                          (list (list t-sym tensor-form)
+                                (list ws-sym (list to-ulong-sym 32))
+                                (list len-sym (list len-tilde-sym t-sym))
+                                (list glid-sym (list get-glid-sym))
+                                (list glsize-sym (list get-glsize-sym))
+                                (list mywarp-sym (list div-sym glid-sym ws-sym))
                                 (list numwarps-sym (list div-sym glsize-sym ws-sym))
-                                (list start-sym    (list mul-sym mywarp-sym ws-sym))
-                                (list stride-sym   (list mul-sym ws-sym numwarps-sym)))
+                                (list start-sym (list mul-sym mywarp-sym ws-sym))
+                                (list stride-sym (list mul-sym ws-sym numwarps-sym)))
                           (list declare-sym (list grid-level-sym))
                           iters-let)))
     outer-let))
-
-(defun %tile-helper-name-p (sym)
-  "Returns :indices if SYM is the tile-indices helper macro name, else NIL.
-   tile-coords and tensor-coords were removed in endeavor 111 Phase 0."
-  (when (symbolp sym)
-    (when (string-equal (symbol-name sym) "TILE-INDICES")
-      :indices)))
-
-(defun %tile-helper-build-coords (arg-forms tile-size-fn cl-pkg)
-  "Builds (mod arg_k TILE_k) forms for tile-coords."
-  (let ((mod-sym (intern "MOD" cl-pkg)))
-    (loop for arg in arg-forms
-          for k from 0
-          collect (list mod-sym arg (funcall tile-size-fn k)))))
-
-(defun %tile-helper-build-indices (arg-forms tile-size-fn cl-pkg)
-  "Builds (/ arg_k TILE_k) forms for tile-indices."
-  (let ((div-sym (intern "/" cl-pkg)))
-    (loop for arg in arg-forms
-          for k from 0
-          collect (list div-sym arg (funcall tile-size-fn k)))))
-
-(defun %tile-helper-build-tensor-coords (idx-forms t-forms tile-size-fn cl-pkg)
-  "Builds (+ (* idx_k TILE_k) t_k) forms for tensor-coords."
-  (let ((plus-sym (intern "+" cl-pkg))
-        (mul-sym  (intern "*" cl-pkg)))
-    (unless (= (length idx-forms) (length t-forms))
-      (error 'crisp-compiler-error
-             :message (format nil "tensor-coords: index list (~A) and coord list (~A) must have same arity"
-                              (length idx-forms) (length t-forms))
-             :source-location nil))
-    (loop for idx in idx-forms
-          for tc  in t-forms
-          for k from 0
-          collect (list plus-sym (list mul-sym idx (funcall tile-size-fn k)) tc))))
-
-
-
-(defun %tile-helper-call-expansion (helper-kind helper-args tile-size-fn n-tile cl-pkg)
-  "Returns a list of N expansion forms for a tile-indices helper call.
-   Only :indices is supported under outer-loop tile-stride semantics."
-  (case helper-kind
-    (:indices
-     (unless (= (length helper-args) n-tile)
-       (error 'crisp-compiler-error
-              :message (format nil "tile-indices: expected ~A argument(s) to match tile arity, got ~A"
-                               n-tile (length helper-args))
-              :source-location nil))
-     (%tile-helper-build-indices helper-args tile-size-fn cl-pkg))
-    (t
-     (error 'crisp-compiler-error
-            :message (format nil "Unknown tile-stride helper kind: ~S" helper-kind)
-            :source-location nil))))
-
-(defun %tile-helpers-rewrite (body-forms n-tile tile-size-fn)
-  "Walks BODY-FORMS and rewrites tile-coords / tile-indices / tensor-coords
-   calls.  Multi-value uses in let-bindings (flat MVB form) become multiple
-   single-value bindings; standalone single-value uses are replaced inline.
-   N-TILE is the stride/tile arity; TILE-SIZE-FN takes dim index k and
-   returns a Crisp form for that dim's tile size."
-  (let ((cl-pkg (find-package :crisp-language)))
-    (labels ((walk-form (form)
-               (cond
-                 ((atom form) form)
-                 ((not (consp form)) form)
-                 ((and (symbolp (car form))
-                       (let ((n (symbol-name (car form))))
-                         (or (string-equal n "LET")
-                             (string-equal n "LET*"))))
-                  (walk-let form))
-                 (t
-                  ;; Detect helper call OR walk subforms.  Done as a single
-                  ;; default clause to avoid a `cond` test-only quirk in the
-                  ;; crisp.compiler `cond` macro (simplified vs cl:cond).
-                  (let ((kind (%tile-helper-name-p (car form))))
-                    (if kind
-                        ;; Standalone helper expression: must be single-value.
-                        (let ((expanded (%tile-helper-call-expansion
-                                         kind (cdr form) tile-size-fn n-tile cl-pkg)))
-                          (if (= (length expanded) 1)
-                              (walk-form (first expanded))
-                              (error 'crisp-compiler-error
-                                     :message (format nil "~A used in single-value context but stride is multi-dim — use in a multi-value let binding"
-                                                      (symbol-name (car form)))
-                                     :source-location nil)))
-                        (mapcar #'walk-form form))))))
-             (walk-let (form)
-               (let* ((binding-forms (second form))
-                      (body-forms-let (cddr form))
-                      (new-bindings (mapcan #'rewrite-binding binding-forms))
-                      (new-body (mapcar #'walk-form body-forms-let)))
-                 `(,(first form) ,new-bindings ,@new-body)))
-             (rewrite-binding (binding)
-               ;; binding shapes (from analyze-let-expression):
-               ;;   flat MVB:           (var1 var2 ... varN init)   ; len > 2, first is symbol
-               ;;   group MVB:          ((var1 ... varN) init)      ; first is a list
-               ;;   single:             (var init)                  ; len 2, first is symbol
-               (cond
-                 ;; Flat MVB
-                 ((and (> (length binding) 2)
-                       (symbolp (first binding)))
-                  (let* ((vars (butlast binding))
-                         (init (car (last binding)))
-                         (helper-kind (and (consp init) (%tile-helper-name-p (car init)))))
-                    (if helper-kind
-                        (let ((expanded (%tile-helper-call-expansion
-                                         helper-kind (cdr init) tile-size-fn n-tile cl-pkg)))
-                          (unless (= (length vars) (length expanded))
-                            (error 'crisp-compiler-error
-                                   :message (format nil "~A: ~A binding(s) vs ~A return value(s)"
-                                                    (symbol-name (car init))
-                                                    (length vars) (length expanded))
-                                   :source-location nil))
-                          (loop for v in vars
-                                for e in expanded
-                                collect (list v (walk-form e))))
-                        ;; Not a helper init — walk it and keep as flat MVB
-                        (list (append vars (list (walk-form init)))))))
-                 ;; Group MVB
-                 ((and (= (length binding) 2)
-                       (listp (first binding)))
-                  (let* ((vars (first binding))
-                         (init (second binding))
-                         (helper-kind (and (consp init) (%tile-helper-name-p (car init)))))
-                    (if helper-kind
-                        (let ((expanded (%tile-helper-call-expansion
-                                         helper-kind (cdr init) tile-size-fn n-tile cl-pkg)))
-                          (unless (= (length vars) (length expanded))
-                            (error 'crisp-compiler-error
-                                   :message (format nil "~A: ~A binding(s) vs ~A return value(s)"
-                                                    (symbol-name (car init))
-                                                    (length vars) (length expanded))
-                                   :source-location nil))
-                          (loop for v in vars
-                                for e in expanded
-                                collect (list v (walk-form e))))
-                        (list (list vars (walk-form init))))))
-                 ;; Single binding
-                 ((= (length binding) 2)
-                  (let* ((var (first binding))
-                         (init (second binding))
-                         (helper-kind (and (consp init) (%tile-helper-name-p (car init)))))
-                    (if helper-kind
-                        (let ((expanded (%tile-helper-call-expansion
-                                         helper-kind (cdr init) tile-size-fn n-tile cl-pkg)))
-                          (unless (= (length expanded) 1)
-                            (error 'crisp-compiler-error
-                                   :message (format nil "~A returns ~A values but bound to a single variable"
-                                                    (symbol-name (car init)) (length expanded))
-                                   :source-location nil))
-                          (list (list var (walk-form (first expanded)))))
-                        (list (list var (walk-form init))))))
-                 (t (list binding)))))
-      (mapcar #'walk-form body-forms))))
-
-
-
 
 (defun %expand-tile-stride-form (expr ct location)
   "Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
@@ -1839,12 +1688,12 @@
                  (every #'symbolp bindings)
                  (>= (length bindings) 1))
       (error 'crisp-compiler-error
-             :message "Malformed tile-stride: expected (tile-stride TENSOR [LAYOUT-TAG] <TILE-SPEC> (BINDING ...) BODY...)"
-             :source-location location))
+        :message "Malformed tile-stride: expected (tile-stride TENSOR [LAYOUT-TAG] <TILE-SPEC> (BINDING ...) BODY...)"
+        :source-location location))
     (let* ((n (length bindings))
            (cl-pkg (find-package :crisp-language))
-           (to-ulong-sym      (intern "TO-ULONG" cl-pkg))
-           (aref-sym          (intern "~" cl-pkg))
+           (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
            (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
            (ts-syms (loop for i from 0 below n
                           collect (gensym (format nil "TS~A" i))))
@@ -1856,16 +1705,9 @@
               (:tile-tensor
                (let ((tile-form tile-spec))
                  (lambda (k)
-                   (list aref-sym (list extents-tilde-sym tile-form) k))))))
-           ;; Phase 1b: rewrite bare load-tile / store-tile in body BEFORE
-           ;; helper rewrite (and before any expansion).  Tile-stride bindings
-           ;; are the chunk origin coords, which become the -coords origin list.
-           (body-with-load-store-rewritten
-            (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg))
-           (rewritten-body (%tile-helpers-rewrite body-with-load-store-rewritten n
-                                                  (lambda (k) (nth k ts-syms)))))
+                   (list aref-sym (list extents-tilde-sym tile-form) k)))))))
       (%expand-workgroup-strided-outer-loop-with-ts-syms
-       tensor-form n bindings rewritten-body ts-syms tile-size-expr-fn location))))
+       tensor-form n bindings body-forms ts-syms tile-size-expr-fn location))))
 
 ;; src/analysis/control.lisp
 (defun analyze-tile-stride-expression (expr env context location)
@@ -1878,10 +1720,10 @@
     (let* ((env-resolver
             (lambda (sym)
               (when (symbolp sym)
-                (handler-case
-                    (let ((node (analyze-expression sym env context (append location '(1)))))
-                      (semantic-node-type node))
-                  (error () nil)))))
+                    (handler-case
+                        (let ((node (analyze-expression sym env context (append location '(1)))))
+                          (semantic-node-type node))
+                      (error () nil)))))
            (cl-pkg (find-package :crisp-language))
            (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
            (synth-for-ct (if strict-p
@@ -1893,20 +1735,20 @@
                        (let ((ty (funcall env-resolver tensor-form)))
                          (and ty (%ts-canonicalize-tensor-type ty)))))
            (declared-n (when (and (listp canon) (>= (length canon) 3))
-                         (third canon))))
+                             (third canon))))
       (when (and (integerp declared-n) (/= declared-n n))
-        (error 'crisp-compiler-error
-               :message (format nil
-                                "tile-stride: tensor has ~A dimension(s) but ~A binding(s) provided"
-                                declared-n n)
-               :source-location location))
+            (error 'crisp-compiler-error
+              :message (format nil
+                           "tile-stride: tensor has ~A dimension(s) but ~A binding(s) provided"
+                         declared-n n)
+              :source-location location))
       (when (and (eq tile-spec-kind :size-list)
                  (/= (length tile-spec) n))
-        (error 'crisp-compiler-error
-               :message (format nil
-                                "tile-stride: tile size-list has ~A dimension(s) but tensor has ~A dimension(s)"
-                                (length tile-spec) n)
-               :source-location location))
+            (error 'crisp-compiler-error
+              :message (format nil
+                           "tile-stride: tile size-list has ~A dimension(s) but tensor has ~A dimension(s)"
+                         (length tile-spec) n)
+              :source-location location))
       (analyze-expression (%expand-tile-stride-form expr ct location)
                           env context location))))
 
@@ -1916,19 +1758,19 @@
    for a hardware-stride EXPR.  Form-shape validation only — does not check
    arity vs tensor."
   (let* ((tensor-form (second expr))
-         (third       (third expr))
-         (strict-p    (and (keywordp third)
-                           (member third '(:row-major :col-major :contiguous-last :contiguous-first))))
-         (layout-tag  (when strict-p third))
-         (hw-tag-pos  (if strict-p 3 2))
-         (hw-tag      (nth hw-tag-pos expr))
-         (bind-pos    (1+ hw-tag-pos))
-         (bindings    (nth bind-pos expr))
-         (body-forms  (nthcdr (1+ bind-pos) expr)))
+         (third (third expr))
+         (strict-p (and (keywordp third)
+                        (member third '(:row-major :col-major :contiguous-last :contiguous-first))))
+         (layout-tag (when strict-p third))
+         (hw-tag-pos (if strict-p 3 2))
+         (hw-tag (nth hw-tag-pos expr))
+         (bind-pos (1+ hw-tag-pos))
+         (bindings (nth bind-pos expr))
+         (body-forms (nthcdr (1+ bind-pos) expr)))
     (unless (member hw-tag '(:workgroup-idx :warp-idx))
       (error 'crisp-compiler-error
-             :message (format nil "hardware-stride: unknown hw-tag ~S (expected :workgroup-idx or :warp-idx)" hw-tag)
-             :source-location nil))
+        :message (format nil "hardware-stride: unknown hw-tag ~S (expected :workgroup-idx or :warp-idx)" hw-tag)
+        :source-location nil))
     (values strict-p layout-tag hw-tag bindings body-forms tensor-form)))
 
 ;; Custom expansion for :warp-idx.  Unlike :workgroup-idx (which can delegate
@@ -1951,15 +1793,15 @@
          (dotimes-sym (intern "DOTIMES" cl-pkg))
          (if-sym (intern "IF" cl-pkg))
          (progn-sym (intern "PROGN" cl-pkg))
-         (get-glid-sym   (intern "GET-GLOBAL-LINEAR-ID"   cl-pkg))
+         (get-glid-sym (intern "GET-GLOBAL-LINEAR-ID" cl-pkg))
          (get-glsize-sym (intern "GET-GLOBAL-LINEAR-SIZE" cl-pkg))
-         (len-tilde-sym  (intern "LENGTH~" cl-pkg))
+         (len-tilde-sym (intern "LENGTH~" cl-pkg))
          (plus-sym (intern "+" cl-pkg))
-         (lt-sym   (intern "<" cl-pkg))
+         (lt-sym (intern "<" cl-pkg))
          (inner-body (if (= (length body-forms) 1)
                          (first body-forms)
                          (cons progn-sym body-forms)))
-         (inner-if  (list if-sym (list lt-sym var-name len-sym) inner-body))
+         (inner-if (list if-sym (list lt-sym var-name len-sym) inner-body))
          (inner-let (list let-sym
                           (list (list var-name (list plus-sym k-sym gid-sym)))
                           inner-if))
@@ -1967,125 +1809,12 @@
                              (list k-sym len-sym gsize-sym)
                              inner-let))
          (expansion (list let-sym
-                          (list (list gid-sym   (list get-glid-sym))
+                          (list (list gid-sym (list get-glid-sym))
                                 (list gsize-sym (list get-glsize-sym))
-                                (list len-sym   (list len-tilde-sym tensor-form)))
+                                (list len-sym (list len-tilde-sym tensor-form)))
                           (list declare-sym (list grid-level-sym))
                           dotimes-form)))
     expansion))
-
-
-
-
-(defun %rewrite-bare-tile-in-form (form origin-binding-syms cl-pkg)
-  "Rewrites bare (load-tile ...) / (store-tile ...) inside FORM into their
-   -coords equivalents using ORIGIN-BINDING-SYMS as the origin list.  Does
-   NOT recurse into nested tile-stride / hardware-stride / workgroup-stride
-   forms — those manage their own body rewrites.
-   Endeavor 113 Phase 2: also handles bare (request-load-tile ...)."
-  (cond
-    ((atom form) form)
-    ((not (and (consp form) (symbolp (car form))))
-     (mapcar (lambda (sub) (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
-             form))
-    (t
-     (let ((op-name (symbol-name (car form))))
-       (cond
-         ((string-equal op-name "LOAD-TILE")
-          (when (< (length form) 3)
-            (error 'crisp-compiler-error
-                   :message "load-tile: expected (load-tile SRC TILE [&key ...])"
-                   :source-location nil))
-          (let ((ltc-sym (intern "LOAD-TILE-COORDS" cl-pkg))
-                (src     (second form))
-                (tile    (third form))
-                (key-args (nthcdr 3 form)))
-            (append (list ltc-sym src tile origin-binding-syms) key-args)))
-         ((string-equal op-name "STORE-TILE")
-          (when (< (length form) 3)
-            (error 'crisp-compiler-error
-                   :message "store-tile: expected (store-tile TILE DEST [&key ...])"
-                   :source-location nil))
-          (let ((stc-sym (intern "STORE-TILE-COORDS" cl-pkg))
-                (tile    (second form))
-                (dest    (third form))
-                (key-args (nthcdr 3 form)))
-            (append (list stc-sym tile dest origin-binding-syms) key-args)))
-         ;; --- Endeavor 113 Phase 2: bare request-load-tile sugar. ---
-         ((string-equal op-name "REQUEST-LOAD-TILE")
-          (when (< (length form) 3)
-            (error 'crisp-compiler-error
-                   :message "request-load-tile: expected (request-load-tile SRC TILE [&key ...])"
-                   :source-location nil))
-          (let ((rltc-sym (intern "REQUEST-LOAD-TILE-COORDS" cl-pkg))
-                (src      (second form))
-                (tile     (third form))
-                (key-args (nthcdr 3 form)))
-            (append (list rltc-sym src tile origin-binding-syms) key-args)))
-         ;; --- Endeavor 113 Phase 3: bare request-store-tile sugar. ---
-         ((string-equal op-name "REQUEST-STORE-TILE")
-          (when (< (length form) 3)
-            (error 'crisp-compiler-error
-                   :message "request-store-tile: expected (request-store-tile TILE DEST [&key ...])"
-                   :source-location nil))
-          (let ((rstc-sym (intern "REQUEST-STORE-TILE-COORDS" cl-pkg))
-                (tile     (second form))
-                (dest     (third form))
-                (key-args (nthcdr 3 form)))
-            (append (list rstc-sym tile dest origin-binding-syms) key-args)))
-         ((or (string-equal op-name "TILE-STRIDE")
-              (string-equal op-name "HARDWARE-STRIDE")
-              (string-equal op-name "WORKGROUP-STRIDE"))
-          form)
-         (t
-          (cons (car form)
-                (mapcar (lambda (sub)
-                          (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
-                        (cdr form)))))))))
-
-
-(defun %rewrite-bare-load-store-tile-in-body (body-forms origin-binding-syms cl-pkg)
-  "Walks BODY-FORMS top-down and rewrites bare load-tile / store-tile to
-   their -coords equivalents.  Used by tile-stride and hardware-stride
-   :workgroup-idx body expansion."
-  (mapcar (lambda (f) (%rewrite-bare-tile-in-form f origin-binding-syms cl-pkg))
-          body-forms))
-
-
-
-
-(defun %detect-bare-load-store-tile-in-form (form path)
-  "Recursively walks FORM and signals a compile error if a bare (load-tile ...)
-   or (store-tile ...) call appears.  PATH is the context name used in the
-   error message (e.g. \"hardware-stride :warp-idx\").
-   Endeavor 113 Phase 2: also detects bare (request-load-tile ...)."
-  (cond
-    ((atom form) nil)
-    ((not (and (consp form) (symbolp (car form))))
-     (dolist (sub form) (%detect-bare-load-store-tile-in-form sub path)))
-    (t
-     (let ((op-name (symbol-name (car form))))
-       (cond
-         ((or (string-equal op-name "LOAD-TILE")
-              (string-equal op-name "STORE-TILE")
-              (string-equal op-name "REQUEST-LOAD-TILE")
-              (string-equal op-name "REQUEST-STORE-TILE"))
-          (error 'crisp-compiler-error
-                 :message (format nil
-                                  "~A: bare ~A is not allowed inside ~A — it is a workgroup-cooperative primitive whose internal local-barrier would deadlock in a warp-grouped chunking context.  Use ~A-coords with explicit origin coords if you need to copy data here, or restructure the kernel."
-                                  (string-downcase op-name)
-                                  (string-downcase op-name)
-                                  path
-                                  (string-downcase op-name))
-                 :source-location nil))
-         ((or (string-equal op-name "TILE-STRIDE")
-              (string-equal op-name "HARDWARE-STRIDE")
-              (string-equal op-name "WORKGROUP-STRIDE"))
-          nil)
-         (t
-          (dolist (sub (cdr form))
-            (%detect-bare-load-store-tile-in-form sub path))))))))
-
 
 
 ;; ======================================================================
@@ -2129,86 +1858,86 @@
   "Workgroup-strided outer loop over chunk origins.  Per-workgroup exact
    iter count per dim — body runs unconditionally."
   (declare (ignore location))
-  (let* ((cl-pkg              (find-package :crisp-language))
-         (let-sym             (intern "LET"                cl-pkg))
-         (declare-sym         (intern "DECLARE"            cl-pkg))
-         (workgroup-level-sym (intern "WORKGROUP-LEVEL"    cl-pkg))
-         (dotimes-sym         (intern "DOTIMES"            cl-pkg))
-         (progn-sym           (intern "PROGN"              cl-pkg))
-         (aref-sym            (intern "~"                  cl-pkg))
-         (extents-tilde-sym   (intern "EXTENTS~"           cl-pkg))
-         (get-wg-id-sym       (intern "GET-WORKGROUP-ID"   cl-pkg))
-         (get-num-groups-sym  (intern "GET-NUM-GROUPS"     cl-pkg))
-         (plus-sym            (intern "+"                  cl-pkg))
-         (mul-sym             (intern "*"                  cl-pkg))
+  (let* ((cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (declare-sym (intern "DECLARE" cl-pkg))
+         (workgroup-level-sym (intern "WORKGROUP-LEVEL" cl-pkg))
+         (dotimes-sym (intern "DOTIMES" cl-pkg))
+         (progn-sym (intern "PROGN" cl-pkg))
+         (aref-sym (intern "~" cl-pkg))
+         (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+         (get-wg-id-sym (intern "GET-WORKGROUP-ID" cl-pkg))
+         (get-num-groups-sym (intern "GET-NUM-GROUPS" cl-pkg))
+         (plus-sym (intern "+" cl-pkg))
+         (mul-sym (intern "*" cl-pkg))
          (t-sym (gensym "T"))
-         (e-syms      (loop for i from 0 below n collect (gensym (format nil "E~A"      i))))
-         (gid-syms    (loop for i from 0 below n collect (gensym (format nil "WGID~A"   i))))
-         (ng-syms     (loop for i from 0 below n collect (gensym (format nil "NG~A"     i))))
-         (start-syms  (loop for i from 0 below n collect (gensym (format nil "START~A"  i))))
+         (e-syms (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
+         (gid-syms (loop for i from 0 below n collect (gensym (format nil "WGID~A" i))))
+         (ng-syms (loop for i from 0 below n collect (gensym (format nil "NG~A" i))))
+         (start-syms (loop for i from 0 below n collect (gensym (format nil "START~A" i))))
          (stride-syms (loop for i from 0 below n collect (gensym (format nil "STRIDE~A" i))))
-         (iters-syms  (loop for i from 0 below n collect (gensym (format nil "ITERS~A"  i))))
-         (k-syms      (loop for i from 0 below n collect (gensym (format nil "K~A"      i))))
+         (iters-syms (loop for i from 0 below n collect (gensym (format nil "ITERS~A" i))))
+         (k-syms (loop for i from 0 below n collect (gensym (format nil "K~A" i))))
          (inner-body (if (= (length body-forms) 1)
                          (first body-forms)
                          (cons progn-sym body-forms)))
          (nest
           (let ((acc inner-body))
             (loop for i from (1- n) downto 0
-                  for b-sym      = (nth i bindings)
-                  for start-sym  = (nth i start-syms)
+                  for b-sym = (nth i bindings)
+                  for start-sym = (nth i start-syms)
                   for stride-sym = (nth i stride-syms)
-                  for iters-sym  = (nth i iters-syms)
-                  for k-sym      = (nth i k-syms)
+                  for iters-sym = (nth i iters-syms)
+                  for k-sym = (nth i k-syms)
                   do (setf acc
-                           (list dotimes-sym
-                                 (list k-sym iters-sym)
-                                 (list let-sym
-                                       (list (list b-sym
-                                                   (list plus-sym start-sym
-                                                         (list mul-sym k-sym stride-sym))))
-                                       acc))))
+                       (list dotimes-sym
+                             (list k-sym iters-sym)
+                             (list let-sym
+                                   (list (list b-sym
+                                               (list plus-sym start-sym
+                                                     (list mul-sym k-sym stride-sym))))
+                                   acc))))
             acc))
          (outer-bindings
           (append
-           (list (list t-sym tensor-form))
-           ;; ts_i  = tile size (from caller)
-           (loop for i from 0 below n
-                 for ts-sym in ts-syms
-                 collect (list ts-sym (funcall tile-size-expr-fn i)))
-           ;; e_i   = extents[i]
-           (loop for i from 0 below n
-                 for e-sym in e-syms
-                 collect (list e-sym (list aref-sym (list extents-tilde-sym t-sym) i)))
-           ;; gid_i = get-workgroup-id i
-           (loop for i from 0 below n
-                 for gid-sym in gid-syms
-                 collect (list gid-sym (list get-wg-id-sym i)))
-           ;; ng_i  = get-num-groups i
-           (loop for i from 0 below n
-                 for ng-sym in ng-syms
-                 collect (list ng-sym (list get-num-groups-sym i)))
-           ;; start_i  = gid_i * ts_i
-           (loop for i from 0 below n
-                 for start-sym in start-syms
-                 for gid-sym   in gid-syms
-                 for ts-sym    in ts-syms
-                 collect (list start-sym (list mul-sym gid-sym ts-sym)))
-           ;; stride_i = ts_i * ng_i
-           (loop for i from 0 below n
-                 for stride-sym in stride-syms
-                 for ts-sym     in ts-syms
-                 for ng-sym     in ng-syms
-                 collect (list stride-sym (list mul-sym ts-sym ng-sym)))
-           ;; iters_i  = exact count given start_i, stride_i, e_i
-           (loop for i from 0 below n
-                 for iters-sym in iters-syms
-                 for start-sym in start-syms
-                 for stride-sym in stride-syms
-                 for e-sym     in e-syms
-                 collect (list iters-sym
-                               (%build-exact-iter-count-form
-                                start-sym stride-sym e-sym cl-pkg))))))
+            (list (list t-sym tensor-form))
+            ;; ts_i  = tile size (from caller)
+            (loop for i from 0 below n
+                  for ts-sym in ts-syms
+                  collect (list ts-sym (funcall tile-size-expr-fn i)))
+            ;; e_i   = extents[i]
+            (loop for i from 0 below n
+                  for e-sym in e-syms
+                  collect (list e-sym (list aref-sym (list extents-tilde-sym t-sym) i)))
+            ;; gid_i = get-workgroup-id i
+            (loop for i from 0 below n
+                  for gid-sym in gid-syms
+                  collect (list gid-sym (list get-wg-id-sym i)))
+            ;; ng_i  = get-num-groups i
+            (loop for i from 0 below n
+                  for ng-sym in ng-syms
+                  collect (list ng-sym (list get-num-groups-sym i)))
+            ;; start_i  = gid_i * ts_i
+            (loop for i from 0 below n
+                  for start-sym in start-syms
+                  for gid-sym in gid-syms
+                  for ts-sym in ts-syms
+                  collect (list start-sym (list mul-sym gid-sym ts-sym)))
+            ;; stride_i = ts_i * ng_i
+            (loop for i from 0 below n
+                  for stride-sym in stride-syms
+                  for ts-sym in ts-syms
+                  for ng-sym in ng-syms
+                  collect (list stride-sym (list mul-sym ts-sym ng-sym)))
+            ;; iters_i  = exact count given start_i, stride_i, e_i
+            (loop for i from 0 below n
+                  for iters-sym in iters-syms
+                  for start-sym in start-syms
+                  for stride-sym in stride-syms
+                  for e-sym in e-syms
+                  collect (list iters-sym
+                                (%build-exact-iter-count-form
+                                 start-sym stride-sym e-sym cl-pkg))))))
     (list let-sym outer-bindings
           (list declare-sym (list workgroup-level-sym))
           nest)))
@@ -2230,12 +1959,12 @@
     (declare (ignore strict-p layout-tag))
     (unless (and (listp bindings) (every #'symbolp bindings) (>= (length bindings) 1))
       (error 'crisp-compiler-error
-             :message "Malformed hardware-stride: expected (hardware-stride TENSOR [LAYOUT-TAG] <HW-TAG> (BINDING ...) BODY...)"
-             :source-location location))
+        :message "Malformed hardware-stride: expected (hardware-stride TENSOR [LAYOUT-TAG] <HW-TAG> (BINDING ...) BODY...)"
+        :source-location location))
     (when (and (eq hw-tag :warp-idx) (/= (length bindings) 1))
-      (error 'crisp-compiler-error
-             :message "hardware-stride :warp-idx must have exactly 1 binding — warp iteration is always linear over the flattened global execution space"
-             :source-location location))
+          (error 'crisp-compiler-error
+            :message "hardware-stride :warp-idx must have exactly 1 binding — warp iteration is always linear over the flattened global execution space"
+            :source-location location))
     (ecase hw-tag
       (:workgroup-idx
        (%expand-hw-workgroup-idx-form tensor-form bindings body-forms location))
@@ -2252,10 +1981,10 @@
     (let* ((env-resolver
             (lambda (sym)
               (when (symbolp sym)
-                (handler-case
-                    (let ((node (analyze-expression sym env context (append location '(1)))))
-                      (semantic-node-type node))
-                  (error () nil)))))
+                    (handler-case
+                        (let ((node (analyze-expression sym env context (append location '(1)))))
+                          (semantic-node-type node))
+                      (error () nil)))))
            (cl-pkg (find-package :crisp-language))
            (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
            (synth-for-ct (if strict-p
@@ -2267,21 +1996,20 @@
                        (let ((ty (funcall env-resolver tensor-form)))
                          (and ty (%ts-canonicalize-tensor-type ty)))))
            (declared-n (when (and (listp canon) (>= (length canon) 3))
-                         (third canon))))
+                             (third canon))))
       (when (and (eq hw-tag :warp-idx) (/= n 1))
-        (error 'crisp-compiler-error
-               :message "hardware-stride :warp-idx must have exactly 1 binding — warp iteration is always linear over the flattened global execution space"
-               :source-location location))
+            (error 'crisp-compiler-error
+              :message "hardware-stride :warp-idx must have exactly 1 binding — warp iteration is always linear over the flattened global execution space"
+              :source-location location))
       (when (and (eq hw-tag :workgroup-idx)
                  (integerp declared-n) (/= declared-n n))
-        (error 'crisp-compiler-error
-               :message (format nil
-                                "hardware-stride :workgroup-idx: tensor has ~A dimension(s) but ~A binding(s) provided"
-                                declared-n n)
-               :source-location location))
+            (error 'crisp-compiler-error
+              :message (format nil
+                           "hardware-stride :workgroup-idx: tensor has ~A dimension(s) but ~A binding(s) provided"
+                         declared-n n)
+              :source-location location))
       (analyze-expression (%expand-hardware-stride-form expr ct location)
                           env context location))))
-
 
 
 ;; Endeavor 110: workgroup-stride
@@ -2302,8 +2030,8 @@
   "Returns (values bindings body-forms tensor-form) for a workgroup-stride EXPR.
    Form-shape validation only — does not check tensor arity vs bindings arity."
   (let* ((tensor-form (second expr))
-         (bindings    (third expr))
-         (body-forms  (cdddr expr)))
+         (bindings (third expr))
+         (body-forms (cdddr expr)))
     (values bindings body-forms tensor-form)))
 
 
@@ -2355,25 +2083,25 @@
                  (every #'symbolp bindings)
                  (>= (length bindings) 1))
       (error 'crisp-compiler-error
-             :message "Malformed workgroup-stride: expected (workgroup-stride TENSOR (BINDING ...) BODY...)"
-             :source-location location))
+        :message "Malformed workgroup-stride: expected (workgroup-stride TENSOR (BINDING ...) BODY...)"
+        :source-location location))
     (let* ((n (length bindings))
-           (cl-pkg              (find-package :crisp-language))
-           (let-sym             (intern "LET"                 cl-pkg))
-           (dotimes-sym         (intern "DOTIMES"             cl-pkg))
-           (progn-sym           (intern "PROGN"               cl-pkg))
-           (aref-sym            (intern "~"                   cl-pkg))
-           (extents-tilde-sym   (intern "EXTENTS~"            cl-pkg))
-           (get-local-id-sym    (intern "GET-LOCAL-ID"        cl-pkg))
-           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
-           (plus-sym            (intern "+"                   cl-pkg))
-           (mul-sym             (intern "*"                   cl-pkg))
+           (cl-pkg (find-package :crisp-language))
+           (let-sym (intern "LET" cl-pkg))
+           (dotimes-sym (intern "DOTIMES" cl-pkg))
+           (progn-sym (intern "PROGN" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (plus-sym (intern "+" cl-pkg))
+           (mul-sym (intern "*" cl-pkg))
            (t-sym (gensym "T"))
-           (e-syms     (loop for i from 0 below n collect (gensym (format nil "E~A"     i))))
-           (lid-syms   (loop for i from 0 below n collect (gensym (format nil "LID~A"   i))))
-           (lws-syms   (loop for i from 0 below n collect (gensym (format nil "LWS~A"   i))))
+           (e-syms (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
+           (lid-syms (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
            (iters-syms (loop for i from 0 below n collect (gensym (format nil "ITERS~A" i))))
-           (k-syms     (loop for i from 0 below n collect (gensym (format nil "K~A"     i))))
+           (k-syms (loop for i from 0 below n collect (gensym (format nil "K~A" i))))
            (inner-body (if (= (length body-forms) 1)
                            (first body-forms)
                            (cons progn-sym body-forms)))
@@ -2384,41 +2112,41 @@
            (nest
             (let ((acc inner-body))
               (loop for i from (1- n) downto 0
-                    for b-sym     = (nth i bindings)
-                    for lid-sym   = (nth i lid-syms)
-                    for lws-sym   = (nth i lws-syms)
-                    for k-sym     = (nth i k-syms)
+                    for b-sym = (nth i bindings)
+                    for lid-sym = (nth i lid-syms)
+                    for lws-sym = (nth i lws-syms)
+                    for k-sym = (nth i k-syms)
                     for iters-sym = (nth i iters-syms)
                     do (setf acc
-                             (list dotimes-sym
-                                   (list k-sym iters-sym)
-                                   (list let-sym
-                                         (list (list b-sym
-                                                     (list plus-sym lid-sym
-                                                           (list mul-sym k-sym lws-sym))))
-                                         acc))))
+                         (list dotimes-sym
+                               (list k-sym iters-sym)
+                               (list let-sym
+                                     (list (list b-sym
+                                                 (list plus-sym lid-sym
+                                                       (list mul-sym k-sym lws-sym))))
+                                     acc))))
               acc))
            (outer-bindings
             (append
-             (list (list t-sym tensor-form))
-             (loop for i from 0 below n
-                   for e-sym in e-syms
-                   collect (list e-sym (list aref-sym (list extents-tilde-sym t-sym) i)))
-             (loop for i from 0 below n
-                   for lid-sym in lid-syms
-                   collect (list lid-sym (list get-local-id-sym i)))
-             (loop for i from 0 below n
-                   for lws-sym in lws-syms
-                   collect (list lws-sym (list get-lws-sym i)))
-             ;; Per-dim exact-iter-count, one per thread.
-             (loop for i from 0 below n
-                   for iters-sym in iters-syms
-                   for lid-sym   in lid-syms
-                   for lws-sym   in lws-syms
-                   for e-sym     in e-syms
-                   collect (list iters-sym
-                                 (%build-exact-iter-count-form
-                                  lid-sym lws-sym e-sym cl-pkg))))))
+              (list (list t-sym tensor-form))
+              (loop for i from 0 below n
+                    for e-sym in e-syms
+                    collect (list e-sym (list aref-sym (list extents-tilde-sym t-sym) i)))
+              (loop for i from 0 below n
+                    for lid-sym in lid-syms
+                    collect (list lid-sym (list get-local-id-sym i)))
+              (loop for i from 0 below n
+                    for lws-sym in lws-syms
+                    collect (list lws-sym (list get-lws-sym i)))
+              ;; Per-dim exact-iter-count, one per thread.
+              (loop for i from 0 below n
+                    for iters-sym in iters-syms
+                    for lid-sym in lid-syms
+                    for lws-sym in lws-syms
+                    for e-sym in e-syms
+                    collect (list iters-sym
+                                  (%build-exact-iter-count-form
+                                   lid-sym lws-sym e-sym cl-pkg))))))
       (list let-sym outer-bindings nest))))
 
 
@@ -2431,114 +2159,94 @@
     (let* ((env-resolver
             (lambda (sym)
               (when (symbolp sym)
-                (handler-case
-                    (let ((node (analyze-expression sym env context (append location '(1)))))
-                      (semantic-node-type node))
-                  (error () nil)))))
+                    (handler-case
+                        (let ((node (analyze-expression sym env context (append location '(1)))))
+                          (semantic-node-type node))
+                      (error () nil)))))
            (n (length bindings))
            (canon (and (symbolp tensor-form)
                        (let ((ty (funcall env-resolver tensor-form)))
                          (and ty (%ts-canonicalize-tensor-type ty)))))
            (declared-n (when (and (listp canon) (>= (length canon) 3))
-                         (third canon))))
+                             (third canon))))
       (when (and (integerp declared-n) (/= declared-n n))
-        (error 'crisp-compiler-error
-               :message (format nil
-                                "workgroup-stride: tensor has ~A dimension(s) but ~A binding(s) provided"
-                                declared-n n)
-               :source-location location))
+            (error 'crisp-compiler-error
+              :message (format nil
+                           "workgroup-stride: tensor has ~A dimension(s) but ~A binding(s) provided"
+                         declared-n n)
+              :source-location location))
       (analyze-expression (%expand-workgroup-stride-form expr location)
                           env context location))))
-
-
-
-
-(defun analyze-load-tile-expression (expr env context location)
-  "Bare (load-tile SRC TILE &key ...) outside a stride context — compile
-   error pointing the user to load-tile-coords."
-  (declare (ignore expr env context))
-  (error 'crisp-compiler-error
-         :message "load-tile is only valid inside a tile-stride or hardware-stride :workgroup-idx body, where its origin coords are inferred from the surrounding stride bindings.  Use (load-tile-coords SRC TILE (ORIGIN...) ...) for explicit coordinate forms."
-         :source-location location))
-
-
-(defun analyze-store-tile-expression (expr env context location)
-  "Bare (store-tile TILE DEST &key ...) outside a stride context — compile
-   error pointing the user to store-tile-coords."
-  (declare (ignore expr env context))
-  (error 'crisp-compiler-error
-         :message "store-tile is only valid inside a tile-stride or hardware-stride :workgroup-idx body, where its origin coords are inferred from the surrounding stride bindings.  Use (store-tile-coords TILE DEST (ORIGIN...) ...) for explicit coordinate forms."
-         :source-location location))
 
 
 (defun %expand-load-tile-coords-bwd-form (expr location)
   "Pure expansion of (%load-tile-coords-bwd SRC-ADJ TILE-ADJ (ORIGIN...) &key transpose).
    Cooperative scatter-add via atomic-add!."
-  (let* ((src-adj-form  (second expr))
+  (let* ((src-adj-form (second expr))
          (tile-adj-form (third expr))
-         (origin-list   (fourth expr))
-         (key-args      (nthcdr 4 expr)))
+         (origin-list (fourth expr))
+         (key-args (nthcdr 4 expr)))
     (unless (and (listp origin-list) (>= (length origin-list) 1))
       (error 'crisp-compiler-error
-             :message "%load-tile-coords-bwd: origin must be a non-empty list of coord forms"
-             :source-location location))
+        :message "%load-tile-coords-bwd: origin must be a non-empty list of coord forms"
+        :source-location location))
     (let* ((transpose-form (%extract-key-arg key-args :transpose nil))
-           (n              (length origin-list))
-           (perm           (%tlc-transpose-permutation n transpose-form location))
-           (cl-pkg         (find-package :crisp-language))
-           (let-sym             (intern "LET" cl-pkg))
-           (progn-sym           (intern "PROGN" cl-pkg))
-           (when-sym            (intern "WHEN" cl-pkg))
-           (aref-sym            (intern "~" cl-pkg))
-           (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
-           (get-local-id-sym    (intern "GET-LOCAL-ID" cl-pkg))
-           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
-           (local-barrier-sym   (intern "LOCAL-BARRIER" cl-pkg))
-           (to-ulong-sym        (intern "TO-ULONG" cl-pkg))
-           (plus-sym            (intern "+" cl-pkg))
-           (lt-sym              (intern "<" cl-pkg))
-           (and-sym             (intern "AND" cl-pkg))
-           (atomic-add-sym      (intern "ATOMIC-ADD!" cl-pkg))
-           (src-adj-sym  (gensym "SRC-ADJ"))
+           (n (length origin-list))
+           (perm (%tlc-transpose-permutation n transpose-form location))
+           (cl-pkg (find-package :crisp-language))
+           (let-sym (intern "LET" cl-pkg))
+           (progn-sym (intern "PROGN" cl-pkg))
+           (when-sym (intern "WHEN" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (local-barrier-sym (intern "LOCAL-BARRIER" cl-pkg))
+           (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+           (plus-sym (intern "+" cl-pkg))
+           (lt-sym (intern "<" cl-pkg))
+           (and-sym (intern "AND" cl-pkg))
+           (atomic-add-sym (intern "ATOMIC-ADD!" cl-pkg))
+           (src-adj-sym (gensym "SRC-ADJ"))
            (tile-adj-sym (gensym "TILE-ADJ"))
-           (origin-syms       (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
-           (tile-coord-syms   (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
-           (tile-extent-syms  (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
+           (origin-syms (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
+           (tile-coord-syms (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
+           (tile-extent-syms (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
            (global-extent-syms (loop for i from 0 below n collect (gensym (format nil "GE~A" i))))
-           (lid-syms          (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
-           (lws-syms          (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
-           (src-coord-exprs   (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
-           (tile-aref         (cons aref-sym (cons tile-adj-sym tile-coord-syms)))
-           (src-aref          (cons aref-sym (cons src-adj-sym src-coord-exprs)))
-           (bounds-form       (%tlc-all-in-bounds-form n src-coord-exprs
-                                                       global-extent-syms lt-sym and-sym))
+           (lid-syms (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
+           (src-coord-exprs (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
+           (tile-aref (cons aref-sym (cons tile-adj-sym tile-coord-syms)))
+           (src-aref (cons aref-sym (cons src-adj-sym src-coord-exprs)))
+           (bounds-form (%tlc-all-in-bounds-form n src-coord-exprs
+                                                 global-extent-syms lt-sym and-sym))
            ;; Inner body: scatter-add tile_adj[lc] into src_adj[orig+lc] via atomic-add!.
            ;; Skip silently when out of bounds (no contribution).
-           (inner-body        (list when-sym
-                                    bounds-form
-                                    (list atomic-add-sym src-aref tile-aref)))
+           (inner-body (list when-sym
+                             bounds-form
+                             (list atomic-add-sym src-aref tile-aref)))
            (loop-nest (%tlc-coop-loop-skeleton n tile-adj-sym nil tile-coord-syms
                                                tile-extent-syms lid-syms lws-syms
                                                inner-body cl-pkg))
            (outer-bindings
             (append
-             (list (list src-adj-sym src-adj-form)
-                   (list tile-adj-sym tile-adj-form))
-             (loop for i from 0 below n
-                   for o-sym in origin-syms
-                   collect (list o-sym (list to-ulong-sym (nth i origin-list))))
-             (loop for i from 0 below n
-                   for te-sym in tile-extent-syms
-                   collect (list te-sym (list aref-sym (list extents-tilde-sym tile-adj-sym) i)))
-             (loop for i from 0 below n
-                   for ge-sym in global-extent-syms
-                   collect (list ge-sym (list aref-sym (list extents-tilde-sym src-adj-sym) i)))
-             (loop for i from 0 below n
-                   for lid-sym in lid-syms
-                   collect (list lid-sym (list get-local-id-sym i)))
-             (loop for i from 0 below n
-                   for lws-sym in lws-syms
-                   collect (list lws-sym (list get-lws-sym i))))))
+              (list (list src-adj-sym src-adj-form)
+                    (list tile-adj-sym tile-adj-form))
+              (loop for i from 0 below n
+                    for o-sym in origin-syms
+                    collect (list o-sym (list to-ulong-sym (nth i origin-list))))
+              (loop for i from 0 below n
+                    for te-sym in tile-extent-syms
+                    collect (list te-sym (list aref-sym (list extents-tilde-sym tile-adj-sym) i)))
+              (loop for i from 0 below n
+                    for ge-sym in global-extent-syms
+                    collect (list ge-sym (list aref-sym (list extents-tilde-sym src-adj-sym) i)))
+              (loop for i from 0 below n
+                    for lid-sym in lid-syms
+                    collect (list lid-sym (list get-local-id-sym i)))
+              (loop for i from 0 below n
+                    for lws-sym in lws-syms
+                    collect (list lws-sym (list get-lws-sym i))))))
       (list let-sym outer-bindings
             (list progn-sym
                   loop-nest
@@ -2552,70 +2260,70 @@
    the result."
   (let* ((tile-adj-form (second expr))
          (dest-adj-form (third expr))
-         (origin-list   (fourth expr))
-         (key-args      (nthcdr 4 expr)))
+         (origin-list (fourth expr))
+         (key-args (nthcdr 4 expr)))
     (unless (and (listp origin-list) (>= (length origin-list) 1))
       (error 'crisp-compiler-error
-             :message "%store-tile-coords-bwd: origin must be a non-empty list of coord forms"
-             :source-location location))
+        :message "%store-tile-coords-bwd: origin must be a non-empty list of coord forms"
+        :source-location location))
     (let* ((transpose-form (%extract-key-arg key-args :transpose nil))
-           (n              (length origin-list))
-           (perm           (%tlc-transpose-permutation n transpose-form location))
-           (cl-pkg         (find-package :crisp-language))
-           (let-sym             (intern "LET" cl-pkg))
-           (progn-sym           (intern "PROGN" cl-pkg))
-           (when-sym            (intern "WHEN" cl-pkg))
-           (set-sym             (intern "SET!" cl-pkg))
-           (aref-sym            (intern "~" cl-pkg))
-           (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
-           (get-local-id-sym    (intern "GET-LOCAL-ID" cl-pkg))
-           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
-           (local-barrier-sym   (intern "LOCAL-BARRIER" cl-pkg))
-           (to-ulong-sym        (intern "TO-ULONG" cl-pkg))
-           (plus-sym            (intern "+" cl-pkg))
-           (lt-sym              (intern "<" cl-pkg))
-           (and-sym             (intern "AND" cl-pkg))
+           (n (length origin-list))
+           (perm (%tlc-transpose-permutation n transpose-form location))
+           (cl-pkg (find-package :crisp-language))
+           (let-sym (intern "LET" cl-pkg))
+           (progn-sym (intern "PROGN" cl-pkg))
+           (when-sym (intern "WHEN" cl-pkg))
+           (set-sym (intern "SET!" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (local-barrier-sym (intern "LOCAL-BARRIER" cl-pkg))
+           (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+           (plus-sym (intern "+" cl-pkg))
+           (lt-sym (intern "<" cl-pkg))
+           (and-sym (intern "AND" cl-pkg))
            (tile-adj-sym (gensym "TILE-ADJ"))
            (dest-adj-sym (gensym "DEST-ADJ"))
-           (origin-syms       (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
-           (tile-coord-syms   (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
-           (tile-extent-syms  (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
+           (origin-syms (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
+           (tile-coord-syms (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
+           (tile-extent-syms (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
            (global-extent-syms (loop for i from 0 below n collect (gensym (format nil "GE~A" i))))
-           (lid-syms          (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
-           (lws-syms          (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
-           (dest-coord-exprs  (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
-           (tile-aref         (cons aref-sym (cons tile-adj-sym tile-coord-syms)))
-           (dest-aref         (cons aref-sym (cons dest-adj-sym dest-coord-exprs)))
-           (bounds-form       (%tlc-all-in-bounds-form n dest-coord-exprs
-                                                       global-extent-syms lt-sym and-sym))
+           (lid-syms (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
+           (dest-coord-exprs (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
+           (tile-aref (cons aref-sym (cons tile-adj-sym tile-coord-syms)))
+           (dest-aref (cons aref-sym (cons dest-adj-sym dest-coord-exprs)))
+           (bounds-form (%tlc-all-in-bounds-form n dest-coord-exprs
+                                                 global-extent-syms lt-sym and-sym))
            ;; tile_adj[lc] += dest_adj[orig+lc].  No atomic — each tile slot
            ;; is written by exactly one thread in the workgroup-cooperative loop.
-           (acc-form          (list plus-sym tile-aref dest-aref))
-           (inner-body        (list when-sym
-                                    bounds-form
-                                    (list set-sym tile-aref acc-form)))
+           (acc-form (list plus-sym tile-aref dest-aref))
+           (inner-body (list when-sym
+                             bounds-form
+                             (list set-sym tile-aref acc-form)))
            (loop-nest (%tlc-coop-loop-skeleton n tile-adj-sym nil tile-coord-syms
                                                tile-extent-syms lid-syms lws-syms
                                                inner-body cl-pkg))
            (outer-bindings
             (append
-             (list (list tile-adj-sym tile-adj-form)
-                   (list dest-adj-sym dest-adj-form))
-             (loop for i from 0 below n
-                   for o-sym in origin-syms
-                   collect (list o-sym (list to-ulong-sym (nth i origin-list))))
-             (loop for i from 0 below n
-                   for te-sym in tile-extent-syms
-                   collect (list te-sym (list aref-sym (list extents-tilde-sym tile-adj-sym) i)))
-             (loop for i from 0 below n
-                   for ge-sym in global-extent-syms
-                   collect (list ge-sym (list aref-sym (list extents-tilde-sym dest-adj-sym) i)))
-             (loop for i from 0 below n
-                   for lid-sym in lid-syms
-                   collect (list lid-sym (list get-local-id-sym i)))
-             (loop for i from 0 below n
-                   for lws-sym in lws-syms
-                   collect (list lws-sym (list get-lws-sym i))))))
+              (list (list tile-adj-sym tile-adj-form)
+                    (list dest-adj-sym dest-adj-form))
+              (loop for i from 0 below n
+                    for o-sym in origin-syms
+                    collect (list o-sym (list to-ulong-sym (nth i origin-list))))
+              (loop for i from 0 below n
+                    for te-sym in tile-extent-syms
+                    collect (list te-sym (list aref-sym (list extents-tilde-sym tile-adj-sym) i)))
+              (loop for i from 0 below n
+                    for ge-sym in global-extent-syms
+                    collect (list ge-sym (list aref-sym (list extents-tilde-sym dest-adj-sym) i)))
+              (loop for i from 0 below n
+                    for lid-sym in lid-syms
+                    collect (list lid-sym (list get-local-id-sym i)))
+              (loop for i from 0 below n
+                    for lws-sym in lws-syms
+                    collect (list lws-sym (list get-lws-sym i))))))
       (list let-sym outer-bindings
             (list progn-sym
                   (list local-barrier-sym)
@@ -2634,87 +2342,119 @@
   (analyze-expression (%expand-store-tile-coords-bwd-form expr location)
                       env context location))
 
-  
-  
+
+(defun %rewrite-bare-tile-in-form (form origin-binding-syms cl-pkg)
+  (cond
+   ((atom form) form)
+   ((not (and (consp form) (symbolp (car form))))
+     (mapcar (lambda (sub) (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
+         form))
+   (t
+     (let ((op-name (symbol-name (car form))))
+       (cond
+        ((or (string-equal op-name "LOAD-TILE")
+             (string-equal op-name "REQUEST-LOAD-TILE"))
+          (if (>= (length form) 4)
+              (cons (car form) (mapcar (lambda (sub) (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg)) (cdr form)))
+              (let ((sym (car form))
+                    (src (second form))
+                    (tile (third form))
+                    (key-args (nthcdr 3 form)))
+                (append (list sym src tile origin-binding-syms) key-args))))
+        ((or (string-equal op-name "STORE-TILE")
+             (string-equal op-name "REQUEST-STORE-TILE"))
+          (if (>= (length form) 4)
+              (cons (car form) (mapcar (lambda (sub) (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg)) (cdr form)))
+              (let ((sym (car form))
+                    (tile (second form))
+                    (dest (third form))
+                    (key-args (nthcdr 3 form)))
+                (append (list sym tile dest origin-binding-syms) key-args))))
+        (t (cons (car form)
+                 (mapcar (lambda (sub) (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
+                     (cdr form)))))))))
+
+(defun %rewrite-bare-load-store-tile-in-body (body-forms origin-binding-syms cl-pkg)
+  (mapcar (lambda (f) (%rewrite-bare-tile-in-form f origin-binding-syms cl-pkg))
+      body-forms))
+
+(defun %detect-bare-load-store-tile-in-form (form path)
+  (cond
+   ((atom form) nil)
+   ((not (and (consp form) (symbolp (car form))))
+     (dolist (sub form) (%detect-bare-load-store-tile-in-form sub path)))
+   (t
+     (let ((op-name (symbol-name (car form))))
+       (cond
+        ((or (string-equal op-name "LOAD-TILE")
+             (string-equal op-name "STORE-TILE")
+             (string-equal op-name "REQUEST-LOAD-TILE")
+             (string-equal op-name "REQUEST-STORE-TILE"))
+          (when (< (length form) 4)
+                (error 'crisp-compiler-error
+                  :message (format nil "~A: bare ~A is not allowed inside ~A..."
+                             (string-downcase op-name) (string-downcase op-name) path)
+                  :source-location nil)))
+        (t
+          (dolist (sub (cdr form))
+            (%detect-bare-load-store-tile-in-form sub path))))))))
 
 
-(defun %expand-request-load-tile-coords-form (expr location)
-  "Phase 1a: degrade-to-sync.  Expand to (PROGN <sync-load-tile-coords> 0)
-   so the result has a ulong-typed phantom token for the surrounding let."
-  (let* ((cl-pkg     (find-package :crisp-language))
-         (progn-sym  (intern "PROGN" cl-pkg))
-         (to-ulong   (intern "TO-ULONG" cl-pkg))
-         (sync-sym   (intern "LOAD-TILE-COORDS" cl-pkg))
-         (sync-expr  (cons sync-sym (rest expr)))
-         (sync-form  (%expand-load-tile-coords-form sync-expr location)))
-    (list progn-sym sync-form (list to-ulong 0))))
+(defun analyze-load-tile-at-expression (expr env context location)
+  (let ((key-args (nthcdr 4 expr)))
+    (when (and (getf key-args :barrier) (getf key-args :transformF))
+          (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
+    (analyze-expression (cons (intern "LOAD-TILE-COORDS" (find-package :crisp-language)) (cdr expr))
+                        env context location)))
 
-;; Phase 3: symmetric fallback for the store side.
+(defun analyze-store-tile-at-expression (expr env context location)
+  (let ((key-args (nthcdr 4 expr)))
+    (when (and (getf key-args :barrier) (getf key-args :transformF))
+          (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
+    (analyze-expression (cons (intern "STORE-TILE-COORDS" (find-package :crisp-language)) (cdr expr))
+                        env context location)))
 
-(defun %expand-request-store-tile-coords-form (expr location)
-  "Phase 3 fallback: degrade-to-sync.  Expand to
-   (PROGN <sync-store-tile-coords> 0) — same phantom-token shape as the
-   load side.  Real async store (where hardware supports it) lands in
-   114 Phase E."
-  (let* ((cl-pkg     (find-package :crisp-language))
-         (progn-sym  (intern "PROGN" cl-pkg))
-         (to-ulong   (intern "TO-ULONG" cl-pkg))
-         (sync-sym   (intern "STORE-TILE-COORDS" cl-pkg))
-         (sync-expr  (cons sync-sym (rest expr)))
-         (sync-form  (%expand-store-tile-coords-form sync-expr location)))
-    (list progn-sym sync-form (list to-ulong 0))))
+(defun analyze-load-tile-expression (expr env context location)
+  (let* ((src (second expr))
+         (tile (third expr))
+         (grid-list (fourth expr))
+         (key-args (nthcdr 4 expr))
+         (cl-pkg (find-package :crisp-language))
+         (mul-sym (intern "*" cl-pkg))
+         (extents-sym (intern "EXTENTS~" cl-pkg))
+         (aref-sym (intern "~" cl-pkg)))
+    (unless (and (listp grid-list) (>= (length grid-list) 1))
+      (error 'crisp-compiler-error :message "load-tile: origin must be a non-empty list of grid coords" :source-location location))
+    (let ((pixel-coords
+           (loop for g in grid-list
+                 for i from 0
+                 collect (list mul-sym g (list aref-sym (list extents-sym tile) i)))))
+      (analyze-load-tile-at-expression
+       (append (list (intern "LOAD-TILE-AT" cl-pkg) src tile pixel-coords) key-args)
+       env context location))))
 
+(defun analyze-store-tile-expression (expr env context location)
+  (let* ((tile (second expr))
+         (dest (third expr))
+         (grid-list (fourth expr))
+         (key-args (nthcdr 4 expr))
+         (cl-pkg (find-package :crisp-language))
+         (mul-sym (intern "*" cl-pkg))
+         (extents-sym (intern "EXTENTS~" cl-pkg))
+         (aref-sym (intern "~" cl-pkg)))
+    (unless (and (listp grid-list) (>= (length grid-list) 1))
+      (error 'crisp-compiler-error :message "store-tile: origin must be a non-empty list of grid coords" :source-location location))
+    (let ((pixel-coords
+           (loop for g in grid-list
+                 for i from 0
+                 collect (list mul-sym g (list aref-sym (list extents-sym tile) i)))))
+      (analyze-store-tile-at-expression
+       (append (list (intern "STORE-TILE-AT" cl-pkg) tile dest pixel-coords) key-args)
+       env context location))))
 
-(defun analyze-request-load-tile-coords-expression (expr env context location)
-  "114 Phase B: emit semantic-nvvm-cp-async-tile-copy on :ptx target;
-   fall back to sync expansion elsewhere (including :spirv, which is
-   blocked — see 114 Phase A notes)."
-  (%tlc-check-not-divergent "request-load-tile-coords" location)
-  (case *target-backend*
-    (:ptx
-     (let* ((src-form    (second expr))
-            (tile-form   (third expr))
-            (origin-list (fourth expr))
-            (src-node    (analyze-expression src-form env context (append location '(1))))
-            (tile-node   (analyze-expression tile-form env context (append location '(2))))
-            (origin-nodes (loop for o in origin-list for i from 0
-                                collect (analyze-expression
-                                         o env context
-                                         (append location (list 3 i))))))
-       (make-semantic-nvvm-cp-async-tile-copy
-        :src-node     src-node
-        :tile-node    tile-node
-        :origin-nodes origin-nodes
-        :type         'ulong
-        :source-location location)))
-    (t
-     (analyze-expression (%expand-request-load-tile-coords-form expr location)
-                         env context location))))
-
-(defun analyze-request-store-tile-coords-expression (expr env context location)
-  "Phase 3 analyzer for request-store-tile-coords.  Same divergence guard
-   as the sync form, then delegates to the fallback expansion."
-  (%tlc-check-not-divergent "request-store-tile-coords" location)
-  (analyze-expression (%expand-request-store-tile-coords-form expr location)
-                      env context location))
-
-
-
-(defun analyze-await-request-expression (expr env context location)
-  "114 Phase B: emit semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere."
-  (unless (= (length expr) 2)
-    (error 'crisp-compiler-error
-           :message (format nil "await-request: expected (await-request TOKEN), got ~S" expr)
-           :source-location location))
-  (case *target-backend*
-    (:ptx
-     (make-semantic-nvvm-cp-async-wait
-      :type 'ulong
-      :source-location location))
-    (t
-     (analyze-expression
-      (list (intern "TO-ULONG" (find-package :crisp-language)) 0)
-      env context location))))
+(defun analyze-make-async-barrier-expression (expr env context location)
+  (declare (ignore expr))
+  (analyze-expression 0 env context location))
 
 
 (defun register-control-analyzers ()
@@ -2823,20 +2563,20 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression)))
-  ;; --- Endeavor 113 Phase 1a: async tile load + await. ---
-  (let ((sym-cl (intern "REQUEST-LOAD-TILE-COORDS" (find-package :crisp-language)))
-        (sym-cc (intern "REQUEST-LOAD-TILE-COORDS" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-request-load-tile-coords-expression)
+  (let ((sym-cl (intern "AWAIT" (find-package :crisp-language)))
+        (sym-cc (intern "AWAIT" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-request-load-tile-coords-expression)))
-  ;; --- Endeavor 113 Phase 3: async tile store. ---
-  (let ((sym-cl (intern "REQUEST-STORE-TILE-COORDS" (find-package :crisp-language)))
-        (sym-cc (intern "REQUEST-STORE-TILE-COORDS" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-request-store-tile-coords-expression)
-    (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-request-store-tile-coords-expression)))
-  (let ((sym-cl (intern "AWAIT-REQUEST" (find-package :crisp-language)))
-        (sym-cc (intern "AWAIT-REQUEST" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-request-expression)
-    (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-request-expression))))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-expression)))
+  (let ((sym-cl (intern "LOAD-TILE-AT" (find-package :crisp-language)))
+        (sym-cc (intern "LOAD-TILE-AT" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-at-expression)
+    (setf (gethash sym-cc *expression-analyzers*) #'analyze-load-tile-at-expression))
+  (let ((sym-cl (intern "STORE-TILE-AT" (find-package :crisp-language)))
+        (sym-cc (intern "STORE-TILE-AT" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-at-expression)
+    (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-at-expression))
+  (let ((sym-cl (intern "MAKE-ASYNC-BARRIER" (find-package :crisp-language)))
+        (sym-cc (intern "MAKE-ASYNC-BARRIER" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-make-async-barrier-expression)
+    (setf (gethash sym-cc *expression-analyzers*) #'analyze-make-async-barrier-expression)))

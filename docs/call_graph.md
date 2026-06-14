@@ -218,9 +218,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp
 - - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp
 - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp
 - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [RECURSION]
 - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
@@ -801,13 +801,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%TENSOR-STRIDE-RESOLVE-CT EXPR TYPE-RESOLVER-FN LOCATION)  macros.lisp [See above]
 - - - - (%EXPAND-TILE-STRIDE-FORM EXPR CT LOCATION)  analysis/control.lisp
 - - - - - (%TILE-STRIDE-PARSE EXPR)  analysis/control.lisp
-- - - - - (%REWRITE-BARE-LOAD-STORE-TILE-IN-BODY BODY-FORMS ORIGIN-BINDING-SYMS CL-PKG)  analysis/control.lisp
-- - - - - - (%REWRITE-BARE-TILE-IN-FORM FORM ORIGIN-BINDING-SYMS CL-PKG)  analysis/control.lisp
-- - - - - - - (%REWRITE-BARE-TILE-IN-FORM FORM ORIGIN-BINDING-SYMS CL-PKG)  analysis/control.lisp [RECURSION]
-- - - - - (%TILE-HELPERS-REWRITE BODY-FORMS N-TILE TILE-SIZE-FN)  analysis/control.lisp
-- - - - - - (%TILE-HELPER-NAME-P SYM)  analysis/control.lisp
-- - - - - - (%TILE-HELPER-CALL-EXPANSION HELPER-KIND HELPER-ARGS TILE-SIZE-FN N-TILE CL-PKG)  analysis/control.lisp
-- - - - - - - (%TILE-HELPER-BUILD-INDICES ARG-FORMS TILE-SIZE-FN CL-PKG)  analysis/control.lisp
 - - - - - (%EXPAND-WORKGROUP-STRIDED-OUTER-LOOP-WITH-TS-SYMS TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN LOCATION)  analysis/control.lisp
 - - - - - - (%BUILD-EXACT-ITER-COUNT-FORM START-SYM STRIDE-SYM LEN-SYM CL-PKG)  analysis/control.lisp [See above]
 - - - (%EXPAND-HARDWARE-STRIDE-OP FORM TYPE-RESOLVER-FN LOCATION)  macros.lisp
@@ -816,13 +809,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%EXPAND-HARDWARE-STRIDE-FORM EXPR CT LOCATION)  analysis/control.lisp
 - - - - - (%HARDWARE-STRIDE-PARSE EXPR)  analysis/control.lisp
 - - - - - (%EXPAND-HW-WORKGROUP-IDX-FORM TENSOR-FORM BINDINGS BODY-FORMS LOCATION)  analysis/control.lisp
-- - - - - - (%REWRITE-BARE-LOAD-STORE-TILE-IN-BODY BODY-FORMS ORIGIN-BINDING-SYMS CL-PKG)  analysis/control.lisp [See above]
-- - - - - - (%TILE-HELPERS-REWRITE BODY-FORMS N-TILE TILE-SIZE-FN)  analysis/control.lisp [See above]
 - - - - - - (%EXPAND-WORKGROUP-STRIDED-OUTER-LOOP-WITH-TS-SYMS TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN LOCATION)  analysis/control.lisp [See above]
 - - - - - (%EXPAND-HW-WARP-IDX-FORM TENSOR-FORM BINDINGS BODY-FORMS LOCATION)  analysis/control.lisp
 - - - - - - (%DETECT-BARE-LOAD-STORE-TILE-IN-FORM FORM PATH)  analysis/control.lisp
 - - - - - - - (%DETECT-BARE-LOAD-STORE-TILE-IN-FORM FORM PATH)  analysis/control.lisp [RECURSION]
-- - - - - - (%TILE-HELPERS-REWRITE BODY-FORMS N-TILE TILE-SIZE-FN)  analysis/control.lisp [See above]
 - - - - - - (%BUILD-EXACT-ITER-COUNT-FORM START-SYM STRIDE-SYM LEN-SYM CL-PKG)  analysis/control.lisp [See above]
 - - - (%EXPAND-WORKGROUP-STRIDE-OP FORM TYPE-RESOLVER-FN LOCATION)  macros.lisp
 - - - - (%EXPAND-STRIDE-MACROS-IN-FORM FORM TYPE-RESOLVER-FN LOCATION)  macros.lisp [RECURSION]
@@ -891,6 +881,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%GFW-PROCESS-SET! FORM EMIT-FN LOCAL-ADJ-FN INPUTS OUTPUTS SCRATCH-TILE-SYMS INTERMEDIATE-ZERO KERNEL-PKG)  autodiff.lisp
 - - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
 - - - (%AUGMENT-SCRATCH-ADJ-BINDINGS BINDINGS KERNEL-PKG)  autodiff.lisp
+- - - - (%PROMOTE-SCRATCH-INIT-FOR-AD INIT)  autodiff.lisp
+- - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp [See above]
+- - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp [See above]
 - - - (%GFW-PROCESS-LET FORM EMIT-FN PROCESS-FORM-FN BINDINGS AUGMENTED-BINDINGS BODY)  autodiff.lisp
 - - - (%COLLECT-LOCALLY-BOUND-VARS BODY-FORMS)  autodiff.lisp
 - - - (%GFW-PROCESS-DOTIMES FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP INTERMEDIATE-ZERO)  autodiff.lisp
@@ -901,6 +896,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%PROMOTE-SCRATCH-INIT-FOR-AD INIT)  autodiff.lisp [See above]
 - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp
 - - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp [RECURSION]
 - - (%COLLECT-ALL-LEAF-ADJ-SYMS FIELD-ADJ-ALIST)  autodiff.lisp
@@ -915,6 +911,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%GENERATE-STRUCT-ACCESSOR MEMBER-SPEC NAME PKG RUNTIME-INDEX)  macros.lisp
 - - (%PARSE-CT-LITERAL VALUE)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
+
+- (%HAS-EXPLICIT-N ARGS)  autodiff.lisp
+- - (%IS-TENSOR-ALIAS SYM)  autodiff.lisp
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 
 - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp
 - - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp
@@ -932,11 +932,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
 - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 
+- (%REWRITE-BARE-LOAD-STORE-TILE-IN-BODY BODY-FORMS ORIGIN-BINDING-SYMS CL-PKG)  analysis/control.lisp
+- - (%REWRITE-BARE-TILE-IN-FORM FORM ORIGIN-BINDING-SYMS CL-PKG)  analysis/control.lisp
+- - - (%REWRITE-BARE-TILE-IN-FORM FORM ORIGIN-BINDING-SYMS CL-PKG)  analysis/control.lisp [RECURSION]
+
 - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp
-
-- (%TILE-HELPER-BUILD-COORDS ARG-FORMS TILE-SIZE-FN CL-PKG)  analysis/control.lisp
-
-- (%TILE-HELPER-BUILD-TENSOR-COORDS IDX-FORMS T-FORMS TILE-SIZE-FN CL-PKG)  analysis/control.lisp
 
 - (ADDRESS-SPACE-VALUE K)  enums.lisp
 - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp [See above]
@@ -1034,7 +1034,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-ATOMIC-XCHG!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
 
-- (ANALYZE-AWAIT-REQUEST-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- (ANALYZE-AWAIT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-BITCAST-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
@@ -1148,6 +1148,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-LOAD-TILE-COORDS-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp
+- - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%EXPAND-LOAD-TILE-COORDS-FORM EXPR LOCATION)  analysis/control.lisp
 - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
@@ -1157,10 +1158,15 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%TLC-COOP-LOOP-SKELETON N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS LID-SYMS LWS-SYMS INNER-FORM CL-PKG)  analysis/control.lisp [See above]
 
 - (ANALYZE-LOAD-TILE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-LOAD-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-LOOP-VECTOR-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%EXPAND-LOOP-VECTOR-STRIDE-FORM EXPR LOCATION)  analysis/control.lisp [See above]
+
+- (ANALYZE-MAKE-ASYNC-BARRIER-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-MAKE-VIEW-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1200,23 +1206,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-REM-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-MOD-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-
-- (ANALYZE-REQUEST-LOAD-TILE-COORDS-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
-- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%EXPAND-REQUEST-LOAD-TILE-COORDS-FORM EXPR LOCATION)  analysis/control.lisp
-- - - (%EXPAND-LOAD-TILE-COORDS-FORM EXPR LOCATION)  analysis/control.lisp [See above]
-
-- (ANALYZE-REQUEST-STORE-TILE-COORDS-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
-- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%EXPAND-REQUEST-STORE-TILE-COORDS-FORM EXPR LOCATION)  analysis/control.lisp
-- - - (%EXPAND-STORE-TILE-COORDS-FORM EXPR LOCATION)  analysis/control.lisp
-- - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
-- - - - (%TLC-TRANSPOSE-PERMUTATION N TRANSPOSE-FORM LOCATION)  analysis/control.lisp [See above]
-- - - - (%TLC-SOURCE-COORD-EXPRS N ORIGIN-SYMS TILE-COORD-SYMS PERM PLUS-SYM)  analysis/control.lisp [See above]
-- - - - (%TLC-ALL-IN-BOUNDS-FORM N SRC-COORD-EXPRS GLOBAL-EXTENT-SYMS LT-SYM AND-SYM)  analysis/control.lisp [See above]
-- - - - (%TLC-COOP-LOOP-SKELETON N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS LID-SYMS LWS-SYMS INNER-FORM CL-PKG)  analysis/control.lisp [See above]
 
 - (ANALYZE-RETURN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1276,9 +1265,16 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-STORE-TILE-COORDS-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%EXPAND-STORE-TILE-COORDS-FORM EXPR LOCATION)  analysis/control.lisp [See above]
+- - (%EXPAND-STORE-TILE-COORDS-FORM EXPR LOCATION)  analysis/control.lisp
+- - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
+- - - (%TLC-TRANSPOSE-PERMUTATION N TRANSPOSE-FORM LOCATION)  analysis/control.lisp [See above]
+- - - (%TLC-SOURCE-COORD-EXPRS N ORIGIN-SYMS TILE-COORD-SYMS PERM PLUS-SYM)  analysis/control.lisp [See above]
+- - - (%TLC-ALL-IN-BOUNDS-FORM N SRC-COORD-EXPRS GLOBAL-EXTENT-SYMS LT-SYM AND-SYM)  analysis/control.lisp [See above]
+- - - (%TLC-COOP-LOOP-SKELETON N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS LID-SYMS LWS-SYMS INNER-FORM CL-PKG)  analysis/control.lisp [See above]
 
 - (ANALYZE-STORE-TILE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-STORE-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-STRUCT-CONSTRUCTION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
@@ -1378,6 +1374,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANF-TRANSFORM-MODULE FORMS)  anf-transform.lisp
 - - (WITH-TEMPLATE-TYPE PARAMS &BODY BODY)  templates.lisp
+
+- (AWAIT BARRIER)  macros.lisp
 
 - (BRAND-MEMBER-P MEMBER-TYPE)  types/brand.lisp
 - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
@@ -1495,6 +1493,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (IS-ADDRESS-SPACE? X)  enums.lisp
 
+- (LOAD-TILE SRC TILE GRID-LIST &REST KEY-ARGS)  macros.lisp
+- - (LOAD-TILE-AT SRC TILE GRID-LIST &REST KEY-ARGS)  macros.lisp
+- - - (%CHECK-BARRIER-TRANSFORMF KEY-ARGS)  macros.lisp
+
+- (MAKE-ASYNC-BARRIER)  macros.lisp
+
 - (MAKE-STRUCTURE-TEMPLATE-INSTANCE TEMPLATE-NAME CONCRETE-TYPES &REST CTOR-ARGS)  templates.lisp
 - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp [See above]
@@ -1539,6 +1543,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (FLATTEN-STRUCT-DATA-MEMBERS STRUCT-DEF)  types/hierarchy.lisp [RECURSION]
 - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp [See above]
+
+- (STORE-TILE TILE DEST GRID-LIST &REST KEY-ARGS)  macros.lisp
+- - (STORE-TILE-AT TILE DEST GRID-LIST &REST KEY-ARGS)  macros.lisp
+- - - (%CHECK-BARRIER-TRANSFORMF KEY-ARGS)  macros.lisp [See above]
 
 - (TEMPLATE-INSTANTIATION FORM)  templates.lisp
 

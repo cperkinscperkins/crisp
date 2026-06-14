@@ -18,10 +18,6 @@ do with the debug output once it is retrieved. The hoisting code typically model
 #### `--debug` or `-g` ✅
 When outputting LLVM-IR, include DWARF symbols
 
-#### `--hoist-unified-memory` 📝
-If this flag is present then the memory that is prepared in the hoisting code will be
-CUDA Unified Memory, LevelZero Unified Shared Memory, or OpenCL Shared Virtual Memory, as appropriate to the hoisting 
-target.  Otherwise, the memory operations will use regular memory. 
 
 #### `--hoist-dynamic=<KERNELNAME>` 📝
 This flag can be used repeatedly, each occurrence with a different KERNELNAME.  For each kernel named, the hoisting 

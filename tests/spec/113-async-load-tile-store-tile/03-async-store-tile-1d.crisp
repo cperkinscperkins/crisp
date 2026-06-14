@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "AD pre-rewrite normalises store-tile to store-tile-coords; covered in phase 4"
+
+;; Phase 3 sugar: bare store-tile inside tile-stride.  The bare form
+;; (store-tile tile OUT (grid-x) :barrier barrier) gets rewritten to
+;; (store-tile-coords tile OUT (grid-x) :barrier barrier) by the tile-stride body walker,
+;; mirroring the sync (store-tile tile OUT (grid-x)) -> (store-tile-coords tile OUT (grid-x))
+;; rewrite from 111/11.
+;;
+;; Fallback semantics in 113: store-tile-coords collapses to sync
+;; store-tile-coords + barrier; await is a no-op.  Real async store
+;; (when hardware supports it) lives in 114 Phase E.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel bare_store_tile_1d (&out OUT)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (tile-stride OUT (4) (grid-x)
+      (let ((barrier (make-async-barrier)))
+        (workgroup-stride tile (lx)
+          (set! (~ tile lx) (+ (* grid-x (to-ulong 4)) lx)))
+        (store-tile tile OUT (grid-x) :barrier barrier)
+        (await barrier)))))

@@ -20,8 +20,8 @@ Note that while all platforms support 32 bit, the other sizes aren't always avai
 
 #### precision 📝
 
-In addition to choice of variable type, Crisp has a precision control that supports two
-different options: `fast` and `ieee`.
+In addition to choice of variable type, Crisp has a precision control that supports three
+different options: `fast` ,  `ieee` and `ieee-ftz`.
 
 With the `ieee` the compiler will choose instructions that guarantee IEEE 754 compliance.
 For operations like division or square root, this might mean selecting a slightly slower
@@ -29,6 +29,9 @@ but fully precise instruction sequence. This is conditional on the GPU hardware 
 IEEE 754 conforming instructions.
 This might also entail disabling automatic FMAD generation, and ensuring that denormalized
 numbers are handled correctly (not flushed to zero).
+
+With `ieee-ftz` the behavior is the same as `ieee` except that denormalized numbers are
+flushed to zero. This is a common optimization in HPC applications. 
 
 With the `fast` precision option, the compiler will prioritize speed, selecting faster
 but potentially approximate instructcions (like `rsqrt.approx`). It might use specific
@@ -45,9 +48,9 @@ from the least specific to the most specific, they are:
 
 | What                           |  Value           | Descripotion         |
 |--------------------------------|------------------|----------------------|
-| `--math-precision`             | `fast` or `ieee` | compilation flag     |
-| `(declaim (precision <KEY>))`  | `fast` or `ieee` | per-file declamation |
-| `(with-precision (<KEY>) ...)` | `fast` or `ieee` | in-function macro    |
+| `--math-precision`             | `fast` or `ieee` or `ieee-ftz` | compilation flag     |
+| `(declaim (precision <KEY>))`  | `fast` or `ieee` or `ieee-ftz` | per-file declamation |
+| `(with-precision (<KEY>) ...)` | `fast` or `ieee` or `ieee-ftz` | in-function macro    |
 
 If there are competing values for precision, the compiler will favor the MOST specific.
 

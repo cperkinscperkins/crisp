@@ -33,16 +33,34 @@ to an IR (Intermediate Representation) file. One file per occurrence of the `--i
 
 Unless the `--merge` or `--join` flags are used, one target file (e.g. `spv`) is output per `def-orchestration`.  Loose kernels outside of any orchestration have a default one generated for them.
 
+#### `--ir-target-arch=<ID>` 📝
+
+This flag tells the Crisp compiler which architecture the IR should target. It is optional, but
+matches the use of `--ir-target` flag. (ie, if `--ir-target=ptx` then `--ir-target-arch` should 
+be an NVidia architecture.).
+
+
+
+| ID       | Description                    |
+|----------|--------------------------------|
+| `sm_75`  | NVIDIA Turing (RTX 2000 Series / T4) |
+| `sm_80`  | NVIDIA Ampere (A100)           |
+| `sm_86`  | NVIDIA Ampere (RTX 3000 Series)  |
+| `sm_89`  | NVIDIA Ada Lovelace (RTX 4000 Series / L40) |
+| `sm_90`  | NVIDIA Hopper (H100 / H200)      |
+| `sm_100` | NVIDIA Blackwell Datacenter (B100 / B200 / GB200) |
+| `sm_120` | NVIDIA Blackwell Consumer (RTX 5000 Series / PRO 6000) |
+| `gen12`  | Intel Gen12                    |
+| `dg2`    | Intel DG2 / Alchemist          |
+| `pvc`    | Intel Ponte Vecchio            |
+| `xe2`    | Intel BattleMage / Lunar Lake  |
+
+
 #### `--binary-gpu-target=<ID>` 📝
 
 This flag can be used repeatedly, each occurrence with a different ID. The compiler will compile the .crisp files to a different binary file for each binary target. The binary file name will be `<output-base-name>_<ID>.<extension>`
 
-`ID` can be one of
-
-| ID      | Extension |  Description       |
-|---------|-----------|--------------------|
-| `sm_90` | `cubin`   | NVidia             |
-| `pvc`   | `bin`     | Intel PonteVechio  |
+`ID` can be one of the `--ir-target-arch` flags
 
 Unless the `--merge` or `--join` flags are used, one target file (e.g. `cubin`) is output per `def-orchestration`.  Loose kernels outside of any orchestration have a default one generated for them.
 
@@ -70,7 +88,7 @@ The hoist file name will be `<output-base-name>_<orchestration>_<ID>.<extension>
 | `PyLevelZero`   | `py`      | Python LevelZero   |
 | `PyCUDA`        | `py`      | PyCUDA             |
 
-There are other flags that interoperate with the hoisting, such as `--hoist-unified-memory` and `--hoist-dynamic`
+There are other flags that interoperate with the hoisting, such as `--hoist-dynamic`
 
 One hoisting file is output per orchestration.
 

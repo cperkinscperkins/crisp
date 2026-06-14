@@ -221,4 +221,8 @@ be hoisted, plus a pointer to a unsigned long array.
       ...))
 ```
 
+<!-- 
+OUTDATED AND REMOVED
+SEE topology.md for latest API.
+
 

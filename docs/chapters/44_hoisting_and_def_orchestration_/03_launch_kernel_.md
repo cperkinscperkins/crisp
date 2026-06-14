@@ -2,17 +2,17 @@
 
 
 ```
-(launch-kernel launch-specification &key copyback)
+(launch-kernel launch-specification &key :pipeline-stages <int>)
 ```
-Launches exactly one kernel invocation, a `:copyback` key can specify the variables that should be copied back.
+Launches exactly one kernel invocation. Multiple invocations mean serial enqueues.
 
-These can be useful if you need host-side processing in-between kernel calls, however this is quite suboptimal and should be considered an anti-pattern.
+Multiple `launch-kernel` invocations are NOT the same as `launch-sequential`, because `launch-kernel` invocations return to the host after each kernel operation completes, but  `launch-sequential` does not.
 
-If you need to launch multiple kernels, the other `launch-XXXX` with an explicit `(copyback ...)` call at the end will be superior.
+The `:pipeline-stages` keyword is advanced. See "Out of Core Orchestration" in `topology.md` 
 
 ```
-(launch-kernel (VADD A B C) :copyback (C))
-;; host does something here with C? Possible, but bad idea.
-(launch-kernel (VSUM C RES) :copyback (RES))
+(launch-kernel (VADD A B C))
+(launch-kernel (VSUM C RES))
+(copy-back RES)
 ```
 

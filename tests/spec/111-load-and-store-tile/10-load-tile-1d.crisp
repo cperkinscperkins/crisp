@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords land in sub-step 1c"
+
+;; Sub-step 1b: bare load-tile inside tile-stride.  The bare form
+;; (load-tile V tile (grid-x)) gets rewritten to
+;; (load-tile-coords V tile (grid-x)) by the tile-stride body walker,
+;; injecting the tile-stride's binding sym as the origin.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel bare_load_tile_1d (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (tile-stride V (4) (grid-x)
+      (load-tile V tile (grid-x))
+      ;; Copy out to make the load host-observable.
+      (workgroup-stride tile (lx)
+        (set! (~ OUT (+ (* grid-x (to-ulong 4)) lx)) (~ tile lx))))))

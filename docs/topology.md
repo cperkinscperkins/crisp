@@ -85,7 +85,7 @@ Note that `def-topology` is its own Domain Specific Language (DSL), and supports
 
 The `def-topology` form can take arguments, but CANNOT be templated.
 
-### ':id'
+### `:id`
 
 The id keyword is optional, but recommended. It is a symbol that will be used to refer to the node in the topology tree. In `def-orchestration` if you need to tell the compiler where data should be allocated or distributed it will have to be by id.  
 
@@ -206,11 +206,27 @@ A single topology should be bound to the result of a `def-topology` function and
 
 ```
 
-### :distribution
-(need docs)
 
-### :location
-(need docs)
+### `:distribution`
+
+The `:distribution` keyword dictates how a tensor is logically and physically partitioned across the compute units within the specified `:topology`.
+
+Supported distribution strategies include:
+
+- '(:block (<dims>))`: Partitions the tensor into contiguous chunks of the specified dimensions (e.g., `'(:block (64 64))`) and distributes them across the network grid.
+- `:replicated`: Duplicates the entire tensor, placing a complete copy on every compute unit within the targeted topology.
+
+When combined with a custom topology, this explicit mapping gives the compiler the dependency awareness needed to automatically generate the underlying NCCL, oneCCL, or raw PGAS signaling required for distributed execution.
+
+### `:location`
+
+The `:location` keyword explicitly pins the allocation of a tensor or buffer to a specific physical node within the hardware architecture.
+
+- Topological IDs: When using a custom `def-topology`, the location targets the symbol assigned to the `:id` of a `compute-unit`. For example, `'(xeon-cpu)` or `'(pvc-tile)`.
+- Coordinate Addressing: For multi-node fabrics or meshes, coordinates can be appended to the ID to target a specific node in the logical grid, such as `'(xeon-cpu (0 0))`.
+- Default Locations: If you are not utilizing a custom topology (such as for local "Out of Core" orchestration on a single workstation), you can bypass IDs and simply use `:host` or `:device`.
+
+By declaring the exact physical residency, the compiler can evaluate the interconnect boundaries (e.g., `:p2p`, `:pcie`, or `:pgas-fabric`) between nodes. This dictates whether a topologically aware `make-async-barrier` is lowered into a local LLVM-IR address space transfer or a network-level RDMA pull.
 
 ### What does this do?
 
@@ -220,38 +236,80 @@ Topologically Aware Async
 -------------------------
 
 ```
-(let ((barrirer (make-async-barrier)))
+(let ((barrier (make-async-barrier)))
 
-  (load-tile A A-tile (... idx-y idx-x) :transpose <bool> :identity <val> :barrier barrier)
+  (load-tile A A-tile (... grid-y grid-x) :transpose <bool> :identity <val> :barrier barrier)
+  (load-tile-at A A-tile (... y x) :transpose <bool> :identity <val> :barrier barrier)
 
-  (store-tile C-Tile C ( ... idx-y idx-x) :transpose <bool> :transformF <func> :barrier barrier) ;; illegal to use transfomF and barrier together.
+  (store-tile C-Tile C ( ... grid-y grid-x) :transpose <bool> :transformF <func> :barrier barrier) ;; illegal to use transfomF and barrier together.
+  (store-tile-at C-Tile C ( ... y x) :transpose <bool> :transformF <func> :barrier barrier) ;; illegal to use transfomF and barrier together.
 
   (await barrier)
 
-  (signal barrier)
-
-   ;; NOTES
-   ;; also need a name for these idx-z / idx-y   etc.  "tile coordinates" "tile index" ??
-   ;; lose "helper" store-tile.  "indices" always required.  rename load-tile-coords => load-tile. Add barrier
-   ;; lose request-xxxx 
+  (signal barrier))
 
    ;; Sometimes `make-async-barrier` is going to need a <CUTensorMap>. 
-   ;; 1 - Do we have enough information at cmopile-time to produce one without further user intervention?
+   ;; 1 - Do we have enough information at compile-time to produce one without further user intervention?
    ;;     If not, what more information do we need?
    ;; 2 - We might have to pass that as another "side channel" argument, like we do scratch tensors. 
    ;;     Meaning the kernel arg list has the <CUTensorMap> added at the beginning, but hidden from the user.
-   ;;     Like scratch tensors, it must be passed down the call chain implicitly until it reaches where it is neede. 
-    
+   ;;     Like scratch tensors, it must be passed down the call chain implicitly until it reaches where it is needed. 
+
 ```
 
-Question: what about the NON topologically aware async? 
-A: See 'Primitives' below.
+### `make-async-barrier`
 
-Q: what about "named" barrier?
-(make-named-barrier <count>) 
-A: that's not really a DMA/memcpy barrier, that's a thread arrive barrier. Like local-barrier.
-A2: consider rename local-barrier => sync-workgroup ?
-A3: if so, consider rename make-named-barrier to (make-arrival-sync <count>)
+`(make-async-barrier) => barrier`
+
+Allocates a topologically aware data-movement barrier. Depending on the memory scope it spans, the Crisp compiler lowers this into the appropriate hardware construct (e.g., an `mbarrier` object in Shared Local Memory for TMA, or an asynchronous `cp.async.commit_group` fence). This barrier is strictly used to synchronize the state of the hardware DMA engine with the execution unit, not for arbitrary control flow.
+
+### `load-tile`
+
+`(load-tile src dest (... grid-y grid-x) &key transpose identity barrier) => nil`
+
+Initiates a bulk memory transfer from the `src` tensor to the `dest` tensor (typically moving from Global Memory to SLM or registers).
+
+* **Tile IDs (`grid-y`, `grid-x`):** The target location is specified using logical Tile Identifiers, which map to the strided chunks defined by the tensor's block distribution.
+* **`:transpose`:** A boolean indicating if the hardware should transpose the data during the load (leveraging tensor core layout features).
+* **`:identity`:** A fallback value used for out-of-bounds padding if the tile intersects the edge of the source tensor.
+* **`:barrier`:** Links this memory transfer to a previously created `async-barrier`. The hardware DMA engine will automatically signal this barrier when the bytes physically arrive in the destination memory space.
+
+### `load-tile-at`
+
+`(load-tile-at src dest (... y x) &key transpose identity barrier) => nil`
+
+Functions identically to `load-tile`, but instead of using logical Tile IDs, the location is specified using exact **Element Coordinates** (the specific scalar index offsets, such as the top-left pixel). This is necessary for unaligned loads, halo exchanges, or ragged boundary processing.
+
+### `store-tile`
+
+`(store-tile src dest (... grid-y grid-x) &key transpose transformF barrier) => nil`
+
+Initiates a bulk memory transfer from the `src` tensor (usually registers or SLM) back to the `dest` tensor (usually Global Memory), targeting a specific logical Tile ID.
+
+* **`:transformF`:** An optional epilogue function (e.g., `relu`) applied to the data during the store operation.
+* **`:barrier`:** If provided, delegates the write out to the async DMA engine.
+* **Note:** It is strictly illegal to use `:transformF` and `:barrier` simultaneously. A hardware DMA engine cannot apply arbitrary mathematical functions; it only moves raw bytes. If you need epilogue fusion, the warp must perform the math inline before storing.
+
+### `store-tile-at`
+
+`(store-tile-at src dest (... y x) &key transpose transformF barrier) => nil`
+
+Functions identically to `store-tile`, but uses exact **Element Coordinates** rather than logical Tile IDs to position the data in the destination tensor.
+
+### `await`
+
+`(await barrier) => nil`
+
+Halts the execution of the calling warp or workgroup until the specified `barrier` has been fully signaled by the hardware DMA engine. This guarantees that all asynchronous bytes tracked by the barrier are visible in memory, ensuring the execution unit does not read garbage data.
+
+### `signal`
+
+`(signal barrier) => nil`
+
+Manually notifies the specified `barrier`. This is predominantly used in pipelined or warp-specialized loops where the Consumer warp must explicitly tell the Producer warp's DMA engine that a specific chunk of Shared Local Memory has been fully read and is safe to be overwritten by the next memory fetch.
+
+
+
 
 ### Note about OpenSHMem Barrier
 
@@ -267,6 +325,74 @@ Here is what the compiler makes the hardware do:
 Issue: The Producer warp fires the RDMA read request, and attaches a directive telling the NIC: "When you finish writing these bytes, write the value '1' to this specific signal flag."
 Wait: When the Consumer warp calls (await b1), it does NOT call quiet(). It compiles down to a hardware polling loop (nvshmem_wait_until) that watches only b1's specific signal flag.
 Because b1 and b2 have separate, dedicated signal flags in memory, b1 can safely signal completion and allow the math to start while the network is still physically transferring b2.
+
+
+### Crisp Terminology
+
+"barrier" - data movement.
+"sync" - thread synchronization. collective waiting
+"semaphore"  - individual waiting.  Used primarily for interop, but useful in-kernel too.
+
+### Sync Operations
+```
+(sync-workgroup)
+(sync-warp)
+(make-arrival-sync <count>)
+```
+
+(sync-workgroup): Same as `barrier(CLK_LOCAL_MEM_FENCE)`.
+
+(sync-warp): Implemented via `__builtin_shflsync(0xFFFFFFFF, 0)`.
+
+(make-arrival-sync count) : A thread-count barrier. Returns a handle used by the consumer to block until `count` threads have called (wait). Implementation uses a global atomic counter.
+
+
+### Semaphore Operations
+```
+(make-semaphore :address-space :global/:local :initial-value <int> :scope :system/:device) => sema
+(semaphore-release sema new-value)
+(semaphore-acquire sema expected-value)
+
+;; semaphore type declaration:
+(semaphore :address-space <as> :scope <s>)
+;; :scope defaults to :device.
+;; :address-space must be provided for a complete type definition (as would be required at the kernel boundary).
+```
+
+Semaphore is just a location in :global or :local address space.  Must be enqueued by the host.  
+Crisp will need a semaphore data type. (and a marshall- routine)
+
+`make-semaphore` for :global has to do the "side channel" thing. Gets implicitly added to the kernel arglist. 
+
+`make-semaphore` for :local must be prepared by host, BUT can be "carved out" of kernel space since it is a known fixed size.
+Obviously, we can't do 'make-semaphore` in a loop etc.  
+
+#### make-semaphore
+`(make-semaphore &key address-space initial-value (scope :device)) => sema`
+
+For semaphores used within the same kernel call, it is only necessary to set `:address-space` to `:local`.
+If a semaphore is used between kernel calls, then the `:address-space` should be `:global`.
+
+For interoperating with Vulkan, OpenGL, or CPU-side code, the `:scope` must be set to `:system`.
+If interoperating with other kernels but in the same execution context, then the `:scope` should be `:device`.
+
+### semaphore-acquire
+
+`(semaphore-acquire sema expected-value)`
+
+Wait on the semaphore until its value equals `expected-value`.
+
+In the implementation this translates into a spin-wait loop that atomically polls the memory address using a `memory_order_acquire` fence. It will loop—inserting hardware yield/sleep instructions to save power—until the semaphore equals the expected-value. The acquire fence guarantees that your warp will not speculatively start reading memory for the next step until the lock is officially acquired.
+
+### semaphore-release
+
+`(semaphore-release sema new-value)`
+
+Change the value of the semaphore. Presumably some other party might have been waiting and will now spring to action.
+
+In the implementation this translates into an atomic write instruction coupled with a `memory_order_release` fence. The fence is the magic part. It strictly guarantees that any data your warp just calculated and stored (e.g., writing a computed tile back to Global Memory) is fully flushed and visible to the rest of the GPU before the semaphore's value actually changes.
+
+
 
 
 
@@ -340,12 +466,12 @@ your kernel, leading to lower overall occupancy. In most matrix multiplication o
 
 ### matrix-multiply-tile-stride
 ```
-(matrix-multiply-tile-stride <matrix> <matrix-tile> <inner-dim-scalar> (<index-bindings>) ...)
+(matrix-multiply-tile-stride <matrix> <matrix-tile> <inner-dim-scalar> (<grid-bindings>) ...)
 ```
 
-<index-bindings> are `(idx-y idx-x idx-k)`
+<grid-bindings> are `(grid-y grid-x grid-k)`
 
-Inside the body of the macro, `idx-k` will be the fastest changing term as it loops over K. 
+Inside the body of the macro, `grid-k` will be the fastest changing term as it loops over K. 
 This macro is very handy for producing matrix multiply kernels.  If used in conjunction with `mma-accumulate-via-tile` 
 then nearly all the boilerplate of a matrix multiply is handled.
 
@@ -380,10 +506,10 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
           (C-tile (make-register-tile T (128 128) (identity T)))
           (K (inner-dimension A B))
           (barrier (make-async-barrier))) ;;topology aware async
-    (matrix-multiply-tile-stride C C-tile K (idx-y idx-x idx-k)
+    (matrix-multiply-tile-stride C C-tile K (grid-y grid-x grid-k)
 
-      (load-tile A A-tile (idx-y idx-k) :barrier barrier) 
-      (load-tile B B-tile (idx-k idx-x) :barrier barrier )
+      (load-tile A A-tile (grid-y grid-k) :barrier barrier) 
+      (load-tile B B-tile (grid-k grid-x) :barrier barrier )
       (await barrier) 
       
         (mma-accumulate-via-tile (16 8) C-tile A-tile B-tile (my-accum)
@@ -397,7 +523,7 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
         ;; (Another barrier usually goes here before the next 'k' iteration overwrites SLM)
         (sync-workgroup))
       ;; 4. Loop is done. Store the final computed 128x128 tile back to Global Memory C
-      (store-tile C-Tile C (idx-y idx-x) :barrier barrier))))
+      (store-tile C-Tile C (grid-y grid-x) :barrier barrier))))
 ```
 
 
@@ -447,17 +573,17 @@ We use rings to set up a load/execute pipeline.
           (barrier-ring (make-async-barrier-ring :ring-count pipeline-stages)))
 
       ;; Outer loops for C-tile (X and Y coordinates)
-      (tile-stride C C-tile (idx-y idx-x) 
+      (tile-stride C C-tile (grid-y grid-x) 
         
         ;; 1. PROLOGUE: Fill the pipeline for the current C-tile
         (do-times+ (i pipeline-stages)
           ;; Striding along K, keeping Y and X locked to the current block
-          (load-tile A (ring-get A-tile-ring i) idx-y i :barrier (ring-get barrier-ring i)) 
-          (load-tile B (ring-get B-tile-ring i) i idx-x :barrier (ring-get barrier-ring i)))
+          (load-tile A (ring-get A-tile-ring i) grid-y i :barrier (ring-get barrier-ring i)) 
+          (load-tile B (ring-get B-tile-ring i) i grid-x :barrier (ring-get barrier-ring i)))
 
         ;; 2. MAIN K-LOOP
         (let ((ring-idx 0))
-          (do-times (idx-k K)
+          (do-times (grid-k K)
             
             ;; Wait for the current stage's data to arrive in SLM
             (await (ring-get barrier-ring ring-idx)) 
@@ -473,11 +599,11 @@ We use rings to set up a load/execute pipeline.
 
             
             ;; Issue the fetch for the NEXT chunk of K, wrapping the ring buffer
-            ;; We fetch (idx-k + pipeline-stages) to stay ahead of the compute
-            (let ((next-k (+ idx-k pipeline-stages)))
+            ;; We fetch (grid-k + pipeline-stages) to stay ahead of the compute
+            (let ((next-k (+ grid-k pipeline-stages)))
               (when (< next-k K) ;; Don't fetch out of bounds at the end of the matrix
-                (load-tile A (ring-get A-tile-ring ring-idx) idx-y next-k :barrier (ring-get barrier-ring ring-idx))
-                (load-tile B (ring-get B-tile-ring ring-idx) next-k idx-x :barrier (ring-get barrier-ring ring-idx))))
+                (load-tile A (ring-get A-tile-ring ring-idx) grid-y next-k :barrier (ring-get barrier-ring ring-idx))
+                (load-tile B (ring-get B-tile-ring ring-idx) next-k grid-x :barrier (ring-get barrier-ring ring-idx))))
             
             ;; Execution barrier to ensure all math is done before we overwrite SLM on the next wrap
             (sync-workgroup)
@@ -487,7 +613,7 @@ We use rings to set up a load/execute pipeline.
 
         ;; 3. EPILOGUE: C-tile is complete. Store it.
         ;; we can also do Relu and friends on the C-Tile now.
-        (store-tile C-Tile C (idx-y idx-x) :barrier barrier)))))
+        (store-tile C-Tile C (grid-y grid-x) :barrier barrier)))))
 ```
 
 ### Matrix Multiply with Pipelining via Warp Specialization
@@ -514,26 +640,26 @@ We use rings to set up a load/execute pipeline.
         (full-barrier-ring  (make-async-barrier-ring :ring-count pipeline-stages :initial-state :waiting)))
 
     ;; Outer loop
-    (tile-stride C C-tile (idx-y idx-x) 
+    (tile-stride C C-tile (grid-y grid-x) 
       
       ;; Split the execution! 
       ;; The compiler will physically map these to different warps in the Workgroup.
-      (with-warp-specialization (:producer-warps 1 :consumer-warps 3)
+      (with-warp-specialization (:producer 1 :consumer 3)
         
         ;; ==========================================
         ;; THE PRODUCER BLOCK (Memory only)
         ;; ==========================================
         (:producer
           (let ((ring-idx 0))
-            (do-times (idx-k K-tiles)
+            (do-times (grid-k K)
               
               ;; 1. Wait for the Consumer to say this SLM slot is empty/safe.
               (await (ring-get empty-barrier-ring ring-idx))
               
               ;; 2. Issue the hardware fetch. 
               ;; The hardware DMA engine will AUTOMATICALLY signal the full-barrier when the bytes arrive.
-              (load-tile A (ring-get A-tile-ring ring-idx) (idx-y idx-k) :barrier (ring-get full-barrier-ring ring-idx))
-              (load-tile B (ring-get B-tile-ring ring-idx) (idx-k idx-x) :barrier (ring-get full-barrier-ring ring-idx))
+              (load-tile A (ring-get A-tile-ring ring-idx) (grid-y grid-k) :barrier (ring-get full-barrier-ring ring-idx))
+              (load-tile B (ring-get B-tile-ring ring-idx) (grid-k grid-x) :barrier (ring-get full-barrier-ring ring-idx))
               
               ;; 3. Move to the next ring slot
               (set! ring-idx (mod (+ ring-idx 1) pipeline-stages)))))
@@ -543,7 +669,7 @@ We use rings to set up a load/execute pipeline.
         ;; ==========================================
         (:consumer
           (let ((ring-idx 0))
-            (do-times (idx-k K-tiles)
+            (do-times (grid-k K-tiles)
               
               ;; 1. Wait for the hardware DMA to say the bytes have arrived.
               (await (ring-get full-barrier-ring ring-idx))
@@ -563,7 +689,7 @@ We use rings to set up a load/execute pipeline.
           ;; EPILOGUE (Only the Consumer writes back to Global Memory!)
           (add-bias C-tile bias-tile) ;; <-- fictional operation for illustrative purposes
           (relu C-tile)
-          (store-tile C-tile C  (idx-y idx-x)))))))))
+          (store-tile C-tile C  (grid-y grid-x)))))))))
 
 ```
 
@@ -664,7 +790,7 @@ Primitives
 
 For users who want to roll their own async operations and don't want topologically aware forms.
 
-1. Raw Memory Movement (The Verbs)
+### Raw Memory Movement 
 
 ```
 (cp-async dest src size) -> Lowers to cp.async or sycl::group_async_copy.
@@ -676,7 +802,7 @@ For users who want to roll their own async operations and don't want topological
 (pgas-put-nbi dest src size pe) -> Non-blocking implicit put.
 ```
 
-2. Raw Synchronization (The Fences)
+### Raw Synchronization 
 
 ```
 (slm-commit) -> Lowers to cp.async.commit_group.
@@ -686,10 +812,30 @@ For users who want to roll their own async operations and don't want topological
 (pgas-quiet) -> Lowers to shmem_quiet().
 ```
 
-3. Fine-Grained Signaling (For the real hackers)
+### Fine-Grained Signaling 
 
 ```
 (pgas-signal dest-flag value pe) -> Lowers to shmem_signal_add or nvshmem_signal_op.
 
 (pgas-wait-until flag condition value) -> Lowers to shmem_wait_until.
 ```
+
+
+
+
+IMPORTANT NOTES
+----------------
+
+Both global semaphores and CUTensorMap need "side channel" support. That will have to be added.  Effects metadata, hoisting, everything.
+
+
+More Distributions.
+For 1.0, Crisp is targeting :distribution values of :block and :replicated.  Ultimately, in some 2.0 version, we may want to expand to include:
+- :block
+- :block-cyclic
+- :halo
+- :sparse
+- :irregular
+
+Most of these should be realizable in Crisp 1.0 with macros. But for maximum performance, with a capital "P", the compiler will likely need to be involved.
+

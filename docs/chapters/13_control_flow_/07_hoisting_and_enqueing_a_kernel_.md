@@ -126,9 +126,6 @@ will try to size the global work size near the number of threads actually availa
 
 But note that while maximum occupancy results in ideal performance for many workloads, it is not ideal for all workloads. In particular, if atomics are used, then a maximum occupancy stride might result in less work performed per atomic and more net atomic operations performed. Lower occupancy might be better for performance. See [:occupancy](#occupancy) below.
 
-- `:interleaved` This strategy tells the hoisting code that we are expecting this kernels launching to be interleaved
-with a progressive chunked memory transfer. It's a good practice to document expectations further with the `:msg` key.
-See [`launch-interleaved`](#launch-interleaved) for more information.
 
 - `:exact` This strategy tells the hoisting code to set the global work size to be exactly the size, no more no less. This
 strategy could also be used with the `:set-to` key.

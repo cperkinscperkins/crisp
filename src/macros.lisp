@@ -172,11 +172,11 @@
            (body-forms (nthcdr (length declare-forms) body)))
 
       `(internal-def-function
-         ',name
-         ',params
-         ',declarations  ;  '(((type a b int)) ((return-type int)))
-         ',body-forms    ;  '((+ a b))
-         ,source-location))))
+        ',name
+        ',params
+        ',declarations ;  '(((type a b int)) ((return-type int)))
+        ',body-forms ;  '((+ a b))
+        ,source-location))))
 
 ;; Helper for disambiguation (Pass 1 relaxation makes valid-type-p too permissive for symbols)
 (defun strict-valid-type-p (spec)
@@ -294,8 +294,6 @@
             spec))))
 
 
-
-
 (defun %incomplete-storage-handle-p (type-spec)
   "Returns T if the type-spec is a storage handle missing a required :c-t property.
    Canonical 6-tuple (tensor elem N addr aln ct) is complete only when addr and aln
@@ -309,26 +307,26 @@
                         (expand-storage-handle-type-specifier resolved)
                         resolved)))
     (when (and (consp canonical) (%storage-handle-type-p canonical))
-      (let* ((base (first canonical))
-             (args (rest canonical)))
-        (cond
-          ;; Tensor: canonical positional 6-tuple (elem N addr aln ct).
-          ;; Incomplete if addr or aln is nil (or fewer than 5 args, meaning
-          ;; the user's keyword form wasn't fully canonicalized).
-          ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
-           (cond
-             ;; 5 positional args: check for nil in addr (3rd) or aln (4th)
-             ((= (length args) 5)
-              (or (null (third args))   ; addr
-                  (null (fourth args)))) ; aln
-             ;; Anything else: not yet canonical — treat as incomplete
-             (t t)))
-          ;; CELL: canonical positional 3-tuple (elem addr).
-          ;; Incomplete if addr is nil or fewer than 2 args.
-          (t
-           (cond
-             ((= (length args) 2) (null (second args)))  ; addr
-             (t t))))))))
+          (let* ((base (first canonical))
+                 (args (rest canonical)))
+            (cond
+             ;; Tensor: canonical positional 6-tuple (elem N addr aln ct).
+             ;; Incomplete if addr or aln is nil (or fewer than 5 args, meaning
+             ;; the user's keyword form wasn't fully canonicalized).
+             ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+               (cond
+                ;; 5 positional args: check for nil in addr (3rd) or aln (4th)
+                ((= (length args) 5)
+                  (or (null (third args)) ; addr
+                      (null (fourth args)))) ; aln
+                ;; Anything else: not yet canonical — treat as incomplete
+                (t t)))
+             ;; CELL: canonical positional 3-tuple (elem addr).
+             ;; Incomplete if addr is nil or fewer than 2 args.
+             (t
+               (cond
+                ((= (length args) 2) (null (second args))) ; addr
+                (t t))))))))
 
 (defun %explode-kernel-args (params signature)
   "Explodes storage handle parameters into raw scalars.
@@ -371,47 +369,47 @@
                          (push 'ulong exploded-types)
                          (push `(,p (marshall-cell ,type ,size-sym ,ptr-sym ,off-sym)) reassembly-bindings)))
                      ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
-                      ;; Tensor (also covers vector/matrix after sugar expansion).
-                      ;; N-dimensional: explode to (2 + 3N + 1) scalars.
-                      ;; Order: p_PTR, p_BYTE_SIZE, p_OFFSET_0..N-1, p_STRIDE_0..N-1, p_EXTENT_0..N-1, p_LENGTH
-                      (let* ((n   (if (integerp (third canonical)) (third canonical)
-                                      (parse-integer (symbol-name (third canonical)))))
-                             (as  (fourth canonical))
-                             (p-name (symbol-name p))
-                             (pkg    (symbol-package p))
-                             (ptr-sym    (intern (format nil "~a_PTR"       p-name) pkg))
-                             (size-sym   (intern (format nil "~a_BYTE_SIZE" p-name) pkg))
-                             (off-syms   (loop for k from 0 below n
-                                               collect (intern (format nil "~a_OFFSET_~a" p-name k) pkg)))
-                             (str-syms   (loop for k from 0 below n
-                                               collect (intern (format nil "~a_STRIDE_~a" p-name k) pkg)))
-                             (ext-syms   (loop for k from 0 below n
-                                               collect (intern (format nil "~a_EXTENT_~a" p-name k) pkg)))
-                             (len-sym    (intern (format nil "~a_LENGTH"    p-name) pkg)))
-                        ;; Push params in reverse of desired ABI order.
-                        ;; Each push prepends; the outer (reverse ...) flips back.
-                        ;; Desired final ABI: PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1, EXT_0..N-1, LENGTH
-                        ;; Push order (reversed by outer reverse):
-                        ;;   ptr, size, off_0..N-1, str_0..N-1, ext_0..N-1, len
-                        (push ptr-sym  exploded-params)
-                        (push size-sym exploded-params)
-                        (dolist (s off-syms) (push s exploded-params))
-                        (dolist (s str-syms) (push s exploded-params))
-                        (dolist (s ext-syms) (push s exploded-params))
-                        (push len-sym  exploded-params)
-                        ;; Push types in matching order
-                        (if (and (boundp '*target-backend*) (member *target-backend* '(:ptx :cuda)))
-                            (push 'ulong exploded-types)
-                            (push `(c-pointer :address-space ,as) exploded-types)) ; ptr
-                        (push 'ulong exploded-types)           ; byte-size
-                        (dotimes (_ n) (push 'ulong exploded-types)) ; offsets 0..N-1
-                        (dotimes (_ n) (push 'ulong exploded-types)) ; strides 0..N-1
-                        (dotimes (_ n) (push 'ulong exploded-types)) ; extents 0..N-1
-                        (push 'ulong exploded-types)           ; length
-                        ;; Reassembly
-                        (push `(,p (%marshall-tensor ,type ,size-sym ,ptr-sym
-                                     ,@off-syms ,@str-syms ,@ext-syms ,len-sym))
-                              reassembly-bindings)))
+                       ;; Tensor (also covers vector/matrix after sugar expansion).
+                       ;; N-dimensional: explode to (2 + 3N + 1) scalars.
+                       ;; Order: p_PTR, p_BYTE_SIZE, p_OFFSET_0..N-1, p_STRIDE_0..N-1, p_EXTENT_0..N-1, p_LENGTH
+                       (let* ((n (if (integerp (third canonical)) (third canonical)
+                                     (parse-integer (symbol-name (third canonical)))))
+                              (as (fourth canonical))
+                              (p-name (symbol-name p))
+                              (pkg (symbol-package p))
+                              (ptr-sym (intern (format nil "~a_PTR" p-name) pkg))
+                              (size-sym (intern (format nil "~a_BYTE_SIZE" p-name) pkg))
+                              (off-syms (loop for k from 0 below n
+                                              collect (intern (format nil "~a_OFFSET_~a" p-name k) pkg)))
+                              (str-syms (loop for k from 0 below n
+                                              collect (intern (format nil "~a_STRIDE_~a" p-name k) pkg)))
+                              (ext-syms (loop for k from 0 below n
+                                              collect (intern (format nil "~a_EXTENT_~a" p-name k) pkg)))
+                              (len-sym (intern (format nil "~a_LENGTH" p-name) pkg)))
+                         ;; Push params in reverse of desired ABI order.
+                         ;; Each push prepends; the outer (reverse ...) flips back.
+                         ;; Desired final ABI: PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1, EXT_0..N-1, LENGTH
+                         ;; Push order (reversed by outer reverse):
+                         ;;   ptr, size, off_0..N-1, str_0..N-1, ext_0..N-1, len
+                         (push ptr-sym exploded-params)
+                         (push size-sym exploded-params)
+                         (dolist (s off-syms) (push s exploded-params))
+                         (dolist (s str-syms) (push s exploded-params))
+                         (dolist (s ext-syms) (push s exploded-params))
+                         (push len-sym exploded-params)
+                         ;; Push types in matching order
+                         (if (and (boundp '*target-backend*) (member *target-backend* '(:ptx :cuda)))
+                             (push 'ulong exploded-types)
+                             (push `(c-pointer :address-space ,as) exploded-types)) ; ptr
+                         (push 'ulong exploded-types) ; byte-size
+                         (dotimes (_ n) (push 'ulong exploded-types)) ; offsets 0..N-1
+                         (dotimes (_ n) (push 'ulong exploded-types)) ; strides 0..N-1
+                         (dotimes (_ n) (push 'ulong exploded-types)) ; extents 0..N-1
+                         (push 'ulong exploded-types) ; length
+                         ;; Reassembly
+                         (push `(,p (%marshall-tensor ,type ,size-sym ,ptr-sym
+                                                      ,@off-syms ,@str-syms ,@ext-syms ,len-sym))
+                               reassembly-bindings)))
                      (t (error "Unsupported storage handle: ~a" base))))
                   (progn
                    (push p exploded-params)
@@ -465,7 +463,6 @@
     type-map))
 
 
-
 (defun %validate-kernel-parameters (params type-map name)
   "Helper: Validates that kernel parameters are complete, not voidp,
    and that records do not appear in &out position."
@@ -497,20 +494,20 @@
     (loop for t-spec in signature-types
           do (when (incomplete-type-p t-spec)
                    (error "Kernel parameters must be COMPLETE types. Found incomplete: ~a" t-spec))
-             (let ((canon (canonicalize-type-specifier t-spec)))
-               (when (or (eq canon 'voidp)
-                         (and (symbolp canon) (string-equal (symbol-name canon) "VOIDP")))
-                 (error "Kernel parameters cannot be of type 'voidp'. Use a specific pointer type with address space or a storage handle."))))
+            (let ((canon (canonicalize-type-specifier t-spec)))
+              (when (or (eq canon 'voidp)
+                        (and (symbolp canon) (string-equal (symbol-name canon) "VOIDP")))
+                    (error "Kernel parameters cannot be of type 'voidp'. Use a specific pointer type with address space or a storage handle."))))
 
     ;; Records must NOT appear in &out position
     (let ((sig-ptr (copy-list signature-types)))
       (loop while sig-ptr do
               (let ((t-spec (pop sig-ptr)))
                 (when (and (symbolp t-spec) (string-equal (symbol-name t-spec) "&OUT"))
-                  (let ((next-type (first sig-ptr)))
-                    (when (and next-type (%user-record-type-p next-type))
-                      (error "Record type ~a cannot appear in &out position at the kernel boundary. Only storage handles (cell, vector, matrix) support &out position."
-                        next-type)))))))
+                      (let ((next-type (first sig-ptr)))
+                        (when (and next-type (%user-record-type-p next-type))
+                              (error "Record type ~a cannot appear in &out position at the kernel boundary. Only storage handles (cell, vector, matrix) support &out position."
+                                next-type)))))))
 
     signature-types))
 
@@ -527,127 +524,124 @@
       nil))
 
 
-
-
 (defun %split-kernel-inputs-outputs (params signature-types)
   (let ((inputs nil) (input-types nil)
-        (outputs nil) (output-types nil)
-        (is-out nil))
+                     (outputs nil) (output-types nil)
+                     (is-out nil))
     (loop for p in params
           for t-spec in signature-types do
-      (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
-          (setf is-out t)
-          (if is-out
-              (progn (push p outputs) (push t-spec output-types))
-              (progn (push p inputs)  (push t-spec input-types)))))
+            (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                (setf is-out t)
+                (if is-out
+                    (progn (push p outputs) (push t-spec output-types))
+                    (progn (push p inputs) (push t-spec input-types)))))
     (values (nreverse inputs) (nreverse input-types)
-            (nreverse outputs) (nreverse output-types))))
-
+      (nreverse outputs) (nreverse output-types))))
 
 
 (defun %compute-backward-kernel-params (flat-inputs flat-input-types outputs output-types
-                                        record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
+                                                    record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
   "Computes the parameter lists and type lists for the backward (gradient) kernel.
 085: integer tensor inputs now also receive _GRAD outputs, typed as float tensors
 (64-bit integers → double, all others → float). The backward walk still only
 processes float inputs — integer tensor inputs contribute zero gradient."
   (let* ((record-exploded-syms
-             (loop for orig in inputs
-                      append (cl:let ((flds (gethash orig record-subs-ht)))
-                               (when flds (mapcar #'cdr flds)))))
+          (loop for orig in inputs
+                  append (cl:let ((flds (gethash orig record-subs-ht)))
+                           (when flds (mapcar #'cdr flds)))))
 
-            ;; Backward-walk participation: per the 101 endeavor, float AND
-            ;; integer scalars, float AND integer tensors, cells (any element
-            ;; type).  Integer-scalar inputs used purely as indices end up
-            ;; with always-zero adjoints automatically — index operators
-            ;; (aref, cell read at index) have no gradient rule for the
-            ;; index argument, so the chain rule never reaches them.
-            (differentiable-non-rec-p
-             (lambda (t-spec)
-               (cl:let ((canonical (canonicalize-type-specifier t-spec)))
-                 (or (%crisp-float-type-p t-spec)
-                     (%crisp-integer-scalar-type-p t-spec)
-                     (%crisp-float-tensor-type-p t-spec)
-                     (%crisp-integer-tensor-type-p t-spec)
-                     (and (consp canonical)
-                          (string-equal (symbol-name (first canonical)) "CELL"))))))
+         ;; Backward-walk participation: per the 101 endeavor, float AND
+         ;; integer scalars, float AND integer tensors, cells (any element
+         ;; type).  Integer-scalar inputs used purely as indices end up
+         ;; with always-zero adjoints automatically — index operators
+         ;; (aref, cell read at index) have no gradient rule for the
+         ;; index argument, so the chain rule never reaches them.
+         (differentiable-non-rec-p
+          (lambda (t-spec)
+            (cl:let ((canonical (canonicalize-type-specifier t-spec)))
+              (or (%crisp-float-type-p t-spec)
+                  (%crisp-integer-scalar-type-p t-spec)
+                  (%crisp-float-tensor-type-p t-spec)
+                  (%crisp-integer-tensor-type-p t-spec)
+                  (and (consp canonical)
+                       (string-equal (symbol-name (first canonical)) "CELL"))))))
 
-            ;; Gets-grad-output: same set as differentiable-non-rec-p.
-            ;; Integer-typed inputs receive float-typed _GRAD slots.  Index
-            ;; uses produce always-zero gradients (correct semantics, free).
-            (has-grad-output-p
-             (lambda (t-spec) (funcall differentiable-non-rec-p t-spec)))
+         ;; Gets-grad-output: same set as differentiable-non-rec-p.
+         ;; Integer-typed inputs receive float-typed _GRAD slots.  Index
+         ;; uses produce always-zero gradients (correct semantics, free).
+         (has-grad-output-p
+          (lambda (t-spec) (funcall differentiable-non-rec-p t-spec)))
 
-            (non-rec-scalar-in-grad-params
-             (loop for p in flat-inputs
-                      for t-spec in flat-input-types
-                      unless (or (%crisp-record-type-p t-spec)
-                                 (member p record-exploded-syms :test #'eq)
-                                 (not (funcall has-grad-output-p t-spec)))
-                      collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+         (non-rec-scalar-in-grad-params
+          (loop for p in flat-inputs
+                for t-spec in flat-input-types
+                  unless (or (%crisp-record-type-p t-spec)
+                             (member p record-exploded-syms :test #'eq)
+                             (not (funcall has-grad-output-p t-spec)))
+                collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
 
-            ;; Promote each input's _GRAD type to a writeable float-adjoint slot.
-            ;; - integer/float tensor      → element-promoted tensor (read-write)
-            ;; - integer/float cell        → element-promoted cell (keyword form)
-            ;; - integer/float bare scalar → wrap in (cell <float-elem> :address-space :global)
-            ;;   so the gradient can flow back to the caller via pointer indirection
-            ;;   (bare scalar &out can't carry a value back).
-            (non-rec-scalar-in-grad-types
-             (loop for p in flat-inputs
-                      for t-spec in flat-input-types
-                      unless (or (%crisp-record-type-p t-spec)
-                                 (member p record-exploded-syms :test #'eq)
-                                 (not (funcall has-grad-output-p t-spec)))
-                      collect (cond
-                                ((%crisp-integer-tensor-type-p t-spec)
-                                 (%integer-tensor-elem-to-float t-spec))
-                                ((%crisp-float-tensor-type-p t-spec)
-                                 (%ensure-tensor-read-write t-spec))
-                                ((%crisp-integer-cell-type-p t-spec)
-                                 (%integer-cell-elem-to-float t-spec))
-                                ((let ((c (canonicalize-type-specifier t-spec)))
-                                   (and (consp c) (symbolp (first c))
-                                        (string-equal (symbol-name (first c)) "CELL")))
-                                 ;; Float-element cell: pass through unchanged.
-                                 t-spec)
-                                ((%crisp-integer-scalar-type-p t-spec)
-                                 (list 'cell (%integer-scalar-to-float-scalar t-spec)
-                                       :address-space :global))
-                                ((%crisp-float-type-p t-spec)
-                                 (list 'cell t-spec :address-space :global))
-                                (t (%ensure-tensor-read-write t-spec)))))
+         ;; Promote each input's _GRAD type to a writeable float-adjoint slot.
+         ;; - integer/float tensor      → element-promoted tensor (read-write)
+         ;; - integer/float cell        → element-promoted cell (keyword form)
+         ;; - integer/float bare scalar → wrap in (cell <float-elem> :address-space :global)
+         ;;   so the gradient can flow back to the caller via pointer indirection
+         ;;   (bare scalar &out can't carry a value back).
+         (non-rec-scalar-in-grad-types
+          (loop for p in flat-inputs
+                for t-spec in flat-input-types
+                  unless (or (%crisp-record-type-p t-spec)
+                             (member p record-exploded-syms :test #'eq)
+                             (not (funcall has-grad-output-p t-spec)))
+                collect (cond
+                         ((%crisp-integer-tensor-type-p t-spec)
+                           (%integer-tensor-elem-to-float t-spec))
+                         ((%crisp-float-tensor-type-p t-spec)
+                           (%ensure-tensor-read-write t-spec))
+                         ((%crisp-integer-cell-type-p t-spec)
+                           (%integer-cell-elem-to-float t-spec))
+                         ((let ((c (canonicalize-type-specifier t-spec)))
+                            (and (consp c) (symbolp (first c))
+                                 (string-equal (symbol-name (first c)) "CELL")))
+                           ;; Float-element cell: pass through unchanged.
+                           t-spec)
+                         ((%crisp-integer-scalar-type-p t-spec)
+                           (list 'cell (%integer-scalar-to-float-scalar t-spec)
+                                 :address-space :global))
+                         ((%crisp-float-type-p t-spec)
+                           (list 'cell t-spec :address-space :global))
+                         (t (%ensure-tensor-read-write t-spec)))))
 
-            (all-grad-out-params (append rec-grad-out-params non-rec-scalar-in-grad-params))
-            (all-grad-out-types  (append rec-grad-out-types  non-rec-scalar-in-grad-types))
-            (out-grads
-             (loop for p in outputs
-                      collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
-            ;; Output _GRAD seeds (passed in by caller, parallel to outputs).
-            ;; Promote element type to float adjoint when the output is integer-typed.
-            (out-grad-types
-             (mapcar (lambda (t-spec) (%promote-to-float-adjoint t-spec)) output-types))
-            (bwd-params (append flat-inputs outputs out-grads
-                                (when all-grad-out-params (list '&out))
-                                all-grad-out-params))
-            (bwd-types  (append flat-input-types output-types out-grad-types
-                                (when all-grad-out-params (list '&out))
-                                all-grad-out-types))
+         (all-grad-out-params (append rec-grad-out-params non-rec-scalar-in-grad-params))
+         (all-grad-out-types (append rec-grad-out-types non-rec-scalar-in-grad-types))
+         (out-grads
+          (loop for p in outputs
+                collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+         ;; Output _GRAD seeds (passed in by caller, parallel to outputs).
+         ;; Promote element type to float adjoint when the output is integer-typed.
+         (out-grad-types
+          (mapcar (lambda (t-spec) (%promote-to-float-adjoint t-spec)) output-types))
+         (bwd-params (append flat-inputs outputs out-grads
+                       (when all-grad-out-params (list '&out))
+                       all-grad-out-params))
+         (bwd-types (append flat-input-types output-types out-grad-types
+                      (when all-grad-out-params (list '&out))
+                      all-grad-out-types))
 
-            ;; diff-flat-inputs: only float scalars and tensors — integers excluded.
-            (diff-flat-inputs
-             (loop for p in flat-inputs
-                      for t-spec in flat-input-types
-                      when (if (member p record-exploded-syms :test #'eq)
-                               (%crisp-float-type-p t-spec)
-                               (funcall differentiable-non-rec-p t-spec))
-                      collect p))
-            (diff-flat-input-types
-             (loop for p in flat-inputs
-                      for t-spec in flat-input-types
-                      when (if (member p record-exploded-syms :test #'eq)
-                               (%crisp-float-type-p t-spec)
-                               (funcall differentiable-non-rec-p t-spec))
-                      collect t-spec)))
+         ;; diff-flat-inputs: only float scalars and tensors — integers excluded.
+         (diff-flat-inputs
+          (loop for p in flat-inputs
+                for t-spec in flat-input-types
+                  when (if (member p record-exploded-syms :test #'eq)
+                           (%crisp-float-type-p t-spec)
+                           (funcall differentiable-non-rec-p t-spec))
+                collect p))
+         (diff-flat-input-types
+          (loop for p in flat-inputs
+                for t-spec in flat-input-types
+                  when (if (member p record-exploded-syms :test #'eq)
+                           (%crisp-float-type-p t-spec)
+                           (funcall differentiable-non-rec-p t-spec))
+                collect t-spec)))
     (values bwd-params bwd-types diff-flat-inputs diff-flat-input-types)))
 
 (defun %has-diff-capable-scalar-input-p (flat-input-types)
@@ -661,9 +655,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                 (and brand
                      (%crisp-integer-scalar-type-p
                       (brand-definition-base-type brand))))))
-        flat-input-types))
-
-
+      flat-input-types))
 
 
 ;; --------------------------------------------------------------------------
@@ -675,14 +667,14 @@ processes float inputs — integer tensor inputs contribute zero gradient."
    or NIL when it can't be determined.  TYPE-RESOLVER-FN: (sym -> static-type-or-nil).
    Only works when TENSOR-FORM is a bare symbol (the common case)."
   (when (and tensor-form (symbolp tensor-form) type-resolver-fn)
-    (let ((ty (funcall type-resolver-fn tensor-form)))
-      (when ty
-        (let* ((canon (%ts-canonicalize-tensor-type ty))
-               (raw (when (listp canon) (%get-tensor-ct canon))))
-          (cond
-            ((keywordp raw) raw)
-            ((symbolp raw) (intern (symbol-name raw) :keyword))
-            (t nil)))))))
+        (let ((ty (funcall type-resolver-fn tensor-form)))
+          (when ty
+                (let* ((canon (%ts-canonicalize-tensor-type ty))
+                       (raw (when (listp canon) (%get-tensor-ct canon))))
+                  (cond
+                   ((keywordp raw) raw)
+                   ((symbolp raw) (intern (symbol-name raw) :keyword))
+                   (t nil)))))))
 
 (defun %tensor-stride-resolve-ct (expr type-resolver-fn location)
   "Determines the effective CT for expanding a tensor-stride EXPR.
@@ -699,18 +691,18 @@ processes float inputs — integer tensor inputs contribute zero gradient."
          (static-ct (%resolve-tensor-form-ct tensor-form type-resolver-fn))
          (tag-ct (when strict-p (%ts-layout-tag-to-ct layout-tag n location))))
     (cond
-      ((not strict-p)
+     ((not strict-p)
        (or static-ct
            (progn
-             (log:warn "tensor-stride: cannot statically determine contiguous-term for ~S; defaulting to :last (use the strict variant to make the layout explicit)"
-                       tensor-form)
-             :last)))
-      ((null static-ct) tag-ct)
-      ((eq tag-ct static-ct) tag-ct)
-      (t (error 'crisp-compiler-error
-                :message (format nil "tensor-stride: layout-tag ~S implies contiguous-term ~S but the tensor's static type has contiguous-term ~S"
-                                 layout-tag tag-ct static-ct)
-                :source-location location)))))
+            (log:warn "tensor-stride: cannot statically determine contiguous-term for ~S; defaulting to :last (use the strict variant to make the layout explicit)"
+                      tensor-form)
+            :last)))
+     ((null static-ct) tag-ct)
+     ((eq tag-ct static-ct) tag-ct)
+     (t (error 'crisp-compiler-error
+          :message (format nil "tensor-stride: layout-tag ~S implies contiguous-term ~S but the tensor's static type has contiguous-term ~S"
+                     layout-tag tag-ct static-ct)
+          :source-location location)))))
 
 ;; --------------------------------------------------------------------------
 ;; Recursive walker — used by the AD pre-pass.
@@ -721,10 +713,8 @@ processes float inputs — integer tensor inputs contribute zero gradient."
    tensor-stride CT without an env."
   (let ((map (make-hash-table :test 'eq)))
     (loop for p in params for ty in types
-          when (symbolp p) do (setf (gethash p map) ty))
+            when (symbolp p) do (setf (gethash p map) ty))
     (lambda (sym) (and (symbolp sym) (gethash sym map)))))
-
-
 
 
 (defun %expand-tensor-stride-op (form type-resolver-fn location)
@@ -732,7 +722,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let* ((walked (cons (car form)
                        (mapcar (lambda (sub)
                                  (%expand-stride-macros-in-form sub type-resolver-fn location))
-                               (cdr form))))
+                           (cdr form))))
          (ct (%tensor-stride-resolve-ct walked type-resolver-fn location)))
     (%expand-tensor-stride-form walked ct location)))
 
@@ -741,7 +731,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let ((walked (cons (car form)
                       (mapcar (lambda (sub)
                                 (%expand-stride-macros-in-form sub type-resolver-fn location))
-                              (cdr form)))))
+                          (cdr form)))))
     (%expand-grid-stride-form walked location)))
 
 (defun %expand-loop-vector-stride-op (form type-resolver-fn location)
@@ -749,7 +739,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let ((walked (cons (car form)
                       (mapcar (lambda (sub)
                                 (%expand-stride-macros-in-form sub type-resolver-fn location))
-                              (cdr form)))))
+                          (cdr form)))))
     (%expand-loop-vector-stride-form walked location)))
 
 (defun %expand-tile-stride-op (form type-resolver-fn location)
@@ -757,7 +747,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let* ((walked (cons (car form)
                        (mapcar (lambda (sub)
                                  (%expand-stride-macros-in-form sub type-resolver-fn location))
-                               (cdr form))))
+                           (cdr form))))
          (cl-pkg (find-package :crisp-language))
          (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
          (strict-p (keywordp (third walked)))
@@ -774,7 +764,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let* ((walked (cons (car form)
                        (mapcar (lambda (sub)
                                  (%expand-stride-macros-in-form sub type-resolver-fn location))
-                               (cdr form))))
+                           (cdr form))))
          (cl-pkg (find-package :crisp-language))
          (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
          ;; Detect strict variant: 3rd is layout-tag, 4th is hw-tag.
@@ -794,7 +784,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let ((walked (cons (car form)
                       (mapcar (lambda (sub)
                                 (%expand-stride-macros-in-form sub type-resolver-fn location))
-                              (cdr form)))))
+                          (cdr form)))))
     (%expand-workgroup-stride-form walked location)))
 
 (defun %expand-let-stride-op (form type-resolver-fn location)
@@ -810,10 +800,10 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                               (%expand-stride-macros-in-form
                                (cadr b) type-resolver-fn location))
                         (%expand-stride-macros-in-form b type-resolver-fn location)))
-                  bindings))
+              bindings))
          (rewritten-body
           (mapcar (lambda (b) (%expand-stride-macros-in-form b type-resolver-fn location))
-                  body))
+              body))
          (hoisted-calls nil)
          (kept-bindings nil))
     (dolist (b rewritten-bindings)
@@ -821,24 +811,24 @@ processes float inputs — integer tensor inputs contribute zero gradient."
              (op (and (consp val) (symbolp (car val)) (car val)))
              (op-name (and op (symbol-name op))))
         (cond
-          ((and op-name
-                (or (string-equal op-name "LOAD-TILE-COORDS")
-                    (string-equal op-name "STORE-TILE-COORDS")))
+         ((and op-name
+               (or (string-equal op-name "LOAD-TILE-COORDS")
+                   (string-equal op-name "STORE-TILE-COORDS")))
            (push val hoisted-calls))
-          (t
+         (t
            (push b kept-bindings)))))
     (setf hoisted-calls (nreverse hoisted-calls)
-          kept-bindings (nreverse kept-bindings))
+      kept-bindings (nreverse kept-bindings))
     (cond
-      (hoisted-calls
+     (hoisted-calls
        (let* ((cl-pkg (find-package :crisp-language))
               (progn-sym (intern "PROGN" cl-pkg))
               (let-sym (intern "LET" cl-pkg)))
          (if (null kept-bindings)
              `(,progn-sym ,@hoisted-calls ,@rewritten-body)
              `(,progn-sym ,@hoisted-calls
-                          (,let-sym ,kept-bindings ,@rewritten-body)))))
-      (t
+                (,let-sym ,kept-bindings ,@rewritten-body)))))
+     (t
        (cons (car form) (cons rewritten-bindings rewritten-body))))))
 
 (defun %expand-request-load-tile-coords-op (form type-resolver-fn location)
@@ -847,7 +837,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
     (cons sync-sym
           (mapcar (lambda (sub)
                     (%expand-stride-macros-in-form sub type-resolver-fn location))
-                  (cdr form)))))
+              (cdr form)))))
 
 (defun %expand-request-store-tile-coords-op (form type-resolver-fn location)
   "Normalize request-store-tile-coords -> store-tile-coords."
@@ -855,7 +845,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
     (cons sync-sym
           (mapcar (lambda (sub)
                     (%expand-stride-macros-in-form sub type-resolver-fn location))
-                  (cdr form)))))
+              (cdr form)))))
 
 (defun %expand-stride-macros-in-form (form type-resolver-fn location)
   "Recursively walks FORM and rewrites tensor-stride / grid-stride /
@@ -864,38 +854,37 @@ processes float inputs — integer tensor inputs contribute zero gradient."
    request-load-tile-coords -> load-tile-coords and await-request -> nil
    for the backward pass."
   (cond
-    ((atom form) form)
-    ((not (and (consp form) (symbolp (car form))))
+   ((atom form) form)
+   ((not (and (consp form) (symbolp (car form))))
      (mapcar (lambda (sub) (%expand-stride-macros-in-form sub type-resolver-fn location)) form))
-    (t
+   (t
      (let ((op-name (symbol-name (car form))))
        (cond
-         ((string-equal op-name "TENSOR-STRIDE")
+        ((string-equal op-name "TENSOR-STRIDE")
           (%expand-tensor-stride-op form type-resolver-fn location))
-         ((string-equal op-name "GRID-STRIDE")
+        ((string-equal op-name "GRID-STRIDE")
           (%expand-grid-stride-op form type-resolver-fn location))
-         ((string-equal op-name "LOOP-VECTOR-STRIDE")
+        ((string-equal op-name "LOOP-VECTOR-STRIDE")
           (%expand-loop-vector-stride-op form type-resolver-fn location))
-         ((string-equal op-name "TILE-STRIDE")
+        ((string-equal op-name "TILE-STRIDE")
           (%expand-tile-stride-op form type-resolver-fn location))
-         ((string-equal op-name "HARDWARE-STRIDE")
+        ((string-equal op-name "HARDWARE-STRIDE")
           (%expand-hardware-stride-op form type-resolver-fn location))
-         ((string-equal op-name "WORKGROUP-STRIDE")
+        ((string-equal op-name "WORKGROUP-STRIDE")
           (%expand-workgroup-stride-op form type-resolver-fn location))
-         ((string-equal op-name "LET")
+        ((string-equal op-name "LET")
           (%expand-let-stride-op form type-resolver-fn location))
-         ((string-equal op-name "REQUEST-LOAD-TILE-COORDS")
+        ((string-equal op-name "REQUEST-LOAD-TILE-COORDS")
           (%expand-request-load-tile-coords-op form type-resolver-fn location))
-         ((string-equal op-name "REQUEST-STORE-TILE-COORDS")
+        ((string-equal op-name "REQUEST-STORE-TILE-COORDS")
           (%expand-request-store-tile-coords-op form type-resolver-fn location))
-         ((string-equal op-name "AWAIT-REQUEST")
+        ((string-equal op-name "AWAIT-REQUEST")
           nil)
-         (t
+        (t
           (cons (car form)
                 (mapcar (lambda (sub)
                           (%expand-stride-macros-in-form sub type-resolver-fn location))
-                        (cdr form)))))))))
-
+                    (cdr form)))))))))
 
 
 (defun %generate-backward-kernel-ast (name params signature-types raw-body)
@@ -909,14 +898,14 @@ processes float inputs — integer tensor inputs contribute zero gradient."
     (let* ((pkg (symbol-package name))
            (bwd-name (intern (format nil "~a_GRAD" (symbol-name name)) pkg)))
       (multiple-value-bind (flat-inputs flat-input-types record-reassembly-bindings
-                            rec-grad-out-params rec-grad-out-types
-                            record-subs-ht record-type-ht grad-cell-syms
-                            struct-shadow-info)
+                                        rec-grad-out-params rec-grad-out-types
+                                        record-subs-ht record-type-ht grad-cell-syms
+                                        struct-shadow-info)
           (%expand-record-kernel-inputs inputs input-types pkg)
         (let* ((subst-body
                 (mapcar (lambda (form)
                           (%substitute-record-accessors form record-subs-ht record-type-ht))
-                        raw-body))
+                    raw-body))
                ;; 107: AD pre-pass — rewrite stride macros into their expansions
                ;; using a kernel-param-based type resolver for tensor-stride CT.
                ;; The resolver is built from the ORIGINAL inputs/input-types
@@ -928,7 +917,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                (expanded-body
                 (mapcar (lambda (form)
                           (%expand-stride-macros-in-form form kernel-type-resolver nil))
-                        subst-body)))
+                    subst-body)))
           (multiple-value-bind (bwd-params bwd-types diff-flat-inputs diff-flat-input-types)
               (%compute-backward-kernel-params flat-inputs flat-input-types outputs output-types
                                                record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
@@ -937,92 +926,92 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                        (null struct-shadow-info)
                        (not (some #'%crisp-integer-tensor-type-p flat-input-types))
                        (not (%has-diff-capable-scalar-input-p flat-input-types)))
-              (error 'crisp.compiler:crisp-compiler-error
-                :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types -- add (forward-only) declaration or use float element types)" name)))
+                  (error 'crisp.compiler:crisp-compiler-error
+                    :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types -- add (forward-only) declaration or use float element types)" name)))
             (multiple-value-bind (exploded-params exploded-types bwd-cell-reassembly-bindings)
                 (%explode-kernel-args bwd-params bwd-types)
               (let* ((augmented-diff-flat-inputs
                       (append diff-flat-inputs
-                              (mapcar #'first struct-shadow-info)))
+                        (mapcar #'first struct-shadow-info)))
                      (augmented-diff-flat-input-types
                       (append diff-flat-input-types
-                              (loop for entry in struct-shadow-info
-                                    for p = (first entry)
-                                    collect (nth (position p flat-inputs :test #'eq)
-                                                 flat-input-types)))))
-              (if (and (null augmented-diff-flat-inputs)
-                       (null struct-shadow-info))
-                  `(progn
-                    (eval-when (:compile-toplevel :load-toplevel :execute)
-                      (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
-                        (loop for p in ',bwd-params
-                                 for t-spec in ',bwd-types
-                                 collect (cons p t-spec))))
-                    (def-kernel-exact ,bwd-name ,exploded-params
-                                      (declare #'(,@exploded-types))
-                                      (return)))
-                  (let* ((anf-body      (mapcar #'anf-transform expanded-body))
-                         (flat-anf      (flatten-anf-body anf-body))
-                         (forward-bindings
-                          (loop for form in flat-anf
-                                when (and (consp form) (= (length form) 2) (symbolp (car form)))
-                                collect form))
-                         (struct-shadow-ht
-                          (when struct-shadow-info
-                            (let ((ht (make-hash-table :test 'eq)))
-                              (dolist (entry struct-shadow-info)
-                                (setf (gethash (first entry) ht)
-                                      (cons (second entry)
-                                            (fourth entry))))
-                              (%register-shadow-anf-intermediates flat-anf ht)
-                              ht)))
-                         (kernel-record-param-field-adjs-ht
-                          (when (> (hash-table-count record-subs-ht) 0)
-                            (let ((ht (make-hash-table :test 'eq)))
-                              (maphash
-                               (lambda (rsym field-alist)
-                                 (let ((adj-alist
-                                        (loop for entry in field-alist
-                                              for fname = (car entry)
-                                              for fsym  = (cdr entry)
-                                              unless (eq fname :%nested-leaf%)
-                                              collect (cons (symbol-name fname)
-                                                            (intern (format nil "~A_ADJ" (symbol-name fsym))
-                                                                    pkg)))))
-                                   (setf (gethash rsym ht) adj-alist)))
-                               record-subs-ht)
-                              ht)))
-                         (raw-backward-walk
-                          (let ((*struct-kernel-param-shadows* struct-shadow-ht)
-                                (*record-param-field-adjs* kernel-record-param-field-adjs-ht))
-                            (generate-backward-walk flat-anf
-                                                    augmented-diff-flat-inputs outputs
-                                                    augmented-diff-flat-input-types output-types
-                                                    :kernel-pkg pkg)))
-                         (backward-walk-1
-                          (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
-                         (backward-walk-2
-                          (if struct-shadow-info
-                              (let ((all-leaves
-                                     (loop for entry in struct-shadow-info
-                                           append (%collect-all-leaf-adj-syms (fourth entry)))))
-                                (%ensure-leaf-adj-bindings backward-walk-1 all-leaves))
-                              backward-walk-1))
-                         (backward-walk
-                          (%fix-struct-shadow-writes backward-walk-2 struct-shadow-info))
-                         (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
+                        (loop for entry in struct-shadow-info
+                              for p = (first entry)
+                              collect (nth (position p flat-inputs :test #'eq)
+                                           flat-input-types)))))
+                (if (and (null augmented-diff-flat-inputs)
+                         (null struct-shadow-info))
                     `(progn
                       (eval-when (:compile-toplevel :load-toplevel :execute)
                         (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
                           (loop for p in ',bwd-params
-                                   for t-spec in ',bwd-types
-                                   collect (cons p t-spec))))
+                                for t-spec in ',bwd-types
+                                collect (cons p t-spec))))
                       (def-kernel-exact ,bwd-name ,exploded-params
                                         (declare #'(,@exploded-types))
-                                        (let (,@all-reassembly)
-                                          (let (,@forward-bindings)
-                                            ,backward-walk))
-                                        (return)))))))))))))
+                                        (return)))
+                    (let* ((anf-body (mapcar #'anf-transform expanded-body))
+                           (flat-anf (flatten-anf-body anf-body))
+                           (forward-bindings
+                            (loop for form in flat-anf
+                                    when (and (consp form) (= (length form) 2) (symbolp (car form)))
+                                  collect form))
+                           (struct-shadow-ht
+                            (when struct-shadow-info
+                                  (let ((ht (make-hash-table :test 'eq)))
+                                    (dolist (entry struct-shadow-info)
+                                      (setf (gethash (first entry) ht)
+                                        (cons (second entry)
+                                              (fourth entry))))
+                                    (%register-shadow-anf-intermediates flat-anf ht)
+                                    ht)))
+                           (kernel-record-param-field-adjs-ht
+                            (when (> (hash-table-count record-subs-ht) 0)
+                                  (let ((ht (make-hash-table :test 'eq)))
+                                    (maphash
+                                      (lambda (rsym field-alist)
+                                        (let ((adj-alist
+                                               (loop for entry in field-alist
+                                                     for fname = (car entry)
+                                                     for fsym = (cdr entry)
+                                                       unless (eq fname :%nested-leaf%)
+                                                     collect (cons (symbol-name fname)
+                                                                   (intern (format nil "~A_ADJ" (symbol-name fsym))
+                                                                           pkg)))))
+                                          (setf (gethash rsym ht) adj-alist)))
+                                      record-subs-ht)
+                                    ht)))
+                           (raw-backward-walk
+                            (let ((*struct-kernel-param-shadows* struct-shadow-ht)
+                                  (*record-param-field-adjs* kernel-record-param-field-adjs-ht))
+                              (generate-backward-walk flat-anf
+                                                      augmented-diff-flat-inputs outputs
+                                                      augmented-diff-flat-input-types output-types
+                                                      :kernel-pkg pkg)))
+                           (backward-walk-1
+                            (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
+                           (backward-walk-2
+                            (if struct-shadow-info
+                                (let ((all-leaves
+                                       (loop for entry in struct-shadow-info
+                                               append (%collect-all-leaf-adj-syms (fourth entry)))))
+                                  (%ensure-leaf-adj-bindings backward-walk-1 all-leaves))
+                                backward-walk-1))
+                           (backward-walk
+                            (%fix-struct-shadow-writes backward-walk-2 struct-shadow-info))
+                           (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
+                      `(progn
+                        (eval-when (:compile-toplevel :load-toplevel :execute)
+                          (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
+                            (loop for p in ',bwd-params
+                                  for t-spec in ',bwd-types
+                                  collect (cons p t-spec))))
+                        (def-kernel-exact ,bwd-name ,exploded-params
+                                          (declare #'(,@exploded-types))
+                                          (let (,@all-reassembly)
+                                            (let (,@forward-bindings)
+                                              ,backward-walk))
+                                          (return)))))))))))))
 
 (defun parse-kernel-signature (name params body)
   "Parses kernel parameters and body, performing validation and type extraction.
@@ -1090,7 +1079,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
         (def-kernel-exact ,name ,exploded-params
                           (declare #'(,@exploded-types))
                           ,@(when (or other-decls non-diff-decl)
-                              `((declare ,@other-decls ,@non-diff-decl)))
+                                  `((declare ,@other-decls ,@non-diff-decl)))
                           (let (,@reassembly-bindings)
                             ,@raw-body))
 
@@ -1117,13 +1106,13 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                               collect f))
          (body-forms (nthcdr (length declare-forms) body)))
     `(progn
-       (eval-when (:compile-toplevel :load-toplevel :execute)
-         (setf (gethash ',name crisp.compiler::*grid-functions*) t))
-       (def-function ,name ,params
-         ,@declare-forms
-         (declare (grid-function))
-         ,@body-forms
-         (return)))))
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (setf (gethash ',name crisp.compiler::*grid-functions*) t))
+      (def-function ,name ,params
+                    ,@declare-forms
+                    (declare (grid-function))
+                    ,@body-forms
+                    (return)))))
 
 
 (defmacro with-struct-accessors (struct-type bindings &body body)
@@ -1185,14 +1174,13 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                              (let ((sl (length s)) (nl (length name)))
                                (when (and (> nl sl)
                                           (string= s (subseq name (- nl sl))))
-                                 s)))
-                           suffixes)))
+                                     s)))
+                         suffixes)))
         (if suffix
             (let* ((num-str (subseq name 0 (- (length name) (length suffix))))
-                   (parsed  (ignore-errors (read-from-string num-str))))
+                   (parsed (ignore-errors (read-from-string num-str))))
               (if (numberp parsed) parsed value))
             value))))
-
 
 
 (defun %generate-struct-accessor (member-spec name pkg runtime-index)
@@ -1299,7 +1287,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
              (sfx (some (lambda (s)
                           (let ((sl (length s)) (nl (length nm)))
                             (when (and (> nl sl) (string= s (subseq nm (- nl sl)))) s)))
-                        sfxs))
+                      sfxs))
              (num (when sfx (ignore-errors (read-from-string (subseq nm 0 (- (length nm) (length sfx))))))))
         (if (numberp num) num value))
       value))
@@ -1350,13 +1338,13 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                                                               ;; Cast integer literals to numeric c-t types
                                                               ;; to avoid int vs ulong/uint/long etc. mismatch.
                                                               (cast-fn (cl:when (cl:and (cl:integerp v)
-                                                                                        (cl:member type '(ulong uint ushort uchar long short char)))
+                                                                                  (cl:member type '(ulong uint ushort uchar long short char)))
                                                                          (cl:intern (cl:format nil "TO-~a" type) pkg))))
-                                                       (cl:if cast-fn
-                                                              `(,cast-fn ,v)
-                                                              (if (or (numberp v) (stringp v) (eq v t) (eq v nil))
-                                                                  v
-                                                                  `',v))))))
+                                                      (cl:if cast-fn
+                                                             `(,cast-fn ,v)
+                                                             (if (or (numberp v) (stringp v) (eq v t) (eq v nil))
+                                                                 v
+                                                                 `',v))))))
                         (let ((idx runtime-index))
                           (incf runtime-index)
                           `(def-function ,accessor-name ((obj ,name))
@@ -1593,38 +1581,38 @@ processes float inputs — integer tensor inputs contribute zero gradient."
    flat-args must contain exactly 3N+1 values: N offsets, N strides, N extents, 1 length.
    Used by %explode-kernel-args, marshall-vector, marshall-matrix, and marshall-tensor."
   (let* ((canonical (canonicalize-type-specifier type-alias))
-         (base      (first canonical))
-         (params    (rest canonical)))
+         (base (first canonical))
+         (params (rest canonical)))
     (unless (and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
       (error "%marshall-tensor: type must be a tensor type, got ~a" type-alias))
-    (let* ((n    (if (integerp (third canonical)) (third canonical)
-                     (parse-integer (symbol-name (third canonical)))))
-           (as   (fourth canonical))
+    (let* ((n (if (integerp (third canonical)) (third canonical)
+                  (parse-integer (symbol-name (third canonical)))))
+           (as (fourth canonical))
            (expected (+ (* 3 n) 1)))
       (unless (= (length flat-args) expected)
         (error "%marshall-tensor: expected ~a flat args (3*N+1 for N=~a) but got ~a" expected n (length flat-args)))
-      (let* ((off-args  (subseq flat-args 0 n))
-             (str-args  (subseq flat-args n (* 2 n)))
-             (ext-args  (subseq flat-args (* 2 n) (* 3 n)))
-             (len-arg   (nth (* 3 n) flat-args))
-             (mangled   (mangle-template-struct-name base params))
-             (ctor      (intern (format nil "MAKE-~a" mangled) (symbol-package base)))
-             (storage-base   (find-symbol "STORAGE" (symbol-package base)))
+      (let* ((off-args (subseq flat-args 0 n))
+             (str-args (subseq flat-args n (* 2 n)))
+             (ext-args (subseq flat-args (* 2 n) (* 3 n)))
+             (len-arg (nth (* 3 n) flat-args))
+             (mangled (mangle-template-struct-name base params))
+             (ctor (intern (format nil "MAKE-~a" mangled) (symbol-package base)))
+             (storage-base (find-symbol "STORAGE" (symbol-package base)))
              (storage-params (list as))
-             (stor-mangled   (mangle-template-struct-name storage-base storage-params))
-             (stor-ctor      (intern (format nil "MAKE-~a" stor-mangled) (symbol-package base))))
+             (stor-mangled (mangle-template-struct-name storage-base storage-params))
+             (stor-ctor (intern (format nil "MAKE-~a" stor-mangled) (symbol-package base))))
         ;; Ensure templates are instantiated so constructors are available
         (eval (instantiate-template base params))
         (eval (instantiate-template storage-base storage-params))
         (log:debug "%MARSHALL-TENSOR: type=~a mangled=~a ctor=~a N=~a" type-alias mangled ctor n)
         `(,ctor
-          :parent (,stor-ctor
-                   :address  (as (c-pointer :address-space ,as) ,ptr)
-                   :byte-size ,byte-size)
-          :offset  (%make-ct-array ulong ,@off-args)
-          :strides (%make-ct-array ulong ,@str-args)
-          :extents (%make-ct-array ulong ,@ext-args)
-          :length  ,len-arg)))))
+           :parent (,stor-ctor
+                     :address (as (c-pointer :address-space ,as) ,ptr)
+                     :byte-size ,byte-size)
+           :offset (%make-ct-array ulong ,@off-args)
+           :strides (%make-ct-array ulong ,@str-args)
+           :extents (%make-ct-array ulong ,@ext-args)
+           :length ,len-arg)))))
 
 
 (defmacro marshall-tensor (type-alias byte-size ptr &rest kwargs)
@@ -1641,29 +1629,29 @@ processes float inputs — integer tensor inputs contribute zero gradient."
    Each sublist must contain exactly N elements matching the tensor arity.
    All four keywords are required."
   (let* ((canonical (canonicalize-type-specifier type-alias))
-         (base      (first canonical)))
+         (base (first canonical)))
     (unless (and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
       (error "marshall-tensor: type must be a tensor type, got ~a" type-alias))
     (let ((n (if (integerp (third canonical)) (third canonical)
                  (parse-integer (symbol-name (third canonical))))))
       ;; Parse keyword args
       (let ((offsets nil) (strides nil) (extents nil) (length-val nil)
-            (ptr-kwargs (copy-list kwargs)))
+                          (ptr-kwargs (copy-list kwargs)))
         (loop while ptr-kwargs do
-          (let ((key (pop ptr-kwargs)))
-            (unless ptr-kwargs
-              (error "marshall-tensor: keyword ~a has no value" key))
-            (let ((val (pop ptr-kwargs)))
-              (cond
-                ((eq key :offsets) (setf offsets val))
-                ((eq key :strides) (setf strides val))
-                ((eq key :extents) (setf extents val))
-                ((eq key :length)  (setf length-val val))
-                (t (error "marshall-tensor: unknown keyword ~a. Expected :offsets, :strides, :extents, :length" key))))))
+                (let ((key (pop ptr-kwargs)))
+                  (unless ptr-kwargs
+                    (error "marshall-tensor: keyword ~a has no value" key))
+                  (let ((val (pop ptr-kwargs)))
+                    (cond
+                     ((eq key :offsets) (setf offsets val))
+                     ((eq key :strides) (setf strides val))
+                     ((eq key :extents) (setf extents val))
+                     ((eq key :length) (setf length-val val))
+                     (t (error "marshall-tensor: unknown keyword ~a. Expected :offsets, :strides, :extents, :length" key))))))
         ;; Validate all keys present
-        (unless offsets   (error "marshall-tensor missing required keyword :offsets"))
-        (unless strides   (error "marshall-tensor missing required keyword :strides"))
-        (unless extents   (error "marshall-tensor missing required keyword :extents"))
+        (unless offsets (error "marshall-tensor missing required keyword :offsets"))
+        (unless strides (error "marshall-tensor missing required keyword :strides"))
+        (unless extents (error "marshall-tensor missing required keyword :extents"))
         (unless length-val (error "marshall-tensor missing required keyword :length"))
         ;; Validate sublist lengths
         (unless (= (length offsets) n)
@@ -1674,7 +1662,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
           (error "marshall-tensor :extents list length ~a does not match tensor arity N=~a" (length extents) n))
         ;; Delegate to the flat internal workhorse
         `(%marshall-tensor ,type-alias ,byte-size ,ptr
-           ,@offsets ,@strides ,@extents ,length-val)))))
+                           ,@offsets ,@strides ,@extents ,length-val)))))
 
 
 (defmacro marshall-vector (type-alias byte-size ptr off_0 str_0 ext_0 length)
@@ -1682,9 +1670,9 @@ processes float inputs — integer tensor inputs contribute zero gradient."
    type-alias must be a fully-specified vector or tensor N=1 type.
    Delegates to %marshall-tensor after validating N=1."
   (let* ((canonical (canonicalize-type-specifier type-alias))
-         (base      (first canonical))
-         (n         (if (integerp (third canonical)) (third canonical)
-                        (parse-integer (symbol-name (third canonical))))))
+         (base (first canonical))
+         (n (if (integerp (third canonical)) (third canonical)
+                (parse-integer (symbol-name (third canonical))))))
     (unless (and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
       (error "marshall-vector: type must be a vector/tensor type, got ~a" type-alias))
     (unless (= n 1)
@@ -1697,9 +1685,9 @@ processes float inputs — integer tensor inputs contribute zero gradient."
    type-alias must be a fully-specified matrix or tensor N=2 type.
    Delegates to %marshall-tensor after validating N=2."
   (let* ((canonical (canonicalize-type-specifier type-alias))
-         (base      (first canonical))
-         (n         (if (integerp (third canonical)) (third canonical)
-                        (parse-integer (symbol-name (third canonical))))))
+         (base (first canonical))
+         (n (if (integerp (third canonical)) (third canonical)
+                (parse-integer (symbol-name (third canonical))))))
     (unless (and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
       (error "marshall-matrix: type must be a matrix/tensor type, got ~a" type-alias))
     (unless (= n 2)
@@ -1742,3 +1730,47 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   "Catches invalid usage of BRAND outside of DEF-STRUCT or DEF-RECORD."
   (declare (ignore args))
   (error "BRAND can only be used within DEF-STRUCT or DEF-RECORD."))
+
+
+(defmacro make-async-barrier ()
+  "Creates an async barrier locally. For compilation analysis, returns a stub value."
+  0)
+
+(defmacro await (barrier)
+  "Awaits an async barrier."
+  (declare (ignore barrier))
+  nil)
+
+(defun %check-barrier-transformf (key-args)
+  (let ((has-barrier (getf key-args :barrier))
+        (has-transformf (or (getf key-args :transformf) (getf key-args :transformF))))
+    (when (and has-barrier has-transformf)
+          (error "Cannot use :barrier and :transformF at the same time."))))
+
+(defmacro load-tile-at (src tile grid-list &rest key-args)
+  "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."
+  (%check-barrier-transformf key-args)
+  `(load-tile-coords ,src ,tile ,grid-list ,@key-args))
+
+(defmacro store-tile-at (tile dest grid-list &rest key-args)
+  "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."
+  (%check-barrier-transformf key-args)
+  `(store-tile-coords ,tile ,dest ,grid-list ,@key-args))
+
+(defmacro load-tile (src tile grid-list &rest key-args)
+  "Helper macro to automatically compute grid index offsets dynamically
+   by scaling the incoming grid-coords by the extents of the tile."
+  (let ((pixel-coords
+         (loop for g in grid-list
+               for i from 0
+               collect `(* ,g (~ (extents~ ,tile) ,i)))))
+    `(load-tile-at ,src ,tile ,pixel-coords ,@key-args)))
+
+(defmacro store-tile (tile dest grid-list &rest key-args)
+  "Helper macro to automatically compute grid index offsets dynamically
+   by scaling the incoming grid-coords by the extents of the tile."
+  (let ((pixel-coords
+         (loop for g in grid-list
+               for i from 0
+               collect `(* ,g (~ (extents~ ,tile) ,i)))))
+    `(store-tile-at ,tile ,dest ,pixel-coords ,@key-args)))

@@ -2,7 +2,7 @@
 ;; TEST-WITH[--ir-target=spv]
 
 ;; Strict tile-stride with :row-major.  Tag goes between the tensor and
-;; the size-list.  col-orig (last binding) varies along the warp lane;
+;; the size-list.  col-grid-x (last binding) varies along the warp lane;
 ;; the matrix's static CT is :last so the tag agrees.  Leader-thread
 ;; sentinel write at each tile origin.
 
@@ -10,6 +10,6 @@
 
 (def-kernel mat_strict_rm_sentinel (&out M)
   (declare #'(&out mat-t => nil))
-  (tile-stride M :row-major (2 2) (row-orig col-orig)
+  (tile-stride M :row-major (2 2) (row-grid-y col-grid-x)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (set! (~ M row-orig col-orig) row-orig))))
+      (set! (~ M row-grid-y col-grid-x) row-grid-y))))

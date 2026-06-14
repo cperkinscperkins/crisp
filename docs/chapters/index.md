@@ -104,16 +104,15 @@
 - [General Purpose: `tensor-stride`, `grid-stride`,  `tile-stride` and `hardware-stride` ✅](13_control_flow_/11_general_purpose_tensor_stride_grid_stride_tile_stride_and_hardware_stride_.md)
 - [Load Tile / Store Tile ✅](13_control_flow_/12_load_tile_store_tile_.md)
 - [workgroup-stride ✅](13_control_flow_/13_workgroup_stride_.md)
-- [Workgroup Stride ✅](13_control_flow_/14_workgroup_stride_.md)
-- [Looping -- Uniform Loops ✅](13_control_flow_/15_looping_uniform_loops_.md)
-- [Looping Constructs ✅](13_control_flow_/16_looping_constructs_.md)
-- [Grid Level Operations ✅](13_control_flow_/17_grid_level_operations_.md)
-- [Workgroup Level Operations ✅](13_control_flow_/18_workgroup_level_operations_.md)
-- [Barriers and Fences ✅](13_control_flow_/19_barriers_and_fences_.md)
-- [Sum a Vector using Local Memory ✅](13_control_flow_/20_sum_a_vector_using_local_memory_.md)
-- [Warps & Shuffles 📝](13_control_flow_/21_warps_shuffles_.md)
-- [in-warp 📝](13_control_flow_/22_in_warp_.md)
-- [Sum a Vector using Warps and Shuffles 📝](13_control_flow_/23_sum_a_vector_using_warps_and_shuffles_.md)
+- [Looping -- Uniform Loops ✅](13_control_flow_/14_looping_uniform_loops_.md)
+- [Looping Constructs ✅](13_control_flow_/15_looping_constructs_.md)
+- [Grid Level Operations ✅](13_control_flow_/16_grid_level_operations_.md)
+- [Workgroup Level Operations ✅](13_control_flow_/17_workgroup_level_operations_.md)
+- [Barriers and Fences ✅](13_control_flow_/18_barriers_and_fences_.md)
+- [Sum a Vector using Local Memory ✅](13_control_flow_/19_sum_a_vector_using_local_memory_.md)
+- [Warps & Shuffles 📝](13_control_flow_/20_warps_shuffles_.md)
+- [in-warp 📝](13_control_flow_/21_in_warp_.md)
+- [Sum a Vector using Warps and Shuffles 📝](13_control_flow_/22_sum_a_vector_using_warps_and_shuffles_.md)
 
 ## Bit Twiddling Operations 📝
 - [`op-popcount` 📝](14_bit_twiddling_operations_/01_op_popcount_.md)
@@ -252,7 +251,6 @@
 - [launch-sequential 📝](44_hoisting_and_def_orchestration_/02_launch_sequential_.md)
 - [launch-kernel 📝](44_hoisting_and_def_orchestration_/03_launch_kernel_.md)
 - [launch-parallel 📝](44_hoisting_and_def_orchestration_/04_launch_parallel_.md)
-- [launch-interleaved 📝](44_hoisting_and_def_orchestration_/05_launch_interleaved_.md)
 
 ## Compiler Invocation and Options ✅
 - [Output Targeting Options 📝](45_compiler_invocation_and_options_/01_output_targeting_options_.md)
