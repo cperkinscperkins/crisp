@@ -765,11 +765,16 @@
              ;; Must precede static input binds so the declared input slots
              ;; line up.
              (dolist (p fwd-implicit-params)
-               (bind-local-scratch-vector-arg
-                fwd-kernel
-                (getf p :base)
-                (getf p :n-elements)
-                (getf p :elem-bytes)))
+               (if (= (getf p :arg-width) 6)
+                   (bind-local-scratch-vector-arg
+                    fwd-kernel
+                    (getf p :base)
+                    (getf p :n-elements)
+                    (getf p :elem-bytes))
+                   (bind-local-scratch-cell-arg
+                    fwd-kernel
+                    (getf p :base)
+                    (getf p :elem-bytes))))
              ;; Static binds: buffer-backed inputs bound once.
              (bind-static-input-args fwd-kernel)
              (if output-vec-length
@@ -778,11 +783,16 @@
              ;; Backward-kernel implicit-params: the original scratch tiles
              ;; PLUS any AD-minted tile_ADJ shadows.
              (dolist (p bwd-implicit-params)
-               (bind-local-scratch-vector-arg
-                bwd-kernel
-                (getf p :base)
-                (getf p :n-elements)
-                (getf p :elem-bytes)))
+               (if (= (getf p :arg-width) 6)
+                   (bind-local-scratch-vector-arg
+                    bwd-kernel
+                    (getf p :base)
+                    (getf p :n-elements)
+                    (getf p :elem-bytes))
+                   (bind-local-scratch-cell-arg
+                    bwd-kernel
+                    (getf p :base)
+                    (getf p :elem-bytes))))
              (bind-static-input-args bwd-kernel)
              (if output-vec-length
                  (progn
@@ -1365,6 +1375,30 @@
 ;;;     length) are set to their normal compact-vector values
 ;;;
 ;;; Both OpenCL and L0 use the same wire form.
+
+(defun opencl-bind-local-scratch-cell-arg (kernel base-index byte-size)
+  "Binds a :local addrspace cell at BASE-INDEX (3 args)."
+  (cffi:with-foreign-objects ((arg1 :uint64) (arg2 :uint64))
+    (setf (cffi:mem-ref arg1 :uint64) byte-size
+          (cffi:mem-ref arg2 :uint64) 0)
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 0) byte-size (cffi:null-pointer)))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 1) (cffi:foreign-type-size :uint64) arg1))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 2) (cffi:foreign-type-size :uint64) arg2))))
+
+(defun l0-bind-local-scratch-cell-arg (kernel base-index byte-size)
+  "L0 counterpart: NULL pArgValue + byte-size for the local mem alloc."
+  (cffi:with-foreign-objects ((p-bs :uint64) (p-off :uint64))
+    (setf (cffi:mem-ref p-bs :uint64) byte-size
+          (cffi:mem-ref p-off :uint64) 0)
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 0) byte-size (cffi:null-pointer)))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 1) (cffi:foreign-type-size :uint64) p-bs))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 2) (cffi:foreign-type-size :uint64) p-off))))
+
+(defun bind-local-scratch-cell-arg (kernel base-index byte-size)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-local-scratch-cell-arg)
+             (:l0     'l0-bind-local-scratch-cell-arg))
+           kernel base-index byte-size))
 
 (defun opencl-bind-local-scratch-vector-arg (kernel base-index n-elements elem-bytes)
   "Binds a :local addrspace 1D-compact scratch vector at BASE-INDEX (6 args)."

@@ -422,11 +422,13 @@
                (origin-nodes (loop for o in origin-list for i from 0
                                    collect (analyze-expression
                                             o env context
-                                            (append location (list 3 i))))))
+                                            (append location (list 3 i)))))
+               (barrier-node (analyze-expression barrier-form env context location)))
           (make-semantic-nvvm-cp-async-tile-copy
            :src-node src-node
            :tile-node tile-node
            :origin-nodes origin-nodes
+           :barrier-node barrier-node
            :type 'ulong
            :source-location location))
         (analyze-expression (%expand-load-tile-coords-form expr location)
@@ -447,13 +449,15 @@
     (error 'crisp-compiler-error
       :message (format nil "await: expected (await BARRIER), got ~S" expr)
       :source-location location))
-  (case *target-backend*
-    (:ptx
-     (make-semantic-nvvm-cp-async-wait
-      :type 'ulong
-      :source-location location))
-    (t
-     (analyze-expression nil env context location))))
+  (let ((barrier-node (analyze-expression (second expr) env context (append location '(1)))))
+    (case *target-backend*
+      (:ptx
+       (make-semantic-nvvm-cp-async-wait
+        :barrier-node barrier-node
+        :type 'ulong
+        :source-location location))
+      (t
+       (analyze-expression nil env context location)))))
 
 (defun analyze-if-expression-impl (expr env context location &key enforce-constant)
   (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
@@ -2454,7 +2458,13 @@
 
 (defun analyze-make-async-barrier-expression (expr env context location)
   (declare (ignore expr))
-  (analyze-expression 0 env context location))
+  (let ((cell-node (analyze-scratch-expression '(make-scratch-cell ulong) env context location)))
+    (if (eq crisp.compiler:*target-backend* :ptx)
+        (make-semantic-make-async-barrier
+         :cell-node cell-node
+         :type (semantic-node-type cell-node)
+         :source-location location)
+        cell-node)))
 
 
 (defun register-control-analyzers ()

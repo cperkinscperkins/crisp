@@ -519,6 +519,11 @@
   ;; Continue scanning arguments
   (dolist (arg args) (scan-form arg)))
 
+(defmethod scan-operator ((op (eql 'make-async-barrier)) args)
+  "Scans make-async-barrier and delegates to make-scratch-cell to allocate an 8-byte mbarrier object."
+  (declare (ignore args))
+  (scan-operator 'make-scratch-cell '(ulong)))
+
 
 
 (defmethod scan-operator ((op (eql 'make-scratch-vector)) args)
@@ -1395,6 +1400,7 @@ in single-pass mode."
     (semantic-stride-view (semantic-stride-view-type node))
     (semantic-gpu-builtin (semantic-gpu-builtin-type node))
     (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-type node))
+    (semantic-make-async-barrier      (semantic-make-async-barrier-type node))
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-type node))))
 
 (defun semantic-node-source-location (node)
@@ -1440,6 +1446,7 @@ in single-pass mode."
     (semantic-stride-view (semantic-stride-view-source-location node))
     (semantic-gpu-builtin (semantic-gpu-builtin-source-location node))
     (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-source-location node))
+    (semantic-make-async-barrier      (semantic-make-async-barrier-source-location node))
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---

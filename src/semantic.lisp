@@ -274,14 +274,21 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 ;; Phase B.1 scope: simple case where tile.length == workgroup_size (one
 ;; cp.async per thread, no inner loop).  Bigger tiles need a cooperative
 ;; loop, which lands in B.2.
+(defstruct semantic-make-async-barrier
+  type
+  cell-node
+  source-location)
+
 (defstruct semantic-nvvm-cp-async-tile-copy
   src-node      ;; semantic node for the source tensor (addrspace 1)
   tile-node     ;; semantic node for the dest tile (addrspace 3)
   origin-nodes  ;; list of semantic nodes for origin coords (one per dim)
+  barrier-node  ;; semantic node for the mbarrier object
   type
   source-location)
 
 (defstruct semantic-nvvm-cp-async-wait
+  barrier-node  ;; semantic node for the mbarrier object
   type
   source-location)
 

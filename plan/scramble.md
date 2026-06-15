@@ -647,7 +647,7 @@ NEXT
 - [x] lose "helper" load-tile / store-tile
 - [ ] (await barrier) maps to cp.async.wait_all , not individual barriers.
 - [ ] strategy :tiled so we can get hoist testing. 
-- [ ] rename load-barrier => sync-workgroup
+- [ ] rename local-barrier => sync-workgroup
 - [ ] sync-warp
 - [ ] make-arrival-sync
 - [ ] update ideal_001.md
