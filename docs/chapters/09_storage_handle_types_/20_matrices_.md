@@ -180,7 +180,7 @@ not necessarily like we want them to be.
         ;; load tile  - coalesced read
         (load-tile M temp-tile tile-idx-y tile-idx-x :transpose (= (get-layout M) :col-major))
         
-        (local-barrier)
+        (sync-workgroup)
 
         ;; store transposed tile coalesced write
         (store-tile temp-tile dest-M tile-idx-y tile-idx-x :transpose (= (get-layout dest-M) :row-major))))))

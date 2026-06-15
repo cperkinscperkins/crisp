@@ -14,14 +14,19 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%EXTRACT-KEY-ARG`
 - **Args**: `(KEY-ARGS KEYWORD DEFAULT)`
 
-  > Parses a &key-style plist KEY-ARGS for KEYWORD, returning its value or  >    DEFAULT if absent.  Phase 1a helper for load-tile-coords / store-tile-coords  >    keyword parsing.
+  > Parses a &key-style plist KEY-ARGS for KEYWORD, returning its value or
+  >    DEFAULT if absent.  Phase 1a helper for load-tile-coords / store-tile-coords
+  >    keyword parsing.
 
 
 ---
 ### DEFUN `%TLC-TRANSPOSE-PERMUTATION`
 - **Args**: `(N TRANSPOSE-FORM LOCATION)`
 
-  > Returns the coord permutation list implied by TRANSPOSE-FORM for a tile of  >    arity N.  Returns NIL for identity (no transpose).  Errors on invalid  >    combinations.  Phase 1a: only NIL and T are supported; explicit permutation  >    lists are deferred.
+  > Returns the coord permutation list implied by TRANSPOSE-FORM for a tile of
+  >    arity N.  Returns NIL for identity (no transpose).  Errors on invalid
+  >    combinations.  Phase 1a: only NIL and T are supported; explicit permutation
+  >    lists are deferred.
 
 
 ---
@@ -29,76 +34,110 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS
               LID-SYMS LWS-SYMS INNER-FORM CL-PKG)`
 
-  > Builds the cooperative N-dim workgroup-strided nest used by  >    load-tile-coords and store-tile-coords.  At each level:  >      (dotimes (K_k TE_k LWS_k)  >        (let ((tile-coord-k (+ K_k LID_k)))  >          (when (< tile-coord-k TE_k)  >            <inner>)))  >    Returns the nested form.  Local-bindings is the outer let's binding list  >    (passed through unchanged; caller adds tensor/extent/lid/lws bindings).  >    Tile-coord-syms / tile-extent-syms / lid-syms / lws-syms must be lists of  >    length n.
+  > Builds the cooperative N-dim workgroup-strided nest used by
+  >    load-tile-coords and store-tile-coords.  At each level:
+  >      (dotimes (K_k TE_k LWS_k)
+  >        (let ((tile-coord-k (+ K_k LID_k)))
+  >          (when (< tile-coord-k TE_k)
+  >            <inner>)))
+  >    Returns the nested form.  Local-bindings is the outer let's binding list
+  >    (passed through unchanged; caller adds tensor/extent/lid/lws bindings).
+  >    Tile-coord-syms / tile-extent-syms / lid-syms / lws-syms must be lists of
+  >    length n.
 
 
 ---
 ### DEFUN `%TLC-SOURCE-COORD-EXPRS`
 - **Args**: `(N ORIGIN-SYMS TILE-COORD-SYMS PERM PLUS-SYM)`
 
-  > Returns a list of N source-coord expressions: source-coord[k] = origin[k]  >    + tile-coord[perm[k]].  PERM is NIL for identity (no transpose) or a  >    permutation list of length N.
+  > Returns a list of N source-coord expressions: source-coord[k] = origin[k]
+  >    + tile-coord[perm[k]].  PERM is NIL for identity (no transpose) or a
+  >    permutation list of length N.
 
 
 ---
 ### DEFUN `%TLC-ALL-IN-BOUNDS-FORM`
 - **Args**: `(N SRC-COORD-EXPRS GLOBAL-EXTENT-SYMS LT-SYM AND-SYM)`
 
-  > Builds an AND of per-dim bounds checks: (and (< src-coord[k] ge[k]) ...).  >    For N=1, returns just the single comparison.
+  > Builds an AND of per-dim bounds checks: (and (< src-coord[k] ge[k]) ...).
+  >    For N=1, returns just the single comparison.
 
 
 ---
 ### DEFUN `%EXPAND-LOAD-TILE-COORDS-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).  >    Returns a let/dotimes/when nest that cooperatively loads the tile, ending  >    with (local-barrier).
+  > Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).
+  >    Returns a let/dotimes/when nest that cooperatively loads the tile, ending
+  >    with (sync-workgroup).
 
 
 ---
 ### DEFUN `%EXPAND-STORE-TILE-COORDS-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).  >    Returns a let/progn nest with (local-barrier) BEFORE and AFTER the  >    cooperative store loop.  TransformF is applied per-element (unary).
+  > Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).
+  >    Returns a let/progn nest with (sync-workgroup) BEFORE and AFTER the
+  >    cooperative store loop.  TransformF is applied per-element (unary).
 
 
 ---
 ### DEFVAR `*IN-DIVERGENT-CONDITIONAL*`
 
-  > T when the analyzer is currently inside a thread-divergent if/when/unless/cond  >    branch (i.e. the conditional's test was not constant-folded).  Used by the  >    load-tile-coords / store-tile-coords analyzers to reject placement that  >    would deadlock at their internal local-barriers.  >   >    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check  >    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the  >    internal %uniform-when form instead, whose analyzer does NOT set this flag.
+  > T when the analyzer is currently inside a thread-divergent if/when/unless/cond
+  >    branch (i.e. the conditional's test was not constant-folded).  Used by the
+  >    load-tile-coords / store-tile-coords analyzers to reject placement that
+  >    would deadlock at their internal sync-workgroups.
+  > 
+  >    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check
+  >    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the
+  >    internal %uniform-when form instead, whose analyzer does NOT set this flag.
 
 
 ---
 ### DEFUN `ANALYZE-%UNIFORM-IF-IMPL`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Internal-use: structurally identical to analyze-if-expression-impl but  >    does NOT bind *in-divergent-conditional* on the two-branch path.  Use  >    only from compiler-generated forms whose conditions are guaranteed  >    workgroup-uniform.
+  > Internal-use: structurally identical to analyze-if-expression-impl but
+  >    does NOT bind *in-divergent-conditional* on the two-branch path.  Use
+  >    only from compiler-generated forms whose conditions are guaranteed
+  >    workgroup-uniform.
 
 
 ---
 ### DEFUN `ANALYZE-%UNIFORM-WHEN-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Internal: like when, but workgroup-uniform — does not set  >    *in-divergent-conditional*.  Used by compiler-generated stride bounds-  >    checks; not exposed to user code.
+  > Internal: like when, but workgroup-uniform — does not set
+  >    *in-divergent-conditional*.  Used by compiler-generated stride bounds-
+  >    checks; not exposed to user code.
 
 
 ---
 ### DEFUN `%TLC-CHECK-NOT-DIVERGENT`
 - **Args**: `(OP-NAME LOCATION)`
 
-  > Signals a clear compile error if (op-name) appears inside a thread-divergent  >    conditional.  Call from load-tile-coords / store-tile-coords analyzers.
+  > Signals a clear compile error if (op-name) appears inside a thread-divergent
+  >    conditional.  Call from load-tile-coords / store-tile-coords analyzers.
 
 
 ---
 ### DEFUN `ANALYZE-LOAD-TILE-COORDS-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-coords-form.
+  > Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
+  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided
+  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
+  >    codegen via %expand-load-tile-coords-form.
 
 
 ---
 ### DEFUN `ANALYZE-STORE-TILE-COORDS-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).  >    Rejects placement inside a thread-divergent conditional, then delegates  >    codegen via %expand-store-tile-coords-form.
+  > Analyzer for (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).
+  >    Rejects placement inside a thread-divergent conditional, then delegates
+  >    codegen via %expand-store-tile-coords-form.
 
 
 ---
@@ -140,35 +179,48 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%STRIP-EXECUTION-CONTEXT-DECLARES`
 - **Args**: `(BODY-FORMS)`
 
-  > Strips leading (declare ...) forms from BODY-FORMS.  >    Returns (values remaining-body all-decl-specs).  >    Uses string-equal matching so package of 'declare doesn't matter.
+  > Strips leading (declare ...) forms from BODY-FORMS.
+  >    Returns (values remaining-body all-decl-specs).
+  >    Uses string-equal matching so package of 'declare doesn't matter.
 
 
 ---
 ### DEFUN `%CHECK-CONTEXT-DECLARATIONS`
 - **Args**: `(DECL-SPECS LOCATION)`
 
-  > Checks DECL-SPECS for (grid-level) and (workgroup-level) declarations.  >    Enforces that:  >    - (grid-level) requires *in-dispatch-context* and cannot be nested.  >    - (workgroup-level) cannot be nested inside another workgroup-level context.  >    Returns (values has-grid-level has-workgroup-level).
+  > Checks DECL-SPECS for (grid-level) and (workgroup-level) declarations.
+  >    Enforces that:
+  >    - (grid-level) requires *in-dispatch-context* and cannot be nested.
+  >    - (workgroup-level) cannot be nested inside another workgroup-level context.
+  >    Returns (values has-grid-level has-workgroup-level).
 
 
 ---
 ### DEFUN `ANALYZE-LET-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(let ...)` expression.  >    Extended (091): strips leading declare forms from the body, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
+  > Analyzes a `(let ...)` expression.
+  >    Extended (091): strips leading declare forms from the body, checks for
+  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
 
 
 ---
 ### DEFUN `ANALYZE-PROGN-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(progn ...)` expression.  >    Extended (091): strips leading declare forms, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
+  > Analyzes a `(progn ...)` expression.
+  >    Extended (091): strips leading declare forms, checks for
+  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
 
 
 ---
 ### DEFUN `ANALYZE-RETURN-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(return ...)` expression.  >    FIX: A 1-element list whose sole element is a symbol (e.g. (INDEX-T)) is always  >    treated as a return-types list, not a parameterized type. This mirrors the fix  >    in validate-return-types.
+  > Analyzes a `(return ...)` expression.
+  >    FIX: A 1-element list whose sole element is a symbol (e.g. (INDEX-T)) is always
+  >    treated as a return-types list, not a parameterized type. This mirrors the fix
+  >    in validate-return-types.
 
 
 ---
@@ -197,7 +249,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANALYZE-COMPILER-NO-OP`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a (compiler-no-op) form, which results in a void literal.  >    Used by compile-time macros (c-t-assert, c-t-output) to emit no code.
+  > Analyzes a (compiler-no-op) form, which results in a void literal.
+  >    Used by compile-time macros (c-t-assert, c-t-output) to emit no code.
 
 
 ---
@@ -218,7 +271,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANALYZE-EVAL-WHEN`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (eval-when ...) forms by ignoring them in the runtime IR.  >    Side effects (like struct registration) should have already occurred during macro expansion.
+  > Analyzes (eval-when ...) forms by ignoring them in the runtime IR.
+  >    Side effects (like struct registration) should have already occurred during macro expansion.
 
 
 ---
@@ -232,133 +286,195 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANALYZE-LENGTH-TILDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (length~ arr).  >    For (array T N): returns compile-time constant N as ulong literal.  >    For tensor/vector/matrix types: dispatches to the runtime length~ accessor.  >    Signals crisp-compiler-error if argument is none of the above.
+  > Analyzes (length~ arr).
+  >    For (array T N): returns compile-time constant N as ulong literal.
+  >    For tensor/vector/matrix types: dispatches to the runtime length~ accessor.
+  >    Signals crisp-compiler-error if argument is none of the above.
 
 
 ---
 ### DEFUN `ANALYZE-DOTIMES-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (dotimes (var limit [stride]) body...).  >    VAR is bound as the limit's type (int, ulong, etc.) in the body.  >    STRIDE is optional; defaults to literal 1 of the limit's type.  >    Returns a semantic-dotimes node (type void).
+  > Analyzes (dotimes (var limit [stride]) body...).
+  >    VAR is bound as the limit's type (int, ulong, etc.) in the body.
+  >    STRIDE is optional; defaults to literal 1 of the limit's type.
+  >    Returns a semantic-dotimes node (type void).
 
 
 ---
 ### DEFUN `%BUILD-EXACT-ITER-COUNT-FORM`
 - **Args**: `(START-SYM STRIDE-SYM LEN-SYM CL-PKG)`
 
-  > Returns an expression that computes the exact iteration count for a  >    grid-stride loop starting at START-SYM and stepping by STRIDE-SYM,  >    visiting only positions < LEN-SYM.  All three symbols name ULONG values.  >   >    Formula:  >      iters = (start >= len) ? 0  >                             : 1 + (len - 1 - start) / stride  >   >    The outer (>= start len) guard short-circuits the (len - 1 - start)  >    ulong underflow when start >= len or len = 0.
+  > Returns an expression that computes the exact iteration count for a
+  >    grid-stride loop starting at START-SYM and stepping by STRIDE-SYM,
+  >    visiting only positions < LEN-SYM.  All three symbols name ULONG values.
+  > 
+  >    Formula:
+  >      iters = (start >= len) ? 0
+  >                             : 1 + (len - 1 - start) / stride
+  > 
+  >    The outer (>= start len) guard short-circuits the (len - 1 - start)
+  >    ulong underflow when start >= len or len = 0.
 
 
 ---
 ### DEFUN `%EXPAND-TENSOR-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
-  > Pure expansion of (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).  >    CT must be :last or :first (already resolved by caller).  Returns the  >    expanded let+dotimes tree.  Validates form shape only — strict-tag vs  >    CT agreement and tensor-arity checks are the caller's job.  >   >    New shape: exact-iter-count + simple dotimes (no per-iter bounds check).
+  > Pure expansion of (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).
+  >    CT must be :last or :first (already resolved by caller).  Returns the
+  >    expanded let+dotimes tree.  Validates form shape only — strict-tag vs
+  >    CT agreement and tensor-arity checks are the caller's job.
+  > 
+  >    New shape: exact-iter-count + simple dotimes (no per-iter bounds check).
 
 
 ---
 ### DEFUN `%EXPAND-GRID-STRIDE-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  No type  >    info needed — grid-stride is always rightmost-binding-gets-warp.  >   >    New shape: exact-iter-count + simple dotimes (no per-iter bounds check).
+  > Pure expansion of (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  No type
+  >    info needed — grid-stride is always rightmost-binding-gets-warp.
+  > 
+  >    New shape: exact-iter-count + simple dotimes (no per-iter bounds check).
 
 
 ---
 ### DEFUN `%EXPAND-LOOP-VECTOR-STRIDE-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  >    Refactored to use %build-exact-iter-count-form for consistency with  >    the rest of Group A.  Same behaviour as the earlier rewrite — single  >    counter dotimes, body runs unconditionally.
+  > Pure expansion of (loop-vector-stride VEC (VAR) BODY...).
+  >    Refactored to use %build-exact-iter-count-form for consistency with
+  >    the rest of Group A.  Same behaviour as the earlier rewrite — single
+  >    counter dotimes, body runs unconditionally.
 
 
 ---
 ### DEFUN `ANALYZE-LOOP-VECTOR-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (loop-vector-stride VEC (VAR) BODY...).  Delegates to  >    %expand-loop-vector-stride-form.
+  > Analyzes (loop-vector-stride VEC (VAR) BODY...).  Delegates to
+  >    %expand-loop-vector-stride-form.
 
 
 ---
 ### DEFUN `%TS-BUILD-DECODE-BINDINGS`
 - **Args**: `(FLAT-SYM BINDING-SYMS STRIDE-SYMS CT)`
 
-  > Builds the let* binding list that decodes FLAT-SYM into BINDING-SYMS using  >    STRIDE-SYMS (per-iteration-strides for each dim, length N or N-1) under  >    contiguous-term CT (:last or :first).  >   >    For CT :last:  i0 = flat/s0; rem1 = flat - i0*s0; i1 = rem1/s1; ...; i_{N-1} = rem_{N-1}  >    For CT :first: i_{N-1} = flat/s_{N-1}; rem1 = flat - i_{N-1}*s_{N-1}; ...; i_0 = rem_{N-1}
+  > Builds the let* binding list that decodes FLAT-SYM into BINDING-SYMS using
+  >    STRIDE-SYMS (per-iteration-strides for each dim, length N or N-1) under
+  >    contiguous-term CT (:last or :first).
+  > 
+  >    For CT :last:  i0 = flat/s0; rem1 = flat - i0*s0; i1 = rem1/s1; ...; i_{N-1} = rem_{N-1}
+  >    For CT :first: i_{N-1} = flat/s_{N-1}; rem1 = flat - i_{N-1}*s_{N-1}; ...; i_0 = rem_{N-1}
 
 
 ---
 ### DEFUN `%TS-BUILD-STRIDE-BINDINGS`
 - **Args**: `(EXTENTS-SYMS CT)`
 
-  > Returns a list of (stride-sym stride-form) bindings for the per-iteration  >    strides, in dim-index order (s_0 .. s_{N-2}).  For N=1, returns NIL.  >   >    For CT :last:  s_k = product(E_{k+1} .. E_{N-1})  >    For CT :first: s_k = product(E_0     .. E_{k-1})  but iteration uses these  >                   in reverse, so we build s_{N-1} .. s_1 instead.  >    Returned bindings have the same indexing convention as %ts-build-decode-bindings.
+  > Returns a list of (stride-sym stride-form) bindings for the per-iteration
+  >    strides, in dim-index order (s_0 .. s_{N-2}).  For N=1, returns NIL.
+  > 
+  >    For CT :last:  s_k = product(E_{k+1} .. E_{N-1})
+  >    For CT :first: s_k = product(E_0     .. E_{k-1})  but iteration uses these
+  >                   in reverse, so we build s_{N-1} .. s_1 instead.
+  >    Returned bindings have the same indexing convention as %ts-build-decode-bindings.
 
 
 ---
 ### DEFUN `%TS-CANONICALIZE-TENSOR-TYPE`
 - **Args**: `(RAW-TYPE)`
 
-  > Resolves RAW-TYPE down to the canonical 6-tuple (TENSOR elem N addr aln ct).  >    Mirrors %083-require-2d-tensor's normalisation but is arity-agnostic.  >    Returns the 6-tuple, or NIL when RAW-TYPE isn't a tensor.
+  > Resolves RAW-TYPE down to the canonical 6-tuple (TENSOR elem N addr aln ct).
+  >    Mirrors %083-require-2d-tensor's normalisation but is arity-agnostic.
+  >    Returns the 6-tuple, or NIL when RAW-TYPE isn't a tensor.
 
 
 ---
 ### DEFUN `%TS-LAYOUT-TAG-TO-CT`
 - **Args**: `(TAG N LOCATION)`
 
-  > Maps a strict layout-tag to its effective contiguous-term (:last or :first).  >    Validates the tag and (for :row-major / :col-major) the 2D restriction.
+  > Maps a strict layout-tag to its effective contiguous-term (:last or :first).
+  >    Validates the tag and (for :row-major / :col-major) the 2D restriction.
 
 
 ---
 ### DEFUN `ANALYZE-TENSOR-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).  >    Delegates expansion to %expand-tensor-stride-form (shared with the AD  >    pre-pass).  Env-based CT resolution: pre-analyzes the tensor form to  >    read its static type.
+  > Analyzes (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).
+  >    Delegates expansion to %expand-tensor-stride-form (shared with the AD
+  >    pre-pass).  Env-based CT resolution: pre-analyzes the tensor form to
+  >    read its static type.
 
 
 ---
 ### DEFUN `ANALYZE-GRID-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  Delegates to  >    %expand-grid-stride-form.
+  > Analyzes (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  Delegates to
+  >    %expand-grid-stride-form.
 
 
 ---
 ### DEFUN `%TILE-STRIDE-PARSE`
 - **Args**: `(EXPR)`
 
-  > Returns (values strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)  >    for a tile-stride EXPR.  TILE-SPEC-KIND is one of :size-list or :tile-tensor.  >    Form-shape validation only — does not check arity vs tensor.
+  > Returns (values strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)
+  >    for a tile-stride EXPR.  TILE-SPEC-KIND is one of :size-list or :tile-tensor.
+  >    Form-shape validation only — does not check arity vs tensor.
 
 
 ---
 ### DEFUN `%EXPAND-HW-WORKGROUP-IDX-FORM`
 - **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
 
-  > Outer-loop expansion for hardware-stride :workgroup-idx.  Phase 1b:  >    pre-walks the body to rewrite bare load-tile / store-tile into their  >    -coords forms using the bindings as the origin.
+  > Outer-loop expansion for hardware-stride :workgroup-idx.  Phase 1b:
+  >    pre-walks the body to rewrite bare load-tile / store-tile into their
+  >    -coords forms using the bindings as the origin.
 
 
 ---
 ### DEFUN `%EXPAND-HW-WARP-IDX-FORM`
 - **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
 
-  > Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.  >    Bare load-tile / store-tile inside :warp-idx remain a compile error.  >   >    New shape: exact-iter-count + simple dotimes (no per-iter bounds check).  >    Loop start  = mywarp * ws         (warp-uniform within a warp)  >    Loop stride = ws * numwarps       (warp-uniform across the device)  >    Loop var    = start + k * stride.
+  > Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.
+  >    Bare load-tile / store-tile inside :warp-idx remain a compile error.
+  > 
+  >    New shape: exact-iter-count + simple dotimes (no per-iter bounds check).
+  >    Loop start  = mywarp * ws         (warp-uniform within a warp)
+  >    Loop stride = ws * numwarps       (warp-uniform across the device)
+  >    Loop var    = start + k * stride.
 
 
 ---
 ### DEFUN `%EXPAND-TILE-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
-  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the  >    body to rewrite bare load-tile / store-tile into their -coords forms using  >    the tile-stride's binding syms as the origin.
+  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
+  >    Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the
+  >    body to rewrite bare load-tile / store-tile into their -coords forms using
+  >    the tile-stride's binding syms as the origin.
 
 
 ---
 ### DEFUN `ANALYZE-TILE-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Validates tensor-arity-vs-bindings and tile-arity-vs-bindings, then  >    delegates codegen via %expand-tile-stride-form.
+  > Analyzes (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
+  >    Validates tensor-arity-vs-bindings and tile-arity-vs-bindings, then
+  >    delegates codegen via %expand-tile-stride-form.
 
 
 ---
 ### DEFUN `%HARDWARE-STRIDE-PARSE`
 - **Args**: `(EXPR)`
 
-  > Returns (values strict-p layout-tag hw-tag bindings body-forms tensor-form)  >    for a hardware-stride EXPR.  Form-shape validation only — does not check  >    arity vs tensor.
+  > Returns (values strict-p layout-tag hw-tag bindings body-forms tensor-form)
+  >    for a hardware-stride EXPR.  Form-shape validation only — does not check
+  >    arity vs tensor.
 
 
 ---
@@ -373,56 +489,76 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN
               LOCATION)`
 
-  > Workgroup-strided outer loop over chunk origins.  Per-workgroup exact  >    iter count per dim — body runs unconditionally.
+  > Workgroup-strided outer loop over chunk origins.  Per-workgroup exact
+  >    iter count per dim — body runs unconditionally.
 
 
 ---
 ### DEFUN `%EXPAND-HARDWARE-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
-  > Pure expansion of (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).  >   >    :workgroup-idx — N-dim outer loop with chunk-size = (get-local-size k)  >                     per dim.  Shares structure with tile-stride; body runs  >                     once per workgroup per chunk.  >    :warp-idx       — 1D outer loop with chunk-size = warp width (currently  >                      hardcoded to 32 as a placeholder for (get-warp-size)).  >                      Body runs once per warp per chunk.  Iteration is  >                      warp-strided over the flattened global execution space.
+  > Pure expansion of (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).
+  > 
+  >    :workgroup-idx — N-dim outer loop with chunk-size = (get-local-size k)
+  >                     per dim.  Shares structure with tile-stride; body runs
+  >                     once per workgroup per chunk.
+  >    :warp-idx       — 1D outer loop with chunk-size = warp width (currently
+  >                      hardcoded to 32 as a placeholder for (get-warp-size)).
+  >                      Body runs once per warp per chunk.  Iteration is
+  >                      warp-strided over the flattened global execution space.
 
 
 ---
 ### DEFUN `ANALYZE-HARDWARE-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).  >    Validates arity (:warp-idx must be 1 binding, :workgroup-idx must match  >    tensor arity) and delegates codegen via %expand-hardware-stride-form.
+  > Analyzes (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).
+  >    Validates arity (:warp-idx must be 1 binding, :workgroup-idx must match
+  >    tensor arity) and delegates codegen via %expand-hardware-stride-form.
 
 
 ---
 ### DEFUN `%WORKGROUP-STRIDE-PARSE`
 - **Args**: `(EXPR)`
 
-  > Returns (values bindings body-forms tensor-form) for a workgroup-stride EXPR.  >    Form-shape validation only — does not check tensor arity vs bindings arity.
+  > Returns (values bindings body-forms tensor-form) for a workgroup-stride EXPR.
+  >    Form-shape validation only — does not check tensor arity vs bindings arity.
 
 
 ---
 ### DEFUN `%EXPAND-WORKGROUP-STRIDE-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (workgroup-stride T (BINDINGS) BODY...).  N-dim nested  >    per-thread cooperative loop.  Each dim's iter count is computed up  >    front (per thread) so the inner dotimes is a single-counter, body-  >    unconditional loop the unroller can attack.
+  > Pure expansion of (workgroup-stride T (BINDINGS) BODY...).  N-dim nested
+  >    per-thread cooperative loop.  Each dim's iter count is computed up
+  >    front (per thread) so the inner dotimes is a single-counter, body-
+  >    unconditional loop the unroller can attack.
 
 
 ---
 ### DEFUN `ANALYZE-WORKGROUP-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (workgroup-stride T (BINDINGS) BODY...).  Validates arity-vs-tensor  >    then delegates codegen via %expand-workgroup-stride-form.
+  > Analyzes (workgroup-stride T (BINDINGS) BODY...).  Validates arity-vs-tensor
+  >    then delegates codegen via %expand-workgroup-stride-form.
 
 
 ---
 ### DEFUN `%EXPAND-LOAD-TILE-COORDS-BWD-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (%load-tile-coords-bwd SRC-ADJ TILE-ADJ (ORIGIN...) &key transpose).  >    Cooperative scatter-add via atomic-add!.
+  > Pure expansion of (%load-tile-coords-bwd SRC-ADJ TILE-ADJ (ORIGIN...) &key transpose).
+  >    Cooperative scatter-add via atomic-add!.
 
 
 ---
 ### DEFUN `%EXPAND-STORE-TILE-COORDS-BWD-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (%store-tile-coords-bwd TILE-ADJ DEST-ADJ (ORIGIN...) &key transpose).  >    Cooperative non-atomic accumulate into local tile_adj.  Barriers before  >    and after so prior tile_adj writes are visible and subsequent ones see  >    the result.
+  > Pure expansion of (%store-tile-coords-bwd TILE-ADJ DEST-ADJ (ORIGIN...) &key transpose).
+  >    Cooperative non-atomic accumulate into local tile_adj.  Barriers before
+  >    and after so prior tile_adj writes are visible and subsequent ones see
+  >    the result.
 
 
 ---
@@ -474,7 +610,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,  >    and (111 Phase 1a) load-tile-coords / store-tile-coords.  >    Endeavor 113: also registers request-load-tile-coords and await-request.
+  > Registers all control flow expression analyzers, including loop-vector-stride,
+  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,
+  >    and (111 Phase 1a) load-tile-coords / store-tile-coords.
+  >    Endeavor 113: also registers request-load-tile-coords and await-request.
 
 
 ---
@@ -485,19 +624,22 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*IN-DISPATCH-CONTEXT*`
 
-  > T when the analyzer is inside a def-kernel/def-grid-function body.  >    Used to restrict GPU built-in calls to kernel entry points only.
+  > T when the analyzer is inside a def-kernel/def-grid-function body.
+  >    Used to restrict GPU built-in calls to kernel entry points only.
 
 
 ---
 ### DEFVAR `*IN-GRID-LEVEL-CONTEXT*`
 
-  > T when the analyzer is currently inside a (declare (grid-level)) let/progn scope.  >    Grid-level contexts cannot be nested inside each other.
+  > T when the analyzer is currently inside a (declare (grid-level)) let/progn scope.
+  >    Grid-level contexts cannot be nested inside each other.
 
 
 ---
 ### DEFVAR `*IN-WORKGROUP-LEVEL-CONTEXT*`
 
-  > T when the analyzer is currently inside a (declare (workgroup-level)) let/progn scope.  >    Workgroup-level contexts cannot be nested inside each other.
+  > T when the analyzer is currently inside a (declare (workgroup-level)) let/progn scope.
+  >    Workgroup-level contexts cannot be nested inside each other.
 
 
 ---
@@ -518,34 +660,46 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%DVEC-INFER-COMP-TYPE`
 - **Args**: `(ELEM-NODE LOCATION)`
 
-  > Returns the component type symbol for a device vector element node.  >    Plain int literals -> 'int, plain float literals -> 'float,  >    typed literals -> their explicit type.  >    Signals crisp-compiler-error for device-vector or unknown types.
+  > Returns the component type symbol for a device vector element node.
+  >    Plain int literals -> 'int, plain float literals -> 'float,
+  >    typed literals -> their explicit type.
+  >    Signals crisp-compiler-error for device-vector or unknown types.
 
 
 ---
 ### DEFUN `%DVEC-ELEMENT-COMPATIBLE-P`
 - **Args**: `(ELEM-TYPE COMP-TYPE)`
 
-  > Returns T if ELEM-TYPE (of a subsequent element) is compatible with COMP-TYPE  >    under the first-term coercion rule:  >    - Exact match always passes.  >    - Plain 'int is coercible to any integral comp-type.  >    - Plain 'float is coercible to any float comp-type.
+  > Returns T if ELEM-TYPE (of a subsequent element) is compatible with COMP-TYPE
+  >    under the first-term coercion rule:
+  >    - Exact match always passes.
+  >    - Plain 'int is coercible to any integral comp-type.
+  >    - Plain 'float is coercible to any float comp-type.
 
 
 ---
 ### DEFUN `ANALYZE-CRISP-DVEC-LITERAL`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (crisp-vec-literal e1 e2 ...) -- produced by the ##(...) reader macro.  >    Infers the component type from the first element, validates width (2-4) and  >    element type compatibility, then returns a semantic-device-vec-literal node.
+  > Analyzes (crisp-vec-literal e1 e2 ...) -- produced by the ##(...) reader macro.
+  >    Infers the component type from the first element, validates width (2-4) and
+  >    element type compatibility, then returns a semantic-device-vec-literal node.
 
 
 ---
 ### DEFUN `REGISTER-WARP-BUILTINS`
 
-  > Registers the warp-id / warp-lane / warp-count GPU builtins in  >    *expression-analyzers* for both :crisp-language and :crisp.compiler.
+  > Registers the warp-id / warp-lane / warp-count GPU builtins in
+  >    *expression-analyzers* for both :crisp-language and :crisp.compiler.
 
 
 ---
 ### DEFUN `%GPU-BUILTIN-INFO`
 - **Args**: `(BUILTIN-KW)`
 
-  > Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.  >    BASE-RETURN-TYPE: return type when called with no args (nil = void).  >    ACCEPTS-DIM-P: T if the builtin accepts a scalar dimension arg 0/1/2.
+  > Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.
+  >    BASE-RETURN-TYPE: return type when called with no args (nil = void).
+  >    ACCEPTS-DIM-P: T if the builtin accepts a scalar dimension arg 0/1/2.
 
 
 ---
@@ -558,20 +712,24 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*VOLATILE-VAR-READS*`
 
-  > Set of semantic-var-read nodes whose load should be emitted as volatile.  >    Weak-keyed so entries vanish when the kernel's AST is GC'd.
+  > Set of semantic-var-read nodes whose load should be emitted as volatile.
+  >    Weak-keyed so entries vanish when the kernel's AST is GC'd.
 
 
 ---
 ### DEFUN `ANALYZE-%VOLATILE-READ-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (%volatile-read SYM): produces the same semantic node as a plain  >    var-read for SYM, but tags the node in *volatile-var-reads* so codegen  >    emits the load as volatile.  IGC SROA-aliasing workaround.
+  > Analyzes (%volatile-read SYM): produces the same semantic node as a plain
+  >    var-read for SYM, but tags the node in *volatile-var-reads* so codegen
+  >    emits the load as volatile.  IGC SROA-aliasing workaround.
 
 
 ---
 ### DEFUN `INITIALIZE-EXPRESSION-ANALYZERS`
 
-  > Registers all expression analyzers; extended for 087-gpu-builtins.  >    Endeavor 103 phase B: adds %volatile-read for the IGC workaround.
+  > Registers all expression analyzers; extended for 087-gpu-builtins.
+  >    Endeavor 103 phase B: adds %volatile-read for the IGC workaround.
 
 
 ---
@@ -583,14 +741,20 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*SCRATCH-CELL-COUNTER*`
 
-  > Monotonic counter for disambiguating scratch cells.  >          Used TWICE per module:  >          1. During Analysis Scan (Pass 1) to generate Implicit Arguments.  >          2. During Codegen (Pass 2) to generate LLVM IR.  >          MUST BE RESET TO 0 BETWEEN PASSES.
+  > Monotonic counter for disambiguating scratch cells.
+  >          Used TWICE per module:
+  >          1. During Analysis Scan (Pass 1) to generate Implicit Arguments.
+  >          2. During Codegen (Pass 2) to generate LLVM IR.
+  >          MUST BE RESET TO 0 BETWEEN PASSES.
 
 
 ---
 ### DEFUN `COMPILE-MODULE`
 - **Args**: `(FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)`
 
-  > Orchestrates the multi-pass compilation of a list of top-level forms.  >    When --differentiate is enabled, pre-injects shadow def-struct forms for  >    AD support before any of the passes see the forms list.
+  > Orchestrates the multi-pass compilation of a list of top-level forms.
+  >    When --differentiate is enabled, pre-injects shadow def-struct forms for
+  >    AD support before any of the passes see the forms list.
 
 
 ---
@@ -602,13 +766,19 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFUN `MULTI-PASS-MODE-P`
 
-  > Returns T if in multi-pass compilation mode, NIL if in single-pass mode.  >   >    Multi-pass mode builds a call graph, propagates implicit arguments, and  >    allows forward references. Single-pass requires dependency-ordered code.
+  > Returns T if in multi-pass compilation mode, NIL if in single-pass mode.
+  > 
+  >    Multi-pass mode builds a call graph, propagates implicit arguments, and
+  >    allows forward references. Single-pass requires dependency-ordered code.
 
 
 ---
 ### DEFUN `SINGLE-PASS-MODE-P`
 
-  > Returns T if in single-pass compilation mode, NIL if in multi-pass mode.  >   >    Single-pass mode compiles each form immediately as read, requiring functions  >    to be defined before use (no forward references). Used for fast JIT compilation.
+  > Returns T if in single-pass compilation mode, NIL if in multi-pass mode.
+  > 
+  >    Single-pass mode compiles each form immediately as read, requiring functions
+  >    to be defined before use (no forward references). Used for fast JIT compilation.
 
 
 ---
@@ -641,14 +811,19 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `SHALLOW-ANALYZE-BODY`
 - **Args**: `(FORMS)`
 
-  > Performs a shallow, recursive walk of a function's body.  >   Returns two values:  >   1. A boolean indicating if a side-channel originator was found.  >   2. A list of all unique symbols found in the 'car' of lists (potential function calls).
+  > Performs a shallow, recursive walk of a function's body.
+  >   Returns two values:
+  >   1. A boolean indicating if a side-channel originator was found.
+  >   2. A list of all unique symbols found in the 'car' of lists (potential function calls).
 
 
 ---
 ### DEFUN `VISIT-TOPLEVEL-FORM`
 - **Args**: `(FORM LOCATION VISITOR-FN)`
 
-  > Recursively visits a top-level form, handling macros and progn.  >    Visitor-fn is called as (visitor-fn form location) for def-function forms.  >    Other forms are evaluated if they are not special forms handled by the walker.
+  > Recursively visits a top-level form, handling macros and progn.
+  >    Visitor-fn is called as (visitor-fn form location) for def-function forms.
+  >    Other forms are evaluated if they are not special forms handled by the walker.
 
 
 ---
@@ -664,7 +839,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
               LOCATION-MAP)`
 
-  > Compiles a single def-function form. Handles optional parameters by generating  > overloaded variants. When *differentiate-p* is T, also generates and compiles  > the _GRAD backward companion after the forward function.
+  > Compiles a single def-function form. Handles optional parameters by generating
+  > overloaded variants. When *differentiate-p* is T, also generates and compiles
+  > the _GRAD backward companion after the forward function.
 
 
 ---
@@ -678,7 +855,11 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANALYZE-SIGNATURES-PASS`
 - **Args**: `(FORMS)`
 
-  > Pass 1: Pre-register differentiable functions, then iterate through forms  > to find and register all function signatures and build the call graph.  > Pre-registration ensures *differentiable-functions* is populated before  > def-kernel macros expand and call generate-backward-walk (feature 052).  > Also scans *template-registry* for HOF templates after walk-code-forms.
+  > Pass 1: Pre-register differentiable functions, then iterate through forms
+  > to find and register all function signatures and build the call graph.
+  > Pre-registration ensures *differentiable-functions* is populated before
+  > def-kernel macros expand and call generate-backward-walk (feature 052).
+  > Also scans *template-registry* for HOF templates after walk-code-forms.
 
 
 ---
@@ -693,7 +874,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
               LOCATION-MAP)`
 
-  > Analyzes and compiles a single top-level form (used in Pass 2 and single-pass mode).  > When *differentiate-p* is T, also calls %pre-register-hof-templates after each form  > so that with-template-type HOF definitions are available before kernel backward walks  > in single-pass mode.
+  > Analyzes and compiles a single top-level form (used in Pass 2 and single-pass mode).
+  > When *differentiate-p* is T, also calls %pre-register-hof-templates after each form
+  > so that with-template-type HOF definitions are available before kernel backward walks
+  > in single-pass mode.
 
 
 ---
@@ -720,7 +904,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `VALIDATE-RETURN-TYPES`
 - **Args**: `(NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)`
 
-  > Analyzes the function body and validates return types.  >    Fixes: A 1-element list whose sole element is a symbol (e.g. (TOKEN-T)) is always  >    treated as a return-types list, never as a parameterized type. This prevents  >    double-wrapping when the type name is a type alias.
+  > Analyzes the function body and validates return types.
+  >    Fixes: A 1-element list whose sole element is a symbol (e.g. (TOKEN-T)) is always
+  >    treated as a return-types list, never as a parameterized type. This prevents
+  >    double-wrapping when the type name is a type alias.
 
 
 ---
@@ -734,54 +921,76 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*BOUNDARY-STRUCT-PARAMS*`
 
-  > Dynamic variable: list of uppercase param name strings that are def-struct  >    params at the current kernel boundary. Non-nil only when compiling an  >    entry-point kernel body. Nil in regular functions.
+  > Dynamic variable: list of uppercase param name strings that are def-struct
+  >    params at the current kernel boundary. Non-nil only when compiling an
+  >    entry-point kernel body. Nil in regular functions.
 
 
 ---
 ### DEFVAR `*STRUCT-MUTATING-FUNCTIONS*`
 
-  > Maps uppercase function name (string) -> T for functions that directly or  >    indirectly mutate a struct-typed :in parameter.
+  > Maps uppercase function name (string) -> T for functions that directly or
+  >    indirectly mutate a struct-typed :in parameter.
 
 
 ---
 ### DEFUN `%BOUNDARY-STRUCT-TYPE-P`
 - **Args**: `(TYPE)`
 
-  > Returns T if TYPE is a symbol naming a registered def-struct (category :struct)  >    in *crisp-structs*. Returns NIL for def-record types (category :record).  >    Uses string-equal for package-agnostic comparison.
+  > Returns T if TYPE is a symbol naming a registered def-struct (category :struct)
+  >    in *crisp-structs*. Returns NIL for def-record types (category :record).
+  >    Uses string-equal for package-agnostic comparison.
 
 
 ---
 ### DEFUN `%CHECK-STRUCT-BOUNDARY-MUTATION`
 - **Args**: `(STRUCT-NODE ENV CONTEXT LOCATION)`
 
-  > Called when a struct member update is about to be emitted.  >    In kernel context (*boundary-struct-params* bound): error if the struct  >    being mutated is a kernel boundary parameter.  >    In function context: mark the current function as struct-mutating if it is  >    mutating an :in parameter.
+  > Called when a struct member update is about to be emitted.
+  >    In kernel context (*boundary-struct-params* bound): error if the struct
+  >    being mutated is a kernel boundary parameter.
+  >    In function context: mark the current function as struct-mutating if it is
+  >    mutating an :in parameter.
 
 
 ---
 ### DEFUN `%CHECK-STRUCT-MUTATING-CALL`
 - **Args**: `(OP EXPLICIT-ARG-NODES ENV CONTEXT LOCATION)`
 
-  > Called during function call analysis when OP is in *struct-mutating-functions*.  >    Kernel context: error if any arg is a boundary struct param.  >    Function context: propagate struct-mutating mark if any :in struct param is passed.
+  > Called during function call analysis when OP is in *struct-mutating-functions*.
+  >    Kernel context: error if any arg is a boundary struct param.
+  >    Function context: propagate struct-mutating mark if any :in struct param is passed.
 
 
 ---
 ### DEFVAR `*BOUNDARY-ARRAY-PARAMS*`
 
-  > Dynamic variable: list of uppercase param name strings that are (array T N)  >    params at the current kernel boundary. Non-nil only when compiling an  >    entry-point kernel. Nil in regular functions.
+  > Dynamic variable: list of uppercase param name strings that are (array T N)
+  >    params at the current kernel boundary. Non-nil only when compiling an
+  >    entry-point kernel. Nil in regular functions.
 
 
 ---
 ### DEFUN `%CHECK-AREF-BOUNDARY-MUTATION`
 - **Args**: `(AREF-NODE LOCATION)`
 
-  > Called when a semantic-aref is the target of a set!.  >    Error 01: If the array-node is a direct var-read in *boundary-array-params*, error.  >    Error 02: If the array-node is a call (accessor) whose first arg is a boundary struct, error.
+  > Called when a semantic-aref is the target of a set!.
+  >    Error 01: If the array-node is a direct var-read in *boundary-array-params*, error.
+  >    Error 02: If the array-node is a call (accessor) whose first arg is a boundary struct, error.
 
 
 ---
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params*, *boundary-array-params*, and  >    *in-dispatch-context* to enforce kernel-boundary rules.  >    Extended to capture global-size/local-size/num-groups dispatch declarations.  >    Extended (091) to handle (grid-function) declaration: sets dispatch context,  >    validates void return type.  >    Note: ANF pre-processing removed from forward pass — backward pass applies  >    its own anf-transform in %generate-backward-function-ast.
+  > Wrapper around internal-compile-function. Detects kernel entry-points and
+  >    binds *boundary-struct-params*, *boundary-array-params*, and
+  >    *in-dispatch-context* to enforce kernel-boundary rules.
+  >    Extended to capture global-size/local-size/num-groups dispatch declarations.
+  >    Extended (091) to handle (grid-function) declaration: sets dispatch context,
+  >    validates void return type.
+  >    Note: ANF pre-processing removed from forward pass — backward pass applies
+  >    its own anf-transform in %generate-backward-function-ast.
 
 
 ---
@@ -802,28 +1011,34 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANALYZE-FUNCTION-CALL`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a function call expression.  >    Checks for struct immutability violations via %check-struct-mutating-call.  >    Extended (091): grid functions can only be called from a dispatch context.
+  > Analyzes a function call expression.
+  >    Checks for struct immutability violations via %check-struct-mutating-call.
+  >    Extended (091): grid functions can only be called from a dispatch context.
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the Crisp type of a semantic node.  >    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).
+  > Returns the Crisp type of a semantic node.
+  >    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
 
-  > Returns the source location of a semantic node.  >    Extended for 092-dotimes and 114 Phase B.
+  > Returns the source location of a semantic node.
+  >    Extended for 092-dotimes and 114 Phase B.
 
 
 ---
 ### DEFUN `GET-SINGLE-VALUE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the type of a semantic node, assuming a single-value context.  >   If the node's type is a list (e.g., from a multi-value function call),  >   this returns the first type in the list. Otherwise, it returns the type as-is.
+  > Returns the type of a semantic node, assuming a single-value context.
+  >   If the node's type is a list (e.g., from a multi-value function call),
+  >   this returns the first type in the list. Otherwise, it returns the type as-is.
 
 
 ---
@@ -844,14 +1059,23 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `COMPILE-CRISP-FORM-TO-IR-STRING`
 - **Args**: `(CRISP-FORM &KEY (DEBUG-P NIL))`
 
-  > Takes a single Crisp s-expression (like a def-function form),  >   compiles it, and returns its LLVM IR as a string.  >   This is a developer utility for REPL use and testing.
+  > Takes a single Crisp s-expression (like a def-function form),
+  >   compiles it, and returns its LLVM IR as a string.
+  >   This is a developer utility for REPL use and testing.
 
 
 ---
 ### DEFUN `%TRY-PARSE-TYPED-LITERAL`
 - **Args**: `(EXPR LOCATION)`
 
-  > If EXPR is a symbol whose name matches <integer><suffix> or <number><suffix>,  >    returns a semantic-literal node with the appropriate Crisp type and value.  >    Suffixes (symbols are already upcased by the SBCL reader):  >      BF -> bfloat16   UC -> uchar   UL -> ulong   US -> ushort  >      U  -> uint       S  -> short   L  -> long     C  -> char  >      H  -> half       F  -> float   D  -> double  >    Multi-character suffixes are tested first to avoid BF matching F,  >    UL matching L, etc.  Returns NIL if EXPR does not match.
+  > If EXPR is a symbol whose name matches <integer><suffix> or <number><suffix>,
+  >    returns a semantic-literal node with the appropriate Crisp type and value.
+  >    Suffixes (symbols are already upcased by the SBCL reader):
+  >      BF -> bfloat16   UC -> uchar   UL -> ulong   US -> ushort
+  >      U  -> uint       S  -> short   L  -> long     C  -> char
+  >      H  -> half       F  -> float   D  -> double
+  >    Multi-character suffixes are tested first to avoid BF matching F,
+  >    UL matching L, etc.  Returns NIL if EXPR does not match.
 
 
 ---
@@ -865,7 +1089,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%DETECT-HOF-PARAM-VIA-FUNCALL`
 - **Args**: `(PARAMS FN-BODY)`
 
-  > Helper: Scans parameters for one that is funcall'd in the body.  >    Returns (values fn-param-idx fn-param-sym float-param-syms).
+  > Helper: Scans parameters for one that is funcall'd in the body.
+  >    Returns (values fn-param-idx fn-param-sym float-param-syms).
 
 
 ---
@@ -887,13 +1112,27 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%PRE-REGISTER-DIFFERENTIABLE-FNS`
 - **Args**: `(FORMS &OPTIONAL RECORD-INFO)`
 
-  > When *differentiate-p* is T, walk FORMS for def-function forms and  > pre-register them in *differentiable-functions* (and *differentiable-hof-store*  > for HOF functions). Handles top-level def-function, progn, and with-template-type.  > Guards parse-function-declarations against unknown-type errors from brand types  > that are not yet registered at pre-registration time.  >   > 101 widening: records / structs / derived-from-record-or-struct contribute  > their runtime-field count to the differentiable-param count, and a function  > with any tensor or cell parameter is differentiable (handle-grad pathway).  >   > RECORD-INFO is an alist of (NAME-STR . FIELD-COUNT) built by  > %scan-forms-for-record-info at top-level call.  Recursive calls reuse it.
+  > When *differentiate-p* is T, walk FORMS for def-function forms and
+  > pre-register them in *differentiable-functions* (and *differentiable-hof-store*
+  > for HOF functions). Handles top-level def-function, progn, and with-template-type.
+  > Guards parse-function-declarations against unknown-type errors from brand types
+  > that are not yet registered at pre-registration time.
+  > 
+  > 101 widening: records / structs / derived-from-record-or-struct contribute
+  > their runtime-field count to the differentiable-param count, and a function
+  > with any tensor or cell parameter is differentiable (handle-grad pathway).
+  > 
+  > RECORD-INFO is an alist of (NAME-STR . FIELD-COUNT) built by
+  > %scan-forms-for-record-info at top-level call.  Recursive calls reuse it.
 
 
 ---
 ### DEFUN `%PRE-REGISTER-HOF-TEMPLATES`
 
-  > When *differentiate-p* is T, scan *template-registry* for def-function templates  > that use (funcall <param> ...) in their body, indicating a HOF parameter. Pre-register  > each such template in *differentiable-hof-store* and *differentiable-functions*.  > Must be called after walk-code-forms so *template-registry* is populated.
+  > When *differentiate-p* is T, scan *template-registry* for def-function templates
+  > that use (funcall <param> ...) in their body, indicating a HOF parameter. Pre-register
+  > each such template in *differentiable-hof-store* and *differentiable-functions*.
+  > Must be called after walk-code-forms so *template-registry* is populated.
 
 
 ---
@@ -907,28 +1146,43 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%DVEC-TYPE-LOOKUP`
 - **Args**: `(TYPE-SYM)`
 
-  > Returns the crisp-type entry for TYPE-SYM if it is a registered device-vector  >    type, trying both :crisp-language and :crisp.compiler packages.  >    Returns NIL when TYPE-SYM is not a device-vector type.
+  > Returns the crisp-type entry for TYPE-SYM if it is a registered device-vector
+  >    type, trying both :crisp-language and :crisp.compiler packages.
+  >    Returns NIL when TYPE-SYM is not a device-vector type.
 
 
 ---
 ### DEFUN `%DVEC-CHECK-CELL-WRITE-ACCESS`
 - **Args**: `(AREF-NODE LOCATION)`
 
-  > Signals crisp-compiler-error if the cell accessed through AREF-NODE is  >    read-only.  The check examines the mangled struct name for 'READ-ONLY'.
+  > Signals crisp-compiler-error if the cell accessed through AREF-NODE is
+  >    read-only.  The check examines the mangled struct name for 'READ-ONLY'.
 
 
 ---
 ### DEFUN `ANALYZE-DVEC-COMPONENT-REF`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (x~ v), (y~ v), (z~ v), (w~ v) -- device-vector component accessors.  >    The operator symbol determines the 0-based LLVM element index (0..3).  >    Returns a semantic-extract-value node whose type is the scalar component type.  >   >    Brand-instance gensyms (e.g. VALUE-T-204 derived from float2) are resolved  >    to their concrete device-vector base type via *type-derivation-graph* before  >    width and component-scalar extraction.  >   >    In :write mode (inside a set! target), also validates that a cell-deref  >    aggregate is not read-only.
+  > Analyzes (x~ v), (y~ v), (z~ v), (w~ v) -- device-vector component accessors.
+  >    The operator symbol determines the 0-based LLVM element index (0..3).
+  >    Returns a semantic-extract-value node whose type is the scalar component type.
+  > 
+  >    Brand-instance gensyms (e.g. VALUE-T-204 derived from float2) are resolved
+  >    to their concrete device-vector base type via *type-derivation-graph* before
+  >    width and component-scalar extraction.
+  > 
+  >    In :write mode (inside a set! target), also validates that a cell-deref
+  >    aggregate is not read-only.
 
 
 ---
 ### DEFUN `%MV-RESOLVE-SRC-TYPE`
 - **Args**: `(SRC-TYPE)`
 
-  > Resolve a source storage-handle type to a canonical list.  >    Handles type aliases, mangled symbols (e.g. TENSOR_INT_1_...),  >    (vector ...) / (matrix ...) sugar, and already-canonical lists.  >    Returns (CELL elem addr access) or (TENSOR elem N addr access align), or NIL.
+  > Resolve a source storage-handle type to a canonical list.
+  >    Handles type aliases, mangled symbols (e.g. TENSOR_INT_1_...),
+  >    (vector ...) / (matrix ...) sugar, and already-canonical lists.
+  >    Returns (CELL elem addr access) or (TENSOR elem N addr access align), or NIL.
 
 
 ---
@@ -985,7 +1239,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANALYZE-GENERIC-AS-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes the generic (as type value) form.  >    Extended to handle brand application forms like (index-t fc) where  >    index-t is a brand, resolving to the concrete target type before validation.
+  > Analyzes the generic (as type value) form.
+  >    Extended to handle brand application forms like (index-t fc) where
+  >    index-t is a brand, resolving to the concrete target type before validation.
 
 
 ---
@@ -1006,7 +1262,14 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%ANALYZE-ATOMIC-RMW-EXPRESSION`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)`
 
-  > Shared helper for all atomic RMW analyzers.  > OP is a keyword (:add :sub :min :max :xchg).  > Target (second element of EXPR) must be an aref expression like (~ vec idx).  > When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta.  >   > Target analysis runs with *analysis-access-mode* = :write so &out params can  > serve as atomic-RMW targets — the read is part of the write.  Matches the  > set!  analyzer's behavior in analysis/structs.lisp.
+  > Shared helper for all atomic RMW analyzers.
+  > OP is a keyword (:add :sub :min :max :xchg).
+  > Target (second element of EXPR) must be an aref expression like (~ vec idx).
+  > When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta.
+  > 
+  > Target analysis runs with *analysis-access-mode* = :write so &out params can
+  > serve as atomic-RMW targets — the read is part of the write.  Matches the
+  > set!  analyzer's behavior in analysis/structs.lisp.
 
 
 ---
@@ -1069,20 +1332,25 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANALYZE-MOD-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (mod x y).  Expands to (- x (* (/ x y) y)) with x and y bound  >    to gensyms first, then delegates to analyze-expression.  Works for any  >    numeric type via the standard +/-/*/ analyzers.
+  > Analyzes (mod x y).  Expands to (- x (* (/ x y) y)) with x and y bound
+  >    to gensyms first, then delegates to analyze-expression.  Works for any
+  >    numeric type via the standard +/-/*/ analyzers.
 
 
 ---
 ### DEFUN `ANALYZE-REM-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (rem x y).  Currently identical to mod — both match C % / LLVM  >    srem.  Split semantics later if needed.
+  > Analyzes (rem x y).  Currently identical to mod — both match C % / LLVM
+  >    srem.  Split semantics later if needed.
 
 
 ---
 ### DEFUN `REGISTER-OPS-ANALYZERS`
 
-  > Registers all expression analyzer functions.  > Redefined for 082-atomics to add atomic RMW op analyzers.  > Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler.
+  > Registers all expression analyzer functions.
+  > Redefined for 082-atomics to add atomic RMW op analyzers.
+  > Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler.
 
 
 ---
@@ -1091,7 +1359,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
 - **Args**: `(TYPE)`
 
-  > Determines the element type of an array, pointer, cell, or tensor type.  >    Returns NIL if unknown.  >    Handles single-element list wrapping, e.g. ((array float 4)) → (array float 4).
+  > Determines the element type of an array, pointer, cell, or tensor type.
+  >    Returns NIL if unknown.
+  >    Handles single-element list wrapping, e.g. ((array float 4)) → (array float 4).
 
 
 ---
@@ -1105,28 +1375,35 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `NUMERIC-TYPE-CATEGORY`
 - **Args**: `(TYPE-NAME)`
 
-  > Returns the category (:signed-int, :unsigned-int, :float) if TYPE-NAME is a numeric  >    scalar in *crisp-types*, or NIL otherwise. Resolves aliases and derived types first.
+  > Returns the category (:signed-int, :unsigned-int, :float) if TYPE-NAME is a numeric
+  >    scalar in *crisp-types*, or NIL otherwise. Resolves aliases and derived types first.
 
 
 ---
 ### DEFUN `ANALYZE-STRUCT-CONSTRUCTION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a (%construct-struct type-name arg1 arg2 ...) form.  >    Supports implicit promotion of base-type values to branded member types  >    in struct constructors (the birthplace of branded values).  >    Uses get-single-value-type to normalize function-call return type lists  >    (e.g. ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)) before type comparison.
+  > Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
+  >    Supports implicit promotion of base-type values to branded member types
+  >    in struct constructors (the birthplace of branded values).
+  >    Uses get-single-value-type to normalize function-call return type lists
+  >    (e.g. ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)) before type comparison.
 
 
 ---
 ### DEFUN `ANALYZE-EXTRACT-STRUCT-MEMBER-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `%extract-struct-member` expression.  >    Form: (%extract-struct-member object-node index-literal)
+  > Analyzes a `%extract-struct-member` expression.
+  >    Form: (%extract-struct-member object-node index-literal)
 
 
 ---
 ### DEFUN `ANALYZE-INSERT-STRUCT-MEMBER-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `%insert-struct-member` expression.  >    Form: (%insert-struct-member object-node index-literal value-node)
+  > Analyzes a `%insert-struct-member` expression.
+  >    Form: (%insert-struct-member object-node index-literal value-node)
 
 
 ---
@@ -1140,42 +1417,59 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%GET-TENSOR-ARITY`
 - **Args**: `(TYPE)`
 
-  > Returns the compile-time arity N of TYPE as an integer, or NIL.  >    Handles list form (tensor elem N ...) and mangled-symbol form.
+  > Returns the compile-time arity N of TYPE as an integer, or NIL.
+  >    Handles list form (tensor elem N ...) and mangled-symbol form.
 
 
 ---
 ### DEFUN `%BUILD-TENSOR-FLAT-INDEX-FORM`
 - **Args**: `(TARGET-SYM INDEX-FORMS)`
 
-  > Builds a Crisp expression computing the flat element index for a tensor access.  >    flat = Σ_k( (~ (offset~ target) k) + index_k * (~ (strides~ target) k) )  >    for k in 0..(N-1).  Returns a Crisp form ready for analyze-expression.  >    All arithmetic is ulong: each index is wrapped in (to-ulong ...) to ensure  >    consistent types when the caller passes bare integer literals (int by default).
+  > Builds a Crisp expression computing the flat element index for a tensor access.
+  >    flat = Σ_k( (~ (offset~ target) k) + index_k * (~ (strides~ target) k) )
+  >    for k in 0..(N-1).  Returns a Crisp form ready for analyze-expression.
+  >    All arithmetic is ulong: each index is wrapped in (to-ulong ...) to ensure
+  >    consistent types when the caller passes bare integer literals (int by default).
 
 
 ---
 ### DEFUN `%GET-TENSOR-ALIGN`
 - **Args**: `(TYPE)`
 
-  > Extracts the :align keyword from a tensor type specifier.  >    New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth type).  >    Handles both list form and mangled symbol.
+  > Extracts the :align keyword from a tensor type specifier.
+  >    New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth type).
+  >    Handles both list form and mangled symbol.
 
 
 ---
 ### DEFUN `%BUILD-TENSOR-COMPACT-FLAT-INDEX-FORM`
 - **Args**: `(TARGET-SYM INDEX-FORMS)`
 
-  > Builds the :compact flat-index form — Horner on extents only, NO offset reads.  >    :compact guarantees all offsets are zero at the kernel boundary, so we skip them.  >    N=1: flat = i_0  >    N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1})
+  > Builds the :compact flat-index form — Horner on extents only, NO offset reads.
+  >    :compact guarantees all offsets are zero at the kernel boundary, so we skip them.
+  >    N=1: flat = i_0
+  >    N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1})
 
 
 ---
 ### DEFUN `%BUILD-TENSOR-COMPACT-OFFSET-FLAT-INDEX-FORM`
 - **Args**: `(TARGET-SYM INDEX-FORMS)`
 
-  > Builds the :compact-offset flat-index form — Horner on extents plus offset sum.  >    Strides are ignored (compact layout), but per-dimension offsets are read.  >    N=1: flat = offset[0] + i_0  >    N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1}) + sum(offset[k])
+  > Builds the :compact-offset flat-index form — Horner on extents plus offset sum.
+  >    Strides are ignored (compact layout), but per-dimension offsets are read.
+  >    N=1: flat = offset[0] + i_0
+  >    N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1}) + sum(offset[k])
 
 
 ---
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Tensor path dispatches on resolved :align:  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)
+  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.
+  >    Tensor path dispatches on resolved :align:
+  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)
+  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)
+  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)
 
 
 ---
@@ -1203,28 +1497,36 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANALYZE-SET!-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a (set! target value) expression.  >    Enforces struct and array immutability at kernel boundary.
+  > Analyzes a (set! target value) expression.
+  >    Enforces struct and array immutability at kernel boundary.
 
 
 ---
 ### DEFUN `ANALYZE-INCOMPLETE-TYPE-ACCESSOR`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
 
-  > Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).  >    Returns a semantic-node (literal) if resolved, or NIL if not applicable.  >   >    Fix: float values now return value-type 'float instead of 'quote.
+  > Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).
+  >    Returns a semantic-node (literal) if resolved, or NIL if not applicable.
+  > 
+  >    Fix: float values now return value-type 'float instead of 'quote.
 
 
 ---
 ### DEFUN `ANALYZE-SCRATCH-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a (make-scratch-cell ...) expression.  >  This marks the current function as an originator in BOTH analysis modes.
+  > Analyzes a (make-scratch-cell ...) expression.
+  >  This marks the current function as an originator in BOTH analysis modes.
 
 
 ---
 ### DEFUN `ANALYZE-%MAKE-CT-ARRAY`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (%make-ct-array elem-type val0 val1 ... valN-1).  >    elem-type is taken as a literal type symbol (not evaluated).  >    Returns a semantic-ct-array node of type (array elem-type N).  >    Used internally by marshall-tensor to assemble offset/strides/extents fields.
+  > Analyzes (%make-ct-array elem-type val0 val1 ... valN-1).
+  >    elem-type is taken as a literal type symbol (not evaluated).
+  >    Returns a semantic-ct-array node of type (array elem-type N).
+  >    Used internally by marshall-tensor to assemble offset/strides/extents fields.
 
 
 ---
@@ -1238,21 +1540,26 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%SCRATCH-TENSOR-CANONICAL-SPEC`
 - **Args**: `(OP ARGS)`
 
-  > Resolves type arguments of a make-scratch-{vector,matrix,tensor} form  >    to a canonical (tensor elem N addr align ct) spec.
+  > Resolves type arguments of a make-scratch-{vector,matrix,tensor} form
+  >    to a canonical (tensor elem N addr align ct) spec.
 
 
 ---
 ### DEFUN `%REGISTER-SCRATCH-TENSOR-IMPLICIT`
 - **Args**: `(OP ARGS)`
 
-  > Shared logic for scan-operator methods on make-scratch-{vector,matrix,tensor}.  >    Marks the current function as an originator and records the canonical-list type  >    in *implicit-arg-map* and the size-expr in *implicit-scratch-size-expr-map*.
+  > Shared logic for scan-operator methods on make-scratch-{vector,matrix,tensor}.
+  >    Marks the current function as an originator and records the canonical-list type
+  >    in *implicit-arg-map* and the size-expr in *implicit-scratch-size-expr-map*.
 
 
 ---
 ### DEFUN `ANALYZE-SCRATCH-TENSOR-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a (make-scratch-{vector,matrix,tensor} ...) expression.  >    Stores canonical-list type in *implicit-arg-map* and size-expr in  >    *implicit-scratch-size-expr-map*.
+  > Analyzes a (make-scratch-{vector,matrix,tensor} ...) expression.
+  >    Stores canonical-list type in *implicit-arg-map* and size-expr in
+  >    *implicit-scratch-size-expr-map*.
 
 
 ---
@@ -1287,7 +1594,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%MV-SOURCE-ALIGN`
 - **Args**: `(CANON)`
 
-  > Return the :align keyword from a canonical storage handle type (tensors only).  >    New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth canon).
+  > Return the :align keyword from a canonical storage handle type (tensors only).
+  >    New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth canon).
 
 
 ---
@@ -1301,28 +1609,32 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%MV-PARSE-KWARGS`
 - **Args**: `(KWARG-LIST)`
 
-  > Parse a flat keyword-arg list like (:offset 2 :length 5 :major :row).  >    Returns a plist.
+  > Parse a flat keyword-arg list like (:offset 2 :length 5 :major :row).
+  >    Returns a plist.
 
 
 ---
 ### DEFUN `%MV-EVAL-INTEGER`
 - **Args**: `(FORM)`
 
-  > Evaluate a compile-time integer form (bare integer or quoted integer).  >    Returns an integer or NIL.
+  > Evaluate a compile-time integer form (bare integer or quoted integer).
+  >    Returns an integer or NIL.
 
 
 ---
 ### DEFUN `%MV-EVAL-LIST`
 - **Args**: `(FORM)`
 
-  > Evaluate a compile-time list form like '(2 3 4) or (2 3 4) for extents/strides.  >    Returns a list of integers or NIL.
+  > Evaluate a compile-time list form like '(2 3 4) or (2 3 4) for extents/strides.
+  >    Returns a list of integers or NIL.
 
 
 ---
 ### DEFUN `%MV-CHECK-RESTRICTIONS`
 - **Args**: `(OP SRC-CANON NEW-ELEM LOCATION)`
 
-  > Enforce compile-time restrictions for view constructors.  >    Signals a compiler-error on violation.
+  > Enforce compile-time restrictions for view constructors.
+  >    Signals a compiler-error on violation.
 
 
 ---
@@ -1350,14 +1662,16 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%MV-ROW-MAJOR-STRIDES`
 - **Args**: `(EXTENTS)`
 
-  > Compute row-major strides for given extents list.  >    Innermost stride = 1; stride[k] = product(extents[k+1..N-1]).
+  > Compute row-major strides for given extents list.
+  >    Innermost stride = 1; stride[k] = product(extents[k+1..N-1]).
 
 
 ---
 ### DEFUN `%MV-COL-MAJOR-STRIDES`
 - **Args**: `(EXTENTS)`
 
-  > Compute col-major strides for a 2D matrix with extents [height width].  >    stride_row=1, stride_col=height.
+  > Compute col-major strides for a 2D matrix with extents [height width].
+  >    stride_row=1, stride_col=height.
 
 
 ---
@@ -1370,49 +1684,57 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFUN `REGISTER-STRUCT-ANALYZERS`
 
-  > Registers all struct/storage-handle expression analyzers.  >    Extends the original to add make-cell/vector/matrix/tensor view constructors.
+  > Registers all struct/storage-handle expression analyzers.
+  >    Extends the original to add make-cell/vector/matrix/tensor view constructors.
 
 
 ---
 ### DEFUN `%083-REQUIRE-2D-TENSOR`
 - **Args**: `(RAW-TYPE LOCATION)`
 
-  > Validates that RAW-TYPE is a 2D tensor and returns the canonical 6-tuple list.  >    Unwraps single-element list wrappers and mangled symbols.  >    Signals crisp-compiler-error if the type is not a 2D tensor.
+  > Validates that RAW-TYPE is a 2D tensor and returns the canonical 6-tuple list.
+  >    Unwraps single-element list wrappers and mangled symbols.
+  >    Signals crisp-compiler-error if the type is not a 2D tensor.
 
 
 ---
 ### DEFUN `%GET-TENSOR-CT`
 - **Args**: `(CANON)`
 
-  > Extracts the :contiguous-term keyword (6th element, index 5) from a  >    canonical tensor type 6-tuple, defaulting to :last when absent.
+  > Extracts the :contiguous-term keyword (6th element, index 5) from a
+  >    canonical tensor type 6-tuple, defaulting to :last when absent.
 
 
 ---
 ### DEFUN `ANALYZE-TRANSPOSE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (transpose M) for 2D tensors.  >    Result type: (tensor elem 2 addr :strided src-ct).
+  > Analyzes (transpose M) for 2D tensors.
+  >    Result type: (tensor elem 2 addr :strided src-ct).
 
 
 ---
 ### DEFUN `ANALYZE-COL-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (col index M) for 2D tensors.  >    Result type: (tensor elem 1 addr :strided :last).
+  > Analyzes (col index M) for 2D tensors.
+  >    Result type: (tensor elem 1 addr :strided :last).
 
 
 ---
 ### DEFUN `ANALYZE-ROW-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (row index M) for 2D tensors.  >    Result type: (tensor elem 1 addr :strided :last).
+  > Analyzes (row index M) for 2D tensors.
+  >    Result type: (tensor elem 1 addr :strided :last).
 
 
 ---
 ### DEFUN `ANALYZE-TRANSPOSE-BANG-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (transpose! M). Expands to (set! M (transpose M)).  >    Signals a type error if M's type is :compact (result is :strided, incompatible).
+  > Analyzes (transpose! M). Expands to (set! M (transpose M)).
+  >    Signals a type error if M's type is :compact (result is :strided, incompatible).
 
 
 ---
@@ -1441,7 +1763,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANF-NORMALIZE-PLACE`
 - **Args**: `(PLACE)`
 
-  > Returns (VALUES normalized-place bindings)  >    Normalizes a place for mutation (e.g. the left side of a set!).  >    An atomic place stays unchanged, while accessors have their parent argument hoisted.
+  > Returns (VALUES normalized-place bindings)
+  >    Normalizes a place for mutation (e.g. the left side of a set!).
+  >    An atomic place stays unchanged, while accessors have their parent argument hoisted.
 
 
 ---
@@ -1476,21 +1800,25 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ANF-NORMALIZE`
 - **Args**: `(EXPR IS-NESTED?)`
 
-  > Returns (VALUES normalized-expr bindings-list).  >    Phase 1c: added opaque pass-through for load-tile-coords / store-tile-coords  >    and their internal *-bwd / bare load-tile / store-tile variants.
+  > Returns (VALUES normalized-expr bindings-list).
+  >    Phase 1c: added opaque pass-through for load-tile-coords / store-tile-coords
+  >    and their internal *-bwd / bare load-tile / store-tile variants.
 
 
 ---
 ### DEFUN `%STRIP-CTX-DECLARES`
 - **Args**: `(EXPR)`
 
-  > Recursively strip (declare (grid-level)) and (declare (workgroup-level))  > from let/progn bodies before ANF transform.
+  > Recursively strip (declare (grid-level)) and (declare (workgroup-level))
+  > from let/progn bodies before ANF transform.
 
 
 ---
 ### DEFUN `%ANF-TRANSFORM`
 - **Args**: `(EXPR)`
 
-  > Internal helper for recursive ANF transformation.  > Pre-strips execution-context declares so anf-normalize never sees them.
+  > Internal helper for recursive ANF transformation.
+  > Pre-strips execution-context declares so anf-normalize never sees them.
 
 
 ---
@@ -1511,7 +1839,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `FLATTEN-ANF-BODY`
 - **Args**: `(ANF-BODY)`
 
-  > Flattens an ANF body into a sequential list of bindings and side-effects.  > Returns a list of elements formatted as either (var expr), (var0 var1 expr) for  > multi-value bindings, or just expr (for side-effects).  > Accepts bindings of length >= 2 (fix: was = 2, dropping multi-value bindings).
+  > Flattens an ANF body into a sequential list of bindings and side-effects.
+  > Returns a list of elements formatted as either (var expr), (var0 var1 expr) for
+  > multi-value bindings, or just expr (for side-effects).
+  > Accepts bindings of length >= 2 (fix: was = 2, dropping multi-value bindings).
 
 
 ---
@@ -1521,35 +1852,55 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN
               &OPTIONAL (SYM-PREFIX BW))`
 
-  > Emits the call to BKWD-FN and routes returned deltas / passed-through  >    &out grad-tensors per the AD convention.  >   >    - Scalar arg: one delta from multi-value return → accumulated into  >      (local-adj arg).  >    - Record/struct arg (looked up via *record-param-field-adjs*): N deltas  >      in declaration order → accumulated into each per-field synth adj.  >    - Tensor arg (identified via fn's :tensor-param-indices registry slot):  >      pairs with an &out arg in the call.  The kernel's corresponding  >      `<arg>_GRAD` is passed; the chain rule's atomic-add happens inside  >      the sub-fn body.  No scalar delta to accumulate.  >   >    The call is emitted whenever there's any accumulation OR any tensor  >    arg (the tensor case writes via &out, not via accumulation, but the  >    call itself still needs to happen).
+  > Emits the call to BKWD-FN and routes returned deltas / passed-through
+  >    &out grad-tensors per the AD convention.
+  > 
+  >    - Scalar arg: one delta from multi-value return → accumulated into
+  >      (local-adj arg).
+  >    - Record/struct arg (looked up via *record-param-field-adjs*): N deltas
+  >      in declaration order → accumulated into each per-field synth adj.
+  >    - Tensor arg (identified via fn's :tensor-param-indices registry slot):
+  >      pairs with an &out arg in the call.  The kernel's corresponding
+  >      `<arg>_GRAD` is passed; the chain rule's atomic-add happens inside
+  >      the sub-fn body.  No scalar delta to accumulate.
+  > 
+  >    The call is emitted whenever there's any accumulation OR any tensor
+  >    arg (the tensor case writes via &out, not via accumulation, but the
+  >    call itself still needs to happen).
 
 
 ---
 ### DEFUN `%CRISP-TENSOR-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a tensor/vector/matrix  >    storage handle. Vectors (N=1) and matrices (N=2) are syntactic sugar for tensor,  >    so a single head check covers all three.
+  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a tensor/vector/matrix
+  >    storage handle. Vectors (N=1) and matrices (N=2) are syntactic sugar for tensor,
+  >    so a single head check covers all three.
 
 
 ---
 ### DEFUN `%CRISP-FLOAT-TENSOR-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC resolves to a tensor/vector/matrix whose element type  >    is a float type (float, double, etc.).  Non-float tensors (e.g. vector long)  >    are not differentiable and should not receive gradient parameters.
+  > Returns T if TYPE-SPEC resolves to a tensor/vector/matrix whose element type
+  >    is a float type (float, double, etc.).  Non-float tensors (e.g. vector long)
+  >    are not differentiable and should not receive gradient parameters.
 
 
 ---
 ### DEFUN `%ENSURE-TENSOR-READ-WRITE`
 - **Args**: `(TYPE-SPEC)`
 
-  > For backwards compatibility: returns the canonical 6-tuple unchanged.  >    Access was removed; tensors are always read-write.
+  > For backwards compatibility: returns the canonical 6-tuple unchanged.
+  >    Access was removed; tensors are always read-write.
 
 
 ---
 ### DEFUN `%STRIP-ACCESSOR-TILDES`
 - **Args**: `(ACCESSOR)`
 
-  > Strips trailing tilde, and leading tilde if present, from an accessor  >    name string.  X~ → X, ~X~ → X.
+  > Strips trailing tilde, and leading tilde if present, from an accessor
+  >    name string.  X~ → X, ~X~ → X.
 
 
 ---
@@ -1603,7 +1954,14 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%COLLECT-LOCALLY-BOUND-VARS`
 - **Args**: `(BODY-FORMS)`
 
-  > Returns a list of distinct symbols introduced as bindings anywhere  >    inside BODY-FORMS (a list of forms).  Includes single-value bindings  >    `(v expr)`, multi-value bindings `(v0 v1 ... expr)`, the induction var  >    of nested DOTIMES, and the bound vars of nested LET.  Recurses through  >    LET / DOTIMES / IF / PROGN / WHEN / UNLESS bodies.  SET! and DECLARE  >    introduce no bindings, so they are not scanned.  Used by the AD walker  >    to identify adjoint allocas that must be reset at the top of each  >    backward loop iteration.
+  > Returns a list of distinct symbols introduced as bindings anywhere
+  >    inside BODY-FORMS (a list of forms).  Includes single-value bindings
+  >    `(v expr)`, multi-value bindings `(v0 v1 ... expr)`, the induction var
+  >    of nested DOTIMES, and the bound vars of nested LET.  Recurses through
+  >    LET / DOTIMES / IF / PROGN / WHEN / UNLESS bodies.  SET! and DECLARE
+  >    introduce no bindings, so they are not scanned.  Used by the AD walker
+  >    to identify adjoint allocas that must be reset at the top of each
+  >    backward loop iteration.
 
 
 ---
@@ -1618,21 +1976,31 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%PROMOTE-SCRATCH-INIT-FOR-AD`
 - **Args**: `(INIT)`
 
-  > Promotes the type in a make-scratch-* form to its float adjoint equivalent.  >    E.g., (make-scratch-vector ulong 4) -> (make-scratch-vector double 4).
+  > Promotes the type in a make-scratch-* form to its float adjoint equivalent.
+  >    E.g., (make-scratch-vector ulong 4) -> (make-scratch-vector double 4).
 
 
 ---
 ### DEFUN `%AUGMENT-SCRATCH-ADJ-BINDINGS`
 - **Args**: `(BINDINGS KERNEL-PKG)`
 
-  > For each binding (var (make-scratch-X ...)), inject a paired  >    (var_ADJ (make-scratch-X ...)) binding right after.  For other bindings,  >    pass through unchanged.  Promotes element type (e.g., ulong -> double)  >    so gradients use correct FP precision.
+  > For each binding (var (make-scratch-X ...)), inject a paired
+  >    (var_ADJ (make-scratch-X ...)) binding right after.  For other bindings,
+  >    pass through unchanged.  Promotes element type (e.g., ulong -> double)
+  >    so gradients use correct FP precision.
 
 
 ---
 ### DEFUN `%TLC-BWD-ADJ-NAME`
 - **Args**: `(SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)`
 
-  > Returns the backward-pass adjoint symbol for a forward arg SYM:  >      - if SYM is in INPUTS or OUTPUTS  → <SYM>_GRAD  (kernel param)  >      - otherwise (let-bound local)     → <SYM>_ADJ  (direct intern; NOT  >        via local-adj-fn, because local-adj-fn would add the sym to the  >        adjoint-map, which causes the wrapping let to scalar-initialize it  >        — wrong for tensor adjoints.  The auto-allocated LET binding for  >        <var>_ADJ as a make-scratch-* is the only initializer needed.)
+  > Returns the backward-pass adjoint symbol for a forward arg SYM:
+  >      - if SYM is in INPUTS or OUTPUTS  → <SYM>_GRAD  (kernel param)
+  >      - otherwise (let-bound local)     → <SYM>_ADJ  (direct intern; NOT
+  >        via local-adj-fn, because local-adj-fn would add the sym to the
+  >        adjoint-map, which causes the wrapping let to scalar-initialize it
+  >        — wrong for tensor adjoints.  The auto-allocated LET binding for
+  >        <var>_ADJ as a make-scratch-* is the only initializer needed.)
 
 
 ---
@@ -1664,63 +2032,106 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form  >    that emit %load-tile-coords-bwd / %store-tile-coords-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.
+  > Walks an ANF body backwards to accumulate adjoints.
+  >    Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form
+  >    that emit %load-tile-coords-bwd / %store-tile-coords-bwd with the correct
+  >    adjoint symbols.  Also extends the LET case to auto-allocate paired
+  >    <var>_ADJ scratch tensors for make-scratch-* bindings.
+  > 
+  >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor
+  >    output) now emits a proper consume + reset pair so the RHS chain rule
+  >    propagates through tile mutations.
 
 
 ---
 ### DEFUN `%CRISP-FLOAT-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a Crisp  > float-category scalar type (float, double, half, bfloat16).  > Resolves def-type aliases via *crisp-type-aliases* first, then checks  > *crisp-types* directly (for primitives like 'float), then falls back  > to compute-base-type for derived types.
+  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a Crisp
+  > float-category scalar type (float, double, half, bfloat16).
+  > Resolves def-type aliases via *crisp-type-aliases* first, then checks
+  > *crisp-types* directly (for primitives like 'float), then falls back
+  > to compute-base-type for derived types.
 
 
 ---
 ### DEFUN `%CRISP-RECORD-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC names a def-record (category :record).  >    Handles parameterized forms like (V-POINT :EARNESTNESS 3.0).
+  > Returns T if TYPE-SPEC names a def-record (category :record).
+  >    Handles parameterized forms like (V-POINT :EARNESTNESS 3.0).
 
 
 ---
 ### DEFUN `%GET-RECORD-RUNTIME-FIELDS`
 - **Args**: `(REC-TYPE-SPEC)`
 
-  > Returns a list of (FIELD-NAME RESOLVED-FIELD-TYPE) for the runtime  >    (non-:c-t) members of the record type named by REC-TYPE-SPEC.  >    Handles parameterised forms like (V-POINT :EARNESTNESS 3.0).
+  > Returns a list of (FIELD-NAME RESOLVED-FIELD-TYPE) for the runtime
+  >    (non-:c-t) members of the record type named by REC-TYPE-SPEC.
+  >    Handles parameterised forms like (V-POINT :EARNESTNESS 3.0).
 
 
 ---
 ### DEFUN `%RECORD-ACCESSOR-SYSTEM-GENERATED-P`
 - **Args**: `(ACCESSOR-SYM REC-TYPE)`
 
-  > Returns T if ACCESSOR-SYM (e.g. X~) is the single system-generated  >    accessor for REC-TYPE — i.e. it has NOT been user-overloaded.  >    Heuristic: count *function-table* entries whose first parameter type  >    matches REC-TYPE.  Exactly 1 means system-generated only.
+  > Returns T if ACCESSOR-SYM (e.g. X~) is the single system-generated
+  >    accessor for REC-TYPE — i.e. it has NOT been user-overloaded.
+  >    Heuristic: count *function-table* entries whose first parameter type
+  >    matches REC-TYPE.  Exactly 1 means system-generated only.
 
 
 ---
 ### DEFUN `%RECORD-FIELD-PARAM-SYM`
 - **Args**: `(PARAM-SYM FIELD-NAME PKG)`
 
-  > Creates the exploded scalar symbol for PARAM-SYM's FIELD-NAME.  >    E.g. VP + X -> VP_X.
+  > Creates the exploded scalar symbol for PARAM-SYM's FIELD-NAME.
+  >    E.g. VP + X -> VP_X.
 
 
 ---
 ### DEFUN `%SUBSTITUTE-RECORD-ACCESSORS`
 - **Args**: `(FORM RECORD-SUBS-HT RECORD-TYPE-HT)`
 
-  > Recursively walks FORM (a raw Crisp body S-expression) and substitutes:  >      (~field~ p)  -> p_field   (always, ~field~ is non-overloadable)  >      (field~  p)  -> p_field   (only when field~ is system-generated for p's type)  >    RECORD-SUBS-HT maps param-sym -> alist of (field-sym . exploded-sym).  >    RECORD-TYPE-HT  maps param-sym -> rec-type-spec.
+  > Recursively walks FORM (a raw Crisp body S-expression) and substitutes:
+  >      (~field~ p)  -> p_field   (always, ~field~ is non-overloadable)
+  >      (field~  p)  -> p_field   (only when field~ is system-generated for p's type)
+  >    RECORD-SUBS-HT maps param-sym -> alist of (field-sym . exploded-sym).
+  >    RECORD-TYPE-HT  maps param-sym -> rec-type-spec.
 
 
 ---
 ### DEFUN `%FIX-RECORD-GRAD-CELL-EMISSIONS`
 - **Args**: `(FORM GRAD-CELL-SYMS)`
 
-  > Post-processes the backward-walk output.  >    For any (SET! var expr) where VAR is in GRAD-CELL-SYMS,  >    rewrites to (SET! (~ var) expr), since the gradient output  >    for a record field is a cell, not a plain scalar.  >    GRAD-CELL-SYMS is a list of symbols that need cell-style emission.
+  > Post-processes the backward-walk output.
+  >    For any (SET! var expr) where VAR is in GRAD-CELL-SYMS,
+  >    rewrites to (SET! (~ var) expr), since the gradient output
+  >    for a record field is a cell, not a plain scalar.
+  >    GRAD-CELL-SYMS is a list of symbols that need cell-style emission.
 
 
 ---
 ### DEFUN `%EXPAND-RECORD-KERNEL-INPUTS`
 - **Args**: `(INPUTS INPUT-TYPES PKG)`
 
-  > Recursively expands record-typed inputs into their scalar fields,  >    chasing through nested records.  Also handles struct kernel inputs  >    per the Shadow Struct design: structs are NOT exploded; instead a  >    single shadow-grad-cell is paired with each struct param.  >   >    Returns 9 values: (flat-inputs flat-input-types reassembly-bindings  >    grad-out-params grad-out-types record-subs-ht record-type-ht  >    grad-cell-syms struct-shadow-info).  >   >    The 9th value, struct-shadow-info, is an alist:  >      ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)  >    used by %fix-struct-shadow-writes to emit the final shadow-write.  >   >    Leaf scalar fields (float or integer) produce grad cells per 101.  >    Nested-record fields produce a synthetic intermediate sym that gets  >    registered in record-subs-ht/record-type-ht so the substitution  >    machinery walks through it; their leaf fields are further exploded.
+  > Recursively expands record-typed inputs into their scalar fields,
+  >    chasing through nested records.  Also handles struct kernel inputs
+  >    per the Shadow Struct design: structs are NOT exploded; instead a
+  >    single shadow-grad-cell is paired with each struct param.
+  > 
+  >    Returns 9 values: (flat-inputs flat-input-types reassembly-bindings
+  >    grad-out-params grad-out-types record-subs-ht record-type-ht
+  >    grad-cell-syms struct-shadow-info).
+  > 
+  >    The 9th value, struct-shadow-info, is an alist:
+  >      ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)
+  >    used by %fix-struct-shadow-writes to emit the final shadow-write.
+  > 
+  >    Leaf scalar fields (float or integer) produce grad cells per 101.
+  >    Nested-record fields produce a synthetic intermediate sym that gets
+  >    registered in record-subs-ht/record-type-ht so the substitution
+  >    machinery walks through it; their leaf fields are further exploded.
 
 
 ---
@@ -1778,7 +2189,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%GENERATE-BACKWARD-FUNCTION-AST`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY-FORMS)`
 
-  > Generates the backward companion (def-function NAME_GRAD ...) for a  > differentiable user function.
+  > Generates the backward companion (def-function NAME_GRAD ...) for a
+  > differentiable user function.
 
 
 ---
@@ -1786,14 +2198,26 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL
               TENSOR-INPUTS-HT)`
 
-  > Generates the backward-pass body for a def-function.  > FLAT-ANF         : flattened ANF of the forward function body.  > FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).  > T-GRAD-SYMS      : symbols for the incoming gradient inputs (one per return value).  > RETURN-VARS      : symbols of the return variables (identified from FLAT-ANF last element).  >   > 101 extension: TENSOR-INPUTS-HT (optional hash-table mapping each tensor-sub-  > fn-param symbol to its tensor type) is threaded into %handle-single-value-  > backward so tensor reads inside the body emit atomic-add into the corresponding  > &out grad-tensor.  >   > Returns a (let (...) ...) form suitable as the body of the _GRAD companion function.
+  > Generates the backward-pass body for a def-function.
+  > FLAT-ANF         : flattened ANF of the forward function body.
+  > FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).
+  > T-GRAD-SYMS      : symbols for the incoming gradient inputs (one per return value).
+  > RETURN-VARS      : symbols of the return variables (identified from FLAT-ANF last element).
+  > 
+  > 101 extension: TENSOR-INPUTS-HT (optional hash-table mapping each tensor-sub-
+  > fn-param symbol to its tensor type) is threaded into %handle-single-value-
+  > backward so tensor reads inside the body emit atomic-add into the corresponding
+  > &out grad-tensor.
+  > 
+  > Returns a (let (...) ...) form suitable as the body of the _GRAD companion function.
 
 
 ---
 ### DEFUN `%CHECK-FN-BODY-FOR-MUTATIONS`
 - **Args**: `(BODY-FORMS PARAM-NAMES FN-NAME)`
 
-  > Walks BODY-FORMS looking for (set! (~ p) ...) where p is in PARAM-NAMES.  > Signals a compiler error if any mutation is detected, naming FN-NAME.
+  > Walks BODY-FORMS looking for (set! (~ p) ...) where p is in PARAM-NAMES.
+  > Signals a compiler error if any mutation is detected, naming FN-NAME.
 
 
 ---
@@ -1814,49 +2238,58 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%REMOVE-FUNCALL`
 - **Args**: `(FORM FN-PARAM-SYM CONCRETE-FN-SYM)`
 
-  > Recursively replace (funcall FN-PARAM-SYM ...) or (funcall (function X) ...)  > with (CONCRETE-FN-SYM ...) in FORM.
+  > Recursively replace (funcall FN-PARAM-SYM ...) or (funcall (function X) ...)
+  > with (CONCRETE-FN-SYM ...) in FORM.
 
 
 ---
 ### DEFUN `%FN-NAME-IS-GRAD-P`
 - **Args**: `(NAME)`
 
-  > Returns T if NAME ends with the _GRAD suffix, indicating it is already  > a backward companion and should not receive its own companion.
+  > Returns T if NAME ends with the _GRAD suffix, indicating it is already
+  > a backward companion and should not receive its own companion.
 
 
 ---
 ### DEFUN `%EXTRACT-RETURN-VARS`
 - **Args**: `(FLAT-ANF)`
 
-  > Returns the list of return-value symbols from FLAT-ANF.  > Handles both implicit last-expression and explicit (return v0 v1 ...) forms.
+  > Returns the list of return-value symbols from FLAT-ANF.
+  > Handles both implicit last-expression and explicit (return v0 v1 ...) forms.
 
 
 ---
 ### DEFUN `%CRISP-INTEGER-TENSOR-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC resolves to a tensor whose element type is an integer  > category (:signed-int or :unsigned-int). Mirrors %crisp-float-tensor-type-p.
+  > Returns T if TYPE-SPEC resolves to a tensor whose element type is an integer
+  > category (:signed-int or :unsigned-int). Mirrors %crisp-float-tensor-type-p.
 
 
 ---
 ### DEFUN `%INTEGER-TENSOR-ELEM-TO-FLOAT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Replaces the element type of an integer tensor with its float analog:  >    64-bit integers (long, ulong) → double; all others → float.  >    Returns TYPE-SPEC unchanged if it is not an integer tensor.
+  > Replaces the element type of an integer tensor with its float analog:
+  >    64-bit integers (long, ulong) → double; all others → float.
+  >    Returns TYPE-SPEC unchanged if it is not an integer tensor.
 
 
 ---
 ### DEFUN `%CRISP-INTEGER-SCALAR-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC (possibly a type alias) resolves to an integer  > scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints.
+  > Returns T if TYPE-SPEC (possibly a type alias) resolves to an integer
+  > scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints.
 
 
 ---
 ### DEFUN `%INTEGER-SCALAR-TO-FLOAT-SCALAR`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns the float-analog scalar type for an integer scalar:  >    64-bit (long, ulong) → double; smaller ints → float.  Type aliases are  >    resolved.  Returns TYPE-SPEC unchanged if it is not an integer scalar.
+  > Returns the float-analog scalar type for an integer scalar:
+  >    64-bit (long, ulong) → double; smaller ints → float.  Type aliases are
+  >    resolved.  Returns TYPE-SPEC unchanged if it is not an integer scalar.
 
 
 ---
@@ -1870,14 +2303,24 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%INTEGER-CELL-ELEM-TO-FLOAT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Replaces the element type of an integer cell with its float analog.  >    Returns the keyword form (cell float-elem :address-space addr) — length 4 —  >    to satisfy downstream consumers like marshall-cell that reject the canonical  >    3-tuple positional form.  Returns TYPE-SPEC unchanged if it is not an  >    integer cell.
+  > Replaces the element type of an integer cell with its float analog.
+  >    Returns the keyword form (cell float-elem :address-space addr) — length 4 —
+  >    to satisfy downstream consumers like marshall-cell that reject the canonical
+  >    3-tuple positional form.  Returns TYPE-SPEC unchanged if it is not an
+  >    integer cell.
 
 
 ---
 ### DEFUN `%PROMOTE-TO-FLOAT-ADJOINT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Generalised float-adjoint type promotion for AD output gradient slots.  >    - integer scalar      → float / double scalar  >    - integer tensor      → float / double tensor (element-type promoted)  >    - integer cell        → cell of float / double  >    - everything else     → unchanged (already float, or non-numeric)  >    Used to produce caller-supplied _GRAD seed types and input _GRAD output  >    types that mirror the input shape with float adjoint values.
+  > Generalised float-adjoint type promotion for AD output gradient slots.
+  >    - integer scalar      → float / double scalar
+  >    - integer tensor      → float / double tensor (element-type promoted)
+  >    - integer cell        → cell of float / double
+  >    - everything else     → unchanged (already float, or non-numeric)
+  >    Used to produce caller-supplied _GRAD seed types and input _GRAD output
+  >    types that mirror the input shape with float adjoint values.
 
 
 ---
@@ -1889,111 +2332,214 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*RECORD-PARAM-FIELD-ADJS*`
 
-  > Hash table: record-sym -> alist of (FIELD-NAME-STR . FIELD-ADJ-SYM)  >    in declaration order.  Bound during backward walk for sub-functions  >    with record params, and for kernels with record-valued ANF temps  >    (constructed via make-RECORD).  Otherwise NIL.  >   >    Consumers:  >      - The accessor rule in %handle-single-value-backward routes adjoint  >        flow from (FIELD~ p) to the per-field synth adj.  >      - The %construct-struct case flows per-field adjs to constructor args.  >      - %emit-sub-fn-backward distributes deltas per-field when an arg is  >        a record-valued symbol.
+  > Hash table: record-sym -> alist of (FIELD-NAME-STR . FIELD-ADJ-SYM)
+  >    in declaration order.  Bound during backward walk for sub-functions
+  >    with record params, and for kernels with record-valued ANF temps
+  >    (constructed via make-RECORD).  Otherwise NIL.
+  > 
+  >    Consumers:
+  >      - The accessor rule in %handle-single-value-backward routes adjoint
+  >        flow from (FIELD~ p) to the per-field synth adj.
+  >      - The %construct-struct case flows per-field adjs to constructor args.
+  >      - %emit-sub-fn-backward distributes deltas per-field when an arg is
+  >        a record-valued symbol.
 
 
 ---
 ### DEFVAR `*STRUCT-KERNEL-PARAM-SHADOWS*`
 
-  > Hash table: struct-kernel-param-sym -> (cons SHADOW-GRAD-SYM FIELD-ADJ-ALIST).  >    FIELD-ADJ-ALIST is an alist of (FIELD-NAME-STR . FIELD-ADJ-SYM) in  >    declaration order.  Bound by %generate-backward-kernel-ast around  >    the backward walk when struct kernel params are present.  Used by:  >      - The accessor rule in %handle-single-value-backward.  >      - The shadow-write postprocessor.
+  > Hash table: struct-kernel-param-sym -> (cons SHADOW-GRAD-SYM FIELD-ADJ-ALIST).
+  >    FIELD-ADJ-ALIST is an alist of (FIELD-NAME-STR . FIELD-ADJ-SYM) in
+  >    declaration order.  Bound by %generate-backward-kernel-ast around
+  >    the backward walk when struct kernel params are present.  Used by:
+  >      - The accessor rule in %handle-single-value-backward.
+  >      - The shadow-write postprocessor.
 
 
 ---
 ### DEFUN `%SCAN-FORMS-FOR-RECORD-INFO`
 - **Args**: `(FORMS)`
 
-  > Walks FORMS (recursing through progn / with-template-type) and returns  >    an alist mapping (symbol-name TYPE-NAME) -> count of non-:c-t,  >    non-brand runtime fields. Used during pre-registration when *crisp-types*  >    isn't yet populated.  >   >    Includes BOTH def-record AND def-struct (records and structs at the  >    sub-function AD level both contribute their field count toward the  >    differentiability gate).  Also includes derived-from-{record,struct}  >    types: when (def-derived-type NEW BASE ...) is encountered and BASE is  >    already in the alist, NEW is added with the same field count.  >   >    The name `record-info` is historical; the alist now tracks structs too.
+  > Walks FORMS (recursing through progn / with-template-type) and returns
+  >    an alist mapping (symbol-name TYPE-NAME) -> count of non-:c-t,
+  >    non-brand runtime fields. Used during pre-registration when *crisp-types*
+  >    isn't yet populated.
+  > 
+  >    Includes BOTH def-record AND def-struct (records and structs at the
+  >    sub-function AD level both contribute their field count toward the
+  >    differentiability gate).  Also includes derived-from-{record,struct}
+  >    types: when (def-derived-type NEW BASE ...) is encountered and BASE is
+  >    already in the alist, NEW is added with the same field count.
+  > 
+  >    The name `record-info` is historical; the alist now tracks structs too.
 
 
 ---
 ### DEFUN `%RESOLVE-TO-BASE-TYPE-FOR-RECORDS`
 - **Args**: `(PD-TYPE)`
 
-  > If PD-TYPE names a derived type whose base is a record, returns the  >    base record type symbol. Otherwise returns PD-TYPE unchanged.  >   >    Records are SROA'd at every function boundary, and derived-type wrappers  >    preserve that property. This helper lets the sub-function gate widening  >    accept derived-from-record types (e.g. `coordinate` derived from `point`).
+  > If PD-TYPE names a derived type whose base is a record, returns the
+  >    base record type symbol. Otherwise returns PD-TYPE unchanged.
+  > 
+  >    Records are SROA'd at every function boundary, and derived-type wrappers
+  >    preserve that property. This helper lets the sub-function gate widening
+  >    accept derived-from-record types (e.g. `coordinate` derived from `point`).
 
 
 ---
 ### DEFUN `%RESOLVE-TO-BASE-TYPE-FOR-STRUCTS-OR-RECORDS`
 - **Args**: `(PD-TYPE)`
 
-  > If PD-TYPE names a derived type whose base is a struct OR a record,  >    returns the base type symbol.  Otherwise returns PD-TYPE unchanged.  >    Used by sub-function gate widening to accept derived-from-struct types  >    in addition to derived-from-record types.
+  > If PD-TYPE names a derived type whose base is a struct OR a record,
+  >    returns the base type symbol.  Otherwise returns PD-TYPE unchanged.
+  >    Used by sub-function gate widening to accept derived-from-struct types
+  >    in addition to derived-from-record types.
 
 
 ---
 ### DEFUN `%COUNT-DIFFERENTIABLE-CONTRIBUTIONS`
 - **Args**: `(PD-TYPE &OPTIONAL RECORD-INFO)`
 
-  > Returns the number of SCALAR-DELTA contributions this parameter type  >    makes at the SUB-FUNCTION level (def-function).  Used to size the  >    multi-value-return arity at the sub-fn _GRAD boundary.  >   >    - Records / derived-from-records  -> runtime-field count (per-field deltas).  >    - Structs  / derived-from-structs -> runtime-field count (same convention).  >    - Float scalars                   -> 1.  >    - Tensors, cells, integer scalars -> 0.  These contribute zero scalar  >      deltas; tensors flow grad via &out grad-tensor params instead  >      (see %has-tensor-diff-param-p and the tensor-sub-fn pipeline).  >   >    RECORD-INFO (optional alist of (NAME-STR . FIELD-COUNT)) bridges the  >    pre-registration ordering issue where *crisp-types* isn't yet  >    populated. When supplied, it takes priority over the runtime registry.
+  > Returns the number of SCALAR-DELTA contributions this parameter type
+  >    makes at the SUB-FUNCTION level (def-function).  Used to size the
+  >    multi-value-return arity at the sub-fn _GRAD boundary.
+  > 
+  >    - Records / derived-from-records  -> runtime-field count (per-field deltas).
+  >    - Structs  / derived-from-structs -> runtime-field count (same convention).
+  >    - Float scalars                   -> 1.
+  >    - Tensors, cells, integer scalars -> 0.  These contribute zero scalar
+  >      deltas; tensors flow grad via &out grad-tensor params instead
+  >      (see %has-tensor-diff-param-p and the tensor-sub-fn pipeline).
+  > 
+  >    RECORD-INFO (optional alist of (NAME-STR . FIELD-COUNT)) bridges the
+  >    pre-registration ordering issue where *crisp-types* isn't yet
+  >    populated. When supplied, it takes priority over the runtime registry.
 
 
 ---
 ### DEFUN `%CRISP-TENSOR-PARAM-TYPE-P`
 - **Args**: `(PD-TYPE)`
 
-  > Returns T if PD-TYPE is a tensor (float-element or integer-element)  >    at the sub-function level.  Used to decide whether a sub-fn param  >    contributes a tensor grad-out (vs a scalar delta).  >   >    Handles three forms:  >    - List form: (tensor float 1 ...) — caught by the existing helpers.  >    - Mangled-template-name symbol: TENSOR_FLOAT_1_GLOBAL_COMPACT_LAST —  >      produced by Crisp's template instantiation.  Detected by name prefix.  >    - Plain symbol naming a registered tensor type.
+  > Returns T if PD-TYPE is a tensor (float-element or integer-element)
+  >    at the sub-function level.  Used to decide whether a sub-fn param
+  >    contributes a tensor grad-out (vs a scalar delta).
+  > 
+  >    Handles three forms:
+  >    - List form: (tensor float 1 ...) — caught by the existing helpers.
+  >    - Mangled-template-name symbol: TENSOR_FLOAT_1_GLOBAL_COMPACT_LAST —
+  >      produced by Crisp's template instantiation.  Detected by name prefix.
+  >    - Plain symbol naming a registered tensor type.
 
 
 ---
 ### DEFUN `%CRISP-CELL-PARAM-TYPE-P`
 - **Args**: `(PD-TYPE)`
 
-  > Returns T if PD-TYPE is a cell of a SCALAR element type (float or  >    integer) at the sub-function level.  Cells flow grad via &out  >    grad-cell, same pattern as tensors.  >   >    Cells of structs/records are NOT accepted here — their grad-cell  >    would need to be a cell of the corresponding shadow type, and the  >    chain rule for `(set! (field~ (~ c)) ...)` is structurally different  >    (deferred).  >   >    Recognizes three forms (mirrors %crisp-tensor-param-type-p):  >    - List form: (cell float :address-space :global ...).  >    - Mangled template name like CELL_FLOAT_GLOBAL — produced by Crisp's  >      template instantiation.  Detected by name prefix + scalar element.  >    - Plain symbol naming a registered cell type.
+  > Returns T if PD-TYPE is a cell of a SCALAR element type (float or
+  >    integer) at the sub-function level.  Cells flow grad via &out
+  >    grad-cell, same pattern as tensors.
+  > 
+  >    Cells of structs/records are NOT accepted here — their grad-cell
+  >    would need to be a cell of the corresponding shadow type, and the
+  >    chain rule for `(set! (field~ (~ c)) ...)` is structurally different
+  >    (deferred).
+  > 
+  >    Recognizes three forms (mirrors %crisp-tensor-param-type-p):
+  >    - List form: (cell float :address-space :global ...).
+  >    - Mangled template name like CELL_FLOAT_GLOBAL — produced by Crisp's
+  >      template instantiation.  Detected by name prefix + scalar element.
+  >    - Plain symbol naming a registered cell type.
 
 
 ---
 ### DEFUN `%CRISP-HANDLE-PARAM-TYPE-P`
 - **Args**: `(PD-TYPE)`
 
-  > Returns T for any sub-fn param type that flows grad via &out grad-handle:  >    tensors AND cells.  Both go through the same convention — paired with  >    an &out grad-handle of matching shape, body atomic-adds into it.
+  > Returns T for any sub-fn param type that flows grad via &out grad-handle:
+  >    tensors AND cells.  Both go through the same convention — paired with
+  >    an &out grad-handle of matching shape, body atomic-adds into it.
 
 
 ---
 ### DEFUN `%HAS-TENSOR-DIFF-PARAM-P`
 - **Args**: `(ENV)`
 
-  > Returns T if ENV contains at least one non-&OUT parameter that flows  >    grad via a paired &out grad-handle (tensor OR cell).  Used by the  >    sub-function pre-reg + _GRAD generator gates: a sub-fn with such  >    params is differentiable even when its scalar-delta count is zero.  >   >    Name is historical (originally tensor-only); now covers cells too.
+  > Returns T if ENV contains at least one non-&OUT parameter that flows
+  >    grad via a paired &out grad-handle (tensor OR cell).  Used by the
+  >    sub-function pre-reg + _GRAD generator gates: a sub-fn with such
+  >    params is differentiable even when its scalar-delta count is zero.
+  > 
+  >    Name is historical (originally tensor-only); now covers cells too.
 
 
 ---
 ### DEFUN `%TRIVIAL-ACCESSOR-BODY-P`
 - **Args**: `(BODY-FORMS)`
 
-  > Returns T if BODY-FORMS is a single (return (%extract-struct-member obj idx))  >    — i.e. a trivial field-extraction accessor.  Used to detect auto-generated  >    accessors that def-derived-type emits without a `(crisp-system-generated)`  >    declaration (def-record's accessors ARE marked, but def-derived-type's are  >    not).  These accessors don't need their own _GRAD: the kernel-side accessor  >    rule handles them inline.
+  > Returns T if BODY-FORMS is a single (return (%extract-struct-member obj idx))
+  >    — i.e. a trivial field-extraction accessor.  Used to detect auto-generated
+  >    accessors that def-derived-type emits without a `(crisp-system-generated)`
+  >    declaration (def-record's accessors ARE marked, but def-derived-type's are
+  >    not).  These accessors don't need their own _GRAD: the kernel-side accessor
+  >    rule handles them inline.
 
 
 ---
 ### DEFUN `%ADJ-TYPE-FOR-FIELD`
 - **Args**: `(FORWARD-TYPE &OPTIONAL STRUCT-NAME-SET)`
 
-  > Returns the adjoint type for a forward struct field's TYPE, per  >    the 101 promotion rules.  >   >    STRUCT-NAME-SET (optional hash table, symbol->T) covers struct types  >    that will be defined by upcoming def-struct forms in the same  >    compilation unit but haven't been registered in *crisp-types* yet.  >    At shadow-injection time (before any macro expansion), this is the  >    only way to know which symbols are struct types.
+  > Returns the adjoint type for a forward struct field's TYPE, per
+  >    the 101 promotion rules.
+  > 
+  >    STRUCT-NAME-SET (optional hash table, symbol->T) covers struct types
+  >    that will be defined by upcoming def-struct forms in the same
+  >    compilation unit but haven't been registered in *crisp-types* yet.
+  >    At shadow-injection time (before any macro expansion), this is the
+  >    only way to know which symbols are struct types.
 
 
 ---
 ### DEFUN `%GENERATE-SHADOW-DEF-STRUCT-FORM`
 - **Args**: `(DEF-STRUCT-FORM &OPTIONAL STRUCT-NAME-SET)`
 
-  > Given (def-struct NAME (f0 t0) (f1 t1) ... brand-decls...), returns  >    the matching (def-struct NAME_ADJ (f0 adj_t0) (f1 adj_t1) ...) form.  >    Brand declarations are dropped.  :c-t members are preserved (their  >    value is a forward-time constant; not differentiable but harmless).  >    STRUCT-NAME-SET enables recognizing nested struct field types whose  >    def-struct forms appear elsewhere in the compilation unit.
+  > Given (def-struct NAME (f0 t0) (f1 t1) ... brand-decls...), returns
+  >    the matching (def-struct NAME_ADJ (f0 adj_t0) (f1 adj_t1) ...) form.
+  >    Brand declarations are dropped.  :c-t members are preserved (their
+  >    value is a forward-time constant; not differentiable but harmless).
+  >    STRUCT-NAME-SET enables recognizing nested struct field types whose
+  >    def-struct forms appear elsewhere in the compilation unit.
 
 
 ---
 ### DEFUN `%COLLECT-STRUCT-NAMES-FROM-FORMS`
 - **Args**: `(FORMS)`
 
-  > Walks FORMS at the top level and returns a hash table mapping each  >    (def-struct NAME ...) NAME (and only structs, not records) to T.  >    Used by shadow-injection to recognize struct field types when  >    *crisp-types* isn't yet populated.
+  > Walks FORMS at the top level and returns a hash table mapping each
+  >    (def-struct NAME ...) NAME (and only structs, not records) to T.
+  >    Used by shadow-injection to recognize struct field types when
+  >    *crisp-types* isn't yet populated.
 
 
 ---
 ### DEFUN `%INJECT-SHADOW-STRUCT-FORMS`
 - **Args**: `(FORMS)`
 
-  > Walks FORMS at the top level.  After each (def-struct NAME ...) that  >    defines a NON-shadow struct, appends (def-struct NAME_ADJ ...).  >    Already-shadow structs (name ends with _ADJ) are passed through.  >    def-record forms are left untouched (records SROA, no shadow needed).  >    Other forms unchanged.  >   >    First pass collects all struct names so the shadow generator can  >    recognize nested struct field types.
+  > Walks FORMS at the top level.  After each (def-struct NAME ...) that
+  >    defines a NON-shadow struct, appends (def-struct NAME_ADJ ...).
+  >    Already-shadow structs (name ends with _ADJ) are passed through.
+  >    def-record forms are left untouched (records SROA, no shadow needed).
+  >    Other forms unchanged.
+  > 
+  >    First pass collects all struct names so the shadow generator can
+  >    recognize nested struct field types.
 
 
 ---
 ### DEFUN `%CRISP-STRUCT-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC names a registered def-struct (category :struct).  >    Distinct from %crisp-record-type-p (which checks category :record).
+  > Returns T if TYPE-SPEC names a registered def-struct (category :struct).
+  >    Distinct from %crisp-record-type-p (which checks category :record).
 
 
 ---
@@ -2014,49 +2560,83 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%NESTED-FIELD-INFO-P`
 - **Args**: `(FIELD-INFO)`
 
-  > T if FIELD-INFO from a struct-shadow alist refers to a nested struct  >    (an alist), as opposed to a scalar leaf (a symbol).
+  > T if FIELD-INFO from a struct-shadow alist refers to a nested struct
+  >    (an alist), as opposed to a scalar leaf (a symbol).
 
 
 ---
 ### DEFUN `%REGISTER-SHADOW-ANF-INTERMEDIATES`
 - **Args**: `(FLAT-ANF SHADOW-HT)`
 
-  > Pre-scans FLAT-ANF for bindings of the shape (TEMP (FIELD~ SHADOW-TRACKED-SYM))  >    where SHADOW-TRACKED-SYM is in SHADOW-HT and the field's info is a  >    nested-struct alist.  Registers TEMP in SHADOW-HT (with the nested  >    alist as TEMP's field-adj-alist) so subsequent accessor calls on TEMP  >    can route deeper.  Mutates SHADOW-HT in place.  >   >    Must run BEFORE the backward walk so the accessor case can consult  >    the augmented map.
+  > Pre-scans FLAT-ANF for bindings of the shape (TEMP (FIELD~ SHADOW-TRACKED-SYM))
+  >    where SHADOW-TRACKED-SYM is in SHADOW-HT and the field's info is a
+  >    nested-struct alist.  Registers TEMP in SHADOW-HT (with the nested
+  >    alist as TEMP's field-adj-alist) so subsequent accessor calls on TEMP
+  >    can route deeper.  Mutates SHADOW-HT in place.
+  > 
+  >    Must run BEFORE the backward walk so the accessor case can consult
+  >    the augmented map.
 
 
 ---
 ### DEFUN `%BUILD-STRUCT-FIELD-ADJ-ALIST`
 - **Args**: `(PARAM-SYM STRUCT-TYPE PKG)`
 
-  > Recursively builds a field-adj-alist for a struct kernel param of  >    STRUCT-TYPE.  Each entry is (FIELD-NAME-STR . FIELD-INFO) where:  >   >    - For scalar fields: FIELD-INFO is the per-field adj symbol  >      (e.g. r_top-left_x_adj).  >    - For nested struct fields: FIELD-INFO is itself an alist of the  >      same shape, recursively descended.  >   >    PARAM-SYM is the prefix used when generating leaf adj sym names  >    (so leaves nested under r.top-left get names like r_top-left_x_adj).
+  > Recursively builds a field-adj-alist for a struct kernel param of
+  >    STRUCT-TYPE.  Each entry is (FIELD-NAME-STR . FIELD-INFO) where:
+  > 
+  >    - For scalar fields: FIELD-INFO is the per-field adj symbol
+  >      (e.g. r_top-left_x_adj).
+  >    - For nested struct fields: FIELD-INFO is itself an alist of the
+  >      same shape, recursively descended.
+  > 
+  >    PARAM-SYM is the prefix used when generating leaf adj sym names
+  >    (so leaves nested under r.top-left get names like r_top-left_x_adj).
 
 
 ---
 ### DEFUN `%BUILD-SHADOW-CTOR-FORM`
 - **Args**: `(STRUCT-TYPE-NAME FIELD-ADJ-ALIST PKG)`
 
-  > Builds a (MAKE-<S>_ADJ :field1 val1 :field2 val2 ...) form recursively.  >    For scalar leaf fields, val is wrapped in (%volatile-read SYM) — see  >    IGC SROA-aliasing workaround commentary above.
+  > Builds a (MAKE-<S>_ADJ :field1 val1 :field2 val2 ...) form recursively.
+  >    For scalar leaf fields, val is wrapped in (%volatile-read SYM) — see
+  >    IGC SROA-aliasing workaround commentary above.
 
 
 ---
 ### DEFUN `%COLLECT-ALL-LEAF-ADJ-SYMS`
 - **Args**: `(FIELD-ADJ-ALIST)`
 
-  > Collects all leaf adj syms (scalars at the bottom of a nested alist)  >    recursively.
+  > Collects all leaf adj syms (scalars at the bottom of a nested alist)
+  >    recursively.
 
 
 ---
 ### DEFUN `%ENSURE-LEAF-ADJ-BINDINGS`
 - **Args**: `(FORM LEAF-ADJ-SYMS)`
 
-  > If FORM is `(let (bindings) body...)`, augments the bindings list with  >    `(sym 0.0)` for each sym in LEAF-ADJ-SYMS not already bound.  Used to  >    ensure that leaf adj syms referenced ONLY by the shadow-write  >    postprocessor (i.e. unused in the kernel body) have valid zero-init  >    bindings.
+  > If FORM is `(let (bindings) body...)`, augments the bindings list with
+  >    `(sym 0.0)` for each sym in LEAF-ADJ-SYMS not already bound.  Used to
+  >    ensure that leaf adj syms referenced ONLY by the shadow-write
+  >    postprocessor (i.e. unused in the kernel body) have valid zero-init
+  >    bindings.
 
 
 ---
 ### DEFUN `%FIX-STRUCT-SHADOW-WRITES`
 - **Args**: `(FORM STRUCT-SHADOW-INFO)`
 
-  > Postprocesses the kernel backward walk's output.  For each struct  >    kernel input S in STRUCT-SHADOW-INFO, replaces the default scalar  >    input-grad-write `(set! S_GRAD S_ADJ)` with the correct shadow-  >    struct write `(set! (~ S_GRAD) (MAKE-<S>_ADJ ...))` — building  >    the shadow constructor recursively for nested struct fields.  >   >    STRUCT-SHADOW-INFO is the alist returned as the 9th value of  >    %expand-record-kernel-inputs:  >      ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)  >   >    Other (set! ...) forms are passed through unchanged.
+  > Postprocesses the kernel backward walk's output.  For each struct
+  >    kernel input S in STRUCT-SHADOW-INFO, replaces the default scalar
+  >    input-grad-write `(set! S_GRAD S_ADJ)` with the correct shadow-
+  >    struct write `(set! (~ S_GRAD) (MAKE-<S>_ADJ ...))` — building
+  >    the shadow constructor recursively for nested struct fields.
+  > 
+  >    STRUCT-SHADOW-INFO is the alist returned as the 9th value of
+  >    %expand-record-kernel-inputs:
+  >      ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)
+  > 
+  >    Other (set! ...) forms are passed through unchanged.
 
 
 ---
@@ -2080,42 +2660,69 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%PTX-ENTRY-ILLEGAL-ADDRSPACE-P`
 - **Args**: `(AS)`
 
-  > PTX kernel entry-point param pointers may not target shared (NVPTX  >    addrspace 3) or local (NVPTX addrspace 5).  Both are per-block /  >    per-thread state spaces with no addressable launch-time value, and  >    the CUDA driver rejects any cubin whose entry sig declares such  >    a pointer.
+  > PTX kernel entry-point param pointers may not target shared (NVPTX
+  >    addrspace 3) or local (NVPTX addrspace 5).  Both are per-block /
+  >    per-thread state spaces with no addressable launch-time value, and
+  >    the CUDA driver rejects any cubin whose entry sig declares such
+  >    a pointer.
 
 
 ---
 ### DEFUN `%PTX-ENTRY-DEMOTE-TYPE`
 - **Args**: `(TY)`
 
-  > If TY is a pointer in an illegal-for-PTX-entry addrspace, returns  >    i64 (the demoted form Crisp passes at the kernel boundary).  >    Otherwise returns TY unchanged.
+  > If TY is a pointer in an illegal-for-PTX-entry addrspace, returns
+  >    i64 (the demoted form Crisp passes at the kernel boundary).
+  >    Otherwise returns TY unchanged.
 
 
 ---
 ### DEFUN `%VERIFY-PTX-ENTRY-EXPANDED-TYPES`
 - **Args**: `(EXPANDED-TYPES FN-NAME)`
 
-  > Walks an already-demoted EXPANDED-TYPES list and ERRORs if any entry  >    is still an illegal-for-entry pointer (shared/local).  Called from  >    inside CREATE-LLVM-FUNCTION-TYPE on the post-demotion list, so this  >    should never fire in correct code — it's a belt-and-suspenders check  >    for future regressions where a new pointer-producing path slips past  >    %PTX-ENTRY-DEMOTE-TYPE.  >   >    We check expanded LLVM types rather than walking the live func via  >    llvm-count-params because we already have the list at the demotion  >    site and there's no Crisp binding for LLVMCountParams (avoiding the  >    need to plumb a new foreign binding through llvm-bindings-overlay).
+  > Walks an already-demoted EXPANDED-TYPES list and ERRORs if any entry
+  >    is still an illegal-for-entry pointer (shared/local).  Called from
+  >    inside CREATE-LLVM-FUNCTION-TYPE on the post-demotion list, so this
+  >    should never fire in correct code — it's a belt-and-suspenders check
+  >    for future regressions where a new pointer-producing path slips past
+  >    %PTX-ENTRY-DEMOTE-TYPE.
+  > 
+  >    We check expanded LLVM types rather than walking the live func via
+  >    llvm-count-params because we already have the list at the demotion
+  >    site and there's no Crisp binding for LLVMCountParams (avoiding the
+  >    need to plumb a new foreign binding through llvm-bindings-overlay).
 
 
 ---
 ### DEFUN `%PTX-ENTRY-RESTORE-SHARED-PTRS-FOR-IMPLODE`
 - **Args**: `(BUILDER COMPONENTS TYPE-SPEC MODULE IS-ENTRY-POINT)`
 
-  > Counterpart to the demoter: at the receive site, the kernel's LLVM  >    param at a demoted slot is now an i64.  IMPLODE-VALUE expects a  >    pointer in the original addrspace there, so inttoptr each demoted  >    component back before packing.  No-op for non-PTX, non-entry, and  >    for params whose expanded types had no demotable pointer.
+  > Counterpart to the demoter: at the receive site, the kernel's LLVM
+  >    param at a demoted slot is now an i64.  IMPLODE-VALUE expects a
+  >    pointer in the original addrspace there, so inttoptr each demoted
+  >    component back before packing.  No-op for non-PTX, non-entry, and
+  >    for params whose expanded types had no demotable pointer.
 
 
 ---
 ### DEFUN `INITIALIZE-FUNCTION-PARAMETERS`
 - **Args**: `(BUILDER FUNC PARAM-NODES MODULE VAR-ENV &OPTIONAL IS-ENTRY-POINT)`
 
-  > Allocates stack space and stores function parameters.  >    When IS-ENTRY-POINT is non-NIL and *TARGET-BACKEND* is :PTX, restores  >    any param components that the kernel-entry demoter swapped from  >    shared/local pointer to i64 (see header comment in this overlay).
+  > Allocates stack space and stores function parameters.
+  >    When IS-ENTRY-POINT is non-NIL and *TARGET-BACKEND* is :PTX, restores
+  >    any param components that the kernel-entry demoter swapped from
+  >    shared/local pointer to i64 (see header comment in this overlay).
 
 
 ---
 ### DEFUN `ENSURE-OPENCL-KERNEL-METADATA`
 - **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
 
-  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >      >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.
+  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.
+  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
+  >    
+  >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
+  >    as text during IR printing for SPIR-V.
 
 
 ---
@@ -2138,34 +2745,69 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `GENERATE-FUNCTION-PROTOTYPE`
 - **Args**: `(SEMANTIC-FUNCTION MODULE DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)`
 
-  > Generates the LLVM function prototype and debug info.  >    For PTX entry points, threads IS-ENTRY-POINT and FN-NAME into  >    CREATE-LLVM-FUNCTION-TYPE so shared/local pointer params get demoted  >    to i64 at the kernel boundary, and the post-demotion verifier can  >    error with the kernel name (see header comment).
+  > Generates the LLVM function prototype and debug info.
+  >    For PTX entry points, threads IS-ENTRY-POINT and FN-NAME into
+  >    CREATE-LLVM-FUNCTION-TYPE so shared/local pointer params get demoted
+  >    to i64 at the kernel boundary, and the post-demotion verifier can
+  >    error with the kernel name (see header comment).
 
 
 ---
 ### DEFPARAMETER `*KERNEL-READONLY-TENSOR-SYMS*`
 
-  > Hash-table set of kernel-param symbols whose indexed loads should be  >    marked with !invariant.load metadata.  Bound by generate-function-body  >    around the body codegen loop; read by the semantic-aref tensor case.  >    NIL means no read-only inference applies (kernel has no &out, or non-  >    kernel function).
+  > Hash-table set of kernel-param symbols whose indexed loads should be
+  >    marked with !invariant.load metadata.  Bound by generate-function-body
+  >    around the body codegen loop; read by the semantic-aref tensor case.
+  >    NIL means no read-only inference applies (kernel has no &out, or non-
+  >    kernel function).
 
 
 ---
 ### DEFUN `%COLLECT-READONLY-TENSOR-PARAM-SYMS`
 - **Args**: `(SEMANTIC-FUNCTION)`
 
-  > Looks up SEMANTIC-FUNCTION's high-level (pre-flatten) declared  >    signature in *KERNEL-DECLARED-SIGNATURES* and returns a hash-table  >    of param symbols whose tensor reads can be marked invariant, or NIL  >    if the convention doesn't apply.  >   >    The convention applies iff the kernel's declared params include &OUT.  >    Every param BEFORE the &OUT marker that is also a float or integer  >    tensor goes into the returned set.  >   >    Returns NIL when:  >      - The function isn't a registered kernel (no entry in  >        *KERNEL-DECLARED-SIGNATURES*).  Helper functions, accessors, and  >        internally-generated functions all fall here — safe default.  >      - The declared signature contains no &OUT marker (kernel may write  >        through any param; no read-only inference possible).  >      - No qualifying tensor params remain after filtering.  >   >    Declared signature shape: a list of (PARAM-NAME . TYPE-SPEC) pairs,  >    except &OUT itself which appears as (&OUT . &OUT).
+  > Looks up SEMANTIC-FUNCTION's high-level (pre-flatten) declared
+  >    signature in *KERNEL-DECLARED-SIGNATURES* and returns a hash-table
+  >    of param symbols whose tensor reads can be marked invariant, or NIL
+  >    if the convention doesn't apply.
+  > 
+  >    The convention applies iff the kernel's declared params include &OUT.
+  >    Every param BEFORE the &OUT marker that is also a float or integer
+  >    tensor goes into the returned set.
+  > 
+  >    Returns NIL when:
+  >      - The function isn't a registered kernel (no entry in
+  >        *KERNEL-DECLARED-SIGNATURES*).  Helper functions, accessors, and
+  >        internally-generated functions all fall here — safe default.
+  >      - The declared signature contains no &OUT marker (kernel may write
+  >        through any param; no read-only inference possible).
+  >      - No qualifying tensor params remain after filtering.
+  > 
+  >    Declared signature shape: a list of (PARAM-NAME . TYPE-SPEC) pairs,
+  >    except &OUT itself which appears as (&OUT . &OUT).
 
 
 ---
 ### DEFUN `%ATTACH-INVARIANT-LOAD`
 - **Args**: `(LOADED-INST MODULE)`
 
-  > Attach `!invariant.load !{}` metadata to the LLVM load instruction  >    LOADED-INST.  The empty MD node is the LLVM convention for the  >    invariant.load assertion.  NVPTX lowers `load` + `!invariant.load`  >    to `ld.global.nc.f32` (texture-cache / non-coherent path).  >   >    Note: LLVMMDNodeInContext2 returns an LLVMMetadataRef; LLVMSetMetadata  >    expects an LLVMValueRef.  We wrap via LLVMMetadataAsValue.
+  > Attach `!invariant.load !{}` metadata to the LLVM load instruction
+  >    LOADED-INST.  The empty MD node is the LLVM convention for the
+  >    invariant.load assertion.  NVPTX lowers `load` + `!invariant.load`
+  >    to `ld.global.nc.f32` (texture-cache / non-coherent path).
+  > 
+  >    Note: LLVMMDNodeInContext2 returns an LLVMMetadataRef; LLVMSetMetadata
+  >    expects an LLVMValueRef.  We wrap via LLVMMetadataAsValue.
 
 
 ---
 ### DEFUN `%ARRAY-NODE-READONLY-TENSOR-PARAM-P`
 - **Args**: `(ARRAY-NODE)`
 
-  > Returns T if ARRAY-NODE is a direct reference (semantic-var-read)  >    to a kernel-param symbol in *KERNEL-READONLY-TENSOR-SYMS*.  Aliased  >    references (let-bindings, function-call results) return NIL — they  >    degrade gracefully to a plain load.
+  > Returns T if ARRAY-NODE is a direct reference (semantic-var-read)
+  >    to a kernel-param symbol in *KERNEL-READONLY-TENSOR-SYMS*.  Aliased
+  >    references (let-bindings, function-call results) return NIL — they
+  >    degrade gracefully to a plain load.
 
 
 ---
@@ -2173,14 +2815,22 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER
               LOCATION-MAP)`
 
-  > Generates the body of the function.  >    Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the  >    PTX kernel-entry receive site can inttoptr demoted i64 params back  >    to their original-addrspace pointer.  >    Binds *kernel-readonly-tensor-syms* around the body codegen so the  >    semantic-aref tensor case can attach !invariant.load to direct  >    reads of read-only kernel-param tensors.
+  > Generates the body of the function.
+  >    Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the
+  >    PTX kernel-entry receive site can inttoptr demoted i64 params back
+  >    to their original-addrspace pointer.
+  >    Binds *kernel-readonly-tensor-syms* around the body codegen so the
+  >    semantic-aref tensor case can attach !invariant.load to direct
+  >    reads of read-only kernel-param tensors.
 
 
 ---
 ### DEFUN `%LOOKUP-FIELD-PHYSICAL-INDEX`
 - **Args**: `(STRUCT-DEF FIELD-NAME-STR)`
 
-  > Returns the physical (LLVM struct) index of a field identified by  >    FIELD-NAME-STR, using string-equal so package differences don't matter.  >    Returns NIL if not found.
+  > Returns the physical (LLVM struct) index of a field identified by
+  >    FIELD-NAME-STR, using string-equal so package differences don't matter.
+  >    Returns NIL if not found.
 
 
 ---
@@ -2188,7 +2838,12 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(ARRAY-NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE
               LOCATION-MAP)`
 
-  > Bypass for array-returning struct field accessors (e.g. extents~, strides~).  >    Resolves type aliases and canonical list types to mangled symbols so that  >    scratch tensors (with def-type alias or with list type) get the same GEP  >    treatment as named tensors.  >   >    Returns a GEP pointer to the array field, or NIL if the pattern is not matched.
+  > Bypass for array-returning struct field accessors (e.g. extents~, strides~).
+  >    Resolves type aliases and canonical list types to mangled symbols so that
+  >    scratch tensors (with def-type alias or with list type) get the same GEP
+  >    treatment as named tensors.
+  > 
+  >    Returns a GEP pointer to the array field, or NIL if the pattern is not matched.
 
 
 ---
@@ -2263,7 +2918,18 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%GENERATE-TENSOR-SCRATCH-LITERAL-IR`
 - **Args**: `(BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)`
 
-  > Generates IR for a scratch tensor/vector/matrix literal.  >   >    Unlike scratch cells, scratch tensors use Option B (full SROA): the host  >    passes every field of the tensor record individually (ptr, bytesize, each  >    offset, stride, extent, and length).  The SROA/reconstruction machinery  >    in internal-compile-function therefore delivers a fully-assembled tensor  >    record value into var-env under the unique implicit-arg name.  >   >    All we need to do here is:  >      1. Reconstruct the deterministic unique name (same counter + ordering as Pass 1).  >      2. Look up the tensor alloca in var-env.  >      3. Load and return the tensor value.
+  > Generates IR for a scratch tensor/vector/matrix literal.
+  > 
+  >    Unlike scratch cells, scratch tensors use Option B (full SROA): the host
+  >    passes every field of the tensor record individually (ptr, bytesize, each
+  >    offset, stride, extent, and length).  The SROA/reconstruction machinery
+  >    in internal-compile-function therefore delivers a fully-assembled tensor
+  >    record value into var-env under the unique implicit-arg name.
+  > 
+  >    All we need to do here is:
+  >      1. Reconstruct the deterministic unique name (same counter + ordering as Pass 1).
+  >      2. Look up the tensor alloca in var-env.
+  >      3. Load and return the tensor value.
 
 
 ---
@@ -2274,7 +2940,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `BUILD-CAST-IF-NEEDED`
 - **Args**: `(BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)`
 
-  > Builds LLVM cast instruction if types differ, with alias resolution.  >    MODULE is required to resolve types correctly.  >    Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;  >    treat same symbol-name as no-op cast.
+  > Builds LLVM cast instruction if types differ, with alias resolution.
+  >    MODULE is required to resolve types correctly.
+  >    Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;
+  >    treat same symbol-name as no-op cast.
 
 
 ---
@@ -2327,7 +2996,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%PROPAGATE-CALLEE-CC-TO-CALL`
 - **Args**: `(CALL-INST CALLEE-FN-VAL)`
 
-  > If CALLEE-FN-VAL is a function value, copy its calling convention to  >    CALL-INST.  Safe to call even when callee is an arbitrary SSA value  >    (e.g. a function pointer through generate-node-ir) — we only set CC  >    when we have a concrete LLVM value in hand.
+  > If CALLEE-FN-VAL is a function value, copy its calling convention to
+  >    CALL-INST.  Safe to call even when callee is an arbitrary SSA value
+  >    (e.g. a function pointer through generate-node-ir) — we only set CC
+  >    when we have a concrete LLVM value in hand.
 
 
 ---
@@ -2336,7 +3008,11 @@ Generated on 2026-06-14T02:47:55.178170Z
               CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT
               RETURN-TYPE-NAMES)`
 
-  > Helper: Builds the actual function call instruction.  >   >    Overlay change: propagate the callee's calling convention onto the  >    resulting call instruction.  Required on SPV builds — see overlay  >    header for the InstCombine UB bug this fix addresses.
+  > Helper: Builds the actual function call instruction.
+  > 
+  >    Overlay change: propagate the callee's calling convention onto the
+  >    resulting call instruction.  Required on SPV builds — see overlay
+  >    header for the InstCombine UB bug this fix addresses.
 
 
 ---
@@ -2344,7 +3020,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(BINDING BUILDER MODULE LET-ENV DI-BUILDER DI-SCOPE LOCATION-MAP
               MEMOIZED-AGGREGATES)`
 
-  > Helper: Generates IR for a single let binding.  >    Updates let-env with the new binding and returns the alloca.  >    Extended to use llvm-build-extract-element for device-vector aggregates  >    instead of llvm-build-extract-value (which is for struct aggregates only).
+  > Helper: Generates IR for a single let binding.
+  >    Updates let-env with the new binding and returns the alloca.
+  >    Extended to use llvm-build-extract-element for device-vector aggregates
+  >    instead of llvm-build-extract-value (which is for struct aggregates only).
 
 
 ---
@@ -2359,14 +3038,19 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(ELEM-NODE COMP-TYPE COMP-LLVM-TYPE BUILDER MODULE VAR-ENV
               DI-BUILDER DI-SCOPE LOCATION-MAP)`
 
-  > Generates the LLVM value for one element of a ##(...) literal.  >    If the element type already matches COMP-TYPE, generates normally.  >    If the element is a plain-int or plain-float constant being coerced to  >    a different integral/float type, produces the correctly-typed constant  >    directly without emitting a conversion instruction.
+  > Generates the LLVM value for one element of a ##(...) literal.
+  >    If the element type already matches COMP-TYPE, generates normally.
+  >    If the element is a plain-int or plain-float constant being coerced to
+  >    a different integral/float type, produces the correctly-typed constant
+  >    directly without emitting a conversion instruction.
 
 
 ---
 ### DEFUN `%MV-BUILD-CONST-I64-ARRAY`
 - **Args**: `(BUILDER RANK VALUES)`
 
-  > Build an LLVM [rank x i64] constant array from a list of integers.  >    If VALUES is shorter than rank, remaining slots are filled with 0.
+  > Build an LLVM [rank x i64] constant array from a list of integers.
+  >    If VALUES is shorter than rank, remaining slots are filled with 0.
 
 
 ---
@@ -2380,7 +3064,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%MV-BUMP-PTR`
 - **Args**: `(BUILDER BASE-PTR OFFSET-BYTES ADDR-SPACE)`
 
-  > GEP base-ptr by offset-bytes (an i64 LLVM value).  >    Returns the new ptr in the same address space.
+  > GEP base-ptr by offset-bytes (an i64 LLVM value).
+  >    Returns the new ptr in the same address space.
 
 
 ---
@@ -2394,7 +3079,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%SV-TO-I64`
 - **Args**: `(BUILDER VAL)`
 
-  > Sign-extends VAL to i64 if smaller than 64 bits; returns as-is if already i64.  >    Avoids the invalid sext-to-same-width LLVM instruction.
+  > Sign-extends VAL to i64 if smaller than 64 bits; returns as-is if already i64.
+  >    Avoids the invalid sext-to-same-width LLVM instruction.
 
 
 ---
@@ -2408,7 +3094,11 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%CALL-SPIRV-VEC3-BUILTIN`
 - **Args**: `(BUILDER MODULE SPIRV-NAME)`
 
-  > Emits a load from @__spirv_BuiltIn<SPIRV-NAME> addrspace(1) global with zeroinitializer.  >    The LLVM-SPIRV translator maps addrspace(1) globals named __spirv_BuiltIn* to SPIR-V  >    OpVariable BuiltIn decorations.  Using a zeroinitializer (CommonLinkage) suppresses the  >    import linkage that an external declaration generates, preventing the  >    ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED error from Level Zero at runtime.
+  > Emits a load from @__spirv_BuiltIn<SPIRV-NAME> addrspace(1) global with zeroinitializer.
+  >    The LLVM-SPIRV translator maps addrspace(1) globals named __spirv_BuiltIn* to SPIR-V
+  >    OpVariable BuiltIn decorations.  Using a zeroinitializer (CommonLinkage) suppresses the
+  >    import linkage that an external declaration generates, preventing the
+  >    ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED error from Level Zero at runtime.
 
 
 ---
@@ -2429,7 +3119,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%GEN-PRODUCT-OF-VEC3`
 - **Args**: `(BUILDER MODULE SPIRV-NAME RESULT-NAME)`
 
-  > Computes x*y*z for the <3 x i64> builtin named SPIRV-NAME.  >    Backend-aware: uses %get-builtin-vec3 for PTX dispatch.
+  > Computes x*y*z for the <3 x i64> builtin named SPIRV-NAME.
+  >    Backend-aware: uses %get-builtin-vec3 for PTX dispatch.
 
 
 ---
@@ -2443,28 +3134,32 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%GEN-LOCAL-LINEAR-ID`
 - **Args**: `(BUILDER MODULE)`
 
-  > Synthesizes get-local-linear-id: z*lws.y*lws.x + y*lws.x + x.  >    Backend-aware: uses %get-builtin-vec3 for PTX dispatch.
+  > Synthesizes get-local-linear-id: z*lws.y*lws.x + y*lws.x + x.
+  >    Backend-aware: uses %get-builtin-vec3 for PTX dispatch.
 
 
 ---
 ### DEFUN `%GEN-GLOBAL-LINEAR-ID`
 - **Args**: `(BUILDER MODULE)`
 
-  > Synthesizes get-global-linear-id: flat_wg * lws_total + flat_lid.  >    Backend-aware: uses %get-builtin-vec3 for PTX dispatch.
+  > Synthesizes get-global-linear-id: flat_wg * lws_total + flat_lid.
+  >    Backend-aware: uses %get-builtin-vec3 for PTX dispatch.
 
 
 ---
 ### DEFUN `%GEN-SPIRV-CONTROL-BARRIER`
 - **Args**: `(BUILDER MODULE)`
 
-  > Emits @__spirv_ControlBarrier(i32 2, i32 2, i32 264).  >    Scope=Workgroup(2) MemScope=Workgroup(2) Semantics=AcquireRelease(8)|WorkgroupMemory(256).
+  > Emits @__spirv_ControlBarrier(i32 2, i32 2, i32 264).
+  >    Scope=Workgroup(2) MemScope=Workgroup(2) Semantics=AcquireRelease(8)|WorkgroupMemory(256).
 
 
 ---
 ### DEFUN `%GEN-SPIRV-MEMORY-BARRIER`
 - **Args**: `(BUILDER MODULE)`
 
-  > Emits @__spirv_MemoryBarrier(i32 1, i32 520).  >    MemScope=CrossWorkgroup(1) Semantics=AcquireRelease(8)|CrossWorkgroupMemory(512).
+  > Emits @__spirv_MemoryBarrier(i32 1, i32 520).
+  >    MemScope=CrossWorkgroup(1) Semantics=AcquireRelease(8)|CrossWorkgroupMemory(512).
 
 
 ---
@@ -2499,7 +3194,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%GET-BUILTIN-VEC3`
 - **Args**: `(BUILDER MODULE SPIRV-NAME)`
 
-  > Backend-aware vec3 builtin read.  On SPV, delegates to  >    %call-spirv-vec3-builtin.  On PTX, maps SPV names to NVVM  >    special-register intrinsics or synthesizes the value from  >    component registers.
+  > Backend-aware vec3 builtin read.  On SPV, delegates to
+  >    %call-spirv-vec3-builtin.  On PTX, maps SPV names to NVVM
+  >    special-register intrinsics or synthesizes the value from
+  >    component registers.
 
 
 ---
@@ -2520,35 +3218,45 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%PTX-READ-SREG-SCALAR`
 - **Args**: `(BUILDER MODULE SREG-BASE DIM)`
 
-  > Reads @llvm.nvvm.read.ptx.sreg.<SREG-BASE>.<X|Y|Z> and zext-promotes  >    the i32 result to i64 (Crisp's ulong contract).  >    SREG-BASE: "tid" / "ntid" / "ctaid" / "nctaid".  >    DIM: 0=x, 1=y, 2=z.
+  > Reads @llvm.nvvm.read.ptx.sreg.<SREG-BASE>.<X|Y|Z> and zext-promotes
+  >    the i32 result to i64 (Crisp's ulong contract).
+  >    SREG-BASE: "tid" / "ntid" / "ctaid" / "nctaid".
+  >    DIM: 0=x, 1=y, 2=z.
 
 
 ---
 ### DEFUN `%PTX-READ-SREG-VEC3`
 - **Args**: `(BUILDER MODULE SREG-BASE)`
 
-  > Builds a <3 x i64> vector from x/y/z reads of the NVPTX special  >    register family SREG-BASE.  Mirrors the shape of %call-spirv-vec3-builtin  >    so the rest of the gpu-builtin codegen can treat both backends  >    uniformly.
+  > Builds a <3 x i64> vector from x/y/z reads of the NVPTX special
+  >    register family SREG-BASE.  Mirrors the shape of %call-spirv-vec3-builtin
+  >    so the rest of the gpu-builtin codegen can treat both backends
+  >    uniformly.
 
 
 ---
 ### DEFUN `%PTX-READ-WARP-SREG`
 - **Args**: `(BUILDER MODULE SREG-NAME)`
 
-  > Reads a single NVPTX warp special register (warpid, laneid) as i32.  >    Unlike %ptx-read-sreg-scalar which zext's to i64, this returns i32  >    to match the SPV uint convention used by warp builtins.
+  > Reads a single NVPTX warp special register (warpid, laneid) as i32.
+  >    Unlike %ptx-read-sreg-scalar which zext's to i64, this returns i32
+  >    to match the SPV uint convention used by warp builtins.
 
 
 ---
 ### DEFUN `%PTX-SYNTHESIZE-WARP-COUNT`
 - **Args**: `(BUILDER MODULE)`
 
-  > Synthesizes warp count per block: ceil(ntid.x * ntid.y * ntid.z / 32).  >    Returns i32 to match SPV uint convention.
+  > Synthesizes warp count per block: ceil(ntid.x * ntid.y * ntid.z / 32).
+  >    Returns i32 to match SPV uint convention.
 
 
 ---
 ### DEFUN `%GEN-NVVM-CP-ASYNC-ELEM`
 - **Args**: `(BUILDER MODULE DST-PTR SRC-PTR ELEM-BYTES)`
 
-  > Emits @llvm.nvvm.cp.async.ca.shared.global.{4|8|16}(dst, src).  >    ELEM-BYTES picks the right intrinsic variant.
+  > Emits @llvm.nvvm.cp.async.ca.shared.global.{4|8|16}(dst, src).
+  >    ELEM-BYTES picks the right intrinsic variant.
 
 
 ---
@@ -2576,7 +3284,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%VECTOR-ELEM-TYPE`
 - **Args**: `(TILE-TYPE-SPEC)`
 
-  > Returns the element type symbol from a (vector ELEM ...) or (tensor  >    ELEM ...) type spec, walking through aliases.
+  > Returns the element type symbol from a (vector ELEM ...) or (tensor
+  >    ELEM ...) type spec, walking through aliases.
 
 
 ---
@@ -2591,7 +3300,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `GET-LLVM-RETURN-TYPE`
 - **Args**: `(MODULE RETURN-TYPE-NAMES)`
 
-  > Determines the LLVM return type from a list of Crisp type names.  >   Handles single values, void, and multiple values (by creating a struct).
+  > Determines the LLVM return type from a list of Crisp type names.
+  >   Handles single values, void, and multiple values (by creating a struct).
 
 
 ---
@@ -2612,42 +3322,60 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%RECORD-BASE-FROM-LIST-FORM`
 - **Args**: `(TYPE-SPEC)`
 
-  > If TYPE-SPEC is a non-storage list form like (V-POINT :EARNESTNESS 3.0),  >    returns the base symbol V-POINT if it resolves to a user record type.  >    Otherwise returns NIL.  Plain symbols and storage list forms return NIL.
+  > If TYPE-SPEC is a non-storage list form like (V-POINT :EARNESTNESS 3.0),
+  >    returns the base symbol V-POINT if it resolves to a user record type.
+  >    Otherwise returns NIL.  Plain symbols and storage list forms return NIL.
 
 
 ---
 ### DEFUN `GET-EXPANDED-TYPES`
 - **Args**: `(TYPE-SPEC MODULE)`
 
-  > Returns a list of LLVM types for a given Crisp type spec.  >    For cell/storage, returns exploded ptr+i64 types. For records, explodes recursively.  >    For (array T N), explodes to N copies of T's expanded types (SROA for record fields).  >    For others, returns (type).  >    If *target-backend* is :spirv or :ptx, upgrades pointers to Global Address Space (1).
+  > Returns a list of LLVM types for a given Crisp type spec.
+  >    For cell/storage, returns exploded ptr+i64 types. For records, explodes recursively.
+  >    For (array T N), explodes to N copies of T's expanded types (SROA for record fields).
+  >    For others, returns (type).
+  >    If *target-backend* is :spirv or :ptx, upgrades pointers to Global Address Space (1).
 
 
 ---
 ### DEFUN `EXPLODE-VALUE`
 - **Args**: `(BUILDER AGG-VAL TYPE-SPEC)`
 
-  > Extracts components from an aggregate value if necessary. Returns a list of LLVM values.  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).  >    For (array T N) fields: extracts N individual element values (SROA).
+  > Extracts components from an aggregate value if necessary. Returns a list of LLVM values.
+  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
+  >    For (array T N) fields: extracts N individual element values (SROA).
 
 
 ---
 ### DEFUN `IMPLODE-VALUE`
 - **Args**: `(BUILDER COMPONENTS TYPE-SPEC MODULE)`
 
-  > Combines components into an aggregate value if necessary. Returns a single LLVM value.  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).  >    For (array T N) fields: assembles N scalar components into an array value (SROA).
+  > Combines components into an aggregate value if necessary. Returns a single LLVM value.
+  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
+  >    For (array T N) fields: assembles N scalar components into an array value (SROA).
 
 
 ---
 ### DEFUN `EXTRACT-PRIMARY-VALUE`
 - **Args**: `(BUILDER VALUE TYPE-SPEC)`
 
-  > If the type indicates an MVR (multiple return value) struct, extract the first element.  >    Otherwise return the value as is.  >    Used when a single-value context receives an MVR result.
+  > If the type indicates an MVR (multiple return value) struct, extract the first element.
+  >    Otherwise return the value as is.
+  >    Used when a single-value context receives an MVR result.
 
 
 ---
 ### DEFUN `CREATE-LLVM-FUNCTION-TYPE`
 - **Args**: `(MODULE RETURN-TYPES PARAM-NODES &OPTIONAL IS-ENTRY-POINT FN-NAME)`
 
-  > Calculates the LLVM function type, handling parameter explosion.  >    When IS-ENTRY-POINT is non-NIL and *TARGET-BACKEND* is :PTX, demotes  >    shared (addrspace 3) and local (addrspace 5) pointer params to i64  >    so the resulting kernel image will be accepted by the CUDA driver  >    (see header comment in this overlay).  After demotion, runs the  >    PTX-entry verifier as a belt-and-suspenders check.  FN-NAME is used  >    only in the verifier's error message.
+  > Calculates the LLVM function type, handling parameter explosion.
+  >    When IS-ENTRY-POINT is non-NIL and *TARGET-BACKEND* is :PTX, demotes
+  >    shared (addrspace 3) and local (addrspace 5) pointer params to i64
+  >    so the resulting kernel image will be accepted by the CUDA driver
+  >    (see header comment in this overlay).  After demotion, runs the
+  >    PTX-entry verifier as a belt-and-suspenders check.  FN-NAME is used
+  >    only in the verifier's error message.
 
 
 ---
@@ -2655,7 +3383,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ### DEFVAR `*GRID-FUNCTIONS*`
 
-  > Maps grid function name → T.  >    Used to enforce that grid functions can only be called from  >    dispatch contexts (def-kernel or def-grid-function bodies).
+  > Maps grid function name → T.
+  >    Used to enforce that grid functions can only be called from
+  >    dispatch contexts (def-kernel or def-grid-function bodies).
 
 
 ---
@@ -2669,7 +3399,11 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `RESOLVE-TOOL-EXECUTABLE`
 - **Args**: `(TOOL-BASE)`
 
-  > Resolves the path to a tool executable.   >    Prefers bundled version in bin/, falls back to system PATH.  >    Robustness:   >    - Checks versioned suffixes (e.g. llc-21) if base name not in path.  >    - Falls back to bundled tool if system tool is missing even if CRISP_USE_SYSTEM_TOOLS is set.
+  > Resolves the path to a tool executable. 
+  >    Prefers bundled version in bin/, falls back to system PATH.
+  >    Robustness: 
+  >    - Checks versioned suffixes (e.g. llc-21) if base name not in path.
+  >    - Falls back to bundled tool if system tool is missing even if CRISP_USE_SYSTEM_TOOLS is set.
 
 
 ---
@@ -2683,88 +3417,112 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `FIND-SPIR-KERNELS`
 - **Args**: `(IR-TEXT)`
 
-  > Find all SPIR kernel functions in LLVM IR text.  >    Returns list of (function-name start-pos end-pos-of-signature).
+  > Find all SPIR kernel functions in LLVM IR text.
+  >    Returns list of (function-name start-pos end-pos-of-signature).
 
 
 ---
 ### DEFUN `EXTRACT-KERNEL-PARAMS`
 - **Args**: `(IR-TEXT FUNC-START FUNC-END)`
 
-  > Extract parameter types from a kernel function signature.  > Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64', '%POINT').
+  > Extract parameter types from a kernel function signature.
+  > Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64', '%POINT').
 
 
 ---
 ### DEFUN `IR-TYPE-TO-OPENCL-METADATA`
 - **Args**: `(IR-TYPE)`
 
-  > Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).  > Returns (values addr-space-int access-qual-string type-name-string).
+  > Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).
+  > Returns (values addr-space-int access-qual-string type-name-string).
 
 
 ---
 ### DEFUN `GENERATE-KERNEL-METADATA`
 - **Args**: `(PARAMS METADATA-ID-BASE)`
 
-  > Generate LLVM metadata definitions for kernel parameters.  >  Returns (values metadata-refs-string metadata-defs-string next-id).
+  > Generate LLVM metadata definitions for kernel parameters.
+  >  Returns (values metadata-refs-string metadata-defs-string next-id).
 
 
 ---
 ### DEFUN `INJECT-SPIR-KERNEL-METADATA`
 - **Args**: `(IR-TEXT)`
 
-  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  > Returns modified IR text with metadata.
+  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.
+  > Returns modified IR text with metadata.
 
 
 ---
 ### DEFUN `%OPT-AVAILABLE-P`
 
-  > Returns the resolved opt tool path if findable, NIL otherwise.  >    We probe rather than assume, so machines without opt installed still  >    produce PTX / SPV (just unoptimized).
+  > Returns the resolved opt tool path if findable, NIL otherwise.
+  >    We probe rather than assume, so machines without opt installed still
+  >    produce PTX / SPV (just unoptimized).
 
 
 ---
 ### DEFUN `%RUN-OPT-O3`
 - **Args**: `(INPUT-LL-FILE OUTPUT-LL-FILE)`
 
-  > Run opt -O3 -S input-ll-file -o output-ll-file.  >    Returns T on success, NIL if opt isn't available or the run failed.
+  > Run opt -O3 -S input-ll-file -o output-ll-file.
+  >    Returns T on success, NIL if opt isn't available or the run failed.
 
 
 ---
 ### DEFPARAMETER `+SPV-OPT-PIPELINE+`
 
-  > Full -O3 pipeline for SPV builds.  Safe now that the call-site CC  >    mismatch (see overlay header) is fixed in `%build-function-call` and  >    `generate-node-ir semantic-funcall` below.
+  > Full -O3 pipeline for SPV builds.  Safe now that the call-site CC
+  >    mismatch (see overlay header) is fixed in `%build-function-call` and
+  >    `generate-node-ir semantic-funcall` below.
 
 
 ---
 ### DEFUN `%RUN-OPT-PIPELINE`
 - **Args**: `(INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)`
 
-  > Run opt -passes=<passes-string> -S input -o output.  >    Returns T on success, NIL if opt isn't available or the run failed.
+  > Run opt -passes=<passes-string> -S input -o output.
+  >    Returns T on success, NIL if opt isn't available or the run failed.
 
 
 ---
 ### DEFUN `COMPILE-TO-SPIRV`
 - **Args**: `(MODULE OUTPUT-PATH &KEY DEBUG-P)`
 
-  > Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as ->  >    llvm-spirv.
+  > Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as ->
+  >    llvm-spirv.
 
 
 ---
 ### DEFUN `%REMOVE-DEAD-ARRAY-RETURNING-FUNCTIONS`
 - **Args**: `(MODULE)`
 
-  > Scans MODULE for functions whose return type is an LLVM array type  >    ([N x T]) and that have no uses (no callers in this module).  >    Deletes each such function.  >   >    This is Part 2 of the IGC bug 028 workaround.  >    Returns the number of functions deleted.
+  > Scans MODULE for functions whose return type is an LLVM array type
+  >    ([N x T]) and that have no uses (no callers in this module).
+  >    Deletes each such function.
+  > 
+  >    This is Part 2 of the IGC bug 028 workaround.
+  >    Returns the number of functions deleted.
 
 
 ---
 ### DEFUN `COMPILE-TO-PTX`
 - **Args**: `(MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)`
 
-  > Compiles an LLVM Module to PTX using llc.  >    Pipeline: IR -> opt -O3 (if available) -> llc -> PTX.  >    COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)  >                        sm_80 = Ampere (required for endeavor 114's cp.async path).  >                        Pre-Ampere targets can pass an explicit value if needed,  >                        but kernels using request-load-tile / await-request will  >                        fail to compile on anything earlier.
+  > Compiles an LLVM Module to PTX using llc.
+  >    Pipeline: IR -> opt -O3 (if available) -> llc -> PTX.
+  >    COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)
+  >                        sm_80 = Ampere (required for endeavor 114's cp.async path).
+  >                        Pre-Ampere targets can pass an explicit value if needed,
+  >                        but kernels using request-load-tile / await-request will
+  >                        fail to compile on anything earlier.
 
 
 ---
 ### DEFUN `REGISTER-BUILTINS`
 
-  > Registers built-in storage handle templates (storage, cell, tensor) and  >    their system-generated accessor functions.  Called by initialize-compiler.
+  > Registers built-in storage handle templates (storage, cell, tensor) and
+  >    their system-generated accessor functions.  Called by initialize-compiler.
 
 
 ---
@@ -2776,20 +3534,24 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*IMPLICIT-SCRATCH-SIZE-EXPR-MAP*`
 
-  > Maps implicit scratch tensor param-name → size-expr form as written by the user  >    (e.g. :match-warp-tile, 1, 4).  Used by generate-implicit-signature for metadata.
+  > Maps implicit scratch tensor param-name → size-expr form as written by the user
+  >    (e.g. :match-warp-tile, 1, 4).  Used by generate-implicit-signature for metadata.
 
 
 ---
 ### DEFVAR `*KERNEL-DISPATCH-DECLARATIONS*`
 
-  > Maps kernel name symbol → plist of dispatch declarations extracted from def-kernel.  >    Keys: :global-size, :local-size, :num-groups. Values: the raw s-expression forms  >    e.g. :global-size = (global-size :derive-from (width height) :strategy :one-thread-per).
+  > Maps kernel name symbol → plist of dispatch declarations extracted from def-kernel.
+  >    Keys: :global-size, :local-size, :num-groups. Values: the raw s-expression forms
+  >    e.g. :global-size = (global-size :derive-from (width height) :strategy :one-thread-per).
 
 
 ---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
 
-  > Initializes the compiler state.  >    Extended to clear *grid-functions* for def-grid-function support.
+  > Initializes the compiler state.
+  >    Extended to clear *grid-functions* for def-grid-function support.
 
 
 ---
@@ -2798,7 +3560,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `DEF-ENUMERATION`
 - **Args**: `(NAME &REST SPECS)`
 
-  > Defines a new enumeration type.  >    Usage: (def-enumeration address-space (:global 1) :local :private)
+  > Defines a new enumeration type.
+  >    Usage: (def-enumeration address-space (:global 1) :local :private)
 
 
 ---
@@ -2818,14 +3581,17 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `PARSE-FUNCTION-DECLARATIONS`
 - **Args**: `(PARAMS DECLARATIONS)`
 
-  > Parses a function's declarations and returns its environment and return type.  >    Supports interleaved type syntax: ((p type)).  >    Post-processes return types to resolve parameterized brand applications.
+  > Parses a function's declarations and returns its environment and return type.
+  >    Supports interleaved type syntax: ((p type)).
+  >    Post-processes return types to resolve parameterized brand applications.
 
 
 ---
 ### DEFUN `BIND-KEYWORD-ARGS`
 - **Args**: `(FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)`
 
-  > Helper for resolve-argument-bindings. Handles &key argument parsing.  >    Returns (values active-env remainder-env error-message)
+  > Helper for resolve-argument-bindings. Handles &key argument parsing.
+  >    Returns (values active-env remainder-env error-message)
 
 
 ---
@@ -2839,7 +3605,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `RESOLVE-ARGUMENT-BINDINGS`
 - **Args**: `(GENERIC-DEF EXPLICIT-ARG-TYPES)`
 
-  > Resolves the active environment and default bindings for a generic instantiation.  >    Returns (values active-env injected-bindings error-message).
+  > Resolves the active environment and default bindings for a generic instantiation.
+  >    Returns (values active-env injected-bindings error-message).
 
 
 ---
@@ -2905,28 +3672,47 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `INJECT-IMPLICIT-ARGUMENTS`
 - **Args**: `(NAME EXPLICIT-ENV)`
 
-  > Injects implicit arguments into the environment for carrier functions.  >    Types in *implicit-arg-map* are already in the correct form:  >    mangled symbols for tensors (no integers to mangle-type-spec),  >    canonical lists for cells (preserved for hoist metadata).
+  > Injects implicit arguments into the environment for carrier functions.
+  >    Types in *implicit-arg-map* are already in the correct form:
+  >    mangled symbols for tensors (no integers to mangle-type-spec),
+  >    canonical lists for cells (preserved for hoist metadata).
 
 
 ---
 ### DEFUN `SCAN-FOR-CARRIERS`
 - **Args**: `(NAME BODY)`
 
-  > Performs a single-pass look-ahead to detect if the function is a carrier.  >   >    This logic is ONLY executed in single-pass mode. It serves two purposes:  >    1. Early originator detection - finds make-scratch-cell BEFORE env is built  >    2. Upward carrier propagation - copies implicit args from callees to callers  >   >    In multi-pass mode, this analysis is handled by analyze-signatures-pass.
+  > Performs a single-pass look-ahead to detect if the function is a carrier.
+  > 
+  >    This logic is ONLY executed in single-pass mode. It serves two purposes:
+  >    1. Early originator detection - finds make-scratch-cell BEFORE env is built
+  >    2. Upward carrier propagation - copies implicit args from callees to callers
+  > 
+  >    In multi-pass mode, this analysis is handled by analyze-signatures-pass.
 
 
 ---
 ### DEFUN `DETECT-AND-REGISTER-IMPLICIT-TEMPLATE`
 - **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)`
 
-  > Detects if a function is an implicit template (e.g. has function-type args  >    or incomplete-type parameters), and if so registers it as a template and  >    returns T.  Otherwise returns NIL.  >   >    A type is treated as incomplete only if incomplete-type-p says so AND the  >    type is NOT a mangled/instantiated concrete struct (i.e. its name contains  >    an underscore AND has a registered struct definition).  Bare base names such  >    as PANTS and SHIRT have no underscore and remain eligible as implicit  >    template parameters even though they are in *crisp-structs*.
+  > Detects if a function is an implicit template (e.g. has function-type args
+  >    or incomplete-type parameters), and if so registers it as a template and
+  >    returns T.  Otherwise returns NIL.
+  > 
+  >    A type is treated as incomplete only if incomplete-type-p says so AND the
+  >    type is NOT a mangled/instantiated concrete struct (i.e. its name contains
+  >    an underscore AND has a registered struct definition).  Bare base names such
+  >    as PANTS and SHIRT have no underscore and remain eligible as implicit
+  >    template parameters even though they are in *crisp-structs*.
 
 
 ---
 ### DEFUN `PARSE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Parses a single type specifier, handling basic types, parameterized types,  >    function types like #'(int => int), and brand type applications like (token-t s).  >    Extended: (array T N) is returned as-is (not mangled) before the generic path.
+  > Parses a single type specifier, handling basic types, parameterized types,
+  >    function types like #'(int => int), and brand type applications like (token-t s).
+  >    Extended: (array T N) is returned as-is (not mangled) before the generic path.
 
 
 ---
@@ -2961,7 +3747,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%VALIDATE-GRID-FUNCTION-RETURN-TYPE`
 - **Args**: `(RETURN-TYPES)`
 
-  > Validates that a grid function has a void return type.  >    Grid functions are void by definition; declaring a return type is an error.
+  > Validates that a grid function has a void return type.
+  >    Grid functions are void by definition; declaring a return type is an error.
 
 
 ---
@@ -3234,21 +4021,26 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*HOIST-CURRENT-STRUCTS*`
 
-  > Dynamic variable: list of (def-struct NAME ...) forms from the current  >    metacrisp :structs section.  Bound by generate-l0-launcher.
+  > Dynamic variable: list of (def-struct NAME ...) forms from the current
+  >    metacrisp :structs section.  Bound by generate-l0-launcher.
 
 
 ---
 ### DEFUN `%FIND-STRUCT-DEF-L0`
 - **Args**: `(NAME)`
 
-  > Find (def-struct NAME ...) in *hoist-current-structs*.  >    NAME is a symbol; all comparisons use string-equal to be package-agnostic.  >    The metacrisp is parsed with standard READ (cl-user package), so symbols  >    from the parsed data will not eq symbols from overlay source code.
+  > Find (def-struct NAME ...) in *hoist-current-structs*.
+  >    NAME is a symbol; all comparisons use string-equal to be package-agnostic.
+  >    The metacrisp is parsed with standard READ (cl-user package), so symbols
+  >    from the parsed data will not eq symbols from overlay source code.
 
 
 ---
 ### DEFUN `STRUCT-TYPE-P-L0`
 - **Args**: `(TYPE)`
 
-  > Returns T if TYPE names a def-struct in *hoist-current-structs*.  >    Accepts plain symbols or list forms like (POINT :EARNESTNESS 3.0).
+  > Returns T if TYPE names a def-struct in *hoist-current-structs*.
+  >    Accepts plain symbols or list forms like (POINT :EARNESTNESS 3.0).
 
 
 ---
@@ -3283,14 +4075,19 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%STRUCT-EMIT-FIELDS`
 - **Args**: `(STREAM VAR-PATH MEMBERS ALIASES)`
 
-  > Recursively emit C++ field assignments for a struct variable at VAR-PATH.  >    MEMBERS is the member list from the (def-struct NAME ...) form.  >    Array-typed fields are iota-initialized: field[i] = (T)i.  >    Scalar fields use a type-appropriate constant (1 / 1.0f / 1.0).  >    Nested structs are recursed into.
+  > Recursively emit C++ field assignments for a struct variable at VAR-PATH.
+  >    MEMBERS is the member list from the (def-struct NAME ...) form.
+  >    Array-typed fields are iota-initialized: field[i] = (T)i.
+  >    Scalar fields use a type-appropriate constant (1 / 1.0f / 1.0).
+  >    Nested structs are recursed into.
 
 
 ---
 ### DEFUN `GENERATE-L0-LAUNCHER`
 - **Args**: `(METACRISP-PATH)`
 
-  > Generate Level Zero C++ launcher code from metacrisp file.  >    Extended to extract and pass dispatch declarations to generate-cpp-main.
+  > Generate Level Zero C++ launcher code from metacrisp file.
+  >    Extended to extract and pass dispatch declarations to generate-cpp-main.
 
 
 ---
@@ -3311,7 +4108,11 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `GENERATE-CPP-STRUCTS`
 - **Args**: `(STREAM STRUCTS)`
 
-  > Generate C++ struct definitions from metadata.  >    For (array T N) member types: emits 'T name[N]' for the field declaration  >    and a loop in operator<< to print all elements space-separated.  >    operator<< prints values space-separated (no field names, no braces)  >    so HOIST-EXPECT substring checks work correctly.
+  > Generate C++ struct definitions from metadata.
+  >    For (array T N) member types: emits 'T name[N]' for the field declaration
+  >    and a loop in operator<< to print all elements space-separated.
+  >    operator<< prints values space-separated (no field names, no braces)
+  >    so HOIST-EXPECT substring checks work correctly.
 
 
 ---
@@ -3361,14 +4162,18 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%L0-TENSOR-LENGTH-CPP-VAR`
 - **Args**: `(SYM)`
 
-  > Convert a tensor parameter symbol to its C++ length variable.  >    The L0 hoist emits 'uint64_t <name>_length = N;' for each tensor param.
+  > Convert a tensor parameter symbol to its C++ length variable.
+  >    The L0 hoist emits 'uint64_t <name>_length = N;' for each tensor param.
 
 
 ---
 ### DEFUN `%L0-NORMALIZE-DERIVE-FROM`
 - **Args**: `(RAW)`
 
-  > Normalize :derive-from value into a list:  >      <symbol>           -> (<symbol>)  ;; tensor case  >      (sym1 sym2 ...)    -> (sym1 sym2 ...)  >      nil                -> nil
+  > Normalize :derive-from value into a list:
+  >      <symbol>           -> (<symbol>)  ;; tensor case
+  >      (sym1 sym2 ...)    -> (sym1 sym2 ...)
+  >      nil                -> nil
 
 
 ---
@@ -3406,7 +4211,16 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%L0-EMIT-DISPATCH`
 - **Args**: `(STREAM GLOBAL-DECL LOCAL-DECL NUM-GROUPS-DECL)`
 
-  > Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.  >    Supports:  >      :strategy :strided        — max occupancy (zeDeviceGetComputeProperties +  >                                  optional zeKernelGetProperties)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :tiled          — grid sized via derive-from + tile-shape  >      :strategy :interleaved    — not yet implemented (default dispatch)  >    :set-to scalar/list       — fixed grid  >    :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
+  > Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.
+  >    Supports:
+  >      :strategy :strided        — max occupancy (zeDeviceGetComputeProperties +
+  >                                  optional zeKernelGetProperties)
+  >      :strategy :one-thread-per — grid sized to derive-from source
+  >      :strategy :tiled          — grid sized via derive-from + tile-shape
+  >      :strategy :interleaved    — not yet implemented (default dispatch)
+  >    :set-to scalar/list       — fixed grid
+  >    :derive-from can be a single tensor symbol (uses <name>_length) or a list
+  >    of scalar parameter names (uses <name>_arg).
 
 
 ---
@@ -3414,7 +4228,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(STREAM KERNEL-NAME DECLARED-SIG ALIASES RECORDS &OPTIONAL
               DISPATCH-INFO)`
 
-  > Generate kernel creation and launch code. Returns list of USM allocations.  >    Extended to accept dispatch-info plist with :global-size, :local-size, :num-groups.
+  > Generate kernel creation and launch code. Returns list of USM allocations.
+  >    Extended to accept dispatch-info plist with :global-size, :local-size, :num-groups.
 
 
 ---
@@ -3435,7 +4250,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `FIND-RECORD-DEF`
 - **Args**: `(TYPE RECORDS)`
 
-  > Find the def-record entry matching TYPE in RECORDS.  >    TYPE may be a plain symbol or a parameterized list form.
+  > Find the def-record entry matching TYPE in RECORDS.
+  >    TYPE may be a plain symbol or a parameterized list form.
 
 
 ---
@@ -3449,7 +4265,12 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%RECORD-FIELD-ARGS`
 - **Args**: `(STREAM MEMBERS VAR-PATH ARG-INDEX RECORDS ALIASES)`
 
-  > Recursively emit field initialization and zeKernelSetArgumentValue calls  >    for all leaf fields of a record, following nested records.  >    Array-typed members are SROA'd: iota-initialized and passed as N  >    individual scalar args (one per element), matching the compiler's  >    physical signature which explodes (array T N) to N scalar slots.  >    Returns the updated arg-index after consuming all fields.
+  > Recursively emit field initialization and zeKernelSetArgumentValue calls
+  >    for all leaf fields of a record, following nested records.
+  >    Array-typed members are SROA'd: iota-initialized and passed as N
+  >    individual scalar args (one per element), matching the compiler's
+  >    physical signature which explodes (array T N) to N scalar slots.
+  >    Returns the updated arg-index after consuming all fields.
 
 
 ---
@@ -3463,7 +4284,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%TENSOR-COMPACT-EXTENTS-STRIDES`
 - **Args**: `(N DIM-EXTENT)`
 
-  > Returns (values extents strides) for a compact N-dim tensor.  >    Strides are in elements; innermost stride = 1.
+  > Returns (values extents strides) for a compact N-dim tensor.
+  >    Strides are in elements; innermost stride = 1.
 
 
 ---
@@ -3505,7 +4327,15 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR)`
 
-  > Generate kernel argument setup code with USM allocation for cells/tensors.  >    Handles:  >      cell                   — 3 args (ptr, byte-size, offset)  >      local scratch tensor   — 3N+3 args; ptr as nullptr local alloc (NEW)  >      tensor/vector/matrix   — 3N+3 args; USM allocation  >      def-struct             — 1 arg (aggregate by value, sizeof struct)  >      def-record             — exploded scalar args  >      (array T N)            — 1 arg, passed by value (iota-initialized T[N])  >      scalar/dvec            — 1 arg
+  > Generate kernel argument setup code with USM allocation for cells/tensors.
+  >    Handles:
+  >      cell                   — 3 args (ptr, byte-size, offset)
+  >      local scratch tensor   — 3N+3 args; ptr as nullptr local alloc (NEW)
+  >      tensor/vector/matrix   — 3N+3 args; USM allocation
+  >      def-struct             — 1 arg (aggregate by value, sizeof struct)
+  >      def-record             — exploded scalar args
+  >      (array T N)            — 1 arg, passed by value (iota-initialized T[N])
+  >      scalar/dvec            — 1 arg
 
 
 ---
@@ -3516,7 +4346,13 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `CRISP-TYPE-TO-CPP-TYPE`
 - **Args**: `(CRISP-TYPE)`
 
-  > Convert a Crisp type to a C++ type string.  >    Uses string-equal for package-agnostic symbol comparison so that  >    symbols interned in any package (e.g. :crisp.hoist.l0 during metacrisp  >    parsing) are handled correctly.  >    Maps long→int64_t, ulong→uint64_t (64-bit on all platforms).  >    Fallback: hyphens converted to underscores (safe for C++ identifiers).  >    For (array T N): resolves element type.
+  > Convert a Crisp type to a C++ type string.
+  >    Uses string-equal for package-agnostic symbol comparison so that
+  >    symbols interned in any package (e.g. :crisp.hoist.l0 during metacrisp
+  >    parsing) are handled correctly.
+  >    Maps long→int64_t, ulong→uint64_t (64-bit on all platforms).
+  >    Fallback: hyphens converted to underscores (safe for C++ identifiers).
+  >    For (array T N): resolves element type.
 
 
 ---
@@ -3530,7 +4366,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%DVEC-PARSE`
 - **Args**: `(TYPE-SYM)`
 
-  > If TYPE-SYM names a device vector type (e.g. USHORT2, FLOAT4), returns  >    (values base-name width) where base-name is a lowercase string (e.g. "ushort")  >    and width is an integer (2, 3, or 4).  Returns NIL if not a device vector type.
+  > If TYPE-SYM names a device vector type (e.g. USHORT2, FLOAT4), returns
+  >    (values base-name width) where base-name is a lowercase string (e.g. "ushort")
+  >    and width is an integer (2, 3, or 4).  Returns NIL if not a device vector type.
 
 
 ---
@@ -3544,21 +4382,29 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%EMIT-DVEC-TYPEDEF`
 - **Args**: `(STREAM TYPE-SYM)`
 
-  > Emit a C++ struct definition for a device vector type (e.g. ushort2).  >    Uses <cstdint> types for the members.  >    Uses 'struct NAME { };' (not typedef struct) so that the type name is in scope  >    inside the body, which is required for the friend operator<< declaration.  >    The operator<< prints space-separated components, matching the HOIST-EXPECT  >    substring-match convention.
+  > Emit a C++ struct definition for a device vector type (e.g. ushort2).
+  >    Uses <cstdint> types for the members.
+  >    Uses 'struct NAME { };' (not typedef struct) so that the type name is in scope
+  >    inside the body, which is required for the friend operator<< declaration.
+  >    The operator<< prints space-separated components, matching the HOIST-EXPECT
+  >    substring-match convention.
 
 
 ---
 ### DEFUN `%COLLECT-DVEC-TYPES`
 - **Args**: `(DECLARED-SIG ALIASES)`
 
-  > Collect all distinct device vector type symbols used in DECLARED-SIG and ALIASES.  >    Checks cell element types from aliases and direct scalar param types.  >    Returns a deduplicated list ordered by first appearance.
+  > Collect all distinct device vector type symbols used in DECLARED-SIG and ALIASES.
+  >    Checks cell element types from aliases and direct scalar param types.
+  >    Returns a deduplicated list ordered by first appearance.
 
 
 ---
 ### DEFUN `GENERATE-CPP-DVEC-TYPEDEFS`
 - **Args**: `(STREAM DVEC-TYPES)`
 
-  > Emit C++ typedef structs for all device vector types in DVEC-TYPES.  >    Called from generate-l0-launcher after generate-cpp-typedefs.
+  > Emit C++ typedef structs for all device vector types in DVEC-TYPES.
+  >    Called from generate-l0-launcher after generate-cpp-typedefs.
 
 
 ---
@@ -3739,7 +4585,21 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `LET`
 - **Args**: `(BINDINGS &BODY BODY)`
 
-  > A unified 'let' for Crisp that works in both Kernels and Macros.  >    - It is SEQUENTIAL (like CL:LET*).  >    - It supports Multi-Value-Binding (MVB) destructuring.  >      >    Example:  >      (let ((a 1)  >            (b 2)  >            ((q r) (floor 10 3)))  >        (+ a b q r))  >   >    This macro expands into a nest of CL:LET* and CL:MULTIPLE-VALUE-BIND  >    forms, suitable for execution in the Lisp host (macros/tests).  >      >    When compiling Kernels, the Crisp Compiler intercepts the 'let' symbol  >    directly and uses its own semantic analyzer, ignoring this macro.
+  > A unified 'let' for Crisp that works in both Kernels and Macros.
+  >    - It is SEQUENTIAL (like CL:LET*).
+  >    - It supports Multi-Value-Binding (MVB) destructuring.
+  >    
+  >    Example:
+  >      (let ((a 1)
+  >            (b 2)
+  >            ((q r) (floor 10 3)))
+  >        (+ a b q r))
+  > 
+  >    This macro expands into a nest of CL:LET* and CL:MULTIPLE-VALUE-BIND
+  >    forms, suitable for execution in the Lisp host (macros/tests).
+  >    
+  >    When compiling Kernels, the Crisp Compiler intercepts the 'let' symbol
+  >    directly and uses its own semantic analyzer, ignoring this macro.
 
 
 ---
@@ -3765,13 +4625,15 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `IF+`
 - **Args**: `(TEST THEN &OPTIONAL ELSE)`
 
-  > Compile-time conditional. Evaluates TEST at macro-expansion time.  >    Errors if TEST cannot be evaluated (e.g. relies on runtime values).
+  > Compile-time conditional. Evaluates TEST at macro-expansion time.
+  >    Errors if TEST cannot be evaluated (e.g. relies on runtime values).
 
 
 ---
 ### DEFUN `COMPILER-NO-OP`
 
-  > A no-op function that returns no values.   >    Used as the expansion target for compile-time macros when evaluated in the host environment.
+  > A no-op function that returns no values. 
+  >    Used as the expansion target for compile-time macros when evaluated in the host environment.
 
 
 ---
@@ -3785,7 +4647,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `WITH-PEEK-SCRATCH-COUNTER`
 - **Args**: `(&BODY BODY)`
 
-  > Executes body while insulating the global *scratch-cell-counter* from changes.  >    Used for look-ahead scans that shouldn't affect the main codegen counter state.  >    This is critical for single-pass compilation where we scan AND then codegen immediately.
+  > Executes body while insulating the global *scratch-cell-counter* from changes.
+  >    Used for look-ahead scans that shouldn't affect the main codegen counter state.
+  >    This is critical for single-pass compilation where we scan AND then codegen immediately.
 
 
 ---
@@ -3803,7 +4667,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `DEF-KERNEL-EXACT`
 - **Args**: `(NAME PARAMS &REST BODY)`
 
-  > Defines a GPU Kernel with exact ABI control (Raw Scalars).  >    - Name must be valid C identifier (no dashes).  >    - No implicit arguments or marshalling by the compiler.  >    - Return type is implicitly NIL (void).
+  > Defines a GPU Kernel with exact ABI control (Raw Scalars).
+  >    - Name must be valid C identifier (no dashes).
+  >    - No implicit arguments or marshalling by the compiler.
+  >    - Return type is implicitly NIL (void).
 
 
 ---
@@ -3825,14 +4692,19 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%INCOMPLETE-STORAGE-HANDLE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if the type-spec is a storage handle missing a required :c-t property.  >    Canonical 6-tuple (tensor elem N addr aln ct) is complete only when addr and aln  >    are both non-nil; canonical 3-tuple (cell elem addr) is complete only when addr  >    is non-nil.  ct always has a default of :last so it's never the incompleteness  >    trigger.
+  > Returns T if the type-spec is a storage handle missing a required :c-t property.
+  >    Canonical 6-tuple (tensor elem N addr aln ct) is complete only when addr and aln
+  >    are both non-nil; canonical 3-tuple (cell elem addr) is complete only when addr
+  >    is non-nil.  ct always has a default of :last so it's never the incompleteness
+  >    trigger.
 
 
 ---
 ### DEFUN `%EXPLODE-KERNEL-ARGS`
 - **Args**: `(PARAMS SIGNATURE)`
 
-  > Explodes storage handle parameters into raw scalars.  >    Returns (VALUES exploded-params exploded-signature-types reassembly-bindings).
+  > Explodes storage handle parameters into raw scalars.
+  >    Returns (VALUES exploded-params exploded-signature-types reassembly-bindings).
 
 
 ---
@@ -3846,14 +4718,16 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%VALIDATE-KERNEL-PARAMETERS`
 - **Args**: `(PARAMS TYPE-MAP NAME)`
 
-  > Helper: Validates that kernel parameters are complete, not voidp,  >    and that records do not appear in &out position.
+  > Helper: Validates that kernel parameters are complete, not voidp,
+  >    and that records do not appear in &out position.
 
 
 ---
 ### DEFUN `%CHECK-DIFFERENTIATE-KERNEL-SIGNATURE`
 - **Args**: `(NAME SIGNATURE-TYPES DECLARATIONS)`
 
-  > Helper: Enforces kernel requirements when Auto-Differentiation is enabled.  >    Returns T if the kernel should be differentiated, NIL if it is forward-only.
+  > Helper: Enforces kernel requirements when Auto-Differentiation is enabled.
+  >    Returns T if the kernel should be differentiated, NIL if it is forward-only.
 
 
 ---
@@ -3865,35 +4739,49 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT
               REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)`
 
-  > Computes the parameter lists and type lists for the backward (gradient) kernel.  > 085: integer tensor inputs now also receive _GRAD outputs, typed as float tensors  > (64-bit integers → double, all others → float). The backward walk still only  > processes float inputs — integer tensor inputs contribute zero gradient.
+  > Computes the parameter lists and type lists for the backward (gradient) kernel.
+  > 085: integer tensor inputs now also receive _GRAD outputs, typed as float tensors
+  > (64-bit integers → double, all others → float). The backward walk still only
+  > processes float inputs — integer tensor inputs contribute zero gradient.
 
 
 ---
 ### DEFUN `%HAS-DIFF-CAPABLE-SCALAR-INPUT-P`
 - **Args**: `(FLAT-INPUT-TYPES)`
 
-  > Returns T if flat-input-types contains at least one integer scalar  >    (signed/unsigned), including branded int scalars.  Used by the  >    relaxed gate in %generate-backward-kernel-ast.
+  > Returns T if flat-input-types contains at least one integer scalar
+  >    (signed/unsigned), including branded int scalars.  Used by the
+  >    relaxed gate in %generate-backward-kernel-ast.
 
 
 ---
 ### DEFUN `%RESOLVE-TENSOR-FORM-CT`
 - **Args**: `(TENSOR-FORM TYPE-RESOLVER-FN)`
 
-  > Returns the static :contiguous-term keyword (:last/:first) of TENSOR-FORM,  >    or NIL when it can't be determined.  TYPE-RESOLVER-FN: (sym -> static-type-or-nil).  >    Only works when TENSOR-FORM is a bare symbol (the common case).
+  > Returns the static :contiguous-term keyword (:last/:first) of TENSOR-FORM,
+  >    or NIL when it can't be determined.  TYPE-RESOLVER-FN: (sym -> static-type-or-nil).
+  >    Only works when TENSOR-FORM is a bare symbol (the common case).
 
 
 ---
 ### DEFUN `%TENSOR-STRIDE-RESOLVE-CT`
 - **Args**: `(EXPR TYPE-RESOLVER-FN LOCATION)`
 
-  > Determines the effective CT for expanding a tensor-stride EXPR.  >    Handles both safe and strict variants:  >      - Safe: returns the tensor's static CT, or :last with log:warn if  >        it can't be resolved.  >      - Strict: validates LAYOUT-TAG agrees with the tensor's static CT  >        (when known) and returns the tag-implied CT.
+  > Determines the effective CT for expanding a tensor-stride EXPR.
+  >    Handles both safe and strict variants:
+  >      - Safe: returns the tensor's static CT, or :last with log:warn if
+  >        it can't be resolved.
+  >      - Strict: validates LAYOUT-TAG agrees with the tensor's static CT
+  >        (when known) and returns the tag-implied CT.
 
 
 ---
 ### DEFUN `%MAKE-KERNEL-PARAM-TYPE-RESOLVER`
 - **Args**: `(PARAMS TYPES)`
 
-  > Returns a closure (sym -> static-type-or-nil) built from the kernel's  >    PARAMS and their declared TYPES.  Used by the AD pre-pass to resolve  >    tensor-stride CT without an env.
+  > Returns a closure (sym -> static-type-or-nil) built from the kernel's
+  >    PARAMS and their declared TYPES.  Used by the AD pre-pass to resolve
+  >    tensor-stride CT without an env.
 
 
 ---
@@ -3963,70 +4851,101 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%EXPAND-STRIDE-MACROS-IN-FORM`
 - **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
 
-  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride  >    forms into their expansions.  Endeavor 113: also normalises  >    request-load-tile-coords -> load-tile-coords and await-request -> nil  >    for the backward pass.
+  > Recursively walks FORM and rewrites tensor-stride / grid-stride /
+  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride
+  >    forms into their expansions.  Endeavor 113: also normalises
+  >    request-load-tile-coords -> load-tile-coords and await-request -> nil
+  >    for the backward pass.
 
 
 ---
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
 - **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
 
-  > Generates the def-kernel-exact AST for the backward (gradient) pass.  >    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-  >    boundary accessor calls route adj into the SROA'd field's adj sym.  >    Endeavor 107: pre-expands stride macros (tensor-stride / grid-stride /  >    loop-vector-stride) in the kernel body so AD walks the expansion.
+  > Generates the def-kernel-exact AST for the backward (gradient) pass.
+  >    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-
+  >    boundary accessor calls route adj into the SROA'd field's adj sym.
+  >    Endeavor 107: pre-expands stride macros (tensor-stride / grid-stride /
+  >    loop-vector-stride) in the kernel body so AD walks the expansion.
 
 
 ---
 ### DEFUN `PARSE-KERNEL-SIGNATURE`
 - **Args**: `(NAME PARAMS BODY)`
 
-  > Parses kernel parameters and body, performing validation and type extraction.  >    Returns (values exploded-params exploded-types reassembly-bindings raw-body other-decls).
+  > Parses kernel parameters and body, performing validation and type extraction.
+  >    Returns (values exploded-params exploded-types reassembly-bindings raw-body other-decls).
 
 
 ---
 ### DEFMACRO `DEF-KERNEL`
 - **Args**: `(NAME PARAMS &REST BODY)`
 
-  > Defines a GPU Kernel (Entry Point).  >      >    Constraint: All parameter types MUST be complete.  >    Incomplete types (missing compile-time properties) are forbidden at the kernel boundary  >    because the host must know the exact layout to marshall arguments.
+  > Defines a GPU Kernel (Entry Point).
+  >    
+  >    Constraint: All parameter types MUST be complete.
+  >    Incomplete types (missing compile-time properties) are forbidden at the kernel boundary
+  >    because the host must know the exact layout to marshall arguments.
 
 
 ---
 ### DEFMACRO `DEF-GRID-FUNCTION`
 - **Args**: `(NAME PARAMS &REST BODY)`
 
-  > Defines a grid-level function.  >    Grid functions have a dispatch-level context in their body: they can call both  >    thread-level (def-function) and grid-level functions.  >   >    Unlike def-function:  >    - Cannot return values (void).  >    - Cannot be called from def-function (thread-level context).  >   >    Unlike def-kernel:  >    - Lisp-style naming allowed (dashes ok, case-insensitive).  >    - Supports &optional and &key parameters.  >    - Not an entry point; cannot be enqueued by the host directly.
+  > Defines a grid-level function.
+  >    Grid functions have a dispatch-level context in their body: they can call both
+  >    thread-level (def-function) and grid-level functions.
+  > 
+  >    Unlike def-function:
+  >    - Cannot return values (void).
+  >    - Cannot be called from def-function (thread-level context).
+  > 
+  >    Unlike def-kernel:
+  >    - Lisp-style naming allowed (dashes ok, case-insensitive).
+  >    - Supports &optional and &key parameters.
+  >    - Not an entry point; cannot be enqueued by the host directly.
 
 
 ---
 ### DEFMACRO `WITH-STRUCT-ACCESSORS`
 - **Args**: `(STRUCT-TYPE BINDINGS &BODY BODY)`
 
-  > Iterates over the members of a struct type, binding accessor symbols to the provided variables.  >    Bindings: (aos-var [soa-var] [:access type])  >    Returns a PROGN containing the expanded body forms.
+  > Iterates over the members of a struct type, binding accessor symbols to the provided variables.
+  >    Bindings: (aos-var [soa-var] [:access type])
+  >    Returns a PROGN containing the expanded body forms.
 
 
 ---
 ### DEFMACRO `DEF-TYPE`
 - **Args**: `(NAME TYPE-SPEC)`
 
-  > Defines a type alias.  >    Example: (def-type T int)
+  > Defines a type alias.
+  >    Example: (def-type T int)
 
 
 ---
 ### DEFUN `%PARSE-CT-LITERAL`
 - **Args**: `(VALUE)`
 
-  > If VALUE is a symbol whose name looks like a typed numeric literal (e.g. 2.0F,  >    100UC), parse and return the underlying number.  Otherwise return VALUE unchanged.
+  > If VALUE is a symbol whose name looks like a typed numeric literal (e.g. 2.0F,
+  >    100UC), parse and return the underlying number.  Otherwise return VALUE unchanged.
 
 
 ---
 ### DEFUN `%GENERATE-STRUCT-ACCESSOR`
 - **Args**: `(MEMBER-SPEC NAME PKG RUNTIME-INDEX)`
 
-  > Helper: Generates accessor (and setter) for a single struct member.  >    Returns (values accessor-form new-runtime-index).  >    Fix: typed-literal symbols in :c-t defaults are resolved to their numeric values.
+  > Helper: Generates accessor (and setter) for a single struct member.
+  >    Returns (values accessor-form new-runtime-index).
+  >    Fix: typed-literal symbols in :c-t defaults are resolved to their numeric values.
 
 
 ---
 ### DEFUN `%GENERATE-RAW-ACCESSOR`
 - **Args**: `(MEMBER-SPEC NAME PKG RUNTIME-INDEX)`
 
-  > Helper: Generates raw accessor for a runtime struct member.  >    Returns (values accessor-form new-runtime-index).
+  > Helper: Generates raw accessor for a runtime struct member.
+  >    Returns (values accessor-form new-runtime-index).
 
 
 ---
@@ -4040,7 +4959,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%CT-RESOLVE-VALUE`
 - **Args**: `(VALUE)`
 
-  > Resolve VALUE to a Lisp number if it is a typed-literal symbol (e.g. 2.0F, 100UC).  >    SBCL reads suffix-notation literals as symbols; this converts them to the  >    underlying number so :c-t default accessors have the right return type.  >    Returns VALUE unchanged if it is not a recognisable typed literal.
+  > Resolve VALUE to a Lisp number if it is a typed-literal symbol (e.g. 2.0F, 100UC).
+  >    SBCL reads suffix-notation literals as symbols; this converts them to the
+  >    underlying number so :c-t default accessors have the right return type.
+  >    Returns VALUE unchanged if it is not a recognisable typed literal.
 
 
 ---
@@ -4054,14 +4976,29 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `DEF-DERIVED-TYPE`
 - **Args**: `(NEW-NAME ORIGINAL-TYPE &KEY (SUBST NIL SUBST-P))`
 
-  > Defines a new derived type from an existing type.  >   >    Parameters:  >    - new-name: Symbol for the new type  >    - original-type: Type to derive from (must exist)  >    - :subst: Substitution mode - :no, :equal, :descendant, :ancestor  >   >    Automatically generates:  >    - make-<new-name> constructor (for structural types)  >    - as-<new-name> and as-<original> casting functions  >    - is-<new-name>? type predicate  >    - Property accessors (for struct types) - delegates to base type accessors  >   >    Example:  >      (def-derived-type meters float :subst :ancestor)
+  > Defines a new derived type from an existing type.
+  > 
+  >    Parameters:
+  >    - new-name: Symbol for the new type
+  >    - original-type: Type to derive from (must exist)
+  >    - :subst: Substitution mode - :no, :equal, :descendant, :ancestor
+  > 
+  >    Automatically generates:
+  >    - make-<new-name> constructor (for structural types)
+  >    - as-<new-name> and as-<original> casting functions
+  >    - is-<new-name>? type predicate
+  >    - Property accessors (for struct types) - delegates to base type accessors
+  > 
+  >    Example:
+  >      (def-derived-type meters float :subst :ancestor)
 
 
 ---
 ### DEFMACRO `DEF-SETTER`
 - **Args**: `(NAME ARGS &BODY BODY)`
 
-  > Defines a setter function (which is just a def-function but semantically intended for use with set!).  >    The return type is determined by the body.
+  > Defines a setter function (which is just a def-function but semantically intended for use with set!).
+  >    The return type is determined by the body.
 
 
 ---
@@ -4075,7 +5012,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `R-T-ASSERT`
 - **Args**: `(TEST &REST ARGS)`
 
-  > Asserts that TEST is true at runtime. If not, terminates kernel.  >    Args (message strings etc) are currently ignored.
+  > Asserts that TEST is true at runtime. If not, terminates kernel.
+  >    Args (message strings etc) are currently ignored.
 
 
 ---
@@ -4096,28 +5034,45 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `MARSHALL-CELL`
 - **Args**: `(TYPE-ALIAS BYTE-SIZE PTR OFFSET)`
 
-  > Marshals raw kernel arguments into a Cell struct.  >    Usage: (marshall-cell out-c byte-size ptr offset)
+  > Marshals raw kernel arguments into a Cell struct.
+  >    Usage: (marshall-cell out-c byte-size ptr offset)
 
 
 ---
 ### DEFMACRO `%MARSHALL-TENSOR`
 - **Args**: `(TYPE-ALIAS BYTE-SIZE PTR &REST FLAT-ARGS)`
 
-  > Internal workhorse: assembles a tensor struct from flat positional scalar args.  >    Form: (%marshall-tensor type byte-size ptr off0..N-1 str0..N-1 ext0..N-1 length)  >    flat-args must contain exactly 3N+1 values: N offsets, N strides, N extents, 1 length.  >    Used by %explode-kernel-args, marshall-vector, marshall-matrix, and marshall-tensor.
+  > Internal workhorse: assembles a tensor struct from flat positional scalar args.
+  >    Form: (%marshall-tensor type byte-size ptr off0..N-1 str0..N-1 ext0..N-1 length)
+  >    flat-args must contain exactly 3N+1 values: N offsets, N strides, N extents, 1 length.
+  >    Used by %explode-kernel-args, marshall-vector, marshall-matrix, and marshall-tensor.
 
 
 ---
 ### DEFMACRO `MARSHALL-TENSOR`
 - **Args**: `(TYPE-ALIAS BYTE-SIZE PTR &REST KWARGS)`
 
-  > Assembles a tensor struct from keyword-grouped scalar args.  >   >    Form:  >      (marshall-tensor type byte-size ptr  >        :offsets (o0 o1 ... oN-1)  >        :strides (s0 s1 ... sN-1)  >        :extents (e0 e1 ... eN-1)  >        :length  len)  >   >    type-alias must be a fully-specified tensor (or expanded vector/matrix) type.  >    Each sublist must contain exactly N elements matching the tensor arity.  >    All four keywords are required.
+  > Assembles a tensor struct from keyword-grouped scalar args.
+  > 
+  >    Form:
+  >      (marshall-tensor type byte-size ptr
+  >        :offsets (o0 o1 ... oN-1)
+  >        :strides (s0 s1 ... sN-1)
+  >        :extents (e0 e1 ... eN-1)
+  >        :length  len)
+  > 
+  >    type-alias must be a fully-specified tensor (or expanded vector/matrix) type.
+  >    Each sublist must contain exactly N elements matching the tensor arity.
+  >    All four keywords are required.
 
 
 ---
 ### DEFMACRO `MARSHALL-VECTOR`
 - **Args**: `(TYPE-ALIAS BYTE-SIZE PTR OFF_0 STR_0 EXT_0 LENGTH)`
 
-  > Assembles a vector (tensor N=1) from 6 flat scalar args.  >    type-alias must be a fully-specified vector or tensor N=1 type.  >    Delegates to %marshall-tensor after validating N=1.
+  > Assembles a vector (tensor N=1) from 6 flat scalar args.
+  >    type-alias must be a fully-specified vector or tensor N=1 type.
+  >    Delegates to %marshall-tensor after validating N=1.
 
 
 ---
@@ -4125,14 +5080,26 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(TYPE-ALIAS BYTE-SIZE PTR OFF_0 OFF_1 STR_0 STR_1 EXT_0 EXT_1
               LENGTH)`
 
-  > Assembles a matrix (tensor N=2) from 9 flat scalar args.  >    type-alias must be a fully-specified matrix or tensor N=2 type.  >    Delegates to %marshall-tensor after validating N=2.
+  > Assembles a matrix (tensor N=2) from 9 flat scalar args.
+  >    type-alias must be a fully-specified matrix or tensor N=2 type.
+  >    Delegates to %marshall-tensor after validating N=2.
 
 
 ---
 ### DEFMACRO `SET-DERIVED`
 - **Args**: `(ANCESTOR-TYPE DESCENDANT-TYPE)`
 
-  > Links two existing struct types in a type hierarchy.  >    The descendant can implicitly pass where the ancestor is expected.  >    Generates as-<ancestor> and as-<descendant> casting functions.  >   >    Syntax: (set-derived ancestor-type descendant-type)  >   >    Requirements:  >    - Both types must be structs (or derived from structs)  >    - Ancestor size <= Descendant size  >    - Shape compatible (flattened data members match in type and byte offset)  >    - No cycles in the type DAG
+  > Links two existing struct types in a type hierarchy.
+  >    The descendant can implicitly pass where the ancestor is expected.
+  >    Generates as-<ancestor> and as-<descendant> casting functions.
+  > 
+  >    Syntax: (set-derived ancestor-type descendant-type)
+  > 
+  >    Requirements:
+  >    - Both types must be structs (or derived from structs)
+  >    - Ancestor size <= Descendant size
+  >    - Shape compatible (flattened data members match in type and byte offset)
+  >    - No cycles in the type DAG
 
 
 ---
@@ -4177,14 +5144,16 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `LOAD-TILE`
 - **Args**: `(SRC TILE GRID-LIST &REST KEY-ARGS)`
 
-  > Helper macro to automatically compute grid index offsets dynamically  >    by scaling the incoming grid-coords by the extents of the tile.
+  > Helper macro to automatically compute grid index offsets dynamically
+  >    by scaling the incoming grid-coords by the extents of the tile.
 
 
 ---
 ### DEFMACRO `STORE-TILE`
 - **Args**: `(TILE DEST GRID-LIST &REST KEY-ARGS)`
 
-  > Helper macro to automatically compute grid index offsets dynamically  >    by scaling the incoming grid-coords by the extents of the tile.
+  > Helper macro to automatically compute grid index offsets dynamically
+  >    by scaling the incoming grid-coords by the extents of the tile.
 
 
 ---
@@ -4207,7 +5176,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `PARSE-CLI-ARGS`
 - **Args**: `(ARGS)`
 
-  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets).  > Supports one or more .crisp source files: the last file is treated as the primary (determines output name).
+  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets).
+  > Supports one or more .crisp source files: the last file is treated as the primary (determines output name).
 
 
 ---
@@ -4229,7 +5199,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P
               HOIST-TARGETS)`
 
-  > Compiles the given files as a single unit (in order), iterating over requested targets, then invokes hoisters.  > When multiple files are given, forms are read from each file in order and compiled together as if they  > had been one file.  The LAST file is the primary: its name determines output file names and the debug  > compile-unit filepath.
+  > Compiles the given files as a single unit (in order), iterating over requested targets, then invokes hoisters.
+  > When multiple files are given, forms are read from each file in order and compiled together as if they
+  > had been one file.  The LAST file is the primary: its name determines output file names and the debug
+  > compile-unit filepath.
 
 
 ---
@@ -4243,7 +5216,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ### DEFVAR `*TEMPLATE-ARITY-LOOKUP-FN*`
 
-  > A hook for looking up the arity of a template by name (symbol or string).  >    Should be set by the templates module. Returns integer or nil.
+  > A hook for looking up the arity of a template by name (symbol or string).
+  >    Should be set by the templates module. Returns integer or nil.
 
 
 ---
@@ -4278,14 +5252,21 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `RECONSTRUCT-TEMPLATE-ARGS`
 - **Args**: `(TOKENS PACKAGE)`
 
-  > Recursively groups tokens into lists based on template arity.  >    tokens: list of strings.  >    package: the fallback package for interning.  >    Returns: (values property-list remaining-tokens)  >    FIX: numeric token strings are parsed as integers before interning as symbols.
+  > Recursively groups tokens into lists based on template arity.
+  >    tokens: list of strings.
+  >    package: the fallback package for interning.
+  >    Returns: (values property-list remaining-tokens)
+  >    FIX: numeric token strings are parsed as integers before interning as symbols.
 
 
 ---
 ### DEFUN `UNMANGLE-TEMPLATE-STRUCT-NAME`
 - **Args**: `(SYMBOL)`
 
-  > Attempts to reverse mangling for known parameterized types like CELL.  >    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.  >    Returns NIL immediately for uninterned symbols (gensyms produced by  >    brand instance differentiation) since they cannot be mangled struct names.
+  > Attempts to reverse mangling for known parameterized types like CELL.
+  >    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.
+  >    Returns NIL immediately for uninterned symbols (gensyms produced by
+  >    brand instance differentiation) since they cannot be mangled struct names.
 
 
 ---
@@ -4303,7 +5284,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `MANGLE-TYPE-SPEC`
 - **Args**: `(TYPE-SPEC)`
 
-  > Creates a string representation of a type spec for name mangling.  >    Extended to handle integers (e.g. tensor arity N in canonical list form).
+  > Creates a string representation of a type spec for name mangling.
+  >    Extended to handle integers (e.g. tensor arity N in canonical list form).
 
 
 ---
@@ -4312,7 +5294,11 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `DEFINE-FORWARD-ONLY-VALIDATOR`
 - **Args**: `(NAME ARGS &BODY BODY)`
 
-  > Like defun, but the resulting function returns T trivially when  >    *differentiate-p* is set.  Use for metadata validators that describe  >    forward-kernel structure — under --differentiate the metacrisp describes  >    the backward kernel with a different shape, so the forward-only check  >    doesn't apply.
+  > Like defun, but the resulting function returns T trivially when
+  >    *differentiate-p* is set.  Use for metadata validators that describe
+  >    forward-kernel structure — under --differentiate the metacrisp describes
+  >    the backward kernel with a different shape, so the forward-only check
+  >    doesn't apply.
 
 
 ---
@@ -4363,14 +5349,20 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `VALIDATE-DEF-RECORD-EXPLOSION-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates that def-record types are exploded in LLVM IR signatures.  >    Takes a path to a .ll file containing LLVM IR.
+  > Validates that def-record types are exploded in LLVM IR signatures.
+  >    Takes a path to a .ll file containing LLVM IR.
 
 
 ---
 ### DEFUN `VALIDATE-SCRATCH-CELL-EXPLOSION-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates that scratch cells explode to 3 LLVM parameters in IR signatures.  >    Checks for: ptr addrspace(N), i64 (size), i64 (offset).  >      >    Example expected signature:  >    define i32 @kernel_cell_int_global_read_write_int(ptr addrspace(1) %0, i64 %1, i64 %2, i32 %3)  >    where %0, %1, %2 are the exploded cell (ptr, size, offset) and %3 is the explicit int param.
+  > Validates that scratch cells explode to 3 LLVM parameters in IR signatures.
+  >    Checks for: ptr addrspace(N), i64 (size), i64 (offset).
+  >    
+  >    Example expected signature:
+  >    define i32 @kernel_cell_int_global_read_write_int(ptr addrspace(1) %0, i64 %1, i64 %2, i32 %3)
+  >    where %0, %1, %2 are the exploded cell (ptr, size, offset) and %3 is the explicit int param.
 
 
 ---
@@ -4429,7 +5421,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `VALIDATE-NO-SUBST-OVERLOADS`
 - **Args**: `(IR-PATH)`
 
-  > Validates that both distance_point_point and distance_coordinate_coordinate  >    are defined and called in the IR. Used for :subst :no tests where explicit  >    as-point/as-coordinate casts are required.
+  > Validates that both distance_point_point and distance_coordinate_coordinate
+  >    are defined and called in the IR. Used for :subst :no tests where explicit
+  >    as-point/as-coordinate casts are required.
 
 
 ---
@@ -4443,28 +5437,43 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%EXTRACT-FN-BODY-FROM-IR`
 - **Args**: `(IR-CONTENT FN-DEFINE-PREFIX)`
 
-  > Returns the substring of IR-CONTENT covering the body of a function  >    whose `define` line starts with FN-DEFINE-PREFIX (e.g.  >    "define void @measure_distance(").  The body spans from the  >    `define` line through the matching closing `}` at column 0.  >    Returns NIL if no such function found.  >   >    In LLVM IR the function-closing brace is the only `}` that appears at  >    column 0; nested braces (e.g. struct literals) are indented.
+  > Returns the substring of IR-CONTENT covering the body of a function
+  >    whose `define` line starts with FN-DEFINE-PREFIX (e.g.
+  >    "define void @measure_distance(").  The body spans from the
+  >    `define` line through the matching closing `}` at column 0.
+  >    Returns NIL if no such function found.
+  > 
+  >    In LLVM IR the function-closing brace is the only `}` that appears at
+  >    column 0; nested braces (e.g. struct literals) are indented.
 
 
 ---
 ### DEFUN `VALIDATE-DESCENDANT-DISTANCE`
 - **Args**: `(IR-PATH)`
 
-  > Validates descendant substitution: coordinate can substitute for point.  >    Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x  >    in the FORWARD kernel body (measure_distance).  The check is scoped to  >    the forward kernel so it stays meaningful under --differentiate, where  >    the backward kernel recomputes forward values for chain-rule purposes.
+  > Validates descendant substitution: coordinate can substitute for point.
+  >    Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x
+  >    in the FORWARD kernel body (measure_distance).  The check is scoped to
+  >    the forward kernel so it stays meaningful under --differentiate, where
+  >    the backward kernel recomputes forward values for chain-rule purposes.
 
 
 ---
 ### DEFUN `VALIDATE-ANCESTOR-DISTANCE`
 - **Args**: `(IR-PATH)`
 
-  > Validates ancestor substitution: point can substitute for coordinate.  >    Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x  >    in the FORWARD kernel body (measure_distance).  Scoped to the forward  >    kernel for the same reason as validate-descendant-distance.
+  > Validates ancestor substitution: point can substitute for coordinate.
+  >    Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x
+  >    in the FORWARD kernel body (measure_distance).  Scoped to the forward
+  >    kernel for the same reason as validate-descendant-distance.
 
 
 ---
 ### DEFUN `VALIDATE-DERIVED-ACCESSORS`
 - **Args**: `(IR-PATH)`
 
-  > Validates that all five x~ accessor overloads are defined and called:  >    x__point, x__dot, x__conclusion, x__pair, x__coordinate.
+  > Validates that all five x~ accessor overloads are defined and called:
+  >    x__point, x__dot, x__conclusion, x__pair, x__coordinate.
 
 
 ---
@@ -4479,7 +5488,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `VALIDATE-POINT-IN-METADATA`
 - **Args**: `(METADATA-PATH)`
 
-  > Validates that the base struct 'point' appears in metadata when a derived  >    type is used on a kernel boundary. Also verifies derived type names like  >    'coordinate', 'dot', 'conclusion' are NOT listed as separate structs.
+  > Validates that the base struct 'point' appears in metadata when a derived
+  >    type is used on a kernel boundary. Also verifies derived type names like
+  >    'coordinate', 'dot', 'conclusion' are NOT listed as separate structs.
 
 
 ---
@@ -4510,14 +5521,17 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `VALIDATE-INTEGER-LITERALS-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates that integer literal suffixes produce the correct LLVM integer types.  >    Expects:  ret-uchar->i8, ret-char->i8, ret-short/ret-ushort->i16,  >              ret-uint->i32, ret-long/ret-ulong->i64.
+  > Validates that integer literal suffixes produce the correct LLVM integer types.
+  >    Expects:  ret-uchar->i8, ret-char->i8, ret-short/ret-ushort->i16,
+  >              ret-uint->i32, ret-long/ret-ulong->i64.
 
 
 ---
 ### DEFUN `VALIDATE-FLOAT-LITERALS-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates that float literal suffixes produce the correct LLVM float types.  >    Expects: ret-half->half, ret-float->float, ret-bfloat16->bfloat, ret-double->double.
+  > Validates that float literal suffixes produce the correct LLVM float types.
+  >    Expects: ret-half->half, ret-float->float, ret-bfloat16->bfloat, ret-double->double.
 
 
 ---
@@ -4566,147 +5580,195 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%USER-RECORD-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC refers to a user-defined def-record (not a storage handle or primitive).  >    Handles both bare symbols and list forms like (v-point :earnestness 3.0).
+  > Returns T if TYPE-SPEC refers to a user-defined def-record (not a storage handle or primitive).
+  >    Handles both bare symbols and list forms like (v-point :earnestness 3.0).
 
 
 ---
 ### DEFUN `%ENUMERATE-PHYSICAL-TYPES`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns a flat list of primitive Crisp type-specs for TYPE-SPEC.  >    Records are recursively flattened to their runtime members (excluding :c-t members).  >    List forms like (v-point :earnestness 3.0) use the base record type.  >    Brand-typed members are resolved to their base types.
+  > Returns a flat list of primitive Crisp type-specs for TYPE-SPEC.
+  >    Records are recursively flattened to their runtime members (excluding :c-t members).
+  >    List forms like (v-point :earnestness 3.0) use the base record type.
+  >    Brand-typed members are resolved to their base types.
 
 
 ---
 ### DEFUN `VALIDATE-REC-KB-NON-OVERLOADABLE`
 - **Args**: `(IR-PATH)`
 
-  > Validates backward kernel for 01-non-overloadable-accessor.  >    Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas.
+  > Validates backward kernel for 01-non-overloadable-accessor.
+  >    Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas.
 
 
 ---
 ### DEFUN `VALIDATE-REC-KB-BASIC`
 - **Args**: `(IR-PATH)`
 
-  > Validates backward kernel for 03-basic-rec-at-kb.  >    Same signature shape as non-overloadable: 14 params = 13 commas.
+  > Validates backward kernel for 03-basic-rec-at-kb.
+  >    Same signature shape as non-overloadable: 14 params = 13 commas.
 
 
 ---
 ### DEFUN `VALIDATE-REC-KB-NOT-FLOAT`
 - **Args**: `(IR-PATH)`
 
-  > Validates backward kernel for 05-not-float.  >    Post 101 endeavor: integer fields are also differentiable (with float-typed  >    _GRAD slots).  x (int) and y (float) both get gradient outputs.  >    Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas.
+  > Validates backward kernel for 05-not-float.
+  >    Post 101 endeavor: integer fields are also differentiable (with float-typed
+  >    _GRAD slots).  x (int) and y (float) both get gradient outputs.
+  >    Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas.
 
 
 ---
 ### DEFUN `VALIDATE-REC-KB-UNUSED-FIELD`
 - **Args**: `(IR-PATH)`
 
-  > Validates backward kernel for 07-unused-field.  >    Both fields are float, even though x is unused in the body (its grad is 0).  >    Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas.
+  > Validates backward kernel for 07-unused-field.
+  >    Both fields are float, even though x is unused in the body (its grad is 0).
+  >    Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas.
 
 
 ---
 ### DEFUN `VALIDATE-REC-KB-CT-PROP`
 - **Args**: `(IR-PATH)`
 
-  > Validates backward kernel for 09-compile-time-prop.  >    Two v-point inputs (c-t :earnestness excluded), each with 2 float fields.  >    Expects: (VP-1_X VP-1_Y VP-2_X VP-2_Y C C_GRAD &out VP-1_X_GRAD VP-1_Y_GRAD VP-2_X_GRAD VP-2_Y_GRAD)  >    = 22 params = 21 commas.
+  > Validates backward kernel for 09-compile-time-prop.
+  >    Two v-point inputs (c-t :earnestness excluded), each with 2 float fields.
+  >    Expects: (VP-1_X VP-1_Y VP-2_X VP-2_Y C C_GRAD &out VP-1_X_GRAD VP-1_Y_GRAD VP-2_X_GRAD VP-2_Y_GRAD)
+  >    = 22 params = 21 commas.
 
 
 ---
 ### DEFUN `VALIDATE-MULTIPLY-GRAD-METADATA`
 - **Args**: `(PATHS)`
 
-  > Validates the backward grad metacrisp for 01-multiply.  >    Checks: kernel name, physical sig (18 params), declared sig (6 params with  >    correct names and directions), and source path present.
+  > Validates the backward grad metacrisp for 01-multiply.
+  >    Checks: kernel name, physical sig (18 params), declared sig (6 params with
+  >    correct names and directions), and source path present.
 
 
 ---
 ### DEFUN `VALIDATE-RECORD-GRAD-METADATA`
 - **Args**: `(PATHS)`
 
-  > Validates the backward grad metacrisp for 03-record-at-boundary.  >    Checks: kernel name, physical sig (14 params), declared sig (6 params with  >    correct names and directions), and source path present.
+  > Validates the backward grad metacrisp for 03-record-at-boundary.
+  >    Checks: kernel name, physical sig (14 params), declared sig (6 params with
+  >    correct names and directions), and source path present.
 
 
 ---
 ### DEFUN `%FIND-STRUCT-DEF`
 - **Args**: `(STRUCTS-SECTION NAME)`
 
-  > Finds (def-struct NAME ...) in a list of forms from a :structs section.  > Returns the form or NIL.
+  > Finds (def-struct NAME ...) in a list of forms from a :structs section.
+  > Returns the form or NIL.
 
 
 ---
 ### DEFUN `%071-KERNEL-BODY`
 - **Args**: `(IR FUNCTION-NAME)`
 
-  > Extracts the body of the named LLVM kernel function from IR string.  >    Searches for 'define ... @function-name' using a prefix match so that  >    mangled names like compact_mat_get_tensor_float_2_... are found by  >    searching for '@compact_mat_get'.  >    Returns the function body substring, or NIL if not found.
+  > Extracts the body of the named LLVM kernel function from IR string.
+  >    Searches for 'define ... @function-name' using a prefix match so that
+  >    mangled names like compact_mat_get_tensor_float_2_... are found by
+  >    searching for '@compact_mat_get'.
+  >    Returns the function body substring, or NIL if not found.
 
 
 ---
 ### DEFUN `%071-HAS-STRIDE-MUL`
 - **Args**: `(BODY)`
 
-  > Returns T if BODY contains a stride multiply: a 'mul i64' instruction  >    whose second operand is a register (not a ptrtoint sizeof constant).  >    Byte-offset multiplies (mul i64 %reg, ptrtoint(...)) are excluded.
+  > Returns T if BODY contains a stride multiply: a 'mul i64' instruction
+  >    whose second operand is a register (not a ptrtoint sizeof constant).
+  >    Byte-offset multiplies (mul i64 %reg, ptrtoint(...)) are excluded.
 
 
 ---
 ### DEFUN `VALIDATE-071-01-COMPACT-VECTOR-GET-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates compact vector GET IR: no stride multiply, no offset load.  >    Checks:  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.  >      - No load from offset field (field index 1)  — :compact skips offsets entirely.
+  > Validates compact vector GET IR: no stride multiply, no offset load.
+  >    Checks:
+  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.
+  >      - No load from offset field (field index 1)  — :compact skips offsets entirely.
 
 
 ---
 ### DEFUN `VALIDATE-071-02-COMPACT-VECTOR-SET-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates compact vector SET IR: no stride multiply, no offset load.  >    Checks:  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.  >      - No load from offset field — :compact skips offsets entirely.
+  > Validates compact vector SET IR: no stride multiply, no offset load.
+  >    Checks:
+  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.
+  >      - No load from offset field — :compact skips offsets entirely.
 
 
 ---
 ### DEFUN `VALIDATE-071-03-COMPACT-MATRIX-GET-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates compact matrix GET IR: exactly one mul i64 (Horner), no stride load.  >    Checks:  >      - Exactly one 'mul i64' in the kernel body  (i_0 * ext[1])  >      - No load from the strides array field (struct field index 2)
+  > Validates compact matrix GET IR: exactly one mul i64 (Horner), no stride load.
+  >    Checks:
+  >      - Exactly one 'mul i64' in the kernel body  (i_0 * ext[1])
+  >      - No load from the strides array field (struct field index 2)
 
 
 ---
 ### DEFUN `VALIDATE-071-05-STRIDED-VECTOR-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates strided vector GET IR: stride multiply must be present.  >    Checks:  >      - A 'mul i64 %reg, %reg' (stride multiply) IS present in the kernel body.  >        This confirms the compact optimization is NOT applied to :strided tensors.
+  > Validates strided vector GET IR: stride multiply must be present.
+  >    Checks:
+  >      - A 'mul i64 %reg, %reg' (stride multiply) IS present in the kernel body.
+  >        This confirms the compact optimization is NOT applied to :strided tensors.
 
 
 ---
 ### DEFUN `%072-HAS-OFFSET-LOAD`
 - **Args**: `(BODY)`
 
-  > Returns T if BODY contains a load from the tensor offset field (struct field index 1).  >    The GEP pattern is 'i32 0, i32 1' (field 0=parent, 1=offsets, 2=strides, 3=extents).
+  > Returns T if BODY contains a load from the tensor offset field (struct field index 1).
+  >    The GEP pattern is 'i32 0, i32 1' (field 0=parent, 1=offsets, 2=strides, 3=extents).
 
 
 ---
 ### DEFUN `VALIDATE-072-01-COMPACT-OFFSET-VECTOR-GET-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates :compact-offset vector GET IR:  >      - No stride mul (compact strides)  >      - Offset field IS loaded (non-zero offset supported)  >      - add i64 present
+  > Validates :compact-offset vector GET IR:
+  >      - No stride mul (compact strides)
+  >      - Offset field IS loaded (non-zero offset supported)
+  >      - add i64 present
 
 
 ---
 ### DEFUN `VALIDATE-072-02-COMPACT-OFFSET-VECTOR-SET-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates :compact-offset vector SET IR:  >      - No stride mul  >      - Offset field IS loaded
+  > Validates :compact-offset vector SET IR:
+  >      - No stride mul
+  >      - Offset field IS loaded
 
 
 ---
 ### DEFUN `VALIDATE-072-04-COMPACT-NO-OFFSET-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates :compact vector GET IR (strengthened regression):  >      - No stride mul  >      - No offset field load  ← new check vs 071
+  > Validates :compact vector GET IR (strengthened regression):
+  >      - No stride mul
+  >      - No offset field load  ← new check vs 071
 
 
 ---
 ### DEFUN `%074-COUNT-KERNEL-PARAMS`
 - **Args**: `(IR KERNEL-NAME)`
 
-  > Returns the parameter count of the named kernel from the IR string,  >    or NIL if the kernel is not found.  >    Handles nested parens in type names like addrspace(3) by counting  >    only top-level commas.
+  > Returns the parameter count of the named kernel from the IR string,
+  >    or NIL if the kernel is not found.
+  >    Handles nested parens in type names like addrspace(3) by counting
+  >    only top-level commas.
 
 
 ---
@@ -4749,168 +5811,250 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(TAG K-DEF EXPECTED-TYPE-HEAD EXPECTED-N EXPECTED-SLOTS
               EXPECTED-ADDR-SPACE EXPECTED-SIZE-EXPR)`
 
-  > Shared checker for 075-0x validators.  >    Verifies:  >      - exactly one implicit param  >      - :type is a cons whose first element is TENSOR with the correct N and :address-space  >      - :size-expr is present and equals EXPECTED-SIZE-EXPR  >      - :range spans exactly EXPECTED-SLOTS physical slots starting at 0  >      - :physical-signature has EXPECTED-SLOTS entries for the implicit range,  >        first entry (C-POINTER ...), remaining entries ULONG
+  > Shared checker for 075-0x validators.
+  >    Verifies:
+  >      - exactly one implicit param
+  >      - :type is a cons whose first element is TENSOR with the correct N and :address-space
+  >      - :size-expr is present and equals EXPECTED-SIZE-EXPR
+  >      - :range spans exactly EXPECTED-SLOTS physical slots starting at 0
+  >      - :physical-signature has EXPECTED-SLOTS entries for the implicit range,
+  >        first entry (C-POINTER ...), remaining entries ULONG
 
 
 ---
 ### DEFUN `VALIDATE-075-01-SCRATCH-VECTOR-IMPLICIT-META`
 - **Args**: `(META-PATH)`
 
-  > Validates scratch vector (N=1) metacrisp:  >      - implicit :type is (TENSOR INT 1 :ADDRESS-SPACE :LOCAL ...) canonical list  >      - physical-signature has 6 exploded scalar entries for the implicit range  >      - :range is (0 5)
+  > Validates scratch vector (N=1) metacrisp:
+  >      - implicit :type is (TENSOR INT 1 :ADDRESS-SPACE :LOCAL ...) canonical list
+  >      - physical-signature has 6 exploded scalar entries for the implicit range
+  >      - :range is (0 5)
 
 
 ---
 ### DEFUN `VALIDATE-075-02-SCRATCH-TENSOR-N3-IMPLICIT-META`
 - **Args**: `(META-PATH)`
 
-  > Validates scratch tensor (N=3) metacrisp:  >      - implicit :type is (TENSOR FLOAT 3 :ADDRESS-SPACE :LOCAL ...) canonical list  >      - physical-signature has 12 exploded scalar entries for the implicit range  >      - :range is (0 11)
+  > Validates scratch tensor (N=3) metacrisp:
+  >      - implicit :type is (TENSOR FLOAT 3 :ADDRESS-SPACE :LOCAL ...) canonical list
+  >      - physical-signature has 12 exploded scalar entries for the implicit range
+  >      - :range is (0 11)
 
 
 ---
 ### DEFUN `VALIDATE-075-03-SCRATCH-MATRIX-IMPLICIT-META`
 - **Args**: `(META-PATH)`
 
-  > Validates scratch matrix (N=2) metacrisp:  >      - implicit :type is (TENSOR FLOAT 2 :ADDRESS-SPACE :LOCAL ...) canonical list  >      - physical-signature has 9 exploded scalar entries for the implicit range  >      - :range is (0 8)
+  > Validates scratch matrix (N=2) metacrisp:
+  >      - implicit :type is (TENSOR FLOAT 2 :ADDRESS-SPACE :LOCAL ...) canonical list
+  >      - physical-signature has 9 exploded scalar entries for the implicit range
+  >      - :range is (0 8)
 
 
 ---
 ### DEFUN `VALIDATE-VEC-ADD-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 01-vec-add (vector addition):  >      - @vec_add_grad is defined  >      - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (gradient tensors, no access in name)  >      - fadd instruction present (addition backward)  >      - idx_GRAD is NOT present (integer scalar filtering)
+  > Validates the backward kernel for 01-vec-add (vector addition):
+  >      - @vec_add_grad is defined
+  >      - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (gradient tensors, no access in name)
+  >      - fadd instruction present (addition backward)
+  >      - idx_GRAD is NOT present (integer scalar filtering)
 
 
 ---
 ### DEFUN `VALIDATE-VEC-MULTIPLY-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 02-vec-multiply (vector product rule):  >      - @vec_mult_grad is defined  >      - fmul instruction present  >      - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (no access in name)  >      - idx_GRAD is NOT present
+  > Validates the backward kernel for 02-vec-multiply (vector product rule):
+  >      - @vec_mult_grad is defined
+  >      - fmul instruction present
+  >      - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (no access in name)
+  >      - idx_GRAD is NOT present
 
 
 ---
 ### DEFUN `VALIDATE-VEC-MIXED-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 03-vec-mixed (scalar float + tensor inputs):  >      - @vec_scale_grad is defined  >      - %scale_grad present  >      - TENSOR_FLOAT_1_GLOBAL_COMPACT present (no access in name)  >      - fmul present  >      - idx_GRAD is NOT present
+  > Validates the backward kernel for 03-vec-mixed (scalar float + tensor inputs):
+  >      - @vec_scale_grad is defined
+  >      - %scale_grad present
+  >      - TENSOR_FLOAT_1_GLOBAL_COMPACT present (no access in name)
+  >      - fmul present
+  >      - idx_GRAD is NOT present
 
 
 ---
 ### DEFUN `VALIDATE-MATRIX-ADD-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 04-matrix-add (2D matrix, two indices):  >      - @mat_add_grad is defined  >      - TENSOR_FLOAT_2_GLOBAL_COMPACT type present (no access in name)  >      - fadd present  >      - row_GRAD and col_GRAD are NOT present (integer scalar filtering)
+  > Validates the backward kernel for 04-matrix-add (2D matrix, two indices):
+  >      - @mat_add_grad is defined
+  >      - TENSOR_FLOAT_2_GLOBAL_COMPACT type present (no access in name)
+  >      - fadd present
+  >      - row_GRAD and col_GRAD are NOT present (integer scalar filtering)
 
 
 ---
 ### DEFUN `VALIDATE-TENSOR-ADD-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 05-tensor-add (3D tensor, three indices):  >      - @tensor_add_grad is defined  >      - TENSOR_FLOAT_3_GLOBAL_COMPACT type present (no access in name)  >      - fadd present  >      - d0_GRAD, d1_GRAD, d2_GRAD are NOT present (integer scalar filtering)
+  > Validates the backward kernel for 05-tensor-add (3D tensor, three indices):
+  >      - @tensor_add_grad is defined
+  >      - TENSOR_FLOAT_3_GLOBAL_COMPACT type present (no access in name)
+  >      - fadd present
+  >      - d0_GRAD, d1_GRAD, d2_GRAD are NOT present (integer scalar filtering)
 
 
 ---
 ### DEFUN `VALIDATE-VEC-TRANSCENDENTAL-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 06-vec-transcendental (sin with cos chain rule):  >      - @vec_sin_grad is defined  >      - @llvm.cos.f32 intrinsic declared and called (derivative of sin is cos)  >      - fmul present (chain rule: cos(x) * adj)  >      - idx_GRAD is NOT present
+  > Validates the backward kernel for 06-vec-transcendental (sin with cos chain rule):
+  >      - @vec_sin_grad is defined
+  >      - @llvm.cos.f32 intrinsic declared and called (derivative of sin is cos)
+  >      - fmul present (chain rule: cos(x) * adj)
+  >      - idx_GRAD is NOT present
 
 
 ---
 ### DEFUN `VALIDATE-VEC-BASIC-SUB-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates 081/01-vec-basic-sub-function:  >      - @some_operation_grad is defined (the _GRAD companion)  >      - @vec_sub_op_grad is defined (the backward kernel)  >      - some_operation_grad is called inside vec_sub_op_grad body  >      - fadd present (gradient accumulation)  >      - idx_GRAD NOT present (integer index filtered)
+  > Validates 081/01-vec-basic-sub-function:
+  >      - @some_operation_grad is defined (the _GRAD companion)
+  >      - @vec_sub_op_grad is defined (the backward kernel)
+  >      - some_operation_grad is called inside vec_sub_op_grad body
+  >      - fadd present (gradient accumulation)
+  >      - idx_GRAD NOT present (integer index filtered)
 
 
 ---
 ### DEFUN `VALIDATE-VEC-CHAIN-DEPTH-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates 081/02-vec-chain-depth:  >      - three _GRAD companions defined: some_operation_grad, other_operation_grad, final_operation_grad  >      - @vec_chain_grad backward kernel defined  >      - idx_GRAD NOT present
+  > Validates 081/02-vec-chain-depth:
+  >      - three _GRAD companions defined: some_operation_grad, other_operation_grad, final_operation_grad
+  >      - @vec_chain_grad backward kernel defined
+  >      - idx_GRAD NOT present
 
 
 ---
 ### DEFUN `VALIDATE-MAT-BASIC-SUB-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates 081/03-matrix-basic-sub-function:  >      - @scale_and_bias_grad defined  >      - @mat_sub_op_grad defined  >      - 2D gradient tensor type present (TENSOR_FLOAT_2 ... READ-WRITE)  >      - fmul present (product rule for a*b)  >      - row_GRAD and col_GRAD NOT present
+  > Validates 081/03-matrix-basic-sub-function:
+  >      - @scale_and_bias_grad defined
+  >      - @mat_sub_op_grad defined
+  >      - 2D gradient tensor type present (TENSOR_FLOAT_2 ... READ-WRITE)
+  >      - fmul present (product rule for a*b)
+  >      - row_GRAD and col_GRAD NOT present
 
 
 ---
 ### DEFUN `VALIDATE-TENSOR-BASIC-SUB-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates 081/04-tensor-basic-sub-function:  >      - @combine_grad defined  >      - @tensor_sub_op_grad defined  >      - 3D gradient tensor type present  >      - d0_GRAD, d1_GRAD, d2_GRAD NOT present
+  > Validates 081/04-tensor-basic-sub-function:
+  >      - @combine_grad defined
+  >      - @tensor_sub_op_grad defined
+  >      - 3D gradient tensor type present
+  >      - d0_GRAD, d1_GRAD, d2_GRAD NOT present
 
 
 ---
 ### DEFUN `VALIDATE-VEC-MVB-SUB-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates 081/05-vec-multi-value-return:  >      - @split_op_grad defined (two t_grad inputs, two delta outputs)  >      - @vec_mvb_op_grad defined  >      - split_op_grad called in backward kernel body  >      - idx_GRAD NOT present
+  > Validates 081/05-vec-multi-value-return:
+  >      - @split_op_grad defined (two t_grad inputs, two delta outputs)
+  >      - @vec_mvb_op_grad defined
+  >      - split_op_grad called in backward kernel body
+  >      - idx_GRAD NOT present
 
 
 ---
 ### DEFUN `VALIDATE-VEC-FAN-OUT-SUB-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates 081/06-vec-fan-out:  >      - @some_operation_grad and @augmentation_grad both defined  >      - @vec_fan_op_grad defined  >      - both _GRAD functions referenced (two paths contribute to A_GRAD)  >      - idx_GRAD NOT present
+  > Validates 081/06-vec-fan-out:
+  >      - @some_operation_grad and @augmentation_grad both defined
+  >      - @vec_fan_op_grad defined
+  >      - both _GRAD functions referenced (two paths contribute to A_GRAD)
+  >      - idx_GRAD NOT present
 
 
 ---
 ### DEFUN `VALIDATE-VEC-MIXED-SUB-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates 081/07-vec-mixed-scalar-tensor:  >      - @scale_element_grad defined  >      - @vec_scale_sub_grad defined  >      - scalar scale_GRAD present (float scalar gradient)  >      - TENSOR_FLOAT_1 present (tensor gradient for A_GRAD)  >      - fmul present (product rule for s*a)  >      - idx_GRAD NOT present
+  > Validates 081/07-vec-mixed-scalar-tensor:
+  >      - @scale_element_grad defined
+  >      - @vec_scale_sub_grad defined
+  >      - scalar scale_GRAD present (float scalar gradient)
+  >      - TENSOR_FLOAT_1 present (tensor gradient for A_GRAD)
+  >      - fmul present (product rule for s*a)
+  >      - idx_GRAD NOT present
 
 
 ---
 ### DEFUN `VALIDATE-ATOMICRMW-ADD`
 - **Args**: `(IR-PATH)`
 
-  > Verifies atomicrmw add (integer fetch-and-add) is present in the IR.  > Used by: 01-atomic-add-cell, 03-atomic-inc-cell.
+  > Verifies atomicrmw add (integer fetch-and-add) is present in the IR.
+  > Used by: 01-atomic-add-cell, 03-atomic-inc-cell.
 
 
 ---
 ### DEFUN `VALIDATE-ATOMICRMW-SUB`
 - **Args**: `(IR-PATH)`
 
-  > Verifies atomicrmw sub (integer fetch-and-sub) is present in the IR.  > Used by: 02-atomic-sub-cell, 04-atomic-dec-cell.
+  > Verifies atomicrmw sub (integer fetch-and-sub) is present in the IR.
+  > Used by: 02-atomic-sub-cell, 04-atomic-dec-cell.
 
 
 ---
 ### DEFUN `VALIDATE-ATOMICRMW-MIN`
 - **Args**: `(IR-PATH)`
 
-  > Verifies atomicrmw min (signed integer fetch-and-min) is present in the IR.  > Used by: 05-atomic-min-cell.
+  > Verifies atomicrmw min (signed integer fetch-and-min) is present in the IR.
+  > Used by: 05-atomic-min-cell.
 
 
 ---
 ### DEFUN `VALIDATE-ATOMICRMW-MAX`
 - **Args**: `(IR-PATH)`
 
-  > Verifies atomicrmw max (signed integer fetch-and-max) is present in the IR.  > Used by: 06-atomic-max-cell.
+  > Verifies atomicrmw max (signed integer fetch-and-max) is present in the IR.
+  > Used by: 06-atomic-max-cell.
 
 
 ---
 ### DEFUN `VALIDATE-ATOMICRMW-XCHG`
 - **Args**: `(IR-PATH)`
 
-  > Verifies atomicrmw xchg (unconditional exchange) is present in the IR.  > Used by: 07-atomic-xchg-cell, 09-atomic-set-alias.
+  > Verifies atomicrmw xchg (unconditional exchange) is present in the IR.
+  > Used by: 07-atomic-xchg-cell, 09-atomic-set-alias.
 
 
 ---
 ### DEFUN `VALIDATE-ATOMICRMW-FADD`
 - **Args**: `(IR-PATH)`
 
-  > Verifies atomicrmw fadd (float fetch-and-add) is present in the IR.  > Used by: 08-atomic-add-float.
+  > Verifies atomicrmw fadd (float fetch-and-add) is present in the IR.
+  > Used by: 08-atomic-add-float.
 
 
 ---
 ### DEFUN `VALIDATE-TENSOR-AD-ATOMIC`
 - **Args**: `(IR-PATH)`
 
-  > Validates that tensor gradient accumulation in the backward kernel uses atomicrmw fadd.  > Checks:  >   - tensor_ad_atomic_grad function is defined  >   - atomicrmw instruction is present (atomic gradient accumulation)  >   - idx_GRAD is NOT present (integer index is non-differentiable)
+  > Validates that tensor gradient accumulation in the backward kernel uses atomicrmw fadd.
+  > Checks:
+  >   - tensor_ad_atomic_grad function is defined
+  >   - atomicrmw instruction is present (atomic gradient accumulation)
+  >   - idx_GRAD is NOT present (integer index is non-differentiable)
 
 
 ---
@@ -4952,7 +6096,21 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `VALIDATE-NO-SROA-GRAD-LEAK`
 - **Args**: `(METADATA-PATH)`
 
-  > Locks the no-SROA-grad-leak invariant for backward kernels.  >   >    For every entry in the kernel's :declared-signature whose :name ends in  >    '_grad', the name stripped of '_grad' must also appear as an entry's  >    :name in the same declared-signature.  >   >    This catches the failure mode where SROA-expanded scalar components of a  >    compound type (e.g. a tensor's offset/stride/extent/length/parent/byte-size)  >    leak as standalone _grad cells in the backward kernel signature, rather  >    than riding along inside the single logical _grad companion of the  >    compound parameter.  >   >    In the forward (non --differentiate) suite, no _grad entries exist in  >    declared-signature at all, so the validator passes trivially. The same  >    test file therefore locks the invariant under both passes.
+  > Locks the no-SROA-grad-leak invariant for backward kernels.
+  > 
+  >    For every entry in the kernel's :declared-signature whose :name ends in
+  >    '_grad', the name stripped of '_grad' must also appear as an entry's
+  >    :name in the same declared-signature.
+  > 
+  >    This catches the failure mode where SROA-expanded scalar components of a
+  >    compound type (e.g. a tensor's offset/stride/extent/length/parent/byte-size)
+  >    leak as standalone _grad cells in the backward kernel signature, rather
+  >    than riding along inside the single logical _grad companion of the
+  >    compound parameter.
+  > 
+  >    In the forward (non --differentiate) suite, no _grad entries exist in
+  >    declared-signature at all, so the validator passes trivially. The same
+  >    test file therefore locks the invariant under both passes.
 
 
 ---
@@ -4995,14 +6153,22 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `STRIP-PACKAGE-QUALIFIERS`
 - **Args**: `(TYPE-SPEC)`
 
-  > Recursively strips package qualifiers from symbols in a type specification.  >    Returns the type spec with bare symbol names (no CRISP.COMPILER:: prefixes).  >      >    Examples:  >      CRISP.COMPILER:INT -> INT  >      (CRISP.COMPILER:CELL CRISP.COMPILER:FLOAT :GLOBAL :READ-WRITE)   >        -> (CELL FLOAT :GLOBAL :READ-WRITE)  >      (C-POINTER ADDRESS-SPACE GLOBAL) -> (C-POINTER ADDRESS-SPACE GLOBAL)
+  > Recursively strips package qualifiers from symbols in a type specification.
+  >    Returns the type spec with bare symbol names (no CRISP.COMPILER:: prefixes).
+  >    
+  >    Examples:
+  >      CRISP.COMPILER:INT -> INT
+  >      (CRISP.COMPILER:CELL CRISP.COMPILER:FLOAT :GLOBAL :READ-WRITE) 
+  >        -> (CELL FLOAT :GLOBAL :READ-WRITE)
+  >      (C-POINTER ADDRESS-SPACE GLOBAL) -> (C-POINTER ADDRESS-SPACE GLOBAL)
 
 
 ---
 ### DEFUN `PRINT-WITHOUT-PACKAGES`
 - **Args**: `(OBJ STREAM)`
 
-  > Prints an object to stream without any package qualifiers.  >    Uses *package* context to avoid printing qualifiers.
+  > Prints an object to stream without any package qualifiers.
+  >    Uses *package* context to avoid printing qualifiers.
 
 
 ---
@@ -5013,14 +6179,18 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%SERIALIZE-RECORDS`
 - **Args**: `(STREAM STRUCTS-HASH)`
 
-  > Emits the (:records ...) section for user-defined records found in STRUCTS-HASH.  >    Only runtime members are emitted (no :c-t members). Brand types resolved to base.
+  > Emits the (:records ...) section for user-defined records found in STRUCTS-HASH.
+  >    Only runtime members are emitted (no :c-t members). Brand types resolved to base.
 
 
 ---
 ### DEFUN `SERIALIZE-STRUCTS`
 - **Args**: `(STREAM STRUCTS-HASH)`
 
-  > Emits (:records ...) for def-records and (:structs ...) for def-structs.  >    Records are split into their own section; brand and :c-t members handled.  >    For def-structs: c-t members are excluded (they are compile-time constants  >    not in the runtime memory layout).
+  > Emits (:records ...) for def-records and (:structs ...) for def-structs.
+  >    Records are split into their own section; brand and :c-t members handled.
+  >    For def-structs: c-t members are excluded (they are compile-time constants
+  >    not in the runtime memory layout).
 
 
 ---
@@ -5032,21 +6202,27 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(INPUT-PATH OUTPUT-PATH &KEY (OUTPUT-TARGETS NIL)
               (SOURCE-FILE NIL) (FORMS NIL))`
 
-  > Generates .metacrisp sidecar files for each kernel in INPUT-PATH.  >    In differentiate mode (*differentiate-p*), generates metadata for the backward  >    (_GRAD) kernel rather than the forward kernel, while preserving the file-name  >    convention established by main.lisp (output-path already carries the _grad prefix).
+  > Generates .metacrisp sidecar files for each kernel in INPUT-PATH.
+  >    In differentiate mode (*differentiate-p*), generates metadata for the backward
+  >    (_GRAD) kernel rather than the forward kernel, while preserving the file-name
+  >    convention established by main.lisp (output-path already carries the _grad prefix).
 
 
 ---
 ### DEFUN `GET-PHYSICAL-WIDTH`
 - **Args**: `(TYPE)`
 
-  > Returns the number of physical ABI slots for TYPE.  >    Cell -> 3, Storage -> 2, user-defined records -> recursively counted, others -> 1.
+  > Returns the number of physical ABI slots for TYPE.
+  >    Cell -> 3, Storage -> 2, user-defined records -> recursively counted, others -> 1.
 
 
 ---
 ### DEFUN `GENERATE-PHYSICAL-SIGNATURE`
 - **Args**: `(SIG-OR-PARAMS)`
 
-  > Generates the physical ABI signature from kernel parameters.  >    Records are flattened to primitive scalar entries.  >    Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple.
+  > Generates the physical ABI signature from kernel parameters.
+  >    Records are flattened to primitive scalar entries.
+  >    Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple.
 
 
 ---
@@ -5057,35 +6233,40 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `GENERATE-DECLARED-SIGNATURE`
 - **Args**: `(SIG &OPTIONAL DECLARED-PARAMS)`
 
-  > Generates the declared-signature plist for a kernel's metadata.  >    Omits :access — storage handles are always treated as read-write by hoist code.
+  > Generates the declared-signature plist for a kernel's metadata.
+  >    Omits :access — storage handles are always treated as read-write by hoist code.
 
 
 ---
 ### DEFUN `GENERATE-IMPLICIT-SIGNATURE`
 - **Args**: `(SIG DECLARED-PARAMS)`
 
-  > Generates the :implicit-params plist for metadata serialization.  >    Omits :access — storage handles are always treated as read-write by hoist code.
+  > Generates the :implicit-params plist for metadata serialization.
+  >    Omits :access — storage handles are always treated as read-write by hoist code.
 
 
 ---
 ### DEFUN `SERIALIZE-KERNELS`
 - **Args**: `(OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)`
 
-  > Emits the (:kernels ...) section of the metacrisp file.  >    Extended to include :global-size, :local-size, :num-groups dispatch declarations.
+  > Emits the (:kernels ...) section of the metacrisp file.
+  >    Extended to include :global-size, :local-size, :num-groups dispatch declarations.
 
 
 ---
 ### DEFUN `%BWD-RESOLVE-TYPE`
 - **Args**: `(TYPE-SPEC &OPTIONAL NEW-ACCESS)`
 
-  > Resolves TYPE-SPEC alias to its inline form.  >    NEW-ACCESS is accepted for signature compatibility but ignored.
+  > Resolves TYPE-SPEC alias to its inline form.
+  >    NEW-ACCESS is accepted for signature compatibility but ignored.
 
 
 ---
 ### DEFUN `%BWD-FIXUP-DECLARED-TYPES`
 - **Args**: `(BWD-K-NAME)`
 
-  > Reads BWD-K-NAME's entry in *kernel-declared-signatures*, resolves  >    aliases to inline types, and updates the entry in place.
+  > Reads BWD-K-NAME's entry in *kernel-declared-signatures*, resolves
+  >    aliases to inline types, and updates the entry in place.
 
 
 ---
@@ -5095,7 +6276,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ### DEFSTRUCT `PARAMETER-DEF`
 
-  > Represents a function parameter with its type, kind, and metadata.  >    Replaces the legacy list format: (name type :kind kind ...)
+  > Represents a function parameter with its type, kind, and metadata.
+  >    Replaces the legacy list format: (name type :kind kind ...)
 
 
 ---
@@ -5135,7 +6317,11 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFSTRUCT `SEMANTIC-DEVICE-VEC-LITERAL`
 
-  > Represents a ##(...) device vector literal.  >    VEC-TYPE is the full Crisp type symbol (e.g. 'float4).  >    ELEMENT-TYPE is the component type symbol (e.g. 'float).  >    WIDTH is the number of elements (2, 3, or 4).  >    ELEMENTS is a list of analyzed semantic nodes, one per element.
+  > Represents a ##(...) device vector literal.
+  >    VEC-TYPE is the full Crisp type symbol (e.g. 'float4).
+  >    ELEMENT-TYPE is the component type symbol (e.g. 'float).
+  >    WIDTH is the number of elements (2, 3, or 4).
+  >    ELEMENTS is a list of analyzed semantic nodes, one per element.
 
 
 ---
@@ -5201,7 +6387,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFSTRUCT `SEMANTIC-ATOMIC-RMW`
 
-  > Represents an atomic read-modify-write operation (atomic-add!, atomic-sub!, etc.).  > Returns the value at the location BEFORE the modification (fetch-and-op semantics).  > OP is a keyword: :add :sub :min :max :xchg.  > DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1).
+  > Represents an atomic read-modify-write operation (atomic-add!, atomic-sub!, etc.).
+  > Returns the value at the location BEFORE the modification (fetch-and-op semantics).
+  > OP is a keyword: :add :sub :min :max :xchg.
+  > DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1).
 
 
 ---
@@ -5273,7 +6462,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFSTRUCT `SEMANTIC-CT-ARRAY`
 
-  > Represents construction of a (array T N) value from N scalar T values.  >    Used by marshall-tensor to assemble offset/strides/extents array fields.
+  > Represents construction of a (array T N) value from N scalar T values.
+  >    Used by marshall-tensor to assemble offset/strides/extents array fields.
 
 
 ---
@@ -5291,7 +6481,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFSTRUCT `SEMANTIC-GPU-BUILTIN`
 
-  > Represents a GPU built-in function call (e.g. get-global-id, local-barrier).  >    BUILTIN-NAME is a keyword: :get-global-id, :local-barrier, etc.  >    DIMENSION is NIL for the 3D vector form, or 0/1/2 for the scalar-n form.  >    TYPE is the Crisp return type: 'ulong3, 'ulong, 'uint, or NIL (void).
+  > Represents a GPU built-in function call (e.g. get-global-id, sync-workgroup).
+  >    BUILTIN-NAME is a keyword: :get-global-id, :sync-workgroup, etc.
+  >    DIMENSION is NIL for the 3D vector form, or 0/1/2 for the scalar-n form.
+  >    TYPE is the Crisp return type: 'ulong3, 'ulong, 'uint, or NIL (void).
 
 
 ---
@@ -5303,19 +6496,43 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFSTRUCT `SEMANTIC-MAKE-VIEW`
 
-  > Represents a make-cell/vector/matrix/tensor view construction.  >    Creates a new Storage Handle that reinterprets an existing one.  >    No memory allocation occurs — only a new struct value is built.  >    Fields:  >      type        — result type, e.g. (tensor int 1 :global :read-write :compact)  >      source-node — semantic node for the source storage handle  >      element-type — new element type symbol (e.g. int, float, short)  >      rank        — N: 0=cell, 1=vector, 2=matrix, N=tensor  >      offset      — element offset (non-negative integer, default 0)  >      length      — explicit length (integer) or NIL for auto-compute (vectors only)  >      extents     — list of N integers (matrix/tensor); NIL for cell/auto-vector  >      strides     — explicit strides list or NIL (computed from extents/major)  >      major       — :row or :col (make-matrix only; default :row)  >      source-location
+  > Represents a make-cell/vector/matrix/tensor view construction.
+  >    Creates a new Storage Handle that reinterprets an existing one.
+  >    No memory allocation occurs — only a new struct value is built.
+  >    Fields:
+  >      type        — result type, e.g. (tensor int 1 :global :read-write :compact)
+  >      source-node — semantic node for the source storage handle
+  >      element-type — new element type symbol (e.g. int, float, short)
+  >      rank        — N: 0=cell, 1=vector, 2=matrix, N=tensor
+  >      offset      — element offset (non-negative integer, default 0)
+  >      length      — explicit length (integer) or NIL for auto-compute (vectors only)
+  >      extents     — list of N integers (matrix/tensor); NIL for cell/auto-vector
+  >      strides     — explicit strides list or NIL (computed from extents/major)
+  >      major       — :row or :col (make-matrix only; default :row)
+  >      source-location
 
 
 ---
 ### DEFSTRUCT `SEMANTIC-STRIDE-VIEW`
 
-  > A view into an existing 2D tensor with stride/extent/offset computed at runtime.  >    Used for: transpose (swaps row/col dimensions), col (extract 1D column slice),  >    row (extract 1D row slice).  >    Fields:  >      op           — :transpose, :col, or :row  >      source-node  — semantic node for the 2D source matrix  >      index-node   — semantic node for the column/row index (NIL for transpose)  >      type         — result type list, e.g. (tensor int 2 :global :read-write :strided)  >      source-location
+  > A view into an existing 2D tensor with stride/extent/offset computed at runtime.
+  >    Used for: transpose (swaps row/col dimensions), col (extract 1D column slice),
+  >    row (extract 1D row slice).
+  >    Fields:
+  >      op           — :transpose, :col, or :row
+  >      source-node  — semantic node for the 2D source matrix
+  >      index-node   — semantic node for the column/row index (NIL for transpose)
+  >      type         — result type list, e.g. (tensor int 2 :global :read-write :strided)
+  >      source-location
 
 
 ---
 ### DEFSTRUCT `SEMANTIC-DOTIMES`
 
-  > Represents (dotimes (var limit [stride]) body...).  >    var is bound to 0, stride, 2*stride, ... while var < limit.  >    stride-node is NIL when the stride was omitted (emit constant 1).  >    Always returns void.
+  > Represents (dotimes (var limit [stride]) body...).
+  >    var is bound to 0, stride, 2*stride, ... while var < limit.
+  >    stride-node is NIL when the stride was omitted (emit constant 1).
+  >    Always returns void.
 
 
 ---
@@ -5376,21 +6593,26 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%STRUCT-NATIVE-ALIGNMENT`
 - **Args**: `(STRUCT-NAME)`
 
-  > Returns the native scalar alignment of a struct: the maximum alignment of  >    all its runtime members (recursively resolved).  This is the struct's  >    own alignment requirement under native scalar layout rules.
+  > Returns the native scalar alignment of a struct: the maximum alignment of
+  >    all its runtime members (recursively resolved).  This is the struct's
+  >    own alignment requirement under native scalar layout rules.
 
 
 ---
 ### DEFUN `GET-NATIVE-BASE-ALIGNMENT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns the base alignment (in bytes) for TYPE-SPEC under native scalar rules.  >    Scalars: natural size.  Arrays: element alignment.  Structs: max member alignment.
+  > Returns the base alignment (in bytes) for TYPE-SPEC under native scalar rules.
+  >    Scalars: natural size.  Arrays: element alignment.  Structs: max member alignment.
 
 
 ---
 ### DEFUN `GET-NATIVE-SIZE`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns the size (in bytes) of TYPE-SPEC under native scalar rules.  >    Arrays: N * elem-size (compact, no per-element 16-byte padding).  >    Structs: total-size as recorded (compact layout).  Scalars: natural size.
+  > Returns the size (in bytes) of TYPE-SPEC under native scalar rules.
+  >    Arrays: N * elem-size (compact, no per-element 16-byte padding).
+  >    Structs: total-size as recorded (compact layout).  Scalars: natural size.
 
 
 ---
@@ -5404,7 +6626,11 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `COMPUTE-NATIVE-LAYOUT`
 - **Args**: `(MEMBERS)`
 
-  > Computes native scalar layout for a struct.  >    Members are placed at their natural alignment boundaries (same as before).  >    Total struct size is padded to the struct's overall alignment, which equals  >    the maximum alignment of any member — NOT to 16.  >    Returns (values expanded-members total-size).
+  > Computes native scalar layout for a struct.
+  >    Members are placed at their natural alignment boundaries (same as before).
+  >    Total struct size is padded to the struct's overall alignment, which equals
+  >    the maximum alignment of any member — NOT to 16.
+  >    Returns (values expanded-members total-size).
 
 
 ---
@@ -5417,7 +6643,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `ENSURE-STRUCT-LLVM-TYPE`
 - **Args**: `(NAME)`
 
-  > Ensures the LLVM struct type exists for the given struct name.  >    Handles forward declarations and recursion.
+  > Ensures the LLVM struct type exists for the given struct name.
+  >    Handles forward declarations and recursion.
 
 
 ---
@@ -5438,14 +6665,21 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `LOOKUP-STRUCT-DEFINITION`
 - **Args**: `(TYPE-NAME)`
 
-  > Looks up a struct definition, handling derived types and package issues.  >    Returns the struct definition or NIL if not found.  >   >    This function:  >    1. Resolves derived types to their base type using get-type-base  >    2. Tries package-agnostic lookup (current package, then :crisp-language)  >    3. Works for both structs and records (both stored in *crisp-structs*)
+  > Looks up a struct definition, handling derived types and package issues.
+  >    Returns the struct definition or NIL if not found.
+  > 
+  >    This function:
+  >    1. Resolves derived types to their base type using get-type-base
+  >    2. Tries package-agnostic lookup (current package, then :crisp-language)
+  >    3. Works for both structs and records (both stored in *crisp-structs*)
 
 
 ---
 ### DEFUN `REGISTER-STRUCT-DEFINITION`
 - **Args**: `(NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))`
 
-  > Registers a struct or record definition in the global registry.  >    Extended: for records, validates that no (array T N) member has N > 16.
+  > Registers a struct or record definition in the global registry.
+  >    Extended: for records, validates that no (array T N) member has N > 16.
 
 
 ---
@@ -5458,7 +6692,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `PARSE-STRUCT-MEMBER-SPEC`
 - **Args**: `(SPEC)`
 
-  > Parses a struct member specification.  >    Supports (name type) and (name type :c-t [value]).
+  > Parses a struct member specification.
+  >    Supports (name type) and (name type :c-t [value]).
 
 
 ---
@@ -5473,7 +6708,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ### DEFVAR `*PARTIAL-TEMPLATE-INSTANTIATIONS*`
 
-  > Maps template name symbols to lists of partial instantiation plists.  >    Each plist has keys:  >      :partial-mangled-name - symbol for the partial concrete type (e.g. FAKE-CELL_INT)  >      :data-members         - ordered data-member specs (excluding brand forms)
+  > Maps template name symbols to lists of partial instantiation plists.
+  >    Each plist has keys:
+  >      :partial-mangled-name - symbol for the partial concrete type (e.g. FAKE-CELL_INT)
+  >      :data-members         - ordered data-member specs (excluding brand forms)
 
 
 ---
@@ -5487,7 +6725,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `TEMPLATE-INSTANTIATION`
 - **Args**: `(FORM)`
 
-  > Identity macro to allow top-level template instantiation logic to be visible to the compiler  >    walker (visit-toplevel-form), preventing 'undefined function' errors.
+  > Identity macro to allow top-level template instantiation logic to be visible to the compiler
+  >    walker (visit-toplevel-form), preventing 'undefined function' errors.
 
 
 ---
@@ -5508,7 +6747,13 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `STRIP-KEYWORD-LABELS`
 - **Args**: `(TYPE-LIST TEMPLATE-PARAMS)`
 
-  > Strips keyword LABEL pairs from a type specifier list, keeping keyword VALUES.  >    A keyword is treated as a label (and stripped) only when the element following  >    it is a template parameter.  Keyword values (concrete types like :global) are kept.  >    e.g. (fake-cell T :address-space addr :access acc) with params (T addr acc)  >         => (fake-cell T addr acc)  >    But  (cell T :global :read-write) with params (T)  >         => (cell T :global :read-write)  -- :global and :read-write are values, kept.
+  > Strips keyword LABEL pairs from a type specifier list, keeping keyword VALUES.
+  >    A keyword is treated as a label (and stripped) only when the element following
+  >    it is a template parameter.  Keyword values (concrete types like :global) are kept.
+  >    e.g. (fake-cell T :address-space addr :access acc) with params (T addr acc)
+  >         => (fake-cell T addr acc)
+  >    But  (cell T :global :read-write) with params (T)
+  >         => (cell T :global :read-write)  -- :global and :read-write are values, kept.
 
 
 ---
@@ -5529,7 +6774,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `MATCH-TEMPLATE-ARG`
 - **Args**: `(RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)`
 
-  > Recursively matches sig-type against arg-type, updating inference-map.  >    FIX: Resolves type aliases (e.g., FC-INT -> (FAKE-CELL INT ...)) before matching  >    list structures, so def-type aliases work with template inference.
+  > Recursively matches sig-type against arg-type, updating inference-map.
+  >    FIX: Resolves type aliases (e.g., FC-INT -> (FAKE-CELL INT ...)) before matching
+  >    list structures, so def-type aliases work with template inference.
 
 
 ---
@@ -5543,28 +6790,40 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFUN `INITIALIZE-TEMPLATES`
 
-  > Initializes the template system and hooks into the compiler.  >    Extended to register ARRAY as a built-in arity-2 form for unmangle support.
+  > Initializes the template system and hooks into the compiler.
+  >    Extended to register ARRAY as a built-in arity-2 form for unmangle support.
 
 
 ---
 ### DEFUN `INSTANTIATE-TEMPLATE`
 - **Args**: `(NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)`
 
-  > Generates the specialized code for a template.   >    name-or-tmpl can be a symbol (name) or a template-data struct.  >    override-name: If provided (string or symbol), renames the generated function/kernel.
+  > Generates the specialized code for a template. 
+  >    name-or-tmpl can be a symbol (name) or a template-data struct.
+  >    override-name: If provided (string or symbol), renames the generated function/kernel.
 
 
 ---
 ### DEFUN `%INSTANTIATE-STRUCTURE-TEMPLATE`
 - **Args**: `(NAME BODY SUBSTITUTIONS CONCRETE-TYPES)`
 
-  > Instantiates a struct template with the given substitutions and concrete types.  >    For incomplete templates (those with :c-t fields lacking a default value), stores  >    partial instantiation info in *partial-template-instantiations* and installs a CL  >    macro for MAKE-X%DISPATCH so dispatch can complete the type at call-site expansion.  >    For complete templates, generates the wrapper def-function and registers the overload  >    as before.
+  > Instantiates a struct template with the given substitutions and concrete types.
+  >    For incomplete templates (those with :c-t fields lacking a default value), stores
+  >    partial instantiation info in *partial-template-instantiations* and installs a CL
+  >    macro for MAKE-X%DISPATCH so dispatch can complete the type at call-site expansion.
+  >    For complete templates, generates the wrapper def-function and registers the overload
+  >    as before.
 
 
 ---
 ### DEFUN `%DISPATCH-INCOMPLETE-TEMPLATE`
 - **Args**: `(TEMPLATE-NAME ALL-ARGS)`
 
-  > Called at CL macro expansion time when MAKE-X%DISPATCH expands for an incomplete  >    struct template. Maps positional args back to keyword args and calls the partial  >    struct's constructor with all values (including the required incomplete CT ones).  >    Returns a direct constructor call whose result type is the partial mangled type  >    (e.g. FAKE-CELL_INT), preserving correct arity for template function resolution.
+  > Called at CL macro expansion time when MAKE-X%DISPATCH expands for an incomplete
+  >    struct template. Maps positional args back to keyword args and calls the partial
+  >    struct's constructor with all values (including the required incomplete CT ones).
+  >    Returns a direct constructor call whose result type is the partial mangled type
+  >    (e.g. FAKE-CELL_INT), preserving correct arity for template function resolution.
 
 
 ---
@@ -5582,14 +6841,18 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%INFER-FROM-SINGLE-TEMPLATE`
 - **Args**: `(TMPL ARGUMENT-TYPES)`
 
-  > Helper: Attempts to infer template types for a single template.  > Returns NIL on failure, or (list template-data concrete-types) on success.  > Extended: HOF-type sig-params are allowed to fail matching when all template  > parameters have already been inferred from earlier arguments.
+  > Helper: Attempts to infer template types for a single template.
+  > Returns NIL on failure, or (list template-data concrete-types) on success.
+  > Extended: HOF-type sig-params are allowed to fail matching when all template
+  > parameters have already been inferred from earlier arguments.
 
 
 ---
 ### DEFUN `TRY-INFER-TEMPLATE-TYPES`
 - **Args**: `(NAME ARGUMENT-TYPES)`
 
-  > Attempts to infer template parameters for 'name' given 'argument-types'.  >    Returns a LIST OF LISTS of (template-data concrete-types).
+  > Attempts to infer template parameters for 'name' given 'argument-types'.
+  >    Returns a LIST OF LISTS of (template-data concrete-types).
 
 
 ---
@@ -5603,14 +6866,17 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%SHOULD-INSTANTIATE-TEMPLATE`
 - **Args**: `(KEY STATUS IS-COMPILING)`
 
-  > Helper: Determines if a template should be instantiated based on cache status.  >    Returns T if instantiation should proceed, NIL otherwise.
+  > Helper: Determines if a template should be instantiated based on cache status.
+  >    Returns T if instantiation should proceed, NIL otherwise.
 
 
 ---
 ### DEFUN `ENSURE-TEMPLATE-INSTANTIATION`
 - **Args**: `(NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)`
 
-  > Called by the compiler to auto-instantiate templates.  >    compiler-callback is (lambda (form location) ...).  >    Fixed: is-compiling now uses *compiler-session* instead of boundp on symbol-macro.
+  > Called by the compiler to auto-instantiate templates.
+  >    compiler-callback is (lambda (form location) ...).
+  >    Fixed: is-compiling now uses *compiler-session* instead of boundp on symbol-macro.
 
 
 ---
@@ -5626,7 +6892,11 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `GET-PROMOTED-TYPE`
 - **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
 
-  > Determines result type of binary operation with alias resolution.  >    Now uses type derivation hierarchy (DAG) for promotion rules.  >    Cross-package same-name fix: device vector types like USHORT2 may be interned in  >    :crisp-language or :crisp.compiler depending on the code path; treat same symbol-name  >    as the same type after alias resolution.
+  > Determines result type of binary operation with alias resolution.
+  >    Now uses type derivation hierarchy (DAG) for promotion rules.
+  >    Cross-package same-name fix: device vector types like USHORT2 may be interned in
+  >    :crisp-language or :crisp.compiler depending on the code path; treat same symbol-name
+  >    as the same type after alias resolution.
 
 
 ---
@@ -5647,7 +6917,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `RESOLVE-BEST-SIGNATURE`
 - **Args**: `(OP EXPLICIT-ARG-TYPES CONTEXT)`
 
-  > Finds the best matching function signature for the given operator and argument types.  >    Attempts template instantiation if no immediate match is found.
+  > Finds the best matching function signature for the given operator and argument types.
+  >    Attempts template instantiation if no immediate match is found.
 
 
 ---
@@ -5655,7 +6926,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ### DEFVAR `*BRAND-INSTANCE-CACHE*`
 
-  > Per-function cache mapping (brand-name . variable-identity) to a gensym'd  >    instance-specific type name. Cleared at the start of each function compilation.
+  > Per-function cache mapping (brand-name . variable-identity) to a gensym'd
+  >    instance-specific type name. Cleared at the start of each function compilation.
 
 
 ---
@@ -5667,14 +6939,20 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*BRAND-INSTANCE-TYPES*`
 
-  > Maps gensym brand-instance type names (created by resolve-brand-type) to  >    the brand-name they instantiate.  Consulted by resolve-dominance to block  >    cross-instance arithmetic and to preserve instance types in arithmetic  >    with the brand's base type.  >    Cleared alongside *brand-instance-cache* in initialize-compiler.
+  > Maps gensym brand-instance type names (created by resolve-brand-type) to
+  >    the brand-name they instantiate.  Consulted by resolve-dominance to block
+  >    cross-instance arithmetic and to preserve instance types in arithmetic
+  >    with the brand's base type.
+  >    Cleared alongside *brand-instance-cache* in initialize-compiler.
 
 
 ---
 ### DEFUN `BRAND-ACTIVE-P`
 - **Args**: `(BRAND-DEF)`
 
-  > Returns T if the given brand should be actively enforced in the current compilation.  >    A brand is active when :enforce is :always, or when :enforce is :diff  >    and *differentiate-p* is set.
+  > Returns T if the given brand should be actively enforced in the current compilation.
+  >    A brand is active when :enforce is :always, or when :enforce is :diff
+  >    and *differentiate-p* is set.
 
 
 ---
@@ -5695,62 +6973,102 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `PARSE-BRAND-DECLARATION`
 - **Args**: `(BRAND-FORM)`
 
-  > Parses a brand declaration form: (brand name base-type :subst mode &optional :enforce mode).  >    Returns a brand-definition struct.
+  > Parses a brand declaration form: (brand name base-type :subst mode &optional :enforce mode).
+  >    Returns a brand-definition struct.
 
 
 ---
 ### DEFUN `REGISTER-BRAND-DEFINITION`
 - **Args**: `(STRUCT-NAME BRAND-FORM)`
 
-  > Registers a brand declaration from within a struct definition.  >    When the brand is active: registers as a derived type in the DAG.  >    When inactive: registers as a type alias (transparent erasure).  >    Parameterized brands (base type varies across template specializations,  >    and the brand is NOT used as a concrete struct member type) skip global  >    registration and are resolved lazily per-owner.  >    Brands that conflict in base type AND appear as a concrete struct member  >    in the existing owner are always an error (cannot be parameterized).  >   >    Non-symbol base types (e.g., compound types like (POINT INT)) are silently  >    skipped: they cannot be registered in the type DAG.
+  > Registers a brand declaration from within a struct definition.
+  >    When the brand is active: registers as a derived type in the DAG.
+  >    When inactive: registers as a type alias (transparent erasure).
+  >    Parameterized brands (base type varies across template specializations,
+  >    and the brand is NOT used as a concrete struct member type) skip global
+  >    registration and are resolved lazily per-owner.
+  >    Brands that conflict in base type AND appear as a concrete struct member
+  >    in the existing owner are always an error (cannot be parameterized).
+  > 
+  >    Non-symbol base types (e.g., compound types like (POINT INT)) are silently
+  >    skipped: they cannot be registered in the type DAG.
 
 
 ---
 ### DEFUN `RESOLVE-BRAND-TYPE`
 - **Args**: `(BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)`
 
-  > Resolves a branded type for a specific variable instance.  >    Returns a gensym'd type name unique to (brand-name, var-ref [, base-type]).  >   >    When BASE-TYPE is supplied the gensym is registered as a :descendant of  >    BASE-TYPE directly.  BASE-TYPE is first normalized against the type registries  >    to handle package mismatches: unmangle-template-struct-name creates symbols in  >    crisp.compiler (the cell type's package) while user structs are stored in  >    crisp-language (Fix D reads source files in that package).  A name-based scan  >    of *type-derivation-graph* then *crisp-structs* finds the canonical symbol.  >   >    When BASE-TYPE is NIL, the gensym is registered as a :descendant of  >    brand-name (original behaviour, used by fake-cell / template brands).  >   >    In all cases the gensym is stored in *brand-instance-types* under brand-name  >    so that resolve-dominance can block cross-instance arithmetic.
+  > Resolves a branded type for a specific variable instance.
+  >    Returns a gensym'd type name unique to (brand-name, var-ref [, base-type]).
+  > 
+  >    When BASE-TYPE is supplied the gensym is registered as a :descendant of
+  >    BASE-TYPE directly.  BASE-TYPE is first normalized against the type registries
+  >    to handle package mismatches: unmangle-template-struct-name creates symbols in
+  >    crisp.compiler (the cell type's package) while user structs are stored in
+  >    crisp-language (Fix D reads source files in that package).  A name-based scan
+  >    of *type-derivation-graph* then *crisp-structs* finds the canonical symbol.
+  > 
+  >    When BASE-TYPE is NIL, the gensym is registered as a :descendant of
+  >    brand-name (original behaviour, used by fake-cell / template brands).
+  > 
+  >    In all cases the gensym is stored in *brand-instance-types* under brand-name
+  >    so that resolve-dominance can block cross-instance arithmetic.
 
 
 ---
 ### DEFUN `VALIDATE-DEPENDENT-BRAND-TYPES`
 - **Args**: `(DECLARE-FORMS ENV)`
 
-  > Verifies that any parameters typed as (brand var) refer to a valid owner parameter.  >    Scans the raw declarations to find dependencies that parse-type-specifier might have flattened.  >    Supports shared brands (same brand name defined on multiple structs).  >    Uses find-brand-for-owner for alias resolution (e.g., FC-INT -> FAKE-CELL_INT_GLOBAL_READ-WRITE).
+  > Verifies that any parameters typed as (brand var) refer to a valid owner parameter.
+  >    Scans the raw declarations to find dependencies that parse-type-specifier might have flattened.
+  >    Supports shared brands (same brand name defined on multiple structs).
+  >    Uses find-brand-for-owner for alias resolution (e.g., FC-INT -> FAKE-CELL_INT_GLOBAL_READ-WRITE).
 
 
 ---
 ### DEFUN `%FIND-BRAND-OWNER-VAR`
 - **Args**: `(BRAND-NAME SIG-PARAMS ARG-NODES)`
 
-  > Finds the actual argument variable for the parameter that owns the brand instance.  >    Handles shared brands by checking if any parameter's type is a registered owner  >    for the given BRAND-NAME. Uses find-brand-for-owner for alias resolution.
+  > Finds the actual argument variable for the parameter that owns the brand instance.
+  >    Handles shared brands by checking if any parameter's type is a registered owner
+  >    for the given BRAND-NAME. Uses find-brand-for-owner for alias resolution.
 
 
 ---
 ### DEFVAR `*PARAMETERIZED-BRAND-NAMES*`
 
-  > Set of brand names whose base type varies across template specializations.  >    These brands skip global type registration and are resolved lazily per-owner.
+  > Set of brand names whose base type varies across template specializations.
+  >    These brands skip global type registration and are resolved lazily per-owner.
 
 
 ---
 ### DEFUN `RESOLVE-OWNER-TYPE-TO-MANGLED`
 - **Args**: `(TYPE-SPEC)`
 
-  > Resolves a type specifier (which may be an alias like FC-INT) to its  >    canonical mangled form (like FAKE-CELL_INT_GLOBAL_READ-WRITE).  >    Used for looking up per-owner brand definitions.
+  > Resolves a type specifier (which may be an alias like FC-INT) to its
+  >    canonical mangled form (like FAKE-CELL_INT_GLOBAL_READ-WRITE).
+  >    Used for looking up per-owner brand definitions.
 
 
 ---
 ### DEFUN `FIND-BRAND-FOR-OWNER`
 - **Args**: `(BRAND-NAME OWNER-TYPE)`
 
-  > Looks up a brand definition for the given brand name and owner type.  >    Resolves type aliases (e.g., FC-INT -> FAKE-CELL_INT_GLOBAL_READ-WRITE)  >    before lookup.
+  > Looks up a brand definition for the given brand name and owner type.
+  >    Resolves type aliases (e.g., FC-INT -> FAKE-CELL_INT_GLOBAL_READ-WRITE)
+  >    before lookup.
 
 
 ---
 ### DEFUN `RESOLVE-PARAMETERIZED-BRAND-IN-ENV`
 - **Args**: `(BRAND-SPEC ENV)`
 
-  > Resolves a parameterized brand application (brand-name var-ref) using  >    the function environment. Returns the concrete base type for the brand  >    based on the variable's owner type.  >    For inactive brands, returns the base type directly (transparent).  >    For active brands, returns the base type (instance differentiation  >    happens later in analyze-function-call).
+  > Resolves a parameterized brand application (brand-name var-ref) using
+  >    the function environment. Returns the concrete base type for the brand
+  >    based on the variable's owner type.
+  >    For inactive brands, returns the base type directly (transparent).
+  >    For active brands, returns the base type (instance differentiation
+  >    happens later in analyze-function-call).
 
 
 ---
@@ -5769,7 +7087,9 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFUN `INITIALIZE-TYPE-HIERARCHY`
 
-  > Initializes the type derivation graph (starts empty).  >    User-defined derived types will be added via def-derived-type.  >    Built-in numeric types use the existing size-based promotion system.
+  > Initializes the type derivation graph (starts empty).
+  >    User-defined derived types will be added via def-derived-type.
+  >    Built-in numeric types use the existing size-based promotion system.
 
 
 ---
@@ -5783,70 +7103,106 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `CREATE-NUMERIC-HIERARCHY`
 - **Args**: `(TYPE-NAMES)`
 
-  > Creates a linked hierarchy of numeric types.  >    type-names should be ordered from most specific to most general.  >    Example: '(char short int long) creates char -> short -> int -> long.
+  > Creates a linked hierarchy of numeric types.
+  >    type-names should be ordered from most specific to most general.
+  >    Example: '(char short int long) creates char -> short -> int -> long.
 
 
 ---
 ### DEFUN `IS-SUBSTITUTABLE-FOR?`
 - **Args**: `(SOURCE-TYPE TARGET-TYPE)`
 
-  > Returns T if SOURCE-TYPE can be used where TARGET-TYPE is expected.  >    This is the fundamental 'Can I put peg A in hole B?' check.  >   >    Algorithm:  >    - If types are equal, return T  >    - Walk UP from source through ancestors to find target  >    - Handles cycles (from :equal relationships) via visited tracking
+  > Returns T if SOURCE-TYPE can be used where TARGET-TYPE is expected.
+  >    This is the fundamental 'Can I put peg A in hole B?' check.
+  > 
+  >    Algorithm:
+  >    - If types are equal, return T
+  >    - Walk UP from source through ancestors to find target
+  >    - Handles cycles (from :equal relationships) via visited tracking
 
 
 ---
 ### DEFUN `TYPES-ASSIGNABLE-P`
 - **Args**: `(SOURCE-TYPE TARGET-TYPE)`
 
-  > Checks if source-type can be assigned to target-type.  >    This is true if:  >    1. The types feature exact equivalence (types-equivalent-p)  >    2. The source type represents a derived type that is substitutable for the target (is-substitutable-for?)
+  > Checks if source-type can be assigned to target-type.
+  >    This is true if:
+  >    1. The types feature exact equivalence (types-equivalent-p)
+  >    2. The source type represents a derived type that is substitutable for the target (is-substitutable-for?)
 
 
 ---
 ### DEFUN `HAS-ANCESTOR-PATH?`
 - **Args**: `(FROM-TYPE TO-TYPE VISITED)`
 
-  > Walk UP through ancestors from FROM-TYPE to find TO-TYPE.  >    Returns T if path exists, NIL otherwise.  >    VISITED hash table prevents infinite loops (from :equal cycles).
+  > Walk UP through ancestors from FROM-TYPE to find TO-TYPE.
+  >    Returns T if path exists, NIL otherwise.
+  >    VISITED hash table prevents infinite loops (from :equal cycles).
 
 
 ---
 ### DEFUN `GET-TYPE-BASE`
 - **Args**: `(TYPE-NAME)`
 
-  > Returns the base 'real' type for a given type (derived or real).  >    If the type is not in the derivation graph, returns the type itself.
+  > Returns the base 'real' type for a given type (derived or real).
+  >    If the type is not in the derivation graph, returns the type itself.
 
 
 ---
 ### DEFUN `GET-REACHABLE-TYPES`
 - **Args**: `(TYPE-NAME)`
 
-  > Returns a list of all types that TYPE-NAME can substitute for (including itself).  >    Uses BFS to walk up the ancestor graph, plus handles :equal relationships.  >    Returns types in order from closest to farthest (BFS order).
+  > Returns a list of all types that TYPE-NAME can substitute for (including itself).
+  >    Uses BFS to walk up the ancestor graph, plus handles :equal relationships.
+  >    Returns types in order from closest to farthest (BFS order).
 
 
 ---
 ### DEFUN `FIND-COMMON-PROMOTED-TYPE`
 - **Args**: `(TYPE-A TYPE-B)`
 
-  > Finds the best common type for promotion in binary operations.  >    Returns the closest common type that both can substitute for.  >   >    Algorithm:  >    1. Calculate all types type-a can reach (substitute for)  >    2. Calculate all types type-b can reach  >    3. Find intersection  >    4. Return the first common type in type-a's reachable list (closest to type-a)  >   >    Returns NIL if no common type exists.
+  > Finds the best common type for promotion in binary operations.
+  >    Returns the closest common type that both can substitute for.
+  > 
+  >    Algorithm:
+  >    1. Calculate all types type-a can reach (substitute for)
+  >    2. Calculate all types type-b can reach
+  >    3. Find intersection
+  >    4. Return the first common type in type-a's reachable list (closest to type-a)
+  > 
+  >    Returns NIL if no common type exists.
 
 
 ---
 ### DEFUN `RESOLVE-DOMINANCE`
 - **Args**: `(TYPE-A TYPE-B)`
 
-  > Determines which type dominates in arithmetic operations.  >    Returns the dominant type, or NIL if the types cannot mix.  >   >    Brand-instance rules are applied BEFORE substitutability so that a brand  >    instance always wins over the plain type it descends from:  >    - Same type: return it.  >    - Both instances of the SAME brand (different vars): cannot mix -> NIL.  >    - One brand instance, one non-brand: brand instance dominates.  >    - Neither is a brand instance: standard substitutability /  >      find-common-promoted-type.
+  > Determines which type dominates in arithmetic operations.
+  >    Returns the dominant type, or NIL if the types cannot mix.
+  > 
+  >    Brand-instance rules are applied BEFORE substitutability so that a brand
+  >    instance always wins over the plain type it descends from:
+  >    - Same type: return it.
+  >    - Both instances of the SAME brand (different vars): cannot mix -> NIL.
+  >    - One brand instance, one non-brand: brand instance dominates.
+  >    - Neither is a brand instance: standard substitutability /
+  >      find-common-promoted-type.
 
 
 ---
 ### DEFUN `COMPUTE-BASE-TYPE`
 - **Args**: `(ORIGINAL-TYPE-NAME)`
 
-  > Walks the original-type chain to find the root 'real' type.  >    Returns the base type name, or NIL if not found.
+  > Walks the original-type chain to find the root 'real' type.
+  >    Returns the base type name, or NIL if not found.
 
 
 ---
 ### DEFUN `%VALIDATE-DERIVED-TYPE-REGISTRATION`
 - **Args**: `(NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)`
 
-  > Checks if new-type-name is already registered identically (returns :already-registered),  >    otherwise performs collisions & presence checks, raising an error if anything is invalid.
+  > Checks if new-type-name is already registered identically (returns :already-registered),
+  >    otherwise performs collisions & presence checks, raising an error if anything is invalid.
 
 
 ---
@@ -5860,35 +7216,65 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%REGISTER-DERIVED-IN-CRISP-TYPES`
 - **Args**: `(NEW-TYPE-NAME BASE-TYPE)`
 
-  > Registers the derived type in *crisp-types* so type checking and casting work.  >    Derived types have identical memory layout to their base type.
+  > Registers the derived type in *crisp-types* so type checking and casting work.
+  >    Derived types have identical memory layout to their base type.
 
 
 ---
 ### DEFUN `REGISTER-DERIVED-TYPE`
 - **Args**: `(NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)`
 
-  > Registers a new derived type in the type derivation graph.  >   >    Parameters:  >    - new-type-name: Symbol for the new derived type  >    - original-type-name: Symbol for the type being derived from  >    - subst-mode: One of :no, :equal, :descendant, :ancestor  >   >    Validates:  >    - Original type must exist (in *type-derivation-graph*, *crisp-types*, or *crisp-structs*)  >    - Subst-mode must be valid  >   >    Updates:  >    - Creates new type-node with computed base-type  >    - Updates ancestor/descendant relationships based on subst-mode
+  > Registers a new derived type in the type derivation graph.
+  > 
+  >    Parameters:
+  >    - new-type-name: Symbol for the new derived type
+  >    - original-type-name: Symbol for the type being derived from
+  >    - subst-mode: One of :no, :equal, :descendant, :ancestor
+  > 
+  >    Validates:
+  >    - Original type must exist (in *type-derivation-graph*, *crisp-types*, or *crisp-structs*)
+  >    - Subst-mode must be valid
+  > 
+  >    Updates:
+  >    - Creates new type-node with computed base-type
+  >    - Updates ancestor/descendant relationships based on subst-mode
 
 
 ---
 ### DEFUN `REGISTER-SET-DERIVED`
 - **Args**: `(ANCESTOR-TYPE-NAME DESCENDANT-TYPE-NAME)`
 
-  > Registers a set-derived relationship between two existing struct types.  >    The descendant can implicitly substitute for the ancestor (like :descendant subst-mode).  >   >    Parameters:  >    - ancestor-type-name: The 'smaller' or contained type  >    - descendant-type-name: The 'larger' or extension type  >   >    Validates:  >    - Both types must exist  >    - Both must be structs (or derived from structs) -- not records, scalars, functions, or enums  >    - Ancestor size <= Descendant size  >    - Shape compatibility (flattened data members with matching types and byte offsets)  >    - No cycles in the type hierarchy DAG
+  > Registers a set-derived relationship between two existing struct types.
+  >    The descendant can implicitly substitute for the ancestor (like :descendant subst-mode).
+  > 
+  >    Parameters:
+  >    - ancestor-type-name: The 'smaller' or contained type
+  >    - descendant-type-name: The 'larger' or extension type
+  > 
+  >    Validates:
+  >    - Both types must exist
+  >    - Both must be structs (or derived from structs) -- not records, scalars, functions, or enums
+  >    - Ancestor size <= Descendant size
+  >    - Shape compatibility (flattened data members with matching types and byte offsets)
+  >    - No cycles in the type hierarchy DAG
 
 
 ---
 ### DEFUN `FLATTEN-STRUCT-DATA-MEMBERS`
 - **Args**: `(STRUCT-DEF)`
 
-  > Recursively flattens a struct definition to its scalar data members.  >    Returns a list of (type byte-offset) pairs, skipping padding fields.  >    Nested structs are expanded recursively.
+  > Recursively flattens a struct definition to its scalar data members.
+  >    Returns a list of (type byte-offset) pairs, skipping padding fields.
+  >    Nested structs are expanded recursively.
 
 
 ---
 ### DEFUN `VALIDATE-SET-DERIVED-SHAPE`
 - **Args**: `(ANCESTOR-STRUCT DESCENDANT-STRUCT ANCESTOR-NAME DESCENDANT-NAME)`
 
-  > Validates shape compatibility for set-derived.  >    Flattens both structs and checks that each ancestor data member has a  >    matching data member in the descendant with the same type and byte offset.
+  > Validates shape compatibility for set-derived.
+  >    Flattens both structs and checks that each ancestor data member has a
+  >    matching data member in the descendant with the same type and byte offset.
 
 
 ---
@@ -5896,37 +7282,44 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ### DEFVAR `*GENERIC-FUNCTIONS*`
 
-  > Registry of generic function templates (functions with &optional or &key parameters)   >    that are instantiated lazily. Key: function name symbol. Value: generic-function-def struct.
+  > Registry of generic function templates (functions with &optional or &key parameters) 
+  >    that are instantiated lazily. Key: function name symbol. Value: generic-function-def struct.
 
 
 ---
 ### DEFVAR `*FUNCTION-TABLE*`
 
-  > A hash table mapping function names (symbols) to a list of  >   FUNCTION-SIGNATURE structs. This supports overloading.
+  > A hash table mapping function names (symbols) to a list of
+  >   FUNCTION-SIGNATURE structs. This supports overloading.
 
 
 ---
 ### DEFVAR `*DIFFERENTIABLE-FUNCTIONS*`
 
-  > Registry of user def-functions for which a _GRAD backward companion has been generated.  > Maps function-name -> (:bkwd-name sym :n-float-params N :n-return M).
+  > Registry of user def-functions for which a _GRAD backward companion has been generated.
+  > Maps function-name -> (:bkwd-name sym :n-float-params N :n-return M).
 
 
 ---
 ### DEFVAR `*CALL-GRAPH*`
 
-  > A hash table representing the call graph of functions.  >   Keys are caller function names, values are lists of callee names.
+  > A hash table representing the call graph of functions.
+  >   Keys are caller function names, values are lists of callee names.
 
 
 ---
 ### DEFVAR `*TEMPLATE-INSTANTIATOR-FN*`
 
-  > Hook for template instantiation.  >    Called as (funcall *template-instantiator-fn* name arg-types callback).  >    The callback is (funcall callback form location).
+  > Hook for template instantiation.
+  >    Called as (funcall *template-instantiator-fn* name arg-types callback).
+  >    The callback is (funcall callback form location).
 
 
 ---
 ### DEFVAR `*TEMPLATE-REGISTRY*`
 
-  > Maps template names (symbols) to a LIST of template-data structs.  > This supports overloading templates by arity or other factors.
+  > Maps template names (symbols) to a LIST of template-data structs.
+  > This supports overloading templates by arity or other factors.
 
 
 ---
@@ -5962,13 +7355,15 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*BRAND-DEFINITIONS*`
 
-  > Maps (brand-name . struct-type) to brand-definition records.  >    Populated when def-struct / def-record with brand declarations are processed.
+  > Maps (brand-name . struct-type) to brand-definition records.
+  >    Populated when def-struct / def-record with brand declarations are processed.
 
 
 ---
 ### DEFVAR `*DIFFERENTIATE-P*`
 
-  > If T, enable differentiation mode. Activates branded type enforcement  >    for brands declared with :enforce :diff (the default).
+  > If T, enable differentiation mode. Activates branded type enforcement
+  >    for brands declared with :enforce :diff (the default).
 
 
 ---
@@ -5986,7 +7381,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*TARGET-BACKEND*`
 
-  > The active target backend for compilation.   >    Supported values: :generic, :cpu, :spirv, :ptx.
+  > The active target backend for compilation. 
+  >    Supported values: :generic, :cpu, :spirv, :ptx.
 
 
 ---
@@ -6053,21 +7449,25 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `EXCLUDED-TEMPLATE-BASE-TYPE-P`
 - **Args**: `(BASE-TYPE)`
 
-  > Returns true if the base-type should be excluded from struct template processing.  >    Excludes COMMON-LISP special forms like FUNCTION and QUOTE to prevent package lock violations.
+  > Returns true if the base-type should be excluded from struct template processing.
+  >    Excludes COMMON-LISP special forms like FUNCTION and QUOTE to prevent package lock violations.
 
 
 ---
 ### DEFUN `RESOLVE-TYPE-ALIAS`
 - **Args**: `(TYPE-SPEC)`
 
-  > Fully resolves a type alias chain, returning the underlying type.  >    Includes cycle detection to prevent infinite loops.  >    SIGNALS ERROR if a cycle is detected.
+  > Fully resolves a type alias chain, returning the underlying type.
+  >    Includes cycle detection to prevent infinite loops.
+  >    SIGNALS ERROR if a cycle is detected.
 
 
 ---
 ### DEFUN `%BARE-STORAGE-HANDLE-VALUE-ERROR`
 - **Args**: `(ITEM SPEC)`
 
-  > Raises an intelligent error when a bare address-space/access/align value  >    is found in a storage handle type spec, suggesting the correct key-value form.
+  > Raises an intelligent error when a bare address-space/access/align value
+  >    is found in a storage handle type spec, suggesting the correct key-value form.
 
 
 ---
@@ -6090,7 +7490,12 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Expands storage handle type specs into canonical positional forms.  >    Cell   → (cell  elem addr)              [3-tuple].  >    Vector → (tensor elem 1 addr align ct)  [6-tuple, sugar for tensor N=1].  >    Matrix → (tensor elem 2 addr align ct)  [6-tuple, sugar for tensor N=2].  >    Tensor → (tensor elem N addr align ct)  [6-tuple].  >    ct defaults to :last; :row-major/:col-major are matrix-only aliases for :last/:first.
+  > Expands storage handle type specs into canonical positional forms.
+  >    Cell   → (cell  elem addr)              [3-tuple].
+  >    Vector → (tensor elem 1 addr align ct)  [6-tuple, sugar for tensor N=1].
+  >    Matrix → (tensor elem 2 addr align ct)  [6-tuple, sugar for tensor N=2].
+  >    Tensor → (tensor elem N addr align ct)  [6-tuple].
+  >    ct defaults to :last; :row-major/:col-major are matrix-only aliases for :last/:first.
 
 
 ---
@@ -6108,28 +7513,36 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `CANONICALIZE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Canonicalizes type specifiers.  >    Extended: (array T N) is returned as-is before the template path, preventing  >    mangle to ARRAY_LONG_5 via the get-template-arity=2 path.
+  > Canonicalizes type specifiers.
+  >    Extended: (array T N) is returned as-is before the template path, preventing
+  >    mangle to ARRAY_LONG_5 via the get-template-arity=2 path.
 
 
 ---
 ### DEFUN `%TYPE-ATOM-EQUAL-P`
 - **Args**: `(A B)`
 
-  > Package-agnostic atom comparison for type specs.  >    Symbols compared by name (string-equal); others compared by equal.
+  > Package-agnostic atom comparison for type specs.
+  >    Symbols compared by name (string-equal); others compared by equal.
 
 
 ---
 ### DEFUN `%TYPE-SPEC-EQUAL-P`
 - **Args**: `(T1 T2)`
 
-  > Recursive package-agnostic comparison of type spec trees.  >    Used in types-equivalent-p for the cons-vs-cons case.
+  > Recursive package-agnostic comparison of type spec trees.
+  >    Used in types-equivalent-p for the cons-vs-cons case.
 
 
 ---
 ### DEFUN `TYPES-EQUIVALENT-P`
 - **Args**: `(T1 T2)`
 
-  > Checks if two types are equivalent, with alias resolution and template handling.  >    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels  >    before mangling comparison. This supports def-type aliases for any template type.  >    FIX2: Use %type-spec-equal-p (package-agnostic) for cons-vs-cons case.  >    FIX3: Use compiler-session check instead of broken (boundp '*current-module*).
+  > Checks if two types are equivalent, with alias resolution and template handling.
+  >    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels
+  >    before mangling comparison. This supports def-type aliases for any template type.
+  >    FIX2: Use %type-spec-equal-p (package-agnostic) for cons-vs-cons case.
+  >    FIX3: Use compiler-session check instead of broken (boundp '*current-module*).
 
 
 ---
@@ -6154,35 +7567,45 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `VALID-FUNCTION-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Checks if type-spec is a valid function literal or descriptor.  > Extended to also accept raw (function ...) forms from the Crisp reader  > (i.e., #'(float float => float) which the CL reader gives as (function ...)).
+  > Checks if type-spec is a valid function literal or descriptor.
+  > Extended to also accept raw (function ...) forms from the Crisp reader
+  > (i.e., #'(float float => float) which the CL reader gives as (function ...)).
 
 
 ---
 ### DEFUN `%INSTANTIATE-TEMPLATE-IF-NEEDED`
 - **Args**: `(BASE-TYPE TEMPLATE-ARGS MANGLED-NAME)`
 
-  > Helper: Attempts to instantiate a template if not already instantiated.  >    Returns T if template exists/instantiated successfully, NIL otherwise.  >    FIX3: Use (and *compiler-session* (compiler-session-module *compiler-session*))  >    instead of (boundp '*current-module*) — the latter always returns NIL because  >    *current-module* is a define-symbol-macro, not a defvar special variable.
+  > Helper: Attempts to instantiate a template if not already instantiated.
+  >    Returns T if template exists/instantiated successfully, NIL otherwise.
+  >    FIX3: Use (and *compiler-session* (compiler-session-module *compiler-session*))
+  >    instead of (boundp '*current-module*) — the latter always returns NIL because
+  >    *current-module* is a define-symbol-macro, not a defvar special variable.
 
 
 ---
 ### DEFUN `%VALIDATE-TEMPLATE-INSTANTIATION`
 - **Args**: `(BASE-TYPE TEMPLATE-ARGS)`
 
-  > Helper: Validates a template instantiation, checking if it's already defined  >    or can be instantiated. Returns T if valid, NIL otherwise.
+  > Helper: Validates a template instantiation, checking if it's already defined
+  >    or can be instantiated. Returns T if valid, NIL otherwise.
 
 
 ---
 ### DEFUN `VALID-PARAMETERIZED-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Checks if type-spec is a valid parameterized type (cell, templates, array, etc).  >    Extended to recognise (array T N), reject nested arrays, and accept symbol counts  >    (e.g. the symbol |5| produced by unmangle-template-struct-name).
+  > Checks if type-spec is a valid parameterized type (cell, templates, array, etc).
+  >    Extended to recognise (array T N), reject nested arrays, and accept symbol counts
+  >    (e.g. the symbol |5| produced by unmangle-template-struct-name).
 
 
 ---
 ### DEFUN `VALID-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Checks if a type specifier is valid.  >    Handles simple types, parameterized types, and function literals/types.
+  > Checks if a type specifier is valid.
+  >    Handles simple types, parameterized types, and function literals/types.
 
 
 ---
@@ -6207,28 +7630,47 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%ARRAY-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC is a list form whose head is the symbol ARRAY.  >    Used throughout the array implementation to identify (array T N) type specs.
+  > Returns T if TYPE-SPEC is a list form whose head is the symbol ARRAY.
+  >    Used throughout the array implementation to identify (array T N) type specs.
 
 
 ---
 ### DEFUN `RESOLVE-TYPE-TO-LLVM`
 - **Args**: `(TYPE-SPEC)`
 
-  > Resolves a Crisp type specifier to an LLVM type reference.  >    Extended to handle (array T N) → LLVM [N x T_llvm].  >    Extended to normalize VECTOR/MATRIX sugar to TENSOR before dispatch,  >    and to canonicalize type alias values before recursing.
+  > Resolves a Crisp type specifier to an LLVM type reference.
+  >    Extended to handle (array T N) → LLVM [N x T_llvm].
+  >    Extended to normalize VECTOR/MATRIX sugar to TENSOR before dispatch,
+  >    and to canonicalize type alias values before recursing.
 
 
 ---
 ### DEFUN `INCOMPLETE-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Checks if a type specifier is incomplete (missing required compile-time properties).  >    Returns T if incomplete, NIL if complete.
+  > Checks if a type specifier is incomplete (missing required compile-time properties).
+  >    Returns T if incomplete, NIL if complete.
 
 
 ---
 ### DEFUN `EXTRACT-POSITIONAL-FROM-KEYWORD-ARGS`
 - **Args**: `(ARGS NUM-PARAMS)`
 
-  > Extract NUM-PARAMS positional template args from ARGS when (length ARGS) > NUM-PARAMS.  >   >    Two conventions are supported:  >    1. Labeled style: (:label value) pairs identify template params by a descriptive name.  >       e.g. (int :address-space :global :access :read-write) with arity 3  >            => (int :global :read-write)  >    2. Positional+c-t style: first NUM-PARAMS args are positional template args;  >       any remaining args are compile-time field overrides handled elsewhere.  >       e.g. (int :blue :stitching-c :black) with arity 2  >            => (int :blue)  >   >    Disambiguation: label-strip the entire list.  If the result has exactly  >    NUM-PARAMS elements, the labeled convention was used and that result is  >    returned.  Otherwise the positional+c-t convention was used and the first  >    NUM-PARAMS elements of ARGS are returned unchanged.
+  > Extract NUM-PARAMS positional template args from ARGS when (length ARGS) > NUM-PARAMS.
+  > 
+  >    Two conventions are supported:
+  >    1. Labeled style: (:label value) pairs identify template params by a descriptive name.
+  >       e.g. (int :address-space :global :access :read-write) with arity 3
+  >            => (int :global :read-write)
+  >    2. Positional+c-t style: first NUM-PARAMS args are positional template args;
+  >       any remaining args are compile-time field overrides handled elsewhere.
+  >       e.g. (int :blue :stitching-c :black) with arity 2
+  >            => (int :blue)
+  > 
+  >    Disambiguation: label-strip the entire list.  If the result has exactly
+  >    NUM-PARAMS elements, the labeled convention was used and that result is
+  >    returned.  Otherwise the positional+c-t convention was used and the first
+  >    NUM-PARAMS elements of ARGS are returned unchanged.
 
 
 ---
@@ -6237,14 +7679,27 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFMACRO `LET-D`
 - **Args**: `(BINDINGS &BODY BODY)`
 
-  > A debugging version of `let*`.  >   >   It behaves exactly like `let*`, but inserts a `(log:debug ...)` statement  >   after each variable is bound to log its name and value.  >   >   Example:  >     (let-d ((a 10)  >             (b (* a 2)))  >       b)  >   Will log:  >     DEBUG: let-d: A => 10  >     DEBUG: let-d: B => 20
+  > A debugging version of `let*`.
+  > 
+  >   It behaves exactly like `let*`, but inserts a `(log:debug ...)` statement
+  >   after each variable is bound to log its name and value.
+  > 
+  >   Example:
+  >     (let-d ((a 10)
+  >             (b (* a 2)))
+  >       b)
+  >   Will log:
+  >     DEBUG: let-d: A => 10
+  >     DEBUG: let-d: B => 20
 
 
 ---
 ### DEFUN `ADVISE-FUNCTION`
 - **Args**: `(FN-SYMBOL)`
 
-  > Replaces a function's definition with a logging wrapper.  >   The wrapper logs arguments on entry and return values on exit.  >   It correctly handles multiple return values.
+  > Replaces a function's definition with a logging wrapper.
+  >   The wrapper logs arguments on entry and return values on exit.
+  >   It correctly handles multiple return values.
 
 
 ---
@@ -6257,7 +7712,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `DUMP-ENV`
 - **Args**: `(ENV &KEY (TITLE Environment Dump))`
 
-  > Prints the contents of a semantic environment to *debug-io* in a formatted way.  >   The environment is expected to be an alist of (name type) pairs.
+  > Prints the contents of a semantic environment to *debug-io* in a formatted way.
+  >   The environment is expected to be an alist of (name type) pairs.
 
 
 ---

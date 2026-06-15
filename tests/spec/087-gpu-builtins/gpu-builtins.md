@@ -83,7 +83,7 @@ PTX-specific registers.
 | `get-local-linear-size` | `ulong` | Total number of threads in a single workgroup. Alias: `get-local-work-size 0 * 1 * 2`. |
 | `get-global-linear-id` | `ulong` | Flattened 1D index of the thread within the entire grid. |
 | `get-global-linear-size` | `ulong` | Total threads in the grid. Alias of `get-total-threads`. |
-| `local-barrier` | `void` | Synchronizes all threads within a workgroup. |
+| `sync-workgroup` | `void` | Synchronizes all threads within a workgroup. |
 | `mem-fence` | `void` | Ensures memory ordering across threads (global + local). |
 
 Dropped from original list:
@@ -126,7 +126,7 @@ Example mappings:
 - `get-num-groups` → `NumWorkgroups` (built-in 24)
 - `get-global-offset` → `GlobalOffset` (built-in 74)
 - `get-work-dim` → `WorkDim` (built-in 40, hidden kernel param)
-- `local-barrier` → `OpControlBarrier` (workgroup scope)
+- `sync-workgroup` → `OpControlBarrier` (workgroup scope)
 - `mem-fence` → `OpMemoryBarrier`
 
 The 3D forms return `<3 x i64>` (LLVM vector), which maps naturally to Crisp's

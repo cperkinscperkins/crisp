@@ -2392,6 +2392,31 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (base     (llvm-build-mul builder flat-wg lws-tot "base")))
     (llvm-build-add builder base flat-lid "global_linear_id")))
 
+(defun %gen-spirv-warp-barrier (builder module)
+  "Emits @__spirv_ControlBarrier(i32 3, i32 3, i32 264).
+   Scope=Subgroup(3) MemScope=Subgroup(3) Semantics=AcquireRelease(8)|WorkgroupMemory(256)."
+  (let* ((i32-type (llvm-int32-type))
+         (fn-name  "__spirv_ControlBarrier")
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 3)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 2) i32-type)
+                        arr))
+         (fn-type  (llvm-function-type (llvm-void-type) param-types 3 nil))
+         (fn       (let ((ex (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p ex)
+                         (llvm-add-function module fn-name fn-type)
+                         ex)))
+         (args     (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 3)))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 0) (llvm-const-int i32-type 3 nil))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 1) (llvm-const-int i32-type 3 nil))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 2) (llvm-const-int i32-type 264 nil))
+                     arr)))
+    (llvm-build-call2 builder fn-type fn args 3 "")
+    (cffi:foreign-free args)
+    (cffi:foreign-free param-types)
+    (values nil nil)))
+
 (defun %gen-spirv-control-barrier (builder module)
   "Emits @__spirv_ControlBarrier(i32 2, i32 2, i32 264).
    Scope=Workgroup(2) MemScope=Workgroup(2) Semantics=AcquireRelease(8)|WorkgroupMemory(256)."
@@ -2536,6 +2561,24 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 
 ;; --- PTX barrier and fence intrinsics ---
+
+(defun %ptx-syncwarp (builder module)
+  "Emits @llvm.nvvm.bar.warp.sync(i32) - PTX bar.warp.sync 0xFFFFFFFF."
+  (let* ((i32-type (llvm-int32-type))
+         (fn-name "llvm.nvvm.bar.warp.sync")
+         (void-type (llvm-void-type))
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        arr))
+         (fn-type   (llvm-function-type void-type param-types 1 nil))
+         (fn        (%spirv-get-or-create-fn module fn-name void-type param-types 1)))
+    (let ((args (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 1)))
+                  (setf (cffi:mem-aref arr 'llvm-value-ref 0) (llvm-const-int i32-type #xFFFFFFFF nil))
+                  arr)))
+      (llvm-build-call2 builder fn-type fn args 1 "")
+      (cffi:foreign-free args))
+    (cffi:foreign-free param-types)
+    (values nil nil)))
 
 (defun %ptx-barrier (builder module)
   "Emits @llvm.nvvm.barrier0() — PTX bar.sync 0 (workgroup barrier)."
@@ -2699,10 +2742,14 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (values (%ptx-synthesize-warp-count builder module) nil)
              (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
         ;; --- Barriers (void) ---
-        (:local-barrier
+        (:sync-workgroup
          (if (eq *target-backend* :ptx)
              (%ptx-barrier builder module)
              (%gen-spirv-control-barrier builder module)))
+        (:sync-warp
+         (if (eq *target-backend* :ptx)
+             (%ptx-syncwarp builder module)
+             (%gen-spirv-warp-barrier builder module)))
         (:mem-fence
          (if (eq *target-backend* :ptx)
              (%ptx-membar-cta builder module)

@@ -40,7 +40,7 @@ scratch vector whose length is equal to the local work size.
       ;; overwrite scratch
       (set! (~ scratch-vec lid) exm))
 
-    (local-barrier)
+    (sync-workgroup)
 
     ;; sum across workgroup, 'sum' is uniform after
     (let ((sum (~ scratch-vec lid)))

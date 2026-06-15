@@ -44,7 +44,7 @@
 
       ;; --- STEP 4: Write Results ---
       ;; Barrier to ensure scan AND global offset write are done
-      (local-barrier)
+      (sync-workgroup)
 
       ;; Check if this thread had a match by reading the flag back
       (when (= (~ local-wg-matches local-id) 1)

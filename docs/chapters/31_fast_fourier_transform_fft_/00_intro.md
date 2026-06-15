@@ -211,7 +211,7 @@ Now using soa-vector for better performance
 
       ;; Load the tile for this workgroup
       (load-complex-soa-tile input-soa-vec tile-y tile-x local-reals local-imags)
-      (local-barrier) ; Ensure loading is done
+      (sync-workgroup) ; Ensure loading is done
 
       (let ((local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
             (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1)))
@@ -223,7 +223,7 @@ Now using soa-vector for better performance
         ;; LOAD TILE INTO SoA FORMAT
         ;; Use a hypothetical SoA-aware load macro. This handles coalescing.
         (load-tile-soa input-vec local-reals local-imags group-idy group-idx)
-        (local-barrier)
+        (sync-workgroup)
 
         ;; COMPUTE BUTTERFLIES IN LOCAL MEMORY 
         ;; This part needs careful indexing based on the FFT stage/stride
@@ -251,7 +251,7 @@ Now using soa-vector for better performance
                   (set! (~ local-imags local-idy1 local-idx1) ap-im)
                   (set! (~ local-reals local-idy2 local-idx2) bp-re)
                   (set! (~ local-imags local-idy2 local-idx2) bp-im)))))
-        (local-barrier)
+        (sync-workgroup)
 
         ;; STORE TILE FROM SoA FORMAT 
         ;; Use a hypothetical SoA-aware store macro. This handles coalescing.

@@ -146,7 +146,7 @@
       :get-global-linear-id :get-global-linear-size
       :get-total-threads :get-total-groups)
      (list 'ulong nil))
-    ((:local-barrier :mem-fence)
+    ((:sync-workgroup :sync-warp :mem-fence)
      (list nil nil))
     ;; 110 — warp helpers (scalar uint, no dim arg)
     ((:warp-id :warp-lane :warp-count)
@@ -277,7 +277,8 @@
                      ("GET-GLOBAL-LINEAR-SIZE"  :get-global-linear-size)
                      ("GET-TOTAL-THREADS"       :get-total-threads)
                      ("GET-TOTAL-GROUPS"        :get-total-groups)
-                     ("LOCAL-BARRIER"           :local-barrier)
+                     ("SYNC-WORKGROUP"          :sync-workgroup)
+                     ("SYNC-WARP"               :sync-warp)
                      ("MEM-FENCE"               :mem-fence)))
       (let* ((name-str (first entry))
              (kw       (second entry))

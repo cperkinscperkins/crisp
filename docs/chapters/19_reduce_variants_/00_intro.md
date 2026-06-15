@@ -149,7 +149,7 @@ Possible Implementation
     (reduce-to-warp ,someFunction ,someVar ,identity)
     (when-thread-in-warp-is 0
       (set! (~ ,local-scratch-vec (get-warp-id)) ,someVar))
-    (local-barrier)
+    (sync-workgroup)
 
     ; inter warp reduction
     (let ((num-warps (ceil (get-local-work-size) (get-warp-size)))
@@ -167,7 +167,7 @@ Possible Implementation
                               (~ ,local-scratch-vec local-id)
                               (~ ,local-scratch-vec partner-idx))))))
           ; barrier needed between each pass 
-          (local-barrier)))
+          (sync-workgroup)))
 
       ; The final result is in local-scratch-vec[0]. Load it to thread 0
       (when-thread-in-group-is 0
@@ -176,7 +176,7 @@ Possible Implementation
       ; broadcast to entire workgroup
       (when-thread-in-group-is 0
         (set! (~ ,local-scratch-vec 0) ,someVar))
-      (local-barrier)
+      (sync-workgroup)
       (set! ,someVar (~ ,local-scratch-vec 0))))
 
       ;; add (declare (uniform ,someVar)) ??  
@@ -250,7 +250,7 @@ Possible Implementation
                     ; Broadcast to all threads in wg
                     (when-thread-in-group-is 0
                       (set! (~ ,localScratchVec 0) var))
-                    (local-barrier)
+                    (sync-workgroup)
                     (set! ,someVar (~ ,localScratchVec 0))))
                 ((< N l-w-s)
                   (let ((local-id (get-local-id))

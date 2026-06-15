@@ -29,10 +29,10 @@ Implementation Notes
 ; start when-is-last-workgroup
 ;; Executed by thread 0 of each workgroup
 (mem-fence :global)
-(local-barrier)
+(sync-workgroup)
 (when-thread-in-group-is 0
    (set! old-count (atomic-dec! *internal-global-counter*))
-   (local-barrier))
+   (sync-workgroup))
 
 (when (= old-count 1)
     ;; body of when-is-last-workgroup

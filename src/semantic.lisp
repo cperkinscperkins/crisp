@@ -251,8 +251,8 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   source-location)
 
 (defstruct semantic-gpu-builtin
-  "Represents a GPU built-in function call (e.g. get-global-id, local-barrier).
-   BUILTIN-NAME is a keyword: :get-global-id, :local-barrier, etc.
+  "Represents a GPU built-in function call (e.g. get-global-id, sync-workgroup).
+   BUILTIN-NAME is a keyword: :get-global-id, :sync-workgroup, etc.
    DIMENSION is NIL for the 3D vector form, or 0/1/2 for the scalar-n form.
    TYPE is the Crisp return type: 'ulong3, 'ulong, 'uint, or NIL (void)."
   builtin-name

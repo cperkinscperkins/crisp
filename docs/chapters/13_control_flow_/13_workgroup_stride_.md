@@ -49,7 +49,7 @@ This pattern is useful for algorithms where only one "representative" thread per
 
 #### Implementation Notes
 
-- Implicit Synchronization: To maintain maximum performance, `workgroup-stride` does not inject a `(local-barrier)` at the end of its block. If your logic requires all threads to finish a pass before moving to the next, call `(local-barrier)` explicitly.
+- Implicit Synchronization: To maintain maximum performance, `workgroup-stride` does not inject a `(sync-workgroup)` at the end of its block. If your logic requires all threads to finish a pass before moving to the next, call `(sync-workgroup)` explicitly.
 - Arity Consistency: The number of `<bindings>` must match the arity of the `<tile-tensor>`.
 - Scope: The bindings `(ly lx)` represent the position within the tile, while any bindings from an outer tile-stride (e.g., y x) remain available for calculating positions relative to the global problem space.
 

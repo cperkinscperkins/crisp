@@ -67,14 +67,14 @@ These dot product and matmul implementations work for ALL types.
         (load-tile B tile-B tile-num group-id-x
                    :transpose (= (get-layout B) :row-major))
         
-        (local-barrier)
+        (sync-workgroup)
 
         ;; This part is now simple and fast, both local tiles are row-major.
         (dotimes (k TILE_DIM)
           (set! acc (+ acc (*! (~ tile-A local-id-y k)  ;; widening multiplication
                               (~ tile-B local-id-x k)))))
 
-        (local-barrier))
+        (sync-workgroup))
 
       ;; store final result. coalesced access
       (let ((c-row (+ (* group-id-y TILE_DIM) local-id-y))

@@ -35,7 +35,7 @@
       (set! (~ slm lid) acc)
       ;; 8 rounds for lsize=256: stride = 128, 64, 32, 16, 8, 4, 2, 1
       (dotimes (round (to-ulong 8))
-        (local-barrier)
+        (sync-workgroup)
         (when (< lid stride)
           (set! (~ slm lid) (+ (~ slm lid) (~ slm (+ lid stride)))))
         (set! stride (/ stride (to-ulong 2))))

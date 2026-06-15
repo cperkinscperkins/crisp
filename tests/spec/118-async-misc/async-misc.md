@@ -11,8 +11,8 @@ Pass 1
 
 Pass 2.  I may add a task here.  
 In Crisp "barrier" denotes memcopy/data movement, and "sync" denote thread synchronization. 
-- [ ] rename local-barrier => sync-workgroup
-- [ ] sync-warp
+- [x] rename local-barrier => sync-workgroup
+- [x] sync-warp
 
 Pass 3.  I'll definitely be adding more to this one. maybe it should be its own endeavor. We'll see.
 Before we can start this, I will need to update some documentation about it.

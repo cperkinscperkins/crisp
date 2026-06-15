@@ -363,7 +363,7 @@
    #:get-local-linear-id #:get-local-linear-size
    #:get-global-linear-id #:get-global-linear-size
    #:get-total-threads #:get-total-groups
-   #:local-barrier #:mem-fence
+   #:sync-workgroup #:sync-warp #:mem-fence
    #:warp-id #:warp-lane #:warp-count))
 
 (defpackage :crisp.main
@@ -445,7 +445,7 @@
                 #:get-local-linear-id #:get-local-linear-size
                 #:get-global-linear-id #:get-global-linear-size
                 #:get-total-threads #:get-total-groups
-                #:local-barrier #:mem-fence
+                #:sync-workgroup #:sync-warp #:mem-fence
                 #:warp-id #:warp-lane #:warp-count
 
                 ;; Accessors

@@ -33,7 +33,7 @@ If you need to use a runtime `n`, get the vector `ulong3` and index it `(~ (get-
 | `get-local-linear-size` | `ulong` | Total number of threads in a single workgroup. Alias: `get-local-work-size 0 * 1 * 2`. |
 | `get-global-linear-id` | `ulong` | Flattened 1D index of the thread within the entire grid. |
 | `get-global-linear-size` | `ulong` | Total threads in the grid. Alias of `get-total-threads`. |
-| `local-barrier` | `void` | Synchronizes all threads within a workgroup. |
+| `sync-workgroup` | `void` | Synchronizes all threads within a workgroup. |
 | `mem-fence` | `void` | Ensures memory ordering across threads (global + local). |
 
 - get-timestamp   returns the high resolution clock counter. ( %clock64 register).

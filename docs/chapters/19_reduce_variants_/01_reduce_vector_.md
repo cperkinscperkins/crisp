@@ -88,7 +88,7 @@ This is what an implementation of `reduce-vec-second-stage` might look like
       
       (when (< local-id N)
         (set! (~ localScratch local-id) (~ intermediateVec local-id)))
-      (local-barrier)
+      (sync-workgroup)
 
       (let ((val (if (< local-id N) (~ localScratch local-id) identity)))
         (reduce-to-workgroup someFunction val identity)

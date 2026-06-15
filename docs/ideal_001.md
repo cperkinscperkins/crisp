@@ -2684,7 +2684,7 @@ Important: There are asynchronouse variants of these helpers.  See [Async Memory
 In `:one-thread-per` strategies, a common practice is to divide some input vec
 across workgroups and have each workgroup work on the vec using a local memory
 copy of the workgroups segment. These two macros handle that and even include a 
-`local-barrier`.
+`sync-workgroup`.
 
 `load-local` has an optional `identity` arg. If the global work size is
 greater than `global-vec`, then it may be necessary to fill in the matching portion
@@ -2705,7 +2705,7 @@ Possible Implementation
          (gid (get-global-linear-id))
          (val (if (< gid (length~ ,global-vec)) (~ ,global-vec gid) ,identity)))
       (set! (~ ,scratch-vec lid) val)
-      (local-barrier)))
+      (sync-workgroup)))
 
 (defmacro store-global (scratch-vec global-vec 
               &optional (transformF (get-identityF (element-type~ global-vec))))
@@ -2715,7 +2715,7 @@ Possible Implementation
             ;; (wg-idx (get-workgroup-linear-id))) ;;<-- exists? 
       (when (< gid (length~ ,global-vec))
         (set! (~ ,global-vec gid) (funcall ,transformF (~ ,scratch-vec lid))))
-      (local-barrier))
+      (sync-workgroup))
 
 ```
 
@@ -3123,7 +3123,7 @@ not necessarily like we want them to be.
         ;; load tile  - coalesced read
         (load-tile M temp-tile tile-idx-y tile-idx-x :transpose (= (get-layout M) :col-major))
         
-        (local-barrier)
+        (sync-workgroup)
 
         ;; store transposed tile coalesced write
         (store-tile temp-tile dest-M tile-idx-y tile-idx-x :transpose (= (get-layout dest-M) :row-major))))))
@@ -4088,9 +4088,9 @@ Similarly, `when-group-is` is akin to those except that the group id is used ins
 (when-group-is x-id y-id z-id <expr>)   
 ```
 
-#### local-barrier compilation issue.
+#### sync-workgroup compilation issue.
 
-Using `(local-barrier)` inside the scope of `when-thread-in-group-is` results in a compilation error as it would otherwise deadlock an entire workgroup.
+Using `(sync-workgroup)` inside the scope of `when-thread-in-group-is` results in a compilation error as it would otherwise deadlock an entire workgroup.
 
 Crisp users are strongly encouraged to use `when-thread-in-group-is` as opposed to a generic construction like  `(when (= (get-local-id) 0) ...)`  for this reason. The compiler will _attempt_ to detect the deadlock possibility in a generic construction, but due to variables, assignments, etc that guarantee is not strong. Whereas in `when-thread-in-group-is` it is a surety.
 
@@ -4137,10 +4137,10 @@ Implementation Notes
 ; start when-is-last-workgroup
 ;; Executed by thread 0 of each workgroup
 (mem-fence :global)
-(local-barrier)
+(sync-workgroup)
 (when-thread-in-group-is 0
    (set! old-count (atomic-dec! *internal-global-counter*))
-   (local-barrier))
+   (sync-workgroup))
 
 (when (= old-count 1)
     ;; body of when-is-last-workgroup
@@ -4918,9 +4918,9 @@ not support the `:transformF` key.
 
 > Implementation Note: first order functions are automatically templated and monomorphically specialized in Crisp
 
-#### local-barrier ✅
+#### sync-workgroup ✅
 
-Both `load-tile` and `store-tile` invoke `(local-barrier)` at the completion of their
+Both `load-tile` and `store-tile` invoke `(sync-workgroup)` at the completion of their
 operation. This prevents read-after-write and write-after-read race conditions. 
 But be aware, that this also means these functions should NOT appear in conditional blocks 
 ( `when`, `if`, `cond`, `unless`) or you will incure a deadlock. The Crisp compiler should
@@ -5026,7 +5026,7 @@ This pattern is useful for algorithms where only one "representative" thread per
 
 #### Implementation Notes
 
-- Implicit Synchronization: To maintain maximum performance, `workgroup-stride` does not inject a `(local-barrier)` at the end of its block. If your logic requires all threads to finish a pass before moving to the next, call `(local-barrier)` explicitly.
+- Implicit Synchronization: To maintain maximum performance, `workgroup-stride` does not inject a `(sync-workgroup)` at the end of its block. If your logic requires all threads to finish a pass before moving to the next, call `(sync-workgroup)` explicitly.
 - Arity Consistency: The number of `<bindings>` must match the arity of the `<tile-tensor>`.
 - Scope: The bindings `(ly lx)` represent the position within the tile, while any bindings from an outer tile-stride (e.g., y x) remain available for calculating positions relative to the global problem space.
 
@@ -5418,8 +5418,8 @@ this declaration in its expansion.
 
 The golden rule of GPU programming is: if you have threads cooperating on a task and one thread writes a value that another thread needs to read, you must use a barrier. The logical pattern is always **Write -> Barrier -> Read**, regardless of whether it's one thread writing and many reading, or many threads writing and one reading.
 
-#### local-barrier ✅
-`(local-barrier)`
+#### sync-workgroup ✅
+`(sync-workgroup)`
 This routine inserts a local barrier. It ensures that all threads in the workgroup have reached the same location before continuing. This barrier includes a memory fence that guarantees all writes to local memory by threads in the workgroup are visible to all other threads in that same workgroup. Use it after you are done writing to shared local memory and before any other thread is expected to read from it. On CUDA it will map to `__syncthreads()` and on OpenCL to `barrier(CLK_LOCAL_MEM_FENCE)`.
 
 #### mem-fence ✅
@@ -5499,7 +5499,7 @@ going to agree on a convention that the local_work_size is 64.
         
         ;; tree reduce
         (dec-times-by-half* (s (/ (get-local-size) 2))  s is 32, then 16, 8, 4, 2, 1
-          (local-barrier)
+          (sync-workgroup)
           (when (< local-idx s)
             (inc! (~ slm local-idx) (~ slm (+ local-idx s))))))
 
@@ -6292,7 +6292,7 @@ Possible Implementation
     (reduce-to-warp ,someFunction ,someVar ,identity)
     (when-thread-in-warp-is 0
       (set! (~ ,local-scratch-vec (get-warp-id)) ,someVar))
-    (local-barrier)
+    (sync-workgroup)
 
     ; inter warp reduction
     (let ((num-warps (ceil (get-local-work-size) (get-warp-size)))
@@ -6310,7 +6310,7 @@ Possible Implementation
                               (~ ,local-scratch-vec local-id)
                               (~ ,local-scratch-vec partner-idx))))))
           ; barrier needed between each pass 
-          (local-barrier)))
+          (sync-workgroup)))
 
       ; The final result is in local-scratch-vec[0]. Load it to thread 0
       (when-thread-in-group-is 0
@@ -6319,7 +6319,7 @@ Possible Implementation
       ; broadcast to entire workgroup
       (when-thread-in-group-is 0
         (set! (~ ,local-scratch-vec 0) ,someVar))
-      (local-barrier)
+      (sync-workgroup)
       (set! ,someVar (~ ,local-scratch-vec 0))))
 
       ;; add (declare (uniform ,someVar)) ??  
@@ -6393,7 +6393,7 @@ Possible Implementation
                     ; Broadcast to all threads in wg
                     (when-thread-in-group-is 0
                       (set! (~ ,localScratchVec 0) var))
-                    (local-barrier)
+                    (sync-workgroup)
                     (set! ,someVar (~ ,localScratchVec 0))))
                 ((< N l-w-s)
                   (let ((local-id (get-local-id))
@@ -6666,7 +6666,7 @@ This is what an implementation of `reduce-vec-second-stage` might look like
       
       (when (< local-id N)
         (set! (~ localScratch local-id) (~ intermediateVec local-id)))
-      (local-barrier)
+      (sync-workgroup)
 
       (let ((val (if (< local-id N) (~ localScratch local-id) identity)))
         (reduce-to-workgroup someFunction val identity)
@@ -6976,7 +6976,7 @@ POssible Implementation:
           (set! (~ ,local-flags-var local-id) (if match? 1 0))))
 
       ;; Ensure all flags are written before the user's code runs
-      (local-barrier)
+      (sync-workgroup)
 
       ;; Splice in the body provided by the user
       ,@body))
@@ -7043,14 +7043,14 @@ This is a possible implementation of `exclusive-scan-workgroup` realized via a B
         (set! (~ ,local-vec local-id)
               (+ (~ ,local-vec local-id)
                 (~ ,local-vec (- local-id stride)))))
-       (local-barrier))
+       (sync-workgroup))
 
      ;; The last element now holds the total sum. We save it and clear
      ;; that slot to start the exclusive scan.
      (let ((total-sum (~ ,local-vec (- wg-size 1))))
        (when (= local-id (- wg-size 1))
          (set! (~ ,local-vec local-id) 0))
-       (local-barrier)
+       (sync-workgroup)
 
        ;; second pass - down sweep
        ;; Now we work back down the tree, distributing the sums.
@@ -7061,7 +7061,7 @@ This is a possible implementation of `exclusive-scan-workgroup` realized via a B
             (let ((temp (~ ,local-vec partner-idx)))
               (set! (~ ,local-vec partner-idx) (~ ,local-vec local-id))
               (set! (~ ,local-vec local-id) (+ temp (~ ,local-vec local-id))))))
-         (local-barrier))
+         (sync-workgroup))
 
        ;; The macro can return the total sum from the workgroup
        total-sum)))
@@ -7106,10 +7106,10 @@ What could be simpler?
     (r-t-assert-0 (= (length~ input-vec) (length~ output-vec)) "in/out vec lengths don't match")
     (hardware-stride input-vec :workgroup-idx (wg-idx)
       (load-tile input-vec scratch-vec)
-      (let ((total (exclusive-scan-workgroup scratch-vec))) ;; scratch-vec now reordered. local-barrier within exclusive-scan-wg
+      (let ((total (exclusive-scan-workgroup scratch-vec))) ;; scratch-vec now reordered. sync-workgroup within exclusive-scan-wg
         (when (= 0 (get-local-id))
           (set! (~ block-sums wg-idx) total)))
-      (local-barrier)
+      (sync-workgroup)
       (store-tile scratch-vec output-vec)))
 
   (def-grid-function global-exclusive-scan-downsweep (input-vec block-sums &out output-vec)
@@ -7201,7 +7201,7 @@ the same recursive behavior expected.
 
       ;; --- STEP 4: Write Results ---
       ;; Barrier to ensure scan AND global offset write are done
-      (local-barrier)
+      (sync-workgroup)
 
       ;; Check if this thread had a match by reading the flag back
       (when (= (~ local-wg-matches local-id) 1)
@@ -7253,7 +7253,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
       ;; STEP 1: local match detection
       (set! is-a-match (when (< i (length~ ,input-vec)) (funcall predicateF (~ ,input-vec i)))
       (set! (~ local-wg-matches (get-local-linear-id)) (select-if is-a-match 1 0))
-      (local-barrier)
+      (sync-workgroup)
       ;; local-wg-matches = #(0 1 0 1 1 0 ...)
 
       ;; STEP 2: Reorder
@@ -7266,7 +7266,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
           (set! wg-offset (atomic-add! global-counter count))))
       
       ;; STEP 4 - write results to global memory
-      (local-barrier)
+      (sync-workgroup)
 
       (when is-a-match
         (let ((final-write-pos (+ (~ local-wg-matches local-id) wg-offset)))
@@ -7377,7 +7377,7 @@ But the count in `count-vec` is correct regardless.
 
       ;; Write 1 for match, 0 for miss to local memory
       (set! (~ local-flags local-id) (select-if is-a-match 1 0))
-      (local-barrier) ; Ensure all flags are written before scanning
+      (sync-workgroup) ; Ensure all flags are written before scanning
 
     ;; next perform exclusive scan on the flags to get local indices
     (let ((workgroup-total (exclusive-scan-workgroup local-flags)))
@@ -7386,7 +7386,7 @@ But the count in `count-vec` is correct regardless.
       ;; Leader thread saves the workgroup's total count to local memory
       (when (= local-id 0)
         (set! (~ local-info 0) workgroup-total)))
-    (local-barrier) ; Ensure total count is visible before atomic add
+    (sync-workgroup) ; Ensure total count is visible before atomic add
 
     ;; then get global write offset
     ;; Only the leader thread performs the atomic operation
@@ -7396,7 +7396,7 @@ But the count in `count-vec` is correct regardless.
       (let ((offset (atomic-add! (~ result-count-vec 0) (~ local-info 0))))
         ;; Share the obtained global offset with the workgroup via local memory
         (set! (~ local-info 1) offset)))
-    (local-barrier) ; Ensure the global offset is visible to all threads before writing
+    (sync-workgroup) ; Ensure the global offset is visible to all threads before writing
 
     ;; fainally, write results (indices) to global mem
     ;; Only threads that found a match perform a write
@@ -7573,7 +7573,7 @@ A possible implementation might be
       ;; Each thread loads one element. For simplicity, assume N = global_size
       (when (< global-id N) ;; Boundary check for global data
         (set! (~ shared-array local-id) (~ data-in global-id)))
-      (local-barrier)
+      (sync-workgroup)
 
       ;; perform Bitonic Sort
       ;; Outer loop: Builds increasingly large bitonic sequences
@@ -7589,12 +7589,12 @@ A possible implementation might be
 
             (when (< partner-id N) ; Ensure partner ID is within bounds (for non-power-of-2 sizes)
               (bitonic-compare-and-swap shared-array local-id partner-id direction keyF))) 
-          (local-barrier)))
+          (sync-workgroup)))
 
       ; store sorted data from shared to global memory
       (when (< global-id N) ;; Boundary check for global data
         (set! (~ data-out global-id) (~ shared-array local-id)))
-      (local-barrier)))
+      (sync-workgroup)))
 
 ;; in place sorting
 (with-template-type (T A)
@@ -7819,7 +7819,7 @@ Possible Implementation
       ;; The workgroup must zero-out its local histogram. This is done in parallel.
       ;; Each thread clears a portion of the 256-element array.
       (set! (~ local-histogram local-id) 0)
-      (local-barrier)
+      (sync-workgroup)
 
       ;; build local histogram
       ;; Each thread processes its slice of the large input vector.
@@ -7842,7 +7842,7 @@ Possible Implementation
             ;; c. Atomically increment the counter for that digit IN LOCAL MEMORY.
             ;;    Atomics on local memory are very fast.
             (atomic-add! (~ local-histogram digit) 1))))
-      (local-barrier)
+      (sync-workgroup)
 
       ;; combine into local histogram
       ;; Now that the local histogram is complete, the workgroup adds its results
@@ -7887,7 +7887,7 @@ And its output is a prefix-sum vector.
       ;; load data from global to local
       ;; each thread loads one count from the global histogram
       (set! (~ local-scan-buffer local-id) (~ global-histogram local-id))
-      (local-barrier) ; ensure load is complete before scan begins
+      (sync-workgroup) ; ensure load is complete before scan begins
 
       ;; perform Parallel Exclusive Scan in local memory 
       ;; uses the built-in primitive - modifies
@@ -7952,13 +7952,13 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
             (digit (bit-and (ash sortable-int (- bit-offset)) #xFF)))
 
         (set! (~ local-digits local-id) digit)
-        (local-barrier)
+        (sync-workgroup)
 
         ;; Perform a local scan on the digits to find the rank within the workgroup
         ;; Need a scan that counts occurrences of each digit.
         (let ((local-rank (local-rank-within-digit local-digits local-id)))
           (set! (~ local-scan-indices local-id) local-rank)))
-      (local-barrier)
+      (sync-workgroup)
 
       ;; calculate global write position
       ;; Read the starting offset for this element's digit from the global offsets.
@@ -8049,7 +8049,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
     (when (< local-id 256)
       (set! (~ digit-counts local-id) 0))
     ;; Ensure all counters are zero before any thread proceeds.
-    (local-barrier)
+    (sync-workgroup)
 
     ;; atomically increment and get rank
     ;; each thread reads its digit for the current pass.
@@ -8062,7 +8062,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
       (let ((rank (atomic-add! (~ digit-counts my-digit) 1)))
 
         ;; synchronize
-        (local-barrier)
+        (sync-workgroup)
 
         ;; return the calculated rank
         rank))))
@@ -8517,14 +8517,14 @@ the hardware accellerated types that have a widened accumulator, quantized integ
         (load-tile B tile-B tile-num group-id-x
                    :transpose (= (get-layout B) :row-major))
         
-        (local-barrier)
+        (sync-workgroup)
 
         ;; This part is now simple and fast, both local tiles are row-major.
         (dotimes (k TILE_DIM)
           (set! acc (+ acc (* (~ tile-A local-id-y k)
                               (~ tile-B local-id-x k)))))
 
-        (local-barrier))
+        (sync-workgroup))
 
       ;; store final result. coalesced access
       (let ((c-row (+ (* group-id-y TILE_DIM) local-id-y))
@@ -9722,7 +9722,7 @@ Now using soa-vector for better performance
 
       ;; Load the tile for this workgroup
       (load-complex-soa-tile input-soa-vec tile-y tile-x local-reals local-imags)
-      (local-barrier) ; Ensure loading is done
+      (sync-workgroup) ; Ensure loading is done
 
       (let ((local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
             (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1)))
@@ -9734,7 +9734,7 @@ Now using soa-vector for better performance
         ;; LOAD TILE INTO SoA FORMAT
         ;; Use a hypothetical SoA-aware load macro. This handles coalescing.
         (load-tile-soa input-vec local-reals local-imags group-idy group-idx)
-        (local-barrier)
+        (sync-workgroup)
 
         ;; COMPUTE BUTTERFLIES IN LOCAL MEMORY 
         ;; This part needs careful indexing based on the FFT stage/stride
@@ -9762,7 +9762,7 @@ Now using soa-vector for better performance
                   (set! (~ local-imags local-idy1 local-idx1) ap-im)
                   (set! (~ local-reals local-idy2 local-idx2) bp-re)
                   (set! (~ local-imags local-idy2 local-idx2) bp-im)))))
-        (local-barrier)
+        (sync-workgroup)
 
         ;; STORE TILE FROM SoA FORMAT 
         ;; Use a hypothetical SoA-aware store macro. This handles coalescing.
@@ -9861,7 +9861,7 @@ scratch vector whose length is equal to the local work size.
       ;; overwrite scratch
       (set! (~ scratch-vec lid) exm))
 
-    (local-barrier)
+    (sync-workgroup)
 
     ;; sum across workgroup, 'sum' is uniform after
     (let ((sum (~ scratch-vec lid)))
@@ -9911,7 +9911,7 @@ If you need to use a runtime `n`, get the vector `ulong3` and index it `(~ (get-
 | `get-local-linear-size` | `ulong` | Total number of threads in a single workgroup. Alias: `get-local-work-size 0 * 1 * 2`. |
 | `get-global-linear-id` | `ulong` | Flattened 1D index of the thread within the entire grid. |
 | `get-global-linear-size` | `ulong` | Total threads in the grid. Alias of `get-total-threads`. |
-| `local-barrier` | `void` | Synchronizes all threads within a workgroup. |
+| `sync-workgroup` | `void` | Synchronizes all threads within a workgroup. |
 | `mem-fence` | `void` | Ensures memory ordering across threads (global + local). |
 
 - get-timestamp   returns the high resolution clock counter. ( %clock64 register).
@@ -10558,7 +10558,7 @@ When you add this declaration, you are "tagging" your macro and telling the comp
 
 This tag enables Crisp's `(check-divergence)` static analysis. The compiler will then throw a compile-time error if an end-user tries to call your macro from inside a divergent branch (like a `(when (< (get-local-id 0) 10) ...)`).
 
-Many constructs in Crisp, like `local-barrier` or shuffle operations, automatically inject the appropriate "taint", 
+Many constructs in Crisp, like `sync-workgroup` or shuffle operations, automatically inject the appropriate "taint", 
 so you don't need this declaration when those are present. But it is easy to write a macro that _assumes_ warp or workgroup wide operation. In that case, use the declaration so the compiler will help users of your macro. 
 
 ## `entrypoint` 📝
@@ -10745,7 +10745,7 @@ and be moved to local memory. Only use `max-registers` if you know what you are 
 (declaim (check-barriers #'some-function #'other-function))
 ```
 
-If a `(local-barrier)` is placed inside a conditional branch that not all threads in a workgroup will execute, the kernel will deadlock.
+If a `(sync-workgroup)` is placed inside a conditional branch that not all threads in a workgroup will execute, the kernel will deadlock.
 Crisp performs this check automatically for any use of `when-thread-in-group-is`, whether this check has been elected or not.
 But with this check declared, Crisp will try to analyze other thread divergences and barriers looking for deadlock potential.
 
@@ -11752,14 +11752,14 @@ These dot product and matmul implementations work for ALL types.
         (load-tile B tile-B tile-num group-id-x
                    :transpose (= (get-layout B) :row-major))
         
-        (local-barrier)
+        (sync-workgroup)
 
         ;; This part is now simple and fast, both local tiles are row-major.
         (dotimes (k TILE_DIM)
           (set! acc (+ acc (*! (~ tile-A local-id-y k)  ;; widening multiplication
                               (~ tile-B local-id-x k)))))
 
-        (local-barrier))
+        (sync-workgroup))
 
       ;; store final result. coalesced access
       (let ((c-row (+ (* group-id-y TILE_DIM) local-id-y))

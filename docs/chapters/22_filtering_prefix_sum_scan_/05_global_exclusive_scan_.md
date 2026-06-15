@@ -36,10 +36,10 @@ What could be simpler?
     (r-t-assert-0 (= (length~ input-vec) (length~ output-vec)) "in/out vec lengths don't match")
     (hardware-stride input-vec :workgroup-idx (wg-idx)
       (load-tile input-vec scratch-vec)
-      (let ((total (exclusive-scan-workgroup scratch-vec))) ;; scratch-vec now reordered. local-barrier within exclusive-scan-wg
+      (let ((total (exclusive-scan-workgroup scratch-vec))) ;; scratch-vec now reordered. sync-workgroup within exclusive-scan-wg
         (when (= 0 (get-local-id))
           (set! (~ block-sums wg-idx) total)))
-      (local-barrier)
+      (sync-workgroup)
       (store-tile scratch-vec output-vec)))
 
   (def-grid-function global-exclusive-scan-downsweep (input-vec block-sums &out output-vec)

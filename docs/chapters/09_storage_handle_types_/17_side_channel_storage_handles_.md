@@ -151,7 +151,7 @@ Important: There are asynchronouse variants of these helpers.  See [Async Memory
 In `:one-thread-per` strategies, a common practice is to divide some input vec
 across workgroups and have each workgroup work on the vec using a local memory
 copy of the workgroups segment. These two macros handle that and even include a 
-`local-barrier`.
+`sync-workgroup`.
 
 `load-local` has an optional `identity` arg. If the global work size is
 greater than `global-vec`, then it may be necessary to fill in the matching portion
@@ -172,7 +172,7 @@ Possible Implementation
          (gid (get-global-linear-id))
          (val (if (< gid (length~ ,global-vec)) (~ ,global-vec gid) ,identity)))
       (set! (~ ,scratch-vec lid) val)
-      (local-barrier)))
+      (sync-workgroup)))
 
 (defmacro store-global (scratch-vec global-vec 
               &optional (transformF (get-identityF (element-type~ global-vec))))
@@ -182,7 +182,7 @@ Possible Implementation
             ;; (wg-idx (get-workgroup-linear-id))) ;;<-- exists? 
       (when (< gid (length~ ,global-vec))
         (set! (~ ,global-vec gid) (funcall ,transformF (~ ,scratch-vec lid))))
-      (local-barrier))
+      (sync-workgroup))
 
 ```
 

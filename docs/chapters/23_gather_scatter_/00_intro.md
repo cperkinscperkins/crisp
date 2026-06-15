@@ -100,7 +100,7 @@ But the count in `count-vec` is correct regardless.
 
       ;; Write 1 for match, 0 for miss to local memory
       (set! (~ local-flags local-id) (select-if is-a-match 1 0))
-      (local-barrier) ; Ensure all flags are written before scanning
+      (sync-workgroup) ; Ensure all flags are written before scanning
 
     ;; next perform exclusive scan on the flags to get local indices
     (let ((workgroup-total (exclusive-scan-workgroup local-flags)))
@@ -109,7 +109,7 @@ But the count in `count-vec` is correct regardless.
       ;; Leader thread saves the workgroup's total count to local memory
       (when (= local-id 0)
         (set! (~ local-info 0) workgroup-total)))
-    (local-barrier) ; Ensure total count is visible before atomic add
+    (sync-workgroup) ; Ensure total count is visible before atomic add
 
     ;; then get global write offset
     ;; Only the leader thread performs the atomic operation
@@ -119,7 +119,7 @@ But the count in `count-vec` is correct regardless.
       (let ((offset (atomic-add! (~ result-count-vec 0) (~ local-info 0))))
         ;; Share the obtained global offset with the workgroup via local memory
         (set! (~ local-info 1) offset)))
-    (local-barrier) ; Ensure the global offset is visible to all threads before writing
+    (sync-workgroup) ; Ensure the global offset is visible to all threads before writing
 
     ;; fainally, write results (indices) to global mem
     ;; Only threads that found a match perform a write

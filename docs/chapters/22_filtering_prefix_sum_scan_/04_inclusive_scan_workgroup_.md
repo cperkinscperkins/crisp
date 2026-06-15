@@ -25,14 +25,14 @@ This is a possible implementation of `exclusive-scan-workgroup` realized via a B
         (set! (~ ,local-vec local-id)
               (+ (~ ,local-vec local-id)
                 (~ ,local-vec (- local-id stride)))))
-       (local-barrier))
+       (sync-workgroup))
 
      ;; The last element now holds the total sum. We save it and clear
      ;; that slot to start the exclusive scan.
      (let ((total-sum (~ ,local-vec (- wg-size 1))))
        (when (= local-id (- wg-size 1))
          (set! (~ ,local-vec local-id) 0))
-       (local-barrier)
+       (sync-workgroup)
 
        ;; second pass - down sweep
        ;; Now we work back down the tree, distributing the sums.
@@ -43,7 +43,7 @@ This is a possible implementation of `exclusive-scan-workgroup` realized via a B
             (let ((temp (~ ,local-vec partner-idx)))
               (set! (~ ,local-vec partner-idx) (~ ,local-vec local-id))
               (set! (~ ,local-vec local-id) (+ temp (~ ,local-vec local-id))))))
-         (local-barrier))
+         (sync-workgroup))
 
        ;; The macro can return the total sum from the workgroup
        total-sum)))

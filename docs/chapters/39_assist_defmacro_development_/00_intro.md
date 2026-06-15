@@ -151,6 +151,6 @@ When you add this declaration, you are "tagging" your macro and telling the comp
 
 This tag enables Crisp's `(check-divergence)` static analysis. The compiler will then throw a compile-time error if an end-user tries to call your macro from inside a divergent branch (like a `(when (< (get-local-id 0) 10) ...)`).
 
-Many constructs in Crisp, like `local-barrier` or shuffle operations, automatically inject the appropriate "taint", 
+Many constructs in Crisp, like `sync-workgroup` or shuffle operations, automatically inject the appropriate "taint", 
 so you don't need this declaration when those are present. But it is easy to write a macro that _assumes_ warp or workgroup wide operation. In that case, use the declaration so the compiler will help users of your macro. 
 
