@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; TEST-WITH[--ir-target=ptx]
+;; sync-warp synchronizes all threads within a warp/subgroup.
+;; Lowers to OpControlBarrier (Subgroup scope) in SPIR-V, and bar.warp.sync in PTX.
+
+(def-type out-t (cell int :address-space :global))
+
+(def-kernel test_sync_warp (&out c)
+  (declare #'(&out out-t))
+  (sync-warp)
+  (set! (~ c) 0))
