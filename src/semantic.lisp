@@ -345,3 +345,11 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   stride-node
   body
   source-location)
+
+(defstruct semantic-while
+  "Represents (while condition body...).
+   Returns void."
+  type
+  condition-node
+  body
+  source-location)

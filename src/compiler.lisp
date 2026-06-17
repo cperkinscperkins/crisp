@@ -581,6 +581,11 @@ Returns modified IR text with metadata."
              (element-type type-spec :c-t To)
              (address-space address-space :c-t Addr))))
 
+  ;; ARRIVAL-SYNC-HANDLE: opaque handle to a sync point.
+  (eval '(def-struct crisp-language:arrival-sync-handle
+           (crisp-language::counter (cell int :address-space :global))
+           (crisp-language::count int)))
+
   ;; bytes~ helper for cell.
   (register-template 'bytes~ '(To (Addr address-space :global)) nil
     '(def-function bytes~ (c)

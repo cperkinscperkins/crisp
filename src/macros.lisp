@@ -1736,6 +1736,32 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   "Creates an async barrier locally. For compilation analysis, returns a stub value."
   0)
 
+(defmacro make-arrival-sync-handle (counter count)
+  `(%construct-struct crisp-language:arrival-sync-handle ,counter ,count))
+
+(defmacro arrival-sync-handle-counter (obj)
+  `(progn (declare (crisp-system-generated))
+          (%extract-struct-member ,obj 0)))
+
+(defmacro arrival-sync-handle-count (obj)
+  `(progn (declare (crisp-system-generated))
+          (%extract-struct-member ,obj 1)))
+
+(defmacro make-arrival-sync (count)
+  "Creates an arrival sync handle using a global atomic counter."
+  `(make-arrival-sync-handle :counter (make-scratch-cell int :address-space :global) :count ,count))
+
+(defmacro sync-arrive (handle)
+  "Puts one unit into the sync bucket."
+  `(atomic-add! (~ (arrival-sync-handle-counter ,handle)) 1))
+
+(defmacro sync-wait (handle)
+  "Blocks until count units have been put into the sync bucket."
+  `(progn
+    (while (< (crisp.compiler::%volatile-read (~ (arrival-sync-handle-counter ,handle))) (arrival-sync-handle-count ,handle))
+           (mem-fence))
+    (sync-workgroup)))
+
 (defmacro await (barrier)
   "Awaits an async barrier."
   (declare (ignore barrier))
@@ -1745,7 +1771,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let ((has-barrier (getf key-args :barrier))
         (has-transformf (or (getf key-args :transformf) (getf key-args :transformF))))
     (when (and has-barrier has-transformf)
-          (error "Cannot use :barrier and :transformF at the same time."))))
+          (error "Cannot use :barrier and :transformF together."))))
 
 (defmacro load-tile-at (src tile grid-list &rest key-args)
   "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."

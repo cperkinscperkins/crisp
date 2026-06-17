@@ -160,6 +160,8 @@
   (declare (ignore env context))
   (unless *in-dispatch-context*
     (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
+  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence))
+    (%tlc-check-not-divergent name-str location))
   (let* ((info     (%gpu-builtin-info builtin-kw))
          (base-ty  (first info))
          (acc-dim  (second info))
@@ -425,12 +427,23 @@
 ;; Default Handler (Function Calls & Macros)
 (defmethod scan-operator (op args)
   (cond
+   ((and (symbolp op)
+         (not (gethash op *expression-analyzers*))
+         (macro-function op))
+    ;; Expand macro and scan the result
+    (handler-case
+        (let ((expanded (macroexpand-1 (cons op args))))
+          (scan-form expanded))
+      (error ()
+        ;; If macroexpansion fails, fall back to scanning arguments.
+        ;; This allows the analyzer in Pass 2 to generate the proper compiler error.
+        (dolist (arg args) (scan-form arg)))))
    ((member op *side-channel-originators*)
-     (setf *scan-is-originator* t))
+    (setf *scan-is-originator* t))
    (t
-     (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op)))
-           (pushnew op *scan-callees*))
-     (dolist (arg args) (scan-form arg)))))
+    (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op)))
+          (pushnew op *scan-callees*))
+    (dolist (arg args) (scan-form arg)))))
 
 ;; Special Form Handlers
 (defmethod scan-operator ((op (eql 'declare)) args) nil)
@@ -484,6 +497,9 @@
   ;; an explicit user-supplied address-space.
   (when args
         (let* ((arg1 (first args))
+               (address-space (if (and (>= (length args) 3) (eq (second args) :address-space))
+                                  (third args)
+                                  :local))
                (raw-spec (cond
                            ((and (consp arg1) (eq (first arg1) 'cell))
                             ;; User wrote (cell elem ...).  Inject :local if
@@ -497,7 +513,7 @@
                                           (rest arg1)))
                                 arg1
                                 (append arg1 '(:address-space :local))))
-                           (t (list 'cell arg1 :address-space :local))))
+                           (t (list 'cell arg1 :address-space address-space))))
                (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
           ;; Store in *implicit-arg-map* for this function
           ;; Unique Naming: varName_from_FnName_N

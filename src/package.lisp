@@ -355,6 +355,7 @@
    
    ;; Async operations
    #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile
+   #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle
    
    ;; GPU Built-ins
    #:get-global-id #:get-local-id #:get-workgroup-id #:get-num-groups
@@ -429,6 +430,7 @@
                 
                 ;; Async operations
                 #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile
+                #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle
 
                 ;; All Crisp types
                 #:char #:short #:int #:long
@@ -604,6 +606,7 @@
    #:emit-llvm
    #:compile-function #:store-chunk #:load-tile #:store-tile
    #:load-tile-at #:store-tile-at #:make-async-barrier #:await
+   #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle
    #:~ #:set! #:length~ #:~ref~
 
    ;; Ops

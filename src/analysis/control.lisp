@@ -1029,6 +1029,29 @@
                                :source-location location)))))
 
 
+(defun analyze-while-expression (expr env context location)
+  "Analyzes (while condition body...).
+   Returns a semantic-while node (type void)."
+  (unless (>= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message "Malformed while: expected (while condition body...)"
+      :source-location location))
+  (let* ((condition-form (second expr))
+         (body-forms (cddr expr))
+         (condition-node (analyze-expression condition-form env context (append location '(0))))
+         (condition-type (get-single-value-type condition-node))
+         (condition-ct (gethash condition-type *crisp-types*)))
+    (unless (and condition-ct (member (crisp-type-category condition-ct)
+                                      '(:boolean :signed-int :unsigned-int)))
+      (error 'crisp-compiler-error
+        :message (format nil "while condition must be a boolean or integer type, got ~a" condition-type)
+        :source-location location))
+    (let ((body-nodes (analyze-body-expressions body-forms env context (append location '(1)))))
+      (make-semantic-while :type 'void
+                           :condition-node condition-node
+                           :body body-nodes
+                           :source-location location))))
+
 ;; ==========================================================================
 ;; Endeavor 107 — make stride macros AD-able by expanding them BEFORE the
 ;; AD pipeline walks the kernel body.
@@ -2507,6 +2530,11 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-dotimes-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-dotimes-expression)))
+  (let ((sym-cl (intern "WHILE" (find-package :crisp-language)))
+        (sym-cc (intern "WHILE" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-while-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-while-expression)))
   (let ((sym-cl (intern "LOOP-VECTOR-STRIDE" (find-package :crisp-language)))
         (sym-cc (intern "LOOP-VECTOR-STRIDE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-loop-vector-stride-expression)

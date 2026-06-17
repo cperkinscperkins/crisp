@@ -1,0 +1,11 @@
+;; TEST-EXPECT: FAIL
+
+(def-kernel test_arrival_sync_divergent ()
+  (declare #'( => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  
+  (let ((sync (make-arrival-sync 128)))
+    (sync-arrive sync)
+    (when (> (get-global-id 0) (to-ulong 10))
+      (sync-wait sync))))

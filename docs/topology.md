@@ -336,14 +336,20 @@ Because b1 and b2 have separate, dedicated signal flags in memory, b1 can safely
 ```
 (sync-workgroup)
 (sync-warp)
-(make-arrival-sync <count>)
+
+(make-arrival-sync <count>) => sync-handle
+(sync-arrive sync-handle) => nil
+(sync-wait sync-handle) => nil
 ```
 
 (sync-workgroup): Same as `barrier(CLK_LOCAL_MEM_FENCE)`.
 
 (sync-warp): Implemented via `__builtin_shflsync(0xFFFFFFFF, 0)`.
 
-(make-arrival-sync count) : A thread-count barrier. Returns a handle used by the consumer to block until `count` threads have called (wait). Implementation uses a global atomic counter.
+(make-arrival-sync count) : A thread-count barrier. Returns a handle used by the consumer to block until `count` threads have called (sync-arrive). Implementation uses a global atomic counter.
+
+(sync-arrive sync-handle) : non-blocking. Puts one "unit" into the sync bucket.
+(sync-wait sync-handle) : blocks until "count" units have been put into the sync bucket.
 
 
 ### Semaphore Operations

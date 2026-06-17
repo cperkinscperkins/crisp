@@ -138,6 +138,17 @@
                   (values temp (append limit-bindings `((,temp ,anf-dotimes)))))
                 (values anf-dotimes limit-bindings)))))))
 
+(defun %anf-normalize-while (op expr is-nested?)
+  (let* ((condition (cadr expr))
+         (body (cddr expr)))
+    (multiple-value-bind (new-condition condition-bindings) (anf-normalize condition t)
+      (let* ((anf-body (mapcar #'%anf-transform body))
+             (anf-while `(,op ,new-condition ,@anf-body)))
+        (if is-nested?
+            (let ((temp (anf-fresh-temp)))
+              (values temp (append condition-bindings `((,temp ,anf-while)))))
+            (values anf-while condition-bindings))))))
+
 (defun %anf-normalize-atomic (op expr is-nested?)
   (let ((place (cadr expr))
         (rest-args (cddr expr)))
@@ -162,7 +173,7 @@
      (let ((op (car expr)))
        (when (and (symbolp op)
                   (macro-function op)
-                  (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes set! declare progn let
+                  (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes while set! declare progn let
                                           template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
                                           make-cell make-vector make-matrix make-tensor))))
              (multiple-value-bind (expanded changed) (macroexpand-1 expr)
@@ -247,6 +258,8 @@
                   (values anf-progn nil)))))
         ((and (symbolp op) (string-equal (symbol-name op) "DOTIMES"))
           (%anf-normalize-dotimes op expr is-nested?))
+        ((and (symbolp op) (string-equal (symbol-name op) "WHILE"))
+          (%anf-normalize-while op expr is-nested?))
         ((and (symbolp op)
               (member (symbol-name op)
                       '("ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-INC!" "ATOMIC-DEC!"

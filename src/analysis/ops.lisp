@@ -51,11 +51,17 @@
   `(defun ,name (expr env context location)
      ,(format nil "Analyzes a `(~a ...)` expression." op-string)
      (let* ((left-node (analyze-expression (second expr) env context (append location '(1))))
-            (right-node (analyze-expression (third expr) env context (append location '(2)))))
-       ;; We intentionally do not enforce strict numeric types here yet,
-       ;; allowing for potential future pointer comparisons etc.
-       ;; Result is always INT (boolean 0/1).
-       (,node-constructor :type 'int :left-arg left-node :right-arg right-node :source-location location))))
+            (right-node (analyze-expression (third expr) env context (append location '(2))))
+            (left-type (get-single-value-type left-node))
+            (right-type (get-single-value-type right-node))
+            (promoted-type (get-promoted-type left-type right-type)))
+       (unless promoted-type
+         (error 'crisp-type-error
+           :message (format nil "Type mismatch for comparison '~a'. Cannot compare ~a and ~a." ,op-string left-type right-type)
+           :source-location location))
+       (let ((promoted-left (if (equal left-type promoted-type) left-node (create-implicit-cast left-node promoted-type location)))
+             (promoted-right (if (equal right-type promoted-type) right-node (create-implicit-cast right-node promoted-type location))))
+         (,node-constructor :type 'int :left-arg promoted-left :right-arg promoted-right :source-location location)))))
 
 (defun try-constant-fold (node)
   "Attempts to reduce a semantic node to a semantic-literal if possible."

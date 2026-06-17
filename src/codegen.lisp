@@ -842,6 +842,7 @@
 (defun get-type-cat-safe (type-name type-obj)
   (cond
    (type-obj (crisp-type-category type-obj))
+   ((and (symbolp type-name) (gethash type-name *crisp-enums*)) :signed-int)
    ((and (consp type-name) (eq (first type-name) 'c-pointer)) :pointer)
    (t nil)))
 
@@ -874,6 +875,17 @@
                    (to-cat (get-type-cat-safe to-type-name to-type)))
               (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
               (cond
+               ;; Keywords and symbols cast to int
+               ((and (or (member from-type-name '(keyword symbol quote))
+                         (and (listp from-type-name) (member (first from-type-name) '(keyword symbol quote))))
+                     (member to-cat '(:signed-int :unsigned-int)))
+                 (let ((to-size (if to-type (crisp-type-size to-type) 32)))
+                   (cond
+                    ((< to-size 32)
+                      (llvm-build-trunc builder from-val to-llvm-type "trunc_kw_cast"))
+                    ((> to-size 32)
+                      (llvm-build-sext builder from-val to-llvm-type "sext_kw_cast"))
+                    (t from-val))))
                ((and (member from-cat '(:signed-int :unsigned-int))
                      (eq to-cat :float))
                  (if (eq from-cat :signed-int)
@@ -1768,7 +1780,8 @@
                          (unmangle-template-struct-name canon))
                         (t canon)))))
 
-      (cond
+      (multiple-value-bind (loaded-val _loc target-ptr)
+          (cond
        ;; Case 2: (array T N) fixed-size array — GEP into alloca (unchanged)
        ((%array-type-p (resolve-type-alias array-type))
         (let* ((resolved-arr-type (resolve-type-alias array-type))
@@ -1888,9 +1901,12 @@
                   (values loaded-val nil target-ptr)))))))
 
        (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)"
-                 array-type cell-spec))))))
-
-
+                 array-type cell-spec)))
+        (declare (ignore _loc))
+        (when (gethash node *volatile-var-reads*)
+          (log:debug "aref marked volatile (IGC workaround)")
+          (crisp.llvm-bindings::llvm-set-volatile loaded-val 1))
+        (values loaded-val nil target-ptr)))))
 (defmethod generate-node-ir ((node semantic-sizeof) builder module var-env di-builder di-scope location-map)
   "Generates IR for a sizeof(T) expression. Returns an i64 constant."
   (declare (ignore builder var-env di-builder di-scope location-map))
@@ -2815,6 +2831,32 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     ;; dotimes returns void
     (values nil nil)))
 
+(defmethod generate-node-ir ((node semantic-while) builder module var-env di-builder di-scope location-map)
+  "Generates IR for (while condition body...)."
+  (let* ((condition-node (semantic-while-condition-node node))
+         (body           (semantic-while-body node))
+         (current-fn     (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (check-block    (llvm-append-basic-block current-fn "wh_check"))
+         (body-block     (llvm-append-basic-block current-fn "wh_body"))
+         (exit-block     (llvm-append-basic-block current-fn "wh_exit")))
+    
+    (llvm-build-br builder check-block)
+    ;; --- Check Block ---
+    (llvm-position-builder-at-end builder check-block)
+    (let* ((cond-val (generate-node-ir condition-node builder module var-env di-builder di-scope location-map))
+           (cond-bool (llvm-build-icmp builder +llvm-int-ne+ cond-val (llvm-const-int (llvm-int32-type) 0 nil) "wh_cond")))
+      (llvm-build-cond-br builder cond-bool body-block exit-block))
+    
+    ;; --- Body Block ---
+    (llvm-position-builder-at-end builder body-block)
+    (dolist (body-node body)
+      (generate-node-ir body-node builder module var-env di-builder di-scope location-map))
+    (unless (terminator-p (llvm-get-insert-block builder))
+      (llvm-build-br builder check-block))
+      
+    ;; --- Exit Block ---
+    (llvm-position-builder-at-end builder exit-block)
+    (values nil nil)))
 
 (defmethod generate-node-ir ((node semantic-eq) builder module var-env di-builder di-scope location-map)
   "Generates IR for =, guarding against NIL lhs-type for enum/keyword operands."
