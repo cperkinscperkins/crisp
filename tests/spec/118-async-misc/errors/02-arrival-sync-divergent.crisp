@@ -1,4 +1,7 @@
+;; TEST-EXPECT: FAIL
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; CHECK-FAIL: "MEM-FENCE cannot appear inside a thread-divergent conditional"
+
 
 (def-kernel test_arrival_sync_divergent ()
   (declare #'( => nil)

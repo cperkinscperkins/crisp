@@ -134,12 +134,13 @@
        (member (symbol-name (first param-type))
                '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal)))
 
-(defun %tensor-compact-extents-strides (n dim-extent)
-  "Returns (values extents strides) for a compact N-dim tensor."
-  (let* ((extents (make-list n :initial-element dim-extent))
+(defun %tensor-compact-extents-strides (n extents-list)
+  "Returns (values extents strides) for a compact N-dim tensor.
+   Strides are in elements; innermost stride = 1."
+  (let* ((extents (copy-list extents-list))
          (strides (make-list n :initial-element 1)))
     (loop for k from (- n 2) downto 0 do
-      (setf (nth k strides) (* (nth (1+ k) strides) dim-extent)))
+            (setf (nth k strides) (* (nth (1+ k) strides) (nth (1+ k) extents))))
     (values extents strides)))
 
 
@@ -373,7 +374,7 @@
   (format stream "    std::cout << \"Kernel function loaded\" << std::endl;~%~%")
 
   ;; Allocate and set up args; returns list of allocations for readback
-  (let ((allocations (emit-kernel-args stream declared-sig aliases records)))
+  (let ((allocations (emit-kernel-args stream declared-sig aliases records dispatch-info)))
 
     ;; Compute shared memory total for local tiles
     (let ((shared-bytes (compute-total-shared-bytes declared-sig aliases)))
@@ -527,7 +528,7 @@
     (unless (integerp size-expr)
       (error "Local scratch tensor ~a has non-integer :size-expr ~a." param-name size-expr))
     (multiple-value-bind (extents strides)
-        (%tensor-compact-extents-strides rank size-expr)
+        (%tensor-compact-extents-strides rank (make-list rank :initial-element size-expr))
       (let* ((length   (expt size-expr rank))
              (bytesize (* length elem-bytes)))
         (format stream "~%    // LOCAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes)~%"
@@ -576,7 +577,7 @@
     (unless (integerp size-expr)
       (error "Global scratch tensor ~a has non-integer :size-expr ~a." param-name size-expr))
     (multiple-value-bind (extents strides)
-        (%tensor-compact-extents-strides rank size-expr)
+        (%tensor-compact-extents-strides rank (make-list rank :initial-element size-expr))
       (let* ((length   (expt size-expr rank))
              (bytesize (* length elem-bytes)))
         (format stream "~%    // GLOBAL scratch tensor: ~a (rank=~d, ~a, ~d elems)~%"
@@ -614,19 +615,34 @@
         (incf current-idx)
         (values current-idx (nreverse arg-names))))))
 
-(defun %cuda-emit-tensor-arg (stream param param-name param-type param-dir arg-index)
+(defun %cuda-emit-tensor-arg (stream param param-name param-type param-dir arg-index dispatch-info)
   (let* ((rank        (or (getf param :rank)
                           (let ((n3 (third param-type))) (if (integerp n3) n3 1))))
          (elem-type   (second param-type))
          (elem-str    (crisp-type-to-cpp-type elem-type))
-         (dim-extent  4)
          (param-name-cpp (substitute #\_ #\- param-name))
          (ptr-var     (format nil "~a_ptr" param-name-cpp))
          (arg-names   '())
          (current-idx arg-index)
-         (alloc       nil))
+         (alloc       nil)
+         (extents-list (let ((lst (make-list rank :initial-element 4)))
+                         (let* ((global-decl (getf dispatch-info :global-size))
+                                (strategy (getf (cdr global-decl) :strategy))
+                                (derive-from (getf (cdr global-decl) :derive-from))
+                                (tile-shape (getf (cdr global-decl) :tile-shape)))
+                           (when (and strategy
+                                      (string-equal (symbol-name strategy) "TILED")
+                                      derive-from
+                                      (member param-name (if (listp derive-from) derive-from (list derive-from))
+                                              :test (lambda (a b) (string-equal (string a) (string b)))))
+                             (loop for k from 0 below (min rank (length tile-shape)) do
+                               (let* ((tx (nth k tile-shape))
+                                      (base (nth k lst))
+                                      (padded (* (ceiling base tx) tx)))
+                                 (setf (nth k lst) padded)))))
+                         lst)))
     (multiple-value-bind (extents strides)
-        (%tensor-compact-extents-strides rank dim-extent)
+        (%tensor-compact-extents-strides rank extents-list)
       (let* ((total-elems (* (first strides) (first extents)))
              (elem-bytes  (if (or (string-equal elem-str "double")
                                   (string-equal elem-str "int64_t")
@@ -717,7 +733,7 @@
           (format stream "    ~a ~a_arg = ~d;~%" type-str param-name-cpp (+ arg-index 42))))
     (values (+ arg-index 1) (list (format nil "~a_arg" param-name-cpp)))))
 
-(defun emit-kernel-args (stream declared-sig aliases records)
+(defun emit-kernel-args (stream declared-sig aliases records dispatch-info)
   "Emit host-side variable declarations and fill the kernelParams[] array.
    Returns a list of allocation plists for readback."
   (format stream "    // Set up kernel arguments~%")
@@ -755,7 +771,7 @@
 
          ((tensor-type-p param-type)
           (multiple-value-bind (new-idx names alloc)
-              (%cuda-emit-tensor-arg stream param param-name param-type param-dir arg-index)
+              (%cuda-emit-tensor-arg stream param param-name param-type param-dir arg-index dispatch-info)
             (setf arg-index new-idx)
             (setf arg-names (append (reverse names) arg-names))
             (when alloc (push alloc allocations))))

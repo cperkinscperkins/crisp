@@ -515,7 +515,11 @@
   "Helper: Enforces kernel requirements when Auto-Differentiation is enabled.
    Returns T if the kernel should be differentiated, NIL if it is forward-only."
   (if *differentiate-p*
-      (let ((is-forward-only (find "FORWARD-ONLY" declarations :key (lambda (x) (when (symbolp x) (symbol-name x))) :test #'string-equal)))
+      (let ((is-forward-only (find "FORWARD-ONLY" declarations 
+                                   :key (lambda (x) 
+                                          (cond ((symbolp x) (symbol-name x))
+                                                ((and (consp x) (symbolp (car x))) (symbol-name (car x)))))
+                                   :test #'string-equal)))
         (if is-forward-only
             nil
             (if (member '&out signature-types)

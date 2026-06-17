@@ -1,4 +1,4 @@
-;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 (def-kernel test_arrival_sync ()
   (declare #'( => nil)

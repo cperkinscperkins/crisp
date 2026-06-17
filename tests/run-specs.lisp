@@ -168,7 +168,7 @@
     ;; Check if we should skip this file entirely based on current flags
     (when (parse-skip-with directives)
           (format t "~&Running Spec: ~a (Default)... SKIP (Skipped due to SKIP-WITH matches active flags)~%" (pathname-name file))
-          (return-from run-spec-file t))
+          (return-from run-spec-file :skipped))
 
     ;; 1. Default Run (Current Global Flags)
     (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
@@ -1862,6 +1862,10 @@
                               (pathname-name file) test-passed expect-failure))
 
                       (cond
+                       ;; Test was skipped
+                       ((eq test-passed :skipped)
+                         (incf passed))
+
                        ;; Test passed and we expected it to pass
                        ((and test-passed (not expect-failure))
                          (incf passed))
