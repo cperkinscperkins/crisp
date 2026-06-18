@@ -1,0 +1,16 @@
+;; SKIP-WITH[--differentiate]: "AD pre-rewrite for load-local / store-global async lands in phase 1"
+;; Tests the new load-local and store-global async primitives.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+
+(def-kernel tile_copy (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4))
+        (barrier (make-async-barrier)))
+    (load-local V tile :barrier barrier)
+    (await barrier)
+    (let ((barrier2 (make-async-barrier)))
+      (store-global tile OUT :barrier barrier2)
+      (await barrier2))))

@@ -1784,3 +1784,31 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                for i from 0
                collect `(* ,g (~ (extents~ ,tile) ,i)))))
     `(store-tile-at ,tile ,dest ,pixel-coords ,@key-args)))
+
+
+(defmacro position-tile-at (tile parent grid-list)
+  "Sets the tile to view a sub-region of the parent tensor at the specified coordinates.
+   Updates the tile's parent and offset metadata in place without transferring data."
+  (let* ((ndim (length grid-list))
+         (sets (loop for i from 0 below ndim
+                     for coord in grid-list
+                     collect `(set! (~ (offset~ ,tile) ,i)
+                                    (+ (~ (offset~ ,parent) ,i)
+                                       (* (as ulong ,coord) (~ (strides~ ,parent) ,i)))))))
+    `(progn
+       (set! (parent~ ,tile) (parent~ ,parent))
+       ,@sets)))
+
+(defmacro position-tile (tile parent grid-list)
+  "Sets the tile to view a sub-region of the parent tensor at the specified grid coordinates.
+   Updates the tile's parent and offset metadata in place without transferring data."
+  (let* ((ndim (length grid-list))
+         (sets (loop for i from 0 below ndim
+                     for coord in grid-list
+                     collect `(set! (~ (offset~ ,tile) ,i)
+                                    (+ (~ (offset~ ,parent) ,i)
+                                       (* (* (as ulong ,coord) (~ (extents~ ,tile) ,i))
+                                          (~ (strides~ ,parent) ,i)))))))
+    `(progn
+       (set! (parent~ ,tile) (parent~ ,parent))
+       ,@sets)))

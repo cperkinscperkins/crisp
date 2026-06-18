@@ -2486,9 +2486,9 @@
          (key-args (nthcdr 3 expr))
          (src-node (analyze-expression src env context (append location '(1))))
          (src-type (semantic-node-type src-node)))
-    (unless (tensor-type-p src-type)
+    (unless (%tensor-type-p src-type)
       (error 'crisp-compiler-error :message "load-local: source must be a tensor" :source-location location))
-    (let ((num-dims (tensor-type-num-dims src-type))
+    (let ((num-dims (%get-tensor-arity src-type))
           (cl-pkg (find-package :crisp-language)))
       (analyze-load-tile-coords-expression
        (append (list (intern "LOAD-TILE-COORDS" cl-pkg) src dest
@@ -2503,9 +2503,9 @@
          (key-args (nthcdr 3 expr))
          (dest-node (analyze-expression dest env context (append location '(2))))
          (dest-type (semantic-node-type dest-node)))
-    (unless (tensor-type-p dest-type)
+    (unless (%tensor-type-p dest-type)
       (error 'crisp-compiler-error :message "store-global: destination must be a tensor" :source-location location))
-    (let ((num-dims (tensor-type-num-dims dest-type))
+    (let ((num-dims (%get-tensor-arity dest-type))
           (cl-pkg (find-package :crisp-language)))
       (analyze-store-tile-coords-expression
        (append (list (intern "STORE-TILE-COORDS" cl-pkg) src dest

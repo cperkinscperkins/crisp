@@ -25,7 +25,7 @@ Pass 2.5 - arrival sync primitives
 - second: implement.
 
 Pass 2.7
-- [ ] load-local and store-local with :barrier arg
+- [x] load-local and store-local with :barrier arg
 
 Here are the relevant docs
 
@@ -51,8 +51,24 @@ Important: These helpers support a `:barrier` key for asynchronous execution.  S
 
 
 Pass 2.8
-- there should not be any real need for any "request-XXXX" functions anymore.
+- [x] there should not be any real need for any "request-XXXX" functions anymore.
 So request-load-tile request-store-tile, etc can be removed because load-tile/store-tile has :barrier args now.  Remove all request-XXXX from the compiler .
+
+Pass 2.9
+- [ ] position-tile  / position-tile-at
+- [ ] with tests
+
+Docs for this:
+
+### More Tile helpers
+```
+(position-tile tile-tensor tensor (... grid-y grid-x))
+(position-tile-at tile-tensor tensor (... y x))
+```
+
+These functions have a very similar API to the load/store tile functions above. But they do not transfer any data, instead they simply update the tile metadata. This is useful when a tile is being used a view into a larger (parent) tensor and you want to move that "window". 
+
+
 
 
 Pass 3.  I'll definitely be adding more to this one. maybe it should be its own endeavor. We'll see.
