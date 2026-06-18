@@ -812,6 +812,10 @@
                (unique-name (intern unique-name-str (symbol-package binding-name)))
                (size-expr (%extract-scratch-size-expr op args)))
 
+          (format *terminal-io* "PUSHING: ~s to ~s~%" unique-name fn-name)
+          (format *terminal-io* "  binding-name: ~s (package: ~a)~%" binding-name (package-name (symbol-package binding-name)))
+          (format *terminal-io* "  unique-name: ~s (package: ~a)~%" unique-name (package-name (symbol-package unique-name)))
+
           (log:info "Pass 1: ~a ~a -> implicit: ~a (type: ~a, size-expr: ~a)"
                     op binding-name unique-name canonical-spec size-expr)
 

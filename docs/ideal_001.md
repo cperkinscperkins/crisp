@@ -2670,16 +2670,21 @@ Modifying the beginning of the arglist (of course).
 
 #### Scratch Helpers
 
-Important: There are asynchronouse variants of these helpers.  See [Async Memory Operations](#async-memory-operations) for more information. 
+Important: These helpers support a `:barrier` key for asynchronous execution.  See [Async Memory Operations](#async-memory-operations) for more information. 
 
 ```
-(load-local global-vec scratch-vec &optional identity)
-(store-global scratch-vec global-vec &optional (transformF #'identityF))
+(load-local global-tensor scratch-tensor &key identity barrier)
+(store-global scratch-tensor global-tensor &key (transformF #'identityF) barrier)
 
 (load-tile ...) 
 (store-tile ...)
 
 ```
+
+`load-local` and `store-global` simply copy data between a global tensor and a scratch one. There is no "positioning" of the tensors relative one another. These are most straightforward to use if the two arguments are the same size. But, in the event they are not the same size, the bytes moved are limited by the smaller of the two.  
+
+`load-tile` and `store-tile`, on the other hand, have positioning arguments and that determine what section of the global tensor is copied to/from. See topology.md for details. 
+
 
 In `:one-thread-per` strategies, a common practice is to divide some input vec
 across workgroups and have each workgroup work on the vec using a local memory
@@ -4292,13 +4297,20 @@ But note that while maximum occupancy results in ideal performance for many work
 
 
 - `:exact` This strategy tells the hoisting code to set the global work size to be exactly the size, no more no less. This
-strategy could also be used with the `:set-to` key.
+strategy could also be used with the `:set-to` key. If combined with `:tile-shape`, `:exact` calculates exactly enough workgroups to cover the number of tiles.
 
-- `:tiled`  This signals that the kernel ises a tiled algorithm (like `matmul` or `convert-layout` below).  The global
-size isn't based on the total number of elements, but on the number of tiles needed to cover the input data.
-The host code generator would calculate the grid dimensions based on the input matrix/tensor dimensions and the tile dimensions.
-When using this strategy, be sure to also use the `:tile-shape` key so the hoisting code can calculate accordingly.
-This declaration should always be used when using the `tile-stride` macro.  See [`tile-stride`](#tile-stride) for more information. 
+`:tile-shape`
+```
+(declare (global-size :derive-from '(width height) :strategy :strided :tile-shape '(64 64)))
+```
+
+The `:tile-shape` key defines the geometric extents of the work being processed by a single workgroup. It is an orthogonal modifier to the `:strategy`.
+
+When used with `:strategy :exact`, the hoisting code divides the input dimensions by the `:tile-shape` to determine the exact number of workgroups to launch `(CEIL(dimension / tile_extent))`.
+
+When used with `:strategy :strided`, the host relies on hardware occupancy to determine the launch size, but uses the `:tile-shape` to configure any necessary tile-based dynamic memory allocations.
+
+This declaration should always be used when utilizing the `tile-stride` or `matrix-multiply-tile-stride` macros so the host orchestrator understands the block partitioning.
 
 
 

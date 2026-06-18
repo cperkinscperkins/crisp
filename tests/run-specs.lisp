@@ -1116,6 +1116,7 @@
               res)
             (progn (format *error-output* "FAIL (No PTX generated)~%") nil)))
     (error (e)
+      (uiop:print-backtrace :condition e)
       (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
 
@@ -1328,15 +1329,11 @@
 
 ;; Used for .crisp specs - generic backend (IR validation)
 (defun run-spec-lisp-loader (file)
-  (handler-case
+  (handler-bind ((error (lambda (e) (sb-debug:print-backtrace :count 30 :stream *terminal-io*) (format *terminal-io* "FAIL (Condition: ~a)~%" e) (return-from run-spec-lisp-loader nil))))
       (let ((ir-string (compile-crisp-file-to-ir-string file)))
         (if (validate-ir-with-clang ir-string)
             (progn (format t "PASS~%") t)
-            (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
-    (error (e)
-      (uiop:print-backtrace :condition e)
-      (format *error-output* "FAIL (Condition: ~a)~%" e)
-      nil)))
+            (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))))
 
 (defun discover-unit-tests (spec-dir stop-target)
   "Find all *.unit.lisp files in spec tree up to stop-target"

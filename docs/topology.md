@@ -308,6 +308,14 @@ Halts the execution of the calling warp or workgroup until the specified `barrie
 Manually notifies the specified `barrier`. This is predominantly used in pipelined or warp-specialized loops where the Consumer warp must explicitly tell the Producer warp's DMA engine that a specific chunk of Shared Local Memory has been fully read and is safe to be overwritten by the next memory fetch.
 
 
+### More Tile helpers
+```
+(position-tile tile-tensor tensor (... grid-y grid-x))
+(position-tile-at tile-tensor tensor (... y x))
+```
+
+These functions have a very similar API to the load/store tile functions above. But they do not transfer any data, instead they simply update the tile metadata. This is useful when a tile is being used a view into a larger (parent) tensor and you want to move that "window". 
+
 
 
 ### Note about OpenSHMem Barrier
