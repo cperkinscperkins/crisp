@@ -835,21 +835,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
      (t
        (cons (car form) (cons rewritten-bindings rewritten-body))))))
 
-(defun %expand-request-load-tile-coords-op (form type-resolver-fn location)
-  "Normalize request-load-tile-coords -> load-tile-coords (sync)."
-  (let ((sync-sym (intern "LOAD-TILE-COORDS" (find-package :crisp-language))))
-    (cons sync-sym
-          (mapcar (lambda (sub)
-                    (%expand-stride-macros-in-form sub type-resolver-fn location))
-              (cdr form)))))
 
-(defun %expand-request-store-tile-coords-op (form type-resolver-fn location)
-  "Normalize request-store-tile-coords -> store-tile-coords."
-  (let ((sync-sym (intern "STORE-TILE-COORDS" (find-package :crisp-language))))
-    (cons sync-sym
-          (mapcar (lambda (sub)
-                    (%expand-stride-macros-in-form sub type-resolver-fn location))
-              (cdr form)))))
 
 (defun %expand-stride-macros-in-form (form type-resolver-fn location)
   "Recursively walks FORM and rewrites tensor-stride / grid-stride /
@@ -878,12 +864,6 @@ processes float inputs — integer tensor inputs contribute zero gradient."
           (%expand-workgroup-stride-op form type-resolver-fn location))
         ((string-equal op-name "LET")
           (%expand-let-stride-op form type-resolver-fn location))
-        ((string-equal op-name "REQUEST-LOAD-TILE-COORDS")
-          (%expand-request-load-tile-coords-op form type-resolver-fn location))
-        ((string-equal op-name "REQUEST-STORE-TILE-COORDS")
-          (%expand-request-store-tile-coords-op form type-resolver-fn location))
-        ((string-equal op-name "AWAIT-REQUEST")
-          nil)
         (t
           (cons (car form)
                 (mapcar (lambda (sub)

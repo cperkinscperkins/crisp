@@ -24,6 +24,37 @@ Pass 2.5 - arrival sync primitives
         including negative tests (under /error)
 - second: implement.
 
+Pass 2.7
+- [ ] load-local and store-local with :barrier arg
+
+Here are the relevant docs
+
+#### Scratch Helpers
+
+Important: These helpers support a `:barrier` key for asynchronous execution.  See [Async Memory Operations](#async-memory-operations) for more information. 
+
+```
+(load-local global-tensor scratch-tensor &key identity barrier)
+(store-global scratch-tensor global-tensor &key (transformF #'identityF) barrier)
+
+(load-tile ...) 
+(store-tile ...)
+
+```
+
+`load-local` and `store-global` simply copy data between a global tensor and a scratch one. There is no "positioning" of the tensors relative one another. These are most straightforward to use if the two arguments are the same size. But, in the event they are not the same size, the bytes moved are limited by the smaller of the two.  
+
+`load-tile` and `store-tile`, on the other hand, have positioning arguments and that determine what section of the global tensor is copied to/from. See topology.md for details. 
+
+
+
+
+
+Pass 2.8
+- there should not be any real need for any "request-XXXX" functions anymore.
+So request-load-tile request-store-tile, etc can be removed because load-tile/store-tile has :barrier args now.  Remove all request-XXXX from the compiler .
+
+
 Pass 3.  I'll definitely be adding more to this one. maybe it should be its own endeavor. We'll see.
 Before we can start this, I will need to update some documentation about it.
 - [ ] strategy :tiled so we can get hoist testing. 

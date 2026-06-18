@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT: zeKernelSetGroupSize(kernel, 16, 16, 1)
+;; STRATEGY-EXPECT: uint64_t image_length = 256ULL;
+;; STRATEGY-EXPECT: zeMemAllocShared(context, &deviceDesc, &hostDesc,
+;; STRATEGY-EXPECT: 256 * sizeof(int)
+;; STRATEGY-EXPECT: memset(image_ptr, 0, 256 * sizeof(int));
+
+(def-type image-t (tensor int 2 :address-space :global :align :compact))
+
+(def-kernel hoist_tiled_oversubscribe (&out image)
+    (declare (type image image-t)
+             (global-size :derive-from image :strategy :tiled :tile-shape (16 16) :pad-with 0))
+  (set! (~ image 0 0) 0))

@@ -2479,6 +2479,40 @@
        (append (list (intern "STORE-TILE-AT" cl-pkg) tile dest pixel-coords) key-args)
        env context location))))
 
+(defun analyze-load-local-expression (expr env context location)
+  "Analyzer for (load-local global-tensor scratch-tensor &key identity barrier)."
+  (let* ((src (second expr))
+         (dest (third expr))
+         (key-args (nthcdr 3 expr))
+         (src-node (analyze-expression src env context (append location '(1))))
+         (src-type (semantic-node-type src-node)))
+    (unless (tensor-type-p src-type)
+      (error 'crisp-compiler-error :message "load-local: source must be a tensor" :source-location location))
+    (let ((num-dims (tensor-type-num-dims src-type))
+          (cl-pkg (find-package :crisp-language)))
+      (analyze-load-tile-coords-expression
+       (append (list (intern "LOAD-TILE-COORDS" cl-pkg) src dest
+                     (loop repeat num-dims collect 0))
+               key-args)
+       env context location))))
+
+(defun analyze-store-global-expression (expr env context location)
+  "Analyzer for (store-global scratch-tensor global-tensor &key (transformF #'identityF) barrier)."
+  (let* ((src (second expr))
+         (dest (third expr))
+         (key-args (nthcdr 3 expr))
+         (dest-node (analyze-expression dest env context (append location '(2))))
+         (dest-type (semantic-node-type dest-node)))
+    (unless (tensor-type-p dest-type)
+      (error 'crisp-compiler-error :message "store-global: destination must be a tensor" :source-location location))
+    (let ((num-dims (tensor-type-num-dims dest-type))
+          (cl-pkg (find-package :crisp-language)))
+      (analyze-store-tile-coords-expression
+       (append (list (intern "STORE-TILE-COORDS" cl-pkg) src dest
+                     (loop repeat num-dims collect 0))
+               key-args)
+       env context location))))
+
 (defun analyze-make-async-barrier-expression (expr env context location)
   (declare (ignore expr))
   (let ((cell-node (analyze-scratch-expression '(make-scratch-cell ulong) env context location)))
@@ -2586,6 +2620,16 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-expression)))
+  (let ((sym-cl (intern "LOAD-LOCAL" (find-package :crisp-language)))
+        (sym-cc (intern "LOAD-LOCAL" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-local-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-load-local-expression)))
+  (let ((sym-cl (intern "STORE-GLOBAL" (find-package :crisp-language)))
+        (sym-cc (intern "STORE-GLOBAL" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-global-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-global-expression)))
   (let ((sym-cl (intern "%UNIFORM-WHEN" (find-package :crisp-language)))
         (sym-cc (intern "%UNIFORM-WHEN" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%uniform-when-expression)
