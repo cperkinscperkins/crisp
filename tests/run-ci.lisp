@@ -1,6 +1,8 @@
 ;; tests/run-ci.lisp
 (in-package :cl-user)
 
+(defvar *no-quit* (member "--no-quit" sb-ext:*posix-argv* :test #'string=))
+
 ;; load the crisp system using Quicklisp
 (unless (find-package :ql)
   (let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
@@ -41,11 +43,14 @@
 (let ((report (parachute:test :crisp.tests)))
   (unless (eq (parachute:status report) :passed)
     (format *error-output* "~&~%*** Crisp CI Tests FAILED! ***~%")
-    (uiop:quit 1)))
+    (if *no-quit*
+        (error "Crisp CI Tests FAILED!")
+        (uiop:quit 1))))
 
 ;; switch back to cl-user just in case
 (in-package :cl-user)
 
 
 (format t "~&; --- ALL TESTS PASSED ---~%")
-(uiop:quit 0)
+(unless *no-quit*
+  (uiop:quit 0))

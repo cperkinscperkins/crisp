@@ -16,6 +16,7 @@
 ;; Configuration
 (defvar *use-binary* t) ;; Always use binary for processed isolation
 (defvar *debug* nil)
+(defvar *no-quit* (member "--no-quit" sb-ext:*posix-argv* :test #'string=))
 
 (defun get-binary-path ()
   (let ((exe (merge-pathnames "bin/crisp-compile.exe" (uiop:getcwd)))
@@ -131,7 +132,9 @@
             (format t "  - ~a: ~a~%" (car f) (cdr f))))
 
     (if (and (> total 0) (= passed total))
-        (uiop:quit 0)
-        (uiop:quit 1))))
+        (unless *no-quit* (uiop:quit 0))
+        (if *no-quit*
+            (error "Negative Test Summary: ~a/~a Passed." passed total)
+            (uiop:quit 1)))))
 
 (main)

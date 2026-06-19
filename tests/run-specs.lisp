@@ -82,6 +82,7 @@
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
 (defvar *keep-work* nil)
+(defvar *no-quit* nil)
 
 (defvar *vad-runner-status* nil
   "Cached load state of tests/verify-autodiff-runner.lisp.
@@ -1804,6 +1805,7 @@
              ((string= arg "--only-unit-tests") (setf *only-unit-tests* t))
              ((string= arg "--skip-unit-tests") (setf *skip-unit-tests* t))
              ((string= arg "--keep-work") (setf *keep-work* t))
+             ((string= arg "--no-quit") (setf *no-quit* t))
              ((and (> (length arg) 9) (string= (subseq arg 0 9) "--filter="))
                (setf *test-filter* (subseq arg 9)))))
 
@@ -1826,7 +1828,8 @@
 
     (when *only-unit-tests*
           (format t "~&Only run unit tests requested. Exiting.~%")
-          (uiop:quit 0))
+          (unless *no-quit* (uiop:quit 0))
+          (return-from main))
 
     (format t "~&~%=== Running E2E Spec Tests ===~%")
     (format t "~&Locating specs in ~a~%" spec-dir)
@@ -1889,8 +1892,10 @@
           (format t "Failed Specs:~%~{  - ~a~%~}" (nreverse failed-files)))
 
     (if (= passed total)
-        (uiop:quit 0)
-        (uiop:quit 1))))
+        (unless *no-quit* (uiop:quit 0))
+        (if *no-quit*
+            (error "Spec Summary: ~a/~a Passed." passed total)
+            (uiop:quit 1)))))
 
 ;; Load overlay if present (for safe patching)
 (let ((overlay (merge-pathnames "overlays/spec-runner-overlay.lisp" (uiop:getcwd))))

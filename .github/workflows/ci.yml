@@ -171,8 +171,24 @@ jobs:
           echo "--- Running Negative Specs (Unified Runner) ---"
           sbcl --script tests/run-error-specs.lisp
 
+      - name: 14. Run Code Coverage Orchestrator
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+        run: |
+          set -o pipefail
+          echo "--- Running Code Coverage ---"
+          sbcl --script scripts/run-coverage.lisp
+
+      - name: 15. Upload Coverage Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-report/
+          retention-days: 14
+
   deploy-docs:
     name: Build & Deploy Documentation
+    needs: build-and-test
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -192,6 +208,13 @@ jobs:
 
       - name: Build site (All Branches)
         run: python -m mkdocs build
+
+      - name: Download Coverage Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: site/coverage/
+        continue-on-error: true
 
       - name: Deploy to GitHub Pages (Main Branch Only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'

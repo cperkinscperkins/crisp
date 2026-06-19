@@ -58,6 +58,20 @@ Now that we have hoisting support, some of the spect tests generate a lot of int
 
 If you WANT the intermediate files, use the `--keep-work` flag.
 
+### Code Coverage
+
+You can generate a comprehensive code coverage report for the compiler using the master orchestrator script. This script natively executes all E2E and infrastructure unit tests to compile an aggregate view of which `src/` lines and branches have been exercised.
+
+```bash
+# This cleans the system, builds with instrumentation, runs tests, and strips instrumentation.
+sbcl --non-interactive --script scripts/run-coverage.lisp
+```
+
+After completion, open `coverage-report/cover-index.html` in your browser. The report provides:
+* **Expression Coverage**: % of Lisp forms evaluated.
+* **Branch Coverage**: % of conditional branches (`if`, `cond`, `when`, etc.) taken.
+
+Coverage is automatically run on CI, and the HTML output is published to [GitHub Pages](https://cperkinscperkins.github.io/crisp/coverage/).
 
 ### IMPORTANT NOTE
  The spec runner is nice because it validates the LLVM-iR using llc.exe and it will also run a "validator" if a spec test requests one (see below).
