@@ -171,6 +171,14 @@ jobs:
           echo "--- Running Negative Specs (Unified Runner) ---"
           sbcl --script tests/run-error-specs.lisp
 
+      - name: 14. Run Code Coverage Orchestrator
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+        run: |
+          set -o pipefail
+          echo "--- Running Code Coverage ---"
+          sbcl --script scripts/run-coverage.lisp
+
   deploy-docs:
     name: Build & Deploy Documentation
     runs-on: ubuntu-latest

@@ -27,3 +27,6 @@ docs/convo.md
 
 # Mkdocs
 site/
+
+# Coverage Report
+coverage-report/
