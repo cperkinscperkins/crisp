@@ -174,13 +174,27 @@ jobs:
       - name: 14. Run Code Coverage Orchestrator
         env:
           CRISP_USE_SYSTEM_TOOLS: true
+          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
         run: |
           set -o pipefail
           echo "--- Running Code Coverage ---"
-          sbcl --script scripts/run-coverage.lisp
+          if [ -n "$COVERALLS_REPO_TOKEN" ]; then
+            sbcl --script scripts/run-coveralls.lisp
+          else
+            echo "COVERALLS_REPO_TOKEN not found, skipping cl-coveralls upload. Just running coverage report."
+            sbcl --script scripts/run-coverage.lisp
+          fi
+
+      - name: 15. Upload Coverage Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-report/
+          retention-days: 14
 
   deploy-docs:
     name: Build & Deploy Documentation
+    needs: build-and-test
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -200,6 +214,13 @@ jobs:
 
       - name: Build site (All Branches)
         run: python -m mkdocs build
+
+      - name: Download Coverage Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: site/coverage/
+        continue-on-error: true
 
       - name: Deploy to GitHub Pages (Main Branch Only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'

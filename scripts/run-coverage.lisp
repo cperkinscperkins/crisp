@@ -47,4 +47,3 @@
   (asdf:load-system :crisp :force t))
 
 (format t "~&=== COVERAGE RUN COMPLETE ===~%")
-(uiop:quit 0)
