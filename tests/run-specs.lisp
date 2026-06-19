@@ -1855,6 +1855,9 @@
                     (finish-output)
                     (incf total)
 
+                    ;; Force garbage collection to prevent OOM during large test suites (e.g. coverage runs)
+                    (sb-ext:gc :full t)
+
                     ;; Run test and check expectation
                     (let ((test-passed (run-spec-file file)))
                       (when (search "multipass" (pathname-name file))
