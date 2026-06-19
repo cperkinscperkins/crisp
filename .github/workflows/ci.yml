@@ -174,16 +174,10 @@ jobs:
       - name: 14. Run Code Coverage Orchestrator
         env:
           CRISP_USE_SYSTEM_TOOLS: true
-          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
         run: |
           set -o pipefail
           echo "--- Running Code Coverage ---"
-          if [ -n "$COVERALLS_REPO_TOKEN" ]; then
-            sbcl --script scripts/run-coveralls.lisp
-          else
-            echo "COVERALLS_REPO_TOKEN not found, skipping cl-coveralls upload. Just running coverage report."
-            sbcl --script scripts/run-coverage.lisp
-          fi
+          sbcl --script scripts/run-coverage.lisp
 
       - name: 15. Upload Coverage Artifact
         uses: actions/upload-artifact@v4
