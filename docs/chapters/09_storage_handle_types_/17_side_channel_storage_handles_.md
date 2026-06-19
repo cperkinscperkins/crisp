@@ -137,21 +137,26 @@ Modifying the beginning of the arglist (of course).
 
 #### Scratch Helpers
 
-Important: There are asynchronouse variants of these helpers.  See [Async Memory Operations](#async-memory-operations) for more information. 
+Important: These helpers support a `:barrier` key for asynchronous execution.  See [Async Memory Operations](#async-memory-operations) for more information. 
 
 ```
-(load-local global-vec scratch-vec &optional identity)
-(store-global scratch-vec global-vec &optional (transformF #'identityF))
+(load-local global-tensor scratch-tensor &key identity barrier)
+(store-global scratch-tensor global-tensor &key (transformF #'identityF) barrier)
 
 (load-tile ...) 
 (store-tile ...)
 
 ```
 
+`load-local` and `store-global` simply copy data between a global tensor and a scratch one. There is no "positioning" of the tensors relative one another. These are most straightforward to use if the two arguments are the same size. But, in the event they are not the same size, the bytes moved are limited by the smaller of the two.  
+
+`load-tile` and `store-tile`, on the other hand, have positioning arguments and that determine what section of the global tensor is copied to/from. See topology.md for details. 
+
+
 In `:one-thread-per` strategies, a common practice is to divide some input vec
 across workgroups and have each workgroup work on the vec using a local memory
 copy of the workgroups segment. These two macros handle that and even include a 
-`local-barrier`.
+`sync-workgroup`.
 
 `load-local` has an optional `identity` arg. If the global work size is
 greater than `global-vec`, then it may be necessary to fill in the matching portion
@@ -172,7 +177,7 @@ Possible Implementation
          (gid (get-global-linear-id))
          (val (if (< gid (length~ ,global-vec)) (~ ,global-vec gid) ,identity)))
       (set! (~ ,scratch-vec lid) val)
-      (local-barrier)))
+      (sync-workgroup)))
 
 (defmacro store-global (scratch-vec global-vec 
               &optional (transformF (get-identityF (element-type~ global-vec))))
@@ -182,7 +187,7 @@ Possible Implementation
             ;; (wg-idx (get-workgroup-linear-id))) ;;<-- exists? 
       (when (< gid (length~ ,global-vec))
         (set! (~ ,global-vec gid) (funcall ,transformF (~ ,scratch-vec lid))))
-      (local-barrier))
+      (sync-workgroup))
 
 ```
 

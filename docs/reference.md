@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-06-14T02:47:55.178170Z
+Generated on 2026-06-19T05:33:58.483686Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -50,20 +50,20 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%EXPAND-LOAD-TILE-COORDS-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).  >    Returns a let/dotimes/when nest that cooperatively loads the tile, ending  >    with (local-barrier).
+  > Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).  >    Returns a let/dotimes/when nest that cooperatively loads the tile, ending  >    with (sync-workgroup).
 
 
 ---
 ### DEFUN `%EXPAND-STORE-TILE-COORDS-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).  >    Returns a let/progn nest with (local-barrier) BEFORE and AFTER the  >    cooperative store loop.  TransformF is applied per-element (unary).
+  > Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).  >    Returns a let/progn nest with (sync-workgroup) BEFORE and AFTER the  >    cooperative store loop.  TransformF is applied per-element (unary).
 
 
 ---
 ### DEFVAR `*IN-DIVERGENT-CONDITIONAL*`
 
-  > T when the analyzer is currently inside a thread-divergent if/when/unless/cond  >    branch (i.e. the conditional's test was not constant-folded).  Used by the  >    load-tile-coords / store-tile-coords analyzers to reject placement that  >    would deadlock at their internal local-barriers.  >   >    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check  >    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the  >    internal %uniform-when form instead, whose analyzer does NOT set this flag.
+  > T when the analyzer is currently inside a thread-divergent if/when/unless/cond  >    branch (i.e. the conditional's test was not constant-folded).  Used by the  >    load-tile-coords / store-tile-coords analyzers to reject placement that  >    would deadlock at their internal sync-workgroups.  >   >    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check  >    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the  >    internal %uniform-when form instead, whose analyzer does NOT set this flag.
 
 
 ---
@@ -240,6 +240,13 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes (dotimes (var limit [stride]) body...).  >    VAR is bound as the limit's type (int, ulong, etc.) in the body.  >    STRIDE is optional; defaults to literal 1 of the limit's type.  >    Returns a semantic-dotimes node (type void).
+
+
+---
+### DEFUN `ANALYZE-WHILE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (while condition body...).  >    Returns a semantic-while node (type void).
 
 
 ---
@@ -466,6 +473,20 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFUN `ANALYZE-STORE-TILE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+---
+### DEFUN `ANALYZE-LOAD-LOCAL-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (load-local global-tensor scratch-tensor &key identity barrier).
+
+
+---
+### DEFUN `ANALYZE-STORE-GLOBAL-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (store-global scratch-tensor global-tensor &key (transformF #'identityF) barrier).
+
 
 ---
 ### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-EXPRESSION`
@@ -1221,6 +1242,13 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 
 ---
+### DEFUN `ANALYZE-GLOBAL-SCRATCH-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes a (%make-global-scratch-cell <type>) expression.  >  This marks the current function as an originator in BOTH analysis modes.
+
+
+---
 ### DEFUN `ANALYZE-%MAKE-CT-ARRAY`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
@@ -1466,6 +1494,10 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ---
 ### DEFUN `%ANF-NORMALIZE-DOTIMES`
+- **Args**: `(OP EXPR IS-NESTED?)`
+
+---
+### DEFUN `%ANF-NORMALIZE-WHILE`
 - **Args**: `(OP EXPR IS-NESTED?)`
 
 ---
@@ -2454,6 +2486,13 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 
 ---
+### DEFUN `%GEN-SPIRV-WARP-BARRIER`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @__spirv_ControlBarrier(i32 3, i32 3, i32 264).  >    Scope=Subgroup(3) MemScope=Subgroup(3) Semantics=AcquireRelease(8)|WorkgroupMemory(256).
+
+
+---
 ### DEFUN `%GEN-SPIRV-CONTROL-BARRIER`
 - **Args**: `(BUILDER MODULE)`
 
@@ -2500,6 +2539,13 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(BUILDER MODULE SPIRV-NAME)`
 
   > Backend-aware vec3 builtin read.  On SPV, delegates to  >    %call-spirv-vec3-builtin.  On PTX, maps SPV names to NVVM  >    special-register intrinsics or synthesizes the value from  >    component registers.
+
+
+---
+### DEFUN `%PTX-SYNCWARP`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.bar.warp.sync(i32) - PTX bar.warp.sync 0xFFFFFFFF.
 
 
 ---
@@ -2552,17 +2598,31 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 
 ---
-### DEFUN `%GEN-NVVM-CP-ASYNC-COMMIT-GROUP`
-- **Args**: `(BUILDER MODULE)`
+### DEFUN `%GEN-NVVM-MBARRIER-INIT-SHARED`
+- **Args**: `(BUILDER MODULE MBARRIER-PTR COUNT-VAL)`
 
-  > Emits @llvm.nvvm.cp.async.commit.group().
+  > Emits @llvm.nvvm.mbarrier.init.shared(ptr addrspace(3), i32 count).
 
 
 ---
-### DEFUN `%GEN-NVVM-CP-ASYNC-WAIT-GROUP`
-- **Args**: `(BUILDER MODULE)`
+### DEFUN `%GEN-NVVM-CP-ASYNC-MBARRIER-ARRIVE-NOINC-SHARED`
+- **Args**: `(BUILDER MODULE MBARRIER-PTR)`
 
-  > Emits @llvm.nvvm.cp.async.wait.group(i32 0).  i32 must be an immarg.
+  > Emits @llvm.nvvm.cp.async.mbarrier.arrive.noinc.shared(ptr addrspace(3)).
+
+
+---
+### DEFUN `%GEN-NVVM-MBARRIER-ARRIVE-SHARED`
+- **Args**: `(BUILDER MODULE MBARRIER-PTR)`
+
+  > Emits @llvm.nvvm.mbarrier.arrive.shared(ptr addrspace(3)) -> i64 state.
+
+
+---
+### DEFUN `%GEN-NVVM-MBARRIER-TEST-WAIT-SHARED`
+- **Args**: `(BUILDER MODULE MBARRIER-PTR STATE-VAL)`
+
+  > Emits @llvm.nvvm.mbarrier.test.wait.shared(ptr addrspace(3), i64 state) -> i1 bool.
 
 
 ---
@@ -2570,6 +2630,41 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(BUILDER MODULE)`
 
   > Emits @llvm.nvvm.read.ptx.sreg.tid.x() → i32 (per-thread tid in X).
+
+
+---
+### DEFUN `%GEN-NVVM-READ-TID-Y`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.read.ptx.sreg.tid.y() → i32.
+
+
+---
+### DEFUN `%GEN-NVVM-READ-TID-Z`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.read.ptx.sreg.tid.z() → i32.
+
+
+---
+### DEFUN `%GEN-NVVM-READ-NTID-X`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.read.ptx.sreg.ntid.x() → i32.
+
+
+---
+### DEFUN `%GEN-NVVM-READ-NTID-Y`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.read.ptx.sreg.ntid.y() → i32.
+
+
+---
+### DEFUN `%GEN-NVVM-READ-NTID-Z`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.read.ptx.sreg.ntid.z() → i32.
 
 
 ---
@@ -2977,7 +3072,7 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFVAR `*HOIST-CURRENT-STRUCTS*`
 
-  > Dynamic variable: list of (def-struct NAME ...) forms from the current  >    metacrisp :structs section.
+  > Dynamic variable: list of (def-struct NAME ...) forms from the current  >    metacrisp :structs section.
 
 
 ---
@@ -3053,16 +3148,16 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ---
 ### DEFUN `%TENSOR-COMPACT-EXTENTS-STRIDES`
-- **Args**: `(N DIM-EXTENT)`
+- **Args**: `(N EXTENTS-LIST)`
 
-  > Returns (values extents strides) for a compact N-dim tensor.
+  > Returns (values extents strides) for a compact N-dim tensor.  >    Strides are in elements; innermost stride = 1.
 
 
 ---
 ### DEFUN `EMIT-CUDA-DVEC-OSTREAM-OPERATORS`
 - **Args**: `(STREAM DVEC-TYPES)`
 
-  > Emit operator<< free functions for device vector types.  >    Unlike the L0 hoist, does NOT emit struct definitions since CUDA already  >    provides them via <cuda.h>.
+  > Emit operator<< free functions for device vector types.  >    Unlike the L0 hoist, does NOT emit struct definitions since CUDA already  >    provides them via <cuda.h>.
 
 
 ---
@@ -3151,7 +3246,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ---
 ### DEFUN `%CUDA-EMIT-TENSOR-ARG`
-- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR ARG-INDEX)`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR ARG-INDEX
+              DISPATCH-INFO)`
 
 ---
 ### DEFUN `%CUDA-EMIT-STRUCT-ARG`
@@ -3167,16 +3263,16 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ---
 ### DEFUN `EMIT-KERNEL-ARGS`
-- **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS)`
+- **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS DISPATCH-INFO)`
 
-  > Emit host-side variable declarations and fill the kernelParams[] array.  >    Returns a list of allocation plists for readback.
+  > Emit host-side variable declarations and fill the kernelParams[] array.  >    Returns a list of allocation plists for readback.
 
 
 ---
 ### DEFUN `%RECORD-FIELD-ARGS`
 - **Args**: `(STREAM MEMBERS VAR-PATH ARG-INDEX RECORDS ALIASES)`
 
-  > Recursively emit field initialization for record args.  >    Returns (values new-arg-index list-of-arg-names).
+  > Recursively emit field initialization for record args.  >    Returns (values new-arg-index list-of-arg-names).
 
 
 ---
@@ -3190,14 +3286,14 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `%TENSOR-LENGTH-CPP-VAR`
 - **Args**: `(SYM)`
 
-  > Convert a tensor parameter symbol to its C++ length variable.  >    The CUDA hoist emits 'uint64_t <name>_length = N;' for each tensor param,  >    which we reference at dispatch time.
+  > Convert a tensor parameter symbol to its C++ length variable.  >    The CUDA hoist emits 'uint64_t <name>_length = N;' for each tensor param,  >    which we reference at dispatch time.
 
 
 ---
 ### DEFUN `%NORMALIZE-DERIVE-FROM`
 - **Args**: `(RAW)`
 
-  > Normalize :derive-from value into a list:  >      <symbol>           -> (<symbol>)  ;; tensor case  >      (sym1 sym2 ...)    -> (sym1 sym2 ...)  >      nil                -> nil
+  > Normalize :derive-from value into a list:  >      <symbol>           -> (<symbol>)  ;; tensor case  >      (sym1 sym2 ...)    -> (sym1 sym2 ...)  >      nil                -> nil
 
 
 ---
@@ -3211,7 +3307,7 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFUN `EMIT-LAUNCH`
 - **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES)`
 
-  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :tiled          — grid sized via derive-from + tile-shape  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
+  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :tiled          — grid sized via derive-from + tile-shape  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
 
 
 ---
@@ -3461,7 +3557,7 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ---
 ### DEFUN `%TENSOR-COMPACT-EXTENTS-STRIDES`
-- **Args**: `(N DIM-EXTENT)`
+- **Args**: `(N EXTENTS-LIST)`
 
   > Returns (values extents strides) for a compact N-dim tensor.  >    Strides are in elements; innermost stride = 1.
 
@@ -3483,7 +3579,7 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFUN `%L0-EMIT-TENSOR-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR CONTEXT-VAR
-              DEVICE-VAR ARG-INDEX)`
+              DEVICE-VAR ARG-INDEX DISPATCH-INFO)`
 
 ---
 ### DEFUN `%L0-EMIT-STRUCT-ARG`
@@ -3503,7 +3599,8 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 ---
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
-- **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR)`
+- **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR
+              DISPATCH-INFO)`
 
   > Generate kernel argument setup code with USM allocation for cells/tensors.  >    Handles:  >      cell                   — 3 args (ptr, byte-size, offset)  >      local scratch tensor   — 3N+3 args; ptr as nullptr local alloc (NEW)  >      tensor/vector/matrix   — 3N+3 args; USM allocation  >      def-struct             — 1 arg (aggregate by value, sizeof struct)  >      def-record             — exploded scalar args  >      (array T N)            — 1 arg, passed by value (iota-initialized T[N])  >      scalar/dvec            — 1 arg
 
@@ -3946,20 +4043,6 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 
 ---
-### DEFUN `%EXPAND-REQUEST-LOAD-TILE-COORDS-OP`
-- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
-
-  > Normalize request-load-tile-coords -> load-tile-coords (sync).
-
-
----
-### DEFUN `%EXPAND-REQUEST-STORE-TILE-COORDS-OP`
-- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
-
-  > Normalize request-store-tile-coords -> store-tile-coords.
-
-
----
 ### DEFUN `%EXPAND-STRIDE-MACROS-IN-FORM`
 - **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
 
@@ -4149,6 +4232,39 @@ Generated on 2026-06-14T02:47:55.178170Z
 
 
 ---
+### DEFMACRO `MAKE-ARRIVAL-SYNC-HANDLE`
+- **Args**: `(COUNTER COUNT)`
+
+---
+### DEFMACRO `ARRIVAL-SYNC-HANDLE-COUNTER`
+- **Args**: `(OBJ)`
+
+---
+### DEFMACRO `ARRIVAL-SYNC-HANDLE-COUNT`
+- **Args**: `(OBJ)`
+
+---
+### DEFMACRO `MAKE-ARRIVAL-SYNC`
+- **Args**: `(COUNT)`
+
+  > Creates an arrival sync handle using a global atomic counter.
+
+
+---
+### DEFMACRO `SYNC-ARRIVE`
+- **Args**: `(HANDLE)`
+
+  > Puts one unit into the sync bucket.
+
+
+---
+### DEFMACRO `SYNC-WAIT`
+- **Args**: `(HANDLE)`
+
+  > Blocks until count units have been put into the sync bucket.
+
+
+---
 ### DEFMACRO `AWAIT`
 - **Args**: `(BARRIER)`
 
@@ -4185,6 +4301,20 @@ Generated on 2026-06-14T02:47:55.178170Z
 - **Args**: `(TILE DEST GRID-LIST &REST KEY-ARGS)`
 
   > Helper macro to automatically compute grid index offsets dynamically  >    by scaling the incoming grid-coords by the extents of the tile.
+
+
+---
+### DEFMACRO `POSITION-TILE-AT`
+- **Args**: `(TILE PARENT GRID-LIST)`
+
+  > Sets the tile to view a sub-region of the parent tensor at the specified coordinates.  >    Updates the tile's parent and offset metadata in place without transferring data.
+
+
+---
+### DEFMACRO `POSITION-TILE`
+- **Args**: `(TILE PARENT GRID-LIST)`
+
+  > Sets the tile to view a sub-region of the parent tensor at the specified grid coordinates.  >    Updates the tile's parent and offset metadata in place without transferring data.
 
 
 ---
@@ -5291,8 +5421,11 @@ Generated on 2026-06-14T02:47:55.178170Z
 ---
 ### DEFSTRUCT `SEMANTIC-GPU-BUILTIN`
 
-  > Represents a GPU built-in function call (e.g. get-global-id, local-barrier).  >    BUILTIN-NAME is a keyword: :get-global-id, :local-barrier, etc.  >    DIMENSION is NIL for the 3D vector form, or 0/1/2 for the scalar-n form.  >    TYPE is the Crisp return type: 'ulong3, 'ulong, 'uint, or NIL (void).
+  > Represents a GPU built-in function call (e.g. get-global-id, sync-workgroup).  >    BUILTIN-NAME is a keyword: :get-global-id, :sync-workgroup, etc.  >    DIMENSION is NIL for the 3D vector form, or 0/1/2 for the scalar-n form.  >    TYPE is the Crisp return type: 'ulong3, 'ulong, 'uint, or NIL (void).
 
+
+---
+### DEFSTRUCT `SEMANTIC-MAKE-ASYNC-BARRIER`
 
 ---
 ### DEFSTRUCT `SEMANTIC-NVVM-CP-ASYNC-TILE-COPY`
@@ -5316,6 +5449,12 @@ Generated on 2026-06-14T02:47:55.178170Z
 ### DEFSTRUCT `SEMANTIC-DOTIMES`
 
   > Represents (dotimes (var limit [stride]) body...).  >    var is bound to 0, stride, 2*stride, ... while var < limit.  >    stride-node is NIL when the stride was omitted (emit constant 1).  >    Always returns void.
+
+
+---
+### DEFSTRUCT `SEMANTIC-WHILE`
+
+  > Represents (while condition body...).  >    Returns void.
 
 
 ---

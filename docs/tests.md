@@ -236,6 +236,15 @@ Header comment directives for test expectations:
 
 See `docs/plan/scramble.md` section "Better Spine Testing" for details.
 
+## --differentiate pass
+Most tests should pass the --differentiate pass, but some kernels don't have &out params and are not differentiable.
+
+Do NOT use (declare forward-only) . Instead use 
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+
+
+
+
 ## On-Metal AD Verification (`VERIFY-AUTODIFF`)
 
 The `;; VERIFY-AUTODIFF: …` directive (endeavor 103) runs a tagged spec's

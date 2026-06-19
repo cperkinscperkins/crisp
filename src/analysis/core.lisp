@@ -146,7 +146,7 @@
       :get-global-linear-id :get-global-linear-size
       :get-total-threads :get-total-groups)
      (list 'ulong nil))
-    ((:local-barrier :mem-fence)
+    ((:sync-workgroup :sync-warp :mem-fence)
      (list nil nil))
     ;; 110 — warp helpers (scalar uint, no dim arg)
     ((:warp-id :warp-lane :warp-count)
@@ -160,6 +160,8 @@
   (declare (ignore env context))
   (unless *in-dispatch-context*
     (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
+  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence))
+    (%tlc-check-not-divergent name-str location))
   (let* ((info     (%gpu-builtin-info builtin-kw))
          (base-ty  (first info))
          (acc-dim  (second info))
@@ -277,7 +279,8 @@
                      ("GET-GLOBAL-LINEAR-SIZE"  :get-global-linear-size)
                      ("GET-TOTAL-THREADS"       :get-total-threads)
                      ("GET-TOTAL-GROUPS"        :get-total-groups)
-                     ("LOCAL-BARRIER"           :local-barrier)
+                     ("SYNC-WORKGROUP"          :sync-workgroup)
+                     ("SYNC-WARP"               :sync-warp)
                      ("MEM-FENCE"               :mem-fence)))
       (let* ((name-str (first entry))
              (kw       (second entry))
@@ -424,12 +427,23 @@
 ;; Default Handler (Function Calls & Macros)
 (defmethod scan-operator (op args)
   (cond
+   ((and (symbolp op)
+         (not (gethash op *expression-analyzers*))
+         (macro-function op))
+    ;; Expand macro and scan the result
+    (handler-case
+        (let ((expanded (macroexpand-1 (cons op args))))
+          (scan-form expanded))
+      (error ()
+        ;; If macroexpansion fails, fall back to scanning arguments.
+        ;; This allows the analyzer in Pass 2 to generate the proper compiler error.
+        (dolist (arg args) (scan-form arg)))))
    ((member op *side-channel-originators*)
-     (setf *scan-is-originator* t))
+    (setf *scan-is-originator* t))
    (t
-     (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op)))
-           (pushnew op *scan-callees*))
-     (dolist (arg args) (scan-form arg)))))
+    (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op)))
+          (pushnew op *scan-callees*))
+    (dolist (arg args) (scan-form arg)))))
 
 ;; Special Form Handlers
 (defmethod scan-operator ((op (eql 'declare)) args) nil)
@@ -483,6 +497,9 @@
   ;; an explicit user-supplied address-space.
   (when args
         (let* ((arg1 (first args))
+               (address-space (if (and (>= (length args) 3) (eq (second args) :address-space))
+                                  (third args)
+                                  :local))
                (raw-spec (cond
                            ((and (consp arg1) (eq (first arg1) 'cell))
                             ;; User wrote (cell elem ...).  Inject :local if
@@ -496,7 +513,7 @@
                                           (rest arg1)))
                                 arg1
                                 (append arg1 '(:address-space :local))))
-                           (t (list 'cell arg1 :address-space :local))))
+                           (t (list 'cell arg1 :address-space address-space))))
                (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
           ;; Store in *implicit-arg-map* for this function
           ;; Unique Naming: varName_from_FnName_N
@@ -518,6 +535,11 @@
 
   ;; Continue scanning arguments
   (dolist (arg args) (scan-form arg)))
+
+(defmethod scan-operator ((op (eql 'make-async-barrier)) args)
+  "Scans make-async-barrier and delegates to make-scratch-cell to allocate an 8-byte mbarrier object."
+  (declare (ignore args))
+  (scan-operator 'make-scratch-cell '(ulong)))
 
 
 
@@ -823,6 +845,8 @@ in single-pass mode."
 
 (defun internal-compile-function (name explicit-env return-type params body declarations location context)
   "Core compilation logic for a function, accepting a pre-parsed environment."
+  (format *terminal-io* "COMPILE: ~s (single-pass: ~a)~%" name (single-pass-mode-p))
+  (format *terminal-io* "COMPILE: ~s (env keys for ~s: ~s)~%" name name (mapcar #'car (gethash name *implicit-arg-map*)))
 
   ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
   (let ((name-str (symbol-name name)))
@@ -1395,6 +1419,7 @@ in single-pass mode."
     (semantic-stride-view (semantic-stride-view-type node))
     (semantic-gpu-builtin (semantic-gpu-builtin-type node))
     (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-type node))
+    (semantic-make-async-barrier      (semantic-make-async-barrier-type node))
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-type node))))
 
 (defun semantic-node-source-location (node)
@@ -1440,6 +1465,7 @@ in single-pass mode."
     (semantic-stride-view (semantic-stride-view-source-location node))
     (semantic-gpu-builtin (semantic-gpu-builtin-source-location node))
     (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-source-location node))
+    (semantic-make-async-barrier      (semantic-make-async-barrier-source-location node))
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---

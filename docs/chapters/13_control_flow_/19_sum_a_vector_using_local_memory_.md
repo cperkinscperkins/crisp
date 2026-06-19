@@ -63,7 +63,7 @@ going to agree on a convention that the local_work_size is 64.
         
         ;; tree reduce
         (dec-times-by-half* (s (/ (get-local-size) 2))  s is 32, then 16, 8, 4, 2, 1
-          (local-barrier)
+          (sync-workgroup)
           (when (< local-idx s)
             (inc! (~ slm local-idx) (~ slm (+ local-idx s))))))
 

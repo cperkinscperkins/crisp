@@ -344,24 +344,28 @@
    In multi-pass mode, this analysis is handled by analyze-signatures-pass."
   (when (single-pass-mode-p)
         (with-peek-scratch-counter
-         (let ((*scanning-function-name* name))
-           (setf (compiler-context-scanning-function-name *compiler-context*) name)
-           (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
-             (when (or is-originator (some (lambda (callee)
-                                             (or (gethash callee *implicit-arg-map*)
-                                                 (member callee *side-channel-originators*)))
-                                       callees))
-                   (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
+         (let ((*scanning-function-name* name)
+               (prev-scanning-name (compiler-context-scanning-function-name *compiler-context*)))
+           (unwind-protect
+               (progn
+                 (setf (compiler-context-scanning-function-name *compiler-context*) name)
+                 (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
+                   (when (or is-originator (some (lambda (callee)
+                                                   (or (gethash callee *implicit-arg-map*)
+                                                       (member callee *side-channel-originators*)))
+                                             callees))
+                         (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
+                         ;; Union all implicit args from ALL callees
+                         (let ((all-implicits nil))
+                           (dolist (callee callees)
+                             (let ((callee-imps (gethash callee *implicit-arg-map*)))
+                               (when callee-imps
+                                     (setf all-implicits (union all-implicits callee-imps :test #'equal)))))
 
-                   ;; Union all implicit args from ALL callees
-                   (let ((all-implicits nil))
-                     (dolist (callee callees)
-                       (let ((callee-imps (gethash callee *implicit-arg-map*)))
-                         (when callee-imps
-                               (setf all-implicits (union all-implicits callee-imps :test #'equal)))))
-
-                     (when all-implicits
-                           (setf (gethash name *implicit-arg-map*) all-implicits)))))))))
+                           (when all-implicits
+                                 (setf (gethash name *implicit-arg-map*)
+                                       (union (gethash name *implicit-arg-map*) all-implicits :test #'equal)))))))
+             (setf (compiler-context-scanning-function-name *compiler-context*) prev-scanning-name))))))
 
 
 (defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)

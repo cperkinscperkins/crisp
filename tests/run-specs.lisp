@@ -168,7 +168,7 @@
     ;; Check if we should skip this file entirely based on current flags
     (when (parse-skip-with directives)
           (format t "~&Running Spec: ~a (Default)... SKIP (Skipped due to SKIP-WITH matches active flags)~%" (pathname-name file))
-          (return-from run-spec-file t))
+          (return-from run-spec-file :skipped))
 
     ;; 1. Default Run (Current Global Flags)
     (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
@@ -292,12 +292,12 @@
     (if *use-binary*
         (cond
           ((eq ir-target :spirv)  (run-spec-spirv-binary file :emit-metadata emit-metadata :validator validator))
-          ((eq ir-target :ptx)    (run-spec-ptx-binary file))
+          ((eq ir-target :ptx)    (run-spec-ptx-binary file :validator validator))
           ((eq ir-target :llvmir) (run-spec-llvmir-binary file :validator validator))
           (t (run-spec-binary file)))
         (cond
           ((eq ir-target :spirv)  (run-spec-spirv-in-process file :emit-metadata emit-metadata :validator validator))
-          ((eq ir-target :ptx)    (run-spec-ptx-in-process file))
+          ((eq ir-target :ptx)    (run-spec-ptx-in-process file :validator validator))
           ((eq ir-target :llvmir) (run-spec-llvmir-in-process file :validator validator))
           (t (run-spec-lisp-loader file))))))
 
@@ -682,8 +682,9 @@
                                 (format t "PASS (~A)~%" (%vad-format-results results))
                                 t)))
                           (error (e)
-                            (format *error-output* "FAIL (Runner error: ~a)~%" e)
-                            nil)))))
+                             (uiop:print-backtrace :condition e)
+                             (format *error-output* "FAIL (Runner error: ~a)~%" e)
+                             nil)))))
              ;; Cleanup: VERIFY-AUTODIFF produces fwd/bwd .spv files plus
              ;; the .metacrisp metadata files (since 1c.2.f.3 added
              ;; --metadata to the compile so the runner can read
@@ -1076,10 +1077,11 @@
                   ;; Initialize for PTX
                   (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
                                                       :differentiate *compile-differentiate*)
-                  (with-open-file (stream filepath)
-                    (loop for form = (read stream nil :eof)
-                          until (eq form :eof)
-                          collect form)))))
+                  (let ((*package* (find-package :crisp-language)))
+                    (with-open-file (stream filepath)
+                      (loop for form = (read stream nil :eof)
+                            until (eq form :eof)
+                            collect form))))))
       (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filepath)))
              (builder (crisp.llvm-bindings:llvm-create-builder)))
         (unwind-protect
@@ -1094,21 +1096,31 @@
         out-path
         nil)))
 
-(defun run-spec-ptx-in-process (file)
+(defun run-spec-ptx-in-process (file &key (validator nil))
   (handler-case
       (let ((out-path (compile-crisp-file-to-ptx file)))
         (if out-path
-            (progn
-             (format t "PASS (Generated ~a)~%" (file-namestring out-path))
-             ;; Optional: Cleanup generated file
-             (unless *keep-work* (delete-file out-path))
-             t)
+            (let ((res (if validator
+                           (let* ((ptx-content (uiop:read-file-string out-path))
+                                  (sym (if (symbolp validator) validator
+                                           (find-symbol (string-upcase (string validator)) :crisp.spec-runner))))
+                             (if (and sym (fboundp sym))
+                                 (funcall sym file ptx-content)
+                                 (progn
+                                   (format *error-output* "FAIL: Validator ~a not found~%" validator)
+                                   nil)))
+                           t)))
+              (when res
+                (format t "PASS (Generated ~a)~%" (file-namestring out-path)))
+              (unless *keep-work* (delete-file out-path))
+              res)
             (progn (format *error-output* "FAIL (No PTX generated)~%") nil)))
     (error (e)
+      (uiop:print-backtrace :condition e)
       (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
 
-(defun run-spec-ptx-binary (file)
+(defun run-spec-ptx-binary (file &key (validator nil))
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
          (bin (get-binary-path))
          (out-path (make-pathname :name base-name :type "ptx" :defaults file))
@@ -1128,9 +1140,20 @@
          (format *error-output* "FAIL (Compiler Exit Code ~a)~%~a~%" exit-code error-output)
          nil)
        ((probe-file out-path)
-         (format t "PASS (Generated .ptx)~%")
-         (unless *keep-work* (delete-file out-path))
-         t)
+         (let ((res (if validator
+                        (let* ((ptx-content (uiop:read-file-string out-path))
+                               (sym (if (symbolp validator) validator
+                                        (find-symbol (string-upcase (string validator)) :crisp.spec-runner))))
+                          (if (and sym (fboundp sym))
+                              (funcall sym file ptx-content)
+                              (progn
+                                (format *error-output* "FAIL: Validator ~a not found~%" validator)
+                                nil)))
+                        t)))
+           (when res
+             (format t "PASS (Generated .ptx)~%"))
+           (unless *keep-work* (delete-file out-path))
+           res))
        (t
          (format *error-output* "FAIL (No PTX generated)~%~a~%" error-output)
          nil)))))
@@ -1306,15 +1329,11 @@
 
 ;; Used for .crisp specs - generic backend (IR validation)
 (defun run-spec-lisp-loader (file)
-  (handler-case
+  (handler-bind ((error (lambda (e) (sb-debug:print-backtrace :count 30 :stream *terminal-io*) (format *terminal-io* "FAIL (Condition: ~a)~%" e) (return-from run-spec-lisp-loader nil))))
       (let ((ir-string (compile-crisp-file-to-ir-string file)))
         (if (validate-ir-with-clang ir-string)
             (progn (format t "PASS~%") t)
-            (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
-    (error (e)
-      (uiop:print-backtrace :condition e)
-      (format *error-output* "FAIL (Condition: ~a)~%" e)
-      nil)))
+            (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))))
 
 (defun discover-unit-tests (spec-dir stop-target)
   "Find all *.unit.lisp files in spec tree up to stop-target"
@@ -1494,6 +1513,18 @@
                 (push value expectations)))))
     (nreverse expectations)))
 
+(defun validate-ptx-mbarrier (file ptx-string)
+  "Validates that the PTX string contains mbarrier.init, cp.async.mbarrier.arrive, and mbarrier.test_wait."
+  (declare (ignore file))
+  (let ((expected '("mbarrier.init.shared.b64"
+                    "cp.async.mbarrier.arrive.noinc.shared.b64"
+                    "mbarrier.test_wait.shared.b64")))
+    (dolist (exp expected)
+      (unless (search exp ptx-string)
+        (format *error-output* "FAIL: Expected PTX string not found:~%  '~a'~%" exp)
+        (return-from validate-ptx-mbarrier nil)))
+    t))
+
 (defun should-expect-failure-p (file)
   "Determine if test should be expected to fail."
   (let* ((directives (extract-test-directives file))
@@ -1583,7 +1614,7 @@
   "Validates that a kernel with a local tile emits:
    - shared-memory offset = 0 for the tile ptr
    - non-zero sharedMemBytes in cuLaunchKernel
-   - kernelParams[18] (tile 6 + v 6 + out 6)"
+   - kernelParams[21] (tile 6 + v 6 + out 6 + barrier 3)"
   (declare (ignore crisp-file))
   (if (null cu-files)
       (progn (format t "FAIL: No .cu files generated~%") nil)
@@ -1597,15 +1628,15 @@
               (when launch-pos
                 (let ((launch-region (subseq content launch-pos
                                              (min (+ launch-pos 300) (length content)))))
-                  (unless (search "32," launch-region)
-                    (format t "FAIL: ~a cuLaunchKernel should have sharedMemBytes=32 for 4-element ulong tile~%"
+                  (unless (search "40," launch-region)
+                    (format t "FAIL: ~a cuLaunchKernel should have sharedMemBytes=40 for 4-element tile + mbarrier~%"
                             (file-namestring cu))
                     (setf passed nil)))))
-            (unless (search "kernelParams[18]" content)
-              (format t "FAIL: ~a expected kernelParams[18] for tile+v+out~%" (file-namestring cu))
+            (unless (search "kernelParams[21]" content)
+              (format t "FAIL: ~a expected kernelParams[21] for tile+v+out+barrier~%" (file-namestring cu))
               (setf passed nil))))
         (when passed
-          (format t "PASS: .cu has correct shared-mem setup (offset=0, 32 bytes, 18 params)~%"))
+          (format t "PASS: .cu local tile test passed~%"))
         passed)))
 
 
@@ -1828,6 +1859,10 @@
                               (pathname-name file) test-passed expect-failure))
 
                       (cond
+                       ;; Test was skipped
+                       ((eq test-passed :skipped)
+                         (incf passed))
+
                        ;; Test passed and we expected it to pass
                        ((and test-passed (not expect-failure))
                          (incf passed))

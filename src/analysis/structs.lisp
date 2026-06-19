@@ -608,17 +608,17 @@
   "Analyzes a (make-scratch-cell ...) expression.
  This marks the current function as an originator in BOTH analysis modes."
   (declare (ignore env)) ; We don't use env yet.
-  (unless (and (= (length expr) 2) (symbolp (cadr expr)))
-    (error "Malformed make-scratch-cell form: ~a. Expected (make-scratch-cell <type>)" expr))
+  (unless (and (>= (length expr) 2) (symbolp (cadr expr)))
+    (error "Malformed make-scratch-cell form: ~a. Expected (make-scratch-cell <type> [:address-space <space>])" expr))
 
   ;; --- Originator Detection (both single-pass and two-pass) ---
   ;; Store the actual cell type and name in *implicit-arg-map*
   (log:debug "Originator: Found make-scratch-cell in ~s" (compiler-context-current-compiling-function context))
-  ;; Per design: scratch cells default to :address-space :local in the absence
-  ;; of an explicit user-supplied address-space.  This makes the resulting
-  ;; cell type complete so it flows through the call graph as a concrete type.
   (let* ((inner-type (cadr expr))
-         (raw-spec (list 'cell inner-type :address-space :local))
+         (address-space (if (and (>= (length expr) 4) (eq (caddr expr) :address-space))
+                            (cadddr expr)
+                            :local))
+         (raw-spec (list 'cell inner-type :address-space address-space))
          (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
     ;; Store: (name . type) - use current binding name if available
     (let ((implicit-name (or (compiler-context-current-binding-name context) '__storage))
@@ -632,13 +632,58 @@
            (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*)
              (list (cons implicit-name canonical-spec)))))))
 
-  (let ((inner-type (cadr expr)))
+  (let ((inner-type (cadr expr))
+        (address-space (if (and (>= (length expr) 4) (eq (caddr expr) :address-space))
+                           (cadddr expr)
+                           :local)))
     ;; Ensure the inner type is valid
     (unless (gethash inner-type *crisp-types*)
       (error 'crisp-unknown-type-error :type-name inner-type :source-location location))
 
     ;; Construct raw spec with :local default, then canonicalize.
-    (let* ((raw-spec (list 'cell inner-type :address-space :local))
+    (let* ((raw-spec (list 'cell inner-type :address-space address-space))
+           (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
+
+      ;; Ensure instantiation
+      (unless (valid-parameterized-type-p canonical-spec)
+        (error "Failed to instantiate template for ~a (raw: ~a)" canonical-spec raw-spec))
+
+      (make-semantic-literal :value-type canonical-spec
+                             :value nil ; No real value yet
+                             :source-location location))))
+
+(defun analyze-global-scratch-expression (expr env context location)
+  "Analyzes a (%make-global-scratch-cell <type>) expression.
+ This marks the current function as an originator in BOTH analysis modes."
+  (declare (ignore env)) ; We don't use env yet.
+  (unless (and (= (length expr) 2) (symbolp (cadr expr)))
+    (error "Malformed %make-global-scratch-cell form: ~a. Expected (%make-global-scratch-cell <type>)" expr))
+
+  ;; --- Originator Detection (both single-pass and two-pass) ---
+  ;; Store the actual cell type and name in *implicit-arg-map*
+  (log:debug "Originator: Found %make-global-scratch-cell in ~s" (compiler-context-current-compiling-function context))
+  (let* ((inner-type (cadr expr))
+         (raw-spec (list 'cell inner-type :address-space :global))
+         (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
+    ;; Store: (name . type) - use current binding name if available
+    (let ((implicit-name (or (compiler-context-current-binding-name context) '__storage_global))
+          (existing (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*)))
+      (if existing
+          (log:warn "Structs: Implicit implicit-args already exist for ~a: ~a. Keeping existing."
+                    (compiler-context-current-compiling-function context) existing)
+          (progn
+           (log:warn "Structs: Detected %make-global-scratch-cell in ~a (Implicit Name: ~a)"
+                     (compiler-context-current-compiling-function context) implicit-name)
+           (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*)
+             (list (cons implicit-name canonical-spec)))))))
+
+  (let ((inner-type (cadr expr)))
+    ;; Ensure the inner type is valid
+    (unless (gethash inner-type *crisp-types*)
+      (error 'crisp-unknown-type-error :type-name inner-type :source-location location))
+
+    ;; Construct raw spec with :global default, then canonicalize.
+    (let* ((raw-spec (list 'cell inner-type :address-space :global))
            (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
 
       ;; Ensure instantiation
@@ -766,6 +811,10 @@
                (unique-name-str (format nil "~a_FROM_~a_~d" binding-name fn-name counter))
                (unique-name (intern unique-name-str (symbol-package binding-name)))
                (size-expr (%extract-scratch-size-expr op args)))
+
+          (format *terminal-io* "PUSHING: ~s to ~s~%" unique-name fn-name)
+          (format *terminal-io* "  binding-name: ~s (package: ~a)~%" binding-name (package-name (symbol-package binding-name)))
+          (format *terminal-io* "  unique-name: ~s (package: ~a)~%" unique-name (package-name (symbol-package unique-name)))
 
           (log:info "Pass 1: ~a ~a -> implicit: ~a (type: ~a, size-expr: ~a)"
                     op binding-name unique-name canonical-spec size-expr)
@@ -1080,6 +1129,7 @@
   (def-expression-analyzer make-scratch-vector analyze-scratch-tensor-expression)
   (def-expression-analyzer make-scratch-matrix analyze-scratch-tensor-expression)
   (def-expression-analyzer make-scratch-tensor analyze-scratch-tensor-expression)
+  (def-expression-analyzer %make-global-scratch-cell analyze-global-scratch-expression)
   (def-expression-analyzer %make-ct-array analyze-%make-ct-array)
 
   (def-expression-analyzer aref analyze-aref-expression)

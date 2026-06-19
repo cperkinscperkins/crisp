@@ -22,7 +22,7 @@ for the full design.
 - If tile-size < workgroup-size, threads with local-id beyond the tile extent
   skip via the bounds check.
 - Does NOT inject an end barrier (intentional, per chapter 13) — the caller
-  inserts `(local-barrier)` explicitly when needed.
+  inserts `(sync-workgroup)` explicitly when needed.
 
 ### Helper builtins (the warp-aware logic helpers)
 

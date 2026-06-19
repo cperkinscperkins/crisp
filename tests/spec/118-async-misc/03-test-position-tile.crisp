@@ -1,0 +1,23 @@
+;; Tests the new position-tile and position-tile-at macros.
+
+(def-type vec-t (vector int :address-space :global :align :compact))
+(def-type mat-t (matrix int :address-space :global :align :strided))
+
+(def-kernel position_tile_test (V &out OUT M)
+  (declare #'(vec-t &out vec-t mat-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  ;; create views of V and M by value-copying the struct
+  (let ((tile-v V)
+        (tile-m M))
+    
+    ;; Test position-tile-at on vector
+    (position-tile-at tile-v V (2))
+    
+    ;; Test position-tile on matrix (scaled by extents)
+    (position-tile tile-m M (0 1))
+    
+    ;; Check if offset is set correctly
+    (set! (~ (offset~ tile-v) 0) (+ (~ (offset~ tile-v) 0) (as ulong 1)))
+    
+    (set! (~ OUT 0) (~ tile-v 0))))

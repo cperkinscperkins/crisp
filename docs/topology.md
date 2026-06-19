@@ -103,7 +103,6 @@ The `:arch` specifier indicated the target architecture. The values are the same
 
 | ID       | Description                    |
 |----------|--------------------------------|
-| `sm_75`  | NVIDIA Turing (RTX 2000 Series / T4) |
 | `sm_80`  | NVIDIA Ampere (A100)           |
 | `sm_86`  | NVIDIA Ampere (RTX 3000 Series)  |
 | `sm_89`  | NVIDIA Ada Lovelace (RTX 4000 Series / L40) |
@@ -230,7 +229,7 @@ By declaring the exact physical residency, the compiler can evaluate the interco
 
 ### What does this do?
 
-Once a `def-orchestration` is expanded to use a topology then the topologically aware `make-async-barrier` routine and all consumers of those barriers (`position-tile-in`, `store-tile`, `await` et al) are adjusted by the compiler. If the compiler sees that the data movement requires a simple address space transfer, then the LLVM-IR it lowers handles that. But if it determines that requires a transfer across the PGAS fabric, then it becomes that. Additionally, the kernel signature might be modified to accept an implicit `CUTensorMap`, if required. On the hoisting side, the python example code that is generated will demonstrate how to initialize data with NCCL/OneCCL scatter, launch kernels, initialize a `CUtensorMap` (if reuquired), move data with allreduce and gather.
+Once a `def-orchestration` is expanded to use a topology then the topologically aware `make-async-barrier` routine and all consumers of those barriers (`load-tile`, `store-tile`, `await` et al) are adjusted by the compiler. If the compiler sees that the data movement requires a simple address space transfer, then the LLVM-IR it lowers handles that. But if it determines that requires a transfer across the PGAS fabric, then it becomes that. Additionally, the kernel signature might be modified to accept an implicit `CUTensorMap`, if required. On the hoisting side, the python example code that is generated will demonstrate how to initialize data with NCCL/OneCCL scatter, launch kernels, initialize a `CUtensorMap` (if reuquired), move data with allreduce and gather.
 
 Topologically Aware Async
 -------------------------
@@ -309,6 +308,14 @@ Halts the execution of the calling warp or workgroup until the specified `barrie
 Manually notifies the specified `barrier`. This is predominantly used in pipelined or warp-specialized loops where the Consumer warp must explicitly tell the Producer warp's DMA engine that a specific chunk of Shared Local Memory has been fully read and is safe to be overwritten by the next memory fetch.
 
 
+### More Tile helpers
+```
+(position-tile tile-tensor tensor (... grid-y grid-x))
+(position-tile-at tile-tensor tensor (... y x))
+```
+
+These functions have a very similar API to the load/store tile functions above. But they do not transfer any data, instead they simply update the tile metadata. This is useful when a tile is being used a view into a larger (parent) tensor and you want to move that "window". 
+
 
 
 ### Note about OpenSHMem Barrier
@@ -337,14 +344,20 @@ Because b1 and b2 have separate, dedicated signal flags in memory, b1 can safely
 ```
 (sync-workgroup)
 (sync-warp)
-(make-arrival-sync <count>)
+
+(make-arrival-sync <count>) => sync-handle
+(sync-arrive sync-handle) => nil
+(sync-wait sync-handle) => nil
 ```
 
 (sync-workgroup): Same as `barrier(CLK_LOCAL_MEM_FENCE)`.
 
 (sync-warp): Implemented via `__builtin_shflsync(0xFFFFFFFF, 0)`.
 
-(make-arrival-sync count) : A thread-count barrier. Returns a handle used by the consumer to block until `count` threads have called (wait). Implementation uses a global atomic counter.
+(make-arrival-sync count) : A thread-count barrier. Returns a handle used by the consumer to block until `count` threads have called (sync-arrive). Implementation uses a global atomic counter.
+
+(sync-arrive sync-handle) : non-blocking. Puts one "unit" into the sync bucket.
+(sync-wait sync-handle) : blocks until "count" units have been put into the sync bucket.
 
 
 ### Semaphore Operations

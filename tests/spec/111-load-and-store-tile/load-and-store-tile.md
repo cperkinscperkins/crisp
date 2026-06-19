@@ -79,7 +79,7 @@ Claude Points Out Problem
 1. The big structural question: does tile-stride actually have an outer-tile loop?
 109's implementation note (and the docs' "implementation note" at the bottom of 14/11) says tile-stride is just tensor-stride with the helpers re-mapping coordinates — every problem-space coord visited once, no outer/inner split.
 
-But load-tile's semantics in 14/12 — "cooperative, each thread sets one value, ends with (local-barrier)" — really wants a per-outer-tile hook: one call populates one tile, the workgroup cooperates, then a barrier. If tile-stride has no outer-tile-iter structure, a bare (load-tile PS T) in the body would either fire once per problem-coord (wrong: redundant + barrier-per-coord-deadlock-risk) or need a clever rewrite that hoists it out of the inner loop.
+But load-tile's semantics in 14/12 — "cooperative, each thread sets one value, ends with (sync-workgroup)" — really wants a per-outer-tile hook: one call populates one tile, the workgroup cooperates, then a barrier. If tile-stride has no outer-tile-iter structure, a bare (load-tile PS T) in the body would either fire once per problem-coord (wrong: redundant + barrier-per-coord-deadlock-risk) or need a clever rewrite that hoists it out of the inner loop.
 
 This is the biggest design question of 111. I think we either need to give tile-stride a real outer-tile loop structure (which would let load-tile/store-tile attach cleanly), or define very carefully what one call to load-tile means under the current tensor-stride-style iteration. Worth nailing down before any code.
 
@@ -112,7 +112,7 @@ Example: Tile is 16x16 (256 elements), Workgroup is 32x32 (1024 threads).
 
 Behavior: The generated loop evaluates its bounds check immediately. 768 threads realize their local_id is out-of-bounds for the tile size and simply skip the load instruction. 256 threads load one element each.
 
-Result: The tile is loaded safely. The idle threads simply wait at the (local-barrier) that terminates the load-tile operation.
+Result: The tile is loaded safely. The idle threads simply wait at the (sync-workgroup) that terminates the load-tile operation.
 
 Why this makes Path 1 robust
 Because load-tile and store-tile encapsulate this cooperative loop, tile-stride doesn't need to care about the thread-to-element mapping.
@@ -136,7 +136,7 @@ Typical workflow:
 ```
 (tile-stride source-tensor '(TILE_DIM TILE_DIM) (t-y t-x)
   
-  (load-tile source-tensor local-tile)  ;; <-- has local-barrier at end
+  (load-tile source-tensor local-tile)  ;; <-- has sync-workgroup at end
   
   (workgroup-stride local-tile (l-y l-x)
     ;; All threads cooperatively chew through the math on the local tile
@@ -144,7 +144,7 @@ Typical workflow:
           (activation-function (aref local-tile l-y l-x))))
   
 
-  (store-tile dest-tensor local-tile)) ;; <-- store-tile has local-barrier at beginning and end
+  (store-tile dest-tensor local-tile)) ;; <-- store-tile has sync-workgroup at beginning and end
 ```
 
 
@@ -241,7 +241,7 @@ These are doc/scope items, not blockers — but they affect Phase 0's surface ar
 
 2. **`load-tile` inside `hardware-stride :warp-idx` is a category error.**
    `load-tile` is a workgroup-cooperative primitive (uses `local_id`, ends with
-   `(local-barrier)`). Inside `:warp-idx` only one warp is processing the current
+   `(sync-workgroup)`). Inside `:warp-idx` only one warp is processing the current
    chunk, but a workgroup-wide barrier would expect all warps to sync — deadlock.
    Decision needed: (a) disallow + compile error, (b) context-dispatched to emit
    warp-cooperative code when inside `:warp-idx`, (c) introduce a separate
@@ -305,7 +305,7 @@ Three pieces of work, not one:
   `get-local-id` / `get-local-size`. Coalesced on the tile's contiguous dim.
 - Handles tile-size > workgroup-size (block-stride loop) and tile-size <
   workgroup-size (lane-mask).
-- No end-barrier (intentional — user inserts `(local-barrier)` explicitly).
+- No end-barrier (intentional — user inserts `(sync-workgroup)` explicitly).
 - New helpers in its scope: `(warp-id)`, `(warp-lane)`, `(warp-count)` — these
   are *new* SPIR-V/PTX builtins that need codegen plumbing.
   - `warp-lane` = `__spirv_BuiltInSubgroupLocalInvocationId` on SPV; `%laneid` on

@@ -16,9 +16,9 @@ Similarly, `when-group-is` is akin to those except that the group id is used ins
 (when-group-is x-id y-id z-id <expr>)   
 ```
 
-#### local-barrier compilation issue.
+#### sync-workgroup compilation issue.
 
-Using `(local-barrier)` inside the scope of `when-thread-in-group-is` results in a compilation error as it would otherwise deadlock an entire workgroup.
+Using `(sync-workgroup)` inside the scope of `when-thread-in-group-is` results in a compilation error as it would otherwise deadlock an entire workgroup.
 
 Crisp users are strongly encouraged to use `when-thread-in-group-is` as opposed to a generic construction like  `(when (= (get-local-id) 0) ...)`  for this reason. The compiler will _attempt_ to detect the deadlock possibility in a generic construction, but due to variables, assignments, etc that guarantee is not strong. Whereas in `when-thread-in-group-is` it is a surety.
 

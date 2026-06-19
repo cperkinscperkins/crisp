@@ -28,7 +28,22 @@
          (log:debug "get-promoted-type: ~a + ~a => dominant=~a" type-a-name type-b-name dominant-type)
          (if dominant-type
              dominant-type
-             ;; Fall back to category + size promotion for types not in hierarchy
+                 (cond
+                  ;; Keywords and symbols implicitly promote to the integer/enum type they are compared against
+                  ((and (listp type-b-name) (member (first type-b-name) '(keyword symbol))
+                        (symbolp type-a-name)
+                        (or (gethash type-a-name *crisp-enums*)
+                            (let ((ct (gethash type-a-name *crisp-types*)))
+                              (and ct (member (crisp-type-category ct) '(:signed-int :unsigned-int))))))
+                   type-a-name)
+                  ((and (listp type-a-name) (member (first type-a-name) '(keyword symbol))
+                        (symbolp type-b-name)
+                        (or (gethash type-b-name *crisp-enums*)
+                            (let ((ct (gethash type-b-name *crisp-types*)))
+                              (and ct (member (crisp-type-category ct) '(:signed-int :unsigned-int))))))
+                   type-b-name)
+                  (t
+                 ;; Fall back to category + size promotion for types not in hierarchy
              (let ((type-a (gethash type-a-name *crisp-types*))
                    (type-b (gethash type-b-name *crisp-types*)))
                (cond
@@ -45,7 +60,7 @@
                 ((and (member (crisp-type-category type-b) '(:signed-int :unsigned-int))
                       (eq (crisp-type-category type-a) :float))
                  type-a-name)
-                (t nil)))))))))
+                (t nil)))))))))))
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."

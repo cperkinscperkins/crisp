@@ -156,14 +156,13 @@
    When IS-ENTRY-POINT is non-NIL and *TARGET-BACKEND* is :PTX, restores
    any param components that the kernel-entry demoter swapped from
    shared/local pointer to i64 (see header comment in this overlay)."
-  (let ((llvm-param-index 0))
-    (loop for param-node in param-nodes
-          for param-name = (semantic-param-name param-node)
-          for type-spec = (semantic-param-type param-node)
-          do
-            (log:debug "Init-func-params: param-name='~s' (type: ~a) type-spec='~s'"
-                       param-name (type-of param-name) type-spec)
-            (log:debug "Cached INT32: ~a" *cached-int32-type*)
+    (let ((llvm-param-index 0))
+      (format *terminal-io* "initialize-function-parameters: func=~a param-nodes=~a~%" func param-nodes)
+      (format *terminal-io* "initialize-function-parameters var-env before: ~s~%" (alexandria:hash-table-keys var-env))
+      (loop for param-node in param-nodes
+            for param-name = (semantic-param-name param-node)
+            for type-spec = (semantic-param-type param-node)
+            do
             (let* ((expanded-types (get-expanded-types type-spec module))
                    (num-expanded (length expanded-types))
                    (raw-components
@@ -737,6 +736,11 @@
          (unique-name (intern unique-name-str (symbol-package binding-name)))
          (tensor-alloca (gethash unique-name var-env)))
 
+    (format *terminal-io* "LOOKING UP: ~s~%" unique-name)
+    (format *terminal-io* "  binding-name: ~s (package: ~a)~%" binding-name (package-name (symbol-package binding-name)))
+    (format *terminal-io* "  unique-name: ~s (package: ~a)~%" unique-name (package-name (symbol-package unique-name)))
+    (format *terminal-io* "  var-env keys: ~s~%" (alexandria:hash-table-keys var-env))
+
     (log:info "Pass 2: scratch tensor ~a -> implicit: ~a (found? ~a)"
               binding-name unique-name (not (null tensor-alloca)))
 
@@ -842,6 +846,7 @@
 (defun get-type-cat-safe (type-name type-obj)
   (cond
    (type-obj (crisp-type-category type-obj))
+   ((and (symbolp type-name) (gethash type-name *crisp-enums*)) :signed-int)
    ((and (consp type-name) (eq (first type-name) 'c-pointer)) :pointer)
    (t nil)))
 
@@ -874,6 +879,17 @@
                    (to-cat (get-type-cat-safe to-type-name to-type)))
               (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
               (cond
+               ;; Keywords and symbols cast to int
+               ((and (or (member from-type-name '(keyword symbol quote))
+                         (and (listp from-type-name) (member (first from-type-name) '(keyword symbol quote))))
+                     (member to-cat '(:signed-int :unsigned-int)))
+                 (let ((to-size (if to-type (crisp-type-size to-type) 32)))
+                   (cond
+                    ((< to-size 32)
+                      (llvm-build-trunc builder from-val to-llvm-type "trunc_kw_cast"))
+                    ((> to-size 32)
+                      (llvm-build-sext builder from-val to-llvm-type "sext_kw_cast"))
+                    (t from-val))))
                ((and (member from-cat '(:signed-int :unsigned-int))
                      (eq to-cat :float))
                  (if (eq from-cat :signed-int)
@@ -1768,7 +1784,8 @@
                          (unmangle-template-struct-name canon))
                         (t canon)))))
 
-      (cond
+      (multiple-value-bind (loaded-val _loc target-ptr)
+          (cond
        ;; Case 2: (array T N) fixed-size array — GEP into alloca (unchanged)
        ((%array-type-p (resolve-type-alias array-type))
         (let* ((resolved-arr-type (resolve-type-alias array-type))
@@ -1888,9 +1905,12 @@
                   (values loaded-val nil target-ptr)))))))
 
        (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)"
-                 array-type cell-spec))))))
-
-
+                 array-type cell-spec)))
+        (declare (ignore _loc))
+        (when (gethash node *volatile-var-reads*)
+          (log:debug "aref marked volatile (IGC workaround)")
+          (crisp.llvm-bindings::llvm-set-volatile loaded-val 1))
+        (values loaded-val nil target-ptr)))))
 (defmethod generate-node-ir ((node semantic-sizeof) builder module var-env di-builder di-scope location-map)
   "Generates IR for a sizeof(T) expression. Returns an i64 constant."
   (declare (ignore builder var-env di-builder di-scope location-map))
@@ -2392,6 +2412,31 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (base     (llvm-build-mul builder flat-wg lws-tot "base")))
     (llvm-build-add builder base flat-lid "global_linear_id")))
 
+(defun %gen-spirv-warp-barrier (builder module)
+  "Emits @__spirv_ControlBarrier(i32 3, i32 3, i32 264).
+   Scope=Subgroup(3) MemScope=Subgroup(3) Semantics=AcquireRelease(8)|WorkgroupMemory(256)."
+  (let* ((i32-type (llvm-int32-type))
+         (fn-name  "__spirv_ControlBarrier")
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 3)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 2) i32-type)
+                        arr))
+         (fn-type  (llvm-function-type (llvm-void-type) param-types 3 nil))
+         (fn       (let ((ex (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p ex)
+                         (llvm-add-function module fn-name fn-type)
+                         ex)))
+         (args     (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 3)))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 0) (llvm-const-int i32-type 3 nil))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 1) (llvm-const-int i32-type 3 nil))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 2) (llvm-const-int i32-type 264 nil))
+                     arr)))
+    (llvm-build-call2 builder fn-type fn args 3 "")
+    (cffi:foreign-free args)
+    (cffi:foreign-free param-types)
+    (values nil nil)))
+
 (defun %gen-spirv-control-barrier (builder module)
   "Emits @__spirv_ControlBarrier(i32 2, i32 2, i32 264).
    Scope=Workgroup(2) MemScope=Workgroup(2) Semantics=AcquireRelease(8)|WorkgroupMemory(256)."
@@ -2536,6 +2581,24 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 
 ;; --- PTX barrier and fence intrinsics ---
+
+(defun %ptx-syncwarp (builder module)
+  "Emits @llvm.nvvm.bar.warp.sync(i32) - PTX bar.warp.sync 0xFFFFFFFF."
+  (let* ((i32-type (llvm-int32-type))
+         (fn-name "llvm.nvvm.bar.warp.sync")
+         (void-type (llvm-void-type))
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        arr))
+         (fn-type   (llvm-function-type void-type param-types 1 nil))
+         (fn        (%spirv-get-or-create-fn module fn-name void-type param-types 1)))
+    (let ((args (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 1)))
+                  (setf (cffi:mem-aref arr 'llvm-value-ref 0) (llvm-const-int i32-type #xFFFFFFFF nil))
+                  arr)))
+      (llvm-build-call2 builder fn-type fn args 1 "")
+      (cffi:foreign-free args))
+    (cffi:foreign-free param-types)
+    (values nil nil)))
 
 (defun %ptx-barrier (builder module)
   "Emits @llvm.nvvm.barrier0() — PTX bar.sync 0 (workgroup barrier)."
@@ -2699,10 +2762,14 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (values (%ptx-synthesize-warp-count builder module) nil)
              (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
         ;; --- Barriers (void) ---
-        (:local-barrier
+        (:sync-workgroup
          (if (eq *target-backend* :ptx)
              (%ptx-barrier builder module)
              (%gen-spirv-control-barrier builder module)))
+        (:sync-warp
+         (if (eq *target-backend* :ptx)
+             (%ptx-syncwarp builder module)
+             (%gen-spirv-warp-barrier builder module)))
         (:mem-fence
          (if (eq *target-backend* :ptx)
              (%ptx-membar-cta builder module)
@@ -2768,6 +2835,32 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     ;; dotimes returns void
     (values nil nil)))
 
+(defmethod generate-node-ir ((node semantic-while) builder module var-env di-builder di-scope location-map)
+  "Generates IR for (while condition body...)."
+  (let* ((condition-node (semantic-while-condition-node node))
+         (body           (semantic-while-body node))
+         (current-fn     (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (check-block    (llvm-append-basic-block current-fn "wh_check"))
+         (body-block     (llvm-append-basic-block current-fn "wh_body"))
+         (exit-block     (llvm-append-basic-block current-fn "wh_exit")))
+    
+    (llvm-build-br builder check-block)
+    ;; --- Check Block ---
+    (llvm-position-builder-at-end builder check-block)
+    (let* ((cond-val (generate-node-ir condition-node builder module var-env di-builder di-scope location-map))
+           (cond-bool (llvm-build-icmp builder +llvm-int-ne+ cond-val (llvm-const-int (llvm-int32-type) 0 nil) "wh_cond")))
+      (llvm-build-cond-br builder cond-bool body-block exit-block))
+    
+    ;; --- Body Block ---
+    (llvm-position-builder-at-end builder body-block)
+    (dolist (body-node body)
+      (generate-node-ir body-node builder module var-env di-builder di-scope location-map))
+    (unless (terminator-p (llvm-get-insert-block builder))
+      (llvm-build-br builder check-block))
+      
+    ;; --- Exit Block ---
+    (llvm-position-builder-at-end builder exit-block)
+    (values nil nil)))
 
 (defmethod generate-node-ir ((node semantic-eq) builder module var-env di-builder di-scope location-map)
   "Generates IR for =, guarding against NIL lhs-type for enum/keyword operands."
@@ -2817,27 +2910,69 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (setf (cffi:mem-aref args 'llvm-value-ref 1) src-ptr)
     (llvm-build-call2 builder fn-type fn args 2 "")))
 
-(defun %gen-nvvm-cp-async-commit-group (builder module)
-  "Emits @llvm.nvvm.cp.async.commit.group()."
-  (let* ((fn-name  "llvm.nvvm.cp.async.commit.group")
-         (fn-type  (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil))
-         (fn       (%spirv-get-or-create-fn module fn-name (llvm-void-type)
-                                            (cffi:null-pointer) 0)))
-    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "")))
-
-(defun %gen-nvvm-cp-async-wait-group (builder module)
-  "Emits @llvm.nvvm.cp.async.wait.group(i32 0).  i32 must be an immarg."
-  (let* ((fn-name    "llvm.nvvm.cp.async.wait.group")
+(defun %gen-nvvm-mbarrier-init-shared (builder module mbarrier-ptr count-val)
+  "Emits @llvm.nvvm.mbarrier.init.shared(ptr addrspace(3), i32 count)."
+  (let* ((fn-name    "llvm.nvvm.mbarrier.init.shared")
          (i32-type   (llvm-int32-type))
+         (i8-type    (llvm-int8-type))
+         (ptr-as3    (llvm-pointer-type i8-type 3))
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i32-type)
+                        arr))
+         (fn-type    (llvm-function-type (llvm-void-type) param-types 2 nil))
+         (fn         (%spirv-get-or-create-fn module fn-name (llvm-void-type) param-types 2))
+         (args       (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+    (setf (cffi:mem-aref args 'llvm-value-ref 0) mbarrier-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 1) count-val)
+    (llvm-build-call2 builder fn-type fn args 2 "")))
+
+(defun %gen-nvvm-cp-async-mbarrier-arrive-noinc-shared (builder module mbarrier-ptr)
+  "Emits @llvm.nvvm.cp.async.mbarrier.arrive.noinc.shared(ptr addrspace(3))."
+  (let* ((fn-name    "llvm.nvvm.cp.async.mbarrier.arrive.noinc.shared")
+         (i8-type    (llvm-int8-type))
+         (ptr-as3    (llvm-pointer-type i8-type 3))
          (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3)
                         arr))
          (fn-type    (llvm-function-type (llvm-void-type) param-types 1 nil))
          (fn         (%spirv-get-or-create-fn module fn-name (llvm-void-type) param-types 1))
          (args       (cffi:foreign-alloc 'llvm-value-ref :count 1)))
-    (setf (cffi:mem-aref args 'llvm-value-ref 0)
-          (llvm-const-int i32-type 0 nil))   ;; wait for all groups
+    (setf (cffi:mem-aref args 'llvm-value-ref 0) mbarrier-ptr)
     (llvm-build-call2 builder fn-type fn args 1 "")))
+
+(defun %gen-nvvm-mbarrier-arrive-shared (builder module mbarrier-ptr)
+  "Emits @llvm.nvvm.mbarrier.arrive.shared(ptr addrspace(3)) -> i64 state."
+  (let* ((fn-name    "llvm.nvvm.mbarrier.arrive.shared")
+         (i64-type   (llvm-int64-type))
+         (i8-type    (llvm-int8-type))
+         (ptr-as3    (llvm-pointer-type i8-type 3))
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3)
+                        arr))
+         (fn-type    (llvm-function-type i64-type param-types 1 nil))
+         (fn         (%spirv-get-or-create-fn module fn-name i64-type param-types 1))
+         (args       (cffi:foreign-alloc 'llvm-value-ref :count 1)))
+    (setf (cffi:mem-aref args 'llvm-value-ref 0) mbarrier-ptr)
+    (llvm-build-call2 builder fn-type fn args 1 "mbar_state")))
+
+(defun %gen-nvvm-mbarrier-test-wait-shared (builder module mbarrier-ptr state-val)
+  "Emits @llvm.nvvm.mbarrier.test.wait.shared(ptr addrspace(3), i64 state) -> i1 bool."
+  (let* ((fn-name    "llvm.nvvm.mbarrier.test.wait.shared")
+         (i1-type    (llvm-int1-type))
+         (i64-type   (llvm-int64-type))
+         (i8-type    (llvm-int8-type))
+         (ptr-as3    (llvm-pointer-type i8-type 3))
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i64-type)
+                        arr))
+         (fn-type    (llvm-function-type i1-type param-types 2 nil))
+         (fn         (%spirv-get-or-create-fn module fn-name i1-type param-types 2))
+         (args       (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+    (setf (cffi:mem-aref args 'llvm-value-ref 0) mbarrier-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 1) state-val)
+    (llvm-build-call2 builder fn-type fn args 2 "mbar_ready")))
 
 (defun %gen-nvvm-read-tid-x (builder module)
   "Emits @llvm.nvvm.read.ptx.sreg.tid.x() → i32 (per-thread tid in X)."
@@ -2848,6 +2983,50 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                                             (cffi:null-pointer) 0)))
     (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "tid_x")))
 
+(defun %gen-nvvm-read-tid-y (builder module)
+  "Emits @llvm.nvvm.read.ptx.sreg.tid.y() → i32."
+  (let* ((fn-name  "llvm.nvvm.read.ptx.sreg.tid.y")
+         (i32-type (llvm-int32-type))
+         (fn-type  (llvm-function-type i32-type (cffi:null-pointer) 0 nil))
+         (fn       (%spirv-get-or-create-fn module fn-name i32-type
+                                            (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "tid_y")))
+
+(defun %gen-nvvm-read-tid-z (builder module)
+  "Emits @llvm.nvvm.read.ptx.sreg.tid.z() → i32."
+  (let* ((fn-name  "llvm.nvvm.read.ptx.sreg.tid.z")
+         (i32-type (llvm-int32-type))
+         (fn-type  (llvm-function-type i32-type (cffi:null-pointer) 0 nil))
+         (fn       (%spirv-get-or-create-fn module fn-name i32-type
+                                            (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "tid_z")))
+
+(defun %gen-nvvm-read-ntid-x (builder module)
+  "Emits @llvm.nvvm.read.ptx.sreg.ntid.x() → i32."
+  (let* ((fn-name  "llvm.nvvm.read.ptx.sreg.ntid.x")
+         (i32-type (llvm-int32-type))
+         (fn-type  (llvm-function-type i32-type (cffi:null-pointer) 0 nil))
+         (fn       (%spirv-get-or-create-fn module fn-name i32-type
+                                            (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "ntid_x")))
+
+(defun %gen-nvvm-read-ntid-y (builder module)
+  "Emits @llvm.nvvm.read.ptx.sreg.ntid.y() → i32."
+  (let* ((fn-name  "llvm.nvvm.read.ptx.sreg.ntid.y")
+         (i32-type (llvm-int32-type))
+         (fn-type  (llvm-function-type i32-type (cffi:null-pointer) 0 nil))
+         (fn       (%spirv-get-or-create-fn module fn-name i32-type
+                                            (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "ntid_y")))
+
+(defun %gen-nvvm-read-ntid-z (builder module)
+  "Emits @llvm.nvvm.read.ptx.sreg.ntid.z() → i32."
+  (let* ((fn-name  "llvm.nvvm.read.ptx.sreg.ntid.z")
+         (i32-type (llvm-int32-type))
+         (fn-type  (llvm-function-type i32-type (cffi:null-pointer) 0 nil))
+         (fn       (%spirv-get-or-create-fn module fn-name i32-type
+                                            (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "ntid_z")))
 
 (defun %vector-elem-type (tile-type-spec)
   "Returns the element type symbol from a (vector ELEM ...) or (tensor
@@ -2862,20 +3041,48 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
       (second canon))
      (t (error "%vector-elem-type: can't extract element type from ~S" canon)))))
 
+(defmethod generate-node-ir ((node semantic-make-async-barrier) builder module var-env
+                              di-builder di-scope location-map)
+  "Phase B.1 NVPTX: alloc mbarrier and emit mbarrier.init."
+  (let* ((cell-val (generate-node-ir (semantic-make-async-barrier-cell-node node) builder module var-env
+                                     di-builder di-scope location-map))
+         (i32-type (llvm-int32-type))
+         (tid-x    (%gen-nvvm-read-tid-x builder module))
+         (tid-y    (%gen-nvvm-read-tid-y builder module))
+         (tid-z    (%gen-nvvm-read-tid-z builder module))
+         (tid-sum  (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz"))
+         (is-zero  (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "is_tid_0"))
+         (init-bb  (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "mbar_init"))
+         (merge-bb (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "mbar_cont")))
+    (llvm-build-cond-br builder is-zero init-bb merge-bb)
+    (llvm-position-builder-at-end builder init-bb)
+    (let* ((ntid-x (%gen-nvvm-read-ntid-x builder module))
+           (ntid-y (%gen-nvvm-read-ntid-y builder module))
+           (ntid-z (%gen-nvvm-read-ntid-z builder module))
+           (wg-size (llvm-build-mul builder (llvm-build-mul builder ntid-x ntid-y "nxy") ntid-z "nxyz"))
+           (cell-storage (llvm-build-extract-value builder cell-val 0 "cell_storage"))
+           (cell-ptr     (llvm-build-extract-value builder cell-storage 0 "cell_ptr")))
+      (%gen-nvvm-mbarrier-init-shared builder module cell-ptr wg-size)
+      (llvm-build-br builder merge-bb))
+    (llvm-position-builder-at-end builder merge-bb)
+    (%ptx-barrier builder module)
+    (values cell-val nil)))
+
 (defmethod generate-node-ir ((node semantic-nvvm-cp-async-tile-copy) builder module var-env
                               di-builder di-scope location-map)
-  "Phase B.1 NVPTX: emit per-thread cp.async.ca.shared.global +
-   cp.async.commit.group.  Assumes tile.length == workgroup_size so
-   each thread copies exactly one element (no inner loop).  Returns
-   the phantom ulong 0 for the surrounding let-binding."
+  "Phase B.1 NVPTX: emit cp.async.ca.shared.global + mbarrier.arrive.noinc."
   (let* ((src-node     (semantic-nvvm-cp-async-tile-copy-src-node node))
          (tile-node    (semantic-nvvm-cp-async-tile-copy-tile-node node))
-         (origin-nodes (semantic-nvvm-cp-async-tile-copy-origin-nodes node))
-         (origin-node  (first origin-nodes))
+         (origin-node  (first (semantic-nvvm-cp-async-tile-copy-origin-nodes node)))
+         (barrier-node (semantic-nvvm-cp-async-tile-copy-barrier-node node))
          (src-val      (generate-node-ir src-node builder module var-env
                                          di-builder di-scope location-map))
          (tile-val     (generate-node-ir tile-node builder module var-env
                                          di-builder di-scope location-map))
+         (barrier-val  (if barrier-node
+                           (generate-node-ir barrier-node builder module var-env
+                                             di-builder di-scope location-map)
+                           nil))
          (origin-raw   (generate-node-ir origin-node builder module var-env
                                          di-builder di-scope location-map))
          (elem-type    (%vector-elem-type (semantic-node-type tile-node)))
@@ -2884,7 +3091,6 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                          ((long ulong double) 8)
                          (t (error "nvvm cp.async: unsupported element type ~S (need 4 or 8 bytes)"
                                    elem-type))))
-         ;; Extract base ptrs from the tensor struct values.
          (src-parent   (llvm-build-extract-value builder src-val 0 "src_parent"))
          (src-base     (llvm-build-extract-value builder src-parent 0 "src_base"))
          (tile-parent  (llvm-build-extract-value builder tile-val 0 "tile_parent"))
@@ -2892,19 +3098,15 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (i32-type     (llvm-int32-type))
          (i64-type     (llvm-int64-type))
          (elem-bytes-v (llvm-const-int i64-type elem-bytes nil))
-         ;; tid (per-thread index in X dim).
          (tid-i32      (%gen-nvvm-read-tid-x builder module))
          (tid-i64      (llvm-build-sext builder tid-i32 i64-type "tid_i64"))
-         ;; Origin is the global problem-space start.  Coerce to i64.
          (origin-i64   (llvm-build-sext builder origin-raw i64-type "origin_i64"))
-         ;; src-elt = src-base + (origin + tid) * elem-bytes
          (src-flat     (llvm-build-add builder origin-i64 tid-i64 "src_flat"))
          (src-byte-off (llvm-build-mul builder src-flat elem-bytes-v "src_byte_off"))
          (src-elt-ptr  (let ((indices (cffi:foreign-alloc :pointer :count 1)))
                          (setf (cffi:mem-aref indices :pointer 0) src-byte-off)
                          (llvm-build-in-bounds-gep2
                           builder (llvm-int8-type) src-base indices 1 "src_elt_ptr")))
-         ;; tile-elt = tile-base + tid * elem-bytes
          (tile-byte-off (llvm-build-mul builder tid-i64 elem-bytes-v "tile_byte_off"))
          (tile-elt-ptr  (let ((indices (cffi:foreign-alloc :pointer :count 1)))
                           (setf (cffi:mem-aref indices :pointer 0) tile-byte-off)
@@ -2912,12 +3114,29 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                            builder (llvm-int8-type) tile-base indices 1 "tile_elt_ptr"))))
     (declare (ignore i32-type))
     (%gen-nvvm-cp-async-elem builder module tile-elt-ptr src-elt-ptr elem-bytes)
-    (%gen-nvvm-cp-async-commit-group builder module)
+    (if barrier-val
+        (let* ((barrier-storage (llvm-build-extract-value builder barrier-val 0 "barrier_storage"))
+               (barrier-ptr     (llvm-build-extract-value builder barrier-storage 0 "barrier_ptr")))
+          (%gen-nvvm-cp-async-mbarrier-arrive-noinc-shared builder module barrier-ptr))
+        (error "load-tile-coords missing barrier-node!"))
     (values (llvm-const-int i64-type 0 nil) nil)))
 
 (defmethod generate-node-ir ((node semantic-nvvm-cp-async-wait) builder module var-env
                               di-builder di-scope location-map)
-  "Phase B.1 NVPTX: emit cp.async.wait.group(0)."
-  (declare (ignore var-env di-builder di-scope location-map))
-  (%gen-nvvm-cp-async-wait-group builder module)
-  (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
+  "Phase B.1 NVPTX: emit mbarrier.arrive and loop on mbarrier.test_wait."
+  (let* ((barrier-node (semantic-nvvm-cp-async-wait-barrier-node node))
+         (barrier-val  (if barrier-node
+                           (generate-node-ir barrier-node builder module var-env
+                                             di-builder di-scope location-map)
+                           (error "await missing barrier-node!")))
+         (barrier-storage (llvm-build-extract-value builder barrier-val 0 "barrier_storage"))
+         (barrier-ptr     (llvm-build-extract-value builder barrier-storage 0 "barrier_ptr"))
+         (state-val    (%gen-nvvm-mbarrier-arrive-shared builder module barrier-ptr))
+         (loop-bb      (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "wait_loop"))
+         (cont-bb      (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "wait_cont")))
+    (llvm-build-br builder loop-bb)
+    (llvm-position-builder-at-end builder loop-bb)
+    (let ((is-ready (%gen-nvvm-mbarrier-test-wait-shared builder module barrier-ptr state-val)))
+      (llvm-build-cond-br builder is-ready cont-bb loop-bb))
+    (llvm-position-builder-at-end builder cont-bb)
+    (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))

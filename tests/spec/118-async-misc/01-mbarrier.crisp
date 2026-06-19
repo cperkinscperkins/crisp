@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx] : validate-ptx-mbarrier
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel test_mbarrier (src &out dst)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  
+  (let ((bar (make-async-barrier))
+        (tile (make-scratch-vector float 64))
+        (wg-id (get-workgroup-id 0)))
+    (load-tile src tile (wg-id) :barrier bar)
+    (await bar)
+    (store-tile tile dst (wg-id))))

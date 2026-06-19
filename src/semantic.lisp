@@ -251,8 +251,8 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   source-location)
 
 (defstruct semantic-gpu-builtin
-  "Represents a GPU built-in function call (e.g. get-global-id, local-barrier).
-   BUILTIN-NAME is a keyword: :get-global-id, :local-barrier, etc.
+  "Represents a GPU built-in function call (e.g. get-global-id, sync-workgroup).
+   BUILTIN-NAME is a keyword: :get-global-id, :sync-workgroup, etc.
    DIMENSION is NIL for the 3D vector form, or 0/1/2 for the scalar-n form.
    TYPE is the Crisp return type: 'ulong3, 'ulong, 'uint, or NIL (void)."
   builtin-name
@@ -274,14 +274,21 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 ;; Phase B.1 scope: simple case where tile.length == workgroup_size (one
 ;; cp.async per thread, no inner loop).  Bigger tiles need a cooperative
 ;; loop, which lands in B.2.
+(defstruct semantic-make-async-barrier
+  type
+  cell-node
+  source-location)
+
 (defstruct semantic-nvvm-cp-async-tile-copy
   src-node      ;; semantic node for the source tensor (addrspace 1)
   tile-node     ;; semantic node for the dest tile (addrspace 3)
   origin-nodes  ;; list of semantic nodes for origin coords (one per dim)
+  barrier-node  ;; semantic node for the mbarrier object
   type
   source-location)
 
 (defstruct semantic-nvvm-cp-async-wait
+  barrier-node  ;; semantic node for the mbarrier object
   type
   source-location)
 
@@ -336,5 +343,13 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   var-name
   limit-node
   stride-node
+  body
+  source-location)
+
+(defstruct semantic-while
+  "Represents (while condition body...).
+   Returns void."
+  type
+  condition-node
   body
   source-location)

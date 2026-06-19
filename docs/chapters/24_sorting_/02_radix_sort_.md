@@ -78,7 +78,7 @@ Possible Implementation
       ;; The workgroup must zero-out its local histogram. This is done in parallel.
       ;; Each thread clears a portion of the 256-element array.
       (set! (~ local-histogram local-id) 0)
-      (local-barrier)
+      (sync-workgroup)
 
       ;; build local histogram
       ;; Each thread processes its slice of the large input vector.
@@ -101,7 +101,7 @@ Possible Implementation
             ;; c. Atomically increment the counter for that digit IN LOCAL MEMORY.
             ;;    Atomics on local memory are very fast.
             (atomic-add! (~ local-histogram digit) 1))))
-      (local-barrier)
+      (sync-workgroup)
 
       ;; combine into local histogram
       ;; Now that the local histogram is complete, the workgroup adds its results
@@ -146,7 +146,7 @@ And its output is a prefix-sum vector.
       ;; load data from global to local
       ;; each thread loads one count from the global histogram
       (set! (~ local-scan-buffer local-id) (~ global-histogram local-id))
-      (local-barrier) ; ensure load is complete before scan begins
+      (sync-workgroup) ; ensure load is complete before scan begins
 
       ;; perform Parallel Exclusive Scan in local memory 
       ;; uses the built-in primitive - modifies
@@ -211,13 +211,13 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
             (digit (bit-and (ash sortable-int (- bit-offset)) #xFF)))
 
         (set! (~ local-digits local-id) digit)
-        (local-barrier)
+        (sync-workgroup)
 
         ;; Perform a local scan on the digits to find the rank within the workgroup
         ;; Need a scan that counts occurrences of each digit.
         (let ((local-rank (local-rank-within-digit local-digits local-id)))
           (set! (~ local-scan-indices local-id) local-rank)))
-      (local-barrier)
+      (sync-workgroup)
 
       ;; calculate global write position
       ;; Read the starting offset for this element's digit from the global offsets.
@@ -308,7 +308,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
     (when (< local-id 256)
       (set! (~ digit-counts local-id) 0))
     ;; Ensure all counters are zero before any thread proceeds.
-    (local-barrier)
+    (sync-workgroup)
 
     ;; atomically increment and get rank
     ;; each thread reads its digit for the current pass.
@@ -321,7 +321,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
       (let ((rank (atomic-add! (~ digit-counts my-digit) 1)))
 
         ;; synchronize
-        (local-barrier)
+        (sync-workgroup)
 
         ;; return the calculated rank
         rank))))

@@ -44,7 +44,7 @@
 
 ;; These are the "explicit coords" variants of load-tile / store-tile.  They
 ;; expand into a workgroup-stride-shaped cooperative loop with bounds
-;; checking and an implicit local-barrier.
+;; checking and an implicit sync-workgroup.
 ;;
 ;; API (sub-step 1a, src-first universally):
 ;;   (load-tile-coords  <src-global> <dest-tile> (origin-coords...) &key (identity 0) transpose)
@@ -58,16 +58,16 @@
 ;;     - If source coord is in-bounds, copy source[src-coord] -> tile[tile-coord].
 ;;     - If source coord is out-of-bounds, write the :identity value to
 ;;       tile[tile-coord] (default 0).
-;;     - Ends with (local-barrier) so subsequent reads see the loaded tile.
+;;     - Ends with (sync-workgroup) so subsequent reads see the loaded tile.
 ;;
 ;;   store-tile-coords:
-;;     - Starts with (local-barrier) so all prior tile writes are visible.
+;;     - Starts with (sync-workgroup) so all prior tile writes are visible.
 ;;     - For each tile coord (cooperatively), compute dest coord = origin +
 ;;       tile-coord (or transposed).
 ;;     - If dest coord is in-bounds, write tile[tile-coord] (optionally run
 ;;       through :transformF first) to dest[dest-coord].  Out-of-bounds
 ;;       tile slots are silently skipped (no :identity equivalent on store).
-;;     - Ends with (local-barrier).
+;;     - Ends with (sync-workgroup).
 ;;
 ;; Transpose handling (Phase 1a):
 ;;   - :transpose nil or absent: identity coord map.
@@ -171,7 +171,7 @@
 (defun %expand-load-tile-coords-form (expr location)
   "Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).
    Returns a let/dotimes/when nest that cooperatively loads the tile, ending
-   with (local-barrier)."
+   with (sync-workgroup)."
   (let* ((src-form (second expr))
          (tile-form (third expr))
          (origin-list (fourth expr))
@@ -194,7 +194,7 @@
            (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
            (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
            (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
-           (local-barrier-sym (intern "LOCAL-BARRIER" cl-pkg))
+           (sync-workgroup-sym (intern "SYNC-WORKGROUP" cl-pkg))
            (to-ulong-sym (intern "TO-ULONG" cl-pkg))
            (plus-sym (intern "+" cl-pkg))
            (lt-sym (intern "<" cl-pkg))
@@ -248,13 +248,13 @@
       (list let-sym outer-bindings
             (list progn-sym
                   loop-nest
-                  (list local-barrier-sym))))))
+                  (list sync-workgroup-sym))))))
 
 
 ;; src/analysis/control.lisp
 (defun %expand-store-tile-coords-form (expr location)
   "Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).
-   Returns a let/progn nest with (local-barrier) BEFORE and AFTER the
+   Returns a let/progn nest with (sync-workgroup) BEFORE and AFTER the
    cooperative store loop.  TransformF is applied per-element (unary)."
   (let* ((tile-form (second expr))
          (dest-form (third expr))
@@ -279,7 +279,7 @@
            (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
            (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
            (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
-           (local-barrier-sym (intern "LOCAL-BARRIER" cl-pkg))
+           (sync-workgroup-sym (intern "SYNC-WORKGROUP" cl-pkg))
            (to-ulong-sym (intern "TO-ULONG" cl-pkg))
            (plus-sym (intern "+" cl-pkg))
            (lt-sym (intern "<" cl-pkg))
@@ -330,13 +330,13 @@
                     collect (list lws-sym (list get-lws-sym i))))))
       (list let-sym outer-bindings
             (list progn-sym
-                  (list local-barrier-sym) ; barrier BEFORE
+                  (list sync-workgroup-sym) ; barrier BEFORE
                   loop-nest
-                  (list local-barrier-sym)))))) ; barrier AFTER
+                  (list sync-workgroup-sym)))))) ; barrier AFTER
 
 
 ;; load-tile-coords / store-tile-coords (and the bare load-tile / store-tile
-;; that rewrite to them) contain internal (local-barrier) calls.  Inside a
+;; that rewrite to them) contain internal (sync-workgroup) calls.  Inside a
 ;; thread-divergent (if / when / unless / cond) where some threads enter the
 ;; branch and others don't, only some threads hit the barrier — deadlock.
 ;;
@@ -353,7 +353,7 @@
         "T when the analyzer is currently inside a thread-divergent if/when/unless/cond
    branch (i.e. the conditional's test was not constant-folded).  Used by the
    load-tile-coords / store-tile-coords analyzers to reject placement that
-   would deadlock at their internal local-barriers.
+   would deadlock at their internal sync-workgroups.
 
    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check
    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the
@@ -400,7 +400,7 @@
   (when *in-divergent-conditional*
         (error 'crisp-compiler-error
           :message (format nil
-                       "~A cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It contains an internal local-barrier that would deadlock when only some threads enter the branch.  Compile-time conditionals (if+ / when+ / unless+) are safe.  If you need a guarded copy, use a non-divergent condition (e.g. one based on get-workgroup-id, not get-local-id) or restructure the kernel."
+                       "~A cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It contains an internal sync-workgroup that would deadlock when only some threads enter the branch.  Compile-time conditionals (if+ / when+ / unless+) are safe.  If you need a guarded copy, use a non-divergent condition (e.g. one based on get-workgroup-id, not get-local-id) or restructure the kernel."
                      op-name)
           :source-location location)))
 
@@ -422,11 +422,13 @@
                (origin-nodes (loop for o in origin-list for i from 0
                                    collect (analyze-expression
                                             o env context
-                                            (append location (list 3 i))))))
+                                            (append location (list 3 i)))))
+               (barrier-node (analyze-expression barrier-form env context location)))
           (make-semantic-nvvm-cp-async-tile-copy
            :src-node src-node
            :tile-node tile-node
            :origin-nodes origin-nodes
+           :barrier-node barrier-node
            :type 'ulong
            :source-location location))
         (analyze-expression (%expand-load-tile-coords-form expr location)
@@ -447,13 +449,15 @@
     (error 'crisp-compiler-error
       :message (format nil "await: expected (await BARRIER), got ~S" expr)
       :source-location location))
-  (case *target-backend*
-    (:ptx
-     (make-semantic-nvvm-cp-async-wait
-      :type 'ulong
-      :source-location location))
-    (t
-     (analyze-expression nil env context location))))
+  (let ((barrier-node (analyze-expression (second expr) env context (append location '(1)))))
+    (case *target-backend*
+      (:ptx
+       (make-semantic-nvvm-cp-async-wait
+        :barrier-node barrier-node
+        :type 'ulong
+        :source-location location))
+      (t
+       (analyze-expression nil env context location)))))
 
 (defun analyze-if-expression-impl (expr env context location &key enforce-constant)
   (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
@@ -1024,6 +1028,29 @@
                                :body body-nodes
                                :source-location location)))))
 
+
+(defun analyze-while-expression (expr env context location)
+  "Analyzes (while condition body...).
+   Returns a semantic-while node (type void)."
+  (unless (>= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message "Malformed while: expected (while condition body...)"
+      :source-location location))
+  (let* ((condition-form (second expr))
+         (body-forms (cddr expr))
+         (condition-node (analyze-expression condition-form env context (append location '(0))))
+         (condition-type (get-single-value-type condition-node))
+         (condition-ct (gethash condition-type *crisp-types*)))
+    (unless (and condition-ct (member (crisp-type-category condition-ct)
+                                      '(:boolean :signed-int :unsigned-int)))
+      (error 'crisp-compiler-error
+        :message (format nil "while condition must be a boolean or integer type, got ~a" condition-type)
+        :source-location location))
+    (let ((body-nodes (analyze-body-expressions body-forms env context (append location '(1)))))
+      (make-semantic-while :type 'void
+                           :condition-node condition-node
+                           :body body-nodes
+                           :source-location location))))
 
 ;; ==========================================================================
 ;; Endeavor 107 — make stride macros AD-able by expanding them BEFORE the
@@ -2024,7 +2051,7 @@
 ;;   B. tile < workgroup: threads with local-id beyond extent skip.
 ;;
 ;; Does NOT inject an end barrier (per chapter 13).  Caller inserts
-;; (local-barrier) explicitly when needed.
+;; (sync-workgroup) explicitly when needed.
 
 (defun %workgroup-stride-parse (expr)
   "Returns (values bindings body-forms tensor-form) for a workgroup-stride EXPR.
@@ -2070,7 +2097,7 @@
 ;; In both scenarios the body is unconditional — no per-iter compare.
 ;;
 ;; Does NOT inject an end barrier (per chapter 13).  Caller inserts
-;; (local-barrier) explicitly when needed.
+;; (sync-workgroup) explicitly when needed.
 
 (defun %expand-workgroup-stride-form (expr location)
   "Pure expansion of (workgroup-stride T (BINDINGS) BODY...).  N-dim nested
@@ -2201,7 +2228,7 @@
            (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
            (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
            (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
-           (local-barrier-sym (intern "LOCAL-BARRIER" cl-pkg))
+           (sync-workgroup-sym (intern "SYNC-WORKGROUP" cl-pkg))
            (to-ulong-sym (intern "TO-ULONG" cl-pkg))
            (plus-sym (intern "+" cl-pkg))
            (lt-sym (intern "<" cl-pkg))
@@ -2250,7 +2277,7 @@
       (list let-sym outer-bindings
             (list progn-sym
                   loop-nest
-                  (list local-barrier-sym))))))
+                  (list sync-workgroup-sym))))))
 
 
 (defun %expand-store-tile-coords-bwd-form (expr location)
@@ -2278,7 +2305,7 @@
            (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
            (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
            (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
-           (local-barrier-sym (intern "LOCAL-BARRIER" cl-pkg))
+           (sync-workgroup-sym (intern "SYNC-WORKGROUP" cl-pkg))
            (to-ulong-sym (intern "TO-ULONG" cl-pkg))
            (plus-sym (intern "+" cl-pkg))
            (lt-sym (intern "<" cl-pkg))
@@ -2326,9 +2353,9 @@
                     collect (list lws-sym (list get-lws-sym i))))))
       (list let-sym outer-bindings
             (list progn-sym
-                  (list local-barrier-sym)
+                  (list sync-workgroup-sym)
                   loop-nest
-                  (list local-barrier-sym))))))
+                  (list sync-workgroup-sym))))))
 
 
 (defun analyze-%load-tile-coords-bwd-expression (expr env context location)
@@ -2452,9 +2479,49 @@
        (append (list (intern "STORE-TILE-AT" cl-pkg) tile dest pixel-coords) key-args)
        env context location))))
 
+(defun analyze-load-local-expression (expr env context location)
+  "Analyzer for (load-local global-tensor scratch-tensor &key identity barrier)."
+  (let* ((src (second expr))
+         (dest (third expr))
+         (key-args (nthcdr 3 expr))
+         (src-node (analyze-expression src env context (append location '(1))))
+         (src-type (semantic-node-type src-node)))
+    (unless (%tensor-type-p src-type)
+      (error 'crisp-compiler-error :message "load-local: source must be a tensor" :source-location location))
+    (let ((num-dims (%get-tensor-arity src-type))
+          (cl-pkg (find-package :crisp-language)))
+      (analyze-load-tile-coords-expression
+       (append (list (intern "LOAD-TILE-COORDS" cl-pkg) src dest
+                     (loop repeat num-dims collect 0))
+               key-args)
+       env context location))))
+
+(defun analyze-store-global-expression (expr env context location)
+  "Analyzer for (store-global scratch-tensor global-tensor &key (transformF #'identityF) barrier)."
+  (let* ((src (second expr))
+         (dest (third expr))
+         (key-args (nthcdr 3 expr))
+         (dest-node (analyze-expression dest env context (append location '(2))))
+         (dest-type (semantic-node-type dest-node)))
+    (unless (%tensor-type-p dest-type)
+      (error 'crisp-compiler-error :message "store-global: destination must be a tensor" :source-location location))
+    (let ((num-dims (%get-tensor-arity dest-type))
+          (cl-pkg (find-package :crisp-language)))
+      (analyze-store-tile-coords-expression
+       (append (list (intern "STORE-TILE-COORDS" cl-pkg) src dest
+                     (loop repeat num-dims collect 0))
+               key-args)
+       env context location))))
+
 (defun analyze-make-async-barrier-expression (expr env context location)
   (declare (ignore expr))
-  (analyze-expression 0 env context location))
+  (let ((cell-node (analyze-scratch-expression '(make-scratch-cell ulong) env context location)))
+    (if (eq crisp.compiler:*target-backend* :ptx)
+        (make-semantic-make-async-barrier
+         :cell-node cell-node
+         :type (semantic-node-type cell-node)
+         :source-location location)
+        cell-node)))
 
 
 (defun register-control-analyzers ()
@@ -2497,6 +2564,11 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-dotimes-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-dotimes-expression)))
+  (let ((sym-cl (intern "WHILE" (find-package :crisp-language)))
+        (sym-cc (intern "WHILE" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-while-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-while-expression)))
   (let ((sym-cl (intern "LOOP-VECTOR-STRIDE" (find-package :crisp-language)))
         (sym-cc (intern "LOOP-VECTOR-STRIDE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-loop-vector-stride-expression)
@@ -2548,6 +2620,16 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-expression)))
+  (let ((sym-cl (intern "LOAD-LOCAL" (find-package :crisp-language)))
+        (sym-cc (intern "LOAD-LOCAL" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-local-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-load-local-expression)))
+  (let ((sym-cl (intern "STORE-GLOBAL" (find-package :crisp-language)))
+        (sym-cc (intern "STORE-GLOBAL" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-global-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-global-expression)))
   (let ((sym-cl (intern "%UNIFORM-WHEN" (find-package :crisp-language)))
         (sym-cc (intern "%UNIFORM-WHEN" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%uniform-when-expression)

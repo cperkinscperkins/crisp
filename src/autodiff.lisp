@@ -1228,7 +1228,7 @@ to compute-base-type for derived types."
                                         "GET-LOCAL-LINEAR-ID" "GET-LOCAL-LINEAR-SIZE"
                                         "GET-GLOBAL-LINEAR-ID" "GET-GLOBAL-LINEAR-SIZE"
                                         "GET-TOTAL-THREADS" "GET-TOTAL-GROUPS"
-                                        "LOCAL-BARRIER" "MEM-FENCE")
+                                        "SYNC-WORKGROUP" "SYNC-WARP" "MEM-FENCE")
                when (prefix-or-mangled-p prefix) return t)))))
 
 (defun %collect-record-param-info (env pkg)

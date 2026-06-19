@@ -647,7 +647,7 @@
   ;; Set kernel arguments if any
   (let ((allocations '()))
     (when declared-sig
-          (setf allocations (generate-kernel-arguments-with-usm stream declared-sig aliases records "context" "device")))
+          (setf allocations (generate-kernel-arguments-with-usm stream declared-sig aliases records "context" "device" dispatch-info)))
 
     ;; Create command list and queue
     (format stream "    // Create command list~%")
@@ -814,13 +814,13 @@
        (member (symbol-name (first param-type))
                '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal)))
 
-(defun %tensor-compact-extents-strides (n dim-extent)
+(defun %tensor-compact-extents-strides (n extents-list)
   "Returns (values extents strides) for a compact N-dim tensor.
    Strides are in elements; innermost stride = 1."
-  (let* ((extents (make-list n :initial-element dim-extent))
+  (let* ((extents (copy-list extents-list))
          (strides (make-list n :initial-element 1)))
     (loop for k from (- n 2) downto 0 do
-            (setf (nth k strides) (* (nth (1+ k) strides) dim-extent)))
+            (setf (nth k strides) (* (nth (1+ k) strides) (nth (1+ k) extents))))
     (values extents strides)))
 
 (defun %l0-emit-cell-arg (stream param param-name param-type param-dir is-local aliases context-var device-var arg-index)
@@ -908,7 +908,7 @@
               Only literal integer sizes are supported in the L0 hoist launcher."
         param-name size-expr))
     (multiple-value-bind (extents strides)
-        (%tensor-compact-extents-strides rank size-expr)
+        (%tensor-compact-extents-strides rank (make-list rank :initial-element size-expr))
       (let* ((length (* (expt size-expr rank)))
              (bytesize (* length elem-bytes))
              (current-idx arg-index))
@@ -972,7 +972,7 @@
               Only literal integer sizes are supported in the L0 hoist launcher."
         param-name size-expr))
     (multiple-value-bind (extents strides)
-        (%tensor-compact-extents-strides rank size-expr)
+        (%tensor-compact-extents-strides rank (make-list rank :initial-element size-expr))
       (let* ((length (expt size-expr rank))
              (bytesize (* length elem-bytes))
              (current-idx arg-index))
@@ -1032,18 +1032,33 @@
         (incf current-idx)
         current-idx))))
 
-(defun %l0-emit-tensor-arg (stream param param-name param-type param-dir context-var device-var arg-index)
+(defun %l0-emit-tensor-arg (stream param param-name param-type param-dir context-var device-var arg-index dispatch-info)
   (let* ((rank (or (getf param :rank)
                    (let ((n3 (third param-type)))
                      (if (integerp n3) n3 1))))
          (elem-type (second param-type))
          (align (getf param :align))
          (elem-str (crisp-type-to-cpp-type elem-type))
-         (dim-extent 4) ; test harness: 4 elements per dimension
          (param-name-cpp (substitute #\_ #\- param-name))
-         (ptr-var (format nil "~a_ptr" param-name-cpp)))
+         (ptr-var (format nil "~a_ptr" param-name-cpp))
+         (extents-list (let ((lst (make-list rank :initial-element 4)))
+                         (let* ((global-decl (getf dispatch-info :global-size))
+                                (strategy (getf (cdr global-decl) :strategy))
+                                (derive-from (getf (cdr global-decl) :derive-from))
+                                (tile-shape (getf (cdr global-decl) :tile-shape)))
+                           (when (and strategy
+                                      (string-equal (symbol-name strategy) "TILED")
+                                      derive-from
+                                      (member param-name (if (listp derive-from) derive-from (list derive-from))
+                                              :test (lambda (a b) (string-equal (string a) (string b)))))
+                             (loop for k from 0 below (min rank (length tile-shape)) do
+                               (let* ((tx (nth k tile-shape))
+                                      (base (nth k lst))
+                                      (padded (* (ceiling base tx) tx)))
+                                 (setf (nth k lst) padded)))))
+                         lst)))
     (multiple-value-bind (extents strides)
-        (%tensor-compact-extents-strides rank dim-extent)
+        (%tensor-compact-extents-strides rank extents-list)
       (let* ((total-elems (* (first strides) (first extents)))
              (offsets (make-list rank :initial-element 0))
              (elem-bytes (if (or (string-equal elem-str "double")
@@ -1067,8 +1082,11 @@
           param-name)
         (format stream "        return 1;~%")
         (format stream "    }~%")
-        (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)_i;~%"
-          total-elems ptr-var elem-str)
+        (let* ((global-decl (getf dispatch-info :global-size))
+               (pad-with (getf (cdr global-decl) :pad-with)))
+          (if (and pad-with (eql pad-with 0))
+              (format stream "    memset(~a, 0, ~d * sizeof(~a));~%" ptr-var total-elems elem-str)
+              (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)_i;~%" total-elems ptr-var elem-str)))
         (format stream "    // Arg ~d: ~a PTR~%" current-idx param-name)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
           current-idx ptr-var)
@@ -1173,7 +1191,7 @@
              arg-index type-str param-name)))))
   (incf arg-index))
 
-(defun generate-kernel-arguments-with-usm (stream declared-sig aliases records context-var device-var)
+(defun generate-kernel-arguments-with-usm (stream declared-sig aliases records context-var device-var dispatch-info)
   "Generate kernel argument setup code with USM allocation for cells/tensors.
    Handles:
      cell                   — 3 args (ptr, byte-size, offset)
@@ -1213,7 +1231,7 @@
 
          ((tensor-type-p param-type)
            (multiple-value-bind (new-idx alloc)
-               (%l0-emit-tensor-arg stream param param-name param-type param-dir context-var device-var arg-index)
+               (%l0-emit-tensor-arg stream param param-name param-type param-dir context-var device-var arg-index dispatch-info)
              (setf arg-index new-idx)
              (when alloc (push alloc allocations))))
 

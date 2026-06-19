@@ -39,7 +39,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
       ;; STEP 1: local match detection
       (set! is-a-match (when (< i (length~ ,input-vec)) (funcall predicateF (~ ,input-vec i)))
       (set! (~ local-wg-matches (get-local-linear-id)) (select-if is-a-match 1 0))
-      (local-barrier)
+      (sync-workgroup)
       ;; local-wg-matches = #(0 1 0 1 1 0 ...)
 
       ;; STEP 2: Reorder
@@ -52,7 +52,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
           (set! wg-offset (atomic-add! global-counter count))))
       
       ;; STEP 4 - write results to global memory
-      (local-barrier)
+      (sync-workgroup)
 
       (when is-a-match
         (let ((final-write-pos (+ (~ local-wg-matches local-id) wg-offset)))

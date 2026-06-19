@@ -9,7 +9,7 @@
 (declaim (check-barriers #'some-function #'other-function))
 ```
 
-If a `(local-barrier)` is placed inside a conditional branch that not all threads in a workgroup will execute, the kernel will deadlock.
+If a `(sync-workgroup)` is placed inside a conditional branch that not all threads in a workgroup will execute, the kernel will deadlock.
 Crisp performs this check automatically for any use of `when-thread-in-group-is`, whether this check has been elected or not.
 But with this check declared, Crisp will try to analyze other thread divergences and barriers looking for deadlock potential.
 

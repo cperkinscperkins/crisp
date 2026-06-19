@@ -30,7 +30,7 @@ POssible Implementation:
           (set! (~ ,local-flags-var local-id) (if match? 1 0))))
 
       ;; Ensure all flags are written before the user's code runs
-      (local-barrier)
+      (sync-workgroup)
 
       ;; Splice in the body provided by the user
       ,@body))

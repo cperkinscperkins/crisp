@@ -515,7 +515,11 @@
   "Helper: Enforces kernel requirements when Auto-Differentiation is enabled.
    Returns T if the kernel should be differentiated, NIL if it is forward-only."
   (if *differentiate-p*
-      (let ((is-forward-only (find "FORWARD-ONLY" declarations :key (lambda (x) (when (symbolp x) (symbol-name x))) :test #'string-equal)))
+      (let ((is-forward-only (find "FORWARD-ONLY" declarations 
+                                   :key (lambda (x) 
+                                          (cond ((symbolp x) (symbol-name x))
+                                                ((and (consp x) (symbolp (car x))) (symbol-name (car x)))))
+                                   :test #'string-equal)))
         (if is-forward-only
             nil
             (if (member '&out signature-types)
@@ -831,21 +835,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
      (t
        (cons (car form) (cons rewritten-bindings rewritten-body))))))
 
-(defun %expand-request-load-tile-coords-op (form type-resolver-fn location)
-  "Normalize request-load-tile-coords -> load-tile-coords (sync)."
-  (let ((sync-sym (intern "LOAD-TILE-COORDS" (find-package :crisp-language))))
-    (cons sync-sym
-          (mapcar (lambda (sub)
-                    (%expand-stride-macros-in-form sub type-resolver-fn location))
-              (cdr form)))))
 
-(defun %expand-request-store-tile-coords-op (form type-resolver-fn location)
-  "Normalize request-store-tile-coords -> store-tile-coords."
-  (let ((sync-sym (intern "STORE-TILE-COORDS" (find-package :crisp-language))))
-    (cons sync-sym
-          (mapcar (lambda (sub)
-                    (%expand-stride-macros-in-form sub type-resolver-fn location))
-              (cdr form)))))
 
 (defun %expand-stride-macros-in-form (form type-resolver-fn location)
   "Recursively walks FORM and rewrites tensor-stride / grid-stride /
@@ -874,12 +864,6 @@ processes float inputs — integer tensor inputs contribute zero gradient."
           (%expand-workgroup-stride-op form type-resolver-fn location))
         ((string-equal op-name "LET")
           (%expand-let-stride-op form type-resolver-fn location))
-        ((string-equal op-name "REQUEST-LOAD-TILE-COORDS")
-          (%expand-request-load-tile-coords-op form type-resolver-fn location))
-        ((string-equal op-name "REQUEST-STORE-TILE-COORDS")
-          (%expand-request-store-tile-coords-op form type-resolver-fn location))
-        ((string-equal op-name "AWAIT-REQUEST")
-          nil)
         (t
           (cons (car form)
                 (mapcar (lambda (sub)
@@ -1736,6 +1720,32 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   "Creates an async barrier locally. For compilation analysis, returns a stub value."
   0)
 
+(defmacro make-arrival-sync-handle (counter count)
+  `(%construct-struct crisp-language:arrival-sync-handle ,counter ,count))
+
+(defmacro arrival-sync-handle-counter (obj)
+  `(progn (declare (crisp-system-generated))
+          (%extract-struct-member ,obj 0)))
+
+(defmacro arrival-sync-handle-count (obj)
+  `(progn (declare (crisp-system-generated))
+          (%extract-struct-member ,obj 1)))
+
+(defmacro make-arrival-sync (count)
+  "Creates an arrival sync handle using a global atomic counter."
+  `(make-arrival-sync-handle :counter (make-scratch-cell int :address-space :global) :count ,count))
+
+(defmacro sync-arrive (handle)
+  "Puts one unit into the sync bucket."
+  `(atomic-add! (~ (arrival-sync-handle-counter ,handle)) 1))
+
+(defmacro sync-wait (handle)
+  "Blocks until count units have been put into the sync bucket."
+  `(progn
+    (while (< (crisp.compiler::%volatile-read (~ (arrival-sync-handle-counter ,handle))) (arrival-sync-handle-count ,handle))
+           (mem-fence))
+    (sync-workgroup)))
+
 (defmacro await (barrier)
   "Awaits an async barrier."
   (declare (ignore barrier))
@@ -1745,7 +1755,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let ((has-barrier (getf key-args :barrier))
         (has-transformf (or (getf key-args :transformf) (getf key-args :transformF))))
     (when (and has-barrier has-transformf)
-          (error "Cannot use :barrier and :transformF at the same time."))))
+          (error "Cannot use :barrier and :transformF together."))))
 
 (defmacro load-tile-at (src tile grid-list &rest key-args)
   "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."
@@ -1774,3 +1784,31 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                for i from 0
                collect `(* ,g (~ (extents~ ,tile) ,i)))))
     `(store-tile-at ,tile ,dest ,pixel-coords ,@key-args)))
+
+
+(defmacro position-tile-at (tile parent grid-list)
+  "Sets the tile to view a sub-region of the parent tensor at the specified coordinates.
+   Updates the tile's parent and offset metadata in place without transferring data."
+  (let* ((ndim (length grid-list))
+         (sets (loop for i from 0 below ndim
+                     for coord in grid-list
+                     collect `(set! (~ (offset~ ,tile) ,i)
+                                    (+ (~ (offset~ ,parent) ,i)
+                                       (* (as ulong ,coord) (~ (strides~ ,parent) ,i)))))))
+    `(progn
+       (set! (parent~ ,tile) (parent~ ,parent))
+       ,@sets)))
+
+(defmacro position-tile (tile parent grid-list)
+  "Sets the tile to view a sub-region of the parent tensor at the specified grid coordinates.
+   Updates the tile's parent and offset metadata in place without transferring data."
+  (let* ((ndim (length grid-list))
+         (sets (loop for i from 0 below ndim
+                     for coord in grid-list
+                     collect `(set! (~ (offset~ ,tile) ,i)
+                                    (+ (~ (offset~ ,parent) ,i)
+                                       (* (* (as ulong ,coord) (~ (extents~ ,tile) ,i))
+                                          (~ (strides~ ,parent) ,i)))))))
+    `(progn
+       (set! (parent~ ,tile) (parent~ ,parent))
+       ,@sets)))

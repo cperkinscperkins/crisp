@@ -43,7 +43,6 @@ be an NVidia architecture.).
 
 | ID       | Description                    |
 |----------|--------------------------------|
-| `sm_75`  | NVIDIA Turing (RTX 2000 Series / T4) |
 | `sm_80`  | NVIDIA Ampere (A100)           |
 | `sm_86`  | NVIDIA Ampere (RTX 3000 Series)  |
 | `sm_89`  | NVIDIA Ada Lovelace (RTX 4000 Series / L40) |

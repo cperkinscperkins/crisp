@@ -647,13 +647,18 @@ NEXT
 - [x] lose "helper" load-tile / store-tile
 - [ ] (await barrier) maps to cp.async.wait_all , not individual barriers.
 - [ ] strategy :tiled so we can get hoist testing. 
-- [ ] rename load-barrier => sync-workgroup
+- [ ] rename local-barrier => sync-workgroup
 - [ ] sync-warp
 - [ ] make-arrival-sync
-- [ ] update ideal_001.md
+- [ ] update ideal_001.md - sync-warp
 - [ ] revisit request-load-local in ideal_001.md.  Do we need a new variant? Or delete?
 - [ ] matrix-mult-stride ?  if we do this do we need mma-accumulate-via-tile / load-fragment etc.
 - [ ] we need position-tile-grid and position-tile-ad to adjust a tile view "into" a space.
+
+code coverage
+=============
+- [ ] maybe (sb-cover) ?
+- [ ] for unit tests, and e2e spec
 
 --runtime-checks
 ================

@@ -63,9 +63,9 @@ not support the `:transformF` key.
 
 > Implementation Note: first order functions are automatically templated and monomorphically specialized in Crisp
 
-#### local-barrier ✅
+#### sync-workgroup ✅
 
-Both `load-tile` and `store-tile` invoke `(local-barrier)` at the completion of their
+Both `load-tile` and `store-tile` invoke `(sync-workgroup)` at the completion of their
 operation. This prevents read-after-write and write-after-read race conditions. 
 But be aware, that this also means these functions should NOT appear in conditional blocks 
 ( `when`, `if`, `cond`, `unless`) or you will incure a deadlock. The Crisp compiler should

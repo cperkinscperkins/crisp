@@ -158,7 +158,7 @@ A possible implementation might be
       ;; Each thread loads one element. For simplicity, assume N = global_size
       (when (< global-id N) ;; Boundary check for global data
         (set! (~ shared-array local-id) (~ data-in global-id)))
-      (local-barrier)
+      (sync-workgroup)
 
       ;; perform Bitonic Sort
       ;; Outer loop: Builds increasingly large bitonic sequences
@@ -174,12 +174,12 @@ A possible implementation might be
 
             (when (< partner-id N) ; Ensure partner ID is within bounds (for non-power-of-2 sizes)
               (bitonic-compare-and-swap shared-array local-id partner-id direction keyF))) 
-          (local-barrier)))
+          (sync-workgroup)))
 
       ; store sorted data from shared to global memory
       (when (< global-id N) ;; Boundary check for global data
         (set! (~ data-out global-id) (~ shared-array local-id)))
-      (local-barrier)))
+      (sync-workgroup)))
 
 ;; in place sorting
 (with-template-type (T A)

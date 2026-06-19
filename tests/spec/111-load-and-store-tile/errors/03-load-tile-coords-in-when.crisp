@@ -2,7 +2,7 @@
 ;; CHECK-FAIL: "divergent"
 
 ;; load-tile-coords inside a thread-divergent (when ...) would cause some
-;; threads to enter the cooperative loop + local-barrier and others to skip,
+;; threads to enter the cooperative loop + sync-workgroup and others to skip,
 ;; deadlocking at the barrier.  The compiler should reject this.
 
 (def-type vec-t  (vector ulong :address-space :global :align :compact))

@@ -29,7 +29,7 @@
    ;; Types
    #:llvm-void-type
    #:llvm-int32-type-in-context #:llvm-int64-type-in-context
-   #:llvm-int32-type #:llvm-int8-type #:llvm-int8-type-in-context #:llvm-int16-type #:llvm-int64-type #:llvm-int16-type
+   #:llvm-int32-type #:llvm-int8-type #:llvm-int8-type-in-context #:llvm-int16-type #:llvm-int64-type #:llvm-int1-type
    #:llvm-type-kind-is-pointer?
    #:llvm-get-type-kind
    #:llvm-get-type-by-name
@@ -354,7 +354,19 @@
    #:die #:r-t-assert #:r-t-assert-0
    
    ;; Async operations
-   #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile))
+   #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile #:load-local #:store-global
+   #:position-tile #:position-tile-at
+   #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle
+   
+   ;; GPU Built-ins
+   #:get-global-id #:get-local-id #:get-workgroup-id #:get-num-groups
+   #:get-local-work-size #:get-global-work-size #:get-global-offset
+   #:get-global-id-abs #:get-work-dim
+   #:get-local-linear-id #:get-local-linear-size
+   #:get-global-linear-id #:get-global-linear-size
+   #:get-total-threads #:get-total-groups
+   #:sync-workgroup #:sync-warp #:mem-fence
+   #:warp-id #:warp-lane #:warp-count))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -418,7 +430,9 @@
                 #:c-t-assert #:c-t-output
                 
                 ;; Async operations
-                #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile
+                #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile #:load-local #:store-global
+                #:position-tile #:position-tile-at
+                #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle
 
                 ;; All Crisp types
                 #:char #:short #:int #:long
@@ -427,6 +441,16 @@
                 #:storage #:c-pointer #:voidp
                 #:uchar #:ushort #:uint #:ulong
                 #:half #:bfloat16 #:float #:double
+
+                ;; GPU Built-ins
+                #:get-global-id #:get-local-id #:get-workgroup-id #:get-num-groups
+                #:get-local-work-size #:get-global-work-size #:get-global-offset
+                #:get-global-id-abs #:get-work-dim
+                #:get-local-linear-id #:get-local-linear-size
+                #:get-global-linear-id #:get-global-linear-size
+                #:get-total-threads #:get-total-groups
+                #:sync-workgroup #:sync-warp #:mem-fence
+                #:warp-id #:warp-lane #:warp-count
 
                 ;; Accessors
                 #:address~ #:byte-size~ #:address-space~
@@ -582,8 +606,9 @@
 
    ;; Compiler/Codegen
    #:emit-llvm
-   #:compile-function #:store-chunk #:load-tile #:store-tile
-   #:load-tile-at #:store-tile-at #:make-async-barrier #:await
+   #:compile-function #:store-chunk #:load-tile #:store-tile #:load-local #:store-global
+   #:load-tile-at #:store-tile-at #:position-tile #:position-tile-at #:make-async-barrier #:await
+   #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle
    #:~ #:set! #:length~ #:~ref~
 
    ;; Ops

@@ -1,0 +1,14 @@
+;; TEST-EXPECT: FAIL
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+;; CHECK-FAIL: "MEM-FENCE cannot appear inside a thread-divergent conditional"
+
+
+(def-kernel test_arrival_sync_divergent ()
+  (declare #'( => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  
+  (let ((sync (make-arrival-sync 128)))
+    (sync-arrive sync)
+    (when (> (get-global-id 0) (to-ulong 10))
+      (sync-wait sync))))
