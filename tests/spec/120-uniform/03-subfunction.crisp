@@ -1,0 +1,23 @@
+
+
+
+(def-function C (x)
+    (declare #'(ulong => ulong))
+    (declare (uniform x))
+    (if+ (< x 13ul)
+      x
+      (- x 2ul)))
+      
+(def-function B (x y)
+    (declare #'(ulong ulong => ulong))
+    (declare (uniform x))
+    (+ (C x) y))
+
+
+(def-type out-c (cell ulong :address-space :global))
+
+(def-kernel A_kernel (x &out res)
+(declare #'(ulong &out out-c => nil))
+    (let ((y (get-global-id 0)))
+      (set! (~ res) (B x y))))
+

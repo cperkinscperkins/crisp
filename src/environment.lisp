@@ -55,9 +55,24 @@
        (log:debug "PARSE CASE 3: Standard declarations. Params: ~s" params)
        (setf env (analyze-environment-from-list params declarations))))
 
+    ;; Apply uniformity declarations
+    (when env
+      (let ((is-entry-point (find "ENTRY-POINT" declarations :key (lambda (x) (and (consp x) (symbol-name (car x)))) :test #'string-equal))
+            (uniform-vars (loop for d in declarations
+                                when (and (consp d) (symbolp (first d)) (string-equal (symbol-name (first d)) "UNIFORM"))
+                                append (rest d))))
+        (if is-entry-point
+            ;; All params in entry-point are uniform by definition
+            (dolist (p env)
+              (setf (parameter-def-uniformity p) :uniform))
+            ;; Only explicitly declared uniform parameters
+            (dolist (uvar uniform-vars)
+              (let ((p (find uvar env :key #'parameter-def-name)))
+                (if p
+                    (setf (parameter-def-uniformity p) :uniform)
+                    (log:warn "Declared uniform parameter ~s not found in parameter list." uvar)))))))
+
     ;; Post-process: resolve parameterized brand applications in return types.
-    ;; A parameterized brand application looks like (BRAND-NAME VAR-REF) where
-    ;; BRAND-NAME is in *parameterized-brand-names*. We resolve it using the
     ;; environment to find the variable's owner type and the per-owner base type.
     (when env
       (setf return-types

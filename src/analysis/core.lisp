@@ -1404,6 +1404,20 @@ in single-pass mode."
             :inferred (length explicit-arg-types)
             :source-location location))
 
+        ;; === Uniformity Constraint Checking ===
+        (let ((sig-params (function-signature-parameters signature)))
+          (loop for param in sig-params
+                for arg-node in explicit-arg-nodes
+                do (when (eq (parameter-def-uniformity param) :uniform)
+                     (let ((arg-uniformity (calculate-uniformity-state arg-node env)))
+                       (unless (eq arg-uniformity :uniform)
+                         (error 'crisp-compiler-error
+                           :message (format nil "Function ~a requires parameter ~a to be :uniform, but inferred state was ~a. Use (to-workgroup-uniform ...) if you must."
+                                            (function-signature-name signature)
+                                            (parameter-def-name param)
+                                            arg-uniformity)
+                           :source-location location))))))
+
         (let ((augmented-signature
                (if implicit-args-required
                    (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required

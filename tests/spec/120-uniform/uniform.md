@@ -14,7 +14,7 @@ The base compile-time routines for this are these:
 
 Quick Summary
 =============
-
+[/]
 (uniformity-state <var>) => :uniform | :divergent | :unknown 
  compile-time determination of the variable uniformity. For variables this can be checked to see if the variable originates as a scalar/arg at the kernel boundary itself. Go up the tree. There are other things as well, discussed below.
 

@@ -1,0 +1,41 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+
+;; Test positive compilation of uniformity intrinsics
+;; These forms allow users to query the uniformity state of expressions at compile time.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel uniformity_intrinsics_test (OUT)
+  (declare #'(vec-t => nil))
+  
+  (let ((gid (get-global-id 0))
+        (wid (get-workgroup-id 0))
+        (lid (get-local-id 0)))
+    
+    ;; provably-uniform?
+    (if (provably-uniform? wid)
+        (set! (~ OUT gid) 1.0)
+        (set! (~ OUT gid) 0.0))
+
+    ;; provably-divergent?
+    (if (provably-divergent? lid)
+        (set! (~ OUT gid) (+ (~ OUT gid) 1.0))
+        (set! (~ OUT gid) (+ (~ OUT gid) 0.0)))
+        
+    ;; (uniformity-state) is generally intended for other intrinsics or 
+    ;; static evaluators, since we don't have keyword equality in the GPU kernel.
+
+    ;; to-workgroup-uniform converts divergent -> uniform
+    ;; so provably-uniform? on the result should be true.
+    ;; We use a let-binding to ensure the state propagates.
+    (let ((u-lid (to-workgroup-uniform lid)))
+      (if (provably-uniform? u-lid)
+          (set! (~ OUT gid) (+ (~ OUT gid) 1.0))
+          (set! (~ OUT gid) (+ (~ OUT gid) 0.0))))
+
+    ;; to-warp-uniform converts divergent -> uniform at warp level
+    (let ((w-lid (to-warp-uniform lid)))
+      (if (provably-uniform? w-lid)
+          (set! (~ OUT gid) (+ (~ OUT gid) 1.0))
+          (set! (~ OUT gid) (+ (~ OUT gid) 0.0))))))
