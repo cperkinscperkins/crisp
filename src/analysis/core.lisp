@@ -845,8 +845,8 @@ in single-pass mode."
 
 (defun internal-compile-function (name explicit-env return-type params body declarations location context)
   "Core compilation logic for a function, accepting a pre-parsed environment."
-  (format *terminal-io* "COMPILE: ~s (single-pass: ~a)~%" name (single-pass-mode-p))
-  (format *terminal-io* "COMPILE: ~s (env keys for ~s: ~s)~%" name name (mapcar #'car (gethash name *implicit-arg-map*)))
+  (log:info "COMPILE: ~s (single-pass: ~a)" name (single-pass-mode-p))
+  (log:info "COMPILE: ~s (env keys for ~s: ~s)" name name (mapcar #'car (gethash name *implicit-arg-map*)))
 
   ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
   (let ((name-str (symbol-name name)))
