@@ -12,17 +12,7 @@ The default case for `cond` is not `T` like it is in Common Lisp. That would be 
 with the very common `T` used for templating.  Instead in Crisp, `cond` uses `else` as the default case.
 
 #### + variant ✅
-The `+` variant exists as well (`if+`, `when+`, `unless+`, `cond+`). 
-This variant checks that the predicate expression is compile time calculable. It wil error if it is not.
-This variant is very useful for when you expect the compiler will "compile away" some clause. 
-Use it to have your intentions confirmed, rather than guessing. 
-
-This is parallel to  `if constexpr (...)` introduced in C++17.
-
-#### * variant 📝
-Each of these has a `*` variant: `if*`, `when*`, `unless*`, and `cond*`.  
-
-The `*` variant checks that the predicate expression is uniform across the entire warp. If the compiler
+The `+` variant checks that the predicate expression is uniform across the entire warp. If the compiler
 detects that it is not, it will emit an error. This variant is EXTREMELY USEFUL when developing 
 high performance non-diverging code. 
 

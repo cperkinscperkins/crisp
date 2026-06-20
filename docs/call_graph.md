@@ -570,6 +570,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp
+- - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
 - - - - - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
 - - - - - - - - - - - - - - (%FIND-BRAND-OWNER-VAR BRAND-NAME SIG-PARAMS ARG-NODES)  types/brand.lisp
@@ -1079,10 +1082,14 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-DEC!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 
-- (ANALYZE-DOTIMES-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- (ANALYZE-DOTIMES+-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+- - (ANALYZE-DOTIMES-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+- - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-DVEC-COMPONENT-REF EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1227,6 +1234,14 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 
+- (ANALYZE-PROVABLY-DIVERGENT? EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+
+- (ANALYZE-PROVABLY-UNIFORM? EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+
 - (ANALYZE-QUOTE EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 
 - (ANALYZE-REM-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
@@ -1279,6 +1294,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (ANALYZE-IF-EXPRESSION-IMPL EXPR ENV CONTEXT LOCATION &KEY ENFORCE-CONSTANT)  analysis/control.lisp
 - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - - - (TRY-CONSTANT-FOLD NODE)  analysis/ops.lisp [See above]
+- - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
 - - - - (ENSURE-BRANCH-COMPATIBILITY THEN-NODE ELSE-NODE LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-STATIC-WHEN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
@@ -1333,6 +1349,14 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp [See above]
 - - (%EXPAND-TILE-STRIDE-FORM EXPR CT LOCATION)  analysis/control.lisp [See above]
 
+- (ANALYZE-TO-WARP-UNIFORM EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-TO-WORKGROUP-UNIFORM EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+
 - (ANALYZE-TRANSPOSE-BANG-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
@@ -1346,12 +1370,28 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 
+- (ANALYZE-UNIFORMITY-STATE EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+
+- (ANALYZE-UNLESS+-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-IF+-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (TRY-CONSTANT-FOLD NODE)  analysis/ops.lisp [See above]
+- - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+- - - (ANALYZE-%UNIFORM-IF-IMPL EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
+- - (IF+ TEST THEN &OPTIONAL ELSE)  macros.lisp
+
 - (ANALYZE-UNLESS-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-IF-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - - (ANALYZE-IF-EXPRESSION-IMPL EXPR ENV CONTEXT LOCATION &KEY ENFORCE-CONSTANT)  analysis/control.lisp [See above]
 
 - (ANALYZE-VALUE-CAST-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+
+- (ANALYZE-WHEN+-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-IF+-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
+- - (IF+ TEST THEN &OPTIONAL ELSE)  macros.lisp [See above]
 
 - (ANALYZE-WHEN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-IF-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
@@ -1524,8 +1564,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (GET-TEMPLATE-SIGNATURE NAME CONCRETE-TYPES)  templates.lisp
-
-- (IF+ TEST THEN &OPTIONAL ELSE)  macros.lisp
 
 - (INITIALIZE-TEMPLATES)  templates.lisp
 

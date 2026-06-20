@@ -15,12 +15,12 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 - - load-tile
 - - store-tile
 - workgroup-stride
-- dotimes / dotimes+ / dotimes*
+- dotimes / dotimes+
 - do-times-by-doubling
 - do-times-by-multiply
-- dec-times / dec-times+ / dec-times*
-- dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
-- dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
+- dec-times / dec-times+
+- dec-times-by-half / dec-times-by-half+
+- dec-times-by-factor / dec-times-by-factor+
 - do-power-step
 - dec-power-step
 
@@ -29,13 +29,9 @@ All of the above bind a loop index. Unlike in a C++ `for` loop, that index value
 body of the loop.
 
 #### + variants 📝
-Most of the Looping Constructs have a variant whose name ends in `+`. These variants 
-only accept compile-time calculable values for their target `N` . The compiler will emit
-an error if `N` is not. 
-
-#### * variants 📝
-The compiler will check that the target `N` is uniform across the warp. If the compiler
-detects that it is not warp-level uniform, it will emit an error. 
+Most of the Looping Constructs have a variant whose name ends in `+`. 
+The compiler will check that the target `N` is uniform across the workgroup. If the compiler
+detects that it is not workgroup-level uniform, it will emit an error. 
 
 #### variants compared
 Let's start with a simple example:
@@ -51,30 +47,23 @@ between threads, the loop will not be uniformly executed and this may result in 
 (dotimes+ (x (+ a b))
  ...)
 ```
-If `(+ a b)` is calculable at compile time, then this is fine. The compiler will insert that value and the loop 
-will be uniform. The compiler might even elect to unroll the loop for faster performance.
+If `(+ a b)` is calculable at compile time, then this is fine. The compiler will insert that value and the loop will be uniform. The compiler might even elect to unroll the loop for faster performance.
 
 
-
-`*`
-```
-(dotimes* (x (+ a b))
- ...)
-```
-The compiler will check that both `a` and `b` are warp-level uniform. If they are, then their sum is as well and 
+Otherwise the compiler will check that both `a` and `b` are warp-level uniform. If they are, then their sum is as well and 
 this will both compile just fine, but it'll execute quickly without stalling. But if the compiler
 detects that this is not warp-level uniform it will emit an error.
 
 
 
-#### dotimes / dotimes+ / dotimes* ⚠️
+#### dotimes / dotimes+  ⚠️
 ```
  (dotimes (i N:ulong &optional (stride:ulong 1)) 
     ...)
 ```
 Binds `i` to 0, counts up to N, incrementing by `stride` each time through the loop. `stride` is optional, defaults to 1.
 
-#### dec-times / dec-times+ / dec-times* 📝
+#### dec-times / dec-times+  📝
 ```
   (dec-times (i N:ulong &optional (stride:ulong 1))
     ...)
@@ -83,7 +72,7 @@ Binds `i` to `N-1` and counts down to `0`, subtracting `stride` each time throug
 This is the opposite of `dotimes`
 
 
-#### do-times-by-doubling / do-times-by-double+ / do-times-by-doubling* 📝
+#### do-times-by-doubling / do-times-by-double+ 📝
 ```
   (do-times-by-doubling (i:ulong init:ulong N:ulong) 
    ...)
@@ -94,7 +83,7 @@ it reaches (or exceeds) `N`.  The last call will always have `i` bound to a valu
 Example: If `init` is 1 and `N` is 64: i => 1, 2, 4, 8, 16, 32, 64
 Example: If `init` is 1 and `N` is 100: i => 1, 2, 4, 8, 16, 32, 64
 
-#### do-times-by-multiply / do-times-by-multiply+ / do-times-by-multiply* 📝
+#### do-times-by-multiply / do-times-by-multiply+  📝
 ```
   (do-times-by-multiply (i:ulong init:ulong N:ulong factor:ulong)
    ...)
@@ -107,7 +96,7 @@ The `factor` value must be greater than 1.
 Example:  `init` is 1  `N` is 64 and the `factor` is 4:  i => 1, 4, 16, 64
 
 
-#### dec-times-by-half / dec-times-by-half+ / dec-times-by-half* 📝
+#### dec-times-by-half / dec-times-by-half+  📝
 ```
   (dec-times-by-half (i:ulong N:ulong)
     ...)
@@ -121,7 +110,7 @@ the full value.  See the example for `sum_vector` with barriers below.
 
 If your algorithm always needs powers of two, make sure `N` is a power of 2 itself, or consider using `dec-power-step` instead ( below ).
 
-#### dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor* 📝
+#### dec-times-by-factor / dec-times-by-factor+ 📝
 ```
   (dec-times-by-factor (i:ulong N:ulong factor:ulong)
      ...)
@@ -138,7 +127,7 @@ Example #1:  `N` is 64 and the `factor` is 4:  i => 64, 16, 4, 1
 Example #2:  `N` is 24 and the `factor` is 5:  i => 24, 4
 
 
-#### do-power-step / do-power-step+ / do-power-step* 📝
+#### do-power-step / do-power-step+ 📝
 
 ```
   (do-power-step (step-var:ulong limit:ulong) 
@@ -165,7 +154,7 @@ The number of steps taken is `(log2 padded_limit)` ( aka `(log padded_limit 2)`)
 ```
 
 
-#### dec-power-step / dec-power-step+ / dec-power-step* 📝
+#### dec-power-step / dec-power-step+ 📝
 
 ```
   (dec-power-step (step-var:ulong limit:ulong) 
