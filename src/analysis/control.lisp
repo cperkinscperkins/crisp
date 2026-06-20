@@ -480,12 +480,18 @@
     (when enforce-constant
           (error "IF+ condition failed to evaluate at compile time: ~a" expr))
 
-    ;; Phase 1d: both branches will be analyzed → runtime divergence.  Bind
-    ;; *in-divergent-conditional* to T for the branch analyses so that any
-    ;; load-tile-coords / store-tile-coords inside either branch is rejected.
-    (let* ((*in-divergent-conditional* t)
-           (then-node (analyze-expression (third expr) env context (append location '(2))))
-           (else-node (if (fourth expr) (analyze-expression (fourth expr) env context (append location '(3))) nil)))
+    ;; Calculate uniformity state of the condition
+    (let ((cond-uniformity (calculate-uniformity-state cond-node env)))
+
+      ;; Phase 1d: both branches will be analyzed → runtime divergence.  Bind
+      ;; *in-divergent-conditional* to T for the branch analyses so that any
+      ;; load-tile-coords / store-tile-coords inside either branch is rejected.
+      (let* ((*in-divergent-conditional* t)
+             (*divergent-scope-depth* (if (not (eq cond-uniformity :uniform))
+                                          (1+ *divergent-scope-depth*)
+                                          *divergent-scope-depth*))
+             (then-node (analyze-expression (third expr) env context (append location '(2))))
+             (else-node (if (fourth expr) (analyze-expression (fourth expr) env context (append location '(3))) nil)))
 
       (multiple-value-bind (unified-type final-then final-else)
           (ensure-branch-compatibility then-node else-node location)
@@ -494,10 +500,23 @@
                           :condition-node cond-node
                           :then-node final-then
                           :else-node final-else
-                          :source-location location)))))
+                          :source-location location))))))
 
 (defun analyze-if-expression (expr env context location)
   (analyze-if-expression-impl expr env context location :enforce-constant nil))
+
+(defun analyze-if+-expression (expr env context location)
+  "Strictly checks that the condition is workgroup-uniform at compile time.
+   If unknown, prompts for a declare uniform."
+  (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
+         (cond-node (try-constant-fold raw-cond-node))
+         (cond-uniformity (calculate-uniformity-state cond-node env)))
+    (unless (eq cond-uniformity :uniform)
+      (error 'crisp-compiler-error
+        :message (format nil "if+ requires a provably uniform condition. Condition was inferred as ~a. If you are certain it is uniform, use (declare (uniform ...)) or (let ((u (to-workgroup-uniform ...))) ...) to assert uniformity." cond-uniformity)
+        :source-location location))
+    ;; Condition is proven uniform. Hand off to uniform-if-impl which does NOT increment scope depth.
+    (analyze-%uniform-if-impl expr env context location)))
 
 (defun analyze-static-if-expression (expr env context location)
   (analyze-if-expression-impl expr env context location :enforce-constant t))
@@ -508,6 +527,11 @@
   (let ((cond (second expr))
         (body (cons 'progn (cddr expr))))
     (analyze-if-expression `(if ,cond ,body) env context location)))
+
+(defun analyze-when+-expression (expr env context location)
+  (let ((cond (second expr))
+        (body (cons 'progn (cddr expr))))
+    (analyze-if+-expression `(if+ ,cond ,body) env context location)))
 
 (defun analyze-static-when-expression (expr env context location)
   (let ((cond (second expr))
@@ -520,6 +544,11 @@
   (let ((cond (second expr))
         (body (cons 'progn (cddr expr))))
     (analyze-if-expression `(if ,cond nil ,body) env context location)))
+
+(defun analyze-unless+-expression (expr env context location)
+  (let ((cond (second expr))
+        (body (cons 'progn (cddr expr))))
+    (analyze-if+-expression `(if+ ,cond nil ,body) env context location)))
 
 (defun analyze-static-unless-expression (expr env context location)
   (let ((cond (second expr))
@@ -1016,17 +1045,39 @@
         :message (format nil "dotimes limit must be an integer type, got ~a" limit-type)
         :source-location location))
     ;; Analyze stride if provided
+    ;; Analyze stride if provided
     (let ((stride-node (when stride-form
                              (analyze-expression stride-form env context (append location '(0 1))))))
-      ;; Extend env: bind var as the limit's type
-      (let* ((body-env (cons (make-parameter-def :name var-name :type limit-type :kind :local) env))
-             (body-nodes (analyze-body-expressions body-forms body-env context (append location '(1)))))
-        (make-semantic-dotimes :type 'void
-                               :var-name var-name
-                               :limit-node limit-node
-                               :stride-node stride-node
-                               :body body-nodes
-                               :source-location location)))))
+      ;; Check uniformity
+      (let* ((limit-uniformity (calculate-uniformity-state limit-node env))
+             (stride-uniformity (if stride-node (calculate-uniformity-state stride-node env) :uniform))
+             (is-divergent (or (eq limit-uniformity :divergent) (eq stride-uniformity :divergent)
+                               (eq limit-uniformity :unknown) (eq stride-uniformity :unknown))))
+        ;; Extend env: bind var as the limit's type, inheriting uniformity from the limit
+        (let* ((body-env (cons (make-parameter-def :name var-name :type limit-type :kind :local :uniformity limit-uniformity) env))
+               (*divergent-scope-depth* (if is-divergent (1+ *divergent-scope-depth*) *divergent-scope-depth*))
+               (body-nodes (analyze-body-expressions body-forms body-env context (append location '(1)))))
+          (make-semantic-dotimes :type 'void
+                                 :var-name var-name
+                                 :limit-node limit-node
+                                 :stride-node stride-node
+                                 :body body-nodes
+                                 :source-location location))))))
+
+(defun analyze-dotimes+-expression (expr env context location)
+  "Strictly checks that the limit (and stride) are workgroup-uniform."
+  (let* ((binding (second expr))
+         (limit-form (second binding))
+         (stride-form (third binding))
+         (limit-node (analyze-expression limit-form env context (append location '(0))))
+         (stride-node (when stride-form (analyze-expression stride-form env context (append location '(0 1)))))
+         (limit-uniformity (calculate-uniformity-state limit-node env))
+         (stride-uniformity (if stride-node (calculate-uniformity-state stride-node env) :uniform)))
+    (unless (and (eq limit-uniformity :uniform) (eq stride-uniformity :uniform))
+      (error 'crisp-compiler-error
+        :message "dotimes+ requires provably uniform limit and stride."
+        :source-location location))
+    (analyze-dotimes-expression expr env context location)))
 
 
 (defun analyze-while-expression (expr env context location)
@@ -1051,6 +1102,42 @@
                            :condition-node condition-node
                            :body body-nodes
                            :source-location location))))
+
+(defun analyze-uniformity-state (expr env context location)
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error :message "uniformity-state expects 1 argument" :source-location location))
+  ;; Evaluate the expression for its uniformity state (compile time)
+  (let* ((arg-node (analyze-expression (second expr) env context (append location '(1))))
+         (state (calculate-uniformity-state arg-node env)))
+    (make-semantic-literal :value-type 'keyword :value state :source-location location)))
+
+(defun analyze-provably-uniform? (expr env context location)
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error :message "provably-uniform? expects 1 argument" :source-location location))
+  (let* ((arg-node (analyze-expression (second expr) env context (append location '(1))))
+         (state (calculate-uniformity-state arg-node env)))
+    (make-semantic-literal :value-type 'boolean :value (eq state :uniform) :source-location location)))
+
+(defun analyze-provably-divergent? (expr env context location)
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error :message "provably-divergent? expects 1 argument" :source-location location))
+  (let* ((arg-node (analyze-expression (second expr) env context (append location '(1))))
+         (state (calculate-uniformity-state arg-node env)))
+    (make-semantic-literal :value-type 'boolean :value (eq state :divergent) :source-location location)))
+
+(defun analyze-to-workgroup-uniform (expr env context location)
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error :message "to-workgroup-uniform expects 1 argument" :source-location location))
+  (let* ((val-node (analyze-expression (second expr) env context (append location '(1))))
+         (type (get-single-value-type val-node)))
+    (make-semantic-to-workgroup-uniform :type type :value-node val-node :source-location location)))
+
+(defun analyze-to-warp-uniform (expr env context location)
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error :message "to-warp-uniform expects 1 argument" :source-location location))
+  (let* ((val-node (analyze-expression (second expr) env context (append location '(1))))
+         (type (get-single-value-type val-node)))
+    (make-semantic-to-warp-uniform :type type :value-node val-node :source-location location)))
 
 ;; ==========================================================================
 ;; Endeavor 107 — make stride macros AD-able by expanding them BEFORE the
@@ -2545,13 +2632,20 @@
   (def-expression-analyzer common-lisp:when analyze-when-expression)
   (def-expression-analyzer unless analyze-unless-expression)
   (def-expression-analyzer common-lisp:unless analyze-unless-expression)
+  (def-expression-analyzer if+ analyze-if+-expression)
+  (def-expression-analyzer when+ analyze-when+-expression)
+  (def-expression-analyzer unless+ analyze-unless+-expression)
+  (def-expression-analyzer dotimes+ analyze-dotimes+-expression)
+  (def-expression-analyzer uniformity-state analyze-uniformity-state)
+  (def-expression-analyzer provably-uniform? analyze-provably-uniform?)
+  (def-expression-analyzer provably-divergent? analyze-provably-divergent?)
+  (def-expression-analyzer to-workgroup-uniform analyze-to-workgroup-uniform)
+  (def-expression-analyzer to-warp-uniform analyze-to-warp-uniform)
   (def-expression-analyzer return analyze-return-expression)
   (def-expression-analyzer explicit-return analyze-return-expression)
   (def-expression-analyzer semantic-return analyze-return-expression)
   (def-expression-analyzer quote analyze-quote)
-  (def-expression-analyzer if+ analyze-static-if-expression)
-  (def-expression-analyzer when+ analyze-static-when-expression)
-  (def-expression-analyzer unless+ analyze-static-unless-expression)
+
   (def-expression-analyzer def-function analyze-nested-def-function)
   (def-expression-analyzer template-instantiation analyze-template-instantiation)
   (def-expression-analyzer common-lisp:eval-when analyze-eval-when)

@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "IF+ condition failed to evaluate at compile time"
+;; CHECK-FAIL: "if+ requires a provably uniform condition"
 ;; Test: Branching + Variant Failure
 ;; This checks that if+ ERRORS if the condition is not known at compile time.
 

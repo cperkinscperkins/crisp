@@ -14,6 +14,7 @@
   (is-optional nil :type boolean)
   (is-key nil :type boolean)
   (default-value nil)
+  (uniformity :unknown :type keyword)
   (source-location nil))
 
 (defmethod print-object ((obj parameter-def) stream)

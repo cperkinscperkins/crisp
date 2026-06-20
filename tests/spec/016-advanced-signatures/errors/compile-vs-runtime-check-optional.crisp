@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "IF+ condition failed to evaluate at compile time"
+;; CHECK-FAIL: "if+ requires a provably uniform condition"
 
 ;; this should fail because when+ demands a compile-time known value.
 (def-function add-some-runtime (a &optional b c)

@@ -981,6 +981,10 @@ in single-pass mode."
 ;;;   3. Propagation: f mutates :in param -> register f as struct-mutating
 ;;; ============================================================
 
+(defvar *divergent-scope-depth* 0
+  "Tracks the depth of nested divergent control flow constructs (if, when, etc.
+   with divergent conditions) during semantic analysis.")
+
 (defvar *boundary-struct-params* nil
   "Dynamic variable: list of uppercase param name strings that are def-struct
    params at the current kernel boundary. Non-nil only when compiling an
@@ -1170,6 +1174,88 @@ in single-pass mode."
 
       (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
 
+
+(defun calculate-uniformity-state (node env)
+  "Recursively determines the uniformity state of an analyzed semantic AST node.
+   Returns :uniform, :divergent, or :unknown.
+   - Literals are :uniform.
+   - Variables are looked up in the env for their stored uniformity. If env lookup
+     fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.
+   - GPU Builtins: get-workgroup-id is :uniform, get-local-id/get-global-id are :divergent.
+   - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.
+     If any arg is :divergent, it is :divergent. Otherwise :unknown.
+   - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast."
+  (etypecase node
+    (semantic-literal :uniform)
+    (semantic-device-vec-literal
+     (let ((states (mapcar (lambda (el) (calculate-uniformity-state el env))
+                           (semantic-device-vec-literal-elements node))))
+       (cond
+         ((some (lambda (s) (eq s :divergent)) states) :divergent)
+         ((every (lambda (s) (eq s :uniform)) states) :uniform)
+         (t :unknown))))
+    (semantic-var-read
+     (let ((v (find-variable-in-env (semantic-var-read-name node) env)))
+       (if v
+           (parameter-def-uniformity v)
+           :unknown)))
+    (semantic-add
+     (let ((ls (calculate-uniformity-state (semantic-add-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-add-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-sub
+     (let ((ls (calculate-uniformity-state (semantic-sub-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-sub-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-mul
+     (let ((ls (calculate-uniformity-state (semantic-mul-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-mul-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-div
+     (let ((ls (calculate-uniformity-state (semantic-div-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-div-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-sin
+     (calculate-uniformity-state (semantic-sin-arg node) env))
+    (semantic-cos
+     (calculate-uniformity-state (semantic-cos-arg node) env))
+    ((or semantic-lt semantic-gt semantic-le semantic-ge semantic-eq semantic-neq)
+     ;; Extract left-arg and right-arg using the specific struct accessors. 
+     ;; Or we can just use slot-value. Let's use slot-value for brevity in OR.
+     (let ((ls (calculate-uniformity-state (slot-value node 'left-arg) env))
+           (rs (calculate-uniformity-state (slot-value node 'right-arg) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-if
+     (let ((cs (calculate-uniformity-state (semantic-if-condition-node node) env))
+           (ts (calculate-uniformity-state (semantic-if-then-node node) env))
+           (es (calculate-uniformity-state (semantic-if-else-node node) env)))
+       (cond ((or (eq cs :divergent) (eq ts :divergent) (eq es :divergent)) :divergent)
+             ((and (eq cs :uniform) (eq ts :uniform) (eq es :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-let
+     ;; the result of let is the last expression in its body, but we need the environment.
+     ;; However, calculate-uniformity-state does not re-evaluate bindings. 
+     ;; We can just return :unknown as a conservative fallback for let expressions as values.
+     :unknown)
+    (semantic-gpu-builtin
+     (let ((name (semantic-gpu-builtin-builtin-name node)))
+       (cond ((member name '(:get-global-id :get-local-id)) :divergent)
+             ((member name '(:get-workgroup-id :get-workgroup-size :get-warp-size :sync-workgroup :get-global-size :get-num-groups)) :uniform)
+             (t :unknown))))
+    (semantic-to-workgroup-uniform :uniform)
+    (semantic-to-warp-uniform :uniform)
+    ;; Memory reads and anything else
+    (t :unknown)))
 
 (defun analyze-body-expressions (body-list env context location)
   "Recursively analyzes a list of expressions."
@@ -1380,6 +1466,8 @@ in single-pass mode."
   "Returns the Crisp type of a semantic node.
    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*)."
   (etypecase node
+    (semantic-to-workgroup-uniform (semantic-to-workgroup-uniform-type node))
+    (semantic-to-warp-uniform (semantic-to-warp-uniform-type node))
     (semantic-dotimes (semantic-dotimes-type node))
     (semantic-literal (semantic-literal-value-type node))
     (semantic-device-vec-literal (semantic-device-vec-literal-vec-type node))

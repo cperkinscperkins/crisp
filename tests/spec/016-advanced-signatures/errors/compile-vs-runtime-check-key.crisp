@@ -1,6 +1,6 @@
-;; CHECK-FAIL: "IF+ condition failed to evaluate at compile time"
+;; CHECK-FAIL: "if+ requires a provably uniform condition"
 
-;; this should fail because when+ demands a compile-time known value.
+;; this should fail because when+ demands a compile-time-known-to-be-uniform value.
 (def-function add-some-runtime (a &key b c)
     (declare #'(int &key :b int :c int => int))
     (let ((sum a))
