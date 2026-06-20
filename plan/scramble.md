@@ -645,8 +645,8 @@ NEXT
 - - [x] lose (await-request <req>) .  Now just (await <barrier>)
 - [x] load-tile/store-tile API from topology.md.   
 - [x] lose "helper" load-tile / store-tile
-- [ ] (await barrier) maps to cp.async.wait_all , not individual barriers.
-- [ ] strategy :tiled so we can get hoist testing. 
+- [x] (await barrier) maps to cp.async.wait_all , not individual barriers.
+- [x] strategy :tiled so we can get hoist testing. 
 - [x] rename local-barrier => sync-workgroup
 - [x] sync-warp
 - [x] make-arrival-sync
@@ -663,9 +663,9 @@ code coverage
 
 CleanUP
 =======
-format T, format *terminal-io*    WTF.  should use log4cl
-temp files everywhere EXCEPT in put_temp_files_here directory.
-never reads ANTIGRAVITY.md or tests.md 
+[x]format T, format *terminal-io*    WTF.  should use log4cl
+[x]temp files everywhere EXCEPT in put_temp_files_here directory.
+[ ] never reads ANTIGRAVITY.md or tests.md 
 
 --runtime-checks
 ================
@@ -673,6 +673,11 @@ never reads ANTIGRAVITY.md or tests.md
 - [ ] Audit routines implemented so far. Which should have --runtime-checks support?
 - [ ] test
 
+workgroup uniform
+=================
+- [ ] (declare (uniform someVar))
+- [ ] (is-uniform? <var>)
+- [ ] (to-uniform <var>)  
 
 Looping Constructs
 ==================
@@ -738,7 +743,7 @@ Technical Debt
 - [x] drop oneDPL and use SYCL built-in reductions instead for benchmark
 - [x] occupancy.
 - [/] rename --binary-gpu-target flag and expand docs 
-- [ ] consider renaming `local-barrier` to `workgroup-sync` ?
+- [x] consider renaming `local-barrier` to `workgroup-sync` ?
 
 PERFORMANCE TESTING
 ===================
