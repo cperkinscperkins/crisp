@@ -25,6 +25,8 @@
 (let ((sb-ext:*posix-argv* '("sbcl" "--no-quit")))
 
   (format t "~&=== EXECUTION: Running CI Tests ===~%")
+  ;; Skip SPIRV compilation during coverage to avoid OOM from forking heavy Lisp process
+  (setf (uiop:getenv "SKIP_SPIRV_TESTS") "true")
   (load "tests/run-ci.lisp")
 
   (format t "~&=== EXECUTION: Running Negative Specs ===~%")
