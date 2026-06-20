@@ -206,15 +206,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install mkdocs mkdocs-material
 
-      - name: Build site (All Branches)
-        run: python -m mkdocs build
-
       - name: Download Coverage Artifact
         uses: actions/download-artifact@v4
         with:
           name: coverage-report
-          path: site/coverage/
+          path: docs/coverage/
         continue-on-error: true
+
+      - name: Build site (All Branches)
+        run: python -m mkdocs build
 
       - name: Deploy to GitHub Pages (Main Branch Only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
