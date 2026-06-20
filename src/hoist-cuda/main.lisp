@@ -630,8 +630,7 @@
                                 (strategy (getf (cdr global-decl) :strategy))
                                 (derive-from (getf (cdr global-decl) :derive-from))
                                 (tile-shape (getf (cdr global-decl) :tile-shape)))
-                           (when (and strategy
-                                      (string-equal (symbol-name strategy) "TILED")
+                           (when (and tile-shape
                                       derive-from
                                       (member param-name (if (listp derive-from) derive-from (list derive-from))
                                               :test (lambda (a b) (string-equal (string a) (string b)))))
@@ -872,7 +871,7 @@
 ;;                             Ignores tensor length (loop-vector-stride knows
 ;;                             where to stop via length~).
 ;;   :strategy :one-thread-per — gridX = ceil(length / block_x)
-;;   :strategy :tiled        — gridX = ceil(length / tile-shape[0])
+;;   :strategy :exact        — gridX = ceil(length / block_x) or ceil(length / tile-shape[0]) if present
 ;;
 ;; The block size used for occupancy comes from :local-size :set-to N.
 ;; If :local-size is missing, defaults to 256.
@@ -904,7 +903,7 @@
    Supports:
      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)
      :strategy :one-thread-per — grid sized to derive-from source
-     :strategy :tiled          — grid sized via derive-from + tile-shape
+     :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)
      :set-to integer/list      — fixed grid
    And :derive-from can be a single tensor symbol (uses <name>_length) or a list
    of scalar parameter names (uses <name>_arg)."
@@ -929,7 +928,7 @@
          (strategy    (when disp-rest (getf disp-rest :strategy)))
          (strat-name  (when strategy (symbol-name strategy)))
          (is-strided  (and strat-name (string-equal strat-name "STRIDED")))
-         (is-tiled    (and strat-name (string-equal strat-name "TILED")))
+         (is-exact    (and strat-name (string-equal strat-name "EXACT")))
          (is-one-thread-per (or (and strat-name (string-equal strat-name "ONE-THREAD-PER"))
                                 ;; default when :derive-from is present without explicit strategy
                                 (and (null strat-name) derive-from)))
@@ -964,26 +963,26 @@
          (format stream "    unsigned int gridY = 1, gridZ = 1;~%")))
 
       ;; --- :set-to integer — fixed grid ---
-      ((and (not is-tiled) (integerp set-to))
+      ((and (not is-exact) (integerp set-to))
        (let ((grid-x (if (> block-x 1)
                          (format nil "(~a + ~a) / ~a" set-to (1- block-x) block-x)
                          (format nil "~a" set-to))))
          (format stream "    unsigned int gridX = ~a, gridY = 1, gridZ = 1;~%" grid-x)))
 
-      ;; --- :strategy :tiled with :derive-from and :tile-shape ---
-      (is-tiled
+      ;; --- :strategy :exact with :derive-from ---
+      (is-exact
        (if derive-from-is-tensor
-           ;; Tensor-derived tiled: gridX = ceil(<tensor>_length / tile-shape[0])
-           (let ((tx (or (first tile-shape) 1))
+           ;; Tensor-derived exact: gridX = ceil(<tensor>_length / tx)
+           (let ((tx (if tile-shape (or (first tile-shape) 1) block-x))
                  (tensor-var (%tensor-length-cpp-var (first derive-from))))
              (format stream "    unsigned int gridX = ((unsigned int)~a + ~d) / ~d;~%"
                      tensor-var (1- tx) tx)
              (format stream "    unsigned int gridY = 1, gridZ = 1;~%"))
-           ;; Scalar list:tiled
+           ;; Scalar list exact
            (let ((d0 (first derive-from))
                  (d1 (second derive-from))
-                 (tx (or (first tile-shape) 1))
-                 (ty (or (second tile-shape) 1)))
+                 (tx (if tile-shape (or (first tile-shape) 1) block-x))
+                 (ty (if tile-shape (or (second tile-shape) 1) (if (> block-y 1) block-y 1))))
              (when d0
                (format stream "    unsigned int gridX = ((unsigned int)~a + ~a) / ~a;~%"
                        (%dispatch-sym-to-cpp-var d0) (1- tx) tx))

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-06-19T05:33:58.483686Z
+Generated on 2026-06-20T04:06:40.683097Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -3307,7 +3307,7 @@ Generated on 2026-06-19T05:33:58.483686Z
 ### DEFUN `EMIT-LAUNCH`
 - **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES)`
 
-  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :tiled          — grid sized via derive-from + tile-shape  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
+  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
 
 
 ---
@@ -3491,7 +3491,7 @@ Generated on 2026-06-19T05:33:58.483686Z
 
 ---
 ### DEFUN `%L0-EMIT-GROUP-COUNT`
-- **Args**: `(STREAM IS-STRIDED IS-INTERLEAVED IS-TILED IS-ONE-THREAD-PER
+- **Args**: `(STREAM IS-STRIDED IS-INTERLEAVED IS-EXACT IS-ONE-THREAD-PER
               DISPATCH-DECL SET-TO DERIVE-FROM DERIVE-FROM-IS-TENSOR TILE-SHAPE
               LOCAL-X LOCAL-Y)`
 
@@ -3502,7 +3502,7 @@ Generated on 2026-06-19T05:33:58.483686Z
 ### DEFUN `%L0-EMIT-DISPATCH`
 - **Args**: `(STREAM GLOBAL-DECL LOCAL-DECL NUM-GROUPS-DECL)`
 
-  > Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.  >    Supports:  >      :strategy :strided        — max occupancy (zeDeviceGetComputeProperties +  >                                  optional zeKernelGetProperties)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :tiled          — grid sized via derive-from + tile-shape  >      :strategy :interleaved    — not yet implemented (default dispatch)  >    :set-to scalar/list       — fixed grid  >    :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
+  > Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.  >    Supports:  >      :strategy :strided        — max occupancy (zeDeviceGetComputeProperties +  >                                  optional zeKernelGetProperties)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :strategy :interleaved    — not yet implemented (default dispatch)  >    :set-to scalar/list       — fixed grid  >    :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
 
 
 ---

@@ -433,7 +433,7 @@
 ;;                             plus optional zeKernelGetProperties for register
 ;;                             pressure awareness.
 ;;   :strategy :one-thread-per — grid = ceil(length / wg_x)
-;;   :strategy :tiled        — grid = ceil(length / tile-shape[0])
+;;   :strategy :exact        — grid = ceil(length / local-size[0]) or ceil(length / tile-shape[0]) if present
 
 (defun %l0-tensor-length-cpp-var (sym)
   "Convert a tensor parameter symbol to its C++ length variable.
@@ -497,7 +497,7 @@
   (when is-interleaved
         (format stream "    // Strategy: :interleaved not yet implemented — using default dispatch~%")))
 
-(defun %l0-emit-group-count (stream is-strided is-interleaved is-tiled is-one-thread-per dispatch-decl set-to derive-from derive-from-is-tensor tile-shape local-x local-y)
+(defun %l0-emit-group-count (stream is-strided is-interleaved is-exact is-one-thread-per dispatch-decl set-to derive-from derive-from-is-tensor tile-shape local-x local-y)
   "Emit group count logic for ze_group_count_t groupCount."
   (cond
    ;; :strided — occupancy-based grid
@@ -514,21 +514,21 @@
    ((null dispatch-decl)
      (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%"))
 
-   ;; :tiled with tensor :derive-from
-   ((and is-tiled derive-from-is-tensor)
-     (let ((tx (or (first tile-shape) 1))
+   ;; :exact with tensor :derive-from
+   ((and is-exact derive-from-is-tensor)
+     (let ((tx (if tile-shape (or (first tile-shape) 1) local-x))
            (tensor-var (%l0-tensor-length-cpp-var (first derive-from))))
        (format stream "    uint32_t _gx = ((uint32_t)~a + ~d) / ~d;~%"
          tensor-var (1- tx) tx)
        (format stream "    ze_group_count_t groupCount = { _gx, 1, 1 };~%")))
 
-   ;; :tiled with scalar derive-from list
-   (is-tiled
+   ;; :exact with scalar derive-from list
+   (is-exact
      (let* ((d0 (first derive-from))
             (d1 (second derive-from))
             (d2 (third derive-from))
-            (tx (or (first tile-shape) 1))
-            (ty (or (second tile-shape) 1)))
+            (tx (if tile-shape (or (first tile-shape) 1) local-x))
+            (ty (if tile-shape (or (second tile-shape) 1) (if (> local-y 1) local-y 1))))
        (when d0
              (format stream "    uint32_t _gx = ((uint32_t)~a + ~a) / ~a;~%"
                (%dispatch-sym-to-cpp-var d0) (1- tx) tx))
@@ -576,7 +576,7 @@
      :strategy :strided        — max occupancy (zeDeviceGetComputeProperties +
                                  optional zeKernelGetProperties)
      :strategy :one-thread-per — grid sized to derive-from source
-     :strategy :tiled          — grid sized via derive-from + tile-shape
+     :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)
      :strategy :interleaved    — not yet implemented (default dispatch)
    :set-to scalar/list       — fixed grid
    :derive-from can be a single tensor symbol (uses <name>_length) or a list
@@ -597,7 +597,7 @@
          (strat-name (when strategy (symbol-name strategy)))
 
          (is-strided (and strat-name (string-equal strat-name "STRIDED")))
-         (is-tiled (and strat-name (string-equal strat-name "TILED")))
+         (is-exact (and strat-name (string-equal strat-name "EXACT")))
          (is-interleaved (and strat-name (string-equal strat-name "INTERLEAVED")))
          (is-one-thread-per (and strat-name (string-equal strat-name "ONE-THREAD-PER")))
 
@@ -611,12 +611,8 @@
 
     (%l0-emit-occupancy-and-strategy stream is-strided is-interleaved occupancy derive-from-is-tensor derive-from)
 
-    (let ((wg-x (if is-tiled
-                    (format nil "~a" (or (first tile-shape) 1))
-                    (format nil "~a" local-x)))
-          (wg-y (if is-tiled
-                    (format nil "~a" (or (second tile-shape) 1))
-                    (format nil "~a" local-y))))
+    (let ((wg-x (format nil "~a" local-x))
+          (wg-y (format nil "~a" local-y)))
 
       (format stream "    // Set group (workgroup) size~%")
       (format stream "    result = zeKernelSetGroupSize(kernel, ~a, ~a, 1);~%" wg-x wg-y)
@@ -626,7 +622,7 @@
       (format stream "    }~%~%")
 
       (format stream "    // Compute dispatch group count~%")
-      (%l0-emit-group-count stream is-strided is-interleaved is-tiled is-one-thread-per
+      (%l0-emit-group-count stream is-strided is-interleaved is-exact is-one-thread-per
                             dispatch-decl set-to derive-from derive-from-is-tensor tile-shape
                             local-x local-y))))
 
@@ -1046,8 +1042,7 @@
                                 (strategy (getf (cdr global-decl) :strategy))
                                 (derive-from (getf (cdr global-decl) :derive-from))
                                 (tile-shape (getf (cdr global-decl) :tile-shape)))
-                           (when (and strategy
-                                      (string-equal (symbol-name strategy) "TILED")
+                           (when (and tile-shape
                                       derive-from
                                       (member param-name (if (listp derive-from) derive-from (list derive-from))
                                               :test (lambda (a b) (string-equal (string a) (string b)))))

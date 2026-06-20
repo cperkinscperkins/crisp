@@ -55,8 +55,8 @@ Pass 2.8
 So request-load-tile request-store-tile, etc can be removed because load-tile/store-tile has :barrier args now.  Remove all request-XXXX from the compiler .
 
 Pass 2.9
-- [ ] position-tile  / position-tile-at
-- [ ] with tests
+- [x] position-tile  / position-tile-at
+- [x] with tests
 
 Docs for this:
 
@@ -70,7 +70,7 @@ These functions have a very similar API to the load/store tile functions above. 
 
 
 
-
+DO NOT IMPLEMENT THIS. SEE the strategy.md file instead
 Pass 3.  I'll definitely be adding more to this one. maybe it should be its own endeavor. We'll see.
 Before we can start this, I will need to update some documentation about it.
 - [ ] strategy :tiled so we can get hoist testing. 

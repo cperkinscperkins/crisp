@@ -1,0 +1,39 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT[L0]: zeKernelSetGroupSize(kernel, 16, 1, 1)
+;; STRATEGY-EXPECT[L0]: // :derive-from tensor 'IN' (length=in_length) used for check-thread-bounds; grid uses occupancy
+;; STRATEGY-EXPECT[L0]: zeKernelSetArgumentValue(kernel, 3, 64ULL, nullptr);
+;; TEST-HOIST[CUDA]: validate-cuda-strategy-content
+;; STRATEGY-EXPECT[CUDA]: // derive-from tensor 'IN' (length=in_length) used for check-thread-bounds; grid uses occupancy
+;; STRATEGY-EXPECT[CUDA]: cuOccupancyMaxActiveBlocksPerMultiprocessor(&_blocksPerSM, kernel, 16, 72)
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+(def-type tile-t (vector float :address-space :local :align :compact))
+
+(def-kernel async_hoist_demo (IN &out OUT)
+    (declare (type IN  vec-t)
+             (type OUT vec-t)
+             ;; Declare block-size and tile-shape
+             (local-size :set-to 16)
+             (global-size :derive-from IN
+                          :strategy :strided
+                          :tile-shape (16)))
+  
+  (let ((tile (make-scratch-vector float 16)))
+    ;; tile-stride iterates over the global grid, pulling 16-element tiles
+    (tile-stride IN (16) (grid-x)
+      (let ((barrier (make-async-barrier)))
+        ;; load-tile uses the implicit grid-x to fetch a tile into local memory
+        (load-tile IN tile (grid-x) :barrier barrier)
+        (await barrier)
+        
+        ;; Process locally using workgroup-stride
+        (workgroup-stride tile (lx)
+          (set! (~ tile lx) (* (~ tile lx) 2.0)))
+        
+        ;; Ensure all threads are done processing the tile before writing back
+        (sync-workgroup)
+
+        ;; store-tile uses the implicit grid-x to write back
+        (store-tile tile OUT (grid-x) :barrier barrier)
+        (await barrier)))))

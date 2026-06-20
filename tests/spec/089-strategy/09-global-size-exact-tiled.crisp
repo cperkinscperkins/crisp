@@ -1,0 +1,11 @@
+;; TEST-WITH[--metadata]: crisp.compiler::validate-089-09-global-size-exact-tiled
+;;
+;; Metadata: (global-size :derive-from (width height) :strategy :exact :tile-shape (16 16)).
+
+(def-type result-t (cell int :address-space :global))
+
+(def-kernel tiled_kernel (width height &out result)
+    (declare (type width height ulong)
+             (type result result-t)
+             (global-size :derive-from (width height) :strategy :exact :tile-shape (16 16)))
+  (set! (~ result) 0))

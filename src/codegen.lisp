@@ -157,8 +157,6 @@
    any param components that the kernel-entry demoter swapped from
    shared/local pointer to i64 (see header comment in this overlay)."
     (let ((llvm-param-index 0))
-      (format *terminal-io* "initialize-function-parameters: func=~a param-nodes=~a~%" func param-nodes)
-      (format *terminal-io* "initialize-function-parameters var-env before: ~s~%" (alexandria:hash-table-keys var-env))
       (loop for param-node in param-nodes
             for param-name = (semantic-param-name param-node)
             for type-spec = (semantic-param-type param-node)
@@ -735,11 +733,6 @@
          (unique-name-str (format nil "~a_FROM_~a_~d" binding-name fn-name counter))
          (unique-name (intern unique-name-str (symbol-package binding-name)))
          (tensor-alloca (gethash unique-name var-env)))
-
-    (format *terminal-io* "LOOKING UP: ~s~%" unique-name)
-    (format *terminal-io* "  binding-name: ~s (package: ~a)~%" binding-name (package-name (symbol-package binding-name)))
-    (format *terminal-io* "  unique-name: ~s (package: ~a)~%" unique-name (package-name (symbol-package unique-name)))
-    (format *terminal-io* "  var-env keys: ~s~%" (alexandria:hash-table-keys var-env))
 
     (log:info "Pass 2: scratch tensor ~a -> implicit: ~a (found? ~a)"
               binding-name unique-name (not (null tensor-alloca)))
@@ -3039,6 +3032,13 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
            (or (string-equal (symbol-name (first canon)) "VECTOR")
                (string-equal (symbol-name (first canon)) "TENSOR")))
       (second canon))
+     ((and (listp canon) (= (length canon) 1) (symbolp (first canon))
+           (let ((name (symbol-name (first canon))))
+             (or (alexandria:starts-with-subseq "TENSOR_" name)
+                 (alexandria:starts-with-subseq "VECTOR_" name))))
+      (let* ((name (symbol-name (first canon)))
+             (parts (uiop:split-string name :separator "_")))
+        (intern (second parts) :crisp.compiler)))
      (t (error "%vector-elem-type: can't extract element type from ~S" canon)))))
 
 (defmethod generate-node-ir ((node semantic-make-async-barrier) builder module var-env
