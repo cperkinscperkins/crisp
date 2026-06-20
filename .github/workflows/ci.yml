@@ -178,6 +178,8 @@ jobs:
           set -o pipefail
           echo "--- Running Code Coverage ---"
           sbcl --script scripts/run-coverage.lisp
+          # Rename sb-cover's default entrypoint to index.html so GitHub Pages serves it properly
+          mv coverage-report/cover-index.html coverage-report/index.html
 
       - name: 15. Upload Coverage Artifact
         uses: actions/upload-artifact@v4
