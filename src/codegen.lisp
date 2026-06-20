@@ -3039,6 +3039,13 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
            (or (string-equal (symbol-name (first canon)) "VECTOR")
                (string-equal (symbol-name (first canon)) "TENSOR")))
       (second canon))
+     ((and (listp canon) (= (length canon) 1) (symbolp (first canon))
+           (let ((name (symbol-name (first canon))))
+             (or (alexandria:starts-with-subseq "TENSOR_" name)
+                 (alexandria:starts-with-subseq "VECTOR_" name))))
+      (let* ((name (symbol-name (first canon)))
+             (parts (uiop:split-string name :separator "_")))
+        (intern (second parts) :crisp.compiler)))
      (t (error "%vector-elem-type: can't extract element type from ~S" canon)))))
 
 (defmethod generate-node-ir ((node semantic-make-async-barrier) builder module var-env

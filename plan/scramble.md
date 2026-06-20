@@ -647,18 +647,25 @@ NEXT
 - [x] lose "helper" load-tile / store-tile
 - [ ] (await barrier) maps to cp.async.wait_all , not individual barriers.
 - [ ] strategy :tiled so we can get hoist testing. 
-- [ ] rename local-barrier => sync-workgroup
-- [ ] sync-warp
-- [ ] make-arrival-sync
-- [ ] update ideal_001.md - sync-warp
-- [ ] revisit request-load-local in ideal_001.md.  Do we need a new variant? Or delete?
+- [x] rename local-barrier => sync-workgroup
+- [x] sync-warp
+- [x] make-arrival-sync
+- [x] update ideal_001.md - sync-warp
+- [x] revisit request-load-local in ideal_001.md.  Do we need a new variant? Or delete?
 - [ ] matrix-mult-stride ?  if we do this do we need mma-accumulate-via-tile / load-fragment etc.
-- [ ] we need position-tile-grid and position-tile-ad to adjust a tile view "into" a space.
+- [x] we need position-tile-grid and position-tile-ad to adjust a tile view "into" a space.
 
 code coverage
 =============
-- [ ] maybe (sb-cover) ?
-- [ ] for unit tests, and e2e spec
+- [x] maybe (sb-cover) ?
+- [x] for unit tests, and e2e spec
+- [x] github ci report
+
+CleanUP
+=======
+format T, format *terminal-io*    WTF.  should use log4cl
+temp files everywhere EXCEPT in put_temp_files_here directory.
+never reads ANTIGRAVITY.md or tests.md 
 
 --runtime-checks
 ================

@@ -749,15 +749,21 @@
        (format t "PASS~%")
        t)))
 
-(defun parse-strategy-expect (directive-lines)
-  "Parse STRATEGY-EXPECT: <string> lines.
+(defun parse-strategy-expect (directive-lines &optional target)
+  "Parse STRATEGY-EXPECT: or STRATEGY-EXPECT[target]: <string> lines.
    Returns list of expected strings to find in generated C++ source content."
-  (let ((expectations '()))
+  (let ((expectations '())
+        (prefix-generic "STRATEGY-EXPECT:")
+        (prefix-target (when target (format nil "STRATEGY-EXPECT[~a]:" target))))
     (dolist (line directive-lines)
       (let ((trimmed (string-left-trim ";; " line)))
-        (when (starts-with trimmed "STRATEGY-EXPECT:")
-              (let ((value (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 16))))
-                (push value expectations)))))
+        (cond
+         ((and prefix-target (starts-with trimmed prefix-target))
+          (let ((value (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed (length prefix-target)))))
+            (push value expectations)))
+         ((starts-with trimmed prefix-generic)
+          (let ((value (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed (length prefix-generic)))))
+            (push value expectations))))))
     (nreverse expectations)))
 
 (defun validate-l0-strategy-content (crisp-file cpp-files)
@@ -768,7 +774,7 @@
     (format t "FAIL: No C++ files to validate~%")
     (return-from validate-l0-strategy-content nil))
   (let* ((directives (extract-test-directives crisp-file))
-         (expectations (parse-strategy-expect directives))
+         (expectations (parse-strategy-expect directives "L0"))
          (passed t))
     (when (null expectations)
       (format t "PASS: No STRATEGY-EXPECT directives (trivial pass).~%")
@@ -1765,7 +1771,7 @@
     (format t "FAIL: No .cu files to validate~%")
     (return-from validate-cuda-strategy-content nil))
   (let* ((directives (extract-test-directives crisp-file))
-         (expectations (parse-strategy-expect directives))
+         (expectations (parse-strategy-expect directives "CUDA"))
          (passed t))
     (when (null expectations)
       (format t "PASS: No STRATEGY-EXPECT directives (trivial pass).~%")

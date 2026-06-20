@@ -1,0 +1,230 @@
+
+In Crisp, a kernel can declare global-size or local-size. Those declarations are used when we generate the "hoisting" code that loads and enqueues the kernel.
+
+Along with just declaring a given size, users can communicate that the size should "derive from" some argument, and also express the "strategy" that the hoisting code should use (and expect the kernel to follow).
+
+The docs for this are below, but there are three main strategies: :one-thread-per, :strided, and :exact.   Once there was an idea of a :tiled strategy, but I've thrown that out. I think it might be in the source base, and if so we'll need to remove it.
+
+For :strided and :exact there is another part of that declaration which is :tile-shape. In this endeavor we are not only removing any accidental :tiled strategy, but, more importantly, adding :tile-shape support.
+
+The hoisting code is just example code that usually makes Storage Hnadles initialized via iota. We will want the :tile-shape to be taken into account when calculating the enqueue.
+
+And, lastly and most importantly, there are several tests that exist already for testing tile-stride,  tile loading/storing, etc, but none of them have on metal testing specified. Insofar as it is reasonable, we should add TEST-HOIST[L0] and TEST-HOIST[CUDA] test directives to them along with HOIST-EXPECT directives to make sure everything is working.  And if the existing tests are not amenable to such changes, then lets write some new ones that are. Tests that use tile-stride in conjuntion with load-tile, store-tile and barriers and have on-metal tests that verify that everything we think is working is, in fact, working on Intel and NVidia hardware.   
+
+In summary
+- [x] remove :tiled strategy
+- [x] support :tile-shape for :strided and :exact strategies.  Implement :tile-shape in hoisting code and tests
+- [x] update existing tests (if reasonable)
+- [x] add on-metal tests
+
+Design Docs follows:
+
+
+### Hoisting and Enqueing a Kernel ⚠️
+
+Crisp refers to the overall effort of getting a kernel read from disk, preparing the data, and actually enqueueing it as "hoisting". The Crisp compiler
+can output hoisting example code for any kernel it compiles. That hoisting code is tailored to the kernel itself and the compilation targets,
+which ensures that assumptions and dependencies are adhered to by both sides.
+
+There are two important decisions that the host must make at the moment a kernel is enqueued. 
+1. global work size - how many threads are spawned simultaneously for this kernels operation. 
+2. local work size - how many threads are grouped together such that they can share fast local memory.
+But note that in specifying these two values, you are also making a third very important decision:
+3. number of workgroups.    The number of workgroups is simply the global work size divided by the local work size:
+`num-groups = global-size / local-size`.  It is not uncommon to have kernels where the number of workgroups
+cannot exceed the local work size. When this restriction is in place, certain algorithms become much simpler. 
+
+
+Typically, the most performant choices that maximize GPU throughput use a "local_work_size" that is both
+a power of two and a multiple of the GPU warp size (32 or 64).  So typically 64, 128, or 256.  And the global_work_size,
+the actual number of threads that will be spawned, should be a multiple of that. 
+
+Crisp has a number of `declare` directives that allow the host and the kernel to agree on what, or how, these values will be set. They tell the story of who expects what. These all go in the kernel's top level `declare` block.
+
+
+#### global-size / local-size ✅
+```
+(global-size &key set-to VALS derive-from EXPR strategy:SYM tile-shape:(<extents>) dims:ulong msg:string)
+(local-size &key set-to VALS derive-from EXPR strategy:SYM  tile-shape:(<extents>) dims:ulong msg:string)
+```
+These directives tells the hoisting code about how the kernel expects the global_work_size or local_work_size to be set.  
+If both are used, then their arity must agree. And, the `work_dim` value the hoisting code sets will also match their arity.
+
+
+The local_work_size is the number of threads grouped together in a single workgroup. This is number is usually best a power of two and multiple of the GPU warp size ( 32 or 64 ).
+The global_work_size is the number of threads that the kernel will be enqueued upon. For maximum throughput, it is best to be a multiple of the local_work_size. 
+
+A single directive CANNOT use both the `:set-to` and `:derive-from` keys.
+
+These directives are optional but hightly encouraged as they serve to both document intent to future readers
+of your kernel code, but also so the hoisting code is configuring things correctly for your kernel.
+
+##### :msg 📝
+The `:msg` key takes a string that will be output into the comment at the place where the hoisting code is setting the particular value. 
+
+
+##### :dims 📝
+The `:dims` key just takes the number `1` , `2` or `3` to express the required arity.  If using `:set-to` or `:derive-from` then
+`:dims` is not usually needed.  But there will be times when a kernel doesn't have particular size requirements but DOES
+have arity expectations.  Communicate them with `:dims`
+
+If the `:dims` declaration does not match the arity of `:set-to` or `:derived-from`, or the arity differs between `global-size` and `local-size` then the compiler will error.
+
+```
+;; -- operate_2D --
+(def-kernel operate_2D ()
+   (declare (global-size :dims 2))
+   ...)
+```
+
+
+##### :set-to ✅
+The `:set-to` key instructs the hoisting code to use a specific value, (or values if multi-dimensional).
+
+```
+; Crisp Code
+;; -- fun --
+(def-kernel fun ()
+  (declare (local-size :set-to 256))
+   ...)
+
+;; -- do_something --
+(def-kernel do_something ()
+  (declare (global-size :set-to '(512 256)  :msg "please don't change"))
+  (declare (local-size :set-to '(32 32)))
+  ... )
+
+// possibly resulting C++ enqueue in hoisting example
+// note that the work_dim is 2, which matches the arity of :set-to
+ clEnqueeuNDRangeKernel( someCommandQueue, doSomethingKernel, 
+                          2             /* work_dim */,
+                          0             /* global_work_offset */,
+                          { 512, 256 }  /* global_work_size  please don't change */,
+                          { 32, 32 }    /* local_work_size */,
+                          ...);
+```
+
+##### :derive-from ✅
+The `:derive-from` key instructs the hoisting code that the kernel expects the size value to be in response to the named kernel parameter.  If the expression names a vector, then in response to its length. How "in response to" should be
+intepreted is specified by the `:strategy` key (see below).  
+It can take a single symbol (for a vector, implying its length) or a list of symbols (for scalar parameters representing dimensions).
+
+```
+;; Crisp Code
+
+;; -- lighten_image --
+(def-kernel lighten_image (image-data width height)
+   (declare (type image-data (vector uchar :address-space :global))
+            (type width height ulong)
+            (global-size :derive-from '(width height) :strategy :one-thread-per :msg "ensure enough threads for every pixel of image, otherwise use the stepping convolution")) 
+  ...)
+
+// hoisting
+ ...
+ clSetKernelArg(lightenImageKernel, 1, sizeof(unsigned long), &imageWidth);
+ clSetKernelArg(lightenImageKernel, 2, sizeof(unsigned long), &imageHeight);
+ clEnqueeuNDRangeKernel( someCommandQueue, lightenImageKernel, 
+                          2                            /* work_dim */,
+                          0                            /* global_work_offset */,
+                          { imageWidth, imageHeight }  /* global_work_size ensure enough threads for every pixel of image, otherwise use the stepping convolution */,
+                          ...);
+```
+
+##### :strategy ✅
+
+The `:strategy` key is most useful when used in conjunction with `:derive-from` (above). 
+
+With `:derive-from` we are telling the hoisting code, "take such-and-such vectors size into consideration when setting the
+global work size".  And the `:strategy` tells it _how_ that should be done.
+
+It can be one of five possible values.
+
+- `:one-thread-per`  This strategy means we expect there to be at least one global thread for each element of the vector. See [One Thread Per Element](#one-thread-per-element) discussion below.
+
+- `:strided` This strategy tells the hoisting code that we are expecting to use a grid stride pattern to walk
+the vector. (Read more at [Looping -- Grid Stride](#looping---grid-stride)). In this case the hoisting code
+will try to size the global work size near the number of threads actually available on the hardware for MAXIMUM OCCUPANCY. 
+
+But note that while maximum occupancy results in ideal performance for many workloads, it is not ideal for all workloads. In particular, if atomics are used, then a maximum occupancy stride might result in less work performed per atomic and more net atomic operations performed. Lower occupancy might be better for performance. See [:occupancy](#occupancy) below.
+
+
+- `:exact` This strategy tells the hoisting code to set the global work size to be exactly the size, no more no less. This
+strategy could also be used with the `:set-to` key. If combined with `:tile-shape`, `:exact` calculates exactly enough workgroups to cover the number of tiles.
+
+`:tile-shape`
+```
+(declare (global-size :derive-from '(width height) :strategy :strided :tile-shape '(64 64)))
+```
+
+The `:tile-shape` key defines the geometric extents of the work being processed by a single workgroup. It is an orthogonal modifier to the `:strategy`.
+
+When used with `:strategy :exact`, the hoisting code divides the input dimensions by the `:tile-shape` to determine the exact number of workgroups to launch `(CEIL(dimension / tile_extent))`.
+
+When used with `:strategy :strided`, the host relies on hardware occupancy to determine the launch size, but uses the `:tile-shape` to configure any necessary tile-based dynamic memory allocations.
+
+This declaration should always be used when utilizing the `tile-stride` or `matrix-multiply-tile-stride` macros so the host orchestrator understands the block partitioning.
+
+
+
+If the `:strategy` is not provided, then the default assumption is `:one-thread-per`. 
+
+
+##### `:occupancy` ✅
+
+The `:occupancy` key is a manual derating factor for the `:strided` strategy.
+Accepts a number from `0.0` to `1.0` (default `1.0`).
+
+When the hoisting code calculates "near the number of threads actually
+available on the hardware" (via `cuOccupancyMaxActiveBlocksPerMultiprocessor`
+on CUDA or `zeDeviceGetComputeProperties` + `zeKernelGetProperties` on Level
+Zero), it multiplies the result by the `:occupancy` ratio.
+
+Maximum theoretical occupancy is necessary but not
+sufficient for peak performance. Real workloads compete for shared resources
+that don't scale with thread count:
+
+- L2 cache pressure -  more concurrent workgroups thrash the L2.
+- LSU queue depth -  finite per-SM load/store queues saturate.
+- Atomic serialization - kernels ending in `atomic-add!` to global memory
+  serialize at the atomic site. More workgroups = more atomic ops queued.
+- Per-block fixed overhead amortization - shared-memory setup and
+  barriers cost the same regardless of how much work each thread does.
+
+For reduction-pattern kernels (those ending in a global atomic), the sweet
+spot is often `:occupancy 0.2` or even lower. Bandwidth-bound kernels without
+atomics generally benefit from the default `1.0`.
+
+Remember, these declarations influence any hoisting code that Crisp outputs (`--hoist=L0` or `--hoist=CUDA`), the kernel itself is NOT effected in any way. 
+
+```
+;; -- sum_reduce_tree --
+(def-kernel sum_reduce_tree (input &out result)
+  (declare #'(in-vec &out out-cell => nil))
+  (declare (global-size :derive-from input :strategy :strided :occupancy 0.5)
+           (local-size  :set-to 256))
+  ...)
+```
+
+
+##### :tile-shape ⚠️
+
+`:tile-shape`  When  using the `:tiled` strategy you can provide the extents of the tile so the host can 
+calculate accordingly.  
+
+#### num-groups 📝
+```
+(declare (num-groups :max :local-size :msg "number of groups can't be bigger than a local work size"))
+;OR
+(declare (num-groups :max <someExpr> :msg "But here's my number, so call me maybe."))
+```
+
+As mentioned earlier, the number of workgroups for a kernel is simply the "global work size" divided by the "local work size". 
+Thus the need to have any kernel specify it is redundant. Simply declaring `global-size` and `local-size` are sufficient.
+
+But there are cases where kernels make assumptions about the number of workgroups. The most common one being that the 
+number of workgroups cannot exceed the local work size. In that even simply `(declare (num-groups :max :local-size))`.
+This will help document this restriction to anyone reading the kernel code, and the hoisting code that is 
+generated will also abide by that restriction (and note it in the comments).
+
+Alternately, some other expression can be provided. And, as with `local-size` and `global-size` and optional `:msg` 
+can be used to inject a comment into the hoisting code.

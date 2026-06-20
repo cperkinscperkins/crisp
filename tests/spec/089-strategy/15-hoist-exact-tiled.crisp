@@ -3,12 +3,13 @@
 ;; STRATEGY-EXPECT: + 15) / 16
 ;; STRATEGY-EXPECT: _gx, _gy, 1
 ;;
-;; Hoist: :tiled 16x16 => workgroup=(16,16,1), groupCount=(ceil(w/16), ceil(h/16), 1).
+;; Hoist: :exact with :tile-shape 16x16 => workgroup=(16,16,1), groupCount=(ceil(w/16), ceil(h/16), 1).
 
 (def-type result-t (cell int :address-space :global))
 
-(def-kernel hoist_tiled (width height &out result)
+(def-kernel hoist_exact_tiled (width height &out result)
     (declare (type width height ulong)
              (type result result-t)
-             (global-size :derive-from (width height) :strategy :tiled :tile-shape (16 16)))
+             (local-size :set-to (16 16))
+             (global-size :derive-from (width height) :strategy :exact :tile-shape (16 16)))
   (set! (~ result) 0))

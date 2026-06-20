@@ -8,7 +8,8 @@
 
 (def-type image-t (tensor int 2 :address-space :global :align :compact))
 
-(def-kernel hoist_tiled_oversubscribe (&out image)
+(def-kernel hoist_exact_tiled_oversubscribe (&out image)
     (declare (type image image-t)
-             (global-size :derive-from image :strategy :tiled :tile-shape (16 16) :pad-with 0))
+             (local-size :set-to (16 16))
+             (global-size :derive-from image :strategy :exact :tile-shape (16 16) :pad-with 0))
   (set! (~ image 0 0) 0))
