@@ -4,8 +4,9 @@ Crisp can compile time check that a variable might be uniform or divergent.
 
 The base compile-time routines for this are these:
 
-(uniformity-state <var>) => :uniform | :divergent | :unknown   <-- these three are from some uniformity-state Crisp enum.
+(uniformity-state <var>) => :uniform | :divergent | :unknown   <-- NOT exposed to users
 
+Macros exposed to users:
 (provably-uniform? <var>)  -->  (eq (uniformity-state <var>) :uniform)
 
 (provably-divergent? <var>)  -->  (eq (uniformity-state <var>) :divergent)

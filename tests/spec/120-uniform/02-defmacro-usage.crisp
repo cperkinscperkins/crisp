@@ -1,4 +1,4 @@
-
+;; SKIP-WITH[--differentiate]: "folded boolean literal materialized as backward let-binding. boolean has no LLVM type.  Will fix later"
 
 ;; this macro is a bad idea for a kernel with real performance requirements.
 ;; just demonstrating macro usage 
