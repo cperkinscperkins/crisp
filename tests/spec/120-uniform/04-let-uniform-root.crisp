@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "dotimes+ not yet handled in AD backward walk; uniformity is a forward-time concern"
+
+;; Endeavor 120 (gap #1): a let-bound uniform ROOT must remain provably uniform,
+;; so dotimes+ accepts it.  analyze-let-expression must propagate the init's
+;; uniformity to the bound variable (currently it defaults to :unknown).
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel let_uniform_root (OUT)
+  (declare #'(vec-t => nil))
+  (let ((n (get-workgroup-id 0)))
+    (dotimes+ (i n)
+      (set! (~ OUT (get-global-id 0)) 1.0))))

@@ -219,7 +219,12 @@ differentiable user function."
     (let ((cell (assoc form env)))
       (if cell (cdr cell) :unknown)))
    ((consp form)
-    (let ((op (car form)))
+    (let* ((op (car form))
+           ;; Compute builtin state up front. NOTE: crisp.compiler's `cond`
+           ;; macro drops the value of a clause that has only a test and no
+           ;; body, so we must NOT rely on the bare `((%uni-builtin-state op))`
+           ;; idiom — give the builtin clause an explicit body (`(bs bs)`).
+           (bs (and (symbolp op) (%uni-builtin-state op))))
       (cond
        ((not (symbolp op))
         ;; e.g. ((lambda ...) ...) — just recurse for nested calls.
@@ -238,8 +243,15 @@ differentiable user function."
        ((member (symbol-name op) '("TO-WARP-UNIFORM" "TO-WORKGROUP-UNIFORM") :test #'string=)
         (dolist (a (cdr form)) (%uni-analyze a env))
         :uniform)
-       ;; GPU builtins (uniform / divergent roots)
-       ((%uni-builtin-state op))
+       ;; type conversions are uniformity-transparent (Endeavor 120 gap #6).
+       ;; (to-*-uniform handled above, so a TO-/AS- prefix here is a cast.)
+       ((and (> (length (symbol-name op)) 3)
+             (or (string= (subseq (symbol-name op) 0 3) "TO-")
+                 (string= (subseq (symbol-name op) 0 3) "AS-")))
+        (%uni-combine (mapcar (lambda (a) (%uni-analyze a env)) (cdr form))))
+       ;; GPU builtins (uniform / divergent roots). Explicit body required —
+       ;; see the cond-quirk note above.
+       (bs bs)
        ;; call to a known user function: contribute argument uniformities
        ((gethash op *fn-normalized-info*)
         (let* ((callee-params (%uni-param-names (getf (gethash op *fn-normalized-info*) :params)))
@@ -409,3 +421,319 @@ runs infer-param-uniformity once the call graph is complete."
             (log:debug "Endeavor 120: inferred ~a.~a as :uniform" name (parameter-def-name p))
             (setf (parameter-def-uniformity p) :uniform)))))
     env))
+
+;;; ------------------------------------------------------------
+;;; Endeavor 120 gap #1: let-binding uniformity propagation
+;;;
+;;; analyze-let-expression created each binding's parameter-def with the
+;;; default :uniformity :unknown, so a variable bound to a uniform root (or to
+;;; (to-workgroup-uniform ...)) read back as :unknown -- breaking if+/dotimes+
+;;; and rendering the to-*-uniform forms decorative. Fix: stamp each binding's
+;;; :uniformity from the init expression's calculated uniformity state (computed
+;;; in the pre-binding environment, matching let*'s sequential scoping).
+;;; ------------------------------------------------------------
+
+;;; Endeavor 120 gap #4: to-*-uniform may only be the direct initializer of a
+;;; let binding. *to-uniform-allowed* is bound T by analyze-let-expression only
+;;; when the binding's init-form is syntactically a to-*-uniform call; the
+;;; analyzers below error otherwise.
+(defvar *to-uniform-allowed* nil
+  "T only while analyzing a let-binding initializer that is itself a direct
+   to-warp-uniform / to-workgroup-uniform form.")
+
+(defun %to-uniform-form-p (form)
+  "T if FORM is a direct (to-warp-uniform ...) or (to-workgroup-uniform ...)."
+  (and (consp form) (symbolp (car form))
+       (member (symbol-name (car form))
+               '("TO-WARP-UNIFORM" "TO-WORKGROUP-UNIFORM")
+               :test #'string=)))
+
+;; src/analysis/control.lisp
+(defun analyze-to-workgroup-uniform (expr env context location)
+  (unless *to-uniform-allowed*
+    (error 'crisp-compiler-error
+      :message "to-workgroup-uniform may only be used as the initializer of a let binding, e.g. (let ((u (to-workgroup-uniform ...))) ...)."
+      :source-location location))
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error :message "to-workgroup-uniform expects 1 argument" :source-location location))
+  (let* ((val-node (let ((*to-uniform-allowed* nil))
+                     (analyze-expression (second expr) env context (append location '(1)))))
+         (type (get-single-value-type val-node)))
+    (make-semantic-to-workgroup-uniform :type type :value-node val-node :source-location location)))
+
+;; src/analysis/control.lisp
+(defun analyze-to-warp-uniform (expr env context location)
+  (unless *to-uniform-allowed*
+    (error 'crisp-compiler-error
+      :message "to-warp-uniform may only be used as the initializer of a let binding, e.g. (let ((u (to-warp-uniform ...))) ...)."
+      :source-location location))
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error :message "to-warp-uniform expects 1 argument" :source-location location))
+  (let* ((val-node (let ((*to-uniform-allowed* nil))
+                     (analyze-expression (second expr) env context (append location '(1)))))
+         (type (get-single-value-type val-node)))
+    (make-semantic-to-warp-uniform :type type :value-node val-node :source-location location)))
+
+;; src/analysis/control.lisp
+(defun analyze-let-expression (expr env context location)
+  "Analyzes a `(let ...)` expression.
+   Extended (091): strips leading declare forms from the body, checks for
+   (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
+   Extended (120): propagates each binding's uniformity from its init."
+  (unless (and (>= (length expr) 2) (listp (cadr expr)))
+    (error "Malformed let form: ~a" expr))
+
+  (let* ((binding-forms (cadr expr))
+         (raw-body (cddr expr)))
+
+    ;; Strip leading declares and check for execution-context declarations
+    (multiple-value-bind (body-forms decl-specs)
+        (%strip-execution-context-declares raw-body)
+      (multiple-value-bind (has-grid-level has-workgroup-level)
+          (%check-context-declarations decl-specs location)
+
+        ;; Bind context vars for the body analysis
+        (let ((*in-grid-level-context* (or *in-grid-level-context* has-grid-level))
+              (*in-workgroup-level-context* (or *in-workgroup-level-context* has-workgroup-level)))
+
+          ;; Implement let* scoping by sequentially building the environment.
+          (multiple-value-bind (final-env analyzed-bindings)
+              (let ((current-env env)
+                    (bindings-list '()))
+                (loop for binding in binding-forms
+                      for i from 0 do
+                        (log:debug "Analyzing let binding form: ~s" binding)
+
+                        (let ((is-flat-mvb (and (> (length binding) 2)
+                                                (not (listp (first binding))))))
+
+                          (let* ((binding-vars (if is-flat-mvb
+                                                   (butlast binding)
+                                                   (if (and (= (length binding) 2) (listp (first binding)))
+                                                       (first binding)
+                                                       (list (first binding)))))
+                                 (init-form (first (last binding)))
+                                 (current-binding-name (if (= (length binding-vars) 1) (first binding-vars) nil))
+                                 (init-node
+                                  (let ((old-name (compiler-context-current-binding-name context)))
+                                    (when current-binding-name
+                                          (setf (compiler-context-current-binding-name context) current-binding-name))
+                                    (unwind-protect
+                                        ;; Endeavor 120 gap #4: permit to-*-uniform only when it
+                                        ;; is the direct initializer of this binding.
+                                        (let ((*to-uniform-allowed* (%to-uniform-form-p init-form)))
+                                          (analyze-expression init-form current-env context
+                                                              (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1)))))
+                                      (when current-binding-name
+                                            (setf (compiler-context-current-binding-name context) old-name)))))
+                                 (init-node-types (semantic-node-type init-node))
+                                 ;; Endeavor 120: uniformity of the init, computed in the
+                                 ;; pre-binding environment (let* sequential scope).
+                                 (init-uniformity (calculate-uniformity-state init-node current-env)))
+
+                            (cond
+                             ((= (length binding-vars) 1)
+                               (let* ((var-name (first binding-vars))
+                                      (var-type (get-single-value-type init-node)))
+                                 (log:warn "ANALYZE-LET VAR: ~a -> Inferred Type: ~a Uniformity: ~a" var-name var-type init-uniformity)
+                                 (push (cons var-name init-node) bindings-list)
+                                 (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local
+                                                                             :uniformity init-uniformity)
+                                                         current-env))))
+
+                             ((> (length binding-vars) 1)
+                               (unless (listp init-node-types)
+                                 (error "Cannot destructure a single-value return into multiple variables at ~a. Got type ~a for binding ~a."
+                                   (semantic-node-source-location init-node) init-node-types binding))
+                               (unless (>= (length init-node-types) (length binding-vars))
+                                 (error "Not enough return values from ~a to bind ~a variables at ~a" init-form (length binding-vars) (semantic-node-source-location init-node)))
+
+                               (loop for var-name in binding-vars
+                                     for j from 0 do
+                                       (let* ((var-type (nth j init-node-types))
+                                              (extract-node (make-semantic-extract-value
+                                                             :type var-type
+                                                             :aggregate-node init-node
+                                                             :index j
+                                                             :source-location (semantic-node-source-location init-node))))
+                                         (push (cons var-name extract-node) bindings-list)
+                                         (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local
+                                                                                     :uniformity init-uniformity)
+                                                                 current-env)))))
+                             (t (error "Malformed let binding: ~a" binding))))))
+                (values current-env (reverse bindings-list)))
+
+            ;; Endeavor 120 gap #2/#3: apply (declare (uniform v)) hints from the
+            ;; let block. Only let-bound variables are eligible (so the hint
+            ;; cannot leak into an outer scope's shared parameter-def). A hint on
+            ;; a provably-divergent binding is an error -- the user can always use
+            ;; a plain if/when/dotimes instead, so an unsafe assertion buys
+            ;; nothing.
+            (let ((let-bound-names (mapcar #'car analyzed-bindings)))
+              (dolist (uvar (loop for d in decl-specs
+                                  when (and (consp d) (symbolp (car d))
+                                            (string-equal (symbol-name (car d)) "UNIFORM"))
+                                  append (rest d)))
+                (cond
+                 ((not (member uvar let-bound-names))
+                  (log:warn "(declare (uniform ~s)) ignored: not a variable bound by this let." uvar))
+                 (t
+                  (let ((pd (find-variable-in-env uvar final-env)))
+                    (cond
+                     ((null pd)
+                      (log:warn "(declare (uniform ~s)): binding not found." uvar))
+                     ((eq (parameter-def-uniformity pd) :divergent)
+                      (error 'crisp-compiler-error
+                        :message (format nil "(declare (uniform ~a)) is invalid: ~a is provably divergent in this scope. Use a plain if/when/dotimes instead."
+                                         uvar uvar)
+                        :source-location location))
+                     (t
+                      (log:debug "Endeavor 120: (declare (uniform ~a)) -> :uniform (was ~a)"
+                                 uvar (parameter-def-uniformity pd))
+                      (setf (parameter-def-uniformity pd) :uniform))))))))
+
+            (let* ((analyzed-body (analyze-body-expressions body-forms final-env context (append location '(2))))
+                   (last-body-node (first (last analyzed-body)))
+                   (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
+              (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
+                         analyzed-bindings analyzed-body return-type)
+              (make-semantic-let :type return-type
+                                 :bindings analyzed-bindings
+                                 :body analyzed-body
+                                 :source-location location))))))))
+
+;;; ------------------------------------------------------------
+;;; Endeavor 120 gap #6: type conversions are uniformity-transparent
+;;;
+;;; (to-ulong x), (to-float x), (as-int x), etc. all produce semantic-cast
+;;; nodes (base struct; to-* / as-* share the :include hierarchy). Previously
+;;; these hit the :unknown fallback, so a uniform value run through a
+;;; conversion (extremely common: `(< (get-workgroup-id 0) (to-ulong 4))`)
+;;; collapsed to :unknown and if+/dotimes+/when+ rejected it. A cast carries
+;;; the uniformity of its operand unchanged.
+;;; ------------------------------------------------------------
+
+;; src/analysis/core.lisp
+(defun calculate-uniformity-state (node env)
+  "Recursively determines the uniformity state of an analyzed semantic AST node.
+   Returns :uniform, :divergent, or :unknown.
+   - Literals are :uniform.
+   - Variables are looked up in the env for their stored uniformity. If env lookup
+     fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.
+   - GPU Builtins: get-workgroup-id is :uniform, get-local-id/get-global-id are :divergent.
+   - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.
+     If any arg is :divergent, it is :divergent. Otherwise :unknown.
+   - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.
+   - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast."
+  (etypecase node
+    (semantic-literal :uniform)
+    (semantic-device-vec-literal
+     (let ((states (mapcar (lambda (el) (calculate-uniformity-state el env))
+                           (semantic-device-vec-literal-elements node))))
+       (cond
+         ((some (lambda (s) (eq s :divergent)) states) :divergent)
+         ((every (lambda (s) (eq s :uniform)) states) :uniform)
+         (t :unknown))))
+    (semantic-var-read
+     (let ((v (find-variable-in-env (semantic-var-read-name node) env)))
+       (if v
+           (parameter-def-uniformity v)
+           :unknown)))
+    (semantic-add
+     (let ((ls (calculate-uniformity-state (semantic-add-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-add-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-sub
+     (let ((ls (calculate-uniformity-state (semantic-sub-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-sub-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-mul
+     (let ((ls (calculate-uniformity-state (semantic-mul-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-mul-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-div
+     (let ((ls (calculate-uniformity-state (semantic-div-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-div-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-sin
+     (calculate-uniformity-state (semantic-sin-arg node) env))
+    (semantic-cos
+     (calculate-uniformity-state (semantic-cos-arg node) env))
+    ;; Endeavor 120: casts/conversions (to-*, as-*) are passthrough. Covers all
+    ;; semantic-cast subtypes (value-cast, bitcast, fp-truncate-cast, truncate).
+    (semantic-cast
+     (calculate-uniformity-state (semantic-cast-arg node) env))
+    ((or semantic-lt semantic-gt semantic-le semantic-ge semantic-eq semantic-neq)
+     (let ((ls (calculate-uniformity-state (slot-value node 'left-arg) env))
+           (rs (calculate-uniformity-state (slot-value node 'right-arg) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-if
+     (let ((cs (calculate-uniformity-state (semantic-if-condition-node node) env))
+           (ts (calculate-uniformity-state (semantic-if-then-node node) env))
+           (es (calculate-uniformity-state (semantic-if-else-node node) env)))
+       (cond ((or (eq cs :divergent) (eq ts :divergent) (eq es :divergent)) :divergent)
+             ((and (eq cs :uniform) (eq ts :uniform) (eq es :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-let
+     :unknown)
+    (semantic-gpu-builtin
+     (let ((name (semantic-gpu-builtin-builtin-name node)))
+       (cond ((member name '(:get-global-id :get-local-id)) :divergent)
+             ((member name '(:get-workgroup-id :get-workgroup-size :get-warp-size :sync-workgroup :get-global-size :get-num-groups)) :uniform)
+             (t :unknown))))
+    (semantic-to-workgroup-uniform :uniform)
+    (semantic-to-warp-uniform :uniform)
+    ;; Memory reads and anything else
+    (t :unknown)))
+
+;;; ------------------------------------------------------------
+;;; Endeavor 120 gap #5: set! taint inside a divergent block
+;;;
+;;; Mutating a variable via set! inside a divergent control-flow region
+;;; (where *divergent-scope-depth* > 0, set by if/when/cond with a non-uniform
+;;; condition) permanently taints that variable :divergent for the remainder of
+;;; the scope -- different threads take different paths, so the value diverges.
+;;; Assigning a divergent value taints likewise (contagion). The uniformity is
+;;; stored on the shared parameter-def, so a subsequent if+ on the variable
+;;; correctly observes the taint.
+;;; ------------------------------------------------------------
+
+;; src/analysis/structs.lisp
+(defun %analyze-set!-simple-variable (target-form value-node env location)
+  "Helper to analyze simple variable assignment (set! target-form value-node).
+   Endeavor 120 (gap #5): taints the variable :divergent when mutated inside a
+   divergent block, or when assigned a divergent value."
+  (let ((var-info (find-variable-in-env target-form env)))
+    (unless var-info
+      (error 'crisp-unknown-variable :name target-form :source-location location))
+    (let ((var-type (parameter-def-type var-info))
+          (val-type (semantic-node-type value-node)))
+      (unless (types-compatible-p val-type var-type)
+        (error 'crisp-type-error :expected var-type :inferred val-type
+               :source-location location)))
+    ;; Endeavor 120: uniformity taint on mutation.
+    (let ((val-uni (calculate-uniformity-state value-node env)))
+      (cond
+       ((> *divergent-scope-depth* 0)
+        (log:debug "Endeavor 120: set! ~a inside divergent scope -> :divergent" target-form)
+        (setf (parameter-def-uniformity var-info) :divergent))
+       ((eq val-uni :divergent)
+        (log:debug "Endeavor 120: set! ~a := divergent value -> :divergent" target-form)
+        (setf (parameter-def-uniformity var-info) :divergent))))
+    (make-semantic-set!
+     :target-node (make-semantic-var-read
+                   :name target-form
+                   :type (parameter-def-type var-info)
+                   :source-location location)
+     :value-node value-node
+     :source-location location)))

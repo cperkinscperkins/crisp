@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "if+/to-warp-uniform not yet handled in AD backward walk"
+
+;; Endeavor 120 (gap #1): (to-warp-uniform ...) bound in a let must make the
+;; variable provably uniform so if+ accepts it.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel to_warp_uniform_if (OUT)
+  (declare #'(vec-t => nil))
+  (let ((u (to-warp-uniform (get-local-id 0))))
+    (if+ (< u (to-ulong 4))
+      (set! (~ OUT (get-global-id 0)) 1.0)
+      (set! (~ OUT (get-global-id 0)) 0.0))))

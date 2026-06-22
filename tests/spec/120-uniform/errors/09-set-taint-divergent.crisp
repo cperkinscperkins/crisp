@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "if+ requires a provably uniform condition"
+
+;; Endeavor 120 (gap #5): a uniform variable mutated via set! inside a divergent
+;; block is permanently tainted divergent, so the later if+ must reject it.
+;; (Depends on gap #1: u must first be uniform for this to be a real taint test.)
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel set_taint (OUT)
+  (declare #'(vec-t => nil))
+  (let ((u (get-workgroup-id 0)))
+    (when (= (get-local-id 0) (to-ulong 0))
+      (set! u (get-local-id 0)))
+    (if+ (< u (to-ulong 4))
+      (set! (~ OUT (get-global-id 0)) 1.0)
+      (set! (~ OUT (get-global-id 0)) 0.0))))
