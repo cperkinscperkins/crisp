@@ -275,6 +275,8 @@
                            (+ ,(local-adj ctor-arg) ,field-adj-sym)))))
     t))
 
+
+  
 (defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
                                         &key hof-handler-fn (error-on-unknown t)
                                         tensor-inputs-ht
@@ -304,6 +306,18 @@
      nil)
    ((and (consp expr) (symbolp (car expr))
          (%backward-skip-fn-p (car expr)))
+     nil)
+   ;; Endeavor 120: gradient-inert calls.
+   ;;  - *inert-functions*: user functions with no differentiable params
+   ;;    (zero gradient), recorded by %generate-backward-function-ast.
+   ;;  - the compile-time uniformity intrinsics, which fold to constants and
+   ;;    carry no gradient.
+   ((and (consp expr) (symbolp (car expr))
+         (or (gethash (car expr) *inert-functions*)
+             (member (symbol-name (car expr))
+                     '("PROVABLY-UNIFORM?" "PROVABLY-DIVERGENT?" "UNIFORMITY-STATE"
+                       "TO-WARP-UNIFORM" "TO-WORKGROUP-UNIFORM")
+                     :test #'string=)))
      nil)
    ((and (consp expr) (symbolp (car expr)))
      (when error-on-unknown
@@ -1387,6 +1401,8 @@ to compute-base-type for derived types."
         (remhash name *differentiable-functions*)
         nil))))
 
+
+
 (defun %generate-backward-function-ast (name params declarations body-forms)
   "Generates the backward companion (def-function NAME_GRAD ...) for a
 differentiable user function."
@@ -1421,7 +1437,11 @@ differentiable user function."
 
         (when (and (zerop n-float-params)
                    (not (%has-tensor-diff-param-p env)))
-              (log:info "AUTODIFF: ~a has no differentiable params — skipping _GRAD generation." name)
+              (log:info "AUTODIFF: ~a has no differentiable params — skipping _GRAD generation (marking gradient-inert)." name)
+              ;; Endeavor 120: record that this skip is *intentional* (zero
+              ;; gradient), so calls to it are silently skipped in the backward
+              ;; walk rather than erroring.
+              (setf (gethash name *inert-functions*) t)
               (return-from %generate-backward-function-ast nil))
 
         (if is-hof

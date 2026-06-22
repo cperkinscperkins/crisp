@@ -672,22 +672,41 @@ the _GRAD backward companion after the forward function."
         do (visit-toplevel-form form (list i) visitor-fn)))
 
 
-;;; Updated analyze-signatures-pass -- calls %pre-register-hof-templates after
-;;; walk-code-forms so HOF templates in the template registry are registered.
-;;; src/analysis/core.lisp
+
+
+
 (defun analyze-signatures-pass (forms)
   "Pass 1: Pre-register differentiable functions, then iterate through forms
 to find and register all function signatures and build the call graph.
 Pre-registration ensures *differentiable-functions* is populated before
 def-kernel macros expand and call generate-backward-walk (feature 052).
-Also scans *template-registry* for HOF templates after walk-code-forms."
+Also scans *template-registry* for HOF templates after walk-code-forms.
+
+Endeavor 120: also captures each function's macro-expanded params/body and
+runs infer-param-uniformity once the call graph is complete."
+  ;; Endeavor 120: reset per-module uniformity/inert state.
+  (clrhash *inert-functions*)
+  (clrhash *fn-normalized-info*)
+  (clrhash *inferred-param-uniformity*)
   ;; Step 1: Pre-populate from top-level def-function forms.
   (%pre-register-differentiable-fns forms)
   ;; Step 2: Walk all forms (registers templates, signatures, etc.)
   (walk-code-forms forms
                    (lambda (form location)
                      (let* ((name (second form))
-                               (body (cdddr form)))
+                               (body (cdddr form))
+                               (body-forms (loop for f in body
+                                                 unless (and (listp f) (eq (car f) 'declare))
+                                                 collect f))
+                               (decls (loop for f in body
+                                            when (and (listp f) (eq (car f) 'declare))
+                                            append (rest f)))
+                               (entry-point-p (loop for d in decls
+                                                    thereis (and (listp d) (symbolp (first d))
+                                                                 (string-equal (symbol-name (first d)) "ENTRY-POINT")))))
+                       ;; Endeavor 120: capture normalized info for inference.
+                       (setf (gethash name *fn-normalized-info*)
+                             (list :params (third form) :body body-forms :entry-point-p entry-point-p))
                        (register-function-signature form location)
                        (let ((*compiler-context* (make-compiler-context)))
                          (setf (compiler-context-scanning-function-name *compiler-context*) name)
@@ -697,7 +716,208 @@ Also scans *template-registry* for HOF templates after walk-code-forms."
                              (setf (gethash name *originator-functions*) t))
                            (setf (gethash name *call-graph*) callees))))))
   ;; Step 3: After walk-code-forms, scan template registry for HOF templates.
-  (%pre-register-hof-templates))
+  (%pre-register-hof-templates)
+  ;; Endeavor 120: interprocedural uniformity inference (call graph is ready).
+  (infer-param-uniformity))
+
+
+
+(defun %uni-param-names (params)
+  "Extract ordered parameter names from a def-function parameter list,
+   handling both plain symbols and (name type ...) interleaved specs."
+  (loop for p in params
+        collect (if (consp p) (first p) p)))
+
+(defun %uni-combine (states)
+  "Taint-max over a list of uniformity STATES. :divergent dominates, then
+   :unknown, otherwise :uniform. (Empty list -> :uniform.)"
+  (cond ((null states) :uniform)
+        ((member :divergent states) :divergent)
+        ((member :unknown states) :unknown)
+        (t :uniform)))
+
+(defun %uni-builtin-state (op)
+  "Return :uniform or :divergent if OP is a recognized GPU builtin operator,
+   else NIL. Matched by symbol-name so it is package-agnostic."
+  (let ((n (symbol-name op)))
+    (cond ((member n '("GET-LOCAL-ID" "GET-GLOBAL-ID") :test #'string=) :divergent)
+          ((member n '("GET-WORKGROUP-ID" "GET-WORKGROUP-SIZE" "GET-WARP-SIZE"
+                       "GET-GLOBAL-SIZE" "GET-NUM-GROUPS" "GET-LOCAL-WORK-SIZE"
+                       "GET-GLOBAL-WORK-SIZE" "GET-GLOBAL-OFFSET")
+                   :test #'string=) :uniform)
+          (t nil))))
+
+(defun %uni-contribute (callee param-name state)
+  "Meet STATE into *uni-meet-table*[CALLEE][PARAM-NAME]."
+  (let ((tbl (or (gethash callee *uni-meet-table*)
+                 (setf (gethash callee *uni-meet-table*) (make-hash-table :test 'eq)))))
+    (multiple-value-bind (existing present) (gethash param-name tbl)
+      (setf (gethash param-name tbl)
+            (if present (%uni-combine (list existing state)) state)))))
+
+(defun %uni-analyze-let (form env)
+  "Uniformity walk of a (let (bindings...) body...) form. Crisp let is
+   let*-like, so bindings extend ENV sequentially. Multi-value bindings bind
+   each var to :unknown (conservative). Returns the state of the last body
+   form."
+  (let ((bindings (second form))
+        (body (cddr form))
+        (new-env env))
+    (dolist (b bindings)
+      (cond
+       ((and (consp b) (= (length b) 2) (symbolp (first b)))
+        (let ((st (%uni-analyze (second b) new-env)))
+          (setf new-env (acons (first b) st new-env))))
+       ((consp b)
+        ;; multi-value bind: walk the init (last element) for nested calls;
+        ;; the bound vars are conservatively :unknown.
+        (%uni-analyze (car (last b)) new-env)
+        (dolist (vv (butlast b))
+          (when (symbolp vv) (setf new-env (acons vv :unknown new-env)))))
+       (t nil)))
+    (let ((last-state :uniform))
+      (dolist (f body last-state)
+        (setf last-state (%uni-analyze f new-env))))))
+
+(defun %uni-analyze (form env)
+  "Lightweight uniformity walk of a raw body FORM under ENV (an alist
+   name -> state). Returns FORM's uniformity state; as a side effect,
+   contributes call-site argument states to *uni-meet-table* for every call
+   to a known user function (see infer-param-uniformity)."
+  (cond
+   ((null form) :uniform)
+   ((integerp form) :uniform)
+   ((floatp form) :uniform)
+   ((keywordp form) :uniform)
+   ((symbolp form)
+    (let ((cell (assoc form env)))
+      (if cell (cdr cell) :unknown)))
+   ((consp form)
+    (let* ((op (car form))
+           ;; Compute builtin state up front. NOTE: crisp.compiler's `cond`
+           ;; macro drops the value of a clause that has only a test and no
+           ;; body, so we must NOT rely on the bare `((%uni-builtin-state op))`
+           ;; idiom — give the builtin clause an explicit body (`(bs bs)`).
+           (bs (and (symbolp op) (%uni-builtin-state op))))
+      (cond
+       ((not (symbolp op))
+        ;; e.g. ((lambda ...) ...) — just recurse for nested calls.
+        (dolist (a (cdr form)) (when (consp a) (%uni-analyze a env)))
+        :unknown)
+       ;; let / let* : sequential scoping
+       ((string-equal (symbol-name op) "LET")
+        (%uni-analyze-let form env))
+       ;; arithmetic / comparison contagion
+       ((member (symbol-name op)
+                '("+" "-" "*" "/" "SIN" "COS"
+                  "<" ">" "<=" ">=" "=" "/=" "MOD" "REM")
+                :test #'string=)
+        (%uni-combine (mapcar (lambda (a) (%uni-analyze a env)) (cdr form))))
+       ;; forced-uniform constructs
+       ((member (symbol-name op) '("TO-WARP-UNIFORM" "TO-WORKGROUP-UNIFORM") :test #'string=)
+        (dolist (a (cdr form)) (%uni-analyze a env))
+        :uniform)
+       ;; type conversions are uniformity-transparent (Endeavor 120 gap #6).
+       ;; (to-*-uniform handled above, so a TO-/AS- prefix here is a cast.)
+       ((and (> (length (symbol-name op)) 3)
+             (or (string= (subseq (symbol-name op) 0 3) "TO-")
+                 (string= (subseq (symbol-name op) 0 3) "AS-")))
+        (%uni-combine (mapcar (lambda (a) (%uni-analyze a env)) (cdr form))))
+       ;; GPU builtins (uniform / divergent roots). Explicit body required —
+       ;; see the cond-quirk note above.
+       (bs bs)
+       ;; call to a known user function: contribute argument uniformities
+       ((gethash op *fn-normalized-info*)
+        (let* ((callee-params (%uni-param-names (getf (gethash op *fn-normalized-info*) :params)))
+               (args (cdr form))
+               (arg-states (mapcar (lambda (a) (%uni-analyze a env)) args)))
+          ;; Only contribute when arity matches positionally — exploded
+          ;; storage-handle calls or arity mismatches are left uninferred
+          ;; (safe: callee param stays :unknown).
+          (when (= (length args) (length callee-params))
+            (loop for pname in callee-params
+                  for st in arg-states
+                  do (%uni-contribute op pname st)))
+          :unknown))
+       ;; anything else: recurse to discover nested calls; value :unknown
+       (t
+        (dolist (a (cdr form)) (when (consp a) (%uni-analyze a env)))
+        :unknown))))
+   (t :unknown)))
+
+(defun %uni-topo-order (nodes)
+  "Topological order of NODES (function-name symbols) by *call-graph* edges
+   caller->callee, callers first. Recursion is banned so this is a DAG; any
+   leftover (cyclic) nodes are appended at the end."
+  (let ((indeg (make-hash-table :test 'eq))
+        (succ (make-hash-table :test 'eq))
+        (nodeset (make-hash-table :test 'eq)))
+    (dolist (n nodes)
+      (setf (gethash n nodeset) t)
+      (setf (gethash n indeg) 0))
+    (dolist (caller nodes)
+      (let ((callees (remove-duplicates
+                      (loop for c in (gethash caller *call-graph*)
+                            when (and (gethash c nodeset) (not (eq c caller)))
+                            collect c))))
+        (setf (gethash caller succ) callees)
+        (dolist (c callees) (incf (gethash c indeg)))))
+    (let ((queue (loop for n in nodes when (zerop (gethash n indeg)) collect n))
+          (order '()))
+      (loop while queue do
+        (let ((n (pop queue)))
+          (push n order)
+          (dolist (c (gethash n succ))
+            (when (zerop (decf (gethash c indeg)))
+              (push c queue)))))
+      (dolist (n nodes)
+        (unless (member n order) (push n order)))
+      (nreverse order))))
+
+(defun infer-param-uniformity ()
+  "Endeavor 120 (Option 1): conservative interprocedural uniformity inference.
+   Seeds kernel (entry-point) parameters as :uniform, then propagates argument
+   uniformity down the call graph (callers processed before callees). A
+   function parameter is inferred :uniform only when EVERY observed call site
+   passes a provably-uniform argument. Results are stored in
+   *inferred-param-uniformity* and applied (upgrade-only) to the
+   body-compilation environment by inject-implicit-arguments.
+
+   Generic/template functions are skipped: their call sites can be created
+   lazily during Pass 2, so the pre-pass cannot see all of them, and an
+   incorrectly-inferred :uniform would be unsafe."
+  (let ((nodes (loop for k being the hash-keys of *fn-normalized-info* collect k)))
+    (let ((*uni-meet-table* (make-hash-table :test 'eq))
+          (order (%uni-topo-order nodes)))
+      (dolist (name order)
+        (let* ((info (gethash name *fn-normalized-info*))
+               (params (%uni-param-names (getf info :params)))
+               (entry-point-p (getf info :entry-point-p))
+               (body (getf info :body))
+               (lazy-p (or (and (boundp '*generic-functions*) (gethash name *generic-functions*))
+                           (and (boundp '*template-registry*) (gethash name *template-registry*))))
+               (param-states
+                (cond
+                 (entry-point-p
+                  (loop for p in params collect (cons p :uniform)))
+                 (lazy-p
+                  (loop for p in params collect (cons p :unknown)))
+                 (t
+                  (let ((tbl (gethash name *uni-meet-table*)))
+                    (loop for p in params
+                          collect (cons p (if tbl
+                                              (multiple-value-bind (s present) (gethash p tbl)
+                                                (if present s :unknown))
+                                              :unknown))))))))
+          (setf (gethash name *inferred-param-uniformity*) param-states)
+          ;; Walk the body to contribute argument uniformities to callees,
+          ;; using this function's own resolved parameter environment.
+          (let ((env param-states))
+            (dolist (f body)
+              (%uni-analyze f env)))))
+      (log:debug "Endeavor 120 inferred param uniformity: ~s"
+                 (loop for k being the hash-keys of *inferred-param-uniformity*
+                       using (hash-value vv) collect (cons k vv))))))
 
 (defun compile-forms-pass (forms module builder di-builder di-compile-unit location-map)
   "Pass 2: Iterates through forms to perform full analysis and codegen."
@@ -1175,6 +1395,8 @@ in single-pass mode."
       (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
 
 
+
+
 (defun calculate-uniformity-state (node env)
   "Recursively determines the uniformity state of an analyzed semantic AST node.
    Returns :uniform, :divergent, or :unknown.
@@ -1184,6 +1406,7 @@ in single-pass mode."
    - GPU Builtins: get-workgroup-id is :uniform, get-local-id/get-global-id are :divergent.
    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.
      If any arg is :divergent, it is :divergent. Otherwise :unknown.
+   - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.
    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast."
   (etypecase node
     (semantic-literal :uniform)
@@ -1227,9 +1450,11 @@ in single-pass mode."
      (calculate-uniformity-state (semantic-sin-arg node) env))
     (semantic-cos
      (calculate-uniformity-state (semantic-cos-arg node) env))
+    ;; Endeavor 120: casts/conversions (to-*, as-*) are passthrough. Covers all
+    ;; semantic-cast subtypes (value-cast, bitcast, fp-truncate-cast, truncate).
+    (semantic-cast
+     (calculate-uniformity-state (semantic-cast-arg node) env))
     ((or semantic-lt semantic-gt semantic-le semantic-ge semantic-eq semantic-neq)
-     ;; Extract left-arg and right-arg using the specific struct accessors. 
-     ;; Or we can just use slot-value. Let's use slot-value for brevity in OR.
      (let ((ls (calculate-uniformity-state (slot-value node 'left-arg) env))
            (rs (calculate-uniformity-state (slot-value node 'right-arg) env)))
        (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
@@ -1243,9 +1468,6 @@ in single-pass mode."
              ((and (eq cs :uniform) (eq ts :uniform) (eq es :uniform)) :uniform)
              (t :unknown))))
     (semantic-let
-     ;; the result of let is the last expression in its body, but we need the environment.
-     ;; However, calculate-uniformity-state does not re-evaluate bindings. 
-     ;; We can just return :unknown as a conservative fallback for let expressions as values.
      :unknown)
     (semantic-gpu-builtin
      (let ((name (semantic-gpu-builtin-builtin-name node)))

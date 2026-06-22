@@ -120,6 +120,32 @@ This supports overloading templates by arity or other factors.")
   "A helper macro to register an operator's analyzer function."
   `(setf (gethash ',operator *expression-analyzers*) ',handler-fn))
 
+
+
+(defvar *inert-functions* (make-hash-table :test 'eq)
+  "Set of user functions intentionally skipped from _GRAD generation because
+   they have no differentiable parameters (their gradient is identically
+   zero). Calls to these are gradient-inert and are silently skipped during
+   the AD backward walk -- in contrast to genuinely non-differentiable
+   functions, whose _GRAD generation errored and which must still error if
+   called from a differentiable kernel. Cleared per-module in
+   analyze-signatures-pass.")
+
+(defvar *fn-normalized-info* (make-hash-table :test 'eq)
+  "Per-module map: function name -> plist (:params :body :entry-point-p),
+   captured during analyze-signatures-pass from the macro-expanded
+   def-function forms. Consumed by infer-param-uniformity. Cleared per-module.")
+
+(defvar *inferred-param-uniformity* (make-hash-table :test 'eq)
+  "Per-module map: function name -> alist (param-name . :uniform|:divergent|
+   :unknown), the result of infer-param-uniformity. Applied (upgrade-only) to
+   the body-compilation environment by inject-implicit-arguments. Cleared
+   per-module.")
+
+(defvar *uni-meet-table* nil
+  "Dynamic: hash callee-name -> (hash param-name -> accumulated meet state).
+   Bound for the duration of infer-param-uniformity.")
+
 ;; Initialization
 ;; ==============
 

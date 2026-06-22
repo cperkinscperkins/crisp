@@ -334,11 +334,18 @@
 
 
 
+
 (defun inject-implicit-arguments (name explicit-env)
   "Injects implicit arguments into the environment for carrier functions.
    Types in *implicit-arg-map* are already in the correct form:
    mangled symbols for tensors (no integers to mangle-type-spec),
-   canonical lists for cells (preserved for hoist metadata)."
+   canonical lists for cells (preserved for hoist metadata).
+
+   Endeavor 120: also stamps interprocedurally-inferred :uniform onto the
+   returned parameter-defs. Upgrade-only — it never downgrades a parameter
+   already marked :uniform by an explicit (declare (uniform ...)) or by
+   entry-point status, and it does not touch the stored function signature, so
+   call-site uniformity constraints are unaffected."
   (let* ((implicit-info (gethash name *implicit-arg-map*))
          (implicit-env
           (when implicit-info
@@ -346,8 +353,17 @@
                   collect (make-parameter-def
                            :name param-name
                            :type param-type
-                           :kind :in)))))
-    (append implicit-env explicit-env)))                      
+                           :kind :in))))
+         (env (append implicit-env explicit-env))
+         (inferred (gethash name *inferred-param-uniformity*)))
+    (when inferred
+      (dolist (p env)
+        (let ((cell (assoc (parameter-def-name p) inferred)))
+          (when (and cell (eq (cdr cell) :uniform)
+                     (not (eq (parameter-def-uniformity p) :uniform)))
+            (log:debug "Endeavor 120: inferred ~a.~a as :uniform" name (parameter-def-name p))
+            (setf (parameter-def-uniformity p) :uniform)))))
+    env))               
 
 (defun scan-for-carriers (name body)
   "Performs a single-pass look-ahead to detect if the function is a carrier.
