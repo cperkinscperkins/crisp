@@ -66,6 +66,8 @@ using the `to-workgroup-uniform` or `to-warp-uniform` .
 `to-workgroup-uniform` will capture the variable in workgroup thread, use a `sync-workgroup` barrier and broadcast it to all the others.
 `to-warp-uniform` is similar, but uses shuffles to broadcast through the warp. 
 
+These two expression can ONLY be used in a let binding.  They cannot be used in any normal position like a regular lisp form. This is because of the barriers they might introduce, they need consistent predictable ordering. 
+
 Note that these to forms are HEAVY HANDED and not peformant (though, when used correctly, performance can be gained).
 
 

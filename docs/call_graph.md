@@ -669,6 +669,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
 - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp [See above]
 - - - - - (%PRE-REGISTER-HOF-TEMPLATES)  analysis/core.lisp [See above]
+- - - - - (INFER-PARAM-UNIFORMITY)  analysis/core.lisp
+- - - - - - (%UNI-TOPO-ORDER NODES)  analysis/core.lisp
+- - - - - - (%UNI-PARAM-NAMES PARAMS)  analysis/core.lisp
+- - - - - - (%UNI-ANALYZE FORM ENV)  analysis/core.lisp
+- - - - - - - (%UNI-BUILTIN-STATE OP)  analysis/core.lisp
+- - - - - - - (%UNI-ANALYZE FORM ENV)  analysis/core.lisp [RECURSION]
+- - - - - - - (%UNI-ANALYZE-LET FORM ENV)  analysis/core.lisp
+- - - - - - - - (%UNI-ANALYZE FORM ENV)  analysis/core.lisp [RECURSION]
+- - - - - - - (%UNI-COMBINE STATES)  analysis/core.lisp
+- - - - - - - (%UNI-PARAM-NAMES PARAMS)  analysis/core.lisp [See above]
+- - - - - - - (%UNI-CONTRIBUTE CALLEE PARAM-NAME STATE)  analysis/core.lisp
+- - - - - - - - (%UNI-COMBINE STATES)  analysis/core.lisp [See above]
 - - - - (FINALIZE-STRUCT-DEFINITIONS)  structs.lisp
 - - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
 - - - - (PROPAGATE-IMPLICIT-ARGUMENTS)  analysis/core.lisp
@@ -1165,10 +1177,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-LET-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%STRIP-EXECUTION-CONTEXT-DECLARES BODY-FORMS)  analysis/control.lisp
 - - (%CHECK-CONTEXT-DECLARATIONS DECL-SPECS LOCATION)  analysis/control.lisp
+- - (%TO-UNIFORM-FORM-P FORM)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-LOAD-LOCAL-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
@@ -1270,6 +1285,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp [See above]
+- - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
 - - (%ANALYZE-SET!-CALL-ACCESSOR TARGET-FORM VALUE-NODE ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]

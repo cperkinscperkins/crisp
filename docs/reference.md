@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-06-20T23:00:57.405019Z
+Generated on 2026-06-22T05:20:16.050960Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -166,10 +166,23 @@ Generated on 2026-06-20T23:00:57.405019Z
 
 
 ---
+### DEFVAR `*TO-UNIFORM-ALLOWED*`
+
+  > T only while analyzing a let-binding initializer that is itself a direct  >    to-warp-uniform / to-workgroup-uniform form.
+
+
+---
+### DEFUN `%TO-UNIFORM-FORM-P`
+- **Args**: `(FORM)`
+
+  > T if FORM is a direct (to-warp-uniform ...) or (to-workgroup-uniform ...).
+
+
+---
 ### DEFUN `ANALYZE-LET-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(let ...)` expression.  >    Extended (091): strips leading declare forms from the body, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
+  > Analyzes a `(let ...)` expression.  >    Extended (091): strips leading declare forms from the body, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.  >    Extended (120): propagates each binding's uniformity from its init.
 
 
 ---
@@ -741,7 +754,62 @@ Generated on 2026-06-20T23:00:57.405019Z
 ### DEFUN `ANALYZE-SIGNATURES-PASS`
 - **Args**: `(FORMS)`
 
-  > Pass 1: Pre-register differentiable functions, then iterate through forms  > to find and register all function signatures and build the call graph.  > Pre-registration ensures *differentiable-functions* is populated before  > def-kernel macros expand and call generate-backward-walk (feature 052).  > Also scans *template-registry* for HOF templates after walk-code-forms.
+  > Pass 1: Pre-register differentiable functions, then iterate through forms  > to find and register all function signatures and build the call graph.  > Pre-registration ensures *differentiable-functions* is populated before  > def-kernel macros expand and call generate-backward-walk (feature 052).  > Also scans *template-registry* for HOF templates after walk-code-forms.  >   > Endeavor 120: also captures each function's macro-expanded params/body and  > runs infer-param-uniformity once the call graph is complete.
+
+
+---
+### DEFUN `%UNI-PARAM-NAMES`
+- **Args**: `(PARAMS)`
+
+  > Extract ordered parameter names from a def-function parameter list,  >    handling both plain symbols and (name type ...) interleaved specs.
+
+
+---
+### DEFUN `%UNI-COMBINE`
+- **Args**: `(STATES)`
+
+  > Taint-max over a list of uniformity STATES. :divergent dominates, then  >    :unknown, otherwise :uniform. (Empty list -> :uniform.)
+
+
+---
+### DEFUN `%UNI-BUILTIN-STATE`
+- **Args**: `(OP)`
+
+  > Return :uniform or :divergent if OP is a recognized GPU builtin operator,  >    else NIL. Matched by symbol-name so it is package-agnostic.
+
+
+---
+### DEFUN `%UNI-CONTRIBUTE`
+- **Args**: `(CALLEE PARAM-NAME STATE)`
+
+  > Meet STATE into *uni-meet-table*[CALLEE][PARAM-NAME].
+
+
+---
+### DEFUN `%UNI-ANALYZE-LET`
+- **Args**: `(FORM ENV)`
+
+  > Uniformity walk of a (let (bindings...) body...) form. Crisp let is  >    let*-like, so bindings extend ENV sequentially. Multi-value bindings bind  >    each var to :unknown (conservative). Returns the state of the last body  >    form.
+
+
+---
+### DEFUN `%UNI-ANALYZE`
+- **Args**: `(FORM ENV)`
+
+  > Lightweight uniformity walk of a raw body FORM under ENV (an alist  >    name -> state). Returns FORM's uniformity state; as a side effect,  >    contributes call-site argument states to *uni-meet-table* for every call  >    to a known user function (see infer-param-uniformity).
+
+
+---
+### DEFUN `%UNI-TOPO-ORDER`
+- **Args**: `(NODES)`
+
+  > Topological order of NODES (function-name symbols) by *call-graph* edges  >    caller->callee, callers first. Recursion is banned so this is a DAG; any  >    leftover (cyclic) nodes are appended at the end.
+
+
+---
+### DEFUN `INFER-PARAM-UNIFORMITY`
+
+  > Endeavor 120 (Option 1): conservative interprocedural uniformity inference.  >    Seeds kernel (entry-point) parameters as :uniform, then propagates argument  >    uniformity down the call graph (callers processed before callees). A  >    function parameter is inferred :uniform only when EVERY observed call site  >    passes a provably-uniform argument. Results are stored in  >    *inferred-param-uniformity* and applied (upgrade-only) to the  >    body-compilation environment by inject-implicit-arguments.  >   >    Generic/template functions are skipped: their call sites can be created  >    lazily during Pass 2, so the pre-pass cannot see all of them, and an  >    incorrectly-inferred :uniform would be unsafe.
 
 
 ---
@@ -857,7 +925,7 @@ Generated on 2026-06-20T23:00:57.405019Z
 ### DEFUN `CALCULATE-UNIFORMITY-STATE`
 - **Args**: `(NODE ENV)`
 
-  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: get-workgroup-id is :uniform, get-local-id/get-global-id are :divergent.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.
+  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: get-workgroup-id is :uniform, get-local-id/get-global-id are :divergent.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.
 
 
 ---
@@ -1258,7 +1326,7 @@ Generated on 2026-06-20T23:00:57.405019Z
 ### DEFUN `%ANALYZE-SET!-SIMPLE-VARIABLE`
 - **Args**: `(TARGET-FORM VALUE-NODE ENV LOCATION)`
 
-  > Helper to analyze simple variable assignment (set! target-form value-node).
+  > Helper to analyze simple variable assignment (set! target-form value-node).  >    Endeavor 120 (gap #5): taints the variable :divergent when mutated inside a  >    divergent block, or when assigned a divergent value.
 
 
 ---
@@ -3055,7 +3123,7 @@ Generated on 2026-06-20T23:00:57.405019Z
 ### DEFUN `INJECT-IMPLICIT-ARGUMENTS`
 - **Args**: `(NAME EXPLICIT-ENV)`
 
-  > Injects implicit arguments into the environment for carrier functions.  >    Types in *implicit-arg-map* are already in the correct form:  >    mangled symbols for tensors (no integers to mangle-type-spec),  >    canonical lists for cells (preserved for hoist metadata).
+  > Injects implicit arguments into the environment for carrier functions.  >    Types in *implicit-arg-map* are already in the correct form:  >    mangled symbols for tensors (no integers to mangle-type-spec),  >    canonical lists for cells (preserved for hoist metadata).  >   >    Endeavor 120: also stamps interprocedurally-inferred :uniform onto the  >    returned parameter-defs. Upgrade-only — it never downgrades a parameter  >    already marked :uniform by an explicit (declare (uniform ...)) or by  >    entry-point status, and it does not touch the stored function signature, so  >    call-site uniformity constraints are unaffected.
 
 
 ---
@@ -6245,6 +6313,30 @@ Generated on 2026-06-20T23:00:57.405019Z
 - **Args**: `(OPERATOR HANDLER-FN)`
 
   > A helper macro to register an operator's analyzer function.
+
+
+---
+### DEFVAR `*INERT-FUNCTIONS*`
+
+  > Set of user functions intentionally skipped from _GRAD generation because  >    they have no differentiable parameters (their gradient is identically  >    zero). Calls to these are gradient-inert and are silently skipped during  >    the AD backward walk -- in contrast to genuinely non-differentiable  >    functions, whose _GRAD generation errored and which must still error if  >    called from a differentiable kernel. Cleared per-module in  >    analyze-signatures-pass.
+
+
+---
+### DEFVAR `*FN-NORMALIZED-INFO*`
+
+  > Per-module map: function name -> plist (:params :body :entry-point-p),  >    captured during analyze-signatures-pass from the macro-expanded  >    def-function forms. Consumed by infer-param-uniformity. Cleared per-module.
+
+
+---
+### DEFVAR `*INFERRED-PARAM-UNIFORMITY*`
+
+  > Per-module map: function name -> alist (param-name . :uniform|:divergent|  >    :unknown), the result of infer-param-uniformity. Applied (upgrade-only) to  >    the body-compilation environment by inject-implicit-arguments. Cleared  >    per-module.
+
+
+---
+### DEFVAR `*UNI-MEET-TABLE*`
+
+  > Dynamic: hash callee-name -> (hash param-name -> accumulated meet state).  >    Bound for the duration of infer-param-uniformity.
 
 
 ---
