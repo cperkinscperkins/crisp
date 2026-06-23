@@ -2,7 +2,7 @@ In this endeavor we are going to implement FFI support for Crisp.
 
 The design document chapter for this feature is below.  I think we should break this up into a few passes.  In each pass we'll first write the TDD tests (and negative tests) we think are necessary, then implement.
 
-Pass 1 - basic FFI, simple C scalar types.  no pointers or handles.
+Pass 1 - basic FFI, simple C scalar types.  no pointers or handles.   ✅ DONE (2026-06-23)
 
 This is still a big pass, because it needs new Crisp forms supported, .bc args to the cmopiler, and possibly changes to run-specs.lisp for the test harness.
 
@@ -14,9 +14,9 @@ This is still a big pass, because it needs new Crisp forms supported, .bc args t
 - [ ] have a test use hoisting and  HOST-EXPECT: BUFFER directive to actually test our FFI "on metal".
  - - do we need a different .bc for Intel and Nvidia? ( spv and ptx ) ??  Might need two .bc and two tests?
 
-Pass 2 - advanced scalar types: float4, uint2 etc.
+Pass 2 - advanced scalar types: float4, uint2 etc.   ✅ DONE (2026-06-23) — zero compiler changes; rode entirely on Pass 1.
 
-- [ ] open question: how to best handle alignment? 
+- [x] open question: how to best handle alignment?  ANSWERED: vector types pass by value as `<N x T>` and clang's per-target ABI handles alignment automatically (PTX shows `.param .align 16 .b8 ...[16]` for float4), matching Crisp's device-vector representation. No struct/byval/splitting. 
 - [ ] new library functions for advanced scalar types.
 - [ ] new .crisp tests to test them.
 
@@ -39,6 +39,137 @@ Pass 5 - check "real" libraries
 - [ ] bind something from libclc ? test
 - [ ] bind something from libdevice ? test
 
+
+
+=====================================================================
+AMENDMENT (2026-06-23): Pointer & Handle API — supersedes the
+"pointers and handles: voidp and voidp-handle" section of the Design Doc below.
+=====================================================================
+
+The original design assumed `voidp` (an opaque pointer) plus marshalling would
+carry the address space. That doesn't hold: the *pointer value itself* carries
+its address space at the LLVM/SPIR-V/PTX level, and this is one of the places
+CUDA and SPIR-V diverge. A pointer crossing into a C function must already be in
+an address space the C function's signature expects.
+
+### The address-space reality
+
+`voidp` currently hardcodes LLVM addrspace 0. The per-target meaning of 0 differs:
+
+| Crisp `:address-space` | PTX addrspace | SPIR-V addrspace | notes |
+|------------------------|---------------|------------------|-------|
+| `:generic`             | 0             | 4                | the real "void*"; points anywhere |
+| `:global`              | 1             | 1                | global buffer (portable!) |
+| `:local`               | 3             | 3                | workgroup |
+| `:constant`            | 4             | 2                |       |
+| `:private`             | 5             | 0                | thread-private |
+
+So `voidp` = addrspace 0 means **generic on PTX (works)** but **private on SPIR-V
+(invalid for global data — llvm-spirv rejects it)**. Crisp ALREADY has a
+backend-aware encoder (`encode-address-space`, src/types/validation.lisp) that
+maps the table above correctly; `voidp` simply doesn't use it.
+
+NOTE / pre-existing bug: this also affects `def-kernel-exact` — a bare `voidp`
+kernel pointer param compiles on PTX but FAILS on SPV today (latent; no SPV test
+exercises it). Additionally, on SPIR-V a *kernel* pointer param must be `:global`
+(kernel args cannot be `:generic` or `:private`). So no single `voidp` address
+space is correct for both the kernel boundary and a generic FFI call.
+
+### Decision: explicit typed pointers are first-class
+
+The real FFI/kernel pointer type is:
+
+```
+(c-pointer :address-space <:global | :generic | :local | :constant | :private>)
+```
+
+resolved per-target via `encode-address-space`. For global buffers (the common
+case) use `:global` — it is addrspace 1 on BOTH targets, needs no cast, and is
+fully portable. For generic-pointer libraries (CUDA libdevice) use `:generic`.
+
+`voidp` is retained as a convenience **alias for `(c-pointer :address-space
+:generic)`** — the honest "void*". (Fixing its two hardcoded `0`s to use the
+`:generic` encoder is a small, separate step; it makes `voidp` work for FFI
+generic-pointer calls on both targets. Kernel-boundary and global-buffer pointers
+should use explicit `:global`.)
+
+### `base-ptr~` accessor (Pass 3)
+
+`(base-ptr~ <storage-handle>)` returns the handle's underlying pointer in its
+NATIVE address space (e.g. a global cell → a `(c-pointer :address-space :global)`).
+Like `byte-size~` it is a pass-through: `(base-ptr~ someCell)` works as well as
+`(base-ptr~ (parent~ someCell))`. Passing it to a foreign param of the same
+address space needs no cast; differing spaces are reconciled by an
+`addrspacecast` in the existing value-coercion path.
+
+### Per-target `.bc` compilation
+
+Because the pointer address space is encoded in the `.bc`, the C source must be
+compiled so its pointer params land in the matching address space:
+- PTX/CUDA: plain/CUDA C (`int*` → generic addrspace 0; or annotate global).
+- SPIR-V/OpenCL: OpenCL C (`-x cl`) with `__global int*` → addrspace 1 to match a
+  `:global` Crisp pointer (zero cast), or generic for `:generic`.
+
+The spec harness builds the `.bc` per target; an FFI spec may therefore carry a
+target-specific C/CL source (e.g. a `.cl` for spv, a `.c`/`.cu` for ptx).
+
+### Revised pointer example (Pass 3)
+
+```
+;; C (OpenCL, for spv): void write_seven(__global int *p) { p[0] = 7; }
+;; C (CUDA/plain, for ptx): equivalent with a generic/global pointer
+
+(def-foreign-function write_seven #'((c-pointer :address-space :global) => nil))
+
+(def-type cell-int (cell int :address-space :global))
+
+(def-kernel use_write (&out out-cell)
+  (declare #'(&out cell-int))
+  (write_seven (base-ptr~ out-cell)))   ;; out-cell then holds 7
+```
+
+### Handles (Pass 4) — revised
+
+A handle is a `void**`: it has TWO address spaces — the slot's (outer, where the
+`void*` lives) and the held pointer's (inner, where the data lives) — and they
+are generally DIFFERENT. In `pool_alloc`, the handle is a kernel-local slot
+(`:local`/`:private`) and the pointer it receives is `:global` (the allocation).
+So the handle type must carry the held pointer's type:
+
+```
+;; type:        (c-handle <held-pointer-type>)   e.g. (c-handle (c-pointer :address-space :global))
+;;              (the handle's own slot address space defaults to :local; optional override)
+;; constructor: (make-c-handle (c-pointer :address-space :global))   ;; allocates the slot
+;; deref:       (get-pointer <c-handle-obj>)  =>  the typed (c-pointer ...)
+```
+
+This replaces the original `voidp-handle` type, `(voidp-handle)` constructor, and
+`(voidp <h>)` deref. The exact form (defaults, slot AS) will be finalized in
+Pass 4 against the real `pool_alloc` signature so the `void**` address spaces match.
+
+### Revised pass checklists
+
+Pass 3 - pointers (decided: explicit typed pointers; on-metal via :global)
+- [ ] make `(c-pointer :address-space X)` usable as a foreign-function param type
+- [ ] add `(base-ptr~ <storage>)` accessor (pass-through; native address space)
+- [ ] harness: per-target `.bc` build (OpenCL `__global` for spv; CUDA/plain for ptx)
+- [ ] .crisp test passing `(base-ptr~ cell)` to a foreign function; compile ptx+spv
+- [ ] on-metal test on the BMG (TEST-HOIST[L0], HOIST-EXPECT buffer)
+- [ ] (separate, optional) fix `voidp` to use the `:generic` encoder (also fixes
+      the latent def-kernel-exact-on-SPV case for generic pointers)
+
+Pass 4 - handles (revised)
+- [ ] `(c-handle <held-pointer-type>)` type
+- [ ] `(make-c-handle <pointer-type>)` constructor (allocates the slot)
+- [ ] `(get-pointer <c-handle>)` deref
+- [ ] C function taking a handle (`void**`); match its inner/outer address spaces
+- [ ] .crisp test binding and exercising it (pool_alloc-style)
+
+=====================================================================
+END AMENDMENT.  The original design text below is kept for reference; where it
+conflicts with the amendment above (the voidp/voidp-handle section), the
+amendment wins.
+=====================================================================
 
 
 Design Doc Follows
@@ -70,6 +201,10 @@ $ crisp-compile.exe myLib.bc someKernel.crisp --ir-target=ptx
 The `def-foreign-function` form has two arguments: the "C name" of the function and its signature in Crisp arrow form. 
 
 ### pointers and handles: `voidp` and `voidp-handle`
+
+> ⚠️ SUPERSEDED by the AMENDMENT (2026-06-23) above. This subsection's
+> `voidp`/`voidp-handle` design is kept for reference only; use the typed
+> `(c-pointer :address-space X)` / `(c-handle ...)` API from the amendment.
 
 Just as in `def-kernel-exact`, pointer arguments to foreign functions can be declared with the `voidp` type. But note that to actually use a pointer or dereference it, you'll need to use a marshalling form (like `marshall-cell` or `marshall-vector`), which will require a complete type that has `:address-space`, `:align` and possibly other properties to be specified.
 

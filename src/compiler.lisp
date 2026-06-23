@@ -619,6 +619,33 @@ Returns modified IR text with metadata."
        (return (sizeof To)))
     '((tensor To N Addr Aln Ct) => ulong))
 
+  ;; Endeavor 122 (FFI) Pass 3: base-ptr~ — returns a storage handle's underlying
+  ;; pointer in its NATIVE address space (a (c-pointer :address-space Addr)).
+  ;; Pass-through like bytes~: works on a cell/tensor (via parent~) or on a
+  ;; storage directly. Used to pass a buffer's base pointer to a foreign function.
+  (register-template 'base-ptr~ '(To (Addr address-space :global)) nil
+    '(def-function base-ptr~ (c)
+       (declare (function ((cell To Addr) => (c-pointer :address-space Addr))))
+       (declare (crisp-system-generated))
+       (return (address~ (parent~ c))))
+    '((cell To Addr) => (c-pointer :address-space Addr)))
+
+  (register-template 'base-ptr~
+    '(To (N integer 1) (Addr address-space :global)
+      (Aln align :compact) (Ct contiguity :last)) nil
+    '(def-function base-ptr~ (t1)
+       (declare (function ((tensor To N Addr Aln Ct) => (c-pointer :address-space Addr))))
+       (declare (crisp-system-generated))
+       (return (address~ (parent~ t1))))
+    '((tensor To N Addr Aln Ct) => (c-pointer :address-space Addr)))
+
+  (register-template 'base-ptr~ '((Addr address-space :global)) nil
+    '(def-function base-ptr~ (s)
+       (declare (function ((storage Addr) => (c-pointer :address-space Addr))))
+       (declare (crisp-system-generated))
+       (return (address~ s)))
+    '((storage Addr) => (c-pointer :address-space Addr)))
+
   ;; num-rows — return extents[0] (height dimension) of a 2D tensor.
   (register-template 'num-rows
     '(To (Addr address-space :global) (Aln align :compact) (Ct contiguity :last))

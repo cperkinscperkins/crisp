@@ -6,6 +6,80 @@
 (in-package :crisp.compiler)
 
 ;;; ============================================================
+;;; Endeavor 122 (FFI) Pass 3: a voidp parameter accepts any pointer argument.
+;;; FROM: src/type-checker.lisp
+;;;
+;;; Lifts the def-kernel-exact-only restriction so foreign functions (and any
+;;; function) declaring a voidp parameter can be passed a typed pointer such as
+;;; the result of (base-ptr~ cell) / (address~ (parent~ cell)). Address-space
+;;; differences (e.g. global addrspace 1 -> voidp addrspace 0) are reconciled by
+;;; the pointer->pointer addrspacecast already in the value-coercion path.
+;;; ============================================================
+(defun types-compatible-p (arg-type param-type)
+  "Checks if an argument type is compatible with a parameter type."
+  (log:debug "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
+  (or (types-equivalent-p arg-type param-type)
+
+      ;; Endeavor 122 (FFI): voidp accepts any pointer argument (voidp or a
+      ;; typed (c-pointer ...)).
+      (and (symbolp param-type)
+           (string-equal (symbol-name param-type) "VOIDP")
+           (or (and (symbolp arg-type)
+                    (string-equal (symbol-name arg-type) "VOIDP"))
+               (and (consp arg-type) (symbolp (first arg-type))
+                    (string-equal (symbol-name (first arg-type)) "C-POINTER"))))
+
+      ;; Derived type substitutability check
+      ;; If arg-type can substitute for param-type in the derivation hierarchy
+      (and (symbolp arg-type)
+           (symbolp param-type)
+           (is-substitutable-for? arg-type param-type))
+
+      ;; Keyword Literal -> Keyword Symbol
+      ;; Value: (keyword :foo) or (:keyword :foo), Param: keyword
+      (and (consp arg-type)
+           (or (eq (first arg-type) 'keyword) (eq (first arg-type) :keyword))
+           (or (eq param-type 'keyword) (eq param-type :keyword)
+               (eq param-type 'common-lisp:keyword)))
+
+      ;; KEYWORD Literal -> Enum Type
+      ;; Value: (keyword :red), Param: color (where :red is in color)
+      (and (consp arg-type)
+           (or (eq (first arg-type) 'keyword) (eq (first arg-type) :keyword))
+           (symbolp param-type)
+           (let ((enum-def (gethash param-type *crisp-enums*))
+                 (key (second arg-type)))
+             (and enum-def
+                  (assoc key (crisp.compiler::enumeration-def-members enum-def)))))
+
+      ;; Incomplete/Composite Type compatibility:
+      ;; 1. (PANTS :COLOR :RED) is compatible with PANTS
+      (and (listp arg-type)
+           (valid-type-p arg-type)
+           (symbolp param-type)
+           (eq (first arg-type) param-type))
+      ;; 2. PANTS_COLOR_RED (symbol) is compatible with PANTS
+      (and (symbolp arg-type)
+           (symbolp param-type)
+           (let ((unmangled (unmangle-template-struct-name arg-type)))
+             (log:info "COMPAT: Unmangling ~s -> ~s. Param: ~s" arg-type unmangled param-type)
+             (and (consp unmangled)
+                  (eq (first unmangled) param-type))))
+
+      (and (listp arg-type) (eq (first arg-type) :function-literal)
+           (listp param-type) (eq (first param-type) :function-type)
+           ;; Verify signature match
+           (let* ((literal-name (second arg-type))
+                  (expected-ret (second param-type))
+                  (expected-params (getf (cddr param-type) :params))
+                  (sigs (gethash literal-name *function-table*)))
+             ;; Find ANY signature of literal-name that matches the expected type
+             (some (lambda (sig)
+                     (and (equal (function-signature-return-types sig) expected-ret)
+                          (equal (mapcar #'parameter-def-type (function-signature-parameters sig)) expected-params)))
+                 sigs)))))
+
+;;; ============================================================
 ;;; Endeavor 122 (FFI) Pass 1: def-foreign-function support.
 ;;;
 ;;; - register-foreign-function: builds a function-signature (so calls resolve)

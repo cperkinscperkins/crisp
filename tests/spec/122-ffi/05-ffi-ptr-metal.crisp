@@ -1,0 +1,18 @@
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; FFI-LINK: ptr.c
+;; HOIST-EXPECT: BUFFER out-cell: 7
+;; SKIP-WITH[--differentiate]: "foreign functions are opaque (no known derivative); not differentiable"
+
+;; Endeavor 122 (FFI) Pass 3, on-metal: pass a Crisp buffer's base pointer to a
+;; foreign C function that writes through it. (base-ptr~ out-cell) yields the
+;; cell's global (addrspace 1) pointer, matching write_seven's global pointer
+;; param with no cast. After the call the cell holds 7, verified on the GPU.
+
+(def-foreign-function write_seven #'((c-pointer :address-space :global) => nil))
+
+(def-type cell-int (cell int :address-space :global))
+
+(def-kernel ffi_ptr_metal (&out out-cell)
+  (declare #'(&out cell-int))
+  (write_seven (base-ptr~ out-cell)))

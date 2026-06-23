@@ -290,7 +290,7 @@
    ;; Accessors
    #:address~ #:byte-size~ #:address-space~
    #:parent~ #:offset~ #:element-type~
-   #:bytes~ #:sizeof
+   #:bytes~ #:sizeof #:base-ptr~
    ;; Tensor accessors
    #:num-dims~ #:length~ #:strides~ #:extents~ #:contiguous-term~
    ;; Matrix helpers
@@ -461,7 +461,7 @@
                 ;; Accessors
                 #:address~ #:byte-size~ #:address-space~
                 #:parent~ #:offset~ #:element-type~
-                #:bytes~ #:sizeof
+                #:bytes~ #:sizeof #:base-ptr~ #:base-ptr~
                 ;; Tensor accessors
                 #:num-dims~ #:length~ #:strides~ #:extents~ #:contiguous-term~
                 ;; Matrix helpers
@@ -595,7 +595,7 @@
    #:make-tensor
    #:cell #:voidp
    #:parent~ #:offset~ #:element-type~
-   #:bytes~ #:sizeof
+   #:bytes~ #:sizeof #:base-ptr~
    ;; Tensor accessors
    #:num-dims~ #:length~ #:strides~ #:extents~ #:contiguous-term~
    ;; Matrix helpers
