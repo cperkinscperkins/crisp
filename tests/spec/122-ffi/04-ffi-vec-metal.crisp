@@ -1,0 +1,20 @@
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; FFI-LINK: vec.c
+;; HOIST-EXPECT: BUFFER out-cell: 6
+;; SKIP-WITH[--differentiate]: "foreign functions are opaque (no known derivative); not differentiable"
+
+;; Endeavor 122 (FFI) Pass 2, on-metal: a foreign int4 add runs on the GPU.
+;; my_ivadd(##(1 2 3 4), ##(5 6 7 8)) = ##(6 8 10 12); the kernel writes the
+;; x component (6) to an output cell, verified on real hardware.
+
+(def-foreign-function my_ivadd #'(int4 int4 => int4))
+
+(def-type cell-int (cell int :address-space :global))
+
+(def-kernel ffi_ivadd_metal (&out out-cell)
+  (declare #'(&out cell-int))
+  (let ((a ##(1 2 3 4))
+        (b ##(5 6 7 8))
+        (r (my_ivadd a b)))
+    (set! (~ out-cell) (x~ r))))

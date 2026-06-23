@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; FFI-LINK: vec.c
+;; TEST-WITH[--ir-target=ptx]
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "foreign functions are opaque (no known derivative); not differentiable"
+
+;; Endeavor 122 (FFI) Pass 2: call a foreign function over float4 (a SIMD vector
+;; type). The vector args pass by value as <4 x float>, matching Crisp's
+;; device-vector ABI on both ptx and spv.
+
+(def-foreign-function my_vadd #'(float4 float4 => float4))
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel invoke_vadd (&out c)
+  (declare #'(&out out-c))
+  (let ((a ##(1.0 2.0 3.0 4.0))
+        (b ##(5.0 6.0 7.0 8.0))
+        (r (my_vadd a b)))
+    (set! (~ c) (x~ r))))
