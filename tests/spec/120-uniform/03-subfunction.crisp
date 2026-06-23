@@ -1,5 +1,6 @@
 
 ;; SKIP-WITH[--differentiate]: "if+ and friends not recognized in AD backward walk  will fix later"
+;; SKIP-WITH[--single-pass]: "interprocedural uniformity inference needs the multi-pass call graph; single-pass compiles C before its call sites exist"
 
 (def-function C (x)
     (declare #'(ulong => ulong))

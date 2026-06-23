@@ -678,6 +678,8 @@ workgroup uniform
 - [x] (declare (uniform someVar))
 - [x] (provably-uniform? <var>) (provably-divergent? <var>)
 - [x] (to-uniform <var>)  
+- [ ] make sure GPU builtin names (like get-global-work-size ) are consistent
+      in design doc (as opposed to get-global-size )
 
 A|D issues
 ==========
