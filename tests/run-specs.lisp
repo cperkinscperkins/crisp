@@ -162,6 +162,154 @@
               nil))))))))
 
 
+;;; ============================================================
+;;; Endeavor 122 (FFI) harness.
+;;;
+;;; An FFI spec carries an `;; FFI-LINK: <source>.c` directive. Because the
+;;; .bc linking lives in the compiler binary (main.lisp), not the in-process
+;;; path, FFI specs are run by: building the C source to a .bc for each
+;;; requested device target (clang) and invoking crisp-compile.exe with the .bc
+;;; linked. Targets come from the spec's TEST-WITH[--ir-target=...] directives.
+;;; ============================================================
+
+(defun parse-ffi-link (directive-lines)
+  "Parse `FFI-LINK: <c-source>` from header directives. Returns the C source
+   filename string (e.g. \"add.c\"), or NIL if absent."
+  (dolist (line directive-lines)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "FFI-LINK:")
+        (return (string-trim '(#\Space #\Tab #\Return #\Newline)
+                             (subseq trimmed (length "FFI-LINK:"))))))))
+
+(defun %ffi-requested-targets (directives)
+  "Device targets (\"ptx\"/\"spv\") requested via TEST-WITH[--ir-target=...].
+   Returns NIL when none are specified."
+  (let ((targets '()))
+    (dolist (run (parse-test-with directives))
+      (dolist (flag (first run))
+        (cond ((string= flag "--ir-target=ptx") (pushnew "ptx" targets :test #'string=))
+              ((string= flag "--ir-target=spv") (pushnew "spv" targets :test #'string=)))))
+    (nreverse targets)))
+
+(defun %clang-available-p ()
+  "T if a `clang` is on PATH (needed to build FFI .bc artifacts)."
+  (ignore-errors
+    (zerop (nth-value 2 (uiop:run-program '("clang" "--version")
+                                          :ignore-error-status t
+                                          :output nil :error-output nil)))))
+
+(defun %ffi-build-bc (c-path target)
+  "Compile C-PATH to a .bc for TARGET (\"ptx\"|\"spv\") via clang. Returns the
+   .bc pathname on success, NIL on failure (logging clang's stderr)."
+  (let* ((triple (cond ((string= target "ptx") "nvptx64-nvidia-cuda")
+                       ((string= target "spv") "spir64-unknown-unknown")
+                       (t (error "FFI: unknown target ~a" target))))
+         (bc-path (make-pathname :name (format nil "~a_~a" (pathname-name c-path) target)
+                                 :type "bc" :defaults c-path)))
+    (multiple-value-bind (out err code)
+        (uiop:run-program (list "clang" (format nil "--target=~a" triple)
+                                "-emit-llvm" "-c"
+                                (uiop:native-namestring c-path)
+                                "-o" (uiop:native-namestring bc-path))
+          :output :string :error-output :string :ignore-error-status t)
+      (declare (ignore out))
+      (if (and (zerop code) (probe-file bc-path))
+          bc-path
+          (progn
+           (format *error-output* "~&FFI: clang failed building ~a for ~a (exit ~a)~%~a~%"
+                   c-path target code err)
+           nil)))))
+
+(defun run-spec-ffi (crisp-file c-source directives)
+  "Run an FFI spec: for each requested device target, build the co-located C
+   source to a .bc and compile CRISP-FILE via the binary with that .bc linked.
+   Skips (as a pass) when clang is unavailable. Returns T if all runs pass."
+  (let* ((dir (pathname-directory crisp-file))
+         (c-path (make-pathname :directory dir
+                                :name (pathname-name c-source)
+                                :type (or (pathname-type c-source) "c")
+                                :defaults crisp-file)))
+    (unless (%clang-available-p)
+      (format t "~&Running Spec: ~a (FFI)... SKIP (clang unavailable)~%" (pathname-name crisp-file))
+      (return-from run-spec-ffi t))
+    (unless (probe-file c-path)
+      (format t "~&Running Spec: ~a (FFI)... FAIL (C source ~a not found)~%"
+              (pathname-name crisp-file) c-path)
+      (return-from run-spec-ffi nil))
+    (let* ((bin (get-binary-path))
+           (compile-targets (%ffi-requested-targets directives))
+           (hoist-dirs (parse-test-hoist directives))
+           ;; With no explicit TEST-WITH or TEST-HOIST, do one ptx compile-check.
+           (compile-targets (if (and (null compile-targets) (null hoist-dirs))
+                                '("ptx")
+                                compile-targets))
+           (all-ok t)
+           (artifacts '()))
+
+      ;; 1. Compile-check runs (TEST-WITH[--ir-target=...]).
+      (dolist (target compile-targets)
+        (format t "~&Running Spec: ~a (FFI[~a])... " (pathname-name crisp-file) target)
+        (finish-output)
+        (let ((bc (%ffi-build-bc c-path target)))
+          (if (null bc)
+              (progn (format t "FAIL (clang)~%") (setf all-ok nil))
+              (let* ((out-type (if (string= target "spv") "spv" "ptx"))
+                     (out-path (make-pathname :name (pathname-name crisp-file)
+                                              :type out-type :defaults crisp-file)))
+                (push bc artifacts)
+                (when (probe-file out-path) (delete-file out-path))
+                (multiple-value-bind (out err code)
+                    (uiop:run-program (list (uiop:native-namestring bin)
+                                            (uiop:native-namestring bc)
+                                            (uiop:native-namestring crisp-file)
+                                            (format nil "--ir-target=~a" target)
+                                            (format nil "--log-level=~a" cl-user::*log-level*))
+                      :output :string :error-output :string :ignore-error-status t)
+                  (declare (ignore out))
+                  (cond
+                   ((not (zerop code))
+                    (format t "FAIL (compile exit ~a)~%~a~%" code err) (setf all-ok nil))
+                   ((not (probe-file out-path))
+                    (format t "FAIL (no ~a produced)~%" out-type) (setf all-ok nil))
+                   (t (format t "PASS~%") (push out-path artifacts))))))))
+
+      ;; 2. On-metal hoist runs (TEST-HOIST[backend]: validator), with the .bc
+      ;; linked. Skipped under --differentiate (foreign calls aren't AD-able).
+      (when (and hoist-dirs (not *compile-differentiate*))
+        (dolist (hd hoist-dirs)
+          (let* ((backend (car hd))
+                 (validator-name (cdr hd))
+                 (target (if (string-equal (symbol-name backend) "CUDA") "ptx" "spv")))
+            (format t "~&Running Spec: ~a (FFI-Hoist[~a] -> ~a)... "
+                    (pathname-name crisp-file) backend validator-name)
+            (finish-output)
+            (let ((bc (%ffi-build-bc c-path target)))
+              (if (null bc)
+                  (progn (format t "FAIL (clang)~%") (setf all-ok nil))
+                  (progn
+                   (push bc artifacts)
+                   (let ((cpp-files (run-spec-with-hoist crisp-file backend (list bc))))
+                     (cond
+                      ((eq cpp-files :skipped) nil) ; SKIP counts as pass
+                      ((null cpp-files) (setf all-ok nil))
+                      (t (let ((vsym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
+                           (if (and vsym (fboundp vsym))
+                               (unless (funcall vsym crisp-file cpp-files) (setf all-ok nil))
+                               (progn (format t "FAIL (Validator ~a not found)~%" validator-name)
+                                      (setf all-ok nil)))))))))))))
+
+      ;; Cleanup: foreign .bc plus any hoist/output artifacts for this spec.
+      (unless *keep-work*
+        (dolist (a artifacts) (when (probe-file a) (ignore-errors (delete-file a))))
+        (let* ((base-name (pathname-name crisp-file))
+               (dir (pathname-directory crisp-file)))
+          (dolist (type '("cpp" "cu" "exe" "spv" "ptx" "metacrisp"))
+            (dolist (f (directory (make-pathname :directory dir :name :wild :type type :defaults crisp-file)))
+              (when (and (stringp (pathname-name f))
+                         (uiop:string-prefix-p base-name (pathname-name f)))
+                (ignore-errors (delete-file f)))))))
+      all-ok)))
+
 (defun run-spec-file (file)
   (let ((directives (extract-test-directives file))
         (all-passed t))
@@ -170,6 +318,13 @@
     (when (parse-skip-with directives)
           (format t "~&Running Spec: ~a (Default)... SKIP (Skipped due to SKIP-WITH matches active flags)~%" (pathname-name file))
           (return-from run-spec-file :skipped))
+
+    ;; Endeavor 122 (FFI): specs with an FFI-LINK directive are run exclusively
+    ;; through the FFI path (build .bc + link via the binary per device target).
+    ;; The normal in-process runs don't link the .bc, so they're skipped here.
+    (let ((ffi-source (parse-ffi-link directives)))
+      (when ffi-source
+        (return-from run-spec-file (run-spec-ffi file ffi-source directives))))
 
     ;; 1. Default Run (Current Global Flags)
     (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
@@ -703,11 +858,13 @@
 
 ;;; ======================================================================
 
-(defun run-spec-with-hoist (file backend)
+(defun run-spec-with-hoist (file backend &optional bc-files)
   "Compiles .crisp file with --hoist=backend flag and returns list of generated output files.
    For L0: discovers .cpp files.  For CUDA: discovers .cu files.
    Checks SKIP_<BACKEND>_HOIST env var (e.g. SKIP_L0_HOIST=true) to skip
-   gracefully on machines that don't have the target SDK."
+   gracefully on machines that don't have the target SDK.
+   Endeavor 122: BC-FILES (foreign .bc) are prepended to the compiler args so
+   FFI device functions are linked into the hoisted kernel."
   ;; Check for SKIP env var (e.g. SKIP_L0_HOIST, SKIP_CUDA_HOIST)
   (let ((skip-env (uiop:getenv (format nil "SKIP_~a_HOIST" (symbol-name backend)))))
     (when (and skip-env (string-not-equal skip-env "false"))
@@ -715,9 +872,10 @@
       (return-from run-spec-with-hoist :skipped)))
   (let* ((hoist-arg (format nil "--hoist=~a" backend))
          (bin (get-binary-path))
-         (args (list hoist-arg
-                     (format nil "--log-level=~a" cl-user::*log-level*)
-                     (uiop:native-namestring file)))
+         (args (append (mapcar #'uiop:native-namestring bc-files)
+                       (list hoist-arg
+                             (format nil "--log-level=~a" cl-user::*log-level*)
+                             (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)

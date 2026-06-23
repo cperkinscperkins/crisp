@@ -208,6 +208,7 @@
    ;; laungage symbols
    #:def-function
    #:def-function
+   #:def-foreign-function
    #:def-kernel
    #:def-kernel-exact
    #:def-grid-function
@@ -388,6 +389,7 @@
   ;; --- 1. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
                 #:def-function
+                #:def-foreign-function
                 #:def-kernel
                 #:def-kernel-exact
                 #:def-grid-function

@@ -125,6 +125,19 @@
 ;; Core Language Macros
 ;; ====================
 
+(defmacro def-foreign-function (c-name signature)
+  "Endeavor 122 (FFI): declares a foreign (C / device-library) function callable
+   from Crisp kernels. C-NAME is the verbatim C symbol; SIGNATURE is a Crisp
+   arrow spec. The definition is supplied by linking a .bc at compile time.
+
+   Example:
+     (def-foreign-function my_add #'(float float => float))
+
+   Expands to a registration call (evaluated during the signatures pass), so the
+   call resolves and codegen emits an external declaration + call. No body is
+   generated here."
+  `(register-foreign-function ',c-name ',signature))
+
 (defmacro def-function (name params &rest body-and-location)
   "Defines a new, thread-level Crisp function."
   (when (string-equal (symbol-name name) "~REF~")

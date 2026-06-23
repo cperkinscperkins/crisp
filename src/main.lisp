@@ -61,6 +61,10 @@
 Supports one or more .crisp source files: the last file is treated as the primary (determines output name)."
   (let* ((flags (remove-if-not (lambda (arg) (char= (cl:char arg 0) #\-)) args))
          (files (remove-if (lambda (arg) (char= (cl:char arg 0) #\-)) args))
+         ;; Endeavor 122 (FFI): foreign-library bitcode files are passed
+         ;; alongside the .crisp sources; split them out here.
+         (bc-files (remove-if-not (lambda (f) (string-equal (pathname-type f) "bc")) files))
+         (source-files (remove-if (lambda (f) (string-equal (pathname-type f) "bc")) files))
          (log-level-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--log-level=" f)) flags))
          (log-level (if log-level-flag
                         (intern (string-upcase (subseq log-level-flag (length "--log-level="))) :keyword)
@@ -105,8 +109,8 @@ Supports one or more .crisp source files: the last file is treated as the primar
                                         :differentiate differentiate-p)
 
     ;; Require at least one source file; support multiple files.
-    (unless (>= (length files) 1)
-      (format *error-output* "Usage: crisp-compile [flags] <file1.crisp> [file2.crisp ...]~%")
+    (unless (>= (length source-files) 1)
+      (format *error-output* "Usage: crisp-compile [flags] [lib1.bc ...] <file1.crisp> [file2.crisp ...]~%")
       (uiop:quit 1))
 
     ;; --- Hoisting Logic ---
@@ -130,7 +134,16 @@ Supports one or more .crisp source files: the last file is treated as the primar
                 (format *error-output* "ERROR: --hoist=CUDA requires --ir-target=ptx. Found targets: ~a~%" targets)
                 (uiop:quit 1))))
 
-    (values files nil debug-p single-pass-p targets metadata-p hoist-targets)))
+    ;; Endeavor 122 (FFI): linking a foreign .bc requires lowering to a real
+    ;; device target (ptx or spv). The .bc is target-specific (triple, datalayout,
+    ;; calling convention) and llvmir/generic output cannot bind it.
+    (when (and bc-files
+               (or (null targets)
+                   (notevery (lambda (tg) (member tg '(:ptx :spirv))) targets)))
+      (format *error-output* "ERROR: linking a foreign .bc requires --ir-target=ptx or --ir-target=spv (not llvmir/generic).~%")
+      (uiop:quit 1))
+
+    (values source-files nil debug-p single-pass-p targets metadata-p hoist-targets bc-files)))
 
 (defun get-hoister-binary-path (hoist-id)
   "Returns path to crisp-hoist-{id}.exe (or .bin on Unix)"
@@ -171,7 +184,34 @@ Supports one or more .crisp source files: the last file is treated as the primar
 
 
 
-(defun compile-files (files output-file debug-p single-pass-p targets metadata-p hoist-targets)
+(defun link-foreign-bitcode (module bc-files)
+  "Endeavor 122 (FFI): parse each .bc in BC-FILES and link it into MODULE so
+   that def-foreign-function calls resolve to real definitions at compile time.
+   Quits with a clear error on read/parse/link failure."
+  (when bc-files
+    (let ((ctx (crisp.llvm-bindings::llvm-get-module-context module)))
+      (flet ((msg-string (msg)
+               (let ((p (cffi:mem-ref msg :pointer)))
+                 (if (cffi:null-pointer-p p)
+                     "<no message>"
+                     (prog1 (cffi:foreign-string-to-lisp p)
+                       (crisp.llvm-bindings::llvm-dispose-message p))))))
+        (dolist (bc bc-files)
+          (let ((path (namestring (uiop:truename* bc))))
+            (format *error-output* "; --- Linking foreign bitcode: ~a ---~%" path)
+            (cffi:with-foreign-objects ((mbuf :pointer) (msg :pointer) (srcmod :pointer))
+              (unless (zerop (crisp.llvm-bindings::llvm-create-memory-buffer-with-contents-of-file path mbuf msg))
+                (format *error-output* "ERROR: FFI cannot read bitcode ~a: ~a~%" path (msg-string msg))
+                (uiop:quit 1))
+              ;; parse-ir consumes the memory buffer; link-modules2 consumes srcmod.
+              (unless (zerop (crisp.llvm-bindings::llvm-parse-ir-in-context ctx (cffi:mem-ref mbuf :pointer) srcmod msg))
+                (format *error-output* "ERROR: FFI cannot parse bitcode ~a: ~a~%" path (msg-string msg))
+                (uiop:quit 1))
+              (unless (zerop (crisp.llvm-bindings::llvm-link-modules2 module (cffi:mem-ref srcmod :pointer)))
+                (format *error-output* "ERROR: FFI cannot link bitcode ~a into the kernel module.~%" path)
+                (uiop:quit 1)))))))))
+
+(defun compile-files (files output-file debug-p single-pass-p targets metadata-p hoist-targets &optional bc-files)
   "Compiles the given files as a single unit (in order), iterating over requested targets, then invokes hoisters.
 When multiple files are given, forms are read from each file in order and compiled together as if they
 had been one file.  The LAST file is the primary: its name determines output file names and the debug
@@ -227,6 +267,11 @@ compile-unit filepath."
                                 (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
                            (setf captured-forms forms)
                            (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map)))
+
+                     ;; Endeavor 122 (FFI): link any foreign .bc libraries into the
+                     ;; freshly-built module (per target) before opt/output, so
+                     ;; foreign calls resolve and can be optimized/inlined.
+                     (link-foreign-bitcode module bc-files)
 
                      ;; Output Generation — keyed off the primary (last) file.
                      (let ((base-name (if crisp.compiler::*differentiate-p*
@@ -303,9 +348,9 @@ compile-unit filepath."
 (defun main ()
   "Main entry point for the crisp-compile executable."
   (let ((args (uiop:command-line-arguments)))
-    (multiple-value-bind (source-files output-file debug-p single-pass-p targets metadata-p hoist-targets)
+    (multiple-value-bind (source-files output-file debug-p single-pass-p targets metadata-p hoist-targets bc-files)
         (parse-cli-args args)
-      (compile-files source-files output-file debug-p single-pass-p targets metadata-p hoist-targets))))
+      (compile-files source-files output-file debug-p single-pass-p targets metadata-p hoist-targets bc-files))))
 
 
 

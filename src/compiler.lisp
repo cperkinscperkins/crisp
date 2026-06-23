@@ -712,6 +712,7 @@ Returns modified IR text with metadata."
 
   (clrhash *differentiable-functions*)
   (clrhash *differentiable-hof-store*)
+  (clrhash *foreign-functions*)
 
   (initialize-expression-analyzers)
   (clrhash *implicit-arg-map*)

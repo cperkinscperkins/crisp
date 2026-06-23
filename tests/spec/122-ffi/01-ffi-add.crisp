@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; FFI-LINK: add.c
+;; TEST-WITH[--ir-target=ptx]
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "foreign functions are opaque (no known derivative); not differentiable"
+
+;; Endeavor 122 (FFI) Pass 1: declare a foreign C function and call it from a
+;; kernel. The harness builds add.c -> a target-specific .bc and links it via
+;; the compiler binary; the kernel's call to my_add must resolve to the linked
+;; definition (verified for both ptx and spv).
+
+(def-foreign-function my_add #'(float float => float))
+
+(def-kernel invoke_my_add (a b &out c)
+  (declare #'(float float &out (cell float :address-space :global)))
+  (let ((res (my_add a b)))
+    (set! (~ c) res)))
