@@ -20,14 +20,15 @@
   (log:debug "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
   (or (types-equivalent-p arg-type param-type)
 
-      ;; Endeavor 122 (FFI): voidp accepts any pointer argument (voidp or a
-      ;; typed (c-pointer ...)).
+      ;; Endeavor 122 (FFI): voidp accepts any pointer argument — voidp, a typed
+      ;; (c-pointer ...), or a (c-handle ...) (a void** slot; same addrspace-0 ABI).
       (and (symbolp param-type)
            (string-equal (symbol-name param-type) "VOIDP")
            (or (and (symbolp arg-type)
                     (string-equal (symbol-name arg-type) "VOIDP"))
                (and (consp arg-type) (symbolp (first arg-type))
-                    (string-equal (symbol-name (first arg-type)) "C-POINTER"))))
+                    (member (symbol-name (first arg-type)) '("C-POINTER" "C-HANDLE")
+                            :test #'string-equal))))
 
       ;; Derived type substitutability check
       ;; If arg-type can substitute for param-type in the derivation hierarchy
@@ -171,3 +172,122 @@
                               callee-name llvm-fn-type param-types param-count return-type-names)))))
 
 
+
+;;; ============================================================
+;;; Endeavor 122 (FFI) Pass 4: handles (void**).
+;;;
+;;; A c-handle is a local slot (alloca) holding a pointer of HELD-TYPE; its value
+;;; is the slot address (an addrspace-0 pointer == voidp at the ABI). Pass it to a
+;;; foreign function's void** (declared `voidp`) param; the function writes a
+;;; pointer into the slot; read it back with get-pointer.
+;;;   (make-c-handle (c-pointer :address-space :global))  => c-handle value (alloca)
+;;;   (get-pointer <c-handle>)                            => the held pointer
+;;; The c-handle LLVM type is `ptr addrspace(0)`; the held type is tracked only in
+;;; the Crisp type `(c-handle <held-ptr-type>)` so get-pointer knows what to load.
+;;; analyzers registered in register-control-analyzers (src/analysis/control.lisp);
+;;; structs in src/semantic.lisp.
+;;; ============================================================
+
+;; src/analysis/control.lisp (analyzers)
+(defun analyze-make-c-handle (expr env context location)
+  "Analyzer for (make-c-handle <held-ptr-type>)."
+  (declare (ignore env context))
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message "make-c-handle expects 1 argument: the held pointer type, e.g. (make-c-handle (c-pointer :address-space :global))"
+      :source-location location))
+  (let ((held (second expr)))
+    (unless (and (consp held) (symbolp (first held))
+                 (string-equal (symbol-name (first held)) "C-POINTER"))
+      (error 'crisp-compiler-error
+        :message (format nil "make-c-handle requires a (c-pointer :address-space ...) type; got ~a" held)
+        :source-location location))
+    (make-semantic-make-c-handle
+     :type (list (intern "C-HANDLE" (find-package :crisp.compiler)) held)
+     :held-type held
+     :source-location location)))
+
+(defun analyze-get-pointer (expr env context location)
+  "Analyzer for (get-pointer <c-handle>) — loads the held pointer from the slot."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message "get-pointer expects 1 argument (a c-handle)"
+      :source-location location))
+  (let* ((handle-node (analyze-expression (second expr) env context (append location '(1))))
+         (htype (get-single-value-type handle-node)))
+    (unless (and (consp htype) (symbolp (first htype))
+                 (string-equal (symbol-name (first htype)) "C-HANDLE"))
+      (error 'crisp-compiler-error
+        :message (format nil "get-pointer requires a c-handle argument; got type ~a" htype)
+        :source-location location))
+    (make-semantic-get-pointer
+     :type (second htype)
+     :handle-node handle-node
+     :source-location location)))
+
+;; src/codegen.lisp (codegen)
+(defmethod generate-node-ir ((node semantic-make-c-handle) builder module var-env di-builder di-scope location-map)
+  "Allocate a local slot (alloca) typed by the held pointer type; the value is
+   the slot's address (an addrspace-0 pointer)."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let ((held-llvm (crisp-type-to-llvm-type (semantic-make-c-handle-held-type node) module)))
+    (crisp.llvm-bindings::llvm-build-alloca builder held-llvm "c_handle_slot")))
+
+(defmethod generate-node-ir ((node semantic-get-pointer) builder module var-env di-builder di-scope location-map)
+  "Load the held pointer out of a c-handle slot."
+  (let ((held-llvm   (crisp-type-to-llvm-type (semantic-get-pointer-type node) module))
+        (handle-val  (generate-node-ir (semantic-get-pointer-handle-node node)
+                                       builder module var-env di-builder di-scope location-map)))
+    (crisp.llvm-bindings::llvm-build-load2 builder held-llvm handle-val "c_handle_load")))
+
+;; src/codegen/abi.lisp — c-handle resolves to an addrspace-0 opaque pointer.
+(defun crisp-type-to-llvm-type (type-spec module)
+  "Resolves a Crisp type specifier (simple or parameterized) to an LLVM type.
+   Endeavor 122 Pass 4: (c-handle ...) -> addrspace-0 opaque pointer (the slot)."
+  (let ((canonical-spec (if (and (consp type-spec)
+                                 (symbolp (first type-spec))
+                                 (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+                            (progn
+                             (log:debug "crisp-type-to-llvm-type: Mangling storage handle list form: ~s" type-spec)
+                             (mangle-template-struct-name (first type-spec) (rest type-spec)))
+                            type-spec)))
+    (let ((result
+           (cond
+            ((and (listp canonical-spec)
+                  (or (eq (first canonical-spec) :function-type)
+                      (eq (first canonical-spec) :function-literal)))
+              (llvm-pointer-type (llvm-int8-type) 0))
+            ((eq canonical-spec 'int)
+              (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
+            ((eq canonical-spec 'long)
+              (or *cached-int64-type* (llvm-int64-type-in-context (llvm-get-module-context module))))
+            ((or (eq canonical-spec 'keyword) (eq canonical-spec 'symbol))
+              (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
+            ((eq canonical-spec 'voidp)
+              (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 0))
+            ;; Endeavor 122 Pass 4: handle slot pointer is addrspace 0 (== voidp).
+            ((and (consp canonical-spec) (symbolp (first canonical-spec))
+                  (string-equal (symbol-name (first canonical-spec)) "C-HANDLE"))
+              (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 0))
+            (t
+              (resolve-type-to-llvm canonical-spec)))))
+      (when (or (null result) (cffi:null-pointer-p result))
+            (error "Failed to resolve LLVM type for type-spec: ~s (canonical: ~s)" type-spec canonical-spec))
+      result)))
+
+;; src/types/validation.lisp — (c-handle ...) is a valid type.
+(defun valid-type-p (type-spec)
+  "Checks if a type specifier is valid.
+   Handles simple types, parameterized types, and function literals/types.
+   Endeavor 122 Pass 4: accepts (c-handle ...)."
+  (or (valid-basic-type-p type-spec)
+      (valid-function-type-p type-spec)
+      (valid-parameterized-type-p type-spec)
+      (and (listp type-spec)
+           (symbolp (first type-spec))
+           (string-equal (symbol-name (first type-spec)) "C-HANDLE"))
+      (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
+      (and (listp type-spec)
+           (symbolp (first type-spec))
+           (or (gethash (first type-spec) *crisp-type-aliases*)
+               (gethash (first type-spec) *crisp-template-aliases*)))))

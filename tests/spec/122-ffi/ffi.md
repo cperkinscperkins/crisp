@@ -158,12 +158,20 @@ Pass 3 - pointers (decided: explicit typed pointers; on-metal via :global)
 - [ ] (separate, optional) fix `voidp` to use the `:generic` encoder (also fixes
       the latent def-kernel-exact-on-SPV case for generic pointers)
 
-Pass 4 - handles (revised)
-- [ ] `(c-handle <held-pointer-type>)` type
-- [ ] `(make-c-handle <pointer-type>)` constructor (allocates the slot)
-- [ ] `(get-pointer <c-handle>)` deref
-- [ ] C function taking a handle (`void**`); match its inner/outer address spaces
-- [ ] .crisp test binding and exercising it (pool_alloc-style)
+Pass 4 - handles (revised)   ✅ DONE (2026-06-23), verified on the BMG
+- [x] `(c-handle <held-pointer-type>)` type — LLVM `ptr addrspace(0)` (the slot);
+      held type tracked only in the Crisp type so get-pointer knows what to load.
+- [x] `(make-c-handle <pointer-type>)` constructor — emits `alloca <held>`.
+- [x] `(get-pointer <c-handle>)` deref — emits `load` of the held pointer.
+- [x] C function taking a handle (`void**`): the outer/slot is addrspace 0 on both
+      targets (opaque pointers erase the inner AS), so the foreign param is just
+      `voidp`; the data pointer uses `__attribute__((address_space(1)))`.
+- [x] .crisp test (06-ffi-handle-metal): make-c-handle -> give_ptr writes into it
+      -> get-pointer reads it back -> write 7 through it. BUFFER out-cell: 7 on BMG.
+NOTE: the slot addrspace turned out simpler than feared — the void** outer is
+addrspace 0 (a device-function private param, VALID on SPIR-V, unlike kernel
+params), matching make-c-handle's alloca. Only the inner data pointer carries the
+global addrspace, and it's erased in the void** ABI by opaque pointers.
 
 =====================================================================
 END AMENDMENT.  The original design text below is kept for reference; where it

@@ -2707,6 +2707,9 @@
   (def-expression-analyzer provably-divergent? analyze-provably-divergent?)
   (def-expression-analyzer to-workgroup-uniform analyze-to-workgroup-uniform)
   (def-expression-analyzer to-warp-uniform analyze-to-warp-uniform)
+  ;; Endeavor 122 (FFI) Pass 4: handle forms (analyzers live in the overlay).
+  (def-expression-analyzer make-c-handle analyze-make-c-handle)
+  (def-expression-analyzer get-pointer analyze-get-pointer)
   (def-expression-analyzer return analyze-return-expression)
   (def-expression-analyzer explicit-return analyze-return-expression)
   (def-expression-analyzer semantic-return analyze-return-expression)

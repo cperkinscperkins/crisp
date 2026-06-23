@@ -209,6 +209,8 @@
    #:def-function
    #:def-function
    #:def-foreign-function
+   #:make-c-handle
+   #:get-pointer
    #:def-kernel
    #:def-kernel-exact
    #:def-grid-function
@@ -390,6 +392,8 @@
   (:import-from :crisp.compiler
                 #:def-function
                 #:def-foreign-function
+                #:make-c-handle
+                #:get-pointer
                 #:def-kernel
                 #:def-kernel-exact
                 #:def-grid-function

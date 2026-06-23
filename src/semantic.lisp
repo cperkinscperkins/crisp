@@ -187,6 +187,22 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 (defstruct (semantic-truncate (:include semantic-cast))
   "Represents a truncate operation returning (quot rem).")
 
+;; Endeavor 122 (FFI) Pass 4: handles (void**).
+(defstruct semantic-make-c-handle
+  "Allocates a local slot (alloca) that holds a pointer of HELD-TYPE; the node's
+   value is the slot's address (a c-handle, an addrspace-0 pointer). Pass it to a
+   foreign function expecting a void**; read it back with get-pointer."
+  type        ; the c-handle type: (c-handle <held-ptr-type>)
+  held-type   ; the held pointer type-spec, e.g. (c-pointer :address-space :global)
+  source-location)
+
+(defstruct semantic-get-pointer
+  "Loads the held pointer out of a c-handle slot (the value a foreign function
+   wrote into it)."
+  type         ; the held pointer type-spec
+  handle-node  ; semantic node evaluating to the c-handle
+  source-location)
+
 
 (defstruct semantic-call
   "Represents a call to a user-defined function."
