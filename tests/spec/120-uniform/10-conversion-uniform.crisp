@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "if+ not yet handled in AD backward walk"
+
+;; Endeavor 120 (gap #6): type conversions are uniformity-transparent. A
+;; conversion applied to a uniform value (here a literal and a uniform builtin)
+;; stays uniform, so if+ must accept it. Real conditions routinely use to-ulong.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel conversion_uniform (OUT)
+  (declare #'(vec-t => nil))
+  (if+ (< (get-workgroup-id 0) (to-ulong 4))
+    (set! (~ OUT (get-global-id 0)) 1.0)
+    (set! (~ OUT (get-global-id 0)) 0.0)))

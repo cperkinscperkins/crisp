@@ -244,6 +244,18 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   body ; A list of semantic nodes
   source-location)
 
+(defstruct semantic-to-workgroup-uniform
+  "Represents a (to-workgroup-uniform ...) expression."
+  type ; The type of the value
+  value-node ; The expression being made uniform
+  source-location)
+
+(defstruct semantic-to-warp-uniform
+  "Represents a (to-warp-uniform ...) expression."
+  type ; The type of the value
+  value-node ; The expression being made uniform
+  source-location)
+
 (defstruct semantic-sizeof
   "Represents a sizeof(type) expression."
   type ; Always ulong (or similar integer type)

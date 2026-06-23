@@ -1,0 +1,14 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "provably divergent"
+
+;; Endeavor 120 (gap #3): (declare (uniform u)) on a provably-divergent value
+;; must error. The user can always use plain `if` instead; an unsafe escape
+;; hatch buys nothing.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel declare_wrong (OUT)
+  (declare #'(vec-t => nil))
+  (let ((u (get-local-id 0)))
+    (declare (uniform u))
+    (set! (~ OUT u) 1.0)))

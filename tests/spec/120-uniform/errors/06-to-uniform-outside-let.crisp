@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "let binding"
+
+;; Endeavor 120 (gap #4): to-warp-uniform / to-workgroup-uniform may only be the
+;; direct init of a let binding, never a nested or argument expression.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel to_uniform_misuse (OUT)
+  (declare #'(vec-t => nil))
+  (let ((x (+ (to-ulong 1) (to-warp-uniform (get-local-id 0)))))
+    (set! (~ OUT x) 1.0)))

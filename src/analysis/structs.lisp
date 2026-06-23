@@ -430,9 +430,10 @@
 
 
 
-
 (defun %analyze-set!-simple-variable (target-form value-node env location)
-  "Helper to analyze simple variable assignment (set! target-form value-node)."
+  "Helper to analyze simple variable assignment (set! target-form value-node).
+   Endeavor 120 (gap #5): taints the variable :divergent when mutated inside a
+   divergent block, or when assigned a divergent value."
   (let ((var-info (find-variable-in-env target-form env)))
     (unless var-info
       (error 'crisp-unknown-variable :name target-form :source-location location))
@@ -441,6 +442,15 @@
       (unless (types-compatible-p val-type var-type)
         (error 'crisp-type-error :expected var-type :inferred val-type
                :source-location location)))
+    ;; Endeavor 120: uniformity taint on mutation.
+    (let ((val-uni (calculate-uniformity-state value-node env)))
+      (cond
+       ((> *divergent-scope-depth* 0)
+        (log:debug "Endeavor 120: set! ~a inside divergent scope -> :divergent" target-form)
+        (setf (parameter-def-uniformity var-info) :divergent))
+       ((eq val-uni :divergent)
+        (log:debug "Endeavor 120: set! ~a := divergent value -> :divergent" target-form)
+        (setf (parameter-def-uniformity var-info) :divergent))))
     (make-semantic-set!
      :target-node (make-semantic-var-read
                    :name target-form

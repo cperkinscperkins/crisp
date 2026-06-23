@@ -37,7 +37,7 @@ GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-a
 
 - Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:strided`) and GPU-native iteration patterns (`loop-vector-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
 
-- Compile-Time Verification:  Special variants of control-flow forms (`if*`, `dotimes+`) and declarations (`uniform`, `constexpr`) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
+- Compile-Time Verification:  Special variants of control-flow forms (`if+`, `dotimes+`) and declarations (`uniform`, `constexpr`) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
 
 - Strict Memory Layout Standard:  All Crisp structs adhere to a strict "scalar" memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
 
@@ -5069,95 +5069,79 @@ which kill throughput and performance.
 
 Similarly, the compiler is capable of unrolling a loop if its target is compile-time calculable.
 
-In Crisp, you can convey both of these expectations in your code, and if the compiler detects
+In Crisp, you can convey these expectations in your code, and if the compiler detects
 that it is not achievable, it will emit an error. This makes writing performant code that 
 does not diverge much easier. There is much less guessing will-it/won't-it.
 
-Crisp has `*` variants of all the looping macros. These variants allow you to tell the compiler
+Crisp has `+` variants of all the looping macros. These variants allow you to tell the compiler
 that you expect the loop to run uniformly across the entire warp. If the compiler detects the 
 possibility for warp-level divergences, it will emit a compliation error.
-
-Similarly, there are `+` variants where you tell the compiler that you expect the loop target
-to be compile-time calculable. The compiler will error if it is not.
 
 Note, that these variants are used to help you discover divergences. Even if you don't use them
 the loop will still benefit if it is warp level uniform, and the compiler might still optimize
 by unrolling. The use (or not) of the variant doesn't change the actual performance.
 
-#### detecting compile-time calculable
 
-In this example, if the compiler detects that `someN` is not compile-time calculable, it will
-emit an error.
-```
-(dotimes+ (x someN)
-...)
-```
+#### `provably-uniform?` and `provably-divergent?` ✅
 
-Alternately, we could achieve the same result by using the `constexpr` declaration
 ```
-(let ((someN someLong))
-  (declare (constexpr someN))  ;; declare that we expect someN to be compile-time calculable. 
-                               ;; compiler will emit an error if it is not.
-   (dotimes (x someN)
-      ...))
+(provably-uniform? <someExpre>)
+(provably-divergent? <someExpr>)
 ```
+`provably-uniform?` and `provably-divergent?` are compile-time forms that can be used to develop your own macros.
+
+When evaluating uniformity, there are three possibilities: 
+- the compiler can prove to itself that some variable is uniform across the workgroup
+- the compiler can prove to itself that some variable diverges in the workgroup
+- the compiler is unable to prove anything about the variable or expression uniformity.
+
+Keep that in mind because because `(not (provably-uniform? var))` does NOT necessarily mean that `(provably-divergent? var)` would be true. 
+
+The `+` variants (`if+`, `dotimes+`) etc all use `provably-uniform?` and emit an error if that is not determiinable. 
 
 
-#### detecting uniform execution 📝
+
+
+#### detecting uniform execution ✅
 In this example, if the compiler detects that `someN` is not uniform across the warps it will
 emit an error. 
 ```
-(dotimes* (x someN)
+(dotimes+ (x someN)
  ...)
 ```
 
-Warp level loop uniformity is the most useful/important. And that's what `dotimes*` checks.
+Warp level loop uniformity is the most useful/important. And that's what `dotimes+` checks.
 
-But note, that `(declare (uniform someVal))` is a check across the entire workgroup.
-So the "roll our own" approach makes for a (needlessly) stronger guarantee.
 
-```
-(let ((someN someLong))
-  (declare (uniform someN))  ;; declare that we expect someN to be uniform
-                             ;; ACROSS THE ENTIRE WORKGROUP 
-                             ;; compiler will emit an error if it detects otherwise.
-   (dotimes (x someN)
-      ...))
-```
 
-#### forcing uniform loop execution 📝
+#### forcing uniform loop execution ✅
 
 If you want to FORCE a loop to be uniform across the entire workgroup, Crisp makes it easy to do that 
-using the `to-uniform` declaration.
+using the `to-workgroup-uniform` or `to-warp-uniform` .
 
 ```
-(let ((someN someLong))
-  (declare (to-uniform someN)) 
+(let ((someN (to-workgroup-uniform (some-expression ...))))
    (dotimes* (x someN)
       ...))
 ```
 
-`to-uniform` will capture the variable in workgroup thread and broadcast it to all the others.
+`to-workgroup-uniform` will capture the variable in workgroup thread, use a `sync-workgroup` barrier and broadcast it to all the others.
+`to-warp-uniform` is similar, but uses shuffles to broadcast through the warp. 
+
+These two expression can ONLY be used in a let binding.  They cannot be used in any normal position like a regular lisp form. This is because of the barriers they might introduce, they need consistent predictable ordering. 
+
+Note that these to forms are HEAVY HANDED and not peformant (though, when used correctly, performance can be gained).
 
 
 
-#### (uniform <varName>) 📝
+#### providing uniformity hints to the compiler ✅
 `(declare (uniform someVar))`
 
-The compiler will check that `someVar` is uniform across the workgroup and if it is not, emit an error.
+If you know that a variable will be uniform, even if the compiler cannot determine that by itself,
+you can tell it using this declaration. 
+The compiler will check that `someVar` isn't provably divergent. If it detects that it is, it will emit an error. Otherwise, the variable will be taken as uniform and that will influence the uniformity check peformed by `provably-uniform?`
 
-#### (to-uniform <varName>) 📝
-`(declare (to-uniform someVar))`
-This is a convenience declaration to help programmers set up values that are uniform in a workgroup.
 
-The `to-uniform` declaration causes the compiler to
-- initialize the variable in exactly one workgroup thread
-- share it with the other threads of the workgroup via local memory and a barrier.
-
-Furthermore
-- The variable named and the `declare` invocation both MUST originate in 
-the same `let` clause. 
-- `to-uniform` cannot be used in other `declare` contexts.
 
 #### (constexpr <varName>) 📝
 `(declare (constexpr someVar))`
@@ -5166,12 +5150,8 @@ The compiler will check that `someVar` is compile-time calculable, and emit an e
 
 
 
-#### dotimes+  📝
- `dotimes+` is the `+` variant. It will throw a compiler error if it
-is used without a compile-time calculable `N` value. 
-
-#### dotimes* 📝
-`dotimes*` is the `*` variant. It will throw a compiler error if it determines
+#### dotimes+  ✅
+ `dotimes+` is the `+` variant.  It will throw a compiler error if it determines
 that the `N` value is not uniform across the warp. 
 
 
@@ -5200,12 +5180,12 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 - - load-tile
 - - store-tile
 - workgroup-stride
-- dotimes / dotimes+ / dotimes*
+- dotimes / dotimes+
 - do-times-by-doubling
 - do-times-by-multiply
-- dec-times / dec-times+ / dec-times*
-- dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
-- dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
+- dec-times / dec-times+
+- dec-times-by-half / dec-times-by-half+
+- dec-times-by-factor / dec-times-by-factor+
 - do-power-step
 - dec-power-step
 
@@ -5214,13 +5194,9 @@ All of the above bind a loop index. Unlike in a C++ `for` loop, that index value
 body of the loop.
 
 #### + variants 📝
-Most of the Looping Constructs have a variant whose name ends in `+`. These variants 
-only accept compile-time calculable values for their target `N` . The compiler will emit
-an error if `N` is not. 
-
-#### * variants 📝
-The compiler will check that the target `N` is uniform across the warp. If the compiler
-detects that it is not warp-level uniform, it will emit an error. 
+Most of the Looping Constructs have a variant whose name ends in `+`. 
+The compiler will check that the target `N` is uniform across the workgroup. If the compiler
+detects that it is not workgroup-level uniform, it will emit an error. 
 
 #### variants compared
 Let's start with a simple example:
@@ -5236,30 +5212,23 @@ between threads, the loop will not be uniformly executed and this may result in 
 (dotimes+ (x (+ a b))
  ...)
 ```
-If `(+ a b)` is calculable at compile time, then this is fine. The compiler will insert that value and the loop 
-will be uniform. The compiler might even elect to unroll the loop for faster performance.
+If `(+ a b)` is calculable at compile time, then this is fine. The compiler will insert that value and the loop will be uniform. The compiler might even elect to unroll the loop for faster performance.
 
 
-
-`*`
-```
-(dotimes* (x (+ a b))
- ...)
-```
-The compiler will check that both `a` and `b` are warp-level uniform. If they are, then their sum is as well and 
+Otherwise the compiler will check that both `a` and `b` are warp-level uniform. If they are, then their sum is as well and 
 this will both compile just fine, but it'll execute quickly without stalling. But if the compiler
 detects that this is not warp-level uniform it will emit an error.
 
 
 
-#### dotimes / dotimes+ / dotimes* ⚠️
+#### dotimes / dotimes+  ⚠️
 ```
  (dotimes (i N:ulong &optional (stride:ulong 1)) 
     ...)
 ```
 Binds `i` to 0, counts up to N, incrementing by `stride` each time through the loop. `stride` is optional, defaults to 1.
 
-#### dec-times / dec-times+ / dec-times* 📝
+#### dec-times / dec-times+  📝
 ```
   (dec-times (i N:ulong &optional (stride:ulong 1))
     ...)
@@ -5268,7 +5237,7 @@ Binds `i` to `N-1` and counts down to `0`, subtracting `stride` each time throug
 This is the opposite of `dotimes`
 
 
-#### do-times-by-doubling / do-times-by-double+ / do-times-by-doubling* 📝
+#### do-times-by-doubling / do-times-by-double+ 📝
 ```
   (do-times-by-doubling (i:ulong init:ulong N:ulong) 
    ...)
@@ -5279,7 +5248,7 @@ it reaches (or exceeds) `N`.  The last call will always have `i` bound to a valu
 Example: If `init` is 1 and `N` is 64: i => 1, 2, 4, 8, 16, 32, 64
 Example: If `init` is 1 and `N` is 100: i => 1, 2, 4, 8, 16, 32, 64
 
-#### do-times-by-multiply / do-times-by-multiply+ / do-times-by-multiply* 📝
+#### do-times-by-multiply / do-times-by-multiply+  📝
 ```
   (do-times-by-multiply (i:ulong init:ulong N:ulong factor:ulong)
    ...)
@@ -5292,7 +5261,7 @@ The `factor` value must be greater than 1.
 Example:  `init` is 1  `N` is 64 and the `factor` is 4:  i => 1, 4, 16, 64
 
 
-#### dec-times-by-half / dec-times-by-half+ / dec-times-by-half* 📝
+#### dec-times-by-half / dec-times-by-half+  📝
 ```
   (dec-times-by-half (i:ulong N:ulong)
     ...)
@@ -5306,7 +5275,7 @@ the full value.  See the example for `sum_vector` with barriers below.
 
 If your algorithm always needs powers of two, make sure `N` is a power of 2 itself, or consider using `dec-power-step` instead ( below ).
 
-#### dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor* 📝
+#### dec-times-by-factor / dec-times-by-factor+ 📝
 ```
   (dec-times-by-factor (i:ulong N:ulong factor:ulong)
      ...)
@@ -5323,7 +5292,7 @@ Example #1:  `N` is 64 and the `factor` is 4:  i => 64, 16, 4, 1
 Example #2:  `N` is 24 and the `factor` is 5:  i => 24, 4
 
 
-#### do-power-step / do-power-step+ / do-power-step* 📝
+#### do-power-step / do-power-step+ 📝
 
 ```
   (do-power-step (step-var:ulong limit:ulong) 
@@ -5350,7 +5319,7 @@ The number of steps taken is `(log2 padded_limit)` ( aka `(log padded_limit 2)`)
 ```
 
 
-#### dec-power-step / dec-power-step+ / dec-power-step* 📝
+#### dec-power-step / dec-power-step+ 📝
 
 ```
   (dec-power-step (step-var:ulong limit:ulong) 
@@ -5894,17 +5863,7 @@ The default case for `cond` is not `T` like it is in Common Lisp. That would be 
 with the very common `T` used for templating.  Instead in Crisp, `cond` uses `else` as the default case.
 
 #### + variant ✅
-The `+` variant exists as well (`if+`, `when+`, `unless+`, `cond+`). 
-This variant checks that the predicate expression is compile time calculable. It wil error if it is not.
-This variant is very useful for when you expect the compiler will "compile away" some clause. 
-Use it to have your intentions confirmed, rather than guessing. 
-
-This is parallel to  `if constexpr (...)` introduced in C++17.
-
-#### * variant 📝
-Each of these has a `*` variant: `if*`, `when*`, `unless*`, and `cond*`.  
-
-The `*` variant checks that the predicate expression is uniform across the entire warp. If the compiler
+The `+` variant checks that the predicate expression is uniform across the entire warp. If the compiler
 detects that it is not, it will emit an error. This variant is EXTREMELY USEFUL when developing 
 high performance non-diverging code. 
 
@@ -11990,10 +11949,10 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - uniform            [DP]
 - constexpr          [DP]
 - to-uniform         [DP]
-- dotimes / dotimes+ / dotimes*
-- dec-times / dec-times+ / dec-times*
-- dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
-- dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
+- dotimes / dotimes+
+- dec-times / dec-times+
+- dec-times-by-half / dec-times-by-half+
+- dec-times-by-factor / dec-times-by-factor+
 - do-times-by-doubling
 - do-times-by-multiply
 - do-power-step
@@ -12006,10 +11965,10 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - warp-ballot
 - warp-any?
 - warp-all?
-- if / if+ / if*
-- when / when+ / when*
-- unless / unless+ / unless*
-- cond / cond+ / when*
+- if / if+
+- when / when+
+- unless / unless+
+- cond / cond+
 - select-if
 
 ### Higher Order Function Operations

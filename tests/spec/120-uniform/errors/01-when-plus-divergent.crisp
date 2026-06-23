@@ -1,0 +1,9 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "if+ requires a provably uniform condition"
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel divergent_when_plus (OUT)
+  (declare #'(vec-t => nil))
+  (when+ (= (get-local-id 0) (to-ulong 0))
+    (set! (~ OUT (get-global-id 0)) 1.0)))

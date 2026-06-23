@@ -500,7 +500,7 @@ Miscelleny
 - [x] multi-file support
 - [ ] TEST-FILES[ 01-basic.crisp 11-app.crisp]  
 - [ ] ieee / fast accuracy support
-- [ ] is-uniform? and if*/when* variants
+- [ ] is-uniform? and if+/when+ variants
 - [x] what is going on with validation.lisp? why does everything need cl:cond ?
       same with autodiff.lisp  . FIX 
 - [ ] i64 and ui64 as types and literals!!
@@ -541,8 +541,8 @@ Tensors Vectors and Matrices
 - - [ ] test offsets, strides really SET by hoisting code (instead of always jsut 0). for both align
         would we need some sort of .cpp fixture?
 - - [x] scratch tensors / matrix / vector
-- - [ ] scratch tensor sizeExpression - but we need strategy etc support first.  <==== (!!!!)
-- - [ ] CUDA support for :local ( need cu hoist)
+- - [x] scratch tensor sizeExpression - but we need strategy etc support first.  <==== (!!!!)
+- - [x] CUDA support for :local ( need cu hoist)
 - - [x] "view" manipulation - changing offset, make-xxxx etc
 - - [ ] double check branding
 - - [x] differentiate support!!
@@ -551,7 +551,7 @@ Tensors Vectors and Matrices
 - - - [x] non-float tensors. Limitation. We have good readable compilation error?
 - - [x] vector helpers
 - - [x] matrix helpers
-- - [ ] tile?
+- - [x] tile?
 - - [ ] no-sroa ?
 - [x] :contiguous-term  As a compile-time property of tensor? <-- would require some refactor
                    Is optional. Defaults to :last 
@@ -628,9 +628,9 @@ Grid Stride
 - - [x] async variations of same
 - - [x] probably have to revisit async API. Sorry. No transform or identity (see strategy below)
 - [ ] convert-layout (in Crisp)
-- [ ] :strategy :tiled and :tile-shape declarations. 
-- - [ ] metadata
-- - [ ] hoisting
+- [x] :strategy :tiled and :tile-shape declarations. 
+- - [x] metadata
+- - [x] hoisting
 - - [ ] when hoisting we need to make sure the total tensor size is an even multiple of the tile. "oversubscribe" it and ideally fill with an identity value, which maybe we should have the :strategy ddeclare.
 - - [ ] with --runtime-checks we should validate that tensor IS an even multiple of tile.
 - - [ ] update documentation with this "oversubscribe and assert" behavior.
@@ -645,8 +645,8 @@ NEXT
 - - [x] lose (await-request <req>) .  Now just (await <barrier>)
 - [x] load-tile/store-tile API from topology.md.   
 - [x] lose "helper" load-tile / store-tile
-- [ ] (await barrier) maps to cp.async.wait_all , not individual barriers.
-- [ ] strategy :tiled so we can get hoist testing. 
+- [x] (await barrier) maps to cp.async.wait_all , not individual barriers.
+- [x] strategy :tiled so we can get hoist testing. 
 - [x] rename local-barrier => sync-workgroup
 - [x] sync-warp
 - [x] make-arrival-sync
@@ -663,9 +663,9 @@ code coverage
 
 CleanUP
 =======
-format T, format *terminal-io*    WTF.  should use log4cl
-temp files everywhere EXCEPT in put_temp_files_here directory.
-never reads ANTIGRAVITY.md or tests.md 
+[x]format T, format *terminal-io*    WTF.  should use log4cl
+[x]temp files everywhere EXCEPT in put_temp_files_here directory.
+[ ] never reads ANTIGRAVITY.md or tests.md 
 
 --runtime-checks
 ================
@@ -673,14 +673,32 @@ never reads ANTIGRAVITY.md or tests.md
 - [ ] Audit routines implemented so far. Which should have --runtime-checks support?
 - [ ] test
 
+workgroup uniform
+=================
+- [x] (declare (uniform someVar))
+- [x] (provably-uniform? <var>) (provably-divergent? <var>)
+- [x] (to-uniform <var>)  
+- [x] make sure GPU builtin names (like get-global-work-size ) are consistent
+      in design doc (as opposed to get-global-size )
+
+A|D issues
+==========
+- [ ] if+/when+/dortime+ aren't recognized in AD backward walk
+- [ ] folded boolean literal materialized as a backward let-binding; boolean has no LLVM type.
+- [ ] 120-uniform/02-defmacro-usage  and 03-subfunction
 
 Looping Constructs
 ==================
 - [ ] dotimes 
-- - [ ]  dotimes+ / dotimes*
-- [ ] dec-times / dec-times+ / dec-times*
+- - [ ]  dotimes+
+- [ ] dec-times / dec-times+
 - [ ] do-times-by-doubling
 - [ ] &c.
+
+FFI
+===
+ - update design
+ - required to use libdevice.10.bc which will be needed for ieee transcendentals.
 
 Precision: ieee vs fast vs ieee-ftz
 ===================================
@@ -738,7 +756,7 @@ Technical Debt
 - [x] drop oneDPL and use SYCL built-in reductions instead for benchmark
 - [x] occupancy.
 - [/] rename --binary-gpu-target flag and expand docs 
-- [ ] consider renaming `local-barrier` to `workgroup-sync` ?
+- [x] consider renaming `local-barrier` to `workgroup-sync` ?
 
 PERFORMANCE TESTING
 ===================

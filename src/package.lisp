@@ -348,7 +348,9 @@
    #:compile-crisp-form-to-ir-string
 
    ;; Macros
-   #:when #:unless #:cond #:if+ #:when+ #:unless+ #:else
+   #:when #:unless #:cond #:if+ #:when+ #:unless+ #:else #:dotimes+
+   #:provably-uniform? #:provably-divergent? #:uniformity-state
+   #:to-workgroup-uniform #:to-warp-uniform
    #:c-t-assert #:c-t-output #:compiler-no-op
    #:!= #:is-set?
    #:die #:r-t-assert #:r-t-assert-0
@@ -394,7 +396,9 @@
                 #:marshall-vector
                 #:marshall-matrix
                 #:%make-ct-array
-                #:when #:unless #:if+ #:when+ #:unless+
+                #:when #:unless #:if+ #:when+ #:unless+ #:dotimes+
+                #:provably-uniform? #:provably-divergent? #:uniformity-state
+                #:to-workgroup-uniform #:to-warp-uniform
                 #:def-struct
                 #:def-derived-type
                 #:set-derived
@@ -530,7 +534,9 @@
    #:sin #:cos
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
-   #:if+ #:else
+   #:if+ #:when+ #:unless+ #:else #:dotimes+
+   #:provably-uniform? #:provably-divergent? #:uniformity-state
+   #:to-workgroup-uniform #:to-warp-uniform
    #:c-t-assert #:c-t-output
    #:die #:r-t-assert #:r-t-assert-0
    #:type-equal-p

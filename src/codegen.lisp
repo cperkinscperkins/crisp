@@ -2767,7 +2767,29 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (if (eq *target-backend* :ptx)
              (%ptx-membar-cta builder module)
              (%gen-spirv-memory-barrier builder module)))
-        (t (error "generate-node-ir: unknown GPU builtin ~a" bname))))))
+        (t (error "Unknown GPU builtin ~a" builtin-name))))))
+
+(defmethod generate-node-ir ((node semantic-to-workgroup-uniform) builder module var-env di-builder di-scope location-map)
+  "Emits IR to make a value uniform across the workgroup.
+   Phase 1a: This is currently a pass-through that emits a workgroup barrier."
+  (let* ((val-node (semantic-to-workgroup-uniform-value-node node))
+         (val (generate-node-ir val-node builder module var-env di-builder di-scope location-map)))
+    (log:warn "to-workgroup-uniform codegen is currently a pass-through with a barrier.")
+    (if (eq *target-backend* :ptx)
+        (%ptx-barrier builder module)
+        (%gen-spirv-control-barrier builder module))
+    (values val nil)))
+
+(defmethod generate-node-ir ((node semantic-to-warp-uniform) builder module var-env di-builder di-scope location-map)
+  "Emits IR to make a value uniform across the warp.
+   Phase 1a: This is currently a pass-through that emits a warp barrier."
+  (let* ((val-node (semantic-to-warp-uniform-value-node node))
+         (val (generate-node-ir val-node builder module var-env di-builder di-scope location-map)))
+    (log:warn "to-warp-uniform codegen is currently a pass-through.")
+    (if (eq *target-backend* :ptx)
+        (%ptx-syncwarp builder module)
+        (%gen-spirv-warp-barrier builder module))
+    (values val nil)))
 
 
 

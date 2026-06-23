@@ -1,0 +1,14 @@
+;; SKIP-WITH[--differentiate]: "folded boolean literal materialized as backward let-binding. boolean has no LLVM type.  Will fix later"
+
+;; this macro is a bad idea for a kernel with real performance requirements.
+;; just demonstrating macro usage 
+(defmacro probably-uniform (expr)
+  `(if (provably-divergent? ,expr) 0 1))
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel fake_kernel (a &out res)
+    (declare #'(float &out out-c => nil))
+    (let ((v (if (probably-uniform a) a 13.0)))
+      (set! (~ res) v)))
+    

@@ -1,0 +1,9 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "divergent"
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel divergent_dotimes_plus (OUT)
+  (declare #'(vec-t => nil))
+  (dotimes+ (i (get-local-id 0))
+    (set! (~ OUT (get-global-id 0)) 1.0)))

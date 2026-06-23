@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "dotimes+ not yet handled in AD backward walk"
+
+;; Endeavor 120 (gap #1): contagion through a let binding. uniform + uniform is
+;; uniform, and the let-bound result must stay uniform for dotimes+.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel contagion_let (OUT)
+  (declare #'(vec-t => nil))
+  (let ((s (+ (get-workgroup-id 0) (get-num-groups 0))))
+    (dotimes+ (i s)
+      (set! (~ OUT (get-global-id 0)) 1.0))))

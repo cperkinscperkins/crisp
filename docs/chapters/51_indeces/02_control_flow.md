@@ -36,10 +36,10 @@
 - uniform            [DP]
 - constexpr          [DP]
 - to-uniform         [DP]
-- dotimes / dotimes+ / dotimes*
-- dec-times / dec-times+ / dec-times*
-- dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
-- dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
+- dotimes / dotimes+
+- dec-times / dec-times+
+- dec-times-by-half / dec-times-by-half+
+- dec-times-by-factor / dec-times-by-factor+
 - do-times-by-doubling
 - do-times-by-multiply
 - do-power-step
@@ -52,9 +52,9 @@
 - warp-ballot
 - warp-any?
 - warp-all?
-- if / if+ / if*
-- when / when+ / when*
-- unless / unless+ / unless*
-- cond / cond+ / when*
+- if / if+
+- when / when+
+- unless / unless+
+- cond / cond+
 - select-if
 

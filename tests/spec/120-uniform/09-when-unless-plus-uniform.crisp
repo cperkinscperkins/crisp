@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "when+/unless+ not yet handled in AD backward walk"
+
+;; Endeavor 120: positive coverage for when+ and unless+ with a genuinely
+;; uniform condition (only divergent negatives existed before). Uses typed
+;; literals so it isolates when+/unless+ (conversion-transparency is covered
+;; separately in 10-conversion-uniform).
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel when_unless_uniform (OUT)
+  (declare #'(vec-t => nil))
+  (when+ (< (get-workgroup-id 0) 4ul)
+    (set! (~ OUT (get-global-id 0)) 1.0))
+  (unless+ (< (get-workgroup-id 0) 2ul)
+    (set! (~ OUT (get-global-id 0)) 2.0)))

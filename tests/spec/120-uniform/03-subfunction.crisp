@@ -1,0 +1,24 @@
+
+;; SKIP-WITH[--differentiate]: "if+ and friends not recognized in AD backward walk  will fix later"
+;; SKIP-WITH[--single-pass]: "interprocedural uniformity inference needs the multi-pass call graph; single-pass compiles C before its call sites exist"
+
+(def-function C (x)
+    (declare #'(ulong => ulong))
+    ;(declare (uniform x))  ;; I would prefer this test pass WITHOUT the uniform declaration
+    (if+ (< x 13ul)
+      x
+      (- x 2ul)))
+      
+(def-function B (x y)
+    (declare #'(ulong ulong => ulong))
+    ;(declare (uniform x))  ;; I would prefer this test pass WITHOUT the uniform declaration
+    (+ (C x) y))
+
+
+(def-type out-c (cell ulong :address-space :global))
+
+(def-kernel A_kernel (x &out res)
+(declare #'(ulong &out out-c => nil))
+    (let ((y (get-global-id 0)))
+      (set! (~ res) (B x y))))
+

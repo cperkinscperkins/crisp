@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "provably uniform"
+
+;; Endeavor 120 pre-pass safety: a function whose parameter is passed a uniform
+;; arg at one call site and a divergent arg at another must NOT be inferred
+;; uniform (conservative meet). pick's if+ must therefore be rejected.
+
+(def-function pick (x)
+  (declare #'(ulong => ulong))
+  (if+ (< x (to-ulong 8)) x (- x (to-ulong 1))))
+
+(def-type out-c (cell ulong :address-space :global))
+
+(def-kernel conflict (a &out res)
+  (declare #'(ulong &out out-c => nil))
+  (let ((d (get-global-id 0)))
+    (set! (~ res) (+ (pick a) (pick d)))))

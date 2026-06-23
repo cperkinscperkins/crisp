@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "dotimes+/to-workgroup-uniform not yet handled in AD backward walk"
+
+;; Endeavor 120 headline (gap #1): (to-workgroup-uniform ...) bound in a let must
+;; make the variable provably uniform so dotimes+ accepts it.  This is the
+;; flagship pattern from chapter 13.14.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel to_wg_uniform_loop (OUT)
+  (declare #'(vec-t => nil))
+  (let ((n (to-workgroup-uniform (get-local-id 0))))
+    (dotimes+ (i n)
+      (set! (~ OUT (get-global-id 0)) 1.0))))

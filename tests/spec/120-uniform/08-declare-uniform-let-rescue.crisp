@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "if+ not yet handled in AD backward walk"
+
+;; Endeavor 120 (gap #2): escape hatch. A memory read is :unknown (not provably
+;; uniform), so (declare (uniform v)) inside the let block must rescue it for
+;; if+.  declare-uniform in a let block is currently stripped and ignored.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel declare_rescue (IN OUT)
+  (declare #'(vec-t vec-t => nil))
+  (let ((v (~ IN 0)))
+    (declare (uniform v))
+    (if+ (< v 5.0)
+      (set! (~ OUT (get-global-id 0)) 1.0)
+      (set! (~ OUT (get-global-id 0)) 0.0))))
