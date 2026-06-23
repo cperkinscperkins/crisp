@@ -35,9 +35,17 @@ Pass 4 - handles
 - [ ] add new C function to our library that takes handle
 - [ ] and .crisp file that binds and exercises.
 
-Pass 5 - check "real" libraries
-- [ ] bind something from libclc ? test
-- [ ] bind something from libdevice ? test
+Pass 5 - check "real" libraries   (libclc SKIPPED — L0 runtime subsumes it)
+- [x] harness: FFI-LINK can reference a PRE-BUILT .bc with $ENV expansion (e.g.
+      $CUDA_HOME/nvvm/libdevice/libdevice.10.bc); SKIPs cleanly if not found.
+      Validated on the BMG with a stand-in spir64 .bc (BUFFER out-cell: 26).
+- [x] libdevice test written: 07-ffi-libdevice.crisp binds __nv_sqrtf,
+      __nv_sqrtf(16)==4, TEST-HOIST[CUDA]. SKIPs here / in CI (no CUDA_HOME).
+- [ ] ON-METAL verify on RunPod (CUDA). RISK: libdevice functions may reference
+      __nvvm_reflect (FTZ/precision); our llc path may need a reflect step or a
+      reflect-mapped value. Confirm exact CUDA_HOME env var on the RunPod image.
+- [SKIP] libclc — Intel L0 runtime provides OpenCL builtins; revisit only if/when
+      we want full OpenCL hoisting.
 
 
 
