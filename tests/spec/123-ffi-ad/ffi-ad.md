@@ -243,13 +243,17 @@ Build `.bc` per target as in 122 (OpenCL `__global` for spv, CUDA/plain for ptx)
 challenge signatures as the backbone of the signature-derivation coverage, plus:
 
 **HARNESS PREREQUISITE (first implementation task).** FFI specs route exclusively
-through `run-spec-ffi-runs`, which compiles forward-only (binary args are just
-`--ir-target` + `--log-level`), skips hoist under `--differentiate`, and never
-reaches the VERIFY-AUTODIFF pass. So none of the AD tests below can be *driven*
-until that runner gains: (a) a `--differentiate` compile-check pass that links the
-`.bc`, and (b) a VERIFY-AUTODIFF pass with the `.bc` linked. Proposed trigger:
-an FFI spec runs the differentiate variant automatically when it lacks
-`SKIP-WITH[--differentiate]` (the 122 specs keep that skip; 123 specs drop it).
+through `run-spec-ffi-runs`, which today is forward-only: it hardcodes the binary
+args to `--ir-target` + `--log-level` (NOT forwarding the global `--differentiate`
+flag), skips hoist under `--differentiate`, and never reaches the VERIFY-AUTODIFF
+pass. So none of the AD tests below can be *driven* yet.
+
+Fix (no new directive): make `run-spec-ffi-runs` honor `*compile-differentiate*`,
+exactly like the non-FFI path does — when set, add `--differentiate` to the binary
+invocation and run the VERIFY-AUTODIFF pass with the `.bc` linked. The suite is run
+under `--differentiate` by CI; the 122 specs opt out via `SKIP-WITH[--differentiate]`
+(skipped at parse time, before the FFI branch), while 123 specs lack that skip and
+so fall through to the FFI path and get differentiated.
 
 **Pass 1 — scalar only** (positive tests DRAFTED 2026-06-24; RED until compiler +
 harness land. 123 is past ci-stop so the suite doesn't run them yet.)
