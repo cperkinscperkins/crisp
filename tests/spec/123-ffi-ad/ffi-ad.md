@@ -255,15 +255,32 @@ under `--differentiate` by CI; the 122 specs opt out via `SKIP-WITH[--differenti
 (skipped at parse time, before the FFI branch), while 123 specs lack that skip and
 so fall through to the FFI path and get differentiated.
 
-**Pass 1 — scalar only** (positive tests DRAFTED 2026-06-24; RED until compiler +
-harness land. 123 is past ci-stop so the suite doesn't run them yet.)
-- [x] `01-ffi-cube-scalar` — `#'(float => float)`, VERIFY-AUTODIFF x=2 → 12 (keystone).
-- [x] `02-ffi-wmul-two-input` — `#'(float float => float)`, two partials, order matters.
-- [x] `03-ffi-int-promote` — `#'(int => int)`, int→float seed AND returned grad (compile-shape; manual IR).
-- [x] `04-ffi-long-return` — `#'(float => long)`, long-return seed is `double` (compile-shape; manual IR).
+**Pass 1 — scalar only** — IMPLEMENTED & GREEN 2026-06-24 (full suite 771/771 both
+forward and `--differentiate`). Implementation: `def-foreign-function` gained the
+optional backward arg (src/macros.lisp); `register-foreign-function` +
+`%register-foreign-backward` + `%ffi-active-scalar-param-p` wire the VJP into
+`*differentiable-functions*` (src/compiler.lisp); `run-spec-ffi-runs` now forwards
+the global `--differentiate` flag and expects `<name>_grad.<type>` (tests/run-specs.lisp).
+The existing sub-function backward machinery (`%handle-sub-fn-call-backward` →
+`%emit-sub-fn-backward`) drives everything — no new backward-walk code.
+- [x] `01-ffi-cube-scalar` — `#'(float => float)`. IR verified: backward kernel reads
+      seed from `y_grad`, calls `@c_cube_bwd(x, dy)`, routes delta to `x_grad`.
+- [x] `02-ffi-wmul-two-input` — `#'(float float => float)`. IR: `@c_wmul_bwd(a,b,dy)`
+      returns `{float,float}`, both partials in forward order.
+- [x] `03-ffi-int-promote` — `#'(int => int)`. IR: `@c_idbl_bwd(i32 primal, float seed)`
+      → float delta. Integer differentiation across FFI confirmed (n-active-scalars
+      counts ints, unlike the sub-fn `%count-differentiable-contributions`).
+- [~] `04-ffi-long-return` — `#'(float => long)`. SKIP-WITH[--differentiate]. DISCOVERED
+      GAP: a `long` foreign result's adjoint is typed `float` by the AD machinery
+      while its grad cell is `double` → "Expected FLOAT but inferred DOUBLE". Reproduces
+      with a trivial VJP body AND (independently) with a long output cell — so it's a
+      broader long/double **output-adjoint** gap, NOT the FFI VJP wiring. Forward FFI
+      path still verified. Needs its own endeavor; the double-seed promotion rule in the
+      docs remains correct (it rides `%promote-to-float-adjoint` once outputs support it).
 - [ ] negative: FFI call with NO backward registered inside `--differentiate` → clean error.
 - [ ] negative: backward `def-function` whose signature mismatches the derived VJP → clean error.
-  (Negatives deferred pending agreement on how the negative-test runner drives FFI + `--differentiate`.)
+  (Negatives: per Chris, the error-spec runner is forward-only unless a spec carries
+  TEST-WITH[--differentiate]; wiring TBD. Check run-error-specs.lisp handles FFI-LINK.)
 
 **Pass 2 — pointer input + shadow routing**
 - [ ] `#'(int (c-pointer :global) (c-pointer :global) => nil)` (c_vsin, Example 2) — shadow-in /

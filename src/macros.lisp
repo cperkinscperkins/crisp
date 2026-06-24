@@ -125,18 +125,27 @@
 ;; Core Language Macros
 ;; ====================
 
-(defmacro def-foreign-function (c-name signature)
+(defmacro def-foreign-function (c-name signature &optional backward-name)
   "Endeavor 122 (FFI): declares a foreign (C / device-library) function callable
    from Crisp kernels. C-NAME is the verbatim C symbol; SIGNATURE is a Crisp
    arrow spec. The definition is supplied by linking a .bc at compile time.
 
+   Endeavor 123 (FFI-AD): the optional BACKWARD-NAME names a user-supplied Crisp
+   def-function that serves as this foreign function's Vector-Jacobian Product
+   (VJP). When present, the foreign function becomes differentiable: a call to it
+   inside a --differentiate kernel routes its backward pass through BACKWARD-NAME.
+   The VJP's signature is mechanically derived from SIGNATURE (primals ++ seeds
+   for active returns ++ shadow pointers for active-memory inputs => one gradient
+   per active scalar input).
+
    Example:
      (def-foreign-function my_add #'(float float => float))
+     (def-foreign-function c_cube #'(float => float) c-cube-bwd)  ;; differentiable
 
    Expands to a registration call (evaluated during the signatures pass), so the
    call resolves and codegen emits an external declaration + call. No body is
    generated here."
-  `(register-foreign-function ',c-name ',signature))
+  `(register-foreign-function ',c-name ',signature ',backward-name))
 
 (defmacro def-function (name params &rest body-and-location)
   "Defines a new, thread-level Crisp function."

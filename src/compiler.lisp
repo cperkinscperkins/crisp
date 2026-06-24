@@ -710,12 +710,17 @@ Returns modified IR text with metadata."
    e.g. :global-size = (global-size :derive-from (width height) :strategy :one-thread-per).")
   
 
-(defun register-foreign-function (c-name signature)
-  "Registers a (def-foreign-function C-NAME SIGNATURE). SIGNATURE is a Crisp
-   arrow spec, possibly wrapped as (function (...)) from #'(...). Builds a
-   single function-signature in *function-table* (synthetic param names; only
-   the types matter for resolution) and records the verbatim C name in
-   *foreign-functions*."
+(defun register-foreign-function (c-name signature &optional backward-name)
+  "Registers a (def-foreign-function C-NAME SIGNATURE [BACKWARD-NAME]). SIGNATURE
+   is a Crisp arrow spec, possibly wrapped as (function (...)) from #'(...).
+   Builds a single function-signature in *function-table* (synthetic param names;
+   only the types matter for resolution) and records the verbatim C name in
+   *foreign-functions*.
+
+   Endeavor 123 (FFI-AD): when BACKWARD-NAME is supplied, also wires the foreign
+   function into *differentiable-functions* (via %register-foreign-backward) so a
+   call to it inside a --differentiate kernel routes its backward pass through
+   BACKWARD-NAME (the user-supplied VJP)."
   (let* ((spec (if (and (consp signature) (symbolp (first signature))
                         (string-equal (symbol-name (first signature)) "FUNCTION"))
                    (second signature)
@@ -738,7 +743,43 @@ Returns modified IR text with metadata."
     (setf (gethash c-name *foreign-functions*) (%foreign-c-name c-name))
     (log:info "FFI: registered foreign function ~a -> C name ~s (~a params, returns ~a)"
               c-name (gethash c-name *foreign-functions*) (length params) return-types)
+    (when backward-name
+      (%register-foreign-backward c-name params return-types backward-name))
     c-name))
+
+(defun %register-foreign-backward (c-name params return-types backward-name)
+  "Endeavor 123 (FFI-AD): registers C-NAME in *differentiable-functions* so the
+   existing sub-function backward machinery (%handle-sub-fn-call-backward ->
+   %emit-sub-fn-backward) drives the user-supplied VJP BACKWARD-NAME.
+
+   Unlike the sub-function convention (%count-differentiable-contributions, which
+   treats integer scalars as gradient-inert), FFI treats every active scalar
+   input — float AND integer — as differentiable, matching Crisp's kernel-level
+   integer differentiation. N-FLOAT-PARAMS is therefore the count of active
+   scalar params (each yields one returned gradient, in forward order).
+
+   :TENSOR-PARAM-INDICES (pointer/active-memory inputs, for shadow routing) is
+   left NIL for now; Pass 1 is scalar-only. Pointer shadows arrive in Pass 2."
+  (let* ((n-active-scalars (loop for p in params
+                                 count (%ffi-active-scalar-param-p
+                                        (parameter-def-type p))))
+         (n-return (length (remove nil return-types))))
+    (setf (gethash c-name *differentiable-functions*)
+          (list :bkwd-name backward-name
+                :n-float-params n-active-scalars
+                :n-return n-return
+                :tensor-param-indices nil
+                :foreign t))
+    (log:info "FFI-AD: registered VJP ~a for foreign ~a (n-active-scalars=~a n-return=~a)"
+              backward-name c-name n-active-scalars n-return)))
+
+(defun %ffi-active-scalar-param-p (type-spec)
+  "T if TYPE-SPEC is an active (differentiable) scalar for FFI VJP purposes:
+   a float-category OR integer-category scalar. Integers are active here (Crisp
+   differentiates them, promoting gradients to float/double), in contrast to the
+   sub-function delta convention which treats integer scalars as inert."
+  (or (%crisp-float-type-p type-spec)
+      (%crisp-integer-scalar-type-p type-spec)))
 
 
 
