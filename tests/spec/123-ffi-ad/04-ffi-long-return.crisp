@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; FFI-LINK: scalel.c
+;; TEST-WITH[--ir-target=ptx]
+;; TEST-WITH[--ir-target=spv]
+
+;; Endeavor 123 (FFI-AD) Pass 1: the seed-promotion guard. A `long` (64-bit)
+;; return must take a DOUBLE gradient seed, not a float (per
+;; %promote-to-float-adjoint: long/ulong -> double). This is the rule the
+;; earlier Gemini writeup got wrong ("universally float"). Compile-shape test;
+;; verify MANUALLY in the backward IR that the seed param is f64.
+;;
+;; Derived VJP signature:  #'(float double => float)
+;;   primal x, seed dy (double, promoted from the long return), returns dx (float).
+
+(def-foreign-function c_scalel #'(float => long) c-scalel-bwd)
+
+(def-function c-scalel-bwd (x dy)
+  (declare #'(float double => float))
+  (* (to-float dy) 1000.0))
+
+(def-type in-f  (cell float :address-space :global))
+(def-type out-l (cell long  :address-space :global))
+
+(def-kernel use_scalel (x &out y)
+  (declare #'(in-f &out out-l))
+  (set! (~ y) (c_scalel (~ x))))

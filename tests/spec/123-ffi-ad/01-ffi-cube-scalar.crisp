@@ -1,0 +1,31 @@
+;; TEST-EXPECT: PASS
+;; FFI-LINK: cube.c
+;; TEST-WITH[--ir-target=ptx]
+;; TEST-WITH[--ir-target=spv]
+;; VERIFY-AUTODIFF: x=2.0 atol=1e-3 expect.x=12.0
+
+;; Endeavor 123 (FFI-AD) Pass 1, KEYSTONE: a foreign scalar function made
+;; differentiable by a user-supplied backward (VJP).
+;;
+;; Forward:  y = c_cube(x) = x^3        Backward: dx = dy * 3*x^2
+;; At x=2.0: df/dx = 3*(2^2) = 12.0  (checked numerically by VERIFY-AUTODIFF).
+;;
+;; Derived VJP signature:  #'(float float => float)
+;;   primal x, seed dy, returns dx.
+;;
+;; NOTE (harness): VERIFY-AUTODIFF on an FFI spec requires run-spec-ffi-runs to
+;; gain a --differentiate pass that links the .bc (today the FFI path is
+;; forward-only). That harness extension is the first implementation task.
+
+(def-foreign-function c_cube #'(float => float) c-cube-bwd)
+
+(def-function c-cube-bwd (x dy)
+  (declare #'(float float => float))
+  (* dy (* 3.0 (* x x))))
+
+(def-type in-ish  (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
+
+(def-kernel use_cube (x &out y)
+  (declare #'(in-ish &out out-ish))
+  (set! (~ y) (c_cube (~ x))))
