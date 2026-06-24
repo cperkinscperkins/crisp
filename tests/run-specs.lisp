@@ -264,14 +264,25 @@
    NIL on failure). DELETE-BC-P: clean up the returned .bc afterward (true for
    clang-built sources; false for prebuilt libs we must not delete). Returns T
    if all runs pass."
-  (let* ((compile-targets (%ffi-requested-targets directives))
+  (let* ((requested (%ffi-requested-targets directives))
          (hoist-dirs (parse-test-hoist directives))
-         (compile-targets (if (and (null compile-targets) (null hoist-dirs))
-                              '("ptx")
-                              compile-targets))
+         (requested (if (and (null requested) (null hoist-dirs))
+                        '("ptx")
+                        requested))
+         ;; Honor SKIP_SPIRV_TESTS (e.g. a CUDA-only box with no SPIR-V tooling):
+         ;; drop spv compile-checks just as run-single-spec-pass does. (L0 hoist
+         ;; is skipped separately via SKIP_L0_HOIST in run-spec-with-hoist.)
+         (skip-spv (and (uiop:getenv "SKIP_SPIRV_TESTS") t))
+         (compile-targets (if skip-spv
+                              (remove "spv" requested :test #'string=)
+                              requested))
          (bin (get-binary-path))
          (all-ok t)
          (artifacts '()))
+
+    (when (and skip-spv (member "spv" requested :test #'string=))
+      (format t "~&Running Spec: ~a (FFI[spv])... SKIP (SKIP_SPIRV_TESTS)~%"
+              (pathname-name crisp-file)))
 
     ;; 1. Compile-check runs (TEST-WITH[--ir-target=...]).
     (dolist (target compile-targets)
