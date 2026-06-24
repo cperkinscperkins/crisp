@@ -21,6 +21,12 @@
   "Registry of user def-functions for which a _GRAD backward companion has been generated.
 Maps function-name -> (:bkwd-name sym :n-float-params N :n-return M).")
 
+(defvar *foreign-functions* (make-hash-table :test 'eq)
+  "Endeavor 122 (FFI). Registry of functions declared via def-foreign-function.
+Maps the function-name symbol -> the verbatim C name string to emit (no Crisp
+mangling). Presence here also tells codegen to give the external declaration the
+target-appropriate calling convention so it matches the linked .bc definition.")
+
 
 (defvar *call-graph* nil
         "A hash table representing the call graph of functions.

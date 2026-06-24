@@ -133,6 +133,3 @@ The `--differentiate` flag significantly increases the complexity of the generat
 When using the `--differentiate` flag, the compiler will append `_grad` to the output filename. For example, if compiling `my-kernel.crisp` with `--differentiate` and the `--ir-target=spv` flag, the output file will be named `my-kernel_grad.spv`.
 
 
-
-
-

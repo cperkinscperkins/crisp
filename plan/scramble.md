@@ -697,8 +697,9 @@ Looping Constructs
 
 FFI
 ===
- - update design
+ - [x] update design
  - required to use libdevice.10.bc which will be needed for ieee transcendentals.
+ - [ ] (byte-size float)
 
 Precision: ieee vs fast vs ieee-ftz
 ===================================

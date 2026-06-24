@@ -1223,9 +1223,15 @@
     (values call-inst di-location)))
 
 
-(defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
-  "Generates IR for a function call."
 
+(defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
+  "Generates IR for a function call.
+
+   Endeavor 122 (FFI): a call to a function registered in *foreign-functions*
+   uses its verbatim C name (no Crisp type-mangling), and its external
+   declaration is given the target's device calling convention (SPIR_FUNC=75 on
+   SPV; default on PTX) so the call instruction (which copies the callee's CC)
+   matches the definition merged in from the linked .bc."
   ;; Special handling for compiler intrinsic DIE
   (when (eq (semantic-call-name node) 'die)
         (return-from generate-node-ir (%handle-die-intrinsic builder module)))
@@ -1237,14 +1243,26 @@
     (multiple-value-bind (llvm-fn-type param-count)
         (%build-llvm-function-type module return-type-names param-types)
 
-      (let* (;; The name of the function in LLVM IR is mangled with its types
-             (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
-                             (mapcar #'mangle-type-spec param-types)))
-             (callee-name (substitute #\_ #\~ (substitute #\_ #\- (string-downcase mangled-name)))))
+      (let* ((foreign-c-name (gethash (semantic-call-name node) *foreign-functions*))
+             (callee-name
+              (if foreign-c-name
+                  foreign-c-name
+                  (let ((mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
+                                        (mapcar #'mangle-type-spec param-types))))
+                    (substitute #\_ #\~ (substitute #\_ #\- (string-downcase mangled-name)))))))
 
-        ;; Build and return the call
+        ;; Foreign: pre-declare with the device calling convention so the call's
+        ;; propagated CC matches the linked definition.
+        (when foreign-c-name
+          (let ((f (llvm-get-named-function module callee-name)))
+            (when (cffi:null-pointer-p f)
+              (setf f (llvm-add-function module callee-name llvm-fn-type)))
+            (when (eq *target-backend* :spirv)
+              (llvm-set-function-call-conv f 75))))
+
         (%build-function-call builder module var-env di-builder di-scope location-map node sig
                               callee-name llvm-fn-type param-types param-count return-type-names)))))
+
 
 
 (defmethod generate-node-ir ((node semantic-progn) builder module var-env di-builder di-scope location-map)
@@ -3162,3 +3180,19 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
       (llvm-build-cond-br builder is-ready cont-bb loop-bb))
     (llvm-position-builder-at-end builder cont-bb)
     (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+
+
+
+(defmethod generate-node-ir ((node semantic-make-c-handle) builder module var-env di-builder di-scope location-map)
+  "Allocate a local slot (alloca) typed by the held pointer type; the value is
+   the slot's address (an addrspace-0 pointer)."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let ((held-llvm (crisp-type-to-llvm-type (semantic-make-c-handle-held-type node) module)))
+    (crisp.llvm-bindings::llvm-build-alloca builder held-llvm "c_handle_slot")))
+
+(defmethod generate-node-ir ((node semantic-get-pointer) builder module var-env di-builder di-scope location-map)
+  "Load the held pointer out of a c-handle slot."
+  (let ((held-llvm   (crisp-type-to-llvm-type (semantic-get-pointer-type node) module))
+        (handle-val  (generate-node-ir (semantic-get-pointer-handle-node node)
+                                       builder module var-env di-builder di-scope location-map)))
+    (crisp.llvm-bindings::llvm-build-load2 builder held-llvm handle-val "c_handle_load")))

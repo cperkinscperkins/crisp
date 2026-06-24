@@ -1814,11 +1814,12 @@ referencing.
 | Property      | Type          |              |     Description |
 | --------------|---------------|--------------|-----------------|
 | byte-size~         | ulong         | runtime      | the number of bytes in the `storage`. This is immutable.|
+| base-ptr~     | voidp          | runtime      | the voidp pointer of the storage. |
 | address-space~ | address-space | compile-time | one of `:global`, `:local`, `:constant` |
 
 
 
-The `byte-size~` property for a `storage` is sometimes known at compile time, but is most often a runtime property.
+The `byte-size~` property for a `storage` is sometimes known at compile time, but is most often a runtime property.  The `base-ptr~` is most definitely a runtime property. 
 However the other properties are all known and evaluable at compile time. 
 
 <!-- IMPLEMENTATION NOTE:
@@ -1909,6 +1910,8 @@ than the `bytes` of the parent `storage`. But the checking and enforcement for t
 
 The `storage` property accessor  `address-space~` can be used directly on any Storage Handle type. 
 There is no reason to do `(address-space~ (parent~ some-vector))`.  Simply doing `(address-space~ some-vector)` is sufficient.
+
+Similarly, the `base-ptr~` accessor can be used directly on any Storage Handle type. `(base-ptr~ some-vector)` is sufficient.
 
 ### Element Access ✅
 
@@ -10873,6 +10876,117 @@ The `--differentiate` flag significantly increases the complexity of the generat
 When using the `--differentiate` flag, the compiler will append `_grad` to the output filename. For example, if compiling `my-kernel.crisp` with `--differentiate` and the `--ir-target=spv` flag, the output file will be named `my-kernel_grad.spv`.
 
 
+## Foreign Function Interface (FFI) ✅
+
+Crisp kernels can call functions from third party libraries (such as the OpenCL `libclc` library or NVidia's `libdevice` library, and others). The process is much like in C, simply name each function and its signature that you wish to use and pass its `.bc` when compiling.
+
+### `def-foreign-function` ✅
+```
+(def-foreign-function <C_name> <arrow-signature>)
+```
+
+```
+;; example someKernel.crisp
+(def-foreign-function my_add #'(float float => float))
+
+(def-kernel invoke_my_add (a b &out c)
+  (declare #'(float float &out (cell float :address-space :global)))
+  (let ((res (my_add a b)))
+    (set! (~ c) res)))
+
+;; invocation
+$ crisp-compile.exe myLib.bc someKernel.crisp --ir-target=ptx
+```
+
+The `def-foreign-function` form has two arguments: the "C name" of the function and its signature in Crisp arrow form. 
+
+### pointers and handles: `c-pointer` ✅
+
+```
+(c-pointer :address-space <:global | :generic | :local | :constant | :private>)
+```
+
+`c-pointer` can be used to declare a pointer variable type. It must be qualified with `:address-space`.
+
+Just as in `def-kernel-exact`, pointer arguments to foreign functions can have their type declared using `voidp` or `c-pointer`. But note that to actually use a pointer or dereference it, you'll need to use a marshalling form (like `marshall-cell` or `marshall-vector`), which will require a complete type that has `:address-space`, `:align` and possibly other properties to be specified.
+
+### `base-ptr~` accessor ✅
+
+`(base-ptr~ <storage-handle>)` returns the handle's underlying pointer in its
+NATIVE address space (e.g. a global cell → a `(c-pointer :address-space :global)`).
+Like `byte-size~` it is a pass-through: `(base-ptr~ someCell)` works as well as
+`(base-ptr~ (parent~ someCell))`. Passing it to a foreign param of the same
+address space needs no cast; differing spaces are reconciled by an
+`addrspacecast` in the existing value-coercion path.
+
+### handles ✅
+
+A handle is a `void**`: it has TWO address spaces — the slot's (outer, where the
+`void*` lives) and the held pointer's (inner, where the data lives) — and they
+are generally DIFFERENT. 
+
+```
+;; handle type declaration
+(c-handle <held-pointer-type>)
+
+
+(c-handle (c-pointer :address-space :global))
+
+;; handle creation
+(make-c-hanlde <pointer-type>)
+
+;; dereference handle to pointer
+(get-pointer <c-handle-obj>)
+
+```
+
+
+#### Example
+
+In the example below, there is a C library function called `pool_alloc` takes a pointer, a size, and a handle.
+
+```
+// C 
+// Atomically reserves 'size' bytes from the pool.
+// Returns 0 on success, and writes the allocated pointer into 'out_ptr'.
+__device__ int pool_alloc(memory_pool_t* pool, size_t size, void** out_ptr);
+```
+
+```
+(def-type float-vec-t (vector float :address-space :global :align :compact))
+
+(def-type ptr-t (c-pointer :address-space :global))
+
+(def-foreign-function pool_alloc #'(ptr-t ulong (c-handle ptr-t) => int))
+
+(def-kernel-exact use_pool_alloc (pool pool-size)
+  (declare #'(voidp ulong => nil))
+  (let ((vph (make-c-handle ptr-t))
+        (bytes (* 16 (byte-size float)))
+        (err (pool_alloc pool bytes vph)))
+    (when  (= err 0)
+      (let ((v (marshall-vector (get-pointer  vph) 16 float-vec-t)))
+        ...))))
+```
+
+### basic invocation ✅
+```
+crisp-compile.exe <some.bc> <another.bc> <some.crisp> --ir-target=ptx|spv
+
+
+$ crisp-compile.exe myLib.bc someKernel.crisp --ir-target=ptx
+```
+Just add your library .bc file as an argument to the compiler.  As a general rule, the compiler will need to know the `--ir-target` (ptx or spv, and NOT `llvmir`) to correctly lower and bind.
+
+### deferred invocation 📝
+NOTE: deferred FFI binding is not supported yet.
+
+The library binding can be left unresolved and then someone needs to use nvlink (or whatever) to link cuBlas.a against someKernel.ptx 
+
+```
+crisp-compile.exe someKernel.crisp --ir-target=spv
+```
+
 
 
 
@@ -11949,6 +12063,8 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - uniform            [DP]
 - constexpr          [DP]
 - to-uniform         [DP]
+- provably-uniform?
+- provably-divergent?
 - dotimes / dotimes+
 - dec-times / dec-times+
 - dec-times-by-half / dec-times-by-half+

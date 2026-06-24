@@ -53,3 +53,5 @@ than the `bytes` of the parent `storage`. But the checking and enforcement for t
 The `storage` property accessor  `address-space~` can be used directly on any Storage Handle type. 
 There is no reason to do `(address-space~ (parent~ some-vector))`.  Simply doing `(address-space~ some-vector)` is sufficient.
 
+Similarly, the `base-ptr~` accessor can be used directly on any Storage Handle type. `(base-ptr~ some-vector)` is sufficient.
+

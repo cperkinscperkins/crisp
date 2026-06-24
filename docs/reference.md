@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-06-22T05:20:16.050960Z
+Generated on 2026-06-24T05:51:34.574346Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -548,6 +548,20 @@ Generated on 2026-06-22T05:20:16.050960Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
+### DEFUN `ANALYZE-MAKE-C-HANDLE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (make-c-handle <held-ptr-type>).
+
+
+---
+### DEFUN `ANALYZE-GET-POINTER`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (get-pointer <c-handle>) — loads the held pointer from the slot.
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
   > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,  >    and (111 Phase 1a) load-tile-coords / store-tile-coords.  >    Endeavor 113: also registers request-load-tile-coords and await-request.
@@ -925,7 +939,7 @@ Generated on 2026-06-22T05:20:16.050960Z
 ### DEFUN `CALCULATE-UNIFORMITY-STATE`
 - **Args**: `(NODE ENV)`
 
-  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: get-workgroup-id is :uniform, get-local-id/get-global-id are :divergent.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.
+  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: per-work-item ids (get-global-id/get-local-id/*-linear-id/  >      get-global-id-abs) are :divergent; ids/sizes/offsets constant across the  >      workgroup (get-workgroup-id, get-num-groups, get-*-work-size, get-global-offset,  >      get-work-dim, get-*-linear-size, get-total-*) are :uniform.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.
 
 
 ---
@@ -2816,7 +2830,7 @@ Generated on 2026-06-22T05:20:16.050960Z
 ### DEFUN `CRISP-TYPE-TO-LLVM-TYPE`
 - **Args**: `(TYPE-SPEC MODULE)`
 
-  > Resolves a Crisp type specifier (simple or parameterized) to an LLVM type.
+  > Resolves a Crisp type specifier (simple or parameterized) to an LLVM type.  >    Endeavor 122 Pass 4: (c-handle ...) -> addrspace-0 opaque pointer (the slot).
 
 
 ---
@@ -3001,6 +3015,13 @@ Generated on 2026-06-22T05:20:16.050960Z
 ### DEFVAR `*KERNEL-DISPATCH-DECLARATIONS*`
 
   > Maps kernel name symbol → plist of dispatch declarations extracted from def-kernel.  >    Keys: :global-size, :local-size, :num-groups. Values: the raw s-expression forms  >    e.g. :global-size = (global-size :derive-from (width height) :strategy :one-thread-per).
+
+
+---
+### DEFUN `REGISTER-FOREIGN-FUNCTION`
+- **Args**: `(C-NAME SIGNATURE)`
+
+  > Registers a (def-foreign-function C-NAME SIGNATURE). SIGNATURE is a Crisp  >    arrow spec, possibly wrapped as (function (...)) from #'(...). Builds a  >    single function-signature in *function-table* (synthetic param names; only  >    the types matter for resolution) and records the verbatim C name in  >    *foreign-functions*.
 
 
 ---
@@ -4009,6 +4030,13 @@ Generated on 2026-06-22T05:20:16.050960Z
 
 
 ---
+### DEFMACRO `DEF-FOREIGN-FUNCTION`
+- **Args**: `(C-NAME SIGNATURE)`
+
+  > Endeavor 122 (FFI): declares a foreign (C / device-library) function callable  >    from Crisp kernels. C-NAME is the verbatim C symbol; SIGNATURE is a Crisp  >    arrow spec. The definition is supplied by linking a .bc at compile time.  >   >    Example:  >      (def-foreign-function my_add #'(float float => float))  >   >    Expands to a registration call (evaluated during the signatures pass), so the  >    call resolves and codegen emits an external declaration + call. No body is  >    generated here.
+
+
+---
 ### DEFMACRO `DEF-FUNCTION`
 - **Args**: `(NAME PARAMS &REST BODY-AND-LOCATION)`
 
@@ -4177,6 +4205,13 @@ Generated on 2026-06-22T05:20:16.050960Z
 - **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
 
   > Generates the def-kernel-exact AST for the backward (gradient) pass.  >    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-  >    boundary accessor calls route adj into the SROA'd field's adj sym.  >    Endeavor 107: pre-expands stride macros (tensor-stride / grid-stride /  >    loop-vector-stride) in the kernel body so AD walks the expansion.
+
+
+---
+### DEFUN `%FOREIGN-C-NAME`
+- **Args**: `(SYM)`
+
+  > C name to emit for a foreign-function symbol. Verbatim when the symbol was  >    written with any lowercase character (i.e. escaped, like |myFunc|), otherwise  >    downcased -- the common case, since unescaped Lisp symbols are uppercased on  >    read while C library names are typically lowercase.
 
 
 ---
@@ -4478,9 +4513,16 @@ Generated on 2026-06-22T05:20:16.050960Z
 
 
 ---
+### DEFUN `LINK-FOREIGN-BITCODE`
+- **Args**: `(MODULE BC-FILES)`
+
+  > Endeavor 122 (FFI): parse each .bc in BC-FILES and link it into MODULE so  >    that def-foreign-function calls resolve to real definitions at compile time.  >    Quits with a clear error on read/parse/link failure.
+
+
+---
 ### DEFUN `COMPILE-FILES`
 - **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P
-              HOIST-TARGETS)`
+              HOIST-TARGETS &OPTIONAL BC-FILES)`
 
   > Compiles the given files as a single unit (in order), iterating over requested targets, then invokes hoisters.  > When multiple files are given, forms are read from each file in order and compiled together as if they  > had been one file.  The LAST file is the primary: its name determines output file names and the debug  > compile-unit filepath.
 
@@ -5488,6 +5530,18 @@ Generated on 2026-06-22T05:20:16.050960Z
 
 
 ---
+### DEFSTRUCT `SEMANTIC-MAKE-C-HANDLE`
+
+  > Allocates a local slot (alloca) that holds a pointer of HELD-TYPE; the node's  >    value is the slot's address (a c-handle, an addrspace-0 pointer). Pass it to a  >    foreign function expecting a void**; read it back with get-pointer.
+
+
+---
+### DEFSTRUCT `SEMANTIC-GET-POINTER`
+
+  > Loads the held pointer out of a c-handle slot (the value a foreign function  >    wrote into it).
+
+
+---
 ### DEFSTRUCT `SEMANTIC-CALL`
 
   > Represents a call to a user-defined function.
@@ -6186,6 +6240,12 @@ Generated on 2026-06-22T05:20:16.050960Z
 
 
 ---
+### DEFVAR `*FOREIGN-FUNCTIONS*`
+
+  > Endeavor 122 (FFI). Registry of functions declared via def-foreign-function.  > Maps the function-name symbol -> the verbatim C name string to emit (no Crisp  > mangling). Presence here also tells codegen to give the external declaration the  > target-appropriate calling convention so it matches the linked .bc definition.
+
+
+---
 ### DEFVAR `*CALL-GRAPH*`
 
   > A hash table representing the call graph of functions.  >   Keys are caller function names, values are lists of callee names.
@@ -6480,7 +6540,7 @@ Generated on 2026-06-22T05:20:16.050960Z
 ### DEFUN `VALID-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Checks if a type specifier is valid.  >    Handles simple types, parameterized types, and function literals/types.
+  > Checks if a type specifier is valid.  >    Handles simple types, parameterized types, and function literals/types.  >    Endeavor 122 Pass 4: accepts (c-handle ...).
 
 
 ---

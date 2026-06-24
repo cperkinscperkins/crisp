@@ -619,6 +619,33 @@ Returns modified IR text with metadata."
        (return (sizeof To)))
     '((tensor To N Addr Aln Ct) => ulong))
 
+  ;; Endeavor 122 (FFI) Pass 3: base-ptr~ — returns a storage handle's underlying
+  ;; pointer in its NATIVE address space (a (c-pointer :address-space Addr)).
+  ;; Pass-through like bytes~: works on a cell/tensor (via parent~) or on a
+  ;; storage directly. Used to pass a buffer's base pointer to a foreign function.
+  (register-template 'base-ptr~ '(To (Addr address-space :global)) nil
+    '(def-function base-ptr~ (c)
+       (declare (function ((cell To Addr) => (c-pointer :address-space Addr))))
+       (declare (crisp-system-generated))
+       (return (address~ (parent~ c))))
+    '((cell To Addr) => (c-pointer :address-space Addr)))
+
+  (register-template 'base-ptr~
+    '(To (N integer 1) (Addr address-space :global)
+      (Aln align :compact) (Ct contiguity :last)) nil
+    '(def-function base-ptr~ (t1)
+       (declare (function ((tensor To N Addr Aln Ct) => (c-pointer :address-space Addr))))
+       (declare (crisp-system-generated))
+       (return (address~ (parent~ t1))))
+    '((tensor To N Addr Aln Ct) => (c-pointer :address-space Addr)))
+
+  (register-template 'base-ptr~ '((Addr address-space :global)) nil
+    '(def-function base-ptr~ (s)
+       (declare (function ((storage Addr) => (c-pointer :address-space Addr))))
+       (declare (crisp-system-generated))
+       (return (address~ s)))
+    '((storage Addr) => (c-pointer :address-space Addr)))
+
   ;; num-rows — return extents[0] (height dimension) of a 2D tensor.
   (register-template 'num-rows
     '(To (Addr address-space :global) (Aln align :compact) (Ct contiguity :last))
@@ -683,6 +710,35 @@ Returns modified IR text with metadata."
    e.g. :global-size = (global-size :derive-from (width height) :strategy :one-thread-per).")
   
 
+(defun register-foreign-function (c-name signature)
+  "Registers a (def-foreign-function C-NAME SIGNATURE). SIGNATURE is a Crisp
+   arrow spec, possibly wrapped as (function (...)) from #'(...). Builds a
+   single function-signature in *function-table* (synthetic param names; only
+   the types matter for resolution) and records the verbatim C name in
+   *foreign-functions*."
+  (let* ((spec (if (and (consp signature) (symbolp (first signature))
+                        (string-equal (symbol-name (first signature)) "FUNCTION"))
+                   (second signature)
+                   signature))
+         (arrow-pos (position-if (lambda (x) (and (symbolp x)
+                                                  (string-equal (symbol-name x) "=>")))
+                                 spec))
+         (param-type-specs (subseq spec 0 (or arrow-pos (length spec))))
+         (return-types (analyze-return-type-from-spec spec))
+         (params (loop for ty in param-type-specs
+                       for i from 0
+                       collect (make-parameter-def
+                                :name (intern (format nil "ARG~a" i) (symbol-package c-name))
+                                :type (parse-type-specifier ty)
+                                :kind :in)))
+         (sig (make-function-signature :name c-name
+                                       :parameters params
+                                       :return-types return-types)))
+    (setf (gethash c-name *function-table*) (list sig))
+    (setf (gethash c-name *foreign-functions*) (%foreign-c-name c-name))
+    (log:info "FFI: registered foreign function ~a -> C name ~s (~a params, returns ~a)"
+              c-name (gethash c-name *foreign-functions*) (length params) return-types)
+    c-name))
 
 
 
@@ -712,6 +768,7 @@ Returns modified IR text with metadata."
 
   (clrhash *differentiable-functions*)
   (clrhash *differentiable-hof-store*)
+  (clrhash *foreign-functions*)
 
   (initialize-expression-analyzers)
   (clrhash *implicit-arg-map*)

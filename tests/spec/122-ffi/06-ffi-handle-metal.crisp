@@ -1,0 +1,22 @@
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; FFI-LINK: hnd.c
+;; HOIST-EXPECT: BUFFER out-cell: 7
+;; SKIP-WITH[--differentiate]: "foreign functions are opaque (no known derivative); not differentiable"
+
+;; Endeavor 122 (FFI) Pass 4, on-metal: a void** handle round-trip on the GPU.
+;; The kernel allocates a c-handle slot, passes it to give_ptr which writes a
+;; pointer into it, reads it back with get-pointer, then writes 7 through that
+;; pointer. If the cell holds 7, the whole handle round-trip ran on the device.
+
+(def-foreign-function give_ptr #'((c-pointer :address-space :global) voidp => nil))
+
+(def-type cell-int (cell int :address-space :global))
+
+(def-kernel ffi_handle_metal (&out out-cell)
+  (declare #'(&out cell-int))
+  (let ((h (make-c-handle (c-pointer :address-space :global))))
+    (give_ptr (base-ptr~ out-cell) h)
+    (let ((p (get-pointer h)))
+      (let ((c (marshall-cell cell-int 4ul p 0ul)))
+        (set! (~ c) 7)))))

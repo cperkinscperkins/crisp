@@ -1,0 +1,18 @@
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; FFI-LINK: addi.c
+;; HOIST-EXPECT: BUFFER out-cell: 7
+;; SKIP-WITH[--differentiate]: "foreign functions are opaque (no known derivative); not differentiable"
+
+;; Endeavor 122 (FFI) Pass 1, on-metal: a kernel calls the linked foreign
+;; function my_addi(3,4) and writes the result to an output cell. Running the
+;; hoisted launcher on the GPU must show the cell holding 7 -- proving the
+;; foreign call executes on the device.
+
+(def-foreign-function my_addi #'(int int => int))
+
+(def-type cell-int (cell int :address-space :global))
+
+(def-kernel ffi_add_metal (&out out-cell)
+  (declare #'(&out cell-int))
+  (set! (~ out-cell) (my_addi 3 4)))

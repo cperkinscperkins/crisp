@@ -125,6 +125,19 @@
 ;; Core Language Macros
 ;; ====================
 
+(defmacro def-foreign-function (c-name signature)
+  "Endeavor 122 (FFI): declares a foreign (C / device-library) function callable
+   from Crisp kernels. C-NAME is the verbatim C symbol; SIGNATURE is a Crisp
+   arrow spec. The definition is supplied by linking a .bc at compile time.
+
+   Example:
+     (def-foreign-function my_add #'(float float => float))
+
+   Expands to a registration call (evaluated during the signatures pass), so the
+   call resolves and codegen emits an external declaration + call. No body is
+   generated here."
+  `(register-foreign-function ',c-name ',signature))
+
 (defmacro def-function (name params &rest body-and-location)
   "Defines a new, thread-level Crisp function."
   (when (string-equal (symbol-name name) "~REF~")
@@ -996,6 +1009,16 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                                             (let (,@forward-bindings)
                                               ,backward-walk))
                                           (return)))))))))))))
+
+
+
+(defun %foreign-c-name (sym)
+  "C name to emit for a foreign-function symbol. Verbatim when the symbol was
+   written with any lowercase character (i.e. escaped, like |myFunc|), otherwise
+   downcased -- the common case, since unescaped Lisp symbols are uppercased on
+   read while C library names are typically lowercase."
+  (let ((n (symbol-name sym)))
+    (if (some #'lower-case-p n) n (string-downcase n))))
 
 (defun parse-kernel-signature (name params body)
   "Parses kernel parameters and body, performing validation and type extraction.

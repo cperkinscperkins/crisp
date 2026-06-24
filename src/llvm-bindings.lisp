@@ -791,3 +791,39 @@
 (defcfun ("LLVMGetInstructionCallConv" llvm-get-instruction-call-conv) :unsigned-int
          "Reads the calling convention from a CALL/INVOKE instruction."
          (inst :pointer))
+
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 122 (FFI) Pass 1: bitcode/IR loading + module linking.
+;;; FROM: src/llvm-bindings.lisp (move these there at cleanup time).
+;;;
+;;; These three LLVM-C entry points let the compiler pull a third-party .bc
+;;; (e.g. libdevice, libclc, or a user library) into the kernel module so that
+;;; a (def-foreign-function ...) call can be resolved at compile time. All three
+;;; return an LLVMBool (int): 0 = success, non-zero = failure (with a malloc'd
+;;; message written to the out-message pointer, freed via llvm-dispose-message).
+;;; ---------------------------------------------------------------------------
+
+(defcfun ("LLVMCreateMemoryBufferWithContentsOfFile"
+          llvm-create-memory-buffer-with-contents-of-file) :int
+  "Read PATH into a new LLVMMemoryBuffer. Writes the buffer to OUT-MEM-BUF and,
+   on failure, an error string to OUT-MESSAGE. Returns 0 on success."
+  (path :string)
+  (out-mem-buf :pointer)   ; LLVMMemoryBufferRef*
+  (out-message :pointer))  ; char**
+
+(defcfun ("LLVMParseIRInContext" llvm-parse-ir-in-context) :int
+  "Parse the IR/bitcode in MEM-BUF (consuming it) into a new module in CONTEXT.
+   Writes the module to OUT-MODULE and, on failure, an error string to
+   OUT-MESSAGE. Returns 0 on success. NOTE: takes ownership of MEM-BUF."
+  (context :pointer)
+  (mem-buf :pointer)       ; LLVMMemoryBufferRef (consumed)
+  (out-module :pointer)    ; LLVMModuleRef*
+  (out-message :pointer))  ; char**
+
+(defcfun ("LLVMLinkModules2" llvm-link-modules2) :int
+  "Link the SRC module into DEST (consuming SRC). External declarations in DEST
+   are resolved against definitions in SRC. Returns 0 on success."
+  (dest :pointer)
+  (src :pointer))          ; LLVMModuleRef (consumed)

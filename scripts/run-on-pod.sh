@@ -201,6 +201,18 @@ export SKIP_SPIRV_TESTS=true
 CUDA_DIR=$(ls -d /usr/local/cuda-*/bin 2>/dev/null | sort -V | tail -1)
 [ -n "$CUDA_DIR" ] && export PATH="${CUDA_DIR}:$PATH"
 
+# Endeavor 122 (FFI) Pass 5: libdevice lives at <toolkit-root>/nvvm/libdevice/.
+# CUDA_DIR above is the .../bin dir; set CUDA_HOME to the toolkit ROOT so the
+# 07-ffi-libdevice spec can resolve $CUDA_HOME/nvvm/libdevice/libdevice.10.bc.
+# Derived from nvcc so it works regardless of how the image names the toolkit;
+# harmless if nvcc is absent (the FFI libdevice spec then SKIPs cleanly).
+if command -v nvcc &>/dev/null; then
+    export CUDA_HOME="$(dirname "$(dirname "$(command -v nvcc)")")"
+    echo "CUDA_HOME=${CUDA_HOME}"
+    ls "${CUDA_HOME}/nvvm/libdevice/libdevice.10.bc" 2>/dev/null \
+        && echo "libdevice found" || echo "libdevice NOT found at expected path"
+fi
+
 echo "=== Running specs (external binary) ==="
 sbcl --script tests/run-specs.lisp --use-binary --skip-unit-tests 2>&1 | tail -30
 

@@ -246,46 +246,54 @@
 ## Auto Differentiation (AD) ✅
 - [`--differentiate` ✅](43_auto_differentiation_ad_/01__differentiate_.md)
 
+## Foreign Function Interface (FFI) ✅
+- [`def-foreign-function` ✅](44_foreign_function_interface_ffi_/01_def_foreign_function_.md)
+- [pointers and handles: `c-pointer` ✅](44_foreign_function_interface_ffi_/02_pointers_and_handles_c_pointer_.md)
+- [`base-ptr~` accessor ✅](44_foreign_function_interface_ffi_/03_base_ptr_accessor_.md)
+- [handles ✅](44_foreign_function_interface_ffi_/04_handles_.md)
+- [basic invocation ✅](44_foreign_function_interface_ffi_/05_basic_invocation_.md)
+- [deferred invocation 📝](44_foreign_function_interface_ffi_/06_deferred_invocation_.md)
+
 ## Hoisting and `def-orchestration` ⚠️
-- [`def-orchestration` 📝](44_hoisting_and_def_orchestration_/01_def_orchestration_.md)
-- [launch-sequential 📝](44_hoisting_and_def_orchestration_/02_launch_sequential_.md)
-- [launch-kernel 📝](44_hoisting_and_def_orchestration_/03_launch_kernel_.md)
-- [launch-parallel 📝](44_hoisting_and_def_orchestration_/04_launch_parallel_.md)
+- [`def-orchestration` 📝](45_hoisting_and_def_orchestration_/01_def_orchestration_.md)
+- [launch-sequential 📝](45_hoisting_and_def_orchestration_/02_launch_sequential_.md)
+- [launch-kernel 📝](45_hoisting_and_def_orchestration_/03_launch_kernel_.md)
+- [launch-parallel 📝](45_hoisting_and_def_orchestration_/04_launch_parallel_.md)
 
 ## Compiler Invocation and Options ✅
-- [Output Targeting Options 📝](45_compiler_invocation_and_options_/01_output_targeting_options_.md)
-- [Other Flags ⚠️](45_compiler_invocation_and_options_/02_other_flags_.md)
-- [Compiliation Flags ✅](45_compiler_invocation_and_options_/03_compiliation_flags_.md)
-- [Fast Compilation ✅](45_compiler_invocation_and_options_/04_fast_compilation_.md)
-- [Compiler Invocations and Files ✅](45_compiler_invocation_and_options_/05_compiler_invocations_and_files_.md)
+- [Output Targeting Options 📝](46_compiler_invocation_and_options_/01_output_targeting_options_.md)
+- [Other Flags ⚠️](46_compiler_invocation_and_options_/02_other_flags_.md)
+- [Compiliation Flags ✅](46_compiler_invocation_and_options_/03_compiliation_flags_.md)
+- [Fast Compilation ✅](46_compiler_invocation_and_options_/04_fast_compilation_.md)
+- [Compiler Invocations and Files ✅](46_compiler_invocation_and_options_/05_compiler_invocations_and_files_.md)
 
 ## Hoisting Code ✅
 
 ## In-Memory Compilation API 📝
-- [C API 📝](47_in_memory_compilation_api_/01_c_api_.md)
-- [Status Codes ✅](47_in_memory_compilation_api_/02_status_codes_.md)
-- [Flags](47_in_memory_compilation_api_/03_flags.md)
+- [C API 📝](48_in_memory_compilation_api_/01_c_api_.md)
+- [Status Codes ✅](48_in_memory_compilation_api_/02_status_codes_.md)
+- [Flags](48_in_memory_compilation_api_/03_flags.md)
 
 ## APPENDIX #1 - Summary: set / get vars, storage handles, and structs
 
 ## APPENDIX #2 - Math with Quantized Ints and Microfloat
-- [dot product and matmul 📝](49_appendix_2_math_with_quantized_ints_and_microfloat/01_dot_product_and_matmul_.md)
+- [dot product and matmul 📝](50_appendix_2_math_with_quantized_ints_and_microfloat/01_dot_product_and_matmul_.md)
 
 ## Acknowledgements ✅
 
 ## INDECES
-- [def-](51_indeces/01_def_.md)
-- [control flow](51_indeces/02_control_flow.md)
-- [Higher Order Function Operations](51_indeces/03_higher_order_function_operations.md)
-- [Sorting](51_indeces/04_sorting.md)
-- [Algorithms](51_indeces/05_algorithms.md)
-- [Atomics](51_indeces/06_atomics.md)
-- [Type Constraints](51_indeces/07_type_constraints.md)
-- [other](51_indeces/08_other.md)
-- [Hardware Operations](51_indeces/09_hardware_operations.md)
-- [logging and debugging](51_indeces/10_logging_and_debugging.md)
-- [static analysis](51_indeces/11_static_analysis.md)
-- [hoisting and def-orchestration](51_indeces/12_hoisting_and_def_orchestration.md)
-- [lisp](51_indeces/13_lisp.md)
-- [To Do](51_indeces/14_to_do.md)
-- [Memory](51_indeces/15_memory.md)
+- [def-](52_indeces/01_def_.md)
+- [control flow](52_indeces/02_control_flow.md)
+- [Higher Order Function Operations](52_indeces/03_higher_order_function_operations.md)
+- [Sorting](52_indeces/04_sorting.md)
+- [Algorithms](52_indeces/05_algorithms.md)
+- [Atomics](52_indeces/06_atomics.md)
+- [Type Constraints](52_indeces/07_type_constraints.md)
+- [other](52_indeces/08_other.md)
+- [Hardware Operations](52_indeces/09_hardware_operations.md)
+- [logging and debugging](52_indeces/10_logging_and_debugging.md)
+- [static analysis](52_indeces/11_static_analysis.md)
+- [hoisting and def-orchestration](52_indeces/12_hoisting_and_def_orchestration.md)
+- [lisp](52_indeces/13_lisp.md)
+- [To Do](52_indeces/14_to_do.md)
+- [Memory](52_indeces/15_memory.md)

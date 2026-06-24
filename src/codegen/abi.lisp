@@ -39,9 +39,11 @@
    ;; Case 3: Should not happen, but treat as void.
    (t (llvm-void-type))))
 
+
+
 (defun crisp-type-to-llvm-type (type-spec module)
-  "Resolves a Crisp type specifier (simple or parameterized) to an LLVM type."
-  ;; Mangle list-form storage handle types FIRST
+  "Resolves a Crisp type specifier (simple or parameterized) to an LLVM type.
+   Endeavor 122 Pass 4: (c-handle ...) -> addrspace-0 opaque pointer (the slot)."
   (let ((canonical-spec (if (and (consp type-spec)
                                  (symbolp (first type-spec))
                                  (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
@@ -51,13 +53,10 @@
                             type-spec)))
     (let ((result
            (cond
-            ;; Function Types (Passed as opaque pointers)
             ((and (listp canonical-spec)
                   (or (eq (first canonical-spec) :function-type)
                       (eq (first canonical-spec) :function-literal)))
               (llvm-pointer-type (llvm-int8-type) 0))
-
-            ;; Context-Aware Optimizations (Optional, but preserves existing behavior)
             ((eq canonical-spec 'int)
               (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
             ((eq canonical-spec 'long)
@@ -66,11 +65,12 @@
               (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
             ((eq canonical-spec 'voidp)
               (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 0))
-
-            ;; Delegate everything else to the central type resolver
+            ;; Endeavor 122 Pass 4: handle slot pointer is addrspace 0 (== voidp).
+            ((and (consp canonical-spec) (symbolp (first canonical-spec))
+                  (string-equal (symbol-name (first canonical-spec)) "C-HANDLE"))
+              (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 0))
             (t
               (resolve-type-to-llvm canonical-spec)))))
-      ;; Defensive check
       (when (or (null result) (cffi:null-pointer-p result))
             (error "Failed to resolve LLVM type for type-spec: ~s (canonical: ~s)" type-spec canonical-spec))
       result)))

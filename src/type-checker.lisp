@@ -62,10 +62,21 @@
                  type-a-name)
                 (t nil)))))))))))
 
+               
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."
   (log:debug "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
   (or (types-equivalent-p arg-type param-type)
+
+      ;; Endeavor 122 (FFI): voidp accepts any pointer argument — voidp, a typed
+      ;; (c-pointer ...), or a (c-handle ...) (a void** slot; same addrspace-0 ABI).
+      (and (symbolp param-type)
+           (string-equal (symbol-name param-type) "VOIDP")
+           (or (and (symbolp arg-type)
+                    (string-equal (symbol-name arg-type) "VOIDP"))
+               (and (consp arg-type) (symbolp (first arg-type))
+                    (member (symbol-name (first arg-type)) '("C-POINTER" "C-HANDLE")
+                            :test #'string-equal))))
 
       ;; Derived type substitutability check
       ;; If arg-type can substitute for param-type in the derivation hierarchy

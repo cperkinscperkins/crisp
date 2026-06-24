@@ -1743,6 +1743,9 @@ in single-pass mode."
     (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
     (semantic-funcall (semantic-funcall-type node))
+    ;; Endeavor 122 (FFI) Pass 4: handle forms.
+    (semantic-make-c-handle (semantic-make-c-handle-type node))
+    (semantic-get-pointer (semantic-get-pointer-type node))
     (semantic-extract-value (semantic-extract-value-type node))
     (semantic-insert-value (semantic-insert-value-type node))
     (semantic-struct-construction (semantic-struct-construction-type node))
@@ -1762,6 +1765,9 @@ in single-pass mode."
   "Returns the source location of a semantic node.
    Extended for 092-dotimes and 114 Phase B."
   (etypecase node
+    ;; Endeavor 122 (FFI) Pass 4: handle forms.
+    (semantic-make-c-handle (semantic-make-c-handle-source-location node))
+    (semantic-get-pointer (semantic-get-pointer-source-location node))
     (semantic-dotimes (semantic-dotimes-source-location node))
     (semantic-literal (semantic-literal-source-location node))
     (semantic-device-vec-literal (semantic-device-vec-literal-source-location node))

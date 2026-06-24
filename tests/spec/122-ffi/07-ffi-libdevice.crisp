@@ -1,0 +1,21 @@
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; FFI-LINK: $CUDA_HOME/nvvm/libdevice/libdevice.10.bc
+;; HOIST-EXPECT: BUFFER out-cell: 4
+;; SKIP-WITH[--differentiate]: "foreign functions are opaque (no known derivative); not differentiable"
+
+;; Endeavor 122 (FFI) Pass 5: bind a function from a REAL third-party library --
+;; NVIDIA's libdevice (__nv_* math intrinsics), linked from the CUDA toolkit's
+;; libdevice.10.bc via $CUDA_HOME. __nv_sqrtf(16) == 4.
+;;
+;; This is a CUDA/PTX-only, on-metal test. It SKIPs cleanly where libdevice isn't
+;; found ($CUDA_HOME unset, e.g. this BMG box / CI) and runs on a CUDA GPU
+;; (RunPod). The pre-built-.bc + $ENV harness path is validated separately on the
+;; BMG with a stand-in .bc.
+
+(def-foreign-function __nv_sqrtf #'(float => float))
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel use_libdevice (&out out-cell)
+  (declare #'(&out out-c))
+  (set! (~ out-cell) (__nv_sqrtf 16.0)))

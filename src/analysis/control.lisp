@@ -2677,6 +2677,43 @@
         cell-node)))
 
 
+(defun analyze-make-c-handle (expr env context location)
+  "Analyzer for (make-c-handle <held-ptr-type>)."
+  (declare (ignore env context))
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message "make-c-handle expects 1 argument: the held pointer type, e.g. (make-c-handle (c-pointer :address-space :global))"
+      :source-location location))
+  (let ((held (second expr)))
+    (unless (and (consp held) (symbolp (first held))
+                 (string-equal (symbol-name (first held)) "C-POINTER"))
+      (error 'crisp-compiler-error
+        :message (format nil "make-c-handle requires a (c-pointer :address-space ...) type; got ~a" held)
+        :source-location location))
+    (make-semantic-make-c-handle
+     :type (list (intern "C-HANDLE" (find-package :crisp.compiler)) held)
+     :held-type held
+     :source-location location)))
+
+(defun analyze-get-pointer (expr env context location)
+  "Analyzer for (get-pointer <c-handle>) — loads the held pointer from the slot."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message "get-pointer expects 1 argument (a c-handle)"
+      :source-location location))
+  (let* ((handle-node (analyze-expression (second expr) env context (append location '(1))))
+         (htype (get-single-value-type handle-node)))
+    (unless (and (consp htype) (symbolp (first htype))
+                 (string-equal (symbol-name (first htype)) "C-HANDLE"))
+      (error 'crisp-compiler-error
+        :message (format nil "get-pointer requires a c-handle argument; got type ~a" htype)
+        :source-location location))
+    (make-semantic-get-pointer
+     :type (second htype)
+     :handle-node handle-node
+     :source-location location)))
+
+
 (defun register-control-analyzers ()
   "Registers all control flow expression analyzers, including loop-vector-stride,
    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,
@@ -2707,6 +2744,9 @@
   (def-expression-analyzer provably-divergent? analyze-provably-divergent?)
   (def-expression-analyzer to-workgroup-uniform analyze-to-workgroup-uniform)
   (def-expression-analyzer to-warp-uniform analyze-to-warp-uniform)
+  ;; Endeavor 122 (FFI) Pass 4: handle forms (analyzers live in the overlay).
+  (def-expression-analyzer make-c-handle analyze-make-c-handle)
+  (def-expression-analyzer get-pointer analyze-get-pointer)
   (def-expression-analyzer return analyze-return-expression)
   (def-expression-analyzer explicit-return analyze-return-expression)
   (def-expression-analyzer semantic-return analyze-return-expression)

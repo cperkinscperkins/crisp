@@ -208,6 +208,9 @@
    ;; laungage symbols
    #:def-function
    #:def-function
+   #:def-foreign-function
+   #:make-c-handle
+   #:get-pointer
    #:def-kernel
    #:def-kernel-exact
    #:def-grid-function
@@ -289,7 +292,7 @@
    ;; Accessors
    #:address~ #:byte-size~ #:address-space~
    #:parent~ #:offset~ #:element-type~
-   #:bytes~ #:sizeof
+   #:bytes~ #:sizeof #:base-ptr~
    ;; Tensor accessors
    #:num-dims~ #:length~ #:strides~ #:extents~ #:contiguous-term~
    ;; Matrix helpers
@@ -388,6 +391,9 @@
   ;; --- 1. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
                 #:def-function
+                #:def-foreign-function
+                #:make-c-handle
+                #:get-pointer
                 #:def-kernel
                 #:def-kernel-exact
                 #:def-grid-function
@@ -459,7 +465,7 @@
                 ;; Accessors
                 #:address~ #:byte-size~ #:address-space~
                 #:parent~ #:offset~ #:element-type~
-                #:bytes~ #:sizeof
+                #:bytes~ #:sizeof #:base-ptr~ #:base-ptr~
                 ;; Tensor accessors
                 #:num-dims~ #:length~ #:strides~ #:extents~ #:contiguous-term~
                 ;; Matrix helpers
@@ -593,7 +599,7 @@
    #:make-tensor
    #:cell #:voidp
    #:parent~ #:offset~ #:element-type~
-   #:bytes~ #:sizeof
+   #:bytes~ #:sizeof #:base-ptr~
    ;; Tensor accessors
    #:num-dims~ #:length~ #:strides~ #:extents~ #:contiguous-term~
    ;; Matrix helpers

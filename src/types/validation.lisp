@@ -658,13 +658,18 @@ Extended to also accept raw (function ...) forms from the Crisp reader
 
         (t nil)))))
 
+
+
 (defun valid-type-p (type-spec)
   "Checks if a type specifier is valid.
-   Handles simple types, parameterized types, and function literals/types."
+   Handles simple types, parameterized types, and function literals/types.
+   Endeavor 122 Pass 4: accepts (c-handle ...)."
   (or (valid-basic-type-p type-spec)
       (valid-function-type-p type-spec)
       (valid-parameterized-type-p type-spec)
-      ;; Check aliases
+      (and (listp type-spec)
+           (symbolp (first type-spec))
+           (string-equal (symbol-name (first type-spec)) "C-HANDLE"))
       (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
       (and (listp type-spec)
            (symbolp (first type-spec))
