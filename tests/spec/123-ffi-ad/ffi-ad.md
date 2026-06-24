@@ -277,10 +277,35 @@ The existing sub-function backward machinery (`%handle-sub-fn-call-backward` →
       broader long/double **output-adjoint** gap, NOT the FFI VJP wiring. Forward FFI
       path still verified. Needs its own endeavor; the double-seed promotion rule in the
       docs remains correct (it rides `%promote-to-float-adjoint` once outputs support it).
-- [ ] negative: FFI call with NO backward registered inside `--differentiate` → clean error.
-- [ ] negative: backward `def-function` whose signature mismatches the derived VJP → clean error.
-  (Negatives: per Chris, the error-spec runner is forward-only unless a spec carries
-  TEST-WITH[--differentiate]; wiring TBD. Check run-error-specs.lisp handles FFI-LINK.)
+- [x] `errors/01-no-backward` — FFI call with NO backward inside `--differentiate` →
+      "Function C_CUBE is not differentiable". Pattern: TEST-EXPECT: PASS +
+      FAIL-WITH[--differentiate] (no FFI-LINK; error fires in the backward walk before
+      linking, so the normal runner drives it — like 080-advanced-ad/errors).
+- [x] `errors/02-mismatched-vjp` — backward whose signature mismatches the derived VJP
+      → "No matching function overload found for 'C-CUBE-BWD'". Same pattern.
+
+**Negative-test mechanics (resolved 2026-06-24).** The error-spec runner
+(run-error-specs.lisp) is forward-only, no `--differentiate`, no `.bc`, and keys on
+`;; CHECK-FAIL:` (whose substring IS asserted). So it suits front-end errors only.
+For `--differentiate` negatives, DON'T use TEST-WITH[--differentiate] — use
+`TEST-EXPECT: PASS` + `FAIL-WITH[--differentiate]: "..."`. `expect-failure` is computed
+once per file from the active GLOBAL flags (run-specs.lisp ~L2091); CI runs the suite
+forward then `--differentiate`, so the two passes check both expectations. TEST-WITH
+would instead append a differentiate run DURING the forward pass, which fails while the
+expectation is still "pass" → miscounted. (Note: FAIL-WITH's message is documentation —
+the normal runner only flips the expectation, it does not assert the string; CHECK-FAIL
+does assert it.)
+
+**Bonus — 122 (basic FFI) negatives** (were missing): added
+`122-ffi/errors/01-unknown-type-in-sig` ("Unknown type 'FLORP'.") and
+`02-call-arity-mismatch` ("No matching function overload found for 'MY_ADD'"). Both are
+front-end errors needing no `.bc`, run by the error-spec runner (CHECK-FAIL).
+NOTE: a foreign signature that DISAGREES WITH THE .bc (e.g. Crisp says `float` but the
+symbol is `int`) is NOT caught at Crisp-compile time — the `.bc` is matched by name at
+LLVM link; a type disagreement surfaces (if at all) as an LLVM linker/verifier error on
+the ptx/spv target, not a clean Crisp diagnostic. Possible future enhancement.
+
+Suite after negatives: 775/775 forward & --differentiate; error-spec 183/183.
 
 **Pass 2 — pointer input + shadow routing**
 - [ ] `#'(int (c-pointer :global) (c-pointer :global) => nil)` (c_vsin, Example 2) — shadow-in /

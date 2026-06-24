@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "is not differentiable"
+;;
+;; Endeavor 123 (FFI-AD) negative: a foreign function declared WITHOUT a backward
+;; (VJP) is opaque to A|D. Calling it inside a --differentiate kernel must be a
+;; clean compile error. Forward (no --differentiate) compiles fine — the foreign
+;; call is just an external decl.
+;;
+;; No FFI-LINK directive: the "not differentiable" error fires in the backward
+;; walk BEFORE any .bc linking, so this rides the normal spec runner. The pattern
+;; (TEST-EXPECT: PASS + FAIL-WITH[--differentiate]) mirrors
+;; 080-advanced-ad/errors/01-input-mutation.crisp — the two global CI passes
+;; (forward, then --differentiate) exercise both expectations.
+
+(def-foreign-function c_cube #'(float => float))     ;; <-- no backward supplied
+
+(def-type in-f  (cell float :address-space :global))
+(def-type out-f (cell float :address-space :global))
+
+(def-kernel use_cube (x &out y)
+  (declare #'(in-f &out out-f))
+  (set! (~ y) (c_cube (~ x))))

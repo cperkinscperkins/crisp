@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "No matching function overload found for 'C-CUBE-BWD'"
+;;
+;; Endeavor 123 (FFI-AD) negative: the user-supplied backward's signature must
+;; match the mechanically-derived VJP. The derived VJP for #'(float => float) is
+;; #'(float float => float) (primal + output seed). Here c-cube-bwd takes only
+;; ONE parameter, so under --differentiate the backward call fails to resolve.
+;; Forward compiles fine (c-cube-bwd is a valid def-function on its own).
+;;
+;; No FFI-LINK: the resolution error fires in the backward walk before linking.
+
+(def-foreign-function c_cube #'(float => float) c-cube-bwd)
+
+(def-function c-cube-bwd (x)            ;; <-- WRONG: missing the seed param
+  (declare #'(float => float))
+  (* x 2.0))
+
+(def-type in-f  (cell float :address-space :global))
+(def-type out-f (cell float :address-space :global))
+
+(def-kernel use_cube (x &out y)
+  (declare #'(in-f &out out-f))
+  (set! (~ y) (c_cube (~ x))))
