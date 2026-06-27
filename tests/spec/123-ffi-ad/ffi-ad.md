@@ -307,14 +307,43 @@ the ptx/spv target, not a clean Crisp diagnostic. Possible future enhancement.
 
 Suite after negatives: 775/775 forward & --differentiate; error-spec 183/183.
 
-**Pass 2 — pointer input + shadow routing**
-- [ ] `#'(int (c-pointer :global) (c-pointer :global) => nil)` (c_vsin, Example 2) — shadow-in /
-      shadow-out routed from `base-ptr~` of `_GRAD` cells; VERIFY-AUTODIFF on the BMG.
-- [ ] mixed scalar + pointer, e.g. `#'(float int voidp (c-handle ptr-t) => int)` — verify the handle
-      is skipped in seed/shadow/return phases.
+**Pass 2 — pointer input + shadow routing** — IMPLEMENTED & GREEN 2026-06-24.
+The genuinely-new code. Mechanism:
+- `%register-foreign-backward` now stores `:active-scalar-indices` and
+  `:pointer-param-indices` (src/compiler.lisp; new predicate `%ffi-pointer-param-p`).
+- New dynamic map `*ffi-baseptr-src*` (src/autodiff.lisp), built in
+  `generate-backward-walk` from `(t (base-ptr~ src))` ANF bindings: pointer-temp → source storage.
+- New `%emit-foreign-backward` emits `(BKWD primals... seeds... shadows...)` where each
+  shadow = `(base-ptr~ <src>_GRAD)`, and accumulates the returned deltas ONLY into the
+  active-scalar args (skipping pointer/handle positions by index). Foreign calls now route
+  here from `%handle-sub-fn-call-backward`, the multi-value branch, AND a new VOID-statement
+  branch (a `=> nil` foreign call was previously misparsed as a multi-value binding and
+  silently dropped — that was the core bug).
+- [x] `05-ffi-buffer-shadow` — `#'(int (c-pointer :global) (c-pointer :global) => nil)`,
+      c_vsq (out=in^2). IR verified: `use_vsq_grad` calls
+      `c_vsq_bwd(n, base-ptr(in), base-ptr(out), base-ptr(in_GRAD), base-ptr(out_GRAD))`,
+      return → n's adjoint. Realistic VJP body marshals the raw shadow pointers
+      (contiguous, length n) and does `shadow_in[i] += shadow_out[i] * 2*in[i]`. Passes the
+      harness forward AND `--differentiate` (ptx + spv) with the `.bc` linked.
+      (On-metal VERIFY-AUTODIFF for buffer FFI awaits FFI+VAD harness integration.)
 
-**Pass 3 — handles passive (coverage)**
-- [ ] confirm `(c-handle ...)` args contribute no seed, no shadow, no returned gradient.
+**Pass 3 — handles passive** — IMPLEMENTED & GREEN 2026-06-24.
+A `(c-handle ...)` param is neither an active scalar nor active memory, so it lands in
+NEITHER index list → no seed, no shadow, no returned gradient. Also: `make-c-handle` /
+`get-pointer` / `c-pointer` / `c-handle` added to `%backward-skip-fn-p` (gradient-inert).
+- [x] `pass3-handle-passive.unit.lisp` — registers `#'(float int (c-pointer) (c-handle) => int)`
+      and asserts active-scalar-indices=(0 1), pointer-param-indices=(2); the handle (3) is in
+      neither. Real gate (raises on Parachute failure; verified it fails when broken).
+  KNOWN GAP (separate endeavor): using a handle IN a differentiated kernel is blocked because
+  `make-c-handle`'s `(c-pointer ...)` type argument is ANF-flattened during backward-kernel
+  regeneration and rejected as "Unsupported form 'C-POINTER'". The VJP passivity ABI (verified
+  by the unit test) is independent of this; the fix lives in anf-transform/analysis, not FFI-AD.
 
 **Deferred**
 - [ ] active-memory returns (`=> voidp` seed pointer) — revisit when a real use case lands.
+- [ ] `04-ffi-long-return` (long/double output-adjoint) — separate AD gap (see Pass 1).
+- [ ] make-c-handle under `--differentiate` (Pass 3 known gap above).
+- [ ] on-metal VERIFY-AUTODIFF for FFI (needs the VAD pass to link the `.bc`).
+
+Final state 2026-06-24: Pass 1+2+3 complete. Suite 776/776 forward & --differentiate;
+error-spec 183/183. ci-stop `123-ffi-ad`.

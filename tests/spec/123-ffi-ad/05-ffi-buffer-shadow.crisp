@@ -1,0 +1,47 @@
+;; TEST-EXPECT: PASS
+;; FFI-LINK: vsq.c
+;; TEST-WITH[--ir-target=ptx]
+;; TEST-WITH[--ir-target=spv]
+;;
+;; Endeavor 123 (FFI-AD) Pass 2: gradient SHADOW routing for a foreign buffer op.
+;;
+;; Forward:  out[i] = c_vsq(in)[i] = in[i]^2
+;; Backward: shadow_in[i] += shadow_out[i] * 2*in[i]
+;;
+;; The forward FFI #'(int (c-pointer :global) (c-pointer :global) => nil) derives
+;; the VJP #'(int (c-pointer) (c-pointer) (c-pointer) (c-pointer) => float):
+;;   primals (n, in, out) ++ shadows (shadow-in, shadow-out) ++ one return (grad for n).
+;; The compiler routes the two shadow pointers AUTOMATICALLY from the buffers'
+;; gradient cells. Verified in the backward IR (use_vsq_grad):
+;;   call c_vsq_bwd(n, base-ptr(in), base-ptr(out), base-ptr(in_GRAD), base-ptr(out_GRAD))
+;; with the returned float accumulated into n's adjoint.
+;;
+;; Compile-shape + manual-IR test (like Pass 1's 03/04). On-metal VERIFY-AUTODIFF
+;; for buffer FFI awaits FFI+VAD harness integration.
+
+(def-type fvec (vector float :address-space :global :align :compact))
+
+(def-foreign-function c_vsq
+  #'(int (c-pointer :address-space :global) (c-pointer :address-space :global) => nil)
+  c-vsq-bwd)
+
+;; VJP: marshal the raw shadow pointers (contiguous, length n) back to vectors,
+;; then accumulate shadow_in[i] += shadow_out[i] * 2*in[i]. The int primal n has
+;; no continuous gradient, so it returns 0.0 (Crisp still demands the float slot).
+(def-function c-vsq-bwd (n inp outp shin shout)
+  (declare #'(int (c-pointer :address-space :global) (c-pointer :address-space :global)
+              (c-pointer :address-space :global) (c-pointer :address-space :global) => float))
+  (let ((nb (to-ulong (* n 4)))
+        (nu (to-ulong n)))
+    (let ((vin (marshall-vector fvec nb inp  (to-ulong 0) (to-ulong 1) nu nu))
+          (vsi (marshall-vector fvec nb shin (to-ulong 0) (to-ulong 1) nu nu))
+          (vso (marshall-vector fvec nb shout (to-ulong 0) (to-ulong 1) nu nu)))
+      (dotimes (i n)
+        (set! (~ vsi (to-ulong i))
+              (+ (~ vsi (to-ulong i))
+                 (* (~ vso (to-ulong i)) (* 2.0 (~ vin (to-ulong i)))))))))
+  0.0)
+
+(def-kernel use_vsq (n in &out out)
+  (declare #'(int fvec &out fvec))
+  (c_vsq n (base-ptr~ in) (base-ptr~ out)))
