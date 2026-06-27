@@ -1,0 +1,108 @@
+# other
+
+- Swizzles   `xyyy~` etc.
+- ##(3 4 5 6) 
+- return-type         [DP]
+- type                [DP]
+- #'(int int => int)
+- return-type-of       
+- type-signature-of   [DP]
+- is-type-of
+- type-of
+- set!
+- `XXXX~`
+- `~XXXX~`
+- make-XXXX
+- is-XXXX?
+- with-struct-accessors
+- with-template-type   [KO] [D]
+- XXXX-type
+- gen-XXXX
+- vector
+- `length~ / parent~ / offset~`   [O]
+- element-type
+- bytes  
+- `~`                             [O]
+- `~ref~`
+- cell
+- make-cell
+- type-equal
+- vector          [KO]
+- make-vector          [KO]
+- soa-vector      [KO]
+- make-soa-vector      [KO]
+- convert-soa-to-aos
+- convert-aos-to-soa
+- make-scratch-cell
+- make-scratch-vector
+- make-scratch-matrix
+- make-scratch-tensor
+- scratch-cell-type
+- scratch-vec-type
+- scratch-matrix-type
+- scratch-tensor-type
+- load-local
+- store-global
+
+- make-implicit-cell
+- make-implicit-vector
+- make-implicit-matrix
+- make-implicit-tensor
+- marshall-vector
+- marshall-scratch-vector
+- marshall-implicit-vector
+- marshall-debug-logging-vector
+- voidp
+- #(1 2 3)
+- use                   [DP]
+- matrix
+- tensor
+- make-tensor     [KO]
+- make-matrix          [KO]
+- num-dims-of
+- `extents~`
+- `strides~`
+- `~` for tensors
+- matrix
+- col
+- row
+- num-cols
+- num-rows
+- get-layout
+- transpose
+- load-tile
+- store-tile
+- convert-layout
+- fill
+- iota
+- copy
+- dot-prod-grid
+- dot-prod-seq
+- mat-vec-mult
+- matmul
+- const-vec-type
+- maybe                 
+- result               [KO]
+- or-else
+- as-derived
+- as-original
+- set-derived
+- inline           <== for declare. needs definition  [DP]
+- entrypoint            [DP]
+- warp-convergent       [DP] <== for declare. Tells compiler code cannot be in diverging branch. reduce-to-warp uses it. 
+- workgroup-convergent  [DP]    we get a deadlock in divergent code. checkedd with "divergent-barrier" static analysys
+- let-kernel
+- kernel-name           [DP]
+- /
+- floor
+- ceil
+- round
+- #+
+- #-
+- has-target
+- local-mem                 [DP]
+- global-mem :return-value  [DP] 
+- string-concat
+- forward-only              [DP]
+
+

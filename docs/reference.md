@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-06-24T05:51:34.574346Z
+Generated on 2026-06-27T23:02:44.705980Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1694,6 +1694,19 @@ Generated on 2026-06-24T05:51:34.574346Z
 
 
 ---
+### DEFVAR `*FFI-BASEPTR-SRC*`
+
+  > Endeavor 123 (FFI-AD) backward-walk dynamic map: pointer-temp-sym -> source  >    storage sym, built from (temp (base-ptr~ src)) ANF bindings. Lets  >    %emit-foreign-backward route a foreign pointer argument's gradient SHADOW to  >    the source storage's grad cell, <src>_GRAD. Bound in generate-backward-walk.
+
+
+---
+### DEFUN `%EMIT-FOREIGN-BACKWARD`
+- **Args**: `(FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)`
+
+  > Endeavor 123 (FFI-AD): emits the user-supplied VJP call for foreign function  >    FN. Call shape mirrors the mechanically-derived VJP signature:  >   >        (BKWD  primals...  seeds...  shadows...)  >   >      - primals = ARGS (the original forward args, in order)  >      - seeds   = T-ADJ-FORMS (adjoints of the active returns; empty for => nil)  >      - shadows = (base-ptr~ <src>_GRAD) for each c-pointer/voidp param, where  >                  <src> is the storage the forward pointer came from via  >                  (base-ptr~ <src>), resolved through *ffi-baseptr-src*.  >   >    The VJP returns one delta per ACTIVE SCALAR input (float/int), in forward  >    order; each is accumulated into that input arg's local adjoint. Pointer-input  >    gradients are written through the shadow pointers by the VJP body, not  >    returned. Handles and other passive params get nothing.
+
+
+---
 ### DEFUN `%CRISP-TENSOR-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
@@ -3019,9 +3032,30 @@ Generated on 2026-06-24T05:51:34.574346Z
 
 ---
 ### DEFUN `REGISTER-FOREIGN-FUNCTION`
-- **Args**: `(C-NAME SIGNATURE)`
+- **Args**: `(C-NAME SIGNATURE &OPTIONAL BACKWARD-NAME)`
 
-  > Registers a (def-foreign-function C-NAME SIGNATURE). SIGNATURE is a Crisp  >    arrow spec, possibly wrapped as (function (...)) from #'(...). Builds a  >    single function-signature in *function-table* (synthetic param names; only  >    the types matter for resolution) and records the verbatim C name in  >    *foreign-functions*.
+  > Registers a (def-foreign-function C-NAME SIGNATURE [BACKWARD-NAME]). SIGNATURE  >    is a Crisp arrow spec, possibly wrapped as (function (...)) from #'(...).  >    Builds a single function-signature in *function-table* (synthetic param names;  >    only the types matter for resolution) and records the verbatim C name in  >    *foreign-functions*.  >   >    Endeavor 123 (FFI-AD): when BACKWARD-NAME is supplied, also wires the foreign  >    function into *differentiable-functions* (via %register-foreign-backward) so a  >    call to it inside a --differentiate kernel routes its backward pass through  >    BACKWARD-NAME (the user-supplied VJP).
+
+
+---
+### DEFUN `%REGISTER-FOREIGN-BACKWARD`
+- **Args**: `(C-NAME PARAMS RETURN-TYPES BACKWARD-NAME)`
+
+  > Endeavor 123 (FFI-AD): registers C-NAME in *differentiable-functions* so the  >    backward walk (%handle-sub-fn-call-backward / the void-statement branch ->  >    %emit-foreign-backward) drives the user-supplied VJP BACKWARD-NAME.  >   >    Unlike the sub-function convention (%count-differentiable-contributions, which  >    treats integer scalars as gradient-inert), FFI treats every active scalar  >    input — float AND integer — as differentiable, matching Crisp's kernel-level  >    integer differentiation.  >   >    Stored slots:  >    - :ACTIVE-SCALAR-INDICES — param positions of float/int scalars, in forward  >      order. The VJP returns one gradient per such input (accumulated into that  >      input's adjoint). :N-FLOAT-PARAMS mirrors the count for legacy callers.  >    - :POINTER-PARAM-INDICES — param positions of c-pointer / voidp (active  >      memory) inputs. Each gets a shadow pointer appended to the VJP call,  >      sourced from <storage>_GRAD (Pass 2 shadow routing).  >    - Handles (c-handle) and other types are passive: in neither list, so they  >      contribute no seed, no shadow, and no returned gradient.
+
+
+---
+### DEFUN `%FFI-ACTIVE-SCALAR-PARAM-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > T if TYPE-SPEC is an active (differentiable) scalar for FFI VJP purposes:  >    a float-category OR integer-category scalar. Integers are active here (Crisp  >    differentiates them, promoting gradients to float/double), in contrast to the  >    sub-function delta convention which treats integer scalars as inert.
+
+
+---
+### DEFUN `%FFI-POINTER-PARAM-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > T if TYPE-SPEC is a c-pointer / voidp (active memory) for FFI shadow routing.  >    voidp is matched by name (it is a convenience alias for a generic c-pointer  >    and may not canonicalize to a (c-pointer ...) head).
 
 
 ---
@@ -4031,9 +4065,9 @@ Generated on 2026-06-24T05:51:34.574346Z
 
 ---
 ### DEFMACRO `DEF-FOREIGN-FUNCTION`
-- **Args**: `(C-NAME SIGNATURE)`
+- **Args**: `(C-NAME SIGNATURE &OPTIONAL BACKWARD-NAME)`
 
-  > Endeavor 122 (FFI): declares a foreign (C / device-library) function callable  >    from Crisp kernels. C-NAME is the verbatim C symbol; SIGNATURE is a Crisp  >    arrow spec. The definition is supplied by linking a .bc at compile time.  >   >    Example:  >      (def-foreign-function my_add #'(float float => float))  >   >    Expands to a registration call (evaluated during the signatures pass), so the  >    call resolves and codegen emits an external declaration + call. No body is  >    generated here.
+  > Endeavor 122 (FFI): declares a foreign (C / device-library) function callable  >    from Crisp kernels. C-NAME is the verbatim C symbol; SIGNATURE is a Crisp  >    arrow spec. The definition is supplied by linking a .bc at compile time.  >   >    Endeavor 123 (FFI-AD): the optional BACKWARD-NAME names a user-supplied Crisp  >    def-function that serves as this foreign function's Vector-Jacobian Product  >    (VJP). When present, the foreign function becomes differentiable: a call to it  >    inside a --differentiate kernel routes its backward pass through BACKWARD-NAME.  >    The VJP's signature is mechanically derived from SIGNATURE (primals ++ seeds  >    for active returns ++ shadow pointers for active-memory inputs => one gradient  >    per active scalar input).  >   >    Example:  >      (def-foreign-function my_add #'(float float => float))  >      (def-foreign-function c_cube #'(float => float) c-cube-bwd)  ;; differentiable  >   >    Expands to a registration call (evaluated during the signatures pass), so the  >    call resolves and codegen emits an external declaration + call. No body is  >    generated here.
 
 
 ---

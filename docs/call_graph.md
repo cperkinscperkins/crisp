@@ -496,6 +496,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - (%HANDLE-MATH-AND-TRIG-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
 - - - - - - - - - (%HANDLE-TILDE-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
 - - - - - - - - - (%HANDLE-SUB-FN-CALL-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN HOF-HANDLER-FN)  autodiff.lisp
+- - - - - - - - - - (%EMIT-FOREIGN-BACKWARD FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
 - - - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                                 BW))  autodiff.lisp
 - - - - - - - - - (%IS-ACCESSOR-P EXPR)  autodiff.lisp
@@ -922,6 +923,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%COLLECT-LOCALLY-BOUND-VARS BODY-FORMS)  autodiff.lisp
 - - - (%GFW-PROCESS-DOTIMES FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP INTERMEDIATE-ZERO)  autodiff.lisp
 - - - (%GFW-PROCESS-IF FORM EMIT-FN PROCESS-FORM-FN COND-FORM THEN-FORM ELSE-FORM)  autodiff.lisp
+- - - (%EMIT-FOREIGN-BACKWARD FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp [See above]
 - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                   BW))  autodiff.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -1534,11 +1536,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (DEF-ENUMERATION NAME &REST SPECS)  enums.lisp
 
-- (DEF-FOREIGN-FUNCTION C-NAME SIGNATURE)  macros.lisp
-- - (REGISTER-FOREIGN-FUNCTION C-NAME SIGNATURE)  compiler.lisp
+- (DEF-FOREIGN-FUNCTION C-NAME SIGNATURE &OPTIONAL BACKWARD-NAME)  macros.lisp
+- - (REGISTER-FOREIGN-FUNCTION C-NAME SIGNATURE &OPTIONAL BACKWARD-NAME)  compiler.lisp
 - - - (ANALYZE-RETURN-TYPE-FROM-SPEC FN-SPEC)  environment.lisp [See above]
 - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
 - - - (%FOREIGN-C-NAME SYM)  macros.lisp
+- - - (%REGISTER-FOREIGN-BACKWARD C-NAME PARAMS RETURN-TYPES BACKWARD-NAME)  compiler.lisp
+- - - - (%FFI-ACTIVE-SCALAR-PARAM-P TYPE-SPEC)  compiler.lisp
+- - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - (%FFI-POINTER-PARAM-P TYPE-SPEC)  compiler.lisp
+- - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 
 - (DEF-GRID-FUNCTION NAME PARAMS &REST BODY)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]

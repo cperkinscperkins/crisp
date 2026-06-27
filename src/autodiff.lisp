@@ -83,6 +83,65 @@
      (t nil))))
 
 
+(defvar *ffi-baseptr-src* nil
+  "Endeavor 123 (FFI-AD) backward-walk dynamic map: pointer-temp-sym -> source
+   storage sym, built from (temp (base-ptr~ src)) ANF bindings. Lets
+   %emit-foreign-backward route a foreign pointer argument's gradient SHADOW to
+   the source storage's grad cell, <src>_GRAD. Bound in generate-backward-walk.")
+
+(defun %emit-foreign-backward (fn args t-adj-forms pkg emit-fn local-adj-fn)
+  "Endeavor 123 (FFI-AD): emits the user-supplied VJP call for foreign function
+   FN. Call shape mirrors the mechanically-derived VJP signature:
+
+       (BKWD  primals...  seeds...  shadows...)
+
+     - primals = ARGS (the original forward args, in order)
+     - seeds   = T-ADJ-FORMS (adjoints of the active returns; empty for => nil)
+     - shadows = (base-ptr~ <src>_GRAD) for each c-pointer/voidp param, where
+                 <src> is the storage the forward pointer came from via
+                 (base-ptr~ <src>), resolved through *ffi-baseptr-src*.
+
+   The VJP returns one delta per ACTIVE SCALAR input (float/int), in forward
+   order; each is accumulated into that input arg's local adjoint. Pointer-input
+   gradients are written through the shadow pointers by the VJP body, not
+   returned. Handles and other passive params get nothing."
+  (let* ((info (gethash fn *differentiable-functions*))
+         (bkwd (getf info :bkwd-name))
+         (ptr-indices (getf info :pointer-param-indices))
+         (scalar-indices (getf info :active-scalar-indices))
+         (base-ptr-sym (or (find-symbol "BASE-PTR~" (find-package :crisp-language))
+                           (intern "BASE-PTR~" (find-package :crisp-language))))
+         (shadow-args
+          (loop for i in ptr-indices
+                for arg = (nth i args)
+                for src = (and (symbolp arg) (gethash arg *ffi-baseptr-src*))
+                collect (if src
+                            (list base-ptr-sym
+                                  (intern (format nil "~A_GRAD" (symbol-name src))
+                                          (symbol-package src)))
+                            (error "FFI-AD: cannot route a gradient shadow for pointer argument ~A of foreign function ~A inside a differentiable kernel. FFI pointer arguments must be produced by (base-ptr~~ <storage>) so the shadow can target <storage>_GRAD." arg fn))))
+         (call-form `(,bkwd ,@args ,@t-adj-forms ,@shadow-args))
+         (n-fp (length scalar-indices))
+         (deltas (loop for i from 0 below n-fp
+                       collect (intern (format nil "%FBW_D~a" i) pkg))))
+    (if (zerop n-fp)
+        ;; No active scalar inputs (e.g. all-pointer / void-return): the shadow
+        ;; writes are the whole backward effect; emit the call as a statement.
+        (funcall emit-fn call-form)
+        ;; Bind the returned deltas, then accumulate each into its active scalar
+        ;; argument's adjoint (skipping pointer/handle args by index).
+        (let ((accum (loop for d in deltas
+                           for idx in scalar-indices
+                           for arg = (nth idx args)
+                             when (symbolp arg)
+                           collect `(set! ,(funcall local-adj-fn arg)
+                                          (+ ,(funcall local-adj-fn arg) ,d)))))
+          (funcall emit-fn
+            `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+               (let (,(append deltas (list call-form)))
+                 ,@accum)))))))
+
+
 (defun %crisp-tensor-type-p (type-spec)
   "Returns T if TYPE-SPEC (possibly a type alias) resolves to a tensor/vector/matrix
    storage handle. Vectors (N=1) and matrices (N=2) are syntactic sugar for tensor,
@@ -195,17 +254,27 @@
     (let* ((fn (car expr))
            (args (cdr expr))
            (info (gethash fn *differentiable-functions*)))
-      (if (getf info :hof)
-          (if hof-handler-fn
-              (funcall hof-handler-fn fn args v)
-              (error "HOF handler required for sub-function ~A but not provided" fn))
-          (%emit-sub-fn-backward fn args
-                                 (getf info :bkwd-name)
+      (cond
+       ((getf info :hof)
+         (if hof-handler-fn
+             (funcall hof-handler-fn fn args v)
+             (error "HOF handler required for sub-function ~A but not provided" fn)))
+       ;; Endeavor 123 (FFI-AD): a foreign function with a single active return
+       ;; bound as (v (c_foo ...)). The seed is v's adjoint; shadows + scalar
+       ;; deltas are handled by %emit-foreign-backward.
+       ((getf info :foreign)
+         (%emit-foreign-backward fn args
                                  (list (local-adj v))
-                                 (getf info :n-float-params)
                                  (symbol-package v)
-                                 emit-fn local-adj-fn
-                                 (if (symbolp v) (symbol-name v) "BW"))))
+                                 emit-fn local-adj-fn))
+       (t
+         (%emit-sub-fn-backward fn args
+                                (getf info :bkwd-name)
+                                (list (local-adj v))
+                                (getf info :n-float-params)
+                                (symbol-package v)
+                                emit-fn local-adj-fn
+                                (if (symbolp v) (symbol-name v) "BW")))))
     t))
 
 (defun %is-accessor-p (expr)
@@ -603,7 +672,20 @@
                   (dolist (entry record-temp-entries)
                     (setf (gethash (car entry) ht) (cdr entry))))
             ht)))
-    (let ((*record-param-field-adjs* record-param-field-adjs-ht))
+    (let ((*record-param-field-adjs* record-param-field-adjs-ht)
+          ;; Endeavor 123 (FFI-AD): map each pointer temp bound via
+          ;; (t (base-ptr~ src)) to its source storage sym, so a foreign call's
+          ;; pointer arg can route its shadow to <src>_GRAD.
+          (*ffi-baseptr-src*
+           (let ((ht (make-hash-table :test 'eq)))
+             (loop for form in flat-anf
+                     when (and (consp form) (= (length form) 2)
+                               (symbolp (car form))
+                               (consp (cadr form)) (symbolp (caadr form))
+                               (string-equal (symbol-name (caadr form)) "BASE-PTR~")
+                               (symbolp (second (cadr form))))
+                   do (setf (gethash (car form) ht) (second (cadr form))))
+             ht)))
       (let ((backward-forms nil)
             (adjoint-map (make-hash-table :test 'equal))
             (tensor-inputs-ht
@@ -796,6 +878,19 @@
                                       (dolist (sub (reverse (cdr form)))
                                         (process-form sub emit-fn)))
 
+                                    ;; Endeavor 123 (FFI-AD): a foreign function called as a
+                                    ;; VOID STATEMENT (=> nil), e.g. (c_vsin n inptr outptr).
+                                    ;; It is not a value binding, so it must be recognized by
+                                    ;; its head being a registered foreign function — otherwise
+                                    ;; it is misparsed as a multi-value binding below and
+                                    ;; silently dropped. There is no return seed (void).
+                                    ((and (consp form) (symbolp (car form))
+                                          (let ((info (gethash (car form) *differentiable-functions*)))
+                                            (and info (getf info :foreign))))
+                                      (%emit-foreign-backward (car form) (cdr form) nil
+                                                              (symbol-package (car form))
+                                                              emit-fn #'local-adj))
+
                                     ((and (listp form) (= (length form) 2) (symbolp (car form)))
                                       (%handle-single-value-backward (car form) (cadr form)
                                                                      adjoint-map emit-fn #'local-adj
@@ -819,8 +914,13 @@
                                                      (n-fp (getf info :n-float-params))
                                                      (pkg (symbol-package (car result-vars)))
                                                      (t-adjs (mapcar #'local-adj result-vars)))
-                                                (%emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg
-                                                                       emit-fn #'local-adj "BW")))))
+                                                ;; Endeavor 123 (FFI-AD): foreign multi-return
+                                                ;; routes through the shadow-aware emitter.
+                                                (if (getf info :foreign)
+                                                    (%emit-foreign-backward fn args t-adjs pkg
+                                                                            emit-fn #'local-adj)
+                                                    (%emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg
+                                                                           emit-fn #'local-adj "BW"))))))
 
                                     (t nil))))
 
@@ -1234,6 +1334,12 @@ to compute-base-type for derived types."
                                         ;; 111 Phase 1c: scratch constructors are gradient-inert.
                                         "MAKE-SCRATCH-CELL" "MAKE-SCRATCH-VECTOR"
                                         "MAKE-SCRATCH-MATRIX" "MAKE-SCRATCH-TENSOR"
+                                        ;; 123 (FFI-AD): handle constructor / deref and the
+                                        ;; pointer/handle TYPE constructors are gradient-inert.
+                                        ;; (base-ptr~ is handled by the accessor path; FFI
+                                        ;; buffer gradients flow via shadow pointers routed in
+                                        ;; %emit-foreign-backward.)
+                                        "MAKE-C-HANDLE" "GET-POINTER" "C-POINTER" "C-HANDLE"
                                         "TRANSPOSE" "TRANSPOSE!" "ROW" "COL" "SLICE"
                                         "GET-GLOBAL-ID" "GET-LOCAL-ID" "GET-WORKGROUP-ID"
                                         "GET-NUM-GROUPS" "GET-LOCAL-WORK-SIZE"

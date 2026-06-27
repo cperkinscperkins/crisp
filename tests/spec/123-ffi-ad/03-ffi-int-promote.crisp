@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; FFI-LINK: idbl.c
+;; TEST-WITH[--ir-target=ptx]
+;; TEST-WITH[--ir-target=spv]
+
+;; Endeavor 123 (FFI-AD) Pass 1: integer differentiation across the FFI
+;; boundary. Compile-shape test (no VERIFY-AUTODIFF: finite-differencing an
+;; integer input is ill-defined). Verify MANUALLY in the backward IR that:
+;;   - the seed for the `int` return is a FLOAT (int promotes), and
+;;   - the returned gradient for the `int` input is a FLOAT.
+;;
+;; Forward:  m = c_idbl(n) = 2*n        Backward: dn = dm * 2
+;; Derived VJP signature:  #'(int float => float)
+;;   primal n, seed dm (float, promoted from the int return), returns dn (float).
+
+(def-foreign-function c_idbl #'(int => int) c-idbl-bwd)
+
+(def-function c-idbl-bwd (n dm)
+  (declare #'(int float => float))
+  (* dm 2.0))
+
+(def-type in-i  (cell int :address-space :global))
+(def-type out-i (cell int :address-space :global))
+
+(def-kernel use_idbl (n &out m)
+  (declare #'(in-i &out out-i))
+  (set! (~ m) (c_idbl (~ n))))

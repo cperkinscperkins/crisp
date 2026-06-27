@@ -238,6 +238,7 @@ Header comment directives for test expectations:
 ;; FAIL-WITH[--single-pass]: "Unsupported form"
 ;; TEST-WITH[--metadata] : validate-metacrisp
 ;; TEST-HOIST[L0]: validate-l0-compile-only
+;; FFI-LINK: add.c                       <-- link a C/.bc library into the spec; see below
 ;; VERIFY-AUTODIFF: x=3.0 atol=1e-3      <-- on-metal AD check; see below
 ;; CHECK-FAIL: "message"   <-- for the negative tests in errors
 ;; SKIP-WITH[--flag]: "reason for skipping" <-- for tests that should be skipped
@@ -258,6 +259,57 @@ Do NOT use (declare forward-only) . Instead use
 
 
 
+
+## FFI Linking (`FFI-LINK`)
+
+The `;; FFI-LINK: <source>` directive (endeavor 122) marks a spec that calls a
+foreign function (`def-foreign-function`) and supplies the library to link. Because
+`.bc` linking lives in the compiler **binary** (`main.lisp`), not the in-process
+path, any spec with an `FFI-LINK` directive is run **exclusively** through the FFI
+harness (`run-spec-ffi`): the default / TEST-WITH / metadata in-process passes are
+bypassed. Each run builds (or resolves) a `.bc` and invokes `crisp-compile.exe`
+with the `.bc` linked.
+
+### Two source forms
+
+- **Co-located C source** — `;; FFI-LINK: add.c` — a `.c` file beside the spec.
+  The harness compiles it to a target-specific `.bc` with `clang`
+  (`--target=nvptx64-nvidia-cuda` for ptx, `--target=spir64-unknown-unknown` for
+  spv), once per requested target.
+- **Pre-built `.bc`** — `;; FFI-LINK: $CUDA_HOME/nvvm/libdevice/libdevice.10.bc` —
+  a path ending in `.bc` (or containing a `$VAR`). `$VAR` / `${VAR}` are expanded
+  from the environment; the same `.bc` is linked for every target.
+
+### Targets and which runs happen
+
+- Device targets come from the spec's `TEST-WITH[--ir-target=ptx]` /
+  `[--ir-target=spv]` directives (default `ptx` if none and no hoist directive).
+- **Compile-checks:** for each target, the binary is invoked with the `.bc` and
+  `--ir-target=...`; PASS requires exit 0 and the expected `.ptx`/`.spv` artifact.
+- **On-metal hoist:** `TEST-HOIST[L0]` / `TEST-HOIST[CUDA]` runs link the `.bc`
+  and execute on the device (e.g. `HOIST-EXPECT: BUFFER out-cell: 7`).
+
+### Clean SKIPs (count as pass)
+
+- `clang` not on `PATH` (can't build a co-located `.c`).
+- A pre-built library that can't be resolved (e.g. `$CUDA_HOME` unset).
+- `spv` compile-checks under `SKIP_SPIRV_TESTS`; L0 hoist under `SKIP_L0_HOIST`.
+
+### `--differentiate` (endeavor 123, in progress)
+
+> As of endeavor 122 the FFI harness is **forward-only**: the binary invocation
+> does not forward the global `--differentiate` flag, and hoist is skipped under
+> it. Endeavor 123 (FFI-AD) extends `run-spec-ffi-runs` to honor
+> `*compile-differentiate*` — adding a `--differentiate` compile-check (and a
+> VERIFY-AUTODIFF pass) with the `.bc` linked — so FFI specs that lack
+> `SKIP-WITH[--differentiate]` are differentiated like any other spec.
+
+### Implementation pointers
+
+- Directive parser: `parse-ffi-link` in `tests/run-specs.lisp`.
+- Per-target `.bc` build: `%ffi-build-bc`; env expansion: `%ffi-expand-env`;
+  prebuilt resolution: `%ffi-resolve-prebuilt-bc`.
+- Run loop: `run-spec-ffi` / `run-spec-ffi-runs`.
 
 ## On-Metal AD Verification (`VERIFY-AUTODIFF`)
 

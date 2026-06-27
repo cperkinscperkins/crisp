@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; FFI-LINK: wmul.c
+;; TEST-WITH[--ir-target=ptx]
+;; TEST-WITH[--ir-target=spv]
+;; VERIFY-AUTODIFF: a=3.0 b=4.0 atol=1e-3 expect.a=4.0 expect.b=3.0
+
+;; Endeavor 123 (FFI-AD) Pass 1: a two-input foreign function. Verifies the
+;; ORDER of the two returned gradients in the VJP matches forward arg order.
+;;
+;; Forward:  z = c_wmul(a, b) = a*b     Backward: (da, db) = (dy*b, dy*a)
+;; df/da = b = 4.0,  df/db = a = 3.0.
+;;
+;; Derived VJP signature:  #'(float float float => float float)
+;;   primals a b, seed dy, returns (da, db) in forward order.
+
+(def-foreign-function c_wmul #'(float float => float) c-wmul-bwd)
+
+(def-function c-wmul-bwd (a b dy)
+  (declare #'(float float float => float float))
+  (return (* dy b) (* dy a)))
+
+(def-type in-ish  (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
+
+(def-kernel use_wmul (a b &out z)
+  (declare #'(in-ish in-ish &out out-ish))
+  (set! (~ z) (c_wmul (~ a) (~ b))))

@@ -292,16 +292,26 @@
         (if (null bc)
             (progn (format t "FAIL (no .bc)~%") (setf all-ok nil))
             (let* ((out-type (if (string= target "spv") "spv" "ptx"))
-                   (out-path (make-pathname :name (pathname-name crisp-file)
+                   ;; Endeavor 123 (FFI-AD): under --differentiate the binary emits
+                   ;; the backward kernel as <name>_grad.<type> (mirrors line ~608).
+                   (out-name (if *compile-differentiate*
+                                 (format nil "~a_grad" (pathname-name crisp-file))
+                                 (pathname-name crisp-file)))
+                   (out-path (make-pathname :name out-name
                                             :type out-type :defaults crisp-file)))
               (when delete-bc-p (push bc artifacts))
               (when (probe-file out-path) (delete-file out-path))
               (multiple-value-bind (out err code)
-                  (uiop:run-program (list (uiop:native-namestring bin)
-                                          (uiop:native-namestring bc)
-                                          (uiop:native-namestring crisp-file)
-                                          (format nil "--ir-target=~a" target)
-                                          (format nil "--log-level=~a" cl-user::*log-level*))
+                  (uiop:run-program (append
+                                     (list (uiop:native-namestring bin)
+                                           (uiop:native-namestring bc)
+                                           (uiop:native-namestring crisp-file)
+                                           (format nil "--ir-target=~a" target)
+                                           (format nil "--log-level=~a" cl-user::*log-level*))
+                                     ;; Endeavor 123: forward the global differentiate
+                                     ;; flag so FFI specs compile their backward kernel
+                                     ;; (with the .bc linked) like any other spec.
+                                     (when *compile-differentiate* (list "--differentiate")))
                     :output :string :error-output :string :ignore-error-status t)
                 (declare (ignore out))
                 (cond

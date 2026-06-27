@@ -1,0 +1,14 @@
+;; CHECK-FAIL: "Unknown type 'FLORP'."
+;;
+;; Endeavor 122 (FFI) negative: an unknown type in a foreign signature must be
+;; rejected at registration time. No .bc is needed — the error fires while
+;; parsing the arrow spec, long before any linking. (Run by run-error-specs.lisp,
+;; which compiles forward-only with no FFI-LINK.)
+
+(def-foreign-function f_bad #'(florp => int))
+
+(def-type out-i (cell int :address-space :global))
+
+(def-kernel k (&out o)
+  (declare #'(&out out-i))
+  (set! (~ o) 1))

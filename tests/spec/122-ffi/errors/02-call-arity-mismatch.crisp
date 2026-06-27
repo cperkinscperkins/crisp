@@ -1,0 +1,14 @@
+;; CHECK-FAIL: "No matching function overload found for 'MY_ADD'"
+;;
+;; Endeavor 122 (FFI) negative: a call site whose argument count/types don't
+;; match the declared foreign signature is caught by ordinary overload
+;; resolution (no .bc needed). Here my_add is declared (float float => float)
+;; but called with a single argument.
+
+(def-foreign-function my_add #'(float float => float))
+
+(def-type out-f (cell float :address-space :global))
+
+(def-kernel k (&out o)
+  (declare #'(&out out-f))
+  (set! (~ o) (my_add 1.0)))
