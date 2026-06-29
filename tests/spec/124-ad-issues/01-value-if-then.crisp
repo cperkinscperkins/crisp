@@ -1,0 +1,15 @@
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3 expect.x=2.0
+;;
+;; Endeavor 124 (AD issues) A1: value-producing `if` must propagate the gradient
+;; through the taken branch. TODAY THIS SILENTLY RETURNS ZERO (the seed reaches
+;; the if-result's adjoint but never flows into x). Condition depends on x but a
+;; ±h perturbation stays on the same side, so the branch is stable.
+;;
+;; x=3 < 100 -> then-branch -> res = 2*x -> dres/dx = 2.0.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel value_if_then (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (if (< (~ x) 100.0) (* (~ x) 2.0) (~ x))))

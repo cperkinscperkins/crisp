@@ -1,0 +1,15 @@
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3 expect.x=2.0
+;;
+;; Endeavor 124 (AD issues) A1: a value-producing `if+` (uniform condition).
+;; TODAY THIS ERRORS "Function IF+ is not differentiable". get-workgroup-id is
+;; uniform, so the condition is valid for if+; with a small launch g<5 -> the
+;; then-branch -> res = 2*x -> dres/dx = 2.0. Exercises the let-wrapped branch
+;; ( (* (~ x) 2.0) is ANF'd to (let ((t (~ x))) (* t 2.0)) ).
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel value_ifplus (x &out res)
+  (declare #'(in-c &out out-c))
+  (let ((g (get-workgroup-id 0)))
+    (set! (~ res) (if+ (< g 5ul) (* (~ x) 2.0) (~ x)))))

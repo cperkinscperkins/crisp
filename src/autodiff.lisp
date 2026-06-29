@@ -370,9 +370,18 @@
    ((and (consp expr) (symbolp (car expr))
          (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
      nil)
-   ((and (consp expr) (symbolp (car expr))
-         (string= (symbol-name (car expr)) "IF"))
-     nil)
+   ;; Endeavor 124 (AD issues) A1: value-producing if / if+ / when[+] / unless[+]
+   ;; and value-producing let. These bind a compound expression to V; the seed
+   ;; V_adj must flow through the branches / let body (previously dropped, giving
+   ;; a silent zero gradient, or erroring for the + variants).
+   ((%value-if-p expr)
+     (%handle-value-if-backward v expr adjoint-map emit-fn local-adj-fn
+                                :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+   ((%value-let-p expr)
+     (%handle-value-let-backward v expr adjoint-map emit-fn local-adj-fn
+                                 :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                 :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
    ((and (consp expr) (symbolp (car expr))
          (%backward-skip-fn-p (car expr)))
      nil)
@@ -392,6 +401,148 @@
      (when error-on-unknown
            (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
    (t nil)))
+
+
+;;; ===================================================================
+;;; Endeavor 124 (AD issues) A1: value-producing if / let backward.
+;;;
+;;; ANF binds compound expressions (if / if+ / when[+] / unless[+] / let) to a
+;;; temp: e.g. (%t (if+ cond (let ((u (~ x))) (* u 2.0)) (~ x))). The seed %t_adj
+;;; must flow through whichever branch was taken, and through the let body into
+;;; its (branch-local) bindings. Previously %handle-single-value-backward dropped
+;;; these (silent zero gradient for plain if; hard error for the + variants).
+;;; ===================================================================
+
+(defun %value-if-p (expr)
+  "T if EXPR is a value-producing conditional: if / if+ / when / when+ /
+   unless / unless+."
+  (and (consp expr) (symbolp (car expr))
+       (member (symbol-name (car expr))
+               '("IF" "IF+" "WHEN" "WHEN+" "UNLESS" "UNLESS+")
+               :test #'string=)))
+
+(defun %value-let-p (expr)
+  "T if EXPR is a value-producing LET."
+  (and (consp expr) (symbolp (car expr))
+       (string-equal (symbol-name (car expr)) "LET")))
+
+(defun %forms->progn (forms)
+  "NIL for no forms, the single form, else a (progn ...) wrapper."
+  (cond ((null forms) nil)
+        ((null (cdr forms)) (first forms))
+        (t `(progn ,@forms))))
+
+(defun %backward-value-expr (v expr adjoint-map emit-fn local-adj-fn
+                             &key hof-handler-fn (error-on-unknown t)
+                                  tensor-inputs-ht scratch-tile-syms)
+  "Backward-AD for a VALUE expression EXPR whose result is bound to V (so V's
+   adjoint is the incoming seed). Endeavor 124 A1: handles the symbol-copy and
+   literal cases plus compound value exprs (if / let), recursing; leaf exprs
+   (math, ~, calls, accessors) delegate to %handle-single-value-backward."
+  (cond
+   ;; copy: v <- s  =>  s_adj += v_adj  (skip self-copy)
+   ((symbolp expr)
+     (unless (eq expr v)
+       (funcall emit-fn `(set! ,(funcall local-adj-fn expr)
+                               (+ ,(funcall local-adj-fn expr) ,(funcall local-adj-fn v))))))
+   ;; literal (number / non-symbol atom): no gradient
+   ((not (consp expr)) nil)
+   ((%value-if-p expr)
+     (%handle-value-if-backward v expr adjoint-map emit-fn local-adj-fn
+                                :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+   ((%value-let-p expr)
+     (%handle-value-let-backward v expr adjoint-map emit-fn local-adj-fn
+                                 :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                 :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+   (t
+     (%handle-single-value-backward v expr adjoint-map emit-fn local-adj-fn
+                                    :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                    :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))))
+
+(defun %handle-value-if-backward (v expr adjoint-map emit-fn local-adj-fn
+                                  &key hof-handler-fn (error-on-unknown t)
+                                       tensor-inputs-ht scratch-tile-syms)
+  "Backward for a value-producing (if[+]/when[+]/unless[+] COND THEN ELSE): the
+   result adjoint V_adj flows into whichever branch was taken. Emits a plain `if`
+   mirroring the forward (the uniform-ness of if+ is irrelevant to the backward),
+   each arm carrying its value's chain-rule contribution into V_adj."
+  (let* ((head (symbol-name (car expr)))
+         (cond-form (cadr expr))
+         (when-like (member head '("WHEN" "WHEN+") :test #'string=))
+         (unless-like (member head '("UNLESS" "UNLESS+") :test #'string=))
+         (then-expr (cond (unless-like nil) (t (caddr expr))))
+         (else-expr (cond (when-like nil)
+                          (unless-like (caddr expr))
+                          (t (cadddr expr))))
+         (then-forms nil)
+         (else-forms nil))
+    (flet ((rec (branch collect)
+             (when branch
+               (%backward-value-expr v branch adjoint-map collect local-adj-fn
+                                     :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                     :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))))
+      (rec then-expr (lambda (f) (push f then-forms)))
+      (rec else-expr (lambda (f) (push f else-forms)))
+      (let ((then-body (%forms->progn (nreverse then-forms)))
+            (else-body (%forms->progn (nreverse else-forms))))
+        ;; Only emit if some branch contributes; both-empty is a no-op.
+        (when (or then-body else-body)
+          (funcall emit-fn
+            (if else-body
+                `(if ,cond-form ,(or then-body 'nil) ,else-body)
+                `(if ,cond-form ,then-body)))))))
+  t)
+
+(defun %handle-value-let-backward (v expr adjoint-map emit-fn local-adj-fn
+                                   &key hof-handler-fn (error-on-unknown t)
+                                        tensor-inputs-ht scratch-tile-syms)
+  "Backward for a value-producing (let (BINDS) ... BODY-EXPR): the let's value is
+   V. Recompute BINDS (forward), declare BRANCH-LOCAL adjoints for the bind temps,
+   push V_adj through BODY-EXPR, then push each bind temp's adjoint through its rhs.
+   The local adjoints are scoped to the emitted let so they don't collide with the
+   global adjoint-map / top-level adjoint declarations. Endeavor 124 A1.
+
+   NOTE: zero-inits the local adjoints with 0.0 (float). Double-chain interaction
+   is deferred to the mixed-precision pass (Phase C)."
+  (let* ((raw (cdr expr))
+         (binds (car raw))
+         (body-tail (cdr raw))
+         (body-forms (remove-if (lambda (f) (and (consp f)
+                                                 (symbolp (car f))
+                                                 (string-equal (symbol-name (car f)) "DECLARE")))
+                                body-tail))
+         (body-expr (car (last body-forms)))
+         (bind-pairs (remove-if-not (lambda (b) (and (consp b) (= (length b) 2) (symbolp (car b))))
+                                    binds))
+         (bind-syms (mapcar #'car bind-pairs))
+         (pkg (or (symbol-package v) (find-package :crisp.compiler)))
+         (local-map (make-hash-table :test 'eq))
+         (collected nil))
+    (flet ((blocal-adj (s)
+             (if (member s bind-syms :test #'eq)
+                 (or (gethash s local-map)
+                     (setf (gethash s local-map)
+                           (intern (format nil "~A_ADJ" (symbol-name s)) pkg)))
+                 (funcall local-adj-fn s)))
+           (bcollect (f) (push f collected)))
+      ;; body value = v: push v_adj into the body expression
+      (when body-expr
+        (%backward-value-expr v body-expr adjoint-map #'bcollect #'blocal-adj
+                              :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                              :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+      ;; backward of each binding in reverse: bind-temp adjoint -> rhs's vars
+      (dolist (b (reverse bind-pairs))
+        (%backward-value-expr (car b) (cadr b) adjoint-map #'bcollect #'blocal-adj
+                              :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                              :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+      ;; emit: forward recompute of BINDS + local adjoint inits + backward forms
+      (funcall emit-fn
+        `(let (,@binds
+               ,@(loop for adv being the hash-values of local-map
+                       collect `(,adv 0.0)))
+           ,@(nreverse collected)))))
+  t)
 
 
 ;; 107 iteration-local adjoint reset fix.
