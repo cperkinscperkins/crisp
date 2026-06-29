@@ -77,18 +77,22 @@
 
 ;;; ---- intrinsics fold to booleans --------------------------------------
 
+;; Endeavor 124 B: the uniformity predicates fold to Crisp's int-for-bool (1/0),
+;; not a 'boolean t/NIL literal (which has no LLVM type and crashed the backward
+;; when materialized). The if-DCE treats 0/NIL as false, so behaviour is unchanged
+;; — only the representation (int 1/0) and value-type ('int) changed.
 (define-test (uniformity-logic provably-uniform-intrinsic)
   (let ((u (ck-node "(provably-uniform? (get-workgroup-id 0))"))
         (d (ck-node "(provably-uniform? (get-local-id 0))")))
-    (is eq 'boolean (semantic-node-type u))
-    (true  (semantic-literal-value u))
-    (false (semantic-literal-value d))))
+    (is string-equal "INT" (symbol-name (semantic-node-type u)))
+    (is = 1 (semantic-literal-value u))
+    (is = 0 (semantic-literal-value d))))
 
 (define-test (uniformity-logic provably-divergent-intrinsic)
   (let ((d (ck-node "(provably-divergent? (get-local-id 0))"))
         (u (ck-node "(provably-divergent? (get-workgroup-id 0))")))
-    (true  (semantic-literal-value d))
-    (false (semantic-literal-value u))))
+    (is = 1 (semantic-literal-value d))
+    (is = 0 (semantic-literal-value u))))
 
 ;;; ---- let-binding uniformity propagation (gap #1) ----------------------
 

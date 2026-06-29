@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;;
+;; Endeavor 124 (AD issues) B: companion to 120/02 — covers provably-uniform?
+;; (120/02 covers provably-divergent?). A folded uniformity predicate used in a
+;; value-if must differentiate. The bug was that the predicate returned a
+;; 'boolean literal (no LLVM type) which crashed the backward's forward-recompute
+;; with "Cannot resolve type to LLVM: BOOLEAN". Fixed by returning Crisp's
+;; int-for-bool (1/0) literal. Compile test (the predicate folds at compile time;
+;; the surviving value-if rides the A1 value-if machinery).
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel uniform_pred (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (if (provably-uniform? (~ x)) (* (~ x) 2.0) (~ x))))

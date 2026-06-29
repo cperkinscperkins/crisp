@@ -1169,14 +1169,20 @@
     (error 'crisp-compiler-error :message "provably-uniform? expects 1 argument" :source-location location))
   (let* ((arg-node (analyze-expression (second expr) env context (append location '(1))))
          (state (calculate-uniformity-state arg-node env)))
-    (make-semantic-literal :value-type 'boolean :value (eq state :uniform) :source-location location)))
+    ;; Endeavor 124 (AD issues) B: Crisp represents booleans as int (comparisons
+    ;; fold to int 1/0; the if-DCE treats 0/NIL as false). Returning an int 1/0
+    ;; literal — rather than a 'boolean t/NIL literal that has no LLVM type —
+    ;; keeps this compile-time predicate MATERIALIZABLE, so it survives being
+    ;; recomputed inside a backward kernel's forward-recompute let-binding.
+    (make-semantic-literal :value-type 'int :value (if (eq state :uniform) 1 0) :source-location location)))
 
 (defun analyze-provably-divergent? (expr env context location)
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error :message "provably-divergent? expects 1 argument" :source-location location))
   (let* ((arg-node (analyze-expression (second expr) env context (append location '(1))))
          (state (calculate-uniformity-state arg-node env)))
-    (make-semantic-literal :value-type 'boolean :value (eq state :divergent) :source-location location)))
+    ;; See analyze-provably-uniform? — int 1/0 (Crisp's bool repr), not 'boolean.
+    (make-semantic-literal :value-type 'int :value (if (eq state :divergent) 1 0) :source-location location)))
 
 
 

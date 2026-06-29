@@ -53,9 +53,63 @@ Tests (124-ad-issues/, VERIFY-AUTODIFF on the BMG):
   01-value-if-then (then-branch grad 2.0), 02-value-if-else (else grad 1.0),
   03-value-ifplus (if+ with a let-wrapped branch, grad 2.0). All numeric on metal.
 
+Phase A2 — integer sub-function differentiability — INVESTIGATED, NOT SHIPPED
+(2026-06-28). Reverted; suite back to 779/779.
+
+Root of 120/03 blockage: the multi-pass pre-registration gate
+(analysis/core.lisp ~L2072) registers a def-function as differentiable only when
+%count-differentiable-contributions > 0 OR it has a tensor/cell param. ulong/long
+params count 0 -> B/C registered as NEITHER differentiable NOR inert -> the kernel
+errors "B is not differentiable".
+
+Tried the minimal fix: make %count-differentiable-contributions count integer
+scalars as 1 (via %crisp-integer-scalar-type-p). RESULT — two problems, so reverted:
+  1. BLAST RADIUS: regressed 4 tests whose sub-functions take int INDEX/SIZE params
+     (060-array/11, 060-array/17, 111/14, 113/04). Treating every int param as an
+     active differentiable value changes the sub-fn _GRAD ABI (extra returned
+     deltas) and breaks index-param call sites. Need an active-vs-index distinction
+     (data-flow "activeness"), not a blanket count.
+  2. INSUFFICIENT for 120/03 anyway — it is blocked by a STACK:
+       (a) integer sub-fn registration (this gate),
+       (b) MIXED PRECISION (Phase C): C returns ulong -> seed double, but sub-fn
+           adjoint inits/returns are hardcoded float -> C's _GRAD fails
+           "Expected FLOAT but inferred DOUBLE" -> C unregistered -> B fails,
+       (c) INTERPROCEDURAL UNIFORMITY: C's if+ needs `x` uniform; B doesn't
+           propagate it (even an int variant fails: "Function C requires parameter
+           X to be :uniform, but inferred state was UNKNOWN"). The test author left
+           `(declare (uniform x))` commented with "I would prefer WITHOUT".
+
+CONCLUSION: 120/03-subfunction is a deeply-entangled aspirational test (3 subsystems).
+A2-as-blanket is the wrong shape. Recommend deferring full integer-sub-fn diff as its
+own endeavor (needs activeness analysis + Phase C + interprocedural uniformity), and
+proceeding with the more self-contained B and C.
+
+Phase B — folded boolean literal — DONE 2026-06-28. Suite 780/780 both passes;
+negatives 183/183.
+
+Root cause: `provably-uniform?` / `provably-divergent?` (analysis/control.lisp)
+returned a semantic-literal with :value-type 'boolean and value t/NIL. But Crisp
+has NO boolean type — it represents booleans as int (comparisons fold to int 1/0;
+the if-DCE at control.lisp ~L470 treats 0/NIL as false). The 'boolean literal
+works only while FOLDED (forward analysis folds the if). In a backward kernel, the
+forward-recompute keeps the flat-anf binding (%t (provably-divergent? a)) and tries
+to alloca %t : boolean -> resolve-type-to-llvm has no BOOLEAN -> "Cannot resolve
+type to LLVM: BOOLEAN".
+
+Fix (analysis/control.lisp): both predicates now return :value-type 'int with
+value 1/0 (Crisp's int-for-bool), matching comparisons and try-constant-fold. The
+if-DCE already treats 0/NIL as false, so fold behaviour is unchanged; the value is
+now materializable. (uniformity-state still returns a 'keyword literal — same latent
+issue if ever materialized, but no test hits it; left as-is.)
+
+Tests: un-SKIP'd 120/02-defmacro-usage (compile test; provably-divergent?), added
+124/04-uniform-pred-fold (provably-uniform? companion). Updated the 120
+uniformity-logic.unit.lisp intrinsic assertions to the int 1/0 representation
+(type check made package-robust via symbol-name string-equal, since `int` is not
+cl:int the way `boolean` was cl:boolean).
+
 Remaining:
-- Phase A2: integer sub-function differentiability (ulong/long-param def-functions
-  get no backward companion). Then un-SKIP 120/03-subfunction. (Shares root with
-  the FFI Pass-1 %count-differentiable-contributions int-inert finding.)
-- Phase B: folded boolean literal (120/02). "Cannot resolve type to LLVM: BOOLEAN".
-- Phase C: mixed precision (123/04). See [[endeavor-123-ffi-ad]] / earlier notes.
+- Phase C: mixed precision (123/04 + the ulong-sub-fn case above). See
+  [[endeavor-123-ffi-ad]] / earlier notes.
+- Phase A2 (deferred): integer sub-function differentiability for 120/03 — large,
+  3-subsystem effort (activeness + C + interprocedural uniformity).
