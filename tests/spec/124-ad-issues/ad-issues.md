@@ -137,10 +137,45 @@ Tests: un-SKIP'd 123/04-ffi-long-return (now compiles under --differentiate); ad
 IR — VERIFY-AUTODIFF supports only cell float, so double outputs can't be numerically
 checked on metal).
 
-Remaining:
-- Phase A2 (deferred): integer sub-function differentiability for 120/03 — large,
-  3-subsystem effort: (a) active-vs-index analysis (to avoid the 4-test regression),
-  (b) SUB-FUNCTION-walk double typing (the %generate-backward-function-walk
-  adjoint-bindings still hardcode 0.0 — the analogue of Phase C's fix, needed for
-  ulong/long sub-fn companions), (c) interprocedural uniformity (if+ in C needs
-  uniform x propagated from B).
+Phase A2 (integer sub-function differentiability for 120/03) — RE-INVESTIGATED
+2026-06-30 (post-C). Confirmed a genuine 3-subsystem endeavor; blanket count change
+reverted again (clean 782/782).
+
+BLAST-RADIUS MECHANISM (finally pinned): the blanket "%count-differentiable-
+contributions counts integer scalars as 1" doesn't just add index-param deltas — it
+corrupts the STRUCTURAL-INT machinery. The 4 regressions fail with e.g. "Missing
+implicit argument TILE_..._GRAD_3" in %generate-tensor-scratch-literal-ir: tensor
+metadata (A_LENGTH/STRIDE/OFFSET/EXTENT/BYTE_SIZE, all ULONG) and tile-coord scratch
+descriptors get counted as differentiable, shifting the generated backward kernel's
+implicit-param numbering (_3 vs _2). So integer differentiability MUST distinguish
+ACTIVE value ints (flow into differentiable arithmetic reaching a diff output) from
+STRUCTURAL ints (indices, sizes, tensor metadata, tile descriptors).
+
+The three blockers (all still required for 120/03):
+  (a) ACTIVITY ANALYSIS — DONE 2026-07-01. A pre-registration-time backward-
+      reachability pass over the SOURCE body marks an int param active iff it
+      reaches the return through differentiable ops (the index of ~, the condition
+      of if, and comparison results do NOT propagate). Only ACTIVE ints get a
+      gradient contribution; structural ints (metadata / indices / tile
+      descriptors) fall out as inactive for free. Implementation:
+      %active-scalar-vars / %asv-union / %active-scalar-param-set +
+      %count-active-contributions (src/autodiff.lisp), gated into the 3 sites that
+      size the sub-fn return-delta ABI: pre-reg n-diff-params (analysis/core.lisp),
+      %generate-backward-function-ast n-float-params, and
+      %collect-all-diff-param-syms-for-return. Gates ONLY the new int
+      contributions — float/tensor/cell/record behaviour unchanged (zero
+      regressions). 07-a2-int-subfn now GREEN (scale3_grad returns 3.0*seed,
+      IR-verified); guardrail 10 + the 4 tile/array tests stay green. Sub-fn calls
+      are over-approximated (all args active) — safe, source-only.
+  (b) SUB-FN-walk double typing — port Phase C's fix (canonicalize in a
+      promotes-to-double check + run the chain in double + down-cast) into
+      %generate-backward-function-walk, whose adjoint-bindings still hardcode 0.0.
+      Needed for ulong/long sub-fn companions (C returns ulong -> double seed).
+  (c) COMPANION UNIFORMITY — the generated _GRAD companion must preserve/propagate
+      uniformity so a recomputed if+ (in C, called from B's backward) still proves
+      its condition uniform. Even the int variant with (declare (uniform x)) fails
+      "Function C requires parameter X to be :uniform" because B_GRAD drops it.
+
+None of (a)/(b)/(c) can be validated in isolation for 120/03 (they're entangled),
+though (b) mirrors C and is low-risk once (a) enables registration. Recommend A2 as
+its own focused endeavor starting with the activity analysis (a).

@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;;
+;; Endeavor 124 A2 — BLOCKER (a): integer sub-function differentiability. FIXED
+;; 2026-07-01 by the ACTIVITY ANALYSIS (%active-scalar-param-set): an int sub-fn
+;; param now contributes a gradient iff it differentiably reaches the return.
+;; This is now a regression guard for that pass.
+;;
+;; scale3(n) = 3*n     dm/dn = 3   (int input -> float gradient, per Crisp's
+;;                                  "we differentiate integers" rule)
+;; IR-verified: scale3_grad(i32 primal, float seed) returns 3.0*seed, routed to
+;; n's grad cell. (VERIFY-AUTODIFF supports only cell float, so int is IR-checked.)
+;;
+;; Previously errored "Function SCALE3 is not differentiable":
+;; %count-differentiable-contributions returned 0 for integer scalars, so `scale3`
+;; was registered as NEITHER differentiable NOR inert. A blanket "count ints as 1"
+;; corrupts STRUCTURAL ints (see 10-a2-index-guardrail); the activity analysis
+;; enables scale3's `n` while keeping structural ints inactive.
+
+(def-function scale3 (n)
+  (declare #'(int => int))
+  (* n 3))
+
+(def-type in-i  (cell int :address-space :global))
+(def-type out-i (cell int :address-space :global))
+
+(def-kernel use_scale3 (n &out m)
+  (declare #'(in-i &out out-i))
+  (set! (~ m) (scale3 (~ n))))

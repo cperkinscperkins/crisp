@@ -1545,8 +1545,10 @@ to compute-base-type for derived types."
                                                 (symbol-name field-name))
                                               pkg)))))))
 
-(defun %collect-all-diff-param-syms-for-return (env record-param-info)
-  "Full ordered list of 'differentiable param syms' used for emitting the multi-value return."
+(defun %collect-all-diff-param-syms-for-return (env record-param-info &optional active-set)
+  "Full ordered list of 'differentiable param syms' used for emitting the multi-value
+   return. ACTIVE-SET (A2) gates integer scalar params: an int is included only when
+   active (differentiably reaches the return)."
   (let ((result nil))
     (loop for pd in env
           do (let ((sym (parameter-def-name pd)))
@@ -1557,7 +1559,7 @@ to compute-base-type for derived types."
                           (setf result (append result (mapcar #'cdr (third rec-entry)))))
                         ((%crisp-float-type-p (parameter-def-type pd))
                           (setf result (append result (list sym))))
-                        ((> (%count-differentiable-contributions (parameter-def-type pd)) 0)
+                        ((> (%count-active-contributions (parameter-def-type pd) sym active-set) 0)
                           (setf result (append result (list sym)))))))))
     result))
 
@@ -1700,12 +1702,16 @@ differentiable user function."
                     collect pd))
              (float-param-syms (mapcar #'parameter-def-name float-param-entries))
              (record-param-info (%collect-record-param-info env pkg))
-             (all-diff-param-syms-for-return (%collect-all-diff-param-syms-for-return env record-param-info))
+             ;; A2: which int scalar params actually reach the return differentiably.
+             (active-set (%active-scalar-param-set (mapcar #'parameter-def-name env) body-forms))
+             (all-diff-param-syms-for-return
+              (%collect-all-diff-param-syms-for-return env record-param-info active-set))
              (record-param-field-adjs-ht (%build-record-param-field-adjs-ht record-param-info))
              (n-float-params
               (loop for pd in env
                       when (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                      sum (%count-differentiable-contributions (parameter-def-type pd))))
+                      sum (%count-active-contributions (parameter-def-type pd)
+                                                       (parameter-def-name pd) active-set)))
              (return-types-non-void (remove nil return-types))
              (n-return (length return-types-non-void))
              (fn-param-entries
@@ -2126,6 +2132,88 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
        (length (or (%get-record-runtime-fields resolved) '())))
      ((%crisp-float-type-p pd-type) 1)
      (t 0))))
+
+;;; ===================================================================
+;;; Endeavor 124 (AD issues) A2 — activity analysis for integer sub-fn params.
+;;;
+;;; Integer scalar sub-function params are gradient-inert by default (the sub-fn
+;;; multi-value-return ABI counts float=1, int=0). Crisp differentiates integers
+;;; at the KERNEL boundary but the rule was never ported to the sub-fn boundary.
+;;; A blanket "count ints as 1" corrupts STRUCTURAL ints (indices / tensor
+;;; metadata / tile descriptors in generated functions). So we count an int param
+;;; only when it is ACTIVE — it differentiably reaches the function's return value.
+;;;
+;;; %active-scalar-vars is a lightweight backward-reachability pass over the SOURCE
+;;; body (pure syntax — no types/semantic tree). Per-op EDGE TABLE decides which
+;;; operand positions propagate activeness (the index of ~, the condition of if,
+;;; and comparison results do NOT). Structural ints fall out as "inactive" for
+;;; free — no special-casing.
+;;; ===================================================================
+
+(defun %asv-union (exprs env)
+  "Union of %active-scalar-vars over EXPRS."
+  (let ((acc nil))
+    (dolist (e exprs acc)
+      (setf acc (union acc (%active-scalar-vars e env) :test #'eq)))))
+
+(defun %active-scalar-vars (expr env)
+  "Set (list) of scalar symbols that DIFFERENTIABLY affect EXPR's value. ENV is an
+   alist mapping a let-bound symbol to its own active-scalar-var set."
+  (cond
+   ((symbolp expr) (let ((e (assoc expr env))) (if e (cdr e) (list expr))))
+   ((not (consp expr)) nil)                         ; numbers / other atoms
+   (t
+     (let ((name (and (symbolp (car expr)) (symbol-name (car expr)))))
+       (cond
+        ((null name) nil)
+        ;; differentiable arithmetic — every operand propagates.
+        ((member name '("+" "-" "*" "/") :test #'string-equal) (%asv-union (cdr expr) env))
+        ((member name '("SIN" "COS" "SQRT" "EXP" "LOG" "TANH" "ABS") :test #'string-equal)
+          (%active-scalar-vars (cadr expr) env))
+        ;; numeric conversions propagate (conservative).
+        ((and (>= (length name) 3) (string-equal (subseq name 0 3) "TO-"))
+          (%active-scalar-vars (cadr expr) env))
+        ;; tensor/cell read: no SCALAR activity (the index does not propagate; the
+        ;; tensor/cell itself flows grad via its own &out grad-handle).
+        ((string-equal name "~") nil)
+        ;; comparisons: 0 gradient — nothing propagates.
+        ((member name '("<" ">" "<=" ">=" "=" "/=") :test #'string-equal) nil)
+        ;; conditionals: the branches propagate, the CONDITION does not.
+        ((member name '("IF" "IF+") :test #'string-equal)
+          (union (%active-scalar-vars (caddr expr) env)
+                 (%active-scalar-vars (cadddr expr) env) :test #'eq))
+        ((member name '("WHEN" "WHEN+" "UNLESS" "UNLESS+") :test #'string-equal)
+          (%active-scalar-vars (caddr expr) env))
+        ;; let: bind each var to its init's active set, then evaluate the body.
+        ((string-equal name "LET")
+          (let ((new-env env))
+            (dolist (b (cadr expr))
+              (when (and (consp b) (= (length b) 2) (symbolp (car b)))
+                    (push (cons (car b) (%active-scalar-vars (cadr b) new-env)) new-env)))
+            (%active-scalar-vars (car (last (cddr expr))) new-env)))
+        ((string-equal name "RETURN") (%asv-union (cdr expr) env))
+        ((string-equal name "PROGN") (%active-scalar-vars (car (last (cdr expr))) env))
+        ;; sub-fn / other call: over-approximate — all args propagate. Safe (a
+        ;; spuriously-active int just gets a 0-gradient slot); never runs on the
+        ;; generated structural-int machinery (this pass is source-only).
+        (t (%asv-union (cdr expr) env)))))))
+
+(defun %active-scalar-param-set (params body-forms)
+  "Subset of PARAMS (symbols) that are ACTIVE — differentiably affect the value of
+   BODY-FORMS' final form (the function's return)."
+  (when body-forms
+    (intersection params (%active-scalar-vars (car (last body-forms)) nil) :test #'eq)))
+
+(defun %count-active-contributions (pd-type sym active-set &optional record-info)
+  "Like %count-differentiable-contributions, but an INTEGER scalar param counts 1
+   only when SYM is in ACTIVE-SET (A2 activity analysis). Float / tensor / cell /
+   record behavior is unchanged — this only ADDS active-int contributions."
+  (let ((base (%count-differentiable-contributions pd-type record-info)))
+    (if (and (zerop base)
+             (%crisp-integer-scalar-type-p pd-type)
+             (member sym active-set :test #'eq))
+        1
+        base)))
 
 (defun %crisp-tensor-param-type-p (pd-type)
   "Returns T if PD-TYPE is a tensor (float-element or integer-element)

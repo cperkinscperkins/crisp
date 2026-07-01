@@ -1,0 +1,30 @@
+;; TEST-EXPECT: PASS
+;;
+;; Endeavor 124 A2 — the GUARDRAIL (why blocker (a) needs ACTIVITY analysis, not a
+;; blanket "count every int param"). This test must KEEP PASSING under any A2 fix.
+;;
+;; clamp-count's `n` (int) is used ONLY in a comparison (a control/condition
+;; position) — it is a STRUCTURAL int, not a differentiable value. Its gradient is
+;; meaningless and it must NOT get a returned-gradient slot. `x` (float) is the
+;; active param (dclamp-count/dx = 1 or 2 depending on the branch).
+;;
+;; A blanket "count integers as differentiable" regressed exactly this CLASS:
+;; index / size / tensor-metadata / tile-descriptor ULONGs got counted, producing
+;; "Missing implicit argument ..._GRAD_N" in the scratch/tile machinery (see
+;; 060-array/11, 111/14, 113/04). So the A2 activity analysis must classify `n`
+;; here (comparison position, no arithmetic path to the output) as INACTIVE, while
+;; classifying 07/08/09's params (arithmetic operands) as ACTIVE.
+;;
+;; Compiles today (all ints inactive by default) and must continue to.
+
+(def-function clamp-count (x n)
+  (declare #'(float int => float))
+  (if (< n 5) x (* x 2.0)))
+
+(def-type in-f  (cell float :address-space :global))
+(def-type in-i  (cell int   :address-space :global))
+(def-type out-f (cell float :address-space :global))
+
+(def-kernel use_clamp_count (x n &out r)
+  (declare #'(in-f in-i &out out-f))
+  (set! (~ r) (clamp-count (~ x) (~ n))))

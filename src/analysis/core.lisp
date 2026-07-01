@@ -2050,15 +2050,21 @@ RECORD-INFO is an alist of (NAME-STR . FIELD-COUNT) built by
                                        when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
                                                  (%crisp-float-type-p (parameter-def-type pd)))
                                        collect pd))
+                                ;; A2: active int scalar params (reach the return
+                                ;; differentiably). Structural ints stay inactive.
+                                (active-set (%active-scalar-param-set
+                                             (mapcar #'parameter-def-name env) fn-body))
                                 ;; 101: widened — counts record/struct field
                                 ;; contributions and float scalars; handle types
                                 ;; (tensors, cells) contribute 0 here and flow
                                 ;; grad via the &out grad-handle pathway instead.
+                                ;; A2: plus ACTIVE integer scalar params.
                                 (n-diff-params
                                  (loop for pd in env
                                        when (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                                       sum (%count-differentiable-contributions
-                                            (parameter-def-type pd) record-info)))
+                                       sum (%count-active-contributions
+                                            (parameter-def-type pd) (parameter-def-name pd)
+                                            active-set record-info)))
                                 (n-return (length (remove nil return-types)))
                                 (fn-param-entries
                                  (loop for pd in env
