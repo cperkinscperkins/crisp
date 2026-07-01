@@ -186,11 +186,37 @@ The three blockers (all still required for 120/03):
       n_adj=2*seed). Unit tests updated: 052 gbfa test split into
       gbfa-differentiates-active-int-params + gbfa-skips-inactive-params.
       Suite: unit 252/252, spec 786/787 both ways (only 09), negatives 183/183.
-  (c) COMPANION UNIFORMITY — the generated _GRAD companion must preserve/propagate
-      uniformity so a recomputed if+ (in C, called from B's backward) still proves
-      its condition uniform. Even the int variant with (declare (uniform x)) fails
-      "Function C requires parameter X to be :uniform" because B_GRAD drops it.
+  (c) INTERPROCEDURAL UNIFORMITY through a cell-deref — DONE 2026-07-01. The feared
+      "companion drops uniformity" was again mostly a PHANTOM: 124/09 was failing in
+      the FORWARD pass, before any backward companion existed. Root cause: the
+      pre-pass uniformity walker %uni-analyze (src/analysis/core.lisp — a SEPARATE
+      lightweight walker over raw forms, NOT the semantic-node calculate-uniformity-
+      state) evaluated the call-site argument `(~ x)` as :unknown, so clampish's
+      parameter was never inferred :uniform and its `if+` was rejected. Two clauses
+      added to %uni-analyze:
+        - `~` (memory read): (~ src [idx]) is uniform iff its handle and index are
+          uniform (taint-max via %uni-combine). A whole-cell read (~ x) has no index
+          sub-form (implicit element 0, uniform) so its state is just SRC's.
+        - `MARSHALL-*` (marshall-cell / marshall-tensor / %marshall-tensor /
+          marshall-vector / marshall-matrix): the kernel entry EXPLODES a cell/tensor
+          param into (ptr byte-size offset ...) and REASSEMBLES it via
+          `(let ((x (marshall-cell TYPE size ptr off))) ...)`; the reassembled handle
+          is uniform iff its RUNTIME args are (the leading compile-time TYPE arg is
+          skipped via (cddr form)). Without this the local reads :unknown and blocks
+          uniformity from flowing through (~ x) into the callee.
+      Chain: x_ptr (uniform kernel arg) -> marshall-cell -> (~ x) -> :uniform
+      contributed to clampish.x -> if+ proves uniform FORWARD and in the recomputed
+      BACKWARD (the companion preserves it for free once the param is inferred).
+      NO (declare (uniform)) needed — exactly the author's goal for 120/03. A matching
+      `semantic-aref` clause was also added to calculate-uniformity-state (the
+      node-level evaluator) so a kernel-level `(~ uniform-cell)` used DIRECTLY as an
+      if+ condition is uniform too — sound (uniform handle at uniform/implicit-0 index
+      = same value for every thread), conservative (only asserts :uniform, else
+      unchanged :unknown), and harmless; not strictly required for 09. IR-verified:
+      clampish_grad(i32,float) does x_adj += seed in both branches -> dclampish/dx=1.
+      124/09 GREEN forward + --differentiate; 120/03 green both passes.
+      Suite: unit 252/252, spec 787/787 both ways, negatives 183/183.
 
-None of (a)/(b)/(c) can be validated in isolation for 120/03 (they're entangled),
-though (b) mirrors C and is low-risk once (a) enables registration. Recommend A2 as
-its own focused endeavor starting with the activity analysis (a).
+ENDEAVOR 124 COMPLETE (2026-07-01): A1 (value if/let backward), B (boolean fold),
+C (mixed precision), A2 (a) activity analysis + (b) sub-fn double typing + (c)
+interprocedural uniformity — all done. Suite fully green. ci-stop=124-ad-issues.
