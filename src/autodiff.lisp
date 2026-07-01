@@ -864,9 +864,17 @@
                      do (setf (gethash (car form) ht) t))
                ht)))
         (flet ((promotes-to-double-p (t-spec)
-                                     (let ((promoted (%promote-to-float-adjoint t-spec)))
-                                       (or (eq promoted 'double)
-                                           (and (consp promoted) (eq (second promoted) 'double))))))
+                                     ;; Endeavor 124 (AD issues) C: %promote-to-float-adjoint
+                                     ;; leaves a non-integer type ALIAS unresolved (e.g. a
+                                     ;; (cell double) alias comes back as the bare alias
+                                     ;; symbol), so we must canonicalize before checking for
+                                     ;; a double element. Integer aliases are already promoted
+                                     ;; (long -> double) by %promote-to-float-adjoint.
+                                     (let* ((promoted (%promote-to-float-adjoint t-spec))
+                                            (canon (or (ignore-errors (canonicalize-type-specifier promoted))
+                                                       promoted)))
+                                       (or (eq canon 'double)
+                                           (and (consp canon) (eq (second canon) 'double))))))
           (let* ((any-output-double (some #'promotes-to-double-p output-types))
                  (intermediate-zero (if any-output-double '(as double 0.0) 0.0)))
             (labels ((local-adj (v)
@@ -1095,19 +1103,34 @@
                               (and (not is-cell-input) (not is-tensor-input)
                                    (or (%crisp-integer-scalar-type-p in-type)
                                        (%crisp-float-type-p in-type)))))
-                        (cond
-                         (is-tensor-input nil)
-                         (is-cell-input (emit `(set! (~ ,in-grad) ,(local-adj in))))
-                         (is-scalar-wrapped (emit `(set! (~ ,in-grad) ,(local-adj in))))
-                         (t (emit `(set! ,in-grad ,(local-adj in)))))))
+                        ;; Endeavor 124 (AD issues) C: under any-output-double the
+                        ;; adjoint runs in double, but a float/small-int input's grad
+                        ;; cell is float — down-cast at the write to match the cell.
+                        (let ((write-val
+                               (if (and any-output-double
+                                        (not (promotes-to-double-p in-type))
+                                        (or is-cell-input is-scalar-wrapped))
+                                   `(to-float ,(local-adj in))
+                                   (local-adj in))))
+                          (cond
+                           (is-tensor-input nil)
+                           (is-cell-input (emit `(set! (~ ,in-grad) ,write-val)))
+                           (is-scalar-wrapped (emit `(set! (~ ,in-grad) ,write-val)))
+                           (t (emit `(set! ,in-grad ,write-val)))))))
 
               (let* ((typed-zero-for
                       (lambda (orig-sym)
                         (let* ((idx (position orig-sym inputs))
                                (in-type (when idx (nth idx input-types))))
+                          ;; Endeavor 124 (AD issues) C: when ANY output promotes to
+                          ;; double, the whole backward chain runs in double — INCLUDING
+                          ;; float-input adjoints — so the adjoint accumulations don't mix
+                          ;; float and double. The narrower grad cell is reconciled by a
+                          ;; down-cast at the grad-cell write below.
                           (cond
                            (in-type
-                             (if (promotes-to-double-p in-type) '(as double 0.0) 0.0))
+                             (if (or (promotes-to-double-p in-type) any-output-double)
+                                 '(as double 0.0) 0.0))
                            (any-output-double '(as double 0.0))
                            (t 0.0)))))
                      (local-bindings (loop for v being the hash-keys of adjoint-map

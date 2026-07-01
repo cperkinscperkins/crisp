@@ -108,8 +108,39 @@ uniformity-logic.unit.lisp intrinsic assertions to the int 1/0 representation
 (type check made package-robust via symbol-name string-equal, since `int` is not
 cl:int the way `boolean` was cl:boolean).
 
+Phase C — mixed precision (double / long outputs) — DONE 2026-06-29 (kernel walk).
+Suite 782/782 both passes; negatives 183/183.
+
+Root cause: double/long-output AD was broadly broken (no existing differentiable
+double spec; even an all-double (* x x) failed "Expected FLOAT but inferred DOUBLE").
+Two bugs in generate-backward-walk's adjoint typing:
+  1. promotes-to-double-p called %promote-to-float-adjoint, which leaves a
+     NON-integer type ALIAS unresolved (a (cell double) alias came back as the bare
+     alias symbol) -> any-output-double was NIL -> every adjoint init'd to float 0.0
+     while the chain ran in double. Fix: canonicalize before checking for a double
+     element.
+  2. Even with any-output-double, a FLOAT input's adjoint stayed float (typed-zero-for
+     only promoted inputs that promote-to-double themselves), clashing with the double
+     intermediates at the (set! x_adj (+ x_adj intermediate)) boundary. Fix: under
+     any-output-double the WHOLE chain runs in double — float/int inputs get double
+     adjoints too — and the narrower float grad cell is reconciled by a `to-float`
+     down-cast at the grad-cell write (cell/scalar inputs only). Crisp `+` widens a
+     float operand into a double accumulator, so the FFI VJP's float delta flows in
+     correctly.
+
+IR verified (mixed float-in/double-out, y=x^2): float primals fpext'd into the
+double chain, accumulation in double, `fptrunc double ... to float` at the x_grad
+store. dy/dx = 2x.
+
+Tests: un-SKIP'd 123/04-ffi-long-return (now compiles under --differentiate); added
+124/05-double-output (all-double) and 124/06-mixed-precision (compile-shape + manual
+IR — VERIFY-AUTODIFF supports only cell float, so double outputs can't be numerically
+checked on metal).
+
 Remaining:
-- Phase C: mixed precision (123/04 + the ulong-sub-fn case above). See
-  [[endeavor-123-ffi-ad]] / earlier notes.
 - Phase A2 (deferred): integer sub-function differentiability for 120/03 — large,
-  3-subsystem effort (activeness + C + interprocedural uniformity).
+  3-subsystem effort: (a) active-vs-index analysis (to avoid the 4-test regression),
+  (b) SUB-FUNCTION-walk double typing (the %generate-backward-function-walk
+  adjoint-bindings still hardcode 0.0 — the analogue of Phase C's fix, needed for
+  ulong/long sub-fn companions), (c) interprocedural uniformity (if+ in C needs
+  uniform x propagated from B).
