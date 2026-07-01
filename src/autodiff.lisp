@@ -69,7 +69,7 @@
           ;; Has scalar deltas too: multi-value bind, then accumulate, plus call.
           ((or accum-forms (> n-fp 0))
             (funcall emit-fn
-              `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+              `(let (,@(mapcar (lambda (d) `(,d ,(%ad-zero *ad-any-output-double*))) deltas))
                  (let (,(append deltas (list call-form)))
                    ,@accum-forms))))
           ;; Tensor-only: just emit the call as a statement.
@@ -77,7 +77,7 @@
      ;; No tensors, has scalar accumulations: existing multi-value-bind path.
      (accum-forms
        (funcall emit-fn
-         `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+         `(let (,@(mapcar (lambda (d) `(,d ,(%ad-zero *ad-any-output-double*))) deltas))
             (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adj-forms))))
               ,@accum-forms))))
      (t nil))))
@@ -137,7 +137,7 @@
                            collect `(set! ,(funcall local-adj-fn arg)
                                           (+ ,(funcall local-adj-fn arg) ,d)))))
           (funcall emit-fn
-            `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+            `(let (,@(mapcar (lambda (d) `(,d ,(%ad-zero *ad-any-output-double*))) deltas))
                (let (,(append deltas (list call-form)))
                  ,@accum)))))))
 
@@ -540,7 +540,7 @@
       (funcall emit-fn
         `(let (,@binds
                ,@(loop for adv being the hash-values of local-map
-                       collect `(,adv 0.0)))
+                       collect `(,adv ,(%ad-zero *ad-any-output-double*))))
            ,@(nreverse collected)))))
   t)
 
@@ -863,20 +863,13 @@
                                          :test #'string=))
                      do (setf (gethash (car form) ht) t))
                ht)))
-        (flet ((promotes-to-double-p (t-spec)
-                                     ;; Endeavor 124 (AD issues) C: %promote-to-float-adjoint
-                                     ;; leaves a non-integer type ALIAS unresolved (e.g. a
-                                     ;; (cell double) alias comes back as the bare alias
-                                     ;; symbol), so we must canonicalize before checking for
-                                     ;; a double element. Integer aliases are already promoted
-                                     ;; (long -> double) by %promote-to-float-adjoint.
-                                     (let* ((promoted (%promote-to-float-adjoint t-spec))
-                                            (canon (or (ignore-errors (canonicalize-type-specifier promoted))
-                                                       promoted)))
-                                       (or (eq canon 'double)
-                                           (and (consp canon) (eq (second canon) 'double))))))
+        ;; Endeavor 124 C/A2: the adjoint-typing decision now lives in one place
+        ;; (%ad-promotes-to-double-p / %ad-zero) shared with the sub-fn, FFI and
+        ;; value-if/let paths.
+        (flet ((promotes-to-double-p (t-spec) (%ad-promotes-to-double-p t-spec)))
           (let* ((any-output-double (some #'promotes-to-double-p output-types))
-                 (intermediate-zero (if any-output-double '(as double 0.0) 0.0)))
+                 (*ad-any-output-double* any-output-double)
+                 (intermediate-zero (%ad-zero any-output-double)))
             (labels ((local-adj (v)
                                 (or (gethash v adjoint-map)
                                     (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
@@ -1129,10 +1122,9 @@
                           ;; down-cast at the grad-cell write below.
                           (cond
                            (in-type
-                             (if (or (promotes-to-double-p in-type) any-output-double)
-                                 '(as double 0.0) 0.0))
-                           (any-output-double '(as double 0.0))
-                           (t 0.0)))))
+                             (%ad-zero (or (promotes-to-double-p in-type) any-output-double)))
+                           (any-output-double (%ad-zero t))
+                           (t (%ad-zero nil))))))
                      (local-bindings (loop for v being the hash-keys of adjoint-map
                                            using (hash-value adv)
                                            collect `(,adv ,(funcall typed-zero-for v))))
@@ -1622,6 +1614,17 @@ to compute-base-type for derived types."
          (orig-param-types (mapcar #'parameter-def-type env))
          (t-grad-types (mapcar (lambda (t-spec) (%promote-to-float-adjoint t-spec))
                            return-types-non-void))
+         ;; A2/C: does this sub-fn's adjoint chain run in double? (any param or
+         ;; return promotes to double: long / ulong / double).
+         (any-double (or (some #'%ad-promotes-to-double-p orig-param-types)
+                         (some #'%ad-promotes-to-double-p return-types-non-void)))
+         ;; A2/C: the returned-gradient slot type per active param, in order —
+         ;; double for a ulong/long param, float otherwise. (Record-field-adj syms
+         ;; that are not params keep the float default.)
+         (return-adj-types
+          (loop for sym in all-diff-param-syms-for-return
+                for pd = (find sym env :key #'parameter-def-name)
+                collect (if pd (%ad-scalar-adjoint-type (parameter-def-type pd)) 'float)))
          (tensor-param-info (%collect-tensor-param-info env pkg))
          (tensor-grad-out-syms (mapcar #'third tensor-param-info))
          (tensor-grad-out-types (mapcar #'fourth tensor-param-info))
@@ -1631,7 +1634,7 @@ to compute-base-type for derived types."
          (bkwd-fn-spec
           `(function (,@orig-param-types ,@t-grad-types
                         ,@(when tensor-param-info (cons out-marker tensor-grad-out-types))
-                        => ,@(make-list n-float-params :initial-element 'float)))))
+                        => ,@return-adj-types))))
 
     (setf (gethash name *differentiable-functions*)
       (list :bkwd-name bkwd-name
@@ -1673,7 +1676,7 @@ to compute-base-type for derived types."
                                                 name)
                   (%generate-backward-function-walk
                    flat-anf all-diff-param-syms-for-return t-grad-syms return-vars
-                   tensor-inputs-ht))))
+                   tensor-inputs-ht any-double return-adj-types))))
           `(def-function ,bkwd-name ,bkwd-params
                          (declare #'(,@(second bkwd-fn-spec)))
                          ,bkwd-body))
@@ -1737,7 +1740,7 @@ differentiable user function."
 
 
 (defun %generate-backward-function-walk (flat-anf float-param-syms t-grad-syms return-vars
-                                                  &optional tensor-inputs-ht)
+                                                  &optional tensor-inputs-ht any-double return-adj-types)
   "Generates the backward-pass body for a def-function.
 FLAT-ANF         : flattened ANF of the forward function body.
 FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).
@@ -1752,7 +1755,9 @@ backward so tensor reads inside the body emit atomic-add into the corresponding
 Returns a (let (...) ...) form suitable as the body of the _GRAD companion function."
   (let ((backward-forms nil)
         (adjoint-map (make-hash-table :test 'equal))
-        (return-var-seeds (make-hash-table :test 'eq)))
+        (return-var-seeds (make-hash-table :test 'eq))
+        ;; A2/C: expose the double-chain flag to value-if/let inside the body.
+        (*ad-any-output-double* any-double))
 
     (loop for rv in return-vars
           for tg in t-grad-syms do
@@ -1795,7 +1800,16 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
                        (%emit-sub-fn-backward fn args bkwd-fn (mapcar #'local-adj result-vars) n-fp pkg #'emit #'local-adj "MV")))))
            (t nil))))
 
-      (emit `(return ,@(mapcar #'local-adj float-param-syms)))
+      ;; A2/C: return each active-param adjoint in its declared adjoint slot type.
+      ;; Under a double chain (any-double) a param adjoint runs in double; if its
+      ;; return slot is float (e.g. a float param in a mixed sub-fn), down-cast.
+      (emit `(return
+              ,@(loop for sym in float-param-syms
+                      for slot in (or return-adj-types
+                                      (make-list (length float-param-syms) :initial-element 'float))
+                      collect (if (and any-double (eq slot 'float))
+                                  `(to-float ,(local-adj sym))
+                                  (local-adj sym)))))
 
       (let* ((forward-bindings
               (loop for form in flat-anf
@@ -1808,7 +1822,10 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
               (loop for v being the hash-keys of adjoint-map
                     using (hash-value adv)
                     collect (let ((seed (gethash v return-var-seeds)))
-                              `(,adv ,(if seed seed 0.0)))))
+                              ;; A2/C: non-seed adjoints init to the typed zero
+                              ;; (double under a double chain); seeds carry their
+                              ;; already-promoted t_grad type.
+                              `(,adv ,(if seed seed (%ad-zero any-double))))))
              (all-bindings (append forward-bindings adjoint-bindings)))
         `(let ,all-bindings
            ,@(nreverse backward-forms))))))
@@ -1984,6 +2001,41 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
    ((%crisp-integer-cell-type-p type-spec) (%integer-cell-elem-to-float type-spec))
    ((%crisp-integer-scalar-type-p type-spec) (%integer-scalar-to-float-scalar type-spec))
    (t type-spec)))
+
+;;; ===================================================================
+;;; Endeavor 124 (AD issues) C/A2 — the ONE source of truth for adjoint typing.
+;;;
+;;; An adjoint's type is %promote-to-float-adjoint of the value it shadows:
+;;; float/small-int -> float, double/long/ulong -> DOUBLE. These two helpers
+;;; centralize that decision (and the typed zero-init) so every backward site —
+;;; the kernel walk, the sub-function walk, the FFI VJP path, and the value-if/let
+;;; branch handlers — shares one rule instead of hardcoding 0.0 / 'float.
+;;; ===================================================================
+
+(defun %ad-promotes-to-double-p (type-spec)
+  "T if the ADJOINT of a value of TYPE-SPEC is DOUBLE (double / long / ulong, or a
+   cell/tensor thereof). Canonicalizes first, because %promote-to-float-adjoint
+   leaves a non-integer type ALIAS unresolved (e.g. a (cell double) alias)."
+  (let* ((promoted (%promote-to-float-adjoint type-spec))
+         (canon (or (ignore-errors (canonicalize-type-specifier promoted)) promoted)))
+    (or (eq promoted 'double)                    ; bare scalar double (e.g. ulong/long param)
+        (eq canon 'double)
+        (and (consp canon) (eq (second canon) 'double)))))
+
+(defun %ad-zero (double-p)
+  "The typed zero literal for a fresh adjoint accumulator: (as double 0.0) when
+   DOUBLE-P, else 0.0."
+  (if double-p '(as double 0.0) 0.0))
+
+(defun %ad-scalar-adjoint-type (type-spec)
+  "The SCALAR adjoint type ('float or 'double) for a scalar value of TYPE-SPEC."
+  (if (%ad-promotes-to-double-p type-spec) 'double 'float))
+
+(defvar *ad-any-output-double* nil
+  "Dynamically bound (by the kernel walk and the sub-function walk) to T when the
+   backward chain runs in double — any output/param/return promotes to double. Read
+   by the value-if/let and FFI paths so their fresh adjoints get the typed zero
+   (%ad-zero) too, without threading the flag through every call.")
 
 
 ;; is this actually used?

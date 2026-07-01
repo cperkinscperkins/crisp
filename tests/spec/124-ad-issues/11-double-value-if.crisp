@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;;
+;; Endeavor 124 A2/C consolidation: a value-producing `if` inside a DOUBLE chain.
+;; The branch (* (~ x) (~ x)) is ANF-wrapped in a let, whose branch-local adjoint
+;; used to init to float 0.0 while the chain ran in double -> "Expected FLOAT but
+;; inferred DOUBLE". After routing every fresh-adjoint site through the single
+;; source of truth (%ad-zero + *ad-any-output-double*), the value-let branch
+;; adjoints init in double too. Regression guard for that consolidation.
+;; (Compile-shape + manual IR — VERIFY-AUTODIFF supports only cell float.)
+
+(def-type in-d  (cell double :address-space :global))
+(def-type out-d (cell double :address-space :global))
+
+(def-kernel dbl_value_if (x &out y)
+  (declare #'(in-d &out out-d))
+  (set! (~ y) (if (< (~ x) 100.0) (* (~ x) (~ x)) (~ x))))

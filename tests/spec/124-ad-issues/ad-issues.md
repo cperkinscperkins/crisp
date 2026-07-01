@@ -167,10 +167,25 @@ The three blockers (all still required for 120/03):
       regressions). 07-a2-int-subfn now GREEN (scale3_grad returns 3.0*seed,
       IR-verified); guardrail 10 + the 4 tile/array tests stay green. Sub-fn calls
       are over-approximated (all args active) — safe, source-only.
-  (b) SUB-FN-walk double typing — port Phase C's fix (canonicalize in a
-      promotes-to-double check + run the chain in double + down-cast) into
-      %generate-backward-function-walk, whose adjoint-bindings still hardcode 0.0.
-      Needed for ulong/long sub-fn companions (C returns ulong -> double seed).
+  (b) SUB-FN-walk double typing — DONE 2026-07-01, via a CONSOLIDATION rather than
+      a 5th copy of the logic. Extracted ONE source of truth in src/autodiff.lisp:
+      %ad-promotes-to-double-p (canonicalizes; now also checks the BARE scalar
+      `double` case, which the kernel-only version missed — that was the actual 08
+      bug: %promote-to-float-adjoint('ulong)=double but the old check compared a
+      canonicalized bare 'double and got NIL), %ad-zero (typed zero), and
+      %ad-scalar-adjoint-type. Routed the kernel walk, the sub-fn walk
+      (%generate-backward-companion-ast-body types the return SLOTS per promoted
+      param type + %generate-backward-function-walk types the adjoint inits and
+      down-casts float slots under a double chain), the FFI VJP path
+      (%emit-foreign-backward / %emit-sub-fn-backward delta inits), and the
+      value-if/let path (branch-local adjoint inits) through them. A new dynamic
+      var *ad-any-output-double* (bound by both walks) carries the double-chain flag
+      to value-if/let + FFI without threading it everywhere. Also fixed a LATENT
+      gap this exposed: a value-if in a double chain (branch let-wrapped) — see
+      124/11-double-value-if. 124/08 now GREEN (dbl_grad #'(ulong double => double),
+      n_adj=2*seed). Unit tests updated: 052 gbfa test split into
+      gbfa-differentiates-active-int-params + gbfa-skips-inactive-params.
+      Suite: unit 252/252, spec 786/787 both ways (only 09), negatives 183/183.
   (c) COMPANION UNIFORMITY — the generated _GRAD companion must preserve/propagate
       uniformity so a recomputed if+ (in C, called from B's backward) still proves
       its condition uniform. Even the int variant with (declare (uniform x)) fails
