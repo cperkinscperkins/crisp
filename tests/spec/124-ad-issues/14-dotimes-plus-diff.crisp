@@ -1,0 +1,23 @@
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=3.0 output-vec=4
+;;
+;; Endeavor 124: differentiation THROUGH a `dotimes+` (uniform trip count). Raw
+;; `dotimes` already differentiated (endeavor 107's structure-preserving backward
+;; walk mirrors LET/DOTIMES/IF/PROGN), but `dotimes+` — a dotimes with a
+;; provably-uniform limit — was matched by NAME as only "DOTIMES" and slipped
+;; through to the generic call path, mangling its body ("SET! is not
+;; differentiable"). Fixed by teaching three name-matches to also accept
+;; "DOTIMES+": the ANF dispatch (anf-transform.lisp %anf-normalize-dotimes, which
+;; preserves the operator) and the two backward-walk sites in autodiff.lisp
+;; (bound-var scan + %gfw-process-dotimes dispatch). The backward loop itself is a
+;; plain dotimes (uniformity was a forward-time concern, already discharged).
+;;
+;; C[i] = 3*A[i] over dotimes+ (i 4). f(A) = sum_i C[i] = 3*sum_i A[i];
+;; df/dA[k] = 3.0 for each k.
+
+(def-type vec-t (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
+
+(def-kernel dotimes_plus_diff (A &out C)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4))
+  (dotimes+ (i 4)
+    (set! (~ C i) (* 3.0f (~ A i)))))

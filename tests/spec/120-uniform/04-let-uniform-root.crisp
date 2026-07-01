@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; SKIP-WITH[--differentiate]: "dotimes+ not yet handled in AD backward walk; uniformity is a forward-time concern"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 ;; Endeavor 120 (gap #1): a let-bound uniform ROOT must remain provably uniform,
 ;; so dotimes+ accepts it.  analyze-let-expression must propagate the init's

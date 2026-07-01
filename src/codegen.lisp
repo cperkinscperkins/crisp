@@ -1414,7 +1414,12 @@
               (multiple-value-bind (then-val then-loc)
                   (generate-node-ir (semantic-if-then-node node) builder module var-env di-builder di-scope location-map)
                 (declare (ignore then-loc))
-                (when result-alloca
+                ;; A branch may legitimately produce no value (a `nil` literal, as in
+                ;; the then-arm of (unless+ cond body) => (if+ cond nil body)). Then
+                ;; then-val is NIL; skip the store so this path leaves the result
+                ;; alloca undef (the branch is untaken under the uniform condition,
+                ;; so the value is never observed) — same as a missing then-clause.
+                (when (and result-alloca then-val)
                       (llvm-build-store builder then-val result-alloca)))
               ;; No then clause (e.g. unless). Treat as void/nil.
               nil)
@@ -1428,7 +1433,10 @@
               (multiple-value-bind (else-val else-loc)
                   (generate-node-ir (semantic-if-else-node node) builder module var-env di-builder di-scope location-map)
                 (declare (ignore else-loc))
-                (when result-alloca
+                ;; As with the then-arm: a `nil` else-value (e.g. (when+ cond body) or
+                ;; a plain (if cond x nil)) yields NIL — skip the store, leaving undef
+                ;; on the untaken path rather than crashing on a NIL store operand.
+                (when (and result-alloca else-val)
                       (llvm-build-store builder else-val result-alloca)))
               ;; No else clause. If result expected, this is undefined behavior or nil.
               nil)

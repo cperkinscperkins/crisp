@@ -220,3 +220,21 @@ The three blockers (all still required for 120/03):
 ENDEAVOR 124 COMPLETE (2026-07-01): A1 (value if/let backward), B (boolean fold),
 C (mixed precision), A2 (a) activity analysis + (b) sub-fn double typing + (c)
 interprocedural uniformity — all done. Suite fully green. ci-stop=124-ad-issues.
+
+FOLLOW-UP (2026-07-01): full AD coverage of the uniform `+` control forms.
+  - Corrected the 120-uniform/04-10 SKIP-WITH[--differentiate] reasons to the true
+    "kernel has no &out param, not differentiable" (those kernels are `=> nil`).
+  - Added differentiability tests: if+ was already covered (03 value, 09 sub-fn);
+    NEW 12-when-plus-diff, 13-unless-plus-diff, 14-dotimes-plus-diff — all
+    VERIFY-AUTODIFF green on metal (grad=3).
+  - dotimes+ AD fix: `dotimes+` was matched by name as only "DOTIMES" and slipped to
+    generic-call handling ("SET! is not differentiable"). Now also accepts "DOTIMES+"
+    at 3 sites — anf-transform.lisp dispatch (%anf-normalize-dotimes preserves the op)
+    + its no-macroexpand exclusion list, and the 2 backward-walk sites in autodiff.lisp.
+  - value-unless+ fix: `(if cond nil X)` (unless+ => (if+ cond nil body)) crashed
+    FORWARD ("NIL is not a SYSTEM-AREA-POINTER"), not an AD bug. ensure-branch-
+    compatibility unified a single-void-branch if to VOID, so SEMANTIC-SET! stored the
+    if's NIL value. Fix: unify to void only when BOTH branches are void; a lone void
+    branch takes the other's type. Plus guarded the semantic-if codegen stores against
+    a NIL branch value (untaken arm left undef). when+ needed no fix (missing-else).
+  Suite fully green: spec 790/790 both ways, unit 252/252, negatives 183/183.

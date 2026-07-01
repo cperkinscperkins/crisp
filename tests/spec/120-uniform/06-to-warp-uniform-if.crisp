@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; SKIP-WITH[--differentiate]: "if+/to-warp-uniform not yet handled in AD backward walk"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 ;; Endeavor 120 (gap #1): (to-warp-uniform ...) bound in a let must make the
 ;; variable provably uniform so if+ accepts it.

@@ -1,0 +1,19 @@
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3 expect.x=3.0
+;;
+;; Endeavor 124: differentiation THROUGH a value-producing `when+` (uniform
+;; condition). when+ expands to (if+ cond (progn body)) — a 3-element if+ with a
+;; then-branch and NO else — so the A1 value-if backward routes the result adjoint
+;; into the then-branch only (an untaken when+ contributes zero gradient, which is
+;; correct). get-workgroup-id is uniform, so the condition is valid for when+;
+;; with a small launch g < 5 -> the body runs -> res = 3*x -> dres/dx = 3.0.
+;;
+;; Companion coverage for if+ (03) / if+-in-sub-fn (09); demonstrates that the
+;; uniform-control `+` conditionals differentiate, not just plain `if`.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel when_plus_diff (x &out res)
+  (declare #'(in-c &out out-c))
+  (let ((g (get-workgroup-id 0)))
+    (set! (~ res) (when+ (< g 5ul) (* (~ x) 3.0)))))

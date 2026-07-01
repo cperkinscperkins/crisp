@@ -33,10 +33,22 @@
                    (listp t-type) (member (first t-type) '(ptr array)))
                (values t-type then-node (create-implicit-cast else-node t-type location)))
 
-             ;; Void Compatibility: If one branch is NIL (void), unify to NIL (void).
-             ;; This supports (when ...) and (unless ...) which return NIL on one path.
-             ((or (null t-single) (null e-single))
+             ;; Void Compatibility. If BOTH branches are void, the if is void (a
+             ;; statement (when ...) / (unless ...)).
+             ((and (null t-single) (null e-single))
                (values '(nil) then-node else-node))
+             ;; If only ONE branch is void — e.g. (if cond nil X), as produced by a
+             ;; value-position (unless+ cond X) => (if+ cond nil X), or (if cond X nil)
+             ;; — unify to the OTHER branch's real type. The void branch contributes
+             ;; no value and its path is left undef by codegen (safe: under a uniform
+             ;; if+/when+/unless+ condition that branch is untaken; for a plain
+             ;; divergent if, using the value on the void path is the caller's
+             ;; pre-existing undefined behaviour). This lets such an if be used as a
+             ;; value, e.g. (set! (~ r) (unless+ ...)).
+             ((null t-single)
+               (values e-type then-node else-node))
+             ((null e-single)
+               (values t-type then-node else-node))
 
              (t
                (error "Branch type mismatch in IF expression. Then: ~a, Else: ~a" t-type e-type))))))))

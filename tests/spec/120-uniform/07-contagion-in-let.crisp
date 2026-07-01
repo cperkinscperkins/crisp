@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; SKIP-WITH[--differentiate]: "dotimes+ not yet handled in AD backward walk"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 ;; Endeavor 120 (gap #1): contagion through a let binding. uniform + uniform is
 ;; uniform, and the let-bound result must stay uniform for dotimes+.
