@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "with-precision: expected (fast) or (ieee)"
+;;
+;; Endeavor 126 negative: (with-precision (KEY) ...) accepts only `fast` or `ieee`.
+;; Any other key is a compile error (analyze-with-precision-expression), caught in
+;; the analysis pass before codegen — no flags needed to trigger it.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel wp_bad (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (with-precision (bogus) (* (~ x) (~ x)))))

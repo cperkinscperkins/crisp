@@ -238,6 +238,7 @@ Header comment directives for test expectations:
 ;; FAIL-WITH[--single-pass]: "Unsupported form"
 ;; TEST-WITH[--metadata] : validate-metacrisp
 ;; TEST-WITH[--force-math-precision=fast] : validate-fast-math   <-- FP precision axis; see below
+;; EXPECT-STDERR[--force-math-precision=fast]: "overrides..."    <-- assert a warning on stderr; see below
 ;; TEST-HOIST[L0]: validate-l0-compile-only
 ;; HOIST-DENORMAL: ftz                   <-- denormal mode for a TEST-HOIST run; see below
 ;; FFI-LINK: add.c                       <-- link a C/.bc library into the spec; see below
@@ -299,6 +300,46 @@ compiled to LLVM IR with the flag(s) active and the IR handed to an IR-grep vali
   `denormal-fp-math` attribute (`preserve-sign` for ftz, `ieee` for preserve).
 - Runner dispatch: any flag matching `--force-math-precision=` / `--math-precision=`
   / `--denormal-handling=` routes to `run-spec-precision-pass`.
+
+### Asserting a warning: `EXPECT-STDERR[...]`
+
+Some flags emit a **warning** rather than changing the IR — e.g. `--force-math-precision`
+(a hard lock that overrides all in-source precision intent) and `--math-precision=fast`
+combined with `--denormal-handling=preserve` (`fast` implies flush, so `preserve` can't
+be honored). A `TEST-WITH` validator only sees the IR, so it can't catch these.
+`EXPECT-STDERR[flags]: "substring"` fills the gap: it compiles the spec with `flags`
+active and PASSes iff the compile **succeeds** (exit 0, so the warning is non-fatal)
+**and** `substring` appears on stderr.
+
+```lisp
+;; EXPECT-STDERR[--force-math-precision=fast]: "overrides all in-source precision choices"
+;; EXPECT-STDERR[--math-precision=fast --denormal-handling=preserve]: "is not honored under"
+```
+
+- The warnings are written with a raw `format` to `*error-output*` (not log4cl), so
+  `--log-level=off` does **not** suppress them.
+- The run is independent of `--differentiate`; the target is fixed to `spv`.
+- Implementation: `parse-expect-stderr` + `run-spec-expect-stderr-pass` in
+  `tests/run-specs.lisp`, dispatched as step 2.5 of `run-spec-file` (right after the
+  `TEST-WITH` runs).
+
+**Note:** the fast+preserve warning is a *flag-level* check only — a `declaim`- or
+`with-precision`-set `fast` combined with `preserve` does not (yet) trigger it.
+
+### Bad-key errors (negative tests)
+
+The two new source forms validate their precision key and error on anything but
+`fast`/`ieee`. These are plain `CHECK-FAIL` negatives (no flags needed) under
+`tests/spec/126-precision/errors/`:
+
+```lisp
+;; (with-precision (bogus) ...)  -> CHECK-FAIL: "with-precision: expected (fast) or (ieee)"
+;; (declaim (precision bogus))   -> CHECK-FAIL: "unknown precision key"
+```
+
+The unknown-*value* errors for the CLI flags themselves (`--math-precision=bogus`
+etc.) also exit non-zero, but the negative runner invokes a fixed arg list and can't
+yet inject per-test flags, so they are not covered.
 
 ### On-metal denormal: `HOIST-DENORMAL:`
 

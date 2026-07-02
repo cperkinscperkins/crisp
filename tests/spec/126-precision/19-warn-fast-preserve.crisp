@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; EXPECT-STDERR[--math-precision=fast --denormal-handling=preserve]: "is not honored under"
+;;
+;; Endeavor 126: `fast` precision implies flush-to-zero, so a competing
+;; --denormal-handling=preserve request cannot be honored under `fast` (denormal
+;; handling is not per-region on SPIR-V). Rather than silently flush, the compiler
+;; warns. Checked on stderr (EXPECT-STDERR) since the IR is unaffected. NOTE: this is
+;; a flag-level check only — a declaim/with-precision `fast` combined with `preserve`
+;; does not (yet) trigger it.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (* (~ x) (~ x))))

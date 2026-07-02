@@ -716,6 +716,8 @@ Transcendentals
 - [ ] across both precisions
 - [ ] and both subnormal handling (when ieee)
 - [ ] and auto differentiation for each. ?
+- [ ] error when transcendentals and ieee and no ilbdevice.bc when outputting PTX.
+- [ ] other errors?
 
 Binary Download / Release
 =========================

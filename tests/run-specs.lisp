@@ -432,6 +432,16 @@
           (unless (run-single-spec-pass file flags validator)
             (setf all-passed nil)))))
 
+    ;; 2.5 Expect-Stderr Runs (EXPECT-STDERR[flags]: "substring") -- Endeavor 126.
+    ;; Compile with the flags and assert a warning appears on stderr. For CLI
+    ;; warnings that don't change the IR (so a TEST-WITH validator can't see them).
+    (dolist (run (parse-expect-stderr directives))
+      (destructuring-bind (flags . substr) run
+        (format t "~&Running Spec: ~a (Expect-Stderr ~a : ~s)... " (pathname-name file) flags substr)
+        (finish-output)
+        (unless (run-spec-expect-stderr-pass file flags substr)
+          (setf all-passed nil))))
+
     ;; 3. Hoist Tests (TEST-HOIST[backend]: validator)
     (let ((hoist-directives (parse-test-hoist directives)))
       (if (and hoist-directives *compile-differentiate*)
@@ -561,6 +571,36 @@
       (uiop:print-backtrace :condition e)
       (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
+
+(defun run-spec-expect-stderr-pass (file flags expected-substring)
+  "Endeavor 126: compile FILE through the binary with FLAGS active; PASS iff the
+   compile SUCCEEDS (exit 0) AND EXPECTED-SUBSTRING appears on stderr. Used to lock
+   in CLI *warnings* (force-override, fast+preserve) which are emitted with a raw
+   `format` to *error-output* (not log4cl, so `--log-level=off` does not suppress
+   them) and which leave the IR unchanged — invisible to an IR-grep validator.
+   Runs the compile itself (independent of --differentiate); the target is fixed to
+   spv so a valid module is produced and exit 0 confirms the warning is non-fatal."
+  (let* ((bin (get-binary-path))
+         (args (append flags
+                       (list "--ir-target=spv"
+                             (format nil "--log-level=~a" cl-user::*log-level*)
+                             (uiop:native-namestring file)))))
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string :error-output :string :ignore-error-status t)
+      (declare (ignore output))
+      (cond
+       ((not (zerop exit-code))
+         (format *error-output* "FAIL (compile exit ~a; expected success + stderr ~s)~%~a~%"
+                 exit-code expected-substring error-output)
+         nil)
+       ((search expected-substring error-output)
+         (format t "PASS (stderr: ~s)~%" expected-substring)
+         t)
+       (t
+         (format *error-output* "FAIL (stderr missing ~s)~%--- got stderr ---~%~a~%"
+                 expected-substring error-output)
+         nil)))))
 
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active.
@@ -1872,6 +1912,31 @@
                       ;; Split by space to get individual flags
                       (let ((flags (uiop:split-string content :separator " ")))
                         (push (list flags (when validator (read-from-string validator))) runs)))))))
+    (nreverse runs)))
+
+(defun parse-expect-stderr (directive-lines)
+  "Parses EXPECT-STDERR[--flag1 --flag2]: \"substring\" directives (Endeavor 126).
+   Returns a list of (flags . substring) pairs. Each run compiles the spec with the
+   given flags and requires SUBSTRING to appear on stderr AND a successful compile.
+   For CLI *warnings* (e.g. --force-math-precision override, fast+preserve) that leave
+   the IR unchanged and so cannot be caught by a TEST-WITH IR-grep validator."
+  (let ((runs '()))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "EXPECT-STDERR[")
+          (let* ((end-bracket (position #\] trimmed))
+                 (content (when end-bracket (subseq trimmed (length "EXPECT-STDERR[") end-bracket)))
+                 (colon (position #\: trimmed :start (or end-bracket 0)))
+                 (rest (when colon (string-trim '(#\Space #\Tab #\Return #\Newline)
+                                                (subseq trimmed (1+ colon)))))
+                 ;; Strip the surrounding double-quotes around the expected substring.
+                 (substr (when (and rest (>= (length rest) 2)
+                                    (char= (cl:char rest 0) #\")
+                                    (char= (cl:char rest (1- (length rest))) #\"))
+                           (subseq rest 1 (1- (length rest))))))
+            (when (and content substr (> (length content) 0))
+              (let ((flags (remove "" (uiop:split-string content :separator " ") :test #'string=)))
+                (push (cons flags substr) runs)))))))
     (nreverse runs)))
 
 (defun parse-test-hoist (directive-lines)
