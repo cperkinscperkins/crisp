@@ -9,12 +9,15 @@
 # https://console.runpod.io/deploy
 #
 # Usage:
-#   ./scripts/run-on-pod.sh <host> <port> [branch] [ssh-key]
+#   ./scripts/run-on-pod.sh <host> <port> [branch] [ssh-key] [filter]
 #
 # Examples:
 #   ./scripts/run-on-pod.sh 149.36.1.192 29800
 #   ./scripts/run-on-pod.sh 149.36.1.192 29800 main
-#   ./scripts/run-on-pod.sh 149.36.1.192 29800 runpod-prep ~/.ssh/id_ed25519
+#   ./scripts/run-on-pod.sh 149.36.1.192 29800 precision ~/.ssh/id_ed25519
+#   # targeted (fast): only specs whose path matches <filter>; skips the
+#   # --differentiate + negative phases:
+#   ./scripts/run-on-pod.sh 149.36.1.192 29800 precision ~/.ssh/id_ed25519 09-denorm-ftz
 #
 # Prerequisites:
 #   - A RunPod pod running a PyTorch or CUDA image (provides nvcc)
@@ -26,7 +29,9 @@
 #   3. Installs Quicklisp if not already present
 #   4. Clones the Crisp repo at the specified branch
 #   5. Builds the compiler, L0 hoist, and CUDA hoist
-#   6. Runs the full spec suite (TEST-HOIST[CUDA] tests execute on metal)
+#   6. Runs the spec suite (TEST-HOIST[CUDA] tests execute on metal); output
+#      streams live and is saved to /tmp/crisp-*.log on the pod. A [filter]
+#      targets a subset. L0 hoist + SPIR-V compile-checks are skipped (no Intel GPU).
 #   7. Reports results
 #
 # The script is idempotent — safe to re-run if interrupted.
@@ -38,11 +43,15 @@ HOST="${1:?Usage: $0 <host> <port> [branch] [ssh-key]}"
 PORT="${2:?Usage: $0 <host> <port> [branch] [ssh-key]}"
 BRANCH="${3:-main}"
 SSH_KEY="${4:-$HOME/.ssh/id_ed25519}"
+FILTER="${5:-}"          # optional: substring filter -> only run matching specs (fast, targeted)
 
 REPO_URL="https://github.com/cperkinscperkins/crisp.git"
 WORK_DIR="/root/crisp"
 
 SSH_CMD="ssh -o StrictHostKeyChecking=accept-new -p ${PORT} -i ${SSH_KEY} root@${HOST}"
+
+# --- Helper: timestamped step banner (so a long/quiet phase is obvious) ---
+step() { echo "--- [$(date +%H:%M:%S)] $* ---"; }
 
 echo "=== Crisp RunPod Test Runner ==="
 echo "  Host:   ${HOST}:${PORT}"
@@ -61,12 +70,12 @@ pod_try() {
 }
 
 # --- 1. Verify connectivity and GPU ---
-echo "--- Step 1: Verify connectivity and GPU ---"
+step "Step 1: Verify connectivity and GPU"
 pod_run "nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader"
 echo ""
 
 # --- 2. Install system dependencies ---
-echo "--- Step 2: Install dependencies (SBCL, LLVM 21) ---"
+step "Step 2: Install dependencies (SBCL, LLVM 21)"
 pod_run "bash -s" <<'SETUP_DEPS'
 set -e
 
@@ -130,7 +139,7 @@ SETUP_DEPS
 echo ""
 
 # --- 3. Install Quicklisp ---
-echo "--- Step 3: Install Quicklisp ---"
+step "Step 3: Install Quicklisp"
 pod_run "bash -s" <<'SETUP_QL'
 set -e
 if [ -f ~/quicklisp/setup.lisp ]; then
@@ -149,7 +158,7 @@ SETUP_QL
 echo ""
 
 # --- 4. Clone or update repo ---
-echo "--- Step 4: Clone/update repo (branch: ${BRANCH}) ---"
+step "Step 4: Clone/update repo (branch: ${BRANCH})"
 pod_run "bash -s" <<CLONE
 set -e
 if [ -d ${WORK_DIR}/.git ]; then
@@ -169,7 +178,7 @@ CLONE
 echo ""
 
 # --- 5. Clear FASL cache and build ---
-echo "--- Step 5: Build compiler + hoist apps ---"
+step "Step 5: Build compiler + hoist apps"
 pod_run "bash -s" <<'BUILD'
 set -e
 # Clear stale FASL cache
@@ -189,9 +198,10 @@ BUILD
 echo ""
 
 # --- 6. Run specs ---
-echo "--- Step 6: Run spec suite ---"
-# Run with CRISP_USE_SYSTEM_TOOLS so it finds llc-21 on PATH
-pod_run "bash -s" <<'RUN_SPECS'
+step "Step 6: Run spec suite${FILTER:+  (filter: ${FILTER})}"
+# Run with CRISP_USE_SYSTEM_TOOLS so it finds llc-21 on PATH.
+# FILTER is injected into the remote env so the (quoted) heredoc can read it.
+pod_run "FILTER='${FILTER}' bash -s" <<'RUN_SPECS'
 set -e
 cd /root/crisp
 export CRISP_USE_SYSTEM_TOOLS=true
@@ -213,17 +223,37 @@ if command -v nvcc &>/dev/null; then
         && echo "libdevice found" || echo "libdevice NOT found at expected path"
 fi
 
-echo "=== Running specs (external binary) ==="
-sbcl --script tests/run-specs.lisp --use-binary --skip-unit-tests 2>&1 | tail -30
+FILTER_ARG=""
+[ -n "${FILTER:-}" ] && FILTER_ARG="--filter=${FILTER}"
 
-echo ""
-echo "=== Running specs (external binary, --differentiate) ==="
-sbcl --script tests/run-specs.lisp --use-binary --differentiate --skip-unit-tests 2>&1 | tail -10
+# Stream a phase LIVE. stdbuf -oL forces line-buffering so progress shows over
+# SSH instead of block-buffering into silence (the old `| tail` emitted nothing
+# until the whole suite finished — that was the "20 minutes of silence"). tee keeps
+# a full log on the pod; grep is a per-spec heartbeat. `|| true` so a failing spec
+# doesn't abort the remaining phases under `set -e`.
+run_phase() {
+    local label="$1"; shift
+    local logf="/tmp/crisp-$(echo "$label" | tr ' /,()' '_____').log"
+    echo ""
+    echo "=== [$(date +%H:%M:%S)] ${label} ==="
+    stdbuf -oL -eL sbcl "$@" 2>&1 \
+        | stdbuf -oL tee "$logf" \
+        | stdbuf -oL grep -E 'Running Spec:|Spec Summary|Passed:|Failed:|Skipped:|BUFFER |FAIL' \
+        || true
+    echo "  [$(date +%H:%M:%S)] done  (full log: ${logf})"
+}
 
-echo ""
-echo "=== Running negative specs ==="
-sbcl --script tests/run-error-specs.lisp 2>&1 | tail -5
+run_phase "specs (binary)" --script tests/run-specs.lisp --use-binary --skip-unit-tests ${FILTER_ARG}
+
+# A filter means a targeted run — skip the extra whole-suite phases.
+if [ -z "${FILTER:-}" ]; then
+    run_phase "specs (binary, --differentiate)" --script tests/run-specs.lisp --use-binary --differentiate --skip-unit-tests
+    run_phase "negative specs" --script tests/run-error-specs.lisp
+else
+    echo ""
+    echo "  (filter active -> skipping --differentiate and negative phases)"
+fi
 RUN_SPECS
 
 echo ""
-echo "=== RunPod test run complete ==="
+echo "=== [$(date +%H:%M:%S)] RunPod test run complete ==="
