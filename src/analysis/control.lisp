@@ -776,6 +776,29 @@
              :body nodes
              :source-location location)))))))
 
+(defun analyze-with-precision-expression (expr env context location)
+  "Endeavor 126 (pass 5): analyzes (with-precision (KEY) body...), KEY = fast|ieee.
+   Produces a semantic-with-precision node carrying the region MODE + body nodes; its
+   codegen scopes *math-precision* over just the body (respecting the --force lock).
+   The region's value is the last body form's value (like progn). KEY may be written
+   parenthesised — (with-precision (ieee) ...) — or bare."
+  (let* ((spec  (second expr))
+         (key   (if (consp spec) (first spec) spec))
+         (kname (and (symbolp key) (symbol-name key)))
+         (mode  (cond ((and kname (string-equal kname "FAST")) :fast)
+                      ((and kname (string-equal kname "IEEE")) :ieee)
+                      (t (error 'crisp-compiler-error
+                           :message (format nil "with-precision: expected (fast) or (ieee), got ~a" spec)
+                           :source-location location))))
+         (nodes (loop for form in (cddr expr)
+                      collect (analyze-expression form env context location)))
+         (last-node (first (last nodes))))
+    (make-semantic-with-precision
+     :type (if last-node (semantic-node-type last-node) 'void)
+     :mode mode
+     :body nodes
+     :source-location location)))
+
 
 (defun analyze-return-expression (expr env context location)
   "Analyzes a `(return ...)` expression.
@@ -2757,6 +2780,13 @@
   (def-expression-analyzer when+ analyze-when+-expression)
   (def-expression-analyzer unless+ analyze-unless+-expression)
   (def-expression-analyzer dotimes+ analyze-dotimes+-expression)
+  ;; Endeavor 126 (pass 5): with-precision — register under BOTH :crisp-language and
+  ;; :crisp.compiler so a form read in either package dispatches (cf. warp builtins).
+  (let ((sym-cl (intern "WITH-PRECISION" (find-package :crisp-language)))
+        (sym-cc (intern "WITH-PRECISION" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-with-precision-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-with-precision-expression)))
   (def-expression-analyzer uniformity-state analyze-uniformity-state)
   (def-expression-analyzer provably-uniform? analyze-provably-uniform?)
   (def-expression-analyzer provably-divergent? analyze-provably-divergent?)

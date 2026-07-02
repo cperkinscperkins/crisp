@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=fast] : validate-all-fast
+;; SKIP-WITH[--differentiate]: "with-precision × AD is pass 5b; 5a is forward-only"
+;;
+;; Endeavor 126, pass 5a precedence: --force-math-precision=fast OVERRIDES the
+;; (with-precision (ieee)) region — force is the hard lock, so even the strict
+;; region is compiled fast. ALL FP ops are `fmul fast`, no plain `fmul float`.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel wp_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (let ((hi (with-precision (ieee) (* (~ a) (~ b)))))
+    (let ((lo (* (~ b) (~ c))))
+      (set! (~ res) (+ hi lo)))))

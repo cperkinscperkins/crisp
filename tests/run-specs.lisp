@@ -690,6 +690,25 @@
         (progn (format t "PASS (plain FP ops, no fast-math)~%") t)
         (progn (format t "FAIL: expected plain fmul/fadd with no fast-math flags~%") nil))))
 
+(defun validate-mixed-fast-ieee (file ir-string)
+  "Endeavor 126 pass 5: per-region precision — the IR must contain BOTH a fast FP op
+   (`fmul fast`) AND a plain one (`fmul float`), proving with-precision scoped
+   precision to just its region while the rest of the kernel used the other mode."
+  (declare (ignore file))
+  (let ((ir (string-downcase ir-string)))
+    (if (and (search "fmul fast" ir) (search "fmul float" ir))
+        (progn (format t "PASS (mixed: fast region + plain region coexist)~%") t)
+        (progn (format t "FAIL: expected BOTH `fmul fast` and `fmul float` (per-region scoping)~%") nil))))
+
+(defun validate-all-fast (file ir-string)
+  "Endeavor 126 pass 5: force override — ALL FP ops fast, none plain (force beats
+   with-precision, so an ieee region is compiled fast too)."
+  (declare (ignore file))
+  (let ((ir (string-downcase ir-string)))
+    (if (and (search "fmul fast" ir) (not (search "fmul float" ir)))
+        (progn (format t "PASS (all fast — force overrode the region)~%") t)
+        (progn (format t "FAIL: expected all `fmul fast`, no plain `fmul float`~%") nil))))
+
 (defun validate-denormal-ftz (file ir-string)
   "Validator for TEST-WITH[--denormal-handling=ftz] (Endeavor 126): the
    `denormal-fp-math` function attribute must select flush-to-zero (preserve-sign)."

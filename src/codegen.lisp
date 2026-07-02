@@ -1317,6 +1317,20 @@
       (setf last-val (generate-node-ir sub-node builder module var-env di-builder di-scope location-map)))
     (values last-val nil)))
 
+(defmethod generate-node-ir ((node semantic-with-precision) builder module var-env di-builder di-scope location-map)
+  "Endeavor 126 (pass 5): per-region precision. Dynamically bind *math-precision* to
+   the region's mode for the body's codegen — so the FMF stamped on the body's FP ops
+   (via %apply-precision-fmf) reflects the region — UNLESS --force-math-precision is
+   active (force locks precision; the region is ignored). Returns the last body
+   form's value (like progn)."
+  (let ((*math-precision* (if *force-math-precision*
+                              *math-precision*
+                              (semantic-with-precision-mode node))))
+    (let ((last-val nil))
+      (dolist (sub-node (semantic-with-precision-body node))
+        (setf last-val (generate-node-ir sub-node builder module var-env di-builder di-scope location-map)))
+      (values last-val nil))))
+
 
 (defun %generate-let-binding (binding builder module let-env di-builder di-scope location-map memoized-aggregates)
   "Helper: Generates IR for a single let binding.
