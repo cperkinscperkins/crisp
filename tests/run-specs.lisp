@@ -438,7 +438,9 @@
                   (validator-name (cdr directive)))
               (format t "~&Running Spec: ~a (Hoist[~a] -> ~a)... " (pathname-name file) backend validator-name)
               (finish-output)
-              (let ((hoist-result (run-spec-with-hoist file backend)))
+              (let* ((*compile-denormal-handling* (or (parse-hoist-denormal directives)
+                                                      *compile-denormal-handling*))
+                     (hoist-result (run-spec-with-hoist file backend)))
                 (unless (eq hoist-result :skipped)
                   (let ((cpp-files hoist-result))
                     ;; Use find-symbol to look up the existing function symbol
@@ -1065,8 +1067,13 @@
          (bin (get-binary-path))
          (args (append (mapcar #'uiop:native-namestring bc-files)
                        (list hoist-arg
-                             (format nil "--log-level=~a" cl-user::*log-level*)
-                             (uiop:native-namestring file))))
+                             (format nil "--log-level=~a" cl-user::*log-level*))
+                       ;; Endeavor 126: forward the denormal mode (HOIST-DENORMAL directive)
+                       ;; so an on-metal test can observe flush-to-zero vs preserve.
+                       (when *compile-denormal-handling*
+                         (list (format nil "--denormal-handling=~a"
+                                       (string-downcase (symbol-name *compile-denormal-handling*)))))
+                       (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
@@ -1857,6 +1864,17 @@
                 (when (and backend-str validator)
                       (push (cons (intern (string-upcase backend-str) :keyword) validator) directives))))))
     (nreverse directives)))
+
+(defun parse-hoist-denormal (directive-lines)
+  "Parse HOIST-DENORMAL: ftz|preserve (Endeavor 126). Returns :ftz / :preserve / nil.
+   Sets --denormal-handling for the hoist compile so an on-metal test can observe
+   flush-to-zero vs preserve subnormal handling."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "HOIST-DENORMAL:")
+        (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 15))))
+          (cond ((string-equal v "ftz") (return :ftz))
+                ((string-equal v "preserve") (return :preserve))))))))
 
 (defun parse-hoist-expect (directive-lines)
   "Parse HOIST-EXPECT: <string> lines.

@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-DENORMAL: ftz
+;; HOIST-EXPECT: BUFFER res: 0
+;;
+;; Endeavor 126, pass 3 ON-METAL flush demonstration. CUDA-ONLY, and here's why:
+;; the BMG / Level-Zero stack does NOT flush f32 denormals even under the
+;; DenormFlushToZero execution mode. Verified on the BMG 2026-07-02 — both ftz and
+;; preserve returned the same preserved value (~0.999995). The compiler emits the
+;; correct SPIR-V (ExecutionMode DenormFlushToZero 32 + Capability, spike-proven),
+;; but Intel Xe/L0 compute preserves f32 subnormals regardless. NVIDIA honours -ftz,
+;; so this test runs on CUDA (RunPod) and SKIPs locally without nvcc.
+;;
+;; Same runtime subnormal as 10: sq=(gid+1)*1e-20 squared = 1e-40 (subnormal). Under
+;; ftz sq flushes to zero -> the scaled value is 0.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel denorm_metal (&out res)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 1))
+  (let ((tiny (* (to-float (+ (get-global-id 0) 1ul)) (to-float 1.0e-20))))
+    (let ((sq (* tiny tiny)))
+      (set! (~ res) (* (* sq (to-float 1.0e20)) (to-float 1.0e20))))))
