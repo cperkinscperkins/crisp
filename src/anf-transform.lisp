@@ -256,6 +256,20 @@
                   (let ((temp (anf-fresh-temp)))
                     (values temp `((,temp ,anf-progn))))
                   (values anf-progn nil)))))
+        ;; Endeavor 126 (pass 5b): with-precision is a codegen precision annotation,
+        ;; transparent to the derivative STRUCTURE. For the backward/AD pipeline, ANF
+        ;; it as a progn of its body (drop the region wrapper). The FORWARD kernel
+        ;; keeps the region precision (its semantic-with-precision codegen is
+        ;; untouched); only the backward pipeline drops it, so the backward ops use
+        ;; the ambient precision — correct for the gradient value.
+        ((and (symbolp op) (string-equal (symbol-name op) "WITH-PRECISION"))
+          (let ((body (cddr expr)))
+            (if (= (length body) 1)
+                ;; Single value form (the common case): ANF it directly so the
+                ;; backward walk sees the bare expression, not a progn wrapper.
+                (anf-normalize (car body) is-nested?)
+                ;; Multi-form body: fall back to progn semantics.
+                (anf-normalize (cons 'progn body) is-nested?))))
         ((and (symbolp op) (or (string-equal (symbol-name op) "DOTIMES")
                                (string-equal (symbol-name op) "DOTIMES+")))
           (%anf-normalize-dotimes op expr is-nested?))

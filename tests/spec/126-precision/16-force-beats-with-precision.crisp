@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--force-math-precision=fast] : validate-all-fast
-;; SKIP-WITH[--differentiate]: "with-precision × AD is pass 5b; 5a is forward-only"
 ;;
 ;; Endeavor 126, pass 5a precedence: --force-math-precision=fast OVERRIDES the
 ;; (with-precision (ieee)) region — force is the hard lock, so even the strict

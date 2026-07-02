@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--math-precision=ieee] : validate-mixed-fast-ieee
-;; SKIP-WITH[--differentiate]: "with-precision × AD is pass 5b; 5a is forward-only"
 ;;
 ;; Endeavor 126, pass 5a: (with-precision (fast) ...) scopes fast-math to just its
 ;; lexical region. Baseline is ieee (the flag); `hi` is computed inside a fast

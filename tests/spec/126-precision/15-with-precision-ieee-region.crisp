@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--math-precision=fast] : validate-mixed-fast-ieee
-;; SKIP-WITH[--differentiate]: "with-precision × AD is pass 5b; 5a is forward-only"
 ;;
 ;; Endeavor 126, pass 5a, other direction: (with-precision (ieee) ...) carves a
 ;; strict region out of a fast baseline. `hi` is inside an ieee region -> plain
