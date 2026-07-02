@@ -708,7 +708,7 @@ Precision: ieee vs fast vs ieee-ftz
 - [ ]  `(declaim (precision <KEY>))`
 - [ ] `--math-precision`
 - [ ] `--force-math-precision`
-- [/] `--denormal-handling [ieee | flush]`
+- [ ] `--denormal-handling [ieee | flush]`
 - [x] CHange to precision: ieee | fast | ieee-ftz
 
 Reductions

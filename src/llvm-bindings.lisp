@@ -827,3 +827,56 @@
    are resolved against definitions in SRC. Returns 0 on success."
   (dest :pointer)
   (src :pointer))          ; LLVMModuleRef (consumed)
+
+
+;; --- Precision controls (Endeavor 126): fast-math flags + FP attributes ---
+;; Confirmed present in LLVM-C.dll (LLVM 21) on 2026-07-01.
+
+;; LLVMFastMathFlags is an unsigned bitmask. Values per llvm-c/Core.h:
+(defconstant +llvm-attribute-function-index+ #xFFFFFFFF
+  "LLVMAttributeFunctionIndex (~0u): attribute index for function-level attributes.")
+(defconstant +llvm-fast-math-none+            0)
+(defconstant +llvm-fast-math-allow-reassoc+   1)
+(defconstant +llvm-fast-math-no-nans+         2)
+(defconstant +llvm-fast-math-no-infs+         4)
+(defconstant +llvm-fast-math-no-signed-zeros+ 8)
+(defconstant +llvm-fast-math-allow-reciprocal+ 16)
+(defconstant +llvm-fast-math-allow-contract+  32)
+(defconstant +llvm-fast-math-approx-func+     64)
+(defconstant +llvm-fast-math-all+             #x7F)
+
+;; Per-instruction fast-math flags. Endeavor 126: this per-instruction path is the
+;; ONLY one the LLVM->SPIR-V translator honors — function-level fast-math attributes
+;; do NOT reach SPIR-V FPFastMathMode (verified 2026-07-01). So the `fast` precision
+;; key is realized by setting these flags on every FP-math op in scope.
+(defcfun ("LLVMSetFastMathFlags" llvm-set-fast-math-flags) :void
+  "Set the fast-math flags (unsigned LLVMFastMathFlags bitmask) on an FP-math value."
+  (fp-math-inst :pointer)
+  (fmf :unsigned-int))
+
+(defcfun ("LLVMGetFastMathFlags" llvm-get-fast-math-flags) :unsigned-int
+  "Get the fast-math flags (LLVMFastMathFlags bitmask) of an FP-math value."
+  (fp-math-inst :pointer))
+
+(defcfun ("LLVMCanValueUseFastMathFlags" llvm-can-value-use-fast-math-flags) :int
+  "Non-zero if VALUE is an FP-math instruction that can carry fast-math flags."
+  (value :pointer))
+
+;; String function attributes. Endeavor 126: used to stamp `denormal-fp-math`
+;; (=`preserve-sign,preserve-sign` for flush, `ieee,ieee` for preserve) on kernels
+;; for the denormal axis. PTX honors it directly; SPIR-V needs !spirv.ExecutionMode
+;; metadata instead (deferred to pass 3).
+(defcfun ("LLVMCreateStringAttribute" llvm-create-string-attribute) :pointer
+  "Create a string attribute (K=V) in CONTEXT. Returns an LLVMAttributeRef."
+  (context :pointer)
+  (k :string)
+  (k-length :unsigned-int)
+  (v :string)
+  (v-length :unsigned-int))
+
+(defcfun ("LLVMAddAttributeAtIndex" llvm-add-attribute-at-index) :void
+  "Add ATTR to function F at attribute index IDX (use
+   +llvm-attribute-function-index+ for function-level attributes)."
+  (f :pointer)
+  (idx :unsigned-int)
+  (attr :pointer))
