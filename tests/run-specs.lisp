@@ -78,6 +78,9 @@
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
 (defvar *compile-differentiate* nil)
+(defvar *compile-math-precision* nil
+  "Endeavor 126: effective precision mode (:fast / :ieee / nil) for a precision
+   TEST-WITH run; forwarded to initialize-compiler by compile-crisp-file-to-ir-string.")
 (defvar *test-filter* nil)
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
@@ -500,16 +503,28 @@
 
 
 
-(defun run-spec-precision-pass (file validator)
-  "Compiles FILE to LLVM IR and hands it to VALIDATOR. Used by
-   TEST-WITH[--force-math-precision=KEY] / [--math-precision=KEY] (Endeavor 126).
+(defun %precision-mode-from-flags (flags)
+  "Extract the effective precision mode (:fast / :ieee / nil) from FLAGS.
+   --force-math-precision wins over --math-precision (pass-1 precedence)."
+  (flet ((val-for (prefix)
+           (loop for f in flags
+                 when (and (>= (length f) (length prefix))
+                           (string= prefix (subseq f 0 (length prefix))))
+                 return (subseq f (length prefix)))))
+    (let ((v (or (val-for "--force-math-precision=") (val-for "--math-precision="))))
+      (cond ((null v) nil)
+            ((string-equal v "fast") :fast)
+            ((string-equal v "ieee") :ieee)
+            (t nil)))))
 
-   NOTE (pass 1, TDD): the precision flag is NOT yet forwarded to the compiler —
-   that forwarding + the per-instruction FMF codegen ARE the pass-1 feature. Until
-   then this compiles normally, so validate-fast-math fails (RED) and
-   validate-ieee-precision passes (the default IR is already plain/ieee-shaped).
-   When the feature lands, this fn will bind the precision vars and forward them."
+(defun run-spec-precision-pass (file flags validator)
+  "Compiles FILE with the precision flag active, then hands the LLVM IR to VALIDATOR.
+   Used by TEST-WITH[--force-math-precision=KEY] / [--math-precision=KEY]
+   (Endeavor 126). The mode is parsed from FLAGS and forwarded to the compiler via
+   *compile-math-precision* -> initialize-compiler."
   (handler-case
+      (let* ((mode (%precision-mode-from-flags flags))
+             (*compile-math-precision* (or mode *compile-math-precision*)))
       (let ((ir-string (compile-crisp-file-to-ir-string file)))
         (if validator
             (let ((sym (find-symbol (string-upcase (string validator)) :crisp.spec-runner)))
@@ -518,7 +533,7 @@
                       (progn (format t "PASS~%") t)
                       (progn (format *error-output* "FAIL (Validator ~a)~%" validator) nil))
                   (progn (format *error-output* "FAIL (Validator ~a not found)~%" validator) nil)))
-            (progn (format t "PASS~%") t)))
+            (progn (format t "PASS~%") t))))
     (error (e)
       (uiop:print-backtrace :condition e)
       (format *error-output* "FAIL (Condition: ~a)~%" e)
@@ -541,7 +556,7 @@
               flags)
     (format t "(Precision)... ")
     (return-from run-single-spec-pass
-      (run-spec-precision-pass file validator)))
+      (run-spec-precision-pass file flags validator)))
 
   ;; Original dispatch (unchanged from base run-specs.lisp):
   (let ((*use-binary*         (or *use-binary*         (member "--use-binary"    flags :test #'string=)))
@@ -585,7 +600,8 @@
                    (crisp.compiler:initialize-compiler
                     :log-level cl-user::*log-level*
                     :differentiate *compile-differentiate*
-                    :runtime-checks *compile-runtime-checks*)
+                    :runtime-checks *compile-runtime-checks*
+                    :math-precision (or *compile-math-precision* :ieee))
                    (with-open-file (stream filepath)
                      (let ((*package* (find-package :crisp-language)))
                        (loop for form = (read stream nil :eof)

@@ -951,6 +951,17 @@
                 (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
                 (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))))
 
+(defun %apply-precision-fmf (inst)
+  "Endeavor 126: when *math-precision* is :fast, stamp all fast-math flags on the
+   FP-math instruction INST (guarded by llvm-can-value-use-fast-math-flags). Returns
+   INST so it can wrap a build call inline. No-op under :ieee (plain FP left as-is).
+   Per-instruction FMF is the only path the LLVM->SPIR-V translator honours."
+  (when (and (eq *math-precision* :fast)
+             inst (not (cffi:null-pointer-p inst))
+             (/= 0 (llvm-can-value-use-fast-math-flags inst)))
+    (llvm-set-fast-math-flags inst +llvm-fast-math-all+))
+  inst)
+
 (defmacro def-binary-op-codegen (node-type int-inst float-inst accessor-prefix)
   (let ((left-accessor (intern (format nil "~a-LEFT-ARG" accessor-prefix)))
         (right-accessor (intern (format nil "~a-RIGHT-ARG" accessor-prefix)))
@@ -971,7 +982,7 @@
                   (casted-rhs (build-cast-if-needed builder module rhs-raw rhs-type-name result-type-name))
                   (crisp-type (gethash result-type-name *crisp-types*))
                   (inst (if (eq (crisp-type-category crisp-type) :float)
-                            (,float-inst builder casted-lhs casted-rhs "fop_tmp")
+                            (%apply-precision-fmf (,float-inst builder casted-lhs casted-rhs "fop_tmp"))
                             (,int-inst builder casted-lhs casted-rhs "iop_tmp")))
                   (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
              (values inst di-location)))))))

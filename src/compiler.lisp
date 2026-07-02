@@ -806,11 +806,21 @@ Returns modified IR text with metadata."
 
 
 
-(defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil))
+(defvar *math-precision* :ieee
+  "Endeavor 126: active math-precision mode for FP codegen — :ieee (plain, strict FP)
+   or :fast (per-instruction fast-math flags stamped on FP ops). Set by
+   initialize-compiler from --math-precision / --force-math-precision. Default :ieee
+   preserves existing behaviour; the language's stated `fast` default is deferred —
+   flipping it would change all existing IR and loosen AD numerics, so it must be a
+   deliberate, suite-wide step, not a silent side effect of this pass.")
+
+(defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil)
+                                 (math-precision :ieee))
   "Initializes the compiler state.
    Extended to clear *grid-functions* for def-grid-function support."
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
+  (setf *math-precision* math-precision)
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
   (if (eq log-level :off)

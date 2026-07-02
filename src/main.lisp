@@ -75,6 +75,20 @@ Supports one or more .crisp source files: the last file is treated as the primar
          (runtime-checks-p (member "--runtime-checks" flags :test #'string=))
          (differentiate-p (member "--differentiate" flags :test #'string=))
 
+         ;; Endeavor 126: precision axis. --force-math-precision overrides
+         ;; --math-precision (and, later, all in-source precision choices).
+         (force-prec-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--force-math-precision=" f)) flags))
+         (math-prec-flag  (find-if (lambda (f) (alexandria:starts-with-subseq "--math-precision=" f)) flags))
+         (precision-mode
+          (let ((v (cond (force-prec-flag (subseq force-prec-flag (length "--force-math-precision=")))
+                         (math-prec-flag  (subseq math-prec-flag  (length "--math-precision=")))
+                         (t nil))))
+            (cond ((null v) :ieee)
+                  ((string-equal v "fast") :fast)
+                  ((string-equal v "ieee") :ieee)
+                  (t (format *error-output* "ERROR: unknown math precision '~a' (expected ieee|fast).~%" v)
+                     (uiop:quit 1)))))
+
          ;; Target Parsing
          (target-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--ir-target=" f)) flags))
          (targets (mapcar (lambda (f)
@@ -103,10 +117,15 @@ Supports one or more .crisp source files: the last file is treated as the primar
           (format *error-output* "ERROR: --differentiate and --hoist are incompatible and cannot be used together.~%")
           (uiop:quit 1))
 
+    ;; Endeavor 126: --force-math-precision overrides all in-source precision intent.
+    (when force-prec-flag
+      (format *error-output* "WARNING: --force-math-precision overrides all in-source precision choices; use for testing/validation only.~%"))
+
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
                                         :runtime-checks runtime-checks-p
-                                        :differentiate differentiate-p)
+                                        :differentiate differentiate-p
+                                        :math-precision precision-mode)
 
     ;; Require at least one source file; support multiple files.
     (unless (>= (length source-files) 1)

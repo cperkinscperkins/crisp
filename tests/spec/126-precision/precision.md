@@ -1,10 +1,10 @@
 Precision: ieee vs fast
 ===================================
-- [ ] Precision KEYS: `ieee` | `fast`
+- [x] Precision KEYS: `ieee` | `fast`  (pass 1: per-instruction FMF on FP ops; default :ieee)
 - [ ] `(with-precision (<KEY>) ...)`
 - [ ]  `(declaim (precision <KEY>))`
 - [ ] `--math-precision`
-- [ ] `--force-math-precision`
+- [x] `--force-math-precision`  (pass 1 DONE 2026-07-02: codegen + runner + binary CLI + warning; specs 01/02 green, full regression 792/792 both ways, 252 unit, 183 neg)
 - [ ] `--denormal-handling [ftz | preserve]`
 - [ ] update ideal_001.md with rule about using libdevice.10.bc when using transcendentals with PTX. 
 - [ ] update ideal_001.md with FTZ and SPIR-V "bubble up"  behavior 
