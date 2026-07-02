@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--denormal-handling=ftz] : validate-denormal-ftz
+;;
+;; Endeavor 126, pass 3 (--denormal-handling=ftz). Orthogonal to the precision axis.
+;; TDD: RED until codegen stamps the `denormal-fp-math` function attribute. Under
+;; ftz the attribute value flushes subnormals ("preserve-sign,preserve-sign"); under
+;; preserve it is strict IEEE ("ieee,ieee"). Validated on the LLVM IR (the on-metal
+;; SPIR-V DenormFlushToZero execution mode is a separate emission step).
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel denorm_probe (a b &out res)
+  (declare #'(in-c in-c &out out-c))
+  (set! (~ res) (* (~ a) (~ b))))

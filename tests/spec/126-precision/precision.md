@@ -7,7 +7,7 @@ Precision: ieee vs fast
 - [x] `--force-math-precision`  (pass 1 DONE 2026-07-02: codegen + runner + binary CLI + warning; specs 01/02 green, full regression 792/792 both ways, 252 unit, 183 neg)
 - [ ] DEFAULT precision stays :ieee (nvcc/clang style, fast opt-in). Decided 2026-07-02 after measuring fallout: default :fast breaks the whole numerical-correctness layer (HOIST-EXPECT exact output — 07-struct-with-ct got 12 vs 7 on BMG; VERIFY-AUTODIFF finite-difference). Also flagged: that 7->12 may be an IGC fast-math miscompile on BMG — investigate when verifying the fast path on metal.
 - [ ] AD × precision tests must cover BOTH precision modes: `fast` AND `ieee`, and for each denormal handling `ftz` | `preserve`. (Vehicle: div + sqrt, per the AD-interaction section.)
-- [ ] `--denormal-handling [ftz | preserve]`
+- [x] `--denormal-handling [ftz | preserve]`  (pass 3 DONE 2026-07-02: `denormal-fp-math`(+`-f32`) attribute stamped on every function via ensure-opencl-kernel-metadata; default :preserve; `fast`+`preserve` warning; CLI + runner + validators; specs 07/08 green; regression 798/798 both ways, 253 unit, 183 neg. FOLLOW-UP: SPV `!spirv.ExecutionMode` DenormFlushToZero emission for on-metal SPV effect (LLVM-IR attribute is PTX-effective + validator-observable now; robustified a brittle DWARF unit-test exact-line match along the way)
 - [ ] update ideal_001.md with rule about using libdevice.10.bc when using transcendentals with PTX. 
 - [ ] update ideal_001.md with FTZ and SPIR-V "bubble up"  behavior 
 - [ ] auto differentiation?  (let's deal with transcendentals in our NEXT endeavor, not now, or maybe just one now "sin" ?)

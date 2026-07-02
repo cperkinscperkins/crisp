@@ -81,6 +81,9 @@
 (defvar *compile-math-precision* nil
   "Endeavor 126: effective precision mode (:fast / :ieee / nil) for a precision
    TEST-WITH run; forwarded to initialize-compiler by compile-crisp-file-to-ir-string.")
+(defvar *compile-denormal-handling* nil
+  "Endeavor 126: effective denormal mode (:ftz / :preserve / nil) for a precision
+   TEST-WITH run; forwarded to initialize-compiler by compile-crisp-file-to-ir-string.")
 (defvar *test-filter* nil)
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
@@ -517,14 +520,28 @@
             ((string-equal v "ieee") :ieee)
             (t nil)))))
 
+(defun %denormal-mode-from-flags (flags)
+  "Extract the denormal mode (:ftz / :preserve / nil) from FLAGS."
+  (let ((v (loop with prefix = "--denormal-handling="
+                 for f in flags
+                 when (and (>= (length f) (length prefix))
+                           (string= prefix (subseq f 0 (length prefix))))
+                 return (subseq f (length prefix)))))
+    (cond ((null v) nil)
+          ((string-equal v "ftz") :ftz)
+          ((string-equal v "preserve") :preserve)
+          (t nil))))
+
 (defun run-spec-precision-pass (file flags validator)
-  "Compiles FILE with the precision flag active, then hands the LLVM IR to VALIDATOR.
-   Used by TEST-WITH[--force-math-precision=KEY] / [--math-precision=KEY]
-   (Endeavor 126). The mode is parsed from FLAGS and forwarded to the compiler via
-   *compile-math-precision* -> initialize-compiler."
+  "Compiles FILE with the precision + denormal flags active, then hands the LLVM IR
+   to VALIDATOR. Used by TEST-WITH[--force-math-precision=KEY] / [--math-precision=KEY]
+   / [--denormal-handling=KEY] (Endeavor 126). Modes are parsed from FLAGS and
+   forwarded to the compiler via the *compile-* specials -> initialize-compiler."
   (handler-case
       (let* ((mode (%precision-mode-from-flags flags))
-             (*compile-math-precision* (or mode *compile-math-precision*)))
+             (denorm (%denormal-mode-from-flags flags))
+             (*compile-math-precision* (or mode *compile-math-precision*))
+             (*compile-denormal-handling* (or denorm *compile-denormal-handling*)))
       (let ((ir-string (compile-crisp-file-to-ir-string file)))
         (if validator
             (let ((sym (find-symbol (string-upcase (string validator)) :crisp.spec-runner)))
@@ -552,7 +569,8 @@
 
   ;; Endeavor 126: precision runs — compile and hand the IR to a precision validator.
   (when (some (lambda (f) (or (search "--force-math-precision=" f)
-                              (search "--math-precision=" f)))
+                              (search "--math-precision=" f)
+                              (search "--denormal-handling=" f)))
               flags)
     (format t "(Precision)... ")
     (return-from run-single-spec-pass
@@ -601,7 +619,8 @@
                     :log-level cl-user::*log-level*
                     :differentiate *compile-differentiate*
                     :runtime-checks *compile-runtime-checks*
-                    :math-precision (or *compile-math-precision* :ieee))
+                    :math-precision (or *compile-math-precision* :ieee)
+                    :denormal-handling (or *compile-denormal-handling* :preserve))
                    (with-open-file (stream filepath)
                      (let ((*package* (find-package :crisp-language)))
                        (loop for form = (read stream nil :eof)
@@ -663,6 +682,22 @@
              (not (search "fmuladd" ir)))
         (progn (format t "PASS (plain FP ops, no fast-math)~%") t)
         (progn (format t "FAIL: expected plain fmul/fadd with no fast-math flags~%") nil))))
+
+(defun validate-denormal-ftz (file ir-string)
+  "Validator for TEST-WITH[--denormal-handling=ftz] (Endeavor 126): the
+   `denormal-fp-math` function attribute must select flush-to-zero (preserve-sign)."
+  (declare (ignore file))
+  (if (search "denormal-fp-math\"=\"preserve-sign" ir-string)
+      (progn (format t "PASS (denormal-fp-math = flush-to-zero)~%") t)
+      (progn (format t "FAIL: expected denormal-fp-math=preserve-sign (ftz)~%") nil)))
+
+(defun validate-denormal-preserve (file ir-string)
+  "Validator for TEST-WITH[--denormal-handling=preserve] (Endeavor 126): the
+   `denormal-fp-math` attribute must select strict IEEE (ieee) subnormal handling."
+  (declare (ignore file))
+  (if (search "denormal-fp-math\"=\"ieee" ir-string)
+      (progn (format t "PASS (denormal-fp-math = ieee/preserve)~%") t)
+      (progn (format t "FAIL: expected denormal-fp-math=ieee (preserve)~%") nil)))
 
 (defun validate-ir-with-clang (ir-string)
   "Uses clang to validate LLVM IR."

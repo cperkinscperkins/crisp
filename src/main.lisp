@@ -88,6 +88,14 @@ Supports one or more .crisp source files: the last file is treated as the primar
                   ((string-equal v "ieee") :ieee)
                   (t (format *error-output* "ERROR: unknown math precision '~a' (expected ieee|fast).~%" v)
                      (uiop:quit 1)))))
+         (denorm-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--denormal-handling=" f)) flags))
+         (denormal-handling
+          (let ((v (when denorm-flag (subseq denorm-flag (length "--denormal-handling=")))))
+            (cond ((null v) :preserve)   ; Endeavor 126: default subnormal handling
+                  ((string-equal v "ftz") :ftz)
+                  ((string-equal v "preserve") :preserve)
+                  (t (format *error-output* "ERROR: unknown denormal handling '~a' (expected ftz|preserve).~%" v)
+                     (uiop:quit 1)))))
 
          ;; Target Parsing
          (target-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--ir-target=" f)) flags))
@@ -121,11 +129,17 @@ Supports one or more .crisp source files: the last file is treated as the primar
     (when force-prec-flag
       (format *error-output* "WARNING: --force-math-precision overrides all in-source precision choices; use for testing/validation only.~%"))
 
+    ;; Endeavor 126: `fast` precision flushes denormals; a competing `preserve` request
+    ;; is not honored under `fast` (denorm is not per-region on SPIR-V) — warn, don't silently flush.
+    (when (and (eq precision-mode :fast) (eq denormal-handling :preserve))
+      (format *error-output* "WARNING: `fast` precision flushes denormals; the `preserve` request is not honored under `fast` -- use `ieee` if you need denormal preservation.~%"))
+
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
                                         :runtime-checks runtime-checks-p
                                         :differentiate differentiate-p
-                                        :math-precision precision-mode)
+                                        :math-precision precision-mode
+                                        :denormal-handling denormal-handling)
 
     ;; Require at least one source file; support multiple files.
     (unless (>= (length source-files) 1)

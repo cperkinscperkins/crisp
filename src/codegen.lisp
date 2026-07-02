@@ -183,13 +183,25 @@
 ;; Patch to add SPIR-V kernel metadata functions to codegen.lisp
 ;; Insert BEFORE the line: (defun generate-function-prototype
 
+(defun %apply-denormal-attribute (func module)
+  "Endeavor 126: stamp the `denormal-fp-math` (and `-f32`) function attribute on FUNC
+   per *denormal-handling* — :ftz -> \"preserve-sign,preserve-sign\" (flush subnormals),
+   :preserve -> \"ieee,ieee\" (strict IEEE). NVPTX honours these directly; the SPIR-V
+   DenormFlushToZero execution mode is emitted separately. Applied to every function."
+  (let* ((val (if (eq *denormal-handling* :ftz) "preserve-sign,preserve-sign" "ieee,ieee"))
+         (ctx (llvm-get-module-context module)))
+    (dolist (key '("denormal-fp-math" "denormal-fp-math-f32"))
+      (let ((attr (llvm-create-string-attribute ctx key (length key) val (length val))))
+        (llvm-add-attribute-at-index func +llvm-attribute-function-index+ attr)))))
+
 (defun ensure-opencl-kernel-metadata (func semantic-function module)
   "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
-   
+   Endeavor 126: also stamps the denormal-fp-math attribute (all functions).
+
    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
    as text during IR printing for SPIR-V."
-  (declare (ignore module))
+  (%apply-denormal-attribute func module)
   (when (semantic-function-is-entry-point semantic-function)
         (log:info "Marking function ~a as Kernel for backend ~a"
                   (semantic-function-name semantic-function) *target-backend*)

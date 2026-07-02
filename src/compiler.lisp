@@ -816,13 +816,22 @@ Returns modified IR text with metadata."
    until we decide precise-default (nvcc/clang style, fast opt-in) vs. fast-default +
    forcing :ieee for all correctness runs.")
 
+(defvar *denormal-handling* :preserve
+  "Endeavor 126: subnormal handling for FP codegen — :preserve (strict IEEE gradual
+   underflow) or :ftz (flush subnormals to sign-preserved zero). Orthogonal to
+   *math-precision*. Set by initialize-compiler from --denormal-handling. Stamped as
+   the `denormal-fp-math` function attribute (PTX/NVPTX honours it directly; SPIR-V
+   needs a DenormFlushToZero execution mode, emitted separately). Default :preserve
+   matches the precise (:ieee) default and nvcc (-ftz=false).")
+
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil)
-                                 (math-precision :ieee))
+                                 (math-precision :ieee) (denormal-handling :preserve))
   "Initializes the compiler state.
    Extended to clear *grid-functions* for def-grid-function support."
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
   (setf *math-precision* math-precision)
+  (setf *denormal-handling* denormal-handling)
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
   (if (eq log-level :off)
