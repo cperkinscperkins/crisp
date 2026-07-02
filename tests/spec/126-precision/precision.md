@@ -3,12 +3,15 @@ Precision: ieee vs fast
 - [x] Precision KEYS: `ieee` | `fast`  (pass 1: per-instruction FMF on FP ops; default :ieee)
 - [ ] `(with-precision (<KEY>) ...)`
 - [ ]  `(declaim (precision <KEY>))`
-- [ ] `--math-precision`
+- [x] `--math-precision`  (pass 2 DONE 2026-07-02: flag + `force > math` precedence — parsing landed with pass 1; specs 03/04 (fast/ieee) + 05/06 (precedence both directions) green; suite 796/796)
 - [x] `--force-math-precision`  (pass 1 DONE 2026-07-02: codegen + runner + binary CLI + warning; specs 01/02 green, full regression 792/792 both ways, 252 unit, 183 neg)
+- [ ] DEFAULT precision stays :ieee (nvcc/clang style, fast opt-in). Decided 2026-07-02 after measuring fallout: default :fast breaks the whole numerical-correctness layer (HOIST-EXPECT exact output — 07-struct-with-ct got 12 vs 7 on BMG; VERIFY-AUTODIFF finite-difference). Also flagged: that 7->12 may be an IGC fast-math miscompile on BMG — investigate when verifying the fast path on metal.
+- [ ] AD × precision tests must cover BOTH precision modes: `fast` AND `ieee`, and for each denormal handling `ftz` | `preserve`. (Vehicle: div + sqrt, per the AD-interaction section.)
 - [ ] `--denormal-handling [ftz | preserve]`
 - [ ] update ideal_001.md with rule about using libdevice.10.bc when using transcendentals with PTX. 
 - [ ] update ideal_001.md with FTZ and SPIR-V "bubble up"  behavior 
 - [ ] auto differentiation?  (let's deal with transcendentals in our NEXT endeavor, not now, or maybe just one now "sin" ?)
+- [ ] update docs with 'ieee' being default, not 'fast'. 
 
 
 Now that we have FFI support, we should be able to support Crisp's precision controls.

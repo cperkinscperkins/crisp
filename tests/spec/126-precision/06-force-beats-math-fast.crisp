@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=fast --math-precision=ieee] : validate-fast-math
+;;
+;; Endeavor 126, pass 2 precedence, other direction: force=fast must beat math=ieee
+;; -> fast-math flags present. Together with 05 this pins force > math in both
+;; directions.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel prec_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))

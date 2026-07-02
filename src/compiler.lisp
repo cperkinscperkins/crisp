@@ -810,9 +810,11 @@ Returns modified IR text with metadata."
   "Endeavor 126: active math-precision mode for FP codegen — :ieee (plain, strict FP)
    or :fast (per-instruction fast-math flags stamped on FP ops). Set by
    initialize-compiler from --math-precision / --force-math-precision. Default :ieee
-   preserves existing behaviour; the language's stated `fast` default is deferred —
-   flipping it would change all existing IR and loosen AD numerics, so it must be a
-   deliberate, suite-wide step, not a silent side effect of this pass.")
+   (PENDING DECISION 2026-07-02): the language's stated default is `fast`, but
+   flipping it globally breaks every numerical-correctness check (HOIST-EXPECT exact
+   output, VERIFY-AUTODIFF finite-difference) — those must run under :ieee. Kept :ieee
+   until we decide precise-default (nvcc/clang style, fast opt-in) vs. fast-default +
+   forcing :ieee for all correctness runs.")
 
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil)
                                  (math-precision :ieee))

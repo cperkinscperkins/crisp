@@ -83,7 +83,7 @@ Supports one or more .crisp source files: the last file is treated as the primar
           (let ((v (cond (force-prec-flag (subseq force-prec-flag (length "--force-math-precision=")))
                          (math-prec-flag  (subseq math-prec-flag  (length "--math-precision=")))
                          (t nil))))
-            (cond ((null v) :ieee)
+            (cond ((null v) :ieee)   ; Endeavor 126: default precision (pending fast-default decision)
                   ((string-equal v "fast") :fast)
                   ((string-equal v "ieee") :ieee)
                   (t (format *error-output* "ERROR: unknown math precision '~a' (expected ieee|fast).~%" v)

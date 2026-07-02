@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--math-precision=fast] : validate-fast-math
+;;
+;; Endeavor 126, pass 2 (--math-precision=fast). The precision-flag machinery and
+;; the force>math precedence landed with pass 1's --force-math-precision, so 03/04
+;; validate that the *non-forcing* --math-precision flag drives the same codegen
+;; (fast-math flags on FP ops). Same neutral multiply-add kernel as pass 1.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel prec_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))
