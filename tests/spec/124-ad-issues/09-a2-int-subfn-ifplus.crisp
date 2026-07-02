@@ -1,4 +1,5 @@
 ;; TEST-EXPECT: PASS
+;; SKIP-WITH[--single-pass]: "interprocedural uniformity inference needs the multi-pass call graph; single-pass compiles clampish before its call site (clampish (~ x)) exists, so its parameter can't be inferred uniform and the if+ is rejected"
 ;;
 ;; Endeavor 124 A2 — BLOCKERS (a)+(c): an int sub-function whose body uses if+.
 ;; This is 120/03's `C`, standalone (called directly from a kernel, not through

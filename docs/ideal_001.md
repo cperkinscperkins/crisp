@@ -5201,6 +5201,8 @@ Most of the Looping Constructs have a variant whose name ends in `+`.
 The compiler will check that the target `N` is uniform across the workgroup. If the compiler
 detects that it is not workgroup-level uniform, it will emit an error. 
 
+These variants are fully differentiable under `--differentiate`; see "Requirements for Differentiable Kernels."
+
 #### variants compared
 Let's start with a simple example:
 ```
@@ -10764,6 +10766,14 @@ To be compatible with `--differentiate`, a kernel must meet the following criter
 - Composite Inputs: Records, structs (including nested), tensors, and cells are
   all supported at the kernel boundary. See "Generated Gradient Signature" below
   for how each is paired with its adjoint.
+- Control flow: `if` / `when` / `unless` / `cond`, `let`, and `dotimes` all
+  differentiate, as do their uniform `+` variants — `if+`, `when+`, `unless+`, and
+  `dotimes+`. The backward pass mirrors the forward control flow; a uniform `+`
+  condition or loop bound is a *forward-time* concern, already discharged before the
+  gradient runs, so the generated backward loop is a plain `dotimes` and the backward
+  branch a plain `if`. Value-producing conditionals (e.g.
+  `(set! (~ res) (if+ cond a b))`) propagate the result adjoint into whichever branch
+  was taken; an untaken `when+`/`unless+` contributes zero gradient.
 
 
 #### The Generated Gradient Signature
@@ -11570,6 +11580,8 @@ When the `--single-pass` flag is present the compiler compiles items as it encou
  entry points and kernels appear last in a .crisp file. 
  If this is an inconvenient way of working for you, don't let it crimp your style. Don't bother with the `--single-pass` flag
   or use the `--re-output-crisp` flag to have your .crisp files converted to single pass order. 
+
+**Interprocedural uniformity and `--single-pass`.** Multi-pass compilation lets the compiler *infer* that a scalar kernel input threaded through a call is workgroup-uniform — so a sub-function using `if+`/`dotimes+` on that parameter compiles with no annotation, purely from the proof that every call site passes a uniform argument. This inference needs the whole call graph, which `--single-pass` does not build (a callee is compiled before its callers are seen). Under `--single-pass`, assert it explicitly on the callee with `(declare (uniform x))`; otherwise the `+` form reports its condition as `UNKNOWN` and errors.
 
 #### `--skip-c-t-checks`  📝 
 
