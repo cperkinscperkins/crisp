@@ -33,6 +33,8 @@ Most of the Looping Constructs have a variant whose name ends in `+`.
 The compiler will check that the target `N` is uniform across the workgroup. If the compiler
 detects that it is not workgroup-level uniform, it will emit an error. 
 
+These variants are fully differentiable under `--differentiate`; see "Requirements for Differentiable Kernels."
+
 #### variants compared
 Let's start with a simple example:
 ```

@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; SKIP-WITH[--differentiate]: "if+ not yet handled in AD backward walk"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 ;; Endeavor 120 (gap #2): escape hatch. A memory read is :unknown (not provably
 ;; uniform), so (declare (uniform v)) inside the let block must rescue it for

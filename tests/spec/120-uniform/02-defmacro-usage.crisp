@@ -1,4 +1,9 @@
-;; SKIP-WITH[--differentiate]: "folded boolean literal materialized as backward let-binding. boolean has no LLVM type.  Will fix later"
+;; TEST-EXPECT: PASS
+;; Endeavor 124 (AD issues) B: a folded uniformity predicate (provably-divergent?)
+;; used in a value-if now differentiates. It previously crashed the backward with
+;; "Cannot resolve type to LLVM: BOOLEAN" — the predicate returned a 'boolean
+;; literal (no LLVM type) that got materialized in the backward's forward-recompute
+;; let-binding. Fixed by returning Crisp's int-for-bool (1/0) literal instead.
 
 ;; this macro is a bad idea for a kernel with real performance requirements.
 ;; just demonstrating macro usage 

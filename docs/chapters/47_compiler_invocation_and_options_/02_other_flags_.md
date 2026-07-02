@@ -48,6 +48,8 @@ When the `--single-pass` flag is present the compiler compiles items as it encou
  If this is an inconvenient way of working for you, don't let it crimp your style. Don't bother with the `--single-pass` flag
   or use the `--re-output-crisp` flag to have your .crisp files converted to single pass order. 
 
+**Interprocedural uniformity and `--single-pass`.** Multi-pass compilation lets the compiler *infer* that a scalar kernel input threaded through a call is workgroup-uniform — so a sub-function using `if+`/`dotimes+` on that parameter compiles with no annotation, purely from the proof that every call site passes a uniform argument. This inference needs the whole call graph, which `--single-pass` does not build (a callee is compiled before its callers are seen). Under `--single-pass`, assert it explicitly on the callee with `(declare (uniform x))`; otherwise the `+` form reports its condition as `UNKNOWN` and errors.
+
 #### `--skip-c-t-checks`  📝 
 
 The compile-time checks are skipped. This is very dangerous but does make the act of compilation much faster. 

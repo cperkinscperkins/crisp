@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;;
+;; Endeavor 124 A2 — BLOCKERS (a)+(b): a ULONG sub-function. FIXED 2026-07-01.
+;;
+;; dbl(n) = 2*n     dn gradient is a DOUBLE (ulong promotes to double, per
+;;                  %promote-to-float-adjoint), unlike the 32-bit int case (07).
+;; IR-verified companion: dbl_grad #'(ulong double => double) with double adjoint
+;; inits; n_adj = 2*seed -> dm/dn = 2.
+;;
+;; (a) registration — fixed by the activity analysis (07).
+;; (b) the sub-function backward walk previously hardcoded float 0.0 inits and
+;;     float return slots. Fixed by routing every adjoint-typing decision through
+;;     ONE source of truth (%ad-promotes-to-double-p / %ad-zero /
+;;     %ad-scalar-adjoint-type), shared by the kernel walk, sub-fn walk, FFI VJP,
+;;     and value-if/let paths. The sub-fn companion now types its return slots and
+;;     adjoint inits per the promoted param/return types.
+
+(def-function dbl (n)
+  (declare #'(ulong => ulong))
+  (* n 2ul))
+
+(def-type in-u  (cell ulong :address-space :global))
+(def-type out-u (cell ulong :address-space :global))
+
+(def-kernel use_dbl (n &out m)
+  (declare #'(in-u &out out-u))
+  (set! (~ m) (dbl (~ n))))

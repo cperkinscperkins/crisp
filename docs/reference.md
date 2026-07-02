@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-06-27T23:02:44.705980Z
+Generated on 2026-07-02T00:32:30.594774Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1782,6 +1782,51 @@ Generated on 2026-06-27T23:02:44.705980Z
 
 
 ---
+### DEFUN `%VALUE-IF-P`
+- **Args**: `(EXPR)`
+
+  > T if EXPR is a value-producing conditional: if / if+ / when / when+ /  >    unless / unless+.
+
+
+---
+### DEFUN `%VALUE-LET-P`
+- **Args**: `(EXPR)`
+
+  > T if EXPR is a value-producing LET.
+
+
+---
+### DEFUN `%FORMS->PROGN`
+- **Args**: `(FORMS)`
+
+  > NIL for no forms, the single form, else a (progn ...) wrapper.
+
+
+---
+### DEFUN `%BACKWARD-VALUE-EXPR`
+- **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
+              (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)`
+
+  > Backward-AD for a VALUE expression EXPR whose result is bound to V (so V's  >    adjoint is the incoming seed). Endeavor 124 A1: handles the symbol-copy and  >    literal cases plus compound value exprs (if / let), recursing; leaf exprs  >    (math, ~, calls, accessors) delegate to %handle-single-value-backward.
+
+
+---
+### DEFUN `%HANDLE-VALUE-IF-BACKWARD`
+- **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
+              (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)`
+
+  > Backward for a value-producing (if[+]/when[+]/unless[+] COND THEN ELSE): the  >    result adjoint V_adj flows into whichever branch was taken. Emits a plain `if`  >    mirroring the forward (the uniform-ness of if+ is irrelevant to the backward),  >    each arm carrying its value's chain-rule contribution into V_adj.
+
+
+---
+### DEFUN `%HANDLE-VALUE-LET-BACKWARD`
+- **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
+              (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)`
+
+  > Backward for a value-producing (let (BINDS) ... BODY-EXPR): the let's value is  >    V. Recompute BINDS (forward), declare BRANCH-LOCAL adjoints for the bind temps,  >    push V_adj through BODY-EXPR, then push each bind temp's adjoint through its rhs.  >    The local adjoints are scoped to the emitted let so they don't collide with the  >    global adjoint-map / top-level adjoint declarations. Endeavor 124 A1.  >   >    NOTE: zero-inits the local adjoints with 0.0 (float). Double-chain interaction  >    is deferred to the mixed-precision pass (Phase C).
+
+
+---
 ### DEFUN `%COLLECT-LOCALLY-BOUND-VARS`
 - **Args**: `(BODY-FORMS)`
 
@@ -1921,9 +1966,9 @@ Generated on 2026-06-27T23:02:44.705980Z
 
 ---
 ### DEFUN `%COLLECT-ALL-DIFF-PARAM-SYMS-FOR-RETURN`
-- **Args**: `(ENV RECORD-PARAM-INFO)`
+- **Args**: `(ENV RECORD-PARAM-INFO &OPTIONAL ACTIVE-SET)`
 
-  > Full ordered list of 'differentiable param syms' used for emitting the multi-value return.
+  > Full ordered list of 'differentiable param syms' used for emitting the multi-value  >    return. ACTIVE-SET (A2) gates integer scalar params: an int is included only when  >    active (differentiably reaches the return).
 
 
 ---
@@ -1966,7 +2011,7 @@ Generated on 2026-06-27T23:02:44.705980Z
 ---
 ### DEFUN `%GENERATE-BACKWARD-FUNCTION-WALK`
 - **Args**: `(FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL
-              TENSOR-INPUTS-HT)`
+              TENSOR-INPUTS-HT ANY-DOUBLE RETURN-ADJ-TYPES)`
 
   > Generates the backward-pass body for a def-function.  > FLAT-ANF         : flattened ANF of the forward function body.  > FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).  > T-GRAD-SYMS      : symbols for the incoming gradient inputs (one per return value).  > RETURN-VARS      : symbols of the return variables (identified from FLAT-ANF last element).  >   > 101 extension: TENSOR-INPUTS-HT (optional hash-table mapping each tensor-sub-  > fn-param symbol to its tensor type) is threaded into %handle-single-value-  > backward so tensor reads inside the body emit atomic-add into the corresponding  > &out grad-tensor.  >   > Returns a (let (...) ...) form suitable as the body of the _GRAD companion function.
 
@@ -2063,6 +2108,33 @@ Generated on 2026-06-27T23:02:44.705980Z
 
 
 ---
+### DEFUN `%AD-PROMOTES-TO-DOUBLE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > T if the ADJOINT of a value of TYPE-SPEC is DOUBLE (double / long / ulong, or a  >    cell/tensor thereof). Canonicalizes first, because %promote-to-float-adjoint  >    leaves a non-integer type ALIAS unresolved (e.g. a (cell double) alias).
+
+
+---
+### DEFUN `%AD-ZERO`
+- **Args**: `(DOUBLE-P)`
+
+  > The typed zero literal for a fresh adjoint accumulator: (as double 0.0) when  >    DOUBLE-P, else 0.0.
+
+
+---
+### DEFUN `%AD-SCALAR-ADJOINT-TYPE`
+- **Args**: `(TYPE-SPEC)`
+
+  > The SCALAR adjoint type ('float or 'double) for a scalar value of TYPE-SPEC.
+
+
+---
+### DEFVAR `*AD-ANY-OUTPUT-DOUBLE*`
+
+  > Dynamically bound (by the kernel walk and the sub-function walk) to T when the  >    backward chain runs in double — any output/param/return promotes to double. Read  >    by the value-if/let and FFI paths so their fresh adjoints get the typed zero  >    (%ad-zero) too, without threading the flag through every call.
+
+
+---
 ### DEFUN `%AUTODIFF-GRAD-CELL-TYPE`
 
   > Returns the canonical cell type used for gradient output parameters.
@@ -2106,6 +2178,34 @@ Generated on 2026-06-27T23:02:44.705980Z
 - **Args**: `(PD-TYPE &OPTIONAL RECORD-INFO)`
 
   > Returns the number of SCALAR-DELTA contributions this parameter type  >    makes at the SUB-FUNCTION level (def-function).  Used to size the  >    multi-value-return arity at the sub-fn _GRAD boundary.  >   >    - Records / derived-from-records  -> runtime-field count (per-field deltas).  >    - Structs  / derived-from-structs -> runtime-field count (same convention).  >    - Float scalars                   -> 1.  >    - Tensors, cells, integer scalars -> 0.  These contribute zero scalar  >      deltas; tensors flow grad via &out grad-tensor params instead  >      (see %has-tensor-diff-param-p and the tensor-sub-fn pipeline).  >   >    RECORD-INFO (optional alist of (NAME-STR . FIELD-COUNT)) bridges the  >    pre-registration ordering issue where *crisp-types* isn't yet  >    populated. When supplied, it takes priority over the runtime registry.
+
+
+---
+### DEFUN `%ASV-UNION`
+- **Args**: `(EXPRS ENV)`
+
+  > Union of %active-scalar-vars over EXPRS.
+
+
+---
+### DEFUN `%ACTIVE-SCALAR-VARS`
+- **Args**: `(EXPR ENV)`
+
+  > Set (list) of scalar symbols that DIFFERENTIABLY affect EXPR's value. ENV is an  >    alist mapping a let-bound symbol to its own active-scalar-var set.
+
+
+---
+### DEFUN `%ACTIVE-SCALAR-PARAM-SET`
+- **Args**: `(PARAMS BODY-FORMS)`
+
+  > Subset of PARAMS (symbols) that are ACTIVE — differentiably affect the value of  >    BODY-FORMS' final form (the function's return).
+
+
+---
+### DEFUN `%COUNT-ACTIVE-CONTRIBUTIONS`
+- **Args**: `(PD-TYPE SYM ACTIVE-SET &OPTIONAL RECORD-INFO)`
+
+  > Like %count-differentiable-contributions, but an INTEGER scalar param counts 1  >    only when SYM is in ACTIVE-SET (A2 activity analysis). Float / tensor / cell /  >    record behavior is unchanged — this only ADDS active-int contributions.
 
 
 ---

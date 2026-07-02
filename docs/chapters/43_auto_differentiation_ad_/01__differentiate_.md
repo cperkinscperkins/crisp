@@ -21,6 +21,14 @@ To be compatible with `--differentiate`, a kernel must meet the following criter
 - Composite Inputs: Records, structs (including nested), tensors, and cells are
   all supported at the kernel boundary. See "Generated Gradient Signature" below
   for how each is paired with its adjoint.
+- Control flow: `if` / `when` / `unless` / `cond`, `let`, and `dotimes` all
+  differentiate, as do their uniform `+` variants — `if+`, `when+`, `unless+`, and
+  `dotimes+`. The backward pass mirrors the forward control flow; a uniform `+`
+  condition or loop bound is a *forward-time* concern, already discharged before the
+  gradient runs, so the generated backward loop is a plain `dotimes` and the backward
+  branch a plain `if`. Value-producing conditionals (e.g.
+  `(set! (~ res) (if+ cond a b))`) propagate the result adjoint into whichever branch
+  was taken; an untaken `when+`/`unless+` contributes zero gradient.
 
 
 #### The Generated Gradient Signature

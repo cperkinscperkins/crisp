@@ -173,7 +173,7 @@
      (let ((op (car expr)))
        (when (and (symbolp op)
                   (macro-function op)
-                  (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes while set! declare progn let
+                  (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes dotimes+ while set! declare progn let
                                           template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
                                           make-cell make-vector make-matrix make-tensor))))
              (multiple-value-bind (expanded changed) (macroexpand-1 expr)
@@ -256,7 +256,8 @@
                   (let ((temp (anf-fresh-temp)))
                     (values temp `((,temp ,anf-progn))))
                   (values anf-progn nil)))))
-        ((and (symbolp op) (string-equal (symbol-name op) "DOTIMES"))
+        ((and (symbolp op) (or (string-equal (symbol-name op) "DOTIMES")
+                               (string-equal (symbol-name op) "DOTIMES+")))
           (%anf-normalize-dotimes op expr is-nested?))
         ((and (symbolp op) (string-equal (symbol-name op) "WHILE"))
           (%anf-normalize-while op expr is-nested?))

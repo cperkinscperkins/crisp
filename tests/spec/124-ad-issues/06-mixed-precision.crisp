@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;;
+;; Endeavor 124 (AD issues) C: MIXED precision — float input, double output. This
+;; is the canonical case (also the FFI 123/04 long-return shape): the backward
+;; chain runs in double, but the float input's grad cell is float. Before C, the
+;; float-input adjoint stayed float while intermediates were double -> clash.
+;; Now: the input adjoint is promoted to double too, float primals are fpext'd
+;; into the double chain, and the value is fptrunc'd to float at the grad-cell
+;; write. Compile-shape + manual-IR (VERIFY-AUTODIFF supports only cell float).
+;; IR verified: double chain, `fptrunc double ... to float` at the x_grad store;
+;; y = x^2 -> dy/dx = 2x.
+
+(def-type in-f  (cell float  :address-space :global))
+(def-type out-d (cell double :address-space :global))
+
+(def-kernel mixed_sq (x &out y)
+  (declare #'(in-f &out out-d))
+  (set! (~ y) (* (~ x) (~ x))))

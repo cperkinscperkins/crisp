@@ -683,10 +683,10 @@ workgroup uniform
 
 A|D issues
 ==========
-- [ ] if+/when+/dortime+ aren't recognized in AD backward walk
-- [ ] folded boolean literal materialized as a backward let-binding; boolean has no LLVM type.
-- [ ] 120-uniform/02-defmacro-usage  and 03-subfunction
-- [ ] 123-ff-ad/04-ffi-long-return.crisp    Mixed precision issue.
+- [x] if+/when+/dortime+ aren't recognized in AD backward walk
+- [x] folded boolean literal materialized as a backward let-binding; boolean has no LLVM type.
+- [x] 120-uniform/02-defmacro-usage  and 03-subfunction
+- [x] 123-ff-ad/04-ffi-long-return.crisp    Mixed precision issue.
 
 Looping Constructs
 ==================

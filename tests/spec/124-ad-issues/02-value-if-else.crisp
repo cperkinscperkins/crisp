@@ -1,0 +1,11 @@
+;; VERIFY-AUTODIFF: x=200.0 atol=1e-2 expect.x=1.0
+;;
+;; Endeavor 124 (AD issues) A1: the ELSE branch of a value-producing `if`.
+;; x=200 > 100 -> else-branch -> res = x -> dres/dx = 1.0.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel value_if_else (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (if (< (~ x) 100.0) (* (~ x) 2.0) (~ x))))

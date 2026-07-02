@@ -1,0 +1,23 @@
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3 expect.x=3.0
+;;
+;; Endeavor 124: differentiation THROUGH a value-producing `unless+` (uniform
+;; condition). unless+ expands to (if+ cond nil body) — a 4-element if+ whose
+;; THEN arm is the literal nil and whose value lives in the ELSE (body). Two
+;; fixes made this work:
+;;   1. Forward: `ensure-branch-compatibility` used to unify (if cond nil X) to
+;;      VOID (either branch void -> void), which made the whole if void, so `set!`
+;;      stored a NIL LLVM value ("NIL is not a SYSTEM-AREA-POINTER"). Now a single
+;;      void branch takes the OTHER branch's type; the void path is left undef in
+;;      codegen (guarded NIL-value stores in the semantic-if IR).
+;;   2. Backward: the A1 value-if handler already routes the result adjoint into
+;;      the else/body arm for unless-like forms.
+;; get-workgroup-id is uniform; with a small launch g <= 5 is false -> the body
+;; runs -> res = 3*x -> dres/dx = 3.0. An untaken unless+ contributes zero.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel unless_plus_diff (x &out res)
+  (declare #'(in-c &out out-c))
+  (let ((g (get-workgroup-id 0)))
+    (set! (~ res) (unless+ (> g 5ul) (* (~ x) 3.0)))))

@@ -222,8 +222,12 @@ backward walk emits a call to MULTIPLY_GRAD and accumulates deltas."
       (is = 2 (getf entry :n-float-params))
       (is = 1 (getf entry :n-return)))))
 
-(define-test (sub-func-ad-test gbfa-skips-non-float-params)
-  "A function with no float params produces NIL — nothing to differentiate."
+(define-test (sub-func-ad-test gbfa-differentiates-active-int-params)
+  "Endeavor 124 A2: integer params are differentiable when ACTIVE — they reach the
+   return through differentiable ops — so a backward companion IS generated
+   (integers get float/double gradients, as at the kernel boundary). Pre-A2,
+   non-float scalar params were skipped and this returned NIL. Here a and b are
+   active operands of (+ a b)."
   (initialize-compiler)
   (cl:let* ((pkg   (find-package :crisp-language))
              (name  (intern "INT-ADD052" pkg))
@@ -232,6 +236,21 @@ backward walk emits a call to MULTIPLY_GRAD and accumulates deltas."
              (params (list a b))
              (declarations (list `(function (int int => int))))
              (body-forms (list (list '+ a b)))
+             (result (crisp.compiler::%generate-backward-function-ast
+                       name params declarations body-forms)))
+    (true result)))
+
+(define-test (sub-func-ad-test gbfa-skips-inactive-params)
+  "A2 guardrail: a function whose params do NOT differentiably reach the return
+   (here `n` is unused — a constant body) still produces NIL. Only ACTIVE scalar
+   params make a function differentiable; inactive/structural ints do not."
+  (initialize-compiler)
+  (cl:let* ((pkg   (find-package :crisp-language))
+             (name  (intern "NOOP052" pkg))
+             (n     (intern "N" pkg))
+             (params (list n))
+             (declarations (list `(function (int => int))))
+             (body-forms (list 5))
              (result (crisp.compiler::%generate-backward-function-ast
                        name params declarations body-forms)))
     (false result)))

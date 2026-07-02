@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;;
+;; Endeavor 124 (AD issues) C: a uniform-double kernel (double in, double out).
+;; Before C this failed "Expected FLOAT but inferred DOUBLE" — every adjoint var
+;; init'd to float 0.0 while the chain ran in double, because
+;; promotes-to-double-p didn't see through a (cell double) ALIAS. Now the kernel
+;; backward inits adjoints to (as double 0.0) when any output promotes to double.
+;; Compile-shape + manual-IR test (VERIFY-AUTODIFF only supports cell float).
+;; IR: backward accumulates in `double`; y = x^2 -> dy/dx = 2x.
+
+(def-type in-d  (cell double :address-space :global))
+(def-type out-d (cell double :address-space :global))
+
+(def-kernel double_sq (x &out y)
+  (declare #'(in-d &out out-d))
+  (set! (~ y) (* (~ x) (~ x))))

@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; SKIP-WITH[--differentiate]: "dotimes+/to-workgroup-uniform not yet handled in AD backward walk"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 ;; Endeavor 120 headline (gap #1): (to-workgroup-uniform ...) bound in a let must
 ;; make the variable provably uniform so dotimes+ accepts it.  This is the

@@ -1,5 +1,10 @@
 
-;; SKIP-WITH[--differentiate]: "if+ and friends not recognized in AD backward walk  will fix later"
+;; TEST-EXPECT: PASS
+;; Endeavor 124 A2: differentiates now (a: activity analysis registers the ulong
+;; sub-fns C/B; b: sub-fn double typing handles their ulong->double adjoints). The
+;; feared "companion uniformity" blocker (c) was a PHANTOM — a cascade from C
+;; failing to register; once C registers + its companion compiles, uniformity
+;; propagates through both forward and backward. dres/dx = 1 (through C), double.
 ;; SKIP-WITH[--single-pass]: "interprocedural uniformity inference needs the multi-pass call graph; single-pass compiles C before its call sites exist"
 
 (def-function C (x)

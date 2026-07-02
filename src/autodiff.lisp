@@ -69,7 +69,7 @@
           ;; Has scalar deltas too: multi-value bind, then accumulate, plus call.
           ((or accum-forms (> n-fp 0))
             (funcall emit-fn
-              `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+              `(let (,@(mapcar (lambda (d) `(,d ,(%ad-zero *ad-any-output-double*))) deltas))
                  (let (,(append deltas (list call-form)))
                    ,@accum-forms))))
           ;; Tensor-only: just emit the call as a statement.
@@ -77,7 +77,7 @@
      ;; No tensors, has scalar accumulations: existing multi-value-bind path.
      (accum-forms
        (funcall emit-fn
-         `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+         `(let (,@(mapcar (lambda (d) `(,d ,(%ad-zero *ad-any-output-double*))) deltas))
             (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adj-forms))))
               ,@accum-forms))))
      (t nil))))
@@ -137,7 +137,7 @@
                            collect `(set! ,(funcall local-adj-fn arg)
                                           (+ ,(funcall local-adj-fn arg) ,d)))))
           (funcall emit-fn
-            `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+            `(let (,@(mapcar (lambda (d) `(,d ,(%ad-zero *ad-any-output-double*))) deltas))
                (let (,(append deltas (list call-form)))
                  ,@accum)))))))
 
@@ -370,9 +370,18 @@
    ((and (consp expr) (symbolp (car expr))
          (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
      nil)
-   ((and (consp expr) (symbolp (car expr))
-         (string= (symbol-name (car expr)) "IF"))
-     nil)
+   ;; Endeavor 124 (AD issues) A1: value-producing if / if+ / when[+] / unless[+]
+   ;; and value-producing let. These bind a compound expression to V; the seed
+   ;; V_adj must flow through the branches / let body (previously dropped, giving
+   ;; a silent zero gradient, or erroring for the + variants).
+   ((%value-if-p expr)
+     (%handle-value-if-backward v expr adjoint-map emit-fn local-adj-fn
+                                :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+   ((%value-let-p expr)
+     (%handle-value-let-backward v expr adjoint-map emit-fn local-adj-fn
+                                 :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                 :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
    ((and (consp expr) (symbolp (car expr))
          (%backward-skip-fn-p (car expr)))
      nil)
@@ -392,6 +401,148 @@
      (when error-on-unknown
            (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
    (t nil)))
+
+
+;;; ===================================================================
+;;; Endeavor 124 (AD issues) A1: value-producing if / let backward.
+;;;
+;;; ANF binds compound expressions (if / if+ / when[+] / unless[+] / let) to a
+;;; temp: e.g. (%t (if+ cond (let ((u (~ x))) (* u 2.0)) (~ x))). The seed %t_adj
+;;; must flow through whichever branch was taken, and through the let body into
+;;; its (branch-local) bindings. Previously %handle-single-value-backward dropped
+;;; these (silent zero gradient for plain if; hard error for the + variants).
+;;; ===================================================================
+
+(defun %value-if-p (expr)
+  "T if EXPR is a value-producing conditional: if / if+ / when / when+ /
+   unless / unless+."
+  (and (consp expr) (symbolp (car expr))
+       (member (symbol-name (car expr))
+               '("IF" "IF+" "WHEN" "WHEN+" "UNLESS" "UNLESS+")
+               :test #'string=)))
+
+(defun %value-let-p (expr)
+  "T if EXPR is a value-producing LET."
+  (and (consp expr) (symbolp (car expr))
+       (string-equal (symbol-name (car expr)) "LET")))
+
+(defun %forms->progn (forms)
+  "NIL for no forms, the single form, else a (progn ...) wrapper."
+  (cond ((null forms) nil)
+        ((null (cdr forms)) (first forms))
+        (t `(progn ,@forms))))
+
+(defun %backward-value-expr (v expr adjoint-map emit-fn local-adj-fn
+                             &key hof-handler-fn (error-on-unknown t)
+                                  tensor-inputs-ht scratch-tile-syms)
+  "Backward-AD for a VALUE expression EXPR whose result is bound to V (so V's
+   adjoint is the incoming seed). Endeavor 124 A1: handles the symbol-copy and
+   literal cases plus compound value exprs (if / let), recursing; leaf exprs
+   (math, ~, calls, accessors) delegate to %handle-single-value-backward."
+  (cond
+   ;; copy: v <- s  =>  s_adj += v_adj  (skip self-copy)
+   ((symbolp expr)
+     (unless (eq expr v)
+       (funcall emit-fn `(set! ,(funcall local-adj-fn expr)
+                               (+ ,(funcall local-adj-fn expr) ,(funcall local-adj-fn v))))))
+   ;; literal (number / non-symbol atom): no gradient
+   ((not (consp expr)) nil)
+   ((%value-if-p expr)
+     (%handle-value-if-backward v expr adjoint-map emit-fn local-adj-fn
+                                :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+   ((%value-let-p expr)
+     (%handle-value-let-backward v expr adjoint-map emit-fn local-adj-fn
+                                 :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                 :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+   (t
+     (%handle-single-value-backward v expr adjoint-map emit-fn local-adj-fn
+                                    :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                    :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))))
+
+(defun %handle-value-if-backward (v expr adjoint-map emit-fn local-adj-fn
+                                  &key hof-handler-fn (error-on-unknown t)
+                                       tensor-inputs-ht scratch-tile-syms)
+  "Backward for a value-producing (if[+]/when[+]/unless[+] COND THEN ELSE): the
+   result adjoint V_adj flows into whichever branch was taken. Emits a plain `if`
+   mirroring the forward (the uniform-ness of if+ is irrelevant to the backward),
+   each arm carrying its value's chain-rule contribution into V_adj."
+  (let* ((head (symbol-name (car expr)))
+         (cond-form (cadr expr))
+         (when-like (member head '("WHEN" "WHEN+") :test #'string=))
+         (unless-like (member head '("UNLESS" "UNLESS+") :test #'string=))
+         (then-expr (cond (unless-like nil) (t (caddr expr))))
+         (else-expr (cond (when-like nil)
+                          (unless-like (caddr expr))
+                          (t (cadddr expr))))
+         (then-forms nil)
+         (else-forms nil))
+    (flet ((rec (branch collect)
+             (when branch
+               (%backward-value-expr v branch adjoint-map collect local-adj-fn
+                                     :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                     :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))))
+      (rec then-expr (lambda (f) (push f then-forms)))
+      (rec else-expr (lambda (f) (push f else-forms)))
+      (let ((then-body (%forms->progn (nreverse then-forms)))
+            (else-body (%forms->progn (nreverse else-forms))))
+        ;; Only emit if some branch contributes; both-empty is a no-op.
+        (when (or then-body else-body)
+          (funcall emit-fn
+            (if else-body
+                `(if ,cond-form ,(or then-body 'nil) ,else-body)
+                `(if ,cond-form ,then-body)))))))
+  t)
+
+(defun %handle-value-let-backward (v expr adjoint-map emit-fn local-adj-fn
+                                   &key hof-handler-fn (error-on-unknown t)
+                                        tensor-inputs-ht scratch-tile-syms)
+  "Backward for a value-producing (let (BINDS) ... BODY-EXPR): the let's value is
+   V. Recompute BINDS (forward), declare BRANCH-LOCAL adjoints for the bind temps,
+   push V_adj through BODY-EXPR, then push each bind temp's adjoint through its rhs.
+   The local adjoints are scoped to the emitted let so they don't collide with the
+   global adjoint-map / top-level adjoint declarations. Endeavor 124 A1.
+
+   NOTE: zero-inits the local adjoints with 0.0 (float). Double-chain interaction
+   is deferred to the mixed-precision pass (Phase C)."
+  (let* ((raw (cdr expr))
+         (binds (car raw))
+         (body-tail (cdr raw))
+         (body-forms (remove-if (lambda (f) (and (consp f)
+                                                 (symbolp (car f))
+                                                 (string-equal (symbol-name (car f)) "DECLARE")))
+                                body-tail))
+         (body-expr (car (last body-forms)))
+         (bind-pairs (remove-if-not (lambda (b) (and (consp b) (= (length b) 2) (symbolp (car b))))
+                                    binds))
+         (bind-syms (mapcar #'car bind-pairs))
+         (pkg (or (symbol-package v) (find-package :crisp.compiler)))
+         (local-map (make-hash-table :test 'eq))
+         (collected nil))
+    (flet ((blocal-adj (s)
+             (if (member s bind-syms :test #'eq)
+                 (or (gethash s local-map)
+                     (setf (gethash s local-map)
+                           (intern (format nil "~A_ADJ" (symbol-name s)) pkg)))
+                 (funcall local-adj-fn s)))
+           (bcollect (f) (push f collected)))
+      ;; body value = v: push v_adj into the body expression
+      (when body-expr
+        (%backward-value-expr v body-expr adjoint-map #'bcollect #'blocal-adj
+                              :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                              :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+      ;; backward of each binding in reverse: bind-temp adjoint -> rhs's vars
+      (dolist (b (reverse bind-pairs))
+        (%backward-value-expr (car b) (cadr b) adjoint-map #'bcollect #'blocal-adj
+                              :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                              :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+      ;; emit: forward recompute of BINDS + local adjoint inits + backward forms
+      (funcall emit-fn
+        `(let (,@binds
+               ,@(loop for adv being the hash-values of local-map
+                       collect `(,adv ,(%ad-zero *ad-any-output-double*))))
+           ,@(nreverse collected)))))
+  t)
 
 
 ;; 107 iteration-local adjoint reset fix.
@@ -449,7 +600,8 @@
                         (when (and (consp b) (symbolp (car b)))
                               (push-var (car b))))
                       (dolist (b (cddr form)) (scan b)))
-                    ((string-equal (symbol-name (car form)) "DOTIMES")
+                    ((or (string-equal (symbol-name (car form)) "DOTIMES")
+                         (string-equal (symbol-name (car form)) "DOTIMES+"))
                       (let ((binding (cadr form)))
                         (when (and (consp binding) (symbolp (car binding)))
                               (push-var (car binding))))
@@ -712,12 +864,13 @@
                                          :test #'string=))
                      do (setf (gethash (car form) ht) t))
                ht)))
-        (flet ((promotes-to-double-p (t-spec)
-                                     (let ((promoted (%promote-to-float-adjoint t-spec)))
-                                       (or (eq promoted 'double)
-                                           (and (consp promoted) (eq (second promoted) 'double))))))
+        ;; Endeavor 124 C/A2: the adjoint-typing decision now lives in one place
+        ;; (%ad-promotes-to-double-p / %ad-zero) shared with the sub-fn, FFI and
+        ;; value-if/let paths.
+        (flet ((promotes-to-double-p (t-spec) (%ad-promotes-to-double-p t-spec)))
           (let* ((any-output-double (some #'promotes-to-double-p output-types))
-                 (intermediate-zero (if any-output-double '(as double 0.0) 0.0)))
+                 (*ad-any-output-double* any-output-double)
+                 (intermediate-zero (%ad-zero any-output-double)))
             (labels ((local-adj (v)
                                 (or (gethash v adjoint-map)
                                     (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
@@ -829,7 +982,8 @@
                                         (%gfw-process-let form emit-fn #'process-form bindings augmented-bindings body)))
 
                                     ((and (consp form) (symbolp (car form))
-                                          (string-equal (symbol-name (car form)) "DOTIMES"))
+                                          (or (string-equal (symbol-name (car form)) "DOTIMES")
+                                              (string-equal (symbol-name (car form)) "DOTIMES+")))
                                       (let* ((binding (cadr form))
                                              (body (cddr form))
                                              (local-vars (%collect-locally-bound-vars body)))
@@ -944,21 +1098,35 @@
                               (and (not is-cell-input) (not is-tensor-input)
                                    (or (%crisp-integer-scalar-type-p in-type)
                                        (%crisp-float-type-p in-type)))))
-                        (cond
-                         (is-tensor-input nil)
-                         (is-cell-input (emit `(set! (~ ,in-grad) ,(local-adj in))))
-                         (is-scalar-wrapped (emit `(set! (~ ,in-grad) ,(local-adj in))))
-                         (t (emit `(set! ,in-grad ,(local-adj in)))))))
+                        ;; Endeavor 124 (AD issues) C: under any-output-double the
+                        ;; adjoint runs in double, but a float/small-int input's grad
+                        ;; cell is float — down-cast at the write to match the cell.
+                        (let ((write-val
+                               (if (and any-output-double
+                                        (not (promotes-to-double-p in-type))
+                                        (or is-cell-input is-scalar-wrapped))
+                                   `(to-float ,(local-adj in))
+                                   (local-adj in))))
+                          (cond
+                           (is-tensor-input nil)
+                           (is-cell-input (emit `(set! (~ ,in-grad) ,write-val)))
+                           (is-scalar-wrapped (emit `(set! (~ ,in-grad) ,write-val)))
+                           (t (emit `(set! ,in-grad ,write-val)))))))
 
               (let* ((typed-zero-for
                       (lambda (orig-sym)
                         (let* ((idx (position orig-sym inputs))
                                (in-type (when idx (nth idx input-types))))
+                          ;; Endeavor 124 (AD issues) C: when ANY output promotes to
+                          ;; double, the whole backward chain runs in double — INCLUDING
+                          ;; float-input adjoints — so the adjoint accumulations don't mix
+                          ;; float and double. The narrower grad cell is reconciled by a
+                          ;; down-cast at the grad-cell write below.
                           (cond
                            (in-type
-                             (if (promotes-to-double-p in-type) '(as double 0.0) 0.0))
-                           (any-output-double '(as double 0.0))
-                           (t 0.0)))))
+                             (%ad-zero (or (promotes-to-double-p in-type) any-output-double)))
+                           (any-output-double (%ad-zero t))
+                           (t (%ad-zero nil))))))
                      (local-bindings (loop for v being the hash-keys of adjoint-map
                                            using (hash-value adv)
                                            collect `(,adv ,(funcall typed-zero-for v))))
@@ -1371,8 +1539,10 @@ to compute-base-type for derived types."
                                                 (symbol-name field-name))
                                               pkg)))))))
 
-(defun %collect-all-diff-param-syms-for-return (env record-param-info)
-  "Full ordered list of 'differentiable param syms' used for emitting the multi-value return."
+(defun %collect-all-diff-param-syms-for-return (env record-param-info &optional active-set)
+  "Full ordered list of 'differentiable param syms' used for emitting the multi-value
+   return. ACTIVE-SET (A2) gates integer scalar params: an int is included only when
+   active (differentiably reaches the return)."
   (let ((result nil))
     (loop for pd in env
           do (let ((sym (parameter-def-name pd)))
@@ -1383,7 +1553,7 @@ to compute-base-type for derived types."
                           (setf result (append result (mapcar #'cdr (third rec-entry)))))
                         ((%crisp-float-type-p (parameter-def-type pd))
                           (setf result (append result (list sym))))
-                        ((> (%count-differentiable-contributions (parameter-def-type pd)) 0)
+                        ((> (%count-active-contributions (parameter-def-type pd) sym active-set) 0)
                           (setf result (append result (list sym)))))))))
     result))
 
@@ -1446,6 +1616,17 @@ to compute-base-type for derived types."
          (orig-param-types (mapcar #'parameter-def-type env))
          (t-grad-types (mapcar (lambda (t-spec) (%promote-to-float-adjoint t-spec))
                            return-types-non-void))
+         ;; A2/C: does this sub-fn's adjoint chain run in double? (any param or
+         ;; return promotes to double: long / ulong / double).
+         (any-double (or (some #'%ad-promotes-to-double-p orig-param-types)
+                         (some #'%ad-promotes-to-double-p return-types-non-void)))
+         ;; A2/C: the returned-gradient slot type per active param, in order —
+         ;; double for a ulong/long param, float otherwise. (Record-field-adj syms
+         ;; that are not params keep the float default.)
+         (return-adj-types
+          (loop for sym in all-diff-param-syms-for-return
+                for pd = (find sym env :key #'parameter-def-name)
+                collect (if pd (%ad-scalar-adjoint-type (parameter-def-type pd)) 'float)))
          (tensor-param-info (%collect-tensor-param-info env pkg))
          (tensor-grad-out-syms (mapcar #'third tensor-param-info))
          (tensor-grad-out-types (mapcar #'fourth tensor-param-info))
@@ -1455,7 +1636,7 @@ to compute-base-type for derived types."
          (bkwd-fn-spec
           `(function (,@orig-param-types ,@t-grad-types
                         ,@(when tensor-param-info (cons out-marker tensor-grad-out-types))
-                        => ,@(make-list n-float-params :initial-element 'float)))))
+                        => ,@return-adj-types))))
 
     (setf (gethash name *differentiable-functions*)
       (list :bkwd-name bkwd-name
@@ -1497,7 +1678,7 @@ to compute-base-type for derived types."
                                                 name)
                   (%generate-backward-function-walk
                    flat-anf all-diff-param-syms-for-return t-grad-syms return-vars
-                   tensor-inputs-ht))))
+                   tensor-inputs-ht any-double return-adj-types))))
           `(def-function ,bkwd-name ,bkwd-params
                          (declare #'(,@(second bkwd-fn-spec)))
                          ,bkwd-body))
@@ -1526,12 +1707,16 @@ differentiable user function."
                     collect pd))
              (float-param-syms (mapcar #'parameter-def-name float-param-entries))
              (record-param-info (%collect-record-param-info env pkg))
-             (all-diff-param-syms-for-return (%collect-all-diff-param-syms-for-return env record-param-info))
+             ;; A2: which int scalar params actually reach the return differentiably.
+             (active-set (%active-scalar-param-set (mapcar #'parameter-def-name env) body-forms))
+             (all-diff-param-syms-for-return
+              (%collect-all-diff-param-syms-for-return env record-param-info active-set))
              (record-param-field-adjs-ht (%build-record-param-field-adjs-ht record-param-info))
              (n-float-params
               (loop for pd in env
                       when (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                      sum (%count-differentiable-contributions (parameter-def-type pd))))
+                      sum (%count-active-contributions (parameter-def-type pd)
+                                                       (parameter-def-name pd) active-set)))
              (return-types-non-void (remove nil return-types))
              (n-return (length return-types-non-void))
              (fn-param-entries
@@ -1557,7 +1742,7 @@ differentiable user function."
 
 
 (defun %generate-backward-function-walk (flat-anf float-param-syms t-grad-syms return-vars
-                                                  &optional tensor-inputs-ht)
+                                                  &optional tensor-inputs-ht any-double return-adj-types)
   "Generates the backward-pass body for a def-function.
 FLAT-ANF         : flattened ANF of the forward function body.
 FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).
@@ -1572,7 +1757,9 @@ backward so tensor reads inside the body emit atomic-add into the corresponding
 Returns a (let (...) ...) form suitable as the body of the _GRAD companion function."
   (let ((backward-forms nil)
         (adjoint-map (make-hash-table :test 'equal))
-        (return-var-seeds (make-hash-table :test 'eq)))
+        (return-var-seeds (make-hash-table :test 'eq))
+        ;; A2/C: expose the double-chain flag to value-if/let inside the body.
+        (*ad-any-output-double* any-double))
 
     (loop for rv in return-vars
           for tg in t-grad-syms do
@@ -1615,7 +1802,16 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
                        (%emit-sub-fn-backward fn args bkwd-fn (mapcar #'local-adj result-vars) n-fp pkg #'emit #'local-adj "MV")))))
            (t nil))))
 
-      (emit `(return ,@(mapcar #'local-adj float-param-syms)))
+      ;; A2/C: return each active-param adjoint in its declared adjoint slot type.
+      ;; Under a double chain (any-double) a param adjoint runs in double; if its
+      ;; return slot is float (e.g. a float param in a mixed sub-fn), down-cast.
+      (emit `(return
+              ,@(loop for sym in float-param-syms
+                      for slot in (or return-adj-types
+                                      (make-list (length float-param-syms) :initial-element 'float))
+                      collect (if (and any-double (eq slot 'float))
+                                  `(to-float ,(local-adj sym))
+                                  (local-adj sym)))))
 
       (let* ((forward-bindings
               (loop for form in flat-anf
@@ -1628,7 +1824,10 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
               (loop for v being the hash-keys of adjoint-map
                     using (hash-value adv)
                     collect (let ((seed (gethash v return-var-seeds)))
-                              `(,adv ,(if seed seed 0.0)))))
+                              ;; A2/C: non-seed adjoints init to the typed zero
+                              ;; (double under a double chain); seeds carry their
+                              ;; already-promoted t_grad type.
+                              `(,adv ,(if seed seed (%ad-zero any-double))))))
              (all-bindings (append forward-bindings adjoint-bindings)))
         `(let ,all-bindings
            ,@(nreverse backward-forms))))))
@@ -1805,6 +2004,41 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
    ((%crisp-integer-scalar-type-p type-spec) (%integer-scalar-to-float-scalar type-spec))
    (t type-spec)))
 
+;;; ===================================================================
+;;; Endeavor 124 (AD issues) C/A2 — the ONE source of truth for adjoint typing.
+;;;
+;;; An adjoint's type is %promote-to-float-adjoint of the value it shadows:
+;;; float/small-int -> float, double/long/ulong -> DOUBLE. These two helpers
+;;; centralize that decision (and the typed zero-init) so every backward site —
+;;; the kernel walk, the sub-function walk, the FFI VJP path, and the value-if/let
+;;; branch handlers — shares one rule instead of hardcoding 0.0 / 'float.
+;;; ===================================================================
+
+(defun %ad-promotes-to-double-p (type-spec)
+  "T if the ADJOINT of a value of TYPE-SPEC is DOUBLE (double / long / ulong, or a
+   cell/tensor thereof). Canonicalizes first, because %promote-to-float-adjoint
+   leaves a non-integer type ALIAS unresolved (e.g. a (cell double) alias)."
+  (let* ((promoted (%promote-to-float-adjoint type-spec))
+         (canon (or (ignore-errors (canonicalize-type-specifier promoted)) promoted)))
+    (or (eq promoted 'double)                    ; bare scalar double (e.g. ulong/long param)
+        (eq canon 'double)
+        (and (consp canon) (eq (second canon) 'double)))))
+
+(defun %ad-zero (double-p)
+  "The typed zero literal for a fresh adjoint accumulator: (as double 0.0) when
+   DOUBLE-P, else 0.0."
+  (if double-p '(as double 0.0) 0.0))
+
+(defun %ad-scalar-adjoint-type (type-spec)
+  "The SCALAR adjoint type ('float or 'double) for a scalar value of TYPE-SPEC."
+  (if (%ad-promotes-to-double-p type-spec) 'double 'float))
+
+(defvar *ad-any-output-double* nil
+  "Dynamically bound (by the kernel walk and the sub-function walk) to T when the
+   backward chain runs in double — any output/param/return promotes to double. Read
+   by the value-if/let and FFI paths so their fresh adjoints get the typed zero
+   (%ad-zero) too, without threading the flag through every call.")
+
 
 ;; is this actually used?
 (defun %autodiff-grad-cell-type ()
@@ -1952,6 +2186,88 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
        (length (or (%get-record-runtime-fields resolved) '())))
      ((%crisp-float-type-p pd-type) 1)
      (t 0))))
+
+;;; ===================================================================
+;;; Endeavor 124 (AD issues) A2 — activity analysis for integer sub-fn params.
+;;;
+;;; Integer scalar sub-function params are gradient-inert by default (the sub-fn
+;;; multi-value-return ABI counts float=1, int=0). Crisp differentiates integers
+;;; at the KERNEL boundary but the rule was never ported to the sub-fn boundary.
+;;; A blanket "count ints as 1" corrupts STRUCTURAL ints (indices / tensor
+;;; metadata / tile descriptors in generated functions). So we count an int param
+;;; only when it is ACTIVE — it differentiably reaches the function's return value.
+;;;
+;;; %active-scalar-vars is a lightweight backward-reachability pass over the SOURCE
+;;; body (pure syntax — no types/semantic tree). Per-op EDGE TABLE decides which
+;;; operand positions propagate activeness (the index of ~, the condition of if,
+;;; and comparison results do NOT). Structural ints fall out as "inactive" for
+;;; free — no special-casing.
+;;; ===================================================================
+
+(defun %asv-union (exprs env)
+  "Union of %active-scalar-vars over EXPRS."
+  (let ((acc nil))
+    (dolist (e exprs acc)
+      (setf acc (union acc (%active-scalar-vars e env) :test #'eq)))))
+
+(defun %active-scalar-vars (expr env)
+  "Set (list) of scalar symbols that DIFFERENTIABLY affect EXPR's value. ENV is an
+   alist mapping a let-bound symbol to its own active-scalar-var set."
+  (cond
+   ((symbolp expr) (let ((e (assoc expr env))) (if e (cdr e) (list expr))))
+   ((not (consp expr)) nil)                         ; numbers / other atoms
+   (t
+     (let ((name (and (symbolp (car expr)) (symbol-name (car expr)))))
+       (cond
+        ((null name) nil)
+        ;; differentiable arithmetic — every operand propagates.
+        ((member name '("+" "-" "*" "/") :test #'string-equal) (%asv-union (cdr expr) env))
+        ((member name '("SIN" "COS" "SQRT" "EXP" "LOG" "TANH" "ABS") :test #'string-equal)
+          (%active-scalar-vars (cadr expr) env))
+        ;; numeric conversions propagate (conservative).
+        ((and (>= (length name) 3) (string-equal (subseq name 0 3) "TO-"))
+          (%active-scalar-vars (cadr expr) env))
+        ;; tensor/cell read: no SCALAR activity (the index does not propagate; the
+        ;; tensor/cell itself flows grad via its own &out grad-handle).
+        ((string-equal name "~") nil)
+        ;; comparisons: 0 gradient — nothing propagates.
+        ((member name '("<" ">" "<=" ">=" "=" "/=") :test #'string-equal) nil)
+        ;; conditionals: the branches propagate, the CONDITION does not.
+        ((member name '("IF" "IF+") :test #'string-equal)
+          (union (%active-scalar-vars (caddr expr) env)
+                 (%active-scalar-vars (cadddr expr) env) :test #'eq))
+        ((member name '("WHEN" "WHEN+" "UNLESS" "UNLESS+") :test #'string-equal)
+          (%active-scalar-vars (caddr expr) env))
+        ;; let: bind each var to its init's active set, then evaluate the body.
+        ((string-equal name "LET")
+          (let ((new-env env))
+            (dolist (b (cadr expr))
+              (when (and (consp b) (= (length b) 2) (symbolp (car b)))
+                    (push (cons (car b) (%active-scalar-vars (cadr b) new-env)) new-env)))
+            (%active-scalar-vars (car (last (cddr expr))) new-env)))
+        ((string-equal name "RETURN") (%asv-union (cdr expr) env))
+        ((string-equal name "PROGN") (%active-scalar-vars (car (last (cdr expr))) env))
+        ;; sub-fn / other call: over-approximate — all args propagate. Safe (a
+        ;; spuriously-active int just gets a 0-gradient slot); never runs on the
+        ;; generated structural-int machinery (this pass is source-only).
+        (t (%asv-union (cdr expr) env)))))))
+
+(defun %active-scalar-param-set (params body-forms)
+  "Subset of PARAMS (symbols) that are ACTIVE — differentiably affect the value of
+   BODY-FORMS' final form (the function's return)."
+  (when body-forms
+    (intersection params (%active-scalar-vars (car (last body-forms)) nil) :test #'eq)))
+
+(defun %count-active-contributions (pd-type sym active-set &optional record-info)
+  "Like %count-differentiable-contributions, but an INTEGER scalar param counts 1
+   only when SYM is in ACTIVE-SET (A2 activity analysis). Float / tensor / cell /
+   record behavior is unchanged — this only ADDS active-int contributions."
+  (let ((base (%count-differentiable-contributions pd-type record-info)))
+    (if (and (zerop base)
+             (%crisp-integer-scalar-type-p pd-type)
+             (member sym active-set :test #'eq))
+        1
+        base)))
 
 (defun %crisp-tensor-param-type-p (pd-type)
   "Returns T if PD-TYPE is a tensor (float-element or integer-element)

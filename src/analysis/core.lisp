@@ -813,6 +813,26 @@ runs infer-param-uniformity once the call graph is complete."
                   "<" ">" "<=" ">=" "=" "/=" "MOD" "REM")
                 :test #'string=)
         (%uni-combine (mapcar (lambda (a) (%uni-analyze a env)) (cdr form))))
+       ;; Endeavor 124: memory read (~ src [idx]) is uniform when every thread
+       ;; reads the SAME location — a uniform handle at a uniform index. A
+       ;; whole-cell read (~ x) has no index sub-form (implicit element 0, which
+       ;; is uniform), so its state is just SRC's. This lets a scalar kernel-input
+       ;; cell, dereferenced at a call site (e.g. (clampish (~ x))), contribute
+       ;; :uniform to the callee's parameter. Taint-max is sound: a divergent
+       ;; index makes the read divergent, which (like :unknown) blocks the
+       ;; upgrade-only :uniform inference.
+       ((string= (symbol-name op) "~")
+        (%uni-combine (mapcar (lambda (a) (%uni-analyze a env)) (cdr form))))
+       ;; Endeavor 124: a marshalled aggregate handle (marshall-cell /
+       ;; marshall-tensor / marshall-vector / marshall-matrix, incl. the internal
+       ;; %marshall-tensor) is uniform when its RUNTIME components are — the
+       ;; leading TYPE argument is a compile-time constant and is skipped. Kernel
+       ;; entry explodes a cell/tensor param into (ptr byte-size offset ...) and
+       ;; reassembles it via a (let ((x (marshall-cell TYPE size ptr off))) ...);
+       ;; without this the reassembled local reads :unknown and blocks uniformity
+       ;; from flowing through (~ x) at a call site into the callee's parameter.
+       ((search "MARSHALL-" (symbol-name op))
+        (%uni-combine (mapcar (lambda (a) (%uni-analyze a env)) (cddr form))))
        ;; forced-uniform constructs
        ((member (symbol-name op) '("TO-WARP-UNIFORM" "TO-WORKGROUP-UNIFORM") :test #'string=)
         (dolist (a (cdr form)) (%uni-analyze a env))
@@ -1488,6 +1508,19 @@ in single-pass mode."
          (t :unknown))))
     (semantic-to-workgroup-uniform :uniform)
     (semantic-to-warp-uniform :uniform)
+    ;; Endeavor 124: a memory read (~ src [idx]) is UNIFORM when every thread reads
+    ;; the same location — a uniform storage handle at a uniform index. The common
+    ;; case is a whole-cell read (~ x) of a scalar kernel-input cell: x's handle is
+    ;; a uniform kernel arg and the index is the literal 0. This lets such a value
+    ;; be used as an if+ condition / uniform sub-fn arg without a (declare (uniform))
+    ;; assertion. Conservative: only the :uniform case is asserted; every other read
+    ;; stays :unknown (as before), so no NEW :divergent flags are introduced.
+    (semantic-aref
+     (let ((as (calculate-uniformity-state (semantic-aref-array-node node) env))
+           (is (calculate-uniformity-state (semantic-aref-index-node node) env)))
+       (if (and (eq as :uniform) (eq is :uniform))
+           :uniform
+           :unknown)))
     ;; Memory reads and anything else
     (t :unknown)))
 
@@ -2050,15 +2083,21 @@ RECORD-INFO is an alist of (NAME-STR . FIELD-COUNT) built by
                                        when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
                                                  (%crisp-float-type-p (parameter-def-type pd)))
                                        collect pd))
+                                ;; A2: active int scalar params (reach the return
+                                ;; differentiably). Structural ints stay inactive.
+                                (active-set (%active-scalar-param-set
+                                             (mapcar #'parameter-def-name env) fn-body))
                                 ;; 101: widened — counts record/struct field
                                 ;; contributions and float scalars; handle types
                                 ;; (tensors, cells) contribute 0 here and flow
                                 ;; grad via the &out grad-handle pathway instead.
+                                ;; A2: plus ACTIVE integer scalar params.
                                 (n-diff-params
                                  (loop for pd in env
                                        when (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                                       sum (%count-differentiable-contributions
-                                            (parameter-def-type pd) record-info)))
+                                       sum (%count-active-contributions
+                                            (parameter-def-type pd) (parameter-def-name pd)
+                                            active-set record-info)))
                                 (n-return (length (remove nil return-types)))
                                 (fn-param-entries
                                  (loop for pd in env

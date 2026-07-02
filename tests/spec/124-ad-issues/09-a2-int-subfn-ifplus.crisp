@@ -1,0 +1,36 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--single-pass]: "interprocedural uniformity inference needs the multi-pass call graph; single-pass compiles clampish before its call site (clampish (~ x)) exists, so its parameter can't be inferred uniform and the if+ is rejected"
+;;
+;; Endeavor 124 A2 — BLOCKERS (a)+(c): an int sub-function whose body uses if+.
+;; This is 120/03's `C`, standalone (called directly from a kernel, not through
+;; another sub-fn), and with `int` instead of `ulong` to keep (b) out of it.
+;;
+;; clampish(x) = (if+ (< x 13) x (- x 2))     dclampish/dx = 1 in both branches.
+;;
+;; This one fails FORWARD too (not just --differentiate), which was the point:
+;; `if+` drags in the whole UNIFORMITY subsystem, and that entanglement is a big
+;; part of why 120/03 was the hard case. FIXED 2026-07-01 (blocker (c)) — with NO
+;; (declare (uniform)): interprocedural uniformity inference now proves that a
+;; scalar kernel input threaded through the call is uniform. Two clauses were
+;; added to the pre-pass walker %uni-analyze (src/analysis/core.lisp):
+;;   - `~` (memory read): (~ src [idx]) is uniform iff its handle and index are
+;;     uniform (taint-max). A whole-cell read (~ x) has no index -> just SRC.
+;;   - `marshall-*`: the kernel explodes a cell param into (ptr size offset) and
+;;     reassembles it via (let ((x (marshall-cell TYPE size ptr off))) ...); the
+;;     marshalled handle is uniform iff its RUNTIME args are (leading type skipped).
+;; Together these let x_ptr (uniform kernel arg) -> marshall-cell -> (~ x) flow
+;; :uniform into clampish's parameter, so its if+ proves uniform in BOTH forward
+;; and the recomputed backward. (blocker (a) int registration was fixed by the
+;; activity analysis in 07.) IR-verified: clampish_grad(i32,float) does
+;; x_adj += seed in both branches -> dclampish/dx = 1.
+
+(def-function clampish (x)
+  (declare #'(int => int))
+  (if+ (< x 13) x (- x 2)))
+
+(def-type in-i  (cell int :address-space :global))
+(def-type out-i (cell int :address-space :global))
+
+(def-kernel use_clampish (x &out m)
+  (declare #'(in-i &out out-i))
+  (set! (~ m) (clampish (~ x))))
