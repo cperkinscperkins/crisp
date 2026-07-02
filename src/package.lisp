@@ -144,6 +144,7 @@
    #:llvm-can-value-use-fast-math-flags
    #:llvm-create-string-attribute
    #:llvm-add-attribute-at-index
+   #:llvm-add-named-metadata-operand
    #:+llvm-attribute-function-index+
    #:+llvm-fast-math-none+
    #:+llvm-fast-math-allow-reassoc+

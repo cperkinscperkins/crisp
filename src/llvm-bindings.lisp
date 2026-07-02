@@ -880,3 +880,11 @@
   (f :pointer)
   (idx :unsigned-int)
   (attr :pointer))
+
+(defcfun ("LLVMAddNamedMetadataOperand" llvm-add-named-metadata-operand) :void
+  "Append VAL (a metadata-as-value) to the module M's named metadata NAME.
+   Endeavor 126: used to add !spirv.ExecutionMode entries (DenormFlushToZero /
+   DenormPreserve) so denormal handling reaches SPIR-V."
+  (m :pointer)
+  (name :string)
+  (val :pointer))

@@ -194,6 +194,26 @@
       (let ((attr (llvm-create-string-attribute ctx key (length key) val (length val))))
         (llvm-add-attribute-at-index func +llvm-attribute-function-index+ attr)))))
 
+(defun %emit-spirv-denorm-execution-mode (func module)
+  "Endeavor 126: emit an !spirv.ExecutionMode metadata entry on kernel FUNC so the
+   LLVM->SPIR-V translator emits DenormFlushToZero (4460, :ftz) or DenormPreserve
+   (4459, :preserve) at width 32. The `denormal-fp-math` attribute alone does NOT
+   reach SPIR-V (verified 2026-07-01), so this is required for the choice to take
+   effect on the SPV/L0 path. Per-entry-point; SPV target only."
+  (let* ((ctx (llvm-get-module-context module))
+         (mode-id (if (eq *denormal-handling* :ftz) 4460 4459))
+         (i32 (llvm-int32-type))
+         (func-md  (llvm-value-as-metadata func))
+         (mode-md  (llvm-value-as-metadata (llvm-const-int i32 mode-id 0)))
+         (width-md (llvm-value-as-metadata (llvm-const-int i32 32 0))))
+    (cffi:with-foreign-object (arr :pointer 3)
+      (setf (cffi:mem-aref arr :pointer 0) func-md
+            (cffi:mem-aref arr :pointer 1) mode-md
+            (cffi:mem-aref arr :pointer 2) width-md)
+      (let* ((node (llvm-md-node-in-context2 ctx arr 3))
+             (node-val (crisp.llvm-bindings::llvm-metadata-as-value ctx node)))
+        (llvm-add-named-metadata-operand module "spirv.ExecutionMode" node-val)))))
+
 (defun ensure-opencl-kernel-metadata (func semantic-function module)
   "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
@@ -209,7 +229,9 @@
         (case *target-backend*
           (:spirv
            ;; calling convention spir_kernel (76)
-           (llvm-set-function-call-conv func 76))
+           (llvm-set-function-call-conv func 76)
+           ;; Endeavor 126: denormal handling reaches SPIR-V only via an execution mode.
+           (%emit-spirv-denorm-execution-mode func module))
           (:ptx
            ;; Use ptx_kernel calling convention (71) so llc emits .entry
            ;; If this crashes on Windows, we will need to revisit nvvm attributes.
