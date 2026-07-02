@@ -2,7 +2,7 @@ Precision: ieee vs fast
 ===================================
 - [x] Precision KEYS: `ieee` | `fast`  (pass 1: per-instruction FMF on FP ops; default :ieee)
 - [ ] `(with-precision (<KEY>) ...)`
-- [ ]  `(declaim (precision <KEY>))`
+- [x] `(declaim (precision <KEY>))`  (pass 4 DONE 2026-07-02: first declaim in the language; %process-declaim intercepts it in visit-toplevel-form (before CL's declaim/proclaim); file-level, sets *math-precision* unless force-locked. Precedence force > declaim > math wired by splitting force/math (no longer pre-resolved) through initialize-compiler (:force-math-precision) + runner + CLI, with new *force-math-precision*. Specs 11 (declaim fast > math ieee), 12 (declaim ieee > math fast), 13 (force ieee > declaim fast) green; IR-verified declaim drives FMF with no flags; regression 803/803 both ways, 253 unit, 183 neg.)
 - [x] `--math-precision`  (pass 2 DONE 2026-07-02: flag + `force > math` precedence — parsing landed with pass 1; specs 03/04 (fast/ieee) + 05/06 (precedence both directions) green; suite 796/796)
 - [x] `--force-math-precision`  (pass 1 DONE 2026-07-02: codegen + runner + binary CLI + warning; specs 01/02 green, full regression 792/792 both ways, 252 unit, 183 neg)
 - [ ] DEFAULT precision stays :ieee (nvcc/clang style, fast opt-in). Decided 2026-07-02 after measuring fallout: default :fast breaks the whole numerical-correctness layer (HOIST-EXPECT exact output — 07-struct-with-ct got 12 vs 7 on BMG; VERIFY-AUTODIFF finite-difference). Also flagged: that 7->12 may be an IGC fast-math miscompile on BMG — investigate when verifying the fast path on metal.

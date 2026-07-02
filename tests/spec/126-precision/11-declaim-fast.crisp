@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--math-precision=ieee] : validate-fast-math
+;;
+;; Endeavor 126, pass 4: (declaim (precision fast)) — the FIRST declaim in the
+;; language. This tests BOTH that declaim takes effect AND the precedence
+;; declaim > --math-precision: the file declaims fast, the flag asks for ieee,
+;; declaim wins -> per-instruction fast-math flags.
+
+(declaim (precision fast))
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel prec_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))

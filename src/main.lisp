@@ -79,14 +79,21 @@ Supports one or more .crisp source files: the last file is treated as the primar
          ;; --math-precision (and, later, all in-source precision choices).
          (force-prec-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--force-math-precision=" f)) flags))
          (math-prec-flag  (find-if (lambda (f) (alexandria:starts-with-subseq "--math-precision=" f)) flags))
-         (precision-mode
-          (let ((v (cond (force-prec-flag (subseq force-prec-flag (length "--force-math-precision=")))
-                         (math-prec-flag  (subseq math-prec-flag  (length "--math-precision=")))
-                         (t nil))))
-            (cond ((null v) :ieee)   ; Endeavor 126: default precision (pending fast-default decision)
+         ;; Parsed SEPARATELY (not pre-resolved) so the compiler knows which is the
+         ;; hard lock: force > with-precision > declaim > math > default(:ieee).
+         (math-precision-mode
+          (let ((v (when math-prec-flag (subseq math-prec-flag (length "--math-precision=")))))
+            (cond ((null v) :ieee)
                   ((string-equal v "fast") :fast)
                   ((string-equal v "ieee") :ieee)
                   (t (format *error-output* "ERROR: unknown math precision '~a' (expected ieee|fast).~%" v)
+                     (uiop:quit 1)))))
+         (force-precision-mode
+          (let ((v (when force-prec-flag (subseq force-prec-flag (length "--force-math-precision=")))))
+            (cond ((null v) nil)
+                  ((string-equal v "fast") :fast)
+                  ((string-equal v "ieee") :ieee)
+                  (t (format *error-output* "ERROR: unknown forced math precision '~a' (expected ieee|fast).~%" v)
                      (uiop:quit 1)))))
          (denorm-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--denormal-handling=" f)) flags))
          (denormal-handling
@@ -131,14 +138,16 @@ Supports one or more .crisp source files: the last file is treated as the primar
 
     ;; Endeavor 126: `fast` precision flushes denormals; a competing `preserve` request
     ;; is not honored under `fast` (denorm is not per-region on SPIR-V) — warn, don't silently flush.
-    (when (and (eq precision-mode :fast) (eq denormal-handling :preserve))
+    ;; (Flag-level check; a declaim-set fast + preserve is a later refinement.)
+    (when (and (eq (or force-precision-mode math-precision-mode) :fast) (eq denormal-handling :preserve))
       (format *error-output* "WARNING: `fast` precision flushes denormals; the `preserve` request is not honored under `fast` -- use `ieee` if you need denormal preservation.~%"))
 
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
                                         :runtime-checks runtime-checks-p
                                         :differentiate differentiate-p
-                                        :math-precision precision-mode
+                                        :math-precision math-precision-mode
+                                        :force-math-precision force-precision-mode
                                         :denormal-handling denormal-handling)
 
     ;; Require at least one source file; support multiple files.

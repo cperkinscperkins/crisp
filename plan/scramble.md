@@ -709,7 +709,20 @@ Precision: ieee vs fast vs ieee-ftz
 - [ ] `--math-precision`
 - [ ] `--force-math-precision`
 - [ ] `--denormal-handling [ieee | flush]`
-- [x] CHange to precision: ieee | fast | ieee-ftz
+- [/] CHange to precision: ieee | fast | ieee-ftz
+
+Transcendentals
+===============
+- [ ] across both precisions
+- [ ] and both subnormal handling (when ieee)
+- [ ] and auto differentiation for each. ?
+
+Binary Download / Release
+=========================
+We have a github release for the libraries, with a python script to fetch.
+Should we do something for the compiler itself?
+- [ ] update INSTALL.md instructions.
+- [ ] README.md should link to INSTALL.md
 
 Reductions
 ==========

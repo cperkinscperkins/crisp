@@ -79,8 +79,11 @@
 (defvar *compile-single-pass* nil)
 (defvar *compile-differentiate* nil)
 (defvar *compile-math-precision* nil
-  "Endeavor 126: effective precision mode (:fast / :ieee / nil) for a precision
+  "Endeavor 126: --math-precision mode (:fast / :ieee / nil) for a precision
    TEST-WITH run; forwarded to initialize-compiler by compile-crisp-file-to-ir-string.")
+(defvar *compile-force-math-precision* nil
+  "Endeavor 126: --force-math-precision mode (:fast / :ieee / nil) — the hard lock
+   (force > with-precision > declaim > math). Forwarded to initialize-compiler.")
 (defvar *compile-denormal-handling* nil
   "Endeavor 126: effective denormal mode (:ftz / :preserve / nil) for a precision
    TEST-WITH run; forwarded to initialize-compiler by compile-crisp-file-to-ir-string.")
@@ -508,19 +511,18 @@
 
 
 
-(defun %precision-mode-from-flags (flags)
-  "Extract the effective precision mode (:fast / :ieee / nil) from FLAGS.
-   --force-math-precision wins over --math-precision (pass-1 precedence)."
-  (flet ((val-for (prefix)
-           (loop for f in flags
+(defun %precision-flag-value (flags prefix)
+  "Return the :fast / :ieee mode for flag PREFIX (e.g. \"--math-precision=\") in
+   FLAGS, or NIL if absent. Force and math are parsed SEPARATELY so the compiler
+   knows which is the hard lock (declaim/with-precision precedence)."
+  (let ((v (loop for f in flags
                  when (and (>= (length f) (length prefix))
                            (string= prefix (subseq f 0 (length prefix))))
                  return (subseq f (length prefix)))))
-    (let ((v (or (val-for "--force-math-precision=") (val-for "--math-precision="))))
-      (cond ((null v) nil)
-            ((string-equal v "fast") :fast)
-            ((string-equal v "ieee") :ieee)
-            (t nil)))))
+    (cond ((null v) nil)
+          ((string-equal v "fast") :fast)
+          ((string-equal v "ieee") :ieee)
+          (t nil))))
 
 (defun %denormal-mode-from-flags (flags)
   "Extract the denormal mode (:ftz / :preserve / nil) from FLAGS."
@@ -540,9 +542,11 @@
    / [--denormal-handling=KEY] (Endeavor 126). Modes are parsed from FLAGS and
    forwarded to the compiler via the *compile-* specials -> initialize-compiler."
   (handler-case
-      (let* ((mode (%precision-mode-from-flags flags))
+      (let* ((math   (%precision-flag-value flags "--math-precision="))
+             (force  (%precision-flag-value flags "--force-math-precision="))
              (denorm (%denormal-mode-from-flags flags))
-             (*compile-math-precision* (or mode *compile-math-precision*))
+             (*compile-math-precision* (or math *compile-math-precision*))
+             (*compile-force-math-precision* (or force *compile-force-math-precision*))
              (*compile-denormal-handling* (or denorm *compile-denormal-handling*)))
       (let ((ir-string (compile-crisp-file-to-ir-string file)))
         (if validator
@@ -622,6 +626,7 @@
                     :differentiate *compile-differentiate*
                     :runtime-checks *compile-runtime-checks*
                     :math-precision (or *compile-math-precision* :ieee)
+                    :force-math-precision *compile-force-math-precision*
                     :denormal-handling (or *compile-denormal-handling* :preserve))
                    (with-open-file (stream filepath)
                      (let ((*package* (find-package :crisp-language)))

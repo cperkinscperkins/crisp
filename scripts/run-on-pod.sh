@@ -19,6 +19,7 @@
 #   # --differentiate + negative phases:
 #   ./scripts/run-on-pod.sh 149.36.1.192 29800 precision ~/.ssh/id_ed25519 09-denorm-ftz
 #
+#
 # Prerequisites:
 #   - A RunPod pod running a PyTorch or CUDA image (provides nvcc)
 #   - SSH access configured (key-based)

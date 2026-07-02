@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-ieee-precision
+;;
+;; Endeavor 126, pass 4 precedence: --force-math-precision=ieee OVERRIDES
+;; (declaim (precision fast)) -> plain FP. Confirms force beats declaim (force is
+;; the hard lock; declaim is ignored while it is active).
+
+(declaim (precision fast))
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel prec_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))
