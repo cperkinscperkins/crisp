@@ -500,15 +500,48 @@
 
 
 
+(defun run-spec-precision-pass (file validator)
+  "Compiles FILE to LLVM IR and hands it to VALIDATOR. Used by
+   TEST-WITH[--force-math-precision=KEY] / [--math-precision=KEY] (Endeavor 126).
+
+   NOTE (pass 1, TDD): the precision flag is NOT yet forwarded to the compiler —
+   that forwarding + the per-instruction FMF codegen ARE the pass-1 feature. Until
+   then this compiles normally, so validate-fast-math fails (RED) and
+   validate-ieee-precision passes (the default IR is already plain/ieee-shaped).
+   When the feature lands, this fn will bind the precision vars and forward them."
+  (handler-case
+      (let ((ir-string (compile-crisp-file-to-ir-string file)))
+        (if validator
+            (let ((sym (find-symbol (string-upcase (string validator)) :crisp.spec-runner)))
+              (if (and sym (fboundp sym))
+                  (if (funcall sym file ir-string)
+                      (progn (format t "PASS~%") t)
+                      (progn (format *error-output* "FAIL (Validator ~a)~%" validator) nil))
+                  (progn (format *error-output* "FAIL (Validator ~a not found)~%" validator) nil)))
+            (progn (format t "PASS~%") t)))
+    (error (e)
+      (uiop:print-backtrace :condition e)
+      (format *error-output* "FAIL (Condition: ~a)~%" e)
+      nil)))
+
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active.
-   Extended: --runtime-checks routes to run-spec-runtime-checks-pass."
+   Extended: --runtime-checks routes to run-spec-runtime-checks-pass;
+   --*-math-precision=KEY routes to run-spec-precision-pass."
   ;; NEW: --runtime-checks is handled as a dedicated path — compile with
   ;; runtime assertions enabled and call the validator with the IR string.
   (when (member "--runtime-checks" flags :test #'string=)
     (format t "(RT-Checks)... ")
     (return-from run-single-spec-pass
       (run-spec-runtime-checks-pass file validator)))
+
+  ;; Endeavor 126: precision runs — compile and hand the IR to a precision validator.
+  (when (some (lambda (f) (or (search "--force-math-precision=" f)
+                              (search "--math-precision=" f)))
+              flags)
+    (format t "(Precision)... ")
+    (return-from run-single-spec-pass
+      (run-spec-precision-pass file validator)))
 
   ;; Original dispatch (unchanged from base run-specs.lisp):
   (let ((*use-binary*         (or *use-binary*         (member "--use-binary"    flags :test #'string=)))
@@ -589,7 +622,32 @@
       (progn
         (format t "FAIL: llvm.trap not found in IR (expected from r-t-assert under --runtime-checks)~%")
         nil)))
-        
+
+(defun validate-fast-math (file ir-string)
+  "Validator for TEST-WITH[--*-math-precision=fast] (Endeavor 126): FP ops must
+   carry per-instruction fast-math flags. LLVM prints `fast` when ALL flags are set,
+   otherwise the individual keywords (reassoc/contract/...); a contracted a*b+c may
+   also appear as llvm.fmuladd. Any of these confirms fast precision reached the IR."
+  (declare (ignore file))
+  (let ((ir (string-downcase ir-string)))
+    (if (or (search "fmul fast" ir) (search "fadd fast" ir)
+            (search "reassoc" ir)   (search "fmuladd" ir))
+        (progn (format t "PASS (fast-math flags present)~%") t)
+        (progn (format t "FAIL: no fast-math flags on FP ops (expected under fast precision)~%") nil))))
+
+(defun validate-ieee-precision (file ir-string)
+  "Validator for TEST-WITH[--*-math-precision=ieee] (Endeavor 126): FP ops must be
+   plain — no fast-math flags, no reassoc/contraction — matching strict IEEE. (The
+   test kernel's name is neutral, so a bare `fast` substring implies a fast-math flag.)"
+  (declare (ignore file))
+  (let ((ir (string-downcase ir-string)))
+    (if (and (search "fmul float" ir)
+             (not (search "fast" ir))
+             (not (search "reassoc" ir))
+             (not (search "fmuladd" ir)))
+        (progn (format t "PASS (plain FP ops, no fast-math)~%") t)
+        (progn (format t "FAIL: expected plain fmul/fadd with no fast-math flags~%") nil))))
+
 (defun validate-ir-with-clang (ir-string)
   "Uses clang to validate LLVM IR."
   (uiop:with-temporary-file (:stream stream :pathname path :type "ll")
