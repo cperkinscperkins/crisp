@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-02T00:32:30.594774Z
+Generated on 2026-07-03T00:06:29.557166Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -190,6 +190,13 @@ Generated on 2026-07-02T00:32:30.594774Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a `(progn ...)` expression.  >    Extended (091): strips leading declare forms, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
+
+
+---
+### DEFUN `ANALYZE-WITH-PRECISION-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 126 (pass 5): analyzes (with-precision (KEY) body...), KEY = fast|ieee.  >    Produces a semantic-with-precision node carrying the region MODE + body nodes; its  >    codegen scopes *math-precision* over just the body (respecting the --force lock).  >    The region's value is the last body form's value (like progn). KEY may be written  >    parenthesised — (with-precision (ieee) ...) — or bare.
 
 
 ---
@@ -732,6 +739,13 @@ Generated on 2026-07-02T00:32:30.594774Z
 - **Args**: `(FORMS)`
 
   > Performs a shallow, recursive walk of a function's body.  >   Returns two values:  >   1. A boolean indicating if a side-channel originator was found.  >   2. A list of all unique symbols found in the 'car' of lists (potential function calls).
+
+
+---
+### DEFUN `%PROCESS-DECLAIM`
+- **Args**: `(FORM)`
+
+  > Endeavor 126: handle (declaim (precision KEY)) — the first (and currently only)  >    supported declaim: a file-level precision selection. Sets *math-precision* to  >    :fast/:ieee for the rest of the compilation, UNLESS --force-math-precision is  >    active (force locks precision; declaim is then ignored). Runs in both the analysis  >    and codegen passes — each processes the declaim before the functions, so  >    *math-precision* is correct when FP ops are emitted. Unknown declaim clauses are  >    ignored (forward-compatible); an unknown precision key is an error.
 
 
 ---
@@ -2394,10 +2408,24 @@ Generated on 2026-07-02T00:32:30.594774Z
 
 
 ---
+### DEFUN `%APPLY-DENORMAL-ATTRIBUTE`
+- **Args**: `(FUNC MODULE)`
+
+  > Endeavor 126: stamp the `denormal-fp-math` (and `-f32`) function attribute on FUNC  >    per *denormal-handling* — :ftz -> "preserve-sign,preserve-sign" (flush subnormals),  >    :preserve -> "ieee,ieee" (strict IEEE). NVPTX honours these directly; the SPIR-V  >    DenormFlushToZero execution mode is emitted separately. Applied to every function.
+
+
+---
+### DEFUN `%EMIT-SPIRV-DENORM-EXECUTION-MODE`
+- **Args**: `(FUNC MODULE)`
+
+  > Endeavor 126: emit an !spirv.ExecutionMode metadata entry on kernel FUNC so the  >    LLVM->SPIR-V translator emits DenormFlushToZero (4460, :ftz) or DenormPreserve  >    (4459, :preserve) at width 32. The `denormal-fp-math` attribute alone does NOT  >    reach SPIR-V (verified 2026-07-01), so this is required for the choice to take  >    effect on the SPV/L0 path. Per-entry-point; SPV target only.
+
+
+---
 ### DEFUN `ENSURE-OPENCL-KERNEL-METADATA`
 - **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
 
-  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >      >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.
+  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).  >   >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.
 
 
 ---
@@ -2557,6 +2585,13 @@ Generated on 2026-07-02T00:32:30.594774Z
 - **Args**: `(BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)`
 
   > Builds LLVM cast instruction if types differ, with alias resolution.  >    MODULE is required to resolve types correctly.  >    Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;  >    treat same symbol-name as no-op cast.
+
+
+---
+### DEFUN `%APPLY-PRECISION-FMF`
+- **Args**: `(INST)`
+
+  > Endeavor 126: when *math-precision* is :fast, stamp all fast-math flags on the  >    FP-math instruction INST (guarded by llvm-can-value-use-fast-math-flags). Returns  >    INST so it can wrap a build call inline. No-op under :ieee (plain FP left as-is).  >    Per-instruction FMF is the only path the LLVM->SPIR-V translator honours.
 
 
 ---
@@ -3159,8 +3194,28 @@ Generated on 2026-07-02T00:32:30.594774Z
 
 
 ---
+### DEFVAR `*MATH-PRECISION*`
+
+  > Endeavor 126: active math-precision mode for FP codegen — :ieee (plain, strict FP)  >    or :fast (per-instruction fast-math flags stamped on FP ops). Set by  >    initialize-compiler from --math-precision / --force-math-precision. Default :ieee  >    (PENDING DECISION 2026-07-02): the language's stated default is `fast`, but  >    flipping it globally breaks every numerical-correctness check (HOIST-EXPECT exact  >    output, VERIFY-AUTODIFF finite-difference) — those must run under :ieee. Kept :ieee  >    until we decide precise-default (nvcc/clang style, fast opt-in) vs. fast-default +  >    forcing :ieee for all correctness runs.
+
+
+---
+### DEFVAR `*FORCE-MATH-PRECISION*`
+
+  > Endeavor 126: when non-NIL (:fast/:ieee), the --force-math-precision hard override  >    is active — it LOCKS the precision, so in-source `(declaim (precision …))` and  >    `with-precision` choices are ignored. NIL means no force: declaim (pass 4) /  >    with-precision (pass 5) may set *math-precision*. Precedence:  >    --force > with-precision > declaim > --math-precision > default(:ieee).
+
+
+---
+### DEFVAR `*DENORMAL-HANDLING*`
+
+  > Endeavor 126: subnormal handling for FP codegen — :preserve (strict IEEE gradual  >    underflow) or :ftz (flush subnormals to sign-preserved zero). Orthogonal to  >    *math-precision*. Set by initialize-compiler from --denormal-handling. Stamped as  >    the `denormal-fp-math` function attribute (PTX/NVPTX honours it directly; SPIR-V  >    needs a DenormFlushToZero execution mode, emitted separately). Default :preserve  >    matches the precise (:ieee) default and nvcc (-ftz=false).
+
+
+---
 ### DEFUN `INITIALIZE-COMPILER`
-- **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
+- **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL)
+              (MATH-PRECISION IEEE) (FORCE-MATH-PRECISION NIL)
+              (DENORMAL-HANDLING PRESERVE))`
 
   > Initializes the compiler state.  >    Extended to clear *grid-functions* for def-grid-function support.
 
@@ -4107,6 +4162,39 @@ Generated on 2026-07-02T00:32:30.594774Z
 
   > Returns T if TY is an LLVM array type ([N x T]).
 
+
+---
+### DEFCONSTANT `+LLVM-ATTRIBUTE-FUNCTION-INDEX+`
+
+  > LLVMAttributeFunctionIndex (~0u): attribute index for function-level attributes.
+
+
+---
+### DEFCONSTANT `+LLVM-FAST-MATH-NONE+`
+
+---
+### DEFCONSTANT `+LLVM-FAST-MATH-ALLOW-REASSOC+`
+
+---
+### DEFCONSTANT `+LLVM-FAST-MATH-NO-NANS+`
+
+---
+### DEFCONSTANT `+LLVM-FAST-MATH-NO-INFS+`
+
+---
+### DEFCONSTANT `+LLVM-FAST-MATH-NO-SIGNED-ZEROS+`
+
+---
+### DEFCONSTANT `+LLVM-FAST-MATH-ALLOW-RECIPROCAL+`
+
+---
+### DEFCONSTANT `+LLVM-FAST-MATH-ALLOW-CONTRACT+`
+
+---
+### DEFCONSTANT `+LLVM-FAST-MATH-APPROX-FUNC+`
+
+---
+### DEFCONSTANT `+LLVM-FAST-MATH-ALL+`
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\macros.lisp`
@@ -5721,6 +5809,12 @@ Generated on 2026-07-02T00:32:30.594774Z
 ### DEFSTRUCT `SEMANTIC-PROGN`
 
   > Represents a (progn ...) expression.
+
+
+---
+### DEFSTRUCT `SEMANTIC-WITH-PRECISION`
+
+  > Endeavor 126 (pass 5): (with-precision (KEY) body...) — per-region precision.  >    Codegen dynamically binds *math-precision* to MODE over the body (unless  >    --force-math-precision locks it), so the body's FP ops carry the region's mode.  >    Value is the last body expression's value (like progn).
 
 
 ---

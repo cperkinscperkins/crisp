@@ -9,7 +9,7 @@ Contrarily, the `--split` flag ensures each kernel gets its won individuaul targ
 not joined with any other, regardless of any `def-orchestration`.
 It is an error to use both these flags together.
 
-Also note that the metadata and hoisting output is always output per-orchestration. They are unaffected by either flag. 
+Also note that the metadata and hoisting output is always output per-orchestration. They are uneffected by either flag. 
 
 #### multiple .crisp files
 

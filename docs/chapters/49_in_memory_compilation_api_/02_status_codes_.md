@@ -9,7 +9,7 @@ after recompilation by In Memory Compilation API it now requires 10,000 bytes, t
 be a breaking change.  The kernel, if enqueued as before, would no longer function correctly.
 
 Other changes could result in even more severe API breakage. Query the metadata to see
-if the kernel you intend to call was affected and how before attempting to use it.
+if the kernel you intend to call was effected and how before attempting to use it.
 
 
 ```
