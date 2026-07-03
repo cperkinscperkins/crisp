@@ -948,11 +948,13 @@
                                       :elem-bytes elem-bytes
                                       :arg-width (1+ (- (second range) (first range))))))))))))))
 
-(defun %vad-compile-spv (file &key differentiate)
+(defun %vad-compile-spv (file &key differentiate precision denormal)
   "Compiles FILE to SPV via the crisp-compile binary.
    When DIFFERENTIATE is T, passes --differentiate and expects
-   <basename>_grad.spv.  Returns the output pathname on success, NIL on
-   error (logging the compiler's stderr to *error-output*)."
+   <basename>_grad.spv.  PRECISION (:fast/:ieee) and DENORMAL (:ftz/:preserve),
+   when given, are forwarded as --math-precision / --denormal-handling so the
+   fwd + bwd kernels are compiled under the same FP mode (Endeavor 128 Phase 5).
+   Returns the output pathname on success, NIL on error."
   (let* ((bin (get-binary-path))
          (base-name (if differentiate
                         (format nil "~a_grad" (pathname-name file))
@@ -967,6 +969,10 @@
                      "--metadata"
                      (format nil "--log-level=~a" cl-user::*log-level*))))
     (when differentiate (push "--differentiate" args))
+    (when precision
+      (push (format nil "--math-precision=~a" (string-downcase (symbol-name precision))) args))
+    (when denormal
+      (push (format nil "--denormal-handling=~a" (string-downcase (symbol-name denormal))) args))
     (when (probe-file out-path) (delete-file out-path))
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
@@ -1040,6 +1046,9 @@
             (structs (getf spec :structs))
             (output-vec (getf spec :output-vec))
             (expected-grads (getf spec :expected-grads))
+            ;; Endeavor 128 (Phase 5): compile fwd + bwd under a chosen FP mode.
+            (precision (getf spec :precision))
+            (denormal (getf spec :denormal))
             (kernel-name (%vad-find-kernel-name file))
             ;; Coerce numeric values to single-floats, but preserve integer
             ;; scalars (the runner uses INTEGERP to classify scalar-ulong)
@@ -1061,8 +1070,8 @@
          (format *error-output* "FAIL (No inputs in directive)~%")
          nil)
         (t
-         (let* ((fwd-spv (%vad-compile-spv file :differentiate nil))
-                (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t)))
+         (let* ((fwd-spv (%vad-compile-spv file :differentiate nil :precision precision :denormal denormal))
+                (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t :precision precision :denormal denormal)))
                 (result nil))
            (unwind-protect
                 (setf result

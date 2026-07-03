@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=1.0 atol=1e-2 precision=fast denormal=ftz expect.x=2.7182817
+;;
+;; Endeavor 128 (Phase 5): AD across BOTH FP axes at once — fast precision + ftz
+;; denormal. d/dx exp(x) = exp(x); exp(1) = 2.71828. Under fast the fwd + bwd use
+;; native_exp; the ftz execution mode rides along (no denormals at this input, so it
+;; doesn't change the value — it confirms AD compiles + runs correctly under ftz).
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+(def-kernel k (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (exp (~ x))))

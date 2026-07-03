@@ -468,6 +468,8 @@ Body is whitespace-separated `key=value` tokens. Reserved keys:
 | `<name>=[v0 v1 v2 ...]`   | 1D vector input (kernel takes a `vector float`).                   |
 | `at.<name>=<int>`         | Index in vector `<name>` to perturb / compare.                     |
 | `expect.<name>=<float>`   | Optional explicit expected analytical gradient. Compared with same `atol`. |
+| `precision=fast\|ieee`    | Optional (endeavor 128). Compile the fwd + bwd kernels under this precision.       |
+| `denormal=ftz\|preserve`  | Optional (endeavor 128). Compile the fwd + bwd kernels under this denormal mode.   |
 
 Examples:
 
@@ -484,6 +486,15 @@ Examples:
 
 Per-spec there is at most one `VERIFY-AUTODIFF:` line. Missing `atol`,
 malformed tokens, or duplicate directives all produce clear parse errors.
+
+`precision` / `denormal` (endeavor 128) let a spec verify autodiff across the FP
+matrix — e.g. `precision=fast` compiles both kernels with `--math-precision=fast`, so
+the backward exercises the approximate `native_*` (SPV) transcendentals. The derivative
+rules are precision-independent, so AD stays *correct* under any mode; use a **looser
+`atol`** under `fast` since both the finite-difference and analytical gradients go
+through approximate transcendentals. **ftz caveat:** flush-to-zero can zero a denormal
+intermediate in gradients like `1/x` (log) or `1/√(1−x²)` (asin near ±1) — pick test
+inputs away from those boundaries.
 
 ### What gets verified
 

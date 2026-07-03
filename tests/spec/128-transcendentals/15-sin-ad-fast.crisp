@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=0.5 atol=1e-2 precision=fast expect.x=0.8775826
+;;
+;; Endeavor 128 (Phase 5): AD × fast precision. Under fast the fwd + bwd kernels use
+;; the OpenCL native builtins (native_sin forward, native_cos in the backward, since
+;; d/dx sin(x) = cos(x)); cos(0.5) = 0.87758. atol is looser than the ieee specs
+;; (01-11) because native transcendentals are approximate (a few ULP) on top of the
+;; finite-difference h^2 error. Verifies the derivative is CORRECT under fast — the
+;; chain rule is precision-independent; only the numerical accuracy loosens.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+(def-kernel k (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (sin (~ x))))

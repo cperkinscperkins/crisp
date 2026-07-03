@@ -1,10 +1,10 @@
 Transcendentals
 ===============
-- [ ] across both precisions
-- [ ] and both subnormal handling (when ieee)
-- [ ] and auto differentiation for each. ?
-- [ ] error when transcendentals and ieee and no ilbdevice.bc when outputting PTX.
-- [ ] other errors?
+- [x] across both precisions (ieee precise / fast → native_* SPV, __nv_fast_* PTX)
+- [x] and both subnormal handling (nvvm-reflect-ftz on PTX; DenormFlushToZero mode on SPV)
+- [x] and auto differentiation for each (Phase 1 + Phase 5 across the FP matrix, on BMG/L0)
+- [x] error when transcendentals and ieee and no libdevice.bc when outputting PTX (Phase 4; %ptx-finalize-libdevice)
+- [~] other errors? — the missing-libdevice error can't get an auto CHECK-FAIL (negative runner can't inject --ir-target=ptx); verified manually.
 
 
 Ok, now that we've done FFI and precison controls, we are ready to expose the transcendental functions, and probably  include with them some of the other floating point operations (if not exposed already).
@@ -134,13 +134,26 @@ RunPod-dependent PTX work, finish with the cross-cutting AD × precision matrix.
   Regression 824/824 both ways, 253 unit, 185 neg. NOTE: local (no `opt`) leaves libdevice
   un-inlined but ptxas-valid; the pod's opt-21 inlines + DCEs. Fast-PTX (native `.approx` / `__nv_fast_*`)
   is Phase 3.
-- **Phase 5 — AD × precision × denormal (the "dread", de-dreaded).** The derivative rules are
-  symbolic and exact, so AD is *correct* under any precision (precision is transparent to the
-  derivative structure — same lesson as 126-5b). The only real work is **precision-aware
-  VERIFY-AUTODIFF tolerances** (widen atol under fast) + documenting the one genuine gotcha:
-  ftz can flush denormal intermediates in gradients like `1/x` (log) or `1/√(1−x²)` (asin near
-  ±1) to zero — pick test inputs away from those boundaries. Consistency rule: the backward
-  kernel's forward-recompute must use the same precision as the forward.
+- **Phase 5 — AD × precision × denormal. DONE 2026-07-03 (on-metal BMG). ENDEAVOR COMPLETE.**
+  The dread was unfounded, exactly as predicted: the derivative rules are symbolic and exact, so
+  AD is *correct* under any precision (chain rule is precision-independent — same lesson as 126-5b).
+  Implementation was pure test-harness: added `precision=fast|ieee` + `denormal=ftz|preserve` tokens
+  to the `VERIFY-AUTODIFF` directive (parser `*vad-reserved-keys*` + plist), threaded through
+  `%vad-compile-spv` (forwards `--math-precision`/`--denormal-handling`) so the fwd + bwd kernels
+  compile under the same FP mode. Specs 15-sin-ad-fast, 16-exp-ad-fast-ftz (both axes),
+  17-pow-ad-fast (binary, native_powr + native_log in the backward) — all **verified on the BMG via
+  L0**, gradients correct (sin' diff 3.8e-5, exp' 4.7e-5, pow ∂x=12.0/∂y=5.545). Looser atol under
+  fast (native builtins are approximate) — though on BMG native is accurate enough that FD error
+  dominates. **ftz gradient caveat** documented (tests.md): flush-to-zero can zero a denormal
+  intermediate in `1/x` (log) / `1/√(1−x²)` (asin near ±1) — pick inputs off those boundaries.
+  Regression 828/828 both ways, 253 unit, 185 neg.
+
+---
+
+**ENDEAVOR 128 COMPLETE (2026-07-02/03).** All 11 transcendentals (exp log log2 sin cos tan asin
+acos atan pow atan2), forward + autodiff, across SPV (BMG/L0) and PTX (RTX 2000 Ada/CUDA), both
+precisions (ieee precise / fast → native_* on SPV, __nv_fast_* on PTX) and denormal modes. Suite
+828/828 both ways, 253 unit, 185 neg. ci-stop `128-transcendentals`.
 
 
 
@@ -209,16 +222,20 @@ Crisp supports a standard set of transcendental functions. These are the floatin
 
 > `sqrt` and `rsqrt` are **not** transcendentals. They are algebraic and have IEEE-precise native instructions on every backend, so they compile like ordinary arithmetic and never trigger the libdevice requirement below.
 
+#### Autodiff
+
+All of the transcendentals are **differentiable** — their derivatives are built into Crisp's autodiff, so a kernel that uses them differentiates automatically under `--differentiate`. Unlike a foreign function (which needs a user-supplied VJP), you write `(sin x)` and the backward pass knows `d/dx sin = cos`, `d/dx exp = exp`, and so on, including both partials of the binary `pow` and `atan2`.
+
 #### Precision behavior
 
 Transcendentals honor the precision axis (`fast` vs `ieee`, chosen by `--math-precision`, `declaim`, or `with-precision`) like all FP math:
 
-- **`fast`** — lowered to the backend's fast/approximate hardware path (e.g. the PTX `.approx` instructions, or relaxed SPIR-V math). No external dependencies.
+- **`fast`** — lowered to the backend's fast/approximate path: OpenCL `native_*` builtins on SPIR-V (no external dependencies), or NVIDIA's `__nv_fast_*` routines (the `.approx` hardware path) on PTX. **On PTX the fast routines come from libdevice too**, so the requirement below applies under `fast` as well.
 - **`ieee`** — lowered to a correctly-rounded implementation. On some backends that implementation is not built into the hardware and must be supplied at compile time (see PTX below).
 
-#### PTX: `libdevice.10.bc` required for `ieee` transcendentals ⚠️
+#### PTX: `libdevice.10.bc` required for transcendentals ⚠️
 
-NVIDIA GPUs have no IEEE-precise *native* instruction for the transcendentals — the hardware offers only fast approximate forms. To compile a transcendental under `ieee` precision for `--ir-target=ptx`, Crisp links NVIDIA's math library, **`libdevice.10.bc`**, and specializes the correctly-rounded routine into the kernel at compile time. The emitted `.ptx` is self-contained; nothing special is needed at run time.
+NVIDIA GPUs have no *native* instruction for the transcendentals — the hardware offers only a few approximate primitives. To compile a transcendental for `--ir-target=ptx`, Crisp links NVIDIA's math library, **`libdevice.10.bc`**, and specializes the routine into the kernel at compile time — the correctly-rounded `__nv_*` under `ieee`, or the approximate `__nv_fast_*` under `fast`. The emitted `.ptx` is self-contained; nothing special is needed at run time.
 
 You supply `libdevice.10.bc` the same way as any foreign bitcode — as a positional argument on the command line:
 
@@ -226,7 +243,7 @@ You supply `libdevice.10.bc` the same way as any foreign bitcode — as a positi
 crisp-compile --ir-target=ptx  $CUDA_HOME/nvvm/libdevice/libdevice.10.bc  my_kernel.crisp
 ```
 
-**If a kernel uses an `ieee` transcendental for the PTX target and `libdevice.10.bc` is not provided, compilation fails with an error.** The library ships with the CUDA Toolkit (under `nvvm/libdevice/`). The requirement applies only when *all three* hold: PTX target, `ieee` precision, and at least one transcendental. Pure arithmetic, `sqrt`/`rsqrt`, division, or *any* math under `fast` compiles without it.
+**If a kernel uses a transcendental for the PTX target and `libdevice.10.bc` is not provided, compilation fails with an error.** The library ships with the CUDA Toolkit (under `nvvm/libdevice/`). The requirement applies whenever *both* hold: PTX target and at least one transcendental — **under either precision** (`fast` → `__nv_fast_*`, `ieee` → `__nv_*`; both live in libdevice). Pure arithmetic, `sqrt`/`rsqrt`, and division still compile without it. SPIR-V never needs it.
 
 Denormal handling (`--denormal-handling`) is orthogonal: it selects the flush-to-zero vs preserve variant of the linked routines but never changes *whether* the library is needed.
 

@@ -713,11 +713,11 @@ Precision: ieee vs fast vs ieee-ftz
 
 Transcendentals
 ===============
-- [ ] across both precisions
-- [ ] and both subnormal handling (when ieee)
-- [ ] and auto differentiation for each. ?
-- [ ] error when transcendentals and ieee and no ilbdevice.bc when outputting PTX.
-- [ ] other errors?
+- [x] across both precisions
+- [x] and both subnormal handling (when ieee)
+- [x] and auto differentiation for each. ?
+- [x] error when transcendentals and ieee and no ilbdevice.bc when outputting PTX.
+- [x] other errors?
 
 Binary Download / Release
 =========================
@@ -725,6 +725,10 @@ We have a github release for the libraries, with a python script to fetch.
 Should we do something for the compiler itself?
 - [ ] update INSTALL.md instructions.
 - [ ] README.md should link to INSTALL.md
+
+Integer Only Operations
+=======================
+[ ] There are 6 or 7 of these. Easily overlooked.  
 
 Reductions
 ==========
