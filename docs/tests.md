@@ -241,6 +241,7 @@ Header comment directives for test expectations:
 ;; EXPECT-STDERR[--force-math-precision=fast]: "overrides..."    <-- assert a warning on stderr; see below
 ;; TEST-HOIST[L0]: validate-l0-compile-only
 ;; HOIST-DENORMAL: ftz                   <-- denormal mode for a TEST-HOIST run; see below
+;; HOIST-PRECISION: fast                 <-- precision mode for a TEST-HOIST run; see below
 ;; FFI-LINK: add.c                       <-- link a C/.bc library into the spec; see below
 ;; VERIFY-AUTODIFF: x=3.0 atol=1e-3      <-- on-metal AD check; see below
 ;; CHECK-FAIL: "message"   <-- for the negative tests in errors
@@ -357,6 +358,23 @@ Values: `ftz` or `preserve` (absent = compiler default `preserve`). On SPIR-V th
 choice is emitted as an `!spirv.ExecutionMode` (`DenormFlushToZero` / `DenormPreserve`);
 on PTX it rides the `denormal-fp-math` attribute → `.ftz` instructions.
 
+### On-metal precision: `HOIST-PRECISION:`
+
+`HOIST-PRECISION: fast|ieee` (Endeavor 128) sets `--math-precision` for a spec's
+`TEST-HOIST` runs — the analogue of `HOIST-DENORMAL` for the precision axis. Its main
+use is exercising the **fast transcendental path** on real hardware: under `fast`, a
+transcendental with a native variant (sin/cos/tan/exp/log/log2, and `powr` for pow)
+is emitted as an OpenCL `native_*` builtin and run on the device.
+
+```lisp
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-PRECISION: fast
+;; HOIST-EXPECT: BUFFER res: 2.7    ; native_exp(1.0) ~ e
+```
+
+Implementation: `parse-hoist-precision` + `run-spec-with-hoist` appends
+`--math-precision=…` when `*compile-math-precision*` is bound (from the directive).
+
 **Hardware note:** the Intel BMG / Level-Zero compute stack does NOT flush f32
 denormals even under `ftz` — both modes *preserve* on that metal (verified). The
 compiler emits the correct SPIR-V regardless; the flush is only observable on NVIDIA,
@@ -450,6 +468,8 @@ Body is whitespace-separated `key=value` tokens. Reserved keys:
 | `<name>=[v0 v1 v2 ...]`   | 1D vector input (kernel takes a `vector float`).                   |
 | `at.<name>=<int>`         | Index in vector `<name>` to perturb / compare.                     |
 | `expect.<name>=<float>`   | Optional explicit expected analytical gradient. Compared with same `atol`. |
+| `precision=fast\|ieee`    | Optional (endeavor 128). Compile the fwd + bwd kernels under this precision.       |
+| `denormal=ftz\|preserve`  | Optional (endeavor 128). Compile the fwd + bwd kernels under this denormal mode.   |
 
 Examples:
 
@@ -466,6 +486,15 @@ Examples:
 
 Per-spec there is at most one `VERIFY-AUTODIFF:` line. Missing `atol`,
 malformed tokens, or duplicate directives all produce clear parse errors.
+
+`precision` / `denormal` (endeavor 128) let a spec verify autodiff across the FP
+matrix — e.g. `precision=fast` compiles both kernels with `--math-precision=fast`, so
+the backward exercises the approximate `native_*` (SPV) transcendentals. The derivative
+rules are precision-independent, so AD stays *correct* under any mode; use a **looser
+`atol`** under `fast` since both the finite-difference and analytical gradients go
+through approximate transcendentals. **ftz caveat:** flush-to-zero can zero a denormal
+intermediate in gradients like `1/x` (log) or `1/√(1−x²)` (asin near ±1) — pick test
+inputs away from those boundaries.
 
 ### What gets verified
 

@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=0.5 atol=1e-2 expect.x=1.2984464
+;;
+;; Endeavor 128 (Phase 1): tan forward + autodiff.
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (tan (~ x))))

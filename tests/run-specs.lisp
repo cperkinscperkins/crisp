@@ -278,6 +278,10 @@
          (requested (if (and (null requested) (null hoist-dirs))
                         '("ptx")
                         requested))
+         ;; Endeavor 128 (Phase 3): a HOIST-PRECISION directive selects fast vs ieee
+         ;; for the FFI compile-check + hoist (e.g. fast PTX transcendentals ->
+         ;; __nv_fast_*). Bound here since FFI specs bypass run-spec-file's hoist path.
+         (*compile-math-precision* (or (parse-hoist-precision directives) *compile-math-precision*))
          ;; Honor SKIP_SPIRV_TESTS (e.g. a CUDA-only box with no SPIR-V tooling):
          ;; drop spv compile-checks just as run-single-spec-pass does. (L0 hoist
          ;; is skipped separately via SKIP_L0_HOIST in run-spec-with-hoist.)
@@ -320,7 +324,13 @@
                                      ;; Endeavor 123: forward the global differentiate
                                      ;; flag so FFI specs compile their backward kernel
                                      ;; (with the .bc linked) like any other spec.
-                                     (when *compile-differentiate* (list "--differentiate")))
+                                     (when *compile-differentiate* (list "--differentiate"))
+                                     ;; Endeavor 128 (Phase 3): forward the precision mode
+                                     ;; (HOIST-PRECISION) so the compile-check exercises the
+                                     ;; fast PTX path (__nv_fast_*).
+                                     (when *compile-math-precision*
+                                       (list (format nil "--math-precision=~a"
+                                                     (string-downcase (symbol-name *compile-math-precision*))))))
                     :output :string :error-output :string :ignore-error-status t)
                 (declare (ignore out))
                 (cond
@@ -453,6 +463,8 @@
               (finish-output)
               (let* ((*compile-denormal-handling* (or (parse-hoist-denormal directives)
                                                       *compile-denormal-handling*))
+                     (*compile-math-precision* (or (parse-hoist-precision directives)
+                                                   *compile-math-precision*))
                      (hoist-result (run-spec-with-hoist file backend)))
                 (unless (eq hoist-result :skipped)
                   (let ((cpp-files hoist-result))
@@ -936,11 +948,13 @@
                                       :elem-bytes elem-bytes
                                       :arg-width (1+ (- (second range) (first range))))))))))))))
 
-(defun %vad-compile-spv (file &key differentiate)
+(defun %vad-compile-spv (file &key differentiate precision denormal)
   "Compiles FILE to SPV via the crisp-compile binary.
    When DIFFERENTIATE is T, passes --differentiate and expects
-   <basename>_grad.spv.  Returns the output pathname on success, NIL on
-   error (logging the compiler's stderr to *error-output*)."
+   <basename>_grad.spv.  PRECISION (:fast/:ieee) and DENORMAL (:ftz/:preserve),
+   when given, are forwarded as --math-precision / --denormal-handling so the
+   fwd + bwd kernels are compiled under the same FP mode (Endeavor 128 Phase 5).
+   Returns the output pathname on success, NIL on error."
   (let* ((bin (get-binary-path))
          (base-name (if differentiate
                         (format nil "~a_grad" (pathname-name file))
@@ -955,6 +969,10 @@
                      "--metadata"
                      (format nil "--log-level=~a" cl-user::*log-level*))))
     (when differentiate (push "--differentiate" args))
+    (when precision
+      (push (format nil "--math-precision=~a" (string-downcase (symbol-name precision))) args))
+    (when denormal
+      (push (format nil "--denormal-handling=~a" (string-downcase (symbol-name denormal))) args))
     (when (probe-file out-path) (delete-file out-path))
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
@@ -1028,6 +1046,9 @@
             (structs (getf spec :structs))
             (output-vec (getf spec :output-vec))
             (expected-grads (getf spec :expected-grads))
+            ;; Endeavor 128 (Phase 5): compile fwd + bwd under a chosen FP mode.
+            (precision (getf spec :precision))
+            (denormal (getf spec :denormal))
             (kernel-name (%vad-find-kernel-name file))
             ;; Coerce numeric values to single-floats, but preserve integer
             ;; scalars (the runner uses INTEGERP to classify scalar-ulong)
@@ -1049,8 +1070,8 @@
          (format *error-output* "FAIL (No inputs in directive)~%")
          nil)
         (t
-         (let* ((fwd-spv (%vad-compile-spv file :differentiate nil))
-                (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t)))
+         (let* ((fwd-spv (%vad-compile-spv file :differentiate nil :precision precision :denormal denormal))
+                (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t :precision precision :denormal denormal)))
                 (result nil))
            (unwind-protect
                 (setf result
@@ -1138,6 +1159,11 @@
                        (when *compile-denormal-handling*
                          (list (format nil "--denormal-handling=~a"
                                        (string-downcase (symbol-name *compile-denormal-handling*)))))
+                       ;; Endeavor 128: forward the precision mode (HOIST-PRECISION directive)
+                       ;; so an on-metal test can exercise the fast native_* transcendental path.
+                       (when *compile-math-precision*
+                         (list (format nil "--math-precision=~a"
+                                       (string-downcase (symbol-name *compile-math-precision*)))))
                        (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
@@ -1965,6 +1991,17 @@
         (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 15))))
           (cond ((string-equal v "ftz") (return :ftz))
                 ((string-equal v "preserve") (return :preserve))))))))
+
+(defun parse-hoist-precision (directive-lines)
+  "Parse HOIST-PRECISION: fast|ieee (Endeavor 128). Returns :fast / :ieee / nil.
+   Sets --math-precision for the hoist compile so an on-metal test can exercise the
+   fast native_* transcendental path (vs precise ieee) on real hardware."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "HOIST-PRECISION:")
+        (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 16))))
+          (cond ((string-equal v "fast") (return :fast))
+                ((string-equal v "ieee") (return :ieee))))))))
 
 (defun parse-hoist-expect (directive-lines)
   "Parse HOIST-EXPECT: <string> lines.

@@ -1,5 +1,67 @@
 # Reduction benchmark — running commentary
 
+## 2026-07-03 — Intel Arc B580 (BMG) — first re-run in a month; whole platform faster (driver)
+
+First local Intel run since 2026-06-01 (same box, same kernel, occupancy=0.5,
+N=1K/100K/1M, three-way `crisp` / `sycl` / `sycl-reduce`).  A month of endeavors
+(uniformity → FFI → precision controls → transcendentals) landed in between, but
+**the headline mover here is almost certainly the BMG/L0 driver, not Crisp** — every
+impl jumped by a similar factor, which is the signature of an environment change, not
+a compiler win.
+
+**Kernel time (GPU hardware events):**
+
+|       N | crisp (us) | crisp GB/s | sycl (us) | sycl GB/s | sycl-reduce (us) | sycl-reduce GB/s |
+|--------:|-----------:|-----------:|----------:|----------:|-----------------:|-----------------:|
+|    1000 |       3.85 |       1.04 |      2.70 |      1.48 |             2.39 |             1.67 |
+|  100000 |       4.89 |      81.83 |      3.43 |    116.55 |             3.02 |           132.63 |
+| 1000000 |      11.54 |     346.50 |      8.01 |    499.50 |             7.70 |           519.75 |
+
+**Compile times:**
+
+|        impl | device (s) | end-to-end (s) |
+|------------:|-----------:|---------------:|
+|       crisp |       0.96 |           2.41 |
+|        sycl |       2.23 |           4.03 |
+| sycl-reduce |       1.72 |           4.03 |
+
+**Wall time (kernel + sync + readback):**
+
+|       N | crisp (us) | sycl (us) | sycl-reduce (us) |
+|--------:|-----------:|----------:|-----------------:|
+|    1000 |     184.09 |    136.81 |           136.83 |
+|  100000 |     249.36 |    118.89 |           120.93 |
+| 1000000 |     258.98 |    123.78 |           152.59 |
+
+**Absolute:** big gains everywhere vs 2026-06-01.  Crisp N=100K went 38.85 → 81.83 GB/s
+(+111%), N=1M went 240.38 → 346.50 GB/s (+44%).  Device compile also dropped, 2.37 →
+0.96s (crisp still ~2.3× faster to compile than icpx).  So Crisp is genuinely faster
+than a month ago, wall-clock and compile.
+
+**But the ratio — the metric we actually track — is mixed, because SYCL sped up too:**
+
+| N | crisp/sycl (2026-06-01 → 2026-07-03) |
+|---|---|
+| 100K | 68.7% → **70.2%** (slightly up) |
+| 1M | 75.0% → **69.4%** (down) |
+
+SYCL N=1M went 320.51 → 499.50 GB/s (+56%), i.e. the driver update lifted hand-tuned
+SYCL's 1M pattern *more* than Crisp's (+56% vs +44%), so the gap widened there.  At 100K
+both roughly doubled and the ratio held.  Net: **Crisp got faster, but did not close the
+competitive gap** — the environment moved, mostly.  `sycl` vs `sycl-reduce` is still a
+wash at 1M (8.01 vs 7.70us) as expected for a bandwidth-bound kernel.
+
+**Bears on the old open thread** ("full -O3 hurts BMG": 240 GB/s with O3 on 2026-06-01
+vs 272 without on 2026-05-30).  We're now at 346 GB/s *with* full -O3 — so either the
+driver neutralized whatever -O3 was fighting, or a month of codegen changes helped.
+Can't separate the two from this run alone; a controlled trimmed-vs-O3 re-check on the
+current driver would settle it, if/when it matters.
+
+**Caveat:** single run per size, no variance bars; the 2026-06-01 entry noted high 1M
+variance (one run tied SYCL).  Treat the ratio deltas as directional, not precise.
+
+---
+
 ## 2026-06-01 — Intel Arc B580 (BMG) — full -O3 restored, sycl-reduce replaces oneDPL
 
 Two changes since the 2026-05-30 entry:

@@ -46,6 +46,39 @@
 
 (def-unary-math-analyzer analyze-sin-expression make-semantic-sin "sin")
 (def-unary-math-analyzer analyze-cos-expression make-semantic-cos "cos")
+;; Endeavor 128: transcendentals (unary).
+(def-unary-math-analyzer analyze-exp-expression  make-semantic-exp  "exp")
+(def-unary-math-analyzer analyze-log-expression  make-semantic-log  "log")
+(def-unary-math-analyzer analyze-log2-expression make-semantic-log2 "log2")
+(def-unary-math-analyzer analyze-tan-expression  make-semantic-tan  "tan")
+(def-unary-math-analyzer analyze-asin-expression make-semantic-asin "asin")
+(def-unary-math-analyzer analyze-acos-expression make-semantic-acos "acos")
+(def-unary-math-analyzer analyze-atan-expression make-semantic-atan "atan")
+
+(defmacro def-binary-math-analyzer (name node-constructor op-string)
+  "Endeavor 128: analyzer for a binary FP math intrinsic (pow, atan2). Both args
+   must be float; the result type is the (promoted) argument type."
+  `(defun ,name (expr env context location)
+     ,(format nil "Analyzes a `(~a ...)` expression." op-string)
+     (let* ((left-node  (analyze-expression (second expr) env context (append location '(1))))
+            (right-node (analyze-expression (third expr)  env context (append location '(2))))
+            (left-type  (get-single-value-type left-node))
+            (right-type (get-single-value-type right-node))
+            (left-crisp (gethash left-type *crisp-types*)))
+       (unless (and left-crisp (eq (crisp-type-category left-crisp) :float))
+         (error 'crisp-type-error
+           :message (format nil "Type mismatch for operator '~a'. Expected float, got ~a." ,op-string left-type)
+           :source-location location))
+       (let ((right-crisp (gethash right-type *crisp-types*)))
+         (unless (and right-crisp (eq (crisp-type-category right-crisp) :float))
+           (error 'crisp-type-error
+             :message (format nil "Type mismatch for operator '~a'. Expected float, got ~a." ,op-string right-type)
+             :source-location location)))
+       (,node-constructor :type left-type :left-arg left-node :right-arg right-node
+                          :source-location location))))
+
+(def-binary-math-analyzer analyze-pow-expression   make-semantic-pow   "pow")
+(def-binary-math-analyzer analyze-atan2-expression make-semantic-atan2 "atan2")
 
 (defmacro def-comparison-analyzer (name node-constructor op-string)
   `(defun ,name (expr env context location)
@@ -442,6 +475,16 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
   (def-expression-analyzer / analyze-div-expression)
   (def-expression-analyzer sin analyze-sin-expression)
   (def-expression-analyzer cos analyze-cos-expression)
+  ;; Endeavor 128: transcendentals
+  (def-expression-analyzer exp   analyze-exp-expression)
+  (def-expression-analyzer log   analyze-log-expression)
+  (def-expression-analyzer log2  analyze-log2-expression)
+  (def-expression-analyzer tan   analyze-tan-expression)
+  (def-expression-analyzer asin  analyze-asin-expression)
+  (def-expression-analyzer acos  analyze-acos-expression)
+  (def-expression-analyzer atan  analyze-atan-expression)
+  (def-expression-analyzer pow   analyze-pow-expression)
+  (def-expression-analyzer atan2 analyze-atan2-expression)
   (def-expression-analyzer < analyze-lt-expression)
   (def-expression-analyzer > analyze-gt-expression)
   (def-expression-analyzer <= analyze-le-expression)

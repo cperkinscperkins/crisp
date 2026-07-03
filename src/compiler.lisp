@@ -437,6 +437,12 @@ Returns modified IR text with metadata."
     ;; Set target triple for SPIR-V before writing IR
     (llvm-set-target module "spir64-unknown-unknown")
 
+    ;; Endeavor 128 (Phase 2): if the module emitted any OpenCL native_* builtin
+    ;; (fast-precision transcendentals), inject !opencl.ocl.version so the translator
+    ;; maps the mangled calls to native_* ExtInst instead of unresolved imports.
+    (when (%module-uses-native-builtin-p module)
+      (%emit-opencl-version-metadata module))
+
     ;; 1. Write raw .ll with SPIR-V kernel metadata injected
     (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
            (ir-with-metadata (inject-spir-kernel-metadata ir)))
@@ -529,6 +535,11 @@ Returns modified IR text with metadata."
 
     ;; Set target triple for NVPTX before writing IR
     (llvm-set-target module "nvptx64-nvidia-cuda")
+
+    ;; Endeavor 128 (Phase 4): if any transcendental was lowered to a libdevice
+    ;; __nv_* symbol, verify libdevice.10.bc was linked (else a clear error) and set
+    ;; the nvvm-reflect-ftz module flag so llc's NVVMReflect resolves __CUDA_FTZ.
+    (%ptx-finalize-libdevice module)
 
     ;; 1. Write raw LLVM IR to .ll file
     (let ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module))))

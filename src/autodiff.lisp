@@ -219,6 +219,59 @@
                  (emit `(set! ,sin-a (sin ,a)))
                  (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj)))))
                t)))
+     ;; Endeavor 128: transcendental derivatives. The derivative sub-expressions are
+     ;; plain forward ops in the backward kernel (recomputed from the primal input),
+     ;; not re-differentiated. asin/acos use pow(1-a^2, -0.5) rather than a sqrt op,
+     ;; which isn't wired.
+     ((eq (car expr) 'exp)   ; d/da exp(a) = exp(a)
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+               (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (exp ,a) ,v-adj)))))
+         t))
+     ((eq (car expr) 'log)   ; d/da log(a) = 1/a
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+               (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,a) ,v-adj)))))
+         t))
+     ((eq (car expr) 'log2)  ; d/da log2(a) = 1/(a*ln2) = log2(e)/a
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+               (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.4426950408889634 ,a) ,v-adj)))))
+         t))
+     ((eq (car expr) 'tan)   ; d/da tan(a) = 1 + tan^2(a)
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+               (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (+ 1.0 (* (tan ,a) (tan ,a))) ,v-adj)))))
+         t))
+     ((eq (car expr) 'asin)  ; d/da asin(a) = 1/sqrt(1-a^2) = (1-a^2)^-0.5
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+               (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (pow (- 1.0 (* ,a ,a)) -0.5) ,v-adj)))))
+         t))
+     ((eq (car expr) 'acos)  ; d/da acos(a) = -1/sqrt(1-a^2)
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+               (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* -1.0 (pow (- 1.0 (* ,a ,a)) -0.5)) ,v-adj)))))
+         t))
+     ((eq (car expr) 'atan)  ; d/da atan(a) = 1/(1+a^2)
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+               (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 (+ 1.0 (* ,a ,a))) ,v-adj)))))
+         t))
+     ((eq (car expr) 'pow)   ; v = a^b: d/da = b*a^(b-1); d/db = a^b*log(a)
+       (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+               (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* ,b (pow ,a (- ,b 1.0))) ,v-adj)))))
+         (when (symbolp b)
+               (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* (pow ,a ,b) (log ,a)) ,v-adj)))))
+         t))
+     ((eq (car expr) 'atan2) ; v = atan2(y,x): d/dy = x/(x^2+y^2); d/dx = -y/(x^2+y^2)
+       (let* ((y (cadr expr)) (x (caddr expr)) (v-adj (local-adj v)))
+         (when (symbolp y)
+               (emit `(set! ,(local-adj y) (+ ,(local-adj y) (* (/ ,x (+ (* ,x ,x) (* ,y ,y))) ,v-adj)))))
+         (when (symbolp x)
+               (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (/ (* -1.0 ,y) (+ (* ,x ,x) (* ,y ,y))) ,v-adj)))))
+         t))
      (t nil))))
 
 (defun %handle-tilde-backward (v expr emit-fn local-adj-fn tensor-inputs-ht scratch-tile-syms)
@@ -352,7 +405,10 @@
                                         scratch-tile-syms)
   "Generates backward-pass adjoint updates for a single ANF binding (v := expr)."
   (cond
-   ((and (consp expr) (member (car expr) '(+ - * / sin cos) :test #'eq))
+   ((and (consp expr) (member (car expr)
+                              ;; Endeavor 128: transcendentals join the math/trig backward.
+                              '(+ - * / sin cos exp log log2 tan asin acos atan pow atan2)
+                              :test #'eq))
      (%handle-math-and-trig-backward v expr emit-fn local-adj-fn adjoint-map))
    ((and (consp expr) (eq (car expr) '~))
      (%handle-tilde-backward v expr emit-fn local-adj-fn tensor-inputs-ht scratch-tile-syms))
@@ -2222,8 +2278,13 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
         ((null name) nil)
         ;; differentiable arithmetic — every operand propagates.
         ((member name '("+" "-" "*" "/") :test #'string-equal) (%asv-union (cdr expr) env))
-        ((member name '("SIN" "COS" "SQRT" "EXP" "LOG" "TANH" "ABS") :test #'string-equal)
+        ;; Endeavor 128: unary transcendentals propagate through their single arg.
+        ((member name '("SIN" "COS" "SQRT" "EXP" "LOG" "LOG2" "TAN"
+                        "ASIN" "ACOS" "ATAN" "TANH" "ABS") :test #'string-equal)
           (%active-scalar-vars (cadr expr) env))
+        ;; Endeavor 128: binary transcendentals — both operands propagate.
+        ((member name '("POW" "ATAN2") :test #'string-equal)
+          (%asv-union (cdr expr) env))
         ;; numeric conversions propagate (conservative).
         ((and (>= (length name) 3) (string-equal (subseq name 0 3) "TO-"))
           (%active-scalar-vars (cadr expr) env))

@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; FFI-LINK: $CUDA_HOME/nvvm/libdevice/libdevice.10.bc
+;; HOIST-PRECISION: fast
+;; HOIST-EXPECT: BUFFER res: 0.84
+;; SKIP-WITH[--differentiate]: "AD across the PTX libdevice path is Phase 5"
+;;
+;; Endeavor 128 (Phase 3) ON-METAL: fast-precision transcendental on PTX. Under fast
+;; the compiler lowers (sin x) to libdevice's __nv_fast_sinf (the sin.approx hardware
+;; path, ftz per the nvvm-reflect-ftz flag) instead of the precise __nv_sinf. Runs on
+;; a CUDA GPU (RunPod); SKIPs where $CUDA_HOME is unset. x=(gid+1)=1.0 at runtime;
+;; sin.approx(1.0) ~ 0.84147 (matches precise to the printed digits for this input).
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel sin_fast_ptx_metal (&out res)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 1))
+  (set! (~ res) (sin (to-float (+ (get-global-id 0) 1ul)))))

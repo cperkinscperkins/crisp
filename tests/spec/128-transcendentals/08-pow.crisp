@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=2.0 y=3.0 atol=1e-2 expect.x=12.0 expect.y=5.5451775
+;;
+;; Endeavor 128 (Phase 1): pow forward + autodiff. v=x^y; dv/dx=y*x^(y-1); dv/dy=x^y*ln(x).
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k (x y &out res)
+  (declare #'(in-c in-c &out out-c))
+  (set! (~ res) (pow (~ x) (~ y))))

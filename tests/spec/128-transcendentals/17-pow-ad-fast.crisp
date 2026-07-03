@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=2.0 y=3.0 atol=1e-1 precision=fast expect.x=12.0 expect.y=5.5451775
+;;
+;; Endeavor 128 (Phase 5): AD × fast for a BINARY transcendental. v=x^y; dv/dx=y*x^(y-1)=12,
+;; dv/dy=x^y*ln(x)=5.545. Under fast the fwd uses native_powr (base>=0, satisfied by x=2)
+;; and the backward uses native_powr + native_log. Widest atol of the set — native_powr is
+;; the least accurate of the native builtins.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+(def-kernel k (x y &out res)
+  (declare #'(in-c in-c &out out-c))
+  (set! (~ res) (pow (~ x) (~ y))))

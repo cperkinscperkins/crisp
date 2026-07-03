@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-03T00:06:29.557166Z
+Generated on 2026-07-03T15:29:01.780737Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1112,6 +1112,13 @@ Generated on 2026-07-03T00:06:29.557166Z
 ---
 ### DEFMACRO `DEF-UNARY-MATH-ANALYZER`
 - **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
+
+---
+### DEFMACRO `DEF-BINARY-MATH-ANALYZER`
+- **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
+
+  > Endeavor 128: analyzer for a binary FP math intrinsic (pow, atan2). Both args  >    must be float; the result type is the (promoted) argument type.
+
 
 ---
 ### DEFMACRO `DEF-COMPARISON-ANALYZER`
@@ -2595,12 +2602,80 @@ Generated on 2026-07-03T00:06:29.557166Z
 
 
 ---
+### DEFUN `%NATIVE-BUILTIN-MANGLED-NAME`
+- **Args**: `(BASE-NAME ARITY)`
+
+  > Itanium-mangled name of an OpenCL native builtin taking ARITY float args.  >    native_sin/1 -> _Z10native_sinf ; native_powr/2 -> _Z11native_powrff.
+
+
+---
+### DEFPARAMETER `*NATIVE-BUILTIN-MANGLED-NAMES*`
+
+  > The mangled OpenCL native builtins Crisp may emit under fast precision on SPV.
+
+
+---
+### DEFUN `%MODULE-USES-NATIVE-BUILTIN-P`
+- **Args**: `(MODULE)`
+
+  > T if MODULE declares any OpenCL native_* builtin. Used to decide whether to  >    inject !opencl.ocl.version so the translator recognises the mangled calls.  >    (NB: `return` is shadowed to Crisp's RETURN in :crisp.compiler, so use `some`.)
+
+
+---
+### DEFUN `%EMIT-OPENCL-VERSION-METADATA`
+- **Args**: `(MODULE)`
+
+  > Endeavor 128: add !opencl.ocl.version / !opencl.spir.version = {2,0} so the  >    LLVM->SPIR-V translator runs OpenCL-builtin recognition and maps native_*  >    mangled calls to native_* OpenCL.std ExtInst. Without this metadata the calls  >    translate to imported OpFunctionCall (unresolved at zeKernelCreate on L0).
+
+
+---
+### DEFUN `%LIBDEVICE-FN-NAME`
+- **Args**: `(BASE F32-P)`
+
+  > libdevice symbol for BASE at the given width: __nv_sin -> __nv_sinf (f32) / __nv_sin (f64).
+
+
+---
+### DEFUN `%MATH-CALL-NAME`
+- **Args**: `(INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE
+              ARITY SIZE)`
+
+  > Select the concrete callee for a math intrinsic given target + precision:  >    - PTX + fast + f32 with a fast libdevice variant -> __nv_fast_*f (Phase 3; the  >      .approx hardware path, ftz driven by the nvvm-reflect-ftz flag);  >    - PTX (ieee / f64 / no fast variant) -> precise libdevice __nv_*f / __nv_* (Phase 4);  >    - SPV + fast + f32 with a native variant -> OpenCL native_* ExtInst (Phase 2);  >    - everything else (SPV ieee, f64, generic) -> the precise llvm.* intrinsic.
+
+
+---
+### DEFUN `%SET-NVVM-REFLECT-FTZ`
+- **Args**: `(MODULE FTZ-P)`
+
+  > Set the nvvm-reflect-ftz module flag (Override behavior): 1 = flush-to-zero,  >    0 = preserve. llc's NVPTX NVVMReflect pass reads it to resolve libdevice's  >    __nvvm_reflect("__CUDA_FTZ") calls at codegen time.
+
+
+---
+### DEFUN `%PTX-FINALIZE-LIBDEVICE`
+- **Args**: `(MODULE)`
+
+  > PTX finalization for libdevice transcendentals. If the module calls any __nv_*  >    (a transcendental lowered to a libdevice symbol): (1) error if it is still an  >    undefined declaration -- libdevice.10.bc was not linked -- and (2) set the  >    nvvm-reflect-ftz module flag from *denormal-handling*.
+
+
+---
 ### DEFMACRO `DEF-BINARY-OP-CODEGEN`
 - **Args**: `(NODE-TYPE INT-INST FLOAT-INST ACCESSOR-PREFIX)`
 
 ---
 ### DEFMACRO `DEF-UNARY-MATH-CODEGEN`
-- **Args**: `(NODE-TYPE INTRINSIC-NAME)`
+- **Args**: `(NODE-TYPE INTRINSIC-NAME &OPTIONAL NATIVE-NAME LIBDEVICE-BASE
+              LIBDEVICE-FAST-BASE)`
+
+  > Codegen for a unary FP math intrinsic. INTRINSIC-NAME is the precise `llvm.*`  >    used under ieee (and for f64 / generic). NATIVE-NAME (SPV fast f32), LIBDEVICE-BASE  >    (PTX) and LIBDEVICE-FAST-BASE (PTX fast f32) select alternate callees; see  >    %math-call-name.
+
+
+---
+### DEFMACRO `DEF-BINARY-MATH-CODEGEN`
+- **Args**: `(NODE-TYPE INTRINSIC-NAME &OPTIONAL NATIVE-NAME LIBDEVICE-BASE
+              LIBDEVICE-FAST-BASE)`
+
+  > Endeavor 128: codegen for a binary FP math intrinsic (pow, atan2). Precise  >    `llvm.*` under ieee; SPV fast f32 -> NATIVE-NAME (native_powr, base>=0); PTX ->  >    libdevice LIBDEVICE-BASE; PTX fast f32 -> LIBDEVICE-FAST-BASE. See %math-call-name.
+
 
 ---
 ### DEFUN `GENERATE-COMPARISON-IR`
@@ -5678,6 +5753,33 @@ Generated on 2026-07-03T00:06:29.557166Z
 
 ---
 ### DEFSTRUCT `SEMANTIC-COS`
+
+---
+### DEFSTRUCT `SEMANTIC-EXP`
+
+---
+### DEFSTRUCT `SEMANTIC-LOG`
+
+---
+### DEFSTRUCT `SEMANTIC-LOG2`
+
+---
+### DEFSTRUCT `SEMANTIC-TAN`
+
+---
+### DEFSTRUCT `SEMANTIC-ASIN`
+
+---
+### DEFSTRUCT `SEMANTIC-ACOS`
+
+---
+### DEFSTRUCT `SEMANTIC-ATAN`
+
+---
+### DEFSTRUCT `SEMANTIC-POW`
+
+---
+### DEFSTRUCT `SEMANTIC-ATAN2`
 
 ---
 ### DEFSTRUCT `SEMANTIC-LT`

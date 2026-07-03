@@ -83,7 +83,7 @@
           (subseq token (1+ eq-pos)))))
 
 (defparameter *vad-reserved-keys*
-  '("atol" "h" "seed-grad" "output-vec")
+  '("atol" "h" "seed-grad" "output-vec" "precision" "denormal")
   "Option keys that are not input names.")
 
 (defparameter *vad-prefix* "VERIFY-AUTODIFF:")
@@ -152,7 +152,11 @@
               (atol nil)
               (h 1e-3)
               (seed-grad 1.0)
-              (output-vec nil))
+              (output-vec nil)
+              ;; Endeavor 128 (Phase 5): compile the fwd + bwd kernels under a chosen
+              ;; precision / denormal mode so AD can be verified across the FP matrix.
+              (precision nil)
+              (denormal nil))
          (when (null tokens)
            (error "VERIFY-AUTODIFF: empty body; need at least one input and atol=<float>"))
          (dolist (token tokens)
@@ -166,6 +170,14 @@
                 (setf h (%vad-parse-float val-str token)))
                ((string= key "seed-grad")
                 (setf seed-grad (%vad-parse-float val-str token)))
+               ((string= key "precision")
+                (cond ((string-equal val-str "fast") (setf precision :fast))
+                      ((string-equal val-str "ieee") (setf precision :ieee))
+                      (t (error "VERIFY-AUTODIFF: precision must be fast|ieee, got ~A" val-str))))
+               ((string= key "denormal")
+                (cond ((string-equal val-str "ftz") (setf denormal :ftz))
+                      ((string-equal val-str "preserve") (setf denormal :preserve))
+                      (t (error "VERIFY-AUTODIFF: denormal must be ftz|preserve, got ~A" val-str))))
                ((string= key "output-vec")
                 ;; Output is a 1D float vector of LENGTH elements (107).
                 ;; Without this, the runner assumes a scalar (cell float)
@@ -217,4 +229,6 @@
                :at-points (nreverse at-points)
                :expected-grads (nreverse expected-grads)
                :structs (nreverse structs)
-               :output-vec output-vec))))))
+               :output-vec output-vec
+               :precision precision
+               :denormal denormal))))))

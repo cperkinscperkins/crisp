@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-PRECISION: fast
+;; HOIST-EXPECT: BUFFER res: 2.7
+;;
+;; Endeavor 128 (Phase 2) ON-METAL: under fast, (exp x) lowers to the OpenCL
+;; native_exp builtin (native_* OpenCL.std ExtInst, enabled by the injected
+;; !opencl.ocl.version metadata) and runs on the BMG through Level Zero. x=(gid+1)
+;; keeps the argument runtime so the constant folder can't precompute exp and the
+;; native builtin is actually emitted; native_exp(1.0) ~ e ~ 2.718.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel exp_fast_metal (&out res)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 1))
+  (set! (~ res) (exp (to-float (+ (get-global-id 0) 1ul)))))
