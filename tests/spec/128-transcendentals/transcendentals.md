@@ -104,8 +104,19 @@ RunPod-dependent PTX work, finish with the cross-cutting AD × precision matrix.
   to a hoist run. Spec 12-exp-fast-metal runs `native_exp` **on the BMG via L0** (res 2.71828).
   Regression 823/823 both ways, 253 unit, 185 neg. NOTE: pow→native_powr under fast requires
   base≥0 (document). Denormal-axis interaction with transcendentals: TODO (minor).
-- **Phase 3 — PTX `fast`.** Resolve fork (A)/(B); native `.approx` for sin/cos + the chosen
-  path for the rest. IR/ptx-check locally, on-metal CUDA (pod).
+- **Phase 3 — PTX `fast`. DONE 2026-07-03 (hardware-verified).** Resolved fork = (B) reuse
+  libdevice: under fast on PTX (f32), a transcendental with a fast variant emits libdevice's
+  `__nv_fast_*f` instead of the precise `__nv_*f`. Spike-confirmed `__nv_fast_sinf` → `sin.approx.ftz.f32`
+  (the .approx hardware path; ftz already driven by the nvvm-reflect-ftz flag from Phase 4).
+  Fast variants exist for sin/cos/tan/exp/log/log2 + `__nv_fast_pow`; **asin/acos/atan/atan2 have
+  no `__nv_fast_*`** → stay precise `__nv_*` under fast too. `%math-call-name` now 4-way:
+  PTX-fast-f32 → __nv_fast_*; PTX → __nv_*; SPV-fast-f32 → native_*; else → llvm.*. Verified kernel
+  `k` calls `__nv_fast_sinf` under fast vs `__nv_sinf` under ieee (atan `__nv_atanf` in both).
+  **On-metal (RTX 2000 Ada):** fast (sin x) → __nv_fast_sinf → res 0.841471 = sin(1.0). Spec
+  14-sin-fast-ptx-metal (FFI-LINK libdevice + HOIST-PRECISION fast + TEST-HOIST[CUDA]); the FFI
+  harness now forwards --math-precision (HOIST-PRECISION bound in run-spec-ffi-runs). Regression
+  825/825 both ways, 253 unit, 185 neg. Fast is libdevice-based (not the libdevice-free composition
+  option A) — consistent with Phase 4, since PTX transcendentals need libdevice anyway.
 - **Phase 4 — PTX transcendentals via libdevice. DONE 2026-07-03 (hardware-verified).**
   On PTX a transcendental is emitted as a libdevice `__nv_*f`/`__nv_*` call (all 11 got a
   `__nv_` base in the codegen macros via `%math-call-name`, gated on `*target-backend* = :ptx`).

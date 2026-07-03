@@ -278,6 +278,10 @@
          (requested (if (and (null requested) (null hoist-dirs))
                         '("ptx")
                         requested))
+         ;; Endeavor 128 (Phase 3): a HOIST-PRECISION directive selects fast vs ieee
+         ;; for the FFI compile-check + hoist (e.g. fast PTX transcendentals ->
+         ;; __nv_fast_*). Bound here since FFI specs bypass run-spec-file's hoist path.
+         (*compile-math-precision* (or (parse-hoist-precision directives) *compile-math-precision*))
          ;; Honor SKIP_SPIRV_TESTS (e.g. a CUDA-only box with no SPIR-V tooling):
          ;; drop spv compile-checks just as run-single-spec-pass does. (L0 hoist
          ;; is skipped separately via SKIP_L0_HOIST in run-spec-with-hoist.)
@@ -320,7 +324,13 @@
                                      ;; Endeavor 123: forward the global differentiate
                                      ;; flag so FFI specs compile their backward kernel
                                      ;; (with the .bc linked) like any other spec.
-                                     (when *compile-differentiate* (list "--differentiate")))
+                                     (when *compile-differentiate* (list "--differentiate"))
+                                     ;; Endeavor 128 (Phase 3): forward the precision mode
+                                     ;; (HOIST-PRECISION) so the compile-check exercises the
+                                     ;; fast PTX path (__nv_fast_*).
+                                     (when *compile-math-precision*
+                                       (list (format nil "--math-precision=~a"
+                                                     (string-downcase (symbol-name *compile-math-precision*))))))
                     :output :string :error-output :string :ignore-error-status t)
                 (declare (ignore out))
                 (cond

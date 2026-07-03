@@ -1063,11 +1063,17 @@
   "libdevice symbol for BASE at the given width: __nv_sin -> __nv_sinf (f32) / __nv_sin (f64)."
   (format nil "~a~a" base (if f32-p "f" "")))
 
-(defun %math-call-name (intrinsic-name native-name libdevice-base arity size)
+(defun %math-call-name (intrinsic-name native-name libdevice-base libdevice-fast-base arity size)
   "Select the concrete callee for a math intrinsic given target + precision:
-   PTX -> libdevice __nv_*; SPV + fast + f32 (with a native variant) -> OpenCL
-   native_*; everything else (SPV ieee, f64, generic) -> the precise llvm.* intrinsic."
+   - PTX + fast + f32 with a fast libdevice variant -> __nv_fast_*f (Phase 3; the
+     .approx hardware path, ftz driven by the nvvm-reflect-ftz flag);
+   - PTX (ieee / f64 / no fast variant) -> precise libdevice __nv_*f / __nv_* (Phase 4);
+   - SPV + fast + f32 with a native variant -> OpenCL native_* ExtInst (Phase 2);
+   - everything else (SPV ieee, f64, generic) -> the precise llvm.* intrinsic."
   (cond
+   ((and (eq *target-backend* :ptx) libdevice-fast-base
+         (eq *math-precision* :fast) (= size 32))
+     (%libdevice-fn-name libdevice-fast-base t))
    ((and (eq *target-backend* :ptx) libdevice-base)
      (%libdevice-fn-name libdevice-base (= size 32)))
    ((and native-name (eq *math-precision* :fast) (eq *target-backend* :spirv) (= size 32))
@@ -1136,18 +1142,19 @@
 ;; Assuming signed integers for now as per initialized types.
 (def-binary-op-codegen semantic-div llvm-build-sdiv llvm-build-fdiv "SEMANTIC-DIV")
 
-(defmacro def-unary-math-codegen (node-type intrinsic-name &optional native-name libdevice-base)
+(defmacro def-unary-math-codegen (node-type intrinsic-name &optional native-name libdevice-base libdevice-fast-base)
   "Codegen for a unary FP math intrinsic. INTRINSIC-NAME is the precise `llvm.*`
-   used under ieee (and for f64 / generic). NATIVE-NAME (SPV fast f32) and
-   LIBDEVICE-BASE (PTX) select alternate callees; see %math-call-name."
+   used under ieee (and for f64 / generic). NATIVE-NAME (SPV fast f32), LIBDEVICE-BASE
+   (PTX) and LIBDEVICE-FAST-BASE (PTX fast f32) select alternate callees; see
+   %math-call-name."
   `(defmethod generate-node-ir ((node ,node-type) builder module var-env di-builder di-scope location-map)
-     ,(format nil "Generates IR for ~a (~a; SPV-fast ~a; PTX ~a)." node-type intrinsic-name (or native-name "n/a") (or libdevice-base "n/a"))
+     ,(format nil "Generates IR for ~a (~a; SPV-fast ~a; PTX ~a; PTX-fast ~a)." node-type intrinsic-name (or native-name "n/a") (or libdevice-base "n/a") (or libdevice-fast-base "n/a"))
      (multiple-value-bind (arg-val arg-loc) (generate-node-ir (slot-value node 'arg) builder module var-env di-builder di-scope location-map)
        (declare (ignore arg-loc))
        (let* ((arg-type-name (semantic-node-type (slot-value node 'arg)))
               (arg-crisp-type (gethash arg-type-name *crisp-types*))
               (arg-llvm-type (crisp-type-to-llvm-type arg-type-name module))
-              (call-name (%math-call-name ,intrinsic-name ,native-name ,libdevice-base
+              (call-name (%math-call-name ,intrinsic-name ,native-name ,libdevice-base ,libdevice-fast-base
                                           1 (crisp-type-size arg-crisp-type))))
          (flet ((mk1 () (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
                           (setf (cffi:mem-aref arr 'llvm-type-ref 0) arg-llvm-type)
@@ -1168,25 +1175,25 @@
                (declare (ignore _))
                (values inst di-location))))))))
 
-;;                        node          llvm.*      SPV-fast(native_*)  PTX(libdevice __nv_*)
-(def-unary-math-codegen semantic-sin  "llvm.sin"  "native_sin"  "__nv_sin")
-(def-unary-math-codegen semantic-cos  "llvm.cos"  "native_cos"  "__nv_cos")
-(def-unary-math-codegen semantic-exp  "llvm.exp"  "native_exp"  "__nv_exp")
-(def-unary-math-codegen semantic-log  "llvm.log"  "native_log"  "__nv_log")
-(def-unary-math-codegen semantic-log2 "llvm.log2" "native_log2" "__nv_log2")
-(def-unary-math-codegen semantic-tan  "llvm.tan"  "native_tan"  "__nv_tan")
+;;                        node          llvm.*      SPV-fast(native_*)  PTX(__nv_*)  PTX-fast(__nv_fast_*)
+(def-unary-math-codegen semantic-sin  "llvm.sin"  "native_sin"  "__nv_sin"  "__nv_fast_sin")
+(def-unary-math-codegen semantic-cos  "llvm.cos"  "native_cos"  "__nv_cos"  "__nv_fast_cos")
+(def-unary-math-codegen semantic-exp  "llvm.exp"  "native_exp"  "__nv_exp"  "__nv_fast_exp")
+(def-unary-math-codegen semantic-log  "llvm.log"  "native_log"  "__nv_log"  "__nv_fast_log")
+(def-unary-math-codegen semantic-log2 "llvm.log2" "native_log2" "__nv_log2" "__nv_fast_log2")
+(def-unary-math-codegen semantic-tan  "llvm.tan"  "native_tan"  "__nv_tan"  "__nv_fast_tan")
 ;; No native_asin/acos/atan in OpenCL — precise ExtInst + FMF under fast on SPV.
-;; On PTX they still need libdevice (like all transcendentals).
+;; No __nv_fast_* inverse-trig in libdevice either — precise __nv_* on PTX (both precisions).
 (def-unary-math-codegen semantic-asin "llvm.asin" nil "__nv_asin")
 (def-unary-math-codegen semantic-acos "llvm.acos" nil "__nv_acos")
 (def-unary-math-codegen semantic-atan "llvm.atan" nil "__nv_atan")
 
-(defmacro def-binary-math-codegen (node-type intrinsic-name &optional native-name libdevice-base)
+(defmacro def-binary-math-codegen (node-type intrinsic-name &optional native-name libdevice-base libdevice-fast-base)
   "Endeavor 128: codegen for a binary FP math intrinsic (pow, atan2). Precise
    `llvm.*` under ieee; SPV fast f32 -> NATIVE-NAME (native_powr, base>=0); PTX ->
-   libdevice LIBDEVICE-BASE (__nv_pow / __nv_atan2). See %math-call-name."
+   libdevice LIBDEVICE-BASE; PTX fast f32 -> LIBDEVICE-FAST-BASE. See %math-call-name."
   `(defmethod generate-node-ir ((node ,node-type) builder module var-env di-builder di-scope location-map)
-     ,(format nil "Generates IR for ~a (~a; SPV-fast ~a; PTX ~a)." node-type intrinsic-name (or native-name "n/a") (or libdevice-base "n/a"))
+     ,(format nil "Generates IR for ~a (~a; SPV-fast ~a; PTX ~a; PTX-fast ~a)." node-type intrinsic-name (or native-name "n/a") (or libdevice-base "n/a") (or libdevice-fast-base "n/a"))
      (multiple-value-bind (lhs-val lhs-loc) (generate-node-ir (slot-value node 'left-arg) builder module var-env di-builder di-scope location-map)
        (declare (ignore lhs-loc))
        (multiple-value-bind (rhs-val rhs-loc) (generate-node-ir (slot-value node 'right-arg) builder module var-env di-builder di-scope location-map)
@@ -1194,7 +1201,7 @@
          (let* ((arg-type-name (semantic-node-type (slot-value node 'left-arg)))
                 (arg-crisp-type (gethash arg-type-name *crisp-types*))
                 (arg-llvm-type (crisp-type-to-llvm-type arg-type-name module))
-                (call-name (%math-call-name ,intrinsic-name ,native-name ,libdevice-base
+                (call-name (%math-call-name ,intrinsic-name ,native-name ,libdevice-base ,libdevice-fast-base
                                             2 (crisp-type-size arg-crisp-type))))
            (flet ((mk-param-array ()
                     (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
@@ -1216,8 +1223,8 @@
                  (declare (ignore _ __))
                  (values inst di-location)))))))))
 
-(def-binary-math-codegen semantic-pow   "llvm.pow"   "native_powr" "__nv_pow")
-;; No native_atan2 in OpenCL — precise ExtInst + FMF under fast on SPV. PTX -> libdevice.
+(def-binary-math-codegen semantic-pow   "llvm.pow"   "native_powr" "__nv_pow"   "__nv_fast_pow")
+;; No native_atan2 / __nv_fast_atan2 — precise on both targets.
 (def-binary-math-codegen semantic-atan2 "llvm.atan2" nil           "__nv_atan2")
 
 ;; -- comparisons --
