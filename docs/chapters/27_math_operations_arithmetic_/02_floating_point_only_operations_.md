@@ -3,7 +3,7 @@
 
 Crisp provides the following operations for floating point numbers:
 
-#### Unary Operations 📝
+#### Unary Operations ✅
 
 The Unary Operations take just a single argument.
 Example:
@@ -24,7 +24,7 @@ Example:
 - `atan`
 
 
-#### Binary Operations  📝
+#### Binary Operations  ✅
 - `pow`   => `(pow base exponent)`
 - `atan2` => `(atan2 y x)`
 

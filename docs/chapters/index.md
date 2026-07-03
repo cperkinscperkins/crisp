@@ -181,7 +181,7 @@
 ## Math Operations & Arithmetic ✅
 - [Floating Point Precision ✅](27_math_operations_arithmetic_/01_floating_point_precision_.md)
 - [Floating Point Only Operations ⚠️](27_math_operations_arithmetic_/02_floating_point_only_operations_.md)
-- [Transcendental Functions 📝](27_math_operations_arithmetic_/03_transcendental_functions_.md)
+- [Transcendental Functions ✅](27_math_operations_arithmetic_/03_transcendental_functions_.md)
 - [Floating Point and Integer Operations ✅](27_math_operations_arithmetic_/04_floating_point_and_integer_operations_.md)
 - [Integer Only Operations 📝](27_math_operations_arithmetic_/05_integer_only_operations_.md)
 - [Integer Division ✅](27_math_operations_arithmetic_/06_integer_division_.md)

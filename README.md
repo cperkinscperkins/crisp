@@ -2,6 +2,10 @@
 
 **A strictly evaluated, hardware-aware GPGPU compiler that eliminates the performance compromise.**
 
+Crisp is a Lisp for writing GPU kernels, compiling one source to both NVIDIA (PTX) and Intel (SPIR-V) hardware. Portability isn't the point, though — and neither is any single feature. The point is *unification*: the concerns that GPU computing normally scatters across a stack of incompatible tools — the kernel logic, automatic differentiation, numerical precision, memory layout and movement, and execution uniformity — all live inside one language, sharing one type system and one static analysis. Because it's a Lisp, there's no wall between "language" and "library": tiles, precision regions, and derivatives are all s-expressions in one substrate, added *as* the language rather than bolted beside it.
+
+That's what makes the whole greater than the sum of its parts. Because differentiation, precision, tiling, and uniformity aren't separate frameworks but facets of a single semantic model, **they compose** — you can differentiate a fast-precision, tiled reduction that calls a foreign function, and the compiler reasons about all of it at once. The conventional path would have you glue a kernel language to an autodiff framework to manual half-float casts to hand-rolled shared memory to a separate host program, and hope the seams hold. Crisp's bet is that these should be *properties the compiler upholds*, declared once — not idioms you re-implement across a toolchain and hope you got right.
+
 ### Current Status: Active Implementation & E2E Validation
 
 Crisp has moved far beyond the initial design phase. The core architecture—including reverse-mode auto-differentiation, topological machine-aware compilation, and native C API/FFI integration—is implemented and actively undergoing cross-backend validation (CUDA, SPIR-V). This repository contains the living design document for the language and its tooling ecosystem.

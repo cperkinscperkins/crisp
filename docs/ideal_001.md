@@ -8,8 +8,11 @@
 ### Overview
 
 Crisp is a Lisp dialect for developing GPU Kernels.
-The Crisp compiler takes .crisp files and can output SPIR-V, PTX, or a binary for a specific GPU. 
-The compiler can ALSO output C++ or Python code snippets that can "hoist" that same kernel. 
+
+Its guiding idea is *unification*. The concerns that GPU computing normally scatters across a stack of incompatible tools — the kernel logic, automatic differentiation, numerical precision, memory layout and movement, and execution uniformity — all live inside one language, sharing one type system and one static analysis. Because Crisp is a Lisp, there is no wall between "language" and "library": tiles, precision regions, and derivatives are all s-expressions in one substrate, added *as* the language rather than bolted beside it. And because they are facets of a single semantic model rather than separate frameworks, they *compose* — you can differentiate a fast-precision, tiled reduction that calls a foreign function, and the compiler reasons about all of it at once. Where the conventional path glues a kernel language to an autodiff framework to manual half-float casts to hand-rolled shared memory to a separate host program, Crisp treats these as properties the compiler upholds, declared once. That is the sense in which the whole is meant to be greater than the sum of its parts — and this document is the specification of those parts and how they fit together.
+
+Mechanically: the Crisp compiler takes .crisp files and can output SPIR-V, PTX, or a binary for a specific GPU.
+The compiler can ALSO output C++ or Python code snippets that can "hoist" that same kernel.
 The snippets can be targeted to: OpenCL, LevelZero, or CUDA, as well as whether to use
 Unified Memory/USM/SVM.
 
@@ -23,39 +26,21 @@ GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-a
 
 ### Major Features of the Crisp language and tools
 
-- Distinct Execution Contexts:  A formal context system (thread, grid, dispatch) separates sequential per-thread code from parallel grid-level operations.  This makes a whole class of subtle but catastrophic parallel programming bugs (like nesting grid-level operations) impossible to write by turning them into clear, compile-time errors. (✅ implemented)
+- **Built-in Reverse-Mode Auto-Differentiation.**  The `--differentiate` flag turns any forward kernel into its gradient kernel — and it's a compiler pass, not a bolted-on framework. Because the differentiator reads the kernel's own types, control flow, and memory, it works across records, structs, tensors, foreign functions, and transcendentals, on both SPIR-V and NVIDIA PTX. Write the math once; the calculus — and the whole backward pass — is the compiler's job. No manual backprop, no "calculus bugs," no heavy external framework wrapped around your kernels. (✅ implemented)
 
-- Explicit Output Parameters:  The `&out` modifier explicitly marks output-only parameters in function signatures.  This creates a clear, compiler-enforced contract that prevents race conditions and bugs caused by reading from uninitialized or partially-written output buffers. (✅ implemented)
+- **Guaranteed Termination — and the Analysis It Unlocks.**  Crisp is intentionally not Turing-complete: no unbounded recursion, no unbounded loops. That single decision guarantees kernels always finish (no GPU hangs), but more importantly it's what makes everything else possible — whole-program static analysis that can actually *prove* things about your code: termination, uniformity, activity. Auto-differentiation, divergence-checking, and topology-aware lowering aren't so much separate features as they are consequences of this one. (✅ implemented)
 
-- Guaranteed Termination:  Crisp is intentionally not Turing-complete (no unbounded recursion or loops).  This provides a mathematical guarantee that kernels will always finish, preventing GPU hangs. It also unlocks a suite of powerful static analysis tools that are impossible in general-purpose languages, and is key to supporting auto differentiable kernels (✅ implemented)
+- **Topological-Aware Compilation.**  Write a kernel once and retarget it from a single GPU to a torus mesh or a fat-tree supercomputer without touching the kernel code. `def-topology` and `def-orchestration` describe the machine; the compiler then lowers the *same* `load-tile` into a local address-space copy, a PCIe transfer, or an NVSHMEM/RDMA network pull, depending on which memory boundary it actually crosses. You reason about the algorithm; Crisp reasons about the fabric. (📝 planned)
 
-- First-Class GPU Primitives:  Common but complex GPU patterns like grid-strides, warp shuffles, and parallel reductions are provided as high-level, built-in language constructs.  This allows developers to write powerful, performant code that is both readable and correct, without having to reinvent these difficult algorithms from scratch.
+- **One Language, One Substrate.**  Because Crisp is a Lisp, there's no wall between "language" and "library." Tiles, precision regions, derivatives, and topologies are all s-expressions in one semantic model, added *as* the language through `defmacro` and templates rather than bolted beside it. This is the mechanism behind the whole being greater than the sum of its parts: the features compose because they share one model instead of colliding across five disjoint tools. (✅ implemented)
 
-- Automated Scratch Memory:  High-level primitives (like reductions and sorts) can automatically manage their own temporary local and global memory via a "side-channel" mechanism.  This eliminates tedious and error-prone manual buffer allocation and management. (✅ implemented)
+- **Correctness by Construction.**  A formal execution-context system (thread / grid / dispatch), the `&out` output-only contract, and uniformity-checked control forms (`if+`, `dotimes+`) turn whole classes of parallel bug into compile-time errors — nesting a grid operation inside per-thread code, reading an uninitialized output buffer, or branching divergently where you promised uniform execution. The footguns become type errors, caught before the kernel ever runs. (✅ implemented)
 
-- Flexible Data Layouts:  Crisp provides distinct types and specialized accessors for both "Array of Structs" (`vector`) and "Struct of Arrays" (`soa-vector`).  This gives developers the tools to choose the most performant memory layout for their algorithm without sacrificing type safety or readability.
+- **Performance With a Capital P.**  The primitives that make GEMM and Flash-Attention tractable are first-class citizens, not things you hand-roll: async tile loads (`load-tile`), pipeline `rings`, `with-warp-specialization`, and `mma-accumulate-via-tile` for tensor-core / DPAS matrix units. You get high-level abstraction without the usual performance tax — and the very same tile machinery is what goes topology-aware on a cluster. (⚠️ partially implemented)
 
-- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:strided`) and GPU-native iteration patterns (`loop-vector-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
+- **Precision and Numerics as a First-Class Axis.**  Numerical precision is a scoped language construct, not a global switch: `with-precision` carves `ieee` or `fast` regions lexically, `--denormal-handling` selects flush-to-zero versus preserve, and all of it composes cleanly with auto-differentiation. On the roadmap: quantized integers and low-precision "microfloat" blocks as first-class, nominally "branded," overflow-safe types — a unified, safe path to the specialized AI hardware (Tensor Cores / DPAS) for both integer and floating-point acceleration. (`with-precision` ✅ / quantized & microfloat 📝)
 
-- Compile-Time Verification:  Special variants of control-flow forms (`if+`, `dotimes+`) and declarations (`uniform`, `constexpr`) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
-
-- Strict Memory Layout Standard:  All Crisp structs adhere to a strict "scalar" memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
-
-- Pragmatic Error Handling:  A simple maybe type is integrated into the language.  This provides a lightweight, compiler-assisted mechanism for handling potential failures in a way that minimizes control-flow divergence, a major performance killer on GPUs.
-
-- Powerful Metaprogramming:  A Lisp-based syntax with defmacro and a rich templating system (`with-template-type`).  Developers can extend the language with new abstractions, control structures, and code generators, creating domain-specific solutions that are clean and expressive. (✅ implemented)
-
-- Static Typing with Powerful Generics: Crisp is statically typed with a robust templating system and compile-time type constraints. This provides the compile-time safety and performance benefits typical of C++, preventing runtime type errors, while offering a level of generic programming and code generation via metaprogramming that surpasses traditional C++ templates and is absent in dynamic languages like Python or Common Lisp. (✅ implemented)
-
-- Unified Quantized Math: Crisp provides first-class support for the entire spectrum of modern, high-performance numeric types. This includes both quantized integers (like `qint8`) and low-precision "microfloats" (like `fp8-e4m3`). The type system ensures mathematical safety by enforcing nominal "branded" types preventing you from mixing incompatible formats. It also enforces overflow-safe math, providing a direct, unified, and safe path to the massive performance gains of specialized AI hardware (like Tensor Cores) for both integer and floating-point acceleration. 
-
-- Automated Hoisting Code:  The Crisp compiler can optionally generate a complete, runnable `main()` function in C++ or Python.  This automates the tedious and error-prone task of writing host-side launch code, providing an instant, working "blueprint" that demonstrates how to allocate memory, set arguments, and correctly launch a kernel. (⚠️ partially implemented)
-
-- Opt-In Static Analysis:  The compiler includes a suite of advanced, opt-in checks.  This allows the compiler to act as an expert performance coach, automatically detecting subtle but critical issues like memory-coalescing failures, shared memory bank conflicts, and potential barrier deadlocks.
-
-- In-Memory Compilation API:  Crisp is designed as a compiler library with a C/Python API.  This enables fast, in-memory JIT compilation, allowing applications to dynamically generate and run new kernels on the fly without disk I/O.
-
-- Auto-Differentiation for GPU Kernels: The `--differentiate` compiler flag automatically generates high-performance reverse-mode gradient kernels from your forward code.  Write your math once. Crisp handles the calculus, generating the "backward pass" for you. Whether you're training neural networks, optimizing physical simulations, or performing sensitivity analysis, you can focus on the model and let the compiler worry about the derivatives. No manual backprop, no "calculus bugs," and no need to wrap your kernels in a heavy external framework. (✅ implemented)
+- **Broad Reach.**  One source compiles to both Intel (SPIR-V / Level Zero) and NVIDIA (PTX / CUDA). A foreign-function interface lets you call C — and *differentiate across it* via a supplied vector-Jacobian product. The compiler doesn't stop at the kernel, either: it can emit the host-side `main()` (C++ or Python) that allocates, binds arguments, and launches. And it all compiles fast enough that the compile time itself is a measured advantage over the C++ toolchains it competes with. (✅ implemented / hoisting ⚠️)
 
 
 
