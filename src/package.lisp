@@ -194,6 +194,10 @@
            #:return)
 
   (:export
+   ;; Endeavor 128: transcendentals not present in COMMON-LISP (exp/log/sin/cos/
+   ;; tan/asin/acos/atan are cl-inherited; these three must be interned here so
+   ;; :crisp-language can import them and the analyzer keys match the source form).
+   #:log2 #:pow #:atan2
    #:compile-toplevel-form
    #:compile-module
    #:generate-location-map
@@ -505,6 +509,8 @@
                 #:to-ulong #:as-ulong
                 #:truncate #:floor #:ceil #:round
                 #:sin #:cos
+                ;; Endeavor 128: transcendentals
+                #:exp #:log #:log2 #:tan #:asin #:acos #:atan #:pow #:atan2
 
                 ;; NEW: Unified Let from Compiler
                 #:let
@@ -555,6 +561,8 @@
    #:to #:as
    #:truncate #:floor #:ceil #:round
    #:sin #:cos
+   ;; Endeavor 128: transcendentals
+   #:exp #:log #:log2 #:tan #:asin #:acos #:atan #:pow #:atan2
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
    #:if+ #:when+ #:unless+ #:else #:dotimes+

@@ -839,6 +839,8 @@ runs infer-param-uniformity once the call graph is complete."
        ;; arithmetic / comparison contagion
        ((member (symbol-name op)
                 '("+" "-" "*" "/" "SIN" "COS"
+                  ;; Endeavor 128: transcendentals combine uniformity like arithmetic
+                  "EXP" "LOG" "LOG2" "TAN" "ASIN" "ACOS" "ATAN" "POW" "ATAN2"
                   "<" ">" "<=" ">=" "=" "/=" "MOD" "REM")
                 :test #'string=)
         (%uni-combine (mapcar (lambda (a) (%uni-analyze a env)) (cdr form))))
@@ -1501,6 +1503,27 @@ in single-pass mode."
      (calculate-uniformity-state (semantic-sin-arg node) env))
     (semantic-cos
      (calculate-uniformity-state (semantic-cos-arg node) env))
+    ;; Endeavor 128: transcendentals. Unary intrinsics are passthrough on
+    ;; uniformity; the binary ones combine both operands like mul/div.
+    (semantic-exp  (calculate-uniformity-state (semantic-exp-arg node) env))
+    (semantic-log  (calculate-uniformity-state (semantic-log-arg node) env))
+    (semantic-log2 (calculate-uniformity-state (semantic-log2-arg node) env))
+    (semantic-tan  (calculate-uniformity-state (semantic-tan-arg node) env))
+    (semantic-asin (calculate-uniformity-state (semantic-asin-arg node) env))
+    (semantic-acos (calculate-uniformity-state (semantic-acos-arg node) env))
+    (semantic-atan (calculate-uniformity-state (semantic-atan-arg node) env))
+    (semantic-pow
+     (let ((ls (calculate-uniformity-state (semantic-pow-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-pow-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
+    (semantic-atan2
+     (let ((ls (calculate-uniformity-state (semantic-atan2-left-arg node) env))
+           (rs (calculate-uniformity-state (semantic-atan2-right-arg node) env)))
+       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
+             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
+             (t :unknown))))
     ;; Endeavor 120: casts/conversions (to-*, as-*) are passthrough. Covers all
     ;; semantic-cast subtypes (value-cast, bitcast, fp-truncate-cast, truncate).
     (semantic-cast
@@ -1788,6 +1811,16 @@ in single-pass mode."
     (semantic-div (semantic-div-type node))
     (semantic-sin (semantic-sin-type node))
     (semantic-cos (semantic-cos-type node))
+    ;; Endeavor 128: transcendentals
+    (semantic-exp   (semantic-exp-type node))
+    (semantic-log   (semantic-log-type node))
+    (semantic-log2  (semantic-log2-type node))
+    (semantic-tan   (semantic-tan-type node))
+    (semantic-asin  (semantic-asin-type node))
+    (semantic-acos  (semantic-acos-type node))
+    (semantic-atan  (semantic-atan-type node))
+    (semantic-pow   (semantic-pow-type node))
+    (semantic-atan2 (semantic-atan2-type node))
     (semantic-lt 'int)
     (semantic-gt 'int)
     (semantic-le 'int)
@@ -1846,6 +1879,16 @@ in single-pass mode."
     (semantic-div (semantic-div-source-location node))
     (semantic-sin (semantic-sin-source-location node))
     (semantic-cos (semantic-cos-source-location node))
+    ;; Endeavor 128: transcendentals
+    (semantic-exp   (semantic-exp-source-location node))
+    (semantic-log   (semantic-log-source-location node))
+    (semantic-log2  (semantic-log2-source-location node))
+    (semantic-tan   (semantic-tan-source-location node))
+    (semantic-asin  (semantic-asin-source-location node))
+    (semantic-acos  (semantic-acos-source-location node))
+    (semantic-atan  (semantic-atan-source-location node))
+    (semantic-pow   (semantic-pow-source-location node))
+    (semantic-atan2 (semantic-atan2-source-location node))
     (semantic-lt (semantic-lt-source-location node))
     (semantic-gt (semantic-gt-source-location node))
     (semantic-le (semantic-le-source-location node))

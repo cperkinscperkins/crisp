@@ -704,11 +704,11 @@ FFI
 
 Precision: ieee vs fast vs ieee-ftz
 ===================================
-- [ ] `(with-precision (<KEY>) ...)`
-- [ ]  `(declaim (precision <KEY>))`
-- [ ] `--math-precision`
-- [ ] `--force-math-precision`
-- [ ] `--denormal-handling [ieee | flush]`
+- [x] `(with-precision (<KEY>) ...)`
+- [x]  `(declaim (precision <KEY>))`
+- [x] `--math-precision`
+- [x] `--force-math-precision`
+- [x] `--denormal-handling [ieee | flush]`
 - [/] CHange to precision: ieee | fast | ieee-ftz
 
 Transcendentals

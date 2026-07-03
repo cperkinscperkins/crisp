@@ -121,6 +121,34 @@
 (defstruct semantic-cos
   type arg source-location)
 
+;; Endeavor 128: transcendentals. Unary intrinsics (1 arg) + binary (pow, atan2).
+(defstruct semantic-exp
+  type arg source-location)
+
+(defstruct semantic-log
+  type arg source-location)
+
+(defstruct semantic-log2
+  type arg source-location)
+
+(defstruct semantic-tan
+  type arg source-location)
+
+(defstruct semantic-asin
+  type arg source-location)
+
+(defstruct semantic-acos
+  type arg source-location)
+
+(defstruct semantic-atan
+  type arg source-location)
+
+(defstruct semantic-pow
+  type left-arg right-arg source-location)
+
+(defstruct semantic-atan2
+  type left-arg right-arg source-location)
+
 (defstruct semantic-lt
   type left-arg right-arg source-location)
 

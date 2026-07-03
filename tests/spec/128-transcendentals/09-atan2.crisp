@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: y=1.0 x=2.0 atol=1e-2 expect.y=0.4 expect.x=-0.2
+;;
+;; Endeavor 128 (Phase 1): atan2 forward + autodiff. v=atan2(y,x); dv/dy=x/(x^2+y^2); dv/dx=-y/(x^2+y^2).
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k (y x &out res)
+  (declare #'(in-c in-c &out out-c))
+  (set! (~ res) (atan2 (~ y) (~ x))))

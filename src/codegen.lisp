@@ -1063,6 +1063,51 @@
 
 (def-unary-math-codegen semantic-sin "llvm.sin")
 (def-unary-math-codegen semantic-cos "llvm.cos")
+;; Endeavor 128: transcendentals (unary). All translate to OpenCL ExtInst on SPV;
+;; on PTX these intrinsics need libdevice (handled in a later phase).
+(def-unary-math-codegen semantic-exp  "llvm.exp")
+(def-unary-math-codegen semantic-log  "llvm.log")
+(def-unary-math-codegen semantic-log2 "llvm.log2")
+(def-unary-math-codegen semantic-tan  "llvm.tan")
+(def-unary-math-codegen semantic-asin "llvm.asin")
+(def-unary-math-codegen semantic-acos "llvm.acos")
+(def-unary-math-codegen semantic-atan "llvm.atan")
+
+(defmacro def-binary-math-codegen (node-type intrinsic-name)
+  "Endeavor 128: codegen for a binary FP math intrinsic (pow, atan2). Emits a call
+   to `<intrinsic>.f32`/`.f64` with two same-typed float operands."
+  `(defmethod generate-node-ir ((node ,node-type) builder module var-env di-builder di-scope location-map)
+     ,(format nil "Generates IR for ~a using ~a." node-type intrinsic-name)
+     (multiple-value-bind (lhs-val lhs-loc) (generate-node-ir (slot-value node 'left-arg) builder module var-env di-builder di-scope location-map)
+       (declare (ignore lhs-loc))
+       (multiple-value-bind (rhs-val rhs-loc) (generate-node-ir (slot-value node 'right-arg) builder module var-env di-builder di-scope location-map)
+         (declare (ignore rhs-loc))
+         (let* ((arg-type-name (semantic-node-type (slot-value node 'left-arg)))
+                (arg-crisp-type (gethash arg-type-name *crisp-types*))
+                (arg-llvm-type (crisp-type-to-llvm-type arg-type-name module))
+                (type-suffix (if (= (crisp-type-size arg-crisp-type) 64) "f64" "f32"))
+                (intrinsic-full-name (format nil "~a.~a" ,intrinsic-name type-suffix)))
+           (flet ((mk-param-array ()
+                    (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
+                      (setf (cffi:mem-aref arr 'llvm-type-ref 0) arg-llvm-type)
+                      (setf (cffi:mem-aref arr 'llvm-type-ref 1) arg-llvm-type)
+                      arr)))
+             (let ((f (llvm-get-named-function module intrinsic-full-name)))
+               (when (cffi:null-pointer-p f)
+                     (let ((ft (llvm-function-type arg-llvm-type (mk-param-array) 2 nil)))
+                       (setf f (llvm-add-function module intrinsic-full-name ft))))
+               (let* ((args-array (cffi:foreign-alloc 'llvm-value-ref :count 2))
+                      (_  (setf (cffi:mem-aref args-array 'llvm-value-ref 0) lhs-val))
+                      (__ (setf (cffi:mem-aref args-array 'llvm-value-ref 1) rhs-val))
+                      (inst (llvm-build-call2 builder
+                                              (llvm-function-type arg-llvm-type (mk-param-array) 2 nil)
+                                              f args-array 2 "math_tmp"))
+                      (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
+                 (declare (ignore _ __))
+                 (values inst di-location)))))))))
+
+(def-binary-math-codegen semantic-pow   "llvm.pow")
+(def-binary-math-codegen semantic-atan2 "llvm.atan2")
 
 ;; -- comparisons --
 (defun generate-comparison-ir (builder module var-env di-builder di-scope location-map node op-node-int op-node-float)
