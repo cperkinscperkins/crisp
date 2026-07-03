@@ -536,6 +536,11 @@ Returns modified IR text with metadata."
     ;; Set target triple for NVPTX before writing IR
     (llvm-set-target module "nvptx64-nvidia-cuda")
 
+    ;; Endeavor 128 (Phase 4): if any transcendental was lowered to a libdevice
+    ;; __nv_* symbol, verify libdevice.10.bc was linked (else a clear error) and set
+    ;; the nvvm-reflect-ftz module flag so llc's NVVMReflect resolves __CUDA_FTZ.
+    (%ptx-finalize-libdevice module)
+
     ;; 1. Write raw LLVM IR to .ll file
     (let ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module))))
       (with-open-file (stream ll-file :direction :output :if-exists :supersede)

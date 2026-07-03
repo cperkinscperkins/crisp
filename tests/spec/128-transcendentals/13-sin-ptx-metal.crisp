@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; FFI-LINK: $CUDA_HOME/nvvm/libdevice/libdevice.10.bc
+;; HOIST-EXPECT: BUFFER res: 0.84
+;; SKIP-WITH[--differentiate]: "AD across the PTX libdevice path is Phase 5"
+;;
+;; Endeavor 128 (Phase 4) ON-METAL: a NATIVE transcendental on PTX. The user writes
+;; (sin x); the compiler auto-lowers it to a libdevice __nv_sinf call and requires
+;; libdevice.10.bc to be linked (supplied here via FFI-LINK from $CUDA_HOME). llc's
+;; NVVMReflect resolves __CUDA_FTZ from the nvvm-reflect-ftz module flag. Runs on a
+;; CUDA GPU (RunPod); SKIPs cleanly where $CUDA_HOME is unset (BMG box / CI).
+;; x=(gid+1)=1.0 at runtime (gid dodges the constant folder); sin(1.0) ~ 0.84147.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel sin_ptx_metal (&out res)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 1))
+  (set! (~ res) (sin (to-float (+ (get-global-id 0) 1ul)))))

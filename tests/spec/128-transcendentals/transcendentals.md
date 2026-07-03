@@ -106,10 +106,23 @@ RunPod-dependent PTX work, finish with the cross-cutting AD × precision matrix.
   base≥0 (document). Denormal-axis interaction with transcendentals: TODO (minor).
 - **Phase 3 — PTX `fast`.** Resolve fork (A)/(B); native `.approx` for sin/cos + the chosen
   path for the rest. IR/ptx-check locally, on-metal CUDA (pod).
-- **Phase 4 — PTX `ieee` + libdevice.** In-process libdevice link (reuse FFI plumbing; note
-  `FFI-LINK` already resolves `$CUDA_HOME/.../libdevice.10.bc`), NVVMReflect driven by the
-  denormal axis, the **missing-libdevice error + negative test**, `run-on-pod.sh` update.
-  On-metal CUDA.
+- **Phase 4 — PTX transcendentals via libdevice. DONE 2026-07-03 (hardware-verified).**
+  On PTX a transcendental is emitted as a libdevice `__nv_*f`/`__nv_*` call (all 11 got a
+  `__nv_` base in the codegen macros via `%math-call-name`, gated on `*target-backend* = :ptx`).
+  libdevice.10.bc is linked in-process (reusing the FFI `.bc` plumbing / `link-foreign-bitcode`;
+  `FFI-LINK: $CUDA_HOME/nvvm/libdevice/libdevice.10.bc` supplies it in specs). `%ptx-finalize-libdevice`
+  (in compile-to-ptx, post-link): (a) errors with a clear message if any `__nv_*` is still an
+  undefined declaration (libdevice not linked), (b) sets the `nvvm-reflect-ftz` module flag from
+  `*denormal-handling*`. **Spike-proven:** llc's NVPTX backend runs NVVMReflect automatically from
+  that module flag — the 2217 `__nvvm_reflect` calls in the linked module → 0 in the PTX. Gotcha:
+  `LLVMAddModuleFlag` takes the **C enum** (Override=**3**), not the IR encoding (4) the binding's
+  comment lists — passing 4 made an Append flag → llc verifier error. **On-metal (RTX 2000 Ada, CUDA
+  12.4):** `(sin x)` → `__nv_sinf` → libdevice → ptxas → nvcc-built driver host → **res 0.841471** =
+  sin(1.0). Spec 13-sin-ptx-metal (FFI-LINK libdevice + TEST-HOIST[CUDA]). Missing-libdevice error
+  verified manually (negative-runner can't inject --ir-target=ptx, so no auto CHECK-FAIL yet).
+  Regression 824/824 both ways, 253 unit, 185 neg. NOTE: local (no `opt`) leaves libdevice
+  un-inlined but ptxas-valid; the pod's opt-21 inlines + DCEs. Fast-PTX (native `.approx` / `__nv_fast_*`)
+  is Phase 3.
 - **Phase 5 — AD × precision × denormal (the "dread", de-dreaded).** The derivative rules are
   symbolic and exact, so AD is *correct* under any precision (precision is transparent to the
   derivative structure — same lesson as 126-5b). The only real work is **precision-aware
