@@ -75,7 +75,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (EMIT-READBACK STREAM ALLOCATIONS)  hoist-cuda/main.lisp
 - - (PARSE-CLI-ARGS ARGS) :CRISP.MAIN  main.lisp
 - - - (INITIALIZE-COMPILER &KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE
-                                                                      NIL))  compiler.lisp
+                                                                      NIL) (MATH-PRECISION
+                                                                            IEEE) (FORCE-MATH-PRECISION
+                                                                                   NIL) (DENORMAL-HANDLING
+                                                                                         PRESERVE))  compiler.lisp
 - - - - (INITIALIZE-CRISP-TYPES)  types/registry.lisp
 - - - - (INITIALIZE-TYPE-HIERARCHY)  types/hierarchy.lisp
 - - - - (INITIALIZE-EXPRESSION-ANALYZERS)  analysis/core.lisp
@@ -98,6 +101,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (INITIALIZE-DEBUG-CONTEXT MODULE DI-BUILDER FILEPATH) :CRISP.MAIN  main.lisp
 - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
 - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp
+- - - - - (%PROCESS-DECLAIM FORM)  analysis/core.lisp
 - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [RECURSION]
 - - - - (COMPILE-DEF-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
 - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp
@@ -238,6 +242,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - (%CREATE-NEW-FUNCTION FN-NAME FN-TYPE MODULE DI-BUILDER DI-COMPILE-UNIT CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC)  codegen.lisp
 - - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp [See above]
 - - - - - - - (ENSURE-OPENCL-KERNEL-METADATA FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
+- - - - - - - - (%APPLY-DENORMAL-ATTRIBUTE FUNC MODULE)  codegen.lisp
+- - - - - - - - (%EMIT-SPIRV-DENORM-EXECUTION-MODE FUNC MODULE)  codegen.lisp
 - - - - - - - (GENERATE-FUNCTION-BODY SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER LOCATION-MAP)  codegen.lisp
 - - - - - - - - (INITIALIZE-FUNCTION-PARAMETERS BUILDER FUNC PARAM-NODES MODULE VAR-ENV &OPTIONAL IS-ENTRY-POINT)  codegen.lisp
 - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
@@ -1458,6 +1464,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
+- (ANALYZE-WITH-PRECISION-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+
 - (ANALYZE-WORKGROUP-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%WORKGROUP-STRIDE-PARSE EXPR)  analysis/control.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1541,6 +1551,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - (GET-TYPE-CAT-SAFE TYPE-NAME TYPE-OBJ)  codegen.lisp
 - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - (%APPLY-PRECISION-FMF INST)  codegen.lisp
 - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 
 - (DEF-CAST-CODEGEN NODE-TYPE DOCSTRING ARG-ACCESSOR TYPE-ACCESSOR &BODY BODY)  codegen.lisp

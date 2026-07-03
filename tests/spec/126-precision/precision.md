@@ -12,7 +12,7 @@ Precision: ieee vs fast
 - [ ] update ideal_001.md with rule about using libdevice.10.bc when using transcendentals with PTX. 
 - [ ] update ideal_001.md with FTZ and SPIR-V "bubble up"  behavior 
 - [ ] auto differentiation?  (let's deal with transcendentals in our NEXT endeavor, not now, or maybe just one now "sin" ?)
-- [ ] update docs with 'ieee' being default, not 'fast'.  and 'preserve' default for denormals
+- [x] update docs with 'ieee' being default, not 'fast'.  and 'preserve' default for denormals
 
 
 Now that we have FFI support, we should be able to support Crisp's precision controls.

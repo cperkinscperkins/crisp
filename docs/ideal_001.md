@@ -8605,10 +8605,10 @@ Smaller sizes are less accurate, but faster.
 Note that while all platforms support 32 bit, the other sizes aren't always available. If needed use the compile-time checks
 `target-has` or `device-has` to partition supporting and unusupporting code. See [target-has/device-has](#target-has--device-has) 
 
-#### precision 📝
+#### precision ✅
 
-In addition to choice of variable type, Crisp has a precision control that supports three
-different options: `fast` ,  `ieee` and `ieee-ftz`.
+In addition to choice of variable type, Crisp has a precision control that supports two
+different options: `fast` and  `ieee`.  Crisp defaults to `ieee` (and `preserve` for denormal handling)
 
 With the `ieee` the compiler will choose instructions that guarantee IEEE 754 compliance.
 For operations like division or square root, this might mean selecting a slightly slower
@@ -8617,8 +8617,6 @@ IEEE 754 conforming instructions.
 This might also entail disabling automatic FMAD generation, and ensuring that denormalized
 numbers are handled correctly (not flushed to zero).
 
-With `ieee-ftz` the behavior is the same as `ieee` except that denormalized numbers are
-flushed to zero. This is a common optimization in HPC applications. 
 
 With the `fast` precision option, the compiler will prioritize speed, selecting faster
 but potentially approximate instructcions (like `rsqrt.approx`). It might use specific
@@ -8635,9 +8633,9 @@ from the least specific to the most specific, they are:
 
 | What                           |  Value           | Descripotion         |
 |--------------------------------|------------------|----------------------|
-| `--math-precision`             | `fast` or `ieee` or `ieee-ftz` | compilation flag     |
-| `(declaim (precision <KEY>))`  | `fast` or `ieee` or `ieee-ftz` | per-file declamation |
-| `(with-precision (<KEY>) ...)` | `fast` or `ieee` or `ieee-ftz` | in-function macro    |
+| `--math-precision`             | `fast` or `ieee`  | compilation flag     |
+| `(declaim (precision <KEY>))`  | `fast` or `ieee`  | per-file declamation |
+| `(with-precision (<KEY>) ...)` | `fast` or `ieee`  | in-function macro    |
 
 If there are competing values for precision, the compiler will favor the MOST specific.
 
@@ -8659,11 +8657,18 @@ Example:
 4. in the example above, the `--math-precision` flag would always be ignored. The `declaim` at file level 
 would override.
 
-##### overriding precision: `--force-math-precision` 📝
+##### overriding precision: `--force-math-precision` ✅
 
 The `--force-math-precision` compiler flag can be used to override ALL other precision choices.
 It will override the developers stated intent, and for that reason it should be avoided. This flag is intended for validation and testing purposes and should not be used as part of your release
 cycle.  The compiler emits a warning whenever this flag is used. 
+
+##### `--denormal-handling [preserve | ftz]` ✅
+The `--denormal-handling` compiler flag acts as a global control for subnormal numbers across the entire kernel, specifically effecting operations within ieee precision blocks.
+
+- `preserve` (Default): Strict IEEE 754 compliance. Subnormal numbers are preserved, allowing for gradual underflow. Use this for maximum analytical accuracy, especially when relying on auto-differentiation where vanishing gradients are a risk.
+- `ftz` (Flush-to-Zero): A performance optimization. Proper hardware handling of subnormals can demand significant extra cycles or microcode fallbacks. Setting this to `ftz` instructs the hardware to immediately flush any subnormal value to zero, reclaiming performance at the cost of strict precision at the bottom of the floating-point scale.
+
 
 ### Floating Point Only Operations ⚠️
 
@@ -11628,7 +11633,7 @@ Example: `crisp.exe -DSTART_INDEX=20`
 
 #### Math Flags `--math-precision` 📝
 
-The `--math-precision` flag can be set to `fast`, `ieee` or `ieee-ftz`. But note that Crisp supports
+The `--math-precision` flag can be set to `fast`or `ieee`. But note that Crisp supports
 in-file precision election. See the section on [Math Precision](#precision) above.
 
 Also, there is a `--force-math-precision` flag that can override, but its use is discouraged.
@@ -11689,7 +11694,7 @@ Contrarily, the `--split` flag ensures each kernel gets its won individuaul targ
 not joined with any other, regardless of any `def-orchestration`.
 It is an error to use both these flags together.
 
-Also note that the metadata and hoisting output is always output per-orchestration. They are unaffected by either flag. 
+Also note that the metadata and hoisting output is always output per-orchestration. They are uneffected by either flag. 
 
 #### multiple .crisp files
 
@@ -11823,7 +11828,7 @@ after recompilation by In Memory Compilation API it now requires 10,000 bytes, t
 be a breaking change.  The kernel, if enqueued as before, would no longer function correctly.
 
 Other changes could result in even more severe API breakage. Query the metadata to see
-if the kernel you intend to call was affected and how before attempting to use it.
+if the kernel you intend to call was effected and how before attempting to use it.
 
 
 ```
