@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--math-precision=ieee] : validate-mixed-fast-ieee
+;;
+;; Endeavor 126, pass 5a: (with-precision (fast) ...) scopes fast-math to just its
+;; lexical region. Baseline is ieee (the flag); `hi` is computed inside a fast
+;; region -> `fmul fast`, while `lo` uses the baseline -> plain `fmul float`. Both
+;; present in the IR proves the region is scoped, not global.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel wp_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (let ((hi (with-precision (fast) (* (~ a) (~ b)))))
+    (let ((lo (* (~ b) (~ c))))
+      (set! (~ res) (+ hi lo)))))

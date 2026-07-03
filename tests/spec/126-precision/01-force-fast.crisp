@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=fast] : validate-fast-math
+;;
+;; Endeavor 126, pass 1 (--force-math-precision=fast). TDD: RED until the codegen
+;; stamps per-instruction fast-math flags on FP ops. Discriminating kernel — a
+;; multiply-add whose fmul/fadd should carry `fast` (and permit contraction) under
+;; fast precision, vs plain fmul/fadd under ieee. Kernel name is deliberately
+;; NEUTRAL (no "fast"/"ieee") so the validators' substring checks aren't fooled by
+;; the symbol name in the IR.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel prec_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))

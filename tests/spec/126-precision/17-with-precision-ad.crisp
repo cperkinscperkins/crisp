@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3 expect.x=6.0
+;;
+;; Endeavor 126, pass 5b: with-precision inside a DIFFERENTIATED kernel. res = x*x
+;; computed inside an ieee region; dres/dx = 2x (= 6 at x=3). Under --differentiate
+;; the backward pipeline (ANF + backward walk) must handle the with-precision region
+;; — reproduce its scoping — rather than choke on the unknown form.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel wp_ad (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (with-precision (ieee) (* (~ x) (~ x)))))

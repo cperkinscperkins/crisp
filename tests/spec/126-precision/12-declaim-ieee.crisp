@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--math-precision=fast] : validate-ieee-precision
+;;
+;; Endeavor 126, pass 4: (declaim (precision ieee)) overrides --math-precision=fast
+;; (declaim > math, the other direction) -> plain FP, no fast-math flags.
+
+(declaim (precision ieee))
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel prec_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))

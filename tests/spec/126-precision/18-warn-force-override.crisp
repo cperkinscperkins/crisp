@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; EXPECT-STDERR[--force-math-precision=fast]: "overrides all in-source precision choices"
+;;
+;; Endeavor 126: --force-math-precision is a hard lock that overrides every in-source
+;; precision choice (declaim, with-precision). Because that can silently defeat a
+;; kernel author's intent, the compiler warns when the flag is used. The warning
+;; leaves the IR unchanged, so it's checked on stderr (EXPECT-STDERR) rather than via
+;; an IR-grep validator. The default (no-flag) pass compiles clean with no warning.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (* (~ x) (~ x))))

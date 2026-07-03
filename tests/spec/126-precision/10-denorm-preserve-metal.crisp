@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-DENORMAL: preserve
+;; HOIST-EXPECT: BUFFER res: 0.99
+;;
+;; Endeavor 126, pass 3 ON-METAL preserve (BMG, verified 2026-07-02). A RUNTIME
+;; subnormal (get-global-id keeps it off the constant-folder): tiny=(gid+1)*1e-20 is
+;; normal, sq=tiny*tiny=1e-40 is SUBNORMAL. Scaled back up in two 1e20 steps (1e40
+;; overflows a single float). Under DenormPreserve the subnormal survives -> ~0.999995.
+;; Confirms the SPIR-V DenormPreserve execution mode + the whole hoist pipeline work on
+;; metal. Companion to 09 (ftz flush), which is CUDA-only — see its note.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel denorm_metal (&out res)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 1))
+  (let ((tiny (* (to-float (+ (get-global-id 0) 1ul)) (to-float 1.0e-20))))
+    (let ((sq (* tiny tiny)))
+      (set! (~ res) (* (* sq (to-float 1.0e20)) (to-float 1.0e20))))))

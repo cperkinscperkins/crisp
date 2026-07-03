@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee --math-precision=fast] : validate-ieee-precision
+;;
+;; Endeavor 126, pass 2 precedence: --force-math-precision OVERRIDES --math-precision.
+;; Here force=ieee must beat math=fast -> plain FP (no fast-math flags), proving the
+;; force flag wins even when a competing --math-precision asks for fast.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel prec_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))

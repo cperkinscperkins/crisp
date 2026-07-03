@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--math-precision=ieee] : validate-ieee-precision
+;;
+;; Endeavor 126, pass 2 (--math-precision=ieee). Plain FP ops, no fast-math flags —
+;; same shape as the default, driven explicitly via the non-forcing flag.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel prec_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))

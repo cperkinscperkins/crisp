@@ -708,8 +708,23 @@ Precision: ieee vs fast vs ieee-ftz
 - [ ]  `(declaim (precision <KEY>))`
 - [ ] `--math-precision`
 - [ ] `--force-math-precision`
-- [/] `--denormal-handling [ieee | flush]`
-- [x] CHange to precision: ieee | fast | ieee-ftz
+- [ ] `--denormal-handling [ieee | flush]`
+- [/] CHange to precision: ieee | fast | ieee-ftz
+
+Transcendentals
+===============
+- [ ] across both precisions
+- [ ] and both subnormal handling (when ieee)
+- [ ] and auto differentiation for each. ?
+- [ ] error when transcendentals and ieee and no ilbdevice.bc when outputting PTX.
+- [ ] other errors?
+
+Binary Download / Release
+=========================
+We have a github release for the libraries, with a python script to fetch.
+Should we do something for the compiler itself?
+- [ ] update INSTALL.md instructions.
+- [ ] README.md should link to INSTALL.md
 
 Reductions
 ==========

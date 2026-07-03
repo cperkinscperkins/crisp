@@ -174,7 +174,11 @@
              (define-test scaffolding
                           (let ((ir (compile-crisp-form-to-ir-string '(def-function test-dwarf () (declare (return-type int)) 7) :debug-p t)))
                             (true (search "!DICompileUnit" ir))
-                            (true (search "define i32 @test_dwarf() !dbg" ir))
+                            ;; NB: function-attribute groups (e.g. #0 for denormal-fp-math)
+                            ;; now sit between () and !dbg, so match the stable prefix; the
+                            ;; !dbg / DISubroutineType assertions below confirm the debug info.
+                            (true (search "define i32 @test_dwarf()" ir))
+                            (true (search "!dbg" ir))
                             (true (search "line: 1" ir))
                             (true (search "!DISubroutineType" ir))))
 

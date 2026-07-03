@@ -260,6 +260,16 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   body ; A list of semantic nodes
   source-location)
 
+(defstruct semantic-with-precision
+  "Endeavor 126 (pass 5): (with-precision (KEY) body...) — per-region precision.
+   Codegen dynamically binds *math-precision* to MODE over the body (unless
+   --force-math-precision locks it), so the body's FP ops carry the region's mode.
+   Value is the last body expression's value (like progn)."
+  type ; return type (of the last body expression)
+  mode ; :fast or :ieee
+  body ; a list of semantic nodes
+  source-location)
+
 (defstruct semantic-to-workgroup-uniform
   "Represents a (to-workgroup-uniform ...) expression."
   type ; The type of the value

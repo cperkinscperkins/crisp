@@ -1,0 +1,15 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "unknown precision key"
+;;
+;; Endeavor 126 negative: (declaim (precision KEY)) accepts only `fast` or `ieee`.
+;; An unknown precision key is a compile error (%process-declaim), fired when the
+;; declaim is intercepted in visit-toplevel-form — no flags needed to trigger it.
+
+(declaim (precision bogus))
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (* (~ x) (~ x))))

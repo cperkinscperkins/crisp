@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--math-precision=fast] : validate-mixed-fast-ieee
+;;
+;; Endeavor 126, pass 5a, other direction: (with-precision (ieee) ...) carves a
+;; strict region out of a fast baseline. `hi` is inside an ieee region -> plain
+;; `fmul float`; `lo` uses the fast baseline -> `fmul fast`. Both present ->
+;; with-precision(ieee) overrides --math-precision=fast for its region only.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel wp_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (let ((hi (with-precision (ieee) (* (~ a) (~ b)))))
+    (let ((lo (* (~ b) (~ c))))
+      (set! (~ res) (+ hi lo)))))

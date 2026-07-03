@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-ieee-precision
+;;
+;; Endeavor 126, pass 1 (--force-math-precision=ieee). Expected GREEN even before
+;; implementation: the default codegen already emits plain fmul/fadd with no
+;; fast-math flags, which IS the ieee shape. This test locks that in and guards
+;; against fast-math flags leaking into ieee once the flag is wired. Same neutral
+;; kernel as 01.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel prec_probe (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))

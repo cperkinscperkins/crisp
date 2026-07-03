@@ -138,6 +138,23 @@
    #:llvm-set-function-call-conv
    #:llvm-get-function-call-conv
    #:llvm-set-metadata
+   ;; Precision controls (Endeavor 126)
+   #:llvm-set-fast-math-flags
+   #:llvm-get-fast-math-flags
+   #:llvm-can-value-use-fast-math-flags
+   #:llvm-create-string-attribute
+   #:llvm-add-attribute-at-index
+   #:llvm-add-named-metadata-operand
+   #:+llvm-attribute-function-index+
+   #:+llvm-fast-math-none+
+   #:+llvm-fast-math-allow-reassoc+
+   #:+llvm-fast-math-no-nans+
+   #:+llvm-fast-math-no-infs+
+   #:+llvm-fast-math-no-signed-zeros+
+   #:+llvm-fast-math-allow-reciprocal+
+   #:+llvm-fast-math-allow-contract+
+   #:+llvm-fast-math-approx-func+
+   #:+llvm-fast-math-all+
    #:llvm-md-kind-id-in-context
    #:llvm-md-string-in-context2
    #:llvm-value-as-metadata

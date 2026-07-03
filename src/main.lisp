@@ -75,6 +75,35 @@ Supports one or more .crisp source files: the last file is treated as the primar
          (runtime-checks-p (member "--runtime-checks" flags :test #'string=))
          (differentiate-p (member "--differentiate" flags :test #'string=))
 
+         ;; Endeavor 126: precision axis. --force-math-precision overrides
+         ;; --math-precision (and, later, all in-source precision choices).
+         (force-prec-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--force-math-precision=" f)) flags))
+         (math-prec-flag  (find-if (lambda (f) (alexandria:starts-with-subseq "--math-precision=" f)) flags))
+         ;; Parsed SEPARATELY (not pre-resolved) so the compiler knows which is the
+         ;; hard lock: force > with-precision > declaim > math > default(:ieee).
+         (math-precision-mode
+          (let ((v (when math-prec-flag (subseq math-prec-flag (length "--math-precision=")))))
+            (cond ((null v) :ieee)
+                  ((string-equal v "fast") :fast)
+                  ((string-equal v "ieee") :ieee)
+                  (t (format *error-output* "ERROR: unknown math precision '~a' (expected ieee|fast).~%" v)
+                     (uiop:quit 1)))))
+         (force-precision-mode
+          (let ((v (when force-prec-flag (subseq force-prec-flag (length "--force-math-precision=")))))
+            (cond ((null v) nil)
+                  ((string-equal v "fast") :fast)
+                  ((string-equal v "ieee") :ieee)
+                  (t (format *error-output* "ERROR: unknown forced math precision '~a' (expected ieee|fast).~%" v)
+                     (uiop:quit 1)))))
+         (denorm-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--denormal-handling=" f)) flags))
+         (denormal-handling
+          (let ((v (when denorm-flag (subseq denorm-flag (length "--denormal-handling=")))))
+            (cond ((null v) :preserve)   ; Endeavor 126: default subnormal handling
+                  ((string-equal v "ftz") :ftz)
+                  ((string-equal v "preserve") :preserve)
+                  (t (format *error-output* "ERROR: unknown denormal handling '~a' (expected ftz|preserve).~%" v)
+                     (uiop:quit 1)))))
+
          ;; Target Parsing
          (target-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--ir-target=" f)) flags))
          (targets (mapcar (lambda (f)
@@ -103,10 +132,23 @@ Supports one or more .crisp source files: the last file is treated as the primar
           (format *error-output* "ERROR: --differentiate and --hoist are incompatible and cannot be used together.~%")
           (uiop:quit 1))
 
+    ;; Endeavor 126: --force-math-precision overrides all in-source precision intent.
+    (when force-prec-flag
+      (format *error-output* "WARNING: --force-math-precision overrides all in-source precision choices; use for testing/validation only.~%"))
+
+    ;; Endeavor 126: `fast` precision flushes denormals; a competing `preserve` request
+    ;; is not honored under `fast` (denorm is not per-region on SPIR-V) — warn, don't silently flush.
+    ;; (Flag-level check; a declaim-set fast + preserve is a later refinement.)
+    (when (and (eq (or force-precision-mode math-precision-mode) :fast) (eq denormal-handling :preserve))
+      (format *error-output* "WARNING: `fast` precision flushes denormals; the `preserve` request is not honored under `fast` -- use `ieee` if you need denormal preservation.~%"))
+
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
                                         :runtime-checks runtime-checks-p
-                                        :differentiate differentiate-p)
+                                        :differentiate differentiate-p
+                                        :math-precision math-precision-mode
+                                        :force-math-precision force-precision-mode
+                                        :denormal-handling denormal-handling)
 
     ;; Require at least one source file; support multiple files.
     (unless (>= (length source-files) 1)

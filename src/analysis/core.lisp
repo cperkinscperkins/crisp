@@ -569,11 +569,40 @@
       (scan-form form))
     (values *scan-is-originator* *scan-callees*)))
 
+(defun %process-declaim (form)
+  "Endeavor 126: handle (declaim (precision KEY)) — the first (and currently only)
+   supported declaim: a file-level precision selection. Sets *math-precision* to
+   :fast/:ieee for the rest of the compilation, UNLESS --force-math-precision is
+   active (force locks precision; declaim is then ignored). Runs in both the analysis
+   and codegen passes — each processes the declaim before the functions, so
+   *math-precision* is correct when FP ops are emitted. Unknown declaim clauses are
+   ignored (forward-compatible); an unknown precision key is an error."
+  (dolist (clause (cdr form))
+    (when (and (consp clause) (symbolp (car clause))
+               (string-equal (symbol-name (car clause)) "PRECISION"))
+      (let* ((key (second clause))
+             (kname (and (symbolp key) (symbol-name key)))
+             (mode (cond ((and kname (string-equal kname "FAST")) :fast)
+                         ((and kname (string-equal kname "IEEE")) :ieee)
+                         (t (error "declaim (precision ~a): unknown precision key (expected fast or ieee)" key)))))
+        (if *force-math-precision*
+            (log:info "declaim (precision ~a) ignored — --force-math-precision locks precision" key)
+            (progn
+              (setf *math-precision* mode)
+              (log:info "declaim (precision ~a) -> *math-precision* = ~a" key mode)))))))
+
 (defun visit-toplevel-form (form location visitor-fn)
   "Recursively visits a top-level form, handling macros and progn.
    Visitor-fn is called as (visitor-fn form location) for def-function forms.
    Other forms are evaluated if they are not special forms handled by the walker."
   (cond
+   ;; Endeavor 126: (declaim (precision KEY)) — file-level precision. Intercept
+   ;; before the CL macro/eval path (CL's declaim -> proclaim rejects `precision`
+   ;; and treats the key as an unbound variable).
+   ((and (consp form) (symbolp (car form))
+         (string-equal (symbol-name (car form)) "DECLAIM"))
+     (%process-declaim form))
+
    ;; Case 1: def-function -> Visit it
    ((and (consp form) (eq (car form) 'def-function))
      (funcall visitor-fn form location))
@@ -1784,6 +1813,7 @@ in single-pass mode."
     (semantic-struct-construction (semantic-struct-construction-type node))
     (semantic-ct-array (semantic-ct-array-type node))
     (semantic-progn (semantic-progn-type node))
+    (semantic-with-precision (semantic-with-precision-type node))
     (semantic-struct-member-update (semantic-struct-member-update-type node))
     (semantic-sizeof (semantic-sizeof-type node))
     (semantic-make-view (semantic-make-view-type node))
@@ -1833,6 +1863,7 @@ in single-pass mode."
     (semantic-struct-construction (semantic-struct-construction-source-location node))
     (semantic-ct-array (semantic-ct-array-source-location node))
     (semantic-progn (semantic-progn-source-location node))
+    (semantic-with-precision (semantic-with-precision-source-location node))
     (semantic-struct-member-update (semantic-struct-member-update-source-location node))
     (semantic-sizeof (semantic-sizeof-source-location node))
     (semantic-make-view (semantic-make-view-source-location node))

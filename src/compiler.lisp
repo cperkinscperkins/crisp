@@ -806,11 +806,44 @@ Returns modified IR text with metadata."
 
 
 
-(defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil))
+(defvar *math-precision* :ieee
+  "Endeavor 126: active math-precision mode for FP codegen — :ieee (plain, strict FP)
+   or :fast (per-instruction fast-math flags stamped on FP ops). Set by
+   initialize-compiler from --math-precision / --force-math-precision. Default :ieee
+   (PENDING DECISION 2026-07-02): the language's stated default is `fast`, but
+   flipping it globally breaks every numerical-correctness check (HOIST-EXPECT exact
+   output, VERIFY-AUTODIFF finite-difference) — those must run under :ieee. Kept :ieee
+   until we decide precise-default (nvcc/clang style, fast opt-in) vs. fast-default +
+   forcing :ieee for all correctness runs.")
+
+(defvar *force-math-precision* nil
+  "Endeavor 126: when non-NIL (:fast/:ieee), the --force-math-precision hard override
+   is active — it LOCKS the precision, so in-source `(declaim (precision …))` and
+   `with-precision` choices are ignored. NIL means no force: declaim (pass 4) /
+   with-precision (pass 5) may set *math-precision*. Precedence:
+   --force > with-precision > declaim > --math-precision > default(:ieee).")
+
+(defvar *denormal-handling* :preserve
+  "Endeavor 126: subnormal handling for FP codegen — :preserve (strict IEEE gradual
+   underflow) or :ftz (flush subnormals to sign-preserved zero). Orthogonal to
+   *math-precision*. Set by initialize-compiler from --denormal-handling. Stamped as
+   the `denormal-fp-math` function attribute (PTX/NVPTX honours it directly; SPIR-V
+   needs a DenormFlushToZero execution mode, emitted separately). Default :preserve
+   matches the precise (:ieee) default and nvcc (-ftz=false).")
+
+(defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil)
+                                 (math-precision :ieee) (force-math-precision nil)
+                                 (denormal-handling :preserve))
   "Initializes the compiler state.
    Extended to clear *grid-functions* for def-grid-function support."
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
+  ;; Endeavor 126: force is the hard lock; the effective starting precision is
+  ;; force (if given) else the --math-precision flag. declaim/with-precision may
+  ;; later mutate *math-precision* only when *force-math-precision* is NIL.
+  (setf *force-math-precision* force-math-precision)
+  (setf *math-precision* (or force-math-precision math-precision))
+  (setf *denormal-handling* denormal-handling)
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
   (if (eq log-level :off)

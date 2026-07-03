@@ -183,13 +183,45 @@
 ;; Patch to add SPIR-V kernel metadata functions to codegen.lisp
 ;; Insert BEFORE the line: (defun generate-function-prototype
 
+(defun %apply-denormal-attribute (func module)
+  "Endeavor 126: stamp the `denormal-fp-math` (and `-f32`) function attribute on FUNC
+   per *denormal-handling* — :ftz -> \"preserve-sign,preserve-sign\" (flush subnormals),
+   :preserve -> \"ieee,ieee\" (strict IEEE). NVPTX honours these directly; the SPIR-V
+   DenormFlushToZero execution mode is emitted separately. Applied to every function."
+  (let* ((val (if (eq *denormal-handling* :ftz) "preserve-sign,preserve-sign" "ieee,ieee"))
+         (ctx (llvm-get-module-context module)))
+    (dolist (key '("denormal-fp-math" "denormal-fp-math-f32"))
+      (let ((attr (llvm-create-string-attribute ctx key (length key) val (length val))))
+        (llvm-add-attribute-at-index func +llvm-attribute-function-index+ attr)))))
+
+(defun %emit-spirv-denorm-execution-mode (func module)
+  "Endeavor 126: emit an !spirv.ExecutionMode metadata entry on kernel FUNC so the
+   LLVM->SPIR-V translator emits DenormFlushToZero (4460, :ftz) or DenormPreserve
+   (4459, :preserve) at width 32. The `denormal-fp-math` attribute alone does NOT
+   reach SPIR-V (verified 2026-07-01), so this is required for the choice to take
+   effect on the SPV/L0 path. Per-entry-point; SPV target only."
+  (let* ((ctx (llvm-get-module-context module))
+         (mode-id (if (eq *denormal-handling* :ftz) 4460 4459))
+         (i32 (llvm-int32-type))
+         (func-md  (llvm-value-as-metadata func))
+         (mode-md  (llvm-value-as-metadata (llvm-const-int i32 mode-id 0)))
+         (width-md (llvm-value-as-metadata (llvm-const-int i32 32 0))))
+    (cffi:with-foreign-object (arr :pointer 3)
+      (setf (cffi:mem-aref arr :pointer 0) func-md
+            (cffi:mem-aref arr :pointer 1) mode-md
+            (cffi:mem-aref arr :pointer 2) width-md)
+      (let* ((node (llvm-md-node-in-context2 ctx arr 3))
+             (node-val (crisp.llvm-bindings::llvm-metadata-as-value ctx node)))
+        (llvm-add-named-metadata-operand module "spirv.ExecutionMode" node-val)))))
+
 (defun ensure-opencl-kernel-metadata (func semantic-function module)
   "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
-   
+   Endeavor 126: also stamps the denormal-fp-math attribute (all functions).
+
    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
    as text during IR printing for SPIR-V."
-  (declare (ignore module))
+  (%apply-denormal-attribute func module)
   (when (semantic-function-is-entry-point semantic-function)
         (log:info "Marking function ~a as Kernel for backend ~a"
                   (semantic-function-name semantic-function) *target-backend*)
@@ -197,7 +229,9 @@
         (case *target-backend*
           (:spirv
            ;; calling convention spir_kernel (76)
-           (llvm-set-function-call-conv func 76))
+           (llvm-set-function-call-conv func 76)
+           ;; Endeavor 126: denormal handling reaches SPIR-V only via an execution mode.
+           (%emit-spirv-denorm-execution-mode func module))
           (:ptx
            ;; Use ptx_kernel calling convention (71) so llc emits .entry
            ;; If this crashes on Windows, we will need to revisit nvvm attributes.
@@ -951,6 +985,17 @@
                 (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
                 (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))))
 
+(defun %apply-precision-fmf (inst)
+  "Endeavor 126: when *math-precision* is :fast, stamp all fast-math flags on the
+   FP-math instruction INST (guarded by llvm-can-value-use-fast-math-flags). Returns
+   INST so it can wrap a build call inline. No-op under :ieee (plain FP left as-is).
+   Per-instruction FMF is the only path the LLVM->SPIR-V translator honours."
+  (when (and (eq *math-precision* :fast)
+             inst (not (cffi:null-pointer-p inst))
+             (/= 0 (llvm-can-value-use-fast-math-flags inst)))
+    (llvm-set-fast-math-flags inst +llvm-fast-math-all+))
+  inst)
+
 (defmacro def-binary-op-codegen (node-type int-inst float-inst accessor-prefix)
   (let ((left-accessor (intern (format nil "~a-LEFT-ARG" accessor-prefix)))
         (right-accessor (intern (format nil "~a-RIGHT-ARG" accessor-prefix)))
@@ -971,7 +1016,7 @@
                   (casted-rhs (build-cast-if-needed builder module rhs-raw rhs-type-name result-type-name))
                   (crisp-type (gethash result-type-name *crisp-types*))
                   (inst (if (eq (crisp-type-category crisp-type) :float)
-                            (,float-inst builder casted-lhs casted-rhs "fop_tmp")
+                            (%apply-precision-fmf (,float-inst builder casted-lhs casted-rhs "fop_tmp"))
                             (,int-inst builder casted-lhs casted-rhs "iop_tmp")))
                   (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
              (values inst di-location)))))))
@@ -1271,6 +1316,20 @@
     (dolist (sub-node (semantic-progn-body node))
       (setf last-val (generate-node-ir sub-node builder module var-env di-builder di-scope location-map)))
     (values last-val nil)))
+
+(defmethod generate-node-ir ((node semantic-with-precision) builder module var-env di-builder di-scope location-map)
+  "Endeavor 126 (pass 5): per-region precision. Dynamically bind *math-precision* to
+   the region's mode for the body's codegen — so the FMF stamped on the body's FP ops
+   (via %apply-precision-fmf) reflects the region — UNLESS --force-math-precision is
+   active (force locks precision; the region is ignored). Returns the last body
+   form's value (like progn)."
+  (let ((*math-precision* (if *force-math-precision*
+                              *math-precision*
+                              (semantic-with-precision-mode node))))
+    (let ((last-val nil))
+      (dolist (sub-node (semantic-with-precision-body node))
+        (setf last-val (generate-node-ir sub-node builder module var-env di-builder di-scope location-map)))
+      (values last-val nil))))
 
 
 (defun %generate-let-binding (binding builder module let-env di-builder di-scope location-map memoized-aggregates)

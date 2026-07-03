@@ -1985,7 +1985,7 @@ Returns the form or NIL."
          (progn (log:error "validate-vec-add-grad: @vec_add_grad not found") nil))
      (or (search "TENSOR_FLOAT_1_GLOBAL_COMPACT" ir)
          (progn (log:error "validate-vec-add-grad: gradient tensor type COMPACT not found") nil))
-     (or (search "fadd float" ir)
+     (or (search "fadd" ir)   ; precision-agnostic: matches `fadd float` and `fadd fast float`
          (progn (log:error "validate-vec-add-grad: fadd not found in backward body") nil))
      (or (not (search "idx_GRAD" ir))
          (progn (log:error "validate-vec-add-grad: idx_GRAD should not be emitted (integer scalar)") nil))
@@ -2004,7 +2004,7 @@ Returns the form or NIL."
     (and
      (or (search "define void @vec_mult_grad(" ir)
          (progn (log:error "validate-vec-multiply-grad: @vec_mult_grad not found") nil))
-     (or (search "fmul float" ir)
+     (or (search "fmul" ir)   ; precision-agnostic: matches `fmul float` and `fmul fast float`
          (progn (log:error "validate-vec-multiply-grad: fmul not found (product rule requires multiply)") nil))
      (or (search "TENSOR_FLOAT_1_GLOBAL_COMPACT" ir)
          (progn (log:error "validate-vec-multiply-grad: gradient tensor type COMPACT not found") nil))
@@ -2030,7 +2030,7 @@ Returns the form or NIL."
          (progn (log:error "validate-vec-mixed-grad: scale_grad adjoint variable not found") nil))
      (or (search "TENSOR_FLOAT_1_GLOBAL_COMPACT" ir)
          (progn (log:error "validate-vec-mixed-grad: A_GRAD tensor type COMPACT not found") nil))
-     (or (search "fmul float" ir)
+     (or (search "fmul" ir)   ; precision-agnostic: matches `fmul float` and `fmul fast float`
          (progn (log:error "validate-vec-mixed-grad: fmul not found (scale*A product rule)") nil))
      (or (not (search "idx_GRAD" ir))
          (progn (log:error "validate-vec-mixed-grad: idx_GRAD should not be emitted") nil))
@@ -2051,7 +2051,7 @@ Returns the form or NIL."
          (progn (log:error "validate-matrix-add-grad: @mat_add_grad not found") nil))
      (or (search "TENSOR_FLOAT_2_GLOBAL_COMPACT" ir)
          (progn (log:error "validate-matrix-add-grad: 2D gradient tensor type COMPACT not found") nil))
-     (or (search "fadd float" ir)
+     (or (search "fadd" ir)   ; precision-agnostic: matches `fadd float` and `fadd fast float`
          (progn (log:error "validate-matrix-add-grad: fadd not found in backward body") nil))
      (or (not (search "row_GRAD" ir))
          (progn (log:error "validate-matrix-add-grad: row_GRAD should not be emitted (integer)") nil))
@@ -2074,7 +2074,7 @@ Returns the form or NIL."
          (progn (log:error "validate-tensor-add-grad: @tensor_add_grad not found") nil))
      (or (search "TENSOR_FLOAT_3_GLOBAL_COMPACT" ir)
          (progn (log:error "validate-tensor-add-grad: 3D gradient tensor type COMPACT not found") nil))
-     (or (search "fadd float" ir)
+     (or (search "fadd" ir)   ; precision-agnostic: matches `fadd float` and `fadd fast float`
          (progn (log:error "validate-tensor-add-grad: fadd not found in backward body") nil))
      (or (not (search "d0_GRAD" ir))
          (progn (log:error "validate-tensor-add-grad: d0_GRAD should not be emitted (integer)") nil))
@@ -2099,7 +2099,7 @@ Returns the form or NIL."
          (progn (log:error "validate-vec-transcendental-grad: @vec_sin_grad not found") nil))
      (or (search "llvm.cos" ir)
          (progn (log:error "validate-vec-transcendental-grad: @llvm.cos not found (sin backward needs cos)") nil))
-     (or (search "fmul float" ir)
+     (or (search "fmul" ir)   ; precision-agnostic: matches `fmul float` and `fmul fast float`
          (progn (log:error "validate-vec-transcendental-grad: fmul not found (chain rule multiply)") nil))
      (or (not (search "idx_GRAD" ir))
          (progn (log:error "validate-vec-transcendental-grad: idx_GRAD should not be emitted") nil))
@@ -2126,7 +2126,7 @@ Returns the form or NIL."
          (progn (log:error "validate-vec-basic-sub-grad: @some_operation_grad not found (sub-function _GRAD companion missing)") nil))
      (or (search "vec_sub_op_grad" ir)
          (progn (log:error "validate-vec-basic-sub-grad: @vec_sub_op_grad backward kernel not found") nil))
-     (or (search "fadd float" ir)
+     (or (search "fadd" ir)   ; precision-agnostic: matches `fadd float` and `fadd fast float`
          (progn (log:error "validate-vec-basic-sub-grad: fadd not found (gradient accumulation missing)") nil))
      (or (not (search "idx_GRAD" ir))
          (progn (log:error "validate-vec-basic-sub-grad: idx_GRAD should not be emitted (integer index)") nil))
@@ -2172,7 +2172,7 @@ Returns the form or NIL."
          (progn (log:error "validate-mat-basic-sub-grad: @mat_sub_op_grad backward kernel not found") nil))
      (or (search "TENSOR_FLOAT_2" ir)
          (progn (log:error "validate-mat-basic-sub-grad: 2D gradient tensor type not found") nil))
-     (or (search "fmul float" ir)
+     (or (search "fmul" ir)   ; precision-agnostic: matches `fmul float` and `fmul fast float`
          (progn (log:error "validate-mat-basic-sub-grad: fmul not found (product rule for a*b)") nil))
      (or (not (search "row_GRAD" ir))
          (progn (log:error "validate-mat-basic-sub-grad: row_GRAD should not be emitted (integer index)") nil))
@@ -2264,7 +2264,7 @@ Returns the form or NIL."
          (progn (log:error "validate-vec-mixed-sub-grad: @vec_scale_sub_grad backward kernel not found") nil))
      (or (search "TENSOR_FLOAT_1" ir)
          (progn (log:error "validate-vec-mixed-sub-grad: 1D gradient tensor type for A_GRAD not found") nil))
-     (or (search "fmul float" ir)
+     (or (search "fmul" ir)   ; precision-agnostic: matches `fmul float` and `fmul fast float`
          (progn (log:error "validate-vec-mixed-sub-grad: fmul not found (product rule for s*a)") nil))
      (or (not (search "idx_GRAD" ir))
          (progn (log:error "validate-vec-mixed-sub-grad: idx_GRAD should not be emitted") nil))

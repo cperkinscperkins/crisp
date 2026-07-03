@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--denormal-handling=preserve] : validate-denormal-preserve
+;;
+;; Endeavor 126, pass 3 (--denormal-handling=preserve). Strict-IEEE subnormal
+;; handling: the `denormal-fp-math` attribute is "ieee,ieee". Same neutral kernel
+;; as 07.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel denorm_probe (a b &out res)
+  (declare #'(in-c in-c &out out-c))
+  (set! (~ res) (* (~ a) (~ b))))

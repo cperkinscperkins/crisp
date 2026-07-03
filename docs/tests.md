@@ -237,7 +237,10 @@ Header comment directives for test expectations:
 ;; TEST-EXPECT: PASS
 ;; FAIL-WITH[--single-pass]: "Unsupported form"
 ;; TEST-WITH[--metadata] : validate-metacrisp
+;; TEST-WITH[--force-math-precision=fast] : validate-fast-math   <-- FP precision axis; see below
+;; EXPECT-STDERR[--force-math-precision=fast]: "overrides..."    <-- assert a warning on stderr; see below
 ;; TEST-HOIST[L0]: validate-l0-compile-only
+;; HOIST-DENORMAL: ftz                   <-- denormal mode for a TEST-HOIST run; see below
 ;; FFI-LINK: add.c                       <-- link a C/.bc library into the spec; see below
 ;; VERIFY-AUTODIFF: x=3.0 atol=1e-3      <-- on-metal AD check; see below
 ;; CHECK-FAIL: "message"   <-- for the negative tests in errors
@@ -259,6 +262,110 @@ Do NOT use (declare forward-only) . Instead use
 
 
 
+
+## Precision & Denormal Testing (Endeavor 126)
+
+Endeavor 126 added FP math-precision controls to the compiler, with two matching
+test hooks: precision runs via the existing `TEST-WITH[...]` machinery, and an
+on-metal denormal directive `HOIST-DENORMAL`.
+
+Two orthogonal axes:
+
+- **precision** `ieee` | `fast` — per-instruction fast-math flags on FP ops.
+  Sources (most-specific wins): `--force-math-precision` > `with-precision` >
+  `declaim (precision …)` > `--math-precision`. Default `ieee`.
+- **denormal** `preserve` | `ftz` — the `denormal-fp-math` function attribute
+  (flush subnormals vs strict IEEE). Flag-only (`--denormal-handling`), kernel-level.
+  Default `preserve`.
+
+### Precision / denormal via `TEST-WITH`
+
+Any of the flags can be exercised in a spec through `TEST-WITH[...]`: the spec is
+compiled to LLVM IR with the flag(s) active and the IR handed to an IR-grep validator.
+
+```lisp
+;; TEST-WITH[--force-math-precision=fast] : validate-fast-math
+;; TEST-WITH[--force-math-precision=ieee] : validate-ieee-precision
+;; TEST-WITH[--math-precision=fast]        : validate-fast-math
+;; TEST-WITH[--denormal-handling=ftz]      : validate-denormal-ftz
+;; TEST-WITH[--denormal-handling=preserve] : validate-denormal-preserve
+```
+
+- Flags compose in one directive, so precedence is testable:
+  `TEST-WITH[--force-math-precision=ieee --math-precision=fast]` → force `ieee` wins.
+- Validators (in `tests/run-specs.lisp`) grep the IR: `validate-fast-math` requires
+  per-instruction fast-math flags (`fmul fast` / `reassoc` / `fmuladd`);
+  `validate-ieee-precision` requires plain FP with none of those;
+  `validate-denormal-ftz` / `validate-denormal-preserve` check the
+  `denormal-fp-math` attribute (`preserve-sign` for ftz, `ieee` for preserve).
+- Runner dispatch: any flag matching `--force-math-precision=` / `--math-precision=`
+  / `--denormal-handling=` routes to `run-spec-precision-pass`.
+
+### Asserting a warning: `EXPECT-STDERR[...]`
+
+Some flags emit a **warning** rather than changing the IR — e.g. `--force-math-precision`
+(a hard lock that overrides all in-source precision intent) and `--math-precision=fast`
+combined with `--denormal-handling=preserve` (`fast` implies flush, so `preserve` can't
+be honored). A `TEST-WITH` validator only sees the IR, so it can't catch these.
+`EXPECT-STDERR[flags]: "substring"` fills the gap: it compiles the spec with `flags`
+active and PASSes iff the compile **succeeds** (exit 0, so the warning is non-fatal)
+**and** `substring` appears on stderr.
+
+```lisp
+;; EXPECT-STDERR[--force-math-precision=fast]: "overrides all in-source precision choices"
+;; EXPECT-STDERR[--math-precision=fast --denormal-handling=preserve]: "is not honored under"
+```
+
+- The warnings are written with a raw `format` to `*error-output*` (not log4cl), so
+  `--log-level=off` does **not** suppress them.
+- The run is independent of `--differentiate`; the target is fixed to `spv`.
+- Implementation: `parse-expect-stderr` + `run-spec-expect-stderr-pass` in
+  `tests/run-specs.lisp`, dispatched as step 2.5 of `run-spec-file` (right after the
+  `TEST-WITH` runs).
+
+**Note:** the fast+preserve warning is a *flag-level* check only — a `declaim`- or
+`with-precision`-set `fast` combined with `preserve` does not (yet) trigger it.
+
+### Bad-key errors (negative tests)
+
+The two new source forms validate their precision key and error on anything but
+`fast`/`ieee`. These are plain `CHECK-FAIL` negatives (no flags needed) under
+`tests/spec/126-precision/errors/`:
+
+```lisp
+;; (with-precision (bogus) ...)  -> CHECK-FAIL: "with-precision: expected (fast) or (ieee)"
+;; (declaim (precision bogus))   -> CHECK-FAIL: "unknown precision key"
+```
+
+The unknown-*value* errors for the CLI flags themselves (`--math-precision=bogus`
+etc.) also exit non-zero, but the negative runner invokes a fixed arg list and can't
+yet inject per-test flags, so they are not covered.
+
+### On-metal denormal: `HOIST-DENORMAL:`
+
+Denormal handling only *takes effect* on the GPU, so observing it requires a hoist
+run compiled with the chosen mode. `HOIST-DENORMAL:` sets `--denormal-handling` for
+that spec's `TEST-HOIST` runs:
+
+```lisp
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-DENORMAL: preserve
+;; HOIST-EXPECT: BUFFER res: 0.99
+```
+
+Values: `ftz` or `preserve` (absent = compiler default `preserve`). On SPIR-V the
+choice is emitted as an `!spirv.ExecutionMode` (`DenormFlushToZero` / `DenormPreserve`);
+on PTX it rides the `denormal-fp-math` attribute → `.ftz` instructions.
+
+**Hardware note:** the Intel BMG / Level-Zero compute stack does NOT flush f32
+denormals even under `ftz` — both modes *preserve* on that metal (verified). The
+compiler emits the correct SPIR-V regardless; the flush is only observable on NVIDIA,
+so ftz-flush specs use `TEST-HOIST[CUDA]` (which SKIPs locally without `nvcc`).
+
+Implementation pointers:
+- Directive parser: `parse-hoist-denormal` in `tests/run-specs.lisp`.
+- Flag forwarding: `run-spec-with-hoist` appends `--denormal-handling=…` when
+  `*compile-denormal-handling*` is bound (from the directive).
 
 ## FFI Linking (`FFI-LINK`)
 

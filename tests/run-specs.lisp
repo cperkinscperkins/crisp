@@ -78,6 +78,15 @@
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
 (defvar *compile-differentiate* nil)
+(defvar *compile-math-precision* nil
+  "Endeavor 126: --math-precision mode (:fast / :ieee / nil) for a precision
+   TEST-WITH run; forwarded to initialize-compiler by compile-crisp-file-to-ir-string.")
+(defvar *compile-force-math-precision* nil
+  "Endeavor 126: --force-math-precision mode (:fast / :ieee / nil) — the hard lock
+   (force > with-precision > declaim > math). Forwarded to initialize-compiler.")
+(defvar *compile-denormal-handling* nil
+  "Endeavor 126: effective denormal mode (:ftz / :preserve / nil) for a precision
+   TEST-WITH run; forwarded to initialize-compiler by compile-crisp-file-to-ir-string.")
 (defvar *test-filter* nil)
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
@@ -423,6 +432,16 @@
           (unless (run-single-spec-pass file flags validator)
             (setf all-passed nil)))))
 
+    ;; 2.5 Expect-Stderr Runs (EXPECT-STDERR[flags]: "substring") -- Endeavor 126.
+    ;; Compile with the flags and assert a warning appears on stderr. For CLI
+    ;; warnings that don't change the IR (so a TEST-WITH validator can't see them).
+    (dolist (run (parse-expect-stderr directives))
+      (destructuring-bind (flags . substr) run
+        (format t "~&Running Spec: ~a (Expect-Stderr ~a : ~s)... " (pathname-name file) flags substr)
+        (finish-output)
+        (unless (run-spec-expect-stderr-pass file flags substr)
+          (setf all-passed nil))))
+
     ;; 3. Hoist Tests (TEST-HOIST[backend]: validator)
     (let ((hoist-directives (parse-test-hoist directives)))
       (if (and hoist-directives *compile-differentiate*)
@@ -432,7 +451,9 @@
                   (validator-name (cdr directive)))
               (format t "~&Running Spec: ~a (Hoist[~a] -> ~a)... " (pathname-name file) backend validator-name)
               (finish-output)
-              (let ((hoist-result (run-spec-with-hoist file backend)))
+              (let* ((*compile-denormal-handling* (or (parse-hoist-denormal directives)
+                                                      *compile-denormal-handling*))
+                     (hoist-result (run-spec-with-hoist file backend)))
                 (unless (eq hoist-result :skipped)
                   (let ((cpp-files hoist-result))
                     ;; Use find-symbol to look up the existing function symbol
@@ -500,15 +521,107 @@
 
 
 
+(defun %precision-flag-value (flags prefix)
+  "Return the :fast / :ieee mode for flag PREFIX (e.g. \"--math-precision=\") in
+   FLAGS, or NIL if absent. Force and math are parsed SEPARATELY so the compiler
+   knows which is the hard lock (declaim/with-precision precedence)."
+  (let ((v (loop for f in flags
+                 when (and (>= (length f) (length prefix))
+                           (string= prefix (subseq f 0 (length prefix))))
+                 return (subseq f (length prefix)))))
+    (cond ((null v) nil)
+          ((string-equal v "fast") :fast)
+          ((string-equal v "ieee") :ieee)
+          (t nil))))
+
+(defun %denormal-mode-from-flags (flags)
+  "Extract the denormal mode (:ftz / :preserve / nil) from FLAGS."
+  (let ((v (loop with prefix = "--denormal-handling="
+                 for f in flags
+                 when (and (>= (length f) (length prefix))
+                           (string= prefix (subseq f 0 (length prefix))))
+                 return (subseq f (length prefix)))))
+    (cond ((null v) nil)
+          ((string-equal v "ftz") :ftz)
+          ((string-equal v "preserve") :preserve)
+          (t nil))))
+
+(defun run-spec-precision-pass (file flags validator)
+  "Compiles FILE with the precision + denormal flags active, then hands the LLVM IR
+   to VALIDATOR. Used by TEST-WITH[--force-math-precision=KEY] / [--math-precision=KEY]
+   / [--denormal-handling=KEY] (Endeavor 126). Modes are parsed from FLAGS and
+   forwarded to the compiler via the *compile-* specials -> initialize-compiler."
+  (handler-case
+      (let* ((math   (%precision-flag-value flags "--math-precision="))
+             (force  (%precision-flag-value flags "--force-math-precision="))
+             (denorm (%denormal-mode-from-flags flags))
+             (*compile-math-precision* (or math *compile-math-precision*))
+             (*compile-force-math-precision* (or force *compile-force-math-precision*))
+             (*compile-denormal-handling* (or denorm *compile-denormal-handling*)))
+      (let ((ir-string (compile-crisp-file-to-ir-string file)))
+        (if validator
+            (let ((sym (find-symbol (string-upcase (string validator)) :crisp.spec-runner)))
+              (if (and sym (fboundp sym))
+                  (if (funcall sym file ir-string)
+                      (progn (format t "PASS~%") t)
+                      (progn (format *error-output* "FAIL (Validator ~a)~%" validator) nil))
+                  (progn (format *error-output* "FAIL (Validator ~a not found)~%" validator) nil)))
+            (progn (format t "PASS~%") t))))
+    (error (e)
+      (uiop:print-backtrace :condition e)
+      (format *error-output* "FAIL (Condition: ~a)~%" e)
+      nil)))
+
+(defun run-spec-expect-stderr-pass (file flags expected-substring)
+  "Endeavor 126: compile FILE through the binary with FLAGS active; PASS iff the
+   compile SUCCEEDS (exit 0) AND EXPECTED-SUBSTRING appears on stderr. Used to lock
+   in CLI *warnings* (force-override, fast+preserve) which are emitted with a raw
+   `format` to *error-output* (not log4cl, so `--log-level=off` does not suppress
+   them) and which leave the IR unchanged — invisible to an IR-grep validator.
+   Runs the compile itself (independent of --differentiate). No --ir-target is
+   passed, so the binary emits generic LLVM IR to stdout (no artifact file to clean
+   up); exit 0 confirms the warning is non-fatal, and the warning fires during CLI
+   parsing regardless of target."
+  (let* ((bin (get-binary-path))
+         (args (append flags
+                       (list (format nil "--log-level=~a" cl-user::*log-level*)
+                             (uiop:native-namestring file)))))
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string :error-output :string :ignore-error-status t)
+      (declare (ignore output))
+      (cond
+       ((not (zerop exit-code))
+         (format *error-output* "FAIL (compile exit ~a; expected success + stderr ~s)~%~a~%"
+                 exit-code expected-substring error-output)
+         nil)
+       ((search expected-substring error-output)
+         (format t "PASS (stderr: ~s)~%" expected-substring)
+         t)
+       (t
+         (format *error-output* "FAIL (stderr missing ~s)~%--- got stderr ---~%~a~%"
+                 expected-substring error-output)
+         nil)))))
+
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active.
-   Extended: --runtime-checks routes to run-spec-runtime-checks-pass."
+   Extended: --runtime-checks routes to run-spec-runtime-checks-pass;
+   --*-math-precision=KEY routes to run-spec-precision-pass."
   ;; NEW: --runtime-checks is handled as a dedicated path — compile with
   ;; runtime assertions enabled and call the validator with the IR string.
   (when (member "--runtime-checks" flags :test #'string=)
     (format t "(RT-Checks)... ")
     (return-from run-single-spec-pass
       (run-spec-runtime-checks-pass file validator)))
+
+  ;; Endeavor 126: precision runs — compile and hand the IR to a precision validator.
+  (when (some (lambda (f) (or (search "--force-math-precision=" f)
+                              (search "--math-precision=" f)
+                              (search "--denormal-handling=" f)))
+              flags)
+    (format t "(Precision)... ")
+    (return-from run-single-spec-pass
+      (run-spec-precision-pass file flags validator)))
 
   ;; Original dispatch (unchanged from base run-specs.lisp):
   (let ((*use-binary*         (or *use-binary*         (member "--use-binary"    flags :test #'string=)))
@@ -552,7 +665,10 @@
                    (crisp.compiler:initialize-compiler
                     :log-level cl-user::*log-level*
                     :differentiate *compile-differentiate*
-                    :runtime-checks *compile-runtime-checks*)
+                    :runtime-checks *compile-runtime-checks*
+                    :math-precision (or *compile-math-precision* :ieee)
+                    :force-math-precision *compile-force-math-precision*
+                    :denormal-handling (or *compile-denormal-handling* :preserve))
                    (with-open-file (stream filepath)
                      (let ((*package* (find-package :crisp-language)))
                        (loop for form = (read stream nil :eof)
@@ -589,7 +705,67 @@
       (progn
         (format t "FAIL: llvm.trap not found in IR (expected from r-t-assert under --runtime-checks)~%")
         nil)))
-        
+
+(defun validate-fast-math (file ir-string)
+  "Validator for TEST-WITH[--*-math-precision=fast] (Endeavor 126): FP ops must
+   carry per-instruction fast-math flags. LLVM prints `fast` when ALL flags are set,
+   otherwise the individual keywords (reassoc/contract/...); a contracted a*b+c may
+   also appear as llvm.fmuladd. Any of these confirms fast precision reached the IR."
+  (declare (ignore file))
+  (let ((ir (string-downcase ir-string)))
+    (if (or (search "fmul fast" ir) (search "fadd fast" ir)
+            (search "reassoc" ir)   (search "fmuladd" ir))
+        (progn (format t "PASS (fast-math flags present)~%") t)
+        (progn (format t "FAIL: no fast-math flags on FP ops (expected under fast precision)~%") nil))))
+
+(defun validate-ieee-precision (file ir-string)
+  "Validator for TEST-WITH[--*-math-precision=ieee] (Endeavor 126): FP ops must be
+   plain — no fast-math flags, no reassoc/contraction — matching strict IEEE. (The
+   test kernel's name is neutral, so a bare `fast` substring implies a fast-math flag.)"
+  (declare (ignore file))
+  (let ((ir (string-downcase ir-string)))
+    (if (and (search "fmul float" ir)
+             (not (search "fast" ir))
+             (not (search "reassoc" ir))
+             (not (search "fmuladd" ir)))
+        (progn (format t "PASS (plain FP ops, no fast-math)~%") t)
+        (progn (format t "FAIL: expected plain fmul/fadd with no fast-math flags~%") nil))))
+
+(defun validate-mixed-fast-ieee (file ir-string)
+  "Endeavor 126 pass 5: per-region precision — the IR must contain BOTH a fast FP op
+   (`fmul fast`) AND a plain one (`fmul float`), proving with-precision scoped
+   precision to just its region while the rest of the kernel used the other mode."
+  (declare (ignore file))
+  (let ((ir (string-downcase ir-string)))
+    (if (and (search "fmul fast" ir) (search "fmul float" ir))
+        (progn (format t "PASS (mixed: fast region + plain region coexist)~%") t)
+        (progn (format t "FAIL: expected BOTH `fmul fast` and `fmul float` (per-region scoping)~%") nil))))
+
+(defun validate-all-fast (file ir-string)
+  "Endeavor 126 pass 5: force override — ALL FP ops fast, none plain (force beats
+   with-precision, so an ieee region is compiled fast too)."
+  (declare (ignore file))
+  (let ((ir (string-downcase ir-string)))
+    (if (and (search "fmul fast" ir) (not (search "fmul float" ir)))
+        (progn (format t "PASS (all fast — force overrode the region)~%") t)
+        (progn (format t "FAIL: expected all `fmul fast`, no plain `fmul float`~%") nil))))
+
+(defun validate-denormal-ftz (file ir-string)
+  "Validator for TEST-WITH[--denormal-handling=ftz] (Endeavor 126): the
+   `denormal-fp-math` function attribute must select flush-to-zero (preserve-sign)."
+  (declare (ignore file))
+  (if (search "denormal-fp-math\"=\"preserve-sign" ir-string)
+      (progn (format t "PASS (denormal-fp-math = flush-to-zero)~%") t)
+      (progn (format t "FAIL: expected denormal-fp-math=preserve-sign (ftz)~%") nil)))
+
+(defun validate-denormal-preserve (file ir-string)
+  "Validator for TEST-WITH[--denormal-handling=preserve] (Endeavor 126): the
+   `denormal-fp-math` attribute must select strict IEEE (ieee) subnormal handling."
+  (declare (ignore file))
+  (if (search "denormal-fp-math\"=\"ieee" ir-string)
+      (progn (format t "PASS (denormal-fp-math = ieee/preserve)~%") t)
+      (progn (format t "FAIL: expected denormal-fp-math=ieee (preserve)~%") nil)))
+
 (defun validate-ir-with-clang (ir-string)
   "Uses clang to validate LLVM IR."
   (uiop:with-temporary-file (:stream stream :pathname path :type "ll")
@@ -956,8 +1132,13 @@
          (bin (get-binary-path))
          (args (append (mapcar #'uiop:native-namestring bc-files)
                        (list hoist-arg
-                             (format nil "--log-level=~a" cl-user::*log-level*)
-                             (uiop:native-namestring file))))
+                             (format nil "--log-level=~a" cl-user::*log-level*))
+                       ;; Endeavor 126: forward the denormal mode (HOIST-DENORMAL directive)
+                       ;; so an on-metal test can observe flush-to-zero vs preserve.
+                       (when *compile-denormal-handling*
+                         (list (format nil "--denormal-handling=~a"
+                                       (string-downcase (symbol-name *compile-denormal-handling*)))))
+                       (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
@@ -1734,6 +1915,31 @@
                         (push (list flags (when validator (read-from-string validator))) runs)))))))
     (nreverse runs)))
 
+(defun parse-expect-stderr (directive-lines)
+  "Parses EXPECT-STDERR[--flag1 --flag2]: \"substring\" directives (Endeavor 126).
+   Returns a list of (flags . substring) pairs. Each run compiles the spec with the
+   given flags and requires SUBSTRING to appear on stderr AND a successful compile.
+   For CLI *warnings* (e.g. --force-math-precision override, fast+preserve) that leave
+   the IR unchanged and so cannot be caught by a TEST-WITH IR-grep validator."
+  (let ((runs '()))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "EXPECT-STDERR[")
+          (let* ((end-bracket (position #\] trimmed))
+                 (content (when end-bracket (subseq trimmed (length "EXPECT-STDERR[") end-bracket)))
+                 (colon (position #\: trimmed :start (or end-bracket 0)))
+                 (rest (when colon (string-trim '(#\Space #\Tab #\Return #\Newline)
+                                                (subseq trimmed (1+ colon)))))
+                 ;; Strip the surrounding double-quotes around the expected substring.
+                 (substr (when (and rest (>= (length rest) 2)
+                                    (char= (cl:char rest 0) #\")
+                                    (char= (cl:char rest (1- (length rest))) #\"))
+                           (subseq rest 1 (1- (length rest))))))
+            (when (and content substr (> (length content) 0))
+              (let ((flags (remove "" (uiop:split-string content :separator " ") :test #'string=)))
+                (push (cons flags substr) runs)))))))
+    (nreverse runs)))
+
 (defun parse-test-hoist (directive-lines)
   "Parses TEST-HOIST[backend]: validator-name directives.
    Returns a list of (backend . validator-name) pairs."
@@ -1748,6 +1954,17 @@
                 (when (and backend-str validator)
                       (push (cons (intern (string-upcase backend-str) :keyword) validator) directives))))))
     (nreverse directives)))
+
+(defun parse-hoist-denormal (directive-lines)
+  "Parse HOIST-DENORMAL: ftz|preserve (Endeavor 126). Returns :ftz / :preserve / nil.
+   Sets --denormal-handling for the hoist compile so an on-metal test can observe
+   flush-to-zero vs preserve subnormal handling."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "HOIST-DENORMAL:")
+        (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 15))))
+          (cond ((string-equal v "ftz") (return :ftz))
+                ((string-equal v "preserve") (return :preserve))))))))
 
 (defun parse-hoist-expect (directive-lines)
   "Parse HOIST-EXPECT: <string> lines.
