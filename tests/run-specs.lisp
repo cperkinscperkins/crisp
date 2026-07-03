@@ -578,12 +578,13 @@
    in CLI *warnings* (force-override, fast+preserve) which are emitted with a raw
    `format` to *error-output* (not log4cl, so `--log-level=off` does not suppress
    them) and which leave the IR unchanged — invisible to an IR-grep validator.
-   Runs the compile itself (independent of --differentiate); the target is fixed to
-   spv so a valid module is produced and exit 0 confirms the warning is non-fatal."
+   Runs the compile itself (independent of --differentiate). No --ir-target is
+   passed, so the binary emits generic LLVM IR to stdout (no artifact file to clean
+   up); exit 0 confirms the warning is non-fatal, and the warning fires during CLI
+   parsing regardless of target."
   (let* ((bin (get-binary-path))
          (args (append flags
-                       (list "--ir-target=spv"
-                             (format nil "--log-level=~a" cl-user::*log-level*)
+                       (list (format nil "--log-level=~a" cl-user::*log-level*)
                              (uiop:native-namestring file)))))
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
