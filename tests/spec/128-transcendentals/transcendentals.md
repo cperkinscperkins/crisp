@@ -89,8 +89,21 @@ RunPod-dependent PTX work, finish with the cross-cutting AD × precision matrix.
   BMG GPU** (incl. both partials of pow & atan2). Full regression 822/822 both ways, 253 unit,
   185 neg. ci-stop `128-transcendentals`. NOTE: SPV/default(ieee)-precision only so far — PTX +
   fast/precision variants are Phases 2–5.
-- **Phase 2 — precision × denormal on the SPV path.** fast vs ieee for transcendentals
-  (precise ExtInst vs `native_*`/FMF) + denormal interaction. TDD locally.
+- **Phase 2 — `fast` → OpenCL `native_*` on SPV. DONE 2026-07-02.** Under fast on SPV,
+  transcendentals with a native variant (sin/cos/tan/exp/log/log2 + `powr` for pow) emit a
+  call to the Itanium-mangled OpenCL builtin (`_Z10native_sinf`, …) instead of the `llvm.*`
+  intrinsic; the LLVM→SPIR-V translator maps these to `native_*` OpenCL.std ExtInst — **but
+  only when the module carries `!opencl.ocl.version`** (spike-proven: without it the mangled
+  call becomes an imported OpFunctionCall → unresolved on L0). So `%emit-opencl-version-metadata`
+  is injected in compile-to-spirv whenever `%module-uses-native-builtin-p`. asin/acos/atan/atan2
+  have no native variant → precise ExtInst + FMF under fast. native is f32-only + SPV-only
+  (f64 / PTX / no-variant fall back to precise, still FMF-stamped). Codegen macros now take an
+  optional native-name and branch on `*math-precision*`/`*target-backend*`. Gotcha fixed: a
+  `(return t)` in a helper hit the shadowed Crisp `return` (→ explicit-return) — use `some`.
+  New `HOIST-PRECISION: fast|ieee` directive (mirrors HOIST-DENORMAL) forwards --math-precision
+  to a hoist run. Spec 12-exp-fast-metal runs `native_exp` **on the BMG via L0** (res 2.71828).
+  Regression 823/823 both ways, 253 unit, 185 neg. NOTE: pow→native_powr under fast requires
+  base≥0 (document). Denormal-axis interaction with transcendentals: TODO (minor).
 - **Phase 3 — PTX `fast`.** Resolve fork (A)/(B); native `.approx` for sin/cos + the chosen
   path for the rest. IR/ptx-check locally, on-metal CUDA (pod).
 - **Phase 4 — PTX `ieee` + libdevice.** In-process libdevice link (reuse FFI plumbing; note

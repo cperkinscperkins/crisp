@@ -241,6 +241,7 @@ Header comment directives for test expectations:
 ;; EXPECT-STDERR[--force-math-precision=fast]: "overrides..."    <-- assert a warning on stderr; see below
 ;; TEST-HOIST[L0]: validate-l0-compile-only
 ;; HOIST-DENORMAL: ftz                   <-- denormal mode for a TEST-HOIST run; see below
+;; HOIST-PRECISION: fast                 <-- precision mode for a TEST-HOIST run; see below
 ;; FFI-LINK: add.c                       <-- link a C/.bc library into the spec; see below
 ;; VERIFY-AUTODIFF: x=3.0 atol=1e-3      <-- on-metal AD check; see below
 ;; CHECK-FAIL: "message"   <-- for the negative tests in errors
@@ -356,6 +357,23 @@ that spec's `TEST-HOIST` runs:
 Values: `ftz` or `preserve` (absent = compiler default `preserve`). On SPIR-V the
 choice is emitted as an `!spirv.ExecutionMode` (`DenormFlushToZero` / `DenormPreserve`);
 on PTX it rides the `denormal-fp-math` attribute → `.ftz` instructions.
+
+### On-metal precision: `HOIST-PRECISION:`
+
+`HOIST-PRECISION: fast|ieee` (Endeavor 128) sets `--math-precision` for a spec's
+`TEST-HOIST` runs — the analogue of `HOIST-DENORMAL` for the precision axis. Its main
+use is exercising the **fast transcendental path** on real hardware: under `fast`, a
+transcendental with a native variant (sin/cos/tan/exp/log/log2, and `powr` for pow)
+is emitted as an OpenCL `native_*` builtin and run on the device.
+
+```lisp
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-PRECISION: fast
+;; HOIST-EXPECT: BUFFER res: 2.7    ; native_exp(1.0) ~ e
+```
+
+Implementation: `parse-hoist-precision` + `run-spec-with-hoist` appends
+`--math-precision=…` when `*compile-math-precision*` is bound (from the directive).
 
 **Hardware note:** the Intel BMG / Level-Zero compute stack does NOT flush f32
 denormals even under `ftz` — both modes *preserve* on that metal (verified). The

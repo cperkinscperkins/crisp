@@ -453,6 +453,8 @@
               (finish-output)
               (let* ((*compile-denormal-handling* (or (parse-hoist-denormal directives)
                                                       *compile-denormal-handling*))
+                     (*compile-math-precision* (or (parse-hoist-precision directives)
+                                                   *compile-math-precision*))
                      (hoist-result (run-spec-with-hoist file backend)))
                 (unless (eq hoist-result :skipped)
                   (let ((cpp-files hoist-result))
@@ -1138,6 +1140,11 @@
                        (when *compile-denormal-handling*
                          (list (format nil "--denormal-handling=~a"
                                        (string-downcase (symbol-name *compile-denormal-handling*)))))
+                       ;; Endeavor 128: forward the precision mode (HOIST-PRECISION directive)
+                       ;; so an on-metal test can exercise the fast native_* transcendental path.
+                       (when *compile-math-precision*
+                         (list (format nil "--math-precision=~a"
+                                       (string-downcase (symbol-name *compile-math-precision*)))))
                        (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
@@ -1965,6 +1972,17 @@
         (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 15))))
           (cond ((string-equal v "ftz") (return :ftz))
                 ((string-equal v "preserve") (return :preserve))))))))
+
+(defun parse-hoist-precision (directive-lines)
+  "Parse HOIST-PRECISION: fast|ieee (Endeavor 128). Returns :fast / :ieee / nil.
+   Sets --math-precision for the hoist compile so an on-metal test can exercise the
+   fast native_* transcendental path (vs precise ieee) on real hardware."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "HOIST-PRECISION:")
+        (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 16))))
+          (cond ((string-equal v "fast") (return :fast))
+                ((string-equal v "ieee") (return :ieee))))))))
 
 (defun parse-hoist-expect (directive-lines)
   "Parse HOIST-EXPECT: <string> lines.

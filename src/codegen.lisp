@@ -996,6 +996,57 @@
     (llvm-set-fast-math-flags inst +llvm-fast-math-all+))
   inst)
 
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 128 (Phase 2): fast-precision transcendentals on SPV -> OpenCL
+;;; native_* builtins.
+;;;
+;;; Under `fast`, a transcendental with a native variant (sin/cos/tan/exp/log/
+;;; log2/powr) is emitted as a call to the Itanium-mangled OpenCL builtin
+;;; (e.g. _Z10native_sinf) instead of the precise `llvm.*` intrinsic. The
+;;; LLVM->SPIR-V translator maps such calls to the native_* OpenCL.std ExtInst,
+;;; BUT ONLY when the module carries !opencl.ocl.version metadata (otherwise the
+;;; call stays an imported OpFunctionCall -> unresolved on L0). native_ builtins
+;;; are f32-only and SPV-only; f64 / non-SPV / no-native-variant fall back to the
+;;; precise intrinsic (still FMF-stamped under fast).
+;;; ---------------------------------------------------------------------------
+
+(defun %native-builtin-mangled-name (base-name arity)
+  "Itanium-mangled name of an OpenCL native builtin taking ARITY float args.
+   native_sin/1 -> _Z10native_sinf ; native_powr/2 -> _Z11native_powrff."
+  (format nil "_Z~d~a~a" (length base-name) base-name
+          (make-string arity :initial-element #\f)))
+
+(defparameter *native-builtin-mangled-names*
+  '("_Z10native_sinf" "_Z10native_cosf" "_Z10native_tanf"
+    "_Z10native_expf" "_Z10native_logf" "_Z11native_log2f"
+    "_Z11native_powrff")
+  "The mangled OpenCL native builtins Crisp may emit under fast precision on SPV.")
+
+(defun %module-uses-native-builtin-p (module)
+  "T if MODULE declares any OpenCL native_* builtin. Used to decide whether to
+   inject !opencl.ocl.version so the translator recognises the mangled calls.
+   (NB: `return` is shadowed to Crisp's RETURN in :crisp.compiler, so use `some`.)"
+  (some (lambda (n)
+          (not (cffi:null-pointer-p (llvm-get-named-function module n))))
+        *native-builtin-mangled-names*))
+
+(defun %emit-opencl-version-metadata (module)
+  "Endeavor 128: add !opencl.ocl.version / !opencl.spir.version = {2,0} so the
+   LLVM->SPIR-V translator runs OpenCL-builtin recognition and maps native_*
+   mangled calls to native_* OpenCL.std ExtInst. Without this metadata the calls
+   translate to imported OpFunctionCall (unresolved at zeKernelCreate on L0)."
+  (let* ((ctx (llvm-get-module-context module))
+         (i32 (llvm-int32-type))
+         (major-md (llvm-value-as-metadata (llvm-const-int i32 2 0)))
+         (minor-md (llvm-value-as-metadata (llvm-const-int i32 0 0))))
+    (cffi:with-foreign-object (arr :pointer 2)
+      (setf (cffi:mem-aref arr :pointer 0) major-md
+            (cffi:mem-aref arr :pointer 1) minor-md)
+      (let* ((node (llvm-md-node-in-context2 ctx arr 2))
+             (node-val (crisp.llvm-bindings::llvm-metadata-as-value ctx node)))
+        (llvm-add-named-metadata-operand module "opencl.ocl.version" node-val)
+        (llvm-add-named-metadata-operand module "opencl.spir.version" node-val)))))
+
 (defmacro def-binary-op-codegen (node-type int-inst float-inst accessor-prefix)
   (let ((left-accessor (intern (format nil "~a-LEFT-ARG" accessor-prefix)))
         (right-accessor (intern (format nil "~a-RIGHT-ARG" accessor-prefix)))
@@ -1029,55 +1080,65 @@
 ;; Assuming signed integers for now as per initialized types.
 (def-binary-op-codegen semantic-div llvm-build-sdiv llvm-build-fdiv "SEMANTIC-DIV")
 
-(defmacro def-unary-math-codegen (node-type intrinsic-name)
+(defmacro def-unary-math-codegen (node-type intrinsic-name &optional native-name)
+  "Codegen for a unary FP math intrinsic. INTRINSIC-NAME is the precise `llvm.*`
+   used under ieee (and always for f64 / non-SPV). NATIVE-NAME, when given, is the
+   OpenCL native builtin base (e.g. \"native_sin\") emitted under fast precision on
+   the SPV target for f32 args (Endeavor 128 Phase 2)."
   `(defmethod generate-node-ir ((node ,node-type) builder module var-env di-builder di-scope location-map)
-     ,(format nil "Generates IR for ~a using ~a." node-type intrinsic-name)
+     ,(format nil "Generates IR for ~a using ~a (fast->~a on SPV f32)." node-type intrinsic-name (or native-name "n/a"))
      (multiple-value-bind (arg-val arg-loc) (generate-node-ir (slot-value node 'arg) builder module var-env di-builder di-scope location-map)
        (declare (ignore arg-loc))
        (let* ((arg-type-name (semantic-node-type (slot-value node 'arg)))
               (arg-crisp-type (gethash arg-type-name *crisp-types*))
               (arg-llvm-type (crisp-type-to-llvm-type arg-type-name module))
               (type-suffix (if (= (crisp-type-size arg-crisp-type) 64) "f64" "f32"))
-              (intrinsic-full-name (format nil "~a.~a" ,intrinsic-name type-suffix)))
-         (let ((f (llvm-get-named-function module intrinsic-full-name)))
-           (when (cffi:null-pointer-p f)
-                 (let ((ft (llvm-function-type arg-llvm-type
-                                               (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
-                                                 (setf (cffi:mem-aref arr 'llvm-type-ref 0) arg-llvm-type)
-                                                 arr)
-                                               1 nil)))
-                   (setf f (llvm-add-function module intrinsic-full-name ft))))
+              (use-native (and ,native-name
+                               (eq *math-precision* :fast)
+                               (eq *target-backend* :spirv)
+                               (= (crisp-type-size arg-crisp-type) 32)))
+              (call-name (if use-native
+                             (%native-builtin-mangled-name ,native-name 1)
+                             (format nil "~a.~a" ,intrinsic-name type-suffix))))
+         (flet ((mk1 () (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
+                          (setf (cffi:mem-aref arr 'llvm-type-ref 0) arg-llvm-type)
+                          arr)))
+           (let ((f (llvm-get-named-function module call-name)))
+             (when (cffi:null-pointer-p f)
+                   (setf f (llvm-add-function module call-name
+                                              (llvm-function-type arg-llvm-type (mk1) 1 nil))))
+             (let* ((args-array (cffi:foreign-alloc 'llvm-value-ref :count 1))
+                    (_ (setf (cffi:mem-aref args-array 'llvm-value-ref 0) arg-val))
+                    ;; FMF under fast: no-op for native (already fast), but lets the
+                    ;; precise-fallback ones (asin/acos/atan) hint approximation.
+                    (inst (%apply-precision-fmf
+                           (llvm-build-call2 builder
+                                             (llvm-function-type arg-llvm-type (mk1) 1 nil)
+                                             f args-array 1 "math_tmp")))
+                    (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
+               (declare (ignore _))
+               (values inst di-location))))))))
 
-           (let* ((args-array (cffi:foreign-alloc 'llvm-value-ref :count 1))
-                  (_ (setf (cffi:mem-aref args-array 'llvm-value-ref 0) arg-val))
-                  (inst (llvm-build-call2 builder
-                                          (llvm-function-type arg-llvm-type
-                                                              (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
-                                                                (setf (cffi:mem-aref arr 'llvm-type-ref 0) arg-llvm-type)
-                                                                arr)
-                                                              1 nil)
-                                          f args-array 1 "math_tmp"))
-                  (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
-             (declare (ignore _))
-             (values inst di-location)))))))
-
-(def-unary-math-codegen semantic-sin "llvm.sin")
-(def-unary-math-codegen semantic-cos "llvm.cos")
+(def-unary-math-codegen semantic-sin "llvm.sin" "native_sin")
+(def-unary-math-codegen semantic-cos "llvm.cos" "native_cos")
 ;; Endeavor 128: transcendentals (unary). All translate to OpenCL ExtInst on SPV;
-;; on PTX these intrinsics need libdevice (handled in a later phase).
-(def-unary-math-codegen semantic-exp  "llvm.exp")
-(def-unary-math-codegen semantic-log  "llvm.log")
-(def-unary-math-codegen semantic-log2 "llvm.log2")
-(def-unary-math-codegen semantic-tan  "llvm.tan")
+;; on PTX these intrinsics need libdevice (handled in a later phase). Under fast on
+;; SPV, those with a native_* variant switch to the approximate hardware path.
+(def-unary-math-codegen semantic-exp  "llvm.exp"  "native_exp")
+(def-unary-math-codegen semantic-log  "llvm.log"  "native_log")
+(def-unary-math-codegen semantic-log2 "llvm.log2" "native_log2")
+(def-unary-math-codegen semantic-tan  "llvm.tan"  "native_tan")
+;; No native_asin/acos/atan in OpenCL — precise ExtInst + FMF under fast.
 (def-unary-math-codegen semantic-asin "llvm.asin")
 (def-unary-math-codegen semantic-acos "llvm.acos")
 (def-unary-math-codegen semantic-atan "llvm.atan")
 
-(defmacro def-binary-math-codegen (node-type intrinsic-name)
+(defmacro def-binary-math-codegen (node-type intrinsic-name &optional native-name)
   "Endeavor 128: codegen for a binary FP math intrinsic (pow, atan2). Emits a call
-   to `<intrinsic>.f32`/`.f64` with two same-typed float operands."
+   to `<intrinsic>.f32`/`.f64` under ieee; under fast on SPV (f32), NATIVE-NAME (e.g.
+   \"native_powr\") is used instead. NOTE: native_powr requires base >= 0."
   `(defmethod generate-node-ir ((node ,node-type) builder module var-env di-builder di-scope location-map)
-     ,(format nil "Generates IR for ~a using ~a." node-type intrinsic-name)
+     ,(format nil "Generates IR for ~a using ~a (fast->~a on SPV f32)." node-type intrinsic-name (or native-name "n/a"))
      (multiple-value-bind (lhs-val lhs-loc) (generate-node-ir (slot-value node 'left-arg) builder module var-env di-builder di-scope location-map)
        (declare (ignore lhs-loc))
        (multiple-value-bind (rhs-val rhs-loc) (generate-node-ir (slot-value node 'right-arg) builder module var-env di-builder di-scope location-map)
@@ -1086,27 +1147,35 @@
                 (arg-crisp-type (gethash arg-type-name *crisp-types*))
                 (arg-llvm-type (crisp-type-to-llvm-type arg-type-name module))
                 (type-suffix (if (= (crisp-type-size arg-crisp-type) 64) "f64" "f32"))
-                (intrinsic-full-name (format nil "~a.~a" ,intrinsic-name type-suffix)))
+                (use-native (and ,native-name
+                                 (eq *math-precision* :fast)
+                                 (eq *target-backend* :spirv)
+                                 (= (crisp-type-size arg-crisp-type) 32)))
+                (call-name (if use-native
+                               (%native-builtin-mangled-name ,native-name 2)
+                               (format nil "~a.~a" ,intrinsic-name type-suffix))))
            (flet ((mk-param-array ()
                     (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
                       (setf (cffi:mem-aref arr 'llvm-type-ref 0) arg-llvm-type)
                       (setf (cffi:mem-aref arr 'llvm-type-ref 1) arg-llvm-type)
                       arr)))
-             (let ((f (llvm-get-named-function module intrinsic-full-name)))
+             (let ((f (llvm-get-named-function module call-name)))
                (when (cffi:null-pointer-p f)
-                     (let ((ft (llvm-function-type arg-llvm-type (mk-param-array) 2 nil)))
-                       (setf f (llvm-add-function module intrinsic-full-name ft))))
+                     (setf f (llvm-add-function module call-name
+                                                (llvm-function-type arg-llvm-type (mk-param-array) 2 nil))))
                (let* ((args-array (cffi:foreign-alloc 'llvm-value-ref :count 2))
                       (_  (setf (cffi:mem-aref args-array 'llvm-value-ref 0) lhs-val))
                       (__ (setf (cffi:mem-aref args-array 'llvm-value-ref 1) rhs-val))
-                      (inst (llvm-build-call2 builder
-                                              (llvm-function-type arg-llvm-type (mk-param-array) 2 nil)
-                                              f args-array 2 "math_tmp"))
+                      (inst (%apply-precision-fmf
+                             (llvm-build-call2 builder
+                                               (llvm-function-type arg-llvm-type (mk-param-array) 2 nil)
+                                               f args-array 2 "math_tmp")))
                       (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
                  (declare (ignore _ __))
                  (values inst di-location)))))))))
 
-(def-binary-math-codegen semantic-pow   "llvm.pow")
+(def-binary-math-codegen semantic-pow   "llvm.pow" "native_powr")
+;; No native_atan2 in OpenCL — precise ExtInst + FMF under fast.
 (def-binary-math-codegen semantic-atan2 "llvm.atan2")
 
 ;; -- comparisons --
