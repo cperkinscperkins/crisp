@@ -842,13 +842,32 @@ Returns modified IR text with metadata."
    needs a DenormFlushToZero execution mode, emitted separately). Default :preserve
    matches the precise (:ieee) default and nvcc (-ftz=false).")
 
+;; Endeavor 130: hardware profiles. (Defined in src — not the overlay — because
+;; initialize-compiler references them; forward-referencing a special var from
+;; earlier-compiled code is unsafe.)
+(defvar *hardware-profiles* (make-hash-table :test 'equal)
+  "Endeavor 130: upcased profile-name string -> normalized plist of the target's
+   capabilities/limits.  Populated by def-hardware-profile / register-hardware-profile.
+   Cleared per-compile by initialize-compiler (so profiles don't leak across files in
+   the in-process test runner); the current file's def-hardware-profile forms register
+   after that clear.")
+
+(defvar *requested-hardware-profile* nil
+  "Endeavor 130: profile name (string) requested via --hardware-profile, or NIL.
+   Resolved lazily against *hardware-profiles* by active-hardware-profile.")
+
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil)
                                  (math-precision :ieee) (force-math-precision nil)
-                                 (denormal-handling :preserve))
+                                 (denormal-handling :preserve)
+                                 (hardware-profile nil))
   "Initializes the compiler state.
    Extended to clear *grid-functions* for def-grid-function support."
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
+  ;; Endeavor 130: record the requested hardware profile (a name string) and clear
+  ;; the profile registry (the current file's def-hardware-profile forms re-register).
+  (setf *requested-hardware-profile* hardware-profile)
+  (clrhash *hardware-profiles*)
   ;; Endeavor 126: force is the hard lock; the effective starting precision is
   ;; force (if given) else the --math-precision flag. declaim/with-precision may
   ;; later mutate *math-precision* only when *force-math-precision* is NIL.

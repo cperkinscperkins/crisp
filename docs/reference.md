@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-03T15:29:01.780737Z
+Generated on 2026-07-04T22:56:47.177288Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -3287,10 +3287,22 @@ Generated on 2026-07-03T15:29:01.780737Z
 
 
 ---
+### DEFVAR `*HARDWARE-PROFILES*`
+
+  > Endeavor 130: upcased profile-name string -> normalized plist of the target's  >    capabilities/limits.  Populated by def-hardware-profile / register-hardware-profile.  >    Cleared per-compile by initialize-compiler (so profiles don't leak across files in  >    the in-process test runner); the current file's def-hardware-profile forms register  >    after that clear.
+
+
+---
+### DEFVAR `*REQUESTED-HARDWARE-PROFILE*`
+
+  > Endeavor 130: profile name (string) requested via --hardware-profile, or NIL.  >    Resolved lazily against *hardware-profiles* by active-hardware-profile.
+
+
+---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL)
               (MATH-PRECISION IEEE) (FORCE-MATH-PRECISION NIL)
-              (DENORMAL-HANDLING PRESERVE))`
+              (DENORMAL-HANDLING PRESERVE) (HARDWARE-PROFILE NIL))`
 
   > Initializes the compiler state.  >    Extended to clear *grid-functions* for def-grid-function support.
 
@@ -3470,6 +3482,103 @@ Generated on 2026-07-03T15:29:01.780737Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\errors.lisp`
 
+## File: `C:\Users\cperk\Documents\crisp-man\src\hardware-profile.lisp`
+
+### DEFPARAMETER `*HARDWARE-PROFILE-SCHEMA*`
+
+  > Endeavor 130: canonical hardware-profile keys and their value types.  Every key  >    is KNOWN from Phase 0 (so profiles are typo-checked and may be complete); the  >    CONSUMERS that read each key are added phase by phase.  Unknown keys are a  >    compile error; any subset may be specified (missing keys are fine).
+
+
+---
+### DEFUN `%HP-PARSE-SIZE`
+- **Args**: `(V)`
+
+  > Parse a size value into bytes: a positive integer, or a size-literal symbol  >    like 227KB / 50MB / 8GB / 2TB.  Returns the byte count, or NIL if unparseable.
+
+
+---
+### DEFUN `%HP-UNQUOTE`
+- **Args**: `(V)`
+
+  > Unwrap (quote X) -> X; otherwise return V unchanged.
+
+
+---
+### DEFUN `%HP-3-POS-INTS-P`
+- **Args**: `(X)`
+
+  > T if X is a list of exactly 3 positive integers.
+
+
+---
+### DEFUN `%HP-VALIDATE-VALUE`
+- **Args**: `(PROFILE-NAME KEY TYPE RAW)`
+
+  > Validate/normalize RAW for KEY of TYPE.  Signals a clear compile error on a  >    malformed value; returns the normalized value (sizes in bytes, lists unquoted).
+
+
+---
+### DEFUN `REGISTER-HARDWARE-PROFILE`
+- **Args**: `(NAME PROPLIST)`
+
+  > Endeavor 130 Phase 0: parse, validate, and register a hardware profile.  >    Unknown key -> error; malformed value -> error; duplicate key within one  >    profile -> error; missing keys are fine (a partial profile is valid).  Keyed in  >    *hardware-profiles* by the upcased profile name (package-agnostic).
+
+
+---
+### DEFUN `ACTIVE-HARDWARE-PROFILE`
+
+  > Resolve the requested hardware profile (--hardware-profile) to its normalized  >    plist, or NIL if none was requested.  Errors if a profile was requested but is  >    not registered (a typo'd flag, or a name no def-hardware-profile defines).
+
+
+---
+### DEFUN `%HP-LOCAL-SIZE-DIMS`
+- **Args**: `(LOCAL-SIZE-DECL)`
+
+  > Extract concrete (X Y Z) workgroup dims from a (local-size :set-to <val>) decl,  >    normalizing a scalar or short list to three dims.  Returns NIL when the local  >    size is not compile-time-known (:derive-from / :strategy / absent), in which  >    case profile bounds can't be checked.
+
+
+---
+### DEFUN `%HP-CHECK-WORKGROUP-BOUNDS`
+- **Args**: `(KERNEL-NAME LOCAL-SIZE-DECL PROFILE)`
+
+  > Endeavor 130 Phase 1: when PROFILE is active and the local size is  >    compile-time-known, error if the workgroup exceeds the profile's  >    :max-total-threads-per-block or any :max-work-group-dims axis.  Missing keys are  >    skipped (a partial profile simply checks less).
+
+
+---
+### DEFUN `%HP-SCRATCH-ELEM-BYTES`
+- **Args**: `(ELEM-TYPE)`
+
+  > Bytes per scratch element, matching the hoist's rule (compute-total-shared-bytes):  >    64-bit element types -> 8, everything else -> 4 (the width the launcher reserves).
+
+
+---
+### DEFUN `%HP-KERNEL-SHARED-BYTES`
+- **Args**: `(KERNEL-NAME)`
+
+  > Total local (shared) memory bytes a kernel reserves, summed from its implicit  >    scratch signature (matching the hoist's `(* (expt size-expr rank) elem-bytes)`).  >    Returns the byte total, or NIL if any local scratch size is not a compile-time  >    integer (then the bound can't be checked and is skipped).
+
+
+---
+### DEFUN `%HP-CHECK-SHARED-MEMORY`
+- **Args**: `(KERNEL-NAME PROFILE)`
+
+  > Endeavor 130 Phase 2: error if KERNEL-NAME's local/shared memory exceeds the  >    profile's :max-shared-memory-per-block.  Skipped if the profile omits that key or  >    the total isn't compile-time-known.
+
+
+---
+### DEFUN `%HP-CHECK-ALL-SHARED-MEMORY`
+
+  > Endeavor 130 Phase 2: after a module compiles (all signatures, incl. implicit  >    scratch, finalized), validate every kernel's local memory against the active  >    hardware profile.
+
+
+---
+### DEFUN `%HP-SERIALIZE-ACTIVE-PROFILE`
+- **Args**: `(STREAM)`
+
+  > Emit the active hardware profile (the one --hardware-profile / a topology named)  >    as a top-level metacrisp form, keeping its name.  Values are the normalized  >    (already-parsed) form: sizes in bytes, lists resolved.  Emits nothing when no  >    profile is active.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-cuda\main.lisp`
 
 ### DEFUN `MAIN`
@@ -3613,9 +3722,9 @@ Generated on 2026-07-03T15:29:01.780737Z
 ---
 ### DEFUN `EMIT-MAIN`
 - **Args**: `(STREAM KERNEL-NAME PTX-PATH DECLARED-SIG ALIASES RECORDS
-              &OPTIONAL DISPATCH-INFO)`
+              &OPTIONAL DISPATCH-INFO COMPUTE-UNITS)`
 
-  > Generate C++ main function for CUDA Driver API launcher.
+  > Generate C++ main function for CUDA Driver API launcher.  > COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units and  > overrides the runtime SM-count query in the grid-size heuristic.
 
 
 ---
@@ -3713,9 +3822,9 @@ Generated on 2026-07-03T15:29:01.780737Z
 
 ---
 ### DEFUN `EMIT-LAUNCH`
-- **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES)`
+- **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS)`
 
-  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
+  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).  >    COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units;  >    the :strided strategy then uses that fixed SM count instead of querying the  >    device (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT), so a shrunken profile takes  >    effect host-side.
 
 
 ---
@@ -4119,6 +4228,13 @@ Generated on 2026-07-03T15:29:01.780737Z
 - **Args**: `(METACRISP-DATA)`
 
   > Extract def-record definitions from metacrisp data.
+
+
+---
+### DEFUN `METACRISP-HARDWARE-PROFILE`
+- **Args**: `(METACRISP-DATA)`
+
+  > Extract the active hardware profile plist (or NIL) from metacrisp data.  > The plist keeps its :name plus every registered key, e.g.  >   (:name "GPU-A" :COMPUTE-UNITS 132 ...).
 
 
 ---
@@ -4544,6 +4660,13 @@ Generated on 2026-07-03T15:29:01.780737Z
 - **Args**: `(NAME TYPE-SPEC)`
 
   > Defines a type alias.  >    Example: (def-type T int)
+
+
+---
+### DEFMACRO `DEF-HARDWARE-PROFILE`
+- **Args**: `(NAME &REST PROPLIST)`
+
+  > Endeavor 130: define a named hardware profile — a property list describing a  >    target's capabilities and limits (SIMD width, register file, shared memory,  >    work-group bounds, MMA shapes, ...) that the compiler uses for validation and,  >    later, optimization.  See docs/topology.md.  Keys and values are validated at  >    compile-toplevel time; unknown keys and malformed values are compile errors.
 
 
 ---

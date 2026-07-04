@@ -17,7 +17,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%ARRAY-ELEMENT-TYPE TYPE)  hoist-cuda/main.lisp
 - - - - (%ARRAY-SIZE TYPE)  hoist-cuda/main.lisp
 - - - (EMIT-HELPERS STREAM)  hoist-cuda/main.lisp
-- - - (EMIT-MAIN STREAM KERNEL-NAME PTX-PATH DECLARED-SIG ALIASES RECORDS &OPTIONAL DISPATCH-INFO)  hoist-cuda/main.lisp
+- - - (EMIT-MAIN STREAM KERNEL-NAME PTX-PATH DECLARED-SIG ALIASES RECORDS &OPTIONAL DISPATCH-INFO COMPUTE-UNITS)  hoist-cuda/main.lisp
 - - - - (EMIT-CUDA-INIT STREAM)  hoist-cuda/main.lisp
 - - - - (EMIT-MODULE-LOADING STREAM PTX-PATH)  hoist-cuda/main.lisp
 - - - - (EMIT-KERNEL-ARGS STREAM DECLARED-SIG ALIASES RECORDS DISPATCH-INFO)  hoist-cuda/main.lisp
@@ -67,7 +67,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (TENSOR-TYPE-P PARAM-TYPE)  hoist-cuda/main.lisp [See above]
 - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - (%ARRAY-SIZE TYPE)  hoist-cuda/main.lisp [See above]
-- - - - (EMIT-LAUNCH STREAM DISPATCH-INFO SHARED-BYTES)  hoist-cuda/main.lisp
+- - - - (EMIT-LAUNCH STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS)  hoist-cuda/main.lisp
 - - - - - (%DERIVE-FROM-IS-TENSOR-P RAW)  hoist-cuda/main.lisp
 - - - - - (%NORMALIZE-DERIVE-FROM RAW)  hoist-cuda/main.lisp
 - - - - - (%TENSOR-LENGTH-CPP-VAR SYM)  hoist-cuda/main.lisp
@@ -78,7 +78,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                       NIL) (MATH-PRECISION
                                                                             IEEE) (FORCE-MATH-PRECISION
                                                                                    NIL) (DENORMAL-HANDLING
-                                                                                         PRESERVE))  compiler.lisp
+                                                                                         PRESERVE) (HARDWARE-PROFILE
+                                                                                                    NIL))  compiler.lisp
 - - - - (INITIALIZE-CRISP-TYPES)  types/registry.lisp
 - - - - (INITIALIZE-TYPE-HIERARCHY)  types/hierarchy.lisp
 - - - - (INITIALIZE-EXPRESSION-ANALYZERS)  analysis/core.lisp
@@ -551,6 +552,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp
 - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - (%VALIDATE-GRID-FUNCTION-RETURN-TYPE RETURN-TYPES)  environment.lisp
+- - - - - - - - - (%HP-CHECK-WORKGROUP-BOUNDS KERNEL-NAME LOCAL-SIZE-DECL PROFILE)  hardware-profile.lisp
+- - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp
+- - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp
 - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
 - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp
 - - - - - - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
@@ -728,6 +732,25 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (CHECK-FOR-RECURSION-CYCLES)  analysis/core.lisp
 - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp
 - - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp [RECURSION]
+- - - - (%HP-CHECK-ALL-SHARED-MEMORY)  hardware-profile.lisp
+- - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - (%HP-CHECK-SHARED-MEMORY KERNEL-NAME PROFILE)  hardware-profile.lisp
+- - - - - - (%HP-KERNEL-SHARED-BYTES KERNEL-NAME)  hardware-profile.lisp
+- - - - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp
+- - - - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp
+- - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp
+- - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp
+- - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp
+- - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
+- - - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [RECURSION]
+- - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
+- - - - - - - (%HP-SCRATCH-ELEM-BYTES ELEM-TYPE)  hardware-profile.lisp
 - - - (LINK-FOREIGN-BITCODE MODULE BC-FILES) :CRISP.MAIN  main.lisp
 - - - (COMPILE-TO-SPIRV MODULE OUTPUT-PATH &KEY DEBUG-P)  compiler.lisp
 - - - - (%REMOVE-DEAD-ARRAY-RETURNING-FUNCTIONS MODULE)  compiler.lisp
@@ -769,7 +792,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%BWD-RESOLVE-TYPE TYPE-SPEC &OPTIONAL NEW-ACCESS)  metadata.lisp
 - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - (SERIALIZE-ALIASES STREAM ALIASES-HASH)  metadata.lisp
-- - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
+- - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
 - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp
 - - - - (SERIALIZE-STRUCTS STREAM STRUCTS-HASH)  metadata.lisp
 - - - - - (%SERIALIZE-RECORDS STREAM STRUCTS-HASH)  metadata.lisp
@@ -780,32 +803,21 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp [See above]
 - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
 - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - (%HP-SERIALIZE-ACTIVE-PROFILE STREAM)  hardware-profile.lisp
+- - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - - - (SERIALIZE-KERNELS OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)  metadata.lisp
 - - - - - (GENERATE-PHYSICAL-SIGNATURE SIG-OR-PARAMS)  metadata.lisp
 - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
-- - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp
-- - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp
-- - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
-- - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp
-- - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
-- - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [RECURSION]
-- - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp [See above]
+- - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [See above]
 - - - - - (GENERATE-DECLARED-SIGNATURE SIG &OPTIONAL DECLARED-PARAMS)  metadata.lisp
-- - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp
-- - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
-- - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp [See above]
-- - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [See above]
+- - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp [See above]
 - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
 - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp
-- - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp [See above]
-- - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp [See above]
 - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp [See above]
 - - - (INVOKE-HOISTER HOIST-ID METACRISP-FILE) :CRISP.MAIN  main.lisp
 - - - - (GET-HOISTER-BINARY-PATH HOIST-ID) :CRISP.MAIN  main.lisp
@@ -1611,6 +1623,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (DEF-GRID-FUNCTION NAME PARAMS &REST BODY)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
+
+- (DEF-HARDWARE-PROFILE NAME &REST PROPLIST)  macros.lisp
+- - (REGISTER-HARDWARE-PROFILE NAME PROPLIST)  hardware-profile.lisp
+- - - (%HP-VALIDATE-VALUE PROFILE-NAME KEY TYPE RAW)  hardware-profile.lisp
+- - - - (%HP-PARSE-SIZE V)  hardware-profile.lisp
+- - - - (%HP-UNQUOTE V)  hardware-profile.lisp
+- - - - (%HP-3-POS-INTS-P X)  hardware-profile.lisp
 
 - (DEF-KERNEL NAME PARAMS &REST BODY)  macros.lisp
 - - (PARSE-KERNEL-SIGNATURE NAME PARAMS BODY)  macros.lisp

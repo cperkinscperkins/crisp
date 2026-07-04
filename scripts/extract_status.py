@@ -4,7 +4,7 @@ from pathlib import Path
 
 def main():
     md_file = Path('docs/ideal_001.md')
-    csv_file = Path('put_temp_files_here/ideal_001_status.csv')
+    csv_file = Path('docs/ideal_001_status.csv')
     
     with open(md_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()

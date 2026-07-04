@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=tiny]: FAIL "local/shared memory"
+;; SKIP-WITH[--differentiate]: "SLM bound check is AD-independent; scratch-copy kernel is not the AD focus"
+;;
+;; Endeavor 130 Phase 2: shared/local memory (SLM) bounds vs the active profile.
+;; A make-scratch-vector of 256 floats reserves 256*4 = 1024 bytes of local memory.
+(def-type in-v  (vector float :address-space :global :align :compact))
+(def-type out-v (vector float :address-space :global :align :compact))
+(def-hardware-profile tiny :max-shared-memory-per-block 512)
+(def-kernel sk (A &out C)
+  (declare #'(in-v &out out-v => nil))
+  (let ((tile (make-scratch-vector float 256)))
+    (set! (~ tile (get-local-id 0)) (~ A (get-global-id 0)))
+    (sync-workgroup)
+    (set! (~ C (get-global-id 0)) (~ tile (get-local-id 0)))))

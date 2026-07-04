@@ -6,7 +6,8 @@
     (let ((aliases '())
           (structs '())
           (records '())
-          (kernels '()))
+          (kernels '())
+          (hardware-profile nil))
       ;; Read all forms from the file
       (loop for form = (read stream nil :eof)
             until (eq form :eof)
@@ -18,9 +19,14 @@
                 ((and (consp form) (eq (first form) :records))
                   (setf records (or (rest form) '())))
                 ((and (consp form) (eq (first form) :kernels))
-                  (setf kernels (or (rest form) '())))))
+                  (setf kernels (or (rest form) '())))
+                ;; Endeavor 130 Phase 5: the active hardware profile (only the
+                ;; selected one) travels in as (:hardware-profile (:name "X" ...)).
+                ((and (consp form) (eq (first form) :hardware-profile))
+                  (setf hardware-profile (second form)))))
       ;; Return as plist for easy access
-      (list :aliases aliases :structs structs :records records :kernels kernels))))
+      (list :aliases aliases :structs structs :records records :kernels kernels
+            :hardware-profile hardware-profile))))
 
 (defun metacrisp-kernels (metacrisp-data)
   "Extract kernels list from metacrisp data."
@@ -37,3 +43,9 @@
 (defun metacrisp-records (metacrisp-data)
   "Extract def-record definitions from metacrisp data."
   (getf metacrisp-data :records))
+
+(defun metacrisp-hardware-profile (metacrisp-data)
+  "Extract the active hardware profile plist (or NIL) from metacrisp data.
+The plist keeps its :name plus every registered key, e.g.
+  (:name \"GPU-A\" :COMPUTE-UNITS 132 ...)."
+  (getf metacrisp-data :hardware-profile))

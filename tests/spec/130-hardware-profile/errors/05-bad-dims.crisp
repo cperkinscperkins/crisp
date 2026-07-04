@@ -1,0 +1,7 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "list of 3 positive integers"
+;;
+;; Endeavor 130 Phase 0 negative.
+(def-hardware-profile bad :max-work-group-dims '(1024 1024))
+(def-type out-c (cell float :address-space :global))
+(def-kernel k (&out res) (declare #'(&out out-c => nil)) (set! (~ res) 0.0))

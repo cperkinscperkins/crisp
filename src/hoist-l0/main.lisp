@@ -477,6 +477,16 @@
                            ((numberp occupancy) (float occupancy))
                            (t 1.0))))
           (format stream "    // Strategy: :strided — max occupancy~%")
+          ;; Endeavor 130 Phase 5 (DEFERRED for L0): a CUDA hardware profile's
+          ;; :compute-units overrides the device SM query (see hoist-cuda emit-launch,
+          ;; `int _numSMs = <N>;`).  The active profile ALREADY travels into the
+          ;; metacrisp (metacrisp-hardware-profile), so the wiring is ready here too.
+          ;; What's undecided is the mapping: CUDA :compute-units == SM count (1:1 with
+          ;; _numSMs), but Intel has no single "compute unit" — the occupancy below is
+          ;; numSubslices × numEUsPerSubslice × numThreadsPerEU.  Whether :compute-units
+          ;; should override numSubslices, map to Xe-cores, or use a distinct Intel key
+          ;; is left until we actually benchmark on BMG (per user, 2026-07-04).  Until
+          ;; then L0 keeps the runtime zeDeviceGetComputeProperties query unconditionally.
           (format stream "    ze_device_compute_properties_t _computeProps = { ZE_STRUCTURE_TYPE_DEVICE_COMPUTE_PROPERTIES };~%")
           (format stream "    zeDeviceGetComputeProperties(device, &_computeProps);~%")
           (format stream "    uint32_t _hw_threads = _computeProps.numSubslices * _computeProps.numEUsPerSubslice * _computeProps.numThreadsPerEU;~%")

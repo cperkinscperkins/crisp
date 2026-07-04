@@ -1178,6 +1178,15 @@ processes float inputs — integer tensor inputs contribute zero gradient."
      (setf (gethash ',name crisp.compiler::*crisp-template-aliases*) (cons nil ',type-spec))
      (setf (gethash ',name crisp.compiler::*crisp-type-aliases*) ',type-spec)))
 
+(defmacro def-hardware-profile (name &rest proplist)
+  "Endeavor 130: define a named hardware profile — a property list describing a
+   target's capabilities and limits (SIMD width, register file, shared memory,
+   work-group bounds, MMA shapes, ...) that the compiler uses for validation and,
+   later, optimization.  See docs/topology.md.  Keys and values are validated at
+   compile-toplevel time; unknown keys and malformed values are compile errors."
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (crisp.compiler::register-hardware-profile ',name ',proplist)))
+
 (defun %parse-ct-literal (value)
   "If VALUE is a symbol whose name looks like a typed numeric literal (e.g. 2.0F,
    100UC), parse and return the underlying number.  Otherwise return VALUE unchanged."

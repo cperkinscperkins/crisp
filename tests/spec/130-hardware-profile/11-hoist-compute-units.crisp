@@ -1,0 +1,22 @@
+;; TEST-HOIST[CUDA]: validate-cuda-hw-profile-grid
+;; HOIST-HARDWARE-PROFILE: tiny-gpu
+;; STRATEGY-EXPECT: int _numSMs = 8;
+;; SKIP-WITH[--differentiate]: "forward-only hoist grid-size test"
+;;
+;; Endeavor 130 Phase 5 — HOISTING ENTERS HERE.
+;; An active hardware profile's :compute-units OVERRIDES the runtime
+;; CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT query in the CUDA :strided launcher,
+;; so a deliberately shrunken profile actually takes effect host-side.  The
+;; validator asserts the literal `int _numSMs = 8;` appears AND that the device
+;; query is gone.
+
+(def-hardware-profile tiny-gpu :compute-units 8)
+
+(def-type in-vec-t   (vector float :address-space :global :align :compact))
+(def-type out-cell-t (cell float :address-space :global))
+
+(def-kernel hw_profile_grid_test (input &out result)
+  (declare #'(in-vec-t &out out-cell-t => nil))
+  (declare (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (set! (~ result) 0.0f))

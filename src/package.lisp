@@ -242,6 +242,7 @@
    #:marshall-matrix
    #:%make-ct-array
    #:def-type ;; <--- NEW
+   #:def-hardware-profile ;; Endeavor 130
    #:with-template-type ;; <--- NEW
 
    ;; Structs
@@ -438,6 +439,8 @@
                 #:declare
                 #:with-template-type
                 #:def-type ;; <--- NEW
+                #:def-hardware-profile ;; Endeavor 130
+   #:def-hardware-profile ;; Endeavor 130
                 #:return-type
                 #:type
                 #:make-scratch-cell
@@ -592,6 +595,7 @@
    #:%make-ct-array
    #:def-orchestration #:def-qint #:def-microfloat-block
    #:def-type ;; <--- NEW
+   #:def-hardware-profile ;; Endeavor 130
    #:with-template-type ;; <--- NEW
 
    #:def-type-alias #:def-struct #:def-derived-type #:def-record #:with-struct-accessors #:def-setter

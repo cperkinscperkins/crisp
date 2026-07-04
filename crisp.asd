@@ -32,6 +32,7 @@
                                              (:file "src/types/brand")
                                              (:file "src/structs") ; 5. Struct Layout
                                              (:file "src/compiler") ; 6. Uses FFI, defines compiler
+                                             (:file "src/hardware-profile") ; Endeavor 130 — def-hardware-profile + consumers
                                              (:file "src/enums")
                                              (:file "src/environment")
                                              (:file "src/type-checker")

@@ -10,6 +10,7 @@
    #:metacrisp-aliases
    #:metacrisp-structs
    #:metacrisp-records
+   #:metacrisp-hardware-profile
 
    ;; Code generation base
    #:generate-preamble

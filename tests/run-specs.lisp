@@ -87,6 +87,10 @@
 (defvar *compile-denormal-handling* nil
   "Endeavor 126: effective denormal mode (:ftz / :preserve / nil) for a precision
    TEST-WITH run; forwarded to initialize-compiler by compile-crisp-file-to-ir-string.")
+(defvar *compile-hardware-profile* nil
+  "Endeavor 130: hardware-profile name (string / nil) to SELECT via --hardware-profile
+   during a hoist run (HOIST-HARDWARE-PROFILE directive), so the metacrisp carries the
+   active profile and the CUDA launcher uses its :compute-units for grid sizing.")
 (defvar *test-filter* nil)
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
@@ -452,6 +456,17 @@
         (unless (run-spec-expect-stderr-pass file flags substr)
           (setf all-passed nil))))
 
+    ;; 2.6 Compile-With Runs (COMPILE-WITH[flags]: PASS | FAIL "substr") -- Endeavor 130.
+    ;; Compile via the binary with FLAGS active and assert the outcome (exit 0, or
+    ;; exit!=0 + substring).  The flag-carrying test path for --hardware-profile
+    ;; validation (bounds / not-found), which the negative runner can't inject.
+    (dolist (run (parse-compile-with directives))
+      (destructuring-bind (flags expect substr) run
+        (format t "~&Running Spec: ~a (Compile-With ~a : ~a~@[ ~s~])... " (pathname-name file) flags expect substr)
+        (finish-output)
+        (unless (run-spec-compile-with-pass file flags expect substr)
+          (setf all-passed nil))))
+
     ;; 3. Hoist Tests (TEST-HOIST[backend]: validator)
     (let ((hoist-directives (parse-test-hoist directives)))
       (if (and hoist-directives *compile-differentiate*)
@@ -465,6 +480,8 @@
                                                       *compile-denormal-handling*))
                      (*compile-math-precision* (or (parse-hoist-precision directives)
                                                    *compile-math-precision*))
+                     (*compile-hardware-profile* (or (parse-hoist-hardware-profile directives)
+                                                     *compile-hardware-profile*))
                      (hoist-result (run-spec-with-hoist file backend)))
                 (unless (eq hoist-result :skipped)
                   (let ((cpp-files hoist-result))
@@ -614,6 +631,41 @@
          (format *error-output* "FAIL (stderr missing ~s)~%--- got stderr ---~%~a~%"
                  expected-substring error-output)
          nil)))))
+
+(defun run-spec-compile-with-pass (file flags expect substring)
+  "Endeavor 130: compile FILE through the binary with FLAGS active and assert the
+   outcome.  EXPECT is :pass (require exit 0) or :fail (require exit != 0 AND
+   SUBSTRING on stderr).  This is the flag-carrying test path for hardware-profile
+   validation — the negative runner can't inject a --hardware-profile flag, and the
+   check fires during analysis (so no --ir-target is needed, hence no artifact)."
+  (let* ((bin (get-binary-path))
+         (args (append flags
+                       (list (format nil "--log-level=~a" cl-user::*log-level*)
+                             (uiop:native-namestring file)))))
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string :error-output :string :ignore-error-status t)
+      (declare (ignore output))
+      (ecase expect
+        (:pass
+         (if (zerop exit-code)
+             (progn (format t "PASS (compiled)~%") t)
+             (progn (format *error-output* "FAIL (expected success with ~{~a~^ ~}, exit ~a)~%~a~%"
+                            flags exit-code error-output)
+                    nil)))
+        (:fail
+         (cond
+          ((zerop exit-code)
+            (format *error-output* "FAIL (expected failure with ~{~a~^ ~} + ~s, but compile SUCCEEDED)~%"
+                    flags substring)
+            nil)
+          ((search substring error-output)
+            (format t "PASS (failed with ~s)~%" substring)
+            t)
+          (t
+            (format *error-output* "FAIL (failed but stderr missing ~s)~%--- got stderr ---~%~a~%"
+                    substring error-output)
+            nil)))))))
 
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active.
@@ -1164,6 +1216,11 @@
                        (when *compile-math-precision*
                          (list (format nil "--math-precision=~a"
                                        (string-downcase (symbol-name *compile-math-precision*)))))
+                       ;; Endeavor 130: forward the SELECTED hardware profile
+                       ;; (HOIST-HARDWARE-PROFILE directive) so the metacrisp carries
+                       ;; it and the launcher uses its :compute-units for grid sizing.
+                       (when *compile-hardware-profile*
+                         (list (format nil "--hardware-profile=~a" *compile-hardware-profile*)))
                        (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
@@ -1920,6 +1977,32 @@
                             (return-from parse-skip-with t))))))))
   nil)
 
+(defun parse-compile-with (directive-lines)
+  "Parses COMPILE-WITH[--flag ...]: PASS | FAIL \"substring\" directives (Endeavor 130).
+   Returns a list of (flags expect substring): compile the spec through the binary with
+   FLAGS active and require exit 0 (:pass) or exit != 0 + SUBSTRING on stderr (:fail).
+   The flag-carrying test path for hardware-profile validation."
+  (let ((runs '()))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "COMPILE-WITH[")
+          (let* ((end-bracket (position #\] trimmed))
+                 (content (when end-bracket (subseq trimmed (length "COMPILE-WITH[") end-bracket)))
+                 (colon (position #\: trimmed :start (or end-bracket 0)))
+                 (rest (when colon (string-trim '(#\Space #\Tab #\Return #\Newline)
+                                                (subseq trimmed (1+ colon))))))
+            (when (and content rest (> (length content) 0) (>= (length rest) 4))
+              (let ((flags (remove "" (uiop:split-string content :separator " ") :test #'string=)))
+                (cond
+                  ((string-equal (subseq rest 0 4) "PASS")
+                   (push (list flags :pass nil) runs))
+                  ((string-equal (subseq rest 0 4) "FAIL")
+                   (let* ((q1 (position #\" rest))
+                          (q2 (when q1 (position #\" rest :from-end t))))
+                     (when (and q1 q2 (> q2 q1))
+                       (push (list flags :fail (subseq rest (1+ q1) q2)) runs)))))))))))
+    (nreverse runs)))
+
 (defun parse-test-with (directive-lines)
   "Parses TEST-WITH[--flag1 --flag2] : validator-name directives.
    Returns a list of runs, where each run is (flags validator-fn)."
@@ -2002,6 +2085,16 @@
         (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 16))))
           (cond ((string-equal v "fast") (return :fast))
                 ((string-equal v "ieee") (return :ieee))))))))
+
+(defun parse-hoist-hardware-profile (directive-lines)
+  "Parse HOIST-HARDWARE-PROFILE: <name> (Endeavor 130). Returns the profile name
+   string or nil.  Forwarded as --hardware-profile=<name> to the hoist compile so
+   the metacrisp carries the active profile and the launcher uses its :compute-units."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "HOIST-HARDWARE-PROFILE:")
+        (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 23))))
+          (when (plusp (length v)) (return v)))))))
 
 (defun parse-hoist-expect (directive-lines)
   "Parse HOIST-EXPECT: <string> lines.
@@ -2282,6 +2375,34 @@
     passed))
 
     
+
+(defun validate-cuda-hw-profile-grid (crisp-file cu-files)
+  "Endeavor 130 Phase 5: validate that an active hardware profile's :compute-units
+   OVERRIDES the runtime SM-count query in the :strided grid-size heuristic.
+   Honors STRATEGY-EXPECT (positive substrings, e.g. the exact `int _numSMs = 8;`)
+   AND asserts the device query (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT) is ABSENT."
+  (when (null cu-files)
+    (format t "FAIL: No .cu files to validate~%")
+    (return-from validate-cuda-hw-profile-grid nil))
+  (let* ((directives   (extract-test-directives crisp-file))
+         (expectations (parse-strategy-expect directives "CUDA"))
+         (passed t))
+    (dolist (cu cu-files)
+      (let ((content (uiop:read-file-string cu)))
+        ;; Positive expectations (the literal override assignment).
+        (dolist (exp expectations)
+          (unless (search exp content)
+            (format t "FAIL: Expected string not found in ~a:~%  '~a'~%"
+                    (file-namestring cu) exp)
+            (setf passed nil)))
+        ;; Negative: the device query must be gone when the profile overrides.
+        (when (search "CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT" content)
+          (format t "FAIL: ~a still queries the device SM count; profile :compute-units should override it.~%"
+                  (file-namestring cu))
+          (setf passed nil))))
+    (when passed
+      (format t "PASS: hardware-profile :compute-units overrides the device SM query.~%"))
+    passed))
 
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))
