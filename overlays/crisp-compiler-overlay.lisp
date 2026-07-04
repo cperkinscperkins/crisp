@@ -14,10 +14,9 @@
 ;;;  src/hardware-profile.lisp.)
 ;;; ===================================================================
 
-;; src/types/registry.lisp
-(defvar *hardware-profiles* (make-hash-table :test 'equal)
-  "Endeavor 130: upcased profile-name string -> normalized plist of the target's
-   capabilities/limits.  Populated by def-hardware-profile / register-hardware-profile.")
+;; NOTE (Phase 1): *hardware-profiles* and *requested-hardware-profile* defvars now
+;; live in src/compiler.lisp (near the precision vars), because initialize-compiler
+;; references them.
 
 ;; src/hardware-profile.lisp
 (defparameter *hardware-profile-schema*
@@ -122,3 +121,59 @@
         (setf (getf normalized key) (%hp-validate-value name key (cdr entry) val))))
     (setf (gethash (string-upcase (symbol-name name)) *hardware-profiles*) normalized)
     name))
+
+;;; ===================================================================
+;;; Endeavor 130 (hardware profiles) — Phase 1: selection + first
+;;; consumer (workgroup / local-size bounds).
+;;; (For the eventual merge: these belong in src/hardware-profile.lisp.)
+;;; ===================================================================
+
+;; src/hardware-profile.lisp
+(defun active-hardware-profile ()
+  "Resolve the requested hardware profile (--hardware-profile) to its normalized
+   plist, or NIL if none was requested.  Errors if a profile was requested but is
+   not registered (a typo'd flag, or a name no def-hardware-profile defines)."
+  (when *requested-hardware-profile*
+    (let ((p (gethash (string-upcase *requested-hardware-profile*) *hardware-profiles*)))
+      (unless p
+        (error "Hardware profile ~s not found.  Define it with def-hardware-profile (in a .crisp file passed to the compiler).  Known profiles: ~{~a~^ ~}."
+               *requested-hardware-profile*
+               (loop for k being the hash-keys of *hardware-profiles* collect k)))
+      p)))
+
+;; src/hardware-profile.lisp
+(defun %hp-local-size-dims (local-size-decl)
+  "Extract concrete (X Y Z) workgroup dims from a (local-size :set-to <val>) decl,
+   normalizing a scalar or short list to three dims.  Returns NIL when the local
+   size is not compile-time-known (:derive-from / :strategy / absent), in which
+   case profile bounds can't be checked."
+  (when (consp local-size-decl)
+    (let ((v (getf (cdr local-size-decl) :set-to)))
+      (cond
+        ((and (integerp v) (plusp v)) (list v 1 1))
+        ((and (listp v) v (<= 1 (length v) 3)
+              (every (lambda (x) (and (integerp x) (plusp x))) v))
+         (append v (make-list (- 3 (length v)) :initial-element 1)))
+        (t nil)))))
+
+;; src/hardware-profile.lisp
+(defun %hp-check-workgroup-bounds (kernel-name local-size-decl profile)
+  "Endeavor 130 Phase 1: when PROFILE is active and the local size is
+   compile-time-known, error if the workgroup exceeds the profile's
+   :max-total-threads-per-block or any :max-work-group-dims axis.  Missing keys are
+   skipped (a partial profile simply checks less)."
+  (when profile
+    (let ((dims (%hp-local-size-dims local-size-decl)))
+      (when dims
+        (let ((max-total (getf profile :max-total-threads-per-block))
+              (max-dims   (getf profile :max-work-group-dims)))
+          (when max-total
+            (let ((total (reduce #'* dims)))
+              (when (> total max-total)
+                (error "Kernel ~a: local-size ~a = ~a threads exceeds the hardware profile's :max-total-threads-per-block (~a)."
+                       kernel-name dims total max-total))))
+          (when max-dims
+            (loop for d in dims for m in max-dims for axis from 0
+                  when (> d m)
+                  do (error "Kernel ~a: local-size axis ~a (~a) exceeds the hardware profile's :max-work-group-dims axis ~a (~a)."
+                            kernel-name axis d axis m))))))))

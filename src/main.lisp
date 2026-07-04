@@ -104,6 +104,12 @@ Supports one or more .crisp source files: the last file is treated as the primar
                   (t (format *error-output* "ERROR: unknown denormal handling '~a' (expected ftz|preserve).~%" v)
                      (uiop:quit 1)))))
 
+         ;; Endeavor 130: hardware profile selection — a profile NAME, resolved
+         ;; lazily during compilation against registered def-hardware-profile forms.
+         (hw-profile-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--hardware-profile=" f)) flags))
+         (hardware-profile-name (when hw-profile-flag
+                                  (subseq hw-profile-flag (length "--hardware-profile="))))
+
          ;; Target Parsing
          (target-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--ir-target=" f)) flags))
          (targets (mapcar (lambda (f)
@@ -148,7 +154,8 @@ Supports one or more .crisp source files: the last file is treated as the primar
                                         :differentiate differentiate-p
                                         :math-precision math-precision-mode
                                         :force-math-precision force-precision-mode
-                                        :denormal-handling denormal-handling)
+                                        :denormal-handling denormal-handling
+                                        :hardware-profile hardware-profile-name)
 
     ;; Require at least one source file; support multiple files.
     (unless (>= (length source-files) 1)

@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=tiny]: PASS
+;;
+;; Endeavor 130 Phase 1: workgroup (local-size) bounds vs the active profile.
+(def-hardware-profile tiny :simd-width 32)
+(def-type out-c (cell float :address-space :global))
+(def-kernel k (&out res)
+  (declare #'(&out out-c => nil)
+           (local-size :set-to 999999))
+  (set! (~ res) 0.0))

@@ -1441,7 +1441,12 @@ in single-pass mode."
                             (when local-size-decl  (list :local-size  local-size-decl))
                             (when num-groups-decl  (list :num-groups  num-groups-decl)))))
               (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
-              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))))
+              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
+          ;; Endeavor 130 Phase 1: validate the workgroup (local-size) bounds against
+          ;; the active hardware profile, when one is selected and local-size is
+          ;; compile-time-known.  active-hardware-profile also errors here if the
+          ;; --hardware-profile flag names a profile that isn't registered.
+          (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
 
       (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
 

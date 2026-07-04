@@ -452,6 +452,17 @@
         (unless (run-spec-expect-stderr-pass file flags substr)
           (setf all-passed nil))))
 
+    ;; 2.6 Compile-With Runs (COMPILE-WITH[flags]: PASS | FAIL "substr") -- Endeavor 130.
+    ;; Compile via the binary with FLAGS active and assert the outcome (exit 0, or
+    ;; exit!=0 + substring).  The flag-carrying test path for --hardware-profile
+    ;; validation (bounds / not-found), which the negative runner can't inject.
+    (dolist (run (parse-compile-with directives))
+      (destructuring-bind (flags expect substr) run
+        (format t "~&Running Spec: ~a (Compile-With ~a : ~a~@[ ~s~])... " (pathname-name file) flags expect substr)
+        (finish-output)
+        (unless (run-spec-compile-with-pass file flags expect substr)
+          (setf all-passed nil))))
+
     ;; 3. Hoist Tests (TEST-HOIST[backend]: validator)
     (let ((hoist-directives (parse-test-hoist directives)))
       (if (and hoist-directives *compile-differentiate*)
@@ -614,6 +625,41 @@
          (format *error-output* "FAIL (stderr missing ~s)~%--- got stderr ---~%~a~%"
                  expected-substring error-output)
          nil)))))
+
+(defun run-spec-compile-with-pass (file flags expect substring)
+  "Endeavor 130: compile FILE through the binary with FLAGS active and assert the
+   outcome.  EXPECT is :pass (require exit 0) or :fail (require exit != 0 AND
+   SUBSTRING on stderr).  This is the flag-carrying test path for hardware-profile
+   validation — the negative runner can't inject a --hardware-profile flag, and the
+   check fires during analysis (so no --ir-target is needed, hence no artifact)."
+  (let* ((bin (get-binary-path))
+         (args (append flags
+                       (list (format nil "--log-level=~a" cl-user::*log-level*)
+                             (uiop:native-namestring file)))))
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string :error-output :string :ignore-error-status t)
+      (declare (ignore output))
+      (ecase expect
+        (:pass
+         (if (zerop exit-code)
+             (progn (format t "PASS (compiled)~%") t)
+             (progn (format *error-output* "FAIL (expected success with ~{~a~^ ~}, exit ~a)~%~a~%"
+                            flags exit-code error-output)
+                    nil)))
+        (:fail
+         (cond
+          ((zerop exit-code)
+            (format *error-output* "FAIL (expected failure with ~{~a~^ ~} + ~s, but compile SUCCEEDED)~%"
+                    flags substring)
+            nil)
+          ((search substring error-output)
+            (format t "PASS (failed with ~s)~%" substring)
+            t)
+          (t
+            (format *error-output* "FAIL (failed but stderr missing ~s)~%--- got stderr ---~%~a~%"
+                    substring error-output)
+            nil)))))))
 
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active.
@@ -1919,6 +1965,32 @@
                       (when active
                             (return-from parse-skip-with t))))))))
   nil)
+
+(defun parse-compile-with (directive-lines)
+  "Parses COMPILE-WITH[--flag ...]: PASS | FAIL \"substring\" directives (Endeavor 130).
+   Returns a list of (flags expect substring): compile the spec through the binary with
+   FLAGS active and require exit 0 (:pass) or exit != 0 + SUBSTRING on stderr (:fail).
+   The flag-carrying test path for hardware-profile validation."
+  (let ((runs '()))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "COMPILE-WITH[")
+          (let* ((end-bracket (position #\] trimmed))
+                 (content (when end-bracket (subseq trimmed (length "COMPILE-WITH[") end-bracket)))
+                 (colon (position #\: trimmed :start (or end-bracket 0)))
+                 (rest (when colon (string-trim '(#\Space #\Tab #\Return #\Newline)
+                                                (subseq trimmed (1+ colon))))))
+            (when (and content rest (> (length content) 0) (>= (length rest) 4))
+              (let ((flags (remove "" (uiop:split-string content :separator " ") :test #'string=)))
+                (cond
+                  ((string-equal (subseq rest 0 4) "PASS")
+                   (push (list flags :pass nil) runs))
+                  ((string-equal (subseq rest 0 4) "FAIL")
+                   (let* ((q1 (position #\" rest))
+                          (q2 (when q1 (position #\" rest :from-end t))))
+                     (when (and q1 q2 (> q2 q1))
+                       (push (list flags :fail (subseq rest (1+ q1) q2)) runs)))))))))))
+    (nreverse runs)))
 
 (defun parse-test-with (directive-lines)
   "Parses TEST-WITH[--flag1 --flag2] : validator-name directives.

@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=test-gpu]: PASS
+;;
+;; Endeavor 130 Phase 1: workgroup (local-size) bounds vs the active profile.
+(def-hardware-profile test-gpu :max-total-threads-per-block 1024 :max-work-group-dims '(1024 1024 64))
+(def-type out-c (cell float :address-space :global))
+(def-kernel k (&out res)
+  (declare #'(&out out-c => nil)
+           (local-size :set-to 256))
+  (set! (~ res) 0.0))

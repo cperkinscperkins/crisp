@@ -35,7 +35,10 @@ Phases
       bad value -> CHECK-FAIL (fires at the definition, no flag needed; put in an errors/ dir).
     - Buildable now: yes.
 
-[ ] Phase 1 — `--hardware-profile` flag + first consumer: workgroup bounds
+[x] Phase 1 — `--hardware-profile` flag + first consumer: workgroup bounds  DONE 2026-07-03
+    (Harness: built a general `COMPILE-WITH[flags]: PASS | FAIL "substr"` directive — compiles
+     via the binary with the flags and asserts the outcome — instead of overloading FAIL-WITH.
+     Cleaner, reusable for later consumer phases, and keeps FAIL-WITH's global-flag semantics.)
     Keys: `:max-total-threads-per-block`, `:max-work-group-dims`
     Flag selects a defined profile (builtin or from a passed .crisp) and binds it active.
     Validate the kernel's `local-size` against those two keys. Stub the flag-XOR-topology
