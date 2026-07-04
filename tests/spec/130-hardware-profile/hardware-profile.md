@@ -51,7 +51,12 @@ Phases
     - Infra: extend `FAIL-WITH[--hardware-profile=X]:` to apply the flag and expect failure.
     - Buildable now: yes.
 
-[ ] Phase 2 — `:max-shared-memory-per-block` (scratch / SLM bounds)
+[x] Phase 2 — `:max-shared-memory-per-block` (scratch / SLM bounds)  DONE 2026-07-04
+    (Hook is at the END of compile-module, not the analysis hook of Phase 1: the implicit
+     scratch signature is finalized only after Pass 2.  %hp-kernel-shared-bytes reuses
+     generate-implicit-signature + sums like the hoist's compute-total-shared-bytes.
+     size-expr is a scalar for vectors (total = size^rank) or a dim LIST for matrices/tensors
+     (total = product); symbolic sizes -> skip.  elem bytes: 64-bit -> 8, else 4.)
     Sum a kernel's `make-scratch-*` allocations, validate against the cap.
     - Hoisting: no.
     - Test: in-budget compiles; over-budget -> FAIL-WITH[--hardware-profile].

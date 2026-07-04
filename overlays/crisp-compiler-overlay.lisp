@@ -177,3 +177,74 @@
                   when (> d m)
                   do (error "Kernel ~a: local-size axis ~a (~a) exceeds the hardware profile's :max-work-group-dims axis ~a (~a)."
                             kernel-name axis d axis m))))))))
+
+;;; ===================================================================
+;;; Endeavor 130 (hardware profiles) — Phase 2: :max-shared-memory-per-block
+;;; (local / SLM bounds).  Reuses generate-implicit-signature to enumerate a
+;;; kernel's local scratch and sums bytes like the hoist's compute-total-shared-bytes.
+;;; (For the eventual merge: src/hardware-profile.lisp.)
+;;; ===================================================================
+
+;; src/hardware-profile.lisp
+(defun %hp-scratch-elem-bytes (elem-type)
+  "Bytes per scratch element, matching the hoist's rule (compute-total-shared-bytes):
+   64-bit element types -> 8, everything else -> 4 (the width the launcher reserves)."
+  (let ((n (cond ((symbolp elem-type) (symbol-name elem-type))
+                 ((consp elem-type)   (symbol-name (first elem-type)))
+                 (t ""))))
+    (if (member (string-upcase n) '("DOUBLE" "LONG" "ULONG" "INT64" "UINT64" "F64" "I64" "U64")
+                :test #'string=)
+        8 4)))
+
+;; src/hardware-profile.lisp
+(defun %hp-kernel-shared-bytes (kernel-name)
+  "Total local (shared) memory bytes a kernel reserves, summed from its implicit
+   scratch signature (matching the hoist's `(* (expt size-expr rank) elem-bytes)`).
+   Returns the byte total, or NIL if any local scratch size is not a compile-time
+   integer (then the bound can't be checked and is skipped)."
+  (let ((sig (first (gethash kernel-name *function-table*))))
+    (when sig
+      (let ((total 0) (known t))
+        (dolist (p (generate-implicit-signature sig nil))
+          (let ((as        (getf p :address-space))
+                (type      (getf p :type))
+                (size-expr (getf p :size-expr)))
+            (when (and as (string-equal (string as) "LOCAL"))
+              ;; size-expr is a SCALAR (vector: total = size^rank) or a LIST of dims
+              ;; (matrix/tensor: total = product).  Symbolic sizes -> can't check (skip).
+              (let* ((is-tensor (and (consp type)
+                                     (member (symbol-name (first type))
+                                             '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal)))
+                     (rank (if (and is-tensor (integerp (third type))) (third type) 1))
+                     (elem (if (consp type) (second type) type))
+                     (count (cond
+                              ((integerp size-expr) (expt size-expr rank))
+                              ((and (listp size-expr) size-expr (every #'integerp size-expr))
+                               (reduce #'* size-expr))
+                              (t nil))))
+                (if count
+                    (incf total (* count (%hp-scratch-elem-bytes elem)))
+                    (setf known nil))))))
+        (when known total)))))
+
+;; src/hardware-profile.lisp
+(defun %hp-check-shared-memory (kernel-name profile)
+  "Endeavor 130 Phase 2: error if KERNEL-NAME's local/shared memory exceeds the
+   profile's :max-shared-memory-per-block.  Skipped if the profile omits that key or
+   the total isn't compile-time-known."
+  (let ((cap (and profile (getf profile :max-shared-memory-per-block))))
+    (when cap
+      (let ((used (%hp-kernel-shared-bytes kernel-name)))
+        (when (and used (> used cap))
+          (error "Kernel ~a: uses ~a bytes of local/shared memory, exceeding the hardware profile's :max-shared-memory-per-block (~a bytes)."
+                 kernel-name used cap))))))
+
+;; src/hardware-profile.lisp  (driver, called at the end of compile-module)
+(defun %hp-check-all-shared-memory ()
+  "Endeavor 130 Phase 2: after a module compiles (all signatures, incl. implicit
+   scratch, finalized), validate every kernel's local memory against the active
+   hardware profile."
+  (let ((profile (active-hardware-profile)))
+    (when profile
+      (dolist (k *compiled-kernels*)
+        (%hp-check-shared-memory k profile)))))

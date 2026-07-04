@@ -344,7 +344,11 @@
       (setf *scratch-cell-counter* 0)
       (log:info "Reset *scratch-cell-counter* to 0 for Pass 2 Codegen")
       (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
-      (check-for-recursion-cycles))))
+      (check-for-recursion-cycles)
+      ;; Endeavor 130 Phase 2: validate each kernel's local (shared) memory against the
+      ;; active hardware profile, now that all signatures (incl. implicit scratch) are
+      ;; finalized.
+      (%hp-check-all-shared-memory))))
 
 
 (defun propagate-implicit-arguments ()

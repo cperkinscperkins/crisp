@@ -26,7 +26,7 @@ Hardware profiles are recommeended, but they are always optional.
 
 The Crisp compiler already knows about some hardware profiles. Those are listed below and their name alone as a flag or `:profile` value is sufficient to leverage them. But if Crisp doesn't have the exact profile for your hardware defined already, it is easy to provide it with `def-hardware-profile`.
 
-Note that a hardware profile says nothing about that actual architecture. It may seem strange, but to the Crisp compiler these are orthogonal concerns. Note that this means that Crisp can be employed for certain types of micro-optimizations or experiments. If you know that when your kernel runs, the GPU will be already partially employed running something else, then use a custom shrunken hardware profile to optimize for the capabilities that will be available. 
+Note that a hardware profile says nothing about that actual architecture. It may seem strange, but to the Crisp compiler these are orthogonal concerns. Note that this means that Crisp can be employed for certain types of micro-optimizations or experiments. If you know that when your kernel runs, the GPU will be already partially employed running something else, then use a custom shrunken hardware profile to optimize for the capabilities that WILL be available. This avoids the "Empty Room Fallacy" that ensnares other GPU toolchains.
 
 ### `def-hardware-profile` 
 ```
