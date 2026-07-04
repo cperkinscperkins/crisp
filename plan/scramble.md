@@ -730,6 +730,9 @@ Integer Only Operations
 =======================
 [ ] There are 6 or 7 of these. Easily overlooked.  
 
+
+
+
 Reductions
 ==========
 - [ ] revisit Phase 1 vs Phase 2.
@@ -778,6 +781,7 @@ Technical Debt
 - [x] occupancy.
 - [/] rename --binary-gpu-target flag and expand docs 
 - [x] consider renaming `local-barrier` to `workgroup-sync` ?
+- [ ] L0 hoisting doesn't interpret hardware-profile yet. Need to benchmark and see what's what
 
 PERFORMANCE TESTING
 ===================

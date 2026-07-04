@@ -87,6 +87,10 @@
 (defvar *compile-denormal-handling* nil
   "Endeavor 126: effective denormal mode (:ftz / :preserve / nil) for a precision
    TEST-WITH run; forwarded to initialize-compiler by compile-crisp-file-to-ir-string.")
+(defvar *compile-hardware-profile* nil
+  "Endeavor 130: hardware-profile name (string / nil) to SELECT via --hardware-profile
+   during a hoist run (HOIST-HARDWARE-PROFILE directive), so the metacrisp carries the
+   active profile and the CUDA launcher uses its :compute-units for grid sizing.")
 (defvar *test-filter* nil)
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
@@ -476,6 +480,8 @@
                                                       *compile-denormal-handling*))
                      (*compile-math-precision* (or (parse-hoist-precision directives)
                                                    *compile-math-precision*))
+                     (*compile-hardware-profile* (or (parse-hoist-hardware-profile directives)
+                                                     *compile-hardware-profile*))
                      (hoist-result (run-spec-with-hoist file backend)))
                 (unless (eq hoist-result :skipped)
                   (let ((cpp-files hoist-result))
@@ -1210,6 +1216,11 @@
                        (when *compile-math-precision*
                          (list (format nil "--math-precision=~a"
                                        (string-downcase (symbol-name *compile-math-precision*)))))
+                       ;; Endeavor 130: forward the SELECTED hardware profile
+                       ;; (HOIST-HARDWARE-PROFILE directive) so the metacrisp carries
+                       ;; it and the launcher uses its :compute-units for grid sizing.
+                       (when *compile-hardware-profile*
+                         (list (format nil "--hardware-profile=~a" *compile-hardware-profile*)))
                        (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
@@ -2075,6 +2086,16 @@
           (cond ((string-equal v "fast") (return :fast))
                 ((string-equal v "ieee") (return :ieee))))))))
 
+(defun parse-hoist-hardware-profile (directive-lines)
+  "Parse HOIST-HARDWARE-PROFILE: <name> (Endeavor 130). Returns the profile name
+   string or nil.  Forwarded as --hardware-profile=<name> to the hoist compile so
+   the metacrisp carries the active profile and the launcher uses its :compute-units."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "HOIST-HARDWARE-PROFILE:")
+        (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 23))))
+          (when (plusp (length v)) (return v)))))))
+
 (defun parse-hoist-expect (directive-lines)
   "Parse HOIST-EXPECT: <string> lines.
    Returns list of expected strings."
@@ -2354,6 +2375,34 @@
     passed))
 
     
+
+(defun validate-cuda-hw-profile-grid (crisp-file cu-files)
+  "Endeavor 130 Phase 5: validate that an active hardware profile's :compute-units
+   OVERRIDES the runtime SM-count query in the :strided grid-size heuristic.
+   Honors STRATEGY-EXPECT (positive substrings, e.g. the exact `int _numSMs = 8;`)
+   AND asserts the device query (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT) is ABSENT."
+  (when (null cu-files)
+    (format t "FAIL: No .cu files to validate~%")
+    (return-from validate-cuda-hw-profile-grid nil))
+  (let* ((directives   (extract-test-directives crisp-file))
+         (expectations (parse-strategy-expect directives "CUDA"))
+         (passed t))
+    (dolist (cu cu-files)
+      (let ((content (uiop:read-file-string cu)))
+        ;; Positive expectations (the literal override assignment).
+        (dolist (exp expectations)
+          (unless (search exp content)
+            (format t "FAIL: Expected string not found in ~a:~%  '~a'~%"
+                    (file-namestring cu) exp)
+            (setf passed nil)))
+        ;; Negative: the device query must be gone when the profile overrides.
+        (when (search "CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT" content)
+          (format t "FAIL: ~a still queries the device SM count; profile :compute-units should override it.~%"
+                  (file-namestring cu))
+          (setf passed nil))))
+    (when passed
+      (format t "PASS: hardware-profile :compute-units overrides the device SM query.~%"))
+    passed))
 
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))

@@ -79,19 +79,27 @@ Phases
     - Test: the strong version waits on warp-spec; the light version is a positive/warn check.
     - Buildable now: partial — light check yes, real check deferred.
 
-[ ] Phase 5 — `:compute-units` (+ `:max-registers-per-cu`): occupancy / grid-size — HOISTING ENTERS HERE
+[x] Phase 5 — `:compute-units`: occupancy / grid-size — HOISTING ENTERS HERE  (CUDA) DONE 2026-07-04
     The first key that drives *launch configuration*: the grid-size heuristic uses the
-    profile's numEUs instead of a runtime device query. The metacrisp gains the launch subset,
-    and the hoist learns "when a profile is active, its numbers OVERRIDE the device query"
-    (needed so a deliberately shrunken profile actually takes effect host-side — see
-    topology.md, the "orthogonal / shrunken profile" note).
-    - Hoisting: YES — the only hoist-affecting phase. Metacrisp change + hoist codegen change +
-      the override-the-query policy.
-    - Test: TEST-HOIST — assert the generated launcher's grid formula uses the profile's
-      compute-units, not a query; ideally on-metal (BMG) showing a shrunken profile changes the
-      launch grid.
-    - Buildable now: yes, but the heaviest phase — do it last, after the pure-validation phases
-      are green.
+    profile's compute-units instead of a runtime device query. The metacrisp gains the WHOLE
+    active profile (only the selected one, name preserved — same on-need policy as structs /
+    aliases; runtime compilation will want the full thing), and the hoist learns "when a profile
+    is active, its numbers OVERRIDE the device query" (so a deliberately shrunken profile
+    actually takes effect host-side — see topology.md, the "orthogonal / shrunken profile" note).
+    - Implemented: metacrisp `(:hardware-profile (:name "X" ...))` top-level form
+      (%hp-serialize-active-profile hooked into generate-metadata-for-file); hoist parses it
+      (metacrisp-hardware-profile in hoist/common); CUDA emit-launch :strided emits
+      `int _numSMs = <compute-units>;` instead of the CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT
+      query when a profile is active.  Harness: HOIST-HARDWARE-PROFILE directive forwards
+      --hardware-profile to the hoist compile; validate-cuda-hw-profile-grid asserts the literal
+      override AND the absence of the device query.  Spec: 11-hoist-compute-units.
+    - L0: the metacrisp already carries the profile generically, but the L0 launcher's occupancy
+      formula (numSubslices × numEUsPerSubslice × numThreadsPerEU → _hw_threads) has no single
+      "compute-units" scalar — the generic→Intel-hierarchy mapping is a separate decision,
+      DEFERRED (see below).
+    - Test: TEST-HOIST[CUDA] compile-check (local, no metal) proving the grid formula uses the
+      profile's compute-units, not a query.  On-metal (RTX) confirmation deferred to benchmarking.
+    - Buildable now: yes.
 
 
 Can't support yet — known keys, consumer deferred

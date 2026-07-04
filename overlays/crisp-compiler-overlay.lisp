@@ -248,3 +248,25 @@
     (when profile
       (dolist (k *compiled-kernels*)
         (%hp-check-shared-memory k profile)))))
+
+;;; ===================================================================
+;;; Endeavor 130 (hardware profiles) — Phase 5: carry the ACTIVE profile
+;;; into the metacrisp so the hoist (and, later, runtime compilation) can
+;;; use it.  Only the SELECTED profile is emitted (like structs/aliases,
+;;; on need); the whole normalized profile is copied (not a subset), so we
+;;; never have to reparse it downstream.
+;;; (For the eventual merge: src/hardware-profile.lisp / src/metadata.lisp.)
+;;; ===================================================================
+
+;; src/hardware-profile.lisp
+(defun %hp-serialize-active-profile (stream)
+  "Emit the active hardware profile (the one --hardware-profile / a topology named)
+   as a top-level metacrisp form, keeping its name.  Values are the normalized
+   (already-parsed) form: sizes in bytes, lists resolved.  Emits nothing when no
+   profile is active."
+  (let ((profile (active-hardware-profile)))
+    (when profile
+      (format stream "(:hardware-profile~%  (:name ~s" (string-upcase *requested-hardware-profile*))
+      (loop for (k v) on profile by #'cddr
+            do (format stream "~%   ~s ~s" k v))
+      (format stream "))~%~%"))))

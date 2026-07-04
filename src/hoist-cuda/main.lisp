@@ -183,6 +183,11 @@
   (let* ((data     (parse-metacrisp-file metacrisp-path))
          (kernels  (metacrisp-kernels data))
          (aliases  (metacrisp-aliases data))
+         ;; Endeavor 130 Phase 5: an active hardware profile's :compute-units
+         ;; OVERRIDES the runtime device query for grid sizing (so a deliberately
+         ;; shrunken profile actually takes effect host-side).
+         (hw-profile (metacrisp-hardware-profile data))
+         (hw-compute-units (getf hw-profile :compute-units))
          (base-name (pathname-name metacrisp-path)))
 
     (format t "Processing ~a~%" metacrisp-path)
@@ -236,7 +241,8 @@
                      (emit-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
                      (emit-helpers stream)
                      (emit-main stream kernel-name ptx-path full-sig aliases
-                                (metacrisp-records data) dispatch-info)))
+                                (metacrisp-records data) dispatch-info
+                                hw-compute-units)))
                  (format t "  Done: ~a~%" (namestring output-path))))))))))
 
 
@@ -357,8 +363,10 @@
 ;;; Main function emission — init, module load, arg setup, launch, readback
 ;;; -----------------------------------------------------------------------
 
-(defun emit-main (stream kernel-name ptx-path declared-sig aliases records &optional dispatch-info)
-  "Generate C++ main function for CUDA Driver API launcher."
+(defun emit-main (stream kernel-name ptx-path declared-sig aliases records &optional dispatch-info compute-units)
+  "Generate C++ main function for CUDA Driver API launcher.
+COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units and
+overrides the runtime SM-count query in the grid-size heuristic."
   (format stream "int main() {~%")
   (format stream "    std::cout << \"CUDA Driver API Launcher for kernel: ~a\" << std::endl;~%~%" kernel-name)
 
@@ -380,7 +388,7 @@
     (let ((shared-bytes (compute-total-shared-bytes declared-sig aliases)))
 
       ;; Launch
-      (emit-launch stream dispatch-info shared-bytes)
+      (emit-launch stream dispatch-info shared-bytes compute-units)
 
       ;; Synchronize
       (format stream "    CUDA_CHECK(cuCtxSynchronize());~%")
@@ -898,7 +906,7 @@
   (and raw (symbolp raw)))
 
 
-(defun emit-launch (stream dispatch-info shared-bytes)
+(defun emit-launch (stream dispatch-info shared-bytes &optional compute-units)
   "Emit cuLaunchKernel call with grid/block dims from dispatch-info.
    Supports:
      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)
@@ -906,7 +914,11 @@
      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)
      :set-to integer/list      — fixed grid
    And :derive-from can be a single tensor symbol (uses <name>_length) or a list
-   of scalar parameter names (uses <name>_arg)."
+   of scalar parameter names (uses <name>_arg).
+   COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units;
+   the :strided strategy then uses that fixed SM count instead of querying the
+   device (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT), so a shrunken profile takes
+   effect host-side."
   (let* ((global-decl     (when dispatch-info (getf dispatch-info :global-size)))
          (local-decl      (when dispatch-info (getf dispatch-info :local-size)))
          (num-groups-decl (when dispatch-info (getf dispatch-info :num-groups)))
@@ -952,8 +964,13 @@
          (format stream "    int _blocksPerSM;~%")
          (format stream "    CUDA_CHECK(cuOccupancyMaxActiveBlocksPerMultiprocessor(&_blocksPerSM, kernel, ~d, ~a));~%"
                  block-size shared-bytes)
-         (format stream "    int _numSMs;~%")
-         (format stream "    CUDA_CHECK(cuDeviceGetAttribute(&_numSMs, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));~%")
+         (if compute-units
+             (progn
+               (format stream "    // Hardware profile active: :compute-units overrides the device SM query~%")
+               (format stream "    int _numSMs = ~d;~%" compute-units))
+             (progn
+               (format stream "    int _numSMs;~%")
+               (format stream "    CUDA_CHECK(cuDeviceGetAttribute(&_numSMs, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));~%")))
          (if (= ratio 1.0)
              (format stream "    unsigned int gridX = (unsigned int)(_blocksPerSM * _numSMs);~%")
              (progn
