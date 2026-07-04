@@ -13,7 +13,79 @@ To make this happen the Crisp compiler needs three things:
 - `def-orchestration`  with location and memory distribution information
 - `def-kernel` with the optimized kernel code. 
 
+And for absolute maximum performance, you might want to name or provide a hardware profile (via `--hardware-profile` and/or `def-hardware-profile`) as well, which tell the compiler about the specific machine characteristics of a target.
+
 Note that Crisp is not auto-optimizing the kernel for you. That is an ongoing area of research. You will have to choose the optimization strategy that fits your problem domain and code it. But Crisp forms make this a straightforward endeavor. We'll use real examples of matrix multiplication and Flash Attention as we progress.
+
+Hardware Profiles
+-----------------
+
+`--ir-target`, when set to `ptx` or `spv` tells the compiler the IR target, which will usually be `ptx` for NVidia hardware and `spv` for Intel (and possibly others).  When compiling a kernel that is often enough, nothing more is needed.  But for some capabilties and or optimizations, the  `--ir-target-arch` flag can be used to further inform about the exact architecutre (like `sm_80` or `xe2`).  But for absolutely maximum performance optimizations, the compiler can be given specific bounds and capabilities of a targeted hardware and then it can tailor to those.  These "specific bounds and capabilities" are called a "hardware profile".
+
+Hardware profiles are recommeended, but they are always optional. 
+
+The Crisp compiler already knows about some hardware profiles. Those are listed below and their name alone as a flag or `:profile` value is sufficient to leverage them. But if Crisp doesn't have the exact profile for your hardware defined already, it is easy to provide it with `def-hardware-profile`.
+
+Note that a hardware profile says nothing about that actual architecture. It may seem strange, but to the Crisp compiler these are orthogonal concerns. Note that this means that Crisp can be employed for certain types of micro-optimizations or experiments. If you know that when your kernel runs, the GPU will be already partially employed running something else, then use a custom shrunken hardware profile to optimize for the capabilities that will be available. 
+
+### `def-hardware-profile` 
+```
+(def-hardware-profile <name> <profile-proplist...>)
+```
+
+`def-hardware-profile` just associates a `<name>` with a profile property list. The `<name>` can then be used as the value for the `--hardware-profile` compilation flag, or used with `:profile` value in a `compute-unit` member of a `def-topology` (see below)
+
+```
+(def-hardware-profile nvidia-h100-sxm
+   
+  ;; --- Compute & Vector Core Mechanics ---
+  :simd-width 32
+  :compute-units 132                     
+  :max-registers-per-cu 65536            
+  :max-registers-per-thread 255
+
+  ;; --- Local Memory Hierarchy ---
+  :max-shared-memory-per-block 227KB     
+  :l2-cache-size 50MB
+  :native-cache-line-size 128           
+
+  ;; --- Execution & Work-Group Bounds ---
+  :max-work-group-dims '(1024 1024 64)
+  :max-total-threads-per-block 1024
+  :max-concurrent-kernels 128
+
+  ;; matrix units
+  :mma-shapes '((16 8 16) (8 8 8)))   ; list of (M N K) triples
+```
+
+Missing Keys: an incomplete `def-hardware-profile`, one without the full set of keys as illustrated above, is fine.
+However any optimizations that depend on it will simply not be taken. 
+
+Unkonwn Keys: a `def-hardware-profile` sporting any key outside the ones listed above will result in a compilation error.
+
+### `:mma-shapes`
+
+`:mma-shapes` the matrix-multiply-accumulate (tensor-core / DPAS) instruction shapes the hardware natively supports, each an (M N K) triple. An MMA computes D[M×N] = A[M×K]·B[K×N] + C[M×N], so all three dimensions identify it, and the same M×N typically comes in several K variants for different operand precisions (NVIDIA m16n8k8 for tf32, m16n8k16 for fp16, m16n8k32 for int8; Intel similarly). The form is vendor-neutral, mapping to NVIDIA mma.mMnNkK and Intel joint_matrix shapes alike.
+
+```
+:mma-shapes '((16 8 16) (16 8 8) (8 8 128))
+```
+
+### Crisp predefined hardware profiles
+
+- `bmg`
+
+
+### `--hardware-profile`
+
+This compiler flag names a hardware profile to use for optimization/validation.  It can be one of the Crisp builtin hardware profiles, or can be the name of a profile in one of the .crisp files in the compiler invocation. 
+
+It is an error to use this flag if a topology or orchestration is specifying a hardware profile. 
+
+
+
+
+
 
 
 Topologies
@@ -22,9 +94,10 @@ Topologies
 A topology can be defined with `def-topology`. We'll go over it in a second, but it is essentially a function that returns an `interconnect`. These three examples of a typical single user workstation, a 10 node cluster of a supercomputer, and a mesh might help:
 
 ```
+;; note this first topology leverages the hardware profile from above.
 (def-topology my-workstation ()
   (let  ((main-cpu (compute-unit :id 'xeon-cpu :type :cpu-socket :memory 512GB))
-         (main-gpu (compute-unit :id 'pvc-tile :type :gpu-tile :memory 64GB :arch :pvc))
+         (main-gpu (compute-unit :id 'h100-tile :type :gpu-tile :memory 64GB :arch :sm_90 :profile nvidia-h100-sxm))
          (pcie-bus (interconnect :id 'host-bus :type :pcie :children (list main-cpu main-gpu))))
     pcie-bus))
 
@@ -113,6 +186,9 @@ The `:arch` specifier indicated the target architecture. The values are the same
 | `dg2`    | Intel DG2 / Alchemist          |
 | `pvc`    | Intel Ponte Vecchio            |
 | `xe2`    | Intel BattleMage / Lunar Lake  |
+
+
+The `:profile` specifier indicates a hardware profile. It can be one of the Crisp built-in hardware profiles or any defined by `def-hardware-profile`.  
 
 
 ### `interconnect`
@@ -525,7 +601,7 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
       (load-tile B B-tile (grid-k grid-x) :barrier barrier )
       (await barrier) 
       
-        (mma-accumulate-via-tile (16 8) C-tile A-tile B-tile (my-accum)
+        (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile (my-accum)
             ;; We are now inside the innermost loop!
             ;; The developer decides when (or if) to execute the math.
             ;; accum-op is available in this context.
@@ -549,16 +625,14 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
   ...)
 ```
 
-`mmm-accumulate-via-tile` walks tiles using an even smaller tile of size `<sz-expr>`. 
-`<sz-expr>` must evaluate to a list of integers that match the Tensor MMA units of the underlying hardware.
-For Intel hardware these sizes are 8x8x8, 8x8, or 16x16x16, 16x16. 
-For Nvidia there are various sizes.  16x8 is very common.
+`mma-accumulate-via-tile` walks the tile in steps of `<sz-expr>` — an `(M N K)` triple that must match one of the Tensor MMA units of the underlying hardware.
+The `<sz-expr>` you pass to `mma-accumulate-via-tile` is checked against the active profile's `:mma-shapes` (also an `(M N K)` triple). A shape the hardware doesn't list is a compile error. With no active profile, the shape is accepted unchecked.
 
-Also note that the overall tile size ( 128x128 in the code above) must be a multiple of the MMA units, of `<sz-expr>`. 
+Also note the multiplicity constraints: the output tile's M and N (128x128 in the code above) must each be a multiple of the shape's M and N, and the K-loop extent (the matrices' inner dimension) must be a multiple of the shape's K.
 
 Below is an example of the triple loop that `mma-accumulate-via-tile` might expand into.
 ```
-(let ((accum (make-register-fragment 16 8 0.0)))
+(let ((accum (make-register-fragment 16 8 0.0)))   ; accumulator is M×N; K is the contraction, looped by tk
   (dotimes (tk 128 16)
     (dotimes (ty 128 16)
       (dotimes (tx 128 8)
@@ -604,7 +678,7 @@ We use rings to set up a load/execute pipeline.
             ;; Execute the math from SLM into registers
             (let ((A-tile (ring-get A-tile-ring ring-idx))
                   (B-tile (ring-get B-tile-ring ring-idx)))
-              (mma-accumulate-via-tile (16 8) C-tile A-tile B-tile (my-accum)
+              (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile (my-accum)
                 (accum-op)
                 ;; Developer can immediately do epilogue fusion while still in registers
                 (relu my-accum)
@@ -690,7 +764,7 @@ We use rings to set up a load/execute pipeline.
               ;; 2. Execute the pure math
               (let ((A-tile (ring-get A-tile-ring ring-idx))
                     (B-tile (ring-get B-tile-ring ring-idx)))
-                (mma-accumulate-via-tile (16 8) C-tile A-tile B-tile (my-accum)
+                (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile (my-accum)
                   (accum-op)))
               
               ;; 3. Manually signal to the Producer that we are done reading this slot.
