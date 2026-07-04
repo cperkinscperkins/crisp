@@ -1,0 +1,7 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "unknown key"
+;;
+;; Endeavor 130 Phase 0 negative.
+(def-hardware-profile bad :simd-with 32)
+(def-type out-c (cell float :address-space :global))
+(def-kernel k (&out res) (declare #'(&out out-c => nil)) (set! (~ res) 0.0))

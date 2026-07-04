@@ -1,0 +1,7 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "byte count or size literal"
+;;
+;; Endeavor 130 Phase 0 negative.
+(def-hardware-profile bad :l2-cache-size 50XB)
+(def-type out-c (cell float :address-space :global))
+(def-kernel k (&out res) (declare #'(&out out-c => nil)) (set! (~ res) 0.0))

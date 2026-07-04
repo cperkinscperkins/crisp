@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;;
+;; Endeavor 130 Phase 0: def-hardware-profile registers a named profile. A complete
+;; profile is accepted (alongside a trivial kernel so the file has something to compile).
+
+(def-hardware-profile test-gpu
+  :simd-width 32
+  :compute-units 132
+  :max-registers-per-cu 65536
+  :max-registers-per-thread 255
+  :max-shared-memory-per-block 227KB
+  :l2-cache-size 50MB
+  :native-cache-line-size 128
+  :max-work-group-dims '(1024 1024 64)
+  :max-total-threads-per-block 1024
+  :max-concurrent-kernels 128
+  :mma-shapes '((16 8 16) (8 8 8)))
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+(def-kernel k (x &out res)
+  (declare #'(in-c &out out-c))
+  (set! (~ res) (* (~ x) (~ x))))
