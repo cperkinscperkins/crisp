@@ -943,5 +943,6 @@ Returns modified IR text with metadata."
   (clrhash *grid-functions*)
 
   (register-builtins)
+  (register-mma-types)              ; Endeavor 132 — MMA fundamentals (src/mma.lisp)
 
   (log:info "Compiler initialized. differentiate=~a" differentiate))

@@ -612,7 +612,7 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
       (load-tile B B-tile (grid-k grid-x) :barrier barrier )
       (await barrier) 
       
-        (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile (my-accum)
+        (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
             ;; We are now inside the innermost loop!
             ;; The developer decides when (or if) to execute the math.
             ;; accum-op is available in this context.
@@ -653,6 +653,10 @@ Two further compile-time constraints, both checked from information you already 
 
 Physical SLM *swizzling* (bank-conflict avoidance) is a separate performance optimization, not
 a correctness requirement — a plain row/col-major staging feeds the fragment loads correctly.
+
+The three chapter kernels above pass `(16 8 8)` — the **tf32** shape (K=8), matching tf32/`float`
+operands. The same M×N with **fp16** operands is `(16 8 16)`, which is the variant the expansion
+below illustrates (note its `mma.m16n8k16` intrinsic and K-step of 16).
 
 Below is an example of the triple loop that `mma-accumulate-via-tile` might expand into.
 ```
@@ -702,7 +706,7 @@ We use rings to set up a load/execute pipeline.
             ;; Execute the math from SLM into registers
             (let ((A-tile (ring-get A-tile-ring ring-idx))
                   (B-tile (ring-get B-tile-ring ring-idx)))
-              (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile (my-accum)
+              (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
                 (accum-op)
                 ;; Developer can immediately do epilogue fusion while still in registers
                 (relu my-accum)
@@ -788,7 +792,7 @@ We use rings to set up a load/execute pipeline.
               ;; 2. Execute the pure math
               (let ((A-tile (ring-get A-tile-ring ring-idx))
                     (B-tile (ring-get B-tile-ring ring-idx)))
-                (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile (my-accum)
+                (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
                   (accum-op)))
               
               ;; 3. Manually signal to the Producer that we are done reading this slot.

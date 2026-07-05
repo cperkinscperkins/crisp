@@ -240,6 +240,7 @@
   (register-ops-analyzers)
   (register-control-analyzers)
   (register-struct-analyzers)
+  (register-mma-analyzers)         ; Endeavor 132 — MMA fundamentals (src/mma.lisp)
   ;; ##(...) device vector literal
   (setf (gethash 'crisp-vec-literal *expression-analyzers*)
         #'analyze-crisp-dvec-literal)

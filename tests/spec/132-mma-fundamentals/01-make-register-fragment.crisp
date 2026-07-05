@@ -1,0 +1,21 @@
+;; P1 (MMA fundamentals) — make-register-fragment.
+;;
+;; make-register-fragment mints a WARP-COLLECTIVE accumulator fragment: a
+;; register-backed record whose 16x8 = 128 elements are distributed across the 32
+;; lanes of one warp (4 per lane).  Here we mint a 16x8 fp32 accumulator initialized
+;; to a constant and store it back to a global 16x8 matrix so the value round-trips.
+;;
+;; NOTE: a UNIFORM constant only exercises init + store-touched-every-element; it does
+;; NOT validate the element->lane layout (all values are equal).  Layout correctness
+;; arrives in P2 via load-fragment on non-uniform data.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+
+(def-type out-m (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel make_frag (&out C)
+  (declare #'(&out out-m => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; exactly one warp
+  (let ((acc (make-register-fragment 16 8 7.0)))
+    (store-fragment acc C (0 0))))
