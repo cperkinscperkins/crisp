@@ -382,3 +382,20 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     Confirmed by tests/spec/111-load-and-store-tile/15-ad-tile-scale-1d.crisp
     which is now a full VERIFY-AUTODIFF spec.  Suite 716/716 on both default
     and --differentiate.
+[ ] 033 --debug/GENERIC c-t accessor emits an env-dependent garbage-typed return.
+        Under `--debug` (no -O0 stripping), a 2D-float matrix's c-t accessor functions
+        (align__ / contiguous_term__tensor_float_2_global_compact_last) survive to
+        clang verification. Their body builds a DEAD tensor (param marshalling) then
+        `ret i32 0` — but the return constant's TYPE is fragile: locally it prints
+        `ret i32 0` (valid), on the CI build it printed `ret bfloat 0xR8000000000000000`
+        (a mistyped constant) -> "value doesn't match function result type 'i32'".
+        Surfaced by 132-mma-fundamentals/01 (first plain 2D-float-matrix GENERIC spec
+        in the CI --use-binary --debug pass). NOT caused by the MMA work.
+        NOT reproducible: clean + deterministic on Windows LLVM-21 AND in a CI-matching
+        Linux+LLVM-21 Docker container -> appears to be build-heap-dependent
+        uninitialized memory (the garbage bytes depend on the specific compiled
+        crisp-compile binary, not the source). Likely fix: these dead c-t accessor
+        functions should not be emitted as runtime bodies (c-t values resolve at
+        compile time), OR the return constant must be built with an explicit i32 type
+        rather than a resolved-type that can read uninitialized memory. Verifiable
+        locally for no-regression even without reproducing the garbage.

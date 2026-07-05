@@ -10,6 +10,11 @@
 ;; arrives in P2 via load-fragment on non-uniform data.
 ;;
 ;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; TEST-WITH[--ir-target=ptx]
+;;   MMA fundamentals target PTX (tensor cores); this adds a PTX validation pass.
+;;   (NOTE: the binary runner still ALSO runs a Default GENERIC pass, so this does not
+;;    by itself avoid the pre-existing --debug/GENERIC c-t-accessor verifier bug — see
+;;    plan/bugs.md.)
 
 (def-type out-m (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 
