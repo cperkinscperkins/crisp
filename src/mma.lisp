@@ -236,6 +236,82 @@
                      agg)))
       (values result nil))))
 
+;;; ===================================================================
+;;; P3a — make-register-tile (record-of-fragments) + store-tile overload.
+;;;
+;;; A register-tile is a workgroup-collective MxN accumulator: a record whose fields
+;;; are (M/16)x(N/8) accumulator fragments (register-fragment-acc-f32-16x8), row-major
+;;; (fragment idx = mi*(N/8) + nj).  Single-warp for now (one warp holds all fragments).
+;;; Minted on demand per (M N).
+;;; ===================================================================
+
+(defvar *register-tile-dims* (make-hash-table :test 'eq)
+  "Maps a minted register-tile type symbol -> (list M N); used by store-tile's walk.")
+
+(defun %register-tile-type-name (m n)
+  (intern (format nil "REGISTER-TILE-ACC-F32-~dX~d" m n) (find-package :crisp.compiler)))
+
+(defun %register-tile-type-p (type-name)
+  "T if TYPE-NAME is a minted register-tile type."
+  (and (symbolp type-name) (nth-value 1 (gethash type-name *register-tile-dims*))))
+
+(defun %ensure-register-tile-type (m n)
+  "Mint (once) the register-tile-acc-f32-MxN record — (M/16)x(N/8) fragment fields —
+   and record its dims.  Returns the type symbol."
+  (unless (and (zerop (mod m 16)) (zerop (mod n 8)))
+    (error "make-register-tile: dims (~a ~a) must be multiples of the 16x8 accumulator fragment." m n))
+  (let ((name (%register-tile-type-name m n)))
+    (unless (gethash name *crisp-structs*)
+      (let ((nfrags (* (floor m 16) (floor n 8))))
+        (register-struct-definition
+         name
+         (loop for i below nfrags
+               collect (list (intern (format nil "F~d" i) (find-package :crisp.compiler))
+                             'register-fragment-acc-f32-16x8))
+         :record)))
+    (setf (gethash name *register-tile-dims*) (list m n))
+    name))
+
+(defun analyze-make-register-tile (expr env context location)
+  "P3a: (make-register-tile T (M N) INIT) -> a record-of-fragments accumulator tile,
+   each fragment initialized to INIT.  Mints the tile type on demand; rewrites to
+   %construct-struct of make-register-fragment fields."
+  (destructuring-bind (elem dims init) (cdr expr)
+    (declare (ignore elem))          ; tf32/fp32 fixed for now
+    (destructuring-bind (m n) dims
+      (let* ((tile-name (%ensure-register-tile-type m n))
+             (nfrags (* (floor m 16) (floor n 8))))
+        (analyze-expression
+         `(%construct-struct ,tile-name
+                             ,@(loop repeat nfrags collect `(make-register-fragment 16 8 ,init)))
+         env context location)))))
+
+(defun analyze-store-tile-mma (expr env context location)
+  "Overload of store-tile: if the source is a register-tile, store each fragment via
+   store-fragment at its (row-tile, col-tile) offset; otherwise delegate to the existing
+   (SLM / async) store-tile analyzer."
+  (let* ((src-node (analyze-expression (second expr) env context (append location '(1))))
+         (src-type (semantic-node-type src-node)))
+    (if (%register-tile-type-p src-type)
+        (destructuring-bind (m n) (gethash src-type *register-tile-dims*)
+          (let* ((tile    (second expr))
+                 (dest    (third expr))
+                 (tile-id (fourth expr))
+                 (bty (first tile-id)) (btx (second tile-id))
+                 (m-frags (floor m 16)) (n-frags (floor n 8)))
+            (analyze-expression
+             `(let ((tv ,tile))
+                (progn
+                  ,@(loop for mi below m-frags
+                          append (loop for nj below n-frags
+                                       for idx = (+ (* mi n-frags) nj)
+                                       collect `(store-fragment (%extract-struct-member tv ,idx)
+                                                                ,dest
+                                                                (,(+ (* bty m-frags) mi)
+                                                                 ,(+ (* btx n-frags) nj)))))))
+             env context location)))
+        (analyze-store-tile-expression expr env context location))))
+
 (defun register-mma-analyzers ()
   "Registers the MMA expression analyzers in *expression-analyzers* for both
    :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers
@@ -247,7 +323,11 @@
                          (cons "STORE-FRAGMENT"          #'analyze-store-fragment)
                          (cons "LOAD-FRAGMENT-A"         #'analyze-load-fragment-a)
                          (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)
-                         (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)))
+                         (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
+                         (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
+                         ;; store-tile OVERLOAD: runs after register-control-analyzers,
+                         ;; so this wins; it delegates to the SLM store-tile for non-tiles.
+                         (cons "STORE-TILE"              #'analyze-store-tile-mma)))
       (let ((sym-cl (intern (car entry) cl-pkg))
             (sym-cc (intern (car entry) cc-pkg)))
         (setf (gethash sym-cl *expression-analyzers*) (cdr entry))

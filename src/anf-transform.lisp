@@ -185,9 +185,9 @@
                       '("LOAD-TILE-COORDS" "STORE-TILE-COORDS"
                         "%LOAD-TILE-COORDS-BWD" "%STORE-TILE-COORDS-BWD"
                         "LOAD-TILE" "STORE-TILE"
-                        ;; Endeavor 132 (MMA) — store-fragment is a statement whose
-                        ;; tile-id arg is a coord list; keep it opaque to ANF.
-                        "STORE-FRAGMENT")
+                        ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
+                        ;; coord / dim LISTS that must stay opaque to ANF.
+                        "STORE-FRAGMENT" "MAKE-REGISTER-TILE")
                       :test #'string=))
           (if is-nested?
               (let ((temp (anf-fresh-temp)))
