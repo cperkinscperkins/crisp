@@ -170,11 +170,28 @@ Chapter 1 later = swap the first `sync-workgroup` for `:barrier b` + `(await b)`
 Phases (bottom-up)
 ------------------
 
-[ ] P1 — `register-fragment` record type + `make-register-fragment`. Allocate an
-    accumulator fragment, init from `identity`, store back. Settles the lane-distribution
-    model at the smallest unit. No MMA yet. Also the natural home for the SIMD-width
-    sourcing + the register fit-check plumbing.
-    - Test: mint a fragment, round-trip it to global, verify layout. Unit + on-metal.
+[x] P1 — `register-fragment` record type + `make-register-fragment` + `store-fragment`.
+    DONE 2026-07-04. Round-trips a uniform 16x8 fp32 accumulator to a global matrix.
+    - `src/mma.lisp` (new; in .asd after `templates`). The record type is registered
+      PROGRAMMATICALLY via `register-struct-definition` (the `def-record` macro emits
+      accessor def-functions that compile immediately — fatal in a build-loaded src file
+      with no compiler session). System type: no Crisp accessors; codegen uses
+      `%construct-struct` / `%extract-struct-member`.
+    - Both forms are pure REWRITES to existing machinery (no new codegen):
+      `make-register-fragment` -> `%construct-struct` (init splatted across r0..r3);
+      `store-fragment` -> per-lane `(set! (~ dest row col) (%extract-struct-member frag i))`
+      using the real m16n8 accumulator layout (g=lane/4, t=lane%4 ->
+      (g,2t)(g,2t+1)(g+8,2t)(g+8,2t+1), offset by tile origin). `warp-lane` -> `to-int`
+      (it's UINT; matrix indices are INT). Verified PTX: `%laneid`, `shr .. 2` for /4,
+      4x `st.global.b32 ..,0x40E00000` (7.0).
+    - CLOBBER-FIX (the non-obvious part): `initialize-compiler` clrhash-es both
+      `*expression-analyzers*` and `*crisp-structs*` on every init, so load-time
+      registration does NOT survive. Register inside the init flow instead:
+      `register-mma-analyzers` (from `initialize-expression-analyzers`) and
+      `register-mma-types` (from `initialize-compiler`, after `register-builtins`).
+    - STILL HARDCODED (deferred): single 16x8/fp32/warp-32/4-reg shape; SIMD-width
+      sourcing + register fit-check + c-t MMA metadata all await generalization.
+    - Suite: E2E 846/846 both ways, unit 253/253, neg 191/191.
 
 [ ] P2 — `load-fragment-a` / `load-fragment-b` (→ `ldmatrix.sync`) + `mma-accumulate`
     (→ `@llvm.nvvm.mma.m16n8k16.*`). First on-metal MMA. Where the layout + precision
