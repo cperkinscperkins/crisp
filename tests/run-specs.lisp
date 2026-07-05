@@ -432,10 +432,18 @@
         (return-from run-spec-file (run-spec-ffi file ffi-source directives))))
 
     ;; 1. Default Run (Current Global Flags)
-    (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
-    (finish-output) ;; Ensure "Running Spec..." is printed before runner output
-    (unless (run-single-spec-pass file '())
-      (setf all-passed nil))
+    ;; A spec may carry SKIP-DEFAULT-PASS to opt OUT of the no-flags (GENERIC) run and
+    ;; be validated ONLY through its TEST-WITH target passes.  This is for specs whose
+    ;; feature is target-specific and has no meaningful GENERIC lowering (e.g. MMA /
+    ;; tensor-core kernels are PTX-only).  It also keeps such specs off the GENERIC
+    ;; clang-verify path in the binary runner (see plan/bugs.md #033).
+    (if (parse-skip-default-pass directives)
+        (format t "~&Running Spec: ~a (Default)... SKIP (SKIP-DEFAULT-PASS: target-specific spec)~%" (pathname-name file))
+        (progn
+          (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
+          (finish-output) ;; Ensure "Running Spec..." is printed before runner output
+          (unless (run-single-spec-pass file '())
+            (setf all-passed nil))))
 
     ;; 2. Extra Runs (TEST-WITH flags)
     (let ((extra-runs (parse-test-with directives)))
@@ -1954,6 +1962,17 @@
                       (when active
                             (return-from parse-fail-with t))))))))
   nil)
+
+(defun parse-skip-default-pass (directive-lines)
+  "Returns T if the spec carries a SKIP-DEFAULT-PASS directive — i.e. it opts out of
+   the no-flags (GENERIC) Default run and is validated only via its TEST-WITH passes.
+   For target-specific specs (e.g. MMA/tensor-core kernels are PTX-only) with no
+   meaningful GENERIC lowering; also keeps them off the GENERIC clang-verify path
+   (plan/bugs.md #033)."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "SKIP-DEFAULT-PASS")
+        (return t)))))
 
 (defun parse-skip-with (directive-lines)
   "Parses SKIP-WITH[--flag]: 'message' directives.

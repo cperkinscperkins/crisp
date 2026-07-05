@@ -11,10 +11,11 @@
 ;;
 ;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
 ;; TEST-WITH[--ir-target=ptx]
-;;   MMA fundamentals target PTX (tensor cores); this adds a PTX validation pass.
-;;   (NOTE: the binary runner still ALSO runs a Default GENERIC pass, so this does not
-;;    by itself avoid the pre-existing --debug/GENERIC c-t-accessor verifier bug — see
-;;    plan/bugs.md.)
+;; SKIP-DEFAULT-PASS
+;;   MMA fundamentals target PTX (tensor cores) — validate ONLY via the PTX pass.
+;;   SKIP-DEFAULT-PASS opts out of the no-flags GENERIC run: MMA has no meaningful
+;;   GENERIC lowering, and this keeps the spec off the GENERIC clang-verify path that
+;;   trips the pre-existing --debug c-t-accessor bug (plan/bugs.md #033).
 
 (def-type out-m (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 
