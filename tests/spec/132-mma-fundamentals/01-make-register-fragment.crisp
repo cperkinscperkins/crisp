@@ -11,11 +11,11 @@
 ;;
 ;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
 ;; TEST-WITH[--ir-target=ptx]
-;; SKIP-DEFAULT-PASS
-;;   MMA fundamentals target PTX (tensor cores) — validate ONLY via the PTX pass.
-;;   SKIP-DEFAULT-PASS opts out of the no-flags GENERIC run: MMA has no meaningful
-;;   GENERIC lowering, and this keeps the spec off the GENERIC clang-verify path that
-;;   trips the pre-existing --debug c-t-accessor bug (plan/bugs.md #033).
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;   Under --debug, a 2D-float matrix's dead c-t accessor functions emit an
+;;   env-dependent garbage-typed return that CI's clang/llc reject (but which is clean
+;;   on our hosts and in non-debug).  Skip this spec under --debug until 033 is fixed;
+;;   it still runs+passes in the non-debug binary pass.
 
 (def-type out-m (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 
