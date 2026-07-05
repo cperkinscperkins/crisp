@@ -382,7 +382,7 @@
    
    ;; MMA operations (endeavor 132)
    #:make-register-fragment #:store-fragment #:load-fragment-a #:load-fragment-b #:mma-accumulate
-   #:make-register-tile #:mma-accumulate-via-tile
+   #:make-register-tile #:mma-accumulate-via-tile #:inner-dimension
    ;; Async operations
    #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile #:load-local #:store-global
    #:position-tile #:position-tile-at
@@ -468,7 +468,7 @@
                 
                 ;; MMA operations (endeavor 132)
                 #:make-register-fragment #:store-fragment #:load-fragment-a #:load-fragment-b #:mma-accumulate
-   #:make-register-tile #:mma-accumulate-via-tile
+   #:make-register-tile #:mma-accumulate-via-tile #:inner-dimension
                 ;; Async operations
                 #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile #:load-local #:store-global
                 #:position-tile #:position-tile-at
@@ -654,7 +654,7 @@
    ;; Compiler/Codegen
    #:emit-llvm
    #:make-register-fragment #:store-fragment #:load-fragment-a #:load-fragment-b #:mma-accumulate
-   #:make-register-tile #:mma-accumulate-via-tile
+   #:make-register-tile #:mma-accumulate-via-tile #:inner-dimension
    #:compile-function #:store-chunk #:load-tile #:store-tile #:load-local #:store-global
    #:load-tile-at #:store-tile-at #:position-tile #:position-tile-at #:make-async-barrier #:await
    #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle

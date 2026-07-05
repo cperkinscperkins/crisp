@@ -366,6 +366,20 @@
                                                  (load-fragment-b ,b (0 ,nj))))))))
            env context location))))))
 
+;;; ===================================================================
+;;; P4 — matmul helpers.  inner-dimension = the matmul contraction extent K.
+;;; ===================================================================
+
+(defun analyze-inner-dimension (expr env context location)
+  "(inner-dimension A B) -> the contraction extent K (A is M×K row-major, so K is A's
+   inner/column extent = extents[1]).  Rewrites to (~ (extents~ A) 1)."
+  (destructuring-bind (a b) (cdr expr)
+    (declare (ignore b))
+    (let* ((cl (find-package :crisp-language))
+           (tilde   (intern "~" cl))
+           (extents (intern "EXTENTS~" cl)))
+      (analyze-expression (list tilde (list extents a) 1) env context location))))
+
 (defun register-mma-analyzers ()
   "Registers the MMA expression analyzers in *expression-analyzers* for both
    :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers
@@ -380,6 +394,7 @@
                          (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
                          (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
                          (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
+                         (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
                          ;; store-tile OVERLOAD: runs after register-control-analyzers,
                          ;; so this wins; it delegates to the SLM store-tile for non-tiles.
                          (cons "STORE-TILE"              #'analyze-store-tile-mma)))

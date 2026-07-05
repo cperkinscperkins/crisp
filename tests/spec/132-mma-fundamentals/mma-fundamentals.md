@@ -236,9 +236,21 @@ Phases (bottom-up)
     `inner-dimension`/`outer-dimensions` (for the runtime K-loop — arrives with K-tiling);
     P3b-2 = the body + `accum-op`/`accum` epilogue-fusion API (bodyless covers the core).
 
-[ ] P4 — **Sketch B**, synchronous tiled, K-loop accumulation.
-    - Test: on-metal correctness + `benchmarks/matmul/` vs a hand-CUDA **synchronous
-      shared-memory tiled** reference (same algorithm, apples-to-apples).
+[x] P4 (kernel) — synchronous tiled matmul COMPILES.  DONE 2026-07-05.  Spec 06.
+    - Decision (with user): K-tile = MMA-K (8), so the K-loop is EXTERNAL (a runtime
+      dotimes) and mma-accumulate-via-tile stays one-K-step (P3b-1 unchanged).
+      Accumulation across K-tiles is automatic (mma = A·B + C; the macro set!s the tile).
+    - `inner-dimension A B` -> K (rewrite to (~ (extents~ A) 1)); wrap in to-int for the
+      loop math (extents are ulong).  SLM staging via the existing sync `load-tile-coords`
+      (element coords) into `make-scratch-matrix float (M 8)` / `(8 N)` tiles;
+      `sync-workgroup` around the MMA; `store-tile` writes the register C-tile out.
+    - Kernel (single-warp, one 16x8 C-tile): stage A[:,kt*8:+8] / B[kt*8:+8,:] per
+      K-step, mma-accumulate-via-tile, loop.  Verified PTX: mma.sync in the K-loop +
+      st.shared (staging) + ld.shared (fragment reads).  Suite 852/852 both ways, 192 neg.
+    REMAINING P4: on-metal (RTX) correctness of a known A·B product; `benchmarks/matmul/`
+    vs a hand-CUDA synchronous shared-memory tiled reference; grid-stride over C
+    (multi-tile) — single-workgroup for now.  `make-scratch-matrix float (M N)` accepts a
+    2-list dim (non-square), good to know.
 
 Deferred:
 - `matrix-multiply-tile-stride` (the grid-y/grid-x/grid-k convenience macro).
