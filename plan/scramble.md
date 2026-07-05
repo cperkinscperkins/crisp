@@ -499,8 +499,8 @@ Miscelleny
 ==========
 - [x] multi-file support
 - [ ] TEST-FILES[ 01-basic.crisp 11-app.crisp]  
-- [ ] ieee / fast accuracy support
-- [ ] is-uniform? and if+/when+ variants
+- [x] ieee / fast accuracy support
+- [x] is-uniform? and if+/when+ variants
 - [x] what is going on with validation.lisp? why does everything need cl:cond ?
       same with autodiff.lisp  . FIX 
 - [ ] i64 and ui64 as types and literals!!
@@ -741,6 +741,7 @@ Reductions
 
 Async Ops \ Named Barriers \ Rings
 ===================================
+- [x] def-hardware-profile
 - [ ] def-topology
 - [ ] def-orchestration
 - [ ] primitives

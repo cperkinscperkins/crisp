@@ -17,7 +17,7 @@ And for absolute maximum performance, you might want to name or provide a hardwa
 
 Note that Crisp is not auto-optimizing the kernel for you. That is an ongoing area of research. You will have to choose the optimization strategy that fits your problem domain and code it. But Crisp forms make this a straightforward endeavor. We'll use real examples of matrix multiplication and Flash Attention as we progress.
 
-Hardware Profiles
+Hardware Profiles 
 -----------------
 
 `--ir-target`, when set to `ptx` or `spv` tells the compiler the IR target, which will usually be `ptx` for NVidia hardware and `spv` for Intel (and possibly others).  When compiling a kernel that is often enough, nothing more is needed.  But for some capabilties and or optimizations, the  `--ir-target-arch` flag can be used to further inform about the exact architecutre (like `sm_80` or `xe2`).  But for absolutely maximum performance optimizations, the compiler can be given specific bounds and capabilities of a targeted hardware and then it can tailor to those.  These "specific bounds and capabilities" are called a "hardware profile".
@@ -28,7 +28,7 @@ The Crisp compiler already knows about some hardware profiles. Those are listed 
 
 Note that a hardware profile says nothing about that actual architecture. It may seem strange, but to the Crisp compiler these are orthogonal concerns. Note that this means that Crisp can be employed for certain types of micro-optimizations or experiments. If you know that when your kernel runs, the GPU will be already partially employed running something else, then use a custom shrunken hardware profile to optimize for the capabilities that WILL be available. This avoids the "Empty Room Fallacy" that ensnares other GPU toolchains.
 
-### `def-hardware-profile` 
+### `def-hardware-profile`  ✅
 ```
 (def-hardware-profile <name> <profile-proplist...>)
 ```
@@ -39,23 +39,23 @@ Note that a hardware profile says nothing about that actual architecture. It may
 (def-hardware-profile nvidia-h100-sxm
    
   ;; --- Compute & Vector Core Mechanics ---
-  :simd-width 32
-  :compute-units 132                     
-  :max-registers-per-cu 65536            
-  :max-registers-per-thread 255
+  :simd-width 32  📝
+  :compute-units 132  ⚠️                     
+  :max-registers-per-cu 65536  📝            
+  :max-registers-per-thread 255  📝
 
   ;; --- Local Memory Hierarchy ---
-  :max-shared-memory-per-block 227KB     
-  :l2-cache-size 50MB
-  :native-cache-line-size 128           
+  :max-shared-memory-per-block 227KB  ✅     
+  :l2-cache-size 50MB  📝
+  :native-cache-line-size 128  📝           
 
   ;; --- Execution & Work-Group Bounds ---
-  :max-work-group-dims '(1024 1024 64)
-  :max-total-threads-per-block 1024
-  :max-concurrent-kernels 128
+  :max-work-group-dims '(1024 1024 64)  ✅
+  :max-total-threads-per-block 1024  ✅
+  :max-concurrent-kernels 128  📝
 
   ;; matrix units
-  :mma-shapes '((16 8 16) (8 8 8)))   ; list of (M N K) triples
+  :mma-shapes '((16 8 16) (8 8 8)))  📝  ; list of (M N K) triples
 ```
 
 Missing Keys: an incomplete `def-hardware-profile`, one without the full set of keys as illustrated above, is fine.
@@ -553,6 +553,17 @@ A register tile is extremely performant, but overuse can dramatically increase t
 your kernel, leading to lower overall occupancy. In most matrix multiplication operations, only the highly trafficed
 "C" tile of the result is stored in registers. The others are :local :address-space scratch matrices.
 
+A register tile is a **warp-collective** abstraction, not thread-local. The logical tile
+(e.g. 64×64) is distributed by the compiler across the warps of the workgroup, and within
+each warp across its lanes. Computing that distribution requires a known **SIMD width**.
+That width is taken from the active hardware profile's `:simd-width` if one is in play;
+otherwise it is inferred from `--ir-target-arch` (or the `--ir-target` default — e.g. 32
+for `sm_*`). If none of those pins the SIMD width, `make-register-tile` is a compile error.
+The hardware profile stays optional in general — this is simply one of the few forms that
+needs the SIMD width to be knowable. When a profile *is* supplied, its `:simd-width` and
+`:max-registers-per-thread` additionally let the compiler verify at compile time that the
+distributed fragments actually fit the physical register file.
+
 ### matrix-multiply-tile-stride
 ```
 (matrix-multiply-tile-stride <matrix> <matrix-tile> <inner-dim-scalar> (<grid-bindings>) ...)
@@ -629,6 +640,19 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
 The `<sz-expr>` you pass to `mma-accumulate-via-tile` is checked against the active profile's `:mma-shapes` (also an `(M N K)` triple). A shape the hardware doesn't list is a compile error. With no active profile, the shape is accepted unchecked.
 
 Also note the multiplicity constraints: the output tile's M and N (128x128 in the code above) must each be a multiple of the shape's M and N, and the K-loop extent (the matrices' inner dimension) must be a multiple of the shape's K.
+
+Two further compile-time constraints, both checked from information you already declare:
+
+- **Operand layout.** The A and B matrices' `:contiguous-term` (`:row-major` / `:col-major`)
+  selects which hardware MMA variant is emitted — the canonical NVIDIA form is A row-major,
+  B column-major (`mma…row.col`). A layout the chosen instruction cannot accept is a compile
+  error; use `:transpose` on the tile load to reconcile a source that is stored the other way.
+- **Precision.** The `(M N K)` triple encodes operand *precision* — the same M×N comes in
+  several K variants for different dtypes (e.g. k16 for fp16, k8 for tf32). The shape you pass
+  must match your operands' element type, or it is a compile error.
+
+Physical SLM *swizzling* (bank-conflict avoidance) is a separate performance optimization, not
+a correctness requirement — a plain row/col-major staging feeds the fragment loads correctly.
 
 Below is an example of the triple loop that `mma-accumulate-via-tile` might expand into.
 ```
