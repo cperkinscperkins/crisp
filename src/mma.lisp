@@ -312,6 +312,60 @@
              env context location)))
         (analyze-store-tile-expression expr env context location))))
 
+;;; ===================================================================
+;;; P3b — mma-accumulate-via-tile (bodyless): walk the register C-tile in MMA
+;;; fragments, accumulate one K-step, set! the tile back.  Composes P2/P3a
+;;; primitives (load-fragment-a/b, mma-accumulate, the tile record) — a rewrite.
+;;; ===================================================================
+
+(defun %check-mma-shape (mma-shape location)
+  "Validate the (M N K) MMA shape: a positive-int triple, in the P3 supported set
+   (tf32 (16 8 8) for now), and — if a hardware profile is active — a member of its
+   :mma-shapes (endeavor 130 key; precision is implicit in K)."
+  (unless (and (listp mma-shape) (= (length mma-shape) 3) (every #'integerp mma-shape))
+    (error 'crisp-compiler-error
+           :message (format nil "mma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." mma-shape)
+           :source-location location))
+  (unless (equal mma-shape '(16 8 8))
+    (error 'crisp-compiler-error
+           :message (format nil "mma-accumulate-via-tile: only tf32 (16 8 8) is supported so far, got ~a." mma-shape)
+           :source-location location))
+  (let ((profile (active-hardware-profile)))
+    (when profile
+      (let ((shapes (getf profile :mma-shapes)))
+        (when (and shapes (not (member mma-shape shapes :test #'equal)))
+          (error 'crisp-compiler-error
+                 :message (format nil "mma-accumulate-via-tile: shape ~a is not one of the active hardware profile's :mma-shapes ~a."
+                                  mma-shape shapes)
+                 :source-location location))))))
+
+(defun analyze-mma-accumulate-via-tile (expr env context location)
+  "P3b-1: (mma-accumulate-via-tile (M N K) C-TILE A B) — walk the register C-tile in
+   16x8 fragments and accumulate ONE K-step (K = the shape's K) into each, set!-ing the
+   accumulated tile back.  Bodyless (no accum-op / epilogue yet)."
+  (destructuring-bind (mma-shape c-tile a b) (cdr expr)
+    (%check-mma-shape mma-shape location)
+    (let* ((c-node (analyze-expression c-tile env context (append location '(1))))
+           (c-type (semantic-node-type c-node)))
+      (unless (%register-tile-type-p c-type)
+        (error 'crisp-compiler-error
+               :message (format nil "mma-accumulate-via-tile: C-tile (2nd arg) must be a register-tile, got type ~a." c-type)
+               :source-location location))
+      (destructuring-bind (tm tn) (gethash c-type *register-tile-dims*)
+        (let ((m-frags (floor tm 16)) (n-frags (floor tn 8)))
+          (analyze-expression
+           `(set! ,c-tile
+              (let ((cv ,c-tile))
+                (%construct-struct ,c-type
+                  ,@(loop for mi below m-frags
+                          append (loop for nj below n-frags
+                                       for idx = (+ (* mi n-frags) nj)
+                                       collect `(mma-accumulate
+                                                 (%extract-struct-member cv ,idx)
+                                                 (load-fragment-a ,a (,mi 0))
+                                                 (load-fragment-b ,b (0 ,nj))))))))
+           env context location))))))
+
 (defun register-mma-analyzers ()
   "Registers the MMA expression analyzers in *expression-analyzers* for both
    :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers
@@ -325,6 +379,7 @@
                          (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)
                          (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
                          (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
+                         (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
                          ;; store-tile OVERLOAD: runs after register-control-analyzers,
                          ;; so this wins; it delegates to the SLM store-tile for non-tiles.
                          (cons "STORE-TILE"              #'analyze-store-tile-mma)))

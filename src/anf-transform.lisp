@@ -187,7 +187,7 @@
                         "LOAD-TILE" "STORE-TILE"
                         ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
                         ;; coord / dim LISTS that must stay opaque to ANF.
-                        "STORE-FRAGMENT" "MAKE-REGISTER-TILE")
+                        "STORE-FRAGMENT" "MAKE-REGISTER-TILE" "MMA-ACCUMULATE-VIA-TILE")
                       :test #'string=))
           (if is-nested?
               (let ((temp (anf-fresh-temp)))

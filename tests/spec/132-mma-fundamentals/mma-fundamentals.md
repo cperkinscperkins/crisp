@@ -216,10 +216,25 @@ Phases (bottom-up)
     - Suite: unit 253, E2E 847/847 (in-process + binary non-debug), diff 847/847, neg
       191/191.  (056/07 fails only under Windows binary+debug = bug 033, unrelated.)
 
-[ ] P3 — `make-register-tile` (warp-distributed, profile/arch-driven fit check) +
-    `mma-accumulate-via-tile` sugar + `:mma-shapes` membership check (incl. precision) +
-    `inner-dimension` / `outer-dimensions`.
-    - Test: **Sketch A** end-to-end via the sugar.
+[x] P3 (core) — `make-register-tile` + `store-tile` overload + `mma-accumulate-via-tile`
+    (bodyless) + `:mma-shapes` check.  DONE 2026-07-05.  Decision (with user): tiles are
+    RECORD-OF-FRAGMENTS, single-warp-first.
+    - P3a: `make-register-tile T (M N) init` mints a record whose fields are (M/16)x(N/8)
+      `register-fragment-acc-f32-16x8` fragments (on-demand per (M N); dims tracked in
+      `*register-tile-dims*`).  `store-tile` is OVERLOADED (analyze-store-tile-mma): a
+      register-tile src → per-fragment store-fragment at (row-tile,col-tile); anything
+      else delegates to the existing SLM store-tile.  Spec 03 (16x16 uniform round-trip,
+      8 st.global).
+    - P3b-1: `mma-accumulate-via-tile (M N K) C-tile A B` — bodyless.  Rewrites to a
+      per-fragment-position unrolled `set! C-tile` of `mma-accumulate(C.frag,
+      load-fragment-a(mi,0), load-fragment-b(0,nj))` (ONE K-step, K = shape's K).
+      `%check-mma-shape`: (M N K) int triple + supported (tf32 (16 8 8) only for now) +
+      active-profile `:mma-shapes` membership (consumes the endeavor-130 key).  Specs
+      04 (1-frag→1 mma.sync), 05 (16x16→2 mma.sync), errors/01 (bad shape → CHECK-FAIL).
+    - Suite: E2E 850/850 both ways, neg 192/192.
+    DEFERRED within P3: the register FIT-CHECK (simd-width × max-registers-per-thread);
+    `inner-dimension`/`outer-dimensions` (for the runtime K-loop — arrives with K-tiling);
+    P3b-2 = the body + `accum-op`/`accum` epilogue-fusion API (bodyless covers the core).
 
 [ ] P4 — **Sketch B**, synchronous tiled, K-loop accumulation.
     - Test: on-metal correctness + `benchmarks/matmul/` vs a hand-CUDA **synchronous
