@@ -193,11 +193,28 @@ Phases (bottom-up)
       sourcing + register fit-check + c-t MMA metadata all await generalization.
     - Suite: E2E 846/846 both ways, unit 253/253, neg 191/191.
 
-[ ] P2 — `load-fragment-a` / `load-fragment-b` (→ `ldmatrix.sync`) + `mma-accumulate`
-    (→ `@llvm.nvvm.mma.m16n8k16.*`). First on-metal MMA. Where the layout + precision
-    checks first bite.
-    - Test: Sketch A's guts hand-wired — two fragment loads, one accumulate, one store.
-      HW-verify a known 16×8 product on PTX (RTX).
+[x] P2 — `load-fragment-a/b` + `mma-accumulate`.  DONE 2026-07-05.  Precision = tf32
+    (m16n8k8), so everything stays fp32-stored.  Spec `02-hello-mma`.
+    - Fragment types (programmatic, like P1): `register-fragment-a-tf32-16x8` (4 regs),
+      `register-fragment-b-tf32-8x8` (2 regs); accumulator reused from P1.
+    - `load-fragment-a/b` are REWRITES (per-lane reads at the m16n8k8 operand layouts;
+      A: (g,tg)(g+8,tg)(g,tg+4)(g+8,tg+4); B: (tg,g)(tg+4,g)) — NOT ldmatrix (later perf).
+      Read straight from global for now (SLM staging is P4).
+    - `mma-accumulate` is the ONE genuine-codegen piece: a `semantic-mma-accumulate`
+      node (defstruct in src/semantic.lisp so core.lisp's node etypecases see it) +
+      `generate-node-ir` that extractvalues A(4)/B(2)/C(4) fields, bitcasts A/B float→i32
+      (tf32 passed as i32), declares+calls `@llvm.nvvm.mma.m16n8k8.row.col.tf32`
+      ({f32x4}(i32x6,f32x4)), and insertvalues the 4 results into a new accumulator.
+      Wired into the 3 core.lisp node etypecases (type / source-location /
+      uniformity=:divergent).
+    - store-fragment now binds FRAG to a temp first so an inline mma-accumulate is
+      evaluated ONCE (verified: exactly one mma.sync in the PTX).
+    - Verified PTX: `mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32` (one instr).
+    - 02 is PTX-only (the NVVM intrinsic has no GENERIC lowering) -> SKIP-DEFAULT-PASS
+      (re-introduced) + SKIP-WITH[--debug] (bug 033).  On-metal (RTX) verification of a
+      known product = the remaining P2 follow-up.
+    - Suite: unit 253, E2E 847/847 (in-process + binary non-debug), diff 847/847, neg
+      191/191.  (056/07 fails only under Windows binary+debug = bug 033, unrelated.)
 
 [ ] P3 — `make-register-tile` (warp-distributed, profile/arch-driven fit check) +
     `mma-accumulate-via-tile` sugar + `:mma-shapes` membership check (incl. precision) +

@@ -121,6 +121,11 @@
 (defstruct semantic-cos
   type arg source-location)
 
+;; Endeavor 132 (MMA): one tf32 m16n8k8 matrix-multiply-accumulate.
+;; Genuine codegen (@llvm.nvvm.mma.m16n8k8.row.col.tf32); see src/mma.lisp.
+(defstruct semantic-mma-accumulate
+  type c-node a-node b-node source-location)
+
 ;; Endeavor 128: transcendentals. Unary intrinsics (1 arg) + binary (pow, atan2).
 (defstruct semantic-exp
   type arg source-location)

@@ -93,21 +93,24 @@
 ;;; ===================================================================
 
 (defun analyze-store-fragment (expr env context location)
-  "P1: rewrite (store-fragment FRAG DEST (TY TX)) to per-lane matrix element writes
-   using the m16n8 fp32 accumulator layout, then analyze that."
+  "P1/P2: rewrite (store-fragment FRAG DEST (TY TX)) to per-lane matrix element writes
+   using the m16n8 fp32 accumulator layout, then analyze that.  FRAG is bound to a temp
+   FIRST so a value-producing FRAG (e.g. an inline mma-accumulate) is evaluated ONCE,
+   not once per field extraction."
   (destructuring-bind (frag dest tile-id) (cdr expr)
     (let ((ty (first tile-id))
           (tx (second tile-id)))
       (analyze-expression
-       `(let ((lane (to-int (warp-lane))))
-          (let ((g  (/ lane 4))
-                (t2 (* 2 (rem lane 4))))
-            (let ((row (+ (* ,ty 16) g))
-                  (col (+ (* ,tx 8) t2)))
-              (set! (~ ,dest row col)               (%extract-struct-member ,frag 0))
-              (set! (~ ,dest row (+ col 1))         (%extract-struct-member ,frag 1))
-              (set! (~ ,dest (+ row 8) col)         (%extract-struct-member ,frag 2))
-              (set! (~ ,dest (+ row 8) (+ col 1))   (%extract-struct-member ,frag 3)))))
+       `(let ((frag-val ,frag))
+          (let ((lane (to-int (warp-lane))))
+            (let ((g  (/ lane 4))
+                  (t2 (* 2 (rem lane 4))))
+              (let ((row (+ (* ,ty 16) g))
+                    (col (+ (* ,tx 8) t2)))
+                (set! (~ ,dest row col)               (%extract-struct-member frag-val 0))
+                (set! (~ ,dest row (+ col 1))         (%extract-struct-member frag-val 1))
+                (set! (~ ,dest (+ row 8) col)         (%extract-struct-member frag-val 2))
+                (set! (~ ,dest (+ row 8) (+ col 1))   (%extract-struct-member frag-val 3))))))
        env context location))))
 
 ;;; ===================================================================
@@ -153,6 +156,86 @@
                 (~ ,src (+ r 4) c)))))
        env context location))))
 
+;;; ===================================================================
+;;; P2 — mma-accumulate: the one GENUINE-codegen piece.
+;;;
+;;; (mma-accumulate C-FRAG A-FRAG B-FRAG) -> new accumulator = A*B + C via a single
+;;; tf32 m16n8k8 MMA, lowering to @llvm.nvvm.mma.m16n8k8.row.col.tf32.
+;;;
+;;; The intrinsic signature: {f32,f32,f32,f32} (i32,i32,i32,i32,  i32,i32,  f32,f32,f32,f32)
+;;;   A operands (4) and B operands (2) are tf32 values passed as i32 (bit-reinterpret
+;;;   of the fp32 storage); C operands (4) and the {..} result are f32.
+;;; ===================================================================
+
+;; (defstruct semantic-mma-accumulate ...) lives in src/semantic.lisp so it is defined
+;; before analysis/core.lisp references it in the node-dispatch etypecases.
+
+(defun analyze-mma-accumulate (expr env context location)
+  "P2: (mma-accumulate C A B) -> a semantic-mma-accumulate node typed as the fp32
+   accumulator fragment."
+  (destructuring-bind (c-arg a-arg b-arg) (cdr expr)
+    (make-semantic-mma-accumulate
+     :type 'register-fragment-acc-f32-16x8
+     :c-node (analyze-expression c-arg env context location)
+     :a-node (analyze-expression a-arg env context location)
+     :b-node (analyze-expression b-arg env context location)
+     :source-location location)))
+
+(defmethod generate-node-ir ((node semantic-mma-accumulate)
+                             builder module var-env di-builder di-scope location-map)
+  "P2: emit one tf32 m16n8k8 MMA (@llvm.nvvm.mma.m16n8k8.row.col.tf32)."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let* ((c-val (gen (semantic-mma-accumulate-c-node node)))
+           (a-val (gen (semantic-mma-accumulate-a-node node)))
+           (b-val (gen (semantic-mma-accumulate-b-node node)))
+           (f32 (llvm-float-type))
+           (i32 (llvm-int32-type))
+           ;; A: 4 f32 fields -> bitcast to i32 (tf32 passed as i32)
+           (a-ops (loop for i below 4
+                        collect (llvm-build-bit-cast
+                                 builder
+                                 (llvm-build-extract-value builder a-val i (format nil "a~d" i))
+                                 i32 (format nil "a~di" i))))
+           ;; B: 2 f32 fields -> i32
+           (b-ops (loop for i below 2
+                        collect (llvm-build-bit-cast
+                                 builder
+                                 (llvm-build-extract-value builder b-val i (format nil "b~d" i))
+                                 i32 (format nil "b~di" i))))
+           ;; C: 4 f32 fields (accumulator, passed as f32)
+           (c-ops (loop for i below 4
+                        collect (llvm-build-extract-value builder c-val i (format nil "c~d" i))))
+           ;; intrinsic return type {f32 x 4}
+           (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+                     (dotimes (i 4) (setf (cffi:mem-aref elts 'llvm-type-ref i) f32))
+                     (llvm-struct-type-in-context (llvm-get-module-context module) elts 4 nil)))
+           ;; param types: i32 x6, f32 x4
+           (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 10)))
+                    (loop for i from 0 for ty in (list i32 i32 i32 i32 i32 i32 f32 f32 f32 f32)
+                          do (setf (cffi:mem-aref arr 'llvm-type-ref i) ty))
+                    (llvm-function-type ret-ty arr 10 nil)))
+           (fn-name "llvm.nvvm.mma.m16n8k8.row.col.tf32")
+           (fn (let ((existing (llvm-get-named-function module fn-name)))
+                 (if (cffi:null-pointer-p existing)
+                     (llvm-add-function module fn-name fn-ty)
+                     existing)))
+           (args (append a-ops b-ops c-ops))       ; 4 + 2 + 4 = 10
+           (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 10)))
+                       (loop for i from 0 for v in args
+                             do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
+                       arr))
+           (call (llvm-build-call2 builder fn-ty fn args-arr 10 "mma"))
+           ;; rebuild the accumulator fragment record from the 4 result f32
+           (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f32-16x8 module))
+           (result (let ((agg (llvm-get-undef acc-ty)))
+                     (dotimes (i 4)
+                       (setf agg (llvm-build-insert-value
+                                  builder agg
+                                  (llvm-build-extract-value builder call i (format nil "d~d" i))
+                                  i (format nil "acc~d" i))))
+                     agg)))
+      (values result nil))))
+
 (defun register-mma-analyzers ()
   "Registers the MMA expression analyzers in *expression-analyzers* for both
    :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers
@@ -163,7 +246,8 @@
     (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
                          (cons "STORE-FRAGMENT"          #'analyze-store-fragment)
                          (cons "LOAD-FRAGMENT-A"         #'analyze-load-fragment-a)
-                         (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)))
+                         (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)
+                         (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)))
       (let ((sym-cl (intern (car entry) cl-pkg))
             (sym-cc (intern (car entry) cc-pkg)))
         (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
