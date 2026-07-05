@@ -41,9 +41,18 @@
 (defun register-mma-types ()
   "Registers the MMA register-fragment record types.  Called from initialize-compiler
    AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every
-   init, so a load-time registration would not survive)."
+   init, so a load-time registration would not survive).
+
+   tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4
+   regs.  tf32 is fp32-stored, so all fragment fields are float."
   (register-struct-definition 'register-fragment-acc-f32-16x8
                               '((r0 float) (r1 float) (r2 float) (r3 float))
+                              :record)
+  (register-struct-definition 'register-fragment-a-tf32-16x8
+                              '((a0 float) (a1 float) (a2 float) (a3 float))
+                              :record)
+  (register-struct-definition 'register-fragment-b-tf32-8x8
+                              '((b0 float) (b1 float))
                               :record))
 
 
@@ -101,6 +110,49 @@
               (set! (~ ,dest (+ row 8) (+ col 1))   (%extract-struct-member ,frag 3)))))
        env context location))))
 
+;;; ===================================================================
+;;; P2 — load-fragment-a / load-fragment-b analyzers.
+;;;
+;;; (load-fragment-a SRC (TY TK)) / (load-fragment-b SRC (TK TX)) read this lane's
+;;; tf32 A / B fragment elements from SRC (global or SLM — the layout is the same) at
+;;; the m16n8k8 operand layout, and construct the A / B fragment record.  Rewrites to
+;;; per-lane matrix reads (ldmatrix is a later perf optimization).
+;;;
+;;; m16n8k8 tf32 operand layouts (g = lane/4, tg = lane%4):
+;;;   A (16x8, row): a0=(g,tg) a1=(g+8,tg) a2=(g,tg+4) a3=(g+8,tg+4)
+;;;   B (8x8, col):  b0=(tg,g) b1=(tg+4,g)
+;;; ===================================================================
+
+(defun analyze-load-fragment-a (expr env context location)
+  "P2: rewrite (load-fragment-a SRC (TY TK)) to a per-lane read of the 16x8 tf32 A
+   fragment, offset by the tile origin (TY*16, TK*8), then analyze."
+  (destructuring-bind (src tile-id) (cdr expr)
+    (let ((ty (first tile-id)) (tk (second tile-id)))
+      (analyze-expression
+       `(let ((lane (to-int (warp-lane))))
+          (let ((g (/ lane 4)) (tg (rem lane 4)))
+            (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 8) tg)))
+              (%construct-struct register-fragment-a-tf32-16x8
+                (~ ,src r       c)
+                (~ ,src (+ r 8) c)
+                (~ ,src r       (+ c 4))
+                (~ ,src (+ r 8) (+ c 4))))))
+       env context location))))
+
+(defun analyze-load-fragment-b (expr env context location)
+  "P2: rewrite (load-fragment-b SRC (TK TX)) to a per-lane read of the 8x8 tf32 B
+   fragment, offset by the tile origin (TK*8, TX*8), then analyze."
+  (destructuring-bind (src tile-id) (cdr expr)
+    (let ((tk (first tile-id)) (tx (second tile-id)))
+      (analyze-expression
+       `(let ((lane (to-int (warp-lane))))
+          (let ((g (/ lane 4)) (tg (rem lane 4)))
+            (let ((r (+ (* ,tk 8) tg)) (c (+ (* ,tx 8) g)))
+              (%construct-struct register-fragment-b-tf32-8x8
+                (~ ,src r       c)
+                (~ ,src (+ r 4) c)))))
+       env context location))))
+
 (defun register-mma-analyzers ()
   "Registers the MMA expression analyzers in *expression-analyzers* for both
    :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers
@@ -109,7 +161,9 @@
   (let ((cl-pkg (find-package :crisp-language))
         (cc-pkg (find-package :crisp.compiler)))
     (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
-                         (cons "STORE-FRAGMENT"          #'analyze-store-fragment)))
+                         (cons "STORE-FRAGMENT"          #'analyze-store-fragment)
+                         (cons "LOAD-FRAGMENT-A"         #'analyze-load-fragment-a)
+                         (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)))
       (let ((sym-cl (intern (car entry) cl-pkg))
             (sym-cc (intern (car entry) cc-pkg)))
         (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
