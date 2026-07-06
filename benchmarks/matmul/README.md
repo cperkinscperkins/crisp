@@ -52,17 +52,37 @@ Correctness confirmed on metal (the whole tf32 MMA path computes A·B).  Crisp
 **plateaued at ~70 GFLOPS** = memory-bound: one 16×8 output tile per warp, re-staging
 A/B from global each K-step (tiny arithmetic intensity), so the tensor cores starved.
 
-### Bigger register tiles — 64×64 (current kernel; not yet re-measured)
+### Bigger register tiles — 64×64 (RunPod, RTX, 2026-07-05) — CORRECT
 `matmul.crisp` now uses a **64×64** register tile (4×8 = 32 accumulator fragments, 32
 `mma.sync` per K-step).  Pure source change — no compiler work.  Per K-step it stages
-1024 global floats (64×8 A + 8×64 B) that feed 32 MMAs instead of 1, so **arithmetic
-intensity ≈6×** the 16×8 baseline.  Expect a meaningful GFLOPS jump (still memory-bound
-relative to a real GEMM, but far less starved).  Compiles + verified locally; re-run on
-RunPod to get the number.
+1024 global floats (64×8 A + 8×64 B) that feed 32 MMAs instead of 1.
 
-Register caveat: a 64×64 fp32 accumulator is ~128 registers/lane, near the 255 cap —
-watch for spilling / low occupancy (this is what the deferred register **fit-check** is
-for).  Remaining levers after this: fragment-load reuse inside mma-accumulate-via-tile,
+| MxNxK | crisp GFLOPS | 16×8 was | cuda GFLOPS | crisp/cuda |
+|-------|-------------:|---------:|------------:|-----------:|
+| 256   | 45.6         | 77.5     | 1309.1      | 28.7×      |
+| 512   | 185.5        | 70.8     | 1738.2      | 9.4×       |
+| 1024  | **429.4**    | 70.3     | 1844.7      | **4.3×**   |
+
+`ok=True` at all sizes.  **At 1024, +6.1× over the 16×8 baseline — almost exactly the
+predicted ~6× arithmetic-intensity win**; crisp/cuda collapsed 26.5× → 4.3×.  The 256
+*regression* is occupancy, not the kernel: 256² with 64×64 tiles = only 16 workgroups,
+so most SMs idle (512 → 64 blocks, 1024 → 256 blocks; GFLOPS climbs as the grid fills
+the machine).  Bigger tiles trade workgroup count for per-warp work — they want big
+problems.
+
+`ptxas -v` (sm_80, original monolithic accumulator): **181 registers, 0 spills**, but a
+**4896-byte stack frame** — the 64×64 accumulator was one monolithic loop-carried
+aggregate (`{{4×float}×32}`) rewritten wholesale each K-step, which SROA can't scalarize
+(survives as a struct-typed PHI), so NVPTX dropped it to `.local`.  Not spilling — a
+structural residency problem, unchanged even under `opt -O3`.
+
+**FIXED 2026-07-05 (register residency).** The `let` that binds a `make-register-tile`
+now explodes it into N individual per-fragment mutable variables (each a small
+`{4×float}` set! independently), so mem2reg/SROA keep them in registers.  Verified
+in-process (`opt -O3` → `llc`): the 64×64 matmul went from a 1024-byte `.local` depot +
+~200 local ld/st to **zero `.local`, 0 ld.local, 0 st.local** — fully register-resident,
+32 `mma.sync` / 32 `ld.shared` intact.  The `register-tile` / `mma-accumulate-via-tile`
+source API is unchanged.  Re-measure on RunPod to see the GFLOPS lift.  Remaining levers:
 block-level SLM reuse, then async load-tile / pipelining / warp-specialization.
 
 ## ⚠️ Status (draft — first RunPod iteration expected)
