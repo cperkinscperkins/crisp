@@ -1,14 +1,14 @@
 /*
  * Benchmark harness for the Crisp-compiled PTX tiled matmul.
- *   C[M x N] = A[M x K] . B[K x N]   (tf32, m16n8k8, one warp per 16x8 output tile)
+ *   C[M x N] = A[M x K] . B[K x N]   (tf32, m16n8k8, one warp per 64x64 output tile)
  *
- * Loads matmul.ptx and launches the `matmul` kernel over a (M/16 x N/8) grid of
+ * Loads matmul.ptx and launches the `matmul` kernel over a (M/64 x N/64) grid of
  * 32-thread workgroups (matching the kernel's grid-stride tile assignment via
  * get-workgroup-id).  Inputs are A = B = 1.0, so every C[i][j] == K — a trivially
  * checkable correctness oracle (1.0 is exact in tf32, and K is exact in fp32 accum).
  *
  * Param layout (45 slots, from the Crisp CUDA hoist): the two SLM scratch tiles come
- * first (b_tile 8x8, a_tile 16x8 — each a 9-tuple: ptr/byte_size/off0/off1/str0/str1/
+ * first (b_tile 8x64, a_tile 64x8 — each a 9-tuple: ptr/byte_size/off0/off1/str0/str1/
  * ext0/ext1/length), then A, B, C (same 9-tuple; ptr is a device pointer).
  *
  * Compile: nvcc -O3 -arch=sm_80 bench_harness.cu -lcuda -o matmul_crisp
@@ -37,8 +37,8 @@ int main(int argc, char** argv) {
     int K      = argc > 3 ? atoi(argv[3]) : 256;
     int warmup = argc > 4 ? atoi(argv[4]) : 20;
     int iters  = argc > 5 ? atoi(argv[5]) : 100;
-    if (M % 16 || N % 8 || K % 8) {
-        fprintf(stderr, "M must be %%16, N and K must be %%8 (got %d %d %d)\n", M, N, K);
+    if (M % 64 || N % 64 || K % 8) {
+        fprintf(stderr, "M and N must be %%64, K must be %%8 (got %d %d %d)\n", M, N, K);
         return 1;
     }
 
@@ -67,10 +67,11 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cuMemcpyHtoD(dB, hB.data(), hB.size()*sizeof(float)));
 
     // --- SLM scratch tiles (implicit params; ptr = shared-mem offset) ---
-    // b_tile 8x8 (col-major-agnostic: compact), a_tile 16x8.
-    uint64_t bt_ptr=0, bt_bytes=8*8*sizeof(float), bt_o0=0,bt_o1=0, bt_s0=8,bt_s1=1, bt_e0=8,bt_e1=8, bt_len=64;
-    uint64_t at_ptr=0, at_bytes=16*8*sizeof(float), at_o0=0,at_o1=0, at_s0=8,at_s1=1, at_e0=16,at_e1=8, at_len=128;
-    const unsigned sharedBytes = (unsigned)(bt_bytes + at_bytes);   // 768
+    // Order matches the hoist: b_tile (8x64) first, then a_tile (64x8).  Each is a
+    // compact 2D tensor 9-tuple; str0 = row stride (= cols), str1 = 1.
+    uint64_t bt_ptr=0, bt_bytes=8*64*sizeof(float), bt_o0=0,bt_o1=0, bt_s0=64,bt_s1=1, bt_e0=8, bt_e1=64, bt_len=512;
+    uint64_t at_ptr=0, at_bytes=64*8*sizeof(float), at_o0=0,at_o1=0, at_s0=8,at_s1=1, at_e0=64,at_e1=8, at_len=512;
+    const unsigned sharedBytes = (unsigned)(bt_bytes + at_bytes);   // 4096
 
     // --- global matrix tuples (2D tensor 9-tuple) ---
     // A: row-major MxK  -> str0=K (row), str1=1 (col)
@@ -88,8 +89,8 @@ int main(int argc, char** argv) {
         &dC,&C_bytes,&C_o0,&C_o1,&C_s0,&C_s1,&C_e0,&C_e1,&C_len,
     };
 
-    // grid = (M/16) x (N/8) workgroups, laid out linearly (kernel: wg -> gy,gx).
-    unsigned gridX = (unsigned)((M/16) * (N/8));
+    // grid = (M/64) x (N/64) workgroups, laid out linearly (kernel: wg -> gy,gx).
+    unsigned gridX = (unsigned)((M/64) * (N/64));
     fprintf(stderr, "Grid: %u blocks x 32 threads, shared=%u B, MxNxK=%dx%dx%d\n",
             gridX, sharedBytes, M, N, K);
 
