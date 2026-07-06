@@ -20,7 +20,7 @@ By treating the GPU as a fully integrated compute target rather than an isolated
 
 * **Uncompromised Expressiveness:** Write algorithms in their purest mathematical form. Crisp's macro system, dominant/recessive type system, and scoped precision controls allow you to express complex logic natively. You focus purely on the math; Crisp engineers the silicon.
 * **Absolute Analytical Certainty:** By deliberately rejecting Turing completeness, Crisp turns runtime footguns into strict compile-time errors. It guarantees kernel termination and features a mathematically provable, built-in reverse-mode auto-differentiation engine.
-* **Hardware-Aware Execution:** The compiler absorbs the structural plumbing. Crisp deeply understands hardware topology (`def-machine-model`). It automatically handles Scalar Replacement of Aggregates (SROA), maps implicit memory allocations, unrolls loops to fit exact register limits, and generates the necessary C++ or Python host-side boilerplate.
+* **Hardware-Aware Execution:** The compiler absorbs the structural plumbing. Crisp deeply understands hardware topology (`def-hardware-profile`). It automatically handles Scalar Replacement of Aggregates (SROA), maps implicit memory allocations, unrolls loops to fit exact register limits, and generates the necessary C++ or Python host-side boilerplate.
 * **Transparent Observability:** High-performance partitioned debug logging allows you to inspect the exact state of your data across thousands of threads without mutating the silicon's execution characteristics or causing Heisenbugs.
 
 ### The Specification

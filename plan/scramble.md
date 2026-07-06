@@ -725,6 +725,7 @@ We have a github release for the libraries, with a python script to fetch.
 Should we do something for the compiler itself?
 - [ ] update INSTALL.md instructions.
 - [ ] README.md should link to INSTALL.md
+- [x] handling of opt.exe / 
 
 Integer Only Operations
 =======================

@@ -158,3 +158,128 @@
         (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
         (unless (eq sym-cl sym-cc)
           (setf (gethash sym-cc *expression-analyzers*) (cdr entry)))))))
+
+;;; ===================================================================
+;;; In-process optimizer (2026-07-06)
+;;;
+;;; Replaces the shell-out to an external `opt` binary with an in-process
+;;; `LLVMRunPasses` call against the libLLVM we already ship (tools/LLVM-C-*).
+;;; The Windows dev box has no `opt.exe`, so local PTX/SPV builds were
+;;; UNoptimized (llc alone doesn't run the IR pipeline) and perf-blind.  Now
+;;; every build, on every platform, runs `default<O3>` — no extra binary, no
+;;; subprocess, no init_tools.py/tools-release change.
+;;;
+;;; %run-opt-O3 / %run-opt-pipeline keep their (input-ll output-ll [passes])
+;;; signatures, so compile-to-ptx / compile-to-spirv are UNCHANGED (same file
+;;; flow, same metadata-injection ordering, same +spv-opt-pipeline+ string, and
+;;; the same "fall back to unoptimized IR on failure" safety).  Only the
+;;; optimizer invocation swaps from `opt` subprocess to libLLVM in-process.
+;;; ===================================================================
+
+(defvar *nvptx-target-initialized* nil
+  "Guard so the NVPTX target is registered at most once per image.")
+
+(defun %ensure-nvptx-target-initialized ()
+  "Register the NVPTX target/MC so LLVMGetTargetFromTriple can resolve
+   nvptx64-nvidia-cuda.  Idempotent."
+  (unless *nvptx-target-initialized*
+    (crisp.llvm-bindings::llvm-initialize-nvptx-target-info)
+    (crisp.llvm-bindings::llvm-initialize-nvptx-target)
+    (crisp.llvm-bindings::llvm-initialize-nvptx-target-mc)
+    (setf *nvptx-target-initialized* t)))
+
+(defun %make-target-machine-for-module (module)
+  "Best-effort TargetMachine from MODULE's triple: NVPTX -> a real TM (target-
+   aware opt/TTI); an unregistered target (e.g. spir64) -> NULL, which is the
+   target-independent behavior opt fell back to on the SPV path anyway."
+  (%ensure-nvptx-target-initialized)
+  (let ((triple (crisp.llvm-bindings::llvm-get-target module)))
+    (if (or (null triple) (zerop (length triple)))
+        (cffi:null-pointer)
+        (cffi:with-foreign-objects ((tref :pointer) (err :pointer))
+          (setf (cffi:mem-ref err :pointer) (cffi:null-pointer))
+          (if (zerop (crisp.llvm-bindings::llvm-get-target-from-triple triple tref err))
+              (let ((tm (crisp.llvm-bindings::llvm-create-target-machine
+                         (cffi:mem-ref tref :pointer) triple "" ""
+                         2 0 0)))         ; opt=Default reloc=Default codemodel=Default
+                (if (cffi:null-pointer-p tm) (cffi:null-pointer) tm))
+              (cffi:null-pointer))))))
+
+(defun %run-passes-in-process (input-ll-file output-ll-file passes-string)
+  "Parse INPUT-LL-FILE into a fresh context, run PASSES-STRING (new pass manager)
+   in-process via the loaded libLLVM, and write the optimized IR to
+   OUTPUT-LL-FILE.  Returns T on success, NIL on any failure (caller falls back
+   to the unoptimized IR)."
+  (handler-case
+      (let ((ctx (crisp.llvm-bindings::llvm-context-create)))
+        (unwind-protect
+            (cffi:with-foreign-objects ((mbuf :pointer) (modout :pointer) (msg :pointer))
+              (setf (cffi:mem-ref msg :pointer) (cffi:null-pointer))
+              (cond
+                ((not (zerop (crisp.llvm-bindings::llvm-create-memory-buffer-with-contents-of-file
+                              (namestring input-ll-file) mbuf msg)))
+                 (log:warn "in-process opt: read failed") nil)
+                ((not (zerop (crisp.llvm-bindings::llvm-parse-ir-in-context
+                              ctx (cffi:mem-ref mbuf :pointer) modout msg)))
+                 (log:warn "in-process opt: parse failed") nil)
+                (t
+                 (let* ((module (cffi:mem-ref modout :pointer))
+                        (tm     (%make-target-machine-for-module module))
+                        (opts   (crisp.llvm-bindings::llvm-create-pass-builder-options)))
+                   (unwind-protect
+                       (let ((err (crisp.llvm-bindings::llvm-run-passes
+                                   module passes-string tm opts)))
+                         (if (cffi:null-pointer-p err)
+                             (let ((s (crisp.llvm-bindings:llvm-print-module-to-string module)))
+                               (unwind-protect
+                                   (with-open-file (o output-ll-file :direction :output
+                                                      :if-exists :supersede
+                                                      :if-does-not-exist :create)
+                                     (write-string (cffi:foreign-string-to-lisp s) o))
+                                 (crisp.llvm-bindings:llvm-dispose-message s))
+                               (log:info "in-process opt (~a) -> ~a" passes-string output-ll-file)
+                               t)
+                             (progn
+                               (log:warn "in-process opt: RunPasses failed: ~a"
+                                         (crisp.llvm-bindings::llvm-get-error-message err))
+                               nil)))
+                     (crisp.llvm-bindings::llvm-dispose-pass-builder-options opts)
+                     (unless (cffi:null-pointer-p tm)
+                       (crisp.llvm-bindings::llvm-dispose-target-machine tm))
+                     (crisp.llvm-bindings::llvm-dispose-module module))))))
+          (crisp.llvm-bindings::llvm-context-dispose ctx)))
+    (error (e)
+      (log:warn "in-process opt threw (~a), using unoptimized IR" e)
+      nil)))
+
+;; src/compiler.lisp — in-process replacements (were shell-outs to `opt`).
+(defun %run-opt-O3 (input-ll-file output-ll-file)
+  "Run default<O3> on INPUT-LL-FILE in-process (libLLVM), writing OUTPUT-LL-FILE.
+   Returns T on success, NIL on failure (caller falls back to unoptimized IR)."
+  (%run-passes-in-process input-ll-file output-ll-file "default<O3>"))
+
+(defun %ll-has-spirv-illegal-int-p (ll-file)
+  "T if LL-FILE mentions an integer type iN with N NOT in SPIR-V's legal set
+   {1,8,16,32,64}.  opt's default<O3> can synthesize odd widths (e.g. i33 from the
+   umul-high / (a*b)>>1 idiom) that llvm-spirv rejects with `InvalidBitWidth`."
+  (handler-case
+      (let ((text (uiop:read-file-string ll-file)))
+        (block scan
+          (cl-ppcre:do-register-groups ((#'parse-integer n)) ("\\bi(\\d+)\\b" text)
+            (unless (member n '(1 8 16 32 64))
+              (return-from scan t)))
+          nil))
+    (error () nil)))
+
+(defun %run-opt-pipeline (input-ll-file output-ll-file passes-string)
+  "SPV opt (in-process).  Run PASSES-STRING, but if the optimized IR contains a
+   SPIR-V-illegal integer width, discard it and return NIL so the caller falls
+   back to the unoptimized IR — llvm-spirv can't translate e.g. i33, whereas the
+   PTX path (llc/NVPTX) legalizes it fine, so this guard is SPV-only."
+  (let ((ok (%run-passes-in-process input-ll-file output-ll-file passes-string)))
+    (cond
+      ((not ok) nil)
+      ((%ll-has-spirv-illegal-int-p output-ll-file)
+       (log:warn "SPV opt produced a SPIR-V-illegal integer width; using unoptimized IR for this kernel")
+       nil)
+      (t t))))
