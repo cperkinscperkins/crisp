@@ -1,0 +1,28 @@
+;; Crisp tiled matmul (grid-stride): C[M x N] = A[M x K] . B[K x N], tf32.
+;; Each workgroup (one warp) owns one 16x8 output tile of C, selected by its
+;; workgroup-id.  Per K-step (K-tile = the MMA shape's K = 8) it stages the tile's
+;; A row-block and B col-block into SLM (sync load-tile-coords), then accumulates
+;; via one m16n8k8 mma.sync.  Launch grid = (M/16) * (N/8) workgroups of 32 threads.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((wg  (to-int (get-workgroup-id 0)))
+        (ntx (/ (to-int (num-cols C)) 8)))     ; N-tiles across x
+    (let ((gy (/ wg ntx))                      ; this workgroup's C-tile row
+          (gx (rem wg ntx))                    ; ... and column
+          (A-tile (make-scratch-matrix float (16 8)))
+          (B-tile (make-scratch-matrix float (8 8)))
+          (C-tile (make-register-tile float (16 8) 0.0))
+          (K (to-int (inner-dimension A B))))
+      (dotimes (kt (/ K 8))
+        (load-tile-coords A A-tile ((* gy 16) (* kt 8)))   ; A[gy*16:+16, kt*8:+8]
+        (load-tile-coords B B-tile ((* kt 8) (* gx 8)))    ; B[kt*8:+8, gx*8:+8]
+        (sync-workgroup)
+        (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+        (sync-workgroup))
+      (store-tile C-tile C (gy gx)))))

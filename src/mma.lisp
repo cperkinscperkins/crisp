@@ -305,10 +305,13 @@
                   ,@(loop for mi below m-frags
                           append (loop for nj below n-frags
                                        for idx = (+ (* mi n-frags) nj)
+                                       ;; tile-id (bty btx) may be RUNTIME (e.g. gy/gx
+                                       ;; from workgroup-id), so emit the offset as a FORM
+                                       ;; (bty*m-frags + mi), not an evaluated constant.
                                        collect `(store-fragment (%extract-struct-member tv ,idx)
                                                                 ,dest
-                                                                (,(+ (* bty m-frags) mi)
-                                                                 ,(+ (* btx n-frags) nj)))))))
+                                                                ((+ (* ,bty ,m-frags) ,mi)
+                                                                 (+ (* ,btx ,n-frags) ,nj)))))))
              env context location)))
         (analyze-store-tile-expression expr env context location))))
 
