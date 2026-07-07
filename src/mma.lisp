@@ -373,6 +373,157 @@
 ;;; P4 — matmul helpers.  inner-dimension = the matmul contraction extent K.
 ;;; ===================================================================
 
+
+(defun %head-name-eq (head name)
+  "T if HEAD is a symbol whose name is NAME (package-insensitive)."
+  (and (symbolp head) (string-equal (symbol-name head) name)))
+
+(defun %register-tile-init-form-p (form)
+  "T if FORM is a (make-register-tile T (M N) INIT) constructor."
+  (and (consp form) (= (length form) 4) (%head-name-eq (first form) "MAKE-REGISTER-TILE")
+       (listp (third form)) (= (length (third form)) 2)))
+
+(defun %register-tile-frag-syms (var m n)
+  "The N per-fragment variable symbols for tile VAR of shape MxN (row-major
+   fragment grid), interned in VAR's package with a `$F<i>' suffix."
+  (let ((nfrags (* (floor m 16) (floor n 8))))
+    (loop for i below nfrags
+          collect (intern (format nil "~a$F~d" (symbol-name var) i) (symbol-package var)))))
+
+(defparameter *default-max-registers-per-thread* 255
+  "Fallback per-thread register budget for the register-tile fit-check when no
+   hardware profile pins :max-registers-per-thread.  255 = NVIDIA architectural max.")
+
+(defun %register-tile-fit-check (m n location)
+  "F1 (Endeavor 132) — register FIT-CHECK.  A register-tile accumulator is now
+   register-resident (residency fix, 2026-07-06), so its size is bounded by the
+   per-thread register file.  Error if the (M/16)×(N/8) accumulator fragments — 4 fp32
+   regs each (tf32 m16n8k8) — exceed :max-registers-per-thread (from the active hardware
+   profile, else the NVIDIA default 255).  Single-warp for now, so fragments/warp = total."
+  (let* ((nfrags        (* (floor m 16) (floor n 8)))
+         (regs-per-frag 4)                        ; fp32 accumulator, tf32 m16n8k8
+         (total-regs    (* nfrags regs-per-frag))
+         (profile       (active-hardware-profile))
+         (budget        (or (and profile (getf profile :max-registers-per-thread))
+                            *default-max-registers-per-thread*)))
+    (when (> total-regs budget)
+      (error 'crisp-compiler-error
+             :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs), exceeding the register budget of ~a.  Use a smaller tile shape or a hardware profile with a larger :max-registers-per-thread."
+                              m n total-regs nfrags regs-per-frag budget)
+             :source-location location))))
+
+(defun %subst-accum (form binding-sym frag-var acc-set)
+  "F3: substitute a mma-accumulate-via-tile body per fragment — the accum-binding symbol
+   BINDING-SYM -> FRAG-VAR, and any (accum-op …) call -> ACC-SET (that fragment's
+   accumulate set!).  Walks FORM structurally (cons-cell recursion, so dotted/improper
+   tails are preserved)."
+  (cond
+    ((symbolp form) (if (eq form binding-sym) frag-var form))
+    ((consp form)
+     (if (%head-name-eq (first form) "ACCUM-OP")
+         acc-set
+         (cons (%subst-accum (car form) binding-sym frag-var acc-set)
+               (%subst-accum (cdr form) binding-sym frag-var acc-set))))
+    (t form)))
+
+(defun %emit-per-frag-accumulate (a b entry &optional accum-binding body)
+  "Per-fragment expansion of mma-accumulate-via-tile, matching the index/layout math.
+   Bodyless: one accumulate set!/frag (implicit accum-op).  With ACCUM-BINDING + BODY
+   (F3): splice BODY per fragment, substituting the binding symbol -> the fragment var
+   and (accum-op) -> that fragment's accumulate set! (so the body controls when/how often
+   the MMA fires and can fuse an epilogue on the bound accumulator, in registers)."
+  (destructuring-bind (m n syms) (cdr entry)
+    (let ((m-frags (floor m 16)) (n-frags (floor n 8)))
+      `(progn
+         ,@(loop for mi below m-frags append
+                 (loop for nj below n-frags
+                       for idx = (+ (* mi n-frags) nj)
+                       for fv = (nth idx syms)
+                       for acc-set = `(set! ,fv (mma-accumulate ,fv
+                                                                (load-fragment-a ,a (,mi 0))
+                                                                (load-fragment-b ,b (0 ,nj))))
+                       append (if body
+                                  (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                                  (list acc-set))))))))
+
+(defun %emit-per-frag-store (dest tile-id entry)
+  "Per-fragment expansion of (store-tile V DEST (BTY BTX)): one store-fragment
+   per fragment, matching analyze-store-tile-mma's runtime-offset math."
+  (destructuring-bind (m n syms) (cdr entry)
+    (let ((m-frags (floor m 16)) (n-frags (floor n 8))
+          (bty (first tile-id)) (btx (second tile-id)))
+      `(progn
+         ,@(loop for mi below m-frags append
+                 (loop for nj below n-frags
+                       for idx = (+ (* mi n-frags) nj)
+                       collect `(store-fragment ,(nth idx syms)
+                                                ,dest
+                                                ((+ (* ,bty ,m-frags) ,mi)
+                                                 (+ (* ,btx ,n-frags) ,nj)))))))))
+
+(defun %explode-rewrite-body-form (form tiles)
+  "Recursively rewrite body FORM: replace via-tile / store-tile references to
+   any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
+   otherwise recurse structurally."
+  (cond
+    ((not (consp form)) form)
+    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
+          (assoc (third form) tiles))
+     (let ((shape (nth 1 form)) (v (nth 2 form)) (a (nth 3 form)) (b (nth 4 form)))
+       ;; Still enforce the shape check the analyzer would have run — the explosion
+       ;; pre-empts analyze-mma-accumulate-via-tile, so validate here too.
+       (%check-mma-shape shape nil)
+       (if (>= (length form) 6)
+           ;; F3 body form: (via-tile shape v a b (binding) body…)
+           (let* ((binding-form (nth 5 form))
+                  (binding-sym (if (and (consp binding-form) (= (length binding-form) 1)
+                                        (symbolp (first binding-form)))
+                                   (first binding-form)
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
+                                          :source-location nil)))
+                  (body (nthcdr 6 form)))
+             (%emit-per-frag-accumulate a b (assoc v tiles) binding-sym body))
+           ;; bodyless (implicit single accum-op)
+           (%emit-per-frag-accumulate a b (assoc v tiles)))))
+    ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v dest tile-id) (cdr form)
+       (%emit-per-frag-store dest tile-id (assoc v tiles))))
+    (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
+
+(defun %explode-register-tiles (let-expr &optional location)
+  "Source->source: explode any (V (make-register-tile T (M N) INIT)) binding in
+   LET-EXPR into N (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite
+   the body's via-tile/store-tile references to V into per-fragment progns.  Runs the
+   register FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no
+   register-tile binding is present."
+  (if (not (and (consp let-expr) (>= (length let-expr) 2) (listp (second let-expr))))
+      let-expr
+      (let* ((head (first let-expr))
+             (bindings (second let-expr))
+             (body (cddr let-expr))
+             (tiles '()))
+        (let ((new-bindings
+                (loop for b in bindings
+                      append
+                      (if (and (consp b) (= (length b) 2) (symbolp (first b))
+                               (%register-tile-init-form-p (second b)))
+                          (destructuring-bind (mrt elem dims init) (second b)
+                            (declare (ignore mrt elem))
+                            (destructuring-bind (m n) dims
+                              (%register-tile-fit-check m n location)
+                              (let ((syms (%register-tile-frag-syms (first b) m n)))
+                                (push (list (first b) m n syms) tiles)
+                                (loop for s in syms
+                                      collect (list s `(make-register-fragment 16 8 ,init))))))
+                          (list b)))))
+          (if (null tiles)
+              let-expr
+              `(,head ,new-bindings
+                      ,@(mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) body)))))))
+
+
 (defun analyze-inner-dimension (expr env context location)
   "(inner-dimension A B) -> the contraction extent K (A is M×K row-major, so K is A's
    inner/column extent = extents[1]).  Rewrites to (~ (extents~ A) 1)."
@@ -383,11 +534,38 @@
            (extents (intern "EXTENTS~" cl)))
       (analyze-expression (list tilde (list extents a) 1) env context location))))
 
+
+(defun analyze-outer-dimensions-expression (expr env context location)
+  "(outer-dimensions A B) => M N.  M = A's outer/row extent (~ (extents~ A) 0);
+   N = B's outer/col extent (~ (extents~ B) 1).  Produces a semantic-values 2-value node."
+  (destructuring-bind (a b) (cdr expr)
+    (let* ((cl      (find-package :crisp-language))
+           (tilde   (intern "~" cl))
+           (extents (intern "EXTENTS~" cl))
+           (m-node  (analyze-expression (list tilde (list extents a) 0) env context
+                                        (append location '(1))))
+           (n-node  (analyze-expression (list tilde (list extents b) 1) env context
+                                        (append location '(2)))))
+      (make-semantic-values
+       :type (list (get-single-value-type m-node) (get-single-value-type n-node))
+       :value-nodes (list m-node n-node)
+       :source-location location))))
+
+
+(defun analyze-let-with-tile-explosion (expr env context location)
+  "let/let* analyzer wrapper: explode register-tile bindings into per-fragment
+   mutable variables (register residency, Endeavor 132), then defer to the
+   normal let analysis."
+  (analyze-let-expression (%explode-register-tiles expr location) env context location))
+
+
+
+
 (defun register-mma-analyzers ()
   "Registers the MMA expression analyzers in *expression-analyzers* for both
    :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers
    (which clrhash-es the table on every compiler init, so a load-time setf would not
-   survive)."
+   survive).  Overlay: adds the let/let* wrapper for register-tile residency."
   (let ((cl-pkg (find-package :crisp-language))
         (cc-pkg (find-package :crisp.compiler)))
     (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
@@ -398,9 +576,14 @@
                          (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
                          (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
                          (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
+                         (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
                          ;; store-tile OVERLOAD: runs after register-control-analyzers,
                          ;; so this wins; it delegates to the SLM store-tile for non-tiles.
-                         (cons "STORE-TILE"              #'analyze-store-tile-mma)))
+                         (cons "STORE-TILE"              #'analyze-store-tile-mma)
+                         ;; let/let* WRAPPER: explode register-tile accumulators into
+                         ;; per-fragment mutable vars before the normal let analysis.
+                         (cons "LET"                     #'analyze-let-with-tile-explosion)
+                         (cons "LET*"                    #'analyze-let-with-tile-explosion)))
       (let ((sym-cl (intern (car entry) cl-pkg))
             (sym-cc (intern (car entry) cc-pkg)))
         (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
