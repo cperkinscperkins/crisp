@@ -70,19 +70,39 @@
                               m n total-regs nfrags regs-per-frag budget)
              :source-location location))))
 
-(defun %emit-per-frag-accumulate (a b entry)
-  "Per-fragment expansion of (mma-accumulate-via-tile _ V A B): one set!/frag,
-   matching analyze-mma-accumulate-via-tile's index/layout math."
+(defun %subst-accum (form binding-sym frag-var acc-set)
+  "F3: substitute a mma-accumulate-via-tile body per fragment — the accum-binding symbol
+   BINDING-SYM -> FRAG-VAR, and any (accum-op …) call -> ACC-SET (that fragment's
+   accumulate set!).  Walks FORM structurally (cons-cell recursion, so dotted/improper
+   tails are preserved)."
+  (cond
+    ((symbolp form) (if (eq form binding-sym) frag-var form))
+    ((consp form)
+     (if (%head-name-eq (first form) "ACCUM-OP")
+         acc-set
+         (cons (%subst-accum (car form) binding-sym frag-var acc-set)
+               (%subst-accum (cdr form) binding-sym frag-var acc-set))))
+    (t form)))
+
+(defun %emit-per-frag-accumulate (a b entry &optional accum-binding body)
+  "Per-fragment expansion of mma-accumulate-via-tile, matching the index/layout math.
+   Bodyless: one accumulate set!/frag (implicit accum-op).  With ACCUM-BINDING + BODY
+   (F3): splice BODY per fragment, substituting the binding symbol -> the fragment var
+   and (accum-op) -> that fragment's accumulate set! (so the body controls when/how often
+   the MMA fires and can fuse an epilogue on the bound accumulator, in registers)."
   (destructuring-bind (m n syms) (cdr entry)
     (let ((m-frags (floor m 16)) (n-frags (floor n 8)))
       `(progn
          ,@(loop for mi below m-frags append
                  (loop for nj below n-frags
                        for idx = (+ (* mi n-frags) nj)
-                       collect `(set! ,(nth idx syms)
-                                      (mma-accumulate ,(nth idx syms)
-                                                      (load-fragment-a ,a (,mi 0))
-                                                      (load-fragment-b ,b (0 ,nj))))))))))
+                       for fv = (nth idx syms)
+                       for acc-set = `(set! ,fv (mma-accumulate ,fv
+                                                                (load-fragment-a ,a (,mi 0))
+                                                                (load-fragment-b ,b (0 ,nj))))
+                       append (if body
+                                  (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                                  (list acc-set))))))))
 
 (defun %emit-per-frag-store (dest tile-id entry)
   "Per-fragment expansion of (store-tile V DEST (BTY BTX)): one store-fragment
@@ -105,13 +125,25 @@
    otherwise recurse structurally."
   (cond
     ((not (consp form)) form)
-    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (= (length form) 5)
+    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
           (assoc (third form) tiles))
-     (destructuring-bind (shape v a b) (cdr form)
+     (let ((shape (nth 1 form)) (v (nth 2 form)) (a (nth 3 form)) (b (nth 4 form)))
        ;; Still enforce the shape check the analyzer would have run — the explosion
        ;; pre-empts analyze-mma-accumulate-via-tile, so validate here too.
        (%check-mma-shape shape nil)
-       (%emit-per-frag-accumulate a b (assoc v tiles))))
+       (if (>= (length form) 6)
+           ;; F3 body form: (via-tile shape v a b (binding) body…)
+           (let* ((binding-form (nth 5 form))
+                  (binding-sym (if (and (consp binding-form) (= (length binding-form) 1)
+                                        (symbolp (first binding-form)))
+                                   (first binding-form)
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
+                                          :source-location nil)))
+                  (body (nthcdr 6 form)))
+             (%emit-per-frag-accumulate a b (assoc v tiles) binding-sym body))
+           ;; bodyless (implicit single accum-op)
+           (%emit-per-frag-accumulate a b (assoc v tiles)))))
     ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
           (assoc (second form) tiles))
      (destructuring-bind (v dest tile-id) (cdr form)

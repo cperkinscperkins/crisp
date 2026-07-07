@@ -1,0 +1,29 @@
+;; F3 (MMA fundamentals) — mma-accumulate-via-tile with a BODY + accum-op.
+;;
+;; The optional body form:  (mma-accumulate-via-tile (M N K) C-tile A B (acc) BODY…)
+;; runs BODY per accumulator fragment, with `acc` bound to that fragment and the helper
+;; `(accum-op)` firing that fragment's MMA accumulation — so the developer controls when
+;; (and how often) the MMA runs, and can fuse an epilogue on `acc` while still in registers.
+;; Bodyless (spec 04) stays the default = an implicit single `(accum-op)`.
+;;
+;; Here the body fires `(accum-op)` TWICE on a single 16x8 fragment → two mma.sync,
+;; proving the body splices per-fragment and controls the MMA firing count.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; TEST-WITH[--ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel via_tile_body (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile float (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B (acc)
+      (accum-op)
+      (accum-op))                              ; fires twice → 2 mma.sync
+    (store-tile C-tile C (0 0))))

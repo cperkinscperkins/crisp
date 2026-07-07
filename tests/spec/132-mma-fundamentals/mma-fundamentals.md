@@ -280,11 +280,21 @@ budget is now REAL — so the fit-check is timely.
     semantic-truncate).  The node is generic (backs a future `(values …)` too).  Spec
     08-outer-dimensions.  IR-verified: reads A.extents[0] + B.extents[1], packs `{i64,i64}`,
     the let mvb extract-values each.  Suite 855/855 both ways, 193 neg, 253 unit.
-[ ] F3 — accum-op / body API (P3b-2).  Epilogue-fusion body for `mma-accumulate-via-tile`:
-    `(mma-accumulate-via-tile (M N K) C A B (acc) (accum-op …))` fuses a per-tile epilogue
-    (scale / bias / activation) over the accumulator fragments; bodyless stays the default.
+[x] F3 — accum-op / body API (P3b-2).  DONE 2026-07-06.  Optional body form
+    `(mma-accumulate-via-tile (M N K) C A B (acc) BODY…)`: BODY runs PER FRAGMENT with `acc`
+    bound to that fragment's (exploded) var and `(accum-op)` firing that fragment's MMA
+    accumulate set! — so the developer controls when/how-often the MMA fires and can fuse an
+    epilogue on `acc` in registers.  Bodyless (spec 04) stays the default = implicit single
+    `(accum-op)`.  Pure overlay (no new node): `%subst-accum` (tree-substitute binding→fragvar,
+    (accum-op)→accum-set) + body-aware `%emit-per-frag-accumulate`; `%explode-rewrite-body-form`
+    now matches length ≥ 6 (binding at nth 5, body = nthcdr 6).  Specs: 09-accum-op-body (accum-op
+    twice → 2 mma.sync on one fragment; proves body controls firing) + errors/03-bad-accum-binding
+    (binding not a one-symbol list → CHECK-FAIL).  IR-verified `acc` usable in arbitrary body
+    exprs.  Suite 857/857 both ways, 194 neg, 253 unit.  NOTE: real epilogue ops on a fragment
+    (relu/bias) don't exist yet — F3 is the API surface; those ops compose onto it later.
 
-Then endeavor 133 = Intel/SPV/DPAS port (its own effort: sub-group 16 not 32, systolic 8×N
+MMA FUNDAMENTALS COMPLETE (F1+F2+F3, 2026-07-06).  Next: endeavor 133 = Intel/SPV/DPAS port
+(its own effort: sub-group 16 not 32, systolic 8×N
 shapes, `joint_matrix` / `intel_sub_group_matrix_mad` instead of `mma.sync`).
 
 Deferred:

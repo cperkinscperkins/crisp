@@ -1,0 +1,17 @@
+;; CHECK-FAIL: "accum-binding"
+;;
+;; F3: the mma-accumulate-via-tile body form's accum-binding must be a ONE-symbol list
+;; like (acc).  Here it is (acc extra) — two symbols — which must fail at compile time.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel bad_accum_binding (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-tile (make-register-tile float (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B (acc extra)   ; malformed binding
+      (accum-op))
+    (store-tile C-tile C (0 0))))
