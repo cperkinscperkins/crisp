@@ -3441,3 +3441,134 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
           do (let ((v (generate-node-ir vn builder module var-env di-builder di-scope location-map)))
                (setf agg (llvm-build-insert-value builder agg v i (format nil "mv_~d" i)))))
     (values agg nil)))
+
+
+(defun %coop-type (elem-llvm rows cols use)
+  "Build target(\"spirv.CooperativeMatrixKHR\", ELEM-LLVM, 3, ROWS, COLS, USE) in the
+   global context (= the module's context, so the type matches)."
+  (let ((ctx (crisp.llvm-bindings::llvm-get-global-context)))
+    (cffi:with-foreign-objects ((tps :pointer 1) (ips :unsigned-int 4))
+      (setf (cffi:mem-aref tps :pointer 0) elem-llvm
+            (cffi:mem-aref ips :unsigned-int 0) 3          ; Subgroup scope
+            (cffi:mem-aref ips :unsigned-int 1) rows
+            (cffi:mem-aref ips :unsigned-int 2) cols
+            (cffi:mem-aref ips :unsigned-int 3) use)
+      (crisp.llvm-bindings::llvm-target-ext-type-in-context
+       ctx "spirv.CooperativeMatrixKHR" tps 1 ips 4))))
+
+(defun %coop-call (builder module name ret-type param-types arg-vals)
+  "Declare (once) NAME : RET-TYPE(PARAM-TYPES…) and build a call with ARG-VALS."
+  (let ((np (length param-types)) (na (length arg-vals)))
+    (cffi:with-foreign-objects ((ptypes :pointer (max 1 np)) (args :pointer (max 1 na)))
+      (loop for i from 0 for ty in param-types do (setf (cffi:mem-aref ptypes :pointer i) ty))
+      (loop for i from 0 for v in arg-vals do (setf (cffi:mem-aref args :pointer i) v))
+      (let* ((fnty (crisp.llvm-bindings::llvm-function-type ret-type ptypes np nil))
+             (existing (crisp.llvm-bindings::llvm-get-named-function module name))
+             (fn (if (cffi:null-pointer-p existing)
+                     (crisp.llvm-bindings::llvm-add-function module name fnty)
+                     existing)))
+        (crisp.llvm-bindings::llvm-build-call2 builder fnty fn args na "")))))
+
+(defun %coop-ptr-type (&optional (as 1))
+  "ptr addrspace(AS) — memory pointer for coop load/store (global=1, SLM/local=3)."
+  (crisp.llvm-bindings::llvm-pointer-type (crisp.llvm-bindings::llvm-int8-type) as))
+
+(defun %ptr-as (ptr-val)
+  "The address space of a pointer VALUE (global=1, SLM=3)."
+  (crisp.llvm-bindings::llvm-get-pointer-address-space (crisp.llvm-bindings::llvm-type-of ptr-val)))
+
+
+(defun %coop-tensor-ptr+stride (builder tensor-val orow ocol layout)
+  "From a Crisp tensor STRUCT value, return (values element-ptr stride-i64) for the coop
+   tile whose element origin is (OROW, OCOL) — both i64 LLVM values.  Tensor layout: field0
+   = parent storage {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0]
+   (RowMajor) / strides[1] (ColMajor)."
+  (let* ((f32 (llvm-float-type))
+         (storage (llvm-build-extract-value builder tensor-val 0 "coop_storage"))
+         (base    (llvm-build-extract-value builder storage 0 "coop_base"))
+         (strides (llvm-build-extract-value builder tensor-val 2 "coop_strides"))
+         (s0 (llvm-build-extract-value builder strides 0 "coop_s0"))
+         (s1 (llvm-build-extract-value builder strides 1 "coop_s1"))
+         (off0 (llvm-build-mul builder orow s0 "coop_off0"))
+         (off1 (llvm-build-mul builder ocol s1 "coop_off1"))
+         (flat (llvm-build-add builder off0 off1 "coop_flat"))
+         (stride (if (= layout 0) s0 s1)))
+    (cffi:with-foreign-object (idx :pointer 1)
+      (setf (cffi:mem-aref idx :pointer 0) flat)
+      (values (llvm-build-gep2 builder f32 base idx 1 "coop_elem_ptr") stride))))
+
+
+(defun %coop-store (builder module ptr matrix-val stride-val elem-llvm rows cols use layout)
+  "Emit CooperativeMatrixStoreKHR(PTR, MATRIX, LAYOUT, STRIDE, 0)."
+  (let ((i32 (crisp.llvm-bindings::llvm-int32-type))
+        (i64 (crisp.llvm-bindings::llvm-int64-type))
+        (as  (%ptr-as ptr)))
+    (%coop-call builder module
+                (format nil "__spirv_CooperativeMatrixStoreKHR_~d_~d_~d_as~d" use rows cols as)
+                (crisp.llvm-bindings::llvm-void-type)
+                (list (%coop-ptr-type as) (%coop-type elem-llvm rows cols use) i32 i64 i32)
+                (list ptr matrix-val
+                      (crisp.llvm-bindings::llvm-const-int i32 layout nil)
+                      stride-val
+                      (crisp.llvm-bindings::llvm-const-int i32 0 nil)))))
+
+
+(defun %coop-load (builder module ptr stride-val elem-llvm rows cols use layout)
+  "Emit CooperativeMatrixLoadKHR(PTR, LAYOUT, STRIDE, 0) -> coop(elem,rows,cols,use).
+   STRIDE-VAL is an i64 LLVM value (leading dimension in elements)."
+  (let ((i32 (crisp.llvm-bindings::llvm-int32-type))
+        (i64 (crisp.llvm-bindings::llvm-int64-type))
+        (as  (%ptr-as ptr)))
+    (%coop-call builder module
+                (format nil "__spirv_CooperativeMatrixLoadKHR_~d_~d_~d_as~d" use rows cols as)
+                (%coop-type elem-llvm rows cols use)
+                (list (%coop-ptr-type as) i32 i64 i32)
+                (list ptr
+                      (crisp.llvm-bindings::llvm-const-int i32 layout nil)
+                      stride-val
+                      (crisp.llvm-bindings::llvm-const-int i32 0 nil)))))
+
+
+(defun %coop-fill (builder module init-val elem-llvm rows cols use)
+  "Construct a coop matrix filled with INIT-VAL (scalar) via __spirv_CompositeConstruct."
+  (%coop-call builder module
+              (format nil "__spirv_CompositeConstruct_~d_~d_~d" use rows cols)
+              (%coop-type elem-llvm rows cols use)
+              (list elem-llvm) (list init-val)))
+
+(defmethod generate-node-ir ((node semantic-coop-op) builder module var-env di-builder di-scope location-map)
+  "Endeavor 133: lower a cooperative-matrix op (fill / load / store)."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let ((kind (semantic-coop-op-kind node))
+          (rows (semantic-coop-op-rows node))
+          (cols (semantic-coop-op-cols node))
+          (use  (semantic-coop-op-use node))
+          (layout (semantic-coop-op-layout node))
+          (i64 (llvm-int64-type))
+          (f32 (llvm-float-type)))
+      (labels ((origin (dim-node dim)
+                 ;; element origin along an axis = (tile-id * DIM), computed at runtime:
+                 ;; generate the tile-id int node, sext to i64, multiply by the compile-time DIM.
+                 (llvm-build-mul builder
+                                 (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
+                                 (llvm-const-int i64 dim nil) "coop_orig")))
+        (ecase kind
+          (:fill
+           (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
+                               f32 rows cols use)
+                   nil))
+          (:load
+           (multiple-value-bind (ptr stride)
+               (%coop-tensor-ptr+stride builder (gen (semantic-coop-op-tensor-node node))
+                                        (origin (semantic-coop-op-ty node) rows)
+                                        (origin (semantic-coop-op-tx node) cols) layout)
+             (values (%coop-load builder module ptr stride f32 rows cols use layout) nil)))
+          (:store
+           (let* ((mat (gen (semantic-coop-op-value-node node)))
+                  (tv  (gen (semantic-coop-op-tensor-node node)))
+                  (orow (origin (semantic-coop-op-ty node) rows))
+                  (ocol (origin (semantic-coop-op-tx node) cols)))
+             (multiple-value-bind (ptr stride)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
+               (%coop-store builder module ptr mat stride f32 rows cols use layout)
+               (values nil nil)))))))))

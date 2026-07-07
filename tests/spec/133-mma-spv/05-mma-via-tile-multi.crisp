@@ -1,0 +1,22 @@
+;; P3b (MMA fundamentals) — mma-accumulate-via-tile, MULTI-fragment tile.
+;;
+;; A 16x16 C-tile = two 16x8 fragments (N-frags = 16/8 = 2).  C = A[16x8] . B[8x16]
+;; (K = 8, one K-step).  The walk unrolls to TWO mma.sync (one per N-fragment): A's
+;; fragment is shared, B's fragment shifts by N-tile.  store-tile writes both fragments.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel via_tile_multi (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile float (16 16) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B)
+    (store-tile C-tile C (0 0))))

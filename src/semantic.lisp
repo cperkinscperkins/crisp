@@ -229,6 +229,16 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
    an LLVM aggregate (get-llvm-return-type + insertvalue), indexed by the let mvb path."
   type value-nodes source-location)
 
+;; Endeavor 133 (MMA on SPV) F-SPV: a SPIR-V cooperative-matrix op.  On :spirv the MMA
+;; fragment forms lower to these (not the NVIDIA per-lane rewrites).  KIND ∈ :fill :load
+;; :store.  TYPE = result coop-matrix crisp type `(coop-matrix elem rows cols use)`, or
+;; 'void for :store.  VALUE-NODE = fill's init / store's matrix.  TENSOR-NODE = load's src
+;; / store's dest (a Crisp tensor).  ROWS/COLS/USE/LAYOUT describe the matrix; TY/TX are the
+;; tile-id literals (element origin = ty*rows, tx*cols).  Codegen in the overlay.
+(defstruct semantic-coop-op
+  "A SPIR-V cooperative-matrix op (Endeavor 133): fill / load / store."
+  type kind value-node tensor-node rows cols use layout ty tx source-location)
+
 ;; Endeavor 122 (FFI) Pass 4: handles (void**).
 (defstruct semantic-make-c-handle
   "Allocates a local slot (alloca) that holds a pointer of HELD-TYPE; the node's

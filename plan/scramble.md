@@ -731,7 +731,35 @@ Integer Only Operations
 =======================
 [ ] There are 6 or 7 of these. Easily overlooked.  
 
+MMA
+===
+[x] fundamentals ( for ptx)
+[ ] ibid, for spir-v
+[ ] Chapter 0: synchronous tiled MMA.
+[ ] matrix-multiply-tile-stride macro
+[ ] CUTensorMap as implicit arg for kernels. 
+[ ] Chapter 1 - async tile
+[ ] Chapter 2 - pipelined async tile
+[ ] chapter 3 - warp specialization pipelining
+[ ] precision?  
+[ ] auto-differentiation?
+[ ] need to document register-fragment, including make-register-fragment and store-fragment.
+[ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 
+
+
+FMA
+===
+[ ] needs definition (where)
+[ ] is this even useful if mma-accumulate-via-tile / accum-op exist?
+    A: Yes, but it's worth mentioning that the GEMM macros take a lot of the oxygen
+issues having it explicit avoid:
+- precision ( ieee / fast )
+- one rounding or two?
+- fast op or not?
+- A|D 
+- no need to juggle precision to get speed.
+- widening
 
 
 Reductions

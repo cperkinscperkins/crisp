@@ -1,0 +1,22 @@
+;; P3a (MMA fundamentals) — make-register-tile + store-tile.
+;;
+;; make-register-tile mints a workgroup-collective M×N accumulator as a RECORD OF
+;; FRAGMENTS ((M/16)×(N/8) of the 16×8 accumulator fragments from P2).  Here a 16×16
+;; tile = two 16×8 fragments, initialized to a constant; store-tile writes them all
+;; back to a global 16×16 matrix (uniform round-trip, like P1's fragment test).
+;;
+;; store-tile walks the fragment grid and calls store-fragment per fragment at the
+;; right (row-tile, col-tile) offset — a rewrite over P2's store-fragment.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+
+(def-type out-m (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tile_roundtrip (&out C)
+  (declare #'(&out out-m => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((tile (make-register-tile float (16 16) 7.0)))
+    (store-tile tile C (0 0))))

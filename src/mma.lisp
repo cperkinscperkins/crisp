@@ -65,17 +65,40 @@
 ;;; construction / typing / codegen machinery is reused for free.
 ;;; ===================================================================
 
+
+
+(defun %spv-mma-shape ()
+  "The (values M N K) cooperative-matrix INSTRUCTION shape for the SPV path.  Vendor-
+   specific: from the active hardware profile's :mma-shapes (first entry) — e.g. Intel
+   BMG tf32 is (8 16 8) — else the NVIDIA default (16 8 8).  So the SAME kernel source
+   picks the right hardware shape per --hardware-profile.  A/B/C coop dims derive from
+   it: A = MxK, B = KxN, C(accumulator) = MxN."
+  (let* ((profile (active-hardware-profile))
+         (shapes  (and profile (getf profile :mma-shapes))))
+    (if (and shapes (consp (first shapes)) (= (length (first shapes)) 3))
+        (values-list (first shapes))
+        (values 16 8 8))))
+
 (defun analyze-make-register-fragment (expr env context location)
-  "P1: (make-register-fragment M N INIT) -> a register-fragment accumulator record.
-   Only the 16x8 fp32 shape is minted for now; rewrite to %construct-struct with INIT
-   splatted across the 4 per-lane registers and analyze that."
+  "P1 / F-SPV: (make-register-fragment M N INIT).  :spirv -> a filled accumulator coop
+   matrix; else the NVIDIA %construct-struct record."
   (destructuring-bind (m n init) (cdr expr)
-    (unless (and (eql m 16) (eql n 8))
-      (error 'crisp-compiler-error
-             :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
-    (analyze-expression
-     `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init)
-     env context location)))
+    (if (eq *target-backend* :spirv)
+        ;; accumulator = MxN from the active profile's mma-shape (the source m/n is a
+        ;; logical hint; the hardware shape wins so one source runs on both vendors).
+        (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+          (declare (ignore sk))
+          (make-semantic-coop-op
+           :type (list 'coop-matrix 'float sm sn 2) :kind :fill
+           :value-node (analyze-expression init env context (append location '(1)))
+           :rows sm :cols sn :use 2 :layout 0 :source-location location))
+        (progn
+          (unless (and (eql m 16) (eql n 8))
+            (error 'crisp-compiler-error
+                   :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
+          (analyze-expression
+           `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init)
+           env context location)))))
 
 ;;; ===================================================================
 ;;; P1 — store-fragment analyzer.
@@ -92,26 +115,46 @@
 ;;;   mapping; the real layout is here so P2's non-uniform load->store validates it.)
 ;;; ===================================================================
 
+
+
+(defun %coop-layout-of (tensor-node)
+  "The coop load/store MemoryLayout for an operand, derived from its tensor type's
+   :contiguous-term (NOT hardcoded): :last (row-major) -> 0 (RowMajor); :first (col-major)
+   -> 1 (ColMajor).  So the layout matches how the matrix is actually stored — the stride
+   in %coop-tensor-ptr+stride follows (s0 for RowMajor, s1 for ColMajor).  NOTE: Intel has
+   no ColumnMajor-B coop builtin, so an Intel B operand must be declared :row-major."
+  (if (eq (%get-tensor-ct (canonicalize-type-specifier (get-single-value-type tensor-node)))
+          :first)
+      1 0))
+
 (defun analyze-store-fragment (expr env context location)
-  "P1/P2: rewrite (store-fragment FRAG DEST (TY TX)) to per-lane matrix element writes
-   using the m16n8 fp32 accumulator layout, then analyze that.  FRAG is bound to a temp
-   FIRST so a value-producing FRAG (e.g. an inline mma-accumulate) is evaluated ONCE,
-   not once per field extraction."
+  "P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR
+   (accumulator, row-major); else the NVIDIA per-lane writes."
   (destructuring-bind (frag dest tile-id) (cdr expr)
-    (let ((ty (first tile-id))
-          (tx (second tile-id)))
-      (analyze-expression
-       `(let ((frag-val ,frag))
-          (let ((lane (to-int (warp-lane))))
-            (let ((g  (/ lane 4))
-                  (t2 (* 2 (rem lane 4))))
-              (let ((row (+ (* ,ty 16) g))
-                    (col (+ (* ,tx 8) t2)))
-                (set! (~ ,dest row col)               (%extract-struct-member frag-val 0))
-                (set! (~ ,dest row (+ col 1))         (%extract-struct-member frag-val 1))
-                (set! (~ ,dest (+ row 8) col)         (%extract-struct-member frag-val 2))
-                (set! (~ ,dest (+ row 8) (+ col 1))   (%extract-struct-member frag-val 3))))))
-       env context location))))
+    (let ((ty (first tile-id)) (tx (second tile-id)))
+      (if (eq *target-backend* :spirv)
+          ;; C(accumulator) = MxN; layout from the dest tensor's :contiguous-term.
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (declare (ignore sk))
+            (let ((dnode (analyze-expression dest env context (append location '(2)))))
+              (make-semantic-coop-op
+               :type 'void :kind :store
+               :value-node  (analyze-expression frag env context (append location '(1)))
+               :tensor-node dnode
+               :rows sm :cols sn :use 2 :layout (%coop-layout-of dnode)
+               :ty (analyze-expression `(to-int ,ty) env context (append location '(3)))
+               :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
+               :source-location location)))
+          (analyze-expression
+           `(let ((frag-val ,frag))
+              (let ((lane (to-int (warp-lane))))
+                (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                  (let ((row (+ (* ,ty 16) g)) (col (+ (* ,tx 8) t2)))
+                    (set! (~ ,dest row col)             (%extract-struct-member frag-val 0))
+                    (set! (~ ,dest row (+ col 1))       (%extract-struct-member frag-val 1))
+                    (set! (~ ,dest (+ row 8) col)       (%extract-struct-member frag-val 2))
+                    (set! (~ ,dest (+ row 8) (+ col 1)) (%extract-struct-member frag-val 3))))))
+           env context location)))))
 
 ;;; ===================================================================
 ;;; P2 — load-fragment-a / load-fragment-b analyzers.
@@ -126,35 +169,60 @@
 ;;;   B (8x8, col):  b0=(tg,g) b1=(tg+4,g)
 ;;; ===================================================================
 
+
+
 (defun analyze-load-fragment-a (expr env context location)
-  "P2: rewrite (load-fragment-a SRC (TY TK)) to a per-lane read of the 16x8 tf32 A
-   fragment, offset by the tile origin (TY*16, TK*8), then analyze."
+  "P2 / F-SPV: (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,
+   16x8, row-major); else the NVIDIA per-lane read."
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((ty (first tile-id)) (tk (second tile-id)))
-      (analyze-expression
-       `(let ((lane (to-int (warp-lane))))
-          (let ((g (/ lane 4)) (tg (rem lane 4)))
-            (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 8) tg)))
-              (%construct-struct register-fragment-a-tf32-16x8
-                (~ ,src r       c)
-                (~ ,src (+ r 8) c)
-                (~ ,src r       (+ c 4))
-                (~ ,src (+ r 8) (+ c 4))))))
-       env context location))))
+      (if (eq *target-backend* :spirv)
+          ;; A = MxK; layout from the tensor's :contiguous-term.
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (declare (ignore sn))
+            (let ((tnode (analyze-expression src env context (append location '(1)))))
+              (make-semantic-coop-op
+               :type (list 'coop-matrix 'float sm sk 0) :kind :load
+               :tensor-node tnode
+               :rows sm :cols sk :use 0 :layout (%coop-layout-of tnode)
+               :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+               :tx (analyze-expression `(to-int ,tk) env context (append location '(3)))
+               :source-location location)))
+          (analyze-expression
+           `(let ((lane (to-int (warp-lane))))
+              (let ((g (/ lane 4)) (tg (rem lane 4)))
+                (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 8) tg)))
+                  (%construct-struct register-fragment-a-tf32-16x8
+                    (~ ,src r c) (~ ,src (+ r 8) c) (~ ,src r (+ c 4)) (~ ,src (+ r 8) (+ c 4))))))
+           env context location)))))
 
 (defun analyze-load-fragment-b (expr env context location)
-  "P2: rewrite (load-fragment-b SRC (TK TX)) to a per-lane read of the 8x8 tf32 B
-   fragment, offset by the tile origin (TK*8, TX*8), then analyze."
+  "P2 / F-SPV: (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,
+   8x8, col-major); else the NVIDIA per-lane read."
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((tk (first tile-id)) (tx (second tile-id)))
-      (analyze-expression
-       `(let ((lane (to-int (warp-lane))))
-          (let ((g (/ lane 4)) (tg (rem lane 4)))
-            (let ((r (+ (* ,tk 8) tg)) (c (+ (* ,tx 8) g)))
-              (%construct-struct register-fragment-b-tf32-8x8
-                (~ ,src r       c)
-                (~ ,src (+ r 4) c)))))
-       env context location))))
+      (if (eq *target-backend* :spirv)
+          ;; B = KxN; layout from the tensor's :contiguous-term.  NOTE: Intel has no
+          ;; ColumnMajor-B coop builtin, so an Intel B operand must be declared :row-major
+          ;; (NVIDIA's canonical row.col MMA wants B :col-major — a genuine per-vendor
+          ;; storage difference, like the shape).
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (declare (ignore sm))
+            (let ((tnode (analyze-expression src env context (append location '(1)))))
+              (make-semantic-coop-op
+               :type (list 'coop-matrix 'float sk sn 1) :kind :load
+               :tensor-node tnode
+               :rows sk :cols sn :use 1 :layout (%coop-layout-of tnode)
+               :ty (analyze-expression `(to-int ,tk) env context (append location '(2)))
+               :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+               :source-location location)))
+          (analyze-expression
+           `(let ((lane (to-int (warp-lane))))
+              (let ((g (/ lane 4)) (tg (rem lane 4)))
+                (let ((r (+ (* ,tk 8) tg)) (c (+ (* ,tx 8) g)))
+                  (%construct-struct register-fragment-b-tf32-8x8
+                    (~ ,src r c) (~ ,src (+ r 4) c)))))
+           env context location)))))
 
 ;;; ===================================================================
 ;;; P2 — mma-accumulate: the one GENUINE-codegen piece.
@@ -170,71 +238,80 @@
 ;; (defstruct semantic-mma-accumulate ...) lives in src/semantic.lisp so it is defined
 ;; before analysis/core.lisp references it in the node-dispatch etypecases.
 
+
+
 (defun analyze-mma-accumulate (expr env context location)
-  "P2: (mma-accumulate C A B) -> a semantic-mma-accumulate node typed as the fp32
-   accumulator fragment."
+  "P2 / F-SPV: (mma-accumulate C A B).  Node typed as the accumulator fragment — a coop
+   matrix on :spirv, else the fp32 record.  Codegen forks in the generate-node-ir below."
   (destructuring-bind (c-arg a-arg b-arg) (cdr expr)
     (make-semantic-mma-accumulate
-     :type 'register-fragment-acc-f32-16x8
+     :type (if (eq *target-backend* :spirv)
+               (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                 (declare (ignore sk)) (list 'coop-matrix 'float sm sn 2))
+               'register-fragment-acc-f32-16x8)
      :c-node (analyze-expression c-arg env context location)
      :a-node (analyze-expression a-arg env context location)
      :b-node (analyze-expression b-arg env context location)
      :source-location location)))
 
+(defun %emit-nvvm-mma (builder module a-val b-val c-val)
+  "The NVIDIA tf32 m16n8k8 MMA (@llvm.nvvm.mma.m16n8k8.row.col.tf32) — copied from the
+   original src/mma.lisp semantic-mma-accumulate codegen; A-VAL/B-VAL/C-VAL are the fp32
+   fragment records.  Returns (values acc-record nil)."
+  (let* ((f32 (llvm-float-type))
+         (i32 (llvm-int32-type))
+         (a-ops (loop for i below 4 collect
+                      (llvm-build-bit-cast builder (llvm-build-extract-value builder a-val i (format nil "a~d" i)) i32 (format nil "a~di" i))))
+         (b-ops (loop for i below 2 collect
+                      (llvm-build-bit-cast builder (llvm-build-extract-value builder b-val i (format nil "b~d" i)) i32 (format nil "b~di" i))))
+         (c-ops (loop for i below 4 collect (llvm-build-extract-value builder c-val i (format nil "c~d" i))))
+         (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+                   (dotimes (i 4) (setf (cffi:mem-aref elts 'llvm-type-ref i) f32))
+                   (llvm-struct-type-in-context (llvm-get-module-context module) elts 4 nil)))
+         (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 10)))
+                  (loop for i from 0 for ty in (list i32 i32 i32 i32 i32 i32 f32 f32 f32 f32)
+                        do (setf (cffi:mem-aref arr 'llvm-type-ref i) ty))
+                  (llvm-function-type ret-ty arr 10 nil)))
+         (fn-name "llvm.nvvm.mma.m16n8k8.row.col.tf32")
+         (fn (let ((existing (llvm-get-named-function module fn-name)))
+               (if (cffi:null-pointer-p existing) (llvm-add-function module fn-name fn-ty) existing)))
+         (args (append a-ops b-ops c-ops))
+         (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 10)))
+                     (loop for i from 0 for v in args do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
+                     arr))
+         (call (llvm-build-call2 builder fn-ty fn args-arr 10 "mma"))
+         (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f32-16x8 module))
+         (result (let ((agg (llvm-get-undef acc-ty)))
+                   (dotimes (i 4)
+                     (setf agg (llvm-build-insert-value builder agg
+                                (llvm-build-extract-value builder call i (format nil "d~d" i))
+                                i (format nil "acc~d" i))))
+                   agg)))
+    (values result nil)))
+
+
+(defun %coop-mma (builder module a-val b-val c-val elem-llvm m n k)
+  "Emit CooperativeMatrixMulAddKHR(A, B, C, 0) -> the MxN accumulator coop matrix."
+  (let* ((a-ty (%coop-type elem-llvm m k 0))
+         (b-ty (%coop-type elem-llvm k n 1))
+         (c-ty (%coop-type elem-llvm m n 2))
+         (i32  (crisp.llvm-bindings::llvm-int32-type)))
+    (%coop-call builder module "__spirv_CooperativeMatrixMulAddKHR"
+                c-ty (list a-ty b-ty c-ty i32)
+                (list a-val b-val c-val (crisp.llvm-bindings::llvm-const-int i32 0 nil)))))
+
+
 (defmethod generate-node-ir ((node semantic-mma-accumulate)
                              builder module var-env di-builder di-scope location-map)
-  "P2: emit one tf32 m16n8k8 MMA (@llvm.nvvm.mma.m16n8k8.row.col.tf32)."
+  "F-SPV: on :spirv emit CooperativeMatrixMulAddKHR; else the tf32 NVVM intrinsic (132)."
   (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
-    (let* ((c-val (gen (semantic-mma-accumulate-c-node node)))
-           (a-val (gen (semantic-mma-accumulate-a-node node)))
-           (b-val (gen (semantic-mma-accumulate-b-node node)))
-           (f32 (llvm-float-type))
-           (i32 (llvm-int32-type))
-           ;; A: 4 f32 fields -> bitcast to i32 (tf32 passed as i32)
-           (a-ops (loop for i below 4
-                        collect (llvm-build-bit-cast
-                                 builder
-                                 (llvm-build-extract-value builder a-val i (format nil "a~d" i))
-                                 i32 (format nil "a~di" i))))
-           ;; B: 2 f32 fields -> i32
-           (b-ops (loop for i below 2
-                        collect (llvm-build-bit-cast
-                                 builder
-                                 (llvm-build-extract-value builder b-val i (format nil "b~d" i))
-                                 i32 (format nil "b~di" i))))
-           ;; C: 4 f32 fields (accumulator, passed as f32)
-           (c-ops (loop for i below 4
-                        collect (llvm-build-extract-value builder c-val i (format nil "c~d" i))))
-           ;; intrinsic return type {f32 x 4}
-           (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 4)))
-                     (dotimes (i 4) (setf (cffi:mem-aref elts 'llvm-type-ref i) f32))
-                     (llvm-struct-type-in-context (llvm-get-module-context module) elts 4 nil)))
-           ;; param types: i32 x6, f32 x4
-           (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 10)))
-                    (loop for i from 0 for ty in (list i32 i32 i32 i32 i32 i32 f32 f32 f32 f32)
-                          do (setf (cffi:mem-aref arr 'llvm-type-ref i) ty))
-                    (llvm-function-type ret-ty arr 10 nil)))
-           (fn-name "llvm.nvvm.mma.m16n8k8.row.col.tf32")
-           (fn (let ((existing (llvm-get-named-function module fn-name)))
-                 (if (cffi:null-pointer-p existing)
-                     (llvm-add-function module fn-name fn-ty)
-                     existing)))
-           (args (append a-ops b-ops c-ops))       ; 4 + 2 + 4 = 10
-           (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 10)))
-                       (loop for i from 0 for v in args
-                             do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
-                       arr))
-           (call (llvm-build-call2 builder fn-ty fn args-arr 10 "mma"))
-           ;; rebuild the accumulator fragment record from the 4 result f32
-           (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f32-16x8 module))
-           (result (let ((agg (llvm-get-undef acc-ty)))
-                     (dotimes (i 4)
-                       (setf agg (llvm-build-insert-value
-                                  builder agg
-                                  (llvm-build-extract-value builder call i (format nil "d~d" i))
-                                  i (format nil "acc~d" i))))
-                     agg)))
-      (values result nil))))
+    (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+          (a-val (gen (semantic-mma-accumulate-a-node node)))
+          (b-val (gen (semantic-mma-accumulate-b-node node))))
+      (if (eq *target-backend* :spirv)
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
+          (%emit-nvvm-mma builder module a-val b-val c-val)))))
 
 ;;; ===================================================================
 ;;; P3a — make-register-tile (record-of-fragments) + store-tile overload.
@@ -321,26 +398,28 @@
 ;;; primitives (load-fragment-a/b, mma-accumulate, the tile record) — a rewrite.
 ;;; ===================================================================
 
+
+
 (defun %check-mma-shape (mma-shape location)
-  "Validate the (M N K) MMA shape: a positive-int triple, in the P3 supported set
-   (tf32 (16 8 8) for now), and — if a hardware profile is active — a member of its
-   :mma-shapes (endeavor 130 key; precision is implicit in K)."
+  "Validate the (M N K) MMA shape: an int triple, and — if a hardware profile is active —
+   a member of its :mma-shapes (the vendor's supported shape, e.g. Intel (8 16 8)); with
+   NO profile, require the tf32 NVIDIA default (16 8 8)."
   (unless (and (listp mma-shape) (= (length mma-shape) 3) (every #'integerp mma-shape))
     (error 'crisp-compiler-error
            :message (format nil "mma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." mma-shape)
            :source-location location))
-  (unless (equal mma-shape '(16 8 8))
-    (error 'crisp-compiler-error
-           :message (format nil "mma-accumulate-via-tile: only tf32 (16 8 8) is supported so far, got ~a." mma-shape)
-           :source-location location))
-  (let ((profile (active-hardware-profile)))
-    (when profile
-      (let ((shapes (getf profile :mma-shapes)))
-        (when (and shapes (not (member mma-shape shapes :test #'equal)))
+  (let* ((profile (active-hardware-profile))
+         (shapes  (and profile (getf profile :mma-shapes))))
+    (if shapes
+        (unless (member mma-shape shapes :test #'equal)
           (error 'crisp-compiler-error
                  :message (format nil "mma-accumulate-via-tile: shape ~a is not one of the active hardware profile's :mma-shapes ~a."
                                   mma-shape shapes)
-                 :source-location location))))))
+                 :source-location location))
+        (unless (equal mma-shape '(16 8 8))
+          (error 'crisp-compiler-error
+                 :message (format nil "mma-accumulate-via-tile: only tf32 (16 8 8) is supported without a hardware profile, got ~a." mma-shape)
+                 :source-location location)))))
 
 (defun analyze-mma-accumulate-via-tile (expr env context location)
   "P3b-1: (mma-accumulate-via-tile (M N K) C-TILE A B) — walk the register C-tile in
@@ -383,34 +462,47 @@
   (and (consp form) (= (length form) 4) (%head-name-eq (first form) "MAKE-REGISTER-TILE")
        (listp (third form)) (= (length (third form)) 2)))
 
+
+
+(defun %frag-mn ()
+  "Per-fragment (M . N) for register-tile decomposition: the active profile's mma-shape
+   (M N) on :spirv, else NVIDIA 16x8."
+  (if (eq *target-backend* :spirv)
+      (multiple-value-bind (m n k) (%spv-mma-shape) (declare (ignore k)) (cons m n))
+      (cons 16 8)))
+
 (defun %register-tile-frag-syms (var m n)
-  "The N per-fragment variable symbols for tile VAR of shape MxN (row-major
-   fragment grid), interned in VAR's package with a `$F<i>' suffix."
-  (let ((nfrags (* (floor m 16) (floor n 8))))
-    (loop for i below nfrags
-          collect (intern (format nil "~a$F~d" (symbol-name var) i) (symbol-package var)))))
+  "The N per-fragment variable symbols for tile VAR of shape MxN (row-major fragment
+   grid), interned in VAR's package with a `$F<i>' suffix.  Fragment dims are the
+   target's per-fragment (M . N)."
+  (destructuring-bind (fm . fn) (%frag-mn)
+    (let ((nfrags (* (floor m fm) (floor n fn))))
+      (loop for i below nfrags
+            collect (intern (format nil "~a$F~d" (symbol-name var) i) (symbol-package var))))))
+
 
 (defparameter *default-max-registers-per-thread* 255
   "Fallback per-thread register budget for the register-tile fit-check when no
    hardware profile pins :max-registers-per-thread.  255 = NVIDIA architectural max.")
 
+
+
 (defun %register-tile-fit-check (m n location)
-  "F1 (Endeavor 132) — register FIT-CHECK.  A register-tile accumulator is now
-   register-resident (residency fix, 2026-07-06), so its size is bounded by the
-   per-thread register file.  Error if the (M/16)×(N/8) accumulator fragments — 4 fp32
-   regs each (tf32 m16n8k8) — exceed :max-registers-per-thread (from the active hardware
-   profile, else the NVIDIA default 255).  Single-warp for now, so fragments/warp = total."
-  (let* ((nfrags        (* (floor m 16) (floor n 8)))
-         (regs-per-frag 4)                        ; fp32 accumulator, tf32 m16n8k8
-         (total-regs    (* nfrags regs-per-frag))
-         (profile       (active-hardware-profile))
-         (budget        (or (and profile (getf profile :max-registers-per-thread))
-                            *default-max-registers-per-thread*)))
-    (when (> total-regs budget)
-      (error 'crisp-compiler-error
-             :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs), exceeding the register budget of ~a.  Use a smaller tile shape or a hardware profile with a larger :max-registers-per-thread."
-                              m n total-regs nfrags regs-per-frag budget)
-             :source-location location))))
+  "F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile
+   is opaque cooperative matrices (the driver owns register residency), so SKIP.  Else:
+   (M/16)x(N/8) accumulator fragments x 4 fp32 regs <= :max-registers-per-thread."
+  (unless (eq *target-backend* :spirv)
+    (let* ((nfrags        (* (floor m 16) (floor n 8)))
+           (regs-per-frag 4)
+           (total-regs    (* nfrags regs-per-frag))
+           (profile       (active-hardware-profile))
+           (budget        (or (and profile (getf profile :max-registers-per-thread))
+                              *default-max-registers-per-thread*)))
+      (when (> total-regs budget)
+        (error 'crisp-compiler-error
+               :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs), exceeding the register budget of ~a.  Use a smaller tile shape or a hardware profile with a larger :max-registers-per-thread."
+                                m n total-regs nfrags regs-per-frag budget)
+               :source-location location)))))
 
 (defun %subst-accum (form binding-sym frag-var acc-set)
   "F3: substitute a mma-accumulate-via-tile body per fragment — the accum-binding symbol
@@ -426,40 +518,42 @@
                (%subst-accum (cdr form) binding-sym frag-var acc-set))))
     (t form)))
 
+
+
+
+
 (defun %emit-per-frag-accumulate (a b entry &optional accum-binding body)
-  "Per-fragment expansion of mma-accumulate-via-tile, matching the index/layout math.
-   Bodyless: one accumulate set!/frag (implicit accum-op).  With ACCUM-BINDING + BODY
-   (F3): splice BODY per fragment, substituting the binding symbol -> the fragment var
-   and (accum-op) -> that fragment's accumulate set! (so the body controls when/how often
-   the MMA fires and can fuse an epilogue on the bound accumulator, in registers)."
+  "Per-fragment expansion of mma-accumulate-via-tile (fragment dims = target per-fragment
+   M/N).  Bodyless: one accumulate set!/frag; with ACCUM-BINDING+BODY: splice the body."
   (destructuring-bind (m n syms) (cdr entry)
-    (let ((m-frags (floor m 16)) (n-frags (floor n 8)))
-      `(progn
-         ,@(loop for mi below m-frags append
-                 (loop for nj below n-frags
-                       for idx = (+ (* mi n-frags) nj)
-                       for fv = (nth idx syms)
-                       for acc-set = `(set! ,fv (mma-accumulate ,fv
-                                                                (load-fragment-a ,a (,mi 0))
-                                                                (load-fragment-b ,b (0 ,nj))))
-                       append (if body
-                                  (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
-                                  (list acc-set))))))))
+    (destructuring-bind (fm . fn) (%frag-mn)
+      (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
+        `(progn
+           ,@(loop for mi below m-frags append
+                   (loop for nj below n-frags
+                         for idx = (+ (* mi n-frags) nj)
+                         for fv = (nth idx syms)
+                         for acc-set = `(set! ,fv (mma-accumulate ,fv
+                                                                  (load-fragment-a ,a (,mi 0))
+                                                                  (load-fragment-b ,b (0 ,nj))))
+                         append (if body
+                                    (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                                    (list acc-set)))))))))
 
 (defun %emit-per-frag-store (dest tile-id entry)
-  "Per-fragment expansion of (store-tile V DEST (BTY BTX)): one store-fragment
-   per fragment, matching analyze-store-tile-mma's runtime-offset math."
+  "Per-fragment expansion of (store-tile V DEST (BTY BTX)) — fragment dims = target M/N."
   (destructuring-bind (m n syms) (cdr entry)
-    (let ((m-frags (floor m 16)) (n-frags (floor n 8))
-          (bty (first tile-id)) (btx (second tile-id)))
-      `(progn
-         ,@(loop for mi below m-frags append
-                 (loop for nj below n-frags
-                       for idx = (+ (* mi n-frags) nj)
-                       collect `(store-fragment ,(nth idx syms)
-                                                ,dest
-                                                ((+ (* ,bty ,m-frags) ,mi)
-                                                 (+ (* ,btx ,n-frags) ,nj)))))))))
+    (destructuring-bind (fm . fn) (%frag-mn)
+      (let ((m-frags (floor m fm)) (n-frags (floor n fn))
+            (bty (first tile-id)) (btx (second tile-id)))
+        `(progn
+           ,@(loop for mi below m-frags append
+                   (loop for nj below n-frags
+                         for idx = (+ (* mi n-frags) nj)
+                         collect `(store-fragment ,(nth idx syms)
+                                                  ,dest
+                                                  ((+ (* ,bty ,m-frags) ,mi)
+                                                   (+ (* ,btx ,n-frags) ,nj))))))))))
 
 (defun %explode-rewrite-body-form (form tiles)
   "Recursively rewrite body FORM: replace via-tile / store-tile references to

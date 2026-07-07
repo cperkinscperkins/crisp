@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-07T03:41:05.288947Z
+Generated on 2026-07-07T22:34:13.088993Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -3035,6 +3035,63 @@ Generated on 2026-07-07T03:41:05.288947Z
 
 
 ---
+### DEFUN `%COOP-TYPE`
+- **Args**: `(ELEM-LLVM ROWS COLS USE)`
+
+  > Build target("spirv.CooperativeMatrixKHR", ELEM-LLVM, 3, ROWS, COLS, USE) in the  >    global context (= the module's context, so the type matches).
+
+
+---
+### DEFUN `%COOP-CALL`
+- **Args**: `(BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)`
+
+  > Declare (once) NAME : RET-TYPE(PARAM-TYPES…) and build a call with ARG-VALS.
+
+
+---
+### DEFUN `%COOP-PTR-TYPE`
+- **Args**: `(&OPTIONAL (AS 1))`
+
+  > ptr addrspace(AS) — memory pointer for coop load/store (global=1, SLM/local=3).
+
+
+---
+### DEFUN `%PTR-AS`
+- **Args**: `(PTR-VAL)`
+
+  > The address space of a pointer VALUE (global=1, SLM=3).
+
+
+---
+### DEFUN `%COOP-TENSOR-PTR+STRIDE`
+- **Args**: `(BUILDER TENSOR-VAL OROW OCOL LAYOUT)`
+
+  > From a Crisp tensor STRUCT value, return (values element-ptr stride-i64) for the coop  >    tile whose element origin is (OROW, OCOL) — both i64 LLVM values.  Tensor layout: field0  >    = parent storage {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0]  >    (RowMajor) / strides[1] (ColMajor).
+
+
+---
+### DEFUN `%COOP-STORE`
+- **Args**: `(BUILDER MODULE PTR MATRIX-VAL STRIDE-VAL ELEM-LLVM ROWS COLS USE
+              LAYOUT)`
+
+  > Emit CooperativeMatrixStoreKHR(PTR, MATRIX, LAYOUT, STRIDE, 0).
+
+
+---
+### DEFUN `%COOP-LOAD`
+- **Args**: `(BUILDER MODULE PTR STRIDE-VAL ELEM-LLVM ROWS COLS USE LAYOUT)`
+
+  > Emit CooperativeMatrixLoadKHR(PTR, LAYOUT, STRIDE, 0) -> coop(elem,rows,cols,use).  >    STRIDE-VAL is an i64 LLVM value (leading dimension in elements).
+
+
+---
+### DEFUN `%COOP-FILL`
+- **Args**: `(BUILDER MODULE INIT-VAL ELEM-LLVM ROWS COLS USE)`
+
+  > Construct a coop matrix filled with INIT-VAL (scalar) via __spirv_CompositeConstruct.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
@@ -3229,10 +3286,17 @@ Generated on 2026-07-07T03:41:05.288947Z
 
 
 ---
+### DEFUN `%MODULE-USES-COOP-MATRIX-P`
+- **Args**: `(MODULE)`
+
+  > T if MODULE declares/calls any __spirv_CooperativeMatrix* builtin (Endeavor 133) — used  >    to add --spirv-ext=+SPV_KHR_cooperative_matrix only when needed.
+
+
+---
 ### DEFUN `COMPILE-TO-SPIRV`
 - **Args**: `(MODULE OUTPUT-PATH &KEY DEBUG-P)`
 
-  > Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as ->  >    llvm-spirv.
+  > Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv.
 
 
 ---
@@ -5852,38 +5916,65 @@ Generated on 2026-07-07T03:41:05.288947Z
 
 
 ---
+### DEFUN `%SPV-MMA-SHAPE`
+
+  > The (values M N K) cooperative-matrix INSTRUCTION shape for the SPV path.  Vendor-  >    specific: from the active hardware profile's :mma-shapes (first entry) — e.g. Intel  >    BMG tf32 is (8 16 8) — else the NVIDIA default (16 8 8).  So the SAME kernel source  >    picks the right hardware shape per --hardware-profile.  A/B/C coop dims derive from  >    it: A = MxK, B = KxN, C(accumulator) = MxN.
+
+
+---
 ### DEFUN `ANALYZE-MAKE-REGISTER-FRAGMENT`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P1: (make-register-fragment M N INIT) -> a register-fragment accumulator record.  >    Only the 16x8 fp32 shape is minted for now; rewrite to %construct-struct with INIT  >    splatted across the 4 per-lane registers and analyze that.
+  > P1 / F-SPV: (make-register-fragment M N INIT).  :spirv -> a filled accumulator coop  >    matrix; else the NVIDIA %construct-struct record.
+
+
+---
+### DEFUN `%COOP-LAYOUT-OF`
+- **Args**: `(TENSOR-NODE)`
+
+  > The coop load/store MemoryLayout for an operand, derived from its tensor type's  >    :contiguous-term (NOT hardcoded): :last (row-major) -> 0 (RowMajor); :first (col-major)  >    -> 1 (ColMajor).  So the layout matches how the matrix is actually stored — the stride  >    in %coop-tensor-ptr+stride follows (s0 for RowMajor, s1 for ColMajor).  NOTE: Intel has  >    no ColumnMajor-B coop builtin, so an Intel B operand must be declared :row-major.
 
 
 ---
 ### DEFUN `ANALYZE-STORE-FRAGMENT`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P1/P2: rewrite (store-fragment FRAG DEST (TY TX)) to per-lane matrix element writes  >    using the m16n8 fp32 accumulator layout, then analyze that.  FRAG is bound to a temp  >    FIRST so a value-producing FRAG (e.g. an inline mma-accumulate) is evaluated ONCE,  >    not once per field extraction.
+  > P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR  >    (accumulator, row-major); else the NVIDIA per-lane writes.
 
 
 ---
 ### DEFUN `ANALYZE-LOAD-FRAGMENT-A`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2: rewrite (load-fragment-a SRC (TY TK)) to a per-lane read of the 16x8 tf32 A  >    fragment, offset by the tile origin (TY*16, TK*8), then analyze.
+  > P2 / F-SPV: (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,  >    16x8, row-major); else the NVIDIA per-lane read.
 
 
 ---
 ### DEFUN `ANALYZE-LOAD-FRAGMENT-B`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2: rewrite (load-fragment-b SRC (TK TX)) to a per-lane read of the 8x8 tf32 B  >    fragment, offset by the tile origin (TK*8, TX*8), then analyze.
+  > P2 / F-SPV: (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,  >    8x8, col-major); else the NVIDIA per-lane read.
 
 
 ---
 ### DEFUN `ANALYZE-MMA-ACCUMULATE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2: (mma-accumulate C A B) -> a semantic-mma-accumulate node typed as the fp32  >    accumulator fragment.
+  > P2 / F-SPV: (mma-accumulate C A B).  Node typed as the accumulator fragment — a coop  >    matrix on :spirv, else the fp32 record.  Codegen forks in the generate-node-ir below.
+
+
+---
+### DEFUN `%EMIT-NVVM-MMA`
+- **Args**: `(BUILDER MODULE A-VAL B-VAL C-VAL)`
+
+  > The NVIDIA tf32 m16n8k8 MMA (@llvm.nvvm.mma.m16n8k8.row.col.tf32) — copied from the  >    original src/mma.lisp semantic-mma-accumulate codegen; A-VAL/B-VAL/C-VAL are the fp32  >    fragment records.  Returns (values acc-record nil).
+
+
+---
+### DEFUN `%COOP-MMA`
+- **Args**: `(BUILDER MODULE A-VAL B-VAL C-VAL ELEM-LLVM M N K)`
+
+  > Emit CooperativeMatrixMulAddKHR(A, B, C, 0) -> the MxN accumulator coop matrix.
 
 
 ---
@@ -5928,7 +6019,7 @@ Generated on 2026-07-07T03:41:05.288947Z
 ### DEFUN `%CHECK-MMA-SHAPE`
 - **Args**: `(MMA-SHAPE LOCATION)`
 
-  > Validate the (M N K) MMA shape: a positive-int triple, in the P3 supported set  >    (tf32 (16 8 8) for now), and — if a hardware profile is active — a member of its  >    :mma-shapes (endeavor 130 key; precision is implicit in K).
+  > Validate the (M N K) MMA shape: an int triple, and — if a hardware profile is active —  >    a member of its :mma-shapes (the vendor's supported shape, e.g. Intel (8 16 8)); with  >    NO profile, require the tf32 NVIDIA default (16 8 8).
 
 
 ---
@@ -5953,10 +6044,16 @@ Generated on 2026-07-07T03:41:05.288947Z
 
 
 ---
+### DEFUN `%FRAG-MN`
+
+  > Per-fragment (M . N) for register-tile decomposition: the active profile's mma-shape  >    (M N) on :spirv, else NVIDIA 16x8.
+
+
+---
 ### DEFUN `%REGISTER-TILE-FRAG-SYMS`
 - **Args**: `(VAR M N)`
 
-  > The N per-fragment variable symbols for tile VAR of shape MxN (row-major  >    fragment grid), interned in VAR's package with a `$F<i>' suffix.
+  > The N per-fragment variable symbols for tile VAR of shape MxN (row-major fragment  >    grid), interned in VAR's package with a `$F<i>' suffix.  Fragment dims are the  >    target's per-fragment (M . N).
 
 
 ---
@@ -5969,7 +6066,7 @@ Generated on 2026-07-07T03:41:05.288947Z
 ### DEFUN `%REGISTER-TILE-FIT-CHECK`
 - **Args**: `(M N LOCATION)`
 
-  > F1 (Endeavor 132) — register FIT-CHECK.  A register-tile accumulator is now  >    register-resident (residency fix, 2026-07-06), so its size is bounded by the  >    per-thread register file.  Error if the (M/16)×(N/8) accumulator fragments — 4 fp32  >    regs each (tf32 m16n8k8) — exceed :max-registers-per-thread (from the active hardware  >    profile, else the NVIDIA default 255).  Single-warp for now, so fragments/warp = total.
+  > F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile  >    is opaque cooperative matrices (the driver owns register residency), so SKIP.  Else:  >    (M/16)x(N/8) accumulator fragments x 4 fp32 regs <= :max-registers-per-thread.
 
 
 ---
@@ -5983,14 +6080,14 @@ Generated on 2026-07-07T03:41:05.288947Z
 ### DEFUN `%EMIT-PER-FRAG-ACCUMULATE`
 - **Args**: `(A B ENTRY &OPTIONAL ACCUM-BINDING BODY)`
 
-  > Per-fragment expansion of mma-accumulate-via-tile, matching the index/layout math.  >    Bodyless: one accumulate set!/frag (implicit accum-op).  With ACCUM-BINDING + BODY  >    (F3): splice BODY per fragment, substituting the binding symbol -> the fragment var  >    and (accum-op) -> that fragment's accumulate set! (so the body controls when/how often  >    the MMA fires and can fuse an epilogue on the bound accumulator, in registers).
+  > Per-fragment expansion of mma-accumulate-via-tile (fragment dims = target per-fragment  >    M/N).  Bodyless: one accumulate set!/frag; with ACCUM-BINDING+BODY: splice the body.
 
 
 ---
 ### DEFUN `%EMIT-PER-FRAG-STORE`
 - **Args**: `(DEST TILE-ID ENTRY)`
 
-  > Per-fragment expansion of (store-tile V DEST (BTY BTX)): one store-fragment  >    per fragment, matching analyze-store-tile-mma's runtime-offset math.
+  > Per-fragment expansion of (store-tile V DEST (BTY BTX)) — fragment dims = target M/N.
 
 
 ---
@@ -6214,6 +6311,12 @@ Generated on 2026-07-07T03:41:05.288947Z
 ### DEFSTRUCT `SEMANTIC-VALUES`
 
   > A multi-value producer: TYPE = list of the VALUE-NODES' types; codegen packs them into  >    an LLVM aggregate (get-llvm-return-type + insertvalue), indexed by the let mvb path.
+
+
+---
+### DEFSTRUCT `SEMANTIC-COOP-OP`
+
+  > A SPIR-V cooperative-matrix op (Endeavor 133): fill / load / store.
 
 
 ---

@@ -670,6 +670,11 @@ Extended to also accept raw (function ...) forms from the Crisp reader
       (and (listp type-spec)
            (symbolp (first type-spec))
            (string-equal (symbol-name (first type-spec)) "C-HANDLE"))
+      ;; Endeavor 133 (MMA on SPV): (coop-matrix ELEM ROWS COLS USE) is a single type
+      ;; (not a multi-value list) — so get-single-value-type keeps it whole.
+      (and (listp type-spec)
+           (symbolp (first type-spec))
+           (string-equal (symbol-name (first type-spec)) "COOP-MATRIX"))
       (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
       (and (listp type-spec)
            (symbolp (first type-spec))
@@ -807,6 +812,15 @@ Extended to also accept raw (function ...) forms from the Crisp reader
                  (as-key (getf args :address-space))
                  (as-val (encode-address-space as-key)))
          (llvm-pointer-type (llvm-int8-type) as-val)))
+
+      ;; Endeavor 133 (MMA on SPV): opaque cooperative-matrix type
+      ;; (coop-matrix ELEM ROWS COLS USE) -> target("spirv.CooperativeMatrixKHR", …).
+      ;; Built via the overlay helper %coop-type (uses the global context, which is the
+      ;; module's context).  USE: 0=A 1=B 2=Accumulator.
+      ((and (consp type-spec) (eq (first type-spec) 'coop-matrix))
+       (destructuring-bind (elem rows cols use) (rest type-spec)
+         (funcall (intern "%COOP-TYPE" (find-package :crisp.compiler))
+                  (resolve-type-to-llvm elem) rows cols use)))
 
       ;; Struct (Pre-existing)
       ((and (symbolp type-spec) (find-struct-definition-by-name type-spec))
