@@ -48,6 +48,28 @@
     (loop for i below nfrags
           collect (intern (format nil "~a$F~d" (symbol-name var) i) (symbol-package var)))))
 
+(defparameter *default-max-registers-per-thread* 255
+  "Fallback per-thread register budget for the register-tile fit-check when no
+   hardware profile pins :max-registers-per-thread.  255 = NVIDIA architectural max.")
+
+(defun %register-tile-fit-check (m n location)
+  "F1 (Endeavor 132) — register FIT-CHECK.  A register-tile accumulator is now
+   register-resident (residency fix, 2026-07-06), so its size is bounded by the
+   per-thread register file.  Error if the (M/16)×(N/8) accumulator fragments — 4 fp32
+   regs each (tf32 m16n8k8) — exceed :max-registers-per-thread (from the active hardware
+   profile, else the NVIDIA default 255).  Single-warp for now, so fragments/warp = total."
+  (let* ((nfrags        (* (floor m 16) (floor n 8)))
+         (regs-per-frag 4)                        ; fp32 accumulator, tf32 m16n8k8
+         (total-regs    (* nfrags regs-per-frag))
+         (profile       (active-hardware-profile))
+         (budget        (or (and profile (getf profile :max-registers-per-thread))
+                            *default-max-registers-per-thread*)))
+    (when (> total-regs budget)
+      (error 'crisp-compiler-error
+             :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs), exceeding the register budget of ~a.  Use a smaller tile shape or a hardware profile with a larger :max-registers-per-thread."
+                              m n total-regs nfrags regs-per-frag budget)
+             :source-location location))))
+
 (defun %emit-per-frag-accumulate (a b entry)
   "Per-fragment expansion of (mma-accumulate-via-tile _ V A B): one set!/frag,
    matching analyze-mma-accumulate-via-tile's index/layout math."
@@ -96,11 +118,12 @@
        (%emit-per-frag-store dest tile-id (assoc v tiles))))
     (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
 
-(defun %explode-register-tiles (let-expr)
+(defun %explode-register-tiles (let-expr &optional location)
   "Source->source: explode any (V (make-register-tile T (M N) INIT)) binding in
    LET-EXPR into N (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite
-   the body's via-tile/store-tile references to V into per-fragment progns.  A
-   no-op (returns LET-EXPR unchanged) when no register-tile binding is present."
+   the body's via-tile/store-tile references to V into per-fragment progns.  Runs the
+   register FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no
+   register-tile binding is present."
   (if (not (and (consp let-expr) (>= (length let-expr) 2) (listp (second let-expr))))
       let-expr
       (let* ((head (first let-expr))
@@ -115,6 +138,7 @@
                           (destructuring-bind (mrt elem dims init) (second b)
                             (declare (ignore mrt elem))
                             (destructuring-bind (m n) dims
+                              (%register-tile-fit-check m n location)
                               (let ((syms (%register-tile-frag-syms (first b) m n)))
                                 (push (list (first b) m n syms) tiles)
                                 (loop for s in syms
@@ -129,7 +153,7 @@
   "let/let* analyzer wrapper: explode register-tile bindings into per-fragment
    mutable variables (register residency, Endeavor 132), then defer to the
    normal let analysis."
-  (analyze-let-expression (%explode-register-tiles expr) env context location))
+  (analyze-let-expression (%explode-register-tiles expr location) env context location))
 
 (defun register-mma-analyzers ()
   "Registers the MMA expression analyzers in *expression-analyzers* for both

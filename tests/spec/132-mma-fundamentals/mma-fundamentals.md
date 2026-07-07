@@ -252,6 +252,33 @@ Phases (bottom-up)
     (multi-tile) — single-workgroup for now.  `make-scratch-matrix float (M N)` accepts a
     2-list dim (non-square), good to know.
 
+Remaining fundamentals (post-P4, 2026-07-06)
+--------------------------------------------
+Register RESIDENCY + an in-process optimizer landed 2026-07-06: `make-register-tile`
+accumulators now explode into N per-fragment mutable vars (register-resident; were a
+monolithic aggregate that SROA couldn't scalarize, dropped to `.local`), and the compile
+pipeline runs `default<O3>` via `LLVMRunPasses` in-process (no `opt` binary).  The register
+budget is now REAL — so the fit-check is timely.
+
+[x] F1 — register FIT-CHECK.  DONE 2026-07-06.  Compile-time: (M/16)×(N/8) accumulator
+    fragments × 4 fp32 regs ≤ budget, where budget = active profile's :max-registers-per-thread
+    else `*default-max-registers-per-thread*` (255, NVIDIA max).  Lives in
+    `%register-tile-fit-check`, called from `%explode-register-tiles` (the residency-fix path
+    that replaces make-register-tile before analyze-make-register-tile runs).  Over-budget →
+    `crisp-compiler-error` "…register budget…".  Specs: errors/02-tile-over-budget (128×128 =
+    512 regs > 255, default budget) + 07-fit-check-profile (64×64 = 128 regs, fits default 255
+    but COMPILE-WITH[--hardware-profile=small-regs (100)] FAILs).  Single-warp for now
+    (fragments/warp = total); accumulator-only (transient A/B + addressing are the headroom).
+    Suite: 854/854 both ways, 193 neg, 253 unit.
+[ ] F2 — outer-dimension(s).  Companion to `inner-dimension` (done → K): the M / N
+    (non-contracted) extents.  Small rewrite to `(~ (extents~ …) …)`.
+[ ] F3 — accum-op / body API (P3b-2).  Epilogue-fusion body for `mma-accumulate-via-tile`:
+    `(mma-accumulate-via-tile (M N K) C A B (acc) (accum-op …))` fuses a per-tile epilogue
+    (scale / bias / activation) over the accumulator fragments; bodyless stays the default.
+
+Then endeavor 133 = Intel/SPV/DPAS port (its own effort: sub-group 16 not 32, systolic 8×N
+shapes, `joint_matrix` / `intel_sub_group_matrix_mad` instead of `mma.sync`).
+
 Deferred:
 - `matrix-multiply-tile-stride` (the grid-y/grid-x/grid-k convenience macro).
 - SLM swizzle / bank-conflict removal → `performance/` regression microbench.
