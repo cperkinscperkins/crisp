@@ -483,62 +483,53 @@ Returns modified IR text with metadata."
       (t t))))
 
 
+
+(defun %module-uses-coop-matrix-p (module)
+  "T if MODULE declares/calls any __spirv_CooperativeMatrix* builtin (Endeavor 133) — used
+   to add --spirv-ext=+SPV_KHR_cooperative_matrix only when needed."
+  (let ((fn (crisp.llvm-bindings::llvm-get-first-function module)))
+    (loop until (cffi:null-pointer-p fn) do
+      (let ((name (crisp.llvm-bindings::llvm-get-value-name fn)))
+        (when (and name (search "CooperativeMatrix" name))
+          (return-from %module-uses-coop-matrix-p t)))
+      (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
+    nil))
+
 (defun compile-to-spirv (module output-path &key debug-p)
-  "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as ->
-   llvm-spirv."
+  "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
          (name (pathname-name output-path))
          (ll-file     (merge-pathnames (format nil "~a.temp.ll" name) base-path))
          (ll-opt-file (merge-pathnames (format nil "~a.opt.ll"  name) base-path))
          (bc-file     (merge-pathnames (format nil "~a.temp.bc" name) base-path))
          (spv-file output-path))
-
-    ;; Bug 028 Part 2: remove dead array-returning functions before SPIR-V
-    ;; so IGC never sees a TypeArray return type, even in dead code.
     (%remove-dead-array-returning-functions module)
-
-    ;; Set target triple for SPIR-V before writing IR
     (llvm-set-target module "spir64-unknown-unknown")
-
-    ;; Endeavor 128 (Phase 2): if the module emitted any OpenCL native_* builtin
-    ;; (fast-precision transcendentals), inject !opencl.ocl.version so the translator
-    ;; maps the mangled calls to native_* ExtInst instead of unresolved imports.
     (when (%module-uses-native-builtin-p module)
       (%emit-opencl-version-metadata module))
-
-    ;; 1. Write raw .ll with SPIR-V kernel metadata injected
     (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
            (ir-with-metadata (inject-spir-kernel-metadata ir)))
       (with-open-file (stream ll-file :direction :output :if-exists :supersede)
         (write-string ir-with-metadata stream)))
-
-    ;; 2. opt -O3.  If opt isn't available, fall back to the raw IR.
     (let* ((opt-ok        (%run-opt-pipeline ll-file ll-opt-file +spv-opt-pipeline+))
            (llvm-as-input (if opt-ok ll-opt-file ll-file)))
-
-      ;; 3. llvm-as (LL -> BC)
       (let ((tool (resolve-tool-executable "llvm-as")))
         (run-tool-command
          (list tool (namestring llvm-as-input) "-o" (namestring bc-file))
          :log-prefix "[SPIR-V] ")))
-
-    ;; 4. llvm-spirv (BC -> SPV).
-    ;; Always request SPV_EXT_shader_atomic_float_add — forward kernels
-    ;; can emit `atomicrmw fadd` too (e.g. the sum-reduction phase-3
-    ;; atomic into a float result cell), not just backward _grad kernels.
     (let* ((tool (resolve-tool-executable "llvm-spirv"))
            (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
-           (ext-flags '("--spirv-ext=+SPV_EXT_shader_atomic_float_add"))
+           (ext-flags (append '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
+                              (when (%module-uses-coop-matrix-p module)
+                                '("--spirv-ext=+SPV_KHR_cooperative_matrix"))))
            (flags (append debug-flags ext-flags)))
       (run-tool-command
        (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
        :log-prefix "[SPIR-V] "))
-
     (unless debug-p
       (when (probe-file ll-file)     (delete-file ll-file))
       (when (probe-file ll-opt-file) (delete-file ll-opt-file))
       (when (probe-file bc-file)     (delete-file bc-file)))
-
     (log:info "Generated SPIR-V: ~a" spv-file)))
 
 ;;;; ============================================================
