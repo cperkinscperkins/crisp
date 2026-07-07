@@ -1,0 +1,17 @@
+;; CHECK-FAIL: "register budget"
+;;
+;; F1 — register FIT-CHECK.  A register-tile accumulator lives entirely in registers
+;; (residency fix, 2026-07-06), so its size is bounded by the per-thread register file.
+;; A 128×128 tile = (128/16)×(128/8) = 8×16 = 128 accumulator fragments × 4 fp32 regs
+;; = 512 registers/thread, which blows the 255 budget (NVIDIA default; overridable via a
+;; hardware profile's :max-registers-per-thread).  This must fail at compile time with a
+;; clear message rather than silently spilling to local memory.
+
+(def-type out-m (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tile_over_budget (&out C)
+  (declare #'(&out out-m => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((tile (make-register-tile float (128 128) 0.0)))
+    (store-tile tile C (0 0))))

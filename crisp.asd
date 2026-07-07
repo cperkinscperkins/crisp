@@ -45,6 +45,7 @@
                                              (:file "src/codegen/abi")
                                              (:file "src/codegen") ; 7. Uses compiler, defines codegen
                                              (:file "src/templates") ; 8. with-template-type macro
+                                             (:file "src/mma") ; Endeavor 132 — MMA fundamentals (register-fragment + forms)
                                              (:file "src/metadata") ; 9. Metadata generation
                                              (:file "src/metadata-val") ; 10. Metadata validators
                                              (:file "src/reader")

@@ -184,7 +184,10 @@
               (member (symbol-name op)
                       '("LOAD-TILE-COORDS" "STORE-TILE-COORDS"
                         "%LOAD-TILE-COORDS-BWD" "%STORE-TILE-COORDS-BWD"
-                        "LOAD-TILE" "STORE-TILE")
+                        "LOAD-TILE" "STORE-TILE"
+                        ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
+                        ;; coord / dim LISTS that must stay opaque to ANF.
+                        "STORE-FRAGMENT" "MAKE-REGISTER-TILE" "MMA-ACCUMULATE-VIA-TILE")
                       :test #'string=))
           (if is-nested?
               (let ((temp (anf-fresh-temp)))

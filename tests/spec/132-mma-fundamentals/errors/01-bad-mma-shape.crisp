@@ -1,0 +1,18 @@
+;; CHECK-FAIL: "only tf32"
+;;
+;; The (M N K) shape passed to mma-accumulate-via-tile is validated.  (16 8 16) is the
+;; fp16 shape — not (yet) supported (P3 does tf32 (16 8 8) only), so this must fail at
+;; compile time.  (Also exercises the profile :mma-shapes membership path when a profile
+;; is active.)
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel bad_mma_shape (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-tile (make-register-tile float (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 16) C-tile A B)
+    (store-tile C-tile C (0 0))))

@@ -3426,3 +3426,18 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         (handle-val  (generate-node-ir (semantic-get-pointer-handle-node node)
                                        builder module var-env di-builder di-scope location-map)))
     (crisp.llvm-bindings::llvm-build-load2 builder held-llvm handle-val "c_handle_load")))
+
+
+(defmethod generate-node-ir ((node semantic-values) builder module var-env
+                             di-builder di-scope location-map)
+  "Pack the value-nodes into a multi-value LLVM aggregate (get-llvm-return-type +
+   insertvalue), exactly like a multi-return function's result — the let mvb path then
+   extract-values each field.  Modeled on the semantic-truncate codegen."
+  (let* ((type-spec   (semantic-values-type node))
+         (struct-type (get-llvm-return-type module type-spec))
+         (agg         (llvm-get-undef struct-type)))
+    (loop for vn in (semantic-values-value-nodes node)
+          for i from 0
+          do (let ((v (generate-node-ir vn builder module var-env di-builder di-scope location-map)))
+               (setf agg (llvm-build-insert-value builder agg v i (format nil "mv_~d" i)))))
+    (values agg nil)))

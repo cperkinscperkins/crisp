@@ -499,8 +499,8 @@ Miscelleny
 ==========
 - [x] multi-file support
 - [ ] TEST-FILES[ 01-basic.crisp 11-app.crisp]  
-- [ ] ieee / fast accuracy support
-- [ ] is-uniform? and if+/when+ variants
+- [x] ieee / fast accuracy support
+- [x] is-uniform? and if+/when+ variants
 - [x] what is going on with validation.lisp? why does everything need cl:cond ?
       same with autodiff.lisp  . FIX 
 - [ ] i64 and ui64 as types and literals!!
@@ -725,6 +725,7 @@ We have a github release for the libraries, with a python script to fetch.
 Should we do something for the compiler itself?
 - [ ] update INSTALL.md instructions.
 - [ ] README.md should link to INSTALL.md
+- [x] handling of opt.exe / 
 
 Integer Only Operations
 =======================
@@ -741,6 +742,7 @@ Reductions
 
 Async Ops \ Named Barriers \ Rings
 ===================================
+- [x] def-hardware-profile
 - [ ] def-topology
 - [ ] def-orchestration
 - [ ] primitives

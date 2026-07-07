@@ -240,6 +240,7 @@
   (register-ops-analyzers)
   (register-control-analyzers)
   (register-struct-analyzers)
+  (register-mma-analyzers)         ; Endeavor 132 — MMA fundamentals (src/mma.lisp)
   ;; ##(...) device vector literal
   (setf (gethash 'crisp-vec-literal *expression-analyzers*)
         #'analyze-crisp-dvec-literal)
@@ -1472,6 +1473,17 @@ in single-pass mode."
    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast."
   (etypecase node
     (semantic-literal :uniform)
+    ;; Endeavor 132 (MMA): the accumulator fragment is per-lane (warp-distributed), so
+    ;; the MMA result is divergent.
+    (semantic-mma-accumulate :divergent)
+    ;; Endeavor 132 (MMA) F2: a multi-value pack is as uniform as its least-uniform member.
+    (semantic-values
+     (let ((states (mapcar (lambda (el) (calculate-uniformity-state el env))
+                           (semantic-values-value-nodes node))))
+       (cond
+         ((some (lambda (s) (eq s :divergent)) states) :divergent)
+         ((every (lambda (s) (eq s :uniform)) states) :uniform)
+         (t :unknown))))
     (semantic-device-vec-literal
      (let ((states (mapcar (lambda (el) (calculate-uniformity-state el env))
                            (semantic-device-vec-literal-elements node))))
@@ -1844,6 +1856,7 @@ in single-pass mode."
     (semantic-bitcast (semantic-bitcast-type node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-type node))
     (semantic-truncate (semantic-truncate-type node))
+    (semantic-values (semantic-values-type node))
     (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
     (semantic-funcall (semantic-funcall-type node))
@@ -1864,7 +1877,8 @@ in single-pass mode."
     (semantic-gpu-builtin (semantic-gpu-builtin-type node))
     (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-type node))
     (semantic-make-async-barrier      (semantic-make-async-barrier-type node))
-    (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-type node))))
+    (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-type node))
+    (semantic-mma-accumulate          (semantic-mma-accumulate-type node))))
 
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
@@ -1882,6 +1896,7 @@ in single-pass mode."
     (semantic-let (semantic-let-source-location node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-source-location node))
     (semantic-truncate (semantic-truncate-source-location node))
+    (semantic-values (semantic-values-source-location node))
     (semantic-add (semantic-add-source-location node))
     (semantic-sub (semantic-sub-source-location node))
     (semantic-mul (semantic-mul-source-location node))
@@ -1924,7 +1939,8 @@ in single-pass mode."
     (semantic-gpu-builtin (semantic-gpu-builtin-source-location node))
     (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-source-location node))
     (semantic-make-async-barrier      (semantic-make-async-barrier-source-location node))
-    (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-source-location node))))
+    (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-source-location node))
+    (semantic-mma-accumulate          (semantic-mma-accumulate-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)

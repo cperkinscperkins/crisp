@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-04T22:56:47.177288Z
+Generated on 2026-07-07T03:41:05.288947Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -3176,10 +3176,36 @@ Generated on 2026-07-04T22:56:47.177288Z
 
 
 ---
+### DEFVAR `*NVPTX-TARGET-INITIALIZED*`
+
+  > Guard so the NVPTX target is registered at most once per image.
+
+
+---
+### DEFUN `%ENSURE-NVPTX-TARGET-INITIALIZED`
+
+  > Register the NVPTX target/MC so LLVMGetTargetFromTriple can resolve  >    nvptx64-nvidia-cuda.  Idempotent.
+
+
+---
+### DEFUN `%MAKE-TARGET-MACHINE-FOR-MODULE`
+- **Args**: `(MODULE)`
+
+  > Best-effort TargetMachine from MODULE's triple: NVPTX -> a real TM (target-  >    aware opt/TTI); an unregistered target (e.g. spir64) -> NULL, which is the  >    target-independent behavior opt fell back to on the SPV path anyway.
+
+
+---
+### DEFUN `%RUN-PASSES-IN-PROCESS`
+- **Args**: `(INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)`
+
+  > Parse INPUT-LL-FILE into a fresh context, run PASSES-STRING (new pass manager)  >    in-process via the loaded libLLVM, and write the optimized IR to  >    OUTPUT-LL-FILE.  Returns T on success, NIL on any failure (caller falls back  >    to the unoptimized IR).
+
+
+---
 ### DEFUN `%RUN-OPT-O3`
 - **Args**: `(INPUT-LL-FILE OUTPUT-LL-FILE)`
 
-  > Run opt -O3 -S input-ll-file -o output-ll-file.  >    Returns T on success, NIL if opt isn't available or the run failed.
+  > Run default<O3> on INPUT-LL-FILE in-process (libLLVM), writing OUTPUT-LL-FILE.  >    Returns T on success, NIL on failure (caller falls back to unoptimized IR).
 
 
 ---
@@ -3189,10 +3215,17 @@ Generated on 2026-07-04T22:56:47.177288Z
 
 
 ---
+### DEFUN `%LL-HAS-SPIRV-ILLEGAL-INT-P`
+- **Args**: `(LL-FILE)`
+
+  > T if LL-FILE mentions an integer type iN with N NOT in SPIR-V's legal set  >    {1,8,16,32,64}.  opt's default<O3> can synthesize odd widths (e.g. i33 from the  >    umul-high / (a*b)>>1 idiom) that llvm-spirv rejects with `InvalidBitWidth`.
+
+
+---
 ### DEFUN `%RUN-OPT-PIPELINE`
 - **Args**: `(INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)`
 
-  > Run opt -passes=<passes-string> -S input -o output.  >    Returns T on success, NIL if opt isn't available or the run failed.
+  > SPV opt (in-process).  Run PASSES-STRING, but if the optimized IR contains a  >    SPIR-V-illegal integer width, discard it and return NIL so the caller falls  >    back to the unoptimized IR — llvm-spirv can't translate e.g. i33, whereas the  >    PTX path (llc/NVPTX) legalizes it fine, so this guard is SPV-only.
 
 
 ---
@@ -3752,6 +3785,13 @@ Generated on 2026-07-04T22:56:47.177288Z
 ### DEFUN `%CUDA-EMIT-CELL-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR IS-LOCAL ALIASES
               ARG-INDEX)`
+
+---
+### DEFUN `%CUDA-SCRATCH-DIMS`
+- **Args**: `(SIZE-EXPR RANK PARAM-NAME)`
+
+  > Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE  >    tensor: all RANK dims equal it — e.g. make-scratch-matrix float 4 -> 4x4) or a LIST  >    of RANK integers (a non-square tensor — e.g. make-scratch-matrix float (16 8)).
+
 
 ---
 ### DEFUN `%CUDA-EMIT-LOCAL-SCRATCH-TENSOR-ARG`
@@ -5804,6 +5844,197 @@ Generated on 2026-07-04T22:56:47.177288Z
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp-man\src\mma.lisp`
+
+### DEFUN `REGISTER-MMA-TYPES`
+
+  > Registers the MMA register-fragment record types.  Called from initialize-compiler  >    AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every  >    init, so a load-time registration would not survive).  >   >    tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4  >    regs.  tf32 is fp32-stored, so all fragment fields are float.
+
+
+---
+### DEFUN `ANALYZE-MAKE-REGISTER-FRAGMENT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > P1: (make-register-fragment M N INIT) -> a register-fragment accumulator record.  >    Only the 16x8 fp32 shape is minted for now; rewrite to %construct-struct with INIT  >    splatted across the 4 per-lane registers and analyze that.
+
+
+---
+### DEFUN `ANALYZE-STORE-FRAGMENT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > P1/P2: rewrite (store-fragment FRAG DEST (TY TX)) to per-lane matrix element writes  >    using the m16n8 fp32 accumulator layout, then analyze that.  FRAG is bound to a temp  >    FIRST so a value-producing FRAG (e.g. an inline mma-accumulate) is evaluated ONCE,  >    not once per field extraction.
+
+
+---
+### DEFUN `ANALYZE-LOAD-FRAGMENT-A`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > P2: rewrite (load-fragment-a SRC (TY TK)) to a per-lane read of the 16x8 tf32 A  >    fragment, offset by the tile origin (TY*16, TK*8), then analyze.
+
+
+---
+### DEFUN `ANALYZE-LOAD-FRAGMENT-B`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > P2: rewrite (load-fragment-b SRC (TK TX)) to a per-lane read of the 8x8 tf32 B  >    fragment, offset by the tile origin (TK*8, TX*8), then analyze.
+
+
+---
+### DEFUN `ANALYZE-MMA-ACCUMULATE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > P2: (mma-accumulate C A B) -> a semantic-mma-accumulate node typed as the fp32  >    accumulator fragment.
+
+
+---
+### DEFVAR `*REGISTER-TILE-DIMS*`
+
+  > Maps a minted register-tile type symbol -> (list M N); used by store-tile's walk.
+
+
+---
+### DEFUN `%REGISTER-TILE-TYPE-NAME`
+- **Args**: `(M N)`
+
+---
+### DEFUN `%REGISTER-TILE-TYPE-P`
+- **Args**: `(TYPE-NAME)`
+
+  > T if TYPE-NAME is a minted register-tile type.
+
+
+---
+### DEFUN `%ENSURE-REGISTER-TILE-TYPE`
+- **Args**: `(M N)`
+
+  > Mint (once) the register-tile-acc-f32-MxN record — (M/16)x(N/8) fragment fields —  >    and record its dims.  Returns the type symbol.
+
+
+---
+### DEFUN `ANALYZE-MAKE-REGISTER-TILE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > P3a: (make-register-tile T (M N) INIT) -> a record-of-fragments accumulator tile,  >    each fragment initialized to INIT.  Mints the tile type on demand; rewrites to  >    %construct-struct of make-register-fragment fields.
+
+
+---
+### DEFUN `ANALYZE-STORE-TILE-MMA`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Overload of store-tile: if the source is a register-tile, store each fragment via  >    store-fragment at its (row-tile, col-tile) offset; otherwise delegate to the existing  >    (SLM / async) store-tile analyzer.
+
+
+---
+### DEFUN `%CHECK-MMA-SHAPE`
+- **Args**: `(MMA-SHAPE LOCATION)`
+
+  > Validate the (M N K) MMA shape: a positive-int triple, in the P3 supported set  >    (tf32 (16 8 8) for now), and — if a hardware profile is active — a member of its  >    :mma-shapes (endeavor 130 key; precision is implicit in K).
+
+
+---
+### DEFUN `ANALYZE-MMA-ACCUMULATE-VIA-TILE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > P3b-1: (mma-accumulate-via-tile (M N K) C-TILE A B) — walk the register C-tile in  >    16x8 fragments and accumulate ONE K-step (K = the shape's K) into each, set!-ing the  >    accumulated tile back.  Bodyless (no accum-op / epilogue yet).
+
+
+---
+### DEFUN `%HEAD-NAME-EQ`
+- **Args**: `(HEAD NAME)`
+
+  > T if HEAD is a symbol whose name is NAME (package-insensitive).
+
+
+---
+### DEFUN `%REGISTER-TILE-INIT-FORM-P`
+- **Args**: `(FORM)`
+
+  > T if FORM is a (make-register-tile T (M N) INIT) constructor.
+
+
+---
+### DEFUN `%REGISTER-TILE-FRAG-SYMS`
+- **Args**: `(VAR M N)`
+
+  > The N per-fragment variable symbols for tile VAR of shape MxN (row-major  >    fragment grid), interned in VAR's package with a `$F<i>' suffix.
+
+
+---
+### DEFPARAMETER `*DEFAULT-MAX-REGISTERS-PER-THREAD*`
+
+  > Fallback per-thread register budget for the register-tile fit-check when no  >    hardware profile pins :max-registers-per-thread.  255 = NVIDIA architectural max.
+
+
+---
+### DEFUN `%REGISTER-TILE-FIT-CHECK`
+- **Args**: `(M N LOCATION)`
+
+  > F1 (Endeavor 132) — register FIT-CHECK.  A register-tile accumulator is now  >    register-resident (residency fix, 2026-07-06), so its size is bounded by the  >    per-thread register file.  Error if the (M/16)×(N/8) accumulator fragments — 4 fp32  >    regs each (tf32 m16n8k8) — exceed :max-registers-per-thread (from the active hardware  >    profile, else the NVIDIA default 255).  Single-warp for now, so fragments/warp = total.
+
+
+---
+### DEFUN `%SUBST-ACCUM`
+- **Args**: `(FORM BINDING-SYM FRAG-VAR ACC-SET)`
+
+  > F3: substitute a mma-accumulate-via-tile body per fragment — the accum-binding symbol  >    BINDING-SYM -> FRAG-VAR, and any (accum-op …) call -> ACC-SET (that fragment's  >    accumulate set!).  Walks FORM structurally (cons-cell recursion, so dotted/improper  >    tails are preserved).
+
+
+---
+### DEFUN `%EMIT-PER-FRAG-ACCUMULATE`
+- **Args**: `(A B ENTRY &OPTIONAL ACCUM-BINDING BODY)`
+
+  > Per-fragment expansion of mma-accumulate-via-tile, matching the index/layout math.  >    Bodyless: one accumulate set!/frag (implicit accum-op).  With ACCUM-BINDING + BODY  >    (F3): splice BODY per fragment, substituting the binding symbol -> the fragment var  >    and (accum-op) -> that fragment's accumulate set! (so the body controls when/how often  >    the MMA fires and can fuse an epilogue on the bound accumulator, in registers).
+
+
+---
+### DEFUN `%EMIT-PER-FRAG-STORE`
+- **Args**: `(DEST TILE-ID ENTRY)`
+
+  > Per-fragment expansion of (store-tile V DEST (BTY BTX)): one store-fragment  >    per fragment, matching analyze-store-tile-mma's runtime-offset math.
+
+
+---
+### DEFUN `%EXPLODE-REWRITE-BODY-FORM`
+- **Args**: `(FORM TILES)`
+
+  > Recursively rewrite body FORM: replace via-tile / store-tile references to  >    any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
+
+
+---
+### DEFUN `%EXPLODE-REGISTER-TILES`
+- **Args**: `(LET-EXPR &OPTIONAL LOCATION)`
+
+  > Source->source: explode any (V (make-register-tile T (M N) INIT)) binding in  >    LET-EXPR into N (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite  >    the body's via-tile/store-tile references to V into per-fragment progns.  Runs the  >    register FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no  >    register-tile binding is present.
+
+
+---
+### DEFUN `ANALYZE-INNER-DIMENSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (inner-dimension A B) -> the contraction extent K (A is M×K row-major, so K is A's  >    inner/column extent = extents[1]).  Rewrites to (~ (extents~ A) 1).
+
+
+---
+### DEFUN `ANALYZE-OUTER-DIMENSIONS-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (outer-dimensions A B) => M N.  M = A's outer/row extent (~ (extents~ A) 0);  >    N = B's outer/col extent (~ (extents~ B) 1).  Produces a semantic-values 2-value node.
+
+
+---
+### DEFUN `ANALYZE-LET-WITH-TILE-EXPLOSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > let/let* analyzer wrapper: explode register-tile bindings into per-fragment  >    mutable variables (register residency, Endeavor 132), then defer to the  >    normal let analysis.
+
+
+---
+### DEFUN `REGISTER-MMA-ANALYZERS`
+
+  > Registers the MMA expression analyzers in *expression-analyzers* for both  >    :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers  >    (which clrhash-es the table on every compiler init, so a load-time setf would not  >    survive).  Overlay: adds the let/let* wrapper for register-tile residency.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\package.lisp`
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\parameters.lisp`
@@ -5876,6 +6107,9 @@ Generated on 2026-07-04T22:56:47.177288Z
 
 ---
 ### DEFSTRUCT `SEMANTIC-COS`
+
+---
+### DEFSTRUCT `SEMANTIC-MMA-ACCUMULATE`
 
 ---
 ### DEFSTRUCT `SEMANTIC-EXP`
@@ -5974,6 +6208,12 @@ Generated on 2026-07-04T22:56:47.177288Z
 ### DEFSTRUCT `SEMANTIC-TRUNCATE`
 
   > Represents a truncate operation returning (quot rem).
+
+
+---
+### DEFSTRUCT `SEMANTIC-VALUES`
+
+  > A multi-value producer: TYPE = list of the VALUE-NODES' types; codegen packs them into  >    an LLVM aggregate (get-llvm-return-type + insertvalue), indexed by the let mvb path.
 
 
 ---

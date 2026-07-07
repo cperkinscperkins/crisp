@@ -432,10 +432,17 @@
         (return-from run-spec-file (run-spec-ffi file ffi-source directives))))
 
     ;; 1. Default Run (Current Global Flags)
-    (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
-    (finish-output) ;; Ensure "Running Spec..." is printed before runner output
-    (unless (run-single-spec-pass file '())
-      (setf all-passed nil))
+    ;; SKIP-DEFAULT-PASS opts a spec OUT of the no-flags (GENERIC) run, validating it
+    ;; ONLY through its TEST-WITH target passes.  For target-specific features with no
+    ;; valid GENERIC lowering — e.g. an MMA kernel that emits an NVVM/PTX-only intrinsic
+    ;; (@llvm.nvvm.mma.*) which the host GENERIC validator can't compile.
+    (if (parse-skip-default-pass directives)
+        (format t "~&Running Spec: ~a (Default)... SKIP (SKIP-DEFAULT-PASS: target-specific spec)~%" (pathname-name file))
+        (progn
+          (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
+          (finish-output) ;; Ensure "Running Spec..." is printed before runner output
+          (unless (run-single-spec-pass file '())
+            (setf all-passed nil))))
 
     ;; 2. Extra Runs (TEST-WITH flags)
     (let ((extra-runs (parse-test-with directives)))
@@ -1954,6 +1961,16 @@
                       (when active
                             (return-from parse-fail-with t))))))))
   nil)
+
+(defun parse-skip-default-pass (directive-lines)
+  "Returns T if the spec carries a SKIP-DEFAULT-PASS directive — opts out of the
+   no-flags (GENERIC) Default run, validated only via its TEST-WITH target passes.
+   For target-specific specs whose feature has no valid GENERIC lowering (e.g. an MMA
+   kernel emitting an NVVM/PTX-only intrinsic the host GENERIC validator can't compile)."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "SKIP-DEFAULT-PASS")
+        (return t)))))
 
 (defun parse-skip-with (directive-lines)
   "Parses SKIP-WITH[--flag]: 'message' directives.

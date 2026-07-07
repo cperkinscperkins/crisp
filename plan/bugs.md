@@ -382,3 +382,38 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     Confirmed by tests/spec/111-load-and-store-tile/15-ad-tile-scale-1d.crisp
     which is now a full VERIFY-AUTODIFF spec.  Suite 716/716 on both default
     and --differentiate.
+[ ] 033 --debug/GENERIC c-t accessor emits an env-dependent garbage-typed return.
+        Under `--debug` (no -O0 stripping), a 2D-float matrix's c-t accessor functions
+        (align__ / contiguous_term__tensor_float_2_global_compact_last) survive to
+        clang verification. Their body builds a DEAD tensor (param marshalling) then
+        `ret i32 0` — but the return constant's TYPE is fragile: locally it prints
+        `ret i32 0` (valid), on the CI build it printed `ret bfloat 0xR8000000000000000`
+        (a mistyped constant) -> "value doesn't match function result type 'i32'".
+        Surfaced by 132-mma-fundamentals/01 (first plain 2D-float-matrix GENERIC spec
+        in the CI --use-binary --debug pass). NOT caused by the MMA work.
+        NOT reproducible: clean + deterministic on Windows LLVM-21 AND in a CI-matching
+        Linux+LLVM-21 Docker container -> appears to be build-heap-dependent
+        uninitialized memory (the garbage bytes depend on the specific compiled
+        crisp-compile binary, not the source). Likely fix: these dead c-t accessor
+        functions should not be emitted as runtime bodies (c-t values resolve at
+        compile time), OR the return constant must be built with an explicit i32 type
+        rather than a resolved-type that can read uninitialized memory. Verifiable
+        locally for no-regression even without reproducing the garbage.
+
+    UPDATE (root cause narrowed): it's a null/garbage pointer into a DIBuilder call in
+    generate-debug-info (src/codegen.lisp) — a genuine MEMORY FAULT under --debug, not
+    mere garbage.  On CI (Linux) it corrupts into a garbage-typed `ret` that clang/llc
+    reject; on our Windows build the SAME class of bug crashes ("Unhandled memory fault
+    at #x6").  LOCAL REPRO FOUND: `crisp-compile --debug tests/spec/056-struct-at-kernel-
+    boundary/07-struct-with-ct-hoist.crisp` memory-faults on Windows (compiles clean
+    without --debug).  Which spec faults is BUILD-HEAP-DEPENDENT (CI hits 01; Windows
+    hits 056/07).  The fault is in LLVMDIBuilderCreateFunction for a kernel that has a
+    struct param / void return (di-file and di-fn-type are non-null at the call, so the
+    bad pointer is deeper — likely the struct->di-type via create-basic-type with a
+    bad size, or a null Scope).  One contributing latent bug: get-or-create-di-type
+    returns a raw (cffi:null-pointer) for the :void category (codegen.lisp ~L28), which
+    is packed into the DIBuilder param-type array — but replacing that alone did NOT fix
+    056/07, so there's a second null source in the struct/kernel debug-type path.
+    MITIGATION shipped: SKIP-WITH[--debug] on the MMA specs (01/02).  Proper fix (make
+    generate-debug-info null-safe for struct params / void, and resolve enum/struct
+    di-types correctly) is a focused follow-up, now locally reproducible via 056/07.

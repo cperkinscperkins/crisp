@@ -459,8 +459,14 @@ overrides the runtime SM-count query in the grid-size heuristic."
                  (elem-bytes (if (or (string-equal elem-str "double")
                                      (string-equal elem-str "int64_t")
                                      (string-equal elem-str "uint64_t")) 8 4)))
-            (when (and is-tensor (integerp size-expr))
-              (incf total (* (expt size-expr rank) elem-bytes)))
+            ;; size-expr: scalar (square: total = size^rank) or (rows cols) list
+            ;; (non-square: total = product).  (Matches %cuda-scratch-dims below.)
+            (when (and is-tensor (or (integerp size-expr)
+                                     (and (listp size-expr) (every #'integerp size-expr))))
+              (let ((count (if (integerp size-expr)
+                               (expt size-expr rank)
+                               (reduce #'* size-expr))))
+                (incf total (* count elem-bytes))))
             (when (and (not is-tensor) is-local)
               (let ((count (if (%array-type-p (cell-base-type param-type))
                                (%array-size (cell-base-type param-type))
@@ -522,6 +528,17 @@ overrides the runtime SM-count query in the grid-size heuristic."
                             :direction param-dir))))
     (values (+ arg-index 3) (nreverse arg-names) alloc)))
 
+(defun %cuda-scratch-dims (size-expr rank param-name)
+  "Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE
+   tensor: all RANK dims equal it — e.g. make-scratch-matrix float 4 -> 4x4) or a LIST
+   of RANK integers (a non-square tensor — e.g. make-scratch-matrix float (16 8))."
+  (cond
+    ((integerp size-expr) (make-list rank :initial-element size-expr))
+    ((and (listp size-expr) (= (length size-expr) rank) (every #'integerp size-expr))
+     size-expr)
+    (t (error "Scratch tensor ~a: :size-expr ~a is neither an integer nor a list of ~d integers."
+              param-name size-expr rank))))
+
 (defun %cuda-emit-local-scratch-tensor-arg (stream param param-name param-type arg-index)
   (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
          (size-expr   (getf param :size-expr))
@@ -533,11 +550,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
          (param-name-cpp (substitute #\_ #\- param-name))
          (arg-names   '())
          (current-idx arg-index))
-    (unless (integerp size-expr)
-      (error "Local scratch tensor ~a has non-integer :size-expr ~a." param-name size-expr))
     (multiple-value-bind (extents strides)
-        (%tensor-compact-extents-strides rank (make-list rank :initial-element size-expr))
-      (let* ((length   (expt size-expr rank))
+        (%tensor-compact-extents-strides rank (%cuda-scratch-dims size-expr rank param-name))
+      (let* ((length   (reduce #'* (%cuda-scratch-dims size-expr rank param-name)))
              (bytesize (* length elem-bytes)))
         (format stream "~%    // LOCAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes)~%"
                 param-name rank elem-str length bytesize)
@@ -582,11 +597,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
          (ptr-var     (format nil "~a_ptr" param-name-cpp))
          (arg-names   '())
          (current-idx arg-index))
-    (unless (integerp size-expr)
-      (error "Global scratch tensor ~a has non-integer :size-expr ~a." param-name size-expr))
     (multiple-value-bind (extents strides)
-        (%tensor-compact-extents-strides rank (make-list rank :initial-element size-expr))
-      (let* ((length   (expt size-expr rank))
+        (%tensor-compact-extents-strides rank (%cuda-scratch-dims size-expr rank param-name))
+      (let* ((length   (reduce #'* (%cuda-scratch-dims size-expr rank param-name)))
              (bytesize (* length elem-bytes)))
         (format stream "~%    // GLOBAL scratch tensor: ~a (rank=~d, ~a, ~d elems)~%"
                 param-name rank elem-str length)

@@ -1,0 +1,27 @@
+;; P3b (MMA fundamentals) — mma-accumulate-via-tile (bodyless).
+;;
+;; The sugar that walks a register-tile in MMA-shape steps.  Here "Sketch A via the
+;; sugar": a 16x8 C-tile = one fragment, one K-step (K = the shape's K = 8), so one
+;; mma.sync — same result as 02, but expressed through the tile abstraction.
+;;
+;;   (mma-accumulate-via-tile (M N K) C-tile A B)  — (M N K) is the MMA instruction
+;;   shape (checked against the profile's :mma-shapes); C-tile is a register-tile; the
+;;   walk unrolls load-fragment-a/b + mma-accumulate per fragment position and set!s
+;;   the accumulated tile back.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; TEST-WITH[--ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel via_tile (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile float (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B)
+    (store-tile C-tile C (0 0))))
