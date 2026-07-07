@@ -940,3 +940,16 @@
 (defcfun ("LLVMInitializeNVPTXTargetInfo" llvm-initialize-nvptx-target-info) :void)
 (defcfun ("LLVMInitializeNVPTXTarget" llvm-initialize-nvptx-target) :void)
 (defcfun ("LLVMInitializeNVPTXTargetMC" llvm-initialize-nvptx-target-mc) :void)
+
+
+
+(defcfun ("LLVMGetGlobalContext" llvm-get-global-context) :pointer
+  "The global LLVM context (Crisp modules are created in it).")
+
+(defcfun ("LLVMTargetExtTypeInContext" llvm-target-ext-type-in-context) :pointer
+  "Build a target-extension type target(NAME, <type-params…>, <int-params…>).
+   TYPE-PARAMS is a C array of LLVMTypeRef (count TYPE-PARAM-COUNT); INT-PARAMS is a
+   C array of unsigned (count INT-PARAM-COUNT)."
+  (ctx :pointer) (name :string)
+  (type-params :pointer) (type-param-count :unsigned-int)
+  (int-params :pointer) (int-param-count :unsigned-int))

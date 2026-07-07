@@ -7,24 +7,5 @@
 
 (in-package :crisp.llvm-bindings)
 
-;;; ===================================================================
-;;; Endeavor 133 (MMA on SPV) — target-extension types, for the opaque
-;;; SPIR-V cooperative-matrix type target("spirv.CooperativeMatrixKHR",
-;;; <elem>, <scope>, <rows>, <cols>, <use>).  llvm-spirv (our bundled build)
-;;; lowers this + the __spirv_CooperativeMatrix{Load,MulAdd,Store}KHR builtins
-;;; to OpCooperativeMatrix*KHR under SPV_KHR_cooperative_matrix.
-;;; FROM: src/llvm-bindings.lisp
-;;; ===================================================================
-
-(defcfun ("LLVMGetGlobalContext" llvm-get-global-context) :pointer
-  "The global LLVM context (Crisp modules are created in it).")
-
-(defcfun ("LLVMTargetExtTypeInContext" llvm-target-ext-type-in-context) :pointer
-  "Build a target-extension type target(NAME, <type-params…>, <int-params…>).
-   TYPE-PARAMS is a C array of LLVMTypeRef (count TYPE-PARAM-COUNT); INT-PARAMS is a
-   C array of unsigned (count INT-PARAM-COUNT)."
-  (ctx :pointer) (name :string)
-  (type-params :pointer) (type-param-count :unsigned-int)
-  (int-params :pointer) (int-param-count :unsigned-int))
 
 
