@@ -158,6 +158,18 @@
                (%coop-store builder module ptr mat stride f32 rows cols use layout)
                (values nil nil)))))))))
 
+(defun %spv-mma-shape ()
+  "The (values M N K) cooperative-matrix INSTRUCTION shape for the SPV path.  Vendor-
+   specific: from the active hardware profile's :mma-shapes (first entry) — e.g. Intel
+   BMG tf32 is (8 16 8) — else the NVIDIA default (16 8 8).  So the SAME kernel source
+   picks the right hardware shape per --hardware-profile.  A/B/C coop dims derive from
+   it: A = MxK, B = KxN, C(accumulator) = MxN."
+  (let* ((profile (active-hardware-profile))
+         (shapes  (and profile (getf profile :mma-shapes))))
+    (if (and shapes (consp (first shapes)) (= (length (first shapes)) 3))
+        (values-list (first shapes))
+        (values 16 8 8))))
+
 ;;; --- the 5 fragment-form analyzers, forked on *target-backend* ----------------------
 ;;; :spirv -> cooperative-matrix nodes; else the existing NVIDIA per-lane rewrites (copied
 ;;; verbatim from src/mma.lisp so this stays a drop-in whole-function replacement).
@@ -166,17 +178,22 @@
   "P1 / F-SPV: (make-register-fragment M N INIT).  :spirv -> a filled accumulator coop
    matrix; else the NVIDIA %construct-struct record."
   (destructuring-bind (m n init) (cdr expr)
-    (unless (and (eql m 16) (eql n 8))
-      (error 'crisp-compiler-error
-             :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
     (if (eq *target-backend* :spirv)
-        (make-semantic-coop-op
-         :type (list 'coop-matrix 'float m n 2) :kind :fill
-         :value-node (analyze-expression init env context (append location '(1)))
-         :rows m :cols n :use 2 :layout 0 :source-location location)
-        (analyze-expression
-         `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init)
-         env context location))))
+        ;; accumulator = MxN from the active profile's mma-shape (the source m/n is a
+        ;; logical hint; the hardware shape wins so one source runs on both vendors).
+        (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+          (declare (ignore sk))
+          (make-semantic-coop-op
+           :type (list 'coop-matrix 'float sm sn 2) :kind :fill
+           :value-node (analyze-expression init env context (append location '(1)))
+           :rows sm :cols sn :use 2 :layout 0 :source-location location))
+        (progn
+          (unless (and (eql m 16) (eql n 8))
+            (error 'crisp-compiler-error
+                   :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
+          (analyze-expression
+           `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init)
+           env context location)))))
 
 (defun analyze-load-fragment-a (expr env context location)
   "P2 / F-SPV: (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,
@@ -184,13 +201,16 @@
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((ty (first tile-id)) (tk (second tile-id)))
       (if (eq *target-backend* :spirv)
-          (make-semantic-coop-op
-           :type (list 'coop-matrix 'float 16 8 0) :kind :load
-           :tensor-node (analyze-expression src env context (append location '(1)))
-           :rows 16 :cols 8 :use 0 :layout 0
-           :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
-           :tx (analyze-expression `(to-int ,tk) env context (append location '(3)))
-           :source-location location)
+          ;; A = MxK (row-major) from the profile shape.
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (declare (ignore sn))
+            (make-semantic-coop-op
+             :type (list 'coop-matrix 'float sm sk 0) :kind :load
+             :tensor-node (analyze-expression src env context (append location '(1)))
+             :rows sm :cols sk :use 0 :layout 0
+             :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+             :tx (analyze-expression `(to-int ,tk) env context (append location '(3)))
+             :source-location location))
           (analyze-expression
            `(let ((lane (to-int (warp-lane))))
               (let ((g (/ lane 4)) (tg (rem lane 4)))
@@ -205,13 +225,19 @@
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((tk (first tile-id)) (tx (second tile-id)))
       (if (eq *target-backend* :spirv)
-          (make-semantic-coop-op
-           :type (list 'coop-matrix 'float 8 8 1) :kind :load
-           :tensor-node (analyze-expression src env context (append location '(1)))
-           :rows 8 :cols 8 :use 1 :layout 1
-           :ty (analyze-expression `(to-int ,tk) env context (append location '(2)))
-           :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
-           :source-location location)
+          ;; B = KxN from the profile shape.  Intel coop matrices only support ROW-major
+          ;; (or VNNI-packed) B — PackedB_ColumnMajor has no IGC builtin — so :spirv B is
+          ;; row-major (layout 0).  (For all-ones this is value-identical; real non-uniform
+          ;; data will need row-major B staging / VNNI, a later item.)
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (declare (ignore sm))
+            (make-semantic-coop-op
+             :type (list 'coop-matrix 'float sk sn 1) :kind :load
+             :tensor-node (analyze-expression src env context (append location '(1)))
+             :rows sk :cols sn :use 1 :layout 0
+             :ty (analyze-expression `(to-int ,tk) env context (append location '(2)))
+             :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+             :source-location location))
           (analyze-expression
            `(let ((lane (to-int (warp-lane))))
               (let ((g (/ lane 4)) (tg (rem lane 4)))
@@ -226,14 +252,17 @@
   (destructuring-bind (frag dest tile-id) (cdr expr)
     (let ((ty (first tile-id)) (tx (second tile-id)))
       (if (eq *target-backend* :spirv)
-          (make-semantic-coop-op
-           :type 'void :kind :store
-           :value-node  (analyze-expression frag env context (append location '(1)))
-           :tensor-node (analyze-expression dest env context (append location '(2)))
-           :rows 16 :cols 8 :use 2 :layout 0
-           :ty (analyze-expression `(to-int ,ty) env context (append location '(3)))
-           :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
-           :source-location location)
+          ;; C(accumulator) = MxN (row-major) from the profile shape.
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (declare (ignore sk))
+            (make-semantic-coop-op
+             :type 'void :kind :store
+             :value-node  (analyze-expression frag env context (append location '(1)))
+             :tensor-node (analyze-expression dest env context (append location '(2)))
+             :rows sm :cols sn :use 2 :layout 0
+             :ty (analyze-expression `(to-int ,ty) env context (append location '(3)))
+             :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
+             :source-location location))
           (analyze-expression
            `(let ((frag-val ,frag))
               (let ((lane (to-int (warp-lane))))
@@ -251,7 +280,8 @@
   (destructuring-bind (c-arg a-arg b-arg) (cdr expr)
     (make-semantic-mma-accumulate
      :type (if (eq *target-backend* :spirv)
-               (list 'coop-matrix 'float 16 8 2)
+               (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                 (declare (ignore sk)) (list 'coop-matrix 'float sm sn 2))
                'register-fragment-acc-f32-16x8)
      :c-node (analyze-expression c-arg env context location)
      :a-node (analyze-expression a-arg env context location)
@@ -351,6 +381,7 @@
           (a-val (gen (semantic-mma-accumulate-a-node node)))
           (b-val (gen (semantic-mma-accumulate-b-node node))))
       (if (eq *target-backend* :spirv)
-          (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) 16 8 8) nil)
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
           (%emit-nvvm-mma builder module a-val b-val c-val)))))
 
