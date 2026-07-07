@@ -170,6 +170,16 @@
         (values-list (first shapes))
         (values 16 8 8))))
 
+(defun %coop-layout-of (tensor-node)
+  "The coop load/store MemoryLayout for an operand, derived from its tensor type's
+   :contiguous-term (NOT hardcoded): :last (row-major) -> 0 (RowMajor); :first (col-major)
+   -> 1 (ColMajor).  So the layout matches how the matrix is actually stored — the stride
+   in %coop-tensor-ptr+stride follows (s0 for RowMajor, s1 for ColMajor).  NOTE: Intel has
+   no ColumnMajor-B coop builtin, so an Intel B operand must be declared :row-major."
+  (if (eq (%get-tensor-ct (canonicalize-type-specifier (get-single-value-type tensor-node)))
+          :first)
+      1 0))
+
 ;;; --- the 5 fragment-form analyzers, forked on *target-backend* ----------------------
 ;;; :spirv -> cooperative-matrix nodes; else the existing NVIDIA per-lane rewrites (copied
 ;;; verbatim from src/mma.lisp so this stays a drop-in whole-function replacement).
@@ -201,16 +211,17 @@
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((ty (first tile-id)) (tk (second tile-id)))
       (if (eq *target-backend* :spirv)
-          ;; A = MxK (row-major) from the profile shape.
+          ;; A = MxK; layout from the tensor's :contiguous-term.
           (multiple-value-bind (sm sn sk) (%spv-mma-shape)
             (declare (ignore sn))
-            (make-semantic-coop-op
-             :type (list 'coop-matrix 'float sm sk 0) :kind :load
-             :tensor-node (analyze-expression src env context (append location '(1)))
-             :rows sm :cols sk :use 0 :layout 0
-             :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
-             :tx (analyze-expression `(to-int ,tk) env context (append location '(3)))
-             :source-location location))
+            (let ((tnode (analyze-expression src env context (append location '(1)))))
+              (make-semantic-coop-op
+               :type (list 'coop-matrix 'float sm sk 0) :kind :load
+               :tensor-node tnode
+               :rows sm :cols sk :use 0 :layout (%coop-layout-of tnode)
+               :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+               :tx (analyze-expression `(to-int ,tk) env context (append location '(3)))
+               :source-location location)))
           (analyze-expression
            `(let ((lane (to-int (warp-lane))))
               (let ((g (/ lane 4)) (tg (rem lane 4)))
@@ -225,19 +236,20 @@
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((tk (first tile-id)) (tx (second tile-id)))
       (if (eq *target-backend* :spirv)
-          ;; B = KxN from the profile shape.  Intel coop matrices only support ROW-major
-          ;; (or VNNI-packed) B — PackedB_ColumnMajor has no IGC builtin — so :spirv B is
-          ;; row-major (layout 0).  (For all-ones this is value-identical; real non-uniform
-          ;; data will need row-major B staging / VNNI, a later item.)
+          ;; B = KxN; layout from the tensor's :contiguous-term.  NOTE: Intel has no
+          ;; ColumnMajor-B coop builtin, so an Intel B operand must be declared :row-major
+          ;; (NVIDIA's canonical row.col MMA wants B :col-major — a genuine per-vendor
+          ;; storage difference, like the shape).
           (multiple-value-bind (sm sn sk) (%spv-mma-shape)
             (declare (ignore sm))
-            (make-semantic-coop-op
-             :type (list 'coop-matrix 'float sk sn 1) :kind :load
-             :tensor-node (analyze-expression src env context (append location '(1)))
-             :rows sk :cols sn :use 1 :layout 0
-             :ty (analyze-expression `(to-int ,tk) env context (append location '(2)))
-             :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
-             :source-location location))
+            (let ((tnode (analyze-expression src env context (append location '(1)))))
+              (make-semantic-coop-op
+               :type (list 'coop-matrix 'float sk sn 1) :kind :load
+               :tensor-node tnode
+               :rows sk :cols sn :use 1 :layout (%coop-layout-of tnode)
+               :ty (analyze-expression `(to-int ,tk) env context (append location '(2)))
+               :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+               :source-location location)))
           (analyze-expression
            `(let ((lane (to-int (warp-lane))))
               (let ((g (/ lane 4)) (tg (rem lane 4)))
@@ -252,17 +264,18 @@
   (destructuring-bind (frag dest tile-id) (cdr expr)
     (let ((ty (first tile-id)) (tx (second tile-id)))
       (if (eq *target-backend* :spirv)
-          ;; C(accumulator) = MxN (row-major) from the profile shape.
+          ;; C(accumulator) = MxN; layout from the dest tensor's :contiguous-term.
           (multiple-value-bind (sm sn sk) (%spv-mma-shape)
             (declare (ignore sk))
-            (make-semantic-coop-op
-             :type 'void :kind :store
-             :value-node  (analyze-expression frag env context (append location '(1)))
-             :tensor-node (analyze-expression dest env context (append location '(2)))
-             :rows sm :cols sn :use 2 :layout 0
-             :ty (analyze-expression `(to-int ,ty) env context (append location '(3)))
-             :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
-             :source-location location))
+            (let ((dnode (analyze-expression dest env context (append location '(2)))))
+              (make-semantic-coop-op
+               :type 'void :kind :store
+               :value-node  (analyze-expression frag env context (append location '(1)))
+               :tensor-node dnode
+               :rows sm :cols sn :use 2 :layout (%coop-layout-of dnode)
+               :ty (analyze-expression `(to-int ,ty) env context (append location '(3)))
+               :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
+               :source-location location)))
           (analyze-expression
            `(let ((frag-val ,frag))
               (let ((lane (to-int (warp-lane))))
