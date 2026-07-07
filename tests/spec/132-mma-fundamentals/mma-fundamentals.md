@@ -270,8 +270,16 @@ budget is now REAL — so the fit-check is timely.
     but COMPILE-WITH[--hardware-profile=small-regs (100)] FAILs).  Single-warp for now
     (fragments/warp = total); accumulator-only (transient A/B + addressing are the headroom).
     Suite: 854/854 both ways, 193 neg, 253 unit.
-[ ] F2 — outer-dimension(s).  Companion to `inner-dimension` (done → K): the M / N
-    (non-contracted) extents.  Small rewrite to `(~ (extents~ …) …)`.
+[x] F2 — outer-dimensions.  DONE 2026-07-06.  `(outer-dimensions A B) => M N` (two values):
+    M = A's row extent `(~ (extents~ A) 0)`, N = B's col extent `(~ (extents~ B) 1)`.
+    Consumed by the multi-value let path like `(floor …)`/`(truncate …)`.  Turned out
+    MEDIUM not small: Crisp has multi-value bind/return (via function multi-return) but no
+    `(values …)` EXPRESSION, so this needed a new `semantic-values` multi-value producer node
+    (defstruct in src/semantic.lisp + 3 etypecase clauses in src/analysis/core.lisp;
+    analyzer + `get-llvm-return-type`+insertvalue codegen in the overlay, modeled on
+    semantic-truncate).  The node is generic (backs a future `(values …)` too).  Spec
+    08-outer-dimensions.  IR-verified: reads A.extents[0] + B.extents[1], packs `{i64,i64}`,
+    the let mvb extract-values each.  Suite 855/855 both ways, 193 neg, 253 unit.
 [ ] F3 — accum-op / body API (P3b-2).  Epilogue-fusion body for `mma-accumulate-via-tile`:
     `(mma-accumulate-via-tile (M N K) C A B (acc) (accum-op …))` fuses a per-tile epilogue
     (scale / bias / activation) over the accumulator fragments; bodyless stays the default.

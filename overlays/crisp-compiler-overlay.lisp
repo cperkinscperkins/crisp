@@ -155,6 +155,46 @@
    normal let analysis."
   (analyze-let-expression (%explode-register-tiles expr location) env context location))
 
+;;; ===================================================================
+;;; Endeavor 132 — F2: outer-dimensions (2026-07-06)
+;;;
+;;; Companion to inner-dimension (=> K).  (outer-dimensions A B) => M N, the two
+;;; NON-contracted extents: M = A's row extent (extents[0]), N = B's col extent
+;;; (extents[1]).  Returns TWO values via the semantic-values multi-value node
+;;; (defstruct in src/semantic.lisp; 3 etypecase clauses in src/analysis/core.lisp),
+;;; consumed by the let multi-value binding path like (floor …)/(truncate …).
+;;; ===================================================================
+
+(defun analyze-outer-dimensions-expression (expr env context location)
+  "(outer-dimensions A B) => M N.  M = A's outer/row extent (~ (extents~ A) 0);
+   N = B's outer/col extent (~ (extents~ B) 1).  Produces a semantic-values 2-value node."
+  (destructuring-bind (a b) (cdr expr)
+    (let* ((cl      (find-package :crisp-language))
+           (tilde   (intern "~" cl))
+           (extents (intern "EXTENTS~" cl))
+           (m-node  (analyze-expression (list tilde (list extents a) 0) env context
+                                        (append location '(1))))
+           (n-node  (analyze-expression (list tilde (list extents b) 1) env context
+                                        (append location '(2)))))
+      (make-semantic-values
+       :type (list (get-single-value-type m-node) (get-single-value-type n-node))
+       :value-nodes (list m-node n-node)
+       :source-location location))))
+
+(defmethod generate-node-ir ((node semantic-values) builder module var-env
+                             di-builder di-scope location-map)
+  "Pack the value-nodes into a multi-value LLVM aggregate (get-llvm-return-type +
+   insertvalue), exactly like a multi-return function's result — the let mvb path then
+   extract-values each field.  Modeled on the semantic-truncate codegen."
+  (let* ((type-spec   (semantic-values-type node))
+         (struct-type (get-llvm-return-type module type-spec))
+         (agg         (llvm-get-undef struct-type)))
+    (loop for vn in (semantic-values-value-nodes node)
+          for i from 0
+          do (let ((v (generate-node-ir vn builder module var-env di-builder di-scope location-map)))
+               (setf agg (llvm-build-insert-value builder agg v i (format nil "mv_~d" i)))))
+    (values agg nil)))
+
 (defun register-mma-analyzers ()
   "Registers the MMA expression analyzers in *expression-analyzers* for both
    :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers
@@ -170,6 +210,7 @@
                          (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
                          (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
                          (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
+                         (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
                          ;; store-tile OVERLOAD: runs after register-control-analyzers,
                          ;; so this wins; it delegates to the SLM store-tile for non-tiles.
                          (cons "STORE-TILE"              #'analyze-store-tile-mma)

@@ -1,0 +1,20 @@
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; TEST-WITH[--ir-target=ptx]
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; F2 — outer-dimensions.  Companion to inner-dimension (=> K, the contraction extent).
+;; (outer-dimensions A B) => M N, the two NON-contracted extents: M = A's outer/row extent
+;; (A is M×K row-major → extents[0]), N = B's outer/col extent (B is K×N col-major →
+;; extents[1]).  Returns TWO values, bound via a multi-value let (like (floor …)/(truncate …)).
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel outer_dims (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((M N (outer-dimensions A B)))          ; M = rows(A), N = cols(B)
+    (set! (~ C 0 0) (to-float M))
+    (set! (~ C 0 1) (to-float N))))

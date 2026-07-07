@@ -220,6 +220,15 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 (defstruct (semantic-truncate (:include semantic-cast))
   "Represents a truncate operation returning (quot rem).")
 
+;; Endeavor 132 (MMA) F2: a multi-value producer.  Packs VALUE-NODES into a multi-value
+;; aggregate whose TYPE is the list of their types (e.g. (ulong ulong)); consumed by the
+;; let multi-value binding path (like (floor …)/(truncate …)).  Backs outer-dimensions;
+;; a future (values …) expression would build the same node.
+(defstruct semantic-values
+  "A multi-value producer: TYPE = list of the VALUE-NODES' types; codegen packs them into
+   an LLVM aggregate (get-llvm-return-type + insertvalue), indexed by the let mvb path."
+  type value-nodes source-location)
+
 ;; Endeavor 122 (FFI) Pass 4: handles (void**).
 (defstruct semantic-make-c-handle
   "Allocates a local slot (alloca) that holds a pointer of HELD-TYPE; the node's
