@@ -731,7 +731,16 @@ Integer Only Operations
 =======================
 [ ] There are 6 or 7 of these. Easily overlooked.  
 
-
+FMA
+===
+[ ] needs definition.
+issues having it explicit avoid:
+- precision ( ieee / fast )
+- one rounding or two?
+- fast op or not?
+- A|D 
+- no need to juggle precision to get speed.
+- widening
 
 
 Reductions

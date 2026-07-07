@@ -16,6 +16,21 @@ But it only did so for PTX.  In this endeavor we do the same, but for SPIR-V.
 
 As was documented, the goal was to realize a basic synchronous MMA tile multiplication.
 
+Progress
+--------
+[x] All 7 MMA specs (01-06, 09) COMPILE to valid SPIR-V via SPV_KHR_cooperative_matrix
+    (2026-07-06).  The fragment forms fork on *target-backend*: on :spirv they lower to opaque
+    cooperative matrices (target("spirv.CooperativeMatrixKHR", elem, 3, rows, cols, use) +
+    __spirv_CooperativeMatrix{Load,MulAdd,Store}KHR + CompositeConstruct for the accumulator
+    fill); else the NVIDIA per-lane path (132).  The residency explosion + accum-op body are
+    reused as-is (target-agnostic — they rewrite to make/load/mma/store, which fork).  Tile
+    coords are runtime (analyzed nodes → i64 origin).  Coop load/store are addrspace-aware
+    (global=1 / SLM=3), so the tiled matmul (06, stages through SLM) works too.
+[ ] On-metal: run on BMG (L0) — HOIST-EXPECT / verify a known A·B product.
+[ ] fit-check on :spirv (NVIDIA register model — currently still runs; harmless for these
+    shapes but should be skipped/adapted).
+[ ] Precision/shape generality: only tf32 m16n8k8 / fp32-stored so far.
+
 
 ```lisp
 (with-template-type (T)

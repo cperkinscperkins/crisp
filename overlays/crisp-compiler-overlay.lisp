@@ -46,9 +46,13 @@
                      existing)))
         (crisp.llvm-bindings::llvm-build-call2 builder fnty fn args na "")))))
 
-(defun %coop-ptr-type ()
-  "ptr addrspace(1) — global-memory pointer for coop load/store."
-  (crisp.llvm-bindings::llvm-pointer-type (crisp.llvm-bindings::llvm-int8-type) 1))
+(defun %coop-ptr-type (&optional (as 1))
+  "ptr addrspace(AS) — memory pointer for coop load/store (global=1, SLM/local=3)."
+  (crisp.llvm-bindings::llvm-pointer-type (crisp.llvm-bindings::llvm-int8-type) as))
+
+(defun %ptr-as (ptr-val)
+  "The address space of a pointer VALUE (global=1, SLM=3)."
+  (crisp.llvm-bindings::llvm-get-pointer-address-space (crisp.llvm-bindings::llvm-type-of ptr-val)))
 
 (defun %coop-fill (builder module init-val elem-llvm rows cols use)
   "Construct a coop matrix filled with INIT-VAL (scalar) via __spirv_CompositeConstruct."
@@ -61,11 +65,12 @@
   "Emit CooperativeMatrixLoadKHR(PTR, LAYOUT, STRIDE, 0) -> coop(elem,rows,cols,use).
    STRIDE-VAL is an i64 LLVM value (leading dimension in elements)."
   (let ((i32 (crisp.llvm-bindings::llvm-int32-type))
-        (i64 (crisp.llvm-bindings::llvm-int64-type)))
+        (i64 (crisp.llvm-bindings::llvm-int64-type))
+        (as  (%ptr-as ptr)))
     (%coop-call builder module
-                (format nil "__spirv_CooperativeMatrixLoadKHR_~d_~d_~d" use rows cols)
+                (format nil "__spirv_CooperativeMatrixLoadKHR_~d_~d_~d_as~d" use rows cols as)
                 (%coop-type elem-llvm rows cols use)
-                (list (%coop-ptr-type) i32 i64 i32)
+                (list (%coop-ptr-type as) i32 i64 i32)
                 (list ptr
                       (crisp.llvm-bindings::llvm-const-int i32 layout nil)
                       stride-val
@@ -84,10 +89,12 @@
 (defun %coop-store (builder module ptr matrix-val stride-val elem-llvm rows cols use layout)
   "Emit CooperativeMatrixStoreKHR(PTR, MATRIX, LAYOUT, STRIDE, 0)."
   (let ((i32 (crisp.llvm-bindings::llvm-int32-type))
-        (i64 (crisp.llvm-bindings::llvm-int64-type)))
-    (%coop-call builder module "__spirv_CooperativeMatrixStoreKHR"
+        (i64 (crisp.llvm-bindings::llvm-int64-type))
+        (as  (%ptr-as ptr)))
+    (%coop-call builder module
+                (format nil "__spirv_CooperativeMatrixStoreKHR_~d_~d_~d_as~d" use rows cols as)
                 (crisp.llvm-bindings::llvm-void-type)
-                (list (%coop-ptr-type) (%coop-type elem-llvm rows cols use) i32 i64 i32)
+                (list (%coop-ptr-type as) (%coop-type elem-llvm rows cols use) i32 i64 i32)
                 (list ptr matrix-val
                       (crisp.llvm-bindings::llvm-const-int i32 layout nil)
                       stride-val
@@ -95,20 +102,19 @@
 
 ;;; --- coop-op codegen: element pointer + leading-dim stride from a Crisp tensor -------
 
-(defun %coop-tensor-ptr+stride (builder tensor-val ty tx rows cols layout)
+(defun %coop-tensor-ptr+stride (builder tensor-val orow ocol layout)
   "From a Crisp tensor STRUCT value, return (values element-ptr stride-i64) for the coop
-   tile whose origin is element (ty*rows, tx*cols).  Tensor layout: field0 = parent storage
-   {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0] (RowMajor) / strides[1]
-   (ColMajor)."
-  (let* ((i64 (llvm-int64-type))
-         (f32 (llvm-float-type))
+   tile whose element origin is (OROW, OCOL) — both i64 LLVM values.  Tensor layout: field0
+   = parent storage {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0]
+   (RowMajor) / strides[1] (ColMajor)."
+  (let* ((f32 (llvm-float-type))
          (storage (llvm-build-extract-value builder tensor-val 0 "coop_storage"))
          (base    (llvm-build-extract-value builder storage 0 "coop_base"))
          (strides (llvm-build-extract-value builder tensor-val 2 "coop_strides"))
          (s0 (llvm-build-extract-value builder strides 0 "coop_s0"))
          (s1 (llvm-build-extract-value builder strides 1 "coop_s1"))
-         (off0 (llvm-build-mul builder (llvm-const-int i64 (* ty rows) nil) s0 "coop_off0"))
-         (off1 (llvm-build-mul builder (llvm-const-int i64 (* tx cols) nil) s1 "coop_off1"))
+         (off0 (llvm-build-mul builder orow s0 "coop_off0"))
+         (off1 (llvm-build-mul builder ocol s1 "coop_off1"))
          (flat (llvm-build-add builder off0 off1 "coop_flat"))
          (stride (if (= layout 0) s0 s1)))
     (cffi:with-foreign-object (idx :pointer 1)
@@ -123,26 +129,34 @@
           (cols (semantic-coop-op-cols node))
           (use  (semantic-coop-op-use node))
           (layout (semantic-coop-op-layout node))
+          (i64 (llvm-int64-type))
           (f32 (llvm-float-type)))
-      (ecase kind
-        (:fill
-         (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
-                             f32 rows cols use)
-                 nil))
-        (:load
-         (multiple-value-bind (ptr stride)
-             (%coop-tensor-ptr+stride builder (gen (semantic-coop-op-tensor-node node))
-                                      (semantic-coop-op-ty node) (semantic-coop-op-tx node)
-                                      rows cols layout)
-           (values (%coop-load builder module ptr stride f32 rows cols use layout) nil)))
-        (:store
-         (let ((mat (gen (semantic-coop-op-value-node node))))
+      (labels ((origin (dim-node dim)
+                 ;; element origin along an axis = (tile-id * DIM), computed at runtime:
+                 ;; generate the tile-id int node, sext to i64, multiply by the compile-time DIM.
+                 (llvm-build-mul builder
+                                 (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
+                                 (llvm-const-int i64 dim nil) "coop_orig")))
+        (ecase kind
+          (:fill
+           (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
+                               f32 rows cols use)
+                   nil))
+          (:load
            (multiple-value-bind (ptr stride)
                (%coop-tensor-ptr+stride builder (gen (semantic-coop-op-tensor-node node))
-                                        (semantic-coop-op-ty node) (semantic-coop-op-tx node)
-                                        rows cols layout)
-             (%coop-store builder module ptr mat stride f32 rows cols use layout)
-             (values nil nil))))))))
+                                        (origin (semantic-coop-op-ty node) rows)
+                                        (origin (semantic-coop-op-tx node) cols) layout)
+             (values (%coop-load builder module ptr stride f32 rows cols use layout) nil)))
+          (:store
+           (let* ((mat (gen (semantic-coop-op-value-node node)))
+                  (tv  (gen (semantic-coop-op-tensor-node node)))
+                  (orow (origin (semantic-coop-op-ty node) rows))
+                  (ocol (origin (semantic-coop-op-tx node) cols)))
+             (multiple-value-bind (ptr stride)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
+               (%coop-store builder module ptr mat stride f32 rows cols use layout)
+               (values nil nil)))))))))
 
 ;;; --- the 5 fragment-form analyzers, forked on *target-backend* ----------------------
 ;;; :spirv -> cooperative-matrix nodes; else the existing NVIDIA per-lane rewrites (copied
@@ -173,7 +187,10 @@
           (make-semantic-coop-op
            :type (list 'coop-matrix 'float 16 8 0) :kind :load
            :tensor-node (analyze-expression src env context (append location '(1)))
-           :rows 16 :cols 8 :use 0 :layout 0 :ty ty :tx tk :source-location location)
+           :rows 16 :cols 8 :use 0 :layout 0
+           :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+           :tx (analyze-expression `(to-int ,tk) env context (append location '(3)))
+           :source-location location)
           (analyze-expression
            `(let ((lane (to-int (warp-lane))))
               (let ((g (/ lane 4)) (tg (rem lane 4)))
@@ -191,7 +208,10 @@
           (make-semantic-coop-op
            :type (list 'coop-matrix 'float 8 8 1) :kind :load
            :tensor-node (analyze-expression src env context (append location '(1)))
-           :rows 8 :cols 8 :use 1 :layout 1 :ty tk :tx tx :source-location location)
+           :rows 8 :cols 8 :use 1 :layout 1
+           :ty (analyze-expression `(to-int ,tk) env context (append location '(2)))
+           :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+           :source-location location)
           (analyze-expression
            `(let ((lane (to-int (warp-lane))))
               (let ((g (/ lane 4)) (tg (rem lane 4)))
@@ -210,7 +230,10 @@
            :type 'void :kind :store
            :value-node  (analyze-expression frag env context (append location '(1)))
            :tensor-node (analyze-expression dest env context (append location '(2)))
-           :rows 16 :cols 8 :use 2 :layout 0 :ty ty :tx tx :source-location location)
+           :rows 16 :cols 8 :use 2 :layout 0
+           :ty (analyze-expression `(to-int ,ty) env context (append location '(3)))
+           :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
+           :source-location location)
           (analyze-expression
            `(let ((frag-val ,frag))
               (let ((lane (to-int (warp-lane))))
