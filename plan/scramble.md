@@ -734,8 +734,9 @@ Integer Only Operations
 MMA
 ===
 [x] fundamentals ( for ptx)
-[ ] ibid, for spir-v
+[x] ibid, for spir-v
 [ ] Chapter 0: synchronous tiled MMA.
+[ ] testing and benchmarking
 [ ] matrix-multiply-tile-stride macro
 [ ] CUTensorMap as implicit arg for kernels. 
 [ ] Chapter 1 - async tile
