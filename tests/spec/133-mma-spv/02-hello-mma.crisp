@@ -1,0 +1,32 @@
+;; P2 (MMA fundamentals) — the first REAL tensor-core MMA.
+;;
+;; A single tf32 m16n8k8 matrix-multiply-accumulate on one warp:
+;;   C[16x8] = A[16x8] . B[8x8]   (K = 8, tf32 inputs, fp32 accumulate)
+;;
+;; Isolated to the new work: load per-warp A/B fragments straight from GLOBAL memory
+;; (load-fragment is a per-lane read, not ldmatrix, so no SLM staging needed here —
+;; that arrives with the tiled version, P4), one mma-accumulate into a zero fp32
+;; accumulator, store the result.  tf32 keeps everything fp32-stored; B is :col-major
+;; to match the canonical row.col MMA.  mma-accumulate is the genuine
+;; @llvm.nvvm.mma.m16n8k8.row.col.tf32 intrinsic.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;   tf32 MMA emits an NVVM/PTX-only intrinsic (@llvm.nvvm.mma.m16n8k8.row.col.tf32) that
+;;   GENERIC/SPV can't lower — validate ONLY via the PTX pass (SKIP-DEFAULT-PASS).  Also
+;;   skipped under --debug where the pre-existing c-t-accessor bug bites.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel hello_mma (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; exactly one warp
+  (let ((C-acc  (make-register-fragment 16 8 0.0))
+        (A-frag (load-fragment-a A (0 0)))
+        (B-frag (load-fragment-b B (0 0))))
+    (store-fragment (mma-accumulate C-acc A-frag B-frag) C (0 0))))

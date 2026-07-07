@@ -1,0 +1,27 @@
+;; P1 (MMA fundamentals) — make-register-fragment.
+;;
+;; make-register-fragment mints a WARP-COLLECTIVE accumulator fragment: a
+;; register-backed record whose 16x8 = 128 elements are distributed across the 32
+;; lanes of one warp (4 per lane).  Here we mint a 16x8 fp32 accumulator initialized
+;; to a constant and store it back to a global 16x8 matrix so the value round-trips.
+;;
+;; NOTE: a UNIFORM constant only exercises init + store-touched-every-element; it does
+;; NOT validate the element->lane layout (all values are equal).  Layout correctness
+;; arrives in P2 via load-fragment on non-uniform data.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;   Under --debug, a 2D-float matrix's dead c-t accessor functions emit an
+;;   env-dependent garbage-typed return that CI's clang/llc reject (but which is clean
+;;   on our hosts and in non-debug).  Skip this spec under --debug until 033 is fixed;
+;;   it still runs+passes in the non-debug binary pass.
+
+(def-type out-m (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel make_frag (&out C)
+  (declare #'(&out out-m => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; exactly one warp
+  (let ((acc (make-register-fragment 16 8 7.0)))
+    (store-fragment acc C (0 0))))
