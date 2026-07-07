@@ -1476,6 +1476,8 @@ in single-pass mode."
     ;; Endeavor 132 (MMA): the accumulator fragment is per-lane (warp-distributed), so
     ;; the MMA result is divergent.
     (semantic-mma-accumulate :divergent)
+    ;; Endeavor 133 (MMA on SPV): a cooperative-matrix op is subgroup-collective -> divergent.
+    (semantic-coop-op :divergent)
     ;; Endeavor 132 (MMA) F2: a multi-value pack is as uniform as its least-uniform member.
     (semantic-values
      (let ((states (mapcar (lambda (el) (calculate-uniformity-state el env))
@@ -1857,6 +1859,7 @@ in single-pass mode."
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-type node))
     (semantic-truncate (semantic-truncate-type node))
     (semantic-values (semantic-values-type node))
+    (semantic-coop-op (semantic-coop-op-type node))
     (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
     (semantic-funcall (semantic-funcall-type node))
@@ -1897,6 +1900,7 @@ in single-pass mode."
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-source-location node))
     (semantic-truncate (semantic-truncate-source-location node))
     (semantic-values (semantic-values-source-location node))
+    (semantic-coop-op (semantic-coop-op-source-location node))
     (semantic-add (semantic-add-source-location node))
     (semantic-sub (semantic-sub-source-location node))
     (semantic-mul (semantic-mul-source-location node))

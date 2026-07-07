@@ -16,6 +16,9 @@
 ;;; FROM: src/llvm-bindings.lisp
 ;;; ===================================================================
 
+(defcfun ("LLVMGetGlobalContext" llvm-get-global-context) :pointer
+  "The global LLVM context (Crisp modules are created in it).")
+
 (defcfun ("LLVMTargetExtTypeInContext" llvm-target-ext-type-in-context) :pointer
   "Build a target-extension type target(NAME, <type-params…>, <int-params…>).
    TYPE-PARAMS is a C array of LLVMTypeRef (count TYPE-PARAM-COUNT); INT-PARAMS is a
