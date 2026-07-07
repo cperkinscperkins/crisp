@@ -398,3 +398,97 @@
             (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
           (%emit-nvvm-mma builder module a-val b-val c-val)))))
 
+
+;;; ===================================================================
+;;; Endeavor 133 — profile-driven register-TILE decomposition (2026-07-07).
+;;; The residency explosion hardcoded a 16x8 fragment (NVIDIA).  On :spirv the
+;;; per-fragment shape is the profile's mma-shape (M N) — so a tile decomposes
+;;; into (tile-M/M)x(tile-N/N) Intel fragments.  Redefines the 5 explosion sites.
+;;; ===================================================================
+
+(defun %frag-mn ()
+  "Per-fragment (M . N) for register-tile decomposition: the active profile's mma-shape
+   (M N) on :spirv, else NVIDIA 16x8."
+  (if (eq *target-backend* :spirv)
+      (multiple-value-bind (m n k) (%spv-mma-shape) (declare (ignore k)) (cons m n))
+      (cons 16 8)))
+
+(defun %register-tile-frag-syms (var m n)
+  "The N per-fragment variable symbols for tile VAR of shape MxN (row-major fragment
+   grid), interned in VAR's package with a `$F<i>' suffix.  Fragment dims are the
+   target's per-fragment (M . N)."
+  (destructuring-bind (fm . fn) (%frag-mn)
+    (let ((nfrags (* (floor m fm) (floor n fn))))
+      (loop for i below nfrags
+            collect (intern (format nil "~a$F~d" (symbol-name var) i) (symbol-package var))))))
+
+(defun %register-tile-fit-check (m n location)
+  "F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile
+   is opaque cooperative matrices (the driver owns register residency), so SKIP.  Else:
+   (M/16)x(N/8) accumulator fragments x 4 fp32 regs <= :max-registers-per-thread."
+  (unless (eq *target-backend* :spirv)
+    (let* ((nfrags        (* (floor m 16) (floor n 8)))
+           (regs-per-frag 4)
+           (total-regs    (* nfrags regs-per-frag))
+           (profile       (active-hardware-profile))
+           (budget        (or (and profile (getf profile :max-registers-per-thread))
+                              *default-max-registers-per-thread*)))
+      (when (> total-regs budget)
+        (error 'crisp-compiler-error
+               :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs), exceeding the register budget of ~a.  Use a smaller tile shape or a hardware profile with a larger :max-registers-per-thread."
+                                m n total-regs nfrags regs-per-frag budget)
+               :source-location location)))))
+
+(defun %emit-per-frag-accumulate (a b entry &optional accum-binding body)
+  "Per-fragment expansion of mma-accumulate-via-tile (fragment dims = target per-fragment
+   M/N).  Bodyless: one accumulate set!/frag; with ACCUM-BINDING+BODY: splice the body."
+  (destructuring-bind (m n syms) (cdr entry)
+    (destructuring-bind (fm . fn) (%frag-mn)
+      (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
+        `(progn
+           ,@(loop for mi below m-frags append
+                   (loop for nj below n-frags
+                         for idx = (+ (* mi n-frags) nj)
+                         for fv = (nth idx syms)
+                         for acc-set = `(set! ,fv (mma-accumulate ,fv
+                                                                  (load-fragment-a ,a (,mi 0))
+                                                                  (load-fragment-b ,b (0 ,nj))))
+                         append (if body
+                                    (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                                    (list acc-set)))))))))
+
+(defun %emit-per-frag-store (dest tile-id entry)
+  "Per-fragment expansion of (store-tile V DEST (BTY BTX)) — fragment dims = target M/N."
+  (destructuring-bind (m n syms) (cdr entry)
+    (destructuring-bind (fm . fn) (%frag-mn)
+      (let ((m-frags (floor m fm)) (n-frags (floor n fn))
+            (bty (first tile-id)) (btx (second tile-id)))
+        `(progn
+           ,@(loop for mi below m-frags append
+                   (loop for nj below n-frags
+                         for idx = (+ (* mi n-frags) nj)
+                         collect `(store-fragment ,(nth idx syms)
+                                                  ,dest
+                                                  ((+ (* ,bty ,m-frags) ,mi)
+                                                   (+ (* ,btx ,n-frags) ,nj))))))))))
+
+(defun %check-mma-shape (mma-shape location)
+  "Validate the (M N K) MMA shape: an int triple, and — if a hardware profile is active —
+   a member of its :mma-shapes (the vendor's supported shape, e.g. Intel (8 16 8)); with
+   NO profile, require the tf32 NVIDIA default (16 8 8)."
+  (unless (and (listp mma-shape) (= (length mma-shape) 3) (every #'integerp mma-shape))
+    (error 'crisp-compiler-error
+           :message (format nil "mma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." mma-shape)
+           :source-location location))
+  (let* ((profile (active-hardware-profile))
+         (shapes  (and profile (getf profile :mma-shapes))))
+    (if shapes
+        (unless (member mma-shape shapes :test #'equal)
+          (error 'crisp-compiler-error
+                 :message (format nil "mma-accumulate-via-tile: shape ~a is not one of the active hardware profile's :mma-shapes ~a."
+                                  mma-shape shapes)
+                 :source-location location))
+        (unless (equal mma-shape '(16 8 8))
+          (error 'crisp-compiler-error
+                 :message (format nil "mma-accumulate-via-tile: only tf32 (16 8 8) is supported without a hardware profile, got ~a." mma-shape)
+                 :source-location location)))))
