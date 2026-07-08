@@ -28,6 +28,17 @@
           (return-from parse-mma-dims
             (ignore-errors (mapcar #'parse-integer nums))))))))
 
+(defun parse-mma-scale (directive-lines)
+  "Parse `MMA-SCALE: N` -> integer, or 1 (default).  For kernels that fire the MMA more than
+   once per fragment (e.g. accum-op body), the reference expects C = N·(A·B)."
+  (dolist (line directive-lines 1)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "MMA-SCALE:")
+        (return-from parse-mma-scale
+          (or (ignore-errors (parse-integer (string-trim '(#\Space #\Tab #\Return #\Newline)
+                                                          (subseq trimmed 10))))
+              1))))))
+
 (defun %crisp-hoist-l0-binary ()
   "Path to crisp-hoist-l0.exe (alongside the compiler binary)."
   (merge-pathnames (format nil "bin/crisp-hoist-l0~a" (if (uiop:os-windows-p) ".exe" ""))
@@ -37,7 +48,8 @@
   "Endeavor 134: re-hoist each kernel in --mma-test=M,N,K mode (host-reference C=A·B check),
    then compile+run via validate-l0-host-run (which checks HOIST-EXPECT: MMA_CORRECT)."
   (let* ((directives (extract-test-directives file))
-         (dims (parse-mma-dims directives)))
+         (dims (parse-mma-dims directives))
+         (scale (parse-mma-scale directives)))
     (unless (and dims (= (length dims) 3) (every #'integerp dims))
       (format t "FAIL: validate-l0-mma-run requires an `MMA-DIMS: M N K` directive~%")
       (return-from validate-l0-mma-run nil))
@@ -57,9 +69,11 @@
                     (file-namestring cpp) (file-namestring metacrisp))
             (return-from validate-l0-mma-run nil))
           (multiple-value-bind (out err code)
-              (uiop:run-program (list (uiop:native-namestring hoist)
-                                      (format nil "--mma-test=~{~d~^,~}" dims)
-                                      (uiop:native-namestring metacrisp))
+              (uiop:run-program (append (list (uiop:native-namestring hoist)
+                                              (format nil "--mma-test=~{~d~^,~}" dims))
+                                        (when (and scale (/= scale 1))
+                                          (list (format nil "--mma-scale=~d" scale)))
+                                        (list (uiop:native-namestring metacrisp)))
                 :output :string :error-output :string :ignore-error-status t)
             (declare (ignore out))
             (unless (zerop code)
@@ -78,7 +92,8 @@
    (host-reference C=A·B check), then compile+run via validate-cuda-host-run
    (which checks HOIST-EXPECT: MMA_CORRECT).  Skip-gated by nvcc availability."
   (let* ((directives (extract-test-directives file))
-         (dims (parse-mma-dims directives)))
+         (dims (parse-mma-dims directives))
+         (scale (parse-mma-scale directives)))
     (unless (and dims (= (length dims) 3) (every #'integerp dims))
       (format t "FAIL: validate-cuda-mma-run requires an `MMA-DIMS: M N K` directive~%")
       (return-from validate-cuda-mma-run nil))
@@ -98,9 +113,11 @@
                     (file-namestring cu) (file-namestring metacrisp))
             (return-from validate-cuda-mma-run nil))
           (multiple-value-bind (out err code)
-              (uiop:run-program (list (uiop:native-namestring hoist)
-                                      (format nil "--mma-test=~{~d~^,~}" dims)
-                                      (uiop:native-namestring metacrisp))
+              (uiop:run-program (append (list (uiop:native-namestring hoist)
+                                              (format nil "--mma-test=~{~d~^,~}" dims))
+                                        (when (and scale (/= scale 1))
+                                          (list (format nil "--mma-scale=~d" scale)))
+                                        (list (uiop:native-namestring metacrisp)))
                 :output :string :error-output :string :ignore-error-status t)
             (declare (ignore out))
             (unless (zerop code)

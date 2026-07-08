@@ -25,15 +25,21 @@
 
 (defvar *mma-test-dims* nil "(M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.")
 (defvar *mma-input-counter* 0 "Per-kernel input-tensor counter for A(0)/B(1) role assignment.")
+(defvar *mma-scale* 1 "Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.
+   Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).")
 
 (defun %mma-parse-args (args)
-  "Return (values metacrisp-path (M N K)-or-NIL), extracting a --mma-test=M,N,K flag."
-  (let ((dims nil) (path nil))
+  "Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an
+   optional --mma-scale=S flag."
+  (let ((dims nil) (path nil) (scale 1))
     (dolist (a args)
-      (if (and (>= (length a) 11) (string= (subseq a 0 11) "--mma-test="))
-          (setf dims (mapcar #'parse-integer (uiop:split-string (subseq a 11) :separator ",")))
-          (unless path (setf path a))))
-    (values path dims)))
+      (cond
+        ((and (>= (length a) 11) (string= (subseq a 0 11) "--mma-test="))
+         (setf dims (mapcar #'parse-integer (uiop:split-string (subseq a 11) :separator ","))))
+        ((and (>= (length a) 12) (string= (subseq a 0 12) "--mma-scale="))
+         (setf scale (parse-integer (subseq a 12))))
+        (t (unless path (setf path a)))))
+    (values path dims scale)))
 
 (defun %mma-out-dir-p (dir)
   "T if the param direction is an output (&out)."
@@ -48,8 +54,9 @@
         (unless args
           (format t "Usage: crisp-hoist-cuda [--mma-test=M,N,K] <path-to-metacrisp-file>~%")
           (uiop:quit 1))
-        (multiple-value-bind (metacrisp-path dims) (%mma-parse-args args)
+        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args args)
           (setf *mma-test-dims* dims)
+          (setf *mma-scale* scale)
           (setf *mma-input-counter* 0)     ; reset role assignment for this run
           (unless (and metacrisp-path (probe-file metacrisp-path))
             (format t "Error: File not found: ~a~%" metacrisp-path)
@@ -185,6 +192,8 @@
           (format stream "        float acc = 0.0f;~%")
           (format stream "        for (uint64_t kk = 0; kk < ~dULL; kk++)~%" k)
           (format stream "            acc += ~a_h[i*~a_str0 + kk*~a_str1] * ~a_h[kk*~a_str0 + j*~a_str1];~%" ab ab ab bb bb bb)
+          (when (/= *mma-scale* 1)
+            (format stream "        acc = acc * ~d.0f;   // --mma-scale (MMA fired ~:*~d× per fragment)~%" *mma-scale*))
           (format stream "        float got = ~a_h[i*~a_str0 + j*~a_str1];~%" cb cb cb)
           (format stream "        float d = got - acc; if (d < 0) d = -d;~%")
           (format stream "        if (d > 1e-2f * (acc < 0 ? -acc : acc) + 1e-3f) { mma_ok = 0;~%")

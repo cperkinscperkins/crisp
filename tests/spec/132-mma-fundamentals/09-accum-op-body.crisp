@@ -13,6 +13,15 @@
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; Endeavor 134 — on-metal correctness via the hoist's --mma-test.  This kernel fires
+;; (accum-op) TWICE on one fragment, so C = A·B + A·B = 2·(A·B) — the host reference is
+;; scaled by MMA-SCALE: 2, which is exactly what proves the body fired the MMA twice.
+;; C[16×8] = 2·(A[16×8]·B[8×8]); NVIDIA shape (16 8 8).
+;; MMA-DIMS: 16 8 8
+;; MMA-SCALE: 2
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
