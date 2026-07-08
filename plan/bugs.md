@@ -418,9 +418,36 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     generate-debug-info null-safe for struct params / void, and resolve enum/struct
     di-types correctly) is a focused follow-up, now locally reproducible via 056/07.
 
-[ ] 034 - CUDA multi-K-step SLM-staged tiled matmul miscomputes with non-uniform inputs.
+[x] 034 - CUDA multi-K-step SLM-staged tiled matmul miscomputes with non-uniform inputs.
         Discovered by the Endeavor 134 on-metal MMA test harness (host-reference C=A·B via
-        the hoist's --mma-test) on RunPod (RTX), 2026-07-08.
+        the hoist's --mma-test) on RunPod (RTX), 2026-07-08.  FIXED 2026-07-08.
+
+        ROOT CAUSE (not what the title guessed - not multi-K-step, not the kernel/codegen):
+        the CUDA HOIST's %cuda-emit-local-scratch-tensor-arg hardcoded EVERY local scratch
+        tile's shared-memory offset to 0, so a kernel with >1 SLM tile (06's A-tile + B-tile)
+        had them fully ALIAS.  The kernel stages A-tile (128 floats), then stages B-tile at
+        the same offset 0, clobbering A-tile elements 0-63 = rows 0-7.  So C's top M-half was
+        wrong, bottom half (rows 8-15, elements 64-127) correct.  CUDA-only (L0 gives each
+        local arg a separate zeKernelSetArgumentValue(nullptr) SLM region).  Masked by the old
+        A=B=1 benchmark (clobbering A with identical B data is invisible).
+
+        DIAGNOSIS METHOD (fast, no GPU needed): computed the host reference locally and diffed
+        it against the device BUFFER c from the pod log -> rows 8-15 exact, rows 0-7 wrong with
+        a period-3 (B-structure) pattern -> elements 0-63 = B-tile footprint -> checked the
+        generated .cu: both a_tile_ptr=0 and b_tile_ptr=0 -> confirmed in PTX (both tile bases
+        feed ld.shared from param=0).
+
+        FIX (overlays/hoist-cuda/crisp-hoist-cuda-overlay.lisp, commit 8f3168b): give each
+        local tile a running CUMULATIVE byte offset (*cuda-shared-scratch-offset*, reset per
+        kernel in emit-kernel-args).  The launch already allocates the summed size
+        (compute-total-shared-bytes), so no other change needed.  b-tile@0, a-tile@256,
+        total 768 = launch alloc.
+
+        VERIFIED ON METAL (RTX, RunPod, 2026-07-08): 132/06 BUFFER c now == host reference
+        exactly; 132-mma-fundamentals suite 11/12 -> 12/12.  Local suite 867/867 (06 SKIPs
+        without nvcc).  CAVEAT left in the overlay comment: raw cumulative sizes assume uniform
+        element size across tiles; a mix of 4- and 8-byte tiles would need per-tile alignment
+        plus a matching compute-total-shared-bytes.
 
         SYMPTOM: tests/spec/132-mma-fundamentals/06-tiled-matmul.crisp (a synchronous
         SLM-staged tiled matmul, C[16x8] = A[16xK].B[Kx8], K a runtime multiple of 8) is

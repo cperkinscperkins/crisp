@@ -115,3 +115,14 @@ TODO next session:
 - Investigate/fix bug 034 (K=8 SLM probe spec → pod run → localize → fix).
 - Then benchmarking workstream (A): L0 bench_harness + oneAPI-Docker Intel reference; run.py
   `--backend=l0`.  (oneDNN dropped; Intel reference runs in the same oneAPI Docker container.)
+
+Update 2026-07-08 — bug 034 FIXED
+---------------------------------
+The 132/06 miscompute was a CUDA-hoist SLM-aliasing bug (every local scratch tile emitted at
+shared offset 0 → A-tile/B-tile overlapped; staging B clobbered A-tile rows 0-7).  Fixed by
+assigning cumulative byte offsets per tile (overlays/hoist-cuda/, commit 8f3168b).  Diagnosed
+locally without a GPU by diffing the host reference against the pod's device output (rows 8-15
+exact, rows 0-7 = B's structure), then confirmed via the generated .cu (both ptr=0) and PTX.
+VERIFIED on RTX: 132/06 output == reference; the 132-mma suite went 11/12 -> 12/12.  Both
+backends now have on-metal-verified SLM-staged tiled matmul.  Only the benchmarking on-ramp
+(workstream A) remains open.
