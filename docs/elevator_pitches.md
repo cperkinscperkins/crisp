@@ -1,4 +1,18 @@
+### A Note From the Author
 
+I work in the field of GPU enablement, and over the years I've observed a few things. GPUs with their lockstep parallelism are absolutely amazing at delivering blistering performance for certain types of algorithms. But they are also brittle and finicky. Data coherence, occupancy, branch divergence, register spilling, workgroup and warp coordination, and much more all conspire to make reaching optimal performance tricky. Heck, just basic _correctness_ is tricky. My thought was that the language and tooling should guide users away from mistakes, away from sub-optimal decisions and towards correctness and optimal performance, without nannying. I didn't want to make a new language. I really didn't. I  was just collecting some ideas that I couldn't figure out how to realize and that's the shape they took. 
+
+### Laundry LIst
+
+Crisp rocks. The language is expressive, it represents and captures many common GPU memes, and those memes are well understood by the crisp compiler to give maximum performance and correctness.  What do I mean by that? Here are some examples:
+- SROA - In Crisp code, a matrix or tensor is just one argument, not a dozen. Crisp does Structural Replacement of Aggregates. Want to write your own SROA datatype? Crisp makes that possible with `def-record`.
+- `def-hardware-profile` lets you exactly describe the hardware capabilities of a GPU and then the compiler will optimize to that. Hey, if you know you are going to be running other kernels, then you can provide a smaller definition and the compiler will optimize to THAT.
+- The basic async functions in Crisp are "topology aware". Meaning you can use `def-topology` to exactly describe the nodes, GPUS and interconnects of your system, and describe where/how memory is located/segmented and the compiler will write out the correct async calls for you. This means your kernel code can remain independent of hardware concerns and actually be MORE performant.
+- math precision isn't just set by a flag. It can be scoped over individual closures, and sometimes by individual statements
+- Crisp supports auto-differentiaton. The compiler can generate the backwards deriviative kernel from a forward one.
+- Crisp has type templates like C++, and it leverages the template specializtion to support first order functions (which are monomorphically generated) and optional arguments.
+- The Crisp type templating system includes type constraints (ie C++ Concepts) and type functions. 
+- At compile-time Crisp users can leverage the power of Common Lisp `defmacro` and Common Lisp itself. This isn't a leaking abstraction, this is by design. Having the full power of Common Lisp available to YOU, the developer, means that practically any Crisp design decision you don't like, you can redo to your liking. You aren't limited by the Crisp memes and inventions - invent your own. Shape the language as suits you.
 
 ### Short
 

@@ -7,6 +7,12 @@
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--differentiate]: "forward-only MMA"
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; Endeavor 134 — on-metal correctness (host-reference C=A·B) via the hoist's --mma-test:
+;; MMA-DIMS: 16 16 8
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
 

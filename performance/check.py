@@ -15,6 +15,16 @@ Usage:
   python performance/check.py --seed           # bootstrap baseline.json
                                                # with the current run
 
+You never pass compiler flags on the command line.  A test that needs extra
+crisp-compile flags (e.g. matmul-bmg needs --hardware-profile=bmg for the BMG
+XMX shape) declares them as "compile_flags" in its TESTS entry; check.py applies
+them automatically.  Just run `python performance/check.py`.
+
+--seed caveat: it reseeds EVERY metric of the selected test(s) to the current
+run, blowing away ratchet history.  To accept only, say, a compile-time drift
+without resetting the kernel ratchet, delete just that metric's entry from
+baseline.json and let the next run re-seed it (or hand-edit the one "best").
+
 Exit codes:
   0   all tests within tolerance (or improved)
   1   at least one metric regressed beyond tolerance
@@ -41,9 +51,15 @@ BASELINE_PATH = PERF_DIR / "baseline.json"
 # Each entry: directory under performance/, crisp source filename, kernel name
 # (used to derive the .spv filename), and a default tolerance per metric.
 #
+# Optional "compile_flags": extra crisp-compile args this test needs (applied
+# automatically to the compile step — NOT passed on the check.py command line).
+# E.g. matmul-bmg needs --hardware-profile=bmg to select the BMG XMX shape.
+#
 # tolerance: fractional slowdown allowed before we call it a regression.
-# Wider on compile time (more variable, expected to drift upward as features
-# land); tighter on kernel time (this is the thing we're really watching).
+# device_compile_s is loosely gated (1.0 = 2x): it's a ~0.2s, process-startup-
+# dominated signal that grows with every feature endeavor, so a tight gate just
+# false-alarms.  Wide enough to still catch a catastrophic (e.g. accidentally
+# quadratic) compile blowup.  kernel_median_us / throughput are the real watch.
 TESTS = [
     {
         "name":              "reduction-bmg",
@@ -54,7 +70,7 @@ TESTS = [
         "tolerance": {
             "kernel_median_us":  0.10,
             "throughput_gb_s":   0.10,
-            "device_compile_s":  0.25,
+            "device_compile_s":  1.00,
         },
     },
     {
@@ -66,18 +82,39 @@ TESTS = [
         "tolerance": {
             "kernel_median_us":  0.10,
             "throughput_gb_s":   0.10,
-            "device_compile_s":  0.25,
+            "device_compile_s":  1.00,
+        },
+    },
+    {
+        # Endeavor 134 bookend: Chapter-0 synchronous SLM-staged matmul.
+        # Single sub-group, 8x16 output, large K -> dominated by the K-loop's
+        # sync staging (what the MMA "chapters" will optimize).  Needs the BMG
+        # hardware profile selected (for the (8 16 8) XMX shape).
+        "name":              "matmul-bmg",
+        "crisp_source":      "matmul.crisp",
+        "spv":               "matmul.spv",
+        "harness":           "harness.cpp",
+        "binary":            "harness.exe",
+        "compile_flags":     ["--hardware-profile=bmg"],
+        "tolerance": {
+            "kernel_median_us":  0.10,
+            "gflops":            0.10,
+            "device_compile_s":  1.00,
         },
     },
 ]
 
-# Metrics with this string in the name mean "lower is better" (kernel time,
-# compile time).  Anything else is "higher is better" (throughput).
-LOWER_IS_BETTER = ("_us", "_s")
+# Higher-is-better metrics: throughput / FLOP rate.  Everything else — kernel
+# time, compile time, latency — is lower-is-better.
+#
+# NB: match on SUBSTRING, not suffix.  "throughput_gb_s" ends in "_s" but is
+# HIGHER-is-better; the old endswith(("_us","_s")) rule inverted the throughput
+# ratchet (it recorded the SLOWEST run as "best" and failed on genuine speedups).
+HIGHER_IS_BETTER = ("throughput", "gflops", "tflops", "gb_s", "gbps")
 
 
 def is_lower_better(metric):
-    return any(metric.endswith(s) for s in LOWER_IS_BETTER)
+    return not any(h in metric for h in HIGHER_IS_BETTER)
 
 
 # --- Toolchain resolution (mirrors tests/run-specs.lisp) --------------------
@@ -145,7 +182,7 @@ def run_test(test, warmup=50, iterations=100):
     print(f"  [{name}] crisp-compile {test['crisp_source']}")
     t0 = time.monotonic()
     r = subprocess.run(
-        [crisp_compile, "--ir-target=spv", str(crisp_file)],
+        [crisp_compile, "--ir-target=spv"] + test.get("compile_flags", []) + [str(crisp_file)],
         capture_output=True, text=True)
     device_compile_s = time.monotonic() - t0
     if r.returncode != 0:
@@ -282,9 +319,12 @@ def main():
             return 2
 
         baseline_for_test = baseline.get(test["name"], {})
+        # Second metric is throughput_gb_s (bandwidth tests) or gflops (matmul).
+        second = ("throughput_gb_s" if "throughput_gb_s" in result
+                  else "gflops" if "gflops" in result else None)
+        second_str = f"{second}={result[second]}  " if second else ""
         print(f"  results: kernel_median_us={result['kernel_median_us']}  "
-              f"throughput_gb_s={result['throughput_gb_s']}  "
-              f"device_compile_s={result['device_compile_s']}")
+              f"{second_str}device_compile_s={result['device_compile_s']}")
 
         for metric, tol in test["tolerance"].items():
             current = result.get(metric)

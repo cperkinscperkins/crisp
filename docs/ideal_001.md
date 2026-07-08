@@ -11911,6 +11911,8 @@ The only flags it respects are
 - `--math-precision` (and `--force-math-precision` but discouraged)
 - flags governing errors and warnings (TBD)
 
+> NOTE: revisit the above assertion about "only" flags. We have added some, like --denormal-handling. Why are most flags ignored anyway? The destination and target ones make sense to skip. What about --debug , logging, log-level ?
+
 
 ## APPENDIX #1 - Summary: set / get vars, storage handles, and structs 
 

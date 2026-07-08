@@ -1,0 +1,44 @@
+;; Endeavor 134 — BMG SLM-staged tiled matmul (the L0 Chapter-proof twin of 132/06).
+;;
+;; One sub-group computes an 8x16 output tile: C[8x16] = A[8xK] . B[Kx16], K a runtime
+;; multiple of 8.  Each K-step (K-tile = the BMG XMX shape's K = 8) is staged from global
+;; into SLM via sync load-tile-coords, then mma-accumulate-via-tile adds its A·B into the
+;; register C-tile.  Accumulation across the K-loop is automatic (mma = A·B + C).
+;;
+;; This exercises the implicit SLM scratch args (A-tile/B-tile) on metal — the hoist emits
+;; them; --mma-test only overrides the global A/B/C sizing + appends the host reference.
+;; BMG XMX shape is (8 16 8) and B must be row-major (no PackedB_ColumnMajor on SPV).
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "forward-only MMA"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; Endeavor 134 — on-metal correctness (host-reference C=A·B) via the hoist's --mma-test:
+;; SLM-STAGED: C[8×16] = A[8×16]·B[16×16], K=16 -> 2 K-steps through SLM.
+;; MMA-DIMS: 8 16 16
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tiled_matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one sub-group
+  (let ((A-tile (make-scratch-matrix float (8 8)))      ; SLM: M×8 (one K-step of A)
+        (B-tile (make-scratch-matrix float (8 16)))     ; SLM: 8×N (one K-step of B)
+        (C-tile (make-register-tile float (8 16) 0.0))
+        (K      (to-int (inner-dimension A B))))
+    (dotimes (kt (/ K 8))
+      (load-tile-coords A A-tile (0 (* kt 8)))      ; stage A[:, kt*8 : kt*8+8]
+      (load-tile-coords B B-tile ((* kt 8) 0))      ; stage B[kt*8 : kt*8+8, :]
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup))
+    (store-tile C-tile C (0 0))))

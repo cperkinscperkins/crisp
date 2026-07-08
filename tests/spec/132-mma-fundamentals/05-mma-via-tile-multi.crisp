@@ -8,6 +8,12 @@
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; Endeavor 134 — on-metal correctness (host-reference C=A·B) via the hoist's --mma-test.
+;; C[16×16] = A[16×8]·B[8×16]; two 16×8 N-fragments, NVIDIA shape (16 8 8).
+;; MMA-DIMS: 16 16 8
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))

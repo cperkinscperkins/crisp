@@ -417,3 +417,66 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     MITIGATION shipped: SKIP-WITH[--debug] on the MMA specs (01/02).  Proper fix (make
     generate-debug-info null-safe for struct params / void, and resolve enum/struct
     di-types correctly) is a focused follow-up, now locally reproducible via 056/07.
+
+[x] 034 - CUDA multi-K-step SLM-staged tiled matmul miscomputes with non-uniform inputs.
+        Discovered by the Endeavor 134 on-metal MMA test harness (host-reference C=A·B via
+        the hoist's --mma-test) on RunPod (RTX), 2026-07-08.  FIXED 2026-07-08.
+
+        ROOT CAUSE (not what the title guessed - not multi-K-step, not the kernel/codegen):
+        the CUDA HOIST's %cuda-emit-local-scratch-tensor-arg hardcoded EVERY local scratch
+        tile's shared-memory offset to 0, so a kernel with >1 SLM tile (06's A-tile + B-tile)
+        had them fully ALIAS.  The kernel stages A-tile (128 floats), then stages B-tile at
+        the same offset 0, clobbering A-tile elements 0-63 = rows 0-7.  So C's top M-half was
+        wrong, bottom half (rows 8-15, elements 64-127) correct.  CUDA-only (L0 gives each
+        local arg a separate zeKernelSetArgumentValue(nullptr) SLM region).  Masked by the old
+        A=B=1 benchmark (clobbering A with identical B data is invisible).
+
+        DIAGNOSIS METHOD (fast, no GPU needed): computed the host reference locally and diffed
+        it against the device BUFFER c from the pod log -> rows 8-15 exact, rows 0-7 wrong with
+        a period-3 (B-structure) pattern -> elements 0-63 = B-tile footprint -> checked the
+        generated .cu: both a_tile_ptr=0 and b_tile_ptr=0 -> confirmed in PTX (both tile bases
+        feed ld.shared from param=0).
+
+        FIX (overlays/hoist-cuda/crisp-hoist-cuda-overlay.lisp, commit 8f3168b): give each
+        local tile a running CUMULATIVE byte offset (*cuda-shared-scratch-offset*, reset per
+        kernel in emit-kernel-args).  The launch already allocates the summed size
+        (compute-total-shared-bytes), so no other change needed.  b-tile@0, a-tile@256,
+        total 768 = launch alloc.
+
+        VERIFIED ON METAL (RTX, RunPod, 2026-07-08): 132/06 BUFFER c now == host reference
+        exactly; 132-mma-fundamentals suite 11/12 -> 12/12.  Local suite 867/867 (06 SKIPs
+        without nvcc).  CAVEAT left in the overlay comment: raw cumulative sizes assume uniform
+        element size across tiles; a mix of 4- and 8-byte tiles would need per-tile alignment
+        plus a matching compute-total-shared-bytes.
+
+        SYMPTOM: tests/spec/132-mma-fundamentals/06-tiled-matmul.crisp (a synchronous
+        SLM-staged tiled matmul, C[16x8] = A[16xK].B[Kx8], K a runtime multiple of 8) is
+        MMA_WRONG under the harness with K=16 (2 K-steps).  Hand-check C[0][0]: reference
+        = 30 (Sum_{k=0..15} (k%5)*((8k)%3)), device returned 13.
+
+        SCOPE / what still works (so this is a NARROW bug, not generic):
+          - 132/04, 05, 09 (CUDA, register-only, SINGLE K-step) all MMA_CORRECT.
+          - 132/09 with MMA-SCALE 2 correct (C[0]=32=2x16), so accum-op / scale path is fine.
+          - 133/12-tiled-matmul-bmg (L0/BMG, ALSO SLM-staged, 2 K-steps, shape 8 16 8) is
+            MMA_CORRECT.  So the fault is CUDA-specific (or (16 8 8)/M=16-tile-specific),
+            NOT generic multi-K-step SLM.
+
+        WHY IT WASN'T CAUGHT BEFORE: earlier matmul validation (benchmarks/matmul, 2026-07-05)
+        used A=B=1 -> C=K, which masks layout/staging errors.  The harness's non-uniform fill
+        (A[i]=i%5, B[i]=i%3) exposes them.  The reference is trustworthy: 04/05 use the same
+        col-major B and the same SLM-agnostic reference and pass, so the reference math is
+        correct -> the KERNEL output is genuinely wrong.
+
+        LEADING THEORIES (CUDA multi-K-step SLM path):
+          (1) 2nd-K-step staging: load-tile-coords B B-tile ((* kt 8) 0) at kt=1 reads the
+              wrong B slice into SLM, or the SLM tile is stale/raced across sync-workgroup.
+          (2) register C-tile accumulator not carried correctly between K iterations.
+          (3) an M=16 A-tile fragment-layout issue on re-load (133/12 uses M=8).
+
+        VERIFICATION EXPERIMENT (not yet run): a K=8 SINGLE-step SLM variant of 06 -> if it
+        PASSES, the bug is multi-K-step accumulation/re-staging (theory 1/2); if it FAILS,
+        the bug is SLM staging itself (independent of the K-loop).  One new spec + one pod run.
+
+        STATUS: 132/06's TEST-HOIST[CUDA] wiring is CORRECT (it went red on a real bug).
+        Locally 06 SKIPs (no NVIDIA GPU), so the local suite stays green; only GPU-CI/RunPod
+        sees the red.  Left wired (visible reminder) pending the morning's investigation.
