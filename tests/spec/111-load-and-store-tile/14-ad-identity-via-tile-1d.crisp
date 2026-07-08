@@ -2,15 +2,15 @@
 ;; TEST-WITH[--ir-target=spv --differentiate]
 ;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=1.0 output-vec=4
 
-;; Sub-step 1c: AD of load-tile-coords / store-tile-coords (identity path).
+;; Sub-step 1c: AD of load-tile-at / store-tile-at (identity path).
 ;;
 ;; Forward kernel: C = A (copy through a local tile).
-;;   tile  ← A[0..3]   via load-tile-coords
-;;   C[0..3] ← tile    via store-tile-coords
+;;   tile  ← A[0..3]   via load-tile-at
+;;   C[0..3] ← tile    via store-tile-at
 ;;
 ;; Backward computes df/dA[k] = 1.0 for each k:
-;;   - tile_ADJ ← C_GRAD          via %store-tile-coords-bwd (plain accumulate)
-;;   - A_GRAD  += tile_ADJ        via %load-tile-coords-bwd  (atomic-add!)
+;;   - tile_ADJ ← C_GRAD          via %store-tile-at-bwd (plain accumulate)
+;;   - A_GRAD  += tile_ADJ        via %load-tile-at-bwd  (atomic-add!)
 ;;
 ;; Compile-only verification.  Both forward and backward kernels compile;
 ;; backward IR contains the atomic-add scatter into A_GRAD.  Runtime
@@ -26,5 +26,5 @@
            (global-size :set-to 4)
            (local-size  :set-to 4))
   (let ((tile (make-scratch-vector float 4)))
-    (load-tile-coords A tile (0))
-    (store-tile-coords tile C (0))))
+    (load-tile-at A tile (0))
+    (store-tile-at tile C (0))))

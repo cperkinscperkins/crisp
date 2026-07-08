@@ -1,6 +1,6 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords land in sub-step 1c"
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
 ;; Sub-step 1b: bare load-tile inside hardware-stride :workgroup-idx.
 ;; Same rewrite mechanism as tile-stride; the binding sym (grid-x) is

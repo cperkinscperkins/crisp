@@ -5,7 +5,7 @@
 The Crisp kernel is a **grid-stride tiled matmul**: one warp (32 threads) per 64×64
 output tile (= a 4×8 grid of 32 m16n8k8 accumulator fragments), selected by
 `get-workgroup-id`; each K-step (K-tile = the MMA shape's K = 8) stages the tile's
-64×8 A row-block and 8×64 B col-block from global into SLM via sync `load-tile-coords`,
+64×8 A row-block and 8×64 B col-block from global into SLM via sync `load-tile-at`,
 reused across all 32 fragment MMAs, then accumulated via 32
 `mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32`. Built from the Endeavor-132 MMA
 forms: `make-register-tile`, `load-fragment-a/b`, `mma-accumulate` (via

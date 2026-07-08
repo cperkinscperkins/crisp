@@ -180,8 +180,8 @@ OpenCL fail-state is now documentation, not a regression.
 ### Phase 1c.2.f — 111 AD-on-metal coverage  (blocked: runner needs local-scratch arg support)
 
 Once L0 is the AD runtime, add VERIFY-AUTODIFF directives to a
-handful of representative 111 specs (load-tile-coords,
-store-tile-coords, the bare-sugar variants) to actually exercise
+handful of representative 111 specs (load-tile-at,
+store-tile-at, the bare-sugar variants) to actually exercise
 the Phase 1 compile-side AD on metal.  We've been running these
 forward-only; the runner port is what unlocks them.  Pick maybe
 3 – 5 spec files, not all 19, to keep the runner's wall-clock
@@ -203,8 +203,8 @@ ad_identity_via_tile_1d_grad(
 
 — 36 args.  Two of those vector descriptors are :local addrspace
 scratch tiles (the original `tile` plus the AD-minted `tile_ADJ`
-shadow that load-tile-coords-bwd accumulates into before
-%load-tile-coords-bwd scatters with atomic-add!).
+shadow that load-tile-at-bwd accumulates into before
+%load-tile-at-bwd scatters with atomic-add!).
 
 The runner's `bind-vector-arg` only knows how to bind global
 buffers.  For :local addrspace vectors the binding is different:

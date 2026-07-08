@@ -2,7 +2,7 @@
 ;;
 ;; One sub-group computes an 8x16 output tile: C[8x16] = A[8xK] . B[Kx16], K a runtime
 ;; multiple of 8.  Each K-step (K-tile = the BMG XMX shape's K = 8) is staged from global
-;; into SLM via sync load-tile-coords, then mma-accumulate-via-tile adds its A·B into the
+;; into SLM via sync load-tile-at, then mma-accumulate-via-tile adds its A·B into the
 ;; register C-tile.  Accumulation across the K-loop is automatic (mma = A·B + C).
 ;;
 ;; This exercises the implicit SLM scratch args (A-tile/B-tile) on metal — the hoist emits
@@ -36,8 +36,8 @@
         (C-tile (make-register-tile float (8 16) 0.0))
         (K      (to-int (inner-dimension A B))))
     (dotimes (kt (/ K 8))
-      (load-tile-coords A A-tile (0 (* kt 8)))      ; stage A[:, kt*8 : kt*8+8]
-      (load-tile-coords B B-tile ((* kt 8) 0))      ; stage B[kt*8 : kt*8+8, :]
+      (load-tile-at A A-tile (0 (* kt 8)))      ; stage A[:, kt*8 : kt*8+8]
+      (load-tile-at B B-tile ((* kt 8) 0))      ; stage B[kt*8 : kt*8+8, :]
       (sync-workgroup)
       (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
       (sync-workgroup))

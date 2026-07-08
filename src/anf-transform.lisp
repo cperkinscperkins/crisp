@@ -163,7 +163,7 @@
 
 (defun anf-normalize (expr is-nested?)
   "Returns (VALUES normalized-expr bindings-list).
-   Phase 1c: added opaque pass-through for load-tile-coords / store-tile-coords
+   Phase 1c: added opaque pass-through for load-tile-at / store-tile-at
    and their internal *-bwd / bare load-tile / store-tile variants."
   (cond
    ((anf-is-atomic? expr)

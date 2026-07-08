@@ -1,7 +1,7 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
 
-;; Basic store-tile-coords on a 1D vector.  Fill a :local tile with each
+;; Basic store-tile-at on a 1D vector.  Fill a :local tile with each
 ;; lane's local-id via workgroup-stride, then store the tile back to a
 ;; global &out vector starting at origin 0.  Expected: OUT == [0,1,2,3].
 ;;
@@ -18,4 +18,4 @@
   (let ((tile (make-scratch-vector ulong 4)))
     (workgroup-stride tile (lx)
       (set! (~ tile lx) lx))
-    (store-tile-coords tile OUT (0))))
+    (store-tile-at tile OUT (0))))

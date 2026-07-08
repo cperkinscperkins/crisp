@@ -1,10 +1,10 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords land in sub-step 1c"
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
 ;; Sub-step 1b: bare load-tile inside tile-stride.  The bare form
 ;; (load-tile V tile (grid-x)) gets rewritten to
-;; (load-tile-coords V tile (grid-x)) by the tile-stride body walker,
+;; (load-tile-at V tile (grid-x)) by the tile-stride body walker,
 ;; injecting the tile-stride's binding sym as the origin.
 
 (def-type vec-t  (vector ulong :address-space :global :align :compact))

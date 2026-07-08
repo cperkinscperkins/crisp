@@ -1,10 +1,10 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for store-tile-coords land in sub-step 1c"
+;; SKIP-WITH[--differentiate]: "AD rules for store-tile-at land in sub-step 1c"
 
 ;; Sub-step 1b: bare store-tile inside tile-stride.  The bare form
 ;; (store-tile tile OUT (grid-x)) gets rewritten to
-;; (store-tile-coords tile OUT (grid-x)) by the tile-stride body walker.
+;; (store-tile-at tile OUT (grid-x)) by the tile-stride body walker.
 
 (def-type vec-t  (vector ulong :address-space :global :align :compact))
 (def-type tile-t (vector ulong :address-space :local  :align :compact))

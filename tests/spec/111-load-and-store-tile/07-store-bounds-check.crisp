@@ -19,4 +19,4 @@
   (let ((tile (make-scratch-vector ulong 4)))
     (workgroup-stride tile (lx)
       (set! (~ tile lx) (+ lx (to-ulong 100))))
-    (store-tile-coords tile OUT (2))))
+    (store-tile-at tile OUT (2))))

@@ -38,10 +38,10 @@ and the `await-`.
 Storage back to global memory does NOT yet have wide architecture support.  Crisp has these routines, but be aware that
 the hardware choices that actually support this are limited. Your kernel may fail to compile or execute correctly on non-supporting hardware.
 
-#### Tile Support : `request-load-tile-coords` / `request-store-tile-coords` ✅
+#### Tile Support : `request-load-tile-at` / `request-store-tile-coords` ✅
 
 ```
-(request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
+(request-load-tile-at source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
 
 (request-store-tile-coords source-tile dest-tensor  (... tensor-row-y tensor-col-x) &key transpose) => request token
 ```

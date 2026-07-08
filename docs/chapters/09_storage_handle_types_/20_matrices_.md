@@ -106,11 +106,11 @@ Possible Implemenation
 
 ```
 
-#### load-tile-coords / store-tile-coords ✅
+#### load-tile-at / store-tile-coords ✅
 
 ```
-(load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose)
-(request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
+(load-tile-at source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose)
+(request-load-tile-at source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
 
 (store-tile-coords source-tile dest-tensor  (... tensor-row-y tensor-col-x) &key transformF transpose)
 (request-store-tile-coords source-tile dest-tensor  (... tensor-row-y tensor-col-x) &key transpose) => request token
@@ -124,7 +124,7 @@ If using the `tile-stride` macro, then stride aware `load-tile` and `store-tile`
 are availalable in the body of the `tile-stride` (along with async variants). See [load-tile / store-tile](#load-tile--store-tile) for a full discussion.
 
 Outside that macro, tile loading and storing is available, but coordinates are needed. 
-`load-tile-coords` and `store-tile-coords` can be used.  
+`load-tile-at` and `store-tile-coords` can be used.  
 
 The `:identity` key can be used when the source tensor
 is not evenly divisible by the tile size.  In that case, the tile will be correctly loaded with

@@ -59,11 +59,11 @@
 ;; checking and an implicit sync-workgroup.
 ;;
 ;; API (sub-step 1a, src-first universally):
-;;   (load-tile-coords  <src-global> <dest-tile> (origin-coords...) &key (identity 0) transpose)
-;;   (store-tile-coords <src-tile> <dest-global> (origin-coords...) &key transformF transpose)
+;;   (load-tile-at  <src-global> <dest-tile> (origin-coords...) &key (identity 0) transpose)
+;;   (store-tile-at <src-tile> <dest-global> (origin-coords...) &key transformF transpose)
 ;;
 ;; Semantics:
-;;   load-tile-coords:
+;;   load-tile-at:
 ;;     - For each tile coord (cooperatively across the workgroup), compute the
 ;;       corresponding source coord = origin + tile-coord (or transposed map
 ;;       for :transpose t).
@@ -72,7 +72,7 @@
 ;;       tile[tile-coord] (default 0).
 ;;     - Ends with (sync-workgroup) so subsequent reads see the loaded tile.
 ;;
-;;   store-tile-coords:
+;;   store-tile-at:
 ;;     - Starts with (sync-workgroup) so all prior tile writes are visible.
 ;;     - For each tile coord (cooperatively), compute dest coord = origin +
 ;;       tile-coord (or transposed).
@@ -90,7 +90,7 @@
 
 (defun %extract-key-arg (key-args keyword default)
   "Parses a &key-style plist KEY-ARGS for KEYWORD, returning its value or
-   DEFAULT if absent.  Phase 1a helper for load-tile-coords / store-tile-coords
+   DEFAULT if absent.  Phase 1a helper for load-tile-at / store-tile-at
    keyword parsing."
   (loop for (k v) on key-args by #'cddr
           when (eq k keyword) return v
@@ -127,7 +127,7 @@
                                   tile-extent-syms lid-syms lws-syms inner-form
                                   cl-pkg)
   "Builds the cooperative N-dim workgroup-strided nest used by
-   load-tile-coords and store-tile-coords.  At each level:
+   load-tile-at and store-tile-at.  At each level:
      (dotimes (K_k TE_k LWS_k)
        (let ((tile-coord-k (+ K_k LID_k)))
          (when (< tile-coord-k TE_k)
@@ -180,8 +180,8 @@
         (first tests)
         (cons and-sym tests))))
 
-(defun %expand-load-tile-coords-form (expr location)
-  "Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).
+(defun %expand-load-tile-at-form (expr location)
+  "Pure expansion of (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose).
    Returns a let/dotimes/when nest that cooperatively loads the tile, ending
    with (sync-workgroup)."
   (let* ((src-form (second expr))
@@ -191,7 +191,7 @@
     (unless (and (listp origin-list)
                  (>= (length origin-list) 1))
       (error 'crisp-compiler-error
-        :message "load-tile-coords: origin must be a non-empty list of coord forms"
+        :message "load-tile-at: origin must be a non-empty list of coord forms"
         :source-location location))
     (let* ((identity-form (%extract-key-arg key-args :identity 0))
            (transpose-form (%extract-key-arg key-args :transpose nil))
@@ -264,8 +264,8 @@
 
 
 ;; src/analysis/control.lisp
-(defun %expand-store-tile-coords-form (expr location)
-  "Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).
+(defun %expand-store-tile-at-form (expr location)
+  "Pure expansion of (store-tile-at TILE DEST (ORIGIN...) &key transformF transpose).
    Returns a let/progn nest with (sync-workgroup) BEFORE and AFTER the
    cooperative store loop.  TransformF is applied per-element (unary)."
   (let* ((tile-form (second expr))
@@ -275,7 +275,7 @@
     (unless (and (listp origin-list)
                  (>= (length origin-list) 1))
       (error 'crisp-compiler-error
-        :message "store-tile-coords: origin must be a non-empty list of coord forms"
+        :message "store-tile-at: origin must be a non-empty list of coord forms"
         :source-location location))
     (let* ((transformF-form (%extract-key-arg key-args :transformF nil))
            (transpose-form (%extract-key-arg key-args :transpose nil))
@@ -347,7 +347,7 @@
                   (list sync-workgroup-sym)))))) ; barrier AFTER
 
 
-;; load-tile-coords / store-tile-coords (and the bare load-tile / store-tile
+;; load-tile-at / store-tile-at (and the bare load-tile / store-tile
 ;; that rewrite to them) contain internal (sync-workgroup) calls.  Inside a
 ;; thread-divergent (if / when / unless / cond) where some threads enter the
 ;; branch and others don't, only some threads hit the barrier — deadlock.
@@ -355,7 +355,7 @@
 ;; The compiler tracks divergent-conditional context via the dynamic
 ;; defvar *in-divergent-conditional*.  Set to T inside the analyzed branches
 ;; of a runtime if-expression (when both branches are analyzed, i.e. the
-;; condition wasn't constant-folded).  The load-tile-coords / store-tile-coords
+;; condition wasn't constant-folded).  The load-tile-at / store-tile-at
 ;; analyzers check the flag at entry and error if set.
 ;;
 ;; if+ / when+ / unless+ are compile-time conditionals — they DCE to a single
@@ -364,7 +364,7 @@
 (defvar *in-divergent-conditional* nil
         "T when the analyzer is currently inside a thread-divergent if/when/unless/cond
    branch (i.e. the conditional's test was not constant-folded).  Used by the
-   load-tile-coords / store-tile-coords analyzers to reject placement that
+   load-tile-at / store-tile-at analyzers to reject placement that
    would deadlock at their internal sync-workgroups.
 
    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check
@@ -408,7 +408,7 @@
 
 (defun %tlc-check-not-divergent (op-name location)
   "Signals a clear compile error if (op-name) appears inside a thread-divergent
-   conditional.  Call from load-tile-coords / store-tile-coords analyzers."
+   conditional.  Call from load-tile-at / store-tile-at analyzers."
   (when *in-divergent-conditional*
         (error 'crisp-compiler-error
           :message (format nil
@@ -417,14 +417,16 @@
           :source-location location)))
 
 
-(defun analyze-load-tile-coords-expression (expr env context location)
-  "Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
+(defun analyze-load-tile-at-expression (expr env context location)
+  "Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
    Rejects placement inside a thread-divergent conditional. If :barrier is provided
    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
-   codegen via %expand-load-tile-coords-form."
-  (%tlc-check-not-divergent "load-tile-coords" location)
+   codegen via %expand-load-tile-at-form."
+  (%tlc-check-not-divergent "load-tile-at" location)
   (let* ((key-args (nthcdr 4 expr))
          (barrier-form (%extract-key-arg key-args :barrier nil)))
+    (when (and (getf key-args :barrier) (getf key-args :transformF))
+       (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
     (if (and barrier-form (eq *target-backend* :ptx))
         (let* ((src-form (second expr))
                (tile-form (third expr))
@@ -443,16 +445,19 @@
            :barrier-node barrier-node
            :type 'ulong
            :source-location location))
-        (analyze-expression (%expand-load-tile-coords-form expr location)
+        (analyze-expression (%expand-load-tile-at-form expr location)
                             env context location))))
 
 
-(defun analyze-store-tile-coords-expression (expr env context location)
-  "Analyzer for (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).
+(defun analyze-store-tile-at-expression (expr env context location)
+  "Analyzer for (store-tile-at TILE DEST (ORIGIN...) &key transformF transpose).
    Rejects placement inside a thread-divergent conditional, then delegates
-   codegen via %expand-store-tile-coords-form."
-  (%tlc-check-not-divergent "store-tile-coords" location)
-  (analyze-expression (%expand-store-tile-coords-form expr location)
+   codegen via %expand-store-tile-at-form."
+  (let ((key-args (nthcdr 4 expr)))
+    (when (and (getf key-args :barrier) (getf key-args :transformF))
+          (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location)))
+  (%tlc-check-not-divergent "store-tile-at" location)
+  (analyze-expression (%expand-store-tile-at-form expr location)
                       env context location))
 
 (defun analyze-await-expression (expr env context location)
@@ -497,7 +502,7 @@
 
       ;; Phase 1d: both branches will be analyzed → runtime divergence.  Bind
       ;; *in-divergent-conditional* to T for the branch analyses so that any
-      ;; load-tile-coords / store-tile-coords inside either branch is rejected.
+      ;; load-tile-at / store-tile-at inside either branch is rejected.
       (let* ((*in-divergent-conditional* t)
              (*divergent-scope-depth* (if (not (eq cond-uniformity :uniform))
                                           (1+ *divergent-scope-depth*)
@@ -2400,8 +2405,8 @@
                           env context location))))
 
 
-(defun %expand-load-tile-coords-bwd-form (expr location)
-  "Pure expansion of (%load-tile-coords-bwd SRC-ADJ TILE-ADJ (ORIGIN...) &key transpose).
+(defun %expand-load-tile-at-bwd-form (expr location)
+  "Pure expansion of (%load-tile-at-bwd SRC-ADJ TILE-ADJ (ORIGIN...) &key transpose).
    Cooperative scatter-add via atomic-add!."
   (let* ((src-adj-form (second expr))
          (tile-adj-form (third expr))
@@ -2409,7 +2414,7 @@
          (key-args (nthcdr 4 expr)))
     (unless (and (listp origin-list) (>= (length origin-list) 1))
       (error 'crisp-compiler-error
-        :message "%load-tile-coords-bwd: origin must be a non-empty list of coord forms"
+        :message "%load-tile-at-bwd: origin must be a non-empty list of coord forms"
         :source-location location))
     (let* ((transpose-form (%extract-key-arg key-args :transpose nil))
            (n (length origin-list))
@@ -2474,8 +2479,8 @@
                   (list sync-workgroup-sym))))))
 
 
-(defun %expand-store-tile-coords-bwd-form (expr location)
-  "Pure expansion of (%store-tile-coords-bwd TILE-ADJ DEST-ADJ (ORIGIN...) &key transpose).
+(defun %expand-store-tile-at-bwd-form (expr location)
+  "Pure expansion of (%store-tile-at-bwd TILE-ADJ DEST-ADJ (ORIGIN...) &key transpose).
    Cooperative non-atomic accumulate into local tile_adj.  Barriers before
    and after so prior tile_adj writes are visible and subsequent ones see
    the result."
@@ -2485,7 +2490,7 @@
          (key-args (nthcdr 4 expr)))
     (unless (and (listp origin-list) (>= (length origin-list) 1))
       (error 'crisp-compiler-error
-        :message "%store-tile-coords-bwd: origin must be a non-empty list of coord forms"
+        :message "%store-tile-at-bwd: origin must be a non-empty list of coord forms"
         :source-location location))
     (let* ((transpose-form (%extract-key-arg key-args :transpose nil))
            (n (length origin-list))
@@ -2552,15 +2557,15 @@
                   (list sync-workgroup-sym))))))
 
 
-(defun analyze-%load-tile-coords-bwd-expression (expr env context location)
-  "Analyzer for compiler-internal %load-tile-coords-bwd."
-  (analyze-expression (%expand-load-tile-coords-bwd-form expr location)
+(defun analyze-%load-tile-at-bwd-expression (expr env context location)
+  "Analyzer for compiler-internal %load-tile-at-bwd."
+  (analyze-expression (%expand-load-tile-at-bwd-form expr location)
                       env context location))
 
 
-(defun analyze-%store-tile-coords-bwd-expression (expr env context location)
-  "Analyzer for compiler-internal %store-tile-coords-bwd."
-  (analyze-expression (%expand-store-tile-coords-bwd-form expr location)
+(defun analyze-%store-tile-at-bwd-expression (expr env context location)
+  "Analyzer for compiler-internal %store-tile-at-bwd."
+  (analyze-expression (%expand-store-tile-at-bwd-form expr location)
                       env context location))
 
 
@@ -2620,7 +2625,7 @@
           (dolist (sub (cdr form))
             (%detect-bare-load-store-tile-in-form sub path))))))))
 
-
+#|
 (defun analyze-load-tile-at-expression (expr env context location)
   (let ((key-args (nthcdr 4 expr)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
@@ -2634,6 +2639,7 @@
           (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
     (analyze-expression (cons (intern "STORE-TILE-COORDS" (find-package :crisp-language)) (cdr expr))
                         env context location)))
+                        |#
 
 (defun analyze-load-tile-expression (expr env context location)
   (let* ((src (second expr))
@@ -2684,7 +2690,7 @@
       (error 'crisp-compiler-error :message "load-local: source must be a tensor" :source-location location))
     (let ((num-dims (%get-tensor-arity src-type))
           (cl-pkg (find-package :crisp-language)))
-      (analyze-load-tile-coords-expression
+      (analyze-load-tile-at-expression
        (append (list (intern "LOAD-TILE-COORDS" cl-pkg) src dest
                      (loop repeat num-dims collect 0))
                key-args)
@@ -2701,7 +2707,7 @@
       (error 'crisp-compiler-error :message "store-global: destination must be a tensor" :source-location location))
     (let ((num-dims (%get-tensor-arity dest-type))
           (cl-pkg (find-package :crisp-language)))
-      (analyze-store-tile-coords-expression
+      (analyze-store-tile-at-expression
        (append (list (intern "STORE-TILE-COORDS" cl-pkg) src dest
                      (loop repeat num-dims collect 0))
                key-args)
@@ -2758,8 +2764,8 @@
 (defun register-control-analyzers ()
   "Registers all control flow expression analyzers, including loop-vector-stride,
    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,
-   and (111 Phase 1a) load-tile-coords / store-tile-coords.
-   Endeavor 113: also registers request-load-tile-coords and await-request."
+   and (111 Phase 1a) load-tile-at / store-tile-at.
+   Endeavor 113: also registers request-load-tile-at and await-request."
   (def-expression-analyzer function analyze-function-literal)
   (def-expression-analyzer common-lisp:function analyze-function-literal)
   (def-expression-analyzer funcall analyze-funcall-expression)
@@ -2850,14 +2856,14 @@
   (register-warp-builtins)
   (let ((sym-cl (intern "LOAD-TILE-COORDS" (find-package :crisp-language)))
         (sym-cc (intern "LOAD-TILE-COORDS" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-coords-expression)
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-at-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-load-tile-coords-expression)))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-load-tile-at-expression)))
   (let ((sym-cl (intern "STORE-TILE-COORDS" (find-package :crisp-language)))
         (sym-cc (intern "STORE-TILE-COORDS" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-coords-expression)
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-at-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-coords-expression)))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-at-expression)))
   (let ((sym-cl (intern "LOAD-TILE" (find-package :crisp-language)))
         (sym-cc (intern "LOAD-TILE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-expression)
@@ -2885,14 +2891,14 @@
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%uniform-when-expression)))
   (let ((sym-cl (intern "%LOAD-TILE-COORDS-BWD" (find-package :crisp-language)))
         (sym-cc (intern "%LOAD-TILE-COORDS-BWD" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%load-tile-coords-bwd-expression)
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%load-tile-at-bwd-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%load-tile-coords-bwd-expression)))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%load-tile-at-bwd-expression)))
   (let ((sym-cl (intern "%STORE-TILE-COORDS-BWD" (find-package :crisp-language)))
         (sym-cc (intern "%STORE-TILE-COORDS-BWD" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression)
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%store-tile-at-bwd-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression)))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%store-tile-at-bwd-expression)))
   (let ((sym-cl (intern "AWAIT" (find-package :crisp-language)))
         (sym-cc (intern "AWAIT" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-expression)

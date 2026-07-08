@@ -1,7 +1,7 @@
 ;; TEST-HOIST[CUDA]: validate-cuda-shared-mem
 ;; SKIP-WITH[--differentiate]: "AD pre-rewrite for load-local / store-global async lands in phase 1"
 
-;; Uses a local tile via load-tile-coords — the CUDA hoist must
+;; Uses a local tile via load-tile-at — the CUDA hoist must
 ;; emit shared memory at launch and pass 0 as the tile's parent-ptr offset.
 ;; Mirrors 113/01 but uses the TEST-HOIST[CUDA] directive for validation.
 
@@ -13,7 +13,7 @@
            (local-size  :set-to 4))
   (let ((tile (make-scratch-vector ulong 4))
         (barrier (make-async-barrier)))
-    (load-tile-coords V tile (0) :barrier barrier)
+    (load-tile-at V tile (0) :barrier barrier)
     (await barrier)
       (workgroup-stride tile (lx)
         (set! (~ OUT lx) (~ tile lx)))))

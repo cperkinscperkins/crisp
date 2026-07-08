@@ -241,7 +241,7 @@ Phases (bottom-up)
       dotimes) and mma-accumulate-via-tile stays one-K-step (P3b-1 unchanged).
       Accumulation across K-tiles is automatic (mma = A·B + C; the macro set!s the tile).
     - `inner-dimension A B` -> K (rewrite to (~ (extents~ A) 1)); wrap in to-int for the
-      loop math (extents are ulong).  SLM staging via the existing sync `load-tile-coords`
+      loop math (extents are ulong).  SLM staging via the existing sync `load-tile-at`
       (element coords) into `make-scratch-matrix float (M 8)` / `(8 N)` tiles;
       `sync-workgroup` around the MMA; `store-tile` writes the register C-tile out.
     - Kernel (single-warp, one 16x8 C-tile): stage A[:,kt*8:+8] / B[kt*8:+8,:] per

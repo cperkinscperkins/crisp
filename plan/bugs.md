@@ -319,7 +319,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     VERIFY-AUTODIFF directive enabled.  Kernel is
 
       (let ((tile (make-scratch-vector float 4)))
-        (load-tile-coords A tile (0))
+        (load-tile-at A tile (0))
         (workgroup-stride tile (lx)
           (set! (~ tile lx) (* 2.0f (~ tile lx))))
         (store-tile-coords tile C (0)))
@@ -334,9 +334,9 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     treated as identity by the AD pass rather than its derivative not being
     propagated.
 
-    Suspect: %workgroup-stride-bwd interaction with load-tile-coords-bwd /
+    Suspect: %workgroup-stride-bwd interaction with load-tile-at-bwd /
     store-tile-coords-bwd.  Either the workgroup-stride body's adjoint is being
-    overwritten by load-tile-coords-bwd's accumulate-into-tile_ADJ step, or the
+    overwritten by load-tile-at-bwd's accumulate-into-tile_ADJ step, or the
     transform-on-tile pattern is not being walked by generate-backward-walk.
 
     Status: not blocking.  111/15 is currently a compile-only spec (no VERIFY-AUTODIFF
@@ -468,7 +468,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         correct -> the KERNEL output is genuinely wrong.
 
         LEADING THEORIES (CUDA multi-K-step SLM path):
-          (1) 2nd-K-step staging: load-tile-coords B B-tile ((* kt 8) 0) at kt=1 reads the
+          (1) 2nd-K-step staging: load-tile-at B B-tile ((* kt 8) 0) at kt=1 reads the
               wrong B slice into SLM, or the SLM tile is stale/raced across sync-workgroup.
           (2) register C-tile accumulator not carried correctly between K iterations.
           (3) an M=16 A-tile fragment-layout issue on re-load (133/12 uses M=8).

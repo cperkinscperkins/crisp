@@ -863,7 +863,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   "Recursively walks FORM and rewrites tensor-stride / grid-stride /
    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride
    forms into their expansions.  Endeavor 113: also normalises
-   request-load-tile-coords -> load-tile-coords and await-request -> nil
+   request-load-tile-at -> load-tile-at and await-request -> nil
    for the backward pass."
   (cond
    ((atom form) form)
@@ -1801,12 +1801,12 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 (defmacro load-tile-at (src tile grid-list &rest key-args)
   "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."
   (%check-barrier-transformf key-args)
-  `(load-tile-coords ,src ,tile ,grid-list ,@key-args))
+  `(load-tile-at ,src ,tile ,grid-list ,@key-args))
 
 (defmacro store-tile-at (tile dest grid-list &rest key-args)
   "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."
   (%check-barrier-transformf key-args)
-  `(store-tile-coords ,tile ,dest ,grid-list ,@key-args))
+  `(store-tile-at ,tile ,dest ,grid-list ,@key-args))
 
 (defmacro load-tile (src tile grid-list &rest key-args)
   "Helper macro to automatically compute grid index offsets dynamically

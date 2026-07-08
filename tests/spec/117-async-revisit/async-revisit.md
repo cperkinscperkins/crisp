@@ -16,7 +16,7 @@ Today we are NOT realizing all that.  It has to wait. Instead we are just revisi
    Ultimately, this will be a topologically aware routine that knows the topology when the kernel is being compiled, but not today.  Also, it'll most likely need a CuTensorMap argument in the future, which will be an implicit ("side channel") arg to the kernel like scratch Storage Handles are today. But I'm guessing we won't need that quite yet.
 4.  (await-request req) just becomse (await barrier)
 5. the request-load-tile and all request-xxxx variants should be removed.
-6. load-tile-coords should be renamed to load-tile-at and it takes straight ...y, x as position args, and it ALSO takes a :barrier key.
+6. load-tile-at should be renamed to load-tile-at and it takes straight ...y, x as position args, and it ALSO takes a :barrier key.
 7. :barrier cannot be used with :transformF at the same time. we should error.
 
 Obviously, we'll need the compiler code changed, but also the pre-existing tests and possibly their validators.

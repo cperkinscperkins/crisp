@@ -3,7 +3,7 @@
 First runtime verification of Crisp PTX output, on real NVIDIA hardware.
 
 Loads the PTX compiled from
-  tests/spec/113-async-load-tile-store-tile/01-request-load-tile-coords-1d.crisp
+  tests/spec/113-async-load-tile-store-tile/01-request-load-tile-at-1d.crisp
 launches it with a simple ulong input vector, and verifies that the
 output equals the input -- the kernel copies V[0..3] through a local
 tile using cp.async + cp.async.commit_group + cp.async.wait_group,
@@ -17,7 +17,7 @@ Exercises end-to-end:
 
 Usage on a RunPod Ampere+ pod (or any sm_80+ CUDA host):
   pip install pycuda numpy   # if not already
-  python verify-ptx-113-01.py <path-to-01-request-load-tile-coords-1d.ptx>
+  python verify-ptx-113-01.py <path-to-01-request-load-tile-at-1d.ptx>
 
 What this script does (in order, all failures surfaced early):
   1. Reads the .ptx file and sanity-greps for cp.async markers.

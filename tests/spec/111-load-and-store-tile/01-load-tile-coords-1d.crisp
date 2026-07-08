@@ -1,8 +1,8 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords land in sub-step 1c"
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
-;; Basic load-tile-coords on a 1D vector.  Cooperatively loads 4 elements
+;; Basic load-tile-at on a 1D vector.  Cooperatively loads 4 elements
 ;; from a global vector starting at origin 0 into a :local tile, then
 ;; copies the tile back out via workgroup-stride so the load is observable
 ;; host-side.  Expected: OUT == V.
@@ -18,6 +18,6 @@
            (global-size :set-to 4)
            (local-size  :set-to 4))
   (let ((tile (make-scratch-vector ulong 4)))
-    (load-tile-coords V tile (0))
+    (load-tile-at V tile (0))
     (workgroup-stride tile (lx)
       (set! (~ OUT lx) (~ tile lx)))))
