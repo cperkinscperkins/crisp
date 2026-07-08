@@ -200,3 +200,84 @@
     (format stream "    std::cout << \"Success!\" << std::endl;~%")
     (format stream "    return 0;~%")
     (format stream "}~%")))
+
+;;; ===================================================================
+;;; Endeavor 134 — 2-D SLM scratch dims for the L0 hoist (port of the CUDA
+;;; %cuda-scratch-dims fix).  The stock %l0-emit-local-scratch-tensor-arg only
+;;; accepted a SCALAR :size-expr (square tile).  An SLM-staged tiled matmul uses
+;;; non-square tiles like (make-scratch-matrix float (8 16)), whose :size-expr is a
+;;; RANK-list.  This mirrors the CUDA emitter so the L0 Chapter-proof matmul hoists.
+;;; ===================================================================
+
+;;; src/hoist-l0/main.lisp — %l0-scratch-dims
+(defun %l0-scratch-dims (size-expr rank param-name)
+  "Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE
+   tensor: all RANK dims equal it) or a LIST of RANK integers (a non-square tensor,
+   e.g. make-scratch-matrix float (8 16))."
+  (cond
+    ((integerp size-expr) (make-list rank :initial-element size-expr))
+    ((and (listp size-expr) (= (length size-expr) rank) (every #'integerp size-expr))
+     size-expr)
+    (t (error "Scratch tensor ~a: :size-expr ~a is neither an integer nor a list of ~d integers."
+              param-name size-expr rank))))
+
+;;; src/hoist-l0/main.lisp — %l0-emit-local-scratch-tensor-arg: accept 2-D (rank-list) dims.
+(defun %l0-emit-local-scratch-tensor-arg (stream param param-name param-type arg-index)
+  (let* ((rank (let ((n3 (third param-type)))
+                 (if (integerp n3) n3 1)))
+         (size-expr (getf param :size-expr))
+         (elem-type (second param-type))
+         (elem-str (crisp-type-to-cpp-type elem-type))
+         (elem-bytes (if (or (string-equal elem-str "double")
+                             (string-equal elem-str "int64_t")
+                             (string-equal elem-str "uint64_t")) 8 4))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (dims (%l0-scratch-dims size-expr rank param-name)))
+    (multiple-value-bind (extents strides)
+        (%tensor-compact-extents-strides rank dims)
+      (let* ((length (reduce #'* dims))
+             (bytesize (* length elem-bytes))
+             (current-idx arg-index))
+        (format stream "~%    // LOCAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes)~%"
+          param-name rank elem-str length bytesize)
+        ;; Arg N: local memory allocation — nullptr + bytesize
+        (format stream "    // Arg ~d: local ptr (~d bytes of workgroup-local memory)~%"
+          current-idx bytesize)
+        (format stream "    zeKernelSetArgumentValue(kernel, ~d, ~dULL, nullptr);~%"
+          current-idx bytesize)
+        (incf current-idx)
+        ;; Arg N+1: byte-size
+        (format stream "    // Arg ~d: byte-size = ~d~%" current-idx bytesize)
+        (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
+        (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_byte_size);~%"
+          current-idx param-name-cpp)
+        (incf current-idx)
+        ;; Args N+2 .. N+1+rank: offsets (all zero)
+        (loop for k from 0 below rank do
+                (format stream "    // Arg ~d: offset[~d] = 0~%" current-idx k)
+                (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%"
+                  current-idx param-name-cpp k)
+                (incf current-idx))
+        ;; Args N+2+rank .. N+1+2*rank: strides (compact element strides)
+        (loop for k from 0 below rank do
+                (format stream "    // Arg ~d: stride[~d] = ~d (elements, compact)~%"
+                  current-idx k (nth k strides))
+                (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%"
+                  current-idx param-name-cpp k)
+                (incf current-idx))
+        ;; Args N+2+2*rank .. N+1+3*rank: extents
+        (loop for k from 0 below rank do
+                (format stream "    // Arg ~d: extent[~d] = ~d~%" current-idx k (nth k extents))
+                (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%"
+                  current-idx param-name-cpp k)
+                (incf current-idx))
+        ;; Last arg: length
+        (format stream "    // Arg ~d: length = ~d~%" current-idx length)
+        (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
+        (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_length);~%~%"
+          current-idx param-name-cpp)
+        (incf current-idx)
+        current-idx))))
