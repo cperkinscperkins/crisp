@@ -227,3 +227,154 @@
   (when *mma-test-dims*
     (%cuda-emit-mma-reference stream allocations))
   (format stream "~%"))
+
+;;; ===================================================================
+;;; Bug 034 fix - distinct shared-memory offsets for LOCAL scratch tiles.
+;;;
+;;; The stock %cuda-emit-local-scratch-tensor-arg hardcoded every SLM tile's
+;;; shared-mem offset to 0, so a kernel with >1 local tile (e.g. a tiled matmul's
+;;; A-tile + B-tile) had them ALIAS: staging the second tile clobbered the first.
+;;; (On L0 each local arg is a separate zeKernelSetArgumentValue(nullptr) region,
+;;; so it was CUDA-only.)  The launch already allocates the SUM of the tile sizes
+;;; (compute-total-shared-bytes), so we just hand each tile a running CUMULATIVE
+;;; byte offset.  The tile "ptr" is a byte offset into the dynamic shared blob
+;;; (PTX: tile_base = ptr + byte_offset_in_tile), so raw cumulative byte sizes are
+;;; the correct unit and match the launch total exactly.
+;;;
+;;; NOTE: raw cumulative sizes assume uniform element size across tiles (true for
+;;; the float matmul tiles).  A mix of 4- and 8-byte tiles could need per-tile
+;;; alignment (and a matching compute-total-shared-bytes) - left for if it arises.
+;;; ===================================================================
+
+(defvar *cuda-shared-scratch-offset* 0
+  "Running byte offset into the kernel's dynamic shared memory, assigned to each
+   LOCAL scratch tile in turn so multiple tiles do not alias.  Reset per kernel in
+   emit-kernel-args.")
+
+;;; src/hoist-cuda/main.lisp - %cuda-emit-local-scratch-tensor-arg: distinct SLM offsets.
+(defun %cuda-emit-local-scratch-tensor-arg (stream param param-name param-type arg-index)
+  (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
+         (size-expr   (getf param :size-expr))
+         (elem-type   (second param-type))
+         (elem-str    (crisp-type-to-cpp-type elem-type))
+         (elem-bytes  (if (or (string-equal elem-str "double")
+                              (string-equal elem-str "int64_t")
+                              (string-equal elem-str "uint64_t")) 8 4))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (arg-names   '())
+         (current-idx arg-index))
+    (multiple-value-bind (extents strides)
+        (%tensor-compact-extents-strides rank (%cuda-scratch-dims size-expr rank param-name))
+      (let* ((length   (reduce #'* (%cuda-scratch-dims size-expr rank param-name)))
+             (bytesize (* length elem-bytes))
+             ;; Bug 034: this tile's slice of the shared blob starts at the running
+             ;; offset; advance it past this tile for the next one.
+             (offset   *cuda-shared-scratch-offset*))
+        (setf *cuda-shared-scratch-offset* (+ *cuda-shared-scratch-offset* bytesize))
+        (format stream "~%    // LOCAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes, shared offset ~d)~%"
+                param-name rank elem-str length bytesize offset)
+        ;; Arg: ptr (distinct shared-mem byte offset - bug 034)
+        (format stream "    uint64_t ~a_ptr = ~dULL;  // shared mem offset~%" param-name-cpp offset)
+        (push (format nil "~a_ptr" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; byte-size
+        (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
+        (push (format nil "~a_byte_size" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; offsets
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+          (push (format nil "~a_off~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; strides
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+          (push (format nil "~a_str~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; extents
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+          (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; length
+        (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
+        (push (format nil "~a_length" param-name-cpp) arg-names)
+        (incf current-idx)
+        (values current-idx (nreverse arg-names))))))
+
+;;; src/hoist-cuda/main.lisp - emit-kernel-args: reset the per-kernel shared offset (bug 034).
+(defun emit-kernel-args (stream declared-sig aliases records dispatch-info)
+  "Emit host-side variable declarations and fill the kernelParams[] array.
+   Returns a list of allocation plists for readback.
+   Bug 034: resets *cuda-shared-scratch-offset* so each kernel's LOCAL tiles get
+   distinct, non-overlapping shared-memory offsets."
+  (format stream "    // Set up kernel arguments~%")
+  (setf *cuda-shared-scratch-offset* 0)
+  (let ((arg-index 0)
+        (allocations '())
+        (arg-names '()))
+
+    (dolist (param declared-sig)
+      (let* ((param-name  (getf param :name))
+             (raw-type    (getf param :type))
+             (param-type  (resolve-type-alias raw-type aliases))
+             (param-dir   (getf param :direction))
+             (param-as    (getf param :address-space))
+             (is-local    (member param-as '(:local "LOCAL" local) :test #'string-equal)))
+
+        (cond
+         ((cell-type-p param-type)
+          (multiple-value-bind (new-idx names alloc)
+              (%cuda-emit-cell-arg stream param param-name param-type param-dir is-local aliases arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))
+            (when alloc (push alloc allocations))))
+
+         ((and (tensor-type-p param-type) is-local)
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-local-scratch-tensor-arg stream param param-name param-type arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))))
+
+         ((and (tensor-type-p param-type) (not is-local) (getf param :size-expr))
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-global-scratch-tensor-arg stream param param-name param-type arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))))
+
+         ((tensor-type-p param-type)
+          (multiple-value-bind (new-idx names alloc)
+              (%cuda-emit-tensor-arg stream param param-name param-type param-dir arg-index dispatch-info)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))
+            (when alloc (push alloc allocations))))
+
+         ((struct-type-p param-type)
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-struct-arg stream param-name param-type aliases arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))))
+
+         ((record-type-p param-type records)
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-record-arg stream param-name param-type records aliases arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))))
+
+         ((symbolp param-type)
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-scalar-arg stream param-name param-type arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names)))))))
+
+    ;; Build kernelParams[] array
+    (let ((ordered-names (nreverse arg-names)))
+      (format stream "~%    // Build kernelParams array (~d args)~%" (length ordered-names))
+      (format stream "    void* kernelParams[~d] = {~%" (length ordered-names))
+      (loop for name in ordered-names
+            for i from 0
+            do (format stream "        &~a~a~%" name
+                       (if (< i (1- (length ordered-names))) "," "")))
+      (format stream "    };~%~%"))
+
+    (nreverse allocations)))

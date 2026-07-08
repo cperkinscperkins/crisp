@@ -72,3 +72,46 @@ Phases
 
 Deferred / later: fold into a `HOIST-MMA` generator mode; multi-tile grid-stride perf;
 precision variants (fp16/bf16) once 133/132 add them.
+
+
+Progress / Status (as of 2026-07-08)
+------------------------------------
+The TEST-HARNESS workstream (B) landed first (it was the priority); benchmarking (A) is still
+open.  Notably, the design evolved from an "external verifier" to the **stretch goal**: the
+sizing + host-reference logic was folded into the HOIST GENERATORS themselves (a `--mma-test`
+mode), so there is NO separate verifier binary.  This is chapter-proof: the generators already
+emit every implicit arg (SLM/scratch tuples, launch config); `--mma-test` only overrides the
+global A/B/C sizing + inputs and appends the host reference, so SLM-staged chapter kernels get
+correctness for free.
+
+DONE:
+- **Hoist `--mma-test=M,N,K` mode**, both backends (overlays/hoist-l0/… + overlays/hoist-cuda/…):
+  role-sizes A=M×K / B=K×N / C=M×N, non-uniform fills A/B (`i%5`/`i%3`), zeros C, and appends a
+  STRIDE-AGNOSTIC host reference `C=A·B` → prints `MMA_CORRECT` / `MMA_WRONG`.  L0 reads USM
+  directly; CUDA copies A/B/C back to host first (device memory).
+- **Directives** (P3): `MMA-DIMS: M N K` (whole-tile problem size) + `MMA-SCALE: N` (expected
+  C = N·(A·B), for kernels that fire the MMA >1× per fragment) + `HOIST-HARDWARE-PROFILE`
+  (forwards the vendor shape).  Validators `validate-l0-mma-run` / `validate-cuda-mma-run`
+  (spec-runner overlay) re-hoist the .metacrisp in `--mma-test` mode then delegate to the stock
+  host-run validator (compile+run+HOIST-EXPECT).  Skip-gated (SKIP_*_HOIST / no toolchain).
+- **L0 hoist fix:** ported the CUDA `%cuda-scratch-dims` 2-D-scratch support to L0
+  (`%l0-scratch-dims` + `%l0-emit-local-scratch-tensor-arg` redef) so SLM-staged tiles like
+  `(make-scratch-matrix float (8 16))` hoist.
+- **On-metal verified:**
+    - L0/BMG: 133/11 (single 16×16 tile) + NEW 133/12-tiled-matmul-bmg (SLM-staged, 2 K-steps,
+      shape 8 16 8) → both MMA_CORRECT.
+    - CUDA/RTX (RunPod): 132/04 (single tile), 132/05 (multi-fragment), 132/09 (accum-op body,
+      scale 2) → all MMA_CORRECT.
+- Local suite 867/867; MMA-SCALE plumbing byte-identical for non-scaled specs.
+
+OPEN — bug 034 (see plan/bugs.md):
+- **132/06 (CUDA SLM-staged tiled matmul, K=16 → 2 K-steps) is MMA_WRONG** with non-uniform
+  inputs (C[0][0]: ref 30, device 13).  The harness caught a REAL pre-existing bug (old A=B=1
+  benchmarks masked it).  NARROW: single-K-step CUDA (04/05/09) and the L0 multi-K-step (133/12)
+  all pass → CUDA multi-K-step SLM path.  Left wired (red on GPU-CI; SKIPs locally).  Next:
+  a K=8 single-step SLM probe to localize (multi-K-step accumulation vs SLM staging), then fix.
+
+TODO next session:
+- Investigate/fix bug 034 (K=8 SLM probe spec → pod run → localize → fix).
+- Then benchmarking workstream (A): L0 bench_harness + oneAPI-Docker Intel reference; run.py
+  `--backend=l0`.  (oneDNN dropped; Intel reference runs in the same oneAPI Docker container.)
