@@ -77,12 +77,12 @@ performance/
                     inference path.
   scratch-tensor/   (future) Microbench for local memory codegen.
   baseline.json     Ratcheted per-test best kernel times (committed).
-  check.py          (future) Runs all tests, diffs vs baseline,
-                    exits 1 on regression.
+  check.py          Runs all tests, diffs vs baseline, ratchets on
+                    improvement, exits 1 on regression.
   README.md         This file.
 ```
 
-Currently implemented: none — this is the framing commit.
+Currently implemented: `reduction-bmg`, `vec-copy-bmg`, `matmul-bmg`.
 
 ## What goes in a perf test (vs a benchmark)
 
@@ -116,23 +116,42 @@ A perf test should NOT be:
 1. Create `performance/<test-name>/`
 2. Write the kernel: `<name>.crisp` (or copy from `benchmarks/`)
 3. Write an L0 harness `harness.cpp` using
-   `zeEventQueryKernelTimestamp` for timing, prints same JSON
-   shape as the benchmark harnesses
-4. Add an entry to `baseline.json` with an initial estimated
-   threshold.  The first real run will set the actual baseline.
-5. Register the test in `check.py`
+   `zeEventQueryKernelTimestamp` for timing, printing a compact JSON
+   of the metrics (e.g. `kernel_median_us`, `throughput_gb_s` or
+   `gflops`). `device_compile_s` is added by `check.py` itself.
+4. Register the test in `check.py`'s `TESTS` list with its per-metric
+   `tolerance`. The first run seeds `baseline.json` automatically
+   (no need to hand-write the baseline).
+5. If the kernel needs extra compiler flags (e.g. a hardware profile),
+   add `"compile_flags": ["--hardware-profile=bmg"]` to the entry —
+   `check.py` applies them to the compile step for you.
+
+### Metric direction
+
+`check.py` decides "lower is better" vs "higher is better" from the
+metric name: anything containing `throughput`, `gflops`, `tflops`,
+`gb_s`, or `gbps` is higher-is-better; everything else (`*_us`,
+`device_compile_s`, latencies) is lower-is-better. Name new metrics
+accordingly so the ratchet points the right way.
 
 ## Running
 
-Once `check.py` exists (TBD):
+```
+python performance/check.py                 # run all, diff vs baseline
+python performance/check.py --test=matmul-bmg
+python performance/check.py --update        # loud diff even for non-regressions
+python performance/check.py --seed          # bootstrap baseline (see caveat)
+```
 
-```
-python performance/check.py             # run all, diff vs baseline
-python performance/check.py --update    # ratchet baseline (only lowers)
-python performance/check.py --test=reduction-bmg
-```
+You do **not** pass compiler flags here — a test that needs
+`--hardware-profile=bmg` (or any other flag) declares it in its
+`TESTS` entry's `compile_flags`, and `check.py` applies it
+automatically. Just run `python performance/check.py`.
 
 Default behavior is "run and fail if regressed."  Manual update is
-not normally needed because of ratchet; the `--update` flag exists
-for cases where you intentionally improved a baseline and want
-explicit visibility of the new number.
+not normally needed because of the ratchet; `--update` just prints
+the diff loudly. `--seed` reseeds *every* metric of the selected
+test(s) — handy to bootstrap, but it will overwrite good ratchet
+history, so don't use it to "accept" a single drifted metric (delete
+that one metric from `baseline.json` and let the next run re-seed it
+instead).
