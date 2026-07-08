@@ -838,7 +838,9 @@ processes float inputs — integer tensor inputs contribute zero gradient."
              (op-name (and op (symbol-name op))))
         (cond
          ((and op-name
-               (or (string-equal op-name "LOAD-TILE-COORDS")
+               (or (string-equal op-name "LOAD-TILE-AT")
+                   (string-equal op-name "STORE-TILE-AT")
+                   (string-equal op-name "LOAD-TILE-COORDS")
                    (string-equal op-name "STORE-TILE-COORDS")))
            (push val hoisted-calls))
          (t
@@ -1792,21 +1794,13 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (declare (ignore barrier))
   nil)
 
-(defun %check-barrier-transformf (key-args)
-  (let ((has-barrier (getf key-args :barrier))
-        (has-transformf (or (getf key-args :transformf) (getf key-args :transformF))))
-    (when (and has-barrier has-transformf)
-          (error "Cannot use :barrier and :transformF together."))))
-
-(defmacro load-tile-at (src tile grid-list &rest key-args)
-  "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."
-  (%check-barrier-transformf key-args)
-  `(load-tile-at ,src ,tile ,grid-list ,@key-args))
-
-(defmacro store-tile-at (tile dest grid-list &rest key-args)
-  "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."
-  (%check-barrier-transformf key-args)
-  `(store-tile-at ,tile ,dest ,grid-list ,@key-args))
+;; NOTE (load-tile-coords -> load-tile-at rename): load-tile-at / store-tile-at are the
+;; PRIMITIVE element-coordinate forms now — consumed DIRECTLY by their expression analyzers
+;; (analyze-load-tile-at-expression / analyze-store-tile-at-expression in
+;; src/analysis/control.lisp), which already reject :barrier + :transformF together.
+;; They must NOT be macros: a wrapper macro forwarding (load-tile-at ...) -> (load-tile-at ...)
+;; macroexpands to itself and hangs ANF.  The load-tile / store-tile sugar macros below scale
+;; tile-IDs by the tile extents and expand to these primitives.
 
 (defmacro load-tile (src tile grid-list &rest key-args)
   "Helper macro to automatically compute grid index offsets dynamically

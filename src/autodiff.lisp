@@ -989,8 +989,10 @@
                                           (string-equal (symbol-name (car form)) "DECLARE")) nil)
 
                                     ;; Phase 1c: load-tile-at forward → backward.
+                                    ;; (load-tile-coords is the lingering alias for the same primitive.)
                                     ((and (consp form) (symbolp (car form))
-                                          (string-equal (symbol-name (car form)) "LOAD-TILE-COORDS"))
+                                          (member (symbol-name (car form)) '("LOAD-TILE-AT" "LOAD-TILE-COORDS")
+                                                  :test #'string-equal))
                                       (let* ((src (second form))
                                              (tile (third form))
                                              (origins (fourth form))
@@ -1008,8 +1010,10 @@
                                         (funcall emit-fn bwd-form)))
 
                                     ;; Phase 1c: store-tile-at forward → backward.
+                                    ;; (store-tile-coords is the lingering alias for the same primitive.)
                                     ((and (consp form) (symbolp (car form))
-                                          (string-equal (symbol-name (car form)) "STORE-TILE-COORDS"))
+                                          (member (symbol-name (car form)) '("STORE-TILE-AT" "STORE-TILE-COORDS")
+                                                  :test #'string-equal))
                                       (let* ((tile (second form))
                                              (dest (third form))
                                              (origins (fourth form))

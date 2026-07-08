@@ -182,7 +182,8 @@
        (cond
         ((and (symbolp op)
               (member (symbol-name op)
-                      '("LOAD-TILE-COORDS" "STORE-TILE-COORDS"
+                      '("LOAD-TILE-AT" "STORE-TILE-AT"
+                        "LOAD-TILE-COORDS" "STORE-TILE-COORDS"
                         "%LOAD-TILE-COORDS-BWD" "%STORE-TILE-COORDS-BWD"
                         "LOAD-TILE" "STORE-TILE"
                         ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
