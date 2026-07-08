@@ -69,6 +69,23 @@ TESTS = [
             "device_compile_s":  0.25,
         },
     },
+    {
+        # Endeavor 134 bookend: Chapter-0 synchronous SLM-staged matmul.
+        # Single sub-group, 8x16 output, large K -> dominated by the K-loop's
+        # sync staging (what the MMA "chapters" will optimize).  Needs the BMG
+        # hardware profile selected (for the (8 16 8) XMX shape).
+        "name":              "matmul-bmg",
+        "crisp_source":      "matmul.crisp",
+        "spv":               "matmul.spv",
+        "harness":           "harness.cpp",
+        "binary":            "harness.exe",
+        "compile_flags":     ["--hardware-profile=bmg"],
+        "tolerance": {
+            "kernel_median_us":  0.10,
+            "gflops":            0.10,
+            "device_compile_s":  0.25,
+        },
+    },
 ]
 
 # Metrics with this string in the name mean "lower is better" (kernel time,
@@ -145,7 +162,7 @@ def run_test(test, warmup=50, iterations=100):
     print(f"  [{name}] crisp-compile {test['crisp_source']}")
     t0 = time.monotonic()
     r = subprocess.run(
-        [crisp_compile, "--ir-target=spv", str(crisp_file)],
+        [crisp_compile, "--ir-target=spv"] + test.get("compile_flags", []) + [str(crisp_file)],
         capture_output=True, text=True)
     device_compile_s = time.monotonic() - t0
     if r.returncode != 0:
@@ -282,9 +299,12 @@ def main():
             return 2
 
         baseline_for_test = baseline.get(test["name"], {})
+        # Second metric is throughput_gb_s (bandwidth tests) or gflops (matmul).
+        second = ("throughput_gb_s" if "throughput_gb_s" in result
+                  else "gflops" if "gflops" in result else None)
+        second_str = f"{second}={result[second]}  " if second else ""
         print(f"  results: kernel_median_us={result['kernel_median_us']}  "
-              f"throughput_gb_s={result['throughput_gb_s']}  "
-              f"device_compile_s={result['device_compile_s']}")
+              f"{second_str}device_compile_s={result['device_compile_s']}")
 
         for metric, tol in test["tolerance"].items():
             current = result.get(metric)

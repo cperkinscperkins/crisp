@@ -126,3 +126,27 @@ exact, rows 0-7 = B's structure), then confirmed via the generated .cu (both ptr
 VERIFIED on RTX: 132/06 output == reference; the 132-mma suite went 11/12 -> 12/12.  Both
 backends now have on-metal-verified SLM-staged tiled matmul.  Only the benchmarking on-ramp
 (workstream A) remains open.
+
+Update 2026-07-08 — Chapter-0 perf baseline + ENDEAVOR 134 CLOSED
+-----------------------------------------------------------------
+Closed the endeavor with a performance/ ratchet baseline for the Chapter-0
+synchronous SLM-staged matmul (option b).  performance/matmul-bmg/ : the proven
+133/12 kernel (BMG XMX 8x16x8, single sub-group) timed at large K (2048 -> 256 sync
+staging steps) so the runtime is dominated by exactly what the three MMA "chapters"
+optimize.  Correctness is A=B=1 => C==K (hard gate).  Reuses the L0 harness pattern
+(zeEventQueryKernelTimestamp, warmup + median-of-N).  check.py gained per-test
+compile_flags (needs --hardware-profile=bmg) + a generic second-metric print (gflops
+vs throughput_gb_s).
+
+BASELINE (Intel Arc B580 / BMG, 2026-07-08): kernel_median_us = 868.8 (median ~= min,
+very stable), gflops 0.60 (tiny — single sub-group; it's a staging microbench, not a
+peak run).  This is the honest "Chapter 0" floor.  The chapters (Ch1 async tile load,
+Ch2 pipelined, Ch3 warp-specialized) will drive kernel_median_us DOWN and the ratchet
+records each win.
+
+134 DELIVERABLE COMPLETE: a reusable, cross-backend, on-metal MMA test harness
+(--mma-test, both L0/BMG and CUDA/RTX) that already caught + drove the fix of a real
+bug (034), plus a Chapter-0 perf baseline to measure the optimization arc against.
+The competitive-benchmarking workstream (vs cuBLAS/oneDNN, roofline) is intentionally
+deferred to co-design with the chapters (see the "chit chat" decision) — it earns its
+keep as chapter-progression + gap-closing, not as a Chapter-0-in-isolation number.

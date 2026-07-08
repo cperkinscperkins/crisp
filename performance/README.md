@@ -62,6 +62,12 @@ performance/
   reduction-bmg/    Same kernel as benchmarks/reduction/crisp/, but
                     with an L0 harness producing JSON output suitable
                     for diffing.
+  matmul-bmg/       Chapter-0 synchronous SLM-staged tiled matmul
+                    (single sub-group, 8x16 tile, large K).  Runtime is
+                    dominated by the K-loop's sync staging — the floor the
+                    MMA "chapters" (async / pipelined / warp-specialized)
+                    will improve on.  Needs --hardware-profile=bmg (per-test
+                    compile_flags in check.py).
   stride-suite/     (future) Microbenches for each stride macro
                     (loop-vector / tensor / grid / tile / hardware /
                     workgroup).  Detects regressions in the specific

@@ -38,5 +38,25 @@
       "set_on": "2026-06-01",
       "sha": "8f2d1a8"
     }
+  },
+  "matmul-bmg": {
+    "kernel_median_us": {
+      "best": 868.816,
+      "tolerance": 0.1,
+      "set_on": "2026-07-08",
+      "sha": "6dc8792"
+    },
+    "gflops": {
+      "best": 0.6035,
+      "tolerance": 0.1,
+      "set_on": "2026-07-08",
+      "sha": "6dc8792"
+    },
+    "device_compile_s": {
+      "best": 0.248,
+      "tolerance": 0.25,
+      "set_on": "2026-07-08",
+      "sha": "6dc8792"
+    }
   }
 }
