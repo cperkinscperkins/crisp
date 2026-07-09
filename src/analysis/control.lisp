@@ -2639,7 +2639,8 @@
     (let ((pixel-coords
            (loop for g in grid-list
                  for i from 0
-                 collect (list mul-sym g (list aref-sym (list extents-sym tile) i)))))
+                 collect (list mul-sym (list (intern "TO-ULONG" cl-pkg) g)
+                               (list aref-sym (list extents-sym tile) i)))))
       (analyze-load-tile-at-expression
        (append (list (intern "LOAD-TILE-AT" cl-pkg) src tile pixel-coords) key-args)
        env context location))))
@@ -2658,7 +2659,8 @@
     (let ((pixel-coords
            (loop for g in grid-list
                  for i from 0
-                 collect (list mul-sym g (list aref-sym (list extents-sym tile) i)))))
+                 collect (list mul-sym (list (intern "TO-ULONG" cl-pkg) g)
+                               (list aref-sym (list extents-sym tile) i)))))
       (analyze-store-tile-at-expression
        (append (list (intern "STORE-TILE-AT" cl-pkg) tile dest pixel-coords) key-args)
        env context location))))

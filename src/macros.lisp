@@ -1806,7 +1806,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let ((pixel-coords
          (loop for g in grid-list
                for i from 0
-               collect `(* ,g (~ (extents~ ,tile) ,i)))))
+               collect `(* (to-ulong ,g) (~ (extents~ ,tile) ,i)))))
     `(load-tile-at ,src ,tile ,pixel-coords ,@key-args)))
 
 (defmacro store-tile (tile dest grid-list &rest key-args)
@@ -1815,7 +1815,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let ((pixel-coords
          (loop for g in grid-list
                for i from 0
-               collect `(* ,g (~ (extents~ ,tile) ,i)))))
+               collect `(* (to-ulong ,g) (~ (extents~ ,tile) ,i)))))
     `(store-tile-at ,tile ,dest ,pixel-coords ,@key-args)))
 
 
