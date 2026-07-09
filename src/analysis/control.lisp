@@ -2625,22 +2625,6 @@
           (dolist (sub (cdr form))
             (%detect-bare-load-store-tile-in-form sub path))))))))
 
-#|
-(defun analyze-load-tile-at-expression (expr env context location)
-  (let ((key-args (nthcdr 4 expr)))
-    (when (and (getf key-args :barrier) (getf key-args :transformF))
-          (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
-    (analyze-expression (cons (intern "LOAD-TILE-COORDS" (find-package :crisp-language)) (cdr expr))
-                        env context location)))
-
-(defun analyze-store-tile-at-expression (expr env context location)
-  (let ((key-args (nthcdr 4 expr)))
-    (when (and (getf key-args :barrier) (getf key-args :transformF))
-          (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
-    (analyze-expression (cons (intern "STORE-TILE-COORDS" (find-package :crisp-language)) (cdr expr))
-                        env context location)))
-                        |#
-
 (defun analyze-load-tile-expression (expr env context location)
   (let* ((src (second expr))
          (tile (third expr))
@@ -2691,7 +2675,7 @@
     (let ((num-dims (%get-tensor-arity src-type))
           (cl-pkg (find-package :crisp-language)))
       (analyze-load-tile-at-expression
-       (append (list (intern "LOAD-TILE-COORDS" cl-pkg) src dest
+       (append (list (intern "LOAD-TILE-AT" cl-pkg) src dest
                      (loop repeat num-dims collect 0))
                key-args)
        env context location))))
@@ -2708,7 +2692,7 @@
     (let ((num-dims (%get-tensor-arity dest-type))
           (cl-pkg (find-package :crisp-language)))
       (analyze-store-tile-at-expression
-       (append (list (intern "STORE-TILE-COORDS" cl-pkg) src dest
+       (append (list (intern "STORE-TILE-AT" cl-pkg) src dest
                      (loop repeat num-dims collect 0))
                key-args)
        env context location))))
@@ -2854,16 +2838,8 @@
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-workgroup-stride-expression)))
   (register-warp-builtins)
-  (let ((sym-cl (intern "LOAD-TILE-COORDS" (find-package :crisp-language)))
-        (sym-cc (intern "LOAD-TILE-COORDS" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-at-expression)
-    (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-load-tile-at-expression)))
-  (let ((sym-cl (intern "STORE-TILE-COORDS" (find-package :crisp-language)))
-        (sym-cc (intern "STORE-TILE-COORDS" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-at-expression)
-    (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-at-expression)))
+  ;; (Old element-coordinate load/store aliases removed — endeavor 135 rename.
+  ;;  The load-tile-at / store-tile-at primitives are registered below.)
   (let ((sym-cl (intern "LOAD-TILE" (find-package :crisp-language)))
         (sym-cc (intern "LOAD-TILE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-expression)
@@ -2889,13 +2865,13 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%uniform-when-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%uniform-when-expression)))
-  (let ((sym-cl (intern "%LOAD-TILE-COORDS-BWD" (find-package :crisp-language)))
-        (sym-cc (intern "%LOAD-TILE-COORDS-BWD" (find-package :crisp.compiler))))
+  (let ((sym-cl (intern "%LOAD-TILE-AT-BWD" (find-package :crisp-language)))
+        (sym-cc (intern "%LOAD-TILE-AT-BWD" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%load-tile-at-bwd-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%load-tile-at-bwd-expression)))
-  (let ((sym-cl (intern "%STORE-TILE-COORDS-BWD" (find-package :crisp-language)))
-        (sym-cc (intern "%STORE-TILE-COORDS-BWD" (find-package :crisp.compiler))))
+  (let ((sym-cl (intern "%STORE-TILE-AT-BWD" (find-package :crisp-language)))
+        (sym-cc (intern "%STORE-TILE-AT-BWD" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%store-tile-at-bwd-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%store-tile-at-bwd-expression)))

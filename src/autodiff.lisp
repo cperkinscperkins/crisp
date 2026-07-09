@@ -838,7 +838,7 @@
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                         &key kernel-pkg)
   "Walks an ANF body backwards to accumulate adjoints.
-   Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form
+   Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form
    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct
    adjoint symbols.  Also extends the LET case to auto-allocate paired
    <var>_ADJ scratch tensors for make-scratch-* bindings.
@@ -989,10 +989,8 @@
                                           (string-equal (symbol-name (car form)) "DECLARE")) nil)
 
                                     ;; Phase 1c: load-tile-at forward → backward.
-                                    ;; (load-tile-coords is the lingering alias for the same primitive.)
                                     ((and (consp form) (symbolp (car form))
-                                          (member (symbol-name (car form)) '("LOAD-TILE-AT" "LOAD-TILE-COORDS")
-                                                  :test #'string-equal))
+                                          (string-equal (symbol-name (car form)) "LOAD-TILE-AT"))
                                       (let* ((src (second form))
                                              (tile (third form))
                                              (origins (fourth form))
@@ -1002,7 +1000,7 @@
                                                                          #'local-adj kernel-pkg))
                                              (tile-adj (%tlc-bwd-adj-name tile inputs outputs
                                                                           #'local-adj kernel-pkg))
-                                             (bwd-sym (intern "%LOAD-TILE-COORDS-BWD"
+                                             (bwd-sym (intern "%LOAD-TILE-AT-BWD"
                                                               (find-package :crisp-language)))
                                              (bwd-form (if transpose-v
                                                            (list bwd-sym src-adj tile-adj origins :transpose transpose-v)
@@ -1010,10 +1008,8 @@
                                         (funcall emit-fn bwd-form)))
 
                                     ;; Phase 1c: store-tile-at forward → backward.
-                                    ;; (store-tile-coords is the lingering alias for the same primitive.)
                                     ((and (consp form) (symbolp (car form))
-                                          (member (symbol-name (car form)) '("STORE-TILE-AT" "STORE-TILE-COORDS")
-                                                  :test #'string-equal))
+                                          (string-equal (symbol-name (car form)) "STORE-TILE-AT"))
                                       (let* ((tile (second form))
                                              (dest (third form))
                                              (origins (fourth form))
@@ -1023,7 +1019,7 @@
                                                                           #'local-adj kernel-pkg))
                                              (dest-adj (%tlc-bwd-adj-name dest inputs outputs
                                                                           #'local-adj kernel-pkg))
-                                             (bwd-sym (intern "%STORE-TILE-COORDS-BWD"
+                                             (bwd-sym (intern "%STORE-TILE-AT-BWD"
                                                               (find-package :crisp-language)))
                                              (bwd-form (if transpose-v
                                                            (list bwd-sym tile-adj dest-adj origins :transpose transpose-v)

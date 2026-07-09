@@ -183,8 +183,7 @@
         ((and (symbolp op)
               (member (symbol-name op)
                       '("LOAD-TILE-AT" "STORE-TILE-AT"
-                        "LOAD-TILE-COORDS" "STORE-TILE-COORDS"
-                        "%LOAD-TILE-COORDS-BWD" "%STORE-TILE-COORDS-BWD"
+                        "%LOAD-TILE-AT-BWD" "%STORE-TILE-AT-BWD"
                         "LOAD-TILE" "STORE-TILE"
                         ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
                         ;; coord / dim LISTS that must stay opaque to ANF.

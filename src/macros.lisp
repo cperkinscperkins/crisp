@@ -814,7 +814,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
     (%expand-workgroup-stride-form walked location)))
 
 (defun %expand-let-stride-op (form type-resolver-fn location)
-  "Expand LET form, hoisting tile-coords binding values out of let-bindings."
+  "Expand LET form, hoisting tile-load/store binding values out of let-bindings."
   (let* ((bindings (cadr form))
          (body (cddr form))
          (rewritten-bindings
@@ -839,9 +839,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
         (cond
          ((and op-name
                (or (string-equal op-name "LOAD-TILE-AT")
-                   (string-equal op-name "STORE-TILE-AT")
-                   (string-equal op-name "LOAD-TILE-COORDS")
-                   (string-equal op-name "STORE-TILE-COORDS")))
+                   (string-equal op-name "STORE-TILE-AT")))
            (push val hoisted-calls))
          (t
            (push b kept-bindings)))))
@@ -1794,8 +1792,8 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (declare (ignore barrier))
   nil)
 
-;; NOTE (load-tile-coords -> load-tile-at rename): load-tile-at / store-tile-at are the
-;; PRIMITIVE element-coordinate forms now — consumed DIRECTLY by their expression analyzers
+;; NOTE: load-tile-at / store-tile-at are the
+;; PRIMITIVE element-coordinate forms — consumed DIRECTLY by their expression analyzers
 ;; (analyze-load-tile-at-expression / analyze-store-tile-at-expression in
 ;; src/analysis/control.lisp), which already reject :barrier + :transformF together.
 ;; They must NOT be macros: a wrapper macro forwarding (load-tile-at ...) -> (load-tile-at ...)
