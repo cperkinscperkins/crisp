@@ -2,12 +2,12 @@
 ;; TEST-WITH[--ir-target=spv --differentiate]
 ;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=2.0 output-vec=4
 
-;; AD coverage of load-tile-coords + workgroup-stride tile transform +
-;; store-tile-coords composition.
+;; AD coverage of load-tile-at + workgroup-stride tile transform +
+;; store-tile-at composition.
 ;; Forward kernel: C[i] = 2 * A[i] via a local tile.
-;;   tile  ← A[0..3]            (load-tile-coords)
+;;   tile  ← A[0..3]            (load-tile-at)
 ;;   tile[lx] ← 2 * tile[lx]    (per-thread scale, cooperative via workgroup-stride)
-;;   C[0..3] ← tile             (store-tile-coords)
+;;   C[0..3] ← tile             (store-tile-at)
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 
@@ -16,7 +16,7 @@
            (global-size :set-to 4)
            (local-size  :set-to 4))
   (let ((tile (make-scratch-vector float 4)))
-    (load-tile-coords A tile (0))
+    (load-tile-at A tile (0))
     (workgroup-stride tile (lx)
       (set! (~ tile lx) (* 2.0f (~ tile lx))))
-    (store-tile-coords tile C (0))))
+    (store-tile-at tile C (0))))

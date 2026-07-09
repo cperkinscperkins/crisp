@@ -838,8 +838,8 @@
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                         &key kernel-pkg)
   "Walks an ANF body backwards to accumulate adjoints.
-   Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form
-   that emit %load-tile-coords-bwd / %store-tile-coords-bwd with the correct
+   Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form
+   that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct
    adjoint symbols.  Also extends the LET case to auto-allocate paired
    <var>_ADJ scratch tensors for make-scratch-* bindings.
 
@@ -988,9 +988,9 @@
                                     ((and (consp form) (symbolp (car form))
                                           (string-equal (symbol-name (car form)) "DECLARE")) nil)
 
-                                    ;; Phase 1c: load-tile-coords forward → backward.
+                                    ;; Phase 1c: load-tile-at forward → backward.
                                     ((and (consp form) (symbolp (car form))
-                                          (string-equal (symbol-name (car form)) "LOAD-TILE-COORDS"))
+                                          (string-equal (symbol-name (car form)) "LOAD-TILE-AT"))
                                       (let* ((src (second form))
                                              (tile (third form))
                                              (origins (fourth form))
@@ -1000,16 +1000,16 @@
                                                                          #'local-adj kernel-pkg))
                                              (tile-adj (%tlc-bwd-adj-name tile inputs outputs
                                                                           #'local-adj kernel-pkg))
-                                             (bwd-sym (intern "%LOAD-TILE-COORDS-BWD"
+                                             (bwd-sym (intern "%LOAD-TILE-AT-BWD"
                                                               (find-package :crisp-language)))
                                              (bwd-form (if transpose-v
                                                            (list bwd-sym src-adj tile-adj origins :transpose transpose-v)
                                                            (list bwd-sym src-adj tile-adj origins))))
                                         (funcall emit-fn bwd-form)))
 
-                                    ;; Phase 1c: store-tile-coords forward → backward.
+                                    ;; Phase 1c: store-tile-at forward → backward.
                                     ((and (consp form) (symbolp (car form))
-                                          (string-equal (symbol-name (car form)) "STORE-TILE-COORDS"))
+                                          (string-equal (symbol-name (car form)) "STORE-TILE-AT"))
                                       (let* ((tile (second form))
                                              (dest (third form))
                                              (origins (fourth form))
@@ -1019,7 +1019,7 @@
                                                                           #'local-adj kernel-pkg))
                                              (dest-adj (%tlc-bwd-adj-name dest inputs outputs
                                                                           #'local-adj kernel-pkg))
-                                             (bwd-sym (intern "%STORE-TILE-COORDS-BWD"
+                                             (bwd-sym (intern "%STORE-TILE-AT-BWD"
                                                               (find-package :crisp-language)))
                                              (bwd-form (if transpose-v
                                                            (list bwd-sym tile-adj dest-adj origins :transpose transpose-v)
@@ -1054,7 +1054,7 @@
 
                                     ;; Bug 032 fix part 2: WHEN and UNLESS were not handled
                                     ;; by the AD walker, so any forms inside them (including
-                                    ;; the load/store-tile-coords inner body's set!s after
+                                    ;; the load/store-tile-at inner body's set!s after
                                     ;; workgroup-stride expansion) were silently dropped.
                                     ;; Desugar them to IF + PROGN here and let the IF case
                                     ;; handle the rest.

@@ -1,7 +1,7 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
 
-;; Basic store-tile-coords on a 2D matrix.  Fill a 4x4 :local tile with
+;; Basic store-tile-at on a 2D matrix.  Fill a 4x4 :local tile with
 ;; (ly * 10 + lx) via workgroup-stride, then store back to global at
 ;; origin (0,0).  Expected: OUT[y][x] == y*10 + x.
 
@@ -15,4 +15,4 @@
   (let ((tile (make-scratch-matrix ulong 4)))
     (workgroup-stride tile (ly lx)
       (set! (~ tile ly lx) (+ (* ly (to-ulong 10)) lx)))
-    (store-tile-coords tile OUT (0 0))))
+    (store-tile-at tile OUT (0 0))))

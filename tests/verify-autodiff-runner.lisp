@@ -1361,7 +1361,7 @@
 ;;; --- Local-scratch vector binding -------------------------------------
 ;;;
 ;;; The AD pass auto-mints a `<tile>_ADJ` shadow next to every local-mem
-;;; tile that participates in a load-tile-coords / store-tile-coords AD
+;;; tile that participates in a load-tile-at / store-tile-at AD
 ;;; expansion (and the original tile itself is also a kernel param under
 ;;; that rewriting).  These show up as 6-arg vector descriptors with
 ;;; `:local` addrspace at the start of the backward kernel's arg list,

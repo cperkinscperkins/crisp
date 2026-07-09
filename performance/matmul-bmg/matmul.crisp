@@ -5,7 +5,7 @@
 ;; This is deliberately a MICROBENCH, not a full GEMM: one workgroup, one output
 ;; tile, but a LARGE K (set by the harness).  So the runtime is dominated by the
 ;; K-loop's SYNCHRONOUS staging — each K-step stages an 8x8 A-block and 8x16 B-block
-;; from global into SLM via sync load-tile-coords, sync-workgroups, then one
+;; from global into SLM via sync load-tile-at, sync-workgroups, then one
 ;; cooperative-matrix MMA.  That staging latency is EXACTLY what the three MMA
 ;; "chapters" optimize (Ch1 async tile load / Ch2 pipelined / Ch3 warp-specialized),
 ;; so this number is the honest "Chapter 0" floor they improve on.
@@ -32,8 +32,8 @@
         (C-tile (make-register-tile float (8 16) 0.0))
         (K      (to-int (inner-dimension A B))))
     (dotimes (kt (/ K 8))
-      (load-tile-coords A A-tile (0 (* kt 8)))      ; stage A[:, kt*8 : kt*8+8]
-      (load-tile-coords B B-tile ((* kt 8) 0))      ; stage B[kt*8 : kt*8+8, :]
+      (load-tile-at A A-tile (0 (* kt 8)))      ; stage A[:, kt*8 : kt*8+8]
+      (load-tile-at B B-tile ((* kt 8) 0))      ; stage B[kt*8 : kt*8+8, :]
       (sync-workgroup)
       (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
       (sync-workgroup))

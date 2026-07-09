@@ -201,36 +201,9 @@ It returns mapping coordinates into the problem space tensor.
 (let ((row-y col-x (tensor-coords (idx-y idx-x) (t-y t-x)))))
 ```
 -->
-<!-- 
-HELPERS REMOVED
-
-##### `load-tile` / `store-tile` ✅
-There are two other helper functions that are present when doing "tileed" striding.  
-They have their own section of the docs below.
--->
-<!--  
-
-NOTE: I'm temporarily setting the stride-subview helper function aside
-NOTE: explain risk of deadlock   
- 
-NOTE: compiler will use this to DETECT possible deadlocks 
-       this makes it EASIER to detect deadlocks at "ragged edges"
-       we insert (declare :ragged-edge) or something 
-TODO: figure this out. (declare (convergent)) and friends.
-
-##### `stride-subview`
-In the scope of `thread-stride` there is helper function `stride-subview` which returns another `tensor`.
- This `tensor` has the size and dimensions of the `chunkExpr` but is mapped to the current location in the problem space.
-
-Note that in the event the problem space is not evenly divisible by the chunk, then the `tensor` that is returned
-might have dimensions smaller than the chunk if it is near the memory boundary. This way there is no accidental out of bounds memory access.  
-
-
-Note, also, that this chunk is a subview into the problem space, which is likely `:global`.
-If you are wanting fast chunk access use `load-chunk` / `store-chunk` below to transfer to `:local` memory for fast operations.
--->
 
 
 
-<!--
+
+
 

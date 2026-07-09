@@ -2,7 +2,7 @@
 ;; CHECK-FAIL: "divergent"
 
 ;; Bare load-tile inside a divergent (when ...) inside a tile-stride.
-;; The body walker rewrites the bare form to (load-tile-coords ...) using
+;; The body walker rewrites the bare form to (load-tile-at ...) using
 ;; the tile-stride binding as origin.  The analyzer then fires the
 ;; divergence check and rejects.  Verifies both the bare-form path and
 ;; the divergence detection in one test.

@@ -814,7 +814,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
     (%expand-workgroup-stride-form walked location)))
 
 (defun %expand-let-stride-op (form type-resolver-fn location)
-  "Expand LET form, hoisting tile-coords binding values out of let-bindings."
+  "Expand LET form, hoisting tile-load/store binding values out of let-bindings."
   (let* ((bindings (cadr form))
          (body (cddr form))
          (rewritten-bindings
@@ -838,8 +838,8 @@ processes float inputs — integer tensor inputs contribute zero gradient."
              (op-name (and op (symbol-name op))))
         (cond
          ((and op-name
-               (or (string-equal op-name "LOAD-TILE-COORDS")
-                   (string-equal op-name "STORE-TILE-COORDS")))
+               (or (string-equal op-name "LOAD-TILE-AT")
+                   (string-equal op-name "STORE-TILE-AT")))
            (push val hoisted-calls))
          (t
            (push b kept-bindings)))))
@@ -863,7 +863,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   "Recursively walks FORM and rewrites tensor-stride / grid-stride /
    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride
    forms into their expansions.  Endeavor 113: also normalises
-   request-load-tile-coords -> load-tile-coords and await-request -> nil
+   request-load-tile-at -> load-tile-at and await-request -> nil
    for the backward pass."
   (cond
    ((atom form) form)
@@ -1792,21 +1792,13 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (declare (ignore barrier))
   nil)
 
-(defun %check-barrier-transformf (key-args)
-  (let ((has-barrier (getf key-args :barrier))
-        (has-transformf (or (getf key-args :transformf) (getf key-args :transformF))))
-    (when (and has-barrier has-transformf)
-          (error "Cannot use :barrier and :transformF together."))))
-
-(defmacro load-tile-at (src tile grid-list &rest key-args)
-  "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."
-  (%check-barrier-transformf key-args)
-  `(load-tile-coords ,src ,tile ,grid-list ,@key-args))
-
-(defmacro store-tile-at (tile dest grid-list &rest key-args)
-  "Macro wrapper to forward coordinates to the primitive, without stripping :barrier."
-  (%check-barrier-transformf key-args)
-  `(store-tile-coords ,tile ,dest ,grid-list ,@key-args))
+;; NOTE: load-tile-at / store-tile-at are the
+;; PRIMITIVE element-coordinate forms — consumed DIRECTLY by their expression analyzers
+;; (analyze-load-tile-at-expression / analyze-store-tile-at-expression in
+;; src/analysis/control.lisp), which already reject :barrier + :transformF together.
+;; They must NOT be macros: a wrapper macro forwarding (load-tile-at ...) -> (load-tile-at ...)
+;; macroexpands to itself and hangs ANF.  The load-tile / store-tile sugar macros below scale
+;; tile-IDs by the tile extents and expand to these primitives.
 
 (defmacro load-tile (src tile grid-list &rest key-args)
   "Helper macro to automatically compute grid index offsets dynamically
@@ -1814,7 +1806,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let ((pixel-coords
          (loop for g in grid-list
                for i from 0
-               collect `(* ,g (~ (extents~ ,tile) ,i)))))
+               collect `(* (to-ulong ,g) (~ (extents~ ,tile) ,i)))))
     `(load-tile-at ,src ,tile ,pixel-coords ,@key-args)))
 
 (defmacro store-tile (tile dest grid-list &rest key-args)
@@ -1823,7 +1815,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (let ((pixel-coords
          (loop for g in grid-list
                for i from 0
-               collect `(* ,g (~ (extents~ ,tile) ,i)))))
+               collect `(* (to-ulong ,g) (~ (extents~ ,tile) ,i)))))
     `(store-tile-at ,tile ,dest ,pixel-coords ,@key-args)))
 
 

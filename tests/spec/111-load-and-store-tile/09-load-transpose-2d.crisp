@@ -1,8 +1,8 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords land in sub-step 1c"
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
-;; load-tile-coords with :transpose t on a 2D matrix.  With transpose,
+;; load-tile-at with :transpose t on a 2D matrix.  With transpose,
 ;; tile[ly][lx] receives global[origin-y + lx][origin-x + ly] — the two
 ;; tile axes are swapped relative to global.  Useful for changing access
 ;; pattern to avoid bank conflicts during compute.
@@ -18,6 +18,6 @@
            (global-size :set-to '(4 4))
            (local-size  :set-to '(4 4)))
   (let ((tile (make-scratch-matrix ulong 4)))
-    (load-tile-coords M tile (0 0) :transpose t)
+    (load-tile-at M tile (0 0) :transpose t)
     (workgroup-stride tile (ly lx)
       (set! (~ OUT ly lx) (~ tile ly lx)))))

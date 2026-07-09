@@ -1,0 +1,30 @@
+;; Deliberate confirmation that load-tile uses GRID (tile-index) coordinates,
+;; while load-tile-at uses ABSOLUTE (element) coordinates — and that they differ.
+;;
+;; load-tile scales each coord by the TILE's extent:  element_offset = coord * tile_extent.
+;; load-tile-at uses the coord as the element offset directly.
+;;
+;; With V = [0,1,2,3] (hoist iota fill) and a 2-wide tile, coordinate 1 gives:
+;;   load-tile    V tile (1)  -> V[1*2 .. 1*2+1] = V[2..3] = [2,3]   (grid: 2nd tile block)
+;;   load-tile-at V tile (1)  -> V[1   .. 1  +1] = V[1..2] = [1,2]   (absolute: element 1)
+;; So OUT = [2,3, 1,2].  If load-tile wrongly used absolute coords it would read [1,2].
+;; Also exercises a LITERAL grid coord (1) — the macro must coerce it to ulong before
+;; scaling by the (ulong) tile extent.
+;;
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 2 3 1 2
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel grid_vs_abs (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tileG (make-scratch-vector ulong 2))     ; grid-loaded tile
+        (tileA (make-scratch-vector ulong 2)))    ; absolute-loaded tile
+    (load-tile    V tileG (1))     ; GRID coord 1     -> V[2..3] = [2,3]
+    (load-tile-at V tileA (1))     ; ABSOLUTE coord 1 -> V[1..2] = [1,2]
+    (workgroup-stride tileG (lx)
+      (set! (~ OUT lx)                  (~ tileG lx))     ; OUT[0..1] = [2,3]
+      (set! (~ OUT (+ lx (to-ulong 2))) (~ tileA lx)))))  ; OUT[2..3] = [1,2]

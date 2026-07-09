@@ -1,13 +1,13 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords land in sub-step 1c"
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
 ;; Ragged-edge load: tile is 4 elements but loading from origin 2 of a
 ;; 4-element vector leaves only 2 valid source elements (V[2], V[3]).
 ;; Tile slots 2 and 3 fall past the end and are filled with the :identity
 ;; value (default 0).  Copied out: OUT == [V[2], V[3], 0, 0].
 ;;
-;; Exercises the bounds-check + identity-fill branch of load-tile-coords.
+;; Exercises the bounds-check + identity-fill branch of load-tile-at.
 
 (def-type vec-t  (vector ulong :address-space :global :align :compact))
 (def-type tile-t (vector ulong :address-space :local  :align :compact))
@@ -17,6 +17,6 @@
            (global-size :set-to 4)
            (local-size  :set-to 4))
   (let ((tile (make-scratch-vector ulong 4)))
-    (load-tile-coords V tile (2))
+    (load-tile-at V tile (2))
     (workgroup-stride tile (lx)
       (set! (~ OUT lx) (~ tile lx)))))

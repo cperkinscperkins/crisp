@@ -735,8 +735,8 @@ MMA
 ===
 [x] fundamentals ( for ptx)
 [x] ibid, for spir-v
-[ ] Chapter 0: synchronous tiled MMA.
-[ ] testing and benchmarking
+[x] Chapter 0: synchronous tiled MMA.
+[x] testing and benchmarking
 [ ] matrix-multiply-tile-stride macro
 [ ] CUTensorMap as implicit arg for kernels. 
 [ ] Chapter 1 - async tile

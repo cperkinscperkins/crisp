@@ -7,7 +7,7 @@
  *
  * Kernel: C[8x16] = A[8xK] . B[Kx16], tf32, single sub-group / one 8x16 XMX tile,
  * but LARGE K (hardcoded below).  The runtime is dominated by the K-loop's
- * SYNCHRONOUS staging (sync load-tile-coords + sync-workgroup per K-step) — the
+ * SYNCHRONOUS staging (sync load-tile-at + sync-workgroup per K-step) — the
  * exact thing the three MMA "chapters" (async / pipelined / warp-specialized)
  * optimize.  So kernel_median_us here is the "Chapter 0" floor they improve on.
  *

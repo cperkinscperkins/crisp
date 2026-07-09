@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-08T20:12:00.771463Z
+Generated on 2026-07-08T23:56:51.435630Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -14,7 +14,7 @@ Generated on 2026-07-08T20:12:00.771463Z
 ### DEFUN `%EXTRACT-KEY-ARG`
 - **Args**: `(KEY-ARGS KEYWORD DEFAULT)`
 
-  > Parses a &key-style plist KEY-ARGS for KEYWORD, returning its value or  >    DEFAULT if absent.  Phase 1a helper for load-tile-coords / store-tile-coords  >    keyword parsing.
+  > Parses a &key-style plist KEY-ARGS for KEYWORD, returning its value or  >    DEFAULT if absent.  Phase 1a helper for load-tile-at / store-tile-at  >    keyword parsing.
 
 
 ---
@@ -29,7 +29,7 @@ Generated on 2026-07-08T20:12:00.771463Z
 - **Args**: `(N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS
               LID-SYMS LWS-SYMS INNER-FORM CL-PKG)`
 
-  > Builds the cooperative N-dim workgroup-strided nest used by  >    load-tile-coords and store-tile-coords.  At each level:  >      (dotimes (K_k TE_k LWS_k)  >        (let ((tile-coord-k (+ K_k LID_k)))  >          (when (< tile-coord-k TE_k)  >            <inner>)))  >    Returns the nested form.  Local-bindings is the outer let's binding list  >    (passed through unchanged; caller adds tensor/extent/lid/lws bindings).  >    Tile-coord-syms / tile-extent-syms / lid-syms / lws-syms must be lists of  >    length n.
+  > Builds the cooperative N-dim workgroup-strided nest used by  >    load-tile-at and store-tile-at.  At each level:  >      (dotimes (K_k TE_k LWS_k)  >        (let ((tile-coord-k (+ K_k LID_k)))  >          (when (< tile-coord-k TE_k)  >            <inner>)))  >    Returns the nested form.  Local-bindings is the outer let's binding list  >    (passed through unchanged; caller adds tensor/extent/lid/lws bindings).  >    Tile-coord-syms / tile-extent-syms / lid-syms / lws-syms must be lists of  >    length n.
 
 
 ---
@@ -47,23 +47,23 @@ Generated on 2026-07-08T20:12:00.771463Z
 
 
 ---
-### DEFUN `%EXPAND-LOAD-TILE-COORDS-FORM`
+### DEFUN `%EXPAND-LOAD-TILE-AT-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).  >    Returns a let/dotimes/when nest that cooperatively loads the tile, ending  >    with (sync-workgroup).
+  > Pure expansion of (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose).  >    Returns a let/dotimes/when nest that cooperatively loads the tile, ending  >    with (sync-workgroup).
 
 
 ---
-### DEFUN `%EXPAND-STORE-TILE-COORDS-FORM`
+### DEFUN `%EXPAND-STORE-TILE-AT-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).  >    Returns a let/progn nest with (sync-workgroup) BEFORE and AFTER the  >    cooperative store loop.  TransformF is applied per-element (unary).
+  > Pure expansion of (store-tile-at TILE DEST (ORIGIN...) &key transformF transpose).  >    Returns a let/progn nest with (sync-workgroup) BEFORE and AFTER the  >    cooperative store loop.  TransformF is applied per-element (unary).
 
 
 ---
 ### DEFVAR `*IN-DIVERGENT-CONDITIONAL*`
 
-  > T when the analyzer is currently inside a thread-divergent if/when/unless/cond  >    branch (i.e. the conditional's test was not constant-folded).  Used by the  >    load-tile-coords / store-tile-coords analyzers to reject placement that  >    would deadlock at their internal sync-workgroups.  >   >    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check  >    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the  >    internal %uniform-when form instead, whose analyzer does NOT set this flag.
+  > T when the analyzer is currently inside a thread-divergent if/when/unless/cond  >    branch (i.e. the conditional's test was not constant-folded).  Used by the  >    load-tile-at / store-tile-at analyzers to reject placement that  >    would deadlock at their internal sync-workgroups.  >   >    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check  >    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the  >    internal %uniform-when form instead, whose analyzer does NOT set this flag.
 
 
 ---
@@ -84,21 +84,21 @@ Generated on 2026-07-08T20:12:00.771463Z
 ### DEFUN `%TLC-CHECK-NOT-DIVERGENT`
 - **Args**: `(OP-NAME LOCATION)`
 
-  > Signals a clear compile error if (op-name) appears inside a thread-divergent  >    conditional.  Call from load-tile-coords / store-tile-coords analyzers.
+  > Signals a clear compile error if (op-name) appears inside a thread-divergent  >    conditional.  Call from load-tile-at / store-tile-at analyzers.
 
 
 ---
-### DEFUN `ANALYZE-LOAD-TILE-COORDS-EXPRESSION`
+### DEFUN `ANALYZE-LOAD-TILE-AT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-coords-form.
+  > Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-at-form.
 
 
 ---
-### DEFUN `ANALYZE-STORE-TILE-COORDS-EXPRESSION`
+### DEFUN `ANALYZE-STORE-TILE-AT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).  >    Rejects placement inside a thread-divergent conditional, then delegates  >    codegen via %expand-store-tile-coords-form.
+  > Analyzer for (store-tile-at TILE DEST (ORIGIN...) &key transformF transpose).  >    Rejects placement inside a thread-divergent conditional, then delegates  >    codegen via %expand-store-tile-at-form.
 
 
 ---
@@ -481,31 +481,31 @@ Generated on 2026-07-08T20:12:00.771463Z
 
 
 ---
-### DEFUN `%EXPAND-LOAD-TILE-COORDS-BWD-FORM`
+### DEFUN `%EXPAND-LOAD-TILE-AT-BWD-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (%load-tile-coords-bwd SRC-ADJ TILE-ADJ (ORIGIN...) &key transpose).  >    Cooperative scatter-add via atomic-add!.
+  > Pure expansion of (%load-tile-at-bwd SRC-ADJ TILE-ADJ (ORIGIN...) &key transpose).  >    Cooperative scatter-add via atomic-add!.
 
 
 ---
-### DEFUN `%EXPAND-STORE-TILE-COORDS-BWD-FORM`
+### DEFUN `%EXPAND-STORE-TILE-AT-BWD-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (%store-tile-coords-bwd TILE-ADJ DEST-ADJ (ORIGIN...) &key transpose).  >    Cooperative non-atomic accumulate into local tile_adj.  Barriers before  >    and after so prior tile_adj writes are visible and subsequent ones see  >    the result.
+  > Pure expansion of (%store-tile-at-bwd TILE-ADJ DEST-ADJ (ORIGIN...) &key transpose).  >    Cooperative non-atomic accumulate into local tile_adj.  Barriers before  >    and after so prior tile_adj writes are visible and subsequent ones see  >    the result.
 
 
 ---
-### DEFUN `ANALYZE-%LOAD-TILE-COORDS-BWD-EXPRESSION`
+### DEFUN `ANALYZE-%LOAD-TILE-AT-BWD-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for compiler-internal %load-tile-coords-bwd.
+  > Analyzer for compiler-internal %load-tile-at-bwd.
 
 
 ---
-### DEFUN `ANALYZE-%STORE-TILE-COORDS-BWD-EXPRESSION`
+### DEFUN `ANALYZE-%STORE-TILE-AT-BWD-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for compiler-internal %store-tile-coords-bwd.
+  > Analyzer for compiler-internal %store-tile-at-bwd.
 
 
 ---
@@ -519,14 +519,6 @@ Generated on 2026-07-08T20:12:00.771463Z
 ---
 ### DEFUN `%DETECT-BARE-LOAD-STORE-TILE-IN-FORM`
 - **Args**: `(FORM PATH)`
-
----
-### DEFUN `ANALYZE-LOAD-TILE-AT-EXPRESSION`
-- **Args**: `(EXPR ENV CONTEXT LOCATION)`
-
----
-### DEFUN `ANALYZE-STORE-TILE-AT-EXPRESSION`
-- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-LOAD-TILE-EXPRESSION`
@@ -571,7 +563,7 @@ Generated on 2026-07-08T20:12:00.771463Z
 ---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,  >    and (111 Phase 1a) load-tile-coords / store-tile-coords.  >    Endeavor 113: also registers request-load-tile-coords and await-request.
+  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,  >    and (111 Phase 1a) load-tile-at / store-tile-at.  >    Endeavor 113: also registers request-load-tile-at and await-request.
 
 
 ---
@@ -1666,7 +1658,7 @@ Generated on 2026-07-08T20:12:00.771463Z
 ### DEFUN `ANF-NORMALIZE`
 - **Args**: `(EXPR IS-NESTED?)`
 
-  > Returns (VALUES normalized-expr bindings-list).  >    Phase 1c: added opaque pass-through for load-tile-coords / store-tile-coords  >    and their internal *-bwd / bare load-tile / store-tile variants.
+  > Returns (VALUES normalized-expr bindings-list).  >    Phase 1c: added opaque pass-through for load-tile-at / store-tile-at  >    and their internal *-bwd / bare load-tile / store-tile variants.
 
 
 ---
@@ -1912,7 +1904,7 @@ Generated on 2026-07-08T20:12:00.771463Z
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form  >    that emit %load-tile-coords-bwd / %store-tile-coords-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.
+  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form  >    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.
 
 
 ---
@@ -4714,7 +4706,7 @@ Generated on 2026-07-08T20:12:00.771463Z
 ### DEFUN `%EXPAND-STRIDE-MACROS-IN-FORM`
 - **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
 
-  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride  >    forms into their expansions.  Endeavor 113: also normalises  >    request-load-tile-coords -> load-tile-coords and await-request -> nil  >    for the backward pass.
+  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride  >    forms into their expansions.  Endeavor 113: also normalises  >    request-load-tile-at -> load-tile-at and await-request -> nil  >    for the backward pass.
 
 
 ---
@@ -4951,24 +4943,6 @@ Generated on 2026-07-08T20:12:00.771463Z
 - **Args**: `(BARRIER)`
 
   > Awaits an async barrier.
-
-
----
-### DEFUN `%CHECK-BARRIER-TRANSFORMF`
-- **Args**: `(KEY-ARGS)`
-
----
-### DEFMACRO `LOAD-TILE-AT`
-- **Args**: `(SRC TILE GRID-LIST &REST KEY-ARGS)`
-
-  > Macro wrapper to forward coordinates to the primitive, without stripping :barrier.
-
-
----
-### DEFMACRO `STORE-TILE-AT`
-- **Args**: `(TILE DEST GRID-LIST &REST KEY-ARGS)`
-
-  > Macro wrapper to forward coordinates to the primitive, without stripping :barrier.
 
 
 ---

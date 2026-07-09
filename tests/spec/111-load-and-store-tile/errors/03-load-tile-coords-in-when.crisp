@@ -1,7 +1,7 @@
 ;; TEST-EXPECT: FAIL
 ;; CHECK-FAIL: "divergent"
 
-;; load-tile-coords inside a thread-divergent (when ...) would cause some
+;; load-tile-at inside a thread-divergent (when ...) would cause some
 ;; threads to enter the cooperative loop + sync-workgroup and others to skip,
 ;; deadlocking at the barrier.  The compiler should reject this.
 
@@ -15,6 +15,6 @@
   (let ((tile (make-scratch-vector ulong 4)))
     ;; Divergent: condition is per-thread (get-local-id 0).
     (when (= (get-local-id 0) (to-ulong 0))
-      (load-tile-coords V tile (0)))
+      (load-tile-at V tile (0)))
     (workgroup-stride tile (lx)
       (set! (~ OUT lx) (~ tile lx)))))

@@ -3,7 +3,7 @@ Endeavor 113 — Async load-tile / store-tile API + AD wiring (fallback impl)
 
 > **Note on this directory.**  Endeavor 113 picks up where 111 left off.
 > 111 delivered the synchronous tile family (`load-tile` / `store-tile`
-> / `load-tile-coords` / `store-tile-coords`) and 112 wired their AD
+> / `load-tile-at` / `store-tile-at`) and 112 wired their AD
 > through the L0 verify-autodiff runner.  113 adds the **front-end**
 > for the asynchronous variants — `request-load-tile`,
 > `request-store-tile`, their `-coords` generals, and `await-request`
@@ -35,8 +35,8 @@ the fallback (sync) lowering on both backends:
 (request-store-tile <src-tile> <dest-problem-space-tensor> &key transpose)               => request-token
 
 ;; General forms, anywhere
-(request-load-tile-coords  source-tensor dest-tile (... coord ...) &key (identity 0) transpose) => request-token
-(request-store-tile-coords source-tile dest-tensor (... coord ...) &key transpose)              => request-token
+(request-load-tile-at  source-tensor dest-tile (... coord ...) &key (identity 0) transpose) => request-token
+(request-store-tile-at source-tile dest-tensor (... coord ...) &key transpose)              => request-token
 
 (await-request token)
 ```
@@ -83,18 +83,18 @@ The AD walker delivered in 111+112 doesn't need to know about the
 `request-` prefix.  In `%expand-stride-macros-in-form` (the existing
 pre-rewrite hook used by `%generate-backward-kernel-ast`), rewrite:
 
-- `(request-load-tile-coords  S D O …)` → `(load-tile-coords  S D O …)`
-- `(request-store-tile-coords S D O …)` → `(store-tile-coords S D O …)`
+- `(request-load-tile-at  S D O …)` → `(load-tile-at  S D O …)`
+- `(request-store-tile-at S D O …)` → `(store-tile-at S D O …)`
 - `(await-request tok)` → `nil`
 
-The backward pass then emits `%load-tile-coords-bwd` /
-`%store-tile-coords-bwd` exactly as today, and 112's on-metal AD
+The backward pass then emits `%load-tile-at-bwd` /
+`%store-tile-at-bwd` exactly as today, and 112's on-metal AD
 verification keeps working unchanged.
 
 ### Backend coverage — fallback-only here; real async in 114
 
 Both `:spirv` and `:ptx` use the same fallback: emit the existing sync
-`load-tile-coords` / `store-tile-coords` expansion.  Endeavor 114
+`load-tile-at` / `store-tile-at` expansion.  Endeavor 114
 replaces the fallback with real `OpGroupAsyncCopy` (SPV) and
 `cp.async` (PTX) per backend, and adds the missing-target gate and
 single-outstanding enforcement that the fallback path can't usefully
@@ -104,10 +104,10 @@ check.
 Phasing
 -------
 
-### Phase 1 — `request-load-tile-coords` + `await-request` (DONE)
+### Phase 1 — `request-load-tile-at` + `await-request` (DONE)
 
-- [x] Front-end analyzer for `request-load-tile-coords`: delegates to
-      `%expand-load-tile-coords-form`; wraps the result in a `(progn
+- [x] Front-end analyzer for `request-load-tile-at`: delegates to
+      `%expand-load-tile-at-form`; wraps the result in a `(progn
       … (to-ulong 0))` so the surrounding let-binding has a phantom
       ulong token to bind.
 - [x] Front-end analyzer for `await-request`: validates arity, emits
@@ -118,7 +118,7 @@ Phasing
 - [x] AD pre-rewrite: extend `%expand-stride-macros-in-form` to
       normalise `REQUEST-LOAD-TILE-COORDS` → `LOAD-TILE-COORDS` and
       `AWAIT-REQUEST` → `nil`.
-- [x] Smoke spec `01-request-load-tile-coords-1d.crisp` passes default
+- [x] Smoke spec `01-request-load-tile-at-1d.crisp` passes default
       and `--ir-target=spv`.
 
 ### Phase 2 — `request-load-tile` sugar
@@ -126,16 +126,16 @@ Phasing
 - [ ] Extend `%rewrite-bare-load-store-tile-in-form` in
       [src/analysis/control.lisp](src/analysis/control.lisp) so bare
       `request-load-tile` inside `tile-stride` / `hardware-stride`
-      rewrites to `request-load-tile-coords` with the stride's origin
+      rewrites to `request-load-tile-at` with the stride's origin
       list — same rewrite shape `load-tile` already uses.
 - [ ] Same divergence check as the sync form (the implicit
       consumer-side barrier would deadlock if half the workgroup skips
       the request).
 
-### Phase 3 — `request-store-tile-coords` + `request-store-tile`
+### Phase 3 — `request-store-tile-at` + `request-store-tile`
 
-- [ ] Analyzer for `request-store-tile-coords` that delegates to
-      `%expand-store-tile-coords-form` and returns a phantom token,
+- [ ] Analyzer for `request-store-tile-at` that delegates to
+      `%expand-store-tile-at-form` and returns a phantom token,
       mirroring the load case.  Same fallback semantics on both
       backends — sync store + barrier + no-op await.
 - [ ] Sugar rewriter for bare `request-store-tile` inside tile-stride

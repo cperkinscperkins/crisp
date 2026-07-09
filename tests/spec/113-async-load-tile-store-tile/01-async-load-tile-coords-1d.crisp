@@ -1,15 +1,15 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD pre-rewrite for load-tile-coords lands in phase 1"
+;; SKIP-WITH[--differentiate]: "AD pre-rewrite for load-tile-at lands in phase 1"
 
-;; Async counterpart of 111/01-load-tile-coords-1d.crisp.  Cooperatively
+;; Async counterpart of 111/01-load-tile-at-1d.crisp.  Cooperatively
 ;; loads 4 elements from a global vector starting at origin 0 into a
 ;; :local tile via the async path, awaits, then copies the tile back
 ;; out via workgroup-stride so the load is observable host-side.
 ;; Expected: OUT == V (same as 111/01).
 ;;
 ;; Phase 0 smoke target.  Drives Phase 1 implementation of
-;;   - load-tile-coords analyzer with :barrier (both SPV and PTX lowering)
+;;   - load-tile-at analyzer with :barrier (both SPV and PTX lowering)
 ;;   - await analyzer
 ;;   - barrier scope table
 ;;   - SPV codegen: async_work_group_copy + wait_group_events

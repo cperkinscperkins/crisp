@@ -1,13 +1,13 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords / store-tile-coords land in sub-step 1c"
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at / store-tile-at land in sub-step 1c"
 
 ;; Canonical roundtrip: load global → tile, mutate tile cooperatively,
 ;; store tile → global.  Each thread reads tile[lx], adds 100, writes
 ;; back.  Expected: OUT[i] == V[i] + 100.
 ;;
-;; Exercises the composition load-tile-coords → workgroup-stride →
-;; store-tile-coords, with implicit barriers handled by load/store.
+;; Exercises the composition load-tile-at → workgroup-stride →
+;; store-tile-at, with implicit barriers handled by load/store.
 
 (def-type vec-t  (vector ulong :address-space :global :align :compact))
 (def-type tile-t (vector ulong :address-space :local  :align :compact))
@@ -17,7 +17,7 @@
            (global-size :set-to 4)
            (local-size  :set-to 4))
   (let ((tile (make-scratch-vector ulong 4)))
-    (load-tile-coords V tile (0))
+    (load-tile-at V tile (0))
     (workgroup-stride tile (lx)
       (set! (~ tile lx) (+ (~ tile lx) (to-ulong 100))))
-    (store-tile-coords tile OUT (0))))
+    (store-tile-at tile OUT (0))))

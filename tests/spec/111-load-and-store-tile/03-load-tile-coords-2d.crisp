@@ -1,8 +1,8 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords land in sub-step 1c"
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
-;; Basic load-tile-coords on a 2D matrix.  Cooperatively load a 4x4 chunk
+;; Basic load-tile-at on a 2D matrix.  Cooperatively load a 4x4 chunk
 ;; from origin (0,0) into a :local tile, then copy out via workgroup-stride.
 ;; Expected: OUT == M (same shape, same values).
 
@@ -14,6 +14,6 @@
            (global-size :set-to '(4 4))
            (local-size  :set-to '(4 4)))
   (let ((tile (make-scratch-matrix ulong 4)))
-    (load-tile-coords M tile (0 0))
+    (load-tile-at M tile (0 0))
     (workgroup-stride tile (ly lx)
       (set! (~ OUT ly lx) (~ tile ly lx)))))

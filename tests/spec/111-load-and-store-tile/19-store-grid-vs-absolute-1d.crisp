@@ -1,0 +1,26 @@
+;; Deliberate confirmation of GRID vs ABSOLUTE coordinates on the STORE side — 1-D.
+;;
+;; store-tile scales the grid coord by the tile extent; store-tile-at writes at the absolute
+;; element offset.  One tile = [10,11] is stored at coordinate 1 two ways, into two separate
+;; iota-initialised ([0,1,2,3]) outputs:
+;;   store-tile    tile OUTG (1) -> GRID:     element offset 1*2 = 2 -> OUTG[2,3] -> 0 1 10 11
+;;   store-tile-at tile OUTA (1) -> ABSOLUTE: element offset 1       -> OUTA[1,2] -> 0 10 11 3
+;; Same tile, same coordinate — the grid store lands at elements [2,3], the absolute at [1,2].
+;;
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER outg: 0 1 10 11
+;; HOIST-EXPECT: BUFFER outa: 0 10 11 3
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel store_grid_vs_abs (&out OUTG OUTA)
+  (declare #'(&out vec-t vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 2)))
+    (workgroup-stride tile (lx)
+      (set! (~ tile lx) (+ (to-ulong 10) lx)))    ; tile = [10,11]
+    (sync-workgroup)
+    (store-tile    tile OUTG (1))    ; GRID 1     -> OUTG[2,3]
+    (store-tile-at tile OUTA (1))))  ; ABSOLUTE 1 -> OUTA[1,2]

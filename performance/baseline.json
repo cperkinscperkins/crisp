@@ -13,10 +13,10 @@
       "sha": "3aaccae"
     },
     "device_compile_s": {
-      "best": 0.257,
+      "best": 0.246,
       "tolerance": 1.0,
       "set_on": "2026-07-08",
-      "sha": "00aa7bf"
+      "sha": "1cf8544"
     }
   },
   "vec-copy-bmg": {
@@ -33,10 +33,10 @@
       "sha": "00aa7bf"
     },
     "device_compile_s": {
-      "best": 0.24,
+      "best": 0.228,
       "tolerance": 1.0,
       "set_on": "2026-07-08",
-      "sha": "00aa7bf"
+      "sha": "1cf8544"
     }
   },
   "matmul-bmg": {

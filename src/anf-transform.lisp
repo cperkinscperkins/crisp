@@ -163,7 +163,7 @@
 
 (defun anf-normalize (expr is-nested?)
   "Returns (VALUES normalized-expr bindings-list).
-   Phase 1c: added opaque pass-through for load-tile-coords / store-tile-coords
+   Phase 1c: added opaque pass-through for load-tile-at / store-tile-at
    and their internal *-bwd / bare load-tile / store-tile variants."
   (cond
    ((anf-is-atomic? expr)
@@ -182,8 +182,8 @@
        (cond
         ((and (symbolp op)
               (member (symbol-name op)
-                      '("LOAD-TILE-COORDS" "STORE-TILE-COORDS"
-                        "%LOAD-TILE-COORDS-BWD" "%STORE-TILE-COORDS-BWD"
+                      '("LOAD-TILE-AT" "STORE-TILE-AT"
+                        "%LOAD-TILE-AT-BWD" "%STORE-TILE-AT-BWD"
                         "LOAD-TILE" "STORE-TILE"
                         ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
                         ;; coord / dim LISTS that must stay opaque to ANF.

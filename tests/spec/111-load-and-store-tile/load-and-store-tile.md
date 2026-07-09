@@ -49,16 +49,16 @@ docs\chapters\10_storage_handle_types\16_async_memory_operations.md
 
 ```
 ;; General
-(load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose)
-(request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
+(load-tile-at source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose)
+(request-load-tile-at source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
 
 ;; General
-(store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transformF transpose)
-(request-store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transpose) => request token
+(store-tile-at dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transformF transpose)
+(request-store-tile-at dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transpose) => request token
 ```
 
 
-Bounds Checking: The macro implementation for both store-tile and store-tile-coords must implicitly generate the bounds-checking logic (if (and (< y max-y) (< x max-x)) ...) to prevent rogue threads from writing past the tensor boundaries.
+Bounds Checking: The macro implementation for both store-tile and store-tile-at must implicitly generate the bounds-checking logic (if (and (< y max-y) (< x max-x)) ...) to prevent rogue threads from writing past the tensor boundaries.
 
 The Async transformF Limitation: Notice I omitted transformF from the request-store-tile async variants. If you are leveraging hardware async copy capabilities (like SYCL's async_work_group_copy or hardware DMA), those units only know how to move raw bytes. They do not have access to the ALUs to run a custom Lisp closure (transformF) mid-flight. If a user needs to transform data, they must do it synchronously before initiating the async DMA store.
 
@@ -212,7 +212,7 @@ Two reasons this is cheap:
 The new model is conceptually cleaner (one tile per outer iter, helpers compose at the right level). Building 111 on the wrong foundation would have meant either grafting outer-loop machinery into 111 itself (ugly) or living with non-cooperative load/store-tile (wrong).
 What I'd suggest as a sequencing
 Phase 0 (this work): Restructure 109. Don't introduce load-tile/store-tile yet. Just fix tile-stride's outer-loop semantics + introduce workgroup-stride as a separate primitive. Rewrite the 109 tests to use the new shape. Verify AD still works (the outer loop is now a dotimes equivalent, which 107 handles).
-Phase 1 (endeavor 111a): Sync load-tile / store-tile / load-tile-coords / store-tile-coords, plus AD rules for them. Plus the convergence checker for "no async/cooperative ops inside divergent branches."
+Phase 1 (endeavor 111a): Sync load-tile / store-tile / load-tile-at / store-tile-at, plus AD rules for them. Plus the convergence checker for "no async/cooperative ops inside divergent branches."
 Phase 2 (endeavor 111b): Async variants + request-token type + per-target lowering.
 The Phase 0 work doesn't need a new endeavor directory — it's a "fix 109" patch. The decision to do it now or merge it into 111 is stylistic; I'd lean toward keeping it in 111 (rename to "111-tile-stride-revisit-and-load-store-tile" or similar) so the chronological record reflects that the model changed when load-tile/store-tile were attempted, not preemptively.
 
@@ -393,7 +393,7 @@ Rename `tests/spec/111-load-and-store-tile/` to something like
 
 - 111a: tile-stride / hardware-stride restructure + workgroup-stride + warp
   builtins (Phase 0).
-- 111b: sync load-tile / store-tile / load-tile-coords / store-tile-coords
+- 111b: sync load-tile / store-tile / load-tile-at / store-tile-at
   (Phase 1).
 - 111c: async variants (Phase 2).
 

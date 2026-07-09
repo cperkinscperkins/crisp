@@ -2,7 +2,7 @@
 ;; Each workgroup (one warp) owns one 64x64 output tile of C (= 4x8 = 32 accumulator
 ;; fragments), selected by its workgroup-id.  Per K-step (K-tile = the MMA shape's
 ;; K = 8) it stages the tile's 64x8 A row-block and 8x64 B col-block into SLM (sync
-;; load-tile-coords), reused across all 32 fragment MMAs, then accumulates via 32
+;; load-tile-at), reused across all 32 fragment MMAs, then accumulates via 32
 ;; m16n8k8 mma.sync.  Launch grid = (M/64) * (N/64) workgroups of 32 threads.
 ;;
 ;; Bigger register tiles (64x64 vs 16x8) raise arithmetic intensity ~6x: 1024 global
@@ -25,8 +25,8 @@
           (C-tile (make-register-tile float (64 64) 0.0))
           (K (to-int (inner-dimension A B))))
       (dotimes (kt (/ K 8))
-        (load-tile-coords A A-tile ((* gy 64) (* kt 8)))   ; A[gy*64:+64, kt*8:+8]
-        (load-tile-coords B B-tile ((* kt 8) (* gx 64)))   ; B[kt*8:+8, gx*64:+64]
+        (load-tile-at A A-tile ((* gy 64) (* kt 8)))   ; A[gy*64:+64, kt*8:+8]
+        (load-tile-at B B-tile ((* kt 8) (* gx 64)))   ; B[kt*8:+8, gx*64:+64]
         (sync-workgroup)
         (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
         (sync-workgroup))

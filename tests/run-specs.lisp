@@ -969,7 +969,7 @@
 
    The compiler emits implicit-params for local-mem scratch tiles -- in
    the forward they come from a (let ((tile (make-scratch-vector ...))))
-   that participates in load-tile-coords / store-tile-coords; in the
+   that participates in load-tile-at / store-tile-at; in the
    backward the AD pass adds a paired tile_ADJ shadow for each.  Each
    implicit param's :range pair gives its inclusive arg-slot span and
    :size-expr is the element count of the underlying tensor.  Element

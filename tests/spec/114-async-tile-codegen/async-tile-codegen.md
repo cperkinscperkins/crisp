@@ -8,7 +8,7 @@ Endeavor 114 — Async tile codegen on metal (SPV `OpGroupAsyncCopy` + PTX `cp.a
 >   `@llvm.nvvm.cp.async.ca.shared.global.{4|8}` + `commit.group` +
 >   `wait.group(0)`, lowering to the right cp.async PTX assembly under
 >   `llc -mcpu=sm_80`.  Verified at IR + PTX-assembly inspection level
->   for `tests/spec/113-async-load-tile-store-tile/01-request-load-tile-coords-1d.crisp`.
+>   for `tests/spec/113-async-load-tile-store-tile/01-request-load-tile-at-1d.crisp`.
 >   PTX default compute capability bumped sm_50 → sm_80 in
 >   `src/compiler.lisp`.
 > - **Phase A SPV — BLOCKED.** IGC's BiFModule doesn't resolve either
@@ -205,7 +205,7 @@ specs to nail down by reading the source-of-truth:
 Phasing
 -------
 
-### Phase A — SPV codegen for request-load-tile-coords  *(BLOCKED, pragmatic-fallback)*
+### Phase A — SPV codegen for request-load-tile-at  *(BLOCKED, pragmatic-fallback)*
 
 **Status (2026-05-25): attempted, reverted to fallback.**  Both candidate
 SPV emission paths translate cleanly to SPIR-V but fail at
@@ -270,7 +270,7 @@ L0 + IGC consumers who aren't going through Clang's OpenCL frontend.
       `async-tile-copy` form (or extend the existing tile-coords
       node with an `:async-p` flag).
 - [ ] Replace the fallback path in
-      `%expand-request-load-tile-coords-form` (currently delegates to
+      `%expand-request-load-tile-at-form` (currently delegates to
       sync) with a new expansion that emits the async-tile-copy node
       on `*target-backend* = :spirv`.
 - [ ] Hidden pending-event slot per kernel — an `alloca event_t` at
@@ -301,7 +301,7 @@ cp.async.commit_group;
 cp.async.wait_group  0;
 ```
 
-Confirmed on `tests/spec/113-async-load-tile-store-tile/01-request-load-tile-coords-1d.crisp`.
+Confirmed on `tests/spec/113-async-load-tile-store-tile/01-request-load-tile-at-1d.crisp`.
 PTX default compute capability bumped sm_50 → sm_80 in
 `src/compiler.lisp` (cp.async requires Ampere).  Kernels not using
 request-* still compile cleanly under sm_80.
@@ -319,7 +319,7 @@ green at 720/720 default + --differentiate (no regressions).
 
 For tiles larger than workgroup_size, threads iterate workgroup-strided
 issuing one cp.async per element.  Same structural pattern as the sync
-load-tile-coords cooperative loop, swapping `set!` for cp.async.
+load-tile-at cooperative loop, swapping `set!` for cp.async.
 Worth deferring until there's a kernel that actually needs it (most
 real-world tile shapes equal workgroup_size).
 
@@ -332,7 +332,7 @@ real-world tile shapes equal workgroup_size).
       - `%gen-ptx-cp-async-commit-group`
       - `%gen-ptx-cp-async-wait-group`
 - [ ] Replace the fallback path on `*target-backend* = :ptx` with the
-      cooperative loop pattern of sync load-tile-coords, but with the
+      cooperative loop pattern of sync load-tile-at, but with the
       per-thread inner-body emitting cp.async instead of a regular
       store.
 - [ ] Validation: compile 113/01 with `--ir-target=ptx`, inspect IR

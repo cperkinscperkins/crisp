@@ -3388,7 +3388,7 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         (let* ((barrier-storage (llvm-build-extract-value builder barrier-val 0 "barrier_storage"))
                (barrier-ptr     (llvm-build-extract-value builder barrier-storage 0 "barrier_ptr")))
           (%gen-nvvm-cp-async-mbarrier-arrive-noinc-shared builder module barrier-ptr))
-        (error "load-tile-coords missing barrier-node!"))
+        (error "load-tile-at missing barrier-node!"))
     (values (llvm-const-int i64-type 0 nil) nil)))
 
 (defmethod generate-node-ir ((node semantic-nvvm-cp-async-wait) builder module var-env
