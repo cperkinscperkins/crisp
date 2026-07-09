@@ -1,0 +1,31 @@
+;; Deliberate confirmation of GRID vs ABSOLUTE coordinates on the STORE side — 2-D.
+;;
+;; store-tile scales EACH grid coord by that dimension's tile extent; store-tile-at is absolute.
+;; One 2x2 tile = [[100,101],[102,103]] is stored at coordinate (1 1) two ways, into two 4x4
+;; iota-initialised outputs (flat index i*4+j holds value i*4+j):
+;;   store-tile    tile OUTG (1 1) -> GRID block at (row 1*2, col 1*2) = (2,2)
+;;        -> OUTG[2][2..3]=[100,101], OUTG[3][2..3]=[102,103]  (flat indices 10,11,14,15)
+;;   store-tile-at tile OUTA (1 1) -> ABSOLUTE block at (row 1, col 1) = (1,1)
+;;        -> OUTA[1][1..2]=[100,101], OUTA[2][1..2]=[102,103]  (flat indices 5,6,9,10)
+;; Same tile, same coordinate — grid lands on block (2,2), absolute on block (1,1).
+;;
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER outg: 0 1 2 3 4 5 6 7 8 9 100 101 12 13 102 103
+;; HOIST-EXPECT: BUFFER outa: 0 1 2 3 4 100 101 7 8 102 103 11 12 13 14 15
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel store_grid_vs_abs_2d (&out OUTG OUTA)
+  (declare #'(&out mat-t mat-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-matrix ulong (2 2))))
+    (when (= (get-local-id 0) (to-ulong 0))
+      (set! (~ tile 0 0) (to-ulong 100))
+      (set! (~ tile 0 1) (to-ulong 101))
+      (set! (~ tile 1 0) (to-ulong 102))
+      (set! (~ tile 1 1) (to-ulong 103)))
+    (sync-workgroup)
+    (store-tile    tile OUTG (1 1))   ; GRID (1,1)     -> block at (2,2)
+    (store-tile-at tile OUTA (1 1))))  ; ABSOLUTE (1,1) -> block at (1,1)

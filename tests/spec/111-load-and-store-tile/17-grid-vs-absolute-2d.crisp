@@ -1,0 +1,28 @@
+;; Deliberate confirmation of GRID vs ABSOLUTE tile coordinates — 2-D.
+;;
+;; load-tile scales EACH grid coord by that dimension's tile extent; load-tile-at is absolute.
+;; V is a 4x4 iota matrix (V[i][j] = i*4 + j), tile is 2x2, coordinate (1 1):
+;;   load-tile    V t (1 1) -> block at (row 1*2, col 1*2) = (2,2): t[0][0..1] = V[2][2..3] = [10,11]
+;;   load-tile-at V t (1 1) -> block at (row 1,   col 1)   = (1,1): t[0][0..1] = V[1][1..2] = [5,6]
+;; So BOTH dimensions are scaled by the tile extent (2) for the grid form; a coord of (1 1)
+;; lands on element (2,2)=10 for grid vs (1,1)=5 for absolute — they are demonstrably distinct.
+;;
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 10 11 5 6
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel grid_vs_abs_2d (V &out OUT)
+  (declare #'(mat-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tileG (make-scratch-matrix ulong (2 2)))
+        (tileA (make-scratch-matrix ulong (2 2))))
+    (load-tile    V tileG (1 1))    ; GRID (1,1)     -> V[2][2..3] = [10,11]
+    (load-tile-at V tileA (1 1))    ; ABSOLUTE (1,1) -> V[1][1..2] = [5,6]
+    (set! (~ OUT (to-ulong 0)) (~ tileG 0 0))
+    (set! (~ OUT (to-ulong 1)) (~ tileG 0 1))
+    (set! (~ OUT (to-ulong 2)) (~ tileA 0 0))
+    (set! (~ OUT (to-ulong 3)) (~ tileA 0 1))))
