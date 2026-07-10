@@ -2,9 +2,10 @@
 ;; TEST-WITH[--ir-target=spv]
 
 ;; Basic 2D tile-stride: tile shape (2 2) against a 4x4 default-extent
-;; matrix → 4 tiles, no ragged edges.  Body runs once per workgroup
-;; per tile-origin; leader thread sentinel-writes the y-origin into
-;; M[row-grid-x][col-grid-x] to prove the body reached each origin.
+;; matrix → 4 tiles (tile-IDs {0,1}×{0,1}), no ragged edges.  Body runs
+;; once per workgroup per tile; leader thread sentinel-writes the row
+;; tile-ID into M[row-grid-y][col-grid-x] to prove the body reached each
+;; tile (endeavor 135: bindings are GRID terms, not element origins).
 
 (def-type mat-t (matrix ulong :address-space :global :align :compact))
 

@@ -1,0 +1,16 @@
+;; Endeavor 135 — negative: matrix-multiply-tile-stride requires EXACTLY three grid
+;; bindings (grid-y grid-x grid-k).  Here only two are supplied, which must be a clear
+;; compile error rather than a confusing downstream failure.
+;;
+;; CHECK-FAIL: "three grid bindings"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel bad_bindings (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((C-tile (make-scratch-matrix float (4 4)))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x)   ; <-- only 2 bindings
+      (set! (~ C-tile 0 0) 0.0))))

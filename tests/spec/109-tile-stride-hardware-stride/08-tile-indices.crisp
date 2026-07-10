@@ -1,13 +1,13 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
 
-;; tile-indices helper under outer-loop semantics: returns which cell of
-;; the tile-grid this iteration is processing.  For a 4x4 matrix with
-;; tile (2 2), the tile-stride bindings (row-grid-y col-grid-x) take values
-;; from the problem-space origin set { (0,0), (0,2), (2,0), (2,2) }.
-;; tile-indices then yields { (0,0), (0,1), (1,0), (1,1) }.
+;; tile-stride bindings ARE the tile-indices (endeavor 135: GRID terms).
+;; For a 4x4 matrix with tile (2 2), the bindings (row-grid-y col-grid-x)
+;; take the tile-ID set { (0,0), (0,1), (1,0), (1,1) } directly.  The body
+;; reconstructs the element origin by scaling each tile-ID by the tile
+;; extent (2) → element set { (0,0), (0,2), (2,0), (2,2) }, all in-bounds.
 ;;
-;; Leader thread writes the column tile-index into M[row-grid-y][col-grid-x].
+;; Leader thread writes the column tile-ID into M[row-grid-y*2][col-grid-x*2].
 
 (def-type mat-t (matrix ulong :address-space :global :align :compact))
 

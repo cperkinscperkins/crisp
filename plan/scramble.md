@@ -738,6 +738,7 @@ MMA
 [x] Chapter 0: synchronous tiled MMA.
 [x] testing and benchmarking
 [ ] matrix-multiply-tile-stride macro
+[ ] fill-tile
 [ ] CUTensorMap as implicit arg for kernels. 
 [ ] Chapter 1 - async tile
 [ ] Chapter 2 - pipelined async tile
@@ -746,6 +747,7 @@ MMA
 [ ] auto-differentiation?
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
+[ ] don't forget bug 033 ( --debug )
 
 
 

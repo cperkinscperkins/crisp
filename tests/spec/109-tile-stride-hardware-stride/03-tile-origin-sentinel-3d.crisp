@@ -2,9 +2,10 @@
 ;; TEST-WITH[--ir-target=spv]
 
 ;; Basic 3D tile-stride: tile shape (2 2 2) against a 4x4x4 default-extent
-;; tensor → 8 tiles.  Body runs once per workgroup per tile-origin;
-;; leader-thread sentinel write at each origin proves the outer loop
-;; visits the expected origin coordinates in all three dimensions.
+;; tensor → 8 tiles (tile-IDs {0,1}³).  Body runs once per workgroup per
+;; tile; leader-thread sentinel write at each tile proves the outer loop
+;; visits the expected tile-ID coordinates in all three dimensions
+;; (endeavor 135: bindings are GRID terms, not element origins).
 
 (def-type ten3-t (tensor ulong 3 :address-space :global :align :compact))
 

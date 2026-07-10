@@ -566,10 +566,23 @@ distributed fragments actually fit the physical register file.
 
 ### matrix-multiply-tile-stride
 ```
-(matrix-multiply-tile-stride <matrix> <matrix-tile> <inner-dim-scalar> (<grid-bindings>) ...)
+(matrix-multiply-tile-stride <C-matrix> <C-matrix-tile> <K-inner-dim-scalar> <k-step> (<grid-bindings>) ...)
+
 ```
 
-<grid-bindings> are `(grid-y grid-x grid-k)`
+If you have matrices `A`, `B` and `C` such that you are planning multiply them `(A x B = C)` then
+the `matrix-multiply-tile-stride` macro will help stride and walk the space correctly by a tile.
+The macro doesn't take `A` or `B` as arguments, it's not performing the multiplication itself,
+ it simply needs to know the `C` matrix, the tile matrix view into `C`, the inner dimension of the multiplication (aka `K`), and which tile dimension strides `K`.  Then it'll loop, and in each loop `<grid-bindings>` will
+ be set for you.  Use tihs macro in conjunction with `mma-accumultae-via-tile` to make matrix multiplication
+ easy.
+
+
+
+`<k-step>` is the K-extent of the staging tiles. It is the dimension A-tile and B-tile share.   `K / <k-step>` give the loop trip count.
+ 
+
+`<grid-bindings>` are `(grid-y grid-x grid-k)`
 
 Inside the body of the macro, `grid-k` will be the fastest changing term as it loops over K. 
 This macro is very handy for producing matrix multiply kernels.  If used in conjunction with `mma-accumulate-via-tile` 
@@ -605,8 +618,9 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
           (B-tile (make-scratch-matrix B (128 128)))
           (C-tile (make-register-tile T (128 128) (identity T)))
           (K (inner-dimension A B))
+          (k-step   128)
           (barrier (make-async-barrier))) ;;topology aware async
-    (matrix-multiply-tile-stride C C-tile K (grid-y grid-x grid-k)
+    (matrix-multiply-tile-stride C C-tile K k-step (grid-y grid-x grid-k)
 
       (load-tile A A-tile (grid-y grid-k) :barrier barrier) 
       (load-tile B B-tile (grid-k grid-x) :barrier barrier )

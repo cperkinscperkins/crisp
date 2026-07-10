@@ -1,0 +1,23 @@
+;; Endeavor 135 — NUMERIC enforcement of hardware-stride :workgroup-idx GRID bindings, multi-tile.
+;;
+;; The :workgroup-idx twin of 15.  Here the chunk size is get-local-work-size (= 2), so the
+;; default 4-element V is 2 chunks.  ONE workgroup (global=local=2) strides over both chunks.
+;; With correct grid bindings, gx = chunk-ID {0,1} and load-tile/store-tile scale by the tile
+;; extent (2): chunk 0 = V[0,1], chunk 1 = V[2,3] copied through => OUT = [0,1,2,3].
+;; Under the old element-origin bug, gx={0,2} would double-scale (gx=2 -> V[4,5], OOB).
+;;
+;; SKIP-WITH[--differentiate]: "grid-semantics enforcement (forward copy); ulong not differentiable"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 0 1 2 3
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel hw_wg_idx_copy (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 2)
+           (local-size  :set-to 2))
+  (let ((tile (make-scratch-vector ulong 2)))
+    (hardware-stride V :workgroup-idx (gx)   ; gx = chunk-ID {0,1}, one WG strides both
+      (load-tile V tile (gx))
+      (store-tile tile OUT (gx)))))
