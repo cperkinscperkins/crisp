@@ -1,0 +1,50 @@
+;; Endeavor 135 — matrix multiply over :STRIDED operands (via make-matrix reinterpret).
+;;
+;; :compact is the usual go-to; this exercises the macro/matmul when A, B AND C are :strided
+;; matrices instead.  We get them cheaply by REINTERPRETING the compact kernel params into
+;; :strided views (make-matrix with an explicit :strides key forces :align :strided) — so the
+;; host/hoist side is unchanged (--mma-test still fills the compact params + host-references
+;; C=A·B).  The strides given are exactly the compact row-major strides, so the views are
+;; numerically identical to the originals — but they are TYPED :strided, so element access,
+;; the load-tile staging, and the macro's auto-store all take the STRIDED flat-index path
+;; (honouring strides) instead of the compact direct-index path.  Correct result => the
+;; strided access machinery composes with tiled matmul on metal.
+;;
+;; make-matrix width/height must be literals (extents = (height width)), so dims are fixed
+;; (M=8, N=16, K=16 to match the directive below).  A=8x16, B=16x16, C=8x16, row-major.
+;; BMG XMX shape (8 16 8), single 8x16 output tile.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA"
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 8 16 16
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul_strided (A0 B0 &out C0)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one sub-group
+  ;; Reinterpret the compact params as :strided views (same row-major layout, strided type).
+  (let ((A (make-matrix A0 float 16 8  :strides '(16 1)))   ; M×K = 8×16
+        (B (make-matrix B0 float 16 16 :strides '(16 1)))   ; K×N = 16×16
+        (C (make-matrix C0 float 16 8  :strides '(16 1)))   ; M×N = 8×16
+        (A-tile (make-scratch-matrix float (8 8)))
+        (B-tile (make-scratch-matrix float (8 16)))
+        (C-tile (make-register-tile float (8 16) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))     ; staged from a STRIDED source
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup))))

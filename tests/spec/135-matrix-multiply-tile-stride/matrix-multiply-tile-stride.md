@@ -203,12 +203,34 @@ A register-tile C-tile is a record-of-fragments (SROA-exploded to C-tile$Fi by
 - Scratch (real-tensor) C-tile goes the ordinary expression-analyzer path (tile-tensor spec).
 Auto-store tile-IDs are coerced to int (the register store scales by an INT fragment count).
 
+fill-tile (accumulator-reset sugar) — SHIPPED 2026-07-10
+-------------------------------------------------------
+`(fill-tile <tile> <value>)` sets every element of a tile to VALUE.  Two paths, dispatched
+like store-tile:
+- Register tile (record-of-fragments): reset each fragment to a fragment-of-VALUE, handled
+  in the SROA explosion (%explode-rewrite-body-form gains a FILL-TILE clause + %emit-per-frag-fill).
+  Register fragments are f32 → VALUE must be float.
+- Scratch/SLM tile: workgroup-collective fill (analyze-fill-tile-expression → workgroup-stride
+  set!).  NO barrier inserted — caller syncs before reading.
+Specs: 07 (scratch fill, BUFFER 7 7 7 7) + 08 (register grid-stride matmul, 2 tiles, reset via
+fill-tile — MMA_CORRECT on BMG; without the reset tile 2 would accumulate onto tile 1).  02
+rewritten to use it in the reset position.  All BMG-verified.
+
+:strided operand coverage — 09 (2026-07-10)
+-------------------------------------------
+09-strided-matmul-bmg: matmul where A, B AND C are :strided matrices, obtained by
+REINTERPRETING the compact kernel params via make-matrix with an explicit :strides key
+(forces :align :strided) — so the hoist side is unchanged (--mma-test still fills the compact
+params).  Strides = the compact row-major strides, so numerically identical but TYPED :strided,
+which routes element access / load-tile staging / the auto-store through the STRIDED flat-index
+path instead of the compact direct path.  MMA_CORRECT on BMG.  (make-matrix width/height must
+be literals, so dims are fixed to MMA-DIMS 8 16 16.)  Really a load-tile/store-tile × :strided
+integration check under the macro — the align/ct combinatorics proper live in 097/109/111.
+
 Deferred (next)
 ---------------
-- `clear-tile` (fill-tile) primitive — the accumulator reset the grid-stride case needs.
-  Today the BODY resets on grid-k==0 (02 does this).  Single-tile (03/04) needs no reset.
 - P2 dogfood: rewrite benchmarks/matmul + performance/matmul-bmg onto the macro.
-- P3 docs: reconcile topology.md; register-fragment doc-debt.
+- P3 docs: reconcile topology.md; register-fragment doc-debt; [x]add fill-tile to topology.md.
 - AD across the macro (all P1 specs are forward-only).
 
 Overlay (for merge)

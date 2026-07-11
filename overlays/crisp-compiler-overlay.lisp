@@ -270,14 +270,16 @@
 ;; src/analysis/control.lisp and add these two setf's to register-control-analyzers;
 ;; then this wrapper of initialize-expression-analyzers can be dropped.
 (defun register-matmul-tile-stride-analyzer ()
-  "Registers the matrix-multiply-tile-stride expression analyzer (both packages)."
-  (let ((sym-cl (intern "MATRIX-MULTIPLY-TILE-STRIDE" (find-package :crisp-language)))
-        (sym-cc (intern "MATRIX-MULTIPLY-TILE-STRIDE" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*)
-          #'analyze-matrix-multiply-tile-stride-expression)
-    (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*)
-            #'analyze-matrix-multiply-tile-stride-expression))))
+  "Registers the matrix-multiply-tile-stride + fill-tile analyzers (both packages)."
+  (dolist (entry (list (cons "MATRIX-MULTIPLY-TILE-STRIDE"
+                             #'analyze-matrix-multiply-tile-stride-expression)
+                       (cons "FILL-TILE" #'analyze-fill-tile-expression)))
+    (let ((sym-cl (intern (car entry) (find-package :crisp-language)))
+          (sym-cc (intern (car entry) (find-package :crisp.compiler)))
+          (fn     (cdr entry)))
+      (setf (gethash sym-cl *expression-analyzers*) fn)
+      (unless (eq sym-cl sym-cc)
+        (setf (gethash sym-cc *expression-analyzers*) fn)))))
 
 (defvar *orig-initialize-expression-analyzers* nil)
 (unless *orig-initialize-expression-analyzers*
@@ -285,7 +287,90 @@
         (symbol-function 'initialize-expression-analyzers)))
 (defun initialize-expression-analyzers ()
   "Overlay wrapper: run the original analyzer registration, then add
-   matrix-multiply-tile-stride (endeavor 135)."
+   matrix-multiply-tile-stride + fill-tile (endeavor 135)."
   (funcall *orig-initialize-expression-analyzers*)
   (register-matmul-tile-stride-analyzer))
+
+
+;; ======================================================================
+;; Endeavor 135 — fill-tile  (aka clear-tile: fill T's every element with V)
+;;
+;; src/analysis/control.lisp (scratch analyzer) + src/mma.lisp (register-tile case in
+;; %explode-rewrite-body-form + register in register-control-analyzers / the mma wrapper)
+;;
+;;   (fill-tile <tile> <value>)   ; value must match the tile's element type
+;;
+;; Two paths, dispatched like store-tile:
+;;   - Register tile (record-of-fragments, SROA-exploded): reset each fragment to a
+;;     fragment-of-VALUE.  Handled in the explosion (%explode-rewrite-body-form), before
+;;     the whole-tile variable is gone.  Register fragments are f32 → VALUE must be float.
+;;   - Scratch/SLM tile (real tensor): a workgroup-collective write of every element.
+;;     NO barrier is inserted — the caller syncs before reading.
+(defun %emit-per-frag-fill (entry val)
+  "Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment
+   of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init)."
+  (destructuring-bind (m n syms) (cdr entry)
+    (declare (ignore m n))
+    `(progn
+       ,@(loop for s in syms
+               collect `(set! ,s (make-register-fragment 16 8 ,val))))))
+
+;; MERGE NOTE: add the FILL-TILE cond-clause to %explode-rewrite-body-form in src/mma.lisp.
+(defun %explode-rewrite-body-form (form tiles)
+  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile references to
+   any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
+   otherwise recurse structurally."
+  (cond
+    ((not (consp form)) form)
+    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
+          (assoc (third form) tiles))
+     (let ((shape (nth 1 form)) (v (nth 2 form)) (a (nth 3 form)) (b (nth 4 form)))
+       (%check-mma-shape shape nil)
+       (if (>= (length form) 6)
+           (let* ((binding-form (nth 5 form))
+                  (binding-sym (if (and (consp binding-form) (= (length binding-form) 1)
+                                        (symbolp (first binding-form)))
+                                   (first binding-form)
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
+                                          :source-location nil)))
+                  (body (nthcdr 6 form)))
+             (%emit-per-frag-accumulate a b (assoc v tiles) binding-sym body))
+           (%emit-per-frag-accumulate a b (assoc v tiles)))))
+    ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v dest tile-id) (cdr form)
+       (%emit-per-frag-store dest tile-id (assoc v tiles))))
+    ((and (%head-name-eq (first form) "FILL-TILE") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
+    (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
+
+;; MERGE NOTE: -> src/analysis/control.lisp, register in register-control-analyzers.
+(defun analyze-fill-tile-expression (expr env context location)
+  "(fill-tile T V) for a scratch/SLM tile — workgroup-collective fill of every element of
+   the tensor T to V.  No barrier is inserted; the caller syncs before reading.  Register
+   tiles are handled earlier in the SROA explosion and never reach here."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+      :message "fill-tile: expected (fill-tile <tile> <value>)"
+      :source-location location))
+  (let* ((tensor (second expr))
+         (val    (third expr))
+         (tnode  (analyze-expression tensor env context (append location '(1))))
+         (ttype  (semantic-node-type tnode)))
+    (unless (%tensor-type-p ttype)
+      (error 'crisp-compiler-error
+        :message "fill-tile: first argument must be a tile (vector / matrix / tensor)."
+        :source-location location))
+    (let* ((arity    (%get-tensor-arity ttype))
+           (cl-pkg   (find-package :crisp-language))
+           (ws-sym   (intern "WORKGROUP-STRIDE" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (set-sym  (intern "SET!" cl-pkg))
+           (bindings (loop repeat arity collect (gensym "FI"))))
+      (analyze-expression
+       (list ws-sym tensor bindings
+             (list set-sym (list* aref-sym tensor bindings) val))
+       env context location))))
 

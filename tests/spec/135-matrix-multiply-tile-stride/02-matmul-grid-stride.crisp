@@ -13,7 +13,8 @@
 ;; grid==#tiles case.  K=8, k-step=4 => 2 grid-k reduction steps per tile.
 ;;
 ;; ASSUMPTION (endeavor 135 design): grid-y/grid-x/grid-k are ulong tile indices, and the
-;; macro does NOT auto-reset a scratch accumulator — the body zeros C-tile on grid-k==0.
+;; macro does NOT auto-reset a scratch accumulator — the body clears C-tile on grid-k==0
+;; via (fill-tile C-tile 0.0) (the accumulator-reset sugar).
 ;;
 ;; SKIP-WITH[--differentiate]: "tile-macro AD is a later chapter; endeavor 135 is forward-only"
 ;;
@@ -34,9 +35,7 @@
         (K      (inner-dimension A B)))
     (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
       (when (= grid-k (to-ulong 0))
-        (dotimes (i 4)
-          (dotimes (j 4)
-            (set! (~ C-tile i j) 0.0))))
+        (fill-tile C-tile 0.0))                ; reset accumulator at the start of each tile
       (load-tile A A-tile (grid-y grid-k))     ; A block at tile (grid-y, grid-k)
       (load-tile B B-tile (grid-k grid-x))     ; B block at tile (grid-k, grid-x)
       (dotimes (i 4)

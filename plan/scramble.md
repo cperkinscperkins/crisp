@@ -737,8 +737,10 @@ MMA
 [x] ibid, for spir-v
 [x] Chapter 0: synchronous tiled MMA.
 [x] testing and benchmarking
-[ ] matrix-multiply-tile-stride macro
-[ ] fill-tile
+[x] matrix-multiply-tile-stride macro
+[x] fill-tile / clear-tile  
+- [ ] multiple multiplications, one macro
+- [ ] align and :contiguous-term
 [ ] CUTensorMap as implicit arg for kernels. 
 [ ] Chapter 1 - async tile
 [ ] Chapter 2 - pipelined async tile
