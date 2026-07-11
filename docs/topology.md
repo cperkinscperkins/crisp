@@ -344,7 +344,7 @@ Allocates a topologically aware data-movement barrier. Depending on the memory s
 
 Initiates a bulk memory transfer from the `src` tensor to the `dest` tensor (typically moving from Global Memory to SLM or registers).
 
-* **Tile IDs (`grid-y`, `grid-x`):** The target location is specified using logical Tile Identifiers, which map to the strided chunks defined by the tensor's block distribution.
+* **Tile IDs (`grid-y`, `grid-x`):** The target location is specified using logical Tile Identifiers, which map to the strided chunks defined by the tensor's block distribution.  On a single GPU (no topology) this means simply: **the tile-ID is scaled by the `dest` tile's extent** to give the element origin in `src` — coord `(1 1)` with a `64×64` `dest` reads `src[64:128, 64:128]`.  These are exactly the `grid-y`/`grid-x` bindings that `tile-stride` and `matrix-multiply-tile-stride` hand you, so `(load-tile A A-tile (grid-y grid-k))` "just works".  When you need an exact element offset instead (unaligned / ragged), use `load-tile-at`.
 * **`:transpose`:** A boolean indicating if the hardware should transpose the data during the load (leveraging tensor core layout features).
 * **`:identity`:** A fallback value used for out-of-bounds padding if the tile intersects the edge of the source tensor.
 * **`:barrier`:** Links this memory transfer to a previously created `async-barrier`. The hardware DMA engine will automatically signal this barrier when the bytes physically arrive in the destination memory space.
@@ -588,6 +588,43 @@ Inside the body of the macro, `grid-k` will be the fastest changing term as it l
 This macro is very handy for producing matrix multiply kernels.  If used in conjunction with `mma-accumulate-via-tile` 
 then nearly all the boilerplate of a matrix multiply is handled.
 
+**Auto-store.** The macro OWNS the grid-y/grid-x spatial loops, so it also owns the write-back:
+after the `grid-k` reduction completes for a tile it automatically emits
+`(store-tile C-tile C (grid-y grid-x))`.  Your body does NOT store `C-tile` — just stage and
+accumulate.  (Need a custom epilogue — ReLU / bias before the store?  Drop to the lower-level
+`tile-stride`, which does not auto-store, and write the store yourself.)
+
+**Grid semantics.** `grid-y` / `grid-x` are TILE-IDs — 0-based tile coordinates over `C`'s output
+tiles (sized by `C-tile`) — which is exactly what `load-tile` / `store-tile` expect (they scale a
+tile-ID by the tile's extent).  `grid-k` is the K-step index, `0 .. K/<k-step> - 1`.  The macro is
+grid-strided: a workgroup owns **≥ 1** `C`-tile and strides across the grid, so it works whether
+you launch one workgroup per output tile (a 2-D grid = (#row-tiles, #col-tiles)) or fewer.
+
+**Accumulator reset.** When a workgroup owns more than one `C`-tile, the register `C-tile` is reused
+across tiles, so reset it at the start of each tile's reduction with `fill-tile`:
+`(when (= grid-k 0) (fill-tile C-tile (identity-value)))`.  A one-tile-per-workgroup launch does not
+need this — `make-register-tile`'s init covers the single tile.
+
+**Chapter 0 (synchronous) — what ships today.** The Chapter-0 body is fully synchronous: stage with
+plain `load-tile` (no `:barrier`), `sync-workgroup`, `mma-accumulate-via-tile`, `sync-workgroup`.
+```
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat) (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+      (sync-workgroup))))          ; <- the macro auto-stores C-tile -> C after the K-loop
+```
+The three "chapters" below vary only the BODY (async `:barrier` loads, rings, warp specialization)
+— that is the optimization arc, not all of it implemented yet; the synchronous form above is the
+shipped Chapter 0.
+
 
 ### inner-dimension
 `(inner-dimension A B) => ulong`
@@ -641,9 +678,9 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
             (relu my-accum) 
             (add-bias my-accum bias-tile)) ;; <-- fictional operation for illustrative purposes
         ;; (Another barrier usually goes here before the next 'k' iteration overwrites SLM)
-        (sync-workgroup))
-      ;; 4. Loop is done. Store the final computed 128x128 tile back to Global Memory C
-      (store-tile C-Tile C (grid-y grid-x) :barrier barrier))))
+        ;; 4. Loop done — the macro AUTO-STORES the finished C-tile -> C (grid-y grid-x).
+        ;;    No manual store here (grid-y/grid-x aren't in scope out past the macro anyway).
+        (sync-workgroup)))))
 ```
 
 
@@ -663,10 +700,16 @@ Also note the multiplicity constraints: the output tile's M and N (128x128 in th
 
 Two further compile-time constraints, both checked from information you already declare:
 
-- **Operand layout.** The A and B matrices' `:contiguous-term` (`:row-major` / `:col-major`)
-  selects which hardware MMA variant is emitted — the canonical NVIDIA form is A row-major,
-  B column-major (`mma…row.col`). A layout the chosen instruction cannot accept is a compile
-  error; use `:transpose` on the tile load to reconcile a source that is stored the other way.
+- **Operand layout (and the Intel / NVIDIA difference).** The A and B matrices' `:contiguous-term`
+  (`:row-major` / `:col-major`) selects which hardware MMA variant is emitted — the canonical
+  NVIDIA form is A row-major, B **column-major** (`mma…row.col`). A layout the chosen instruction
+  cannot accept is a compile error; use `:transpose` on the tile load to reconcile a source that
+  is stored the other way.  **Intel (SPV / DPAS) is different:** there is no ColumnMajor-B
+  cooperative-matrix builtin, so on the SPV path the **B operand must be declared `:row-major`**
+  (the hardware expects B in VNNI-packed row-major form).  This is a genuine per-vendor storage
+  requirement — the same source can't be `:col-major` B for NVIDIA and `:row-major` B for Intel —
+  so a portable kernel either declares B per target or transposes on load.  (It parallels the
+  shape difference: NVIDIA tf32 `(16 8 8)` vs Intel XMX `(8 16 8)`.)
 - **Precision.** The `(M N K)` triple encodes operand *precision* — the same M×N comes in
   several K variants for different dtypes (e.g. k16 for fp16, k8 for tf32). The shape you pass
   must match your operands' element type, or it is a compile error.
@@ -689,6 +732,31 @@ Below is an example of the triple loop that `mma-accumulate-via-tile` might expa
           ;; Lowers directly to NVVM intrinsic: @llvm.nvvm.mma.m16n8k16.row.col
           (setf accum (mma-accumulate accum frag-a frag-b)))))))
 ```
+
+### Fragment primitives (the low-level building blocks)
+
+`mma-accumulate-via-tile` composes these lower-level forms.  Most kernels never write them
+directly — reach for them only when you need a hand-rolled MMA loop the macro doesn't cover.
+A *fragment* is one hardware MMA operand's worth of data, distributed across a warp's lanes.
+
+```
+(make-register-fragment <M> <N> <init>)          => an M×N accumulator fragment, filled with <init>
+(load-fragment-a <src> (<ty> <tk>))              => the A operand fragment at tile (ty, tk)
+(load-fragment-b <src> (<tk> <tx>))              => the B operand fragment at tile (tk, tx)
+(mma-accumulate <c-frag> <a-frag> <b-frag>)      => a new accumulator = a-frag · b-frag + c-frag
+(store-fragment <frag> <dest> (<ty> <tx>))       => write accumulator <frag> to <dest> at tile (ty, tx)
+```
+
+- The tile coordinates are in **fragment units** (a fragment is the MMA shape's M×N / M×K / K×N block),
+  not element units.
+- `<src>` / `<dest>` may be global memory or an SLM scratch tile — the per-lane layout is the same.
+- These are **warp-collective**: each lane holds its slice of the fragment; the forms lower to the
+  per-lane reads/writes (and, on NVIDIA, a single `mma.sync` for `mma-accumulate`).  On the SPV
+  path they lower to `CooperativeMatrixLoadKHR` / `…StoreKHR` / the coop-matrix multiply — the
+  operand `:contiguous-term` drives the KHR MemoryLayout (so B's row-major requirement above
+  applies here too).
+- `make-register-tile` is a *tile* of these fragments (an (M/frag-M)×(N/frag-N) grid), and
+  `mma-accumulate-via-tile` walks that grid for you.
 
 ### Matrix Multiply with pipelining
 

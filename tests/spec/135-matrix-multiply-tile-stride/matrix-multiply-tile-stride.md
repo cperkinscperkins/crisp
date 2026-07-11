@@ -246,9 +246,22 @@ P2 dogfood — 2026-07-10
 
 P2 dogfood COMPLETE — both benchmark kernels ride the macro, metal-validated on BMG + RTX.
 
+P3 docs — COMPLETE 2026-07-10 (all into docs/topology.md)
+--------------------------------------------------------
+- matrix-multiply-tile-stride section reconciled with what shipped: AUTO-STORE, grid-y/grid-x
+  are TILE-IDs, grid-stride (>=1 tile/workgroup), fill-tile accumulator reset, and a shipped
+  synchronous Chapter-0 example (the async "3 chapters" flagged as the future arc).
+- Fixed the Chapter/basic example's redundant trailing store-tile (contradicted the auto-store
+  + referenced out-of-scope bindings).
+- Intel col-major / VNNI note added to mma-accumulate-via-tile's operand-layout bullet (Intel
+  SPV/DPAS has no ColumnMajor-B coop builtin -> B must be :row-major; NVIDIA wants B :col-major).
+- New "Fragment primitives" subsection documenting make-register-fragment / load-fragment-a/b /
+  mma-accumulate / store-fragment (the low-level building blocks; fragment-unit coords, warp-collective).
+- load-tile tile-ID semantics clarified for the single-GPU case (tile-ID scaled by dest tile extent).
+- [x] fill-tile section (Chris).
+
 Deferred (next)
 ---------------
-- P3 docs: reconcile topology.md; register-fragment doc-debt; [x]add fill-tile to topology.md.
 - AD across the macro (all P1 specs are forward-only).
 
 Overlay (for merge)
