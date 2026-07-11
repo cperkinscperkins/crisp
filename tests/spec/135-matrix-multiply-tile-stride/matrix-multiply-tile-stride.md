@@ -246,6 +246,25 @@ P2 dogfood — 2026-07-10
 
 P2 dogfood COMPLETE — both benchmark kernels ride the macro, metal-validated on BMG + RTX.
 
+Intel/BMG competitive benchmark (endeavor-134 "workstream A" for matmul) — 2026-07-10
+------------------------------------------------------------------------------------
+Built the whole Intel matmul path (all locally verifiable on the dev BMG, unlike the CUDA one):
+- **benchmarks/matmul/crisp/matmul_bmg.crisp** — a SEPARATE BMG kernel (the vendor shape
+  divergence forces it, not a shape swap): `(8 16 8)` XMX, B `:row-major`, **32×32** register
+  tile.  A 64×64 tile spills the 16-lane sub-group's registers (~5×); 32×32 swept as the sweet
+  spot (1675 GFLOPS @1024 native).
+- **crisp/bench_harness_l0.cpp** — L0 launcher (2-D grid, ze-event timing, A=B=1→C==K gate,
+  GFLOPS).  Arg layout verified against the metacrisp (b-tile, a-tile, A, B, C = 45 args).
+  `#if __has_include(<level_zero/ze_api.h>)` handles native-Windows vs Docker-Linux header paths.
+- **sycl/matmul.cpp** — naive fp32 16×16-tiled SYCL reference (analog of cuda/matmul.cu).
+- **scripts/bench-intel-driver.py** — new `matmul` ALGORITHMS entry + `ALGO_METRICS`
+  (gflops/GFLOPS) + `compile_flags` plumbing (`--hardware-profile=bmg`); **bench-intel.sh**
+  gained per-algo default sizes.
+- **RESULT (Arc B580, Docker):** crisp 114 / 416 / **1493** GFLOPS vs sycl 1317 / 1466 / 1531 at
+  256 / 512 / 1024 — **≈parity at 1024 (0.97×)**, latency-bound far behind at small N.  Same
+  shape as RTX (1.04× @1024).  References are naive fp32, not oneMKL/cuBLAS.
+- benchmarks/matmul/README updated (both backends + both result tables).
+
 P3 docs — COMPLETE 2026-07-10 (all into docs/topology.md)
 --------------------------------------------------------
 - matrix-multiply-tile-stride section reconciled with what shipped: AUTO-STORE, grid-y/grid-x

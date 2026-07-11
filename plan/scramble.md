@@ -739,10 +739,12 @@ MMA
 [x] testing and benchmarking
 [x] matrix-multiply-tile-stride macro
 [x] fill-tile / clear-tile  
-- [ ] multiple multiplications, one macro
-- [ ] align and :contiguous-term
+- [x] multiple multiplications, one macro
+- [x] align and :contiguous-term
+[ ] #+ and #- support? Might be useful for benchmarks / testing, so as to have one file.
 [ ] CUTensorMap as implicit arg for kernels. 
-[ ] Chapter 1 - async tile
+[ ] Chapter 1 - async tile   cp.async and OpGroupAsyncCopy
+[ ] Chapter 1.5 - async tiles  with CuTensorMap and LSC 2D Block Loads in Intel Xe
 [ ] Chapter 2 - pipelined async tile
 [ ] chapter 3 - warp specialization pipelining
 [ ] precision?  

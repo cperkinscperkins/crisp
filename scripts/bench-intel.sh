@@ -43,7 +43,9 @@ export MSYS2_ARG_CONV_EXCL='*'
 
 # --- Parse arguments ---
 ALGO="${1:?Usage: $0 <algo> [sizes] [iters] [impl] [occupancy] [tune]}"
-SIZES="${2:-1K,100K,1M}"
+# Per-algorithm default sizes (reduction: element counts; matmul: square dims, multiples of 32).
+if [ "$ALGO" = "matmul" ]; then DEFAULT_SIZES="256,512,1024"; else DEFAULT_SIZES="1K,100K,1M"; fi
+SIZES="${2:-$DEFAULT_SIZES}"
 ITERS="${3:-100}"
 # Optional 4th arg: comma-separated impl list or 'all'.
 # Use 'sycl' to skip the (currently broken) Crisp L0 path.
