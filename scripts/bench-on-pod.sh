@@ -9,11 +9,18 @@
 # https://console.runpod.io/deploy
 #
 # Usage:
-#   ./scripts/bench-on-pod.sh <host> <port> [branch] [ssh-key] [sizes] [iters]
+#   ./scripts/bench-on-pod.sh <host> <port> [branch] [ssh-key] [sizes] [iters] [occupancy]
+#                             [--bench=reduction|matmul]
+#
+# The --bench flag (default: reduction) selects which benchmark to run; it may appear
+# anywhere in the argument list.  Each benchmark has its own default sizes
+# (reduction: 1K,100K,1M ; matmul: 256,512,1024 — matmul dims must be multiples of 64).
 #
 # Examples:
 #   ./scripts/bench-on-pod.sh 157.157.221.29 24405
 #   ./scripts/bench-on-pod.sh 157.157.221.29 24405 main ~/.ssh/id_ed25519 1K,100K,1M,10M 100
+#   ./scripts/bench-on-pod.sh 157.157.221.29 24405 mm-tile-stride ~/.ssh/id_ed25519 --bench=matmul
+#   ./scripts/bench-on-pod.sh 157.157.221.29 24405 mm-tile-stride ~/.ssh/id_ed25519 256,512,1024 100 --bench=matmul
 #
 # Prerequisites:
 #   - A RunPod pod with CUDA toolkit (nvcc)
@@ -24,14 +31,33 @@
 set -euo pipefail
 
 # --- Parse arguments ---
-HOST="${1:?Usage: $0 <host> <port> [branch] [ssh-key] [sizes] [iters] [crisp-tree-occupancy]}"
-PORT="${2:?Usage: $0 <host> <port> [branch] [ssh-key] [sizes] [iters] [crisp-tree-occupancy]}"
+## Pull the optional --bench=NAME flag out of the argument list (it may appear anywhere),
+## leaving the positional args intact.  ONE script, many benchmarks.
+BENCH="reduction"
+POSITIONAL=()
+for _arg in "$@"; do
+    case "$_arg" in
+        --bench=*) BENCH="${_arg#--bench=}" ;;
+        *)         POSITIONAL+=("$_arg") ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
+case "$BENCH" in
+    reduction|matmul) ;;
+    *) echo "ERROR: unknown --bench=$BENCH (expected 'reduction' or 'matmul')" >&2; exit 1 ;;
+esac
+
+HOST="${1:?Usage: $0 <host> <port> [branch] [ssh-key] [sizes] [iters] [occupancy] [--bench=reduction|matmul]}"
+PORT="${2:?Usage: $0 <host> <port> [branch] [ssh-key] [sizes] [iters] [occupancy] [--bench=reduction|matmul]}"
 BRANCH="${3:-main}"
 SSH_KEY="${4:-$HOME/.ssh/id_ed25519}"
-SIZES="${5:-1K,100K,1M}"
+## Per-benchmark default sizes (reduction: element counts; matmul: square dims, multiples of 64).
+if [ "$BENCH" = "matmul" ]; then DEFAULT_SIZES="256,512,1024"; else DEFAULT_SIZES="1K,100K,1M"; fi
+SIZES="${5:-$DEFAULT_SIZES}"
 ITERS="${6:-100}"
-## crisp-tree occupancy: when empty, run.py reads :occupancy from the .crisp file
-## (the single source of truth).  Provide a value to override for ad-hoc sweeps.
+## crisp-tree occupancy (reduction only): when empty, run.py reads :occupancy from the .crisp
+## file (the single source of truth).  Provide a value to override for ad-hoc sweeps.
 CRISP_TREE_OCCUPANCY="${7:-}"
 
 REPO_URL="https://github.com/cperkinscperkins/crisp.git"
@@ -42,6 +68,7 @@ SSH_CMD="ssh -o StrictHostKeyChecking=accept-new -p ${PORT} -i ${SSH_KEY} root@$
 echo "=== Crisp Benchmark Runner ==="
 echo "  Host:   ${HOST}:${PORT}"
 echo "  Branch: ${BRANCH}"
+echo "  Bench:  ${BENCH}"
 echo "  Sizes:  ${SIZES}"
 echo "  Iters:  ${ITERS}"
 echo ""
@@ -154,22 +181,29 @@ BUILD
 echo ""
 
 # --- 5. Run benchmarks ---
-echo "--- Step 5: Run benchmarks ---"
-pod_run "bash -s" <<BENCH
+echo "--- Step 5: Run benchmarks (${BENCH}) ---"
+pod_run "bash -s" <<RUNBENCH
 set -e
 cd /root/crisp
 CUDA_DIR=\$(ls -d /usr/local/cuda-*/bin 2>/dev/null | sort -V | tail -1)
 [ -n "\$CUDA_DIR" ] && export PATH="\${CUDA_DIR}:\$PATH"
 export CRISP_USE_SYSTEM_TOOLS=true
 
-## Build run.py invocation: only pass --crisp-tree-occupancy when overriding.
-## Empty value -> let run.py read it from the .crisp file (avoids stale defaults).
-PY_ARGS="--sizes=${SIZES} --iters=${ITERS}"
-if [ -n "${CRISP_TREE_OCCUPANCY}" ]; then
-    PY_ARGS="\${PY_ARGS} --crisp-tree-occupancy=${CRISP_TREE_OCCUPANCY}"
-fi
-python3 benchmarks/reduction/run.py \${PY_ARGS}
-BENCH
+case "${BENCH}" in
+  reduction)
+    ## Only pass --crisp-tree-occupancy when overriding; empty -> run.py reads it from
+    ## the .crisp file (avoids stale defaults).
+    PY_ARGS="--sizes=${SIZES} --iters=${ITERS}"
+    if [ -n "${CRISP_TREE_OCCUPANCY}" ]; then
+        PY_ARGS="\${PY_ARGS} --crisp-tree-occupancy=${CRISP_TREE_OCCUPANCY}"
+    fi
+    python3 benchmarks/reduction/run.py \${PY_ARGS}
+    ;;
+  matmul)
+    python3 benchmarks/matmul/run.py --sizes=${SIZES} --iters=${ITERS}
+    ;;
+esac
+RUNBENCH
 
 echo ""
 echo "=== Benchmark run complete ==="

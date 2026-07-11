@@ -237,12 +237,17 @@ P2 dogfood — 2026-07-10
   body is IR-equivalent to the hand-rolled (load-tile/store-tile tile-IDs map 1:1).  The macro
   derives grid-y/grid-x from workgroup-id 0/1 (ctaid.x/.y — confirmed in the generated PTX,
   32 mma.sync.m16n8k8), so bench_harness.cu changed from a 1-D linearized grid to a 2-D
-  grid = (M/64, N/64).  PTX compiles locally; **needs a RunPod run to confirm correctness +
-  same perf** (can't run CUDA locally).  grid == #tiles so no accumulator reset needed.
+  grid = (M/64, N/64).  grid == #tiles so no accumulator reset needed.  **VERIFIED on RTX 4000
+  Ada (RunPod) 2026-07-10:** all ok=True at 256/512/1024; the 2-D mapping is correct.  Perf at
+  parity — 1899 GFLOPS at 1024 vs naive CUDA 1823 (crisp/cuda 0.96; even faster in wall time,
+  1130 vs 1178 us).  The macro rewrite preserved the 64x64 GEMM's performance.
+- **scripts/bench-on-pod.sh**: added a `--bench=reduction|matmul` selector (default reduction,
+  per-bench default sizes) so ONE pod script drives both benchmarks.
+
+P2 dogfood COMPLETE — both benchmark kernels ride the macro, metal-validated on BMG + RTX.
 
 Deferred (next)
 ---------------
-- benchmarks/matmul: RunPod correctness + perf run (Chris) after the 2-D-launch harness change.
 - P3 docs: reconcile topology.md; register-fragment doc-debt; [x]add fill-tile to topology.md.
 - AD across the macro (all P1 specs are forward-only).
 
