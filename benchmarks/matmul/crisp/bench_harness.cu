@@ -89,12 +89,16 @@ int main(int argc, char** argv) {
         &dC,&C_bytes,&C_o0,&C_o1,&C_s0,&C_s1,&C_e0,&C_e1,&C_len,
     };
 
-    // grid = (M/64) x (N/64) workgroups, laid out linearly (kernel: wg -> gy,gx).
-    unsigned gridX = (unsigned)((M/64) * (N/64));
-    fprintf(stderr, "Grid: %u blocks x 32 threads, shared=%u B, MxNxK=%dx%dx%d\n",
-            gridX, sharedBytes, M, N, K);
+    // matrix-multiply-tile-stride (endeavor 135) derives grid-y from workgroup-id 0 (ctaid.x)
+    // and grid-x from workgroup-id 1 (ctaid.y), so launch a 2-D grid = (M/64, N/64):
+    //   gridDim.x = M/64 row-tiles  (grid-y),  gridDim.y = N/64 col-tiles (grid-x).
+    // (Was a 1-D linearized grid of (M/64)*(N/64) for the hand-rolled gy=wg/ntx kernel.)
+    unsigned gridX = (unsigned)(M/64);
+    unsigned gridY = (unsigned)(N/64);
+    fprintf(stderr, "Grid: %u x %u blocks x 32 threads, shared=%u B, MxNxK=%dx%dx%d\n",
+            gridX, gridY, sharedBytes, M, N, K);
 
-    auto launch = [&](){ CUDA_CHECK(cuLaunchKernel(kernel, gridX,1,1, 32,1,1, sharedBytes, 0, params, nullptr)); };
+    auto launch = [&](){ CUDA_CHECK(cuLaunchKernel(kernel, gridX,gridY,1, 32,1,1, sharedBytes, 0, params, nullptr)); };
 
     for (int i=0;i<warmup;i++) launch();
     CUDA_CHECK(cuCtxSynchronize());

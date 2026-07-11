@@ -1,0 +1,28 @@
+;; Endeavor 135 — NUMERIC enforcement of tile-stride's GRID (tile-ID) bindings, multi-tile.
+;;
+;; This is the test the old element-origin behavior could never pass.  V is the default
+;; 4-element vector; tile size 2 => 2 tiles.  We launch ONE workgroup (global=local=2 => a
+;; single group of 2 threads), so that one workgroup must STRIDE over BOTH tiles.
+;;
+;; With correct grid bindings, gx takes tile-IDs {0,1}; load-tile/store-tile scale by the
+;; tile extent (2), so tile 0 = V[0,1] and tile 1 = V[2,3] are copied straight through:
+;;   OUT = [0,1,2,3].
+;; Under the OLD element-origin bug, gx would be {0,2} and load-tile would scale AGAIN
+;; (gx=2 -> V[4,5]) — out of bounds — so OUT[2,3] could never be 2,3.  Hence this test
+;; DISTINGUISHES the fix on metal, on both backends.
+;;
+;; SKIP-WITH[--differentiate]: "grid-semantics enforcement (forward copy); ulong not differentiable"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 0 1 2 3
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel tile_stride_copy (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 2)
+           (local-size  :set-to 2))
+  (let ((tile (make-scratch-vector ulong 2)))
+    (tile-stride V (2) (gx)                 ; gx = tile-ID {0,1}, one WG strides both
+      (load-tile V tile (gx))               ; grid: V[gx*2 .. gx*2+1] -> tile
+      (store-tile tile OUT (gx)))))         ; grid: tile -> OUT[gx*2 .. gx*2+1]

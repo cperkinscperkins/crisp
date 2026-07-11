@@ -2,9 +2,11 @@
 ;; TEST-WITH[--ir-target=spv]
 ;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
-;; Sub-step 1b: bare load-tile inside hardware-stride :workgroup-idx.
-;; Same rewrite mechanism as tile-stride; the binding sym (grid-x) is
-;; injected as the origin coord list.
+;; load-tile inside hardware-stride :workgroup-idx.  The binding (grid-x) is a
+;; GRID term (chunk-ID); load-tile scales it by the tile extent.  When the body
+;; indexes OUT by hand it must do the same scaling — element = grid-x*chunk + lx
+;; (endeavor 135).  Here it's single-chunk (chunk = local-size = 4, V = 4), so
+;; grid-x = 0, but the scaled form is written to be correct for any chunk count.
 
 (def-type vec-t  (vector ulong :address-space :global :align :compact))
 (def-type tile-t (vector ulong :address-space :local  :align :compact))
@@ -17,4 +19,4 @@
     (hardware-stride V :workgroup-idx (grid-x)
       (load-tile V tile (grid-x))
       (workgroup-stride tile (lx)
-        (set! (~ OUT (+ grid-x lx)) (~ tile lx))))))
+        (set! (~ OUT (+ (* grid-x (get-local-work-size 0)) lx)) (~ tile lx))))))

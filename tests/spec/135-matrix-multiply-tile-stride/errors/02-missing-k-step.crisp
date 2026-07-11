@@ -1,0 +1,18 @@
+;; Endeavor 135 — negative: the <k-step> argument is required (OQ2).  This is the OLD
+;; pre-k-step 4-argument call shape: the grid-bindings list sits in the <k-step> slot with
+;; no scalar k-step before it.  The macro must reject this loudly rather than silently
+;; mis-striding K — guarding the API migration.
+;;
+;; CHECK-FAIL: "k-step"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel missing_k_step (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((C-tile (make-scratch-matrix float (4 4)))
+        (K      (inner-dimension A B)))
+    ;; old shape: (... C C-tile K (grid-y grid-x grid-k) BODY) — no scalar k-step
+    (matrix-multiply-tile-stride C C-tile K (grid-y grid-x grid-k)
+      (set! (~ C-tile 0 0) 0.0))))

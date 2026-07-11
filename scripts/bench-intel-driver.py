@@ -89,7 +89,33 @@ ALGORITHMS = {
             "binary": "sum_reduce_sycl_reduce",
         },
     },
+    # Matmul: square GEMM.  The Crisp kernel is the BMG variant (matmul_bmg.crisp —
+    # (8 16 8) XMX shape, B row-major, 32x32 tile), NOT the NVIDIA benchmark kernel.
+    # Needs --hardware-profile=bmg to select the XMX shape.
+    "matmul": {
+        "crisp": {
+            "dir":           REPO_ROOT / "benchmarks" / "matmul" / "crisp",
+            "crisp_source":  "matmul_bmg.crisp",
+            "spv_name":      "matmul_bmg.spv",
+            "harness":       "bench_harness_l0.cpp",
+            "binary":        "matmul_crisp_l0",
+            "compile_flags": ["--hardware-profile=bmg"],
+        },
+        # Hand-written 16x16 shared-memory tiled SYCL GEMM (analog of cuda/matmul.cu).
+        "sycl": {
+            "dir":    REPO_ROOT / "benchmarks" / "matmul" / "sycl",
+            "source": "matmul.cpp",
+            "binary": "matmul_sycl",
+        },
+    },
 }
+
+# Per-algorithm reporting metric (JSON key + column label).  Reduction reports memory
+# bandwidth; matmul reports FLOP rate.  Default is the reduction metric.
+ALGO_METRICS = {
+    "matmul": ("gflops", "GFLOPS"),
+}
+DEFAULT_METRIC = ("throughput_gb_s", "GB/s")
 
 
 def build_sycl(algo_meta):
@@ -168,7 +194,7 @@ def build_crisp_l0(algo_meta):
     # L0 setup, and the L0 hoist's launcher.cpp doesn't yet support
     # :match-workgroup-size scratch tensors (which the reduction kernel
     # uses).  Bypassing the hoist avoids that limitation entirely.
-    cmd_crisp = [compiler, "--ir-target=spv", str(crisp_file)]
+    cmd_crisp = [compiler, "--ir-target=spv"] + impl.get("compile_flags", []) + [str(crisp_file)]
     print(f"  Crisp compile: {' '.join(cmd_crisp)}")
     t0 = time.monotonic()
     r = subprocess.run(cmd_crisp, capture_output=True, text=True,
@@ -219,7 +245,8 @@ def run_benchmark(binary, N, warmup, iters, impl_name, extra_args=None):
         return None
 
 
-def print_comparison_table(all_results, compile_times):
+def print_comparison_table(all_results, compile_times,
+                           metric_key="throughput_gb_s", metric_label="GB/s"):
     """Print the same shape of table the NVIDIA run.py prints, so the
     output reads identically across platforms."""
     if not all_results:
@@ -249,7 +276,7 @@ def print_comparison_table(all_results, compile_times):
     print("=" * 100)
     header = f"{'N':>10s}"
     for impl in impls:
-        header += f"  {impl+' (us)':>14s}  {impl+' GB/s':>11s}"
+        header += f"  {impl+' (us)':>14s}  {impl+' '+metric_label:>11s}"
     print(header)
     print("-" * len(header))
     for n in sorted(by_n):
@@ -257,7 +284,7 @@ def print_comparison_table(all_results, compile_times):
         for impl in impls:
             r = by_n[n].get(impl)
             if r:
-                row += f"  {r['kernel_median_us']:>14.2f}  {r['throughput_gb_s']:>11.2f}"
+                row += f"  {r['kernel_median_us']:>14.2f}  {r.get(metric_key, 0.0):>11.2f}"
             else:
                 row += f"  {'---':>14s}  {'---':>11s}"
         print(row)
@@ -520,7 +547,8 @@ def main():
             if r:
                 all_results.append(r)
 
-    print_comparison_table(all_results, compile_times)
+    metric_key, metric_label = ALGO_METRICS.get(args.algo, DEFAULT_METRIC)
+    print_comparison_table(all_results, compile_times, metric_key, metric_label)
     return 0
 
 

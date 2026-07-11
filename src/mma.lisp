@@ -555,6 +555,8 @@
                                                   ((+ (* ,bty ,m-frags) ,mi)
                                                    (+ (* ,btx ,n-frags) ,nj))))))))))
 
+                                                   #|
+
 (defun %explode-rewrite-body-form (form tiles)
   "Recursively rewrite body FORM: replace via-tile / store-tile references to
    any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
@@ -584,6 +586,63 @@
           (assoc (second form) tiles))
      (destructuring-bind (v dest tile-id) (cdr form)
        (%emit-per-frag-store dest tile-id (assoc v tiles))))
+    (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
+    |#
+
+
+;; ======================================================================
+;; Endeavor 135 — fill-tile  (aka clear-tile: fill T's every element with V)
+;;
+;; src/analysis/control.lisp (scratch analyzer) + src/mma.lisp (register-tile case in
+;; %explode-rewrite-body-form + register in register-control-analyzers / the mma wrapper)
+;;
+;;   (fill-tile <tile> <value>)   ; value must match the tile's element type
+;;
+;; Two paths, dispatched like store-tile:
+;;   - Register tile (record-of-fragments, SROA-exploded): reset each fragment to a
+;;     fragment-of-VALUE.  Handled in the explosion (%explode-rewrite-body-form), before
+;;     the whole-tile variable is gone.  Register fragments are f32 → VALUE must be float.
+;;   - Scratch/SLM tile (real tensor): a workgroup-collective write of every element.
+;;     NO barrier is inserted — the caller syncs before reading.
+
+(defun %emit-per-frag-fill (entry val)
+  "Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment
+   of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init)."
+  (destructuring-bind (m n syms) (cdr entry)
+    (declare (ignore m n))
+    `(progn
+       ,@(loop for s in syms
+               collect `(set! ,s (make-register-fragment 16 8 ,val))))))
+
+
+(defun %explode-rewrite-body-form (form tiles)
+  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile references to
+   any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
+   otherwise recurse structurally."
+  (cond
+    ((not (consp form)) form)
+    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
+          (assoc (third form) tiles))
+     (let ((shape (nth 1 form)) (v (nth 2 form)) (a (nth 3 form)) (b (nth 4 form)))
+       (%check-mma-shape shape nil)
+       (if (>= (length form) 6)
+           (let* ((binding-form (nth 5 form))
+                  (binding-sym (if (and (consp binding-form) (= (length binding-form) 1)
+                                        (symbolp (first binding-form)))
+                                   (first binding-form)
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
+                                          :source-location nil)))
+                  (body (nthcdr 6 form)))
+             (%emit-per-frag-accumulate a b (assoc v tiles) binding-sym body))
+           (%emit-per-frag-accumulate a b (assoc v tiles)))))
+    ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v dest tile-id) (cdr form)
+       (%emit-per-frag-store dest tile-id (assoc v tiles))))
+    ((and (%head-name-eq (first form) "FILL-TILE") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
     (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
 
 (defun %explode-register-tiles (let-expr &optional location)
@@ -646,11 +705,61 @@
        :source-location location))))
 
 
+;; ======================================================================
+;; Endeavor 135 — matrix-multiply-tile-stride register-tile pre-lowering.
+;;
+;; A register-tile C-tile is a record-of-fragments the SROA explosion (%explode-register-tiles)
+;; turns into C-tile$Fi + rewrites the store-tile/mma forms that name it.  So a register-tile
+;; matmul must be lowered to those forms BEFORE the explosion, and its outer tile-spec must be a
+;; compile-time (M N) size-list (a register tile has no extents~ for tile-stride to read).
+;; %mmts-parse / %mmts-lower live in src/analysis/control.lisp (loaded first); the scratch path
+;; goes through analyze-matrix-multiply-tile-stride-expression there.
+(defun %mmts-head-p (form)
+  "T if FORM is a matrix-multiply-tile-stride call."
+  (and (consp form) (symbolp (car form))
+       (string-equal (symbol-name (car form)) "MATRIX-MULTIPLY-TILE-STRIDE")))
+
+(defun %mmts-register-dims-map (bindings)
+  "Alist var -> (M N) for each register-tile binding in a let's BINDINGS."
+  (loop for b in bindings
+        when (and (consp b) (= (length b) 2) (symbolp (first b))
+                  (%register-tile-init-form-p (second b)))
+          collect (cons (first b) (third (second b)))))   ; (make-register-tile elem (M N) init)
+
+(defun %expand-mmts-register-in-form (form reg-map location)
+  "Rewrite matrix-multiply-tile-stride forms whose C-tile is a register tile (in REG-MAP)
+   to their tile-stride + auto-store lowering with a compile-time (M N) size-list tile-spec,
+   so the generated store-tile/mma are visible to the register-tile SROA explosion."
+  (cond
+    ((not (consp form)) form)
+    ((and (%mmts-head-p form) (assoc (third form) reg-map))
+     (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
+         (%mmts-parse form location)
+       (%mmts-lower c-form c-tile (cdr (assoc c-tile reg-map)) k-form k-step gy gx gk
+                    (mapcar (lambda (f) (%expand-mmts-register-in-form f reg-map location)) body))))
+    (t (mapcar (lambda (f) (%expand-mmts-register-in-form f reg-map location)) form))))
+
+(defun %expand-matmul-tile-stride-register-forms (let-expr location)
+  "If LET-EXPR binds register tiles, pre-lower the matrix-multiply-tile-stride forms in its
+   body that target them (endeavor 135).  No-op when no register tile is bound."
+  (if (not (and (consp let-expr) (>= (length let-expr) 2) (listp (second let-expr))))
+      let-expr
+      (let ((reg-map (%mmts-register-dims-map (second let-expr))))
+        (if (null reg-map)
+            let-expr
+            `(,(first let-expr) ,(second let-expr)
+              ,@(mapcar (lambda (f) (%expand-mmts-register-in-form f reg-map location))
+                        (cddr let-expr)))))))
+
 (defun analyze-let-with-tile-explosion (expr env context location)
-  "let/let* analyzer wrapper: explode register-tile bindings into per-fragment
-   mutable variables (register residency, Endeavor 132), then defer to the
-   normal let analysis."
-  (analyze-let-expression (%explode-register-tiles expr location) env context location))
+  "let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),
+   then explode register-tile bindings into per-fragment mutable variables (register residency,
+   Endeavor 132), then defer to the normal let analysis."
+  (analyze-let-expression
+   (%explode-register-tiles
+    (%expand-matmul-tile-stride-register-forms expr location)
+    location)
+   env context location))
 
 
 

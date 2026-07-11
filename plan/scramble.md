@@ -737,15 +737,21 @@ MMA
 [x] ibid, for spir-v
 [x] Chapter 0: synchronous tiled MMA.
 [x] testing and benchmarking
-[ ] matrix-multiply-tile-stride macro
+[x] matrix-multiply-tile-stride macro
+[x] fill-tile / clear-tile  
+- [x] multiple multiplications, one macro
+- [x] align and :contiguous-term
+[ ] def-parameter, -D, #+ and #- support? Might be useful for benchmarks / testing, so as to have one file.
 [ ] CUTensorMap as implicit arg for kernels. 
-[ ] Chapter 1 - async tile
+[ ] Chapter 1 - async tile   cp.async and OpGroupAsyncCopy
+[ ] Chapter 1.5 - async tiles  with CuTensorMap and LSC 2D Block Loads in Intel Xe
 [ ] Chapter 2 - pipelined async tile
 [ ] chapter 3 - warp specialization pipelining
 [ ] precision?  
 [ ] auto-differentiation?
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
+[ ] don't forget bug 033 ( --debug )
 
 
 

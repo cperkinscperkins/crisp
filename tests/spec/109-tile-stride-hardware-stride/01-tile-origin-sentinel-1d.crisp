@@ -1,14 +1,14 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
 
-;; Basic 1D tile-stride: verifies the outer-loop iteration walks tile
-;; origins (0, tile-size, 2*tile-size, ...) over the problem space.
+;; Basic 1D tile-stride: verifies the outer-loop iteration walks tile-IDs
+;; (0, 1, 2, ...) over the problem space — one binding value per tile
+;; (endeavor 135: tile-stride binds GRID terms, not element origins).
 ;;
-;; Under the outer-loop semantics established in this endeavor, the body
-;; executes once per workgroup per tile-origin (not once per problem-coord),
-;; so we use a leader-thread sentinel write to prove the body reached each
-;; origin.  This test exercises tile-stride's macro plumbing only — no
-;; cooperative inner work and no load-tile/store-tile dependencies.
+;; Under the outer-loop semantics, the body executes once per workgroup per
+;; tile-ID (not once per problem-coord), so we use a leader-thread sentinel
+;; write to prove the body reached each tile.  This test exercises tile-stride's
+;; macro plumbing only — no cooperative inner work and no load-tile/store-tile.
 
 (def-type vec-t (vector ulong :address-space :global :align :compact))
 

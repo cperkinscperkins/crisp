@@ -1,0 +1,21 @@
+;; Endeavor 135 — fill-tile on a SCRATCH tile (workgroup-collective fill).
+;;
+;; (fill-tile T V) sets every element of tile T to V.  For an SLM scratch tile this is a
+;; workgroup-strided write; it does NOT insert a barrier, so the caller syncs before reading.
+;; Here: fill a 4-wide scratch vector with 7, sync, store it to OUT (grid tile 0).
+;;
+;; SKIP-WITH[--differentiate]: "fill primitive; ulong not differentiable"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 7 7 7 7
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel fill_scratch (&out OUT)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (fill-tile tile (to-ulong 7))
+    (sync-workgroup)
+    (store-tile tile OUT (0))))

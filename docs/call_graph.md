@@ -7,6 +7,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 ## Roots (Entry Points & Unused Functions)
 - (MAIN) :CRISP.MAIN  main.lisp
+- - (%MMA-PARSE-ARGS ARGS)  hoist-cuda/main.lisp
+- - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp
 - - (GENERATE-CUDA-LAUNCHER METACRISP-PATH)  hoist-cuda/main.lisp
 - - - (EMIT-PREAMBLE STREAM METACRISP-PATH KERNEL-NAME OUTPUT-NAME)  hoist-cuda/main.lisp
 - - - (EMIT-INCLUDES STREAM)  hoist-cuda/main.lisp
@@ -34,6 +36,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%TENSOR-COMPACT-EXTENTS-STRIDES N EXTENTS-LIST)  hoist-cuda/main.lisp [See above]
 - - - - - - (%CUDA-SCRATCH-DIMS SIZE-EXPR RANK PARAM-NAME)  hoist-cuda/main.lisp [See above]
 - - - - - (%CUDA-EMIT-TENSOR-ARG STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR ARG-INDEX DISPATCH-INFO)  hoist-cuda/main.lisp
+- - - - - - (%MMA-OUT-DIR-P DIR)  hoist-cuda/main.lisp
 - - - - - - (%TENSOR-COMPACT-EXTENTS-STRIDES N EXTENTS-LIST)  hoist-cuda/main.lisp [See above]
 - - - - - (STRUCT-TYPE-P TYPE)  hoist-cuda/main.lisp
 - - - - - - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp
@@ -75,6 +78,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%TENSOR-LENGTH-CPP-VAR SYM)  hoist-cuda/main.lisp
 - - - - - (%DISPATCH-SYM-TO-CPP-VAR SYM)  hoist-cuda/main.lisp
 - - - - (EMIT-READBACK STREAM ALLOCATIONS)  hoist-cuda/main.lisp
+- - - - - (%CUDA-EMIT-MMA-REFERENCE STREAM ALLOCATIONS)  hoist-cuda/main.lisp
 - - (PARSE-CLI-ARGS ARGS) :CRISP.MAIN  main.lisp
 - - - (INITIALIZE-COMPILER &KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE
                                                                       NIL) (MATH-PRECISION
@@ -200,7 +204,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - (FIND-TEMPLATE-ROBUST NAME)  types/validation.lisp
 - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp
-- - - - - - - - - - - - - - - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-TEMPLATE-ARGS TOKENS PACKAGE)  mangling.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-ONE-ARG TOKENS PACKAGE)  mangling.lisp
@@ -1217,6 +1221,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 
+- (ANALYZE-FILL-TILE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp
+- - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [See above]
+
 - (ANALYZE-FUNCALL-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
@@ -1297,6 +1307,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%REGISTER-TILE-FRAG-SYMS VAR M N)  mma.lisp
 - - - - (%FRAG-MN)  mma.lisp
 - - - - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
+- - (%EXPAND-MATMUL-TILE-STRIDE-REGISTER-FORMS LET-EXPR LOCATION)  mma.lisp
+- - - (%MMTS-REGISTER-DIMS-MAP BINDINGS)  mma.lisp
+- - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
 
 - (ANALYZE-LOAD-FRAGMENT-A EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
@@ -1314,7 +1327,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-LOAD-LOCAL-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp
+- - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp [See above]
 - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [See above]
 - - (ANALYZE-LOAD-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
@@ -1375,6 +1388,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%MV-EVAL-LIST FORM)  analysis/structs.lisp
 - - (%MV-COL-MAJOR-STRIDES EXTENTS)  analysis/structs.lisp
 - - (%MV-ROW-MAJOR-STRIDES EXTENTS)  analysis/structs.lisp [See above]
+
+- (ANALYZE-MATRIX-MULTIPLY-TILE-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (%MMTS-PARSE EXPR LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%MMTS-LOWER C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY)  analysis/control.lisp
 
 - (ANALYZE-MMA-ACCUMULATE EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]

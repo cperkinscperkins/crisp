@@ -1,0 +1,42 @@
+;; Endeavor 135 — matrix-multiply-tile-stride: FRONT-END / ENVELOPE smoke test.
+;;
+;; The point of THIS test is to isolate the macro's own expansion from any MMA /
+;; register-tile dependency.  The body is a plain scalar accumulate (no tensor cores),
+;; C-tile is an ordinary SLM scratch matrix, and the whole thing is single-tile
+;; (grid == #tiles == 1) and single-thread.  So all this proves is:
+;;   - the (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) BODY) form parses,
+;;   - grid-y / grid-x / grid-k are bound and usable in BODY,
+;;   - the macro emits the K/k-step loop and the auto-store,
+;;   - and it all reaches codegen on the GENERIC default pass (no target needed).
+;;
+;; Real matmul CORRECTNESS is proved on metal by 02 (neutral, both backends) and the
+;; MMA twins 03 (CUDA) / 04 (BMG).
+;;
+;; SKIP-WITH[--differentiate]: "tile-macro AD is a later chapter; endeavor 135 is forward-only"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mm_envelope (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((A-tile (make-scratch-matrix float (4 4)))
+        (B-tile (make-scratch-matrix float (4 4)))
+        (C-tile (make-scratch-matrix float (4 4)))
+        (K      (inner-dimension A B)))
+    ;; k-step = 4 (the shared K-extent of the (4 4) staging tiles); loops K/4 times.
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      ;; Reset the accumulator on the first K-step of each spatial tile.
+      ;; (The macro does NOT auto-reset a scratch C-tile — the user owns init.)
+      (when (= grid-k (to-ulong 0))
+        (dotimes (i 4)
+          (dotimes (j 4)
+            (set! (~ C-tile i j) 0.0))))
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (dotimes (i 4)
+        (dotimes (j 4)
+          (dotimes (kk 4)
+            (set! (~ C-tile i j)
+                  (+ (~ C-tile i j)
+                     (* (~ A-tile i kk) (~ B-tile kk j))))))))))

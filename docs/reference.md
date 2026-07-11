@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-08T23:56:51.435630Z
+Generated on 2026-07-11T15:52:31.054409Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -442,7 +442,7 @@ Generated on 2026-07-08T23:56:51.435630Z
 - **Args**: `(TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN
               LOCATION)`
 
-  > Workgroup-strided outer loop over chunk origins.  Per-workgroup exact  >    iter count per dim — body runs unconditionally.
+  > Workgroup-strided outer loop over TILE-IDs.  Per-workgroup exact iter count per dim —  >    body runs unconditionally, with each binding bound to a tile-ID (0-based chunk index),  >    grid-strided by the number of workgroups.
 
 
 ---
@@ -558,6 +558,34 @@ Generated on 2026-07-08T23:56:51.435630Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzer for (get-pointer <c-handle>) — loads the held pointer from the slot.
+
+
+---
+### DEFUN `ANALYZE-FILL-TILE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (fill-tile T V) for a scratch/SLM tile — workgroup-collective fill of every element of  >    the tensor T to V.  No barrier is inserted; the caller syncs before reading.  Register  >    tiles are handled earlier in the SROA explosion and never reach here.
+
+
+---
+### DEFUN `%MMTS-PARSE`
+- **Args**: `(EXPR LOCATION)`
+
+  > Validate + destructure a matrix-multiply-tile-stride form.  Returns  >    (values c-form c-tile k-form k-step grid-y grid-x grid-k body).
+
+
+---
+### DEFUN `%MMTS-LOWER`
+- **Args**: `(C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY)`
+
+  > The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop + auto-store s-expr.
+
+
+---
+### DEFUN `ANALYZE-MATRIX-MULTIPLY-TILE-STRIDE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Scratch-tensor path for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) BODY...).  >    Lowers with the tile-tensor C-tile (tile-stride reads its extents~).  Register-tile C-tiles  >    are pre-lowered in analyze-let-with-tile-explosion, before SROA explosion, so never reach here.
 
 
 ---
@@ -1904,7 +1932,7 @@ Generated on 2026-07-08T23:56:51.435630Z
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form  >    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.
+  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form  >    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.
 
 
 ---
@@ -3670,9 +3698,41 @@ Generated on 2026-07-08T23:56:51.435630Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-cuda\main.lisp`
 
+### DEFVAR `*MMA-TEST-DIMS*`
+
+  > (M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.
+
+
+---
+### DEFVAR `*MMA-INPUT-COUNTER*`
+
+  > Per-kernel input-tensor counter for A(0)/B(1) role assignment.
+
+
+---
+### DEFVAR `*MMA-SCALE*`
+
+  > Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.  >    Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).
+
+
+---
+### DEFUN `%MMA-PARSE-ARGS`
+- **Args**: `(ARGS)`
+
+  > Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an  >    optional --mma-scale=S flag.
+
+
+---
+### DEFUN `%MMA-OUT-DIR-P`
+- **Args**: `(DIR)`
+
+  > T if the param direction is an output (&out).
+
+
+---
 ### DEFUN `MAIN`
 
-  > Entry point for crisp-hoist-cuda.exe
+  > Entry point for crisp-hoist-cuda.exe.  Endeavor 134: accepts --mma-test=M,N,K.
 
 
 ---
@@ -3850,6 +3910,12 @@ Generated on 2026-07-08T23:56:51.435630Z
 
 
 ---
+### DEFVAR `*CUDA-SHARED-SCRATCH-OFFSET*`
+
+  > Running byte offset into the kernel's dynamic shared memory, assigned to each  >    LOCAL scratch tile in turn so multiple tiles do not alias.  Reset per kernel in  >    emit-kernel-args.
+
+
+---
 ### DEFUN `%CUDA-EMIT-LOCAL-SCRATCH-TENSOR-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
 
@@ -3878,7 +3944,7 @@ Generated on 2026-07-08T23:56:51.435630Z
 ### DEFUN `EMIT-KERNEL-ARGS`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS DISPATCH-INFO)`
 
-  > Emit host-side variable declarations and fill the kernelParams[] array.  >    Returns a list of allocation plists for readback.
+  > Emit host-side variable declarations and fill the kernelParams[] array.  >    Returns a list of allocation plists for readback.  >    Bug 034: resets *cuda-shared-scratch-offset* so each kernel's LOCAL tiles get  >    distinct, non-overlapping shared-memory offsets.
 
 
 ---
@@ -3924,10 +3990,17 @@ Generated on 2026-07-08T23:56:51.435630Z
 
 
 ---
+### DEFUN `%CUDA-EMIT-MMA-REFERENCE`
+- **Args**: `(STREAM ALLOCATIONS)`
+
+  > Emit a stride-agnostic host reference C = A·B (copy A/B/C back to host, compare).
+
+
+---
 ### DEFUN `EMIT-READBACK`
 - **Args**: `(STREAM ALLOCATIONS)`
 
-  > Emit cuMemcpyDtoH and print buffer contents.
+  > Emit cuMemcpyDtoH and print buffer contents.  Endeavor 134: appends host-reference C=A·B.
 
 
 ---
@@ -3935,9 +4008,41 @@ Generated on 2026-07-08T23:56:51.435630Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\main.lisp`
 
+### DEFVAR `*MMA-TEST-DIMS*`
+
+  > (M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.
+
+
+---
+### DEFVAR `*MMA-INPUT-COUNTER*`
+
+  > Per-kernel input-tensor counter for A(0)/B(1) role assignment.
+
+
+---
+### DEFVAR `*MMA-SCALE*`
+
+  > Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.  >    Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).
+
+
+---
+### DEFUN `%MMA-PARSE-ARGS`
+- **Args**: `(ARGS)`
+
+  > Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an  >    optional --mma-scale=S flag.
+
+
+---
+### DEFUN `%MMA-OUT-DIR-P`
+- **Args**: `(DIR)`
+
+  > T if the param direction is an output (&out).
+
+
+---
 ### DEFUN `MAIN`
 
-  > Entry point for crisp-hoist-l0.exe
+  > Entry point for crisp-hoist-l0.exe.  Endeavor 134: accepts --mma-test=M,N,K.
 
 
 ---
@@ -4038,11 +4143,18 @@ Generated on 2026-07-08T23:56:51.435630Z
 
 
 ---
+### DEFUN `%L0-EMIT-MMA-REFERENCE`
+- **Args**: `(STREAM ALLOCATIONS)`
+
+  > Emit a stride-agnostic host reference C = A·B and compare against the device C.
+
+
+---
 ### DEFUN `GENERATE-CPP-MAIN`
 - **Args**: `(STREAM KERNEL-NAME SPV-PATH DECLARED-SIG ALIASES RECORDS
               &OPTIONAL DISPATCH-INFO)`
 
-  > Generate C++ main function. Extended to accept dispatch-info for strategy-aware launch.
+  > Generate C++ main.  Endeavor 134: under --mma-test, appends a host-reference C=A·B check.
 
 
 ---
@@ -4179,6 +4291,13 @@ Generated on 2026-07-08T23:56:51.435630Z
 ### DEFUN `%L0-EMIT-CELL-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR IS-LOCAL ALIASES
               CONTEXT-VAR DEVICE-VAR ARG-INDEX)`
+
+---
+### DEFUN `%L0-SCRATCH-DIMS`
+- **Args**: `(SIZE-EXPR RANK PARAM-NAME)`
+
+  > Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE  >    tensor: all RANK dims equal it) or a LIST of RANK integers (a non-square tensor,  >    e.g. make-scratch-matrix float (8 16)).
+
 
 ---
 ### DEFUN `%L0-EMIT-LOCAL-SCRATCH-TENSOR-ARG`
@@ -4699,7 +4818,7 @@ Generated on 2026-07-08T23:56:51.435630Z
 ### DEFUN `%EXPAND-LET-STRIDE-OP`
 - **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
 
-  > Expand LET form, hoisting tile-coords binding values out of let-bindings.
+  > Expand LET form, hoisting tile-load/store binding values out of let-bindings.
 
 
 ---
@@ -6065,10 +6184,17 @@ Generated on 2026-07-08T23:56:51.435630Z
 
 
 ---
+### DEFUN `%EMIT-PER-FRAG-FILL`
+- **Args**: `(ENTRY VAL)`
+
+  > Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment  >    of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init).
+
+
+---
 ### DEFUN `%EXPLODE-REWRITE-BODY-FORM`
 - **Args**: `(FORM TILES)`
 
-  > Recursively rewrite body FORM: replace via-tile / store-tile references to  >    any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
+  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile references to  >    any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
 
 
 ---
@@ -6093,10 +6219,38 @@ Generated on 2026-07-08T23:56:51.435630Z
 
 
 ---
+### DEFUN `%MMTS-HEAD-P`
+- **Args**: `(FORM)`
+
+  > T if FORM is a matrix-multiply-tile-stride call.
+
+
+---
+### DEFUN `%MMTS-REGISTER-DIMS-MAP`
+- **Args**: `(BINDINGS)`
+
+  > Alist var -> (M N) for each register-tile binding in a let's BINDINGS.
+
+
+---
+### DEFUN `%EXPAND-MMTS-REGISTER-IN-FORM`
+- **Args**: `(FORM REG-MAP LOCATION)`
+
+  > Rewrite matrix-multiply-tile-stride forms whose C-tile is a register tile (in REG-MAP)  >    to their tile-stride + auto-store lowering with a compile-time (M N) size-list tile-spec,  >    so the generated store-tile/mma are visible to the register-tile SROA explosion.
+
+
+---
+### DEFUN `%EXPAND-MATMUL-TILE-STRIDE-REGISTER-FORMS`
+- **Args**: `(LET-EXPR LOCATION)`
+
+  > If LET-EXPR binds register tiles, pre-lower the matrix-multiply-tile-stride forms in its  >    body that target them (endeavor 135).  No-op when no register tile is bound.
+
+
+---
 ### DEFUN `ANALYZE-LET-WITH-TILE-EXPLOSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > let/let* analyzer wrapper: explode register-tile bindings into per-fragment  >    mutable variables (register residency, Endeavor 132), then defer to the  >    normal let analysis.
+  > let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),  >    then explode register-tile bindings into per-fragment mutable variables (register residency,  >    Endeavor 132), then defer to the normal let analysis.
 
 
 ---
