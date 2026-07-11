@@ -1,21 +1,45 @@
 (in-package :crisp.hoist.l0)
 
+
+
+(defvar *mma-test-dims* nil "(M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.")
+(defvar *mma-input-counter* 0 "Per-kernel input-tensor counter for A(0)/B(1) role assignment.")
+(defvar *mma-scale* 1 "Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.
+   Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).")
+
+(defun %mma-parse-args (args)
+  "Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an
+   optional --mma-scale=S flag."
+  (let ((dims nil) (path nil) (scale 1))
+    (dolist (a args)
+      (cond
+        ((and (>= (length a) 11) (string= (subseq a 0 11) "--mma-test="))
+         (setf dims (mapcar #'parse-integer (uiop:split-string (subseq a 11) :separator ","))))
+        ((and (>= (length a) 12) (string= (subseq a 0 12) "--mma-scale="))
+         (setf scale (parse-integer (subseq a 12))))
+        (t (unless path (setf path a)))))
+    (values path dims scale)))
+
+(defun %mma-out-dir-p (dir)
+  "T if the param direction is an output (&out)."
+  (and dir (search "out" (string-downcase (string dir)))))
+
 (defun main ()
-  "Entry point for crisp-hoist-l0.exe"
+  "Entry point for crisp-hoist-l0.exe.  Endeavor 134: accepts --mma-test=M,N,K."
   (handler-case
       (let ((args (uiop:command-line-arguments)))
         (format t "Crisp Hoist L0 - Level Zero C++ Launcher Generator~%")
         (format t "Version: 0.3.0~%~%")
-
         (unless args
-          (format t "Usage: crisp-hoist-l0 <path-to-metacrisp-file>~%")
+          (format t "Usage: crisp-hoist-l0 [--mma-test=M,N,K] <path-to-metacrisp-file>~%")
           (uiop:quit 1))
-
-        (let ((metacrisp-path (first args)))
-          (unless (probe-file metacrisp-path)
+        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args args)
+          (setf *mma-test-dims* dims)
+          (setf *mma-scale* scale)
+          (unless (and metacrisp-path (probe-file metacrisp-path))
             (format t "Error: File not found: ~a~%" metacrisp-path)
             (uiop:quit 1))
-
+          (when dims (format t "MMA test mode: M=~d N=~d K=~d~%" (first dims) (second dims) (third dims)))
           (format t "Processing: ~a~%" metacrisp-path)
           (generate-l0-launcher metacrisp-path)
           (format t "Done!~%")
@@ -23,6 +47,7 @@
     (error (e)
       (format t "Error: ~a~%" e)
       (uiop:quit 1))))
+
 
 
 ;;; -----------------------------------------------------------------------
@@ -303,39 +328,51 @@
   (format stream "}~%~%"))
 
 
-;;; src/hoist-l0/main.lisp
+
+
+(defun %l0-emit-mma-reference (stream allocations)
+  "Emit a stride-agnostic host reference C = A·B and compare against the device C."
+  (destructuring-bind (m n k) *mma-test-dims*
+    (let ((a (find :a allocations :key (lambda (x) (getf x :mma-role))))
+          (b (find :b allocations :key (lambda (x) (getf x :mma-role))))
+          (c (find :c allocations :key (lambda (x) (getf x :mma-role)))))
+      (when (and a b c)
+        (let ((ab (getf a :base)) (bb (getf b :base)) (cb (getf c :base)))
+          (format stream "~%    // Endeavor 134: MMA host reference C = A.B (stride-agnostic)~%")
+          (format stream "    { int mma_ok = 1; int mma_bad = 0;~%")
+          (format stream "      for (uint64_t i = 0; i < ~dULL; i++) for (uint64_t j = 0; j < ~dULL; j++) {~%" m n)
+          (format stream "        float acc = 0.0f;~%")
+          (format stream "        for (uint64_t kk = 0; kk < ~dULL; kk++)~%" k)
+          (format stream "            acc += ~a_ptr[i*~a_str0 + kk*~a_str1] * ~a_ptr[kk*~a_str0 + j*~a_str1];~%" ab ab ab bb bb bb)
+          (when (/= *mma-scale* 1)
+            (format stream "        acc = acc * ~d.0f;   // --mma-scale (MMA fired ~:*~d× per fragment)~%" *mma-scale*))
+          (format stream "        float got = ~a_ptr[i*~a_str0 + j*~a_str1];~%" cb cb cb)
+          (format stream "        float d = got - acc; if (d < 0) d = -d;~%")
+          (format stream "        if (d > 1e-2f * (acc < 0 ? -acc : acc) + 1e-3f) { mma_ok = 0;~%")
+          (format stream "            if (mma_bad < 4) { std::cout << \"  C[\" << i << \"][\" << j << \"]=\" << got << \" ref \" << acc << std::endl; mma_bad++; } }~%")
+          (format stream "      }~%")
+          (format stream "      std::cout << (mma_ok ? \"MMA_CORRECT\" : \"MMA_WRONG\") << std::endl; }~%"))))))
+
+
 (defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases records &optional dispatch-info)
-  "Generate C++ main function. Extended to accept dispatch-info for strategy-aware launch."
+  "Generate C++ main.  Endeavor 134: under --mma-test, appends a host-reference C=A·B check."
   (format stream "int main() {~%")
   (format stream "    ze_result_t result;~%")
   (format stream "    std::cout << \"Level Zero Launcher for kernel: ~a\" << std::endl;~%~%" kernel-name)
-
-  ;; L0 Initialization
   (generate-l0-init stream)
-
-  ;; Module loading
-  (when spv-path
-        (generate-module-loading stream spv-path))
-
-  ;; Kernel creation and launch
+  (when spv-path (generate-module-loading stream spv-path))
+  (setf *mma-input-counter* 0)          ; reset role assignment for this kernel
   (let ((allocations (generate-kernel-launch stream kernel-name declared-sig aliases records dispatch-info)))
-
-    ;; Print output buffers
     (format stream "    // Verify Output~%")
     (dolist (alloc allocations)
-      (let ((name (getf alloc :name))
-            (ptr (getf alloc :ptr))
-            (size-v (getf alloc :size-var))
-            (dir (getf alloc :direction))
-            (access (getf alloc :access)))
-        (declare (ignore dir access))
-
+      (let ((name (getf alloc :name)) (ptr (getf alloc :ptr)) (size-v (getf alloc :size-var)))
         (format stream "    std::cout << \"BUFFER ~a: \";~%" name)
         (format stream "    for (size_t i = 0; i < ~a; i++) {~%" size-v)
         (format stream "        std::cout << ~a[i] << (i == ~a - 1 ? \"\" : \" \");~%" ptr size-v)
         (format stream "    }~%")
         (format stream "    std::cout << std::endl;~%")))
-
+    (when *mma-test-dims*
+      (%l0-emit-mma-reference stream allocations))
     (format stream "    std::cout << \"Success!\" << std::endl;~%")
     (format stream "    return 0;~%")
     (format stream "}~%")))
@@ -899,6 +936,19 @@
                            :access (getf param :access)))))
     (values (+ arg-index 3) alloc)))
 
+
+
+(defun %l0-scratch-dims (size-expr rank param-name)
+  "Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE
+   tensor: all RANK dims equal it) or a LIST of RANK integers (a non-square tensor,
+   e.g. make-scratch-matrix float (8 16))."
+  (cond
+    ((integerp size-expr) (make-list rank :initial-element size-expr))
+    ((and (listp size-expr) (= (length size-expr) rank) (every #'integerp size-expr))
+     size-expr)
+    (t (error "Scratch tensor ~a: :size-expr ~a is neither an integer nor a list of ~d integers."
+              param-name size-expr rank))))
+
 (defun %l0-emit-local-scratch-tensor-arg (stream param param-name param-type arg-index)
   (let* ((rank (let ((n3 (third param-type)))
                  (if (integerp n3) n3 1)))
@@ -908,14 +958,11 @@
          (elem-bytes (if (or (string-equal elem-str "double")
                              (string-equal elem-str "int64_t")
                              (string-equal elem-str "uint64_t")) 8 4))
-         (param-name-cpp (substitute #\_ #\- param-name)))
-    (unless (integerp size-expr)
-      (error "Local scratch tensor ~a has non-integer :size-expr ~a. ~
-              Only literal integer sizes are supported in the L0 hoist launcher."
-        param-name size-expr))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (dims (%l0-scratch-dims size-expr rank param-name)))
     (multiple-value-bind (extents strides)
-        (%tensor-compact-extents-strides rank (make-list rank :initial-element size-expr))
-      (let* ((length (* (expt size-expr rank)))
+        (%tensor-compact-extents-strides rank dims)
+      (let* ((length (reduce #'* dims))
              (bytesize (* length elem-bytes))
              (current-idx arg-index))
         (format stream "~%    // LOCAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes)~%"
@@ -1038,6 +1085,8 @@
         (incf current-idx)
         current-idx))))
 
+
+
 (defun %l0-emit-tensor-arg (stream param param-name param-type param-dir context-var device-var arg-index dispatch-info)
   (let* ((rank (or (getf param :rank)
                    (let ((n3 (third param-type)))
@@ -1047,21 +1096,30 @@
          (elem-str (crisp-type-to-cpp-type elem-type))
          (param-name-cpp (substitute #\_ #\- param-name))
          (ptr-var (format nil "~a_ptr" param-name-cpp))
-         (extents-list (let ((lst (make-list rank :initial-element 4)))
-                         (let* ((global-decl (getf dispatch-info :global-size))
-                                (strategy (getf (cdr global-decl) :strategy))
-                                (derive-from (getf (cdr global-decl) :derive-from))
-                                (tile-shape (getf (cdr global-decl) :tile-shape)))
-                           (when (and tile-shape
-                                      derive-from
-                                      (member param-name (if (listp derive-from) derive-from (list derive-from))
-                                              :test (lambda (a b) (string-equal (string a) (string b)))))
-                             (loop for k from 0 below (min rank (length tile-shape)) do
-                               (let* ((tx (nth k tile-shape))
-                                      (base (nth k lst))
-                                      (padded (* (ceiling base tx) tx)))
-                                 (setf (nth k lst) padded)))))
-                         lst)))
+         ;; Endeavor 134: assign an MMA role (A=first input, B=second input, C=&out) and
+         ;; override the tensor extents accordingly.
+         (mma-role (when (and *mma-test-dims* (= rank 2))
+                     (if (%mma-out-dir-p param-dir)
+                         :c
+                         (prog1 (if (zerop *mma-input-counter*) :a :b)
+                           (incf *mma-input-counter*)))))
+         (extents-list
+           (if mma-role
+               (destructuring-bind (m n k) *mma-test-dims*
+                 (ecase mma-role (:a (list m k)) (:b (list k n)) (:c (list m n))))
+               (let ((lst (make-list rank :initial-element 4)))
+                 (let* ((global-decl (getf dispatch-info :global-size))
+                        (strategy (getf (cdr global-decl) :strategy))
+                        (derive-from (getf (cdr global-decl) :derive-from))
+                        (tile-shape (getf (cdr global-decl) :tile-shape)))
+                   (declare (ignore strategy))
+                   (when (and tile-shape derive-from
+                              (member param-name (if (listp derive-from) derive-from (list derive-from))
+                                      :test (lambda (a b) (string-equal (string a) (string b)))))
+                     (loop for k from 0 below (min rank (length tile-shape)) do
+                       (let* ((tx (nth k tile-shape)) (base (nth k lst)) (padded (* (ceiling base tx) tx)))
+                         (setf (nth k lst) padded)))))
+                 lst))))
     (multiple-value-bind (extents strides)
         (%tensor-compact-extents-strides rank extents-list)
       (let* ((total-elems (* (first strides) (first extents)))
@@ -1072,64 +1130,61 @@
              (byte-size (* total-elems elem-bytes))
              (layout-str (if (member align '(:strided strided)
                                      :test (lambda (a b) (string-equal (string a) (string b))))
-                             "compact (strided param, harness uses compact)"
-                             "compact"))
+                             "compact (strided param, harness uses compact)" "compact"))
              (current-idx arg-index))
         (format stream "~%    // Tensor argument: ~a (rank=~d, ~a, ~d elements, ~a)~%"
           param-name rank elem-str total-elems layout-str)
         (format stream "    ~a* ~a = nullptr;~%" elem-str ptr-var)
-        (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
-          context-var)
-        (format stream "        ~d * sizeof(~a), 1, ~a, (void**)&~a);~%"
-          total-elems elem-str device-var ptr-var)
+        (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%" context-var)
+        (format stream "        ~d * sizeof(~a), 1, ~a, (void**)&~a);~%" total-elems elem-str device-var ptr-var)
         (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
-        (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
-          param-name)
+        (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%" param-name)
         (format stream "        return 1;~%")
         (format stream "    }~%")
+        ;; Initialise data.
         (let* ((global-decl (getf dispatch-info :global-size))
                (pad-with (getf (cdr global-decl) :pad-with)))
-          (if (and pad-with (eql pad-with 0))
-              (format stream "    memset(~a, 0, ~d * sizeof(~a));~%" ptr-var total-elems elem-str)
-              (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)_i;~%" total-elems ptr-var elem-str)))
+          (cond
+            ;; MMA test: A/B get a deterministic non-uniform fill; C is zeroed.
+            ((member mma-role '(:a :b))
+             (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)(_i % ~d);~%"
+               total-elems ptr-var elem-str (if (eq mma-role :a) 5 3)))
+            ((eq mma-role :c)
+             (format stream "    memset(~a, 0, ~d * sizeof(~a));~%" ptr-var total-elems elem-str))
+            ((and pad-with (eql pad-with 0))
+             (format stream "    memset(~a, 0, ~d * sizeof(~a));~%" ptr-var total-elems elem-str))
+            (t
+             (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)_i;~%" total-elems ptr-var elem-str))))
         (format stream "    // Arg ~d: ~a PTR~%" current-idx param-name)
-        (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
-          current-idx ptr-var)
+        (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%" current-idx ptr-var)
         (incf current-idx)
         (format stream "    // Arg ~d: ~a BYTE_SIZE = ~d~%" current-idx param-name byte-size)
         (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp byte-size)
-        (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_byte_size);~%"
-          current-idx param-name-cpp)
+        (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_byte_size);~%" current-idx param-name-cpp)
         (incf current-idx)
         (loop for k from 0 below rank do
-                (format stream "    // Arg ~d: ~a OFFSET_~d = ~d~%" current-idx param-name k (nth k offsets))
-                (format stream "    uint64_t ~a_off~d = ~dULL;~%" param-name-cpp k (nth k offsets))
-                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%"
-                  current-idx param-name-cpp k)
-                (incf current-idx))
+          (format stream "    // Arg ~d: ~a OFFSET_~d = ~d~%" current-idx param-name k (nth k offsets))
+          (format stream "    uint64_t ~a_off~d = ~dULL;~%" param-name-cpp k (nth k offsets))
+          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%" current-idx param-name-cpp k)
+          (incf current-idx))
         (loop for k from 0 below rank do
-                (format stream "    // Arg ~d: ~a STRIDE_~d = ~d~%" current-idx param-name k (nth k strides))
-                (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
-                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%"
-                  current-idx param-name-cpp k)
-                (incf current-idx))
+          (format stream "    // Arg ~d: ~a STRIDE_~d = ~d~%" current-idx param-name k (nth k strides))
+          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%" current-idx param-name-cpp k)
+          (incf current-idx))
         (loop for k from 0 below rank do
-                (format stream "    // Arg ~d: ~a EXTENT_~d = ~d~%" current-idx param-name k (nth k extents))
-                (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
-                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%"
-                  current-idx param-name-cpp k)
-                (incf current-idx))
+          (format stream "    // Arg ~d: ~a EXTENT_~d = ~d~%" current-idx param-name k (nth k extents))
+          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%" current-idx param-name-cpp k)
+          (incf current-idx))
         (format stream "    // Arg ~d: ~a LENGTH = ~d~%" current-idx param-name total-elems)
         (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp total-elems)
-        (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_length);~%~%"
-          current-idx param-name-cpp)
+        (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_length);~%~%" current-idx param-name-cpp)
         (incf current-idx)
         (values current-idx
-          (list :name param-name
-                :ptr ptr-var
-                :size-var (format nil "~d" total-elems)
-                :direction param-dir
-                :access (getf param :access)))))))
+          (list :name param-name :ptr ptr-var :size-var (format nil "~d" total-elems)
+                :direction param-dir :access (getf param :access)
+                :mma-role mma-role :base param-name-cpp))))))
 
 (defun %l0-emit-struct-arg (stream param param-name param-type aliases arg-index)
   (declare (ignore param))
