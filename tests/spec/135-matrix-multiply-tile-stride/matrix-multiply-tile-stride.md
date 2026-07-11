@@ -227,9 +227,22 @@ path instead of the compact direct path.  MMA_CORRECT on BMG.  (make-matrix widt
 be literals, so dims are fixed to MMA-DIMS 8 16 16.)  Really a load-tile/store-tile × :strided
 integration check under the macro — the align/ct combinatorics proper live in 097/109/111.
 
+P2 dogfood — 2026-07-10
+-----------------------
+- **performance/matmul-bmg** (single-tile microbench, local BMG): rewritten onto the macro,
+  IR-equivalent for the single 8x16 tile.  `python performance/check.py --test=matmul-bmg` →
+  correct (A=B=1 => C==K gate) + kernel_median_us 890 vs baseline 868 (+2.5%, within the 10%
+  tolerance; the delta is the macro's outer-loop-once setup + noise).  DONE + verified.
+- **benchmarks/matmul** (64x64 grid-stride GEMM, CUDA/RunPod): kernel rewritten onto the macro;
+  body is IR-equivalent to the hand-rolled (load-tile/store-tile tile-IDs map 1:1).  The macro
+  derives grid-y/grid-x from workgroup-id 0/1 (ctaid.x/.y — confirmed in the generated PTX,
+  32 mma.sync.m16n8k8), so bench_harness.cu changed from a 1-D linearized grid to a 2-D
+  grid = (M/64, N/64).  PTX compiles locally; **needs a RunPod run to confirm correctness +
+  same perf** (can't run CUDA locally).  grid == #tiles so no accumulator reset needed.
+
 Deferred (next)
 ---------------
-- P2 dogfood: rewrite benchmarks/matmul + performance/matmul-bmg onto the macro.
+- benchmarks/matmul: RunPod correctness + perf run (Chris) after the 2-D-launch harness change.
 - P3 docs: reconcile topology.md; register-fragment doc-debt; [x]add fill-tile to topology.md.
 - AD across the macro (all P1 specs are forward-only).
 

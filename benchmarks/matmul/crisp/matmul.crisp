@@ -1,13 +1,18 @@
 ;; Crisp tiled matmul (grid-stride): C[M x N] = A[M x K] . B[K x N], tf32.
-;; Each workgroup (one warp) owns one 64x64 output tile of C (= 4x8 = 32 accumulator
-;; fragments), selected by its workgroup-id.  Per K-step (K-tile = the MMA shape's
-;; K = 8) it stages the tile's 64x8 A row-block and 8x64 B col-block into SLM (sync
-;; load-tile-at), reused across all 32 fragment MMAs, then accumulates via 32
-;; m16n8k8 mma.sync.  Launch grid = (M/64) * (N/64) workgroups of 32 threads.
+;; Written with the matrix-multiply-tile-stride macro (endeavor 135 — Chapter-0 sugar):
+;; the macro owns the grid-y/grid-x tile mapping (over C's 64x64 output tiles), the K-loop
+;; (K/8 steps), and the write-back auto-store.  Each workgroup (one warp) owns one 64x64
+;; output tile (= 4x8 = 32 accumulator fragments).  Per K-step (K-tile = MMA-K = 8) the body
+;; stages the tile's 64x8 A row-block and 8x64 B col-block into SLM (sync load-tile), reused
+;; across all 32 fragment MMAs, then accumulates via 32 m16n8k8 mma.sync.
 ;;
-;; Bigger register tiles (64x64 vs 16x8) raise arithmetic intensity ~6x: 1024 global
-;; floats staged per K-step feed 32 MMAs instead of 1.  Pure source-level change — the
-;; register-tile / mma-accumulate-via-tile forms already generalize.
+;; LAUNCH: the macro derives grid-y from workgroup-id 0 and grid-x from workgroup-id 1, so
+;; the harness launches a 2-D grid = (M/64, N/64) workgroups of 32 threads (grid == #tiles;
+;; each workgroup owns exactly one tile, so no accumulator reset is needed).  (The previous
+;; hand-rolled kernel used a 1-D linearized grid with gy=wg/ntx, gx=wg%ntx.)
+;;
+;; Bigger register tiles (64x64 vs 16x8) raise arithmetic intensity ~6x: 1024 global floats
+;; staged per K-step feed 32 MMAs.  The macro is transparent to that — it just wires the tiles.
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
@@ -16,18 +21,13 @@
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
            (local-size :set-to 32))
-  (let ((wg  (to-int (get-workgroup-id 0)))
-        (ntx (/ (to-int (num-cols C)) 64)))    ; N-tiles across x (64-wide tiles)
-    (let ((gy (/ wg ntx))                      ; this workgroup's C-tile row
-          (gx (rem wg ntx))                    ; ... and column
-          (A-tile (make-scratch-matrix float (64 8)))
-          (B-tile (make-scratch-matrix float (8 64)))
-          (C-tile (make-register-tile float (64 64) 0.0))
-          (K (to-int (inner-dimension A B))))
-      (dotimes (kt (/ K 8))
-        (load-tile-at A A-tile ((* gy 64) (* kt 8)))   ; A[gy*64:+64, kt*8:+8]
-        (load-tile-at B B-tile ((* kt 8) (* gx 64)))   ; B[kt*8:+8, gx*64:+64]
-        (sync-workgroup)
-        (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
-        (sync-workgroup))
-      (store-tile C-tile C (gy gx)))))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))   ; A[grid-y*64:+64, grid-k*8:+8]
+      (load-tile B B-tile (grid-k grid-x))   ; B[grid-k*8:+8, grid-x*64:+64]
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+      (sync-workgroup))))

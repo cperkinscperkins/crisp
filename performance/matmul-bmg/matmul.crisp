@@ -10,8 +10,11 @@
 ;; "chapters" optimize (Ch1 async tile load / Ch2 pipelined / Ch3 warp-specialized),
 ;; so this number is the honest "Chapter 0" floor they improve on.
 ;;
-;; Same kernel as tests/spec/133-mma-spv/12-tiled-matmul-bmg.crisp (proven correct on
-;; BMG); the performance/ role just times it at large K with an L0 harness.
+;; Same matmul as tests/spec/133-mma-spv/12-tiled-matmul-bmg.crisp, now written with the
+;; matrix-multiply-tile-stride macro (endeavor 135 — Chapter-0 sugar): the K-loop, the
+;; sync-staging body, and the write-back fold into the macro's envelope + auto-store.  For
+;; the single 8x16 tile (one sub-group) it is IR-equivalent to the hand-rolled kernel, so the
+;; performance/ role still times exactly the Chapter-0 sync-staging floor at large K.
 ;;
 ;; BMG XMX shape is (8 16 8) and B must be row-major (no PackedB_ColumnMajor on SPV).
 ;;
@@ -30,11 +33,10 @@
   (let ((A-tile (make-scratch-matrix float (8 8)))      ; SLM: M×8 (one K-step of A)
         (B-tile (make-scratch-matrix float (8 16)))     ; SLM: 8×N (one K-step of B)
         (C-tile (make-register-tile float (8 16) 0.0))
-        (K      (to-int (inner-dimension A B))))
-    (dotimes (kt (/ K 8))
-      (load-tile-at A A-tile (0 (* kt 8)))      ; stage A[:, kt*8 : kt*8+8]
-      (load-tile-at B B-tile ((* kt 8) 0))      ; stage B[kt*8 : kt*8+8, :]
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))      ; stage A[:, grid-k*8 : +8]
+      (load-tile B B-tile (grid-k grid-x))      ; stage B[grid-k*8 : +8, :]
       (sync-workgroup)
       (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
-      (sync-workgroup))
-    (store-tile C-tile C (0 0))))
+      (sync-workgroup))))
