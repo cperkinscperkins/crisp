@@ -2079,10 +2079,17 @@
 ;; No %uniform-when needed.  Divergence checker is happy because there's
 ;; no conditional to check.
 
+;; Endeavor 135: binds GRID TERMS (tile-IDs), not element origins.  The bare tile forms
+;; (load-tile / store-tile / position-tile) already scale a grid coord by the tile extent,
+;; so an element origin would DOUBLE-SCALE (out of bounds for any multi-tile launch).  Per
+;; dim: NT_i = ceil(E_i/ts_i); start_i = gid_i; stride_i = ng_i; b_i = gid_i + k_i*ng_i (a
+;; TILE-ID).  Shared by tile-stride (ts = tile size) and hardware-stride :workgroup-idx
+;; (ts = get-local-work-size).
 (defun %expand-workgroup-strided-outer-loop-with-ts-syms
     (tensor-form n bindings body-forms ts-syms tile-size-expr-fn location)
-  "Workgroup-strided outer loop over chunk origins.  Per-workgroup exact
-   iter count per dim — body runs unconditionally."
+  "Workgroup-strided outer loop over TILE-IDs.  Per-workgroup exact iter count per dim —
+   body runs unconditionally, with each binding bound to a tile-ID (0-based chunk index),
+   grid-strided by the number of workgroups."
   (declare (ignore location))
   (let* ((cl-pkg (find-package :crisp-language))
          (let-sym (intern "LET" cl-pkg))
@@ -2094,10 +2101,14 @@
          (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
          (get-wg-id-sym (intern "GET-WORKGROUP-ID" cl-pkg))
          (get-num-groups-sym (intern "GET-NUM-GROUPS" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
          (plus-sym (intern "+" cl-pkg))
+         (minus-sym (intern "-" cl-pkg))
          (mul-sym (intern "*" cl-pkg))
+         (div-sym (intern "/" cl-pkg))
          (t-sym (gensym "T"))
          (e-syms (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
+         (nt-syms (loop for i from 0 below n collect (gensym (format nil "NT~A" i))))
          (gid-syms (loop for i from 0 below n collect (gensym (format nil "WGID~A" i))))
          (ng-syms (loop for i from 0 below n collect (gensym (format nil "NG~A" i))))
          (start-syms (loop for i from 0 below n collect (gensym (format nil "START~A" i))))
@@ -2127,7 +2138,7 @@
          (outer-bindings
           (append
             (list (list t-sym tensor-form))
-            ;; ts_i  = tile size (from caller)
+            ;; ts_i  = chunk size (tile size / local-work-size, from caller)
             (loop for i from 0 below n
                   for ts-sym in ts-syms
                   collect (list ts-sym (funcall tile-size-expr-fn i)))
@@ -2135,6 +2146,16 @@
             (loop for i from 0 below n
                   for e-sym in e-syms
                   collect (list e-sym (list aref-sym (list extents-tilde-sym t-sym) i)))
+            ;; nt_i  = ceil(e_i / ts_i) = (e_i + ts_i - 1) / ts_i   (number of tiles)
+            (loop for i from 0 below n
+                  for nt-sym in nt-syms
+                  for e-sym in e-syms
+                  for ts-sym in ts-syms
+                  collect (list nt-sym
+                                (list div-sym
+                                      (list plus-sym e-sym
+                                            (list minus-sym ts-sym (list to-ulong-sym 1)))
+                                      ts-sym)))
             ;; gid_i = get-workgroup-id i
             (loop for i from 0 below n
                   for gid-sym in gid-syms
@@ -2143,27 +2164,25 @@
             (loop for i from 0 below n
                   for ng-sym in ng-syms
                   collect (list ng-sym (list get-num-groups-sym i)))
-            ;; start_i  = gid_i * ts_i
+            ;; start_i  = gid_i           (this WG's first tile-id)
             (loop for i from 0 below n
                   for start-sym in start-syms
                   for gid-sym in gid-syms
-                  for ts-sym in ts-syms
-                  collect (list start-sym (list mul-sym gid-sym ts-sym)))
-            ;; stride_i = ts_i * ng_i
+                  collect (list start-sym gid-sym))
+            ;; stride_i = ng_i            (grid-stride in tile units)
             (loop for i from 0 below n
                   for stride-sym in stride-syms
-                  for ts-sym in ts-syms
                   for ng-sym in ng-syms
-                  collect (list stride-sym (list mul-sym ts-sym ng-sym)))
-            ;; iters_i  = exact count given start_i, stride_i, e_i
+                  collect (list stride-sym ng-sym))
+            ;; iters_i  = exact count over the TILE count nt_i
             (loop for i from 0 below n
                   for iters-sym in iters-syms
                   for start-sym in start-syms
                   for stride-sym in stride-syms
-                  for e-sym in e-syms
+                  for nt-sym in nt-syms
                   collect (list iters-sym
                                 (%build-exact-iter-count-form
-                                 start-sym stride-sym e-sym cl-pkg))))))
+                                 start-sym stride-sym nt-sym cl-pkg))))))
     (list let-sym outer-bindings
           (list declare-sym (list workgroup-level-sym))
           nest)))
@@ -2747,6 +2766,106 @@
      :source-location location)))
 
 
+(defun analyze-fill-tile-expression (expr env context location)
+  "(fill-tile T V) for a scratch/SLM tile — workgroup-collective fill of every element of
+   the tensor T to V.  No barrier is inserted; the caller syncs before reading.  Register
+   tiles are handled earlier in the SROA explosion and never reach here."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+      :message "fill-tile: expected (fill-tile <tile> <value>)"
+      :source-location location))
+  (let* ((tensor (second expr))
+         (val    (third expr))
+         (tnode  (analyze-expression tensor env context (append location '(1))))
+         (ttype  (semantic-node-type tnode)))
+    (unless (%tensor-type-p ttype)
+      (error 'crisp-compiler-error
+        :message "fill-tile: first argument must be a tile (vector / matrix / tensor)."
+        :source-location location))
+    (let* ((arity    (%get-tensor-arity ttype))
+           (cl-pkg   (find-package :crisp-language))
+           (ws-sym   (intern "WORKGROUP-STRIDE" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (set-sym  (intern "SET!" cl-pkg))
+           (bindings (loop repeat arity collect (gensym "FI"))))
+      (analyze-expression
+       (list ws-sym tensor bindings
+             (list set-sym (list* aref-sym tensor bindings) val))
+       env context location))))
+
+
+;; ======================================================================
+;; Endeavor 135 — matrix-multiply-tile-stride
+;;
+;; Envelope/body macro for tiled matmul.  SUGAR over the (grid-correct) tile-stride: strides
+;; C's output tiles (grid-y/grid-x as TILE-IDs), runs a K/k-step reduction loop (grid-k, the
+;; fastest-changing binding), then AUTO-STORES C-tile back to C.  The body stages + accumulates.
+;;
+;;   (matrix-multiply-tile-stride C C-tile K <k-step> (grid-y grid-x grid-k) BODY...)
+;;     =>  (tile-stride C C-tile (grid-y grid-x)
+;;           (dotimes (grid-k (/ (to-ulong K) (to-ulong <k-step>))) BODY...)
+;;           (store-tile C-tile C (grid-y grid-x)))
+;;
+;; %mmts-parse / %mmts-lower are shared with the register-tile pre-lowering in src/mma.lisp
+;; (%expand-matmul-tile-stride-register-forms).  A register-tile C-tile is a record-of-fragments
+;; the SROA explosion turns into C-tile$Fi + rewrites store-tile/mma — so a register-tile matmul
+;; is pre-lowered BEFORE the explosion (in analyze-let-with-tile-explosion) with a compile-time
+;; (M N) size-list tile-spec (a register tile has no extents~); a scratch C-tile is a real tensor
+;; and takes THIS ordinary analyzer path (tile-tensor spec).
+(defun %mmts-parse (expr location)
+  "Validate + destructure a matrix-multiply-tile-stride form.  Returns
+   (values c-form c-tile k-form k-step grid-y grid-x grid-k body)."
+  (let* ((c-tile   (third expr))
+         (k-step   (fifth expr))
+         (bindings (sixth expr))
+         (body     (nthcdr 6 expr)))
+    (declare (ignore c-tile))
+    ;; Old pre-k-step 4-arg shape: the grid bindings sit in the <k-step> slot.
+    (when (listp k-step)
+      (error 'crisp-compiler-error
+        :message "matrix-multiply-tile-stride: missing scalar <k-step> before the grid bindings — expected (matrix-multiply-tile-stride C C-tile K <k-step> (grid-y grid-x grid-k) BODY...)"
+        :source-location location))
+    (unless (and (listp bindings) (= (length bindings) 3) (every #'symbolp bindings))
+      (error 'crisp-compiler-error
+        :message "matrix-multiply-tile-stride: expected exactly three grid bindings (grid-y grid-x grid-k)"
+        :source-location location))
+    (unless body
+      (error 'crisp-compiler-error
+        :message "matrix-multiply-tile-stride: empty body"
+        :source-location location))
+    (values (second expr) (third expr) (fourth expr) k-step
+            (first bindings) (second bindings) (third bindings) body)))
+
+(defun %mmts-lower (c-form c-tile tile-spec k-form k-step grid-y grid-x grid-k body)
+  "The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop + auto-store s-expr."
+  (let* ((cl-pkg          (find-package :crisp-language))
+         (tile-stride-sym (intern "TILE-STRIDE" cl-pkg))
+         (store-tile-sym  (intern "STORE-TILE" cl-pkg))
+         (dotimes-sym     (intern "DOTIMES" cl-pkg))
+         (div-sym         (intern "/" cl-pkg))
+         (to-ulong-sym    (intern "TO-ULONG" cl-pkg))
+         (to-int-sym      (intern "TO-INT" cl-pkg)))
+    (list tile-stride-sym c-form tile-spec (list grid-y grid-x)
+          (list* dotimes-sym
+                 (list grid-k
+                       (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
+                 body)
+          ;; Auto-store: tile-IDs to int — the register-tile store explosion scales the
+          ;; tile-ID by an INT fragment count (* bty m-frags), and the scratch store's own
+          ;; to-ulong coercion accepts an int coord too.
+          (list store-tile-sym c-tile c-form
+                (list (list to-int-sym grid-y) (list to-int-sym grid-x))))))
+
+(defun analyze-matrix-multiply-tile-stride-expression (expr env context location)
+  "Scratch-tensor path for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) BODY...).
+   Lowers with the tile-tensor C-tile (tile-stride reads its extents~).  Register-tile C-tiles
+   are pre-lowered in analyze-let-with-tile-explosion, before SROA explosion, so never reach here."
+  (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
+      (%mmts-parse expr location)
+    (analyze-expression (%mmts-lower c-form c-tile c-tile k-form k-step gy gx gk body)
+                        env context location)))
+
+
 (defun register-control-analyzers ()
   "Registers all control flow expression analyzers, including loop-vector-stride,
    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,
@@ -2852,6 +2971,17 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-expression)))
+  ;; Endeavor 135 — matrix-multiply-tile-stride (scratch path) + fill-tile.
+  (let ((sym-cl (intern "MATRIX-MULTIPLY-TILE-STRIDE" (find-package :crisp-language)))
+        (sym-cc (intern "MATRIX-MULTIPLY-TILE-STRIDE" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-matrix-multiply-tile-stride-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-matrix-multiply-tile-stride-expression)))
+  (let ((sym-cl (intern "FILL-TILE" (find-package :crisp-language)))
+        (sym-cc (intern "FILL-TILE" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-fill-tile-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-fill-tile-expression)))
   (let ((sym-cl (intern "LOAD-LOCAL" (find-package :crisp-language)))
         (sym-cc (intern "LOAD-LOCAL" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-local-expression)
