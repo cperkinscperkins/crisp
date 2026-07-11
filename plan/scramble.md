@@ -741,7 +741,7 @@ MMA
 [x] fill-tile / clear-tile  
 - [x] multiple multiplications, one macro
 - [x] align and :contiguous-term
-[ ] #+ and #- support? Might be useful for benchmarks / testing, so as to have one file.
+[ ] def-parameter, -D, #+ and #- support? Might be useful for benchmarks / testing, so as to have one file.
 [ ] CUTensorMap as implicit arg for kernels. 
 [ ] Chapter 1 - async tile   cp.async and OpGroupAsyncCopy
 [ ] Chapter 1.5 - async tiles  with CuTensorMap and LSC 2D Block Loads in Intel Xe
