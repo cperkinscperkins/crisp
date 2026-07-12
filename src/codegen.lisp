@@ -3173,6 +3173,29 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (setf (cffi:mem-aref args 'llvm-value-ref 1) src-ptr)
     (llvm-build-call2 builder fn-type fn args 2 "")))
 
+(defun %gen-nvvm-cp-async-commit-group (builder module)
+  "Emits @llvm.nvvm.cp.async.commit.group() — closes the current async-copy group
+   (the canonical Ampere cp.async idiom; no mbarrier object required)."
+  (let* ((fn-name  "llvm.nvvm.cp.async.commit.group")
+         (fn-type  (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil))
+         (fn       (%spirv-get-or-create-fn module fn-name (llvm-void-type)
+                                            (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "")))
+
+(defun %gen-nvvm-cp-async-wait-group (builder module n)
+  "Emits @llvm.nvvm.cp.async.wait.group(i32 N) — blocks until all but the N most
+   recent async-copy groups have completed.  N=0 waits for every committed group."
+  (let* ((fn-name    "llvm.nvvm.cp.async.wait.group")
+         (i32-type   (llvm-int32-type))
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        arr))
+         (fn-type    (llvm-function-type (llvm-void-type) param-types 1 nil))
+         (fn         (%spirv-get-or-create-fn module fn-name (llvm-void-type) param-types 1))
+         (args       (cffi:foreign-alloc 'llvm-value-ref :count 1)))
+    (setf (cffi:mem-aref args 'llvm-value-ref 0) (llvm-const-int i32-type n nil))
+    (llvm-build-call2 builder fn-type fn args 1 "")))
+
 (defun %gen-nvvm-mbarrier-init-shared (builder module mbarrier-ptr count-val)
   "Emits @llvm.nvvm.mbarrier.init.shared(ptr addrspace(3), i32 count)."
   (let* ((fn-name    "llvm.nvvm.mbarrier.init.shared")
@@ -3338,9 +3361,39 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (%ptx-barrier builder module)
     (values cell-val nil)))
 
+(defmethod generate-node-ir ((node semantic-cp-async-copy-elem) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 136 (Chapter 1): one non-blocking cp.async of a single element,
+   SLM tile (addrspace 3) <- global source (addrspace 1).  We generate both aref
+   nodes and reuse their 3rd return value (the element address / l-value); the
+   loaded r-values are dead and get DCE'd by opt."
+  (multiple-value-bind (dst-v dst-ign dst-ptr)
+      (generate-node-ir (semantic-cp-async-copy-elem-dst-aref-node node) builder module var-env
+                        di-builder di-scope location-map)
+    (declare (ignore dst-v dst-ign))
+    (multiple-value-bind (src-v src-ign src-ptr)
+        (generate-node-ir (semantic-cp-async-copy-elem-src-aref-node node) builder module var-env
+                          di-builder di-scope location-map)
+      (declare (ignore src-v src-ign))
+      (unless (and dst-ptr src-ptr)
+        (error "%cp-async-copy-elem: aref did not yield an element pointer (dst ~A src ~A)"
+               dst-ptr src-ptr))
+      (%gen-nvvm-cp-async-elem builder module dst-ptr src-ptr
+                               (semantic-cp-async-copy-elem-elem-bytes node))
+      (values nil nil))))
+
+(defmethod generate-node-ir ((node semantic-cp-async-commit) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 136 (Chapter 1): close the current async-copy group (cp.async.commit_group)."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (%gen-nvvm-cp-async-commit-group builder module)
+  (values nil nil))
+
 (defmethod generate-node-ir ((node semantic-nvvm-cp-async-tile-copy) builder module var-env
                               di-builder di-scope location-map)
-  "Phase B.1 NVPTX: emit cp.async.ca.shared.global + mbarrier.arrive.noinc."
+  "Phase B.1 NVPTX: emit cp.async.ca.shared.global + mbarrier.arrive.noinc.
+   NOTE: superseded by the cooperative %cp-async-copy-elem path (Endeavor 136);
+   retained for reference but no longer produced by the analyzer."
   (let* ((src-node     (semantic-nvvm-cp-async-tile-copy-src-node node))
          (tile-node    (semantic-nvvm-cp-async-tile-copy-tile-node node))
          (origin-node  (first (semantic-nvvm-cp-async-tile-copy-origin-nodes node)))
@@ -3393,23 +3446,12 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-nvvm-cp-async-wait) builder module var-env
                               di-builder di-scope location-map)
-  "Phase B.1 NVPTX: emit mbarrier.arrive and loop on mbarrier.test_wait."
-  (let* ((barrier-node (semantic-nvvm-cp-async-wait-barrier-node node))
-         (barrier-val  (if barrier-node
-                           (generate-node-ir barrier-node builder module var-env
-                                             di-builder di-scope location-map)
-                           (error "await missing barrier-node!")))
-         (barrier-storage (llvm-build-extract-value builder barrier-val 0 "barrier_storage"))
-         (barrier-ptr     (llvm-build-extract-value builder barrier-storage 0 "barrier_ptr"))
-         (state-val    (%gen-nvvm-mbarrier-arrive-shared builder module barrier-ptr))
-         (loop-bb      (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "wait_loop"))
-         (cont-bb      (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "wait_cont")))
-    (llvm-build-br builder loop-bb)
-    (llvm-position-builder-at-end builder loop-bb)
-    (let ((is-ready (%gen-nvvm-mbarrier-test-wait-shared builder module barrier-ptr state-val)))
-      (llvm-build-cond-br builder is-ready cont-bb loop-bb))
-    (llvm-position-builder-at-end builder cont-bb)
-    (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+  "Endeavor 136 (Chapter 1): (await barrier) lowers to cp.async.wait_group(0) — block
+   until every committed async-copy group has landed.  The barrier object is not needed
+   for the commit_group idiom, so it is ignored here."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (%gen-nvvm-cp-async-wait-group builder module 0)
+  (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
 
 
 

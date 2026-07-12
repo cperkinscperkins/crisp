@@ -382,6 +382,21 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   type
   source-location)
 
+;; Endeavor 136 (Chapter 1) — per-element async copy + commit for the cooperative
+;; cp.async tile load.  The async load-tile-at expands to the sync coop loop with a
+;; %cp-async-copy-elem body (one non-blocking cp.async per element, reusing the aref
+;; element-address machinery) + a trailing %cp-async-commit; await -> wait_group(0).
+(defstruct semantic-cp-async-copy-elem
+  dst-aref-node ;; semantic aref node for the dest tile element (addrspace 3)
+  src-aref-node ;; semantic aref node for the source element (addrspace 1)
+  elem-bytes    ;; 4 or 8
+  type
+  source-location)
+
+(defstruct semantic-cp-async-commit
+  type
+  source-location)
+
 (defstruct semantic-make-view
   "Represents a make-cell/vector/matrix/tensor view construction.
    Creates a new Storage Handle that reinterprets an existing one.

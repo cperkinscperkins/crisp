@@ -2125,11 +2125,15 @@
     (nreverse expectations)))
 
 (defun validate-ptx-mbarrier (file ptx-string)
-  "Validates that the PTX string contains mbarrier.init, cp.async.mbarrier.arrive, and mbarrier.test_wait."
+  "Validates the async load-tile idiom (Endeavor 136 Chapter 1): a cooperative
+   cp.async copy into shared memory, closed with cp.async.commit_group, and an
+   (await ...) that lowers to cp.async.wait_group.  This replaces the earlier
+   mbarrier-based lowering (mbarrier.init / cp.async.mbarrier.arrive /
+   mbarrier.test_wait) which under-copied N-D tiles and was never metal-correct."
   (declare (ignore file))
-  (let ((expected '("mbarrier.init.shared.b64"
-                    "cp.async.mbarrier.arrive.noinc.shared.b64"
-                    "mbarrier.test_wait.shared.b64")))
+  (let ((expected '("cp.async.ca.shared.global"
+                    "cp.async.commit_group"
+                    "cp.async.wait_group")))
     (dolist (exp expected)
       (unless (search exp ptx-string)
         (format *error-output* "FAIL: Expected PTX string not found:~%  '~a'~%" exp)

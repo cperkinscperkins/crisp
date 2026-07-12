@@ -1,0 +1,47 @@
+;; Endeavor 136 (mm-async, Chapter 1) — the ASYNC twin of 135/02 (grid-stride correctness).
+;;
+;; ONE source file run on BOTH metals (TEST-HOIST[CUDA] and TEST-HOIST[L0]), verifying
+;; C = A·B via the 134 --mma-test stride-agnostic host reference, but now with the tiles
+;; staged through async (make-async-barrier) + :barrier load-tiles + (await barrier).
+;;
+;; On PTX this exercises the cp.async coop-loop + commit_group/wait_group path.  On L0
+;; :barrier is currently a no-op (the OpGroupAsyncCopy path is Chapter 1.5 / still blocked
+;; on the IGC BiFModule gap), so the L0 run stays on the sync fallback — which must ALSO
+;; stay MMA_CORRECT.  So this doubles as a "async source compiles + is correct on both
+;; backends" divergence catcher.
+;;
+;; GRID-STRIDE (OQ3): C is 8x8 with a 4x4 tile => 2x2 = 4 output tiles, but we launch a
+;; SINGLE workgroup (global=local=1), so that one workgroup must STRIDE over all four
+;; C-tiles — the multi-output-tile async path, not the degenerate grid==#tiles case.
+;; K=8, k-step=4 => 2 grid-k reduction steps per tile.  Accumulator reset on grid-k==0.
+;;
+;; SKIP-WITH[--differentiate]: "tile-macro AD is a later chapter; endeavor 136 is forward-only"
+;;
+;; MMA-DIMS: 8 8 8
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mm_async_grid_stride (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((A-tile   (make-scratch-matrix float (4 4)))
+        (B-tile   (make-scratch-matrix float (4 4)))
+        (C-tile   (make-scratch-matrix float (4 4)))
+        (K        (inner-dimension A B))
+        (barrier  (make-async-barrier)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0))
+        (fill-tile C-tile 0.0))                          ; reset accumulator at the start of each tile
+      (load-tile A A-tile (grid-y grid-k) :barrier barrier)   ; async-stage A block at (grid-y, grid-k)
+      (load-tile B B-tile (grid-k grid-x) :barrier barrier)   ; async-stage B block at (grid-k, grid-x)
+      (await barrier)                                         ; cp.async.wait_group 0 (PTX) / sync (L0)
+      (dotimes (i 4)
+        (dotimes (j 4)
+          (dotimes (kk 4)
+            (set! (~ C-tile i j)
+                  (+ (~ C-tile i j)
+                     (* (~ A-tile i kk) (~ B-tile kk j))))))))))

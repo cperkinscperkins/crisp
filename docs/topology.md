@@ -338,6 +338,31 @@ Topologically Aware Async
 
 Allocates a topologically aware data-movement barrier. Depending on the memory scope it spans, the Crisp compiler lowers this into the appropriate hardware construct (e.g., an `mbarrier` object in Shared Local Memory for TMA, or an asynchronous `cp.async.commit_group` fence). This barrier is strictly used to synchronize the state of the hardware DMA engine with the execution unit, not for arbitrary control flow.
 
+```
+(make-async-barrier &key type mode)
+
+; example
+(make-async-barrier :type :global :mode :linear)
+```
+
+There is also an _explicit_ variant of `make-async-barrier`.  The `:type` and `:mode` keys can be provided to tell the compiler exactly which async data moving APIs you want used, regardless of the topology or hardware profile in the current compilation context.  This is generally used for degenerate cases, for example, on a modern GPU architecture block-wise data copying between global and local memory is the most peformant, but there might be reasons to use the older linear data movement instructions (like `cp.async` or `OpGroupAsyncCopy`).  
+Care should be taken when using these, as they make your code brittle and can easily break it. 
+
+#### `:type` 
+
+The `:type` choices are the same as used with `interconnect` in a `def-topology`, with the addition of `:global` to signify global/local memory movement (device VRAM).
+
+- `:global`
+- `:p2p`
+- `:pcie`
+- `:pgas-fabric`
+
+#### `:mode`
+
+When the `:type` is `:global`, then the mode can be either
+- `:linear`  - selects `cp.async` when targeting PTX, ro `OpGroupAsyncCopy` when targeting SPIR-V.
+- `:block` - select `CuTensorMap` ops when targeting PTX, or Intel LSC 2D Block Loads when targeting SPIR-V.
+
 ### `load-tile`
 
 `(load-tile src dest (... grid-y grid-x) &key transpose identity barrier) => nil`

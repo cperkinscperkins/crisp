@@ -263,6 +263,89 @@
                   (list sync-workgroup-sym))))))
 
 
+;; Endeavor 136 (Chapter 1) — async variant of %expand-load-tile-at-form.  Same cooperative
+;; N-D coop loop, but each in-bounds element is a non-blocking (%cp-async-copy-elem tile src)
+;; instead of a (set!), and the loop is followed by (%cp-async-commit) instead of
+;; (sync-workgroup) — the await lowers to cp.async.wait_group(0).  OOB elements still use a
+;; sync (set! identity) — immediate, and unaffected by the async group.
+(defun %expand-async-load-tile-at-form (expr location)
+  "Async (cp.async) expansion of (load-tile-at SRC TILE (ORIGIN...) &key (identity 0)
+   transpose barrier).  Cooperative cp.async copy + commit_group; the matching await
+   emits wait_group(0)."
+  (let* ((src-form (second expr))
+         (tile-form (third expr))
+         (origin-list (fourth expr))
+         (key-args (nthcdr 4 expr)))
+    (unless (and (listp origin-list) (>= (length origin-list) 1))
+      (error 'crisp-compiler-error
+        :message "load-tile-at: origin must be a non-empty list of coord forms"
+        :source-location location))
+    (let* ((identity-form (%extract-key-arg key-args :identity 0))
+           (transpose-form (%extract-key-arg key-args :transpose nil))
+           (n (length origin-list))
+           (perm (%tlc-transpose-permutation n transpose-form location))
+           (cl-pkg (find-package :crisp-language))
+           (let-sym (intern "LET" cl-pkg))
+           (progn-sym (intern "PROGN" cl-pkg))
+           (if-sym (intern "IF" cl-pkg))
+           (set-sym (intern "SET!" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+           (plus-sym (intern "+" cl-pkg))
+           (lt-sym (intern "<" cl-pkg))
+           (and-sym (intern "AND" cl-pkg))
+           (cp-async-copy-sym (intern "%CP-ASYNC-COPY-ELEM" cl-pkg))
+           (cp-async-commit-sym (intern "%CP-ASYNC-COMMIT" cl-pkg))
+           (src-sym (gensym "SRC"))
+           (tile-sym (gensym "TILE"))
+           (ident-sym (gensym "IDENT"))
+           (origin-syms (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
+           (tile-coord-syms (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
+           (tile-extent-syms (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
+           (global-extent-syms (loop for i from 0 below n collect (gensym (format nil "GE~A" i))))
+           (lid-syms (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
+           (src-coord-exprs (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
+           (tile-aref (cons aref-sym (cons tile-sym tile-coord-syms)))
+           (src-aref (cons aref-sym (cons src-sym src-coord-exprs)))
+           (bounds-form (%tlc-all-in-bounds-form n src-coord-exprs
+                                                 global-extent-syms lt-sym and-sym))
+           ;; in-bounds -> async copy;  out-of-bounds -> sync identity store.
+           (inner-body (list if-sym
+                             bounds-form
+                             (list cp-async-copy-sym tile-aref src-aref)
+                             (list set-sym tile-aref ident-sym)))
+           (loop-nest (%tlc-coop-loop-skeleton n tile-sym nil tile-coord-syms
+                                               tile-extent-syms lid-syms lws-syms
+                                               inner-body cl-pkg))
+           (outer-bindings
+            (append
+              (list (list src-sym src-form)
+                    (list tile-sym tile-form)
+                    (list ident-sym identity-form))
+              (loop for i from 0 below n
+                    for o-sym in origin-syms
+                    collect (list o-sym (list to-ulong-sym (nth i origin-list))))
+              (loop for i from 0 below n
+                    for te-sym in tile-extent-syms
+                    collect (list te-sym (list aref-sym (list extents-tilde-sym tile-sym) i)))
+              (loop for i from 0 below n
+                    for ge-sym in global-extent-syms
+                    collect (list ge-sym (list aref-sym (list extents-tilde-sym src-sym) i)))
+              (loop for i from 0 below n
+                    for lid-sym in lid-syms
+                    collect (list lid-sym (list get-local-id-sym i)))
+              (loop for i from 0 below n
+                    for lws-sym in lws-syms
+                    collect (list lws-sym (list get-lws-sym i))))))
+      (list let-sym outer-bindings
+            (list progn-sym
+                  loop-nest
+                  (list cp-async-commit-sym))))))
+
 ;; src/analysis/control.lisp
 (defun %expand-store-tile-at-form (expr location)
   "Pure expansion of (store-tile-at TILE DEST (ORIGIN...) &key transformF transpose).
@@ -428,25 +511,39 @@
     (when (and (getf key-args :barrier) (getf key-args :transformF))
        (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
     (if (and barrier-form (eq *target-backend* :ptx))
-        (let* ((src-form (second expr))
-               (tile-form (third expr))
-               (origin-list (fourth expr))
-               (src-node (analyze-expression src-form env context (append location '(1))))
-               (tile-node (analyze-expression tile-form env context (append location '(2))))
-               (origin-nodes (loop for o in origin-list for i from 0
-                                   collect (analyze-expression
-                                            o env context
-                                            (append location (list 3 i)))))
-               (barrier-node (analyze-expression barrier-form env context location)))
-          (make-semantic-nvvm-cp-async-tile-copy
-           :src-node src-node
-           :tile-node tile-node
-           :origin-nodes origin-nodes
-           :barrier-node barrier-node
-           :type 'ulong
-           :source-location location))
+        ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
+        (analyze-expression (%expand-async-load-tile-at-form expr location)
+                            env context location)
         (analyze-expression (%expand-load-tile-at-form expr location)
                             env context location))))
+
+(defun analyze-%cp-async-copy-elem-expression (expr env context location)
+  "Analyzer for (%cp-async-copy-elem <dst-aref> <src-aref>) — one non-blocking cp.async of a
+   single element, dst (SLM) <- src (global).  Both operands are aref forms; codegen grabs
+   each element's address (the aref's 3rd return value) and emits cp.async.ca.shared.global."
+  (let* ((dst-node (analyze-expression (second expr) env context (append location '(1))))
+         (src-node (analyze-expression (third expr) env context (append location '(2))))
+         (elem-type (semantic-node-type dst-node))
+         (elem-bytes (case (if (listp elem-type) (first elem-type) elem-type)
+                       ((int uint float) 4)
+                       ((long ulong double) 8)
+                       (t (error 'crisp-compiler-error
+                            :message (format nil "%cp-async-copy-elem: element type ~S needs 4 or 8 bytes" elem-type)
+                            :source-location location)))))
+    (make-semantic-cp-async-copy-elem
+     :dst-aref-node dst-node
+     :src-aref-node src-node
+     :elem-bytes elem-bytes
+     :type 'nil
+     :source-location location)))
+
+(defun analyze-%cp-async-commit-expression (expr env context location)
+  "Analyzer for (%cp-async-commit) — emits cp.async.commit_group."
+  (declare (ignore env context))
+  (unless (= (length expr) 1)
+    (error 'crisp-compiler-error :message "%cp-async-commit: takes no arguments"
+      :source-location location))
+  (make-semantic-cp-async-commit :type 'nil :source-location location))
 
 
 (defun analyze-store-tile-at-expression (expr env context location)
@@ -3023,4 +3120,15 @@
   (let ((sym-cl (intern "MAKE-ASYNC-BARRIER" (find-package :crisp-language)))
         (sym-cc (intern "MAKE-ASYNC-BARRIER" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-make-async-barrier-expression)
-    (setf (gethash sym-cc *expression-analyzers*) #'analyze-make-async-barrier-expression)))
+    (setf (gethash sym-cc *expression-analyzers*) #'analyze-make-async-barrier-expression))
+  ;; Endeavor 136 (Chapter 1): internal forms produced by the async load-tile-at expansion.
+  (let ((sym-cl (intern "%CP-ASYNC-COPY-ELEM" (find-package :crisp-language)))
+        (sym-cc (intern "%CP-ASYNC-COPY-ELEM" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%cp-async-copy-elem-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%cp-async-copy-elem-expression)))
+  (let ((sym-cl (intern "%CP-ASYNC-COMMIT" (find-package :crisp-language)))
+        (sym-cc (intern "%CP-ASYNC-COMMIT" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%cp-async-commit-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%cp-async-commit-expression))))
