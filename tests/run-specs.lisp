@@ -2227,28 +2227,29 @@
 
 (defun validate-cuda-shared-mem (crisp-file cu-files)
   "Validates that a kernel with a local tile emits:
-   - shared-memory offset = 0 for the tile ptr
-   - non-zero sharedMemBytes in cuLaunchKernel
-   - kernelParams[21] (tile 6 + v 6 + out 6 + barrier 3)"
+   - shared-memory offset = 0 for the tile ptr (the tensor form `_ptr = 0ULL;`)
+   - sharedMemBytes = 32 in cuLaunchKernel (4-element ulong tile; Endeavor 136 made the
+     async barrier a phantom, so there is no longer a +8-byte mbarrier)
+   - kernelParams[18] (tile 6 + v 6 + out 6; the phantom barrier contributes no params)"
   (declare (ignore crisp-file))
   (if (null cu-files)
       (progn (format t "FAIL: No .cu files generated~%") nil)
       (let ((passed t))
         (dolist (cu cu-files)
           (let ((content (uiop:read-file-string cu)))
-            (unless (search "_ptr = 0;" content)
+            (unless (search "_ptr = 0ULL;" content)
               (format t "FAIL: ~a missing shared-mem offset=0 for tile ptr~%" (file-namestring cu))
               (setf passed nil))
             (let ((launch-pos (search "cuLaunchKernel" content)))
               (when launch-pos
                 (let ((launch-region (subseq content launch-pos
                                              (min (+ launch-pos 300) (length content)))))
-                  (unless (search "40," launch-region)
-                    (format t "FAIL: ~a cuLaunchKernel should have sharedMemBytes=40 for 4-element tile + mbarrier~%"
+                  (unless (search "32, 0," launch-region)
+                    (format t "FAIL: ~a cuLaunchKernel should have sharedMemBytes=32 for 4-element tile (phantom barrier)~%"
                             (file-namestring cu))
                     (setf passed nil)))))
-            (unless (search "kernelParams[21]" content)
-              (format t "FAIL: ~a expected kernelParams[21] for tile+v+out+barrier~%" (file-namestring cu))
+            (unless (search "kernelParams[18]" content)
+              (format t "FAIL: ~a expected kernelParams[18] for tile+v+out (phantom barrier, no param)~%" (file-namestring cu))
               (setf passed nil))))
         (when passed
           (format t "PASS: .cu local tile test passed~%"))

@@ -40,7 +40,9 @@
         (B-tile   (make-scratch-matrix float (8 8)))     ; SLM: 8×N (one K-step of B)
         (C-tile   (make-register-tile float (16 8) 0.0))
         (K        (inner-dimension A B))
-        (barrier  (make-async-barrier)))
+        ;; Explicit :type/:mode pins the cp.async LINEAR path even when a future
+        ;; topology-aware default would pick :block on a modern arch (e.g. sm_90).
+        (barrier  (make-async-barrier :type :global :mode :linear)))
     (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
       (load-tile A A-tile (grid-y grid-k) :barrier barrier)   ; async-stage A[gy-block, gk-block]
       (load-tile B B-tile (grid-k grid-x) :barrier barrier)   ; async-stage B[gk-block, gx-block]

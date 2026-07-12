@@ -32,7 +32,7 @@
         (B-tile   (make-scratch-matrix float (4 4)))
         (C-tile   (make-scratch-matrix float (4 4)))
         (K        (inner-dimension A B))
-        (barrier  (make-async-barrier)))
+        (barrier  (make-async-barrier :type :global :mode :linear)))
     (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
       (when (= grid-k (to-ulong 0))
         (fill-tile C-tile 0.0))                          ; reset accumulator at the start of each tile

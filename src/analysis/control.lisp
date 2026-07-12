@@ -2815,15 +2815,48 @@
                key-args)
        env context location))))
 
+(defun %parse-async-barrier-keys (expr location)
+  "Parse (make-async-barrier &key type mode) -> (values barrier-type barrier-mode).
+   Omitted keys default to :global / :linear (today's topology-unaware default).
+   Validates: only :global type and :linear mode are implemented in Chapter 1."
+  (let ((keys (rest expr))
+        (btype :global)
+        (bmode :linear))
+    (unless (evenp (length keys))
+      (error 'crisp-compiler-error
+        :message "make-async-barrier: keys must be :type/:mode value pairs"
+        :source-location location))
+    (loop for (k v) on keys by #'cddr do
+      (cond
+        ((eq k :type) (setf btype v))
+        ((eq k :mode) (setf bmode v))
+        (t (error 'crisp-compiler-error
+             :message (format nil "make-async-barrier: unknown key ~S (expected :type or :mode)" k)
+             :source-location location))))
+    (unless (member btype '(:global))
+      (error 'crisp-compiler-error
+        :message (format nil "make-async-barrier :type ~S not supported yet — only :global (global/local DMA) is implemented; :p2p/:pcie/:pgas-fabric are future topology work" btype)
+        :source-location location))
+    (unless (member bmode '(:linear))
+      (error 'crisp-compiler-error
+        :message (format nil "make-async-barrier :mode ~S not supported yet — only :linear (cp.async / OpGroupAsyncCopy) is implemented; :block (CuTensorMap / LSC 2D block) is Chapter 1.5" bmode)
+        :source-location location))
+    (values btype bmode)))
+
 (defun analyze-make-async-barrier-expression (expr env context location)
-  (declare (ignore expr))
-  (let ((cell-node (analyze-scratch-expression '(make-scratch-cell ulong) env context location)))
-    (if (eq crisp.compiler:*target-backend* :ptx)
-        (make-semantic-make-async-barrier
-         :cell-node cell-node
-         :type (semantic-node-type cell-node)
-         :source-location location)
-        cell-node)))
+  "Endeavor 136: (make-async-barrier &key type mode).  :linear is a PHANTOM barrier —
+   the commit_group/wait_group (PTX) and OpGroupAsyncCopy (SPV) idioms need no barrier
+   object, so we allocate NO shared memory and codegen a constant 0.  The node carries
+   :type/:mode for future topology-aware dispatch (approach A: record now, thread the
+   load-tile mode-dispatch when :block / arch-defaults land)."
+  (declare (ignore env context))
+  (multiple-value-bind (btype bmode) (%parse-async-barrier-keys expr location)
+    (make-semantic-make-async-barrier
+     :cell-node nil                 ;; phantom — no mbarrier SLM object
+     :barrier-type btype
+     :barrier-mode bmode
+     :type 'ulong
+     :source-location location)))
 
 
 (defun analyze-make-c-handle (expr env context location)

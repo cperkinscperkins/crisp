@@ -366,7 +366,11 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 ;; loop, which lands in B.2.
 (defstruct semantic-make-async-barrier
   type
-  cell-node
+  cell-node          ;; Endeavor 136: NIL for a phantom :linear barrier (commit_group /
+                     ;; OpGroupAsyncCopy need no object).  A future :block/mbarrier mode
+                     ;; can set this to an 8-byte SLM mbarrier cell node.
+  barrier-type       ;; the :type key — :global (global/local DMA); only one supported now
+  barrier-mode       ;; the :mode key — :linear (cp.async / OpGroupAsyncCopy); only one now
   source-location)
 
 (defstruct semantic-nvvm-cp-async-tile-copy

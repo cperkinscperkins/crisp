@@ -3336,7 +3336,13 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-make-async-barrier) builder module var-env
                               di-builder di-scope location-map)
-  "Phase B.1 NVPTX: alloc mbarrier and emit mbarrier.init."
+  "Endeavor 136: a :linear async barrier is a PHANTOM — commit_group/wait_group (PTX)
+   and OpGroupAsyncCopy (SPV) need no barrier object.  When cell-node is NIL (the only
+   case in Chapter 1) emit NOTHING and return a constant 0 (the bound variable is unused,
+   so opt DCEs it).  The legacy mbarrier.init + bar.sync path below runs only if a future
+   :block/mbarrier mode sets cell-node."
+  (unless (semantic-make-async-barrier-cell-node node)
+    (return-from generate-node-ir (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
   (let* ((cell-val (generate-node-ir (semantic-make-async-barrier-cell-node node) builder module var-env
                                      di-builder di-scope location-map))
          (i32-type (llvm-int32-type))

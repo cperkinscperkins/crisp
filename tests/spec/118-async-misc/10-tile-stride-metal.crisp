@@ -2,10 +2,10 @@
 ;; TEST-HOIST[L0]: validate-l0-strategy-content
 ;; STRATEGY-EXPECT[L0]: zeKernelSetGroupSize(kernel, 16, 1, 1)
 ;; STRATEGY-EXPECT[L0]: // :derive-from tensor 'IN' (length=in_length) used for check-thread-bounds; grid uses occupancy
-;; STRATEGY-EXPECT[L0]: zeKernelSetArgumentValue(kernel, 3, 64ULL, nullptr);
+;; STRATEGY-EXPECT[L0]: zeKernelSetArgumentValue(kernel, 0, 64ULL, nullptr);
 ;; TEST-HOIST[CUDA]: validate-cuda-strategy-content
 ;; STRATEGY-EXPECT[CUDA]: // derive-from tensor 'IN' (length=in_length) used for check-thread-bounds; grid uses occupancy
-;; STRATEGY-EXPECT[CUDA]: cuOccupancyMaxActiveBlocksPerMultiprocessor(&_blocksPerSM, kernel, 16, 72)
+;; STRATEGY-EXPECT[CUDA]: cuOccupancyMaxActiveBlocksPerMultiprocessor(&_blocksPerSM, kernel, 16, 64)
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 (def-type tile-t (vector float :address-space :local :align :compact))
@@ -22,7 +22,7 @@
   (let ((tile (make-scratch-vector float 16)))
     ;; tile-stride iterates over the global grid, pulling 16-element tiles
     (tile-stride IN (16) (grid-x)
-      (let ((barrier (make-async-barrier)))
+      (let ((barrier (make-async-barrier :type :global :mode :linear)))
         ;; load-tile uses the implicit grid-x to fetch a tile into local memory
         (load-tile IN tile (grid-x) :barrier barrier)
         (await barrier)

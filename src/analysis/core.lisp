@@ -542,9 +542,11 @@
   (dolist (arg args) (scan-form arg)))
 
 (defmethod scan-operator ((op (eql 'make-async-barrier)) args)
-  "Scans make-async-barrier and delegates to make-scratch-cell to allocate an 8-byte mbarrier object."
+  "Endeavor 136: the :linear async barrier is a PHANTOM (commit_group / OpGroupAsyncCopy
+   need no object), so it allocates NO shared memory.  A future :block/mbarrier mode will
+   re-introduce an 8-byte SLM mbarrier cell here."
   (declare (ignore args))
-  (scan-operator 'make-scratch-cell '(ulong)))
+  nil)
 
 
 
