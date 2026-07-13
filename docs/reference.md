@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-11T15:52:31.054409Z
+Generated on 2026-07-13T06:17:34.724561Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -54,6 +54,13 @@ Generated on 2026-07-11T15:52:31.054409Z
 
 
 ---
+### DEFUN `%EXPAND-ASYNC-LOAD-TILE-AT-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Async (cp.async) expansion of (load-tile-at SRC TILE (ORIGIN...) &key (identity 0)  >    transpose barrier).  Cooperative cp.async copy + commit_group; the matching await  >    emits wait_group(0).
+
+
+---
 ### DEFUN `%EXPAND-STORE-TILE-AT-FORM`
 - **Args**: `(EXPR LOCATION)`
 
@@ -92,6 +99,34 @@ Generated on 2026-07-11T15:52:31.054409Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-at-form.
+
+
+---
+### DEFUN `%EXPAND-SPIRV-ASYNC-LOAD-TILE-AT-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Endeavor 136 (Chapter 1, SPV) — async load-tile-at via OpGroupAsyncCopy.  >    Rank 1: one collective (%spirv-async-copy <tile[0]> <src[ORIGIN]> <tile-length> BAR)  >    of the whole contiguous run.  Rank 2 (M x N tile from a strided source): a runtime  >    (dotimes (r M) (%spirv-async-copy <tile[r,0]> <src[ORIGIN0+r,ORIGIN1]> N BAR)) — one  >    OpGroupAsyncCopy PER ROW, each copying N contiguous elements, its event chained  >    through the barrier's spirv.Event slot.  The matching await lowers to OpGroupWaitEvents.
+
+
+---
+### DEFUN `ANALYZE-%SPIRV-ASYNC-COPY-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (%spirv-async-copy <dst-aref> <src-aref> <num> BARRIER) — one collective  >    OpGroupAsyncCopy.  dst/src are aref forms (codegen reuses their element-address 3rd  >    value); num is the element count; BARRIER carries the chained spirv.Event slot.
+
+
+---
+### DEFUN `ANALYZE-%CP-ASYNC-COPY-ELEM-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (%cp-async-copy-elem <dst-aref> <src-aref>) — one non-blocking cp.async of a  >    single element, dst (SLM) <- src (global).  Both operands are aref forms; codegen grabs  >    each element's address (the aref's 3rd return value) and emits cp.async.ca.shared.global.
+
+
+---
+### DEFUN `ANALYZE-%CP-ASYNC-COMMIT-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (%cp-async-commit) — emits cp.async.commit_group.
 
 
 ---
@@ -543,8 +578,18 @@ Generated on 2026-07-11T15:52:31.054409Z
 
 
 ---
+### DEFUN `%PARSE-ASYNC-BARRIER-KEYS`
+- **Args**: `(EXPR LOCATION)`
+
+  > Parse (make-async-barrier &key type mode) -> (values barrier-type barrier-mode).  >    Omitted keys default to :global / :linear (today's topology-unaware default).  >    Validates: only :global type and :linear mode are implemented in Chapter 1.
+
+
+---
 ### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 136: (make-async-barrier &key type mode).  :linear is a PHANTOM barrier —  >    the commit_group/wait_group (PTX) and OpGroupAsyncCopy (SPV) idioms need no barrier  >    object, so we allocate NO shared memory and codegen a constant 0.  The node carries  >    :type/:mode for future topology-aware dispatch (approach A: record now, thread the  >    load-tile mode-dispatch when :block / arch-defaults land).
+
 
 ---
 ### DEFUN `ANALYZE-MAKE-C-HANDLE`
@@ -2642,10 +2687,17 @@ Generated on 2026-07-11T15:52:31.054409Z
 
 
 ---
+### DEFUN `%MODULE-USES-ASYNC-COPY-BUILTIN-P`
+- **Args**: `(MODULE)`
+
+  > Endeavor 136 (SPV): T if MODULE declares the OpenCL async-copy/wait builtins  >    (OpGroupAsyncCopy / OpGroupWaitEvents lowering).  The wait builtin has a single  >    element-type-independent mangled name and every async load-tile is paired with an  >    await, so it is a reliable, cheap indicator.  Like native_*, these are only lowered  >    to opcodes when !opencl.ocl.version metadata is present.
+
+
+---
 ### DEFUN `%EMIT-OPENCL-VERSION-METADATA`
 - **Args**: `(MODULE)`
 
-  > Endeavor 128: add !opencl.ocl.version / !opencl.spir.version = {2,0} so the  >    LLVM->SPIR-V translator runs OpenCL-builtin recognition and maps native_*  >    mangled calls to native_* OpenCL.std ExtInst. Without this metadata the calls  >    translate to imported OpFunctionCall (unresolved at zeKernelCreate on L0).
+  > Endeavor 128: add !opencl.ocl.version / !opencl.spir.version = {2,0} so the  >    LLVM->SPIR-V translator runs OpenCL-builtin recognition and maps native_*  >    mangled calls to native_* OpenCL.std ExtInst. Without this metadata the calls  >    translate to imported OpFunctionCall (unresolved at zeKernelCreate on L0).  >    Endeavor 136 reuses this for the async_work_group_copy / wait_group_events builtins.
 
 
 ---
@@ -2978,6 +3030,20 @@ Generated on 2026-07-11T15:52:31.054409Z
 
 
 ---
+### DEFUN `%GEN-NVVM-CP-ASYNC-COMMIT-GROUP`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.cp.async.commit.group() — closes the current async-copy group  >    (the canonical Ampere cp.async idiom; no mbarrier object required).
+
+
+---
+### DEFUN `%GEN-NVVM-CP-ASYNC-WAIT-GROUP`
+- **Args**: `(BUILDER MODULE N)`
+
+  > Emits @llvm.nvvm.cp.async.wait.group(i32 N) — blocks until all but the N most  >    recent async-copy groups have completed.  N=0 waits for every committed group.
+
+
+---
 ### DEFUN `%GEN-NVVM-MBARRIER-INIT-SHARED`
 - **Args**: `(BUILDER MODULE MBARRIER-PTR COUNT-VAL)`
 
@@ -3052,6 +3118,34 @@ Generated on 2026-07-11T15:52:31.054409Z
 - **Args**: `(TILE-TYPE-SPEC)`
 
   > Returns the element type symbol from a (vector ELEM ...) or (tensor  >    ELEM ...) type spec, walking through aliases.
+
+
+---
+### DEFUN `%SPIRV-EVENT-TYPE`
+- **Args**: `(MODULE)`
+
+  > The target("spirv.Event") LLVM type — the OpTypeEvent used by OpGroupAsyncCopy.
+
+
+---
+### DEFUN `%SPIRV-MANGLE-ELEM`
+- **Args**: `(ELEM-TYPE)`
+
+  > Itanium single-char mangle for the element type in the async_work_group_copy name.
+
+
+---
+### DEFUN `%GEN-SPIRV-ASYNC-WORK-GROUP-COPY`
+- **Args**: `(BUILDER MODULE DST-AS3 SRC-AS1 NUM-I64 EVENT-IN ELEM-TYPE)`
+
+  > Emit %e = call async_work_group_copy(dst, src, num, event-in) -> spirv.Event.  >    Mangling mirrors clang so llvm-spirv lowers it to OpGroupAsyncCopy.
+
+
+---
+### DEFUN `%GEN-SPIRV-WAIT-GROUP-EVENTS`
+- **Args**: `(BUILDER MODULE EVENTS-AS4-PTR)`
+
+  > Emit call wait_group_events(1, events) -> void.  Lowers to OpGroupWaitEvents.
 
 
 ---
@@ -5020,8 +5114,9 @@ Generated on 2026-07-11T15:52:31.054409Z
 
 ---
 ### DEFMACRO `MAKE-ASYNC-BARRIER`
+- **Args**: `(&KEY TYPE MODE)`
 
-  > Creates an async barrier locally. For compilation analysis, returns a stub value.
+  > Creates a topologically-aware async data-movement barrier.  :type (:global/:p2p/  >    :pcie/:pgas-fabric) and :mode (:linear/:block) select the DMA path; omitted keys  >    default to :global/:linear.  The analyzer (analyze-make-async-barrier-expression)  >    handles the real semantics and validation — this stub just returns 0 for any  >    CL-level macroexpansion that reaches it.
 
 
 ---
@@ -6541,10 +6636,22 @@ Generated on 2026-07-11T15:52:31.054409Z
 ### DEFSTRUCT `SEMANTIC-MAKE-ASYNC-BARRIER`
 
 ---
+### DEFSTRUCT `SEMANTIC-SPIRV-ASYNC-COPY`
+
+---
+### DEFSTRUCT `SEMANTIC-SPIRV-GROUP-WAIT`
+
+---
 ### DEFSTRUCT `SEMANTIC-NVVM-CP-ASYNC-TILE-COPY`
 
 ---
 ### DEFSTRUCT `SEMANTIC-NVVM-CP-ASYNC-WAIT`
+
+---
+### DEFSTRUCT `SEMANTIC-CP-ASYNC-COPY-ELEM`
+
+---
+### DEFSTRUCT `SEMANTIC-CP-ASYNC-COMMIT`
 
 ---
 ### DEFSTRUCT `SEMANTIC-MAKE-VIEW`

@@ -1757,8 +1757,13 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (error "BRAND can only be used within DEF-STRUCT or DEF-RECORD."))
 
 
-(defmacro make-async-barrier ()
-  "Creates an async barrier locally. For compilation analysis, returns a stub value."
+(defmacro make-async-barrier (&key type mode)
+  "Creates a topologically-aware async data-movement barrier.  :type (:global/:p2p/
+   :pcie/:pgas-fabric) and :mode (:linear/:block) select the DMA path; omitted keys
+   default to :global/:linear.  The analyzer (analyze-make-async-barrier-expression)
+   handles the real semantics and validation — this stub just returns 0 for any
+   CL-level macroexpansion that reaches it."
+  (declare (ignore type mode))
   0)
 
 (defmacro make-arrival-sync-handle (counter count)

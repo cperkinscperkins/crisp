@@ -124,7 +124,44 @@ staging + grid-stride overhead dominates a tiny problem), **converging to ≈par
 warp-specialized loads) exist to close.  Correctness oracle (A=B=1 → C=K) is a hard gate on
 every run.
 
+### Chapter 1 — async tile loading (Endeavor 136, 2026-07-12)
+
+Both crisp kernels now have an ASYNC twin (`matmul_async.crisp` / `matmul_bmg_async.crisp`):
+the K-step A/B staging goes through `(make-async-barrier :type :global :mode :linear)` +
+`:barrier`/`await`.  On PTX that lowers to the per-element `cp.async` coop loop +
+`commit_group`/`wait_group`; on SPIR-V to per-row `OpGroupAsyncCopy` + `OpGroupWaitEvents`.
+`run.py` (NVIDIA) and `bench-intel.sh matmul` (BMG) run sync vs async vs the vendor reference.
+
+**NVIDIA RTX 4000 Ada (RunPod) — async is a clear win, ~1.55×:**
+
+| MxNxK | sync GFLOPS | **async GFLOPS** | cuda GFLOPS | async/sync (time) | async vs cuda |
+|-------|------------:|-----------------:|------------:|:-:|:-:|
+| 256   | 124         | **196**          | 1237        | 0.63 (1.58× faster) | 6.3× behind |
+| 512   | 501         | **796**          | 1619        | 0.63 (1.59× faster) | 2.0× behind |
+| 1024  | 1899        | **2919**         | 1725        | 0.65 (1.54× faster) | **1.7× AHEAD** |
+
+Per-element `cp.async` overlaps the K-step stage with the MMA and adds no per-copy overhead,
+so it's a uniform ~1.55× lift — and at 1024 crisp-async **passes the naive CUDA reference**.
+
+**Intel Arc B580 / BMG (Docker) — async is SLOWER here, and the reason is instructive:**
+
+| MxNxK | sync GFLOPS | async GFLOPS | sycl GFLOPS | async/sync (time) |
+|-------|------------:|-------------:|------------:|:-:|
+| 256   | 114         | 82           | 1322        | 1.39× slower |
+| 512   | 416         | 257          | 1470        | 1.62× slower |
+| 1024  | 1494        | 782          | 1528        | 1.91× slower |
+
+`OpGroupAsyncCopy` is a *collective bulk* copy, not per-element, so a 2D strided tile becomes
+**one collective copy per row**.  This GEMM's A-tile is **32×8** — 32 rows of only 8 elements —
+so each K-step fires **32 tiny 8-element collective copies** (+ 8 for the 8×32 B-tile), and that
+per-call overhead swamps the copy itself.  (Contrast `performance/matmul-async-bmg/`, an 8×16
+microbench = 8-row tiles, where async is *24% faster* — the win flips with row count.)  This is
+exactly the tall-thin-strided case that **Chapter 1.5's LSC 2D block loads** exist to handle
+efficiently; `:mode :linear` per-row is the honest floor they'll improve on.  Correctness oracle
+(A=B=1 → C=K) passed on every run, both backends.
+
 ## Remaining levers
-Block-level SLM reuse, then async `load-tile` / pipelining / warp-specialization (the "three
-chapters" in `docs/topology.md`).  A tf32-MMA / cuBLAS / oneMKL "best-known" reference is the
-natural follow-on for a peak-vs-peak ratio.
+Block-level SLM reuse; Chapter 1.5 (`:mode :block` — CuTensorMap / LSC 2D block loads) for the
+tall-thin-strided BMG case above; then pipelining / warp-specialization (the "three chapters" in
+`docs/topology.md`).  A tf32-MMA / cuBLAS / oneMKL "best-known" reference is the natural follow-on
+for a peak-vs-peak ratio.

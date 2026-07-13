@@ -1,0 +1,26 @@
+;; Crisp tiled matmul (grid-stride) — ASYNC twin of matmul.crisp (NVIDIA / PTX), tf32.
+;; Endeavor 136 (Chapter 1): the K-step A/B staging goes through an async barrier —
+;; `:mode :linear` on PTX lowers each load-tile to the cooperative cp.async coop loop +
+;; cp.async.commit_group, and (await) to cp.async.wait_group(0).  Everything else is
+;; byte-for-byte matmul.crisp (64x64 register tile, (16 8 8) tf32 MMA, B col-major).
+;;
+;; Measures Chapter-1 async staging vs the Chapter-0 sync floor at competitive GEMM sizes.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :type :global :mode :linear)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)   ; async-stage A[grid-y*64:+64, grid-k*8:+8]
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)   ; async-stage B[grid-k*8:+8, grid-x*64:+64]
+      (await bar)                                         ; cp.async.wait_group(0)
+      (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+      (sync-workgroup))))

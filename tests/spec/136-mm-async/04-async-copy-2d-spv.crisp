@@ -1,0 +1,42 @@
+;; Endeavor 136 (mm-async, Chapter 1) — SPIR-V async, the 2D STRIDED case.
+;;
+;; A tiny tiled matmul whose A/B tiles are 4x4 STRIDED sub-blocks of wider operands
+;; (MMA-DIMS 4 4 8 => A is 4x8, B is 8x4, so each 4x4 tile's rows are separated by the
+;; operand's row stride).  A single collective OpGroupAsyncCopy can't express a 2D
+;; strided block, so `:mode :linear` on SPIR-V lowers this to ONE OpGroupAsyncCopy PER
+;; ROW, chained through the instruction's event operand, finished by one
+;; OpGroupWaitEvents.  (On PTX the same source is the per-element cp.async coop loop.)
+;;
+;; The TEST-HOIST[L0] validator disassembles the .spv and asserts the real
+;; OpGroupAsyncCopy opcode is present (RED under the sync fallback — the TDD driver),
+;; then runs the --mma-test host-reference C=A.B check on metal (MMA_CORRECT).
+;;
+;; SKIP-WITH[--differentiate]: "forward-only async staging; tile AD is a later chapter"
+;;
+;; MMA-DIMS: 4 4 8
+;; TEST-HOIST[L0]: validate-l0-mma-async
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel async_matmul_2d (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((A-tile (make-scratch-matrix float (4 4)))
+        (B-tile (make-scratch-matrix float (4 4)))
+        (C-tile (make-scratch-matrix float (4 4)))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :type :global :mode :linear)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0))
+        (fill-tile C-tile 0.0))
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)   ; async: per-row OpGroupAsyncCopy (strided)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)                                          ; OpGroupWaitEvents
+      (dotimes (i 4)
+        (dotimes (j 4)
+          (dotimes (kk 4)
+            (set! (~ C-tile i j)
+                  (+ (~ C-tile i j)
+                     (* (~ A-tile i kk) (~ B-tile kk j))))))))))

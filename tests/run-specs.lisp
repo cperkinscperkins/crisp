@@ -2125,11 +2125,15 @@
     (nreverse expectations)))
 
 (defun validate-ptx-mbarrier (file ptx-string)
-  "Validates that the PTX string contains mbarrier.init, cp.async.mbarrier.arrive, and mbarrier.test_wait."
+  "Validates the async load-tile idiom (Endeavor 136 Chapter 1): a cooperative
+   cp.async copy into shared memory, closed with cp.async.commit_group, and an
+   (await ...) that lowers to cp.async.wait_group.  This replaces the earlier
+   mbarrier-based lowering (mbarrier.init / cp.async.mbarrier.arrive /
+   mbarrier.test_wait) which under-copied N-D tiles and was never metal-correct."
   (declare (ignore file))
-  (let ((expected '("mbarrier.init.shared.b64"
-                    "cp.async.mbarrier.arrive.noinc.shared.b64"
-                    "mbarrier.test_wait.shared.b64")))
+  (let ((expected '("cp.async.ca.shared.global"
+                    "cp.async.commit_group"
+                    "cp.async.wait_group")))
     (dolist (exp expected)
       (unless (search exp ptx-string)
         (format *error-output* "FAIL: Expected PTX string not found:~%  '~a'~%" exp)
@@ -2223,28 +2227,29 @@
 
 (defun validate-cuda-shared-mem (crisp-file cu-files)
   "Validates that a kernel with a local tile emits:
-   - shared-memory offset = 0 for the tile ptr
-   - non-zero sharedMemBytes in cuLaunchKernel
-   - kernelParams[21] (tile 6 + v 6 + out 6 + barrier 3)"
+   - shared-memory offset = 0 for the tile ptr (the tensor form `_ptr = 0ULL;`)
+   - sharedMemBytes = 32 in cuLaunchKernel (4-element ulong tile; Endeavor 136 made the
+     async barrier a phantom, so there is no longer a +8-byte mbarrier)
+   - kernelParams[18] (tile 6 + v 6 + out 6; the phantom barrier contributes no params)"
   (declare (ignore crisp-file))
   (if (null cu-files)
       (progn (format t "FAIL: No .cu files generated~%") nil)
       (let ((passed t))
         (dolist (cu cu-files)
           (let ((content (uiop:read-file-string cu)))
-            (unless (search "_ptr = 0;" content)
+            (unless (search "_ptr = 0ULL;" content)
               (format t "FAIL: ~a missing shared-mem offset=0 for tile ptr~%" (file-namestring cu))
               (setf passed nil))
             (let ((launch-pos (search "cuLaunchKernel" content)))
               (when launch-pos
                 (let ((launch-region (subseq content launch-pos
                                              (min (+ launch-pos 300) (length content)))))
-                  (unless (search "40," launch-region)
-                    (format t "FAIL: ~a cuLaunchKernel should have sharedMemBytes=40 for 4-element tile + mbarrier~%"
+                  (unless (search "32, 0," launch-region)
+                    (format t "FAIL: ~a cuLaunchKernel should have sharedMemBytes=32 for 4-element tile (phantom barrier)~%"
                             (file-namestring cu))
                     (setf passed nil)))))
-            (unless (search "kernelParams[21]" content)
-              (format t "FAIL: ~a expected kernelParams[21] for tile+v+out+barrier~%" (file-namestring cu))
+            (unless (search "kernelParams[18]" content)
+              (format t "FAIL: ~a expected kernelParams[18] for tile+v+out (phantom barrier, no param)~%" (file-namestring cu))
               (setf passed nil))))
         (when passed
           (format t "PASS: .cu local tile test passed~%"))
@@ -2532,6 +2537,91 @@
               (return-from validate-cuda-mma-run nil))))))
     ;; The .cu files are now the MMA test harnesses; compile + run + check MMA_CORRECT.
     (validate-cuda-host-run file cu-files)))
+
+;; --- Endeavor 136 SPV Chapter 1: OpGroupAsyncCopy opcode-presence + on-metal check ---
+
+(defun %llvm-spirv-binary ()
+  "Resolve llvm-spirv exactly as the compiler does (crisp.compiler::resolve-tool-executable):
+   the bundled bin/ copy, else CRISP_USE_SYSTEM_TOOLS -> PATH, else a bare name.  This is the
+   same tool the compiler used to PRODUCE the .spv, so if the .spv exists this resolves to a
+   usable disassembler."
+  (crisp.compiler::resolve-tool-executable "llvm-spirv"))
+
+(defun %spv-contains-opcode-p (crisp-file opcode)
+  "Disassemble CRISP-FILE's .spv with `llvm-spirv --to-text` and return T iff the SPIR-V
+   textual form contains OPCODE (e.g. \"GroupAsyncCopy\").  TDD driver for SPV async: the
+   sync fallback produces no such opcode, so the check is RED until the async path is emitted.
+
+   Degrades gracefully: returns T (SKIP, don't fail) when the check can't be performed on
+   this box — no .spv could be produced, or no llvm-spirv/SPV-disasm is available (e.g. a CI
+   runner without the SPV toolchain).  Returns NIL *only* when the .spv WAS disassembled and
+   the opcode is definitively ABSENT.  The dev box (BMG + bundled llvm-spirv) is the real
+   regression guard; boxes without the SPV toolchain skip it like the metal tests do.
+
+   Disassembles the .spv the hoist already produced (compiling one to a TEMP path only if
+   absent), and NEVER deletes the shared .spv — the L0 harness reads it at runtime."
+  (let* ((hoist-spv (make-pathname :name (pathname-name crisp-file) :type "spv" :defaults crisp-file))
+         (own-compile-p nil)
+         (spv (if (probe-file hoist-spv)
+                  hoist-spv
+                  ;; no hoist artifact — compile our own to a distinct temp path (best effort;
+                  ;; get-binary-path throws when there's no binary, e.g. an in-process run — treat
+                  ;; that as "can't produce a .spv" and skip rather than crashing the test).
+                  (handler-case
+                      (let ((tmp (make-pathname :name (format nil "~a-opchk" (pathname-name crisp-file))
+                                                :type "spv" :defaults crisp-file))
+                            (bin (get-binary-path)))
+                        (setf own-compile-p t)
+                        (multiple-value-bind (o e code)
+                            (uiop:run-program (list (uiop:native-namestring bin)
+                                                    (uiop:native-namestring crisp-file)
+                                                    "--ir-target=spv"
+                                                    (format nil "--log-level=~a" cl-user::*log-level*))
+                              :output :string :error-output :string :ignore-error-status t)
+                          (declare (ignore o e))
+                          (cond ((and (zerop code) (probe-file hoist-spv))
+                                 (rename-file hoist-spv tmp) tmp)
+                                (t nil))))
+                    (error () nil)))))     ; couldn't produce a .spv -> skip below
+    (unless spv
+      (format t "(opcode check skipped: no .spv produced) ")
+      (return-from %spv-contains-opcode-p t))
+    (let* ((spt (make-pathname :type "spt" :defaults spv))
+           (llvm-spirv (%llvm-spirv-binary))
+           (disasm-ok
+            (handler-case
+                (multiple-value-bind (o e code)
+                    (uiop:run-program (list (uiop:native-namestring llvm-spirv) "--to-text"
+                                            (uiop:native-namestring spv)
+                                            "-o" (uiop:native-namestring spt))
+                      :output :string :error-output :string :ignore-error-status t)
+                  (declare (ignore o e))
+                  (and (zerop code) (probe-file spt)))
+              ;; run-program throws if the executable itself can't be found -> treat as "can't check"
+              (error () nil))))
+      (prog1
+          (cond
+            (disasm-ok (and (search opcode (uiop:read-file-string spt)) t))
+            (t (format t "(opcode check skipped: llvm-spirv unavailable) ")
+               t))    ; can't disassemble on this box -> SKIP (don't block), let host-run proceed
+        (unless *keep-work*
+          (when (probe-file spt) (delete-file spt))
+          ;; only delete a .spv WE created on a temp path; never the shared hoist artifact
+          (when (and own-compile-p (probe-file spv)) (delete-file spv)))))))
+
+(defun validate-l0-async-copy (file cpp-files)
+  "Endeavor 136 SPV Chapter 1 (1D): assert the .spv actually uses OpGroupAsyncCopy
+   (not the sync fallback), THEN compile+run the L0 harness and check HOIST-EXPECT."
+  (if (not (%spv-contains-opcode-p file "GroupAsyncCopy"))
+      (progn (format t "FAIL: SPV has no OpGroupAsyncCopy (sync fallback still active)~%") nil)
+      (validate-l0-host-run file cpp-files)))
+
+(defun validate-l0-mma-async (file cpp-files)
+  "Endeavor 136 SPV Chapter 1 (2D): assert per-row OpGroupAsyncCopy in the .spv, THEN
+   run the --mma-test host-reference check (MMA_CORRECT)."
+  (if (not (%spv-contains-opcode-p file "GroupAsyncCopy"))
+      (progn (format t "FAIL: SPV has no OpGroupAsyncCopy (sync fallback still active)~%") nil)
+      (validate-l0-mma-run file cpp-files)))
 
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))

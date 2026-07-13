@@ -338,6 +338,31 @@ Topologically Aware Async
 
 Allocates a topologically aware data-movement barrier. Depending on the memory scope it spans, the Crisp compiler lowers this into the appropriate hardware construct (e.g., an `mbarrier` object in Shared Local Memory for TMA, or an asynchronous `cp.async.commit_group` fence). This barrier is strictly used to synchronize the state of the hardware DMA engine with the execution unit, not for arbitrary control flow.
 
+```
+(make-async-barrier &key type mode)
+
+; example
+(make-async-barrier :type :global :mode :linear)
+```
+
+There is also an _explicit_ variant of `make-async-barrier`.  The `:type` and `:mode` keys can be provided to tell the compiler exactly which async data moving APIs you want used, regardless of the topology or hardware profile in the current compilation context.  This is generally used for degenerate cases, for example, on a modern GPU architecture block-wise data copying between global and local memory is the most peformant, but there might be reasons to use the older linear data movement instructions (like `cp.async` or `OpGroupAsyncCopy`).  
+Care should be taken when using these, as they make your code brittle and can easily break it. 
+
+#### `:type` 
+
+The `:type` choices are the same as used with `interconnect` in a `def-topology`, with the addition of `:global` to signify global/local memory movement (device VRAM).
+
+- `:global`
+- `:p2p`
+- `:pcie`
+- `:pgas-fabric`
+
+#### `:mode`
+
+When the `:type` is `:global`, then the mode can be either
+- `:linear`  - selects `cp.async` when targeting PTX, or `OpGroupAsyncCopy` when targeting SPIR-V. **Shipped** and metal-verified on both backends (see the Three Chapters section).
+- `:block` - selects `CuTensorMap` ops when targeting PTX, or Intel LSC 2D Block Loads when targeting SPIR-V. (Chapter 1.5 — not yet implemented; requesting it is a compile error today.)
+
 ### `load-tile`
 
 `(load-tile src dest (... grid-y grid-x) &key transpose identity barrier) => nil`
@@ -622,8 +647,14 @@ plain `load-tile` (no `:barrier`), `sync-workgroup`, `mma-accumulate-via-tile`, 
       (sync-workgroup))))          ; <- the macro auto-stores C-tile -> C after the K-loop
 ```
 The three "chapters" below vary only the BODY (async `:barrier` loads, rings, warp specialization)
-— that is the optimization arc, not all of it implemented yet; the synchronous form above is the
-shipped Chapter 0.
+— the optimization arc.  **Chapter 1 (async `:barrier` tile loads + `await`) now ships** and is
+metal-verified on both backends (RTX Ampere + Intel Arc B580): with `:mode :linear`, PTX lowers to
+`cp.async` + `cp.async.commit_group` / `cp.async.wait_group`, and SPIR-V lowers to `OpGroupAsyncCopy`
++ `OpGroupWaitEvents` (a 1D contiguous tile is one collective copy; a 2D strided tile is one copy
+per row).  Rings (Chapter 2) and warp specialization (Chapter 3) remain ahead; the synchronous
+form above is Chapter 0.  (NB: the `:linear` barrier carries no SLM object on PTX — `commit_group`/
+`wait_group` need none — so `make-async-barrier :mode :linear` is a phantom there; on SPIR-V it owns
+a small `spirv.Event` slot to chain the copies.)
 
 
 ### inner-dimension

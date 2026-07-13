@@ -366,7 +366,33 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 ;; loop, which lands in B.2.
 (defstruct semantic-make-async-barrier
   type
-  cell-node
+  cell-node          ;; Endeavor 136: NIL for a phantom :linear barrier (commit_group /
+                     ;; OpGroupAsyncCopy need no object).  A future :block/mbarrier mode
+                     ;; can set this to an 8-byte SLM mbarrier cell node.
+  barrier-type       ;; the :type key — :global (global/local DMA); only one supported now
+  barrier-mode       ;; the :mode key — :linear (cp.async / OpGroupAsyncCopy); only one now
+  spirv-event-p      ;; Endeavor 136 SPV: T => allocate a target("spirv.Event") slot (the
+                     ;; async copies chain their event through it; await = OpGroupWaitEvents).
+                     ;; On PTX this stays NIL (commit_group/wait_group need no event).
+  source-location)
+
+;; Endeavor 136 (Chapter 1, SPIR-V) — one collective OpGroupAsyncCopy of a contiguous run.
+;; The dest (SLM tile row) and source (global row) are given as aref nodes; codegen reuses
+;; their 3rd return value (the element address) as the copy pointers, and chains the event
+;; through the barrier's spirv.Event slot so a later OpGroupWaitEvents covers every copy.
+(defstruct semantic-spirv-async-copy
+  dst-aref-node   ;; aref for the dest tile run start (addrspace 3)
+  src-aref-node   ;; aref for the source run start   (addrspace 1)
+  num-node        ;; semantic node for the element count (i64/ulong)
+  elem-type       ;; crisp element-type symbol (float/int/...) for Itanium name mangling
+  barrier-node    ;; the make-async-barrier (holds the chained spirv.Event slot)
+  type
+  source-location)
+
+;; Endeavor 136 (Chapter 1, SPIR-V) — OpGroupWaitEvents on the barrier's chained event.
+(defstruct semantic-spirv-group-wait
+  barrier-node
+  type
   source-location)
 
 (defstruct semantic-nvvm-cp-async-tile-copy
@@ -379,6 +405,21 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 
 (defstruct semantic-nvvm-cp-async-wait
   barrier-node  ;; semantic node for the mbarrier object
+  type
+  source-location)
+
+;; Endeavor 136 (Chapter 1) — per-element async copy + commit for the cooperative
+;; cp.async tile load.  The async load-tile-at expands to the sync coop loop with a
+;; %cp-async-copy-elem body (one non-blocking cp.async per element, reusing the aref
+;; element-address machinery) + a trailing %cp-async-commit; await -> wait_group(0).
+(defstruct semantic-cp-async-copy-elem
+  dst-aref-node ;; semantic aref node for the dest tile element (addrspace 3)
+  src-aref-node ;; semantic aref node for the source element (addrspace 1)
+  elem-bytes    ;; 4 or 8
+  type
+  source-location)
+
+(defstruct semantic-cp-async-commit
   type
   source-location)
 

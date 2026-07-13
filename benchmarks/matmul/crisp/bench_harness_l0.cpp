@@ -110,7 +110,11 @@ int main(int argc, char** argv) {
     ze_context_handle_t ctx;
     L0_CHECK(zeContextCreate(driver, &ctxDesc, &ctx));
 
-    auto spv = read_spv({ "matmul_bmg.spv", "benchmarks/matmul/crisp/matmul_bmg.spv" });
+    // Endeavor 136: CRISP_MATMUL_SPV picks the kernel (sync vs async) without a rebuild.
+    const char* env_spv = getenv("CRISP_MATMUL_SPV");
+    auto spv = env_spv
+        ? read_spv({ env_spv })
+        : read_spv({ "matmul_bmg.spv", "benchmarks/matmul/crisp/matmul_bmg.spv" });
     ze_module_desc_t modDesc = {};
     modDesc.stype = ZE_STRUCTURE_TYPE_MODULE_DESC;
     modDesc.format = ZE_MODULE_FORMAT_IL_SPIRV;
@@ -229,7 +233,10 @@ int main(int argc, char** argv) {
     double k_med = kt[iters / 2], k_min = kt[0];
     double gflops = (2.0 * M * N * K) / (k_med / 1e6) / 1e9;
 
-    printf("{\n  \"algorithm\": \"matmul\",\n  \"implementation\": \"crisp\",\n");
+    // Endeavor 136: CRISP_IMPL_NAME tags sync ("crisp") vs async ("crisp-async") runs.
+    const char* impl_name = getenv("CRISP_IMPL_NAME");
+    printf("{\n  \"algorithm\": \"matmul\",\n  \"implementation\": \"%s\",\n",
+           impl_name ? impl_name : "crisp");
     printf("  \"N\": %d, \"M\": %d, \"K\": %d,\n", N, M, K);
     printf("  \"correct\": %s,\n  \"max_abs_err\": %.3e,\n", correct ? "true" : "false", maxerr);
     printf("  \"kernel_median_us\": %.2f,\n  \"kernel_min_us\": %.2f,\n", k_med, k_min);

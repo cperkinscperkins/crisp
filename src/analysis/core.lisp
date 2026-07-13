@@ -542,9 +542,11 @@
   (dolist (arg args) (scan-form arg)))
 
 (defmethod scan-operator ((op (eql 'make-async-barrier)) args)
-  "Scans make-async-barrier and delegates to make-scratch-cell to allocate an 8-byte mbarrier object."
+  "Endeavor 136: the :linear async barrier is a PHANTOM (commit_group / OpGroupAsyncCopy
+   need no object), so it allocates NO shared memory.  A future :block/mbarrier mode will
+   re-introduce an 8-byte SLM mbarrier cell here."
   (declare (ignore args))
-  (scan-operator 'make-scratch-cell '(ulong)))
+  nil)
 
 
 
@@ -1881,6 +1883,10 @@ in single-pass mode."
     (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-type node))
     (semantic-make-async-barrier      (semantic-make-async-barrier-type node))
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-type node))
+    (semantic-cp-async-copy-elem      (semantic-cp-async-copy-elem-type node))
+    (semantic-cp-async-commit         (semantic-cp-async-commit-type node))
+    (semantic-spirv-async-copy        (semantic-spirv-async-copy-type node))
+    (semantic-spirv-group-wait        (semantic-spirv-group-wait-type node))
     (semantic-mma-accumulate          (semantic-mma-accumulate-type node))))
 
 (defun semantic-node-source-location (node)
@@ -1944,6 +1950,10 @@ in single-pass mode."
     (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-source-location node))
     (semantic-make-async-barrier      (semantic-make-async-barrier-source-location node))
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-source-location node))
+    (semantic-cp-async-copy-elem      (semantic-cp-async-copy-elem-source-location node))
+    (semantic-cp-async-commit         (semantic-cp-async-commit-source-location node))
+    (semantic-spirv-async-copy        (semantic-spirv-async-copy-source-location node))
+    (semantic-spirv-group-wait        (semantic-spirv-group-wait-source-location node))
     (semantic-mma-accumulate          (semantic-mma-accumulate-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---

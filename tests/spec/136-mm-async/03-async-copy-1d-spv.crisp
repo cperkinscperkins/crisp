@@ -1,0 +1,30 @@
+;; Endeavor 136 (mm-async, Chapter 1) — SPIR-V async, the 1D contiguous case.
+;;
+;; A contiguous 64/4-element vector tile is staged global->local via an async barrier,
+;; then written back doubled.  On SPIR-V, `:mode :linear` lowers a CONTIGUOUS tile to a
+;; single collective `OpGroupAsyncCopy` + `OpGroupWaitEvents` (the direct analog of PTX
+;; cp.async, but bulk-collective rather than per-thread).  On PTX the same source is
+;; cp.async; here we only exercise + validate the Intel path.
+;;
+;; The TEST-HOIST[L0] validator does two things: (1) disassembles the .spv with
+;; `llvm-spirv --to-text` and asserts the real `OpGroupAsyncCopy` opcode is present
+;; (RED under the sync fallback — this is the TDD driver), and (2) compiles + runs the
+;; L0 harness on metal and checks the doubled output.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only async staging; tile AD is a later chapter"
+;;
+;; TEST-HOIST[L0]: validate-l0-async-copy
+;; HOIST-EXPECT: BUFFER out: 0 2 4 6
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel async_copy_1d (IN &out OUT)
+  (declare #'(vec-t &out vec-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector float 4))
+        (bar  (make-async-barrier :type :global :mode :linear)))
+    (load-tile-at IN tile (0) :barrier bar)   ; async: one OpGroupAsyncCopy of 4 contiguous floats
+    (await bar)                                ; OpGroupWaitEvents on the copy's event
+    (workgroup-stride tile (lx)
+      (set! (~ OUT lx) (* (~ tile lx) 2.0)))))

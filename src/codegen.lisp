@@ -1030,11 +1030,21 @@
           (not (cffi:null-pointer-p (llvm-get-named-function module n))))
         *native-builtin-mangled-names*))
 
+(defun %module-uses-async-copy-builtin-p (module)
+  "Endeavor 136 (SPV): T if MODULE declares the OpenCL async-copy/wait builtins
+   (OpGroupAsyncCopy / OpGroupWaitEvents lowering).  The wait builtin has a single
+   element-type-independent mangled name and every async load-tile is paired with an
+   await, so it is a reliable, cheap indicator.  Like native_*, these are only lowered
+   to opcodes when !opencl.ocl.version metadata is present."
+  (not (cffi:null-pointer-p
+        (llvm-get-named-function module "_Z17wait_group_eventsiPU3AS49ocl_event"))))
+
 (defun %emit-opencl-version-metadata (module)
   "Endeavor 128: add !opencl.ocl.version / !opencl.spir.version = {2,0} so the
    LLVM->SPIR-V translator runs OpenCL-builtin recognition and maps native_*
    mangled calls to native_* OpenCL.std ExtInst. Without this metadata the calls
-   translate to imported OpFunctionCall (unresolved at zeKernelCreate on L0)."
+   translate to imported OpFunctionCall (unresolved at zeKernelCreate on L0).
+   Endeavor 136 reuses this for the async_work_group_copy / wait_group_events builtins."
   (let* ((ctx (llvm-get-module-context module))
          (i32 (llvm-int32-type))
          (major-md (llvm-value-as-metadata (llvm-const-int i32 2 0)))
@@ -3173,6 +3183,29 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (setf (cffi:mem-aref args 'llvm-value-ref 1) src-ptr)
     (llvm-build-call2 builder fn-type fn args 2 "")))
 
+(defun %gen-nvvm-cp-async-commit-group (builder module)
+  "Emits @llvm.nvvm.cp.async.commit.group() — closes the current async-copy group
+   (the canonical Ampere cp.async idiom; no mbarrier object required)."
+  (let* ((fn-name  "llvm.nvvm.cp.async.commit.group")
+         (fn-type  (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil))
+         (fn       (%spirv-get-or-create-fn module fn-name (llvm-void-type)
+                                            (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "")))
+
+(defun %gen-nvvm-cp-async-wait-group (builder module n)
+  "Emits @llvm.nvvm.cp.async.wait.group(i32 N) — blocks until all but the N most
+   recent async-copy groups have completed.  N=0 waits for every committed group."
+  (let* ((fn-name    "llvm.nvvm.cp.async.wait.group")
+         (i32-type   (llvm-int32-type))
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        arr))
+         (fn-type    (llvm-function-type (llvm-void-type) param-types 1 nil))
+         (fn         (%spirv-get-or-create-fn module fn-name (llvm-void-type) param-types 1))
+         (args       (cffi:foreign-alloc 'llvm-value-ref :count 1)))
+    (setf (cffi:mem-aref args 'llvm-value-ref 0) (llvm-const-int i32-type n nil))
+    (llvm-build-call2 builder fn-type fn args 1 "")))
+
 (defun %gen-nvvm-mbarrier-init-shared (builder module mbarrier-ptr count-val)
   "Emits @llvm.nvvm.mbarrier.init.shared(ptr addrspace(3), i32 count)."
   (let* ((fn-name    "llvm.nvvm.mbarrier.init.shared")
@@ -3311,9 +3344,93 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         (intern (second parts) :crisp.compiler)))
      (t (error "%vector-elem-type: can't extract element type from ~S" canon)))))
 
+;; --- Endeavor 136 (Chapter 1, SPIR-V): OpGroupAsyncCopy / OpGroupWaitEvents -----------
+;; We mirror clang's OpenCL builtin call shapes exactly so the LLVM-SPIRV translator lowers
+;; them to the real opcodes (proven: async_work_group_copy -> OpGroupAsyncCopy, zero imports;
+;; runs on Intel Arc B580).  The event chains through a target("spirv.Event") slot the barrier
+;; owns (passed around as an i64 via ptrtoint/inttoptr so it rides the ulong barrier binding).
+
+(defun %spirv-event-type (module)
+  "The target(\"spirv.Event\") LLVM type — the OpTypeEvent used by OpGroupAsyncCopy."
+  (crisp.llvm-bindings::llvm-target-ext-type-in-context
+   (crisp.llvm-bindings::llvm-get-module-context module)
+   "spirv.Event" (cffi:null-pointer) 0 (cffi:null-pointer) 0))
+
+(defun %spirv-mangle-elem (elem-type)
+  "Itanium single-char mangle for the element type in the async_work_group_copy name."
+  (case elem-type
+    (float "f") (double "d")
+    (int "i") (uint "j")
+    (long "l") (ulong "m")
+    (char "c") (uchar "h")
+    (short "s") (ushort "t")
+    (t (error "spirv async copy: unsupported element type ~S (need f/d/i/j/l/m/...)" elem-type))))
+
+(defun %gen-spirv-async-work-group-copy (builder module dst-as3 src-as1 num-i64 event-in elem-type)
+  "Emit %e = call async_work_group_copy(dst, src, num, event-in) -> spirv.Event.
+   Mangling mirrors clang so llvm-spirv lowers it to OpGroupAsyncCopy."
+  (let* ((ev-type (%spirv-event-type module))
+         (m       (%spirv-mangle-elem elem-type))
+         (i8      (llvm-int8-type))
+         (as3     (llvm-pointer-type i8 3))
+         (as1     (llvm-pointer-type i8 1))
+         (i64     (llvm-int64-type))
+         (fn-name (format nil "_Z21async_work_group_copyPU3AS3~aPU3AS1K~am9ocl_event" m m))
+         (param-types (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+    (setf (cffi:mem-aref param-types 'llvm-type-ref 0) as3)
+    (setf (cffi:mem-aref param-types 'llvm-type-ref 1) as1)
+    (setf (cffi:mem-aref param-types 'llvm-type-ref 2) i64)
+    (setf (cffi:mem-aref param-types 'llvm-type-ref 3) ev-type)
+    (let* ((fn-type (llvm-function-type ev-type param-types 4 nil))
+           (fn      (%spirv-get-or-create-fn module fn-name ev-type param-types 4))
+           (args    (cffi:foreign-alloc 'llvm-value-ref :count 4)))
+      ;; spir_func (75) — the translator recognises OpenCL builtins by mangled name +
+      ;; this calling convention; without it the call is left as an unresolved Import.
+      (crisp.llvm-bindings::llvm-set-function-call-conv fn 75)
+      (setf (cffi:mem-aref args 'llvm-value-ref 0) dst-as3)
+      (setf (cffi:mem-aref args 'llvm-value-ref 1) src-as1)
+      (setf (cffi:mem-aref args 'llvm-value-ref 2) num-i64)
+      (setf (cffi:mem-aref args 'llvm-value-ref 3) event-in)
+      (let ((call (llvm-build-call2 builder fn-type fn args 4 "awgc_evt")))
+        (crisp.llvm-bindings::llvm-set-instruction-call-conv call 75)
+        call))))
+
+(defun %gen-spirv-wait-group-events (builder module events-as4-ptr)
+  "Emit call wait_group_events(1, events) -> void.  Lowers to OpGroupWaitEvents."
+  (let* ((void    (llvm-void-type))
+         (i32     (llvm-int32-type))
+         (i8      (llvm-int8-type))
+         (as4     (llvm-pointer-type i8 4))
+         (fn-name "_Z17wait_group_eventsiPU3AS49ocl_event")
+         (param-types (cffi:foreign-alloc 'llvm-type-ref :count 2)))
+    (setf (cffi:mem-aref param-types 'llvm-type-ref 0) i32)
+    (setf (cffi:mem-aref param-types 'llvm-type-ref 1) as4)
+    (let* ((fn-type (llvm-function-type void param-types 2 nil))
+           (fn      (%spirv-get-or-create-fn module fn-name void param-types 2))
+           (args    (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+      (crisp.llvm-bindings::llvm-set-function-call-conv fn 75)
+      (setf (cffi:mem-aref args 'llvm-value-ref 0) (llvm-const-int i32 1 nil))
+      (setf (cffi:mem-aref args 'llvm-value-ref 1) events-as4-ptr)
+      (let ((call (llvm-build-call2 builder fn-type fn args 2 "")))
+        (crisp.llvm-bindings::llvm-set-instruction-call-conv call 75)
+        call))))
+
 (defmethod generate-node-ir ((node semantic-make-async-barrier) builder module var-env
                               di-builder di-scope location-map)
-  "Phase B.1 NVPTX: alloc mbarrier and emit mbarrier.init."
+  "Endeavor 136: a :linear async barrier is a PHANTOM on PTX — commit_group/wait_group
+   need no object, so it emits nothing and returns const 0.  On SPIR-V it owns a
+   target(\"spirv.Event\") slot (OpGroupAsyncCopy chains its event through it); the slot
+   address rides the ulong barrier binding as an i64 (ptrtoint).  The legacy mbarrier.init
+   path below runs only if a future :block/mbarrier mode sets cell-node."
+  ;; SPIR-V :linear — allocate the event slot, initialize it to a null event.
+  (when (semantic-make-async-barrier-spirv-event-p node)
+    (let* ((ev-type (%spirv-event-type module))
+           (slot    (llvm-build-alloca builder ev-type "async_evt_slot")))
+      (llvm-build-store builder (crisp.llvm-bindings:llvm-const-null ev-type) slot)
+      (return-from generate-node-ir
+        (values (llvm-build-ptr-to-int builder slot (llvm-int64-type) "evt_slot_i") nil))))
+  (unless (semantic-make-async-barrier-cell-node node)
+    (return-from generate-node-ir (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
   (let* ((cell-val (generate-node-ir (semantic-make-async-barrier-cell-node node) builder module var-env
                                      di-builder di-scope location-map))
          (i32-type (llvm-int32-type))
@@ -3338,9 +3455,85 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (%ptx-barrier builder module)
     (values cell-val nil)))
 
+(defmethod generate-node-ir ((node semantic-spirv-async-copy) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 136 (Chapter 1, SPV): one collective OpGroupAsyncCopy of a contiguous run,
+   SLM tile (addrspace 3) <- global source (addrspace 1).  We reuse each aref's 3rd
+   return value (the element address) as the copy pointers, load the incoming event from
+   the barrier's slot, emit the copy (chaining), and store the resulting event back so a
+   later OpGroupWaitEvents covers it."
+  (multiple-value-bind (dv di dst-ptr)
+      (generate-node-ir (semantic-spirv-async-copy-dst-aref-node node) builder module var-env
+                        di-builder di-scope location-map)
+    (declare (ignore dv di))
+    (multiple-value-bind (sv si src-ptr)
+        (generate-node-ir (semantic-spirv-async-copy-src-aref-node node) builder module var-env
+                          di-builder di-scope location-map)
+      (declare (ignore sv si))
+      (unless (and dst-ptr src-ptr)
+        (error "%spirv-async-copy: aref did not yield an element pointer (dst ~A src ~A)"
+               dst-ptr src-ptr))
+      (let* ((num-i64     (generate-node-ir (semantic-spirv-async-copy-num-node node) builder module var-env
+                                            di-builder di-scope location-map))
+             (barrier-int (generate-node-ir (semantic-spirv-async-copy-barrier-node node) builder module var-env
+                                            di-builder di-scope location-map))
+             (ev-type     (%spirv-event-type module))
+             (slot        (llvm-build-int-to-ptr builder barrier-int
+                                                 (llvm-pointer-type (llvm-int8-type) 0) "evt_slot"))
+             (ev-in       (llvm-build-load2 builder ev-type slot "evt_in"))
+             (ev-out      (%gen-spirv-async-work-group-copy
+                           builder module dst-ptr src-ptr num-i64 ev-in
+                           (semantic-spirv-async-copy-elem-type node))))
+        (llvm-build-store builder ev-out slot)
+        (values nil nil)))))
+
+(defmethod generate-node-ir ((node semantic-spirv-group-wait) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 136 (Chapter 1, SPV): (await bar) -> OpGroupWaitEvents on the barrier's
+   chained event.  wait_group_events takes a generic (addrspace 4) pointer to the event
+   list, so we addrspacecast the event slot before the call."
+  (let* ((barrier-int (generate-node-ir (semantic-spirv-group-wait-barrier-node node) builder module var-env
+                                        di-builder di-scope location-map))
+         (slot        (llvm-build-int-to-ptr builder barrier-int
+                                             (llvm-pointer-type (llvm-int8-type) 0) "evt_slot"))
+         (gen         (llvm-build-addrspace-cast builder slot
+                                                 (llvm-pointer-type (llvm-int8-type) 4) "evt_gen")))
+    (%gen-spirv-wait-group-events builder module gen)
+    (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+
+(defmethod generate-node-ir ((node semantic-cp-async-copy-elem) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 136 (Chapter 1): one non-blocking cp.async of a single element,
+   SLM tile (addrspace 3) <- global source (addrspace 1).  We generate both aref
+   nodes and reuse their 3rd return value (the element address / l-value); the
+   loaded r-values are dead and get DCE'd by opt."
+  (multiple-value-bind (dst-v dst-ign dst-ptr)
+      (generate-node-ir (semantic-cp-async-copy-elem-dst-aref-node node) builder module var-env
+                        di-builder di-scope location-map)
+    (declare (ignore dst-v dst-ign))
+    (multiple-value-bind (src-v src-ign src-ptr)
+        (generate-node-ir (semantic-cp-async-copy-elem-src-aref-node node) builder module var-env
+                          di-builder di-scope location-map)
+      (declare (ignore src-v src-ign))
+      (unless (and dst-ptr src-ptr)
+        (error "%cp-async-copy-elem: aref did not yield an element pointer (dst ~A src ~A)"
+               dst-ptr src-ptr))
+      (%gen-nvvm-cp-async-elem builder module dst-ptr src-ptr
+                               (semantic-cp-async-copy-elem-elem-bytes node))
+      (values nil nil))))
+
+(defmethod generate-node-ir ((node semantic-cp-async-commit) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 136 (Chapter 1): close the current async-copy group (cp.async.commit_group)."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (%gen-nvvm-cp-async-commit-group builder module)
+  (values nil nil))
+
 (defmethod generate-node-ir ((node semantic-nvvm-cp-async-tile-copy) builder module var-env
                               di-builder di-scope location-map)
-  "Phase B.1 NVPTX: emit cp.async.ca.shared.global + mbarrier.arrive.noinc."
+  "Phase B.1 NVPTX: emit cp.async.ca.shared.global + mbarrier.arrive.noinc.
+   NOTE: superseded by the cooperative %cp-async-copy-elem path (Endeavor 136);
+   retained for reference but no longer produced by the analyzer."
   (let* ((src-node     (semantic-nvvm-cp-async-tile-copy-src-node node))
          (tile-node    (semantic-nvvm-cp-async-tile-copy-tile-node node))
          (origin-node  (first (semantic-nvvm-cp-async-tile-copy-origin-nodes node)))
@@ -3393,23 +3586,12 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-nvvm-cp-async-wait) builder module var-env
                               di-builder di-scope location-map)
-  "Phase B.1 NVPTX: emit mbarrier.arrive and loop on mbarrier.test_wait."
-  (let* ((barrier-node (semantic-nvvm-cp-async-wait-barrier-node node))
-         (barrier-val  (if barrier-node
-                           (generate-node-ir barrier-node builder module var-env
-                                             di-builder di-scope location-map)
-                           (error "await missing barrier-node!")))
-         (barrier-storage (llvm-build-extract-value builder barrier-val 0 "barrier_storage"))
-         (barrier-ptr     (llvm-build-extract-value builder barrier-storage 0 "barrier_ptr"))
-         (state-val    (%gen-nvvm-mbarrier-arrive-shared builder module barrier-ptr))
-         (loop-bb      (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "wait_loop"))
-         (cont-bb      (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "wait_cont")))
-    (llvm-build-br builder loop-bb)
-    (llvm-position-builder-at-end builder loop-bb)
-    (let ((is-ready (%gen-nvvm-mbarrier-test-wait-shared builder module barrier-ptr state-val)))
-      (llvm-build-cond-br builder is-ready cont-bb loop-bb))
-    (llvm-position-builder-at-end builder cont-bb)
-    (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+  "Endeavor 136 (Chapter 1): (await barrier) lowers to cp.async.wait_group(0) — block
+   until every committed async-copy group has landed.  The barrier object is not needed
+   for the commit_group idiom, so it is ignored here."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (%gen-nvvm-cp-async-wait-group builder module 0)
+  (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
 
 
 
