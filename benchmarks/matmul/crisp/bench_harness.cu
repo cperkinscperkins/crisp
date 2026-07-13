@@ -42,9 +42,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const char* cands[] = { "matmul.ptx", "benchmarks/matmul/crisp/matmul.ptx" };
+    // Endeavor 136: CRISP_MATMUL_PTX picks the kernel (sync vs async) without a rebuild.
+    const char* env_ptx = getenv("CRISP_MATMUL_PTX");
+    const char* cands[] = { env_ptx ? env_ptx : "matmul.ptx", "benchmarks/matmul/crisp/matmul.ptx" };
     std::string ptx; const char* used = nullptr;
-    for (auto* c : cands) { std::ifstream f(c); if (f.good()) {
+    for (auto* c : cands) { if (!c) continue; std::ifstream f(c); if (f.good()) {
         used = c; ptx.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()); break; } }
     if (!used) { fprintf(stderr, "Cannot find matmul.ptx\n"); return 1; }
 

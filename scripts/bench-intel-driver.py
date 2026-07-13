@@ -101,6 +101,17 @@ ALGORITHMS = {
             "binary":        "matmul_crisp_l0",
             "compile_flags": ["--hardware-profile=bmg"],
         },
+        # Endeavor 136: async twin — same harness, staged via per-row OpGroupAsyncCopy.
+        # Its own .spv + binary; the run phase points the harness at the async .spv and
+        # tags results "crisp-async" via CRISP_MATMUL_SPV / CRISP_IMPL_NAME.
+        "crisp-async": {
+            "dir":           REPO_ROOT / "benchmarks" / "matmul" / "crisp",
+            "crisp_source":  "matmul_bmg_async.crisp",
+            "spv_name":      "matmul_bmg_async.spv",
+            "harness":       "bench_harness_l0.cpp",
+            "binary":        "matmul_crisp_async_l0",
+            "compile_flags": ["--hardware-profile=bmg"],
+        },
         # Hand-written 16x16 shared-memory tiled SYCL GEMM (analog of cuda/matmul.cu).
         "sycl": {
             "dir":    REPO_ROOT / "benchmarks" / "matmul" / "sycl",
@@ -170,10 +181,10 @@ def build_sycl(algo_meta):
     return str(binary), {"device": device_time, "end_to_end": e2e}
 
 
-def build_crisp_l0(algo_meta):
+def build_crisp_l0(impl):
     """Compile a Crisp kernel to SPV, then build the L0 harness via icpx.
+    IMPL is the per-impl dict (algo_meta["crisp"] or ["crisp-async"]).
     Returns (binary_path, compile_times_dict) or (None, ...) on failure."""
-    impl = algo_meta["crisp"]
     crisp_dir   = impl["dir"]
     crisp_file  = crisp_dir / impl["crisp_source"]
     spv_file    = crisp_dir / impl["spv_name"]
@@ -222,14 +233,15 @@ def build_crisp_l0(algo_meta):
     return str(binary), {"device": crisp_time, "end_to_end": end_to_end}
 
 
-def run_benchmark(binary, N, warmup, iters, impl_name, extra_args=None):
+def run_benchmark(binary, N, warmup, iters, impl_name, extra_args=None, env_extra=None):
     """Run a benchmark binary and parse JSON output from stdout."""
     cmd = [binary, str(N), str(warmup), str(iters)]
     if extra_args:
         cmd.extend(str(a) for a in extra_args)
     print(f"  Running: {impl_name} N={N} ... ", end="", flush=True)
+    env = {**os.environ, **(env_extra or {})}
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=300,
-                       cwd=str(Path(binary).parent))
+                       cwd=str(Path(binary).parent), env=env)
     if r.returncode != 0:
         print(f"FAIL (exit {r.returncode})")
         if r.stderr:
@@ -505,10 +517,17 @@ def main():
 
     if "crisp" in run_impls and "crisp" in algo_meta:
         print("Building Crisp (L0 backend)...")
-        b, ct = build_crisp_l0(algo_meta)
+        b, ct = build_crisp_l0(algo_meta["crisp"])
         if b:
             binaries["crisp"] = b
             compile_times["crisp"] = ct
+
+    if "crisp-async" in run_impls and "crisp-async" in algo_meta:
+        print("Building Crisp async (L0 backend)...")
+        b, ct = build_crisp_l0(algo_meta["crisp-async"])
+        if b:
+            binaries["crisp-async"] = b
+            compile_times["crisp-async"] = ct
 
     if "sycl" in run_impls and "sycl" in algo_meta:
         print("Building SYCL hand-written...")
@@ -543,7 +562,15 @@ def main():
     for N in sizes:
         for impl_name, binary in binaries.items():
             extra = [occupancy] if occupancy is not None and impl_name in ("crisp", "sycl", "sycl-reduce") else None
-            r = run_benchmark(binary, N, args.warmup, args.iters, impl_name, extra_args=extra)
+            # Endeavor 136: the async crisp variant reuses the same harness but reads its own
+            # .spv and tags its output "crisp-async".
+            env_extra = None
+            if impl_name == "crisp-async":
+                async_meta = algo_meta.get("crisp-async", {})
+                env_extra = {"CRISP_MATMUL_SPV": str(async_meta["dir"] / async_meta["spv_name"]),
+                             "CRISP_IMPL_NAME":  "crisp-async"}
+            r = run_benchmark(binary, N, args.warmup, args.iters, impl_name,
+                              extra_args=extra, env_extra=env_extra)
             if r:
                 all_results.append(r)
 
