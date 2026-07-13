@@ -21,16 +21,16 @@
   },
   "vec-copy-bmg": {
     "kernel_median_us": {
-      "best": 15.08,
+      "best": 14.976,
       "tolerance": 0.1,
-      "set_on": "2026-06-01",
-      "sha": "3aaccae"
+      "set_on": "2026-07-12",
+      "sha": "aff0b6d"
     },
     "throughput_gb_s": {
-      "best": 530.504,
+      "best": 534.188,
       "tolerance": 0.1,
-      "set_on": "2026-06-01",
-      "sha": "00aa7bf"
+      "set_on": "2026-07-12",
+      "sha": "aff0b6d"
     },
     "device_compile_s": {
       "best": 0.228,
@@ -57,6 +57,26 @@
       "tolerance": 1.0,
       "set_on": "2026-07-08",
       "sha": "6dc8792"
+    }
+  },
+  "matmul-async-bmg": {
+    "kernel_median_us": {
+      "best": 716.456,
+      "tolerance": 0.1,
+      "set_on": "2026-07-12",
+      "sha": "aff0b6d"
+    },
+    "gflops": {
+      "best": 0.7318,
+      "tolerance": 0.1,
+      "set_on": "2026-07-12",
+      "sha": "aff0b6d"
+    },
+    "device_compile_s": {
+      "best": 0.29,
+      "tolerance": 1.0,
+      "set_on": "2026-07-12",
+      "sha": "aff0b6d"
     }
   }
 }

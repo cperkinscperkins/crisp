@@ -102,6 +102,23 @@ TESTS = [
             "device_compile_s":  1.00,
         },
     },
+    {
+        # Endeavor 136 (Chapter 1): the ASYNC twin of matmul-bmg.  Same microbench,
+        # but the K-step staging goes through an async barrier -> OpGroupAsyncCopy
+        # (per-row) + OpGroupWaitEvents.  Measures whether Chapter-1 async staging beats
+        # the Chapter-0 sync floor on BMG at large K.
+        "name":              "matmul-async-bmg",
+        "crisp_source":      "matmul.crisp",
+        "spv":               "matmul.spv",
+        "harness":           "harness.cpp",
+        "binary":            "harness.exe",
+        "compile_flags":     ["--hardware-profile=bmg"],
+        "tolerance": {
+            "kernel_median_us":  0.10,
+            "gflops":            0.10,
+            "device_compile_s":  1.00,
+        },
+    },
 ]
 
 # Higher-is-better metrics: throughput / FLOP rate.  Everything else — kernel

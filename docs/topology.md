@@ -360,8 +360,8 @@ The `:type` choices are the same as used with `interconnect` in a `def-topology`
 #### `:mode`
 
 When the `:type` is `:global`, then the mode can be either
-- `:linear`  - selects `cp.async` when targeting PTX, ro `OpGroupAsyncCopy` when targeting SPIR-V.
-- `:block` - select `CuTensorMap` ops when targeting PTX, or Intel LSC 2D Block Loads when targeting SPIR-V.
+- `:linear`  - selects `cp.async` when targeting PTX, or `OpGroupAsyncCopy` when targeting SPIR-V. **Shipped** and metal-verified on both backends (see the Three Chapters section).
+- `:block` - selects `CuTensorMap` ops when targeting PTX, or Intel LSC 2D Block Loads when targeting SPIR-V. (Chapter 1.5 — not yet implemented; requesting it is a compile error today.)
 
 ### `load-tile`
 
@@ -647,8 +647,14 @@ plain `load-tile` (no `:barrier`), `sync-workgroup`, `mma-accumulate-via-tile`, 
       (sync-workgroup))))          ; <- the macro auto-stores C-tile -> C after the K-loop
 ```
 The three "chapters" below vary only the BODY (async `:barrier` loads, rings, warp specialization)
-— that is the optimization arc, not all of it implemented yet; the synchronous form above is the
-shipped Chapter 0.
+— the optimization arc.  **Chapter 1 (async `:barrier` tile loads + `await`) now ships** and is
+metal-verified on both backends (RTX Ampere + Intel Arc B580): with `:mode :linear`, PTX lowers to
+`cp.async` + `cp.async.commit_group` / `cp.async.wait_group`, and SPIR-V lowers to `OpGroupAsyncCopy`
++ `OpGroupWaitEvents` (a 1D contiguous tile is one collective copy; a 2D strided tile is one copy
+per row).  Rings (Chapter 2) and warp specialization (Chapter 3) remain ahead; the synchronous
+form above is Chapter 0.  (NB: the `:linear` barrier carries no SLM object on PTX — `commit_group`/
+`wait_group` need none — so `make-async-barrier :mode :linear` is a phantom there; on SPIR-V it owns
+a small `spirv.Event` slot to chain the copies.)
 
 
 ### inner-dimension
