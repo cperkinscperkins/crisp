@@ -1,0 +1,20 @@
+;; Endeavor 137 (Chapter 1.5) — :mode :block is arch-gated on Intel.
+;; LSC 2D block loads need DG2 or newer; Gen12 must fail loudly.  The default Intel arch
+;; (dg2) supports :block, so only an explicit --ir-target-arch=gen12 trips the gate.  The
+;; GENERIC default pass compiles fine (sync fallback).
+;;
+;; SKIP-WITH[--differentiate]: "forward-only async staging"
+;; COMPILE-WITH[--ir-target=spv --ir-target-arch=gen12]: FAIL "DG2"
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel block_on_gen12 (src &out dst)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 8))
+  (let ((bar   (make-async-barrier :type :global :mode :block))
+        (tile  (make-scratch-vector float 8))
+        (wg-id (get-workgroup-id 0)))
+    (load-tile src tile (wg-id) :barrier bar)
+    (await bar)
+    (store-tile tile dst (wg-id))))

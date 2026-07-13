@@ -510,21 +510,27 @@
          (barrier-form (%extract-key-arg key-args :barrier nil)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
        (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
-    (cond
-      ((and barrier-form (eq *target-backend* :ptx))
-       ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
-       (analyze-expression (%expand-async-load-tile-at-form expr location)
-                           env context location))
-      ((and barrier-form (eq *target-backend* :spirv)
-            (<= (length (fourth expr)) 2))
-       ;; Endeavor 136 (Chapter 1, SPV): 1D contiguous tile -> one OpGroupAsyncCopy;
-       ;; 2D strided tile -> one OpGroupAsyncCopy PER ROW, events chained through the
-       ;; barrier.  (Rank>2 falls through to the sync fallback.)
-       (analyze-expression (%expand-spirv-async-load-tile-at-form expr location)
-                           env context location))
-      (t
-       (analyze-expression (%expand-load-tile-at-form expr location)
-                           env context location)))))
+    ;; Endeavor 137: the barrier's :mode (looked up via its binding) picks the lowering.
+    (let ((mode (and barrier-form (async-barrier-mode-of barrier-form))))
+      (cond
+        ;; :block (TMA / LSC 2D block loads) — Chapter 1.5.  Codegen not yet wired
+        ;; (Phase 1 SPV LSC / Phase 2 PTX TMA); until then fall to the sync staging so a
+        ;; :block kernel still compiles + runs correctly (just not block-optimized).
+        ((and barrier-form (eq mode :block))
+         (analyze-expression (%expand-load-tile-at-form expr location)
+                             env context location))
+        ((and barrier-form (eq mode :linear) (eq *target-backend* :ptx))
+         ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
+         (analyze-expression (%expand-async-load-tile-at-form expr location)
+                             env context location))
+        ((and barrier-form (eq mode :linear) (eq *target-backend* :spirv)
+              (<= (length (fourth expr)) 2))
+         ;; Endeavor 136 (Chapter 1, SPV): 1D -> one OpGroupAsyncCopy; 2D -> per-row.
+         (analyze-expression (%expand-spirv-async-load-tile-at-form expr location)
+                             env context location))
+        (t
+         (analyze-expression (%expand-load-tile-at-form expr location)
+                             env context location))))))
 
 (defun %expand-spirv-async-load-tile-at-form (expr location)
   "Endeavor 136 (Chapter 1, SPV) — async load-tile-at via OpGroupAsyncCopy.
@@ -647,14 +653,20 @@
     (error 'crisp-compiler-error
       :message (format nil "await: expected (await BARRIER), got ~S" expr)
       :source-location location))
-  (let ((barrier-node (analyze-expression (second expr) env context (append location '(1)))))
-    (case *target-backend*
-      (:ptx
+  (let ((barrier-node (analyze-expression (second expr) env context (append location '(1))))
+        ;; Endeavor 137: match the load-tile lowering picked for this barrier's :mode.
+        (mode (async-barrier-mode-of (second expr))))
+    (cond
+      ;; :block loads fell to the sync staging (Phase 1/2 codegen pending), so the await is
+      ;; a no-op — the sync path already synchronized.
+      ((eq mode :block)
+       (analyze-expression nil env context location))
+      ((eq *target-backend* :ptx)
        (make-semantic-nvvm-cp-async-wait
         :barrier-node barrier-node
         :type 'ulong
         :source-location location))
-      (:spirv
+      ((eq *target-backend* :spirv)
        ;; Endeavor 136 SPV: (await bar) -> OpGroupWaitEvents on the barrier's chained event.
        (make-semantic-spirv-group-wait
         :barrier-node barrier-node
@@ -2927,11 +2939,32 @@
       (error 'crisp-compiler-error
         :message (format nil "make-async-barrier :type ~S not supported yet — only :global (global/local DMA) is implemented; :p2p/:pcie/:pgas-fabric are future topology work" btype)
         :source-location location))
-    (unless (member bmode '(:linear))
+    (unless (member bmode '(:linear :block))
       (error 'crisp-compiler-error
-        :message (format nil "make-async-barrier :mode ~S not supported yet — only :linear (cp.async / OpGroupAsyncCopy) is implemented; :block (CuTensorMap / LSC 2D block) is Chapter 1.5" bmode)
+        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy) or :block (CuTensorMap / LSC 2D block loads)" bmode)
         :source-location location))
+    ;; Endeavor 137: :block must be realizable on the elected/default target arch.  Only
+    ;; enforced for real backends (:ptx/:spirv) — the GENERIC compile-check pass has no arch
+    ;; and just verifies the kernel is well-formed (it lowers :block to the sync fallback).
+    (when (and (eq bmode :block)
+               (member crisp.compiler:*target-backend* '(:ptx :spirv)))
+      (let ((arch (resolved-target-arch)))
+        (unless (%arch-supports-block-p arch)
+          (error 'crisp-compiler-error
+            :message (%block-unrealizable-message arch)
+            :source-location location))))
     (values btype bmode)))
+
+(defun %block-unrealizable-message (arch)
+  "Arch-specific error text for a :mode :block barrier the target can't realize."
+  (case (%arch-vendor arch)
+    (:nvidia
+     (format nil ":mode :block needs a Hopper-or-newer NVIDIA arch (sm_90+) for TMA / CuTensorMap; got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
+             arch))
+    (:intel
+     (format nil ":mode :block (Intel LSC 2D block loads) needs DG2 or newer; ~(~a~) does not support it." arch))
+    (t
+     ":mode :block requires a target arch that supports block DMA (NVIDIA sm_90+ or Intel DG2+); none is set. Pass --ir-target and --ir-target-arch.")))
 
 (defun analyze-make-async-barrier-expression (expr env context location)
   "Endeavor 136: (make-async-barrier &key type mode).  :linear is a PHANTOM barrier —
@@ -2939,17 +2972,30 @@
    object, so we allocate NO shared memory and codegen a constant 0.  The node carries
    :type/:mode for future topology-aware dispatch (approach A: record now, thread the
    load-tile mode-dispatch when :block / arch-defaults land)."
-  (declare (ignore env context))
+  (declare (ignore env))
   (multiple-value-bind (btype bmode) (%parse-async-barrier-keys expr location)
+    ;; Endeavor 137: record the barrier's binding name -> resolved mode so load-tile/await
+    ;; can pick the lowering.  The let analyzer set current-binding-name before analyzing us.
+    (let ((bname (and context (compiler-context-current-binding-name context))))
+      (when bname
+        (setf (gethash bname *async-barrier-modes*) bmode)))
     (make-semantic-make-async-barrier
      :cell-node nil                 ;; phantom — no mbarrier SLM object
      :barrier-type btype
      :barrier-mode bmode
      ;; SPV :linear needs a target("spirv.Event") slot to chain OpGroupAsyncCopy events
-     ;; through; PTX commit_group/wait_group needs none (stays a const-0 phantom).
-     :spirv-event-p (eq crisp.compiler:*target-backend* :spirv)
+     ;; through; PTX commit_group/wait_group needs none (const-0 phantom); :block (LSC 2D)
+     ;; has its own completion, no event slot.
+     :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
      :type 'ulong
      :source-location location)))
+
+(defun async-barrier-mode-of (barrier-form)
+  "Endeavor 137: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.
+   BARRIER-FORM is the barrier variable symbol; look it up in *async-barrier-modes*.
+   Defaults to :linear when unknown (bare/older barriers)."
+  (or (and (symbolp barrier-form) (gethash barrier-form *async-barrier-modes*))
+      :linear))
 
 
 (defun analyze-make-c-handle (expr env context location)

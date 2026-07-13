@@ -308,6 +308,13 @@
 (defvar *implicit-arg-map* (make-hash-table)
         "Map of function-name -> list of implicit argument requirements.")
 
+(defvar *async-barrier-modes* (make-hash-table)
+        "Endeavor 137: map of async-barrier binding SYMBOL -> resolved :mode (:linear/:block).
+         make-async-barrier records its let-binding name here (via
+         compiler-context-current-binding-name); load-tile/await look the barrier variable
+         up to pick the lowering (cp.async/OpGroupAsyncCopy vs TMA/LSC 2D block). Rebound
+         per module for clean state.")
+
 (defvar *scratch-cell-counter* 0
         "Monotonic counter for disambiguating scratch cells.
          Used TWICE per module:
@@ -330,6 +337,7 @@
     (let ((*call-graph* (make-hash-table))
           (*originator-functions* (make-hash-table))
           (*implicit-arg-map* (make-hash-table)) ; Rebind for a clean state per module.
+          (*async-barrier-modes* (make-hash-table)) ; Endeavor 137: barrier var -> mode.
           (*scratch-cell-counter* 0)) ; Reset counter for deterministic naming
       (let ((*defer-struct-validation* t)
             (*pending-struct-definitions* nil))

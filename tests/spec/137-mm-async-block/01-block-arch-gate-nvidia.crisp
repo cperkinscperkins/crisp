@@ -1,0 +1,21 @@
+;; Endeavor 137 (Chapter 1.5) — :mode :block is arch-gated on NVIDIA.
+;; TMA / CuTensorMap needs a Hopper-or-newer arch (sm_90+); an older/default arch (sm_80)
+;; must fail loudly rather than silently doing a linear copy.  The GENERIC default pass has
+;; no arch and compiles fine (it lowers :block to the sync fallback); the gate fires only
+;; for a real backend + arch.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only async staging"
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_80]: FAIL "sm_90"
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel block_on_old_nvidia (src &out dst)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 8))
+  (let ((bar   (make-async-barrier :type :global :mode :block))
+        (tile  (make-scratch-vector float 8))
+        (wg-id (get-workgroup-id 0)))
+    (load-tile src tile (wg-id) :barrier bar)
+    (await bar)
+    (store-tile tile dst (wg-id))))
