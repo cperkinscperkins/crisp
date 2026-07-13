@@ -371,6 +371,28 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
                      ;; can set this to an 8-byte SLM mbarrier cell node.
   barrier-type       ;; the :type key — :global (global/local DMA); only one supported now
   barrier-mode       ;; the :mode key — :linear (cp.async / OpGroupAsyncCopy); only one now
+  spirv-event-p      ;; Endeavor 136 SPV: T => allocate a target("spirv.Event") slot (the
+                     ;; async copies chain their event through it; await = OpGroupWaitEvents).
+                     ;; On PTX this stays NIL (commit_group/wait_group need no event).
+  source-location)
+
+;; Endeavor 136 (Chapter 1, SPIR-V) — one collective OpGroupAsyncCopy of a contiguous run.
+;; The dest (SLM tile row) and source (global row) are given as aref nodes; codegen reuses
+;; their 3rd return value (the element address) as the copy pointers, and chains the event
+;; through the barrier's spirv.Event slot so a later OpGroupWaitEvents covers every copy.
+(defstruct semantic-spirv-async-copy
+  dst-aref-node   ;; aref for the dest tile run start (addrspace 3)
+  src-aref-node   ;; aref for the source run start   (addrspace 1)
+  num-node        ;; semantic node for the element count (i64/ulong)
+  elem-type       ;; crisp element-type symbol (float/int/...) for Itanium name mangling
+  barrier-node    ;; the make-async-barrier (holds the chained spirv.Event slot)
+  type
+  source-location)
+
+;; Endeavor 136 (Chapter 1, SPIR-V) — OpGroupWaitEvents on the barrier's chained event.
+(defstruct semantic-spirv-group-wait
+  barrier-node
+  type
   source-location)
 
 (defstruct semantic-nvvm-cp-async-tile-copy

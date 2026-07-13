@@ -1885,6 +1885,8 @@ in single-pass mode."
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-type node))
     (semantic-cp-async-copy-elem      (semantic-cp-async-copy-elem-type node))
     (semantic-cp-async-commit         (semantic-cp-async-commit-type node))
+    (semantic-spirv-async-copy        (semantic-spirv-async-copy-type node))
+    (semantic-spirv-group-wait        (semantic-spirv-group-wait-type node))
     (semantic-mma-accumulate          (semantic-mma-accumulate-type node))))
 
 (defun semantic-node-source-location (node)
@@ -1950,6 +1952,8 @@ in single-pass mode."
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-source-location node))
     (semantic-cp-async-copy-elem      (semantic-cp-async-copy-elem-source-location node))
     (semantic-cp-async-commit         (semantic-cp-async-commit-source-location node))
+    (semantic-spirv-async-copy        (semantic-spirv-async-copy-source-location node))
+    (semantic-spirv-group-wait        (semantic-spirv-group-wait-source-location node))
     (semantic-mma-accumulate          (semantic-mma-accumulate-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---

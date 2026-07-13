@@ -1,9 +1,10 @@
+;; CHECK-FAIL: ":type"
+
 ;; Endeavor 136 — negative: make-async-barrier :type must be one of the supported
 ;; interconnect types.  Only :global (global/local DMA) is implemented in Chapter 1;
 ;; :p2p / :pcie / :pgas-fabric are future topology work and must be rejected loudly
 ;; rather than silently ignored.
 ;;
-;; CHECK-FAIL: ":type"
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 

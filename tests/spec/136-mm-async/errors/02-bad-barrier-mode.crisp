@@ -1,10 +1,12 @@
+;; CHECK-FAIL: ":mode"
+
 ;; Endeavor 136 — negative: make-async-barrier :mode must be one of the supported DMA
 ;; modes.  Only :linear (cp.async / OpGroupAsyncCopy) is implemented in Chapter 1;
 ;; :block (CuTensorMap / Intel LSC 2D block loads) is Chapter 1.5 and must be rejected
 ;; until it lands, so a kernel asking for it fails loudly instead of silently running
 ;; the linear path.
 ;;
-;; CHECK-FAIL: ":mode"
+
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 

@@ -1,9 +1,11 @@
+;; CHECK-FAIL: "missing scalar <k-step>"
+
 ;; Endeavor 135 — negative: the <k-step> argument is required (OQ2).  This is the OLD
 ;; pre-k-step 4-argument call shape: the grid-bindings list sits in the <k-step> slot with
 ;; no scalar k-step before it.  The macro must reject this loudly rather than silently
 ;; mis-striding K — guarding the API migration.
 ;;
-;; CHECK-FAIL: "k-step"
+
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 

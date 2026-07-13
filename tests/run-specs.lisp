@@ -2538,6 +2538,74 @@
     ;; The .cu files are now the MMA test harnesses; compile + run + check MMA_CORRECT.
     (validate-cuda-host-run file cu-files)))
 
+;; --- Endeavor 136 SPV Chapter 1: OpGroupAsyncCopy opcode-presence + on-metal check ---
+
+(defun %llvm-spirv-binary ()
+  "Path to bin/llvm-spirv (the Khronos translator, also disassembles via --to-text)."
+  (merge-pathnames (format nil "bin/llvm-spirv~a" (if (uiop:os-windows-p) ".exe" ""))
+                   (uiop:getcwd)))
+
+(defun %spv-contains-opcode-p (crisp-file opcode)
+  "Disassemble CRISP-FILE's .spv with `llvm-spirv --to-text` and return T iff the SPIR-V
+   textual form contains OPCODE (e.g. \"GroupAsyncCopy\").  This is the TDD driver for SPV
+   async: the sync fallback produces no such opcode, so the check is RED until the async
+   path is emitted.  Disassembles the .spv the hoist already produced (compiling one to a
+   TEMP path only if absent), and NEVER deletes the shared .spv — the L0 harness reads it
+   at runtime, and normal hoist cleanup removes it afterwards."
+  (let* ((hoist-spv (make-pathname :name (pathname-name crisp-file) :type "spv" :defaults crisp-file))
+         (own-compile-p nil)
+         (spv (if (probe-file hoist-spv)
+                  hoist-spv
+                  ;; no hoist artifact — compile our own to a distinct temp path
+                  (let ((tmp (make-pathname :name (format nil "~a-opchk" (pathname-name crisp-file))
+                                            :type "spv" :defaults crisp-file))
+                        (bin (get-binary-path)))
+                    (setf own-compile-p t)
+                    (multiple-value-bind (o e code)
+                        (uiop:run-program (list (uiop:native-namestring bin)
+                                                (uiop:native-namestring crisp-file)
+                                                "--ir-target=spv"
+                                                (format nil "--log-level=~a" cl-user::*log-level*))
+                          :output :string :error-output :string :ignore-error-status t)
+                      (declare (ignore o))
+                      ;; the binary writes <base>.spv, not our temp name — rename if needed
+                      (cond ((and (zerop code) (probe-file hoist-spv))
+                             (rename-file hoist-spv tmp) tmp)
+                            (t (format t "FAIL: could not compile ~a to SPV for opcode check~%~a~%"
+                                       (file-namestring crisp-file) e)
+                               (return-from %spv-contains-opcode-p nil)))))))
+         (spt (make-pathname :type "spt" :defaults spv))
+         (llvm-spirv (%llvm-spirv-binary)))
+    (unless (probe-file llvm-spirv)
+      (format t "FAIL: llvm-spirv not found at ~a~%" (namestring llvm-spirv))
+      (return-from %spv-contains-opcode-p nil))
+    (multiple-value-bind (o e code)
+        (uiop:run-program (list (uiop:native-namestring llvm-spirv) "--to-text"
+                                (uiop:native-namestring spv)
+                                "-o" (uiop:native-namestring spt))
+          :output :string :error-output :string :ignore-error-status t)
+      (declare (ignore o e code))
+      (prog1
+          (and (probe-file spt) (search opcode (uiop:read-file-string spt)) t)
+        (unless *keep-work*
+          (when (probe-file spt) (delete-file spt))
+          ;; only delete a .spv WE created on a temp path; never the shared hoist artifact
+          (when (and own-compile-p (probe-file spv)) (delete-file spv)))))))
+
+(defun validate-l0-async-copy (file cpp-files)
+  "Endeavor 136 SPV Chapter 1 (1D): assert the .spv actually uses OpGroupAsyncCopy
+   (not the sync fallback), THEN compile+run the L0 harness and check HOIST-EXPECT."
+  (if (not (%spv-contains-opcode-p file "GroupAsyncCopy"))
+      (progn (format t "FAIL: SPV has no OpGroupAsyncCopy (sync fallback still active)~%") nil)
+      (validate-l0-host-run file cpp-files)))
+
+(defun validate-l0-mma-async (file cpp-files)
+  "Endeavor 136 SPV Chapter 1 (2D): assert per-row OpGroupAsyncCopy in the .spv, THEN
+   run the --mma-test host-reference check (MMA_CORRECT)."
+  (if (not (%spv-contains-opcode-p file "GroupAsyncCopy"))
+      (progn (format t "FAIL: SPV has no OpGroupAsyncCopy (sync fallback still active)~%") nil)
+      (validate-l0-mma-run file cpp-files)))
+
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))
          ;; Assume tests/run-specs.lisp -> tests/spec/

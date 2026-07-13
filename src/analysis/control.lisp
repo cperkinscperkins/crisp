@@ -510,12 +510,96 @@
          (barrier-form (%extract-key-arg key-args :barrier nil)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
        (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
-    (if (and barrier-form (eq *target-backend* :ptx))
-        ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
-        (analyze-expression (%expand-async-load-tile-at-form expr location)
-                            env context location)
-        (analyze-expression (%expand-load-tile-at-form expr location)
-                            env context location))))
+    (cond
+      ((and barrier-form (eq *target-backend* :ptx))
+       ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
+       (analyze-expression (%expand-async-load-tile-at-form expr location)
+                           env context location))
+      ((and barrier-form (eq *target-backend* :spirv)
+            (<= (length (fourth expr)) 2))
+       ;; Endeavor 136 (Chapter 1, SPV): 1D contiguous tile -> one OpGroupAsyncCopy;
+       ;; 2D strided tile -> one OpGroupAsyncCopy PER ROW, events chained through the
+       ;; barrier.  (Rank>2 falls through to the sync fallback.)
+       (analyze-expression (%expand-spirv-async-load-tile-at-form expr location)
+                           env context location))
+      (t
+       (analyze-expression (%expand-load-tile-at-form expr location)
+                           env context location)))))
+
+(defun %expand-spirv-async-load-tile-at-form (expr location)
+  "Endeavor 136 (Chapter 1, SPV) — async load-tile-at via OpGroupAsyncCopy.
+   Rank 1: one collective (%spirv-async-copy <tile[0]> <src[ORIGIN]> <tile-length> BAR)
+   of the whole contiguous run.  Rank 2 (M x N tile from a strided source): a runtime
+   (dotimes (r M) (%spirv-async-copy <tile[r,0]> <src[ORIGIN0+r,ORIGIN1]> N BAR)) — one
+   OpGroupAsyncCopy PER ROW, each copying N contiguous elements, its event chained
+   through the barrier's spirv.Event slot.  The matching await lowers to OpGroupWaitEvents."
+  (let* ((src-form (second expr))
+         (tile-form (third expr))
+         (origin-list (fourth expr))
+         (key-args (nthcdr 4 expr))
+         (barrier-form (%extract-key-arg key-args :barrier nil))
+         (rank (length origin-list))
+         (cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (aref-sym (intern "~" cl-pkg))
+         (length-tilde-sym (intern "LENGTH~" cl-pkg))
+         (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+         (dotimes-sym (intern "DOTIMES" cl-pkg))
+         (plus-sym (intern "+" cl-pkg))
+         (to-int-sym (intern "TO-INT" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+         (copy-sym (intern "%SPIRV-ASYNC-COPY" cl-pkg))
+         (src-sym (gensym "SRC"))
+         (tile-sym (gensym "TILE")))
+    (ecase rank
+      (1
+       (list let-sym (list (list src-sym src-form)
+                           (list tile-sym tile-form))
+             (list copy-sym
+                   (list aref-sym tile-sym (list to-ulong-sym 0))               ;; dest run start (as3)
+                   (list aref-sym src-sym (list to-ulong-sym (first origin-list))) ;; source run start (as1)
+                   (list length-tilde-sym tile-sym)                             ;; element count
+                   barrier-form)))
+      (2
+       (let ((nrows-sym  (gensym "NROWS"))
+             (rowlen-sym (gensym "ROWLEN"))
+             (r-sym      (gensym "R"))
+             (origin0    (first origin-list))
+             (origin1    (second origin-list)))
+         (list let-sym
+               (list (list src-sym src-form)
+                     (list tile-sym tile-form)
+                     ;; M rows (dotimes bound = int); N contiguous elements per row.
+                     (list nrows-sym  (list to-int-sym (list aref-sym (list extents-tilde-sym tile-sym) 0)))
+                     (list rowlen-sym (list aref-sym (list extents-tilde-sym tile-sym) 1)))
+               (list dotimes-sym (list r-sym nrows-sym)
+                     (list copy-sym
+                           ;; dest: contiguous tile row r start
+                           (list aref-sym tile-sym (list to-ulong-sym r-sym) (list to-ulong-sym 0))
+                           ;; source: strided row (ORIGIN0 + r, ORIGIN1)
+                           (list aref-sym src-sym
+                                 (list plus-sym (list to-ulong-sym origin0) (list to-ulong-sym r-sym))
+                                 (list to-ulong-sym origin1))
+                           rowlen-sym
+                           barrier-form))))))))
+
+(defun analyze-%spirv-async-copy-expression (expr env context location)
+  "Analyzer for (%spirv-async-copy <dst-aref> <src-aref> <num> BARRIER) — one collective
+   OpGroupAsyncCopy.  dst/src are aref forms (codegen reuses their element-address 3rd
+   value); num is the element count; BARRIER carries the chained spirv.Event slot."
+  (let* ((dst-node (analyze-expression (second expr) env context (append location '(1))))
+         (src-node (analyze-expression (third expr) env context (append location '(2))))
+         (num-node (analyze-expression (fourth expr) env context (append location '(3))))
+         (barrier-node (analyze-expression (fifth expr) env context (append location '(4))))
+         (elem-type (semantic-node-type dst-node)))
+    (make-semantic-spirv-async-copy
+     :dst-aref-node dst-node
+     :src-aref-node src-node
+     :num-node num-node
+     :elem-type (if (listp elem-type) (first elem-type) elem-type)
+     :barrier-node barrier-node
+     :type 'nil
+     :source-location location)))
 
 (defun analyze-%cp-async-copy-elem-expression (expr env context location)
   "Analyzer for (%cp-async-copy-elem <dst-aref> <src-aref>) — one non-blocking cp.async of a
@@ -567,6 +651,12 @@
     (case *target-backend*
       (:ptx
        (make-semantic-nvvm-cp-async-wait
+        :barrier-node barrier-node
+        :type 'ulong
+        :source-location location))
+      (:spirv
+       ;; Endeavor 136 SPV: (await bar) -> OpGroupWaitEvents on the barrier's chained event.
+       (make-semantic-spirv-group-wait
         :barrier-node barrier-node
         :type 'ulong
         :source-location location))
@@ -2855,6 +2945,9 @@
      :cell-node nil                 ;; phantom — no mbarrier SLM object
      :barrier-type btype
      :barrier-mode bmode
+     ;; SPV :linear needs a target("spirv.Event") slot to chain OpGroupAsyncCopy events
+     ;; through; PTX commit_group/wait_group needs none (stays a const-0 phantom).
+     :spirv-event-p (eq crisp.compiler:*target-backend* :spirv)
      :type 'ulong
      :source-location location)))
 
@@ -3164,4 +3257,10 @@
         (sym-cc (intern "%CP-ASYNC-COMMIT" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%cp-async-commit-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%cp-async-commit-expression))))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%cp-async-commit-expression)))
+  ;; Endeavor 136 (Chapter 1, SPV): internal form from the async SPV load-tile expansion.
+  (let ((sym-cl (intern "%SPIRV-ASYNC-COPY" (find-package :crisp-language)))
+        (sym-cc (intern "%SPIRV-ASYNC-COPY" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%spirv-async-copy-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%spirv-async-copy-expression))))
