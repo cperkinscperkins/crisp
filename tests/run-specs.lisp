@@ -699,6 +699,13 @@
         (*compile-single-pass* (or *compile-single-pass* (member "--single-pass"  flags :test #'string=)))
         (*compile-debug*       (or *compile-debug*       (member "--debug"        flags :test #'string=)))
         (*compile-differentiate* (or *compile-differentiate* (member "--differentiate" flags :test #'string=)))
+        ;; Endeavor 137: honor --ir-target-arch=<ID> in TEST-WITH flags so the in-process
+        ;; PTX/SPV compile gates + compute-capability match the CLI (else :block gates on sm_80).
+        (crisp.compiler::*ir-target-arch*
+          (let ((af (find-if (lambda (f) (and (stringp f) (search "--ir-target-arch=" f))) flags)))
+            (if af
+                (intern (string-upcase (subseq af (length "--ir-target-arch="))) :keyword)
+                crisp.compiler::*ir-target-arch*)))
         (emit-metadata (member "--metadata" flags :test #'string=))
         (ir-target (cond
                      ((member "--ir-target=spv"    flags :test #'string=) :spirv)
@@ -1606,7 +1613,9 @@
             (progn
              (let ((crisp.compiler:*target-backend* :ptx))
                (crisp.compiler:compile-module forms module builder nil nil nil)
-               (crisp.compiler:compile-to-ptx module out-path)))
+               (crisp.compiler:compile-to-ptx
+                module out-path
+                :compute-capability (crisp.compiler::ptx-compute-capability-string))))
           (crisp.llvm-bindings:llvm-dispose-builder builder)
           (crisp.llvm-bindings:llvm-dispose-module module))))
 
@@ -2138,6 +2147,20 @@
       (unless (search exp ptx-string)
         (format *error-output* "FAIL: Expected PTX string not found:~%  '~a'~%" exp)
         (return-from validate-ptx-mbarrier nil)))
+    t))
+
+(defun validate-ptx-tma (file ptx-string)
+  "Endeavor 137 (Chapter 1.5, Phase 2a) — validates the NVIDIA :block TMA lowering: a per-CTA
+   SLM mbarrier (mbarrier.init) plus a bulk descriptor-driven copy
+   (cp.async.bulk.tensor...mbarrier::complete_tx::bytes).  This is the compile-shape check;
+   the real CUtensorMap descriptor + on-metal correctness land in Phase 2b."
+  (declare (ignore file))
+  (let ((expected '("cp.async.bulk.tensor"
+                    "mbarrier.init")))
+    (dolist (exp expected)
+      (unless (search exp ptx-string)
+        (format *error-output* "FAIL: Expected PTX string not found:~%  '~a'~%" exp)
+        (return-from validate-ptx-tma nil)))
     t))
 
 (defun should-expect-failure-p (file)

@@ -513,9 +513,14 @@
     ;; Endeavor 137: the barrier's :mode (looked up via its binding) picks the lowering.
     (let ((mode (and barrier-form (async-barrier-mode-of barrier-form))))
       (cond
-        ;; :block (TMA / LSC 2D block loads) — Chapter 1.5.  Codegen not yet wired
-        ;; (Phase 1 SPV LSC / Phase 2 PTX TMA); until then fall to the sync staging so a
-        ;; :block kernel still compiles + runs correctly (just not block-optimized).
+        ;; :block on PTX (Chapter 1.5, Phase 2) — NVIDIA TMA: one bulk descriptor-driven copy
+        ;; (cp.async.bulk.tensor...mbarrier::complete_tx::bytes) issued by an elected leader,
+        ;; tracked by the barrier's SLM mbarrier.  Arch (sm_90+) already gated at barrier parse.
+        ((and barrier-form (eq mode :block) (eq *target-backend* :ptx))
+         (%analyze-nvvm-tma-load-tile-at expr env context location))
+        ;; :block on any other target (the GENERIC compile-check pass; SPV is rejected at
+        ;; barrier parse) — fall to the sync staging so the kernel still compiles + runs
+        ;; correctly (just not block-optimized).
         ((and barrier-form (eq mode :block))
          (analyze-expression (%expand-load-tile-at-form expr location)
                              env context location))
@@ -531,6 +536,38 @@
         (t
          (analyze-expression (%expand-load-tile-at-form expr location)
                              env context location))))))
+
+(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+  "Endeavor 137 (Chapter 1.5, Phase 2) — analyze (load-tile-at SRC TILE (ORIGIN...) :barrier BAR)
+   for a NVIDIA :block barrier into a semantic-nvvm-tma-tile-copy.  Codegen emits one bulk
+   cp.async.bulk.tensor copy issued by an elected leader, tracked by BAR's mbarrier.  We build
+   the dest/source as aref-at-base forms so codegen can reuse the aref element-address machinery
+   for the SLM tile base (addrspace 3) and the source tensor base (addrspace 1, the STAND-IN
+   tensormap pointer).  The ORIGIN coords become the TMA {x,y} tile-box operands (element units)."
+  (let* ((src-form     (second expr))
+         (tile-form    (third expr))
+         (origin-list  (fourth expr))
+         (key-args     (nthcdr 4 expr))
+         (barrier-form (%extract-key-arg key-args :barrier nil))
+         (cl-pkg       (find-package :crisp-language))
+         (aref-sym     (intern "~" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+         (rank         (length origin-list))
+         (base-idx     (make-list rank :initial-element (list to-ulong-sym 0)))
+         (dst-aref     (list* aref-sym tile-form base-idx))
+         (src-aref     (list* aref-sym src-form base-idx))
+         (dst-node     (analyze-expression dst-aref env context (append location '(1))))
+         (src-node     (analyze-expression src-aref env context (append location '(2))))
+         (coord-nodes  (loop for o in origin-list for i from 0
+                             collect (analyze-expression o env context (append location (list 3 i)))))
+         (barrier-node (analyze-expression barrier-form env context (append location '(4)))))
+    (make-semantic-nvvm-tma-tile-copy
+     :dst-aref-node dst-node
+     :src-aref-node src-node
+     :coord-nodes coord-nodes
+     :barrier-node barrier-node
+     :type 'nil
+     :source-location location)))
 
 (defun %expand-spirv-async-load-tile-at-form (expr location)
   "Endeavor 136 (Chapter 1, SPV) — async load-tile-at via OpGroupAsyncCopy.
@@ -657,8 +694,15 @@
         ;; Endeavor 137: match the load-tile lowering picked for this barrier's :mode.
         (mode (async-barrier-mode-of (second expr))))
     (cond
-      ;; :block loads fell to the sync staging (Phase 1/2 codegen pending), so the await is
-      ;; a no-op — the sync path already synchronized.
+      ;; :block on PTX (Chapter 1.5, Phase 2) — wait on the barrier's SLM mbarrier for the
+      ;; bulk TMA transaction to complete.
+      ((and (eq mode :block) (eq *target-backend* :ptx))
+       (make-semantic-nvvm-tma-wait
+        :barrier-node barrier-node
+        :type 'ulong
+        :source-location location))
+      ;; :block on the GENERIC compile-check pass fell to the sync staging (which already
+      ;; synchronized), so the await is a no-op.
       ((eq mode :block)
        (analyze-expression nil env context location))
       ((eq *target-backend* :ptx)

@@ -3270,6 +3270,75 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (setf (cffi:mem-aref args 'llvm-value-ref 1) state-val)
     (llvm-build-call2 builder fn-type fn args 2 "mbar_ready")))
 
+;; Endeavor 137 (Chapter 1.5) — NVIDIA :block TMA.  A monotonic counter naming the per-CTA
+;; SLM mbarrier globals (one per :block barrier binding).
+(defvar *tma-mbar-counter* 0
+  "Monotonic id source for unique __crisp_mbar_N shared globals (Endeavor 137 TMA).")
+
+(defun %coerce-to-i32 (builder val)
+  "Coerces an integer VAL to i32 for a TMA tile-box coordinate: trunc if wider, zext if
+   narrower (coords are non-negative), pass-through if already i32."
+  (let* ((i32   (llvm-int32-type))
+         (vtype (llvm-type-of val))
+         (width (crisp.llvm-bindings::llvm-get-int-type-width vtype)))
+    (cond ((= width 32) val)
+          ((> width 32) (llvm-build-trunc builder val i32 "coord_i32"))
+          (t            (llvm-build-zext  builder val i32 "coord_i32")))))
+
+(defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1)
+  "Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,
+   cachehint, flag_mcast, flag_cachehint) ->
+     cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes
+       [dst], [tensormap, {x, y}], [mbar];
+   DST-SMEM-PTR and MBAR-PTR are addrspace(3); TENSORMAP-PTR is a generic ptr to the 128-byte
+   CUtensorMap; COORD0/COORD1 are i32 tile-box origins (element units).  The trailing multicast
+   / cache-hint flags are immarg 0 (disabled) — Phase 2b may enable a cache hint."
+  (let* ((fn-name  "llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d")
+         (void     (llvm-void-type))
+         (i8       (llvm-int8-type))
+         (i16      (llvm-int16-type))
+         (i32      (llvm-int32-type))
+         (i64      (llvm-int64-type))
+         (i1       (llvm-int1-type))
+         (ptr-as3  (llvm-pointer-type i8 3))
+         (ptr-gen  (llvm-pointer-type i8 0))
+         (n        9)
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count n)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3) ;; dst smem
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) ptr-as3) ;; mbar
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 2) ptr-gen) ;; tensormap
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 3) i32)     ;; coord0
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 4) i32)     ;; coord1
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 5) i16)     ;; mcast mask
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 6) i64)     ;; cache hint
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 7) i1)      ;; flag mcast
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 8) i1)      ;; flag cachehint
+                        arr))
+         (fn-type  (llvm-function-type void param-types n nil))
+         (fn       (%spirv-get-or-create-fn module fn-name void param-types n))
+         (args     (cffi:foreign-alloc 'llvm-value-ref :count n)))
+    (setf (cffi:mem-aref args 'llvm-value-ref 0) dst-smem-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 1) mbar-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 2) tensormap-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 3) coord0)
+    (setf (cffi:mem-aref args 'llvm-value-ref 4) coord1)
+    (setf (cffi:mem-aref args 'llvm-value-ref 5) (llvm-const-int i16 0 nil))
+    (setf (cffi:mem-aref args 'llvm-value-ref 6) (llvm-const-int i64 0 nil))
+    (setf (cffi:mem-aref args 'llvm-value-ref 7) (llvm-const-int i1 0 nil))
+    (setf (cffi:mem-aref args 'llvm-value-ref 8) (llvm-const-int i1 0 nil))
+    (llvm-build-call2 builder fn-type fn args n "")))
+
+(defun %gen-nvvm-tma-mbar-global (module)
+  "Creates a fresh per-CTA SLM mbarrier object: a module-level addrspace(3) i64 global with an
+   undef initializer (shared memory is not statically initialized).  Returns the global value
+   (a ptr addrspace(3)).  Endeavor 137 Phase 2a: the mbarrier is a plain shared global, so it
+   needs none of the CUtensorMap implicit-arg machinery (that is Phase 2b, for the descriptor)."
+  (let* ((i64       (llvm-int64-type))
+         (mbar-name (format nil "__crisp_mbar_~a" (incf *tma-mbar-counter*)))
+         (gv        (crisp.llvm-bindings:llvm-add-global-in-addrspace module i64 mbar-name 3)))
+    (crisp.llvm-bindings:llvm-set-initializer gv (llvm-get-undef i64))
+    gv))
+
 (defun %gen-nvvm-read-tid-x (builder module)
   "Emits @llvm.nvvm.read.ptx.sreg.tid.x() → i32 (per-thread tid in X)."
   (let* ((fn-name  "llvm.nvvm.read.ptx.sreg.tid.x")
@@ -3429,6 +3498,31 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
       (llvm-build-store builder (crisp.llvm-bindings:llvm-const-null ev-type) slot)
       (return-from generate-node-ir
         (values (llvm-build-ptr-to-int builder slot (llvm-int64-type) "evt_slot_i") nil))))
+  ;; Endeavor 137 (Chapter 1.5) — :block on PTX (NVIDIA TMA).  Allocate a fresh per-CTA SLM
+  ;; mbarrier (a module addrspace(3) i64 global), init it once from an elected leader thread,
+  ;; and return its address as an i64 so the bulk copy (load-tile) and await can recover the
+  ;; mbarrier pointer via inttoptr.  Init count 1 = the single bulk-copy completion (Phase 2a
+  ;; shape; Phase 2b sets the transaction byte count via expect_tx).
+  (when (and (eq (semantic-make-async-barrier-barrier-mode node) :block)
+             (eq *target-backend* :ptx))
+    (let* ((i64-type (llvm-int64-type))
+           (i32-type (llvm-int32-type))
+           (mbar-gv  (%gen-nvvm-tma-mbar-global module))
+           (tid-x    (%gen-nvvm-read-tid-x builder module))
+           (tid-y    (%gen-nvvm-read-tid-y builder module))
+           (tid-z    (%gen-nvvm-read-tid-z builder module))
+           (tid-sum  (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz"))
+           (is-zero  (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "is_tid_0"))
+           (init-bb  (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_init"))
+           (merge-bb (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_cont")))
+      (llvm-build-cond-br builder is-zero init-bb merge-bb)
+      (llvm-position-builder-at-end builder init-bb)
+      (%gen-nvvm-mbarrier-init-shared builder module mbar-gv (llvm-const-int i32-type 1 nil))
+      (llvm-build-br builder merge-bb)
+      (llvm-position-builder-at-end builder merge-bb)
+      (%ptx-barrier builder module)
+      (return-from generate-node-ir
+        (values (llvm-build-ptr-to-int builder mbar-gv i64-type "mbar_i") nil))))
   (unless (semantic-make-async-barrier-cell-node node)
     (return-from generate-node-ir (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
   (let* ((cell-val (generate-node-ir (semantic-make-async-barrier-cell-node node) builder module var-env
@@ -3593,7 +3687,74 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
   (%gen-nvvm-cp-async-wait-group builder module 0)
   (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
 
+(defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 137 (Chapter 1.5, Phase 2a) — one bulk TMA copy into the SLM tile, issued by a
+   single elected leader thread (tid == 0).  Recovers the dest SLM base (addrspace 3) and the
+   STAND-IN tensormap ptr (source tensor base, addrspace 1 -> generic) from the two aref nodes'
+   3rd return value, the tile-box {x,y} coords from the coord nodes (as i32), and the mbarrier
+   pointer from the barrier value (i64 -> addrspace 3).  Emits
+   cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes.
+   NOTE: the tensormap is a stand-in here (Phase 2b wires the real CUtensorMap implicit arg),
+   so this is not yet runnable — the point is the instruction shape."
+  (multiple-value-bind (dv di dst-ptr)
+      (generate-node-ir (semantic-nvvm-tma-tile-copy-dst-aref-node node) builder module var-env
+                        di-builder di-scope location-map)
+    (declare (ignore dv di))
+    (multiple-value-bind (sv si src-ptr)
+        (generate-node-ir (semantic-nvvm-tma-tile-copy-src-aref-node node) builder module var-env
+                          di-builder di-scope location-map)
+      (declare (ignore sv si))
+      (unless (and dst-ptr src-ptr)
+        (error "nvvm-tma-tile-copy: aref did not yield an element pointer (dst ~A src ~A)"
+               dst-ptr src-ptr))
+      (let* ((i32-type   (llvm-int32-type))
+             (i64-type   (llvm-int64-type))
+             (ptr-as3    (llvm-pointer-type (llvm-int8-type) 3))
+             (ptr-gen    (llvm-pointer-type (llvm-int8-type) 0))
+             ;; STAND-IN tensormap: cast the source tensor base (addrspace 1) to a generic ptr.
+             (tmap-ptr   (llvm-build-addrspace-cast builder src-ptr ptr-gen "tma_map_standin"))
+             ;; mbarrier ptr from the barrier value (i64 address -> addrspace(3) ptr).
+             (barrier-i  (generate-node-ir (semantic-nvvm-tma-tile-copy-barrier-node node) builder module var-env
+                                           di-builder di-scope location-map))
+             (mbar-ptr   (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
+             ;; tile-box coords -> i32.  Missing dims default to 0 (1-D tile).
+             (coord-vals (loop for cn in (semantic-nvvm-tma-tile-copy-coord-nodes node)
+                               collect (%coerce-to-i32 builder
+                                          (generate-node-ir cn builder module var-env
+                                                             di-builder di-scope location-map))))
+             (coord0     (or (first coord-vals) (llvm-const-int i32-type 0 nil)))
+             (coord1     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))
+             ;; Leader-thread guard: only tid == 0 issues the bulk copy.
+             (tid-x      (%gen-nvvm-read-tid-x builder module))
+             (tid-y      (%gen-nvvm-read-tid-y builder module))
+             (tid-z      (%gen-nvvm-read-tid-z builder module))
+             (tid-sum    (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz"))
+             (is-zero    (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "is_tid_0"))
+             (issue-bb   (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_issue"))
+             (cont-bb    (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_cont")))
+        (declare (ignore i64-type))
+        (llvm-build-cond-br builder is-zero issue-bb cont-bb)
+        (llvm-position-builder-at-end builder issue-bb)
+        (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1)
+        (llvm-build-br builder cont-bb)
+        (llvm-position-builder-at-end builder cont-bb)
+        (values nil nil)))))
 
+(defmethod generate-node-ir ((node semantic-nvvm-tma-wait) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 137 (Chapter 1.5, Phase 2a) — (await bar) for a :block TMA barrier.  Recovers the
+   mbarrier pointer from the barrier value and waits on it.  Phase 2a uses the working
+   mbarrier.arrive/test.wait intrinsics for the instruction shape; Phase 2b replaces this with
+   the correct inline-asm expect_tx / try_wait.parity spin loop for on-metal completion."
+  (let* ((ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
+         (barrier-i (generate-node-ir (semantic-nvvm-tma-wait-barrier-node node) builder module var-env
+                                      di-builder di-scope location-map))
+         (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
+         (state     (%gen-nvvm-mbarrier-arrive-shared builder module mbar-ptr)))
+    (%gen-nvvm-mbarrier-test-wait-shared builder module mbar-ptr state)
+    (%ptx-barrier builder module)
+    (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
 
 (defmethod generate-node-ir ((node semantic-make-c-handle) builder module var-env di-builder di-scope location-map)
   "Allocate a local slot (alloca) typed by the held pointer type; the value is

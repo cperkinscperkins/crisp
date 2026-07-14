@@ -1,0 +1,27 @@
+;; Endeavor 137 (Chapter 1.5) Phase 2a — NVIDIA :block TMA codegen SHAPE.
+;;
+;; A :block barrier on a Hopper arch (sm_90+) lowers (load-tile ... :barrier bar) to the
+;; Tensor Memory Accelerator path: an SLM mbarrier object (mbarrier.init) plus a bulk
+;; descriptor-driven copy (cp.async.bulk.tensor...mbarrier::complete_tx::bytes) issued by a
+;; single elected leader thread, with the wait side observing the mbarrier.
+;;
+;; This is the COMPILE-SHAPE test: it only asserts the TMA opcodes reach the emitted PTX.
+;; The real CUtensorMap descriptor (an implicit kernel arg + host cuTensorMapEncodeTiled),
+;; the correct expect_tx / try_wait.parity completion, and on-metal verification land in
+;; Phase 2b.  The tensormap operand here is a STAND-IN (the source tensor's base pointer),
+;; so this kernel is not yet runnable — hence compile-only, no HOIST-EXPECT.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only async staging; tile AD is a later chapter"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tma_load (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((A-tile (make-scratch-matrix float (4 4)))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar)   ;; TMA: cp.async.bulk.tensor + mbarrier
+    (await bar)
+    (store-tile A-tile C (0 0))))

@@ -408,6 +408,30 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   type
   source-location)
 
+;; Endeavor 137 (Chapter 1.5) — NVIDIA :block TMA tile copy.  A single elected leader
+;; thread issues one bulk descriptor-driven copy
+;; (cp.async.bulk.tensor.g2s.tile.2d -> cp.async.bulk.tensor...mbarrier::complete_tx::bytes)
+;; into the SLM tile, tracked by the barrier's mbarrier object.  Distinct from
+;; semantic-nvvm-cp-async-tile-copy (Ampere per-element cp.async): TMA is one bulk
+;; transaction against a CUtensorMap.  Phase 2a: tensormap-node is a STAND-IN (the source
+;; tensor's base pointer); Phase 2b replaces it with a real descriptor implicit arg.
+(defstruct semantic-nvvm-tma-tile-copy
+  dst-aref-node   ;; aref for the dest SLM tile base element (addrspace 3) — codegen reuses its 3rd value
+  src-aref-node   ;; aref for the source tensor base element (addrspace 1) — the STAND-IN tensormap ptr
+  coord-nodes     ;; list of semantic nodes for tile-origin coords (element units -> TMA {x,y}, i32)
+  barrier-node    ;; semantic node carrying the mbarrier address (i64) for this :block barrier
+  type
+  source-location)
+
+;; Endeavor 137 (Chapter 1.5) — (await bar) completion for a NVIDIA :block TMA barrier.
+;; The barrier value carries the SLM mbarrier address (as i64); codegen inttoptrs it and
+;; waits on the mbarrier.  Phase 2a uses the working mbarrier.arrive/test.wait intrinsics;
+;; Phase 2b swaps in the inline-asm expect_tx / try_wait.parity completion for correctness.
+(defstruct semantic-nvvm-tma-wait
+  barrier-node
+  type
+  source-location)
+
 ;; Endeavor 136 (Chapter 1) — per-element async copy + commit for the cooperative
 ;; cp.async tile load.  The async load-tile-at expands to the sync coop loop with a
 ;; %cp-async-copy-elem body (one non-blocking cp.async per element, reusing the aref
