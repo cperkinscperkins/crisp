@@ -91,6 +91,13 @@ It is an error to use this flag if a topology or orchestration is specifying a h
 Topologies
 ----------
 
+> **⚠ DEFERRED (2026-07).**  `def-topology` / `def-orchestration` and everything in this section
+> (multi-device meshes, fabrics, `:distribution` / `:location`) are **set aside for now** — the
+> intended direction for multi-GPU / cluster / out-of-core work, but not on the current path.  The
+> single-GPU MMA optimization arcs (see "Matrix Multiplication Optimization") do not depend on it,
+> and `make-async-barrier` no longer takes a `:type` key.  Read this section as design intent, not
+> current behavior.
+
 A topology can be defined with `def-topology`. We'll go over it in a second, but it is essentially a function that returns an `interconnect`. These three examples of a typical single user workstation, a 10 node cluster of a supercomputer, and a mesh might help:
 
 ```
@@ -336,32 +343,56 @@ Topologically Aware Async
 
 `(make-async-barrier) => barrier`
 
-Allocates a topologically aware data-movement barrier. Depending on the memory scope it spans, the Crisp compiler lowers this into the appropriate hardware construct (e.g., an `mbarrier` object in Shared Local Memory for TMA, or an asynchronous `cp.async.commit_group` fence). This barrier is strictly used to synchronize the state of the hardware DMA engine with the execution unit, not for arbitrary control flow.
+Allocates a data-movement barrier that synchronizes the state of the hardware DMA engine (an
+async global→local memory transfer) with the execution unit.  It is strictly for tracking that
+transfer, not for arbitrary control flow.  A `:barrier` on `load-tile` / `store-tile` links the
+transfer to this barrier; `await` blocks until the bytes have landed.
 
 ```
-(make-async-barrier &key type mode)
+(make-async-barrier &key mode)
 
-; example
-(make-async-barrier :type :global :mode :linear)
+; examples
+(make-async-barrier)                  ; arch-automatic (see below)
+(make-async-barrier :mode :linear)    ; force the linear async copy
 ```
 
-There is also an _explicit_ variant of `make-async-barrier`.  The `:type` and `:mode` keys can be provided to tell the compiler exactly which async data moving APIs you want used, regardless of the topology or hardware profile in the current compilation context.  This is generally used for degenerate cases, for example, on a modern GPU architecture block-wise data copying between global and local memory is the most peformant, but there might be reasons to use the older linear data movement instructions (like `cp.async` or `OpGroupAsyncCopy`).  
-Care should be taken when using these, as they make your code brittle and can easily break it. 
-
-#### `:type` 
-
-The `:type` choices are the same as used with `interconnect` in a `def-topology`, with the addition of `:global` to signify global/local memory movement (device VRAM).
-
-- `:global`
-- `:p2p`
-- `:pcie`
-- `:pgas-fabric`
+> **Note.**  An earlier design had a `:type` key (`:global` / `:p2p` / `:pcie` / `:pgas-fabric`)
+> tied to `def-topology` for cross-device / fabric transfers.  `def-topology` is set aside for
+> now (see the deferred section below), so **`:type` is gone** — the only data movement this
+> barrier governs is global↔local (device VRAM), which needs no key.
 
 #### `:mode`
 
-When the `:type` is `:global`, then the mode can be either
-- `:linear`  - selects `cp.async` when targeting PTX, or `OpGroupAsyncCopy` when targeting SPIR-V. **Shipped** and metal-verified on both backends (see the Three Chapters section).
-- `:block` - selects `CuTensorMap` ops when targeting PTX, or Intel LSC 2D Block Loads when targeting SPIR-V. (Chapter 1.5 — not yet implemented; requesting it is a compile error today.)
+`:mode` selects which async global→local mechanism the barrier governs.  Omit it for the
+arch-automatic default; pass it explicitly to force a specific mechanism (for degenerate cases —
+this makes your code arch-brittle, so take care).
+
+- `:linear` — `cp.async` on PTX, `OpGroupAsyncCopy` on SPIR-V.  A per-element / per-row
+  cooperative copy global→SLM.  **Shipped** and metal-verified on both backends.  Valid on
+  every supported arch.
+- `:block` — `CuTensorMap` (TMA) on PTX.  A bulk descriptor-driven 2D copy global→SLM.
+  **NVIDIA sm_90+ only.**  On an older NVIDIA arch it is a compile error (needs sm_90+); **on
+  Intel it is a compile error** — Intel's fast 2D path (LSC 2D block loads) loads global→
+  *registers*, not SLM, and is **not** a barrier-governed transfer at all (see "Optimizing
+  Intel MMA").  (`:block` codegen lands with the CuTensorMap chapter.)
+
+#### The arch-automatic default
+
+With no `:mode`, the barrier picks the best global→local async copy for the elected architecture
+(`--ir-target-arch`, or the per-backend default):
+
+- **NVIDIA sm_90+** → `:block` (TMA / CuTensorMap).
+- **NVIDIA < sm_90** (incl. the default `sm_80`) → `:linear` (`cp.async`).
+- **Intel** (any arch) → **always `:linear`** (`OpGroupAsyncCopy`).
+
+> **Guidance for Intel.**  `:linear` on Intel is a genuine async copy and useful for large /
+> contiguous tiles, but it is a per-*row* `OpGroupAsyncCopy` — for the small, strided fetches a
+> matmul does, it costs more than it saves.  On Intel, prefer a plain synchronous `load-tile`
+> (no `:barrier`) for those, or the direct register block-load path (Intel MMA optimization).
+
+> **Implementation status.**  The `:block` default on capable NVIDIA lands incrementally: until
+> the CuTensorMap chapter ships, a bare `(make-async-barrier)` stays `:linear` everywhere so
+> there is always a real lowering behind it.
 
 ### `load-tile`
 
@@ -646,15 +677,12 @@ plain `load-tile` (no `:barrier`), `sync-workgroup`, `mma-accumulate-via-tile`, 
       (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
       (sync-workgroup))))          ; <- the macro auto-stores C-tile -> C after the K-loop
 ```
-The three "chapters" below vary only the BODY (async `:barrier` loads, rings, warp specialization)
-— the optimization arc.  **Chapter 1 (async `:barrier` tile loads + `await`) now ships** and is
-metal-verified on both backends (RTX Ampere + Intel Arc B580): with `:mode :linear`, PTX lowers to
-`cp.async` + `cp.async.commit_group` / `cp.async.wait_group`, and SPIR-V lowers to `OpGroupAsyncCopy`
-+ `OpGroupWaitEvents` (a 1D contiguous tile is one collective copy; a 2D strided tile is one copy
-per row).  Rings (Chapter 2) and warp specialization (Chapter 3) remain ahead; the synchronous
-form above is Chapter 0.  (NB: the `:linear` barrier carries no SLM object on PTX — `commit_group`/
-`wait_group` need none — so `make-async-barrier :mode :linear` is a phantom there; on SPIR-V it owns
-a small `spirv.Event` slot to chain the copies.)
+The kernel above is the **shared synchronous baseline** — it ships and is metal-correct on both
+NVIDIA and Intel.  From here the optimization story **splits by vendor**, because the two machines
+hide memory latency in fundamentally different ways (NVIDIA stages global→SLM asynchronously and
+feeds the tensor cores from SLM; Intel's fast path loads global→*registers* directly).  So there
+is no single "three chapters" arc — there are **two separate arcs** over the same baseline.  See
+"Optimizing NVIDIA MMA" and "Optimizing Intel MMA" below.
 
 
 ### inner-dimension
@@ -672,10 +700,27 @@ Returns the size of the inner dimensions of two tensors (the dimension used for 
 It is a simple cooperative workgroup operation (it usually uses `workgroup-stride` under the covers) and is intended, as named, to be used on simple tiles.  For a very large tensor, use one of the other strides to implement your own.  Note: for register tiles (`make-register-tile`) it gets unrolled per fragment. Quite performant. 
 
 
-Matrix Multiplication Optimization - A Story In Three Chapters.
----------------------------------------------------------------
+Matrix Multiplication Optimization — Two Vendor Arcs
+----------------------------------------------------
 
-### Basic Matrix Multiply with async tile loading.
+The synchronous tiled matmul above is the shared baseline (metal-correct on both vendors).
+Optimizing past it **splits by machine** — NVIDIA stages global→SLM asynchronously and feeds the
+tensor cores from SLM; Intel loads global→registers directly.  Two arcs, one baseline.
+
+Optimizing NVIDIA MMA
+---------------------
+
+NVIDIA hides memory latency by staging tiles **global→SLM asynchronously** (tracked by an async
+barrier), then feeding the tensor cores from SLM.  Over the synchronous baseline:
+
+1. **`cp.async` (`:mode :linear`)** — async per-element copy global→SLM.  **Shipped**, metal-verified.
+2. **CuTensorMap (`:mode :block`)** — bulk, descriptor-driven 2D copy global→SLM (sm_90+ / TMA).  *Next.*
+3. **Ring pipelining** — barrier + storage-handle rings so one stage loads while another computes.
+4. **Warp specialization** — dedicated producer / consumer warps over the rings.
+
+The examples below build up this arc.
+
+### Chapter 1 — Basic Matrix Multiply with async tile loading
 
 We use basic async tile loading to hide some of the memory latency when fetching tiles.
 
@@ -693,7 +738,7 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
           (C-tile (make-register-tile T (128 128) (identity T)))
           (K (inner-dimension A B))
           (k-step   128)
-          (barrier (make-async-barrier))) ;;topology aware async
+          (barrier (make-async-barrier))) ;; arch-automatic: :block on sm_90+, else :linear
     (matrix-multiply-tile-stride C C-tile K k-step (grid-y grid-x grid-k)
 
       (load-tile A A-tile (grid-y grid-k) :barrier barrier) 
@@ -928,6 +973,36 @@ We use rings to set up a load/execute pipeline.
 ```
 
 
+Optimizing Intel MMA
+--------------------
+
+Intel's fast path is **not** an async-copy-to-SLM story, so it does **not** reuse the NVIDIA arc
+(async barrier + `load-tile :barrier` + rings).  Instead it optimizes by loading tiles **directly
+from global memory into registers**, in the DPAS-ready layout, via **LSC 2D block loads**
+(`OpSubgroup2DBlockLoadINTEL` and its `…Transpose` / `…Transform` VNNI variants).  This is a
+subgroup-collective load straight into per-lane registers — there is **no SLM staging and no
+barrier** — so it is a *fragment-load* mechanism that fuses into the MMA, not a `load-tile`.
+
+Latency is hidden not with an async barrier but with **`OpSubgroup2DBlockPrefetchINTEL`** — a
+prefetch hint that warms the cache for the *next* tile while the current one computes; the
+subsequent block load then hits cache.
+
+Requires **DG2 or newer** (Gen12 lacks it).
+
+Status / open design: the spike confirms `__spirv_Subgroup2DBlockLoadINTEL` emits the real opcode
+and the Arc B580 loads through it into registers (an SLM destination is rejected at JIT — proof it
+targets registers, not SLM).  The Crisp surface for this — the fragment-load / prefetch forms and
+how they compose with `mma-accumulate-via-tile` — and whether there is anything past the initial
+block-load win, is the "Optimizing Intel MMA" arc still to be mapped out.
+
+
+### Deferred: topology-aware orchestration (`def-topology` / `def-orchestration`)
+
+The `def-topology` / `def-orchestration` design in the earlier part of this document (multi-device
+meshes, fabrics, `:distribution` / `:location`, cross-device `make-async-barrier :type`) is **set
+aside for now**.  It remains the intended direction for multi-GPU / cluster / out-of-core work, but
+the single-GPU MMA optimization arcs above do not depend on it, and `make-async-barrier` no longer
+takes a `:type` key (see its updated spec).
 
 
 Out of Core Orchestration
