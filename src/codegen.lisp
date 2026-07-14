@@ -3339,6 +3339,53 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (crisp.llvm-bindings:llvm-set-initializer gv (llvm-get-undef i64))
     gv))
 
+(defun %build-inline-asm-call (builder ret-type param-types arg-vals asm-str constraints)
+  "Builds a call to an inline-asm value (Endeavor 137 TMA).  RET-TYPE is the llvm result type
+   (void for a statement).  PARAM-TYPES / ARG-VALS are parallel lists of llvm types / values.
+   ASM-STR uses $0.. operand placeholders (output constraints first).  Always side-effecting
+   (these are barrier/DMA ops), ATT dialect (0)."
+  (let* ((n       (length param-types))
+         (ptypes  (if (zerop n) (cffi:null-pointer)
+                      (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count n)))
+                        (loop for pt in param-types for i from 0
+                              do (setf (cffi:mem-aref arr 'llvm-type-ref i) pt))
+                        arr)))
+         (args    (if (zerop n) (cffi:null-pointer)
+                      (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count n)))
+                        (loop for a in arg-vals for i from 0
+                              do (setf (cffi:mem-aref arr 'llvm-value-ref i) a))
+                        arr)))
+         (fn-type (llvm-function-type ret-type ptypes n nil))
+         (asm-val (crisp.llvm-bindings::llvm-get-inline-asm
+                   fn-type asm-str (length asm-str) constraints (length constraints)
+                   1 0 0 0)))
+    (llvm-build-call2 builder fn-type asm-val args n "")))
+
+(defun %gen-nvvm-fence-proxy-async-shared (builder)
+  "Inline PTX: fence.proxy.async.shared::cta;  Makes the mbarrier.init visible to the async
+   (TMA) proxy before the bulk copy is issued.  Emitted by the leader thread after init."
+  (%build-inline-asm-call builder (llvm-void-type) nil nil
+                          "fence.proxy.async.shared::cta;" ""))
+
+(defun %gen-nvvm-mbarrier-arrive-expect-tx (builder mbar-addr-i32 tx-bytes-i32)
+  "Inline PTX: mbarrier.arrive.expect_tx.shared::cta.b64 _, [bar], tx;  Announces the expected
+   transaction byte count for the bulk copy that follows.  MBAR-ADDR-I32 is the 32-bit shared
+   address of the mbarrier (ptrtoint of the addrspace(3) ptr); leader-only."
+  (let ((i32 (llvm-int32-type)))
+    (%build-inline-asm-call builder (llvm-void-type) (list i32 i32)
+                            (list mbar-addr-i32 tx-bytes-i32)
+                            "mbarrier.arrive.expect_tx.shared::cta.b64 _, [$0], $1;"
+                            "r,r")))
+
+(defun %gen-nvvm-mbarrier-try-wait-parity (builder mbar-addr-i32 phase-i32)
+  "Inline PTX: try_wait.parity -> i32 (1 if the barrier's phase flipped, else 0).  Wrapped so
+   the caller can spin in an LLVM loop (no label in the asm)."
+  (let ((i32 (llvm-int32-type)))
+    (%build-inline-asm-call builder i32 (list i32 i32)
+                            (list mbar-addr-i32 phase-i32)
+                            "{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [$1], $2; selp.u32 $0, 1, 0, p; }"
+                            "=r,r,r")))
+
 (defun %gen-nvvm-read-tid-x (builder module)
   "Emits @llvm.nvvm.read.ptx.sreg.tid.x() → i32 (per-thread tid in X)."
   (let* ((fn-name  "llvm.nvvm.read.ptx.sreg.tid.x")
@@ -3518,6 +3565,8 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
       (llvm-build-cond-br builder is-zero init-bb merge-bb)
       (llvm-position-builder-at-end builder init-bb)
       (%gen-nvvm-mbarrier-init-shared builder module mbar-gv (llvm-const-int i32-type 1 nil))
+      ;; make the init visible to the async (TMA) proxy before any bulk copy is issued.
+      (%gen-nvvm-fence-proxy-async-shared builder)
       (llvm-build-br builder merge-bb)
       (llvm-position-builder-at-end builder merge-bb)
       (%ptx-barrier builder module)
@@ -3736,6 +3785,15 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         (declare (ignore i64-type))
         (llvm-build-cond-br builder is-zero issue-bb cont-bb)
         (llvm-position-builder-at-end builder issue-bb)
+        ;; expect_tx: announce the transaction byte count (tile elements * elem-bytes) before
+        ;; the bulk copy, so the mbarrier's try_wait.parity observes completion.
+        (let* ((len-val   (generate-node-ir (semantic-nvvm-tma-tile-copy-tile-length-node node) builder module var-env
+                                            di-builder di-scope location-map))
+               (elem-b    (semantic-nvvm-tma-tile-copy-elem-bytes node))
+               (len-i32   (%coerce-to-i32 builder len-val))
+               (tx-bytes  (llvm-build-mul builder len-i32 (llvm-const-int i32-type elem-b nil) "tma_tx_bytes"))
+               (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr")))
+          (%gen-nvvm-mbarrier-arrive-expect-tx builder mbar-addr tx-bytes))
         (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1)
         (llvm-build-br builder cont-bb)
         (llvm-position-builder-at-end builder cont-bb)
@@ -3743,16 +3801,25 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-nvvm-tma-wait) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 137 (Chapter 1.5, Phase 2a) — (await bar) for a :block TMA barrier.  Recovers the
-   mbarrier pointer from the barrier value and waits on it.  Phase 2a uses the working
-   mbarrier.arrive/test.wait intrinsics for the instruction shape; Phase 2b replaces this with
-   the correct inline-asm expect_tx / try_wait.parity spin loop for on-metal completion."
-  (let* ((ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
+  "Endeavor 137 (Chapter 1.5, Phase 2b) — (await bar) for a :block TMA barrier.  Recovers the
+   mbarrier's 32-bit shared address from the barrier value and spins on try_wait.parity (phase
+   0, a single-use barrier) until the bulk transaction completes, then bar.sync so every thread
+   sees the staged tile.  Matches the nvcc-verified Hopper completion sequence."
+  (let* ((i32-type  (llvm-int32-type))
+         (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
          (barrier-i (generate-node-ir (semantic-nvvm-tma-wait-barrier-node node) builder module var-env
                                       di-builder di-scope location-map))
          (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
-         (state     (%gen-nvvm-mbarrier-arrive-shared builder module mbar-ptr)))
-    (%gen-nvvm-mbarrier-test-wait-shared builder module mbar-ptr state)
+         (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr"))
+         (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (wait-bb   (llvm-append-basic-block parent "tma_wait"))
+         (exit-bb   (llvm-append-basic-block parent "tma_wait_done")))
+    (llvm-build-br builder wait-bb)
+    (llvm-position-builder-at-end builder wait-bb)
+    (let* ((complete (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr (llvm-const-int i32-type 0 nil)))
+           (done     (llvm-build-icmp builder +llvm-int-ne+ complete (llvm-const-int i32-type 0 nil) "tma_done")))
+      (llvm-build-cond-br builder done exit-bb wait-bb))
+    (llvm-position-builder-at-end builder exit-bb)
     (%ptx-barrier builder module)
     (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
 

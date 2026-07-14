@@ -420,6 +420,8 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   src-aref-node   ;; aref for the source tensor base element (addrspace 1) — the STAND-IN tensormap ptr
   coord-nodes     ;; list of semantic nodes for tile-origin coords (element units -> TMA {x,y}, i32)
   barrier-node    ;; semantic node carrying the mbarrier address (i64) for this :block barrier
+  tile-length-node ;; semantic node for (length~ TILE) — total element count (runtime, ulong)
+  elem-bytes      ;; element byte size (compile-time int); tx bytes = length * elem-bytes for expect_tx
   type
   source-location)
 

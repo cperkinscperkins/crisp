@@ -551,6 +551,7 @@
          (barrier-form (%extract-key-arg key-args :barrier nil))
          (cl-pkg       (find-package :crisp-language))
          (aref-sym     (intern "~" cl-pkg))
+         (length-sym   (intern "LENGTH~" cl-pkg))
          (to-ulong-sym (intern "TO-ULONG" cl-pkg))
          (rank         (length origin-list))
          (base-idx     (make-list rank :initial-element (list to-ulong-sym 0)))
@@ -560,12 +561,23 @@
          (src-node     (analyze-expression src-aref env context (append location '(2))))
          (coord-nodes  (loop for o in origin-list for i from 0
                              collect (analyze-expression o env context (append location (list 3 i)))))
-         (barrier-node (analyze-expression barrier-form env context (append location '(4)))))
+         (barrier-node (analyze-expression barrier-form env context (append location '(4))))
+         ;; tx byte count for mbarrier.arrive.expect_tx = (length~ TILE) * elem-bytes.
+         (len-node     (analyze-expression (list length-sym tile-form) env context (append location '(5))))
+         (elem-type    (semantic-node-type dst-node))
+         (elem-bytes   (case (if (listp elem-type) (first elem-type) elem-type)
+                         ((int uint float) 4)
+                         ((long ulong double) 8)
+                         (t (error 'crisp-compiler-error
+                              :message (format nil "load-tile :block: element type ~S needs 4 or 8 bytes" elem-type)
+                              :source-location location)))))
     (make-semantic-nvvm-tma-tile-copy
      :dst-aref-node dst-node
      :src-aref-node src-node
      :coord-nodes coord-nodes
      :barrier-node barrier-node
+     :tile-length-node len-node
+     :elem-bytes elem-bytes
      :type 'nil
      :source-location location)))
 
