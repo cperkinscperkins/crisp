@@ -5,11 +5,13 @@
 ;; descriptor-driven copy (cp.async.bulk.tensor...mbarrier::complete_tx::bytes) issued by a
 ;; single elected leader thread, with the wait side observing the mbarrier.
 ;;
-;; This is the COMPILE-SHAPE test: it only asserts the TMA opcodes reach the emitted PTX.
-;; The real CUtensorMap descriptor (an implicit kernel arg + host cuTensorMapEncodeTiled),
-;; the correct expect_tx / try_wait.parity completion, and on-metal verification land in
-;; Phase 2b.  The tensormap operand here is a STAND-IN (the source tensor's base pointer),
-;; so this kernel is not yet runnable — hence compile-only, no HOIST-EXPECT.
+;; This is the COMPILE-SHAPE test: it asserts the TMA opcodes reach the emitted PTX.  As of
+;; Phase 2b this kernel is fully wired — a real CUtensorMap descriptor implicit arg (option A,
+;; host cuTensorMapEncodeTiled emitted by crisp-hoist-cuda) + the nvcc-verified expect_tx /
+;; try_wait.parity completion — and was metal-verified CORRECT on an H100 (sm_90a): the TMA
+;; loaded A's 4x4 tile and C == A on read-back.  (NB: TMA requires the sm_90a target variant;
+;; --ir-target-arch=sm_90 auto-upgrades the PTX .target to sm_90a.)  Automated metal is not in
+;; CI (no Hopper runner), so this stays a compile+PTX-shape check.
 ;;
 ;; SKIP-WITH[--differentiate]: "forward-only async staging; tile AD is a later chapter"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma

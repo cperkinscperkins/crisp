@@ -127,9 +127,10 @@ This supports overloading templates by arity or other factors.")
         (t nil)))
 
 (defun %arch-sm-number (arch)
-  "Numeric SM level for an sm_NN arch (:sm_90 -> 90), or NIL for non-NVIDIA."
+  "Numeric SM level for an sm_NN[a|f] arch (:sm_90 / :sm_90a -> 90), or NIL for non-NVIDIA.
+   Tolerates the architecture-specific `a`/`f` suffix (junk-allowed strips it)."
   (when (%arch-has-prefix-p arch "sm_")
-    (ignore-errors (parse-integer (subseq (%arch-name-string arch) 3)))))
+    (ignore-errors (parse-integer (%arch-name-string arch) :start 3 :junk-allowed t))))
 
 (defun %arch-supports-block-p (arch)
   "T if ARCH can realize :mode :block: NVIDIA TMA needs sm_90+; Intel LSC 2D block loads
@@ -140,11 +141,14 @@ This supports overloading templates by arity or other factors.")
     (t nil)))
 
 (defun ptx-compute-capability-string ()
-  "The llc -mcpu string for the PTX backend, from --ir-target-arch (default sm_80)."
-  (let ((arch (or *ir-target-arch* :sm_80)))
-    (if (%arch-has-prefix-p arch "sm_")
-        (%arch-name-string arch)   ; e.g. "sm_90"
-        "sm_80")))
+  "The llc -mcpu string for the PTX backend, from --ir-target-arch (default sm_80).
+   Endeavor 137: a bare sm_90 request is upgraded to sm_90a — Hopper's architecture-specific
+   features (TMA cp.async.bulk.tensor, wgmma) are gated behind the `a` target variant, and a
+   plain `.target sm_90` PTX JIT-rejects them at cuModuleLoad.  An explicit sm_90a/sm_90f (or
+   any other sm_*) passes through unchanged."
+  (let* ((arch (or *ir-target-arch* :sm_80))
+         (name (if (%arch-has-prefix-p arch "sm_") (%arch-name-string arch) "sm_80")))
+    (if (string= name "sm_90") "sm_90a" name)))
 
 (defvar *crisp-types* (make-hash-table)
         "A hash table mapping type names (symbols) to CRISP-TYPE structs.")
