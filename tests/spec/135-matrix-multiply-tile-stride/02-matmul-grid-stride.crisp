@@ -43,4 +43,6 @@
           (dotimes (kk 4)
             (set! (~ C-tile i j)
                   (+ (~ C-tile i j)
-                     (* (~ A-tile i kk) (~ B-tile kk j))))))))))
+                     (* (~ A-tile i kk) (~ B-tile kk j)))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

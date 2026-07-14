@@ -47,4 +47,6 @@
       (load-tile B B-tile (grid-k grid-x))
       (sync-workgroup)
       (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
-      (sync-workgroup))))
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

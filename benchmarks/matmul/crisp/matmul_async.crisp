@@ -23,4 +23,6 @@
       (load-tile B B-tile (grid-k grid-x) :barrier bar)   ; async-stage B[grid-k*8:+8, grid-x*64:+64]
       (await bar)                                         ; cp.async.wait_group(0)
       (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
-      (sync-workgroup))))
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

@@ -3093,25 +3093,53 @@
     (values (second expr) (third expr) (fourth expr) k-step
             (first bindings) (second bindings) (third bindings) body)))
 
-(defun %mmts-lower (c-form c-tile tile-spec k-form k-step grid-y grid-x grid-k body)
-  "The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop + auto-store s-expr."
-  (let* ((cl-pkg          (find-package :crisp-language))
-         (tile-stride-sym (intern "TILE-STRIDE" cl-pkg))
-         (store-tile-sym  (intern "STORE-TILE" cl-pkg))
-         (dotimes-sym     (intern "DOTIMES" cl-pkg))
-         (div-sym         (intern "/" cl-pkg))
-         (to-ulong-sym    (intern "TO-ULONG" cl-pkg))
-         (to-int-sym      (intern "TO-INT" cl-pkg)))
-    (list tile-stride-sym c-form tile-spec (list grid-y grid-x)
-          (list* dotimes-sym
-                 (list grid-k
-                       (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
-                 body)
-          ;; Auto-store: tile-IDs to int — the register-tile store explosion scales the
-          ;; tile-ID by an INT fragment count (* bty m-frags), and the scratch store's own
-          ;; to-ulong coercion accepts an int coord too.
-          (list store-tile-sym c-tile c-form
-                (list (list to-int-sym grid-y) (list to-int-sym grid-x))))))
+(defun %mmts-split-epilogue (body)
+  "Endeavor 137: split a matrix-multiply-tile-stride body at the :epilogue marker into
+   (values reduction-body epilogue-body).  Forms before :epilogue run once per K-step
+   (the reduction); forms after run once per tile, post-reduction (grid-y/grid-x in scope,
+   C-tile complete) — that is where the user's store-tile (and any fusion) go.  No :epilogue
+   -> (values body nil)."
+  (let ((pos (position :epilogue body)))
+    (if pos
+        (values (subseq body 0 pos) (subseq body (1+ pos)))
+        (values body nil))))
+
+(defun %form-tree-mentions-store-tile-p (forms)
+  "T if any form in the tree FORMS is a (store-tile ...) / (store-tile-at ...) call."
+  (labels ((walk (f)
+             (cond
+               ((not (consp f)) nil)
+               ((and (symbolp (car f))
+                     (member (symbol-name (car f)) '("STORE-TILE" "STORE-TILE-AT")
+                             :test #'string-equal))
+                t)
+               (t (some #'walk f)))))
+    (some #'walk forms)))
+
+(defun %mmts-lower (c-form c-tile tile-spec k-form k-step grid-y grid-x grid-k body location)
+  "The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO
+   auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit
+   store + any fusion.  Warns if the C-tile is never stored."
+  (declare (ignore location))
+  (multiple-value-bind (reduction-body epilogue-body) (%mmts-split-epilogue body)
+    ;; Endeavor 137: matmul must store its result explicitly (auto-store removed).  A kernel
+    ;; that computes a C-tile and never stores it is almost certainly a bug — warn loudly.
+    (unless (%form-tree-mentions-store-tile-p epilogue-body)
+      (format *error-output*
+        "WARNING: matrix-multiply-tile-stride: the C-tile is computed but never stored — add an :epilogue with (store-tile ~a ~a (~a ~a)).~%"
+        (if (symbolp c-tile) c-tile 'C-tile) (if (symbolp c-form) c-form 'C) grid-y grid-x))
+    (let* ((cl-pkg          (find-package :crisp-language))
+           (tile-stride-sym (intern "TILE-STRIDE" cl-pkg))
+           (dotimes-sym     (intern "DOTIMES" cl-pkg))
+           (div-sym         (intern "/" cl-pkg))
+           (to-ulong-sym    (intern "TO-ULONG" cl-pkg)))
+      (list* tile-stride-sym c-form tile-spec (list grid-y grid-x)
+             (list* dotimes-sym
+                    (list grid-k
+                          (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
+                    reduction-body)
+             ;; per-tile epilogue (the user's store + fusion), post-reduction.
+             epilogue-body))))
 
 (defun analyze-matrix-multiply-tile-stride-expression (expr env context location)
   "Scratch-tensor path for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) BODY...).
@@ -3119,7 +3147,7 @@
    are pre-lowered in analyze-let-with-tile-explosion, before SROA explosion, so never reach here."
   (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
       (%mmts-parse expr location)
-    (analyze-expression (%mmts-lower c-form c-tile c-tile k-form k-step gy gx gk body)
+    (analyze-expression (%mmts-lower c-form c-tile c-tile k-form k-step gy gx gk body location)
                         env context location)))
 
 

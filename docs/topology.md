@@ -644,11 +644,37 @@ Inside the body of the macro, `grid-k` will be the fastest changing term as it l
 This macro is very handy for producing matrix multiply kernels.  If used in conjunction with `mma-accumulate-via-tile` 
 then nearly all the boilerplate of a matrix multiply is handled.
 
-**Auto-store.** The macro OWNS the grid-y/grid-x spatial loops, so it also owns the write-back:
-after the `grid-k` reduction completes for a tile it automatically emits
-`(store-tile C-tile C (grid-y grid-x))`.  Your body does NOT store `C-tile` — just stage and
-accumulate.  (Need a custom epilogue — ReLU / bias before the store?  Drop to the lower-level
-`tile-stride`, which does not auto-store, and write the store yourself.)
+**The `:epilogue` (store + fusion).** The macro owns the `grid-y`/`grid-x` spatial and `grid-k`
+reduction loops, but it does **not** store `C-tile` for you.  Split the body with an `:epilogue`
+marker: forms **before** it run once per K-step (the reduction); forms **after** it run once per
+tile, post-reduction, with `grid-y`/`grid-x` in scope and `C-tile` complete.  That is where your
+store — and any fused epilogue (ReLU, bias, scale) — go:
+
+```
+(matrix-multiply-tile-stride C C-tile K k-step (grid-y grid-x grid-k)
+  ;; per-K-step reduction body
+  (load-tile A A-tile (grid-y grid-k))
+  (load-tile B B-tile (grid-k grid-x))
+  (sync-workgroup)
+  (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+  (sync-workgroup)
+  :epilogue                               ; <- once per tile, post-reduction
+  (relu C-tile)                           ; optional fused epilogue on the completed tile
+  (store-tile C-tile C (grid-y grid-x)))  ; explicit store — you own the write-back
+```
+
+The explicit `:epilogue` keeps
+the macro lean and the store honest — and it makes the progression to ring pipelining / warp
+specialization (which also store explicitly) consistent.  **If a kernel never stores its `C-tile`,
+the compiler warns** (a matmul that discards its result is almost always a bug).
+
+> **Where does the activation go — `my-accum` or `:epilogue`?**  `mma-accumulate-via-tile` exposes
+> a per-fragment accumulator (`my-accum`, in registers) for fusion, and the macro exposes a
+> per-tile `:epilogue`.  Use whichever owns the *complete* reduction: if
+> `mma-accumulate-via-tile` does the whole K-contraction itself, fuse on `my-accum` (finer,
+> in-register).  But in this **staged** pattern — the macro's `grid-k` loop calls
+> `mma-accumulate-via-tile` once per K-step — `my-accum` holds a **partial** sum each step, so the
+> activation belongs in the macro's `:epilogue` (on the completed `C-tile`), **not** on `my-accum`.
 
 **Grid semantics.** `grid-y` / `grid-x` are TILE-IDs — 0-based tile coordinates over `C`'s output
 tiles (sized by `C-tile`) — which is exactly what `load-tile` / `store-tile` expect (they scale a
@@ -675,7 +701,9 @@ plain `load-tile` (no `:barrier`), `sync-workgroup`, `mma-accumulate-via-tile`, 
       (load-tile B B-tile (grid-k grid-x))
       (sync-workgroup)
       (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
-      (sync-workgroup))))          ; <- the macro auto-stores C-tile -> C after the K-loop
+      (sync-workgroup)
+      :epilogue                               ; <- once per tile, post-K-loop
+      (store-tile C-tile C (grid-y grid-x))))) ; you own the store
 ```
 The kernel above is the **shared synchronous baseline** — it ships and is metal-correct on both
 NVIDIA and Intel.  From here the optimization story **splits by vendor**, because the two machines
@@ -746,17 +774,18 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
       (await barrier) 
       
         (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
-            ;; We are now inside the innermost loop!
-            ;; The developer decides when (or if) to execute the math.
-            ;; accum-op is available in this context.
-            (accum-op) ;; Fires the DPAS/MMA instruction
-            ;; Developer can immediately do epilogue fusion while still in registers
-            (relu my-accum) 
-            (add-bias my-accum bias-tile)) ;; <-- fictional operation for illustrative purposes
+            ;; accum-op is available here; call it to fire the DPAS/MMA for THIS K-step.
+            ;; NOTE: this is the STAGED pattern — the macro's grid-k loop calls us once per
+            ;; K-step, so my-accum is a PARTIAL sum here.  Do NOT fuse activation on it; the
+            ;; activation goes in the :epilogue below, on the completed C-tile.
+            (accum-op))
         ;; (Another barrier usually goes here before the next 'k' iteration overwrites SLM)
-        ;; 4. Loop done — the macro AUTO-STORES the finished C-tile -> C (grid-y grid-x).
-        ;;    No manual store here (grid-y/grid-x aren't in scope out past the macro anyway).
-        (sync-workgroup)))))
+        (sync-workgroup)
+      :epilogue
+        ;; K-loop done — C-tile is complete.  Fuse the epilogue on the finished tile, then store.
+        (relu C-tile)
+        (add-bias C-tile bias-tile)          ;; <-- fictional operation for illustration
+        (store-tile C-tile C (grid-y grid-x))))))
 ```
 
 
@@ -871,10 +900,9 @@ We use rings to set up a load/execute pipeline.
             (let ((A-tile (ring-get A-tile-ring ring-idx))
                   (B-tile (ring-get B-tile-ring ring-idx)))
               (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
-                (accum-op)
-                ;; Developer can immediately do epilogue fusion while still in registers
-                (relu my-accum)
-                (add-bias my-accum bias-tile))) ;; <-- fictional operation for illustrative purposes
+                ;; STAGED (this loop calls us once per K-step) -> my-accum is a PARTIAL sum;
+                ;; fuse activation in the epilogue below, on the completed C-tile, not here.
+                (accum-op)))
 
             
             ;; Issue the fetch for the NEXT chunk of K, wrapping the ring buffer
@@ -890,8 +918,8 @@ We use rings to set up a load/execute pipeline.
             ;; Advance the ring pointer (modulo pipeline-stages)
             (set! ring-idx (mod (+ ring-idx 1) pipeline-stages))))
 
-        ;; 3. EPILOGUE: C-tile is complete. Store it.
-        ;; we can also do Relu and friends on the C-Tile now.
+        ;; 3. EPILOGUE: C-tile is complete — fuse activation on the finished tile, then store.
+        (relu C-Tile)                        ;; <-- the RIGHT place to fuse (complete C-tile)
         (store-tile C-Tile C (grid-y grid-x) :barrier barrier)))))
 ```
 
