@@ -17,7 +17,7 @@
         (B-tile (make-scratch-matrix float (8 64)))
         (C-tile (make-register-tile float (64 64) 0.0))
         (K      (inner-dimension A B))
-        (bar    (make-async-barrier :type :global :mode :linear)))
+        (bar    (make-async-barrier :mode :linear)))
     (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
       (load-tile A A-tile (grid-y grid-k) :barrier bar)   ; async-stage A[grid-y*64:+64, grid-k*8:+8]
       (load-tile B B-tile (grid-k grid-x) :barrier bar)   ; async-stage B[grid-k*8:+8, grid-x*64:+64]

@@ -13,7 +13,7 @@
   (declare #'(vec-t &out vec-t => nil)
            (global-size :set-to 8)
            (local-size  :set-to 8))
-  (let ((bar   (make-async-barrier :type :global :mode :block))
+  (let ((bar   (make-async-barrier :mode :block))
         (tile  (make-scratch-vector float 8))
         (wg-id (get-workgroup-id 0)))
     (load-tile src tile (wg-id) :barrier bar)

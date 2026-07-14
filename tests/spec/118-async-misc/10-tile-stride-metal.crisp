@@ -22,7 +22,7 @@
   (let ((tile (make-scratch-vector float 16)))
     ;; tile-stride iterates over the global grid, pulling 16-element tiles
     (tile-stride IN (16) (grid-x)
-      (let ((barrier (make-async-barrier :type :global :mode :linear)))
+      (let ((barrier (make-async-barrier :mode :linear)))
         ;; load-tile uses the implicit grid-x to fetch a tile into local memory
         (load-tile IN tile (grid-x) :barrier barrier)
         (await barrier)

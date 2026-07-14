@@ -2918,62 +2918,52 @@
        env context location))))
 
 (defun %parse-async-barrier-keys (expr location)
-  "Parse (make-async-barrier &key type mode) -> (values barrier-type barrier-mode).
-   Omitted keys default to :global / :linear (today's topology-unaware default).
-   Validates: only :global type and :linear mode are implemented in Chapter 1."
+  "Parse (make-async-barrier &key mode) -> barrier-mode (Endeavor 137).
+   Omitted :mode is arch-automatic (resolved elsewhere; defaults to :linear here).  :type was
+   removed with def-topology.  Validates the mode and gates :block per backend/arch."
   (let ((keys (rest expr))
-        (btype :global)
         (bmode :linear))
     (unless (evenp (length keys))
       (error 'crisp-compiler-error
-        :message "make-async-barrier: keys must be :type/:mode value pairs"
+        :message "make-async-barrier: keys must be :mode value pairs"
         :source-location location))
     (loop for (k v) on keys by #'cddr do
       (cond
-        ((eq k :type) (setf btype v))
         ((eq k :mode) (setf bmode v))
+        ((eq k :type)
+         (error 'crisp-compiler-error
+           :message "make-async-barrier: the :type key was removed (def-topology is set aside); use only :mode"
+           :source-location location))
         (t (error 'crisp-compiler-error
-             :message (format nil "make-async-barrier: unknown key ~S (expected :type or :mode)" k)
+             :message (format nil "make-async-barrier: unknown key ~S (expected :mode)" k)
              :source-location location))))
-    (unless (member btype '(:global))
-      (error 'crisp-compiler-error
-        :message (format nil "make-async-barrier :type ~S not supported yet — only :global (global/local DMA) is implemented; :p2p/:pcie/:pgas-fabric are future topology work" btype)
-        :source-location location))
     (unless (member bmode '(:linear :block))
       (error 'crisp-compiler-error
-        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy) or :block (CuTensorMap / LSC 2D block loads)" bmode)
+        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy) or :block (CuTensorMap)" bmode)
         :source-location location))
-    ;; Endeavor 137: :block must be realizable on the elected/default target arch.  Only
-    ;; enforced for real backends (:ptx/:spirv) — the GENERIC compile-check pass has no arch
-    ;; and just verifies the kernel is well-formed (it lowers :block to the sync fallback).
-    (when (and (eq bmode :block)
-               (member crisp.compiler:*target-backend* '(:ptx :spirv)))
-      (let ((arch (resolved-target-arch)))
-        (unless (%arch-supports-block-p arch)
-          (error 'crisp-compiler-error
-            :message (%block-unrealizable-message arch)
-            :source-location location))))
-    (values btype bmode)))
-
-(defun %block-unrealizable-message (arch)
-  "Arch-specific error text for a :mode :block barrier the target can't realize."
-  (case (%arch-vendor arch)
-    (:nvidia
-     (format nil ":mode :block needs a Hopper-or-newer NVIDIA arch (sm_90+) for TMA / CuTensorMap; got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
-             arch))
-    (:intel
-     (format nil ":mode :block (Intel LSC 2D block loads) needs DG2 or newer; ~(~a~) does not support it." arch))
-    (t
-     ":mode :block requires a target arch that supports block DMA (NVIDIA sm_90+ or Intel DG2+); none is set. Pass --ir-target and --ir-target-arch.")))
+    ;; Endeavor 137: :block is NVIDIA-CuTensorMap only.  Gated on real backends (:ptx/:spirv);
+    ;; the GENERIC compile-check pass has no arch and lowers :block to the sync fallback.
+    (when (eq bmode :block)
+      (case crisp.compiler:*target-backend*
+        (:spirv
+         (error 'crisp-compiler-error
+           :message ":mode :block is not supported on Intel / SPIR-V — Intel's fast 2D path (LSC block loads) loads global into registers directly and is not a barrier mode. Use :mode :linear, or the direct block-load path."
+           :source-location location))
+        (:ptx
+         (unless (%arch-supports-block-p (resolved-target-arch))
+           (error 'crisp-compiler-error
+             :message (format nil ":mode :block needs a Hopper-or-newer NVIDIA arch (sm_90+) for TMA / CuTensorMap; got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
+                              (resolved-target-arch))
+             :source-location location)))))
+    bmode))
 
 (defun analyze-make-async-barrier-expression (expr env context location)
-  "Endeavor 136: (make-async-barrier &key type mode).  :linear is a PHANTOM barrier —
-   the commit_group/wait_group (PTX) and OpGroupAsyncCopy (SPV) idioms need no barrier
-   object, so we allocate NO shared memory and codegen a constant 0.  The node carries
-   :type/:mode for future topology-aware dispatch (approach A: record now, thread the
-   load-tile mode-dispatch when :block / arch-defaults land)."
+  "Endeavor 136/137: (make-async-barrier &key mode).  :linear is a PHANTOM barrier on PTX —
+   commit_group/wait_group need no object, so we codegen a constant 0; on SPV it owns a
+   target(\"spirv.Event\") slot to chain OpGroupAsyncCopy events.  The node carries :mode so
+   load-tile/await pick the lowering (Endeavor 137 mode-threading)."
   (declare (ignore env))
-  (multiple-value-bind (btype bmode) (%parse-async-barrier-keys expr location)
+  (let ((bmode (%parse-async-barrier-keys expr location)))
     ;; Endeavor 137: record the barrier's binding name -> resolved mode so load-tile/await
     ;; can pick the lowering.  The let analyzer set current-binding-name before analyzing us.
     (let ((bname (and context (compiler-context-current-binding-name context))))
@@ -2981,11 +2971,9 @@
         (setf (gethash bname *async-barrier-modes*) bmode)))
     (make-semantic-make-async-barrier
      :cell-node nil                 ;; phantom — no mbarrier SLM object
-     :barrier-type btype
      :barrier-mode bmode
      ;; SPV :linear needs a target("spirv.Event") slot to chain OpGroupAsyncCopy events
-     ;; through; PTX commit_group/wait_group needs none (const-0 phantom); :block (LSC 2D)
-     ;; has its own completion, no event slot.
+     ;; through; PTX commit_group/wait_group needs none (const-0 phantom).
      :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
      :type 'ulong
      :source-location location)))

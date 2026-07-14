@@ -127,7 +127,7 @@ every run.
 ### Chapter 1 — async tile loading (Endeavor 136, 2026-07-12)
 
 Both crisp kernels now have an ASYNC twin (`matmul_async.crisp` / `matmul_bmg_async.crisp`):
-the K-step A/B staging goes through `(make-async-barrier :type :global :mode :linear)` +
+the K-step A/B staging goes through `(make-async-barrier :mode :linear)` +
 `:barrier`/`await`.  On PTX that lowers to the per-element `cp.async` coop loop +
 `commit_group`/`wait_group`; on SPIR-V to per-row `OpGroupAsyncCopy` + `OpGroupWaitEvents`.
 `run.py` (NVIDIA) and `bench-intel.sh matmul` (BMG) run sync vs async vs the vendor reference.
