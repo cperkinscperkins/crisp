@@ -454,6 +454,11 @@
    ((member op *side-channel-originators*)
     (setf *scan-is-originator* t))
    (t
+    ;; Endeavor 137 Phase 2b: a :block load-tile[-at] mints a CUtensorMap descriptor implicit
+    ;; arg for its source tensor.  Matched by symbol-name so it is package-agnostic.
+    (when (and (symbolp op)
+               (member (symbol-name op) '("LOAD-TILE" "LOAD-TILE-AT") :test #'string-equal))
+      (%scan-register-tma-descriptor args))
     (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op)))
           (pushnew op *scan-callees*))
     (dolist (arg args) (scan-form arg)))))
@@ -549,12 +554,58 @@
   ;; Continue scanning arguments
   (dolist (arg args) (scan-form arg)))
 
+(defun %resolve-async-barrier-mode-scan (args)
+  "Scan-pass resolution of a (make-async-barrier &key mode) form's :mode WITHOUT the Pass-2
+   gating/validation.  Explicit :mode wins; otherwise arch-automatic — :block on a TMA-capable
+   NVIDIA arch (sm_90+), else :linear.  Used to decide at scan time whether a :block load-tile
+   needs a CUtensorMap descriptor implicit arg (Endeavor 137 Phase 2b)."
+  (let ((explicit (getf args :mode)))
+    (cond (explicit explicit)
+          ((and (eq *target-backend* :ptx)
+                (%arch-supports-block-p (resolved-target-arch)))
+           :block)
+          (t :linear))))
+
 (defmethod scan-operator ((op (eql 'make-async-barrier)) args)
-  "Endeavor 136: the :linear async barrier is a PHANTOM (commit_group / OpGroupAsyncCopy
-   need no object), so it allocates NO shared memory.  A future :block/mbarrier mode will
-   re-introduce an 8-byte SLM mbarrier cell here."
-  (declare (ignore args))
+  "Endeavor 136: the :linear async barrier is a PHANTOM (commit_group / OpGroupAsyncCopy need no
+   object) — no shared memory.  Endeavor 137 Phase 2b: record this barrier binding's resolved
+   :mode into *async-barrier-modes* during the SCAN pass, so a later :block load-tile can mint a
+   CUtensorMap descriptor implicit arg in the same pass.  (Pass 2's
+   analyze-make-async-barrier-expression re-records + validates + gates.)"
+  (let ((bname (compiler-context-current-binding-name *compiler-context*)))
+    (when bname
+      (setf (gethash bname *async-barrier-modes*)
+            (%resolve-async-barrier-mode-scan args))))
   nil)
+
+(defun %scan-register-tma-descriptor (args)
+  "Endeavor 137 Phase 2b: when a (load-tile[-at] SRC TILE COORDS ... :barrier BAR) references a
+   :block barrier on PTX, register a CUtensorMap descriptor implicit arg for SRC in the current
+   scanning function, deduped per SRC name, and mark the fn a side-channel originator.  The
+   descriptor's canonical spec is (tensor-map SRC) — one physical slot (option A = a pointer);
+   its element-type / rank / box-dims are resolved later (metadata + hoist) from SRC's declared
+   type and the staging tile, so scan only needs SRC + the barrier's resolved mode."
+  (let* ((src     (first args))
+         (barrier (getf (cdddr args) :barrier)))   ;; args = SRC TILE COORDS &key ... :barrier BAR
+    (when (and (symbolp src) (symbolp barrier)
+               (eq (async-barrier-mode-of barrier) :block)
+               (eq *target-backend* :ptx))
+      (setf *scan-is-originator* t)
+      (let* ((fn-name  (compiler-context-scanning-function-name *compiler-context*))
+             (existing (gethash fn-name *implicit-arg-map*))
+             (already  (find-if (lambda (e)
+                                  (let ((spec (cdr e)))
+                                    (and (consp spec)
+                                         (symbolp (first spec))
+                                         (string-equal (symbol-name (first spec)) "TENSOR-MAP")
+                                         (eq (second spec) src))))
+                                existing)))
+        (unless already
+          (let* ((uname (intern (format nil "~a_TENSORMAP_FROM_~a" src fn-name)
+                                (symbol-package src)))
+                 (spec  (list (intern "TENSOR-MAP" (find-package :crisp.compiler)) src)))
+            (log:info "Pass 1: :block load-tile of ~a -> CUtensorMap descriptor implicit ~a" src uname)
+            (push (cons uname spec) (gethash fn-name *implicit-arg-map*))))))))
 
 
 

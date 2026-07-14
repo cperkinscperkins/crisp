@@ -3386,6 +3386,19 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                             "{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [$1], $2; selp.u32 $0, 1, 0, p; }"
                             "=r,r,r")))
 
+(defun %tma-lookup-descriptor-ptr (builder var-env src-name glob-ptr-type)
+  "Endeavor 137 Phase 2b: reconstruct the CUtensorMap descriptor implicit-arg name
+   (SRC_TENSORMAP_FROM_FN — the same deterministic name the scan pass registered) and LOAD the
+   descriptor pointer from its var-env slot (implicit params are alloca'd like every param).
+   Returns the ptr (addrspace 1) or NIL if absent (no src symbol / not registered), so the
+   caller falls back to the Phase-2a stand-in."
+  (when (and src-name (symbolp src-name) *compiler-context*)
+    (let* ((fn    (compiler-context-current-compiling-function *compiler-context*))
+           (uname (intern (format nil "~a_TENSORMAP_FROM_~a" src-name fn) (symbol-package src-name)))
+           (slot  (gethash uname var-env)))
+      (when slot
+        (llvm-build-load2 builder glob-ptr-type slot "tma_desc_ptr")))))
+
 (defun %gen-nvvm-read-tid-x (builder module)
   "Emits @llvm.nvvm.read.ptx.sreg.tid.x() → i32 (per-thread tid in X)."
   (let* ((fn-name  "llvm.nvvm.read.ptx.sreg.tid.x")
@@ -3761,8 +3774,12 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (i64-type   (llvm-int64-type))
              (ptr-as3    (llvm-pointer-type (llvm-int8-type) 3))
              (ptr-gen    (llvm-pointer-type (llvm-int8-type) 0))
-             ;; STAND-IN tensormap: cast the source tensor base (addrspace 1) to a generic ptr.
-             (tmap-ptr   (llvm-build-addrspace-cast builder src-ptr ptr-gen "tma_map_standin"))
+             (ptr-glob   (llvm-pointer-type (llvm-int8-type) 1))
+             ;; Real CUtensorMap descriptor (option A pointer-to-global implicit arg); falls back
+             ;; to the Phase-2a stand-in (source tensor base) only if the descriptor is absent.
+             (desc-ptr   (%tma-lookup-descriptor-ptr builder var-env
+                          (semantic-nvvm-tma-tile-copy-src-name node) ptr-glob))
+             (tmap-ptr   (llvm-build-addrspace-cast builder (or desc-ptr src-ptr) ptr-gen "tma_map"))
              ;; mbarrier ptr from the barrier value (i64 address -> addrspace(3) ptr).
              (barrier-i  (generate-node-ir (semantic-nvvm-tma-tile-copy-barrier-node node) builder module var-env
                                            di-builder di-scope location-map))

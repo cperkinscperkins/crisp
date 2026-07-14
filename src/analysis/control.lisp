@@ -578,6 +578,7 @@
      :barrier-node barrier-node
      :tile-length-node len-node
      :elem-bytes elem-bytes
+     :src-name (and (symbolp src-form) src-form)
      :type 'nil
      :source-location location)))
 

@@ -422,6 +422,8 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   barrier-node    ;; semantic node carrying the mbarrier address (i64) for this :block barrier
   tile-length-node ;; semantic node for (length~ TILE) — total element count (runtime, ulong)
   elem-bytes      ;; element byte size (compile-time int); tx bytes = length * elem-bytes for expect_tx
+  src-name        ;; SRC tensor symbol — codegen reconstructs the CUtensorMap descriptor implicit
+                  ;; name (SRC_TENSORMAP_FROM_FN) to fetch the real descriptor ptr from var-env
   type
   source-location)
 
