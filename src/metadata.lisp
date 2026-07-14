@@ -567,7 +567,8 @@
           ;; (option A pointer-to-global, one slot).  The hoist runs cuTensorMapEncodeTiled from
           ;; :describes (reads that tensor's runtime base/extents/strides) + :box-dims.
           ((and type-head (string-equal type-head "TENSOR-MAP"))
-           (let ((info (gethash name *tma-descriptor-info*)))
+           ;; Resolved (through the carrier chain) per (kernel . uname) in *tma-resolved*.
+           (let ((info (gethash (cons (function-signature-name sig) name) *tma-resolved*)))
              (push (list :name (string-downcase (symbol-name name))
                          :kind :tensor-map
                          :describes (and (getf info :describes)

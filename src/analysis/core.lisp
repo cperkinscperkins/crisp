@@ -322,17 +322,30 @@
          2. During Codegen (Pass 2) to generate LLVM IR.
          MUST BE RESET TO 0 BETWEEN PASSES.")
 
-(defvar *scratch-tile-dims* (make-hash-table)
-        "Endeavor 137: scan-time map of scratch-tile binding SYMBOL -> plist
+(defvar *scratch-tile-dims* (make-hash-table :test 'equal)
+        "Endeavor 137: scan-time map of (fn . scratch-tile-binding-SYMBOL) -> plist
          (:element-type E :box-dims (D...) :rank N).  Populated when scanning a
          make-scratch-{vector,matrix,tensor} binding; consulted when a :block load-tile mints
          a CUtensorMap descriptor to record the tile-box shape.  Rebound per module.")
 
 (defvar *tma-descriptor-info* (make-hash-table)
         "Endeavor 137: map of CUtensorMap descriptor implicit-arg unique-NAME -> plist
-         (:describes SRC :element-type E :rank N :box-dims (D...)).  Populated at scan when a
-         :block load-tile mints a descriptor; read by generate-implicit-signature to emit the
-         :kind :tensor-map metacrisp entry.  Rebound per module.")
+         (:originator F0 :describes-sym SRC :tile-sym TILE).  Populated at scan when a :block
+         load-tile mints a descriptor.  These are ORIGINATOR-frame symbols; resolve-tma-descriptors
+         walks the carrier chain to turn them into concrete kernel-frame values in *tma-resolved*.
+         PERSISTENT (cleared via clrhash in the compiler reset) — survives to metadata emit.")
+
+(defvar *call-site-args* (make-hash-table)
+        "Endeavor 137: scan-time map fn-name -> list of (callee-name . explicit-arg-list) for the
+         user-function calls in fn's body.  Used to resolve a descriptor's describes/tile refs
+         down the carrier call chain (args are threaded positionally at each hop).  Rebound per
+         module (only consulted during resolution, which runs inside compile-module).")
+
+(defvar *tma-resolved* (make-hash-table :test 'equal)
+        "Endeavor 137: map (kernel-name . descriptor-uname) -> plist (:describes NAME
+         :element-type E :rank N :box-dims (D...)), resolved through the carrier chain by
+         resolve-tma-descriptors; read by generate-implicit-signature.  PERSISTENT (cleared via
+         clrhash in the compiler reset) — metadata emit runs after compile-module returns.")
 
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms.
@@ -350,7 +363,8 @@
           (*originator-functions* (make-hash-table))
           (*implicit-arg-map* (make-hash-table)) ; Rebind for a clean state per module.
           (*async-barrier-modes* (make-hash-table)) ; Endeavor 137: barrier var -> mode.
-          (*scratch-tile-dims* (make-hash-table))   ; Endeavor 137: tile var -> box-dims (Pass 1 only).
+          (*scratch-tile-dims* (make-hash-table :test 'equal)) ; Endeavor 137: (fn.tile) -> box-dims.
+          (*call-site-args* (make-hash-table))      ; Endeavor 137: fn -> (callee . args) list.
           ;; NB: *tma-descriptor-info* is a PERSISTENT global (cleared via clrhash in the compiler
           ;; reset, like *implicit-scratch-size-expr-map*) — metadata emission reads it AFTER
           ;; compile-module returns, so it must NOT be dynamically rebound here.
@@ -369,6 +383,12 @@
       (setf *scratch-cell-counter* 0)
       (log:info "Reset *scratch-cell-counter* to 0 for Pass 2 Codegen")
       (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
+      ;; Endeavor 137 Phase 2c: resolve CUtensorMap descriptors' describes/box-dims through the
+      ;; carrier chain.  Runs AFTER Pass 2 so *kernel-declared-signatures* (populated by each
+      ;; def-kernel's eval-when during codegen) is available for the kernel's logical params;
+      ;; still inside the per-module let, so the Pass-1 scan tables (*call-site-args*,
+      ;; *scratch-tile-dims*, *implicit-arg-map*) are alive.
+      (resolve-tma-descriptors)
       (check-for-recursion-cycles)
       ;; Endeavor 130 Phase 2: validate each kernel's local (shared) memory against the
       ;; active hardware profile, now that all signatures (incl. implicit scratch) are
@@ -409,6 +429,102 @@
                                    caller (length existing) (length merged))
                          (setf (gethash caller *implicit-arg-map*) merged)
                          (pushnew caller worklist))))))))
+
+;; -----------------------------------------------------------------------------------------
+;; Endeavor 137 Phase 2c — resolve a CUtensorMap descriptor's describes/tile references down
+;; the carrier call chain.  A descriptor originates in F0 at (load-tile SRC TILE :barrier bar)
+;; and threads up (by unique name) to every caller, ending at the kernel where the hoist runs.
+;; SRC/TILE are the originator's params; at each call hop they map positionally to the caller's
+;; argument, until SRC lands on a kernel global tensor param (describes) and TILE lands on a
+;; scratch-tile binding (box-dims).  Assumes the tensor/tile are passed as direct arguments.
+;; -----------------------------------------------------------------------------------------
+
+(defun %fn-explicit-params (fn-name)
+  "The LOGICAL explicit parameter symbols of FN-NAME, &out removed.  For a kernel we use the
+   declared signature — its *fn-normalized-info* :params are the EXPLODED physical ABI (a_ptr,
+   a_byte_size, ...) after def-kernel expansion, not the logical tensors.  Sub-functions keep
+   their logical params in *fn-normalized-info*."
+  (let ((raw (if (%fn-is-kernel-p fn-name)
+                 (mapcar #'car (gethash fn-name *kernel-declared-signatures*))
+                 (getf (gethash fn-name *fn-normalized-info*) :params))))
+    (remove-if (lambda (s) (and (symbolp s) (string-equal (symbol-name s) "&OUT"))) raw)))
+
+(defun %fn-is-kernel-p (fn-name)
+  "T if FN-NAME is a kernel entry point."
+  (getf (gethash fn-name *fn-normalized-info*) :entry-point-p))
+
+(defun %fn-carries-descriptor-p (fn-name uname)
+  "T if FN-NAME carries the descriptor implicit UNAME (in its *implicit-arg-map* entry)."
+  (find uname (gethash fn-name *implicit-arg-map*) :key #'car))
+
+(defun %tma-downstream-carrier (fn uname)
+  "The callee FN calls that carries descriptor UNAME, plus the explicit args of that call.
+   Returns (values callee-name arg-list) or NIL."
+  (loop for (callee . args) in (gethash fn *call-site-args*)
+        when (%fn-carries-descriptor-p callee uname)
+          do (return-from %tma-downstream-carrier (values callee args)))
+  nil)
+
+(defun %tma-classify (fn sym kind)
+  "Classify SYM in FN's frame for KIND (:describes / :tile).  Returns a concrete
+   (:tensor SYM) / (:tile DIMS ELEM RANK), or (:param SYM) to continue up the chain, or NIL."
+  (let ((tile-info (gethash (cons fn sym) *scratch-tile-dims*)))
+    (cond
+      ((and (eq kind :tile) tile-info)
+       (list :tile (getf tile-info :box-dims) (getf tile-info :element-type) (getf tile-info :rank)))
+      ((member sym (%fn-explicit-params fn))
+       (if (and (eq kind :describes) (%fn-is-kernel-p fn))
+           (list :tensor sym)      ;; kernel global tensor param -> concrete describes
+           (list :param sym)))     ;; otherwise a param: continue up the carrier chain
+      (t (list :param sym)))))
+
+(defun %tma-resolve-ref (fn uname kind &optional visited)
+  "Resolve descriptor UNAME's KIND reference in FN's frame by substituting through the carrier
+   chain.  Returns concrete (:tensor SYM) / (:tile DIMS ELEM RANK), (:param SYM), or NIL."
+  (when (member fn visited) (return-from %tma-resolve-ref nil))
+  (let* ((info (gethash uname *tma-descriptor-info*))
+         (originator (getf info :originator)))
+    (if (eq fn originator)
+        (%tma-classify fn (if (eq kind :describes)
+                              (getf info :describes-sym)
+                              (getf info :tile-sym))
+                       kind)
+        (multiple-value-bind (g args) (%tma-downstream-carrier fn uname)
+          (when g
+            (let ((rg (%tma-resolve-ref g uname kind (cons fn visited))))
+              (cond
+                ((null rg) nil)
+                ((member (first rg) '(:tensor :tile)) rg)   ;; concrete -> propagate unchanged
+                ((eq (first rg) :param)
+                 ;; rg = (:param symG); symG is G's explicit param at position POS -> FN's POS-th arg
+                 (let* ((pos (position (second rg) (%fn-explicit-params g))))
+                   (if (and pos (< pos (length args)))
+                       (%tma-classify fn (nth pos args) kind)
+                       nil)))
+                (t nil))))))))
+
+(defun resolve-tma-descriptors ()
+  "Endeavor 137 Phase 2c: for every kernel carrying a CUtensorMap descriptor, resolve its
+   describes tensor + tile box-dims through the carrier call chain into *tma-resolved*.
+   Element-type / rank come from the resolved tile (they match the source).  Subsumes the 2b
+   same-function case as a zero-hop resolution (originator == kernel)."
+  (loop for kernel being the hash-keys of *implicit-arg-map*
+        when (%fn-is-kernel-p kernel)
+          do (dolist (entry (gethash kernel *implicit-arg-map*))
+               (let ((uname (car entry)))
+                 (when (gethash uname *tma-descriptor-info*)   ;; it is a tensor-map descriptor
+                   (let ((d (%tma-resolve-ref kernel uname :describes))
+                         (til (%tma-resolve-ref kernel uname :tile)))
+                     (cond
+                       ((and d (eq (first d) :tensor) til (eq (first til) :tile))
+                        (setf (gethash (cons kernel uname) *tma-resolved*)
+                              (list :describes (second d)
+                                    :element-type (third til)
+                                    :rank (fourth til)
+                                    :box-dims (second til))))
+                       (t
+                        (log:warn "Endeavor 137: unresolved CUtensorMap descriptor ~a in kernel ~a (describes=~a tile=~a)"
+                                  uname kernel d til)))))))))
 
 ;; --- Generic Dependency Scanner ---
 
@@ -476,7 +592,11 @@
                (member (symbol-name op) '("LOAD-TILE" "LOAD-TILE-AT") :test #'string-equal))
       (%scan-register-tma-descriptor args))
     (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op)))
-          (pushnew op *scan-callees*))
+          (pushnew op *scan-callees*)
+          ;; Endeavor 137: record this call site's explicit args so a descriptor's describes/tile
+          ;; refs can be resolved positionally down the carrier chain.
+          (let ((fn (compiler-context-scanning-function-name *compiler-context*)))
+            (when fn (pushnew (cons op args) (gethash fn *call-site-args*) :test #'equal))))
     (dolist (arg args) (scan-form arg)))))
 
 ;; Special Form Handlers
@@ -620,17 +740,14 @@
         (unless already
           (let* ((uname (intern (format nil "~a_TENSORMAP_FROM_~a" src fn-name)
                                 (symbol-package src)))
-                 (spec  (list (intern "TENSOR-MAP" (find-package :crisp.compiler)) src))
-                 ;; box-dims / element-type / rank from the staging tile's scratch registration.
-                 (tile-info (and (symbolp tile) (gethash tile *scratch-tile-dims*))))
+                 (spec  (list (intern "TENSOR-MAP" (find-package :crisp.compiler)) src)))
             (log:info "Pass 1: :block load-tile of ~a (tile ~a) -> CUtensorMap descriptor ~a"
                       src tile uname)
             (push (cons uname spec) (gethash fn-name *implicit-arg-map*))
+            ;; Store ORIGINATOR-frame refs; resolve-tma-descriptors walks the carrier chain to
+            ;; concrete kernel-frame describes/box-dims/elem/rank.
             (setf (gethash uname *tma-descriptor-info*)
-                  (list :describes src
-                        :element-type (getf tile-info :element-type)
-                        :rank (getf tile-info :rank)
-                        :box-dims (getf tile-info :box-dims)))))))))
+                  (list :originator fn-name :describes-sym src :tile-sym tile))))))))
 
 
 

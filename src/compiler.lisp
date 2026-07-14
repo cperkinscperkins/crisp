@@ -996,6 +996,8 @@ Returns modified IR text with metadata."
   ;; compile-module returns — same lifetime as *implicit-scratch-size-expr-map*.
   (when (boundp '*tma-descriptor-info*)
     (clrhash *tma-descriptor-info*))
+  (when (boundp '*tma-resolved*)
+    (clrhash *tma-resolved*))
 
   ;; clear dispatch declarations side table
   (clrhash *kernel-dispatch-declarations*)

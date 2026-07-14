@@ -280,7 +280,12 @@
   (log:info "EXTRACT-PRIMARY: value=~s type=~s listp=~s" value type-spec (listp type-spec))
   (if (and (listp type-spec)
            (not (valid-type-p type-spec))
-           (> (length type-spec) 1))
+           (> (length type-spec) 1)
+           ;; Endeavor 137: a CUtensorMap descriptor (tensor-map SRC) is a 2-element list that
+           ;; valid-type-p doesn't recognize, but it is a SINGLE pointer value — not a
+           ;; multiple-value-return tuple.  Don't extract-value index 0 from the pointer.
+           (not (and (symbolp (first type-spec))
+                     (string-equal (symbol-name (first type-spec)) "TENSOR-MAP"))))
       ;; It is a multi-value return type (e.g. from semantic-truncate: (int float))
       ;; The value is a struct { i32, float }
       ;; We extract index 0.
