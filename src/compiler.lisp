@@ -991,6 +991,12 @@ Returns modified IR text with metadata."
   ;; clear scratch tensor size-expr side table
   (clrhash *implicit-scratch-size-expr-map*)
 
+  ;; Endeavor 137: clear the CUtensorMap descriptor metadata side table.  This is a PERSISTENT
+  ;; global (not rebound per-module) so it survives to metadata-emission time, which runs after
+  ;; compile-module returns — same lifetime as *implicit-scratch-size-expr-map*.
+  (when (boundp '*tma-descriptor-info*)
+    (clrhash *tma-descriptor-info*))
+
   ;; clear dispatch declarations side table
   (clrhash *kernel-dispatch-declarations*)
 

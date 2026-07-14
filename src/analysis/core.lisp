@@ -322,6 +322,18 @@
          2. During Codegen (Pass 2) to generate LLVM IR.
          MUST BE RESET TO 0 BETWEEN PASSES.")
 
+(defvar *scratch-tile-dims* (make-hash-table)
+        "Endeavor 137: scan-time map of scratch-tile binding SYMBOL -> plist
+         (:element-type E :box-dims (D...) :rank N).  Populated when scanning a
+         make-scratch-{vector,matrix,tensor} binding; consulted when a :block load-tile mints
+         a CUtensorMap descriptor to record the tile-box shape.  Rebound per module.")
+
+(defvar *tma-descriptor-info* (make-hash-table)
+        "Endeavor 137: map of CUtensorMap descriptor implicit-arg unique-NAME -> plist
+         (:describes SRC :element-type E :rank N :box-dims (D...)).  Populated at scan when a
+         :block load-tile mints a descriptor; read by generate-implicit-signature to emit the
+         :kind :tensor-map metacrisp entry.  Rebound per module.")
+
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms.
    When --differentiate is enabled, pre-injects shadow def-struct forms for
@@ -338,6 +350,10 @@
           (*originator-functions* (make-hash-table))
           (*implicit-arg-map* (make-hash-table)) ; Rebind for a clean state per module.
           (*async-barrier-modes* (make-hash-table)) ; Endeavor 137: barrier var -> mode.
+          (*scratch-tile-dims* (make-hash-table))   ; Endeavor 137: tile var -> box-dims (Pass 1 only).
+          ;; NB: *tma-descriptor-info* is a PERSISTENT global (cleared via clrhash in the compiler
+          ;; reset, like *implicit-scratch-size-expr-map*) — metadata emission reads it AFTER
+          ;; compile-module returns, so it must NOT be dynamically rebound here.
           (*scratch-cell-counter* 0)) ; Reset counter for deterministic naming
       (let ((*defer-struct-validation* t)
             (*pending-struct-definitions* nil))
@@ -586,6 +602,7 @@
    its element-type / rank / box-dims are resolved later (metadata + hoist) from SRC's declared
    type and the staging tile, so scan only needs SRC + the barrier's resolved mode."
   (let* ((src     (first args))
+         (tile    (second args))
          (barrier (getf (cdddr args) :barrier)))   ;; args = SRC TILE COORDS &key ... :barrier BAR
     (when (and (symbolp src) (symbolp barrier)
                (eq (async-barrier-mode-of barrier) :block)
@@ -603,9 +620,17 @@
         (unless already
           (let* ((uname (intern (format nil "~a_TENSORMAP_FROM_~a" src fn-name)
                                 (symbol-package src)))
-                 (spec  (list (intern "TENSOR-MAP" (find-package :crisp.compiler)) src)))
-            (log:info "Pass 1: :block load-tile of ~a -> CUtensorMap descriptor implicit ~a" src uname)
-            (push (cons uname spec) (gethash fn-name *implicit-arg-map*))))))))
+                 (spec  (list (intern "TENSOR-MAP" (find-package :crisp.compiler)) src))
+                 ;; box-dims / element-type / rank from the staging tile's scratch registration.
+                 (tile-info (and (symbolp tile) (gethash tile *scratch-tile-dims*))))
+            (log:info "Pass 1: :block load-tile of ~a (tile ~a) -> CUtensorMap descriptor ~a"
+                      src tile uname)
+            (push (cons uname spec) (gethash fn-name *implicit-arg-map*))
+            (setf (gethash uname *tma-descriptor-info*)
+                  (list :describes src
+                        :element-type (getf tile-info :element-type)
+                        :rank (getf tile-info :rank)
+                        :box-dims (getf tile-info :box-dims)))))))))
 
 
 
