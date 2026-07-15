@@ -162,20 +162,31 @@ efficiently; `:mode :linear` per-row is the honest floor they'll improve on.  Co
 
 ### Chapter 1.5 — `:mode :block` TMA / CuTensorMap (Endeavor 137, 2026-07-15)
 
-**NVIDIA H100 80GB (RunPod), 64×64 tile, 1024³ tf32 — all `MMA_CORRECT`:**
+**NVIDIA H100 80GB (RunPod), 64×64 tile, tf32 size sweep — all `MMA_CORRECT`, GFLOPS:**
 
-| kernel | GFLOPS | vs sync | vs `:linear` |
-|--------|-------:|:-------:|:------------:|
-| sync (Chapter 0)      |  1521  |  1.0×  |    —    |
-| `:linear` (cp.async)  |  2495  | 1.64×  |    —    |
-| `:block` (TMA)        | 28110  | **18.5×** | **11.3×** |
+| M=N=K | sync | `:linear` | `:block` (TMA) | cuBLAS tf32 | `:block`/cuBLAS |
+|------:|-----:|----------:|---------------:|------------:|:-:|
+|  256  |   100 |   155 |  1,631 |   6,143 | 27% |
+|  512  |   386 |   624 |  7,188 |  34,848 | 21% |
+| 1024  | 1,534 | 2,510 | 28,139 | 143,077 | 20% |
+| 2048  | 5,596 | 8,964 | 75,039 | 365,512 | 21% |
+| 4096  |  —    |  —    | 79,720 | 436,177 | 18% |
 
-The sync→`:linear` 1.64× matches the RTX ~1.55× above.  The `:block` jump is dramatic but real
-(C=A·B verified after the timed loop): at K=1024 the `cp.async` path issues ~131K per-element
-copies per workgroup, while TMA issues **~256 bulk descriptor-driven 2-D copies** — so `:block`
-becomes compute-bound (~7% of the H100's ~378 TFLOPS dense tf32 peak) while sync/`:linear` stay
-copy-bound (<1%).  These are single-warp-per-workgroup / low-occupancy kernels; rings + warp
-specialization (below) should lift all three.
+(sync / `:linear` at 4096 omitted — copy-bound and glacial; cuBLAS via `cublasGemmEx` +
+`CUBLAS_COMPUTE_32F_FAST_TF32`, `cublas_bench.cu`, same 2·M·N·K FLOP count.)
+
+Findings:
+- **`:block` is a step-change over `:linear`, ~8–11×.**  At K=N the `cp.async` path issues
+  ~131K per-element copies per workgroup; TMA issues ~256 **bulk descriptor-driven 2-D** copies,
+  so `:block` becomes compute-bound while sync/`:linear` stay copy-bound (<2.5% of cuBLAS).
+- **Naive `:block` holds a steady ~18–27% of cuBLAS** across two orders of magnitude — a clean
+  "TMA staging alone buys ~1/5 of peak" result.
+- **`:block` plateaus at 4096** (75→80 TFLOPS from 2048→4096) — the **single-warp / low-occupancy**
+  kernel saturates, while cuBLAS keeps climbing (365→436).  Closing that gap is exactly what the
+  remaining levers do: **rings** (pipeline overlap), **warp specialization** (producer/consumer),
+  bigger tiles, and SLM swizzling.  So this row is the honest "naive TMA ceiling" the next
+  chapters build on.
+- sync→`:linear` 1.6× matches the RTX ~1.55× above.
 
 Generated apples-to-apples by the hoist itself — `crisp-hoist-cuda --mma-bench=M,N,K
 --grid-tile=64 <metacrisp>` emits a per-kernel `_CUDA.cu` that sets up each kernel's exact args
