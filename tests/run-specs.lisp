@@ -721,7 +721,7 @@
     (if *use-binary*
         (cond
           ((eq ir-target :spirv)  (run-spec-spirv-binary file :emit-metadata emit-metadata :validator validator))
-          ((eq ir-target :ptx)    (run-spec-ptx-binary file :validator validator))
+          ((eq ir-target :ptx)    (run-spec-ptx-binary file :validator validator :flags flags))
           ((eq ir-target :llvmir) (run-spec-llvmir-binary file :validator validator))
           (t (run-spec-binary file)))
         (cond
@@ -1651,7 +1651,7 @@
       (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
 
-(defun run-spec-ptx-binary (file &key (validator nil))
+(defun run-spec-ptx-binary (file &key (validator nil) (flags nil))
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
          (bin (get-binary-path))
          (out-path (make-pathname :name base-name :type "ptx" :defaults file))
@@ -1660,6 +1660,11 @@
     (when *compile-debug* (push "--debug" args))
     (when *compile-differentiate* (push "--differentiate" args))
     (when *compile-single-pass* (push "--single-pass" args))
+    ;; Endeavor 137: forward --ir-target-arch=<ID> from the TEST-WITH flags to the binary — a
+    ;; separate crisp-compile.exe process can't see the in-process *ir-target-arch* dynamic
+    ;; binding, so a :block (sm_90+) test gates on the default sm_80 without this.
+    (let ((af (find-if (lambda (f) (and (stringp f) (search "--ir-target-arch=" f))) flags)))
+      (when af (push af args)))
 
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
