@@ -37,18 +37,59 @@
 (defvar *mma-scale* 1 "Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.
    Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).")
 
+(defvar *mma-bench-p* nil "T when --mma-bench=M,N,K is passed: same setup + C=A·B check as
+   --mma-test, PLUS a warmup + timed relaunch loop reporting GFLOPS.  Since the harness is
+   generated from the metacrisp, it launches EACH kernel with its exact args (incl. the
+   CUtensorMap descriptor for :block) — so sync / :linear / :block are apples-to-apples.")
+
+(defvar *mma-grid-tile* nil "Explicit (TM TN) output-tile override from --grid-tile=T[,TN]; the
+   --mma-bench harness launches a (M/TM x N/TN) 2-D grid.  When NIL the tile is DERIVED from the
+   two local staging tiles (%derive-output-tile).")
+
 (defun %mma-parse-args (args)
-  "Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an
-   optional --mma-scale=S flag."
-  (let ((dims nil) (path nil) (scale 1))
+  "Return (values metacrisp-path (M N K)-or-NIL scale bench-p grid-tile), extracting --mma-test,
+   --mma-bench (implies test + timing), --mma-scale=S, and --grid-tile=T[,TN]."
+  (let ((dims nil) (path nil) (scale 1) (bench nil) (grid-tile nil))
     (dolist (a args)
       (cond
         ((and (>= (length a) 11) (string= (subseq a 0 11) "--mma-test="))
          (setf dims (mapcar #'parse-integer (uiop:split-string (subseq a 11) :separator ","))))
+        ((and (>= (length a) 12) (string= (subseq a 0 12) "--mma-bench="))
+         (setf dims (mapcar #'parse-integer (uiop:split-string (subseq a 12) :separator ","))
+               bench t))
         ((and (>= (length a) 12) (string= (subseq a 0 12) "--mma-scale="))
          (setf scale (parse-integer (subseq a 12))))
+        ((and (>= (length a) 12) (string= (subseq a 0 12) "--grid-tile="))
+         (let ((parts (mapcar #'parse-integer (uiop:split-string (subseq a 12) :separator ","))))
+           (setf grid-tile (if (= (length parts) 1) (list (first parts) (first parts)) parts))))
         (t (unless path (setf path a)))))
-    (values path dims scale)))
+    (values path dims scale bench grid-tile)))
+
+(defun %derive-output-tile (full-sig)
+  "Endeavor 137: derive the (M-per-wg . N-per-wg) output tile from the two LOCAL staging tiles
+   in the metacrisp.  A-tile is (M-per-wg k-step), B-tile is (k-step N-per-wg) — they share the
+   k-step dim.  Returns (values TM TN) or NIL if it cannot be cleanly identified (caller falls
+   back to --grid-tile / a single workgroup)."
+  (let ((tiles (loop for p in full-sig
+                     for se = (getf p :size-expr)
+                     when (and (member (getf p :address-space) '(:local "LOCAL" local) :test #'string-equal)
+                               (listp se) (= (length se) 2) (every #'integerp se))
+                       collect se)))
+    (when (= (length tiles) 2)
+      (destructuring-bind (t1 t2) tiles
+        ;; AMBIGUITY GUARD: if the two tiles are dim-swaps (same multiset of dims — e.g. (64 8)
+        ;; and (8 64)), A-tile-vs-B-tile is undecidable (out could be 64x64 OR 8x8).  Bail so
+        ;; the caller requires an explicit --grid-tile.  Only the asymmetric case (M != N) is
+        ;; unambiguous.
+        (unless (equal (sort (copy-list t1) #'<) (sort (copy-list t2) #'<))
+          (let ((kstep (cond ((= (second t1) (first t2)) (second t1))    ; t1 = A-tile, t2 = B-tile
+                             ((= (first t1) (second t2)) (first t1))     ; t1 = B-tile, t2 = A-tile
+                             (t nil))))
+            (when kstep
+              (let ((a-tile (cond ((= (second t1) kstep) t1) ((= (second t2) kstep) t2)))
+                    (b-tile (cond ((= (first t1) kstep) t1)  ((= (first t2) kstep) t2))))
+                (when (and a-tile b-tile)
+                  (values (first a-tile) (second b-tile)))))))))))
 
 (defun %mma-out-dir-p (dir)
   "T if the param direction is an output (&out)."
@@ -63,9 +104,11 @@
         (unless args
           (format t "Usage: crisp-hoist-cuda [--mma-test=M,N,K] <path-to-metacrisp-file>~%")
           (uiop:quit 1))
-        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args args)
+        (multiple-value-bind (metacrisp-path dims scale bench-p grid-tile) (%mma-parse-args args)
           (setf *mma-test-dims* dims)
           (setf *mma-scale* scale)
+          (setf *mma-bench-p* bench-p)
+          (setf *mma-grid-tile* grid-tile)
           (setf *mma-input-counter* 0)     ; reset role assignment for this run
           (unless (and metacrisp-path (probe-file metacrisp-path))
             (format t "Error: File not found: ~a~%" metacrisp-path)
@@ -429,8 +472,14 @@ overrides the runtime SM-count query in the grid-size heuristic."
     ;; Compute shared memory total for local tiles
     (let ((shared-bytes (compute-total-shared-bytes declared-sig aliases)))
 
-      ;; Launch
-      (emit-launch stream dispatch-info shared-bytes compute-units)
+      ;; Launch.  Endeavor 137: for --mma-bench, the output tile (explicit --grid-tile or derived
+      ;; from the staging tiles) drives a (M/TM x N/TN) 2-D grid so many workgroups fill the GPU
+      ;; (grid (1,1) hides no cross-workgroup latency, so async would show nothing).
+      (let ((out-tile (when *mma-bench-p*
+                        (or *mma-grid-tile*
+                            (multiple-value-bind (tm tn) (%derive-output-tile declared-sig)
+                              (when tm (list tm tn)))))))
+        (emit-launch stream dispatch-info shared-bytes compute-units kernel-name out-tile))
 
       ;; Synchronize
       (format stream "    CUDA_CHECK(cuCtxSynchronize());~%")
@@ -833,6 +882,52 @@ overrides the runtime SM-count query in the grid-size heuristic."
 
 
 
+(defun %cuda-tensor-map-data-type (elem-type)
+  "Maps a Crisp element type to the CU_TENSOR_MAP_DATA_TYPE_* enum for cuTensorMapEncodeTiled."
+  (let ((n (string-downcase (string elem-type))))
+    (cond ((string= n "float")  "CU_TENSOR_MAP_DATA_TYPE_FLOAT32")
+          ((string= n "double") "CU_TENSOR_MAP_DATA_TYPE_FLOAT64")
+          (t (error "cuTensorMapEncodeTiled: unsupported element type ~a (need float/double)"
+                    elem-type)))))
+
+(defun %cuda-emit-tensor-map-encode (stream param)
+  "Endeavor 137 Phase 2b.3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map
+   descriptor and copy the 128-byte descriptor to device global (option A), leaving the device
+   pointer in <name> (forward-declared earlier at the descriptor's ABI slot).  References the
+   DESCRIBED tensor's already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).  Uses the
+   innermost-dimension-first convention (globalDim / boxDim reversed vs the row-major extents),
+   matching the nvcc-verified H100 reference."
+  (let* ((name      (substitute #\_ #\- (getf param :name)))
+         (describes (substitute #\_ #\- (getf param :describes)))
+         (rank      (getf param :rank))
+         (box       (getf param :box-dims))
+         (elem      (getf param :element-type))
+         (elem-str  (crisp-type-to-cpp-type elem))
+         (dtype     (%cuda-tensor-map-data-type elem)))
+    (format stream "~%    // CUtensorMap descriptor for '~a' (box ~a) — Endeavor 137 :block TMA~%"
+            describes box)
+    (format stream "    CUtensorMap ~a_host;~%" name)
+    ;; globalDim: fastest-varying (innermost) dim first -> reverse the row-major extents.
+    (format stream "    uint64_t ~a_gdim[~d] = { ~{~a~^, ~} };~%" name rank
+            (loop for k from (1- rank) downto 0 collect (format nil "~a_ext~d" describes k)))
+    ;; globalStrides: tensorRank-1 entries, in BYTES.  For rank 2 row-major: { str0 * sizeof(e) }.
+    (when (> rank 1)
+      (format stream "    uint64_t ~a_gstr[~d] = { ~{~a~^, ~} };~%" name (1- rank)
+              (loop for k from (- rank 2) downto 0
+                    collect (format nil "~a_str~d * sizeof(~a)" describes k elem-str))))
+    ;; boxDim: fastest-varying first -> reverse the tile box dims.
+    (format stream "    uint32_t ~a_box[~d] = { ~{~a~^, ~} };~%" name rank
+            (loop for k from (1- rank) downto 0 collect (nth k box)))
+    (format stream "    uint32_t ~a_elstr[~d] = { ~{~a~^, ~} };~%" name rank
+            (make-list rank :initial-element 1))
+    (format stream "    CUDA_CHECK(cuTensorMapEncodeTiled(&~a_host, ~a, ~d,~%" name dtype rank)
+    (format stream "        (void*)~a_ptr, ~a_gdim, ~a, ~a_box, ~a_elstr,~%"
+            describes name (if (> rank 1) (format nil "~a_gstr" name) "nullptr") name name)
+    (format stream "        CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,~%")
+    (format stream "        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE));~%")
+    (format stream "    CUDA_CHECK(cuMemAlloc(&~a, sizeof(CUtensorMap)));~%" name)
+    (format stream "    CUDA_CHECK(cuMemcpyHtoD(~a, &~a_host, sizeof(CUtensorMap)));~%" name name)))
+
 (defun emit-kernel-args (stream declared-sig aliases records dispatch-info)
   "Emit host-side variable declarations and fill the kernelParams[] array.
    Returns a list of allocation plists for readback.
@@ -842,7 +937,8 @@ overrides the runtime SM-count query in the grid-size heuristic."
   (setf *cuda-shared-scratch-offset* 0)
   (let ((arg-index 0)
         (allocations '())
-        (arg-names '()))
+        (arg-names '())
+        (deferred-tensor-maps '()))
 
     (dolist (param declared-sig)
       (let* ((param-name  (getf param :name))
@@ -853,6 +949,16 @@ overrides the runtime SM-count query in the grid-size heuristic."
              (is-local    (member param-as '(:local "LOCAL" local) :test #'string-equal)))
 
         (cond
+         ;; Endeavor 137: CUtensorMap descriptor (option A).  Forward-declare its device ptr and
+         ;; reserve its ABI slot now (it sorts first); the encode is emitted AFTER the loop, once
+         ;; the DESCRIBED tensor's host vars (<d>_ptr / <d>_ext / <d>_str) have been emitted.
+         ((eq (getf param :kind) :tensor-map)
+          (let ((nm (substitute #\_ #\- (getf param :name))))
+            (format stream "    CUdeviceptr ~a;  // CUtensorMap descriptor (filled below)~%" nm)
+            (push nm arg-names)
+            (incf arg-index)
+            (push param deferred-tensor-maps)))
+
          ((cell-type-p param-type)
           (multiple-value-bind (new-idx names alloc)
               (%cuda-emit-cell-arg stream param param-name param-type param-dir is-local aliases arg-index)
@@ -896,6 +1002,11 @@ overrides the runtime SM-count query in the grid-size heuristic."
               (%cuda-emit-scalar-arg stream param-name param-type arg-index)
             (setf arg-index new-idx)
             (setf arg-names (append (reverse names) arg-names)))))))
+
+    ;; Endeavor 137: now that every described tensor is allocated, emit the CUtensorMap encodes
+    ;; (assigning into the device pointers forward-declared at their ABI slots above).
+    (dolist (tm-param (nreverse deferred-tensor-maps))
+      (%cuda-emit-tensor-map-encode stream tm-param))
 
     ;; Build kernelParams[] array
     (let ((ordered-names (nreverse arg-names)))
@@ -1002,8 +1113,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
   (and raw (symbolp raw)))
 
 
-(defun emit-launch (stream dispatch-info shared-bytes &optional compute-units)
+(defun emit-launch (stream dispatch-info shared-bytes &optional compute-units kernel-name out-tile)
   "Emit cuLaunchKernel call with grid/block dims from dispatch-info.
+   OUT-TILE (TM TN), when set (--mma-bench), OVERRIDES the grid with a (M/TM x N/TN) 2-D grid.
    Supports:
      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)
      :strategy :one-thread-per — grid sized to derive-from source
@@ -1047,6 +1159,16 @@ overrides the runtime SM-count query in the grid-size heuristic."
     (format stream "    // Launch kernel~%")
 
     (cond
+      ;; --- Endeavor 137 --mma-bench grid override: (M/TM x N/TN) 2-D output-tile grid ---
+      ;; gridX = row-tiles (grid-y = workgroup-id 0), gridY = col-tiles (grid-x = workgroup-id 1),
+      ;; matching matrix-multiply-tile-stride's mapping (and the 136 bench_harness.cu).
+      ((and out-tile *mma-test-dims*)
+       (destructuring-bind (m n k) *mma-test-dims*
+         (declare (ignore k))
+         (destructuring-bind (tm tn) out-tile
+           (format stream "    unsigned int gridX = ~d, gridY = ~d, gridZ = 1;  // (M/~d, N/~d) output-tile grid~%"
+                   (ceiling m tm) (ceiling n tn) tm tn))))
+
       ;; --- :strategy :strided — max occupancy (optionally derated by :occupancy) ---
       (is-strided
        (let ((block-size (* block-x (max 1 block-y)))
@@ -1144,11 +1266,38 @@ overrides the runtime SM-count query in the grid-size heuristic."
       (t
        (format stream "    unsigned int gridX = 1, gridY = 1, gridZ = 1;~%")))
 
-    (format stream "    CUDA_CHECK(cuLaunchKernel(kernel,~%")
-    (format stream "        gridX, gridY, gridZ,~%")
-    (format stream "        ~a, ~a, 1,~%" block-x block-y)
-    (format stream "        ~a, 0,~%" shared-bytes)
-    (format stream "        kernelParams, nullptr));~%~%")))
+    ;; Repeatable launch — one call for the correctness readback that follows, and (for
+    ;; --mma-bench) the timed relaunch loop below.
+    ;; Plain launch (no CUDA_CHECK — its `return` would make this void lambda non-void AND
+    ;; swallow errors from the timed loop); a launch error surfaces at the cuCtxSynchronize below.
+    (format stream "    auto _crisp_launch = [&]() {~%")
+    (format stream "      CUresult _lr = cuLaunchKernel(kernel,~%")
+    (format stream "          gridX, gridY, gridZ,~%")
+    (format stream "          ~a, ~a, 1,~%" block-x block-y)
+    (format stream "          ~a, 0,~%" shared-bytes)
+    (format stream "          kernelParams, nullptr);~%")
+    (format stream "      if (_lr != CUDA_SUCCESS) { const char* _es; cuGetErrorString(_lr, &_es);~%")
+    (format stream "        std::cerr << \"launch error: \" << _es << std::endl; }~%")
+    (format stream "    };~%")
+    (format stream "    _crisp_launch();~%~%")
+    ;; Endeavor 137: --mma-bench — warmup + timed relaunch loop -> GFLOPS.  Each launch fully
+    ;; recomputes C (per-tile reset), so the final C is still correct for the readback check.
+    (when (and *mma-bench-p* *mma-test-dims*)
+      (destructuring-bind (m n k) *mma-test-dims*
+        (format stream "    {  // --mma-bench: timed relaunch loop~%")
+        (format stream "      const int WARMUP = 20, ITERS = 100;~%")
+        (format stream "      for (int _w = 0; _w < WARMUP; _w++) _crisp_launch();~%")
+        (format stream "      CUDA_CHECK(cuCtxSynchronize());~%")
+        (format stream "      CUevent _s, _e; cuEventCreate(&_s, 0); cuEventCreate(&_e, 0);~%")
+        (format stream "      cuEventRecord(_s, 0);~%")
+        (format stream "      for (int _i = 0; _i < ITERS; _i++) _crisp_launch();~%")
+        (format stream "      cuEventRecord(_e, 0); cuEventSynchronize(_e);~%")
+        (format stream "      float _ms = 0.0f; cuEventElapsedTime(&_ms, _s, _e);~%")
+        (format stream "      double _gflops = (2.0 * ~d.0 * ~d.0 * ~d.0 * ITERS) / (_ms * 1.0e6);~%" m n k)
+        (format stream "      std::cout << \"BENCH ~a ~dx~dx~d: \" << _gflops << \" GFLOPS (\" << (_ms/ITERS) << \" ms/iter)\" << std::endl;~%"
+                (or kernel-name "kernel") m n k)
+        (format stream "      cuEventDestroy(_s); cuEventDestroy(_e);~%")
+        (format stream "    }~%~%")))))
 
 ;;; -----------------------------------------------------------------------
 ;;; Readback and output printing

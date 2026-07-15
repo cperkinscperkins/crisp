@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-13T06:17:34.724561Z
+Generated on 2026-07-15T05:00:43.540523Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -99,6 +99,13 @@ Generated on 2026-07-13T06:17:34.724561Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-at-form.
+
+
+---
+### DEFUN `%ANALYZE-NVVM-TMA-LOAD-TILE-AT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 137 (Chapter 1.5, Phase 2) — analyze (load-tile-at SRC TILE (ORIGIN...) :barrier BAR)  >    for a NVIDIA :block barrier into a semantic-nvvm-tma-tile-copy.  Codegen emits one bulk  >    cp.async.bulk.tensor copy issued by an elected leader, tracked by BAR's mbarrier.  We build  >    the dest/source as aref-at-base forms so codegen can reuse the aref element-address machinery  >    for the SLM tile base (addrspace 3) and the source tensor base (addrspace 1, the STAND-IN  >    tensormap pointer).  The ORIGIN coords become the TMA {x,y} tile-box operands (element units).
 
 
 ---
@@ -581,14 +588,21 @@ Generated on 2026-07-13T06:17:34.724561Z
 ### DEFUN `%PARSE-ASYNC-BARRIER-KEYS`
 - **Args**: `(EXPR LOCATION)`
 
-  > Parse (make-async-barrier &key type mode) -> (values barrier-type barrier-mode).  >    Omitted keys default to :global / :linear (today's topology-unaware default).  >    Validates: only :global type and :linear mode are implemented in Chapter 1.
+  > Parse (make-async-barrier &key mode) -> barrier-mode (Endeavor 137).  >    Omitted :mode is arch-automatic (resolved elsewhere; defaults to :linear here).  :type was  >    removed with def-topology.  Validates the mode and gates :block per backend/arch.
 
 
 ---
 ### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavor 136: (make-async-barrier &key type mode).  :linear is a PHANTOM barrier —  >    the commit_group/wait_group (PTX) and OpGroupAsyncCopy (SPV) idioms need no barrier  >    object, so we allocate NO shared memory and codegen a constant 0.  The node carries  >    :type/:mode for future topology-aware dispatch (approach A: record now, thread the  >    load-tile mode-dispatch when :block / arch-defaults land).
+  > Endeavor 136/137: (make-async-barrier &key mode).  :linear is a PHANTOM barrier on PTX —  >    commit_group/wait_group need no object, so we codegen a constant 0; on SPV it owns a  >    target("spirv.Event") slot to chain OpGroupAsyncCopy events.  The node carries :mode so  >    load-tile/await pick the lowering (Endeavor 137 mode-threading).
+
+
+---
+### DEFUN `ASYNC-BARRIER-MODE-OF`
+- **Args**: `(BARRIER-FORM)`
+
+  > Endeavor 137: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.  >    BARRIER-FORM is the barrier variable symbol; look it up in *async-barrier-modes*.  >    Defaults to :linear when unknown (bare/older barriers).
 
 
 ---
@@ -620,10 +634,25 @@ Generated on 2026-07-13T06:17:34.724561Z
 
 
 ---
-### DEFUN `%MMTS-LOWER`
-- **Args**: `(C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY)`
+### DEFUN `%MMTS-SPLIT-EPILOGUE`
+- **Args**: `(BODY)`
 
-  > The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop + auto-store s-expr.
+  > Endeavor 137: split a matrix-multiply-tile-stride body at the :epilogue marker into  >    (values reduction-body epilogue-body).  Forms before :epilogue run once per K-step  >    (the reduction); forms after run once per tile, post-reduction (grid-y/grid-x in scope,  >    C-tile complete) — that is where the user's store-tile (and any fusion) go.  No :epilogue  >    -> (values body nil).
+
+
+---
+### DEFUN `%FORM-TREE-MENTIONS-STORE-TILE-P`
+- **Args**: `(FORMS)`
+
+  > T if any form in the tree FORMS is a (store-tile ...) / (store-tile-at ...) call.
+
+
+---
+### DEFUN `%MMTS-LOWER`
+- **Args**: `(C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY
+              LOCATION)`
+
+  > The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO  >    auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit  >    store + any fusion.  Warns if the C-tile is never stored.
 
 
 ---
@@ -743,9 +772,45 @@ Generated on 2026-07-13T06:17:34.724561Z
 
 
 ---
+### DEFVAR `*ASYNC-BARRIER-MODES*`
+
+  > Endeavor 137: map of async-barrier binding SYMBOL -> resolved :mode (:linear/:block).  >          make-async-barrier records its let-binding name here (via  >          compiler-context-current-binding-name); load-tile/await look the barrier variable  >          up to pick the lowering (cp.async/OpGroupAsyncCopy vs TMA/LSC 2D block). Rebound  >          per module for clean state.
+
+
+---
 ### DEFVAR `*SCRATCH-CELL-COUNTER*`
 
   > Monotonic counter for disambiguating scratch cells.  >          Used TWICE per module:  >          1. During Analysis Scan (Pass 1) to generate Implicit Arguments.  >          2. During Codegen (Pass 2) to generate LLVM IR.  >          MUST BE RESET TO 0 BETWEEN PASSES.
+
+
+---
+### DEFVAR `*ASYNC-BARRIER-LOAD-COUNT*`
+
+  > Endeavor 137 Phase 2d: scan-time map of async-barrier binding SYMBOL -> count of :block  >          load-tiles that reference it.  Becomes the mbarrier init arrival count (each TMA load  >          issues one mbarrier.arrive.expect_tx).  Rebound per module.
+
+
+---
+### DEFVAR `*SCRATCH-TILE-DIMS*`
+
+  > Endeavor 137: scan-time map of (fn . scratch-tile-binding-SYMBOL) -> plist  >          (:element-type E :box-dims (D...) :rank N).  Populated when scanning a  >          make-scratch-{vector,matrix,tensor} binding; consulted when a :block load-tile mints  >          a CUtensorMap descriptor to record the tile-box shape.  Rebound per module.
+
+
+---
+### DEFVAR `*TMA-DESCRIPTOR-INFO*`
+
+  > Endeavor 137: map of CUtensorMap descriptor implicit-arg unique-NAME -> plist  >          (:originator F0 :describes-sym SRC :tile-sym TILE).  Populated at scan when a :block  >          load-tile mints a descriptor.  These are ORIGINATOR-frame symbols; resolve-tma-descriptors  >          walks the carrier chain to turn them into concrete kernel-frame values in *tma-resolved*.  >          PERSISTENT (cleared via clrhash in the compiler reset) — survives to metadata emit.
+
+
+---
+### DEFVAR `*CALL-SITE-ARGS*`
+
+  > Endeavor 137: scan-time map fn-name -> list of (callee-name . explicit-arg-list) for the  >          user-function calls in fn's body.  Used to resolve a descriptor's describes/tile refs  >          down the carrier call chain (args are threaded positionally at each hop).  Rebound per  >          module (only consulted during resolution, which runs inside compile-module).
+
+
+---
+### DEFVAR `*TMA-RESOLVED*`
+
+  > Endeavor 137: map (kernel-name . descriptor-uname) -> plist (:describes NAME  >          :element-type E :rank N :box-dims (D...)), resolved through the carrier chain by  >          resolve-tma-descriptors; read by generate-implicit-signature.  PERSISTENT (cleared via  >          clrhash in the compiler reset) — metadata emit runs after compile-module returns.
 
 
 ---
@@ -759,6 +824,61 @@ Generated on 2026-07-13T06:17:34.724561Z
 ### DEFUN `PROPAGATE-IMPLICIT-ARGUMENTS`
 
   > Phase 4: Traverses the call graph backwards from originators to find all carriers.
+
+
+---
+### DEFUN `%FN-EXPLICIT-PARAMS`
+- **Args**: `(FN-NAME)`
+
+  > The LOGICAL explicit parameter symbols of FN-NAME, &out removed.  For a kernel we use the  >    declared signature — its *fn-normalized-info* :params are the EXPLODED physical ABI (a_ptr,  >    a_byte_size, ...) after def-kernel expansion, not the logical tensors.  Sub-functions keep  >    their logical params in *fn-normalized-info*.
+
+
+---
+### DEFUN `%FN-IS-KERNEL-P`
+- **Args**: `(FN-NAME)`
+
+  > T if FN-NAME is a kernel entry point.
+
+
+---
+### DEFUN `%KERNEL-PARAM-CONTIGUOUS-TERM`
+- **Args**: `(KERNEL SYM)`
+
+  > The :contiguous-term (:row-major / :col-major) of KERNEL's tensor param SYM, from its  >    declared type (resolving a type alias).  The CUtensorMap encode is layout-dependent.  >    Defaults to :row-major.
+
+
+---
+### DEFUN `%FN-CARRIES-DESCRIPTOR-P`
+- **Args**: `(FN-NAME UNAME)`
+
+  > T if FN-NAME carries the descriptor implicit UNAME (in its *implicit-arg-map* entry).
+
+
+---
+### DEFUN `%TMA-DOWNSTREAM-CARRIER`
+- **Args**: `(FN UNAME)`
+
+  > The callee FN calls that carries descriptor UNAME, plus the explicit args of that call.  >    Returns (values callee-name arg-list) or NIL.
+
+
+---
+### DEFUN `%TMA-CLASSIFY`
+- **Args**: `(FN SYM KIND)`
+
+  > Classify SYM in FN's frame for KIND (:describes / :tile).  Returns a concrete  >    (:tensor SYM) / (:tile DIMS ELEM RANK), or (:param SYM) to continue up the chain, or NIL.
+
+
+---
+### DEFUN `%TMA-RESOLVE-REF`
+- **Args**: `(FN UNAME KIND &OPTIONAL VISITED)`
+
+  > Resolve descriptor UNAME's KIND reference in FN's frame by substituting through the carrier  >    chain.  Returns concrete (:tensor SYM) / (:tile DIMS ELEM RANK), (:param SYM), or NIL.
+
+
+---
+### DEFUN `RESOLVE-TMA-DESCRIPTORS`
+
+  > Endeavor 137 Phase 2c: for every kernel carrying a CUtensorMap descriptor, resolve its  >    describes tensor + tile box-dims through the carrier call chain into *tma-resolved*.  >    Element-type / rank come from the resolved tile (they match the source).  Subsumes the 2b  >    same-function case as a zero-hop resolution (originator == kernel).
 
 
 ---
@@ -798,6 +918,20 @@ Generated on 2026-07-13T06:17:34.724561Z
 ---
 ### DEFGENERIC `SCAN-OPERATOR`
 - **Args**: `(OP ARGS)`
+
+---
+### DEFUN `%RESOLVE-ASYNC-BARRIER-MODE-SCAN`
+- **Args**: `(ARGS)`
+
+  > Scan-pass resolution of a (make-async-barrier &key mode) form's :mode WITHOUT the Pass-2  >    gating/validation.  Explicit :mode wins; otherwise arch-automatic — :block on a TMA-capable  >    NVIDIA arch (sm_90+), else :linear.  Used to decide at scan time whether a :block load-tile  >    needs a CUtensorMap descriptor implicit arg (Endeavor 137 Phase 2b).
+
+
+---
+### DEFUN `%SCAN-REGISTER-TMA-DESCRIPTOR`
+- **Args**: `(ARGS)`
+
+  > Endeavor 137 Phase 2b: when a (load-tile[-at] SRC TILE COORDS ... :barrier BAR) references a  >    :block barrier on PTX, register a CUtensorMap descriptor implicit arg for SRC in the current  >    scanning function, deduped per SRC name, and mark the fn a side-channel originator.  The  >    descriptor's canonical spec is (tensor-map SRC) — one physical slot (option A = a pointer);  >    its element-type / rank / box-dims are resolved later (metadata + hoist) from SRC's declared  >    type and the staging tile, so scan only needs SRC + the barrier's resolved mode.
+
 
 ---
 ### DEFUN `SHALLOW-ANALYZE-BODY`
@@ -3072,6 +3206,68 @@ Generated on 2026-07-13T06:17:34.724561Z
 
 
 ---
+### DEFVAR `*TMA-MBAR-COUNTER*`
+
+  > Monotonic id source for unique __crisp_mbar_N shared globals (Endeavor 137 TMA).
+
+
+---
+### DEFUN `%COERCE-TO-I32`
+- **Args**: `(BUILDER VAL)`
+
+  > Coerces an integer VAL to i32 for a TMA tile-box coordinate: trunc if wider, zext if  >    narrower (coords are non-negative), pass-through if already i32.
+
+
+---
+### DEFUN `%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D`
+- **Args**: `(BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1)`
+
+  > Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,  >    cachehint, flag_mcast, flag_cachehint) ->  >      cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes  >        [dst], [tensormap, {x, y}], [mbar];  >    DST-SMEM-PTR and MBAR-PTR are addrspace(3); TENSORMAP-PTR is a generic ptr to the 128-byte  >    CUtensorMap; COORD0/COORD1 are i32 tile-box origins (element units).  The trailing multicast  >    / cache-hint flags are immarg 0 (disabled) — Phase 2b may enable a cache hint.
+
+
+---
+### DEFUN `%GEN-NVVM-TMA-MBAR-GLOBAL`
+- **Args**: `(MODULE)`
+
+  > Creates a fresh per-CTA SLM mbarrier object: a module-level addrspace(3) i64 global with an  >    undef initializer (shared memory is not statically initialized).  Returns the global value  >    (a ptr addrspace(3)).  Endeavor 137 Phase 2a: the mbarrier is a plain shared global, so it  >    needs none of the CUtensorMap implicit-arg machinery (that is Phase 2b, for the descriptor).
+
+
+---
+### DEFUN `%BUILD-INLINE-ASM-CALL`
+- **Args**: `(BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)`
+
+  > Builds a call to an inline-asm value (Endeavor 137 TMA).  RET-TYPE is the llvm result type  >    (void for a statement).  PARAM-TYPES / ARG-VALS are parallel lists of llvm types / values.  >    ASM-STR uses $0.. operand placeholders (output constraints first).  Always side-effecting  >    (these are barrier/DMA ops), ATT dialect (0).
+
+
+---
+### DEFUN `%GEN-NVVM-FENCE-PROXY-ASYNC-SHARED`
+- **Args**: `(BUILDER)`
+
+  > Inline PTX: fence.proxy.async.shared::cta;  Makes the mbarrier.init visible to the async  >    (TMA) proxy before the bulk copy is issued.  Emitted by the leader thread after init.
+
+
+---
+### DEFUN `%GEN-NVVM-MBARRIER-ARRIVE-EXPECT-TX`
+- **Args**: `(BUILDER MBAR-ADDR-I32 TX-BYTES-I32)`
+
+  > Inline PTX: mbarrier.arrive.expect_tx.shared::cta.b64 _, [bar], tx;  Announces the expected  >    transaction byte count for the bulk copy that follows.  MBAR-ADDR-I32 is the 32-bit shared  >    address of the mbarrier (ptrtoint of the addrspace(3) ptr); leader-only.
+
+
+---
+### DEFUN `%GEN-NVVM-MBARRIER-TRY-WAIT-PARITY`
+- **Args**: `(BUILDER MBAR-ADDR-I32 PHASE-I32)`
+
+  > Inline PTX: try_wait.parity -> i32 (1 if the barrier's phase flipped, else 0).  Wrapped so  >    the caller can spin in an LLVM loop (no label in the asm).
+
+
+---
+### DEFUN `%TMA-LOOKUP-DESCRIPTOR-PTR`
+- **Args**: `(BUILDER VAR-ENV SRC-NAME GLOB-PTR-TYPE)`
+
+  > Endeavor 137 Phase 2b: reconstruct the CUtensorMap descriptor implicit-arg name  >    (SRC_TENSORMAP_FROM_FN — the same deterministic name the scan pass registered) and LOAD the  >    descriptor pointer from its var-env slot (implicit params are alloca'd like every param).  >    Returns the ptr (addrspace 1) or NIL if absent (no src symbol / not registered), so the  >    caller falls back to the Phase-2a stand-in.
+
+
+---
 ### DEFUN `%GEN-NVVM-READ-TID-X`
 - **Args**: `(BUILDER MODULE)`
 
@@ -3810,10 +4006,29 @@ Generated on 2026-07-13T06:17:34.724561Z
 
 
 ---
+### DEFVAR `*MMA-BENCH-P*`
+
+  > T when --mma-bench=M,N,K is passed: same setup + C=A·B check as  >    --mma-test, PLUS a warmup + timed relaunch loop reporting GFLOPS.  Since the harness is  >    generated from the metacrisp, it launches EACH kernel with its exact args (incl. the  >    CUtensorMap descriptor for :block) — so sync / :linear / :block are apples-to-apples.
+
+
+---
+### DEFVAR `*MMA-GRID-TILE*`
+
+  > Explicit (TM TN) output-tile override from --grid-tile=T[,TN]; the  >    --mma-bench harness launches a (M/TM x N/TN) 2-D grid.  When NIL the tile is DERIVED from the  >    two local staging tiles (%derive-output-tile).
+
+
+---
 ### DEFUN `%MMA-PARSE-ARGS`
 - **Args**: `(ARGS)`
 
-  > Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an  >    optional --mma-scale=S flag.
+  > Return (values metacrisp-path (M N K)-or-NIL scale bench-p grid-tile), extracting --mma-test,  >    --mma-bench (implies test + timing), --mma-scale=S, and --grid-tile=T[,TN].
+
+
+---
+### DEFUN `%DERIVE-OUTPUT-TILE`
+- **Args**: `(FULL-SIG)`
+
+  > Endeavor 137: derive the (M-per-wg . N-per-wg) output tile from the two LOCAL staging tiles  >    in the metacrisp.  A-tile is (M-per-wg k-step), B-tile is (k-step N-per-wg) — they share the  >    k-step dim.  Returns (values TM TN) or NIL if it cannot be cleanly identified (caller falls  >    back to --grid-tile / a single workgroup).
 
 
 ---
@@ -4035,6 +4250,20 @@ Generated on 2026-07-13T06:17:34.724561Z
 - **Args**: `(STREAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
 
 ---
+### DEFUN `%CUDA-TENSOR-MAP-DATA-TYPE`
+- **Args**: `(ELEM-TYPE)`
+
+  > Maps a Crisp element type to the CU_TENSOR_MAP_DATA_TYPE_* enum for cuTensorMapEncodeTiled.
+
+
+---
+### DEFUN `%CUDA-EMIT-TENSOR-MAP-ENCODE`
+- **Args**: `(STREAM PARAM)`
+
+  > Endeavor 137 Phase 2b.3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map  >    descriptor and copy the 128-byte descriptor to device global (option A), leaving the device  >    pointer in <name> (forward-declared earlier at the descriptor's ABI slot).  References the  >    DESCRIBED tensor's already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).  Uses the  >    innermost-dimension-first convention (globalDim / boxDim reversed vs the row-major extents),  >    matching the nvcc-verified H100 reference.
+
+
+---
 ### DEFUN `EMIT-KERNEL-ARGS`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS DISPATCH-INFO)`
 
@@ -4078,9 +4307,10 @@ Generated on 2026-07-13T06:17:34.724561Z
 
 ---
 ### DEFUN `EMIT-LAUNCH`
-- **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS)`
+- **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS
+              KERNEL-NAME OUT-TILE)`
 
-  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).  >    COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units;  >    the :strided strategy then uses that fixed SM count instead of querying the  >    device (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT), so a shrunken profile takes  >    effect host-side.
+  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    OUT-TILE (TM TN), when set (--mma-bench), OVERRIDES the grid with a (M/TM x N/TN) 2-D grid.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).  >    COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units;  >    the :strided strategy then uses that fixed SM count instead of querying the  >    device (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT), so a shrunken profile takes  >    effect host-side.
 
 
 ---
@@ -5114,9 +5344,9 @@ Generated on 2026-07-13T06:17:34.724561Z
 
 ---
 ### DEFMACRO `MAKE-ASYNC-BARRIER`
-- **Args**: `(&KEY TYPE MODE)`
+- **Args**: `(&KEY MODE)`
 
-  > Creates a topologically-aware async data-movement barrier.  :type (:global/:p2p/  >    :pcie/:pgas-fabric) and :mode (:linear/:block) select the DMA path; omitted keys  >    default to :global/:linear.  The analyzer (analyze-make-async-barrier-expression)  >    handles the real semantics and validation — this stub just returns 0 for any  >    CL-level macroexpansion that reaches it.
+  > Creates an async global->local data-movement barrier.  :mode (:linear/:block) selects  >    the DMA path; omitted => arch-automatic (NVIDIA sm_90+ :block, else :linear; Intel always  >    :linear).  (:type was removed with def-topology — Endeavor 137.)  The analyzer  >    (analyze-make-async-barrier-expression) handles the real semantics and validation — this  >    stub just returns 0 for any CL-level macroexpansion that reaches it.
 
 
 ---
@@ -6648,6 +6878,12 @@ Generated on 2026-07-13T06:17:34.724561Z
 ### DEFSTRUCT `SEMANTIC-NVVM-CP-ASYNC-WAIT`
 
 ---
+### DEFSTRUCT `SEMANTIC-NVVM-TMA-TILE-COPY`
+
+---
+### DEFSTRUCT `SEMANTIC-NVVM-TMA-WAIT`
+
+---
 ### DEFSTRUCT `SEMANTIC-CP-ASYNC-COPY-ELEM`
 
 ---
@@ -7351,7 +7587,54 @@ Generated on 2026-07-13T06:17:34.724561Z
 ---
 ### DEFVAR `*TARGET-BACKEND*`
 
-  > The active target backend for compilation.   >    Supported values: :generic, :cpu, :spirv, :ptx.
+  > The active target backend for compilation.  >    Supported values: :generic, :cpu, :spirv, :ptx.
+
+
+---
+### DEFVAR `*IR-TARGET-ARCH*`
+
+  > The raw --ir-target-arch value as a keyword (e.g. :sm_90, :dg2), or NIL if unset.  >    Use (resolved-target-arch) for the effective arch (applies per-backend defaults).
+
+
+---
+### DEFUN `RESOLVED-TARGET-ARCH`
+
+  > The effective target architecture keyword.  When --ir-target-arch is unset it defaults  >    per backend (Endeavor 137): sm_80 for :ptx, dg2 for :spirv, NIL otherwise.
+
+
+---
+### DEFUN `%ARCH-NAME-STRING`
+- **Args**: `(ARCH)`
+
+---
+### DEFUN `%ARCH-HAS-PREFIX-P`
+- **Args**: `(ARCH PREFIX)`
+
+---
+### DEFUN `%ARCH-VENDOR`
+- **Args**: `(ARCH)`
+
+  > Vendor of an arch keyword: :nvidia for sm_*, :intel for gen12/dg2/pvc/xe2, else NIL.
+
+
+---
+### DEFUN `%ARCH-SM-NUMBER`
+- **Args**: `(ARCH)`
+
+  > Numeric SM level for an sm_NN[a|f] arch (:sm_90 / :sm_90a -> 90), or NIL for non-NVIDIA.  >    Tolerates the architecture-specific `a`/`f` suffix (junk-allowed strips it).
+
+
+---
+### DEFUN `%ARCH-SUPPORTS-BLOCK-P`
+- **Args**: `(ARCH)`
+
+  > T if ARCH can realize :mode :block: NVIDIA TMA needs sm_90+; Intel LSC 2D block loads  >    need DG2 or newer (i.e. any Intel arch except Gen12).
+
+
+---
+### DEFUN `PTX-COMPUTE-CAPABILITY-STRING`
+
+  > The llc -mcpu string for the PTX backend, from --ir-target-arch (default sm_80).  >    Endeavor 137: a bare sm_90 request is upgraded to sm_90a — Hopper's architecture-specific  >    features (TMA cp.async.bulk.tensor, wgmma) are gated behind the `a` target variant, and a  >    plain `.target sm_90` PTX JIT-rejects them at cuModuleLoad.  An explicit sm_90a/sm_90f (or  >    any other sm_*) passes through unchanged.
 
 
 ---

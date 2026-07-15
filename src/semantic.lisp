@@ -374,6 +374,8 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   spirv-event-p      ;; Endeavor 136 SPV: T => allocate a target("spirv.Event") slot (the
                      ;; async copies chain their event through it; await = OpGroupWaitEvents).
                      ;; On PTX this stays NIL (commit_group/wait_group need no event).
+  (load-count 1)     ;; Endeavor 137 Phase 2d: number of :block load-tiles sharing this barrier —
+                     ;; the mbarrier init arrival count (each TMA load does one arrive.expect_tx).
   source-location)
 
 ;; Endeavor 136 (Chapter 1, SPIR-V) — one collective OpGroupAsyncCopy of a contiguous run.
@@ -405,6 +407,37 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 
 (defstruct semantic-nvvm-cp-async-wait
   barrier-node  ;; semantic node for the mbarrier object
+  type
+  source-location)
+
+;; Endeavor 137 (Chapter 1.5) — NVIDIA :block TMA tile copy.  A single elected leader
+;; thread issues one bulk descriptor-driven copy
+;; (cp.async.bulk.tensor.g2s.tile.2d -> cp.async.bulk.tensor...mbarrier::complete_tx::bytes)
+;; into the SLM tile, tracked by the barrier's mbarrier object.  Distinct from
+;; semantic-nvvm-cp-async-tile-copy (Ampere per-element cp.async): TMA is one bulk
+;; transaction against a CUtensorMap.  Phase 2a: tensormap-node is a STAND-IN (the source
+;; tensor's base pointer); Phase 2b replaces it with a real descriptor implicit arg.
+(defstruct semantic-nvvm-tma-tile-copy
+  dst-aref-node   ;; aref for the dest SLM tile base element (addrspace 3) — codegen reuses its 3rd value
+  src-aref-node   ;; aref for the source tensor base element (addrspace 1) — the STAND-IN tensormap ptr
+  coord-nodes     ;; list of semantic nodes for tile-origin coords (element units -> TMA {x,y}, i32)
+  barrier-node    ;; semantic node carrying the mbarrier address (i64) for this :block barrier
+  tile-length-node ;; semantic node for (length~ TILE) — total element count (runtime, ulong)
+  elem-bytes      ;; element byte size (compile-time int); tx bytes = length * elem-bytes for expect_tx
+  src-name        ;; SRC tensor symbol — codegen reconstructs the CUtensorMap descriptor implicit
+                  ;; name (SRC_TENSORMAP_FROM_FN) to fetch the real descriptor ptr from var-env
+  type
+  source-location)
+
+;; Endeavor 137 (Chapter 1.5) — (await bar) completion for a NVIDIA :block TMA barrier.
+;; The barrier value carries the SLM mbarrier address (as i64); codegen inttoptrs it and
+;; waits on the mbarrier.  Phase 2a uses the working mbarrier.arrive/test.wait intrinsics;
+;; Phase 2b swaps in the inline-asm expect_tx / try_wait.parity completion for correctness.
+(defstruct semantic-nvvm-tma-wait
+  barrier-node
+  (load-count 1)   ;; Endeavor 137 Phase 2d: #loads on this barrier — the await RE-INITS the
+                   ;; mbarrier (count = load-count) after waiting so a looped (K-step) barrier
+                   ;; restarts at phase 0 each iteration (try_wait.parity always uses phase 0).
   type
   source-location)
 

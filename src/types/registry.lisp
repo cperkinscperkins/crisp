@@ -94,8 +94,61 @@ This supports overloading templates by arity or other factors.")
 ;; ===================
 
 (defvar *target-backend* :generic
-        "The active target backend for compilation. 
+        "The active target backend for compilation.
    Supported values: :generic, :cpu, :spirv, :ptx.")
+
+;; Endeavor 137 — target architecture (--ir-target-arch).  See docs/topology.md for the ID
+;; table (sm_80/sm_86/sm_89/sm_90/sm_100/sm_120 for NVIDIA; gen12/dg2/pvc/xe2 for Intel).
+(defvar *ir-target-arch* nil
+        "The raw --ir-target-arch value as a keyword (e.g. :sm_90, :dg2), or NIL if unset.
+   Use (resolved-target-arch) for the effective arch (applies per-backend defaults).")
+
+(defun resolved-target-arch ()
+  "The effective target architecture keyword.  When --ir-target-arch is unset it defaults
+   per backend (Endeavor 137): sm_80 for :ptx, dg2 for :spirv, NIL otherwise."
+  (or *ir-target-arch*
+      (case *target-backend*
+        (:ptx   :sm_80)
+        (:spirv :dg2)
+        (t nil))))
+
+(defun %arch-name-string (arch)
+  (and arch (string-downcase (symbol-name arch))))
+
+(defun %arch-has-prefix-p (arch prefix)
+  (let ((name (%arch-name-string arch)))
+    (and name (>= (length name) (length prefix))
+         (string= (subseq name 0 (length prefix)) prefix))))
+
+(defun %arch-vendor (arch)
+  "Vendor of an arch keyword: :nvidia for sm_*, :intel for gen12/dg2/pvc/xe2, else NIL."
+  (cond ((%arch-has-prefix-p arch "sm_") :nvidia)
+        ((member arch '(:gen12 :dg2 :pvc :xe2)) :intel)
+        (t nil)))
+
+(defun %arch-sm-number (arch)
+  "Numeric SM level for an sm_NN[a|f] arch (:sm_90 / :sm_90a -> 90), or NIL for non-NVIDIA.
+   Tolerates the architecture-specific `a`/`f` suffix (junk-allowed strips it)."
+  (when (%arch-has-prefix-p arch "sm_")
+    (ignore-errors (parse-integer (%arch-name-string arch) :start 3 :junk-allowed t))))
+
+(defun %arch-supports-block-p (arch)
+  "T if ARCH can realize :mode :block: NVIDIA TMA needs sm_90+; Intel LSC 2D block loads
+   need DG2 or newer (i.e. any Intel arch except Gen12)."
+  (case (%arch-vendor arch)
+    (:nvidia (let ((n (%arch-sm-number arch))) (and n (>= n 90))))
+    (:intel  (not (eq arch :gen12)))
+    (t nil)))
+
+(defun ptx-compute-capability-string ()
+  "The llc -mcpu string for the PTX backend, from --ir-target-arch (default sm_80).
+   Endeavor 137: a bare sm_90 request is upgraded to sm_90a — Hopper's architecture-specific
+   features (TMA cp.async.bulk.tensor, wgmma) are gated behind the `a` target variant, and a
+   plain `.target sm_90` PTX JIT-rejects them at cuModuleLoad.  An explicit sm_90a/sm_90f (or
+   any other sm_*) passes through unchanged."
+  (let* ((arch (or *ir-target-arch* :sm_80))
+         (name (if (%arch-has-prefix-p arch "sm_") (%arch-name-string arch) "sm_80")))
+    (if (string= name "sm_90") "sm_90a" name)))
 
 (defvar *crisp-types* (make-hash-table)
         "A hash table mapping type names (symbols) to CRISP-TYPE structs.")

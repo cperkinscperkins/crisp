@@ -127,7 +127,7 @@ every run.
 ### Chapter 1 — async tile loading (Endeavor 136, 2026-07-12)
 
 Both crisp kernels now have an ASYNC twin (`matmul_async.crisp` / `matmul_bmg_async.crisp`):
-the K-step A/B staging goes through `(make-async-barrier :type :global :mode :linear)` +
+the K-step A/B staging goes through `(make-async-barrier :mode :linear)` +
 `:barrier`/`await`.  On PTX that lowers to the per-element `cp.async` coop loop +
 `commit_group`/`wait_group`; on SPIR-V to per-row `OpGroupAsyncCopy` + `OpGroupWaitEvents`.
 `run.py` (NVIDIA) and `bench-intel.sh matmul` (BMG) run sync vs async vs the vendor reference.
@@ -159,6 +159,39 @@ microbench = 8-row tiles, where async is *24% faster* — the win flips with row
 exactly the tall-thin-strided case that **Chapter 1.5's LSC 2D block loads** exist to handle
 efficiently; `:mode :linear` per-row is the honest floor they'll improve on.  Correctness oracle
 (A=B=1 → C=K) passed on every run, both backends.
+
+### Chapter 1.5 — `:mode :block` TMA / CuTensorMap (Endeavor 137, 2026-07-15)
+
+**NVIDIA H100 80GB (RunPod), 64×64 tile, tf32 size sweep — all `MMA_CORRECT`, GFLOPS:**
+
+| M=N=K | sync | `:linear` | `:block` (TMA) | cuBLAS tf32 | `:block`/cuBLAS |
+|------:|-----:|----------:|---------------:|------------:|:-:|
+|  256  |   100 |   155 |  1,631 |   6,143 | 27% |
+|  512  |   386 |   624 |  7,188 |  34,848 | 21% |
+| 1024  | 1,534 | 2,510 | 28,139 | 143,077 | 20% |
+| 2048  | 5,596 | 8,964 | 75,039 | 365,512 | 21% |
+| 4096  |  —    |  —    | 79,720 | 436,177 | 18% |
+
+(sync / `:linear` at 4096 omitted — copy-bound and glacial; cuBLAS via `cublasGemmEx` +
+`CUBLAS_COMPUTE_32F_FAST_TF32`, `cublas_bench.cu`, same 2·M·N·K FLOP count.)
+
+Findings:
+- **`:block` is a step-change over `:linear`, ~8–11×.**  At K=N the `cp.async` path issues
+  ~131K per-element copies per workgroup; TMA issues ~256 **bulk descriptor-driven 2-D** copies,
+  so `:block` becomes compute-bound while sync/`:linear` stay copy-bound (<2.5% of cuBLAS).
+- **Naive `:block` holds a steady ~18–27% of cuBLAS** across two orders of magnitude — a clean
+  "TMA staging alone buys ~1/5 of peak" result.
+- **`:block` plateaus at 4096** (75→80 TFLOPS from 2048→4096) — the **single-warp / low-occupancy**
+  kernel saturates, while cuBLAS keeps climbing (365→436).  Closing that gap is exactly what the
+  remaining levers do: **rings** (pipeline overlap), **warp specialization** (producer/consumer),
+  bigger tiles, and SLM swizzling.  So this row is the honest "naive TMA ceiling" the next
+  chapters build on.
+- sync→`:linear` 1.6× matches the RTX ~1.55× above.
+
+Generated apples-to-apples by the hoist itself — `crisp-hoist-cuda --mma-bench=M,N,K
+--grid-tile=64 <metacrisp>` emits a per-kernel `_CUDA.cu` that sets up each kernel's exact args
+(incl. the CUtensorMap descriptor for `:block`), warms up, times 100 launches with CUevents, and
+prints GFLOPS + the C=A·B check.  `nvcc -arch=sm_90a … -lcuda`.
 
 ## Remaining levers
 Block-level SLM reuse; Chapter 1.5 (`:mode :block` — CuTensorMap / LSC 2D block loads) for the

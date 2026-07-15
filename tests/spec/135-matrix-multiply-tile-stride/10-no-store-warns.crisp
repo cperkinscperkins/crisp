@@ -1,0 +1,31 @@
+;; Endeavor 137 — matrix-multiply-tile-stride WITHOUT a store WARNS (auto-store removed).
+;; The macro no longer auto-stores C-tile; the user owns the store in an :epilogue.  A matmul
+;; that computes a C-tile and never stores it is almost certainly a bug, so the macro warns —
+;; but it still compiles (a warning, not an error), which is why the default pass PASSES and the
+;; EXPECT-STDERR compile succeeds while emitting the warning.
+;;
+;; SKIP-WITH[--differentiate]: "tile-macro AD is a later chapter; forward-only"
+;; EXPECT-STDERR[--log-level=off]: "never stored"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mm_no_store (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((A-tile (make-scratch-matrix float (4 4)))
+        (B-tile (make-scratch-matrix float (4 4)))
+        (C-tile (make-scratch-matrix float (4 4)))
+        (K      (inner-dimension A B)))
+    ;; No :epilogue / no store-tile -> the macro warns "the C-tile is computed but never stored".
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0))
+        (dotimes (i 4) (dotimes (j 4) (set! (~ C-tile i j) 0.0))))
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (dotimes (i 4)
+        (dotimes (j 4)
+          (dotimes (kk 4)
+            (set! (~ C-tile i j)
+                  (+ (~ C-tile i j)
+                     (* (~ A-tile i kk) (~ B-tile kk j))))))))))

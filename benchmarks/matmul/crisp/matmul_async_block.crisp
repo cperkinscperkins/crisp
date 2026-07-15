@@ -1,6 +1,6 @@
-;; Crisp tiled matmul (grid-stride) — ASYNC twin of matmul.crisp (NVIDIA / PTX), tf32.
+;; Crisp tiled matmul (grid-stride) — :block TMA twin (NVIDIA sm_90 / TMA), tf32.
 ;; Endeavor 136 (Chapter 1): the K-step A/B staging goes through an async barrier —
-;; `:mode :linear` on PTX lowers each load-tile to the cooperative cp.async coop loop +
+;; `:mode :block` on PTX lowers each load-tile to the cooperative cp.async coop loop +
 ;; cp.async.commit_group, and (await) to cp.async.wait_group(0).  Everything else is
 ;; byte-for-byte matmul.crisp (64x64 register tile, (16 8 8) tf32 MMA, B col-major).
 ;;
@@ -17,7 +17,7 @@
         (B-tile (make-scratch-matrix float (8 64)))
         (C-tile (make-register-tile float (64 64) 0.0))
         (K      (inner-dimension A B))
-        (bar    (make-async-barrier :mode :linear)))
+        (bar    (make-async-barrier :mode :block)))
     (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
       (when (= grid-k (to-ulong 0)) (fill-tile C-tile 0.0))  ; grid-strided: reset C-tile per output tile
       (load-tile A A-tile (grid-y grid-k) :barrier bar)   ; async-stage A[grid-y*64:+64, grid-k*8:+8]

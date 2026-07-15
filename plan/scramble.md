@@ -744,15 +744,17 @@ MMA
 [ ] def-parameter, -D, #+ and #- support? Might be useful for benchmarks / testing, so as to have one file.
 [ ] CUTensorMap as implicit arg for kernels. 
 [x] Chapter 1 - async tile   cp.async and OpGroupAsyncCopy
-[ ] Chapter 1.5 - async tiles  with CuTensorMap and LSC 2D Block Loads in Intel Xe
+[x] Chapter 1.5 - async tiles  with CuTensorMap 
 [ ] Chapter 2 - pipelined async tile
 [ ] chapter 3 - warp specialization pipelining
+[ ] Intel  LSC 2D Block Loads in Intel Xe
 [ ] precision?  
 [ ] auto-differentiation?
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] don't forget bug 033 ( --debug )
 [ ] benchmarking (all) probably needs fast math vs. non. And explicit flags for ALL. The defaults may not be what we think they be.
+[ ] run-on-pod.sh has lots its summary?
 
 
 

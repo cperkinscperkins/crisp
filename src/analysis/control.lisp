@@ -510,21 +510,77 @@
          (barrier-form (%extract-key-arg key-args :barrier nil)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
        (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
-    (cond
-      ((and barrier-form (eq *target-backend* :ptx))
-       ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
-       (analyze-expression (%expand-async-load-tile-at-form expr location)
-                           env context location))
-      ((and barrier-form (eq *target-backend* :spirv)
-            (<= (length (fourth expr)) 2))
-       ;; Endeavor 136 (Chapter 1, SPV): 1D contiguous tile -> one OpGroupAsyncCopy;
-       ;; 2D strided tile -> one OpGroupAsyncCopy PER ROW, events chained through the
-       ;; barrier.  (Rank>2 falls through to the sync fallback.)
-       (analyze-expression (%expand-spirv-async-load-tile-at-form expr location)
-                           env context location))
-      (t
-       (analyze-expression (%expand-load-tile-at-form expr location)
-                           env context location)))))
+    ;; Endeavor 137: the barrier's :mode (looked up via its binding) picks the lowering.
+    (let ((mode (and barrier-form (async-barrier-mode-of barrier-form))))
+      (cond
+        ;; :block on PTX (Chapter 1.5, Phase 2) — NVIDIA TMA: one bulk descriptor-driven copy
+        ;; (cp.async.bulk.tensor...mbarrier::complete_tx::bytes) issued by an elected leader,
+        ;; tracked by the barrier's SLM mbarrier.  Arch (sm_90+) already gated at barrier parse.
+        ((and barrier-form (eq mode :block) (eq *target-backend* :ptx))
+         (%analyze-nvvm-tma-load-tile-at expr env context location))
+        ;; :block on any other target (the GENERIC compile-check pass; SPV is rejected at
+        ;; barrier parse) — fall to the sync staging so the kernel still compiles + runs
+        ;; correctly (just not block-optimized).
+        ((and barrier-form (eq mode :block))
+         (analyze-expression (%expand-load-tile-at-form expr location)
+                             env context location))
+        ((and barrier-form (eq mode :linear) (eq *target-backend* :ptx))
+         ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
+         (analyze-expression (%expand-async-load-tile-at-form expr location)
+                             env context location))
+        ((and barrier-form (eq mode :linear) (eq *target-backend* :spirv)
+              (<= (length (fourth expr)) 2))
+         ;; Endeavor 136 (Chapter 1, SPV): 1D -> one OpGroupAsyncCopy; 2D -> per-row.
+         (analyze-expression (%expand-spirv-async-load-tile-at-form expr location)
+                             env context location))
+        (t
+         (analyze-expression (%expand-load-tile-at-form expr location)
+                             env context location))))))
+
+(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+  "Endeavor 137 (Chapter 1.5, Phase 2) — analyze (load-tile-at SRC TILE (ORIGIN...) :barrier BAR)
+   for a NVIDIA :block barrier into a semantic-nvvm-tma-tile-copy.  Codegen emits one bulk
+   cp.async.bulk.tensor copy issued by an elected leader, tracked by BAR's mbarrier.  We build
+   the dest/source as aref-at-base forms so codegen can reuse the aref element-address machinery
+   for the SLM tile base (addrspace 3) and the source tensor base (addrspace 1, the STAND-IN
+   tensormap pointer).  The ORIGIN coords become the TMA {x,y} tile-box operands (element units)."
+  (let* ((src-form     (second expr))
+         (tile-form    (third expr))
+         (origin-list  (fourth expr))
+         (key-args     (nthcdr 4 expr))
+         (barrier-form (%extract-key-arg key-args :barrier nil))
+         (cl-pkg       (find-package :crisp-language))
+         (aref-sym     (intern "~" cl-pkg))
+         (length-sym   (intern "LENGTH~" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+         (rank         (length origin-list))
+         (base-idx     (make-list rank :initial-element (list to-ulong-sym 0)))
+         (dst-aref     (list* aref-sym tile-form base-idx))
+         (src-aref     (list* aref-sym src-form base-idx))
+         (dst-node     (analyze-expression dst-aref env context (append location '(1))))
+         (src-node     (analyze-expression src-aref env context (append location '(2))))
+         (coord-nodes  (loop for o in origin-list for i from 0
+                             collect (analyze-expression o env context (append location (list 3 i)))))
+         (barrier-node (analyze-expression barrier-form env context (append location '(4))))
+         ;; tx byte count for mbarrier.arrive.expect_tx = (length~ TILE) * elem-bytes.
+         (len-node     (analyze-expression (list length-sym tile-form) env context (append location '(5))))
+         (elem-type    (semantic-node-type dst-node))
+         (elem-bytes   (case (if (listp elem-type) (first elem-type) elem-type)
+                         ((int uint float) 4)
+                         ((long ulong double) 8)
+                         (t (error 'crisp-compiler-error
+                              :message (format nil "load-tile :block: element type ~S needs 4 or 8 bytes" elem-type)
+                              :source-location location)))))
+    (make-semantic-nvvm-tma-tile-copy
+     :dst-aref-node dst-node
+     :src-aref-node src-node
+     :coord-nodes coord-nodes
+     :barrier-node barrier-node
+     :tile-length-node len-node
+     :elem-bytes elem-bytes
+     :src-name (and (symbolp src-form) src-form)
+     :type 'nil
+     :source-location location)))
 
 (defun %expand-spirv-async-load-tile-at-form (expr location)
   "Endeavor 136 (Chapter 1, SPV) — async load-tile-at via OpGroupAsyncCopy.
@@ -647,14 +703,31 @@
     (error 'crisp-compiler-error
       :message (format nil "await: expected (await BARRIER), got ~S" expr)
       :source-location location))
-  (let ((barrier-node (analyze-expression (second expr) env context (append location '(1)))))
-    (case *target-backend*
-      (:ptx
+  (let ((barrier-node (analyze-expression (second expr) env context (append location '(1))))
+        ;; Endeavor 137: match the load-tile lowering picked for this barrier's :mode.
+        (mode (async-barrier-mode-of (second expr))))
+    (cond
+      ;; :block on PTX (Chapter 1.5, Phase 2) — wait on the barrier's SLM mbarrier for the
+      ;; bulk TMA transaction to complete, then re-init it (count = #loads) so a looped barrier
+      ;; restarts at phase 0 each K-step.
+      ((and (eq mode :block) (eq *target-backend* :ptx))
+       (make-semantic-nvvm-tma-wait
+        :barrier-node barrier-node
+        :load-count (max 1 (or (and (symbolp (second expr))
+                                    (gethash (second expr) *async-barrier-load-count*))
+                               1))
+        :type 'ulong
+        :source-location location))
+      ;; :block on the GENERIC compile-check pass fell to the sync staging (which already
+      ;; synchronized), so the await is a no-op.
+      ((eq mode :block)
+       (analyze-expression nil env context location))
+      ((eq *target-backend* :ptx)
        (make-semantic-nvvm-cp-async-wait
         :barrier-node barrier-node
         :type 'ulong
         :source-location location))
-      (:spirv
+      ((eq *target-backend* :spirv)
        ;; Endeavor 136 SPV: (await bar) -> OpGroupWaitEvents on the barrier's chained event.
        (make-semantic-spirv-group-wait
         :barrier-node barrier-node
@@ -2906,50 +2979,75 @@
        env context location))))
 
 (defun %parse-async-barrier-keys (expr location)
-  "Parse (make-async-barrier &key type mode) -> (values barrier-type barrier-mode).
-   Omitted keys default to :global / :linear (today's topology-unaware default).
-   Validates: only :global type and :linear mode are implemented in Chapter 1."
+  "Parse (make-async-barrier &key mode) -> barrier-mode (Endeavor 137).
+   Omitted :mode is arch-automatic (resolved elsewhere; defaults to :linear here).  :type was
+   removed with def-topology.  Validates the mode and gates :block per backend/arch."
   (let ((keys (rest expr))
-        (btype :global)
         (bmode :linear))
     (unless (evenp (length keys))
       (error 'crisp-compiler-error
-        :message "make-async-barrier: keys must be :type/:mode value pairs"
+        :message "make-async-barrier: keys must be :mode value pairs"
         :source-location location))
     (loop for (k v) on keys by #'cddr do
       (cond
-        ((eq k :type) (setf btype v))
         ((eq k :mode) (setf bmode v))
+        ((eq k :type)
+         (error 'crisp-compiler-error
+           :message "make-async-barrier: the :type key was removed (def-topology is set aside); use only :mode"
+           :source-location location))
         (t (error 'crisp-compiler-error
-             :message (format nil "make-async-barrier: unknown key ~S (expected :type or :mode)" k)
+             :message (format nil "make-async-barrier: unknown key ~S (expected :mode)" k)
              :source-location location))))
-    (unless (member btype '(:global))
+    (unless (member bmode '(:linear :block))
       (error 'crisp-compiler-error
-        :message (format nil "make-async-barrier :type ~S not supported yet — only :global (global/local DMA) is implemented; :p2p/:pcie/:pgas-fabric are future topology work" btype)
+        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy) or :block (CuTensorMap)" bmode)
         :source-location location))
-    (unless (member bmode '(:linear))
-      (error 'crisp-compiler-error
-        :message (format nil "make-async-barrier :mode ~S not supported yet — only :linear (cp.async / OpGroupAsyncCopy) is implemented; :block (CuTensorMap / LSC 2D block) is Chapter 1.5" bmode)
-        :source-location location))
-    (values btype bmode)))
+    ;; Endeavor 137: :block is NVIDIA-CuTensorMap only.  Gated on real backends (:ptx/:spirv);
+    ;; the GENERIC compile-check pass has no arch and lowers :block to the sync fallback.
+    (when (eq bmode :block)
+      (case crisp.compiler:*target-backend*
+        (:spirv
+         (error 'crisp-compiler-error
+           :message ":mode :block is not supported on Intel / SPIR-V — Intel's fast 2D path (LSC block loads) loads global into registers directly and is not a barrier mode. Use :mode :linear, or the direct block-load path."
+           :source-location location))
+        (:ptx
+         (unless (%arch-supports-block-p (resolved-target-arch))
+           (error 'crisp-compiler-error
+             :message (format nil ":mode :block needs a Hopper-or-newer NVIDIA arch (sm_90+) for TMA / CuTensorMap; got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
+                              (resolved-target-arch))
+             :source-location location)))))
+    bmode))
 
 (defun analyze-make-async-barrier-expression (expr env context location)
-  "Endeavor 136: (make-async-barrier &key type mode).  :linear is a PHANTOM barrier —
-   the commit_group/wait_group (PTX) and OpGroupAsyncCopy (SPV) idioms need no barrier
-   object, so we allocate NO shared memory and codegen a constant 0.  The node carries
-   :type/:mode for future topology-aware dispatch (approach A: record now, thread the
-   load-tile mode-dispatch when :block / arch-defaults land)."
-  (declare (ignore env context))
-  (multiple-value-bind (btype bmode) (%parse-async-barrier-keys expr location)
-    (make-semantic-make-async-barrier
-     :cell-node nil                 ;; phantom — no mbarrier SLM object
-     :barrier-type btype
-     :barrier-mode bmode
+  "Endeavor 136/137: (make-async-barrier &key mode).  :linear is a PHANTOM barrier on PTX —
+   commit_group/wait_group need no object, so we codegen a constant 0; on SPV it owns a
+   target(\"spirv.Event\") slot to chain OpGroupAsyncCopy events.  The node carries :mode so
+   load-tile/await pick the lowering (Endeavor 137 mode-threading)."
+  (declare (ignore env))
+  (let ((bmode (%parse-async-barrier-keys expr location)))
+    ;; Endeavor 137: record the barrier's binding name -> resolved mode so load-tile/await
+    ;; can pick the lowering.  The let analyzer set current-binding-name before analyzing us.
+    (let ((bname (and context (compiler-context-current-binding-name context))))
+      (when bname
+        (setf (gethash bname *async-barrier-modes*) bmode))
+      (make-semantic-make-async-barrier
+       :cell-node nil                 ;; phantom — no mbarrier SLM object
+       :barrier-mode bmode
+       ;; Endeavor 137 Phase 2d: mbarrier init arrival count = #block loads sharing this barrier
+       ;; (scan-counted).  Default 1 for a single-load barrier.
+       :load-count (max 1 (or (and bname (gethash bname *async-barrier-load-count*)) 1))
      ;; SPV :linear needs a target("spirv.Event") slot to chain OpGroupAsyncCopy events
-     ;; through; PTX commit_group/wait_group needs none (stays a const-0 phantom).
-     :spirv-event-p (eq crisp.compiler:*target-backend* :spirv)
-     :type 'ulong
-     :source-location location)))
+     ;; through; PTX commit_group/wait_group needs none (const-0 phantom).
+       :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
+       :type 'ulong
+       :source-location location))))
+
+(defun async-barrier-mode-of (barrier-form)
+  "Endeavor 137: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.
+   BARRIER-FORM is the barrier variable symbol; look it up in *async-barrier-modes*.
+   Defaults to :linear when unknown (bare/older barriers)."
+  (or (and (symbolp barrier-form) (gethash barrier-form *async-barrier-modes*))
+      :linear))
 
 
 (defun analyze-make-c-handle (expr env context location)
@@ -3059,25 +3157,53 @@
     (values (second expr) (third expr) (fourth expr) k-step
             (first bindings) (second bindings) (third bindings) body)))
 
-(defun %mmts-lower (c-form c-tile tile-spec k-form k-step grid-y grid-x grid-k body)
-  "The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop + auto-store s-expr."
-  (let* ((cl-pkg          (find-package :crisp-language))
-         (tile-stride-sym (intern "TILE-STRIDE" cl-pkg))
-         (store-tile-sym  (intern "STORE-TILE" cl-pkg))
-         (dotimes-sym     (intern "DOTIMES" cl-pkg))
-         (div-sym         (intern "/" cl-pkg))
-         (to-ulong-sym    (intern "TO-ULONG" cl-pkg))
-         (to-int-sym      (intern "TO-INT" cl-pkg)))
-    (list tile-stride-sym c-form tile-spec (list grid-y grid-x)
-          (list* dotimes-sym
-                 (list grid-k
-                       (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
-                 body)
-          ;; Auto-store: tile-IDs to int — the register-tile store explosion scales the
-          ;; tile-ID by an INT fragment count (* bty m-frags), and the scratch store's own
-          ;; to-ulong coercion accepts an int coord too.
-          (list store-tile-sym c-tile c-form
-                (list (list to-int-sym grid-y) (list to-int-sym grid-x))))))
+(defun %mmts-split-epilogue (body)
+  "Endeavor 137: split a matrix-multiply-tile-stride body at the :epilogue marker into
+   (values reduction-body epilogue-body).  Forms before :epilogue run once per K-step
+   (the reduction); forms after run once per tile, post-reduction (grid-y/grid-x in scope,
+   C-tile complete) — that is where the user's store-tile (and any fusion) go.  No :epilogue
+   -> (values body nil)."
+  (let ((pos (position :epilogue body)))
+    (if pos
+        (values (subseq body 0 pos) (subseq body (1+ pos)))
+        (values body nil))))
+
+(defun %form-tree-mentions-store-tile-p (forms)
+  "T if any form in the tree FORMS is a (store-tile ...) / (store-tile-at ...) call."
+  (labels ((walk (f)
+             (cond
+               ((not (consp f)) nil)
+               ((and (symbolp (car f))
+                     (member (symbol-name (car f)) '("STORE-TILE" "STORE-TILE-AT")
+                             :test #'string-equal))
+                t)
+               (t (some #'walk f)))))
+    (some #'walk forms)))
+
+(defun %mmts-lower (c-form c-tile tile-spec k-form k-step grid-y grid-x grid-k body location)
+  "The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO
+   auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit
+   store + any fusion.  Warns if the C-tile is never stored."
+  (declare (ignore location))
+  (multiple-value-bind (reduction-body epilogue-body) (%mmts-split-epilogue body)
+    ;; Endeavor 137: matmul must store its result explicitly (auto-store removed).  A kernel
+    ;; that computes a C-tile and never stores it is almost certainly a bug — warn loudly.
+    (unless (%form-tree-mentions-store-tile-p epilogue-body)
+      (format *error-output*
+        "WARNING: matrix-multiply-tile-stride: the C-tile is computed but never stored — add an :epilogue with (store-tile ~a ~a (~a ~a)).~%"
+        (if (symbolp c-tile) c-tile 'C-tile) (if (symbolp c-form) c-form 'C) grid-y grid-x))
+    (let* ((cl-pkg          (find-package :crisp-language))
+           (tile-stride-sym (intern "TILE-STRIDE" cl-pkg))
+           (dotimes-sym     (intern "DOTIMES" cl-pkg))
+           (div-sym         (intern "/" cl-pkg))
+           (to-ulong-sym    (intern "TO-ULONG" cl-pkg)))
+      (list* tile-stride-sym c-form tile-spec (list grid-y grid-x)
+             (list* dotimes-sym
+                    (list grid-k
+                          (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
+                    reduction-body)
+             ;; per-tile epilogue (the user's store + fusion), post-reduction.
+             epilogue-body))))
 
 (defun analyze-matrix-multiply-tile-stride-expression (expr env context location)
   "Scratch-tensor path for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) BODY...).
@@ -3085,7 +3211,7 @@
    are pre-lowered in analyze-let-with-tile-explosion, before SROA explosion, so never reach here."
   (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
       (%mmts-parse expr location)
-    (analyze-expression (%mmts-lower c-form c-tile c-tile k-form k-step gy gx gk body)
+    (analyze-expression (%mmts-lower c-form c-tile c-tile k-form k-step gy gx gk body location)
                         env context location)))
 
 

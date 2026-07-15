@@ -374,7 +374,14 @@
           (let* ((tile    (second expr))
                  (dest    (third expr))
                  (tile-id (fourth expr))
-                 (bty (first tile-id)) (btx (second tile-id))
+                 (to-int-sym (intern "TO-INT" (find-package :crisp-language)))
+                 ;; The tile-ID coords (bty btx) are grid tile-IDs (often ulong from
+                 ;; workgroup-id).  Endeavor 137: since the user now writes the store-tile
+                 ;; explicitly with plain grid-y/grid-x (auto-store, which pre-coerced with
+                 ;; to-int, is gone), coerce them here — the fragment offset math multiplies
+                 ;; by an INT fragment count, so the coord must be int too.
+                 (bty (list to-int-sym (first tile-id)))
+                 (btx (list to-int-sym (second tile-id)))
                  (m-frags (floor m 16)) (n-frags (floor n 8)))
             (analyze-expression
              `(let ((tv ,tile))
@@ -544,8 +551,13 @@
   "Per-fragment expansion of (store-tile V DEST (BTY BTX)) — fragment dims = target M/N."
   (destructuring-bind (m n syms) (cdr entry)
     (destructuring-bind (fm . fn) (%frag-mn)
-      (let ((m-frags (floor m fm)) (n-frags (floor n fn))
-            (bty (first tile-id)) (btx (second tile-id)))
+      ;; Endeavor 137: the user now writes the store-tile explicitly with plain grid-y/grid-x
+      ;; (often ulong from workgroup-id); auto-store, which pre-coerced with to-int, is gone.
+      ;; The fragment offset multiplies by an INT fragment count, so coerce the coord to int.
+      (let* ((to-int-sym (intern "TO-INT" (find-package :crisp-language)))
+             (m-frags (floor m fm)) (n-frags (floor n fn))
+             (bty (list to-int-sym (first tile-id)))
+             (btx (list to-int-sym (second tile-id))))
         `(progn
            ,@(loop for mi below m-frags append
                    (loop for nj below n-frags
@@ -736,7 +748,8 @@
      (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
          (%mmts-parse form location)
        (%mmts-lower c-form c-tile (cdr (assoc c-tile reg-map)) k-form k-step gy gx gk
-                    (mapcar (lambda (f) (%expand-mmts-register-in-form f reg-map location)) body))))
+                    (mapcar (lambda (f) (%expand-mmts-register-in-form f reg-map location)) body)
+                    location)))
     (t (mapcar (lambda (f) (%expand-mmts-register-in-form f reg-map location)) form))))
 
 (defun %expand-matmul-tile-stride-register-forms (let-expr location)

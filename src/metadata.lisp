@@ -561,26 +561,46 @@
              (width (get-physical-width type))
              (start phys-index)
              (end (+ phys-index width -1))
-             (type-head (when (consp type) (symbol-name (first type))))
-             ;; Extract address-space positionally:
-             ;;   CELL:   (cell elem ADDR)             — addr at index 2
-             ;;   TENSOR: (tensor elem N ADDR aln ct)  — addr at index 3
-             (address-space
-              (cond
-                ((and (consp type) (string-equal type-head "CELL") (>= (length type) 3))
-                 (nth 2 type))
-                ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
-                                           :test #'string-equal)
-                      (>= (length type) 4))
-                 (nth 3 type))
-                (t :local)))
-             (size-expr (gethash name *implicit-scratch-size-expr-map*)))
-        (push (list :name (string-downcase (symbol-name name))
-                    :type (strip-package-qualifiers type)
-                    :size-expr size-expr
-                    :address-space address-space
-                    :range (list start end))
-              implicit-args)
+             (type-head (when (consp type) (symbol-name (first type)))))
+        (cond
+          ;; Endeavor 137: CUtensorMap descriptor implicit — emit the :kind :tensor-map entry
+          ;; (option A pointer-to-global, one slot).  The hoist runs cuTensorMapEncodeTiled from
+          ;; :describes (reads that tensor's runtime base/extents/strides) + :box-dims.
+          ((and type-head (string-equal type-head "TENSOR-MAP"))
+           ;; Resolved (through the carrier chain) per (kernel . uname) in *tma-resolved*.
+           (let ((info (gethash (cons (function-signature-name sig) name) *tma-resolved*)))
+             (push (list :name (string-downcase (symbol-name name))
+                         :kind :tensor-map
+                         :describes (and (getf info :describes)
+                                         (string-downcase (symbol-name (getf info :describes))))
+                         :element-type (strip-package-qualifiers (getf info :element-type))
+                         :rank (getf info :rank)
+                         :box-dims (getf info :box-dims)
+                         :layout (or (getf info :layout) :row-major)
+                         :swizzle :none
+                         :address-space :global
+                         :range (list start end))
+                   implicit-args)))
+          (t
+           ;; Extract address-space positionally:
+           ;;   CELL:   (cell elem ADDR)             — addr at index 2
+           ;;   TENSOR: (tensor elem N ADDR aln ct)  — addr at index 3
+           (let ((address-space
+                   (cond
+                     ((and (consp type) (string-equal type-head "CELL") (>= (length type) 3))
+                      (nth 2 type))
+                     ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                                :test #'string-equal)
+                           (>= (length type) 4))
+                      (nth 3 type))
+                     (t :local)))
+                 (size-expr (gethash name *implicit-scratch-size-expr-map*)))
+             (push (list :name (string-downcase (symbol-name name))
+                         :type (strip-package-qualifiers type)
+                         :size-expr size-expr
+                         :address-space address-space
+                         :range (list start end))
+                   implicit-args))))
         (incf phys-index width)))
     (nreverse implicit-args)))
 

@@ -140,13 +140,47 @@
         ;; I added :size-expr here, though for a real cell it would not be present
         (:implicit-params
             (:name "sc"
-             :msg  "please add an extra 10 bytes" 
-             :type (cell iii ) 
-             :debug-logging  :true    
-             :address-space  :local 
-             :access :read-write 
+             :msg  "please add an extra 10 bytes"
+             :type (cell iii )
+             :debug-logging  :true
+             :address-space  :local
+             :access :read-write
              :range (0 2)))
              :size-expr :match-warp-tile
+
+        ;; ------------------------------------------------------------------
+        ;; Endeavor 137 (Chapter 1.5) — NVIDIA :block TMA CuTensorMap descriptor
+        ;; ------------------------------------------------------------------
+        ;; A :block async barrier that stages a global tile through the Tensor Memory
+        ;; Accelerator needs a CUtensorMap: a 128-byte HOST-encoded descriptor of the SOURCE
+        ;; tensor's layout plus the tile box.  Unlike a scratch handle (which the hoist just
+        ;; cudaMallocs), the hoist must ENCODE this with cuTensorMapEncodeTiled, then — option A,
+        ;; our first cut — copy it into a device global and pass its pointer as the implicit arg.
+        ;; So this implicit-param carries a :kind discriminator plus everything the encode needs
+        ;; that isn't already carried by the described tensor:
+        ;;   :kind :tensor-map    — hoist runs cuTensorMapEncodeTiled (NOT cudaMalloc)
+        ;;   :describes "a"       — the declared tensor this maps; the hoist reads ITS runtime
+        ;;                          base pointer, extents (-> globalDim[]) and strides
+        ;;                          (-> globalStride[]) straight from that arg's :range
+        ;;   :element-type float  — encode dtype
+        ;;   :rank 2
+        ;;   :box-dims (4 4)      — compile-time SLM tile box = the per-transfer TMA shape
+        ;;   :swizzle :none       — Hopper shared-memory swizzle mode (32/64/128B come later)
+        ;;   :address-space :global — option A: the descriptor lives in device global memory
+        ;;   :range spans ONE physical slot — the kernel just receives the descriptor pointer
+        ;; There is one descriptor per distinct TMA-loaded SOURCE tensor (a matmul that TMA-loads
+        ;; A and B has two; multiple load-tile sites against the same source SHARE one).  The
+        ;; mbarrier that tracks the transfer is NOT represented here — it is a per-CTA
+        ;; addrspace(3) shared global, self-contained in the PTX.
+        ;;   (:name "a_tensormap_1"
+        ;;    :kind :tensor-map
+        ;;    :describes "a"
+        ;;    :element-type float
+        ;;    :rank 2
+        ;;    :box-dims (4 4)
+        ;;    :swizzle :none
+        ;;    :address-space :global
+        ;;    :range (12 12))
      )
      ;;
     (:name "rec_kernel"

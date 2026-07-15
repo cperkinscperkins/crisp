@@ -827,7 +827,16 @@
 
           (push (cons unique-name canonical-spec) (gethash fn-name *implicit-arg-map*))
           (when size-expr
-            (setf (gethash unique-name *implicit-scratch-size-expr-map*) size-expr)))))))
+            (setf (gethash unique-name *implicit-scratch-size-expr-map*) size-expr))
+          ;; Endeavor 137: record the tile's box shape keyed by (fn . binding) so a later :block
+          ;; load-tile of this tile (possibly in a sub-function it's passed to) can capture the
+          ;; CUtensorMap box-dims for its descriptor.  canonical-spec = (tensor ELEM N ...).
+          (when (and size-expr (consp canonical-spec))
+            (let ((dims (if (listp size-expr) size-expr (list size-expr))))
+              (setf (gethash (cons fn-name binding-name) *scratch-tile-dims*)
+                    (list :element-type (second canonical-spec)
+                          :box-dims dims
+                          :rank (length dims))))))))))
 
 (defun analyze-scratch-tensor-expression (expr env context location)
   "Analyzes a (make-scratch-{vector,matrix,tensor} ...) expression.

@@ -1,0 +1,21 @@
+;; Endeavor 137 (Chapter 1.5) — :mode :block is NOT a valid barrier mode on Intel / SPIR-V.
+;; Intel's fast 2D path (LSC 2D block loads) loads global -> registers directly and is not a
+;; barrier-governed transfer, so make-async-barrier :mode :block is rejected outright on the
+;; SPV backend (regardless of arch — even DG2+).  :block is NVIDIA CuTensorMap only.  The
+;; GENERIC default pass has no backend and compiles fine (sync fallback).
+;;
+;; SKIP-WITH[--differentiate]: "forward-only async staging"
+;; COMPILE-WITH[--ir-target=spv]: FAIL "not supported on Intel"
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel block_on_intel (src &out dst)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 8))
+  (let ((bar   (make-async-barrier :mode :block))
+        (tile  (make-scratch-vector float 8))
+        (wg-id (get-workgroup-id 0)))
+    (load-tile src tile (wg-id) :barrier bar)
+    (await bar)
+    (store-tile tile dst (wg-id))))

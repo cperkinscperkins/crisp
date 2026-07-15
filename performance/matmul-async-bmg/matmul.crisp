@@ -30,10 +30,12 @@
         (B-tile (make-scratch-matrix float (8 16)))     ; SLM: 8×N (one K-step of B)
         (C-tile (make-register-tile float (8 16) 0.0))
         (K      (inner-dimension A B))
-        (bar    (make-async-barrier :type :global :mode :linear)))
+        (bar    (make-async-barrier :mode :linear)))
     (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
       (load-tile A A-tile (grid-y grid-k) :barrier bar)   ; async-stage A[:, grid-k*8 : +8]
       (load-tile B B-tile (grid-k grid-x) :barrier bar)   ; async-stage B[grid-k*8 : +8, :]
       (await bar)                                         ; OpGroupWaitEvents
       (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
-      (sync-workgroup))))
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

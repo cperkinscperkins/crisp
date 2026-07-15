@@ -8,7 +8,7 @@
            (global-size :set-to 64)
            (local-size  :set-to 64))
   
-  (let ((bar (make-async-barrier :type :global :mode :linear))
+  (let ((bar (make-async-barrier :mode :linear))
         (tile (make-scratch-vector float 64))
         (wg-id (get-workgroup-id 0)))
     (load-tile src tile (wg-id) :barrier bar)

@@ -110,6 +110,13 @@ Supports one or more .crisp source files: the last file is treated as the primar
          (hardware-profile-name (when hw-profile-flag
                                   (subseq hw-profile-flag (length "--hardware-profile="))))
 
+         ;; Endeavor 137 — --ir-target-arch=<ID> (sm_90, dg2, ...); NIL if unset (defaults
+         ;; applied per-backend by crisp.compiler:resolved-target-arch).
+         (arch-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--ir-target-arch=" f)) flags))
+         (ir-target-arch-kw (when arch-flag
+                              (intern (string-upcase (subseq arch-flag (length "--ir-target-arch=")))
+                                      :keyword)))
+
          ;; Target Parsing
          (target-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--ir-target=" f)) flags))
          (targets (mapcar (lambda (f)
@@ -156,6 +163,9 @@ Supports one or more .crisp source files: the last file is treated as the primar
                                         :force-math-precision force-precision-mode
                                         :denormal-handling denormal-handling
                                         :hardware-profile hardware-profile-name)
+
+    ;; Endeavor 137: set the target arch AFTER initialize-compiler (which doesn't clear it).
+    (setf crisp.compiler::*ir-target-arch* ir-target-arch-kw)
 
     ;; Require at least one source file; support multiple files.
     (unless (>= (length source-files) 1)
@@ -333,7 +343,9 @@ compile-unit filepath."
                             (push (list :spv out-path) generated-outputs)))
                          (:ptx
                           (let ((out-path (make-pathname :name base-name :type "ptx" :defaults filepath)))
-                            (crisp.compiler:compile-to-ptx module out-path :debug-p debug-p)
+                            (crisp.compiler:compile-to-ptx module out-path
+                                                           :compute-capability (crisp.compiler::ptx-compute-capability-string)
+                                                           :debug-p debug-p)
                             (push (list :ptx out-path) generated-outputs)))
                          (:llvmir
                           (let ((out-path (make-pathname :name base-name :type "ll" :defaults filepath)))

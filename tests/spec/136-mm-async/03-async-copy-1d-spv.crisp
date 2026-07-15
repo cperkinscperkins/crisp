@@ -23,7 +23,7 @@
            (global-size :set-to 4)
            (local-size  :set-to 4))
   (let ((tile (make-scratch-vector float 4))
-        (bar  (make-async-barrier :type :global :mode :linear)))
+        (bar  (make-async-barrier :mode :linear)))
     (load-tile-at IN tile (0) :barrier bar)   ; async: one OpGroupAsyncCopy of 4 contiguous floats
     (await bar)                                ; OpGroupWaitEvents on the copy's event
     (workgroup-stride tile (lx)

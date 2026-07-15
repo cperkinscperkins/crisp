@@ -699,6 +699,13 @@
         (*compile-single-pass* (or *compile-single-pass* (member "--single-pass"  flags :test #'string=)))
         (*compile-debug*       (or *compile-debug*       (member "--debug"        flags :test #'string=)))
         (*compile-differentiate* (or *compile-differentiate* (member "--differentiate" flags :test #'string=)))
+        ;; Endeavor 137: honor --ir-target-arch=<ID> in TEST-WITH flags so the in-process
+        ;; PTX/SPV compile gates + compute-capability match the CLI (else :block gates on sm_80).
+        (crisp.compiler::*ir-target-arch*
+          (let ((af (find-if (lambda (f) (and (stringp f) (search "--ir-target-arch=" f))) flags)))
+            (if af
+                (intern (string-upcase (subseq af (length "--ir-target-arch="))) :keyword)
+                crisp.compiler::*ir-target-arch*)))
         (emit-metadata (member "--metadata" flags :test #'string=))
         (ir-target (cond
                      ((member "--ir-target=spv"    flags :test #'string=) :spirv)
@@ -714,7 +721,7 @@
     (if *use-binary*
         (cond
           ((eq ir-target :spirv)  (run-spec-spirv-binary file :emit-metadata emit-metadata :validator validator))
-          ((eq ir-target :ptx)    (run-spec-ptx-binary file :validator validator))
+          ((eq ir-target :ptx)    (run-spec-ptx-binary file :validator validator :flags flags))
           ((eq ir-target :llvmir) (run-spec-llvmir-binary file :validator validator))
           (t (run-spec-binary file)))
         (cond
@@ -1228,6 +1235,10 @@
                        ;; it and the launcher uses its :compute-units for grid sizing.
                        (when *compile-hardware-profile*
                          (list (format nil "--hardware-profile=~a" *compile-hardware-profile*)))
+                       ;; Endeavor 137: forward HOIST-ARCH so a :block (TMA) kernel passes the
+                       ;; sm_90+ gate at hoist time and emits the sm_90a PTX + CUtensorMap path.
+                       (let ((arch (parse-hoist-arch (extract-test-directives file))))
+                         (when arch (list (format nil "--ir-target-arch=~a" arch))))
                        (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
@@ -1606,7 +1617,9 @@
             (progn
              (let ((crisp.compiler:*target-backend* :ptx))
                (crisp.compiler:compile-module forms module builder nil nil nil)
-               (crisp.compiler:compile-to-ptx module out-path)))
+               (crisp.compiler:compile-to-ptx
+                module out-path
+                :compute-capability (crisp.compiler::ptx-compute-capability-string))))
           (crisp.llvm-bindings:llvm-dispose-builder builder)
           (crisp.llvm-bindings:llvm-dispose-module module))))
 
@@ -1638,7 +1651,7 @@
       (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
 
-(defun run-spec-ptx-binary (file &key (validator nil))
+(defun run-spec-ptx-binary (file &key (validator nil) (flags nil))
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
          (bin (get-binary-path))
          (out-path (make-pathname :name base-name :type "ptx" :defaults file))
@@ -1647,6 +1660,11 @@
     (when *compile-debug* (push "--debug" args))
     (when *compile-differentiate* (push "--differentiate" args))
     (when *compile-single-pass* (push "--single-pass" args))
+    ;; Endeavor 137: forward --ir-target-arch=<ID> from the TEST-WITH flags to the binary — a
+    ;; separate crisp-compile.exe process can't see the in-process *ir-target-arch* dynamic
+    ;; binding, so a :block (sm_90+) test gates on the default sm_80 without this.
+    (let ((af (find-if (lambda (f) (and (stringp f) (search "--ir-target-arch=" f))) flags)))
+      (when af (push af args)))
 
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
@@ -2113,6 +2131,16 @@
         (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 23))))
           (when (plusp (length v)) (return v)))))))
 
+(defun parse-hoist-arch (directive-lines)
+  "Parse HOIST-ARCH: <id> (Endeavor 137).  Returns the arch id string (e.g. \"sm_90\") or nil.
+   Forwarded as --ir-target-arch=<id> to the hoist compile so a :block (TMA) kernel passes the
+   sm_90+ gate at hoist time (the metal run needs the sm_90a PTX / CUtensorMap path)."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "HOIST-ARCH:")
+        (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 11))))
+          (when (plusp (length v)) (return v)))))))
+
 (defun parse-hoist-expect (directive-lines)
   "Parse HOIST-EXPECT: <string> lines.
    Returns list of expected strings."
@@ -2138,6 +2166,20 @@
       (unless (search exp ptx-string)
         (format *error-output* "FAIL: Expected PTX string not found:~%  '~a'~%" exp)
         (return-from validate-ptx-mbarrier nil)))
+    t))
+
+(defun validate-ptx-tma (file ptx-string)
+  "Endeavor 137 (Chapter 1.5, Phase 2a) — validates the NVIDIA :block TMA lowering: a per-CTA
+   SLM mbarrier (mbarrier.init) plus a bulk descriptor-driven copy
+   (cp.async.bulk.tensor...mbarrier::complete_tx::bytes).  This is the compile-shape check;
+   the real CUtensorMap descriptor + on-metal correctness land in Phase 2b."
+  (declare (ignore file))
+  (let ((expected '("cp.async.bulk.tensor"
+                    "mbarrier.init")))
+    (dolist (exp expected)
+      (unless (search exp ptx-string)
+        (format *error-output* "FAIL: Expected PTX string not found:~%  '~a'~%" exp)
+        (return-from validate-ptx-tma nil)))
     t))
 
 (defun should-expect-failure-p (file)

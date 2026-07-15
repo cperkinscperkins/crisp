@@ -67,12 +67,15 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - (FIND-RECORD-DEF TYPE RECORDS)  hoist-cuda/main.lisp [See above]
 - - - - - - - (%RECORD-FIELD-ARGS STREAM MEMBERS VAR-PATH ARG-INDEX RECORDS ALIASES)  hoist-cuda/main.lisp [RECURSION]
 - - - - - (%CUDA-EMIT-SCALAR-ARG STREAM PARAM-NAME PARAM-TYPE ARG-INDEX)  hoist-cuda/main.lisp
+- - - - - (%CUDA-EMIT-TENSOR-MAP-ENCODE STREAM PARAM)  hoist-cuda/main.lisp
+- - - - - - (%CUDA-TENSOR-MAP-DATA-TYPE ELEM-TYPE)  hoist-cuda/main.lisp
 - - - - (COMPUTE-TOTAL-SHARED-BYTES DECLARED-SIG ALIASES)  hoist-cuda/main.lisp
 - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - (TENSOR-TYPE-P PARAM-TYPE)  hoist-cuda/main.lisp [See above]
 - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - (%ARRAY-SIZE TYPE)  hoist-cuda/main.lisp [See above]
-- - - - (EMIT-LAUNCH STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS)  hoist-cuda/main.lisp
+- - - - (%DERIVE-OUTPUT-TILE FULL-SIG)  hoist-cuda/main.lisp
+- - - - (EMIT-LAUNCH STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS KERNEL-NAME OUT-TILE)  hoist-cuda/main.lisp
 - - - - - (%DERIVE-FROM-IS-TENSOR-P RAW)  hoist-cuda/main.lisp
 - - - - - (%NORMALIZE-DERIVE-FROM RAW)  hoist-cuda/main.lisp
 - - - - - (%TENSOR-LENGTH-CPP-VAR SYM)  hoist-cuda/main.lisp
@@ -424,19 +427,22 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-MEMORY-BARRIER BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%SPIRV-EVENT-TYPE MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-MBAR-GLOBAL MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-X BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Y BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Z BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-INIT-SHARED BUILDER MODULE MBARRIER-PTR COUNT-VAL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-FENCE-PROXY-ASYNC-SHARED BUILDER)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-X BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Y BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Z BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-INIT-SHARED BUILDER MODULE MBARRIER-PTR COUNT-VAL)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-ASYNC-WORK-GROUP-COPY BUILDER MODULE DST-AS3 SRC-AS1 NUM-I64 EVENT-IN ELEM-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-EVENT-TYPE MODULE)  codegen.lisp [See above]
@@ -456,6 +462,14 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-WAIT-GROUP BUILDER MODULE N)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%TMA-LOOKUP-DESCRIPTOR-PTR BUILDER VAR-ENV SRC-NAME GLOB-PTR-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (%COERCE-TO-I32 BUILDER VAL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-EXPECT-TX BUILDER MBAR-ADDR-I32 TX-BYTES-I32)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-TRY-WAIT-PARITY BUILDER MBAR-ADDR-I32 PHASE-I32)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%COOP-FILL BUILDER MODULE INIT-VAL ELEM-LLVM ROWS COLS USE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp
@@ -622,10 +636,21 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                             (EQL
                                                              'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (%SCAN-REGISTER-TMA-DESCRIPTOR ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
                                                               (EQL
                                                                'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%RESOLVE-ASYNC-BARRIER-MODE-SCAN ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-BLOCK-P ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-VENDOR ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (RESOLVED-TARGET-ARCH)  types/registry.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%REGISTER-SCRATCH-TENSOR-IMPLICIT OP ARGS)  analysis/structs.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
@@ -775,6 +800,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (COMPILE-FORMS-PASS FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
 - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
 - - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp [See above]
+- - - - (RESOLVE-TMA-DESCRIPTORS)  analysis/core.lisp
+- - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp
+- - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp
+- - - - - - (%TMA-CLASSIFY FN SYM KIND)  analysis/core.lisp
+- - - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp
+- - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
+- - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
+- - - - - - (%TMA-DOWNSTREAM-CARRIER FN UNAME)  analysis/core.lisp
+- - - - - - - (%FN-CARRIES-DESCRIPTOR-P FN-NAME UNAME)  analysis/core.lisp
+- - - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp [RECURSION]
+- - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp [See above]
+- - - - - (%KERNEL-PARAM-CONTIGUOUS-TERM KERNEL SYM)  analysis/core.lisp
 - - - - (CHECK-FOR-RECURSION-CYCLES)  analysis/core.lisp
 - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp
 - - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp [RECURSION]
@@ -826,6 +863,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%RUN-PASSES-IN-PROCESS INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)  compiler.lisp [See above]
 - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]
 - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp [See above]
+- - - (PTX-COMPUTE-CAPABILITY-STRING)  types/registry.lisp
+- - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
+- - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
 - - - (PRINT-COMPILER-ERROR C FILENAME) :CRISP.MAIN  main.lisp
 - - - (GENERATE-METADATA-FOR-FILE INPUT-PATH OUTPUT-PATH &KEY (OUTPUT-TARGETS
                                                                NIL) (SOURCE-FILE
@@ -1189,6 +1229,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-AWAIT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp [See above]
 
 - (ANALYZE-BITCAST-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1356,7 +1397,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-LOAD-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
 - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
+- - - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp [See above]
+- - - (%ANALYZE-NVVM-TMA-LOAD-TILE-AT EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
+- - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (%EXPAND-LOAD-TILE-AT-FORM EXPR LOCATION)  analysis/control.lisp
+- - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
+- - - - (%TLC-TRANSPOSE-PERMUTATION N TRANSPOSE-FORM LOCATION)  analysis/control.lisp [See above]
+- - - - (%TLC-SOURCE-COORD-EXPRS N ORIGIN-SYMS TILE-COORD-SYMS PERM PLUS-SYM)  analysis/control.lisp [See above]
+- - - - (%TLC-ALL-IN-BOUNDS-FORM N SRC-COORD-EXPRS GLOBAL-EXTENT-SYMS LT-SYM AND-SYM)  analysis/control.lisp [See above]
+- - - - (%TLC-COOP-LOOP-SKELETON N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS LID-SYMS LWS-SYMS INNER-FORM CL-PKG)  analysis/control.lisp [See above]
 - - - (%EXPAND-ASYNC-LOAD-TILE-AT-FORM EXPR LOCATION)  analysis/control.lisp
 - - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
 - - - - (%TLC-TRANSPOSE-PERMUTATION N TRANSPOSE-FORM LOCATION)  analysis/control.lisp [See above]
@@ -1365,12 +1417,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%TLC-COOP-LOOP-SKELETON N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS LID-SYMS LWS-SYMS INNER-FORM CL-PKG)  analysis/control.lisp [See above]
 - - - (%EXPAND-SPIRV-ASYNC-LOAD-TILE-AT-FORM EXPR LOCATION)  analysis/control.lisp
 - - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
-- - - (%EXPAND-LOAD-TILE-AT-FORM EXPR LOCATION)  analysis/control.lisp
-- - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
-- - - - (%TLC-TRANSPOSE-PERMUTATION N TRANSPOSE-FORM LOCATION)  analysis/control.lisp [See above]
-- - - - (%TLC-SOURCE-COORD-EXPRS N ORIGIN-SYMS TILE-COORD-SYMS PERM PLUS-SYM)  analysis/control.lisp [See above]
-- - - - (%TLC-ALL-IN-BOUNDS-FORM N SRC-COORD-EXPRS GLOBAL-EXTENT-SYMS LT-SYM AND-SYM)  analysis/control.lisp [See above]
-- - - - (%TLC-COOP-LOOP-SKELETON N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS LID-SYMS LWS-SYMS INNER-FORM CL-PKG)  analysis/control.lisp [See above]
 
 - (ANALYZE-LOAD-TILE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-LOAD-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
@@ -1381,6 +1427,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-MAKE-ASYNC-BARRIER-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%PARSE-ASYNC-BARRIER-KEYS EXPR LOCATION)  analysis/control.lisp
+- - - (%ARCH-SUPPORTS-BLOCK-P ARCH)  types/registry.lisp [See above]
+- - - (RESOLVED-TARGET-ARCH)  types/registry.lisp [See above]
 
 - (ANALYZE-MAKE-C-HANDLE EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 
@@ -1421,7 +1469,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-MATRIX-MULTIPLY-TILE-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%MMTS-PARSE EXPR LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%MMTS-LOWER C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY)  analysis/control.lisp
+- - (%MMTS-LOWER C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY LOCATION)  analysis/control.lisp
+- - - (%MMTS-SPLIT-EPILOGUE BODY)  analysis/control.lisp
+- - - (%FORM-TREE-MENTIONS-STORE-TILE-P FORMS)  analysis/control.lisp
 
 - (ANALYZE-MMA-ACCUMULATE EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
@@ -1840,7 +1890,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (MAKE-ARRIVAL-SYNC COUNT)  macros.lisp
 - - (MAKE-ARRIVAL-SYNC-HANDLE COUNTER COUNT)  macros.lisp
 
-- (MAKE-ASYNC-BARRIER &KEY TYPE MODE)  macros.lisp
+- (MAKE-ASYNC-BARRIER &KEY MODE)  macros.lisp
 
 - (MAKE-STRUCTURE-TEMPLATE-INSTANCE TEMPLATE-NAME CONCRETE-TYPES &REST CTOR-ARGS)  templates.lisp
 - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]

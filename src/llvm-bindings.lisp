@@ -615,6 +615,21 @@
   (global      :pointer)
   (const-val   :pointer))
 
+;; Inline assembly (Endeavor 137 TMA — mbarrier expect_tx / try_wait.parity are not NVVM
+;; intrinsics in LLVM 21, so we emit them as inline PTX).  Returns a callee value to be used
+;; as the function operand of LLVMBuildCall2 with a matching (void or scalar) function type.
+;; Dialect 0 = ATT (the correct choice for NVPTX).  LLVMBool args are 0/1 ints.
+(defcfun ("LLVMGetInlineAsm" llvm-get-inline-asm) :pointer
+  (type             :pointer)
+  (asm-string       :string)
+  (asm-string-size  :unsigned-int)
+  (constraints      :string)
+  (constraints-size :unsigned-int)
+  (has-side-effects :int)
+  (is-align-stack   :int)
+  (dialect          :int)
+  (can-throw        :int))
+
 
 ;; --- Generic Metadata (for specific annotations like kernel args) ---
 
