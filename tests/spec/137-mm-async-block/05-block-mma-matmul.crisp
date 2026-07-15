@@ -1,0 +1,45 @@
+;; Endeavor 137 (Chapter 1.5) Phase 2d — the :block TMA twin of 136/01.  METAL-CORRECT on H100.
+;;
+;; Byte-for-byte the async tiled MMA matmul of 136/01, with ONE change: the barrier is
+;; :mode :block, so each (load-tile ...) stages its SLM tile via a NVIDIA TMA bulk copy
+;; (cp.async.bulk.tensor + mbarrier expect_tx / try_wait.parity) instead of the cp.async
+;; LINEAR path.  The tensor cores then consume the SLM tiles exactly as before.
+;;
+;; This is the full multi-K GEMM (K=16, k-step=8 -> grid-k loops TWICE, REUSING the barrier),
+;; so it exercises everything the single-tile cases did not, all metal-verified on an H100:
+;;   - the multi-load arrival count (barrier shared by load-A + load-B -> mbarrier init count 2),
+;;   - the looped-barrier phase (the await RE-INITS the mbarrier each K-step -> phase 0 stays valid),
+;;   - grid-scaled TMA box coordinates (grid-k=1 -> a non-zero, innermost-first {x,y} origin).
+;; Result: C == A·B on the H100 (MMA_CORRECT).
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals; async tile AD is a later chapter"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 16 8 16
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tiled_matmul_block (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((A-tile   (make-scratch-matrix float (16 8)))    ; SLM: M×8 (one K-step of A)
+        (B-tile   (make-scratch-matrix float (8 8)))     ; SLM: 8×N (one K-step of B)
+        (C-tile   (make-register-tile float (16 8) 0.0))
+        (K        (inner-dimension A B))
+        (barrier  (make-async-barrier :mode :block)))    ; NVIDIA TMA (sm_90a)
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k) :barrier barrier)   ; TMA-stage A[gy-block, gk-block]
+      (load-tile B B-tile (grid-k grid-x) :barrier barrier)   ; TMA-stage B[gk-block, gx-block]
+      (await barrier)                                         ; mbarrier try_wait.parity + re-init
+      (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

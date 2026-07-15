@@ -160,6 +160,28 @@ exactly the tall-thin-strided case that **Chapter 1.5's LSC 2D block loads** exi
 efficiently; `:mode :linear` per-row is the honest floor they'll improve on.  Correctness oracle
 (A=B=1 → C=K) passed on every run, both backends.
 
+### Chapter 1.5 — `:mode :block` TMA / CuTensorMap (Endeavor 137, 2026-07-15)
+
+**NVIDIA H100 80GB (RunPod), 64×64 tile, 1024³ tf32 — all `MMA_CORRECT`:**
+
+| kernel | GFLOPS | vs sync | vs `:linear` |
+|--------|-------:|:-------:|:------------:|
+| sync (Chapter 0)      |  1521  |  1.0×  |    —    |
+| `:linear` (cp.async)  |  2495  | 1.64×  |    —    |
+| `:block` (TMA)        | 28110  | **18.5×** | **11.3×** |
+
+The sync→`:linear` 1.64× matches the RTX ~1.55× above.  The `:block` jump is dramatic but real
+(C=A·B verified after the timed loop): at K=1024 the `cp.async` path issues ~131K per-element
+copies per workgroup, while TMA issues **~256 bulk descriptor-driven 2-D copies** — so `:block`
+becomes compute-bound (~7% of the H100's ~378 TFLOPS dense tf32 peak) while sync/`:linear` stay
+copy-bound (<1%).  These are single-warp-per-workgroup / low-occupancy kernels; rings + warp
+specialization (below) should lift all three.
+
+Generated apples-to-apples by the hoist itself — `crisp-hoist-cuda --mma-bench=M,N,K
+--grid-tile=64 <metacrisp>` emits a per-kernel `_CUDA.cu` that sets up each kernel's exact args
+(incl. the CUtensorMap descriptor for `:block`), warms up, times 100 launches with CUevents, and
+prints GFLOPS + the C=A·B check.  `nvcc -arch=sm_90a … -lcuda`.
+
 ## Remaining levers
 Block-level SLM reuse; Chapter 1.5 (`:mode :block` — CuTensorMap / LSC 2D block loads) for the
 tall-thin-strided BMG case above; then pipelining / warp-specialization (the "three chapters" in

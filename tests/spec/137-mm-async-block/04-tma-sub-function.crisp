@@ -1,0 +1,38 @@
+;; Endeavor 137 (Chapter 1.5) Phase 2c — NVIDIA :block TMA through a SUB-FUNCTION.
+;;
+;; The sub-function `stage` creates the :block barrier and does the TMA load of its SRC param
+;; into its TILE param.  The CUtensorMap descriptor originates in `stage` and threads up to the
+;; kernel as an implicit arg (riding the scratch propagation rails).  Its :describes reference
+;; is remapped through the call chain — `stage`'s `src` <- the kernel's `A` — and its box-dims
+;; are traced to the kernel's `(make-scratch-matrix float (4 4))`, so the hoist encodes
+;; cuTensorMapEncodeTiled from the KERNEL's tensor.
+;;
+;; This is the compile+PTX-shape check (the TMA opcodes still reach PTX from the sub-function).
+;; Metal-verified CORRECT on an H100 (sm_90a): the sub-function's TMA loaded A's 4x4 tile and
+;; C == A on read-back.  Resolution also verified for 0-hop (kernel does the load, test 03) and
+;; 2-hop (kernel -> mid -> stage) carrier chains.
+;;
+;; The GENERIC/default pass can't lower a :block load inside a sub-function — its sync fallback
+;; needs kernel dispatch context (get-local-id), which a device sub-function lacks.  Only the
+;; PTX TMA path is valid here, so validate ONLY via that (SKIP-DEFAULT-PASS).
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "forward-only async staging; tile AD is a later chapter"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+
+(def-type mat-t  (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type tile-t (matrix float :address-space :local  :align :compact :contiguous-term :row-major))
+
+(def-function stage (src tile)
+  (declare #'(mat-t tile-t => ulong))
+  (let ((bar (make-async-barrier :mode :block)))
+    (load-tile src tile (0 0) :barrier bar)   ;; TMA in the sub-function
+    (await bar)))
+
+(def-kernel tma_subfn (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-matrix float (4 4))))
+    (stage A tile)                            ;; descriptor threads up; :describes A resolved here
+    (store-tile tile C (0 0))))
