@@ -708,10 +708,14 @@
         (mode (async-barrier-mode-of (second expr))))
     (cond
       ;; :block on PTX (Chapter 1.5, Phase 2) — wait on the barrier's SLM mbarrier for the
-      ;; bulk TMA transaction to complete.
+      ;; bulk TMA transaction to complete, then re-init it (count = #loads) so a looped barrier
+      ;; restarts at phase 0 each K-step.
       ((and (eq mode :block) (eq *target-backend* :ptx))
        (make-semantic-nvvm-tma-wait
         :barrier-node barrier-node
+        :load-count (max 1 (or (and (symbolp (second expr))
+                                    (gethash (second expr) *async-barrier-load-count*))
+                               1))
         :type 'ulong
         :source-location location))
       ;; :block on the GENERIC compile-check pass fell to the sync staging (which already
@@ -3025,15 +3029,18 @@
     ;; can pick the lowering.  The let analyzer set current-binding-name before analyzing us.
     (let ((bname (and context (compiler-context-current-binding-name context))))
       (when bname
-        (setf (gethash bname *async-barrier-modes*) bmode)))
-    (make-semantic-make-async-barrier
-     :cell-node nil                 ;; phantom — no mbarrier SLM object
-     :barrier-mode bmode
+        (setf (gethash bname *async-barrier-modes*) bmode))
+      (make-semantic-make-async-barrier
+       :cell-node nil                 ;; phantom — no mbarrier SLM object
+       :barrier-mode bmode
+       ;; Endeavor 137 Phase 2d: mbarrier init arrival count = #block loads sharing this barrier
+       ;; (scan-counted).  Default 1 for a single-load barrier.
+       :load-count (max 1 (or (and bname (gethash bname *async-barrier-load-count*)) 1))
      ;; SPV :linear needs a target("spirv.Event") slot to chain OpGroupAsyncCopy events
      ;; through; PTX commit_group/wait_group needs none (const-0 phantom).
-     :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
-     :type 'ulong
-     :source-location location)))
+       :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
+       :type 'ulong
+       :source-location location))))
 
 (defun async-barrier-mode-of (barrier-form)
   "Endeavor 137: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.

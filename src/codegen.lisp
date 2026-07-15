@@ -3577,7 +3577,12 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
            (merge-bb (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_cont")))
       (llvm-build-cond-br builder is-zero init-bb merge-bb)
       (llvm-position-builder-at-end builder init-bb)
-      (%gen-nvvm-mbarrier-init-shared builder module mbar-gv (llvm-const-int i32-type 1 nil))
+      ;; Init arrival count = #block loads sharing this barrier (each TMA load arrives once via
+      ;; mbarrier.arrive.expect_tx); a single-load barrier is count 1.
+      (%gen-nvvm-mbarrier-init-shared builder module mbar-gv
+                                      (llvm-const-int i32-type
+                                                      (max 1 (semantic-make-async-barrier-load-count node))
+                                                      nil))
       ;; make the init visible to the async (TMA) proxy before any bulk copy is issued.
       (%gen-nvvm-fence-proxy-async-shared builder)
       (llvm-build-br builder merge-bb)
@@ -3789,8 +3794,12 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                                collect (%coerce-to-i32 builder
                                           (generate-node-ir cn builder module var-env
                                                              di-builder di-scope location-map))))
-             (coord0     (or (first coord-vals) (llvm-const-int i32-type 0 nil)))
-             (coord1     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))
+             ;; TMA coords are INNERMOST-first: {x,y} where x indexes the fastest-varying
+             ;; dimension.  The load-tile origin is (dim0 dim1) = (row col) for a row-major tile,
+             ;; so x = col = origin[1], y = row = origin[0] — i.e. the origin order REVERSED.
+             ;; (The descriptor's gdim / box are innermost-first too, so this stays consistent.)
+             (coord0     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))   ; x (innermost)
+             (coord1     (or (first coord-vals)  (llvm-const-int i32-type 0 nil)))   ; y (outer)
              ;; Leader-thread guard: only tid == 0 issues the bulk copy.
              (tid-x      (%gen-nvvm-read-tid-x builder module))
              (tid-y      (%gen-nvvm-read-tid-y builder module))
@@ -3818,16 +3827,19 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-nvvm-tma-wait) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 137 (Chapter 1.5, Phase 2b) — (await bar) for a :block TMA barrier.  Recovers the
-   mbarrier's 32-bit shared address from the barrier value and spins on try_wait.parity (phase
-   0, a single-use barrier) until the bulk transaction completes, then bar.sync so every thread
-   sees the staged tile.  Matches the nvcc-verified Hopper completion sequence."
+  "Endeavor 137 (Chapter 1.5, Phase 2b/2d) — (await bar) for a :block TMA barrier.  Recovers the
+   mbarrier's 32-bit shared address from the barrier value and spins on try_wait.parity (phase 0)
+   until the bulk transaction completes, then bar.sync so every thread sees the staged tile.
+   Phase 2d: after the sync it RE-INITS the mbarrier (arrival count = #loads) — so a barrier
+   REUSED across K-steps restarts at phase 0 every iteration, keeping try_wait.parity(0) valid
+   (instead of tracking an alternating phase bit).  Matches the nvcc-verified completion."
   (let* ((i32-type  (llvm-int32-type))
          (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
          (barrier-i (generate-node-ir (semantic-nvvm-tma-wait-barrier-node node) builder module var-env
                                       di-builder di-scope location-map))
          (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
          (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr"))
+         (load-cnt  (max 1 (semantic-nvvm-tma-wait-load-count node)))
          (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
          (wait-bb   (llvm-append-basic-block parent "tma_wait"))
          (exit-bb   (llvm-append-basic-block parent "tma_wait_done")))
@@ -3838,6 +3850,21 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
       (llvm-build-cond-br builder done exit-bb wait-bb))
     (llvm-position-builder-at-end builder exit-bb)
     (%ptx-barrier builder module)
+    ;; Re-init the mbarrier for the next K-step (reset phase to 0), leader-guarded + fence + sync.
+    (let* ((tid-x   (%gen-nvvm-read-tid-x builder module))
+           (tid-y   (%gen-nvvm-read-tid-y builder module))
+           (tid-z   (%gen-nvvm-read-tid-z builder module))
+           (tid-sum (llvm-build-add builder (llvm-build-add builder tid-x tid-y "rtxy") tid-z "rtxyz"))
+           (is-zero (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "reinit_tid0"))
+           (reinit-bb (llvm-append-basic-block parent "tma_reinit"))
+           (cont-bb   (llvm-append-basic-block parent "tma_reinit_cont")))
+      (llvm-build-cond-br builder is-zero reinit-bb cont-bb)
+      (llvm-position-builder-at-end builder reinit-bb)
+      (%gen-nvvm-mbarrier-init-shared builder module mbar-ptr (llvm-const-int i32-type load-cnt nil))
+      (%gen-nvvm-fence-proxy-async-shared builder)
+      (llvm-build-br builder cont-bb)
+      (llvm-position-builder-at-end builder cont-bb)
+      (%ptx-barrier builder module))
     (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
 
 (defmethod generate-node-ir ((node semantic-make-c-handle) builder module var-env di-builder di-scope location-map)

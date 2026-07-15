@@ -1235,6 +1235,10 @@
                        ;; it and the launcher uses its :compute-units for grid sizing.
                        (when *compile-hardware-profile*
                          (list (format nil "--hardware-profile=~a" *compile-hardware-profile*)))
+                       ;; Endeavor 137: forward HOIST-ARCH so a :block (TMA) kernel passes the
+                       ;; sm_90+ gate at hoist time and emits the sm_90a PTX + CUtensorMap path.
+                       (let ((arch (parse-hoist-arch (extract-test-directives file))))
+                         (when arch (list (format nil "--ir-target-arch=~a" arch))))
                        (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
@@ -2120,6 +2124,16 @@
     (let ((trimmed (string-left-trim ";; " line)))
       (when (starts-with trimmed "HOIST-HARDWARE-PROFILE:")
         (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 23))))
+          (when (plusp (length v)) (return v)))))))
+
+(defun parse-hoist-arch (directive-lines)
+  "Parse HOIST-ARCH: <id> (Endeavor 137).  Returns the arch id string (e.g. \"sm_90\") or nil.
+   Forwarded as --ir-target-arch=<id> to the hoist compile so a :block (TMA) kernel passes the
+   sm_90+ gate at hoist time (the metal run needs the sm_90a PTX / CUtensorMap path)."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "HOIST-ARCH:")
+        (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 11))))
           (when (plusp (length v)) (return v)))))))
 
 (defun parse-hoist-expect (directive-lines)

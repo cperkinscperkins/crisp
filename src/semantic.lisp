@@ -374,6 +374,8 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   spirv-event-p      ;; Endeavor 136 SPV: T => allocate a target("spirv.Event") slot (the
                      ;; async copies chain their event through it; await = OpGroupWaitEvents).
                      ;; On PTX this stays NIL (commit_group/wait_group need no event).
+  (load-count 1)     ;; Endeavor 137 Phase 2d: number of :block load-tiles sharing this barrier —
+                     ;; the mbarrier init arrival count (each TMA load does one arrive.expect_tx).
   source-location)
 
 ;; Endeavor 136 (Chapter 1, SPIR-V) — one collective OpGroupAsyncCopy of a contiguous run.
@@ -433,6 +435,9 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 ;; Phase 2b swaps in the inline-asm expect_tx / try_wait.parity completion for correctness.
 (defstruct semantic-nvvm-tma-wait
   barrier-node
+  (load-count 1)   ;; Endeavor 137 Phase 2d: #loads on this barrier — the await RE-INITS the
+                   ;; mbarrier (count = load-count) after waiting so a looped (K-step) barrier
+                   ;; restarts at phase 0 each iteration (try_wait.parity always uses phase 0).
   type
   source-location)
 

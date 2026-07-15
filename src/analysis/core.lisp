@@ -322,6 +322,11 @@
          2. During Codegen (Pass 2) to generate LLVM IR.
          MUST BE RESET TO 0 BETWEEN PASSES.")
 
+(defvar *async-barrier-load-count* (make-hash-table)
+        "Endeavor 137 Phase 2d: scan-time map of async-barrier binding SYMBOL -> count of :block
+         load-tiles that reference it.  Becomes the mbarrier init arrival count (each TMA load
+         issues one mbarrier.arrive.expect_tx).  Rebound per module.")
+
 (defvar *scratch-tile-dims* (make-hash-table :test 'equal)
         "Endeavor 137: scan-time map of (fn . scratch-tile-binding-SYMBOL) -> plist
          (:element-type E :box-dims (D...) :rank N).  Populated when scanning a
@@ -364,6 +369,7 @@
           (*implicit-arg-map* (make-hash-table)) ; Rebind for a clean state per module.
           (*async-barrier-modes* (make-hash-table)) ; Endeavor 137: barrier var -> mode.
           (*scratch-tile-dims* (make-hash-table :test 'equal)) ; Endeavor 137: (fn.tile) -> box-dims.
+          (*async-barrier-load-count* (make-hash-table)) ; Endeavor 137: barrier -> #block loads.
           (*call-site-args* (make-hash-table))      ; Endeavor 137: fn -> (callee . args) list.
           ;; NB: *tma-descriptor-info* is a PERSISTENT global (cleared via clrhash in the compiler
           ;; reset, like *implicit-scratch-size-expr-map*) — metadata emission reads it AFTER
@@ -453,6 +459,15 @@
   "T if FN-NAME is a kernel entry point."
   (getf (gethash fn-name *fn-normalized-info*) :entry-point-p))
 
+(defun %kernel-param-contiguous-term (kernel sym)
+  "The :contiguous-term (:row-major / :col-major) of KERNEL's tensor param SYM, from its
+   declared type (resolving a type alias).  The CUtensorMap encode is layout-dependent.
+   Defaults to :row-major."
+  (let* ((decl     (cdr (assoc sym (gethash kernel *kernel-declared-signatures*))))
+         (resolved (or (and decl (gethash decl *crisp-type-aliases*)) decl))
+         (m        (and (listp resolved) (member :contiguous-term resolved))))
+    (if m (second m) :row-major)))
+
 (defun %fn-carries-descriptor-p (fn-name uname)
   "T if FN-NAME carries the descriptor implicit UNAME (in its *implicit-arg-map* entry)."
   (find uname (gethash fn-name *implicit-arg-map*) :key #'car))
@@ -521,7 +536,8 @@
                               (list :describes (second d)
                                     :element-type (third til)
                                     :rank (fourth til)
-                                    :box-dims (second til))))
+                                    :box-dims (second til)
+                                    :layout (%kernel-param-contiguous-term kernel (second d)))))
                        (t
                         (log:warn "Endeavor 137: unresolved CUtensorMap descriptor ~a in kernel ~a (describes=~a tile=~a)"
                                   uname kernel d til)))))))))
@@ -728,6 +744,8 @@
                (eq (async-barrier-mode-of barrier) :block)
                (eq *target-backend* :ptx))
       (setf *scan-is-originator* t)
+      ;; Count this :block load against its barrier -> the mbarrier init arrival count.
+      (incf (gethash barrier *async-barrier-load-count* 0))
       (let* ((fn-name  (compiler-context-scanning-function-name *compiler-context*))
              (existing (gethash fn-name *implicit-arg-map*))
              (already  (find-if (lambda (e)

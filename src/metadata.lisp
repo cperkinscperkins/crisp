@@ -576,6 +576,7 @@
                          :element-type (strip-package-qualifiers (getf info :element-type))
                          :rank (getf info :rank)
                          :box-dims (getf info :box-dims)
+                         :layout (or (getf info :layout) :row-major)
                          :swizzle :none
                          :address-space :global
                          :range (list start end))

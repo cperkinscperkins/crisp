@@ -753,6 +753,7 @@ MMA
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] don't forget bug 033 ( --debug )
 [ ] benchmarking (all) probably needs fast math vs. non. And explicit flags for ALL. The defaults may not be what we think they be.
+[ ] run-on-pod.sh has lots its summary?
 
 
 
