@@ -2293,20 +2293,29 @@
              (elem-llvm-type (crisp-type-to-llvm-type elem-type-sym module))
              (elem-size      (llvm-size-of elem-llvm-type))
 
+             ;; Endeavor 138: a RUNTIME offset (offset-node) overrides the compile-time one —
+             ;; this is what lets (ring-get ring i) bump to slot i for a runtime i.  When it is
+             ;; present we must always bump (we cannot constant-fold the zero case away).
+             (offset-node   (semantic-make-view-offset-node node))
+             (runtime-off   (when offset-node
+                              (%coerce-to-i64 builder
+                                (generate-node-ir offset-node builder module var-env
+                                                  di-builder di-scope location-map))))
              (offset-bytes
-              (if (zerop offset-elems)
-                  (llvm-const-int (llvm-int64-type) 0 nil)
-                  (llvm-build-mul builder
-                                  (llvm-const-int (llvm-int64-type) offset-elems nil)
-                                  elem-size "mv_off_bytes")))
+              (cond
+                (runtime-off (llvm-build-mul builder runtime-off elem-size "mv_off_bytes_rt"))
+                ((zerop offset-elems) (llvm-const-int (llvm-int64-type) 0 nil))
+                (t (llvm-build-mul builder
+                                   (llvm-const-int (llvm-int64-type) offset-elems nil)
+                                   elem-size "mv_off_bytes"))))
              (new-ptr
-              (if (zerop offset-elems)
+              (if (and (null runtime-off) (zerop offset-elems))
                   src-ptr
                   (%mv-bump-ptr builder src-ptr offset-bytes
                                 (%mv-source-addr (list (first result-type) nil
                                                        (third result-type))))))
              (new-bytesize
-              (if (zerop offset-elems)
+              (if (and (null runtime-off) (zerop offset-elems))
                   src-bytesize
                   (llvm-build-sub builder src-bytesize offset-bytes "mv_new_bs")))
 
@@ -3284,6 +3293,17 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (cond ((= width 32) val)
           ((> width 32) (llvm-build-trunc builder val i32 "coord_i32"))
           (t            (llvm-build-zext  builder val i32 "coord_i32")))))
+
+(defun %coerce-to-i64 (builder val)
+  "Coerces an integer VAL to i64 (Endeavor 138: a runtime make-view element offset, which is
+   multiplied by the element size to bump the pointer): zext if narrower (offsets are
+   non-negative), trunc if wider, pass-through if already i64."
+  (let* ((i64   (llvm-int64-type))
+         (vtype (llvm-type-of val))
+         (width (crisp.llvm-bindings::llvm-get-int-type-width vtype)))
+    (cond ((= width 64) val)
+          ((> width 64) (llvm-build-trunc builder val i64 "off_i64"))
+          (t            (llvm-build-zext  builder val i64 "off_i64")))))
 
 (defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1)
   "Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,

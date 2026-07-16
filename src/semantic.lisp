@@ -466,6 +466,10 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
      element-type — new element type symbol (e.g. int, float, short)
      rank        — N: 0=cell, 1=vector, 2=matrix, N=tensor
      offset      — element offset (non-negative integer, default 0)
+     offset-node — Endeavor 138: a semantic node for a RUNTIME element offset.  When non-NIL it
+                   OVERRIDES `offset` (which is compile-time only, via %mv-eval-integer).  This is
+                   what makes (ring-get ring i) work for a runtime i: a ring slot is just a view
+                   of the ring tensor bumped by i * slot-elems.
      length      — explicit length (integer) or NIL for auto-compute (vectors only)
      extents     — list of N integers (matrix/tensor); NIL for cell/auto-vector
      strides     — explicit strides list or NIL (computed from extents/major)
@@ -476,6 +480,7 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   element-type
   rank
   offset
+  offset-node   ;; Endeavor 138: runtime element offset (overrides OFFSET when non-NIL)
   length
   extents
   strides

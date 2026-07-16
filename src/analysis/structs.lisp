@@ -1010,6 +1010,70 @@
 
 ;;; ── main analyzer ────────────────────────────────────────────
 
+(defun analyze-ring-get-expression (expr env context location)
+  "Endeavor 138 (Chapter 2): (ring-get RING INDEX) -> slot INDEX of RING.
+
+   A ring is ONE rank-(1+N) scratch tensor whose dim 0 IS the ring slot (see the
+   make-scratch-*-ring macros), so slot i is simply the ring VIEWED as a rank-N handle bumped by
+   i * slot-elems.  That means ring-get is a make-view with a RUNTIME offset — no new codegen,
+   and it reuses the view machinery wholesale.
+
+   INDEX may be runtime (the pipelining main loop uses (mod (+ idx 1) stages)); it rides
+   semantic-make-view's OFFSET-NODE.  The ring's compile-time dims come from the scan-time
+   scratch table keyed (fn . binding) — the same table Endeavor 137 added for TMA box-dims."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+      :message (format nil "ring-get: expected (ring-get RING INDEX), got ~S" expr)
+      :source-location location))
+  (let* ((ring-form  (second expr))
+         (index-form (third expr))
+         (ring-node  (analyze-expression ring-form env context (append location '(1))))
+         (src-canon  (%mv-resolve-src-type (semantic-node-type ring-node)))
+         (fn         (and context (compiler-context-current-compiling-function context)))
+         (info       (and (symbolp ring-form) fn
+                          (gethash (cons fn ring-form) *scratch-tile-dims*)))
+         (dims       (getf info :box-dims))
+         (elem       (getf info :element-type)))
+    (unless src-canon
+      (error 'crisp-compiler-error
+        :message (format nil "ring-get: ~S is not a storage handle" ring-form)
+        :source-location location))
+    (unless (and dims (> (length dims) 1))
+      (error 'crisp-compiler-error
+        :message (format nil "ring-get: ~S is not a ring — expected a handle made by make-scratch-{vector,matrix,tensor}-ring (its dim 0 is the ring slot)"
+                         ring-form)
+        :source-location location))
+    (let* ((slot-dims  (rest dims))               ; drop dim 0 (the ring slot)
+           (slot-rank  (length slot-dims))
+           (slot-elems (reduce #'* slot-dims))
+           (cl-pkg     (find-package :crisp-language))
+           (times-sym  (intern "*" cl-pkg))
+           ;; slot i starts at element i * slot-elems within the ring's flat storage.
+           (offset-node (analyze-expression (list times-sym index-form slot-elems)
+                                            env context (append location '(2))))
+           (addr       (%mv-source-addr src-canon))
+           (align      (%mv-source-align src-canon))
+           (slot-type  (%mv-result-tensor-type elem slot-rank addr align :last)))
+      ;; The slot's rank-N handle type may not exist yet (only the ring's rank-(1+N) does), so
+      ;; force the template instantiation — same guard analyze-scratch-tensor-expression uses.
+      (unless (valid-parameterized-type-p slot-type)
+        (error 'crisp-compiler-error
+          :message (format nil "ring-get: failed to instantiate the slot type ~a for ring ~S"
+                           slot-type ring-form)
+          :source-location location))
+      (make-semantic-make-view
+       :type        slot-type
+       :source-node ring-node
+       :element-type elem
+       :rank        slot-rank
+       :offset      0
+       :offset-node offset-node
+       :length      slot-elems
+       :extents     slot-dims
+       :strides     (%mv-row-major-strides slot-dims)
+       :major       :row
+       :source-location location))))
+
 (defun analyze-make-view-expression (expr env context location)
   "Analyzes make-cell / make-vector / make-matrix / make-tensor."
   (let* ((op       (first expr))
@@ -1157,7 +1221,10 @@
   (def-expression-analyzer make-cell   analyze-make-view-expression)
   (def-expression-analyzer make-vector analyze-make-view-expression)
   (def-expression-analyzer make-matrix analyze-make-view-expression)
-  (def-expression-analyzer make-tensor analyze-make-view-expression))
+  (def-expression-analyzer make-tensor analyze-make-view-expression)
+
+  ;; storage-handle rings (138 — pipelining)
+  (def-expression-analyzer ring-get analyze-ring-get-expression))
 
 
 (defun %083-require-2d-tensor (raw-type location)
