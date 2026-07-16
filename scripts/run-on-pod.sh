@@ -202,7 +202,10 @@ echo ""
 step "Step 6: Run spec suite${FILTER:+  (filter: ${FILTER})}"
 # Run with CRISP_USE_SYSTEM_TOOLS so it finds llc-21 on PATH.
 # FILTER is injected into the remote env so the (quoted) heredoc can read it.
-pod_run "FILTER='${FILTER}' bash -s" <<'RUN_SPECS'
+# The remote exits non-zero if any phase failed; capture it (set -e would otherwise abort
+# before the completion banner) and propagate as this script's exit status.
+RUN_STATUS=0
+pod_run "FILTER='${FILTER}' bash -s" <<'RUN_SPECS' || RUN_STATUS=$?
 set -e
 cd /root/crisp
 export CRISP_USE_SYSTEM_TOOLS=true
@@ -232,6 +235,10 @@ FILTER_ARG=""
 # until the whole suite finished — that was the "20 minutes of silence"). tee keeps
 # a full log on the pod; grep is a per-spec heartbeat. `|| true` so a failing spec
 # doesn't abort the remaining phases under `set -e`.
+# Phase verdicts accumulate here for the end-of-run summary (label|verdict per line).
+PHASE_LOG=/tmp/crisp-phase-verdicts.txt
+: > "$PHASE_LOG"
+
 run_phase() {
     local label="$1"; shift
     local logf="/tmp/crisp-$(echo "$label" | tr ' /,()' '_____').log"
@@ -241,6 +248,25 @@ run_phase() {
         | stdbuf -oL tee "$logf" \
         | stdbuf -oL grep -E 'Running Spec:|Spec Summary|Passed:|Failed:|Skipped:|BUFFER |FAIL' \
         || true
+
+    # The live stream buries the verdict among hundreds of 'Running Spec:' lines, and the
+    # runner's 'Failed Specs:' list never matched the grep above ('Failed:' != 'Failed Specs:',
+    # and the '  - name' lines matched nothing) — so re-print both, compactly, right here.
+    local summary failed
+    summary=$(grep -E '^(Spec Summary|Negative Test Summary)' "$logf" | tail -2)
+    failed=$(sed -n '/^Failed Specs:/,$p' "$logf" | grep -E '^[[:space:]]+- ' || true)
+
+    echo "  ----- ${label}: verdict -----"
+    if [ -n "$summary" ]; then echo "$summary" | sed 's/^/    /'; else echo "    (no summary line — phase likely crashed)"; fi
+    if [ -n "$failed" ]; then
+        echo "    FAILED SPECS:"
+        echo "$failed" | sed 's/^[[:space:]]*/      /'
+        echo "${label}|FAIL" >> "$PHASE_LOG"
+    elif [ -z "$summary" ]; then
+        echo "${label}|CRASH" >> "$PHASE_LOG"
+    else
+        echo "${label}|ok" >> "$PHASE_LOG"
+    fi
     echo "  [$(date +%H:%M:%S)] done  (full log: ${logf})"
 }
 
@@ -254,7 +280,36 @@ else
     echo ""
     echo "  (filter active -> skipping --differentiate and negative phases)"
 fi
+
+# --- Aggregate summary: one place to look, at the very bottom ---
+echo ""
+echo "============================================================"
+echo "  RUN SUMMARY"
+echo "============================================================"
+while IFS='|' read -r plabel pverdict; do
+    printf "  %-34s %s\n" "$plabel" "$pverdict"
+done < "$PHASE_LOG"
+
+if grep -qE '\|(FAIL|CRASH)$' "$PHASE_LOG"; then
+    echo ""
+    echo "  ALL FAILED SPECS (across phases):"
+    for lf in /tmp/crisp-specs*.log /tmp/crisp-negative*.log; do
+        [ -f "$lf" ] || continue
+        sed -n '/^Failed Specs:/,$p' "$lf" | grep -E '^[[:space:]]+- ' | sed "s#^[[:space:]]*#    #" || true
+    done
+    echo ""
+    echo "  RESULT: FAILURES PRESENT"
+    echo "============================================================"
+    exit 1
+fi
+echo ""
+echo "  RESULT: all phases green"
+echo "============================================================"
 RUN_SPECS
 
 echo ""
-echo "=== [$(date +%H:%M:%S)] RunPod test run complete ==="
+if [ "${RUN_STATUS}" -ne 0 ]; then
+    echo "=== [$(date +%H:%M:%S)] RunPod test run complete — FAILURES (see RUN SUMMARY above) ==="
+    exit "${RUN_STATUS}"
+fi
+echo "=== [$(date +%H:%M:%S)] RunPod test run complete — all green ==="
