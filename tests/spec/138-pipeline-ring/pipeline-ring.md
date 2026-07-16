@@ -62,6 +62,34 @@ PTX `:linear` is the subtle one: per-slot `wait_group(0)` would wait for *everyt
 destroy the overlap the ring exists for.  The canonical cp.async pipelining idiom is
 `commit_group` per stage + `wait_group(N-1)` (keep the N most recent groups in flight).
 
+## DECISION 4 — `:arrivals` is EXPLICIT on a barrier ring  (agreed: "Definitely A. 100%")
+
+**137's scan-inferred mbarrier arrival count does not survive rings.**  137 tallies the `:block`
+loads naming a barrier, which is sound only because such a kernel has ONE stage in the text.  A
+ring is loaded from the prologue *and* the main loop, so the textual tally (2 + 2 = 4) is **not**
+the per-stage arrival count (2).  An mbarrier completes on (arrivals met) AND (tx bytes met), so a
+wrong count is **too high → the kernel HANGS; too low → it reads a half-arrived tile**.  Grouping
+loads "per phase" statically is fragile and fails *silently on silicon*, so we ask:
+
+```
+(make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2)   ; A+B share each slot
+```
+
+- **Required for `:mode :block`**; ignored for `:linear` (cp.async / OpGroupAsyncCopy track
+  groups and events, not arrivals).  A single `make-async-barrier` KEEPS its inference — no new
+  surface where the old rule is still sound.
+- Rejected alternatives: (B) init count 1 + first-load-arrives / rest bare `expect_tx` — still
+  needs "which load is first in this stage", i.e. the same grouping problem; (C) keep the tally
+  and forbid a prologue — rules out pipelining itself.
+- Docs: topology.md "Rings"; the full rationale lives in `%check-barrier-ring-arrivals`.
+
+**Bug this caught before it reached the H100:** await re-inits the mbarrier from the *await*
+node's load-count, and that lookup required a symbol — so `(await (ring-get bars 0))` fell back to
+**1** while creation used `:arrivals`.  Stage 2+ would re-arm expecting 1 arrival, receive N, and
+complete on the first → torn tile.  Fixed with `barrier-load-count-of` (resolves symbol *or*
+`(ring-get R i)` → ring; one table serves every consumer).
+**Lesson:** `:arrivals 1` cannot prove the wiring — 1 is also the default.  Probe with 3.
+
 ## DECISION 3 — defer `:initial-state :signaled/:waiting` to Chapter 3
 
 It only appears in the warp-specialization example (its sole consumer), and topology.md already
@@ -77,11 +105,44 @@ handles a runtime index anyway, plain `dotimes` serves BOTH the prologue and the
 ## TDD sequence — note ~80% needs NO H100
 
     [x] 01  make-scratch-*-ring + ring-get, COMPILE-TIME index (ring mechanics, no async)
-    [ ] 02  ring-get with a RUNTIME index (the `(mod (+ i 1) stages)` case)
-    [ ] 03  make-async-barrier-ring + :mode, + a `:linear` load into a ring slot
-            (`:linear` runs on ANY arch -> testable locally / BMG, NO Hopper)
-    [ ] 04  the Chapter-2 pipelined `:block` matmul (prologue + main loop)   <-- NEEDS H100
+            IR-verified the 3 slots are DISTINCT (bumps 0/16/32 bytes), not merely compiling.
+    [x] 02  ring-get with a RUNTIME index (the `(mod (+ i 1) stages)` case)
+            Needed NO new code — the offset-node path already carried it.  IR-verified genuinely
+            runtime (zext -> mul -> GEP on an SSA operand, not constant-folded).
+    [x] 03  make-async-barrier-ring + :mode + :arrivals, on `:block`
+            PTX-verified: [2 x i64] mbarrier ring, per-slot init/expect_tx/try_wait/re-init.
+            load-tile/await needed ZERO changes.  + errors/01 (missing :arrivals), errors/02 (0).
+    [ ] 03b `:linear` rings — NOT done (03 covers `:block` only).  PTX `:linear` = phantom slots
+            -> `wait_group(ring-count - 1)`; SPV `:linear` = N `target("spirv.Event")` slots.
+    [~] 04  the Chapter-2 pipelined `:block` matmul (prologue + main loop)
+            COMPILE + PTX-verified pod-free: [2 x i64] mbarrier ring, both init counts = 2
+            (:arrivals, creation AND re-init), 6 cp.async.bulk.tensor, 2 .ptr .global descriptors.
+            Hand-rolled tile-stride + (dotimes grid-k ...) (= what matrix-multiply-tile-stride
+            lowers to) for the prologue slot the macro has no room for.  Metal (MMA_CORRECT) still
+            NEEDS H100 — the phase-across-wrap correctness is the one thing PTX can't confirm.
     [ ] 05  benchmark vs 137's sync/:linear/:block + cuBLAS                  <-- NEEDS H100
+
+## 04 build notes — the compiler wrinkles it surfaced (all pod-free, all fixed)
+
+- **tile-stride binds TILE-IDs, not element origins.**  I briefly re-doubted this off
+  `%expand-tile-stride-form`'s stale "origins" docstring; the delegate it calls
+  (`%expand-workgroup-strided-outer-loop-with-ts-syms`) is truth ("bound to a tile-ID"), and
+  137/05 is metal-proof.  topology.md's Chapter-2 example was CONCEPTUALLY right all along.
+- **register C-tile → tile-spec must be the compile-time (M N) size-list**, not the C-tile symbol
+  (register tiles SROA-explode).  `(tile-stride C (128 128) (grid-y grid-x) ...)`.
+- **:ring-count needs an integer LITERAL** — a `(let ((stages 3)) … :ring-count stages)` binding
+  does not compile.  Repeat the literal.  (topology.md's example was wrong on this; now fixed.)
+- **ring-get's index was int-only** — `(* index slot-elems)` broke on a ulong index (tile-ID or
+  `(mod grid-k n)`); 01/02 never hit it.  Fixed in structs.lisp: coerce both to ulong.
+- **BUG: a uniform guard was rejected as thread-divergent** (control.lisp).  The if-analyzer
+  computed `cond-uniformity` and trusted it for `*divergent-scope-depth*`, but set
+  `*in-divergent-conditional*` to T *unconditionally* — so load-tile's internal sync-workgroup was
+  flagged even under a uniform guard, and the error's own "use a non-divergent condition" advice
+  was unachievable.  Fixed to honor the uniformity.  A dotimes counter still reads :unknown, so
+  the kernel asserts the guard with `to-workgroup-uniform` (must be a let initializer).
+- **topology.md's sync was on the wrong side** — it prefetched then synced, racing the overwrite
+  against the reads of the slot the ring wraps onto.  04 (and the corrected doc) sync BEFORE the
+  prefetch.
 
 Only 04/05 need Hopper.  Build 01-03 pod-free, then ONE focused H100 session for correctness
 + benchmark.  (137 metal workflow: crisp-compile --ir-target=ptx --ir-target-arch=sm_90
@@ -89,9 +150,8 @@ Only 04/05 need Hopper.  Build 01-03 pod-free, then ONE focused H100 session for
 
 ## Carry-overs from 137 that need care (the real risk — not the allocation)
 
-1. **mbarrier init count.**  137 counts `:block` loads per barrier *binding symbol*; but
-   `(ring-get bar-ring i)` is NOT a symbol.  Needs counting per *ring* instead (every slot
-   serves the same A+B loads per stage, so one count covers all slots).
+1. ~~**mbarrier init count.**~~  RESOLVED — and it turned out to be deeper than "count per ring":
+   no textual tally is correct through a ring at all.  See DECISION 4 (`:arrivals`).
 2. **Phase.**  137's "await re-inits the mbarrier" should carry over (each slot is awaited
    before its next load), BUT the prologue puts `ring-count` transfers in flight
    simultaneously — that overlap needs verifying, not assuming.

@@ -713,9 +713,8 @@
       ((and (eq mode :block) (eq *target-backend* :ptx))
        (make-semantic-nvvm-tma-wait
         :barrier-node barrier-node
-        :load-count (max 1 (or (and (symbolp (second expr))
-                                    (gethash (second expr) *async-barrier-load-count*))
-                               1))
+        ;; Endeavor 138: resolve through (ring-get R i) — a ring slot's count is the RING's.
+        :load-count (barrier-load-count-of (second expr))
         :type 'ulong
         :source-location location))
       ;; :block on the GENERIC compile-check pass fell to the sync staging (which already
@@ -763,7 +762,18 @@
       ;; Phase 1d: both branches will be analyzed → runtime divergence.  Bind
       ;; *in-divergent-conditional* to T for the branch analyses so that any
       ;; load-tile-at / store-tile-at inside either branch is rejected.
-      (let* ((*in-divergent-conditional* t)
+      ;;
+      ;; Endeavor 138: ...but ONLY when the condition can actually diverge.  A
+      ;; workgroup-UNIFORM condition takes every thread down the same branch, so an internal
+      ;; sync-workgroup cannot deadlock and the tile op is safe.  We already compute
+      ;; COND-UNIFORMITY and already trust it for *divergent-scope-depth* (right below); using
+      ;; it here too is what makes this check's own advice ("use a non-divergent condition")
+      ;; actually achievable — previously a uniform guard was rejected identically, which made
+      ;; the guarded prefetch of a pipelined ring loop (`(when (< next-k n-k-steps) ...)`,
+      ;; uniform in the K-loop counter) impossible to express.
+      (let* ((*in-divergent-conditional* (if (eq cond-uniformity :uniform)
+                                             *in-divergent-conditional*
+                                             t))
              (*divergent-scope-depth* (if (not (eq cond-uniformity :uniform))
                                           (1+ *divergent-scope-depth*)
                                           *divergent-scope-depth*))
@@ -3042,38 +3052,89 @@
        :type 'ulong
        :source-location location))))
 
+(defun %check-barrier-ring-arrivals (arrivals bmode location)
+  "Endeavor 138: validate :arrivals on a barrier ring.  Positive compile-time integer if given;
+   REQUIRED for :mode :block; ignored for :linear (cp.async / OpGroupAsyncCopy track groups and
+   events, not arrivals).
+
+   Why explicit and not inferred: a :block barrier is a hardware mbarrier, completing only when
+   BOTH its arrival count and its expected transaction bytes are met — too high and it never
+   completes (the kernel HANGS); too low and the consumer reads a half-arrived tile.  For a
+   single make-async-barrier the scan infers the count by tallying the :block loads naming that
+   barrier, which is sound because such a kernel has one stage in the text.  Through a RING that
+   inference breaks: the prologue AND the main loop both load the same ring, so the textual tally
+   (2 in the prologue + 2 in the main loop = 4) is NOT the per-stage arrival count (2).  Grouping
+   loads 'per phase' statically is fragile and the failure mode is a silent GPU hang, so we ask."
+  (when (and arrivals (not (and (integerp arrivals) (plusp arrivals))))
+    (error 'crisp-compiler-error
+      :message (format nil "make-async-barrier-ring: :arrivals must be a positive compile-time integer, got ~S" arrivals)
+      :source-location location))
+  (when (and (eq bmode :block) (null arrivals))
+    (error 'crisp-compiler-error
+      :message (concatenate 'string
+                 "make-async-barrier-ring: :mode :block requires :arrivals — how many transfers EACH SLOT "
+                 "tracks per pipeline stage (i.e. how many load-tiles name one slot in a single stage; the "
+                 "classic A+B staging is 2).  It is explicit rather than inferred because a ring's prologue "
+                 "and main loop both load the same ring, so counting load-tiles textually does not give the "
+                 "per-stage count — and a wrong mbarrier arrival count hangs the GPU.  "
+                 "e.g. (make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2)")
+      :source-location location)))
+
 (defun analyze-make-async-barrier-ring-expression (expr env context location)
-  "Endeavor 138 (Chapter 2): (make-async-barrier-ring &key ring-count mode) -> a ring of
-   RING-COUNT async barriers for pipelining.
+  "Endeavor 138 (Chapter 2): (make-async-barrier-ring &key ring-count mode arrivals) -> a ring
+   of RING-COUNT async barriers for pipelining.
 
    Unification: a plain (make-async-barrier) is simply a RING OF 1.  Both build the same
    semantic-make-async-barrier node; this one just sets :ring-count N.  Codegen allocates
    [N x i64] of SLM mbarriers and yields the BASE address as an i64 — so (ring-get r i) is
    nothing but (base + i*8), which load-tile/await already inttoptr back to an mbarrier ptr.
-   That means the whole 137 barrier path is reused verbatim for every slot."
+   That means the whole 137 barrier path is reused verbatim for every slot.
+
+   :ARRIVALS is how many transfers EACH SLOT tracks per pipeline stage, and it becomes the
+   mbarrier init arrival count (every slot shares it).  It is REQUIRED for :mode :block and
+   ignored otherwise — see %check-barrier-ring-arrivals for why it is explicit rather than
+   scan-inferred the way a single barrier's is."
   (declare (ignore env))
   (let* ((keys (rest expr))
          (n    (getf keys :ring-count))
+         (arr  (getf keys :arrivals))
          (bmode (%parse-async-barrier-keys
                  ;; reuse the single-barrier key parser (validation + arch gating) by handing it
-                 ;; just the :mode pair — :ring-count is ours.
+                 ;; just the :mode pair — :ring-count / :arrivals are ours.
                  (list* (first expr)
                         (let ((m (getf keys :mode)))
                           (when m (list :mode m))))
                  location)))
+    (unless (evenp (length keys))
+      (error 'crisp-compiler-error
+        :message "make-async-barrier-ring: keys must be :key value pairs"
+        :source-location location))
+    (loop for (k nil) on keys by #'cddr do
+      (unless (member k '(:ring-count :mode :arrivals))
+        (error 'crisp-compiler-error
+          :message (format nil "make-async-barrier-ring: unknown key ~S (expected :ring-count, :mode or :arrivals)" k)
+          :source-location location)))
     (unless (and (integerp n) (plusp n))
       (error 'crisp-compiler-error
         :message (format nil "make-async-barrier-ring: :ring-count must be a positive compile-time integer, got ~S" n)
         :source-location location))
-    (let ((bname (and context (compiler-context-current-binding-name context))))
+    (%check-barrier-ring-arrivals arr bmode location)
+    (let ((bname (and context (compiler-context-current-binding-name context)))
+          (count (max 1 (or arr 1))))
       (when bname
         (setf (gethash bname *async-barrier-modes*) bmode)
-        (setf (gethash bname *async-barrier-ring-counts*) n))
+        (setf (gethash bname *async-barrier-ring-counts*) n)
+        ;; Publish the EXPLICIT count under the ring's binding so barrier-load-count-of can serve
+        ;; every consumer (notably await's re-init) from the one table — a ring slot re-armed with
+        ;; a count that disagrees with its init is exactly the hang/torn-tile bug :arrivals exists
+        ;; to prevent.
+        (setf (gethash bname *async-barrier-load-count*) count))
       (make-semantic-make-async-barrier
        :cell-node nil
        :barrier-mode bmode
        :ring-count n
-       :load-count (max 1 (or (and bname (gethash bname *async-barrier-load-count*)) 1))
+       ;; Endeavor 138: EXPLICIT for a ring (never scan-counted — see the check above).
+       :load-count count
        :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
        :type 'ulong
        :source-location location))))
@@ -3086,6 +3147,25 @@
        (symbolp (second form))
        (gethash (second form) *async-barrier-ring-counts*)
        (second form)))
+
+(defun barrier-load-count-of (barrier-form)
+  "Endeavor 137\138: the mbarrier arrival count for the barrier a load-tile/await refers to.
+   BARRIER-FORM is either the barrier variable SYMBOL, or — Endeavor 138 — a
+   (ring-get BARRIER-RING i) form, in which case the count is the RING's (every slot shares it:
+   each stage issues the same loads).  Defaults to 1.
+
+   For a single barrier this is the scan-counted tally of :block loads naming it; for a ring it is
+   the user's explicit :arrivals, recorded under the ring's binding by
+   analyze-make-async-barrier-ring-expression.  Both land in *async-barrier-load-count*, so
+   consumers need only resolve the ring and look up one table.
+
+   This MUST agree with the count the barrier was init'd with — await re-inits the mbarrier to
+   restart it at phase 0, and re-arming with the wrong count either hangs the kernel (too high)
+   or completes it on a half-arrived tile (too low)."
+  (let ((ring (%barrier-ring-form-p barrier-form)))
+    (max 1 (or (and ring (gethash ring *async-barrier-load-count*))
+               (and (symbolp barrier-form) (gethash barrier-form *async-barrier-load-count*))
+               1))))
 
 (defun async-barrier-mode-of (barrier-form)
   "Endeavor 137/138: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.

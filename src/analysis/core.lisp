@@ -539,12 +539,17 @@
                          (til (%tma-resolve-ref kernel uname :tile)))
                      (cond
                        ((and d (eq (first d) :tensor) til (eq (first til) :tile))
-                        (setf (gethash (cons kernel uname) *tma-resolved*)
-                              (list :describes (second d)
-                                    :element-type (third til)
-                                    :rank (fourth til)
-                                    :box-dims (second til)
-                                    :layout (%kernel-param-contiguous-term kernel (second d)))))
+                        ;; Endeavor 138: a ring tile's dims are (slots . box) — dim 0 is the ring
+                        ;; slot, so the TMA box is the remainder (and the rank drops by one).
+                        (let* ((via-ring (getf (gethash uname *tma-descriptor-info*) :tile-via-ring))
+                               (dims     (second til))
+                               (box      (if via-ring (rest dims) dims)))
+                          (setf (gethash (cons kernel uname) *tma-resolved*)
+                                (list :describes (second d)
+                                      :element-type (third til)
+                                      :rank (length box)
+                                      :box-dims box
+                                      :layout (%kernel-param-contiguous-term kernel (second d))))))
                        (t
                         (log:warn "Endeavor 137: unresolved CUtensorMap descriptor ~a in kernel ~a (describes=~a tile=~a)"
                                   uname kernel d til)))))))))
@@ -759,13 +764,26 @@
    type and the staging tile, so scan only needs SRC + the barrier's resolved mode."
   (let* ((src     (first args))
          (tile    (second args))
-         (barrier (getf (cdddr args) :barrier)))   ;; args = SRC TILE COORDS &key ... :barrier BAR
-    (when (and (symbolp src) (symbolp barrier)
+         (barrier (getf (cdddr args) :barrier))   ;; args = SRC TILE COORDS &key ... :barrier BAR
+         ;; Endeavor 138: the barrier/tile may come through a ring — `(ring-get R i)` is NOT a
+         ;; symbol, so resolve to the RING (needed for the descriptor, which is per-ring).  A ring
+         ;; TILE's box is the ring's dims minus dim 0 (dim 0 IS the slot).
+         (bar-ring  (%barrier-ring-form-p barrier))
+         (bar-key   (or bar-ring (and (symbolp barrier) barrier)))
+         (tile-ring (and (consp tile) (symbolp (first tile))
+                         (string-equal (symbol-name (first tile)) "RING-GET")
+                         (symbolp (second tile))
+                         (second tile)))
+         (tile-key  (or tile-ring (and (symbolp tile) tile))))
+    (when (and (symbolp src) bar-key
                (eq (async-barrier-mode-of barrier) :block)
                (eq *target-backend* :ptx))
       (setf *scan-is-originator* t)
-      ;; Count this :block load against its barrier -> the mbarrier init arrival count.
-      (incf (gethash barrier *async-barrier-load-count* 0))
+      ;; Count this :block load against its barrier -> mbarrier arrival count.  RINGS ARE EXEMPT:
+      ;; a ring's prologue and main loop both load it, so the textual tally is NOT the per-stage
+      ;; arrival count — a ring states it explicitly via :arrivals (Endeavor 138).
+      (unless bar-ring
+        (incf (gethash bar-key *async-barrier-load-count* 0)))
       (let* ((fn-name  (compiler-context-scanning-function-name *compiler-context*))
              (existing (gethash fn-name *implicit-arg-map*))
              (already  (find-if (lambda (e)
@@ -783,9 +801,13 @@
                       src tile uname)
             (push (cons uname spec) (gethash fn-name *implicit-arg-map*))
             ;; Store ORIGINATOR-frame refs; resolve-tma-descriptors walks the carrier chain to
-            ;; concrete kernel-frame describes/box-dims/elem/rank.
+            ;; concrete kernel-frame describes/box-dims/elem/rank.  Endeavor 138: when the tile
+            ;; came through (ring-get R i), the tile ref is the RING R and its box is the ring's
+            ;; dims minus dim 0 (dim 0 IS the ring slot) — :tile-via-ring says to drop it.
             (setf (gethash uname *tma-descriptor-info*)
-                  (list :originator fn-name :describes-sym src :tile-sym tile))))))))
+                  (list :originator fn-name :describes-sym src
+                        :tile-sym (or tile-key tile)
+                        :tile-via-ring (and tile-ring t)))))))))
 
 
 

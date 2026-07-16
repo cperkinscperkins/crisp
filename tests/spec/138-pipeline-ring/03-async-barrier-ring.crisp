@@ -11,6 +11,11 @@
 ;; Two ring slots are used with two separate loads/awaits (the shape the pipelined matmul needs);
 ;; the PTX must therefore show a [2 x i64] mbarrier ring and per-slot init.
 ;;
+;; :arrivals 1 — each slot here tracks exactly ONE transfer.  A ring must state this: unlike a
+;; single barrier (whose loads the scan can tally), a ring is loaded from both the prologue and
+;; the main loop, so a textual tally is not the per-stage arrival count, and a wrong mbarrier
+;; arrival count hangs the GPU.  The pipelined matmul (04) stages A+B per slot, so it passes 2.
+;;
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--differentiate]: "ring/pipelining is forward-only; tile AD is a later chapter"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
@@ -22,7 +27,7 @@
            (global-size :set-to 4)
            (local-size  :set-to 4))
   (let ((tiles (make-scratch-matrix-ring float (4 4) :ring-count 2))
-        (bars  (make-async-barrier-ring :ring-count 2 :mode :block)))
+        (bars  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1)))
     ;; Stage into ring slot 0 under barrier slot 0 ...
     (load-tile A (ring-get tiles 0) (0 0) :barrier (ring-get bars 0))
     (await (ring-get bars 0))

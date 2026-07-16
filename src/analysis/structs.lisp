@@ -1067,8 +1067,15 @@
            (slot-elems (reduce #'* slot-dims))
            (cl-pkg     (find-package :crisp-language))
            (times-sym  (intern "*" cl-pkg))
+           (to-ulong-sym (intern "TO-ULONG" cl-pkg))
            ;; slot i starts at element i * slot-elems within the ring's flat storage.
-           (offset-node (analyze-expression (list times-sym index-form slot-elems)
+           ;; BOTH operands are coerced to ulong: the index may arrive as an int (a literal, or a
+           ;; dotimes variable) or as a ulong (a tile-ID, or (mod grid-k stages)), and slot-elems
+           ;; is a raw int — an uncoerced mix is a "Cannot operate on ULONG and INT" type error.
+           ;; Offsets are ulong anyway (codegen %coerce-to-i64's this).
+           (offset-node (analyze-expression (list times-sym
+                                                  (list to-ulong-sym index-form)
+                                                  (list to-ulong-sym slot-elems))
                                             env context (append location '(2))))
            (addr       (%mv-source-addr src-canon))
            (align      (%mv-source-align src-canon))

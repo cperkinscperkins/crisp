@@ -549,7 +549,7 @@ Rings
 (make-scratch-matrix-ring <tensorType> (<dimensions>) :ring-count <count>) => ring
 (make-scratch-tensor-ring <tensorType> (<dimensions>) :ring-count <count>) => ring
 
-(make-async-barrier-ring :ring-count <count>) => ring
+(make-async-barrier-ring :ring-count <count> &key mode arrivals) => ring
 
 
 (ring-get <ring> <index>) => <object>
@@ -562,9 +562,48 @@ The `<tensorType>` can be a type declaration or just a tensor variable.
 `<dimensions>` is a list of integers, which must be known at compile-time. They cannot be runtime variables.
 `<dim>` is a compile time constant integer, used for the vector variant.
 
-`ring-get` takes a ring and an index and returns the nth object in the ring. 
+`ring-get` takes a ring and an index and returns the nth object in the ring.  The `<index>` may be a
+**runtime** value — the pipelining main loop indexes with `(mod (+ ring-idx 1) stages)` — which is
+exactly what makes a ring a ring.
 
-;; Q: does make-async-barrier-ring need :initial-state :signaled / :waiting ?
+> **How a ring is built.**  A ring of N slots is ONE allocation with the ring as a *prepended
+> dimension* — `(make-scratch-matrix-ring float (64 8) :ring-count 3)` is a rank-3 scratch tensor
+> `(3 64 8)` whose **dim 0 is the slot** — and `ring-get` is an offset view into it.  So the slots
+> are contiguous in SLM and a ring costs exactly **one** implicit kernel argument no matter how
+> deep it is.  A barrier ring is the same idea: `N` mbarriers laid out contiguously, and a plain
+> `(make-async-barrier)` is simply **a ring of 1**.
+
+### `make-async-barrier-ring`
+
+`(make-async-barrier-ring :ring-count <count> &key mode arrivals) => ring`
+
+- **`:ring-count`** — required. A positive compile-time integer: the pipeline depth (how many
+  stages are in flight at once).
+- **`:mode`** — exactly as `make-async-barrier` (`:linear` / `:block`; omit for arch-automatic).
+  Every slot in the ring shares the mode.
+- **`:arrivals`** — **required for `:mode :block`**; ignored otherwise.  How many transfers **each
+  slot** tracks *per pipeline stage* — i.e. how many `load-tile`s name that one slot in a single
+  stage.  The classic A+B staging is `2`.
+
+> **Why `:arrivals` is explicit and not inferred.**  A `:block` (TMA) barrier is a hardware
+> mbarrier: it completes when *both* its arrival count and its expected transaction bytes are
+> satisfied, so the count must be exactly right — **too high and the barrier never completes (the
+> kernel hangs); too low and you read a half-arrived tile.**  For a *single* `make-async-barrier`
+> the compiler infers it by counting the `:block` loads that name that barrier, which is correct
+> because such a kernel has one stage in the text.  Through a **ring** that inference breaks: the
+> prologue and the main loop *both* load the same ring, so the textual count (2 in the prologue +
+> 2 in the main loop = 4) is **not** the per-stage arrival count (2).  Grouping loads "per phase"
+> statically is fragile, and the failure mode is a silent GPU hang — so Crisp asks you to say it.
+> You already know the number: it is how many `load-tile`s you wrote against one slot.
+
+```
+;; three stages in flight; each stage stages an A-tile and a B-tile under its own barrier slot.
+(make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2)
+```
+
+> **`:initial-state`** (`:signaled` / `:waiting`) is **deferred** — it is only meaningful for warp
+> specialization (a producer/consumer pair needs an "empty" ring that starts signaled), so it
+> lands with that chapter rather than here.
 
 
 Warp Specialization
@@ -874,53 +913,66 @@ We use rings to set up a load/execute pipeline.
   (def-grid-function pipeline-matrix-multiply (A B &out C)
     (declare #'((mat T) (mat T) (mat T))
                (global-size :derive-from C :strategy :strided)) 
-    (let ((pipeline-stages 3)
-          (A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count pipeline-stages))
-          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count pipeline-stages))
+    ;; NB: the ring depth (3) is a repeated LITERAL — :ring-count needs a compile-time integer
+    ;; and Crisp has no constant form, so a `(let ((pipeline-stages 3)) … :ring-count
+    ;; pipeline-stages)` binding would NOT compile.  We keep it as a plain 3 throughout.
+    (let ((A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count 3))
+          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count 3))
           (C-tile (make-register-tile T (128 128) (identity T)))
-          (barrier-ring (make-async-barrier-ring :ring-count pipeline-stages)))
+          ;; :arrivals 2 — each slot tracks its stage's A-load + B-load.  REQUIRED for :block, and
+          ;; NOT inferable (the prologue and the main loop both load the ring), so you state it.
+          (barrier-ring (make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2))
+          (n-k-steps    (/ (inner-dimension A B) 128)))
 
-      ;; Outer loops for C-tile (X and Y coordinates)
-      (tile-stride C C-tile (grid-y grid-x) 
-        
-        ;; 1. PROLOGUE: Fill the pipeline for the current C-tile
-        (do-times+ (i pipeline-stages)
-          ;; Striding along K, keeping Y and X locked to the current block
-          (load-tile A (ring-get A-tile-ring i) grid-y i :barrier (ring-get barrier-ring i)) 
-          (load-tile B (ring-get B-tile-ring i) i grid-x :barrier (ring-get barrier-ring i)))
+      ;; Outer loops for C-tile (X and Y coordinates).  tile-stride binds grid-y / grid-x as
+      ;; TILE-IDs — exactly what load-tile consumes — and a register C-tile's shape must be given
+      ;; as the compile-time (M N) size-list (the register tile SROA-explodes, so its symbol is
+      ;; gone by tile-stride time).
+      (tile-stride C (128 128) (grid-y grid-x)
 
-        ;; 2. MAIN K-LOOP
-        (let ((ring-idx 0))
-          (do-times (grid-k K)
-            
-            ;; Wait for the current stage's data to arrive in SLM
-            (await (ring-get barrier-ring ring-idx)) 
+        ;; 1. PROLOGUE: fill the pipeline for the current C-tile.  Plain dotimes: ring-get takes a
+        ;; runtime index, so it serves both the prologue and the main loop.  (to-ulong i) — a
+        ;; dotimes counter is int, but tile-IDs / ring indices are ulong.
+        (dotimes (i 3)
+          ;; Stride along K, keeping Y and X locked to the current block.
+          (load-tile A (ring-get A-tile-ring (to-ulong i)) (grid-y (to-ulong i)) :barrier (ring-get barrier-ring (to-ulong i)))
+          (load-tile B (ring-get B-tile-ring (to-ulong i)) ((to-ulong i) grid-x) :barrier (ring-get barrier-ring (to-ulong i))))
 
-            ;; Execute the math from SLM into registers
-            (let ((A-tile (ring-get A-tile-ring ring-idx))
-                  (B-tile (ring-get B-tile-ring ring-idx)))
+        ;; 2. MAIN K-LOOP.  The ring slot is just (mod grid-k 3) — no mutable ring-idx / set!.
+        (dotimes (grid-k n-k-steps)
+          (let ((slot (mod grid-k (to-ulong 3))))
+
+            ;; Wait for the current stage's data to arrive in SLM.
+            (await (ring-get barrier-ring slot))
+
+            ;; Execute the math from SLM into registers.
+            (let ((A-tile (ring-get A-tile-ring slot))
+                  (B-tile (ring-get B-tile-ring slot)))
               (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
                 ;; STAGED (this loop calls us once per K-step) -> my-accum is a PARTIAL sum;
                 ;; fuse activation in the epilogue below, on the completed C-tile, not here.
                 (accum-op)))
 
-            
-            ;; Issue the fetch for the NEXT chunk of K, wrapping the ring buffer
-            ;; We fetch (grid-k + pipeline-stages) to stay ahead of the compute
-            (let ((next-k (+ grid-k pipeline-stages)))
-              (when (< next-k K) ;; Don't fetch out of bounds at the end of the matrix
-                (load-tile A (ring-get A-tile-ring ring-idx) grid-y next-k :barrier (ring-get barrier-ring ring-idx))
-                (load-tile B (ring-get B-tile-ring ring-idx) next-k grid-x :barrier (ring-get barrier-ring ring-idx))))
-            
-            ;; Execution barrier to ensure all math is done before we overwrite SLM on the next wrap
+            ;; Every thread must be DONE reading this slot's SLM before the prefetch below
+            ;; overwrites it — the ring wraps onto the slot we just consumed.  This sync goes
+            ;; BEFORE the prefetch (issuing it after would race the overwrite against the reads).
             (sync-workgroup)
-            
-            ;; Advance the ring pointer (modulo pipeline-stages)
-            (set! ring-idx (mod (+ ring-idx 1) pipeline-stages))))
 
+            ;; Issue the fetch for the NEXT chunk of K (grid-k + 3) into the slot we just freed,
+            ;; so it lands while the following stage computes.  The guard is uniform (it depends
+            ;; only on the K-loop counter), but a dotimes counter reads as :unknown uniformity, so
+            ;; load-tile's internal sync-workgroup would be flagged divergent — assert it with
+            ;; to-workgroup-uniform (which must be a let initializer).
+            (let ((next-k (+ grid-k (to-ulong 3))))
+              (let ((more-k? (to-workgroup-uniform (< next-k n-k-steps))))
+                (when more-k? ;; don't fetch past the end of K
+                  (load-tile A (ring-get A-tile-ring slot) (grid-y next-k) :barrier (ring-get barrier-ring slot))
+                  (load-tile B (ring-get B-tile-ring slot) (next-k grid-x) :barrier (ring-get barrier-ring slot)))))))
+
+        :epilogue
         ;; 3. EPILOGUE: C-tile is complete — fuse activation on the finished tile, then store.
         (relu C-Tile)                        ;; <-- the RIGHT place to fuse (complete C-tile)
-        (store-tile C-Tile C (grid-y grid-x) :barrier barrier)))))
+        (store-tile C-Tile C (grid-y grid-x))))))
 ```
 
 ### Matrix Multiply with Pipelining via Warp Specialization
