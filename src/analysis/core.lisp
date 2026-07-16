@@ -322,6 +322,12 @@
          2. During Codegen (Pass 2) to generate LLVM IR.
          MUST BE RESET TO 0 BETWEEN PASSES.")
 
+(defvar *async-barrier-ring-counts* (make-hash-table)
+        "Endeavor 138: map of async-barrier-RING binding SYMBOL -> :ring-count.  Presence in this
+         table is also what marks a binding as a BARRIER ring (vs a scratch tile ring), so
+         ring-get can dispatch: a barrier slot is address arithmetic (base + i*8), a tile slot is
+         an offset view.  Rebound per module.")
+
 (defvar *async-barrier-load-count* (make-hash-table)
         "Endeavor 137 Phase 2d: scan-time map of async-barrier binding SYMBOL -> count of :block
          load-tiles that reference it.  Becomes the mbarrier init arrival count (each TMA load
@@ -370,6 +376,7 @@
           (*async-barrier-modes* (make-hash-table)) ; Endeavor 137: barrier var -> mode.
           (*scratch-tile-dims* (make-hash-table :test 'equal)) ; Endeavor 137: (fn.tile) -> box-dims.
           (*async-barrier-load-count* (make-hash-table)) ; Endeavor 137: barrier -> #block loads.
+          (*async-barrier-ring-counts* (make-hash-table)) ; Endeavor 138: barrier-ring -> ring-count.
           (*call-site-args* (make-hash-table))      ; Endeavor 137: fn -> (callee . args) list.
           ;; NB: *tma-descriptor-info* is a PERSISTENT global (cleared via clrhash in the compiler
           ;; reset, like *implicit-scratch-size-expr-map*) — metadata emission reads it AFTER
@@ -728,6 +735,19 @@
     (when bname
       (setf (gethash bname *async-barrier-modes*)
             (%resolve-async-barrier-mode-scan args))))
+  nil)
+
+(defmethod scan-operator ((op (eql 'make-async-barrier-ring)) args)
+  "Endeavor 138: record a barrier RING's resolved :mode AND :ring-count during the scan pass, so
+   a later :block load-tile through (ring-get r i) can resolve the mode (and mint its CUtensorMap
+   descriptor) in the same pass — exactly as make-async-barrier does for a single barrier."
+  (let ((bname (compiler-context-current-binding-name *compiler-context*)))
+    (when bname
+      (setf (gethash bname *async-barrier-modes*)
+            (%resolve-async-barrier-mode-scan args))
+      (let ((n (getf args :ring-count)))
+        (when (and (integerp n) (plusp n))
+          (setf (gethash bname *async-barrier-ring-counts*) n)))))
   nil)
 
 (defun %scan-register-tma-descriptor (args)

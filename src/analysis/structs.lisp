@@ -1026,6 +1026,25 @@
       :message (format nil "ring-get: expected (ring-get RING INDEX), got ~S" expr)
       :source-location location))
   (let* ((ring-form  (second expr))
+         (index-form (third expr)))
+    ;; Endeavor 138: a BARRIER ring slot is not a view — the barrier value IS the mbarrier's
+    ;; address as an i64 (137), so slot i is simply (base + i*8).  load-tile/await already
+    ;; inttoptr that back to an mbarrier pointer, so the whole 137 path is reused per slot.
+    (when (and (symbolp ring-form) (gethash ring-form *async-barrier-ring-counts*))
+      (let* ((cl-pkg    (find-package :crisp-language))
+             (plus-sym  (intern "+" cl-pkg))
+             (times-sym (intern "*" cl-pkg))
+             (toul-sym  (intern "TO-ULONG" cl-pkg)))
+        (return-from analyze-ring-get-expression
+          (analyze-expression
+           (list plus-sym ring-form
+                 (list times-sym (list toul-sym index-form) (list toul-sym 8)))
+           env context location))))
+    (%analyze-tile-ring-get expr env context location)))
+
+(defun %analyze-tile-ring-get (expr env context location)
+  "The storage-handle (tile) ring case of ring-get — slot i as an offset view."
+  (let* ((ring-form  (second expr))
          (index-form (third expr))
          (ring-node  (analyze-expression ring-form env context (append location '(1))))
          (src-canon  (%mv-resolve-src-type (semantic-node-type ring-node)))

@@ -3042,12 +3042,60 @@
        :type 'ulong
        :source-location location))))
 
+(defun analyze-make-async-barrier-ring-expression (expr env context location)
+  "Endeavor 138 (Chapter 2): (make-async-barrier-ring &key ring-count mode) -> a ring of
+   RING-COUNT async barriers for pipelining.
+
+   Unification: a plain (make-async-barrier) is simply a RING OF 1.  Both build the same
+   semantic-make-async-barrier node; this one just sets :ring-count N.  Codegen allocates
+   [N x i64] of SLM mbarriers and yields the BASE address as an i64 — so (ring-get r i) is
+   nothing but (base + i*8), which load-tile/await already inttoptr back to an mbarrier ptr.
+   That means the whole 137 barrier path is reused verbatim for every slot."
+  (declare (ignore env))
+  (let* ((keys (rest expr))
+         (n    (getf keys :ring-count))
+         (bmode (%parse-async-barrier-keys
+                 ;; reuse the single-barrier key parser (validation + arch gating) by handing it
+                 ;; just the :mode pair — :ring-count is ours.
+                 (list* (first expr)
+                        (let ((m (getf keys :mode)))
+                          (when m (list :mode m))))
+                 location)))
+    (unless (and (integerp n) (plusp n))
+      (error 'crisp-compiler-error
+        :message (format nil "make-async-barrier-ring: :ring-count must be a positive compile-time integer, got ~S" n)
+        :source-location location))
+    (let ((bname (and context (compiler-context-current-binding-name context))))
+      (when bname
+        (setf (gethash bname *async-barrier-modes*) bmode)
+        (setf (gethash bname *async-barrier-ring-counts*) n))
+      (make-semantic-make-async-barrier
+       :cell-node nil
+       :barrier-mode bmode
+       :ring-count n
+       :load-count (max 1 (or (and bname (gethash bname *async-barrier-load-count*)) 1))
+       :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
+       :type 'ulong
+       :source-location location))))
+
+(defun %barrier-ring-form-p (form)
+  "T if FORM is (ring-get RING i) naming an async-barrier RING; returns the ring symbol."
+  (and (consp form)
+       (symbolp (first form))
+       (string-equal (symbol-name (first form)) "RING-GET")
+       (symbolp (second form))
+       (gethash (second form) *async-barrier-ring-counts*)
+       (second form)))
+
 (defun async-barrier-mode-of (barrier-form)
-  "Endeavor 137: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.
-   BARRIER-FORM is the barrier variable symbol; look it up in *async-barrier-modes*.
+  "Endeavor 137/138: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.
+   BARRIER-FORM is either the barrier variable SYMBOL, or — Endeavor 138 — a
+   (ring-get BARRIER-RING i) form, in which case the mode is the RING's (every slot shares it).
    Defaults to :linear when unknown (bare/older barriers)."
-  (or (and (symbolp barrier-form) (gethash barrier-form *async-barrier-modes*))
-      :linear))
+  (let ((ring (%barrier-ring-form-p barrier-form)))
+    (or (and ring (gethash ring *async-barrier-modes*))
+        (and (symbolp barrier-form) (gethash barrier-form *async-barrier-modes*))
+        :linear)))
 
 
 (defun analyze-make-c-handle (expr env context location)
@@ -3373,6 +3421,12 @@
         (sym-cc (intern "MAKE-ASYNC-BARRIER" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-make-async-barrier-expression)
     (setf (gethash sym-cc *expression-analyzers*) #'analyze-make-async-barrier-expression))
+  ;; Endeavor 138 (Chapter 2): a ring of async barriers for pipelining.
+  (let ((sym-cl (intern "MAKE-ASYNC-BARRIER-RING" (find-package :crisp-language)))
+        (sym-cc (intern "MAKE-ASYNC-BARRIER-RING" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-make-async-barrier-ring-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-make-async-barrier-ring-expression)))
   ;; Endeavor 136 (Chapter 1): internal forms produced by the async load-tile-at expansion.
   (let ((sym-cl (intern "%CP-ASYNC-COPY-ELEM" (find-package :crisp-language)))
         (sym-cc (intern "%CP-ASYNC-COPY-ELEM" (find-package :crisp.compiler))))

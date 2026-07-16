@@ -1,0 +1,27 @@
+;; Endeavor 138 (Chapter 2) — ring-get with a RUNTIME index.
+;;
+;; 01 proved the ring mechanics with COMPILE-TIME indices.  The pipelining main loop indexes the
+;; ring with a runtime value — `(mod (+ ring-idx 1) stages)` — so this test pins that path:
+;;   - fill every slot through a runtime `dotimes` index, then
+;;   - read every slot back through the actual pipelining idiom, `(mod k ring-count)`.
+;; Slot i is marked with float(i), so C = 0,1,2 iff the runtime index resolves to distinct slots
+;; (a broken/aliasing index would repeat a value).
+;;
+;; This works because a ring slot is a make-view bumped by `index * slot-elems`, and that offset
+;; rides semantic-make-view's OFFSET-NODE (a runtime node) rather than the compile-time :offset.
+;;
+;; SKIP-WITH[--differentiate]: "ring/pipelining is forward-only; tile AD is a later chapter"
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel ring_runtime_idx (&out C)
+  (declare #'(&out vec-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((ring (make-scratch-matrix-ring float (2 2) :ring-count 3)))
+    ;; Fill: slot i <- float(i), through a RUNTIME loop index.
+    (dotimes (i 3)
+      (set! (~ (ring-get ring i) 0 0) (as float i)))
+    ;; Read back through the pipelining ring-index idiom.
+    (dotimes (k 3)
+      (set! (~ C k) (~ (ring-get ring (mod k 3)) 0 0)))))

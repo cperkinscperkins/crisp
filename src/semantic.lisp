@@ -376,6 +376,10 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
                      ;; On PTX this stays NIL (commit_group/wait_group need no event).
   (load-count 1)     ;; Endeavor 137 Phase 2d: number of :block load-tiles sharing this barrier —
                      ;; the mbarrier init arrival count (each TMA load does one arrive.expect_tx).
+  (ring-count 1)     ;; Endeavor 138: how many barriers this allocates.  A plain make-async-barrier
+                     ;; is simply a RING OF 1 — make-async-barrier-ring sets N.  Codegen allocates
+                     ;; [N x i64] of SLM mbarriers and returns the BASE address as i64; ring-get
+                     ;; slot i is then just (base + i*8), which load-tile/await already inttoptr.
   source-location)
 
 ;; Endeavor 136 (Chapter 1, SPIR-V) — one collective OpGroupAsyncCopy of a contiguous run.
