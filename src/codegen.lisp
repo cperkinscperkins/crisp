@@ -2293,20 +2293,29 @@
              (elem-llvm-type (crisp-type-to-llvm-type elem-type-sym module))
              (elem-size      (llvm-size-of elem-llvm-type))
 
+             ;; Endeavor 138: a RUNTIME offset (offset-node) overrides the compile-time one —
+             ;; this is what lets (ring-get ring i) bump to slot i for a runtime i.  When it is
+             ;; present we must always bump (we cannot constant-fold the zero case away).
+             (offset-node   (semantic-make-view-offset-node node))
+             (runtime-off   (when offset-node
+                              (%coerce-to-i64 builder
+                                (generate-node-ir offset-node builder module var-env
+                                                  di-builder di-scope location-map))))
              (offset-bytes
-              (if (zerop offset-elems)
-                  (llvm-const-int (llvm-int64-type) 0 nil)
-                  (llvm-build-mul builder
-                                  (llvm-const-int (llvm-int64-type) offset-elems nil)
-                                  elem-size "mv_off_bytes")))
+              (cond
+                (runtime-off (llvm-build-mul builder runtime-off elem-size "mv_off_bytes_rt"))
+                ((zerop offset-elems) (llvm-const-int (llvm-int64-type) 0 nil))
+                (t (llvm-build-mul builder
+                                   (llvm-const-int (llvm-int64-type) offset-elems nil)
+                                   elem-size "mv_off_bytes"))))
              (new-ptr
-              (if (zerop offset-elems)
+              (if (and (null runtime-off) (zerop offset-elems))
                   src-ptr
                   (%mv-bump-ptr builder src-ptr offset-bytes
                                 (%mv-source-addr (list (first result-type) nil
                                                        (third result-type))))))
              (new-bytesize
-              (if (zerop offset-elems)
+              (if (and (null runtime-off) (zerop offset-elems))
                   src-bytesize
                   (llvm-build-sub builder src-bytesize offset-bytes "mv_new_bs")))
 
@@ -3285,6 +3294,17 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
           ((> width 32) (llvm-build-trunc builder val i32 "coord_i32"))
           (t            (llvm-build-zext  builder val i32 "coord_i32")))))
 
+(defun %coerce-to-i64 (builder val)
+  "Coerces an integer VAL to i64 (Endeavor 138: a runtime make-view element offset, which is
+   multiplied by the element size to bump the pointer): zext if narrower (offsets are
+   non-negative), trunc if wider, pass-through if already i64."
+  (let* ((i64   (llvm-int64-type))
+         (vtype (llvm-type-of val))
+         (width (crisp.llvm-bindings::llvm-get-int-type-width vtype)))
+    (cond ((= width 64) val)
+          ((> width 64) (llvm-build-trunc builder val i64 "off_i64"))
+          (t            (llvm-build-zext  builder val i64 "off_i64")))))
+
 (defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1)
   "Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,
    cachehint, flag_mcast, flag_cachehint) ->
@@ -3328,16 +3348,30 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (setf (cffi:mem-aref args 'llvm-value-ref 8) (llvm-const-int i1 0 nil))
     (llvm-build-call2 builder fn-type fn args n "")))
 
-(defun %gen-nvvm-tma-mbar-global (module)
-  "Creates a fresh per-CTA SLM mbarrier object: a module-level addrspace(3) i64 global with an
-   undef initializer (shared memory is not statically initialized).  Returns the global value
-   (a ptr addrspace(3)).  Endeavor 137 Phase 2a: the mbarrier is a plain shared global, so it
-   needs none of the CUtensorMap implicit-arg machinery (that is Phase 2b, for the descriptor)."
+(defun %gen-nvvm-tma-mbar-global (module &optional (count 1))
+  "Creates a fresh per-CTA SLM mbarrier object: a module-level addrspace(3) global with an undef
+   initializer (shared memory is not statically initialized).  Returns the global value (a ptr
+   addrspace(3) to the FIRST mbarrier).  Endeavor 137: the mbarrier is a plain shared global, so
+   it needs none of the CUtensorMap implicit-arg machinery (that is for the descriptor).
+   Endeavor 138: COUNT > 1 allocates a [COUNT x i64] RING of mbarriers — a single barrier is just
+   a ring of 1, and (ring-get r i) is (base + i*8)."
   (let* ((i64       (llvm-int64-type))
+         (ty        (if (> count 1) (crisp.llvm-bindings::llvm-array-type i64 count) i64))
          (mbar-name (format nil "__crisp_mbar_~a" (incf *tma-mbar-counter*)))
-         (gv        (crisp.llvm-bindings:llvm-add-global-in-addrspace module i64 mbar-name 3)))
-    (crisp.llvm-bindings:llvm-set-initializer gv (llvm-get-undef i64))
+         (gv        (crisp.llvm-bindings:llvm-add-global-in-addrspace module ty mbar-name 3)))
+    (crisp.llvm-bindings:llvm-set-initializer gv (llvm-get-undef ty))
     gv))
+
+(defun %gen-nvvm-mbar-slot-ptr (builder mbar-base i)
+  "Address of mbarrier slot I within an mbarrier ring (i8-indexed: each mbarrier is 8 bytes)."
+  (if (zerop i)
+      mbar-base
+      (let* ((i8   (llvm-int8-type))
+             (idx  (llvm-const-int (llvm-int64-type) (* i 8) nil))
+             (args (cffi:foreign-alloc 'llvm-value-ref :count 1)))
+        (setf (cffi:mem-aref args 'llvm-value-ref 0) idx)
+        (llvm-build-in-bounds-gep2 builder i8 mbar-base args 1
+                                   (format nil "mbar_slot_~a" i)))))
 
 (defun %build-inline-asm-call (builder ret-type param-types arg-vals asm-str constraints)
   "Builds a call to an inline-asm value (Endeavor 137 TMA).  RET-TYPE is the llvm result type
@@ -3567,7 +3601,11 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (eq *target-backend* :ptx))
     (let* ((i64-type (llvm-int64-type))
            (i32-type (llvm-int32-type))
-           (mbar-gv  (%gen-nvvm-tma-mbar-global module))
+           ;; Endeavor 138: ring-count > 1 allocates a RING of mbarriers; a plain barrier is a
+           ;; ring of 1.  We init EVERY slot (unrolled — ring depth is a small compile-time N)
+           ;; and return the BASE address, so (ring-get r i) = base + i*8.
+           (ring-n   (max 1 (semantic-make-async-barrier-ring-count node)))
+           (mbar-gv  (%gen-nvvm-tma-mbar-global module ring-n))
            (tid-x    (%gen-nvvm-read-tid-x builder module))
            (tid-y    (%gen-nvvm-read-tid-y builder module))
            (tid-z    (%gen-nvvm-read-tid-z builder module))
@@ -3578,11 +3616,14 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
       (llvm-build-cond-br builder is-zero init-bb merge-bb)
       (llvm-position-builder-at-end builder init-bb)
       ;; Init arrival count = #block loads sharing this barrier (each TMA load arrives once via
-      ;; mbarrier.arrive.expect_tx); a single-load barrier is count 1.
-      (%gen-nvvm-mbarrier-init-shared builder module mbar-gv
-                                      (llvm-const-int i32-type
-                                                      (max 1 (semantic-make-async-barrier-load-count node))
-                                                      nil))
+      ;; mbarrier.arrive.expect_tx); a single-load barrier is count 1.  Every ring slot shares
+      ;; the count (each stage issues the same loads), so init all N.
+      (let ((cnt (llvm-const-int i32-type
+                                 (max 1 (semantic-make-async-barrier-load-count node)) nil)))
+        (dotimes (i ring-n)
+          (%gen-nvvm-mbarrier-init-shared builder module
+                                          (%gen-nvvm-mbar-slot-ptr builder mbar-gv i)
+                                          cnt)))
       ;; make the init visible to the async (TMA) proxy before any bulk copy is issued.
       (%gen-nvvm-fence-proxy-async-shared builder)
       (llvm-build-br builder merge-bb)
@@ -3747,11 +3788,13 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-nvvm-cp-async-wait) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 136 (Chapter 1): (await barrier) lowers to cp.async.wait_group(0) — block
-   until every committed async-copy group has landed.  The barrier object is not needed
-   for the commit_group idiom, so it is ignored here."
+  "Endeavor 136/138: (await barrier) lowers to cp.async.wait_group(N).  N=0 for a plain
+   :linear barrier (wait for every committed group).  For a :linear RING, N=(ring-count-1)*
+   arrivals keeps the newest N groups in flight — the software-pipeline overlap (Endeavor 138).
+   The barrier object is not needed for the commit_group idiom, so it is ignored here."
   (declare (ignore var-env di-builder di-scope location-map))
-  (%gen-nvvm-cp-async-wait-group builder module 0)
+  (%gen-nvvm-cp-async-wait-group builder module
+                                 (max 0 (semantic-nvvm-cp-async-wait-group-count node)))
   (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
 
 (defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env

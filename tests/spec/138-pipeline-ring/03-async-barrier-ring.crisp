@@ -1,0 +1,38 @@
+;; Endeavor 138 (Chapter 2) — make-async-barrier-ring + :mode, on the :block (TMA) path.
+;;
+;; Proves the barrier RING allocates N mbarriers and that (ring-get bar-ring i) selects slot i,
+;; with load-tile/await consuming a ring slot exactly like a plain barrier.
+;;
+;; The unification that makes this cheap: a barrier's VALUE is already the mbarrier's ADDRESS as
+;; an i64 (Endeavor 137), so a ring is just a [N x i64] SLM global and (ring-get r i) is nothing
+;; but (base + i*8) — load-tile/await already inttoptr that back to an mbarrier pointer.  A plain
+;; (make-async-barrier) is simply a ring of 1, so both share ONE node and ONE codegen path.
+;;
+;; Two ring slots are used with two separate loads/awaits (the shape the pipelined matmul needs);
+;; the PTX must therefore show a [2 x i64] mbarrier ring and per-slot init.
+;;
+;; :arrivals 1 — each slot here tracks exactly ONE transfer.  A ring must state this: unlike a
+;; single barrier (whose loads the scan can tally), a ring is loaded from both the prologue and
+;; the main loop, so a textual tally is not the per-stage arrival count, and a wrong mbarrier
+;; arrival count hangs the GPU.  The pipelined matmul (04) stages A+B per slot, so it passes 2.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "ring/pipelining is forward-only; tile AD is a later chapter"
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel barrier_ring (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tiles (make-scratch-matrix-ring float (4 4) :ring-count 2))
+        (bars  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1)))
+    ;; Stage into ring slot 0 under barrier slot 0 ...
+    (load-tile A (ring-get tiles 0) (0 0) :barrier (ring-get bars 0))
+    (await (ring-get bars 0))
+    ;; ... and into ring slot 1 under barrier slot 1 (distinct mbarrier).
+    (load-tile A (ring-get tiles 1) (0 0) :barrier (ring-get bars 1))
+    (await (ring-get bars 1))
+    (store-tile (ring-get tiles 1) C (0 0))))

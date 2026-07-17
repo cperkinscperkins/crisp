@@ -376,6 +376,10 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
                      ;; On PTX this stays NIL (commit_group/wait_group need no event).
   (load-count 1)     ;; Endeavor 137 Phase 2d: number of :block load-tiles sharing this barrier —
                      ;; the mbarrier init arrival count (each TMA load does one arrive.expect_tx).
+  (ring-count 1)     ;; Endeavor 138: how many barriers this allocates.  A plain make-async-barrier
+                     ;; is simply a RING OF 1 — make-async-barrier-ring sets N.  Codegen allocates
+                     ;; [N x i64] of SLM mbarriers and returns the BASE address as i64; ring-get
+                     ;; slot i is then just (base + i*8), which load-tile/await already inttoptr.
   source-location)
 
 ;; Endeavor 136 (Chapter 1, SPIR-V) — one collective OpGroupAsyncCopy of a contiguous run.
@@ -407,6 +411,12 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 
 (defstruct semantic-nvvm-cp-async-wait
   barrier-node  ;; semantic node for the mbarrier object
+  ;; Endeavor 138: cp.async.wait_group N — keep the N most-recent groups in flight.
+  ;; 0 for a plain (non-ring) :linear barrier (wait for everything).  For a :linear RING it is
+  ;; (ring-count - 1) * arrivals — the canonical software-pipeline idiom that overlaps stage k+N's
+  ;; DMA with stage k's compute.  Our :linear load-tile commits one group PER LOAD, so the count
+  ;; multiplies the ring depth by the loads-per-stage (= :arrivals).
+  (group-count 0)
   type
   source-location)
 
@@ -466,6 +476,10 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
      element-type — new element type symbol (e.g. int, float, short)
      rank        — N: 0=cell, 1=vector, 2=matrix, N=tensor
      offset      — element offset (non-negative integer, default 0)
+     offset-node — Endeavor 138: a semantic node for a RUNTIME element offset.  When non-NIL it
+                   OVERRIDES `offset` (which is compile-time only, via %mv-eval-integer).  This is
+                   what makes (ring-get ring i) work for a runtime i: a ring slot is just a view
+                   of the ring tensor bumped by i * slot-elems.
      length      — explicit length (integer) or NIL for auto-compute (vectors only)
      extents     — list of N integers (matrix/tensor); NIL for cell/auto-vector
      strides     — explicit strides list or NIL (computed from extents/major)
@@ -476,6 +490,7 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   element-type
   rank
   offset
+  offset-node   ;; Endeavor 138: runtime element offset (overrides OFFSET when non-NIL)
   length
   extents
   strides

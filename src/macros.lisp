@@ -1797,6 +1797,46 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (declare (ignore barrier))
   nil)
 
+;;; ------------------------------------------------------------------------------------------
+;;; Endeavor 138 (Chapter 2) — storage-handle RINGS for pipelining.
+;;;
+;;; A ring of RING-COUNT slots is ONE scratch tensor with the ring as a PREPENDED dimension:
+;;;   (make-scratch-matrix-ring float (64 8) :ring-count 3)  ==  (make-scratch-tensor float 3 (3 64 8))
+;;; Dim 0 IS the ring slot; `ring-get` slices it.  This buys the whole scratch path for free
+;;; (allocation, implicit-arg registration, size-expr, metacrisp, hoist) and costs exactly ONE
+;;; implicit arg regardless of ring depth — plus the slots are contiguous in SLM.
+;;; ------------------------------------------------------------------------------------------
+
+(defun %ring-count-from-keys (op key-args)
+  "Extract + validate :ring-count from a make-scratch-*-ring key list.  Must be a positive
+   compile-time integer (it becomes a scratch dimension, which cannot be a runtime value)."
+  (let ((n (getf key-args :ring-count)))
+    (unless (and (integerp n) (plusp n))
+      (error "~a: :ring-count must be a positive compile-time integer, got ~S" op n))
+    n))
+
+(defmacro make-scratch-vector-ring (elem dim &rest key-args)
+  "A ring of :ring-count vectors of length DIM — one rank-2 scratch tensor (ring-count DIM).
+   Dim 0 is the ring slot; use (ring-get ring i) to get slot i as a vector."
+  (let ((n (%ring-count-from-keys 'make-scratch-vector-ring key-args)))
+    `(make-scratch-tensor ,elem 2 ,(list n dim))))
+
+(defmacro make-scratch-matrix-ring (elem dims &rest key-args)
+  "A ring of :ring-count matrices of shape DIMS — one rank-3 scratch tensor (ring-count . DIMS).
+   Dim 0 is the ring slot; use (ring-get ring i) to get slot i as a matrix."
+  (let ((n (%ring-count-from-keys 'make-scratch-matrix-ring key-args)))
+    (unless (and (listp dims) (= (length dims) 2))
+      (error "make-scratch-matrix-ring: expected 2 dimensions, got ~S" dims))
+    `(make-scratch-tensor ,elem 3 ,(cons n dims))))
+
+(defmacro make-scratch-tensor-ring (elem dims &rest key-args)
+  "A ring of :ring-count tensors of shape DIMS — one rank-(1+N) scratch tensor (ring-count . DIMS).
+   Dim 0 is the ring slot; use (ring-get ring i) to get slot i as a rank-N tensor."
+  (let ((n (%ring-count-from-keys 'make-scratch-tensor-ring key-args)))
+    (unless (and (listp dims) (plusp (length dims)))
+      (error "make-scratch-tensor-ring: expected a non-empty dimension list, got ~S" dims))
+    `(make-scratch-tensor ,elem ,(1+ (length dims)) ,(cons n dims))))
+
 ;; NOTE: load-tile-at / store-tile-at are the
 ;; PRIMITIVE element-coordinate forms — consumed DIRECTLY by their expression analyzers
 ;; (analyze-load-tile-at-expression / analyze-store-tile-at-expression in

@@ -2182,6 +2182,33 @@
         (return-from validate-ptx-tma nil)))
     t))
 
+(defun validate-ptx-linear-ring (file ptx-string)
+  "Endeavor 138 (Chapter 2) — validates the :linear (cp.async) RING pipeline lowering: each
+   load-tile commits a group (cp.async.commit_group), and (await) keeps stages in flight via
+   cp.async.wait_group with a NON-ZERO depth (= (ring-count-1)*arrivals).  The pre-138 lowering
+   emitted wait_group(0) (wait for everything = no overlap), so a non-zero depth is the proof the
+   ring actually pipelines."
+  (declare (ignore file))
+  (unless (search "cp.async.commit_group" ptx-string)
+    (format *error-output* "FAIL: no cp.async.commit_group (async staging absent)~%")
+    (return-from validate-ptx-linear-ring nil))
+  ;; find every `cp.async.wait_group <n>` and require at least one with n > 0.
+  (let ((found-nonzero nil) (start 0))
+    (loop
+      (let ((pos (search "cp.async.wait_group" ptx-string :start2 start)))
+        (unless pos (return))
+        (let* ((after (+ pos (length "cp.async.wait_group")))
+               (num-start (position-if #'digit-char-p ptx-string :start after
+                                       :end (min (length ptx-string) (+ after 16)))))
+          (when num-start
+            (let ((n (parse-integer ptx-string :start num-start :junk-allowed t)))
+              (when (and n (> n 0)) (setf found-nonzero t))))
+          (setf start after))))
+    (unless found-nonzero
+      (format *error-output* "FAIL: cp.async.wait_group depth is 0 everywhere — the :linear ring is not pipelining (expected (ring-count-1)*arrivals > 0)~%")
+      (return-from validate-ptx-linear-ring nil))
+    t))
+
 (defun should-expect-failure-p (file)
   "Determine if test should be expected to fail."
   (let* ((directives (extract-test-directives file))

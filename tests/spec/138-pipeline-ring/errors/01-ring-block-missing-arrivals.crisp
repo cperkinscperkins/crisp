@@ -1,0 +1,23 @@
+;; CHECK-FAIL: ":arrivals"
+
+;; Endeavor 138 — negative: a :block barrier RING must state :arrivals.
+;;
+;; This is the one case where Crisp refuses to guess.  A :block barrier is a hardware mbarrier
+;; that completes only when BOTH its arrival count and its expected transaction bytes are met, so
+;; the count must be exact: too high and it never completes (the kernel HANGS on the GPU); too low
+;; and the consumer reads a half-arrived tile.  A single make-async-barrier can be scan-inferred
+;; (one stage in the text), but a ring is loaded from both the prologue and the main loop, so a
+;; textual tally of load-tiles is NOT the per-stage arrival count.  Rather than infer it wrong and
+;; hang silicon, we reject at compile time.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel ring_missing_arrivals (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tiles (make-scratch-matrix-ring float (4 4) :ring-count 2))
+        (bars  (make-async-barrier-ring :ring-count 2 :mode :block)))   ;; <- no :arrivals
+    (load-tile A (ring-get tiles 0) (0 0) :barrier (ring-get bars 0))
+    (await (ring-get bars 0))
+    (store-tile (ring-get tiles 0) C (0 0))))

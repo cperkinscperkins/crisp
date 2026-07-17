@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-15T05:00:43.540523Z
+Generated on 2026-07-17T20:58:00.831191Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -599,10 +599,45 @@ Generated on 2026-07-15T05:00:43.540523Z
 
 
 ---
+### DEFUN `%CHECK-BARRIER-RING-ARRIVALS`
+- **Args**: `(ARRIVALS BMODE LOCATION)`
+
+  > Endeavor 138: validate :arrivals on a barrier ring.  Positive compile-time integer, and  >    REQUIRED for EVERY barrier ring — both modes need the per-stage transfer count:  >      :block  -> the mbarrier init ARRIVAL count.  >      :linear -> the loads-per-stage factor in the cp.async wait_group((ring-count-1)*arrivals).  >    (An earlier note said :linear ignored it; Endeavor 138's :linear ring pipelining needs it too,  >    and requiring it for both keeps an arch-automatic ring kernel portable — the same :arrivals  >    works whether the arch resolves to :block on sm_90 or :linear on sm_80.)  >   >    Why explicit and not inferred: for :block the count must be exact — a hardware mbarrier  >    completes only when BOTH its arrival count and its transaction bytes are met, so too high HANGS  >    the kernel and too low reads a half-arrived tile.  A single make-async-barrier can be inferred  >    (one stage in the text), but through a RING the prologue AND the main loop both load it, so the  >    textual tally (2 prologue + 2 loop = 4) is NOT the per-stage count (2).  Static 'per phase'  >    grouping is fragile and fails silently on the GPU, so we ask.
+
+
+---
+### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-RING-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 138 (Chapter 2): (make-async-barrier-ring &key ring-count mode arrivals) -> a ring  >    of RING-COUNT async barriers for pipelining.  >   >    Unification: a plain (make-async-barrier) is simply a RING OF 1.  Both build the same  >    semantic-make-async-barrier node; this one just sets :ring-count N.  Codegen allocates  >    [N x i64] of SLM mbarriers and yields the BASE address as an i64 — so (ring-get r i) is  >    nothing but (base + i*8), which load-tile/await already inttoptr back to an mbarrier ptr.  >    That means the whole 137 barrier path is reused verbatim for every slot.  >   >    :ARRIVALS is how many transfers EACH SLOT tracks per pipeline stage.  It is REQUIRED for every  >    barrier ring (both modes) — the mbarrier arrival count on :block, the cp.async wait_group depth  >    factor on :linear — see %check-barrier-ring-arrivals for why it is explicit not scan-inferred.
+
+
+---
+### DEFUN `%BARRIER-RING-FORM-P`
+- **Args**: `(FORM)`
+
+  > T if FORM is (ring-get RING i) naming an async-barrier RING; returns the ring symbol.
+
+
+---
+### DEFUN `BARRIER-LOAD-COUNT-OF`
+- **Args**: `(BARRIER-FORM)`
+
+  > Endeavor 137138: the mbarrier arrival count for the barrier a load-tile/await refers to.  >    BARRIER-FORM is either the barrier variable SYMBOL, or — Endeavor 138 — a  >    (ring-get BARRIER-RING i) form, in which case the count is the RING's (every slot shares it:  >    each stage issues the same loads).  Defaults to 1.  >   >    For a single barrier this is the scan-counted tally of :block loads naming it; for a ring it is  >    the user's explicit :arrivals, recorded under the ring's binding by  >    analyze-make-async-barrier-ring-expression.  Both land in *async-barrier-load-count*, so  >    consumers need only resolve the ring and look up one table.  >   >    This MUST agree with the count the barrier was init'd with — await re-inits the mbarrier to  >    restart it at phase 0, and re-arming with the wrong count either hangs the kernel (too high)  >    or completes it on a half-arrived tile (too low).
+
+
+---
+### DEFUN `BARRIER-RING-COUNT-OF`
+- **Args**: `(BARRIER-FORM)`
+
+  > Endeavor 138: the RING DEPTH of the barrier a load-tile/await refers to (1 for a plain,  >    non-ring barrier).  BARRIER-FORM is either the barrier symbol or a (ring-get RING i) form;  >    resolves to the ring and looks up *async-barrier-ring-counts*.  Used to size the :linear  >    cp.async.wait_group idiom: keep (ring-count - 1) stages of groups in flight.
+
+
+---
 ### DEFUN `ASYNC-BARRIER-MODE-OF`
 - **Args**: `(BARRIER-FORM)`
 
-  > Endeavor 137: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.  >    BARRIER-FORM is the barrier variable symbol; look it up in *async-barrier-modes*.  >    Defaults to :linear when unknown (bare/older barriers).
+  > Endeavor 137/138: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.  >    BARRIER-FORM is either the barrier variable SYMBOL, or — Endeavor 138 — a  >    (ring-get BARRIER-RING i) form, in which case the mode is the RING's (every slot shares it).  >    Defaults to :linear when unknown (bare/older barriers).
 
 
 ---
@@ -781,6 +816,12 @@ Generated on 2026-07-15T05:00:43.540523Z
 ### DEFVAR `*SCRATCH-CELL-COUNTER*`
 
   > Monotonic counter for disambiguating scratch cells.  >          Used TWICE per module:  >          1. During Analysis Scan (Pass 1) to generate Implicit Arguments.  >          2. During Codegen (Pass 2) to generate LLVM IR.  >          MUST BE RESET TO 0 BETWEEN PASSES.
+
+
+---
+### DEFVAR `*ASYNC-BARRIER-RING-COUNTS*`
+
+  > Endeavor 138: map of async-barrier-RING binding SYMBOL -> :ring-count.  Presence in this  >          table is also what marks a binding as a BARRIER ring (vs a scratch tile ring), so  >          ring-get can dispatch: a barrier slot is address arithmetic (base + i*8), a tile slot is  >          an offset view.  Rebound per module.
 
 
 ---
@@ -1743,6 +1784,20 @@ Generated on 2026-07-15T05:00:43.540523Z
 - **Args**: `(EXTENTS)`
 
   > Compute col-major strides for a 2D matrix with extents [height width].  >    stride_row=1, stride_col=height.
+
+
+---
+### DEFUN `ANALYZE-RING-GET-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 138 (Chapter 2): (ring-get RING INDEX) -> slot INDEX of RING.  >   >    A ring is ONE rank-(1+N) scratch tensor whose dim 0 IS the ring slot (see the  >    make-scratch-*-ring macros), so slot i is simply the ring VIEWED as a rank-N handle bumped by  >    i * slot-elems.  That means ring-get is a make-view with a RUNTIME offset — no new codegen,  >    and it reuses the view machinery wholesale.  >   >    INDEX may be runtime (the pipelining main loop uses (mod (+ idx 1) stages)); it rides  >    semantic-make-view's OFFSET-NODE.  The ring's compile-time dims come from the scan-time  >    scratch table keyed (fn . binding) — the same table Endeavor 137 added for TMA box-dims.
+
+
+---
+### DEFUN `%ANALYZE-TILE-RING-GET`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > The storage-handle (tile) ring case of ring-get — slot i as an offset view.
 
 
 ---
@@ -3219,6 +3274,13 @@ Generated on 2026-07-15T05:00:43.540523Z
 
 
 ---
+### DEFUN `%COERCE-TO-I64`
+- **Args**: `(BUILDER VAL)`
+
+  > Coerces an integer VAL to i64 (Endeavor 138: a runtime make-view element offset, which is  >    multiplied by the element size to bump the pointer): zext if narrower (offsets are  >    non-negative), trunc if wider, pass-through if already i64.
+
+
+---
 ### DEFUN `%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D`
 - **Args**: `(BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1)`
 
@@ -3227,9 +3289,16 @@ Generated on 2026-07-15T05:00:43.540523Z
 
 ---
 ### DEFUN `%GEN-NVVM-TMA-MBAR-GLOBAL`
-- **Args**: `(MODULE)`
+- **Args**: `(MODULE &OPTIONAL (COUNT 1))`
 
-  > Creates a fresh per-CTA SLM mbarrier object: a module-level addrspace(3) i64 global with an  >    undef initializer (shared memory is not statically initialized).  Returns the global value  >    (a ptr addrspace(3)).  Endeavor 137 Phase 2a: the mbarrier is a plain shared global, so it  >    needs none of the CUtensorMap implicit-arg machinery (that is Phase 2b, for the descriptor).
+  > Creates a fresh per-CTA SLM mbarrier object: a module-level addrspace(3) global with an undef  >    initializer (shared memory is not statically initialized).  Returns the global value (a ptr  >    addrspace(3) to the FIRST mbarrier).  Endeavor 137: the mbarrier is a plain shared global, so  >    it needs none of the CUtensorMap implicit-arg machinery (that is for the descriptor).  >    Endeavor 138: COUNT > 1 allocates a [COUNT x i64] RING of mbarriers — a single barrier is just  >    a ring of 1, and (ring-get r i) is (base + i*8).
+
+
+---
+### DEFUN `%GEN-NVVM-MBAR-SLOT-PTR`
+- **Args**: `(BUILDER MBAR-BASE I)`
+
+  > Address of mbarrier slot I within an mbarrier ring (i8-indexed: each mbarrier is 8 bytes).
 
 
 ---
@@ -5390,6 +5459,34 @@ Generated on 2026-07-15T05:00:43.540523Z
 
 
 ---
+### DEFUN `%RING-COUNT-FROM-KEYS`
+- **Args**: `(OP KEY-ARGS)`
+
+  > Extract + validate :ring-count from a make-scratch-*-ring key list.  Must be a positive  >    compile-time integer (it becomes a scratch dimension, which cannot be a runtime value).
+
+
+---
+### DEFMACRO `MAKE-SCRATCH-VECTOR-RING`
+- **Args**: `(ELEM DIM &REST KEY-ARGS)`
+
+  > A ring of :ring-count vectors of length DIM — one rank-2 scratch tensor (ring-count DIM).  >    Dim 0 is the ring slot; use (ring-get ring i) to get slot i as a vector.
+
+
+---
+### DEFMACRO `MAKE-SCRATCH-MATRIX-RING`
+- **Args**: `(ELEM DIMS &REST KEY-ARGS)`
+
+  > A ring of :ring-count matrices of shape DIMS — one rank-3 scratch tensor (ring-count . DIMS).  >    Dim 0 is the ring slot; use (ring-get ring i) to get slot i as a matrix.
+
+
+---
+### DEFMACRO `MAKE-SCRATCH-TENSOR-RING`
+- **Args**: `(ELEM DIMS &REST KEY-ARGS)`
+
+  > A ring of :ring-count tensors of shape DIMS — one rank-(1+N) scratch tensor (ring-count . DIMS).  >    Dim 0 is the ring slot; use (ring-get ring i) to get slot i as a rank-N tensor.
+
+
+---
 ### DEFMACRO `LOAD-TILE`
 - **Args**: `(SRC TILE GRID-LIST &REST KEY-ARGS)`
 
@@ -6892,7 +6989,7 @@ Generated on 2026-07-15T05:00:43.540523Z
 ---
 ### DEFSTRUCT `SEMANTIC-MAKE-VIEW`
 
-  > Represents a make-cell/vector/matrix/tensor view construction.  >    Creates a new Storage Handle that reinterprets an existing one.  >    No memory allocation occurs — only a new struct value is built.  >    Fields:  >      type        — result type, e.g. (tensor int 1 :global :read-write :compact)  >      source-node — semantic node for the source storage handle  >      element-type — new element type symbol (e.g. int, float, short)  >      rank        — N: 0=cell, 1=vector, 2=matrix, N=tensor  >      offset      — element offset (non-negative integer, default 0)  >      length      — explicit length (integer) or NIL for auto-compute (vectors only)  >      extents     — list of N integers (matrix/tensor); NIL for cell/auto-vector  >      strides     — explicit strides list or NIL (computed from extents/major)  >      major       — :row or :col (make-matrix only; default :row)  >      source-location
+  > Represents a make-cell/vector/matrix/tensor view construction.  >    Creates a new Storage Handle that reinterprets an existing one.  >    No memory allocation occurs — only a new struct value is built.  >    Fields:  >      type        — result type, e.g. (tensor int 1 :global :read-write :compact)  >      source-node — semantic node for the source storage handle  >      element-type — new element type symbol (e.g. int, float, short)  >      rank        — N: 0=cell, 1=vector, 2=matrix, N=tensor  >      offset      — element offset (non-negative integer, default 0)  >      offset-node — Endeavor 138: a semantic node for a RUNTIME element offset.  When non-NIL it  >                    OVERRIDES `offset` (which is compile-time only, via %mv-eval-integer).  This is  >                    what makes (ring-get ring i) work for a runtime i: a ring slot is just a view  >                    of the ring tensor bumped by i * slot-elems.  >      length      — explicit length (integer) or NIL for auto-compute (vectors only)  >      extents     — list of N integers (matrix/tensor); NIL for cell/auto-vector  >      strides     — explicit strides list or NIL (computed from extents/major)  >      major       — :row or :col (make-matrix only; default :row)  >      source-location
 
 
 ---

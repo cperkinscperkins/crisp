@@ -1,0 +1,13 @@
+# Spec inputs are the .crisp files (and the .md notes).  Everything the compiler / hoist emits
+# into a spec directory when you compile or --hoist a test is a throwaway artifact — never
+# checked in.  (Verified: no such files are currently tracked as fixtures.)
+*.metacrisp
+*.ptx
+*.spv
+*.spt
+*_CUDA.cu
+*_L0.cpp
+*_hoist_*.cpp
+*.ll
+*.bc
+*.exe

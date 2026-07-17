@@ -418,6 +418,34 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     generate-debug-info null-safe for struct params / void, and resolve enum/struct
     di-types correctly) is a focused follow-up, now locally reproducible via 056/07.
 
+    UPDATE 2026-07-17 (Endeavor 138 — a SECOND null-site, in make-view codegen):
+    The first --binary --debug CI pass over 138 memory-faulted on the RING specs
+    01/03/06 (make-async-barrier-ring / ring-get).  This is the SAME --debug DIBuilder
+    fault family, but NOT the function-signature path above — isolated on Windows:
+      - `crisp-compile --ir-target=ptx --debug` of a rank-3 make-scratch-tensor with NO
+        ring-get  -> compiles clean (exit 0).
+      - the SAME kernel WITH `(ring-get ...)` in the body  -> memory fault at #x5 / #xFFF…
+    So `ring-get` -> `semantic-make-view` codegen creates a bad DIBuilder node (a debug
+    LOCATION or a local-var/type node) that only faults at `llvm-di-builder-finalize`
+    (the crash bottoms out in COMPILE-FILES' unwind-protect CLEANUP -> finalize, not in
+    codegen proper).  A plain make-scratch-matrix (no view) is fine, so the site is the
+    make-view path specifically (`%get-di-location` / the offset-node debug loc, or a
+    view-type di-type).  Build-heap-dependent WHICH ring spec faults: the local Windows build
+    crashed on 01/03/06, but CI's Linux build crashed on 05 (which passed locally) — so the
+    faulting SET varies by build; you cannot skip just the locally-observed subset.
+    MITIGATION: SKIP-WITH[--debug] on ALL 138 ring/make-view specs (01/02/03/04/05/06), like
+    the 132 cluster.  The errors/* specs need no skip — they fail at ANALYSIS (before any
+    make-view debug codegen).  Proper fix should audit make-view codegen for null/garbage
+    DIBuilder args in addition to generate-debug-info.  (General caution: any spec exercising
+    make-view — incl. make-cell/vector/matrix/tensor outside 138 — could surface this on some
+    build under --debug --binary until 033 is actually fixed.)
+
+    META (why this stayed hidden): the IN-PROCESS spec runner calls compile-module with a
+    NULL di-builder (run-specs.lisp:766) — so in-process `--debug` generates NO debug info
+    and tests nothing.  Only `--use-binary` forwards `--debug` to crisp-compile.exe and
+    actually exercises the debug path.  Wiring debug-p into the in-process runner would let
+    the cheap path catch these (separate follow-up).
+
 [x] 034 - CUDA multi-K-step SLM-staged tiled matmul miscomputes with non-uniform inputs.
         Discovered by the Endeavor 134 on-metal MMA test harness (host-reference C=A·B via
         the hoist's --mma-test) on RunPod (RTX), 2026-07-08.  FIXED 2026-07-08.

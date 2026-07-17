@@ -1,0 +1,33 @@
+;; Endeavor 138 (Chapter 2) — make-scratch-matrix-ring + ring-get: the RING MECHANICS.
+;;
+;; The point of THIS test is to isolate the ring itself from any async/pipelining: no barrier,
+;; no load-tile, one thread.  It proves only that
+;;   - (make-scratch-matrix-ring float (2 2) :ring-count 3) allocates THREE distinct 2x2 slots,
+;;   - (ring-get ring i) resolves to slot i (compile-time index here), and
+;;   - the slots do NOT alias — writing a distinct value into each and reading all three back
+;;     yields 10/20/30, whereas an aliasing (or single-slot) ring would collapse them.
+;;
+;; Representation (agreed w/ Chris): a ring is ONE N x slot SLM allocation; ring-get is an
+;; offset view (base + i * slot-bytes).  That keeps SLM contiguous, makes a runtime index plain
+;; pointer arithmetic (test 02), and costs ONE implicit arg regardless of ring depth.
+;;
+;; Runtime-index ring-get is 02; the async barrier ring is 03; the pipelined matmul is later.
+;;
+;; SKIP-WITH[--differentiate]: "ring/pipelining is forward-only; tile AD is a later chapter"
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel ring_basic (&out C)
+  (declare #'(&out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((ring (make-scratch-matrix-ring float (2 2) :ring-count 3)))
+    ;; Write a distinct marker into slot 0/1/2.
+    (set! (~ (ring-get ring 0) 0 0) 10.0)
+    (set! (~ (ring-get ring 1) 0 0) 20.0)
+    (set! (~ (ring-get ring 2) 0 0) 30.0)
+    ;; Read all three back.  Distinct slots => 10, 20, 30.  Aliasing => 30, 30, 30.
+    (set! (~ C 0 0) (~ (ring-get ring 0) 0 0))
+    (set! (~ C 0 1) (~ (ring-get ring 1) 0 0))
+    (set! (~ C 1 0) (~ (ring-get ring 2) 0 0))))

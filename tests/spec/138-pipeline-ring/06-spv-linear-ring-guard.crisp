@@ -1,0 +1,21 @@
+;; Endeavor 138 (Chapter 2) — a :linear barrier RING is not yet implemented on SPIR-V (it would
+;; need per-slot spirv.Event chaining + per-slot OpGroupWaitEvents).  A non-ring
+;; (make-async-barrier :mode :linear) IS fine on SPV; only a genuine ring (ring-count > 1) is
+;; rejected — and only on the SPV backend.  The GENERIC default pass has no backend and compiles
+;; fine (the ring lowers to the no-op await fallback), mirroring 137/02's :block-on-Intel guard.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only async staging"
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
+;; COMPILE-WITH[--ir-target=spv]: FAIL "not yet implemented on SPIR-V"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel spv_linear_ring (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tiles (make-scratch-matrix-ring float (4 4) :ring-count 2))
+        (bars  (make-async-barrier-ring :ring-count 2 :mode :linear :arrivals 1)))
+    (load-tile A (ring-get tiles 0) (0 0) :barrier (ring-get bars 0))
+    (await (ring-get bars 0))
+    (store-tile (ring-get tiles 0) C (0 0))))

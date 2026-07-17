@@ -1,0 +1,18 @@
+;; CHECK-FAIL: ":arrivals"
+
+;; Endeavor 138 — negative: :arrivals must be a POSITIVE compile-time integer.
+;;
+;; It becomes an mbarrier's init arrival count, which is baked into the instruction stream — it
+;; cannot be a runtime value, and zero is not a barrier anyone can arrive at.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel ring_bad_arrivals (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tiles (make-scratch-matrix-ring float (4 4) :ring-count 2))
+        (bars  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 0)))
+    (load-tile A (ring-get tiles 0) (0 0) :barrier (ring-get bars 0))
+    (await (ring-get bars 0))
+    (store-tile (ring-get tiles 0) C (0 0))))

@@ -295,6 +295,12 @@
    #:make-scratch-vector
    #:make-scratch-matrix
    #:make-scratch-tensor
+   ;; storage-handle rings (138 — pipelining)
+   #:make-scratch-vector-ring
+   #:make-scratch-matrix-ring
+   #:make-scratch-tensor-ring
+   #:make-async-barrier-ring
+   #:ring-get
    ;; view constructors (078)
    #:make-cell
    #:make-vector
@@ -450,6 +456,12 @@
                 #:make-scratch-vector
                 #:make-scratch-matrix
                 #:make-scratch-tensor
+                ;; storage-handle rings (138 — pipelining)
+                #:make-scratch-vector-ring
+                #:make-scratch-matrix-ring
+                #:make-scratch-tensor-ring
+                #:make-async-barrier-ring
+                #:ring-get
                 ;; view constructors (078)
                 #:make-cell
                 #:make-vector
@@ -627,6 +639,12 @@
    #:make-scratch-vector
    #:make-scratch-matrix
    #:make-scratch-tensor
+   ;; storage-handle rings (138 — pipelining)
+   #:make-scratch-vector-ring
+   #:make-scratch-matrix-ring
+   #:make-scratch-tensor-ring
+   #:make-async-barrier-ring
+   #:ring-get
    ;; view constructors (078)
    #:make-cell
    #:make-vector

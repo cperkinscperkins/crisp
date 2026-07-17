@@ -357,6 +357,17 @@
      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)"
   (let* ((op          (first expr))
          (target-sym  (if (symbolp (second expr)) (second expr) nil))
+         ;; Endeavor 138: the flat-index builders splice the target into (extents~ TARGET k)
+         ;; etc.  A SYMBOL is the common case, but a compound tensor expression — notably
+         ;; (ring-get ring i) passed straight into mma-accumulate-via-tile / load-tile — must
+         ;; work too.  Splicing the whole FORM re-evaluates it once per extents~/strides~ read;
+         ;; that is safe because such a target is a pure view constructor (make-view: address
+         ;; arithmetic, no side effects, no implicit-arg/descriptor registration).  The element
+         ;; POINTER the aref returns comes from ARRAY-NODE (analyzed once, below), NOT from this
+         ;; re-evaluated form, so both read and pointer/set! contexts stay correct.  Without
+         ;; this, a non-symbol tensor target fell through to the single-index cell path, which
+         ;; silently DROPPED every index past the first (a ring slot read with row-stride 1).
+         (target-form (second expr))
          (array-node  (analyze-expression (second expr) env context (append location '(1))))
          (index-expr  (third expr))
          (index-node  (if index-expr
@@ -392,24 +403,28 @@
               (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
 
           (let ((tensor-n (%get-tensor-arity array-type)))
-            (if (and tensor-n target-sym)
+            ;; Endeavor 138: fire the tensor path whenever the target is a tensor, whether it
+            ;; is a symbol OR a compound expression (e.g. (ring-get ring i)).  The builders take
+            ;; TARGET-FORM — a symbol splices as before; a compound form re-evaluates once per
+            ;; extents~/strides~ read (safe: pure view constructor).
+            (if tensor-n
 
                 ;; ── Tensor path ──────────────────────────────────────────────
                 (let* ((index-forms (cddr expr)))
                   (unless (= (length index-forms) tensor-n)
                     (error "Tensor ~a requires ~a index~:p (arity ~a), got ~a."
-                           target-sym tensor-n tensor-n (length index-forms)))
+                           target-form tensor-n tensor-n (length index-forms)))
                   (let* ((align      (%get-tensor-align array-type))
                          (flat-form  (cond
                                        ((eq align :compact)
-                                        (log:debug "AREF compact path (no offset): ~a (N=~a)" target-sym tensor-n)
-                                        (%build-tensor-compact-flat-index-form target-sym index-forms))
+                                        (log:debug "AREF compact path (no offset): ~a (N=~a)" target-form tensor-n)
+                                        (%build-tensor-compact-flat-index-form target-form index-forms))
                                        ((eq align :compact-offset)
-                                        (log:debug "AREF compact-offset path: ~a (N=~a)" target-sym tensor-n)
-                                        (%build-tensor-compact-offset-flat-index-form target-sym index-forms))
+                                        (log:debug "AREF compact-offset path: ~a (N=~a)" target-form tensor-n)
+                                        (%build-tensor-compact-offset-flat-index-form target-form index-forms))
                                        (t
-                                        (log:debug "AREF strided path: ~a (align=~s)" target-sym align)
-                                        (%build-tensor-flat-index-form target-sym index-forms))))
+                                        (log:debug "AREF strided path: ~a (align=~s)" target-form align)
+                                        (%build-tensor-flat-index-form target-form index-forms))))
                          (flat-node  (analyze-expression flat-form env context location)))
                     (make-semantic-aref :type elem-type
                                         :array-node array-node
@@ -1010,6 +1025,96 @@
 
 ;;; ── main analyzer ────────────────────────────────────────────
 
+(defun analyze-ring-get-expression (expr env context location)
+  "Endeavor 138 (Chapter 2): (ring-get RING INDEX) -> slot INDEX of RING.
+
+   A ring is ONE rank-(1+N) scratch tensor whose dim 0 IS the ring slot (see the
+   make-scratch-*-ring macros), so slot i is simply the ring VIEWED as a rank-N handle bumped by
+   i * slot-elems.  That means ring-get is a make-view with a RUNTIME offset — no new codegen,
+   and it reuses the view machinery wholesale.
+
+   INDEX may be runtime (the pipelining main loop uses (mod (+ idx 1) stages)); it rides
+   semantic-make-view's OFFSET-NODE.  The ring's compile-time dims come from the scan-time
+   scratch table keyed (fn . binding) — the same table Endeavor 137 added for TMA box-dims."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+      :message (format nil "ring-get: expected (ring-get RING INDEX), got ~S" expr)
+      :source-location location))
+  (let* ((ring-form  (second expr))
+         (index-form (third expr)))
+    ;; Endeavor 138: a BARRIER ring slot is not a view — the barrier value IS the mbarrier's
+    ;; address as an i64 (137), so slot i is simply (base + i*8).  load-tile/await already
+    ;; inttoptr that back to an mbarrier pointer, so the whole 137 path is reused per slot.
+    (when (and (symbolp ring-form) (gethash ring-form *async-barrier-ring-counts*))
+      (let* ((cl-pkg    (find-package :crisp-language))
+             (plus-sym  (intern "+" cl-pkg))
+             (times-sym (intern "*" cl-pkg))
+             (toul-sym  (intern "TO-ULONG" cl-pkg)))
+        (return-from analyze-ring-get-expression
+          (analyze-expression
+           (list plus-sym ring-form
+                 (list times-sym (list toul-sym index-form) (list toul-sym 8)))
+           env context location))))
+    (%analyze-tile-ring-get expr env context location)))
+
+(defun %analyze-tile-ring-get (expr env context location)
+  "The storage-handle (tile) ring case of ring-get — slot i as an offset view."
+  (let* ((ring-form  (second expr))
+         (index-form (third expr))
+         (ring-node  (analyze-expression ring-form env context (append location '(1))))
+         (src-canon  (%mv-resolve-src-type (semantic-node-type ring-node)))
+         (fn         (and context (compiler-context-current-compiling-function context)))
+         (info       (and (symbolp ring-form) fn
+                          (gethash (cons fn ring-form) *scratch-tile-dims*)))
+         (dims       (getf info :box-dims))
+         (elem       (getf info :element-type)))
+    (unless src-canon
+      (error 'crisp-compiler-error
+        :message (format nil "ring-get: ~S is not a storage handle" ring-form)
+        :source-location location))
+    (unless (and dims (> (length dims) 1))
+      (error 'crisp-compiler-error
+        :message (format nil "ring-get: ~S is not a ring — expected a handle made by make-scratch-{vector,matrix,tensor}-ring (its dim 0 is the ring slot)"
+                         ring-form)
+        :source-location location))
+    (let* ((slot-dims  (rest dims))               ; drop dim 0 (the ring slot)
+           (slot-rank  (length slot-dims))
+           (slot-elems (reduce #'* slot-dims))
+           (cl-pkg     (find-package :crisp-language))
+           (times-sym  (intern "*" cl-pkg))
+           (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+           ;; slot i starts at element i * slot-elems within the ring's flat storage.
+           ;; BOTH operands are coerced to ulong: the index may arrive as an int (a literal, or a
+           ;; dotimes variable) or as a ulong (a tile-ID, or (mod grid-k stages)), and slot-elems
+           ;; is a raw int — an uncoerced mix is a "Cannot operate on ULONG and INT" type error.
+           ;; Offsets are ulong anyway (codegen %coerce-to-i64's this).
+           (offset-node (analyze-expression (list times-sym
+                                                  (list to-ulong-sym index-form)
+                                                  (list to-ulong-sym slot-elems))
+                                            env context (append location '(2))))
+           (addr       (%mv-source-addr src-canon))
+           (align      (%mv-source-align src-canon))
+           (slot-type  (%mv-result-tensor-type elem slot-rank addr align :last)))
+      ;; The slot's rank-N handle type may not exist yet (only the ring's rank-(1+N) does), so
+      ;; force the template instantiation — same guard analyze-scratch-tensor-expression uses.
+      (unless (valid-parameterized-type-p slot-type)
+        (error 'crisp-compiler-error
+          :message (format nil "ring-get: failed to instantiate the slot type ~a for ring ~S"
+                           slot-type ring-form)
+          :source-location location))
+      (make-semantic-make-view
+       :type        slot-type
+       :source-node ring-node
+       :element-type elem
+       :rank        slot-rank
+       :offset      0
+       :offset-node offset-node
+       :length      slot-elems
+       :extents     slot-dims
+       :strides     (%mv-row-major-strides slot-dims)
+       :major       :row
+       :source-location location))))
+
 (defun analyze-make-view-expression (expr env context location)
   "Analyzes make-cell / make-vector / make-matrix / make-tensor."
   (let* ((op       (first expr))
@@ -1157,7 +1262,10 @@
   (def-expression-analyzer make-cell   analyze-make-view-expression)
   (def-expression-analyzer make-vector analyze-make-view-expression)
   (def-expression-analyzer make-matrix analyze-make-view-expression)
-  (def-expression-analyzer make-tensor analyze-make-view-expression))
+  (def-expression-analyzer make-tensor analyze-make-view-expression)
+
+  ;; storage-handle rings (138 — pipelining)
+  (def-expression-analyzer ring-get analyze-ring-get-expression))
 
 
 (defun %083-require-2d-tensor (raw-type location)

@@ -17,7 +17,7 @@ And for absolute maximum performance, you might want to name or provide a hardwa
 
 Note that Crisp is not auto-optimizing the kernel for you. That is an ongoing area of research. You will have to choose the optimization strategy that fits your problem domain and code it. But Crisp forms make this a straightforward endeavor. We'll use real examples of matrix multiplication and Flash Attention as we progress.
 
-Hardware Profiles 
+Hardware Profiles ✅
 -----------------
 
 `--ir-target`, when set to `ptx` or `spv` tells the compiler the IR target, which will usually be `ptx` for NVidia hardware and `spv` for Intel (and possibly others).  When compiling a kernel that is often enough, nothing more is needed.  But for some capabilties and or optimizations, the  `--ir-target-arch` flag can be used to further inform about the exact architecutre (like `sm_80` or `xe2`).  But for absolutely maximum performance optimizations, the compiler can be given specific bounds and capabilities of a targeted hardware and then it can tailor to those.  These "specific bounds and capabilities" are called a "hardware profile".
@@ -63,7 +63,7 @@ However any optimizations that depend on it will simply not be taken.
 
 Unkonwn Keys: a `def-hardware-profile` sporting any key outside the ones listed above will result in a compilation error.
 
-### `:mma-shapes`
+### `:mma-shapes` ✅
 
 `:mma-shapes` the matrix-multiply-accumulate (tensor-core / DPAS) instruction shapes the hardware natively supports, each an (M N K) triple. An MMA computes D[M×N] = A[M×K]·B[K×N] + C[M×N], so all three dimensions identify it, and the same M×N typically comes in several K variants for different operand precisions (NVIDIA m16n8k8 for tf32, m16n8k16 for fp16, m16n8k32 for int8; Intel similarly). The form is vendor-neutral, mapping to NVIDIA mma.mMnNkK and Intel joint_matrix shapes alike.
 
@@ -76,7 +76,7 @@ Unkonwn Keys: a `def-hardware-profile` sporting any key outside the ones listed 
 - `bmg`
 
 
-### `--hardware-profile`
+### `--hardware-profile` ✅
 
 This compiler flag names a hardware profile to use for optimization/validation.  It can be one of the Crisp builtin hardware profiles, or can be the name of a profile in one of the .crisp files in the compiler invocation. 
 
@@ -339,7 +339,7 @@ Topologically Aware Async
 
 ```
 
-### `make-async-barrier`
+### `make-async-barrier` ✅
 
 `(make-async-barrier) => barrier`
 
@@ -394,7 +394,7 @@ With no `:mode`, the barrier picks the best global→local async copy for the el
 > the CuTensorMap chapter ships, a bare `(make-async-barrier)` stays `:linear` everywhere so
 > there is always a real lowering behind it.
 
-### `load-tile`
+### `load-tile` ✅
 
 `(load-tile src dest (... grid-y grid-x) &key transpose identity barrier) => nil`
 
@@ -405,13 +405,13 @@ Initiates a bulk memory transfer from the `src` tensor to the `dest` tensor (typ
 * **`:identity`:** A fallback value used for out-of-bounds padding if the tile intersects the edge of the source tensor.
 * **`:barrier`:** Links this memory transfer to a previously created `async-barrier`. The hardware DMA engine will automatically signal this barrier when the bytes physically arrive in the destination memory space.
 
-### `load-tile-at`
+### `load-tile-at` ✅
 
 `(load-tile-at src dest (... y x) &key transpose identity barrier) => nil`
 
 Functions identically to `load-tile`, but instead of using logical Tile IDs, the location is specified using exact **Element Coordinates** (the specific scalar index offsets, such as the top-left pixel). This is necessary for unaligned loads, halo exchanges, or ragged boundary processing.
 
-### `store-tile`
+### `store-tile` ✅
 
 `(store-tile src dest (... grid-y grid-x) &key transpose transformF barrier) => nil`
 
@@ -421,13 +421,13 @@ Initiates a bulk memory transfer from the `src` tensor (usually registers or SLM
 * **`:barrier`:** If provided, delegates the write out to the async DMA engine.
 * **Note:** It is strictly illegal to use `:transformF` and `:barrier` simultaneously. A hardware DMA engine cannot apply arbitrary mathematical functions; it only moves raw bytes. If you need epilogue fusion, the warp must perform the math inline before storing.
 
-### `store-tile-at`
+### `store-tile-at` ✅
 
 `(store-tile-at src dest (... y x) &key transpose transformF barrier) => nil`
 
 Functions identically to `store-tile`, but uses exact **Element Coordinates** rather than logical Tile IDs to position the data in the destination tensor.
 
-### `await`
+### `await` ✅
 
 `(await barrier) => nil`
 
@@ -474,7 +474,7 @@ Because b1 and b2 have separate, dedicated signal flags in memory, b1 can safely
 
 ### Sync Operations
 ```
-(sync-workgroup)
+(sync-workgroup) ✅
 (sync-warp)
 
 (make-arrival-sync <count>) => sync-handle
@@ -541,7 +541,7 @@ In the implementation this translates into an atomic write instruction coupled w
 
 
 
-Rings
+Rings ✅
 -----
 
 ```
@@ -549,7 +549,7 @@ Rings
 (make-scratch-matrix-ring <tensorType> (<dimensions>) :ring-count <count>) => ring
 (make-scratch-tensor-ring <tensorType> (<dimensions>) :ring-count <count>) => ring
 
-(make-async-barrier-ring :ring-count <count>) => ring
+(make-async-barrier-ring :ring-count <count> &key mode arrivals) => ring
 
 
 (ring-get <ring> <index>) => <object>
@@ -562,9 +562,57 @@ The `<tensorType>` can be a type declaration or just a tensor variable.
 `<dimensions>` is a list of integers, which must be known at compile-time. They cannot be runtime variables.
 `<dim>` is a compile time constant integer, used for the vector variant.
 
-`ring-get` takes a ring and an index and returns the nth object in the ring. 
+`ring-get` takes a ring and an index and returns the nth object in the ring.  The `<index>` may be a
+**runtime** value — the pipelining main loop indexes with `(mod (+ ring-idx 1) stages)` — which is
+exactly what makes a ring a ring.
 
-;; Q: does make-async-barrier-ring need :initial-state :signaled / :waiting ?
+> **How a ring is built.**  A ring of N slots is ONE allocation with the ring as a *prepended
+> dimension* — `(make-scratch-matrix-ring float (64 8) :ring-count 3)` is a rank-3 scratch tensor
+> `(3 64 8)` whose **dim 0 is the slot** — and `ring-get` is an offset view into it.  So the slots
+> are contiguous in SLM and a ring costs exactly **one** implicit kernel argument no matter how
+> deep it is.  A barrier ring is the same idea: `N` mbarriers laid out contiguously, and a plain
+> `(make-async-barrier)` is simply **a ring of 1**.
+
+### `make-async-barrier-ring` ✅
+
+`(make-async-barrier-ring :ring-count <count> &key mode arrivals) => ring`
+
+- **`:ring-count`** — required. A positive compile-time integer: the pipeline depth (how many
+  stages are in flight at once).
+- **`:mode`** — exactly as `make-async-barrier` (`:linear` / `:block`; omit for arch-automatic).
+  Every slot in the ring shares the mode.  On **SPIR-V, `:linear` rings are not yet implemented**
+  (they would need per-slot `spirv.Event` chaining) — a genuine ring (`ring-count > 1`) with
+  `:mode :linear` is a compile error there; a single `(make-async-barrier :mode :linear)` is fine.
+- **`:arrivals`** — **required for every barrier ring** (both modes).  How many transfers **each
+  slot** tracks *per pipeline stage* — i.e. how many `load-tile`s name that one slot in a single
+  stage.  The classic A+B staging is `2`.  It means the same thing to both lowerings:
+  - `:block` — the mbarrier's init **arrival count**.
+  - `:linear` — the loads-per-stage factor in the `cp.async.wait_group((ring-count − 1) × arrivals)`
+    depth (each `:linear` `load-tile` commits one group), i.e. how many groups a stage closes.
+
+> **Why `:arrivals` is explicit and not inferred.**  A `:block` (TMA) barrier is a hardware
+> mbarrier: it completes when *both* its arrival count and its expected transaction bytes are
+> satisfied, so the count must be exactly right — **too high and the barrier never completes (the
+> kernel hangs); too low and you read a half-arrived tile.**  The `:linear` `wait_group` depth is
+> less catastrophic but still wrong if the count is off (no overlap, or reading too early).  For a
+> *single* `make-async-barrier` the compiler infers it by counting the loads that name that
+> barrier, which is correct because such a kernel has one stage in the text.  Through a **ring**
+> that inference breaks: the prologue and the main loop *both* load the same ring, so the textual
+> count (2 in the prologue + 2 in the main loop = 4) is **not** the per-stage count (2).  Grouping
+> loads "per phase" statically is fragile, so Crisp asks you to say it — you already know the
+> number: it is how many `load-tile`s you wrote against one slot.  Requiring it for **both** modes
+> also keeps an arch-automatic ring kernel portable: the same `:arrivals` works whether the arch
+> resolves to `:block` on sm_90+ or `:linear` on sm_80.
+
+```
+;; three stages in flight; each stage stages an A-tile and a B-tile under its own barrier slot.
+(make-async-barrier-ring :ring-count 3 :mode :block  :arrivals 2)   ; NVIDIA sm_90+ (TMA mbarriers)
+(make-async-barrier-ring :ring-count 3 :mode :linear :arrivals 2)   ; sm_80+ (cp.async wait_group 4)
+```
+
+> **`:initial-state`** (`:signaled` / `:waiting`) is **deferred** — it is only meaningful for warp
+> specialization (a producer/consumer pair needs an "empty" ring that starts signaled), so it
+> lands with that chapter rather than here.
 
 
 Warp Specialization
@@ -596,7 +644,7 @@ When `--runtime-checks` is enabled, the compiler will insert a check to ensure t
 Matrix Multiplication
 ---------------------
 
-### `make-register-tile`
+### `make-register-tile` ✅
 ```
 (make-register-tile <type> <dimensions> <initial-value>)
 
@@ -620,7 +668,7 @@ needs the SIMD width to be knowable. When a profile *is* supplied, its `:simd-wi
 `:max-registers-per-thread` additionally let the compiler verify at compile time that the
 distributed fragments actually fit the physical register file.
 
-### matrix-multiply-tile-stride
+### matrix-multiply-tile-stride ✅
 ```
 (matrix-multiply-tile-stride <C-matrix> <C-matrix-tile> <K-inner-dim-scalar> <k-step> (<grid-bindings>) ...)
 
@@ -713,14 +761,14 @@ is no single "three chapters" arc — there are **two separate arcs** over the s
 "Optimizing NVIDIA MMA" and "Optimizing Intel MMA" below.
 
 
-### inner-dimension
+### inner-dimension ✅
 `(inner-dimension A B) => ulong`
 Returns the size of the inner dimensions of two tensors (the dimension used for matrix multiplication).
 
-### outer-dimensions
+### outer-dimensions ✅
 `(outer-dimensions A B) => M N`
 
-### fill-tile
+### fill-tile ✅
 ```
 (file-tile <some-tensor> <some-value>)
 ```
@@ -790,7 +838,7 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
 
 
 
-### mma-accumulate-via-tile
+### mma-accumulate-via-tile ✅
 ```
 (mma-accumulate-via-tile (<sz-expr>) C-tile A-tile B-tile (<accum-binding>) 
   ;; in the context of this macro, the helper `accum-op` is available.
@@ -863,7 +911,7 @@ A *fragment* is one hardware MMA operand's worth of data, distributed across a w
 - `make-register-tile` is a *tile* of these fragments (an (M/frag-M)×(N/frag-N) grid), and
   `mma-accumulate-via-tile` walks that grid for you.
 
-### Matrix Multiply with pipelining
+### Matrix Multiply with pipelining ✅
 
 We use rings to set up a load/execute pipeline. 
 
@@ -874,53 +922,66 @@ We use rings to set up a load/execute pipeline.
   (def-grid-function pipeline-matrix-multiply (A B &out C)
     (declare #'((mat T) (mat T) (mat T))
                (global-size :derive-from C :strategy :strided)) 
-    (let ((pipeline-stages 3)
-          (A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count pipeline-stages))
-          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count pipeline-stages))
+    ;; NB: the ring depth (3) is a repeated LITERAL — :ring-count needs a compile-time integer
+    ;; and Crisp has no constant form, so a `(let ((pipeline-stages 3)) … :ring-count
+    ;; pipeline-stages)` binding would NOT compile.  We keep it as a plain 3 throughout.
+    (let ((A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count 3))
+          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count 3))
           (C-tile (make-register-tile T (128 128) (identity T)))
-          (barrier-ring (make-async-barrier-ring :ring-count pipeline-stages)))
+          ;; :arrivals 2 — each slot tracks its stage's A-load + B-load.  REQUIRED for :block, and
+          ;; NOT inferable (the prologue and the main loop both load the ring), so you state it.
+          (barrier-ring (make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2))
+          (n-k-steps    (/ (inner-dimension A B) 128)))
 
-      ;; Outer loops for C-tile (X and Y coordinates)
-      (tile-stride C C-tile (grid-y grid-x) 
-        
-        ;; 1. PROLOGUE: Fill the pipeline for the current C-tile
-        (do-times+ (i pipeline-stages)
-          ;; Striding along K, keeping Y and X locked to the current block
-          (load-tile A (ring-get A-tile-ring i) grid-y i :barrier (ring-get barrier-ring i)) 
-          (load-tile B (ring-get B-tile-ring i) i grid-x :barrier (ring-get barrier-ring i)))
+      ;; Outer loops for C-tile (X and Y coordinates).  tile-stride binds grid-y / grid-x as
+      ;; TILE-IDs — exactly what load-tile consumes — and a register C-tile's shape must be given
+      ;; as the compile-time (M N) size-list (the register tile SROA-explodes, so its symbol is
+      ;; gone by tile-stride time).
+      (tile-stride C (128 128) (grid-y grid-x)
 
-        ;; 2. MAIN K-LOOP
-        (let ((ring-idx 0))
-          (do-times (grid-k K)
-            
-            ;; Wait for the current stage's data to arrive in SLM
-            (await (ring-get barrier-ring ring-idx)) 
+        ;; 1. PROLOGUE: fill the pipeline for the current C-tile.  Plain dotimes: ring-get takes a
+        ;; runtime index, so it serves both the prologue and the main loop.  (to-ulong i) — a
+        ;; dotimes counter is int, but tile-IDs / ring indices are ulong.
+        (dotimes (i 3)
+          ;; Stride along K, keeping Y and X locked to the current block.
+          (load-tile A (ring-get A-tile-ring (to-ulong i)) (grid-y (to-ulong i)) :barrier (ring-get barrier-ring (to-ulong i)))
+          (load-tile B (ring-get B-tile-ring (to-ulong i)) ((to-ulong i) grid-x) :barrier (ring-get barrier-ring (to-ulong i))))
 
-            ;; Execute the math from SLM into registers
-            (let ((A-tile (ring-get A-tile-ring ring-idx))
-                  (B-tile (ring-get B-tile-ring ring-idx)))
+        ;; 2. MAIN K-LOOP.  The ring slot is just (mod grid-k 3) — no mutable ring-idx / set!.
+        (dotimes (grid-k n-k-steps)
+          (let ((slot (mod grid-k (to-ulong 3))))
+
+            ;; Wait for the current stage's data to arrive in SLM.
+            (await (ring-get barrier-ring slot))
+
+            ;; Execute the math from SLM into registers.
+            (let ((A-tile (ring-get A-tile-ring slot))
+                  (B-tile (ring-get B-tile-ring slot)))
               (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
                 ;; STAGED (this loop calls us once per K-step) -> my-accum is a PARTIAL sum;
                 ;; fuse activation in the epilogue below, on the completed C-tile, not here.
                 (accum-op)))
 
-            
-            ;; Issue the fetch for the NEXT chunk of K, wrapping the ring buffer
-            ;; We fetch (grid-k + pipeline-stages) to stay ahead of the compute
-            (let ((next-k (+ grid-k pipeline-stages)))
-              (when (< next-k K) ;; Don't fetch out of bounds at the end of the matrix
-                (load-tile A (ring-get A-tile-ring ring-idx) grid-y next-k :barrier (ring-get barrier-ring ring-idx))
-                (load-tile B (ring-get B-tile-ring ring-idx) next-k grid-x :barrier (ring-get barrier-ring ring-idx))))
-            
-            ;; Execution barrier to ensure all math is done before we overwrite SLM on the next wrap
+            ;; Every thread must be DONE reading this slot's SLM before the prefetch below
+            ;; overwrites it — the ring wraps onto the slot we just consumed.  This sync goes
+            ;; BEFORE the prefetch (issuing it after would race the overwrite against the reads).
             (sync-workgroup)
-            
-            ;; Advance the ring pointer (modulo pipeline-stages)
-            (set! ring-idx (mod (+ ring-idx 1) pipeline-stages))))
 
+            ;; Issue the fetch for the NEXT chunk of K (grid-k + 3) into the slot we just freed,
+            ;; so it lands while the following stage computes.  The guard is uniform (it depends
+            ;; only on the K-loop counter), but a dotimes counter reads as :unknown uniformity, so
+            ;; load-tile's internal sync-workgroup would be flagged divergent — assert it with
+            ;; to-workgroup-uniform (which must be a let initializer).
+            (let ((next-k (+ grid-k (to-ulong 3))))
+              (let ((more-k? (to-workgroup-uniform (< next-k n-k-steps))))
+                (when more-k? ;; don't fetch past the end of K
+                  (load-tile A (ring-get A-tile-ring slot) (grid-y next-k) :barrier (ring-get barrier-ring slot))
+                  (load-tile B (ring-get B-tile-ring slot) (next-k grid-x) :barrier (ring-get barrier-ring slot)))))))
+
+        :epilogue
         ;; 3. EPILOGUE: C-tile is complete — fuse activation on the finished tile, then store.
         (relu C-Tile)                        ;; <-- the RIGHT place to fuse (complete C-tile)
-        (store-tile C-Tile C (grid-y grid-x) :barrier barrier)))))
+        (store-tile C-Tile C (grid-y grid-x))))))
 ```
 
 ### Matrix Multiply with Pipelining via Warp Specialization

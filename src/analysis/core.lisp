@@ -322,6 +322,12 @@
          2. During Codegen (Pass 2) to generate LLVM IR.
          MUST BE RESET TO 0 BETWEEN PASSES.")
 
+(defvar *async-barrier-ring-counts* (make-hash-table)
+        "Endeavor 138: map of async-barrier-RING binding SYMBOL -> :ring-count.  Presence in this
+         table is also what marks a binding as a BARRIER ring (vs a scratch tile ring), so
+         ring-get can dispatch: a barrier slot is address arithmetic (base + i*8), a tile slot is
+         an offset view.  Rebound per module.")
+
 (defvar *async-barrier-load-count* (make-hash-table)
         "Endeavor 137 Phase 2d: scan-time map of async-barrier binding SYMBOL -> count of :block
          load-tiles that reference it.  Becomes the mbarrier init arrival count (each TMA load
@@ -370,6 +376,7 @@
           (*async-barrier-modes* (make-hash-table)) ; Endeavor 137: barrier var -> mode.
           (*scratch-tile-dims* (make-hash-table :test 'equal)) ; Endeavor 137: (fn.tile) -> box-dims.
           (*async-barrier-load-count* (make-hash-table)) ; Endeavor 137: barrier -> #block loads.
+          (*async-barrier-ring-counts* (make-hash-table)) ; Endeavor 138: barrier-ring -> ring-count.
           (*call-site-args* (make-hash-table))      ; Endeavor 137: fn -> (callee . args) list.
           ;; NB: *tma-descriptor-info* is a PERSISTENT global (cleared via clrhash in the compiler
           ;; reset, like *implicit-scratch-size-expr-map*) — metadata emission reads it AFTER
@@ -532,12 +539,17 @@
                          (til (%tma-resolve-ref kernel uname :tile)))
                      (cond
                        ((and d (eq (first d) :tensor) til (eq (first til) :tile))
-                        (setf (gethash (cons kernel uname) *tma-resolved*)
-                              (list :describes (second d)
-                                    :element-type (third til)
-                                    :rank (fourth til)
-                                    :box-dims (second til)
-                                    :layout (%kernel-param-contiguous-term kernel (second d)))))
+                        ;; Endeavor 138: a ring tile's dims are (slots . box) — dim 0 is the ring
+                        ;; slot, so the TMA box is the remainder (and the rank drops by one).
+                        (let* ((via-ring (getf (gethash uname *tma-descriptor-info*) :tile-via-ring))
+                               (dims     (second til))
+                               (box      (if via-ring (rest dims) dims)))
+                          (setf (gethash (cons kernel uname) *tma-resolved*)
+                                (list :describes (second d)
+                                      :element-type (third til)
+                                      :rank (length box)
+                                      :box-dims box
+                                      :layout (%kernel-param-contiguous-term kernel (second d))))))
                        (t
                         (log:warn "Endeavor 137: unresolved CUtensorMap descriptor ~a in kernel ~a (describes=~a tile=~a)"
                                   uname kernel d til)))))))))
@@ -730,6 +742,19 @@
             (%resolve-async-barrier-mode-scan args))))
   nil)
 
+(defmethod scan-operator ((op (eql 'make-async-barrier-ring)) args)
+  "Endeavor 138: record a barrier RING's resolved :mode AND :ring-count during the scan pass, so
+   a later :block load-tile through (ring-get r i) can resolve the mode (and mint its CUtensorMap
+   descriptor) in the same pass — exactly as make-async-barrier does for a single barrier."
+  (let ((bname (compiler-context-current-binding-name *compiler-context*)))
+    (when bname
+      (setf (gethash bname *async-barrier-modes*)
+            (%resolve-async-barrier-mode-scan args))
+      (let ((n (getf args :ring-count)))
+        (when (and (integerp n) (plusp n))
+          (setf (gethash bname *async-barrier-ring-counts*) n)))))
+  nil)
+
 (defun %scan-register-tma-descriptor (args)
   "Endeavor 137 Phase 2b: when a (load-tile[-at] SRC TILE COORDS ... :barrier BAR) references a
    :block barrier on PTX, register a CUtensorMap descriptor implicit arg for SRC in the current
@@ -739,13 +764,26 @@
    type and the staging tile, so scan only needs SRC + the barrier's resolved mode."
   (let* ((src     (first args))
          (tile    (second args))
-         (barrier (getf (cdddr args) :barrier)))   ;; args = SRC TILE COORDS &key ... :barrier BAR
-    (when (and (symbolp src) (symbolp barrier)
+         (barrier (getf (cdddr args) :barrier))   ;; args = SRC TILE COORDS &key ... :barrier BAR
+         ;; Endeavor 138: the barrier/tile may come through a ring — `(ring-get R i)` is NOT a
+         ;; symbol, so resolve to the RING (needed for the descriptor, which is per-ring).  A ring
+         ;; TILE's box is the ring's dims minus dim 0 (dim 0 IS the slot).
+         (bar-ring  (%barrier-ring-form-p barrier))
+         (bar-key   (or bar-ring (and (symbolp barrier) barrier)))
+         (tile-ring (and (consp tile) (symbolp (first tile))
+                         (string-equal (symbol-name (first tile)) "RING-GET")
+                         (symbolp (second tile))
+                         (second tile)))
+         (tile-key  (or tile-ring (and (symbolp tile) tile))))
+    (when (and (symbolp src) bar-key
                (eq (async-barrier-mode-of barrier) :block)
                (eq *target-backend* :ptx))
       (setf *scan-is-originator* t)
-      ;; Count this :block load against its barrier -> the mbarrier init arrival count.
-      (incf (gethash barrier *async-barrier-load-count* 0))
+      ;; Count this :block load against its barrier -> mbarrier arrival count.  RINGS ARE EXEMPT:
+      ;; a ring's prologue and main loop both load it, so the textual tally is NOT the per-stage
+      ;; arrival count — a ring states it explicitly via :arrivals (Endeavor 138).
+      (unless bar-ring
+        (incf (gethash bar-key *async-barrier-load-count* 0)))
       (let* ((fn-name  (compiler-context-scanning-function-name *compiler-context*))
              (existing (gethash fn-name *implicit-arg-map*))
              (already  (find-if (lambda (e)
@@ -763,9 +801,13 @@
                       src tile uname)
             (push (cons uname spec) (gethash fn-name *implicit-arg-map*))
             ;; Store ORIGINATOR-frame refs; resolve-tma-descriptors walks the carrier chain to
-            ;; concrete kernel-frame describes/box-dims/elem/rank.
+            ;; concrete kernel-frame describes/box-dims/elem/rank.  Endeavor 138: when the tile
+            ;; came through (ring-get R i), the tile ref is the RING R and its box is the ring's
+            ;; dims minus dim 0 (dim 0 IS the ring slot) — :tile-via-ring says to drop it.
             (setf (gethash uname *tma-descriptor-info*)
-                  (list :originator fn-name :describes-sym src :tile-sym tile))))))))
+                  (list :originator fn-name :describes-sym src
+                        :tile-sym (or tile-key tile)
+                        :tile-via-ring (and tile-ring t)))))))))
 
 
 

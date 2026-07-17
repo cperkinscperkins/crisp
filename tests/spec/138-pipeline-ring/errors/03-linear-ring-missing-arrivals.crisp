@@ -1,0 +1,12 @@
+;; CHECK-FAIL: ":arrivals"
+;; Endeavor 138 — negative: a :linear barrier RING also requires :arrivals (it sizes the
+;; cp.async wait_group depth = (ring-count-1)*arrivals).  Missing it is a compile error, same as
+;; for :block.  Backend-independent, so it fires under the default negative run.
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel lin_ring_no_arrivals (A &out C)
+  (declare #'(mat-t &out mat-t) (global-size :set-to 4) (local-size :set-to 4))
+  (let ((tiles (make-scratch-matrix-ring float (4 4) :ring-count 2))
+        (bars  (make-async-barrier-ring :ring-count 2 :mode :linear)))   ;; <- no :arrivals
+    (load-tile A (ring-get tiles 0) (0 0) :barrier (ring-get bars 0))
+    (await (ring-get bars 0))
+    (store-tile (ring-get tiles 0) C (0 0))))
