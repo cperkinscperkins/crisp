@@ -14,6 +14,7 @@
 ;; Runtime-index ring-get is 02; the async barrier ring is 03; the pipelined matmul is later.
 ;;
 ;; SKIP-WITH[--differentiate]: "ring/pipelining is forward-only; tile AD is a later chapter"
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 

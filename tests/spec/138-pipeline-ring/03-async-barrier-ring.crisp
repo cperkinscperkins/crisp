@@ -18,6 +18,7 @@
 ;;
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--differentiate]: "ring/pipelining is forward-only; tile AD is a later chapter"
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))

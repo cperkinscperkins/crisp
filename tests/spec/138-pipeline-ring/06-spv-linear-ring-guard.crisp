@@ -5,6 +5,7 @@
 ;; fine (the ring lowers to the no-op await fallback), mirroring 137/02's :block-on-Intel guard.
 ;;
 ;; SKIP-WITH[--differentiate]: "forward-only async staging"
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
 ;; COMPILE-WITH[--ir-target=spv]: FAIL "not yet implemented on SPIR-V"
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
