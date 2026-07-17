@@ -430,10 +430,15 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     (the crash bottoms out in COMPILE-FILES' unwind-protect CLEANUP -> finalize, not in
     codegen proper).  A plain make-scratch-matrix (no view) is fine, so the site is the
     make-view path specifically (`%get-di-location` / the offset-node debug loc, or a
-    view-type di-type).  Build-heap-dependent WHICH ring spec faults (here 01/03/06;
-    02/05 use the same path but didn't crash on this build).  MITIGATION: SKIP-WITH[--debug]
-    on 01/03/06 (like 04 / the 132 cluster).  Proper fix should audit make-view codegen
-    for null/garbage DIBuilder args in addition to generate-debug-info.
+    view-type di-type).  Build-heap-dependent WHICH ring spec faults: the local Windows build
+    crashed on 01/03/06, but CI's Linux build crashed on 05 (which passed locally) — so the
+    faulting SET varies by build; you cannot skip just the locally-observed subset.
+    MITIGATION: SKIP-WITH[--debug] on ALL 138 ring/make-view specs (01/02/03/04/05/06), like
+    the 132 cluster.  The errors/* specs need no skip — they fail at ANALYSIS (before any
+    make-view debug codegen).  Proper fix should audit make-view codegen for null/garbage
+    DIBuilder args in addition to generate-debug-info.  (General caution: any spec exercising
+    make-view — incl. make-cell/vector/matrix/tensor outside 138 — could surface this on some
+    build under --debug --binary until 033 is actually fixed.)
 
     META (why this stayed hidden): the IN-PROCESS spec runner calls compile-module with a
     NULL di-builder (run-specs.lisp:766) — so in-process `--debug` generates NO debug info
