@@ -75,9 +75,12 @@ loads "per phase" statically is fragile and fails *silently on silicon*, so we a
 (make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2)   ; A+B share each slot
 ```
 
-- **Required for `:mode :block`**; ignored for `:linear` (cp.async / OpGroupAsyncCopy track
-  groups and events, not arrivals).  A single `make-async-barrier` KEEPS its inference — no new
-  surface where the old rule is still sound.
+- **Required for `:mode :block`**; ~~ignored for `:linear`~~.  **REVISED 2026-07-16 (03b):** now
+  **required for EVERY barrier ring, both modes** — `:linear` needs it too, as the loads-per-stage
+  factor in `cp.async.wait_group((ring-count-1)*arrivals)` (each `:linear` load-tile commits one
+  group).  Requiring it for both also keeps an arch-automatic ring kernel portable (same number
+  whether the arch resolves to `:block` on sm_90 or `:linear` on sm_80).  A single
+  `make-async-barrier` KEEPS its inference — no new surface where the old rule is still sound.
 - Rejected alternatives: (B) init count 1 + first-load-arrives / rest bare `expect_tx` — still
   needs "which load is first in this stage", i.e. the same grouping problem; (C) keep the tally
   and forbid a prologue — rules out pipelining itself.
@@ -112,8 +115,9 @@ handles a runtime index anyway, plain `dotimes` serves BOTH the prologue and the
     [x] 03  make-async-barrier-ring + :mode + :arrivals, on `:block`
             PTX-verified: [2 x i64] mbarrier ring, per-slot init/expect_tx/try_wait/re-init.
             load-tile/await needed ZERO changes.  + errors/01 (missing :arrivals), errors/02 (0).
-    [ ] 03b `:linear` rings — NOT done (03 covers `:block` only).  PTX `:linear` = phantom slots
-            -> `wait_group(ring-count - 1)`; SPV `:linear` = N `target("spirv.Event")` slots.
+    [x] 03b  :linear rings — PTX DONE (wait_group((N-1)*arrivals)); SPV guarded (error, needs
+            per-slot spirv.Event, deferred).  :arrivals now REQUIRED for all rings.  PTX metal
+            still unverified (cheap sm_80+ pod, no H100).
     [~] 04  the Chapter-2 pipelined `:block` matmul (prologue + main loop)
             COMPILE + PTX-verified pod-free: [2 x i64] mbarrier ring, both init counts = 2
             (:arrivals, creation AND re-init), 6 cp.async.bulk.tensor, 2 .ptr .global descriptors.

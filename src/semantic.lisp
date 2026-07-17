@@ -411,6 +411,12 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
 
 (defstruct semantic-nvvm-cp-async-wait
   barrier-node  ;; semantic node for the mbarrier object
+  ;; Endeavor 138: cp.async.wait_group N — keep the N most-recent groups in flight.
+  ;; 0 for a plain (non-ring) :linear barrier (wait for everything).  For a :linear RING it is
+  ;; (ring-count - 1) * arrivals — the canonical software-pipeline idiom that overlaps stage k+N's
+  ;; DMA with stage k's compute.  Our :linear load-tile commits one group PER LOAD, so the count
+  ;; multiplies the ring depth by the loads-per-stage (= :arrivals).
+  (group-count 0)
   type
   source-location)
 

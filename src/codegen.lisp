@@ -3788,11 +3788,13 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-nvvm-cp-async-wait) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 136 (Chapter 1): (await barrier) lowers to cp.async.wait_group(0) — block
-   until every committed async-copy group has landed.  The barrier object is not needed
-   for the commit_group idiom, so it is ignored here."
+  "Endeavor 136/138: (await barrier) lowers to cp.async.wait_group(N).  N=0 for a plain
+   :linear barrier (wait for every committed group).  For a :linear RING, N=(ring-count-1)*
+   arrivals keeps the newest N groups in flight — the software-pipeline overlap (Endeavor 138).
+   The barrier object is not needed for the commit_group idiom, so it is ignored here."
   (declare (ignore var-env di-builder di-scope location-map))
-  (%gen-nvvm-cp-async-wait-group builder module 0)
+  (%gen-nvvm-cp-async-wait-group builder module
+                                 (max 0 (semantic-nvvm-cp-async-wait-group-count node)))
   (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
 
 (defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env

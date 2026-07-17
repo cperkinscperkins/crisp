@@ -1,0 +1,43 @@
+;; Endeavor 138 (Chapter 2) — the :linear (cp.async) twin of 04's :block ring pipeline.
+;;
+;; A :linear barrier RING pipelines via the canonical cp.async idiom: each load-tile commits one
+;; cp.async group, and (await (ring-get bars slot)) lowers to cp.async.wait_group((N-1)*arrivals)
+;; — keeping N-1 stages of transfers in flight so stage k+N's DMA overlaps stage k's compute.
+;; Here N=2 (ring depth), arrivals=2 (A+B per stage) -> wait_group(2).  The old lowering emitted
+;; wait_group(0) (wait for everything = no overlap); the validator asserts a NON-ZERO depth.
+;;
+;; :linear runs on any sm_80+ (cp.async is Ampere+), so this needs no sm_90 / TMA.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "ring/pipelining is forward-only; tile AD is a later chapter"
+;; TEST-WITH[--ir-target=ptx] : validate-ptx-linear-ring
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel linear_ring_pipeline (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((A-ring (make-scratch-matrix-ring float (16 8) :ring-count 2))
+        (B-ring (make-scratch-matrix-ring float (8 8)  :ring-count 2))
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B))
+        (bars   (make-async-barrier-ring :ring-count 2 :mode :linear :arrivals 2)))
+    (tile-stride C (16 8) (grid-y grid-x)
+      (dotimes (i 2)
+        (load-tile A (ring-get A-ring (to-ulong i)) (grid-y (to-ulong i)) :barrier (ring-get bars (to-ulong i)))
+        (load-tile B (ring-get B-ring (to-ulong i)) ((to-ulong i) grid-x) :barrier (ring-get bars (to-ulong i))))
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+        (let ((slot (mod grid-k (to-ulong 2))))
+          (await (ring-get bars slot))
+          (mma-accumulate-via-tile (16 8 8) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+          (sync-workgroup)
+          (let ((next-k (+ grid-k (to-ulong 2))))
+            (let ((more? (to-workgroup-uniform (< next-k (/ (to-ulong K) (to-ulong 8))))))
+              (when more?
+                (load-tile A (ring-get A-ring slot) (grid-y next-k) :barrier (ring-get bars slot))
+                (load-tile B (ring-get B-ring slot) (next-k grid-x) :barrier (ring-get bars slot)))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

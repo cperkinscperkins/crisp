@@ -580,25 +580,34 @@ exactly what makes a ring a ring.
 - **`:ring-count`** — required. A positive compile-time integer: the pipeline depth (how many
   stages are in flight at once).
 - **`:mode`** — exactly as `make-async-barrier` (`:linear` / `:block`; omit for arch-automatic).
-  Every slot in the ring shares the mode.
-- **`:arrivals`** — **required for `:mode :block`**; ignored otherwise.  How many transfers **each
+  Every slot in the ring shares the mode.  On **SPIR-V, `:linear` rings are not yet implemented**
+  (they would need per-slot `spirv.Event` chaining) — a genuine ring (`ring-count > 1`) with
+  `:mode :linear` is a compile error there; a single `(make-async-barrier :mode :linear)` is fine.
+- **`:arrivals`** — **required for every barrier ring** (both modes).  How many transfers **each
   slot** tracks *per pipeline stage* — i.e. how many `load-tile`s name that one slot in a single
-  stage.  The classic A+B staging is `2`.
+  stage.  The classic A+B staging is `2`.  It means the same thing to both lowerings:
+  - `:block` — the mbarrier's init **arrival count**.
+  - `:linear` — the loads-per-stage factor in the `cp.async.wait_group((ring-count − 1) × arrivals)`
+    depth (each `:linear` `load-tile` commits one group), i.e. how many groups a stage closes.
 
 > **Why `:arrivals` is explicit and not inferred.**  A `:block` (TMA) barrier is a hardware
 > mbarrier: it completes when *both* its arrival count and its expected transaction bytes are
 > satisfied, so the count must be exactly right — **too high and the barrier never completes (the
-> kernel hangs); too low and you read a half-arrived tile.**  For a *single* `make-async-barrier`
-> the compiler infers it by counting the `:block` loads that name that barrier, which is correct
-> because such a kernel has one stage in the text.  Through a **ring** that inference breaks: the
-> prologue and the main loop *both* load the same ring, so the textual count (2 in the prologue +
-> 2 in the main loop = 4) is **not** the per-stage arrival count (2).  Grouping loads "per phase"
-> statically is fragile, and the failure mode is a silent GPU hang — so Crisp asks you to say it.
-> You already know the number: it is how many `load-tile`s you wrote against one slot.
+> kernel hangs); too low and you read a half-arrived tile.**  The `:linear` `wait_group` depth is
+> less catastrophic but still wrong if the count is off (no overlap, or reading too early).  For a
+> *single* `make-async-barrier` the compiler infers it by counting the loads that name that
+> barrier, which is correct because such a kernel has one stage in the text.  Through a **ring**
+> that inference breaks: the prologue and the main loop *both* load the same ring, so the textual
+> count (2 in the prologue + 2 in the main loop = 4) is **not** the per-stage count (2).  Grouping
+> loads "per phase" statically is fragile, so Crisp asks you to say it — you already know the
+> number: it is how many `load-tile`s you wrote against one slot.  Requiring it for **both** modes
+> also keeps an arch-automatic ring kernel portable: the same `:arrivals` works whether the arch
+> resolves to `:block` on sm_90+ or `:linear` on sm_80.
 
 ```
 ;; three stages in flight; each stage stages an A-tile and a B-tile under its own barrier slot.
-(make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2)
+(make-async-barrier-ring :ring-count 3 :mode :block  :arrivals 2)   ; NVIDIA sm_90+ (TMA mbarriers)
+(make-async-barrier-ring :ring-count 3 :mode :linear :arrivals 2)   ; sm_80+ (cp.async wait_group 4)
 ```
 
 > **`:initial-state`** (`:signaled` / `:waiting`) is **deferred** — it is only meaningful for warp
