@@ -193,8 +193,70 @@ Generated apples-to-apples by the hoist itself — `crisp-hoist-cuda --mma-bench
 (incl. the CUtensorMap descriptor for `:block`), warms up, times 100 launches with CUevents, and
 prints GFLOPS + the C=A·B check.  `nvcc -arch=sm_90a … -lcuda`.
 
+### Chapter 2 — ring pipelining (Endeavor 138, 2026-07-16)
+
+`matmul_pipelined.crisp` replaces the single `:block` barrier + single A/B SLM tile with **2-deep
+rings** (A-tile ring, B-tile ring, barrier ring, `:arrivals 2`), so stage *k+2*'s TMA transfer is
+in flight while stage *k* feeds the tensor cores.  Hand-rolled `tile-stride` + `dotimes` (= what
+`matrix-multiply-tile-stride` lowers to) so a **prologue** can precede the K-loop; ring slot is
+just `(mod grid-k 2)`.  Same 64×64 register tile, `(16 8 8)` tf32 MMA, B col-major.
+
+**NVIDIA H100 80GB PCIe (RunPod), 64×64 tile, tf32 size sweep — all `MMA_CORRECT`, GFLOPS:**
+
+| M=N=K | sync | `:linear` | `:block` | **pipelined** | cuBLAS tf32 | pipe/`:block` |
+|------:|-----:|----------:|---------:|-----------:|------------:|:-:|
+| 1024  | 1,354 | 2,156 | 24,084 | **25,875** | 111,452 | **+7.4%** |
+| 2048  | 2,599 | 3,992 | 36,005 | **39,328** | 204,019 | **+9.2%** |
+| 4096  | 3,992 | 6,373 | **57,957** | 54,601 | 297,113 | **−5.7%** |
+
+(H100 **PCIe** here — Endeavor 137's Ch 1.5 table was a stronger H100 SKU, so absolute GFLOPS
+differ; the pipe-vs-`:block` delta is measured on the *same* pod.  Same `--mma-bench` harness;
+the `BENCH … GFLOPS` line is CUevent-timed over 100 launches, independent of the host C=A·B check.)
+
+**Depth sweep — 2-deep is the sweet spot; deeper never wins** (GFLOPS, same pod):
+
+| M=N=K | `:block` | pipe **2** | pipe 3 | pipe 4 |
+|------:|---------:|-----------:|-------:|-------:|
+| 1024  | 24,343   | **26,021** | 25,220 | 25,714 |
+| 2048  | 36,147   | **39,335** | 39,053 | 36,034 |
+| 4096  | **57,875** | 54,387   | 54,207 | 54,070 |
+
+Findings:
+- **Pipelining is a real but modest win at 1024–2048 (+7–9%)** and the win *grows* with K — more
+  K-steps means more DMA to overlap behind the MMA.  TMA staging alone (Ch 1.5) already made
+  `:block` mostly compute-bound; the 2-deep ring recovers the residual DMA stall by keeping the
+  next tile landing during the current MMA.
+- **Deeper does NOT help — 2 stages saturate the available overlap.**  pipe-3/pipe-4 are flat-to-
+  *worse* than pipe-2 at every size (pipe-4 at 2048 falls all the way back to `:block`); the extra
+  prologue + per-stage bookkeeping isn't repaid.  The "maybe deeper helps at small sizes" intuition
+  is empirically false here.
+- **It crosses over and loses ~6% at 4096 — but NOT for the reason first assumed.**  `ptxas -v`:
+  `:block` = **254 registers/thread**, pipe = 250, both jammed against the 255 ceiling (the 64×64
+  register accumulator alone is 128 floats = 128 regs/thread).  That pins residency at **~8 warps/
+  SM ≈ 12.5% occupancy**, **identical** for `:block` and every pipe depth — the rings live in
+  *dynamic* shared memory (4 KB `:block` → 8 KB pipe-2 → 12 KB pipe-3), which never becomes the
+  binding limit (registers hit first).  So the crossover is **not** an occupancy effect.  The
+  leading explanation: while the GEMM is latency-bound (≤2048) the ring's overlap is worth its
+  bookkeeping; by 4096 the resident warps already cover the DMA, so the extra per-stage
+  sync/mbarrier work is net cost.  (Stable across reps: 57.9K `:block` vs 54.4K pipe-2.)
+- **The real 5× vs cuBLAS is the REGISTER WALL, not pipelining.**  254 regs/thread → ~12.5%
+  occupancy → one warp per workgroup with almost nothing else resident to hide latency.  cuBLAS
+  runs many cooperating warps per CTA at far higher occupancy.  The dominant lever is therefore
+  **getting the 64×64 tile off a single warp** — distribute it across cooperating warps (≈32
+  regs/thread instead of 128) so occupancy climbs from ~12% toward the 50–75% cuBLAS runs at.
+  That is exactly what warp specialization / multi-warp CTAs buy — *not* a deeper ring, which
+  cannot move the register wall.  Naive-ring `:block` holds ~18–20% of cuBLAS; the gap is the
+  occupancy the register wall is costing us.
+
+Reproduce: `put_temp_files_here/bench05.sh "1024 2048 4096"` (or the same `crisp-hoist-cuda
+--mma-bench=M,N,K --grid-tile=64` → `nvcc -arch=sm_90a … -lcuda` flow as Ch 1.5).  At 4096 the
+harness's O(N³) host reference check is glacial *after* the timed run — grab the `BENCH` line and
+move on (`stdbuf -oL ./bin | grep -m1 BENCH`).
+
 ## Remaining levers
 Block-level SLM reuse; Chapter 1.5 (`:mode :block` — CuTensorMap / LSC 2D block loads) for the
 tall-thin-strided BMG case above; then pipelining / warp-specialization (the "three chapters" in
-`docs/topology.md`).  A tf32-MMA / cuBLAS / oneMKL "best-known" reference is the natural follow-on
-for a peak-vs-peak ratio.
+`docs/topology.md`).  Chapter 2 (rings) shows the next real lever is **occupancy** — warp
+specialization (producer/consumer over the rings, no second full SLM tile per stage) rather than a
+deeper ring.  A tf32-MMA / cuBLAS / oneMKL "best-known" reference is the natural follow-on for a
+peak-vs-peak ratio.

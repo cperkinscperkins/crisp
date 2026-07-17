@@ -357,6 +357,17 @@
      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)"
   (let* ((op          (first expr))
          (target-sym  (if (symbolp (second expr)) (second expr) nil))
+         ;; Endeavor 138: the flat-index builders splice the target into (extents~ TARGET k)
+         ;; etc.  A SYMBOL is the common case, but a compound tensor expression — notably
+         ;; (ring-get ring i) passed straight into mma-accumulate-via-tile / load-tile — must
+         ;; work too.  Splicing the whole FORM re-evaluates it once per extents~/strides~ read;
+         ;; that is safe because such a target is a pure view constructor (make-view: address
+         ;; arithmetic, no side effects, no implicit-arg/descriptor registration).  The element
+         ;; POINTER the aref returns comes from ARRAY-NODE (analyzed once, below), NOT from this
+         ;; re-evaluated form, so both read and pointer/set! contexts stay correct.  Without
+         ;; this, a non-symbol tensor target fell through to the single-index cell path, which
+         ;; silently DROPPED every index past the first (a ring slot read with row-stride 1).
+         (target-form (second expr))
          (array-node  (analyze-expression (second expr) env context (append location '(1))))
          (index-expr  (third expr))
          (index-node  (if index-expr
@@ -392,24 +403,28 @@
               (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
 
           (let ((tensor-n (%get-tensor-arity array-type)))
-            (if (and tensor-n target-sym)
+            ;; Endeavor 138: fire the tensor path whenever the target is a tensor, whether it
+            ;; is a symbol OR a compound expression (e.g. (ring-get ring i)).  The builders take
+            ;; TARGET-FORM — a symbol splices as before; a compound form re-evaluates once per
+            ;; extents~/strides~ read (safe: pure view constructor).
+            (if tensor-n
 
                 ;; ── Tensor path ──────────────────────────────────────────────
                 (let* ((index-forms (cddr expr)))
                   (unless (= (length index-forms) tensor-n)
                     (error "Tensor ~a requires ~a index~:p (arity ~a), got ~a."
-                           target-sym tensor-n tensor-n (length index-forms)))
+                           target-form tensor-n tensor-n (length index-forms)))
                   (let* ((align      (%get-tensor-align array-type))
                          (flat-form  (cond
                                        ((eq align :compact)
-                                        (log:debug "AREF compact path (no offset): ~a (N=~a)" target-sym tensor-n)
-                                        (%build-tensor-compact-flat-index-form target-sym index-forms))
+                                        (log:debug "AREF compact path (no offset): ~a (N=~a)" target-form tensor-n)
+                                        (%build-tensor-compact-flat-index-form target-form index-forms))
                                        ((eq align :compact-offset)
-                                        (log:debug "AREF compact-offset path: ~a (N=~a)" target-sym tensor-n)
-                                        (%build-tensor-compact-offset-flat-index-form target-sym index-forms))
+                                        (log:debug "AREF compact-offset path: ~a (N=~a)" target-form tensor-n)
+                                        (%build-tensor-compact-offset-flat-index-form target-form index-forms))
                                        (t
-                                        (log:debug "AREF strided path: ~a (align=~s)" target-sym align)
-                                        (%build-tensor-flat-index-form target-sym index-forms))))
+                                        (log:debug "AREF strided path: ~a (align=~s)" target-form align)
+                                        (%build-tensor-flat-index-form target-form index-forms))))
                          (flat-node  (analyze-expression flat-form env context location)))
                     (make-semantic-aref :type elem-type
                                         :array-node array-node

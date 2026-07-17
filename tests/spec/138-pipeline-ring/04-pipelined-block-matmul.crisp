@@ -1,0 +1,91 @@
+;; Endeavor 138 (Chapter 2) — the PIPELINED :block matmul.  The payoff of the whole endeavor.
+;; METAL-CORRECT on H100 (MMA_CORRECT, 2026-07-16) — the ring wrap + barrier-ring phase reuse,
+;; the one thing PTX could not confirm, verified on silicon.
+;;
+;; This is 137/05's :block TMA matmul with the single barrier + single pair of SLM tiles replaced
+;; by RINGS, so stage k+2's TMA transfer is in flight while stage k's tensor-core math runs.  137
+;; ended at a 4096 plateau (75->80 TFLOPS) from exactly this: nothing overlapped the DMA.
+;;
+;; Shape: K=32 / k-step=8 -> FOUR K-steps over a TWO-deep ring.  That is the smallest shape that
+;; actually exercises the pipeline rather than degenerating:
+;;   - the prologue fills slots 0,1 (k=0,1) before the loop starts;
+;;   - k=0 awaits slot 0 and prefetches k=2 INTO slot 0 (the ring WRAPS — a slot is reused);
+;;   - k=2 then awaits that wrapped slot, proving the await/re-init phase survives reuse.
+;; With K=16 (137/05's shape) the prologue would cover every K-step and nothing would prefetch.
+;;
+;; No new API: `matrix-multiply-tile-stride` IS `tile-stride` + a `dotimes` over grid-k
+;; (%mmts-lower), so hand-rolling those two gives us the prologue slot the macro has no room for.
+;; tile-stride binds TILE-IDs, which is exactly what load-tile consumes.
+;;
+;; The ring slot is `(mod grid-k 2)` — no mutable ring-idx / set! carried across iterations, and
+;; it is precisely the RUNTIME ring-get index that 138/02 pinned.
+;;
+;; :arrivals 2 — each slot tracks its stage's A-load + B-load.  This CANNOT be inferred: the
+;; prologue and the main loop both load the ring (4 load-tiles textually, 2 arrivals per stage).
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals; async tile AD is a later chapter"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 16 8 32
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel pipelined_matmul_block (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  ;; NB: the ring depth is a repeated literal 2 — :ring-count needs a compile-time integer and
+  ;; Crisp has no constant form, so a (let ((stages 2)) ...) binding would NOT compile here.
+  (let ((A-ring  (make-scratch-matrix-ring float (16 8) :ring-count 2))  ; SLM: 2 x (M x k-step)
+        (B-ring  (make-scratch-matrix-ring float (8 8)  :ring-count 2))  ; SLM: 2 x (k-step x N)
+        (C-tile  (make-register-tile float (16 8) 0.0))
+        (K       (inner-dimension A B))
+        (bars    (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2)))
+    ;; tile-spec is the compile-time (M N) size-list, NOT C-tile: a register tile is SROA-exploded
+    ;; into per-fragment vars, so the symbol is gone by then.  This is exactly what
+    ;; matrix-multiply-tile-stride does for a register C-tile (%expand-mmts-register-in-form).
+    (tile-stride C (16 8) (grid-y grid-x)
+
+      ;; 1. PROLOGUE — fill the pipeline: put both stages' transfers in flight before any math.
+      ;; (to-ulong i): dotimes binds an int, but tile-IDs / ring indices are ulong.
+      (dotimes (i 2)
+        (load-tile A (ring-get A-ring (to-ulong i)) (grid-y (to-ulong i))
+                   :barrier (ring-get bars (to-ulong i)))
+        (load-tile B (ring-get B-ring (to-ulong i)) ((to-ulong i) grid-x)
+                   :barrier (ring-get bars (to-ulong i))))
+
+      ;; 2. MAIN K-LOOP — await stage k while stage k+1 is still landing.
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+        (let ((slot (mod grid-k (to-ulong 2))))
+          (await (ring-get bars slot))          ; try_wait.parity on THIS slot + re-init(2)
+          (mma-accumulate-via-tile (16 8 8) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+
+          ;; Every thread must be DONE reading this slot's SLM before the prefetch below
+          ;; overwrites it — the ring wraps onto the slot we just consumed.  (topology.md's
+          ;; Chapter-2 example puts this sync AFTER the prefetch, which races.)
+          (sync-workgroup)
+
+          ;; Issue stage k+2 into the slot we just freed, so it lands while k+1 computes.
+          ;;
+          ;; The guard is wrapped in to-workgroup-uniform: load-tile contains an internal
+          ;; sync-workgroup, so it is banned from a thread-DIVERGENT branch (it would deadlock
+          ;; when only some threads enter).  This condition is uniform — it depends only on the
+          ;; K-loop counter and K — but it reads as :unknown (a dotimes counter is not a
+          ;; parameter with inferred uniformity), and the checker is rightly conservative about
+          ;; :unknown.  to-workgroup-uniform is the sanctioned assertion, and must be a let
+          ;; initializer.
+          (let ((next-k (+ grid-k (to-ulong 2))))
+            (let ((more-k? (to-workgroup-uniform (< next-k (/ (to-ulong K) (to-ulong 8))))))
+              (when more-k?
+                (load-tile A (ring-get A-ring slot) (grid-y next-k) :barrier (ring-get bars slot))
+                (load-tile B (ring-get B-ring slot) (next-k grid-x) :barrier (ring-get bars slot)))))))
+
+      ;; 3. EPILOGUE — C-tile complete.
+      (store-tile C-tile C (grid-y grid-x)))))
