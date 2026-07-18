@@ -2182,6 +2182,20 @@
         (return-from validate-ptx-tma nil)))
     t))
 
+(defun validate-ptx-distributed-mma (file ptx-string)
+  "Endeavor 139 (Chapter 3, decision A) — a warp-distributed register tile.  The 04 kernel's 32x16
+   tile is 4 fragments split across 2 consumer warps, so each warp emits exactly 2 mma.sync (not 4).
+   Assert the mma.sync count is HALVED — proof the fragments distributed rather than every warp
+   redundantly computing the whole tile."
+  (declare (ignore file))
+  (let ((count 0) (start 0))
+    (loop for pos = (search "mma.sync" ptx-string :start2 start)
+          while pos do (incf count) (setf start (+ pos 8)))
+    (if (= count 2)
+        t
+        (progn (format *error-output* "FAIL: expected 2 mma.sync (4 frags / 2 warps), got ~a~%" count)
+               nil))))
+
 (defun validate-warp-roles (file ir-string)
   "Endeavor 139 (Chapter 3) — the warp-specialization role SKELETON.  Asserts BOTH role bodies
    lowered: the producer marker (40001) and the consumer marker (40002) both survive to the IR.

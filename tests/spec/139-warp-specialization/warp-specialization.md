@@ -125,10 +125,13 @@ handshake).  Intel's fast path is a different animal (LSC 2D block loads, no SLM
     [~] 03  make-register-tile :warps — decision A.
         [x] 3.1 parsing + validation + #true=1 (works: single participating warp needs no split).
                 Tests 03-register-tile-warps + errors/04 (bad length), 05 (all-false).  910/910.
-        [ ] 3.2 the #true>=2 DISTRIBUTION (net-new multi-warp fragment split — the occupancy lever):
-                make-register-tile sizes nfrags/#true per warp; mma-accumulate-via-tile computes each
-                warp's logical fragment range (warp_position*(nfrags/#true)+local); store distributes.
-                warp_position = rank among true warps.  Deep codegen — do fresh + cohesively.
+        [x] 3.2 the #true>=2 DISTRIBUTION DONE 2026-07-18 — net-new multi-warp fragment split.  All in
+                the source-to-source explosion (%explode-register-tiles): parse :warps, size nfrags/
+                #true fragments per warp, entry carries n-true/first-true; %emit-frag-loop-distributed
+                computes each warp's logical fragment range (wp=warp-id-first_true; logical=wp*per-warp
+                +l -> mi/nj).  IR-verified: a 32x16 #true=2 tile emits 2 mma.sync per warp (not 4).
+                Test 04-register-tile-distributed (validate-ptx-distributed-mma).  913/913, 139 10/10.
+                Contiguous true warps only; metal correctness = step 4.
     [ ] 04  the full warp-spec MMA matmul (NVIDIA :block).  <-- NEEDS H100.
     [ ] 05  benchmark: sweep consumer count (the occupancy lever) vs 138's ring + cuBLAS.  <-- H100.
 

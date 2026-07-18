@@ -760,7 +760,7 @@ MMA
 
 [ ] benchmarking
 [ ] How to collect and recollect data? runpod.io gives us LOTS of different GPUs to test against,
-    which is cool. Should we track all that? Where/how?
+    which is cool. Should we track all that? Where/how?  .csv?
 [ ] report compile times!!  (used to be tracked, seemingly no longer?)
 [ ] benchmarking (all) probably needs fast math vs. non. And explicit flags for ALL. The defaults may NOT be what we think they be, now or in the future.
 [ ] Vendor Optimal ( CUBLAS for MMA, CUB for Reduction, not sure for Intel)

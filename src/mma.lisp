@@ -386,6 +386,37 @@
       (cadr v)
       v))
 
+(defun %warp-mask-contiguous-true-p (mask)
+  "T if the TRUE entries of MASK form a single contiguous run — the only layout the fragment
+   distribution supports today (warp_position = warp_id - first_true)."
+  (let ((f (position t mask)) (l (position t mask :from-end t)))
+    (and f (loop for i from f to l always (nth i mask)))))
+
+(defun %validate-warp-mask (mask nfrags n-warps m n location)
+  "Endeavor 139 (decision A): validate a normalized :warps mask.  Returns (values n-true first-true).
+   Checks: length == n-warps (when statically known); >= 1 true; contiguous true run; n-true evenly
+   divides nfrags."
+  (let ((n-true (count t mask)) (first-true (position t mask)))
+    (when (and n-warps (/= (length mask) n-warps))
+      (error 'crisp-compiler-error
+        :message (format nil "make-register-tile :warps has ~a entries but the workgroup has ~a warp~:p (local-size / warp-size).  The mask must name every warp."
+                         (length mask) n-warps)
+        :source-location location))
+    (when (zerop n-true)
+      (error 'crisp-compiler-error
+        :message "make-register-tile :warps must mark at least one warp true (some warp must hold the tile)."
+        :source-location location))
+    (unless (%warp-mask-contiguous-true-p mask)
+      (error 'crisp-compiler-error
+        :message (format nil "make-register-tile :warps: the participating (true) warps must be contiguous, got ~S.  A non-contiguous participation mask is not yet supported." mask)
+        :source-location location))
+    (unless (zerop (mod nfrags n-true))
+      (error 'crisp-compiler-error
+        :message (format nil "make-register-tile: a ~ax~a tile is ~a (16x8) fragments, which ~a participating warps do not evenly divide.  Use a warp count that divides ~a (1/2/4/...)."
+                         m n nfrags n-true nfrags)
+        :source-location location))
+    (values n-true first-true)))
+
 (defun analyze-make-register-tile (expr env context location)
   "P3a: (make-register-tile T (M N) INIT &key warps) -> a record-of-fragments accumulator tile,
    each fragment initialized to INIT.  Mints the tile type on demand; rewrites to
@@ -405,31 +436,14 @@
       (let* ((tile-name (%ensure-register-tile-type m n))
              (nfrags    (* (floor m 16) (floor n 8))))
         (when warps-in
-          (let* ((mask      (%normalize-warp-mask (%warp-mask-unquote warps-in) location))
-                 (n-true    (count t mask))
-                 (n-warps   (%resolve-workgroup-warp-count context)))
-            ;; length must cover exactly the workgroup's warps (when statically known)
-            (when (and n-warps (/= (length mask) n-warps))
-              (error 'crisp-compiler-error
-                :message (format nil "make-register-tile :warps has ~a entries but the workgroup has ~a warp~:p (local-size / warp-size).  The mask must name every warp."
-                                 (length mask) n-warps)
-                :source-location location))
-            (when (zerop n-true)
-              (error 'crisp-compiler-error
-                :message "make-register-tile :warps must mark at least one warp true (some warp must hold the tile)."
-                :source-location location))
-            ;; even-only: participating warps must evenly divide the fragment grid
-            (unless (zerop (mod nfrags n-true))
-              (error 'crisp-compiler-error
-                :message (format nil "make-register-tile: a ~ax~a tile is ~a (16x8) fragments, which ~a participating warps do not evenly divide.  Use a warp count that divides ~a (1/2/4/... ), e.g. :consumer 2."
-                                 m n nfrags n-true nfrags)
-                :source-location location))
-            ;; sub-step 1: only a single participating warp is wired end-to-end; the >=2 split
-            ;; (per-warp fragment range in mma / store) is sub-step 2.
+          ;; This (%construct-struct, non-exploded) path is only reached for a make-register-tile
+          ;; NOT bound in a let — a let binding is EXPLODED, and %explode-register-tiles does the
+          ;; distribution.  Validate here; distribution needs the explosion, so >=2 warps errors.
+          (let* ((mask   (%normalize-warp-mask (%warp-mask-unquote warps-in) location))
+                 (n-true (%validate-warp-mask mask nfrags (%resolve-workgroup-warp-count context) m n location)))
             (when (> n-true 1)
               (error 'crisp-compiler-error
-                :message (format nil "make-register-tile: distributing the tile across ~a participating warps is not yet implemented (step 3 sub-step 2).  A single participating warp (e.g. :warps '(false true)) works today."
-                                 n-true)
+                :message "make-register-tile with :warps distributing across >= 2 warps must be a let binding (so the compiler can split the fragments)."
                 :source-location location))))
         (analyze-expression
          `(%construct-struct ,tile-name
@@ -538,9 +552,11 @@
   (and (symbolp head) (string-equal (symbol-name head) name)))
 
 (defun %register-tile-init-form-p (form)
-  "T if FORM is a (make-register-tile T (M N) INIT) constructor."
-  (and (consp form) (= (length form) 4) (%head-name-eq (first form) "MAKE-REGISTER-TILE")
-       (listp (third form)) (= (length (third form)) 2)))
+  "T if FORM is a (make-register-tile T (M N) INIT &key warps) constructor."
+  (and (consp form) (>= (length form) 4) (%head-name-eq (first form) "MAKE-REGISTER-TILE")
+       (listp (third form)) (= (length (third form)) 2)
+       (or (= (length form) 4)
+           (and (>= (length form) 6) (keywordp (fifth form))))))
 
 
 
@@ -551,14 +567,12 @@
       (multiple-value-bind (m n k) (%spv-mma-shape) (declare (ignore k)) (cons m n))
       (cons 16 8)))
 
-(defun %register-tile-frag-syms (var m n)
-  "The N per-fragment variable symbols for tile VAR of shape MxN (row-major fragment
-   grid), interned in VAR's package with a `$F<i>' suffix.  Fragment dims are the
-   target's per-fragment (M . N)."
-  (destructuring-bind (fm . fn) (%frag-mn)
-    (let ((nfrags (* (floor m fm) (floor n fn))))
-      (loop for i below nfrags
-            collect (intern (format nil "~a$F~d" (symbol-name var) i) (symbol-package var))))))
+(defun %register-tile-frag-syms (var count)
+  "COUNT per-fragment variable symbols for tile VAR, interned in VAR's package with a `$F<i>`
+   suffix.  Endeavor 139: COUNT is the PER-WARP fragment count (= nfrags / #participating-warps),
+   so a warp-distributed tile allocates only its share (the register drop that raises occupancy)."
+  (loop for i below count
+        collect (intern (format nil "~a$F~d" (symbol-name var) i) (symbol-package var))))
 
 
 (defparameter *default-max-registers-per-thread* 255
@@ -602,27 +616,57 @@
 
 
 
+(defun %emit-frag-loop-distributed (syms n-frags first-true per-frag-fn)
+  "Endeavor 139 (decision A): emit a WARP-DISTRIBUTED per-fragment loop.  The tile's fragments are
+   split across its participating warps; this warp holds only (length SYMS) of them.  Bind
+   wp = warp_position = (warp-id - first-true) once (contiguous true warps), then for each local
+   fragment l compute the LOGICAL fragment index = wp*(#syms) + l and its (mi, nj) =
+   (logical / n-frags, logical mod n-frags), and splice (funcall PER-FRAG-FN fv mi-form nj-form)
+   (a LIST of forms) into the progn."
+  (let* ((cl        (find-package :crisp-language))
+         (let-sym   (intern "LET" cl))   (progn-sym (intern "PROGN" cl))
+         (minus-sym (intern "-" cl))     (plus-sym  (intern "+" cl))
+         (mul-sym   (intern "*" cl))     (div-sym   (intern "/" cl))
+         (mod-sym   (intern "MOD" cl))   (to-int-sym (intern "TO-INT" cl))
+         (warp-id-sym (intern "WARP-ID" cl))
+         (per-warp  (length syms))
+         (wp        (gensym "WP"))       (base (gensym "FBASE")))
+    `(,let-sym ((,wp (,minus-sym (,to-int-sym (,warp-id-sym)) ,first-true)))
+       (,let-sym ((,base (,mul-sym ,wp ,per-warp)))
+         (,progn-sym
+           ,@(loop for l below per-warp
+                   for fv = (nth l syms)
+                   for logical = `(,plus-sym ,base ,l)
+                   for mi-form = `(,div-sym ,logical ,n-frags)
+                   for nj-form = `(,mod-sym ,logical ,n-frags)
+                   append (funcall per-frag-fn fv mi-form nj-form)))))))
+
 (defun %emit-per-frag-accumulate (a b entry &optional accum-binding body)
-  "Per-fragment expansion of mma-accumulate-via-tile (fragment dims = target per-fragment
-   M/N).  Bodyless: one accumulate set!/frag; with ACCUM-BINDING+BODY: splice the body."
-  (destructuring-bind (m n syms) (cdr entry)
+  "Per-fragment expansion of mma-accumulate-via-tile (fragment dims = target per-fragment M/N).
+   Bodyless: one accumulate set!/frag; with ACCUM-BINDING+BODY: splice the body.  Endeavor 139:
+   n-true>1 distributes the fragments across the participating warps (runtime logical index)."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
     (destructuring-bind (fm . fn) (%frag-mn)
       (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
-        `(progn
-           ,@(loop for mi below m-frags append
-                   (loop for nj below n-frags
-                         for idx = (+ (* mi n-frags) nj)
-                         for fv = (nth idx syms)
-                         for acc-set = `(set! ,fv (mma-accumulate ,fv
-                                                                  (load-fragment-a ,a (,mi 0))
-                                                                  (load-fragment-b ,b (0 ,nj))))
-                         append (if body
-                                    (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
-                                    (list acc-set)))))))))
+        (flet ((one-frag (fv mi-form nj-form)
+                 (let ((acc-set `(set! ,fv (mma-accumulate ,fv
+                                                           (load-fragment-a ,a (,mi-form 0))
+                                                           (load-fragment-b ,b (0 ,nj-form))))))
+                   (if body
+                       (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                       (list acc-set)))))
+          (if (> n-true 1)
+              (%emit-frag-loop-distributed syms n-frags first-true #'one-frag)
+              `(progn
+                 ,@(loop for mi below m-frags append
+                         (loop for nj below n-frags
+                               for idx = (+ (* mi n-frags) nj)
+                               append (one-frag (nth idx syms) mi nj))))))))))
 
 (defun %emit-per-frag-store (dest tile-id entry)
-  "Per-fragment expansion of (store-tile V DEST (BTY BTX)) — fragment dims = target M/N."
-  (destructuring-bind (m n syms) (cdr entry)
+  "Per-fragment expansion of (store-tile V DEST (BTY BTX)) — fragment dims = target M/N.
+   Endeavor 139: n-true>1 distributes — each warp stores only its share, to the logical positions."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
     (destructuring-bind (fm . fn) (%frag-mn)
       ;; Endeavor 137: the user now writes the store-tile explicitly with plain grid-y/grid-x
       ;; (often ulong from workgroup-id); auto-store, which pre-coerced with to-int, is gone.
@@ -631,14 +675,17 @@
              (m-frags (floor m fm)) (n-frags (floor n fn))
              (bty (list to-int-sym (first tile-id)))
              (btx (list to-int-sym (second tile-id))))
-        `(progn
-           ,@(loop for mi below m-frags append
-                   (loop for nj below n-frags
-                         for idx = (+ (* mi n-frags) nj)
-                         collect `(store-fragment ,(nth idx syms)
-                                                  ,dest
-                                                  ((+ (* ,bty ,m-frags) ,mi)
-                                                   (+ (* ,btx ,n-frags) ,nj))))))))))
+        (flet ((one-frag (fv mi-form nj-form)
+                 (list `(store-fragment ,fv ,dest
+                                        ((+ (* ,bty ,m-frags) ,mi-form)
+                                         (+ (* ,btx ,n-frags) ,nj-form))))))
+          (if (> n-true 1)
+              (%emit-frag-loop-distributed syms n-frags first-true #'one-frag)
+              `(progn
+                 ,@(loop for mi below m-frags append
+                         (loop for nj below n-frags
+                               for idx = (+ (* mi n-frags) nj)
+                               append (one-frag (nth idx syms) mi nj))))))))))
 
                                                    #|
 
@@ -693,8 +740,9 @@
 (defun %emit-per-frag-fill (entry val)
   "Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment
    of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init)."
-  (destructuring-bind (m n syms) (cdr entry)
-    (declare (ignore m n))
+  (destructuring-bind (m n syms &optional n-true first-true) (cdr entry)
+    (declare (ignore m n n-true first-true))
+    ;; fill just resets every fragment this warp holds — no logical index needed.
     `(progn
        ,@(loop for s in syms
                collect `(set! ,s (make-register-fragment 16 8 ,val))))))
@@ -730,12 +778,14 @@
      (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
     (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
 
-(defun %explode-register-tiles (let-expr &optional location)
-  "Source->source: explode any (V (make-register-tile T (M N) INIT)) binding in
-   LET-EXPR into N (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite
-   the body's via-tile/store-tile references to V into per-fragment progns.  Runs the
-   register FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no
-   register-tile binding is present."
+(defun %explode-register-tiles (let-expr &optional location context)
+  "Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in
+   LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the
+   body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register
+   FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.
+   Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp
+   allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions
+   to reconstruct each warp's logical fragment range)."
   (if (not (and (consp let-expr) (>= (length let-expr) 2) (listp (second let-expr))))
       let-expr
       (let* ((head (first let-expr))
@@ -747,12 +797,29 @@
                       append
                       (if (and (consp b) (= (length b) 2) (symbolp (first b))
                                (%register-tile-init-form-p (second b)))
-                          (destructuring-bind (mrt elem dims init) (second b)
-                            (declare (ignore mrt elem))
-                            (destructuring-bind (m n) dims
-                              (%register-tile-fit-check m n location)
-                              (let ((syms (%register-tile-frag-syms (first b) m n)))
-                                (push (list (first b) m n syms) tiles)
+                          (let* ((form    (second b))
+                                 (dims    (third form))
+                                 (init    (fourth form))
+                                 (m       (first dims)) (n (second dims))
+                                 ;; nfrags MUST use the target's per-fragment dims (%frag-mn):
+                                 ;; NVIDIA 16x8, Intel BMG 8x16 — the emit functions use the same,
+                                 ;; so the syms count and the emit loop must agree (hardcoding 16x8
+                                 ;; here broke BMG: nth returned NIL -> "Unknown variable NIL").
+                                 (nfrags  (destructuring-bind (fm . fn) (%frag-mn)
+                                            (* (floor m fm) (floor n fn))))
+                                 (warps-in (getf (nthcdr 4 form) :warps))
+                                 (mask    (and warps-in
+                                               (%normalize-warp-mask (%warp-mask-unquote warps-in) location))))
+                            (%register-tile-fit-check m n location)
+                            (multiple-value-bind (n-true first-true)
+                                (if mask
+                                    (%validate-warp-mask mask nfrags
+                                                         (%resolve-workgroup-warp-count context)
+                                                         m n location)
+                                    (values 1 0))
+                              (let* ((per-warp (floor nfrags n-true))
+                                     (syms     (%register-tile-frag-syms (first b) per-warp)))
+                                (push (list (first b) m n syms n-true first-true) tiles)
                                 (loop for s in syms
                                       collect (list s `(make-register-fragment 16 8 ,init))))))
                           (list b)))))
@@ -844,7 +911,7 @@
   (analyze-let-expression
    (%explode-register-tiles
     (%expand-matmul-tile-stride-register-forms expr location)
-    location)
+    location context)
    env context location))
 
 
