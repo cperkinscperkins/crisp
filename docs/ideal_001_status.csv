@@ -470,3 +470,4 @@ max-pool,468,not implemented
 Average Pool,469,not implemented
 ReLU,470,not implemented
 Acknowledgements,471,implemented
+SUMMARY (Total: 471),Impl: 186 (39.5%),Not Impl: 261 (55.4%) | Part: 24 (5.1%)
