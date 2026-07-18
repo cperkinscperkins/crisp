@@ -745,7 +745,7 @@ MMA
 [x] CUTensorMap as implicit arg for kernels. 
 [x] Chapter 1 - async tile   cp.async and OpGroupAsyncCopy
 [x] Chapter 1.5 - async tiles  with CuTensorMap 
-[ ] Chapter 2 - pipelined async tile
+[x] Chapter 2 - pipelined async tile
 [ ] chapter 3 - warp specialization pipelining
 [ ] Intel  LSC 2D Block Loads in Intel Xe
 [ ] precision?  
@@ -755,6 +755,8 @@ MMA
 [ ] don't forget bug 033 ( --debug )
 
 [ ] run-on-pod.sh has lost its summary?
+
+[ ] extract_status.py -> add a % summary.
 
 [ ] benchmarking
 [ ] How to collect and recollect data? runpod.io gives us LOTS of different GPUs to test against,

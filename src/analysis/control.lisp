@@ -500,29 +500,56 @@
 (defun %tlc-check-not-divergent (op-name location)
   "Signals a clear compile error if (op-name) appears inside a thread-divergent
    conditional.  Call from load-tile-at / store-tile-at analyzers.
-   Endeavor 139 (decision B): a with-warp-specialization role block sets *in-divergent-conditional*
-   too (warps diverge by role), but a :block/TMA load there is leader-issued and mbarrier-tracked
-   — no workgroup collective — so it is safe.  Relax the check inside a warp-spec block."
-  (when (and *in-divergent-conditional* (not *in-warp-spec-block*))
+   NOTE (Endeavor 139): a with-warp-specialization role block ALSO sets *in-divergent-conditional*,
+   but its callers gate this on (not *in-warp-spec-block*) and apply the mode-aware
+   %warp-spec-check-block-only instead — a :block load there is leader-issued and safe."
+  (when *in-divergent-conditional*
         (error 'crisp-compiler-error
           :message (format nil
                        "~A cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It contains an internal sync-workgroup that would deadlock when only some threads enter the branch.  Compile-time conditionals (if+ / when+ / unless+) are safe.  If you need a guarded copy, use a non-divergent condition (e.g. one based on get-workgroup-id, not get-local-id) or restructure the kernel."
                      op-name)
           :source-location location)))
 
+(defun %warp-spec-check-sync (builtin-kw name-str location)
+  "Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective
+   (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped
+   ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, defer to the normal
+   thread-divergent check."
+  (if *in-warp-spec-block*
+      (when (eq builtin-kw :sync-workgroup)
+        (error 'crisp-compiler-error
+          :message "sync-workgroup cannot appear inside a with-warp-specialization role block — it is a workgroup collective and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering."
+          :source-location location))
+      (%tlc-check-not-divergent name-str location)))
+
+
+(defun %warp-spec-check-block-only (op-name mode location)
+  "Endeavor 139 (decision B): inside a with-warp-specialization role block, only a :block (TMA,
+   leader-issued) tile op is safe.  A synchronous (no-barrier) or :linear tile op is a WORKGROUP
+   COLLECTIVE — its cooperative copy has all threads participate — so with only one role's warps
+   present it deadlocks.  MODE is the resolved barrier :mode, or NIL for a synchronous op."
+  (when (and *in-warp-spec-block* (not (eq mode :block)))
+    (error 'crisp-compiler-error
+      :message (format nil
+                   "~A inside a with-warp-specialization role block must use a :block barrier — a ~A tile op is a workgroup-collective cooperative copy that deadlocks when only some warps run the block.  Stage with (make-async-barrier[-ring] :mode :block) on the producer; for the consumer's write-back use per-thread stores or a warp-scoped path (there is no :block store yet)."
+                   op-name (if mode (string-downcase (symbol-name mode)) "synchronous"))
+      :source-location location)))
 
 (defun analyze-load-tile-at-expression (expr env context location)
   "Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
    Rejects placement inside a thread-divergent conditional. If :barrier is provided
    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
    codegen via %expand-load-tile-at-form."
-  (%tlc-check-not-divergent "load-tile-at" location)
+  ;; Endeavor 139: inside a warp-spec block, %warp-spec-check-block-only (after mode resolution)
+  ;; governs instead of the thread-divergent check.
+  (unless *in-warp-spec-block* (%tlc-check-not-divergent "load-tile-at" location))
   (let* ((key-args (nthcdr 4 expr))
          (barrier-form (%extract-key-arg key-args :barrier nil)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
        (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
     ;; Endeavor 137: the barrier's :mode (looked up via its binding) picks the lowering.
     (let ((mode (and barrier-form (async-barrier-mode-of barrier-form))))
+      (%warp-spec-check-block-only "load-tile" mode location)
       (cond
         ;; :block on PTX (Chapter 1.5, Phase 2) — NVIDIA TMA: one bulk descriptor-driven copy
         ;; (cp.async.bulk.tensor...mbarrier::complete_tx::bytes) issued by an elected leader,
@@ -703,8 +730,14 @@
    codegen via %expand-store-tile-at-form."
   (let ((key-args (nthcdr 4 expr)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
-          (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location)))
-  (%tlc-check-not-divergent "store-tile-at" location)
+          (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
+    (unless *in-warp-spec-block* (%tlc-check-not-divergent "store-tile-at" location))
+    ;; Endeavor 139 (decision B): a store-tile in a role block is a workgroup-collective cooperative
+    ;; store (there is no :block store path) — resolve its mode for the message and reject.
+    (%warp-spec-check-block-only "store-tile"
+                                 (let ((b (%extract-key-arg key-args :barrier nil)))
+                                   (and b (async-barrier-mode-of b)))
+                                 location))
   (analyze-expression (%expand-store-tile-at-form expr location)
                       env context location))
 

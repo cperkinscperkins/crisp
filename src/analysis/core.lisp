@@ -161,7 +161,9 @@
   (unless *in-dispatch-context*
     (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
   (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence))
-    (%tlc-check-not-divergent name-str location))
+    ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
+    ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
+    (%warp-spec-check-sync builtin-kw name-str location))
   (let* ((info     (%gpu-builtin-info builtin-kw))
          (base-ty  (first info))
          (acc-dim  (second info))

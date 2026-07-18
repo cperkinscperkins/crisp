@@ -36,5 +36,7 @@
         (load-tile A (ring-get tiles 0) (0) :barrier (ring-get full 0)))  ; stage; TMA arrives `full`
       (:consumer
         (await (ring-get full 0))                                   ; bytes landed?
-        (store-tile (ring-get tiles 0) C (0))                        ; copy out
+        ;; Copy out per-thread (NOT store-tile — that's a workgroup collective and would deadlock
+        ;; with only the consumer warp present; the guard now rejects it).  C[0] == A[0] on metal.
+        (set! (~ C 0) (~ (ring-get tiles 0) 0))
         (signal (ring-get empty 0))))))                              ; release the slot
