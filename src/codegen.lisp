@@ -3897,9 +3897,21 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
          (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr"))
          (load-cnt  (max 1 (semantic-nvvm-tma-wait-load-count node)))
+         (ws-phase  (semantic-nvvm-tma-wait-phase node))   ; Endeavor 139: warp-spec phase (0/1) or NIL
          (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
          (wait-bb   (llvm-append-basic-block parent "tma_wait"))
          (exit-bb   (llvm-append-basic-block parent "tma_wait_done")))
+    ;; Endeavor 139 — WARP-SPEC await: spin on try_wait.parity(ws-phase), then return.  NO
+    ;; workgroup bar.sync (only one role's warps reach this — a bar.sync deadlocks) and NO re-init
+    ;; (producer and consumer are separate warps; the phase flips naturally across laps).
+    (when ws-phase
+      (llvm-build-br builder wait-bb)
+      (llvm-position-builder-at-end builder wait-bb)
+      (let* ((complete (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr (llvm-const-int i32-type ws-phase nil)))
+             (done     (llvm-build-icmp builder +llvm-int-ne+ complete (llvm-const-int i32-type 0 nil) "ws_done")))
+        (llvm-build-cond-br builder done exit-bb wait-bb))
+      (llvm-position-builder-at-end builder exit-bb)
+      (return-from generate-node-ir (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
     (llvm-build-br builder wait-bb)
     (llvm-position-builder-at-end builder wait-bb)
     (let* ((complete (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr (llvm-const-int i32-type 0 nil)))
@@ -3922,6 +3934,28 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
       (llvm-build-br builder cont-bb)
       (llvm-position-builder-at-end builder cont-bb)
       (%ptx-barrier builder module))
+    (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+
+(defmethod generate-node-ir ((node semantic-signal) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 139 (Chapter 3) — (signal (ring-get empty slot)): a leader-guarded mbarrier.arrive on
+   the slot's mbarrier, releasing it to the producer.  One thread per warp (lane 0) arrives, so the
+   arrival count matches :arrivals (one release per consumer warp)."
+  (let* ((i32-type  (llvm-int32-type))
+         (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
+         (barrier-i (generate-node-ir (semantic-signal-barrier-node node) builder module var-env
+                                      di-builder di-scope location-map))
+         (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "sig_mbar"))
+         (lane      (%ptx-read-warp-sreg builder module "laneid"))
+         (is-leader (llvm-build-icmp builder +llvm-int-eq+ lane (llvm-const-int i32-type 0 nil) "sig_leader"))
+         (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (arrive-bb (llvm-append-basic-block parent "sig_arrive"))
+         (cont-bb   (llvm-append-basic-block parent "sig_cont")))
+    (llvm-build-cond-br builder is-leader arrive-bb cont-bb)
+    (llvm-position-builder-at-end builder arrive-bb)
+    (%gen-nvvm-mbarrier-arrive-shared builder module mbar-ptr)
+    (llvm-build-br builder cont-bb)
+    (llvm-position-builder-at-end builder cont-bb)
     (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
 
 (defmethod generate-node-ir ((node semantic-make-c-handle) builder module var-env di-builder di-scope location-map)

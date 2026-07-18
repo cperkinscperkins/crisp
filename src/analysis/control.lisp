@@ -726,6 +726,9 @@
         :barrier-node barrier-node
         ;; Endeavor 138: resolve through (ring-get R i) — a ring slot's count is the RING's.
         :load-count (barrier-load-count-of (second expr))
+        ;; Endeavor 139: a warp-spec ring (has :initial-state) -> phase-tracked, no re-init.
+        ;; For the single-step handshake the phase is the ring's constant initial phase.
+        :phase (barrier-initial-phase-of (second expr))
         :type 'ulong
         :source-location location))
       ;; :block on the GENERIC compile-check pass fell to the sync staging (which already
@@ -3120,9 +3123,19 @@
   (let* ((keys (rest expr))
          (n    (getf keys :ring-count))
          (arr  (getf keys :arrivals))
+         (init-state (getf keys :initial-state))
+         ;; Endeavor 139: :initial-state -> the awaiter's starting try_wait.parity phase.
+         ;; :waiting -> 0 (blocks until first arrival); :signaled -> 1 (passes immediately on a
+         ;; fresh mbarrier).  Absent -> NIL (a plain 138 ring whose await re-inits each step).
+         (init-phase (cond ((null init-state) nil)
+                           ((eq init-state :waiting)  0)
+                           ((eq init-state :signaled) 1)
+                           (t (error 'crisp-compiler-error
+                                :message (format nil "make-async-barrier-ring: :initial-state must be :signaled or :waiting, got ~S" init-state)
+                                :source-location location))))
          (bmode (%parse-async-barrier-keys
                  ;; reuse the single-barrier key parser (validation + arch gating) by handing it
-                 ;; just the :mode pair — :ring-count / :arrivals are ours.
+                 ;; just the :mode pair — :ring-count / :arrivals / :initial-state are ours.
                  (list* (first expr)
                         (let ((m (getf keys :mode)))
                           (when m (list :mode m))))
@@ -3132,9 +3145,9 @@
         :message "make-async-barrier-ring: keys must be :key value pairs"
         :source-location location))
     (loop for (k nil) on keys by #'cddr do
-      (unless (member k '(:ring-count :mode :arrivals))
+      (unless (member k '(:ring-count :mode :arrivals :initial-state))
         (error 'crisp-compiler-error
-          :message (format nil "make-async-barrier-ring: unknown key ~S (expected :ring-count, :mode or :arrivals)" k)
+          :message (format nil "make-async-barrier-ring: unknown key ~S (expected :ring-count, :mode, :arrivals or :initial-state)" k)
           :source-location location)))
     (unless (and (integerp n) (plusp n))
       (error 'crisp-compiler-error
@@ -3157,13 +3170,16 @@
         ;; every consumer (notably await's re-init) from the one table — a ring slot re-armed with
         ;; a count that disagrees with its init is exactly the hang/torn-tile bug :arrivals exists
         ;; to prevent.
-        (setf (gethash bname *async-barrier-load-count*) count))
+        (setf (gethash bname *async-barrier-load-count*) count)
+        ;; Endeavor 139: the ring's initial await phase (marks it a warp-spec producer/consumer ring).
+        (when init-phase (setf (gethash bname *async-barrier-initial-phase*) init-phase)))
       (make-semantic-make-async-barrier
        :cell-node nil
        :barrier-mode bmode
        :ring-count n
        ;; Endeavor 138: EXPLICIT for a ring (never scan-counted — see the check above).
        :load-count count
+       :initial-phase init-phase
        :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
        :type 'ulong
        :source-location location))))
@@ -3205,6 +3221,31 @@
     (max 1 (or (and ring (gethash ring *async-barrier-ring-counts*))
                (and (symbolp barrier-form) (gethash barrier-form *async-barrier-ring-counts*))
                1))))
+
+(defun analyze-signal-expression (expr env context location)
+  "Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive on an
+   empty ring slot, releasing it to the producer.  PTX/:block only (mbarrier); a no-op on other
+   backends (the generic compile-check pass has no mbarriers)."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message (format nil "signal: expected (signal BARRIER), got ~S" expr)
+      :source-location location))
+  (let ((barrier-node (analyze-expression (second expr) env context (append location '(1)))))
+    (if (eq *target-backend* :ptx)
+        (make-semantic-signal
+         :barrier-node barrier-node
+         :type 'ulong
+         :source-location location)
+        ;; No mbarriers off the PTX/:block path — signal is a no-op there.
+        (analyze-expression nil env context location))))
+
+(defun barrier-initial-phase-of (barrier-form)
+  "Endeavor 139: the initial await phase (0/1) of the barrier a load-tile/await refers to, or NIL
+   if it is a plain 138 ring (no :initial-state).  BARRIER-FORM is the barrier SYMBOL or a
+   (ring-get RING i) form.  A non-NIL value selects the warp-spec await (phase-tracked, no re-init)."
+  (let ((ring (%barrier-ring-form-p barrier-form)))
+    (or (and ring (gethash ring *async-barrier-initial-phase*))
+        (and (symbolp barrier-form) (gethash barrier-form *async-barrier-initial-phase*)))))
 
 (defun async-barrier-mode-of (barrier-form)
   "Endeavor 137/138: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.
@@ -3645,6 +3686,12 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-expression)))
+  ;; Endeavor 139 (Chapter 3): signal — the consumer's manual mbarrier.arrive on an empty ring.
+  (let ((sym-cl (intern "SIGNAL" (find-package :crisp-language)))
+        (sym-cc (intern "SIGNAL" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-signal-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-signal-expression)))
   (let ((sym-cl (intern "LOAD-TILE-AT" (find-package :crisp-language)))
         (sym-cc (intern "LOAD-TILE-AT" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-at-expression)

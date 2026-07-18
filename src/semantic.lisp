@@ -380,6 +380,19 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
                      ;; is simply a RING OF 1 — make-async-barrier-ring sets N.  Codegen allocates
                      ;; [N x i64] of SLM mbarriers and returns the BASE address as i64; ring-get
                      ;; slot i is then just (base + i*8), which load-tile/await already inttoptr.
+  (initial-phase nil);; Endeavor 139 (Chapter 3): the :initial-state key -> the AWAITER's starting
+                     ;; try_wait.parity phase.  NIL = a plain 138 ring (await re-inits each step).
+                     ;; 0 = :waiting (await blocks until first arrival); 1 = :signaled (await passes
+                     ;; immediately on a fresh mbarrier).  A non-NIL value marks this a WARP-SPEC
+                     ;; producer/consumer ring: the await is phase-tracked and does NOT re-init.
+  source-location)
+
+;; Endeavor 139 (Chapter 3) — (signal (ring-get empty-ring slot)): the consumer's manual
+;; mbarrier.arrive on an empty ring slot, releasing it back to the producer.  Codegen emits a
+;; leader-guarded (lane 0) mbarrier.arrive on the slot's mbarrier.
+(defstruct semantic-signal
+  barrier-node
+  type
   source-location)
 
 ;; Endeavor 136 (Chapter 1, SPIR-V) — one collective OpGroupAsyncCopy of a contiguous run.
@@ -448,6 +461,10 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   (load-count 1)   ;; Endeavor 137 Phase 2d: #loads on this barrier — the await RE-INITS the
                    ;; mbarrier (count = load-count) after waiting so a looped (K-step) barrier
                    ;; restarts at phase 0 each iteration (try_wait.parity always uses phase 0).
+  (phase nil)      ;; Endeavor 139: NIL = 138 behavior (try_wait.parity(0) + workgroup sync +
+                   ;; re-init).  An integer (0/1) selects the WARP-SPEC variant: try_wait.parity
+                   ;; on THIS phase, NO workgroup bar.sync (would deadlock — only one role's warps
+                   ;; reach it) and NO re-init (producer/consumer are separate warps).
   type
   source-location)
 

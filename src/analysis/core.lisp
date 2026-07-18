@@ -333,6 +333,11 @@
          load-tiles that reference it.  Becomes the mbarrier init arrival count (each TMA load
          issues one mbarrier.arrive.expect_tx).  Rebound per module.")
 
+(defvar *async-barrier-initial-phase* (make-hash-table)
+        "Endeavor 139: map of async-barrier-RING binding SYMBOL -> initial await phase (0 :waiting /
+         1 :signaled).  Presence marks a WARP-SPEC producer/consumer ring, whose await is
+         phase-tracked and does NOT re-init (unlike a plain 138 ring).  Rebound per module.")
+
 (defvar *scratch-tile-dims* (make-hash-table :test 'equal)
         "Endeavor 137: scan-time map of (fn . scratch-tile-binding-SYMBOL) -> plist
          (:element-type E :box-dims (D...) :rank N).  Populated when scanning a
@@ -377,6 +382,7 @@
           (*scratch-tile-dims* (make-hash-table :test 'equal)) ; Endeavor 137: (fn.tile) -> box-dims.
           (*async-barrier-load-count* (make-hash-table)) ; Endeavor 137: barrier -> #block loads.
           (*async-barrier-ring-counts* (make-hash-table)) ; Endeavor 138: barrier-ring -> ring-count.
+          (*async-barrier-initial-phase* (make-hash-table)) ; Endeavor 139: ring -> initial await phase.
           (*call-site-args* (make-hash-table))      ; Endeavor 137: fn -> (callee . args) list.
           ;; NB: *tma-descriptor-info* is a PERSISTENT global (cleared via clrhash in the compiler
           ;; reset, like *implicit-scratch-size-expr-map*) — metadata emission reads it AFTER
@@ -2145,6 +2151,7 @@ in single-pass mode."
     (semantic-nvvm-tma-tile-copy      (semantic-nvvm-tma-tile-copy-type node))
     (semantic-nvvm-tma-wait           (semantic-nvvm-tma-wait-type node))
     (semantic-make-async-barrier      (semantic-make-async-barrier-type node))
+    (semantic-signal                  (semantic-signal-type node))
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-type node))
     (semantic-cp-async-copy-elem      (semantic-cp-async-copy-elem-type node))
     (semantic-cp-async-commit         (semantic-cp-async-commit-type node))
@@ -2214,6 +2221,7 @@ in single-pass mode."
     (semantic-nvvm-tma-tile-copy      (semantic-nvvm-tma-tile-copy-source-location node))
     (semantic-nvvm-tma-wait           (semantic-nvvm-tma-wait-source-location node))
     (semantic-make-async-barrier      (semantic-make-async-barrier-source-location node))
+    (semantic-signal                  (semantic-signal-source-location node))
     (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-source-location node))
     (semantic-cp-async-copy-elem      (semantic-cp-async-copy-elem-source-location node))
     (semantic-cp-async-commit         (semantic-cp-async-commit-source-location node))

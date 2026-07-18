@@ -110,8 +110,18 @@ handshake).  Intel's fast path is a different animal (LSC 2D block loads, no SLM
             :block load-tile inside a role block now compiles.  No regression (906/906 + 201 neg;
             normal divergence rejections intact).  STILL TODO: forbid sync-workgroup + :linear loads
             in a role block (deadlock), and enforce :block-only.
-        [ ] 2b :initial-state key (initial mbarrier phase) + signal (mbarrier.arrive on empty).
-        [ ] 2c the CUTLASS phase-model handshake wiring -> 02 green.
+        [x] 2b :initial-state + signal — DONE 2026-07-18.  :initial-state -> initial await parity
+            (:waiting 0 / :signaled 1), stored on the ring + *async-barrier-initial-phase* table;
+            barrier-initial-phase-of resolver.  signal = leader-guarded (lane 0) mbarrier.arrive
+            (semantic-signal node + codegen).  New-node gotcha: added semantic-signal to the 2 core
+            etypecases (type + source-location).
+        [x] 2c phase-tracked await — DONE 2026-07-18.  semantic-nvvm-tma-wait got a `phase` field:
+            NIL = 138 (try_wait.parity(0) + workgroup sync + re-init); integer = WARP-SPEC
+            (try_wait.parity(phase), NO sync, NO re-init).  02 GREEN.  PTX verified: empty await
+            parity 1, full await parity 0, signal = mbarrier.arrive on empty, 4 inits up front, no
+            re-init.  907/907 + 201 neg; 137/138 (shared await path) unregressed.  Metal (H100)
+            deferred with 4/5.  (Phase is the constant initial phase for single-step; multi-lap
+            flipping is step 4.)
     [ ] 03  make-register-tile :warps — the mask, length check, even-only, fragment distribution
             across true warps.  Compile + IR-verify the fragment->warp mapping.
     [ ] 04  the full warp-spec MMA matmul (NVIDIA :block).  <-- NEEDS H100.
