@@ -122,8 +122,13 @@ handshake).  Intel's fast path is a different animal (LSC 2D block loads, no SLM
             re-init.  907/907 + 201 neg; 137/138 (shared await path) unregressed.  Metal (H100)
             deferred with 4/5.  (Phase is the constant initial phase for single-step; multi-lap
             flipping is step 4.)
-    [ ] 03  make-register-tile :warps — the mask, length check, even-only, fragment distribution
-            across true warps.  Compile + IR-verify the fragment->warp mapping.
+    [~] 03  make-register-tile :warps — decision A.
+        [x] 3.1 parsing + validation + #true=1 (works: single participating warp needs no split).
+                Tests 03-register-tile-warps + errors/04 (bad length), 05 (all-false).  910/910.
+        [ ] 3.2 the #true>=2 DISTRIBUTION (net-new multi-warp fragment split — the occupancy lever):
+                make-register-tile sizes nfrags/#true per warp; mma-accumulate-via-tile computes each
+                warp's logical fragment range (warp_position*(nfrags/#true)+local); store distributes.
+                warp_position = rank among true warps.  Deep codegen — do fresh + cohesively.
     [ ] 04  the full warp-spec MMA matmul (NVIDIA :block).  <-- NEEDS H100.
     [ ] 05  benchmark: sweep consumer count (the occupancy lever) vs 138's ring + cuBLAS.  <-- H100.
 

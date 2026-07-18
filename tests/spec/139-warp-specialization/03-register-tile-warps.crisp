@@ -1,0 +1,21 @@
+;; Endeavor 139 (Chapter 3) — 03: make-register-tile :warps, single participating warp (#true=1).
+;; The C-tile lives on the consumer warp only (warp 0 = producer holds no fragment).  A single
+;; participating warp needs no fragment split — the tile is the full (16/16)x(8/8)=1 fragment on
+;; that warp — so decision A works end-to-end today.  (>=2 participating warps = the split = sub-step 2.)
+;; local-size 64 = 2 warps; the mask '(false true) names both.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "warp specialization is forward-only"
+;; SKIP-WITH[--debug]: "register-tile/MMA path hits the pre-existing --debug DIBuilder fault (plan/bugs.md #033)"
+;; TEST-WITH[--ir-target=ptx]
+
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel rt_warps (&out C)
+  (declare #'(&out mt)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((C-tile (make-register-tile float (16 8) 0.0 :warps '(false true))))
+    (with-warp-specialization (:producer 1 :consumer 1)
+      (:producer (set! (~ C 0 0) 1.0))
+      (:consumer (store-tile C-tile C (0 0))))))

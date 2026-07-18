@@ -349,15 +349,88 @@
     (setf (gethash name *register-tile-dims*) (list m n))
     name))
 
+(defun %normalize-warp-mask (mask location)
+  "Endeavor 139 (decision A): normalize a :warps topology mask to a list of booleans (t/nil).
+   Elements are true/false or 1/0 (Crisp's bool-is-int).  Any other element errors."
+  (unless (and (listp mask) mask)
+    (error 'crisp-compiler-error
+      :message (format nil "make-register-tile: :warps must be a non-empty list, got ~S" mask)
+      :source-location location))
+  (mapcar (lambda (e)
+            (cond ((eql e 1) t)
+                  ((eql e 0) nil)
+                  ((null e) nil)
+                  ((and (symbolp e) (string-equal (symbol-name e) "TRUE"))  t)
+                  ((and (symbolp e) (string-equal (symbol-name e) "FALSE")) nil)
+                  (t (error 'crisp-compiler-error
+                       :message (format nil "make-register-tile: :warps element must be true/false or 1/0, got ~S" e)
+                       :source-location location))))
+          mask))
+
+(defun %resolve-workgroup-warp-count (context)
+  "The workgroup's warp count = local-size / warp-size, or NIL if local-size is not statically
+   known.  warp-size is the active profile's :simd-width, else 32."
+  (let* ((fn      (and context (compiler-context-current-compiling-function context)))
+         (disp    (and fn (gethash fn *kernel-dispatch-declarations*)))
+         (ls-decl (getf disp :local-size))
+         (dims    (and ls-decl (%hp-local-size-dims ls-decl))))
+    (when dims
+      (let* ((total     (reduce #'* dims))
+             (profile   (active-hardware-profile))
+             (warp-size (or (and profile (getf profile :simd-width)) 32)))
+        (max 1 (floor total warp-size))))))
+
+(defun %warp-mask-unquote (v)
+  "The :warps value is a quoted literal — '(false true) reads as (quote (false true)).  Unwrap."
+  (if (and (consp v) (symbolp (car v)) (string-equal (symbol-name (car v)) "QUOTE"))
+      (cadr v)
+      v))
+
 (defun analyze-make-register-tile (expr env context location)
-  "P3a: (make-register-tile T (M N) INIT) -> a record-of-fragments accumulator tile,
+  "P3a: (make-register-tile T (M N) INIT &key warps) -> a record-of-fragments accumulator tile,
    each fragment initialized to INIT.  Mints the tile type on demand; rewrites to
-   %construct-struct of make-register-fragment fields."
-  (destructuring-bind (elem dims init) (cdr expr)
+   %construct-struct of make-register-fragment fields.
+   Endeavor 139 (decision A): :warps is a flat topology mask of which warps hold the tile.  For a
+   single participating warp (or no mask) the tile is the full (M/16)x(N/8) fragment set on that
+   warp — the current build.  Distributing across >= 2 participating warps (the occupancy lever)
+   is sub-step 2."
+  (let* ((args     (cdr expr))
+         (elem     (first args))
+         (dims     (second args))
+         (init     (third args))
+         (kwargs   (nthcdr 3 args))
+         (warps-in (getf kwargs :warps)))
     (declare (ignore elem))          ; tf32/fp32 fixed for now
     (destructuring-bind (m n) dims
       (let* ((tile-name (%ensure-register-tile-type m n))
-             (nfrags (* (floor m 16) (floor n 8))))
+             (nfrags    (* (floor m 16) (floor n 8))))
+        (when warps-in
+          (let* ((mask      (%normalize-warp-mask (%warp-mask-unquote warps-in) location))
+                 (n-true    (count t mask))
+                 (n-warps   (%resolve-workgroup-warp-count context)))
+            ;; length must cover exactly the workgroup's warps (when statically known)
+            (when (and n-warps (/= (length mask) n-warps))
+              (error 'crisp-compiler-error
+                :message (format nil "make-register-tile :warps has ~a entries but the workgroup has ~a warp~:p (local-size / warp-size).  The mask must name every warp."
+                                 (length mask) n-warps)
+                :source-location location))
+            (when (zerop n-true)
+              (error 'crisp-compiler-error
+                :message "make-register-tile :warps must mark at least one warp true (some warp must hold the tile)."
+                :source-location location))
+            ;; even-only: participating warps must evenly divide the fragment grid
+            (unless (zerop (mod nfrags n-true))
+              (error 'crisp-compiler-error
+                :message (format nil "make-register-tile: a ~ax~a tile is ~a (16x8) fragments, which ~a participating warps do not evenly divide.  Use a warp count that divides ~a (1/2/4/... ), e.g. :consumer 2."
+                                 m n nfrags n-true nfrags)
+                :source-location location))
+            ;; sub-step 1: only a single participating warp is wired end-to-end; the >=2 split
+            ;; (per-warp fragment range in mma / store) is sub-step 2.
+            (when (> n-true 1)
+              (error 'crisp-compiler-error
+                :message (format nil "make-register-tile: distributing the tile across ~a participating warps is not yet implemented (step 3 sub-step 2).  A single participating warp (e.g. :warps '(false true)) works today."
+                                 n-true)
+                :source-location location))))
         (analyze-expression
          `(%construct-struct ,tile-name
                              ,@(loop repeat nfrags collect `(make-register-fragment 16 8 ,init)))

@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "at least one warp true"
+;; Endeavor 139 (decision A) — negative: some warp must hold the tile.
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel warps_all_false (&out C)
+  (declare #'(&out mt) (global-size :set-to 64) (local-size :set-to 64))
+  (let ((tile (make-register-tile float (16 8) 0.0 :warps '(false false))))
+    (store-tile tile C (0 0))))
