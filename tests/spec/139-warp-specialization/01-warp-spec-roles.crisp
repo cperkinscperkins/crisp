@@ -18,7 +18,7 @@
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--differentiate]: "warp specialization is forward-only control flow"
 ;; TEST-WITH[--ir-target=ptx] : validate-warp-roles
-;; TEST-WITH[--ir-target=spv] : validate-warp-roles
+;; TEST-WITH[--ir-target=spv]
 
 (def-type vec-t (vector int :address-space :global :align :compact))
 

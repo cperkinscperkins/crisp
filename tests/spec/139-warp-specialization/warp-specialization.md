@@ -78,9 +78,20 @@ handshake).  Intel's fast path is a different animal (LSC 2D block loads, no SLM
 
 ## TDD sequence
 
-    [ ] 01  with-warp-specialization SKELETON — the warp-role branch, NO barriers.  Each role
-            writes a distinct marker to C[tid]; assert both role bodies lower under a warp-gated
-            branch.  Backend-agnostic (ptx + spv).  <-- FIRST RED TEST (drafted).
+    [x] 01  with-warp-specialization SKELETON — DONE 2026-07-17.  The warp-role branch, NO
+            barriers.  Analyzer form (analyze-with-warp-specialization-expression, control.lisp)
+            lowering to a warp-id-gated nested if with the LAST role as the else (all branches are
+            void role bodies -> types match; a numeric fall-through would clash).  01-warp-spec-roles
+            green on ptx (validate-warp-roles: both markers present) + spv (compile).  905/905.
+            PTX folds it to `setp.lt.u32 %p1, linear_tid, 32` + selp — branch on warp 0, stable.
+      >>> FIX (real latent bug): warp-id lowered to %warpid, the VOLATILE physical-SM warp register
+          ("may change during execution ... should not be used for work scheduling" — PTX ISA).
+          Warp specialization IS work scheduling.  Fixed warp-id PTX codegen to synthesize
+          local-linear-id/32 (stable, = SPV SubgroupId): %ptx-synthesize-warp-id (codegen.lisp).
+          Only 110/05 used warp-id (SPV-only compile check) — not regressed.
+      >>> GOTCHA: on Windows the incremental build can keep a STALE fasl (same-second mtime) — a
+          control.lisp/codegen.lisp edit silently didn't recompile until I rm'd the cached fasl
+          under AppData/.../cache/common-lisp/.../src/.  When an edit "doesn't take", clear the fasl.
     [ ] 01b (metal, dev BMG / L0) — behavioral: local-size 64 (2 warps), producer writes 111 to
             C[0..31], consumer writes 222 to C[32..63].  Proves the branch actually split the warps
             (no-split would make every slot the same).  No pod.

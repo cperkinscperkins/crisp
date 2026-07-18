@@ -3206,6 +3206,112 @@
         :linear)))
 
 
+;;; ===================================================================
+;;; Endeavor 139 (Chapter 3) — warp specialization.
+;;; ===================================================================
+
+(defun %role-name-eq (a b)
+  "Role identity: package-insensitive symbol-name compare, so :producer (keyword) and a
+   bare producer symbol both match.  Roles are normally keywords."
+  (and (symbolp a) (symbolp b) (string-equal (symbol-name a) (symbol-name b))))
+
+(defun %parse-warp-specialization (expr location)
+  "Parse (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).
+   Returns (values role-counts role-blocks): role-counts an ordered list of (role . count);
+   role-blocks an alist role -> body-forms.  Validates: even ROLE/COUNT plist with positive
+   integer counts; every block names a declared role; every declared role has exactly one block;
+   no duplicate blocks."
+  (let ((role-spec (second expr))
+        (blocks    (cddr expr)))
+    (unless (and (listp role-spec) (plusp (length role-spec)) (evenp (length role-spec)))
+      (error 'crisp-compiler-error
+        :message "with-warp-specialization: first argument must be a (ROLE COUNT ...) list, e.g. (:producer 1 :consumer 3)"
+        :source-location location))
+    (let ((role-counts (loop for (role count) on role-spec by #'cddr
+                             do (unless (and (symbolp role) (integerp count) (plusp count))
+                                  (error 'crisp-compiler-error
+                                    :message (format nil "with-warp-specialization: each ROLE COUNT must be a symbol and a positive integer, got ~S ~S" role count)
+                                    :source-location location))
+                             collect (cons role count))))
+      (unless blocks
+        (error 'crisp-compiler-error
+          :message "with-warp-specialization: expected one (ROLE BODY...) block per declared role"
+          :source-location location))
+      (let ((role-blocks
+             (loop for blk in blocks
+                   do (unless (and (consp blk) (symbolp (first blk)))
+                        (error 'crisp-compiler-error
+                          :message (format nil "with-warp-specialization: each role block must be (ROLE BODY...), got ~S" blk)
+                          :source-location location))
+                   collect (cons (first blk) (rest blk)))))
+        ;; every block names a declared role
+        (dolist (blk role-blocks)
+          (unless (assoc (car blk) role-counts :test #'%role-name-eq)
+            (error 'crisp-compiler-error
+              :message (format nil "with-warp-specialization: block role ~S is not one of the declared roles ~S"
+                               (car blk) (mapcar #'car role-counts))
+              :source-location location)))
+        ;; exactly one block per declared role
+        (dolist (rc role-counts)
+          (let ((matches (count (car rc) role-blocks :key #'car :test #'%role-name-eq)))
+            (when (zerop matches)
+              (error 'crisp-compiler-error
+                :message (format nil "with-warp-specialization: declared role ~S has no (~S ...) block" (car rc) (car rc))
+                :source-location location))
+            (when (> matches 1)
+              (error 'crisp-compiler-error
+                :message (format nil "with-warp-specialization: role ~S has ~a blocks; expected exactly one" (car rc) matches)
+                :source-location location))))
+        (values role-counts role-blocks)))))
+
+(defun analyze-with-warp-specialization-expression (expr env context location)
+  "Endeavor 139: (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).  Splits the
+   workgroup by WARP — warp k runs the role whose cumulative count range contains k.  Lowers to a
+   warp-id-gated nested if: (let ((wsid (to-int (warp-id)))) (if (< wsid t1) BODY1 (if (< wsid t2)
+   BODY2 ...))) where t_i is the running sum of role counts.  Role blocks are warp-UNIFORM (all
+   lanes of a warp take the same branch) but workgroup-DIVERGENT — so an internal workgroup
+   collective (sync-workgroup, a cooperative load-tile) inside a block would DEADLOCK.  Forbidding
+   those is decision B, enforced when the load path is added (Chapter 3 step 2); the skeleton here
+   just lowers the branch."
+  (multiple-value-bind (role-counts role-blocks) (%parse-warp-specialization expr location)
+    (let* ((cl        (find-package :crisp-language))
+           (let-sym   (intern "LET" cl))
+           (if-sym    (intern "IF" cl))
+           (lt-sym    (intern "<" cl))
+           (progn-sym (intern "PROGN" cl))
+           (to-int-sym (intern "TO-INT" cl))
+           (warp-id-sym (intern "WARP-ID" cl))
+           (wsid      (gensym "WSID"))
+           (n         (length role-counts))
+           ;; each role's body wrapped in a progn (in declaration order)
+           (bodies    (loop for (role . count) in role-counts
+                            do (progn count)
+                            collect (cons progn-sym
+                                          (cdr (assoc role role-blocks :test #'%role-name-eq)))))
+           ;; running-sum upper bounds t_1..t_n
+           (thresholds (let ((acc 0))
+                         (loop for (role . count) in role-counts
+                               do (progn role) (incf acc count)
+                               collect acc)))
+           ;; Nested if with the LAST role as the final else — decision C guarantees warps
+           ;; [t_{n-1}, t_n) are exactly that role and there are none beyond t_n, so we need no
+           ;; numeric fall-through (which would clash types with the void role bodies).  For a
+           ;; single role there is no branch at all.
+           (nest (let ((acc (car (last bodies))))
+                   (loop for i from (- n 2) downto 0
+                         do (setf acc (list if-sym
+                                            (list lt-sym wsid (nth i thresholds))
+                                            (nth i bodies)
+                                            acc)))
+                   acc)))
+      ;; (warp-id) is the STABLE block-local warp index — on PTX it now synthesizes
+      ;; local-linear-id/32 (Endeavor 139 fixed it from the volatile %warpid); on SPV it is
+      ;; SubgroupId.  Either way it is safe for the producer/consumer split.
+      (analyze-expression
+       (list let-sym (list (list wsid (list to-int-sym (list warp-id-sym))))
+             nest)
+       env context location))))
+
 (defun analyze-make-c-handle (expr env context location)
   "Analyzer for (make-c-handle <held-ptr-type>)."
   (declare (ignore env context))
@@ -3403,6 +3509,12 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-with-precision-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-with-precision-expression)))
+  ;; Endeavor 139 (Chapter 3): warp specialization — the warp-role split.
+  (let ((sym-cl (intern "WITH-WARP-SPECIALIZATION" (find-package :crisp-language)))
+        (sym-cc (intern "WITH-WARP-SPECIALIZATION" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-with-warp-specialization-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-with-warp-specialization-expression)))
   (def-expression-analyzer uniformity-state analyze-uniformity-state)
   (def-expression-analyzer provably-uniform? analyze-provably-uniform?)
   (def-expression-analyzer provably-divergent? analyze-provably-divergent?)

@@ -2958,6 +2958,19 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (sum       (llvm-build-add builder total c31 "block_plus_31")))
     (llvm-build-udiv builder sum c32 "warp_count")))
 
+(defun %ptx-synthesize-warp-id (builder module)
+  "Synthesizes the STABLE block-local warp index on PTX: local-linear-id / 32.  Endeavor 139
+   FIX: warp-id previously read %warpid, the volatile PHYSICAL-SM warp register the PTX ISA warns
+   'may change during execution ... should not be used for work scheduling'.  Warp specialization
+   IS work scheduling and needs a stable per-block index — which is exactly SPV's SubgroupId.
+   local-linear-id is %tid-derived and stable; /32 gives the block-local warp index.  i32 (uint)."
+  (let* ((i32-type (llvm-int32-type))
+         (i64-type (llvm-int64-type))
+         (llid     (%gen-local-linear-id builder module))          ; i64 (ulong convention)
+         (c32      (llvm-const-int i64-type 32 nil))
+         (wid64    (crisp.llvm-bindings::llvm-build-udiv builder llid c32 "warp_id64")))
+    (crisp.llvm-bindings::llvm-build-trunc builder wid64 i32-type "warp_id")))
+
 (defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
   "Generates LLVM IR for a GPU built-in function call.
    Endeavor 115 Phase 2: full PTX dispatch for all builtins."
@@ -3011,7 +3024,8 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         ;; --- 110: warp helpers ---
         (:warp-id
          (if (eq *target-backend* :ptx)
-             (values (%ptx-read-warp-sreg builder module "warpid") nil)
+             ;; Endeavor 139: synthesize local-linear-id/32 (stable), NOT %warpid (volatile).
+             (values (%ptx-synthesize-warp-id builder module) nil)
              (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil)))
         (:warp-lane
          (if (eq *target-backend* :ptx)
