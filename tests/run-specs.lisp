@@ -2182,6 +2182,17 @@
         (return-from validate-ptx-tma nil)))
     t))
 
+(defun validate-warp-roles (file ir-string)
+  "Endeavor 139 (Chapter 3) — the warp-specialization role SKELETON.  Asserts BOTH role bodies
+   lowered: the producer marker (40001) and the consumer marker (40002) both survive to the IR.
+   (Neither block was dropped.)  Target-agnostic — works on the PTX or the SPV/IR string.  The
+   branch-actually-split-the-warps proof is the metal test 01b, not this shape check."
+  (declare (ignore file))
+  (dolist (marker '("40001" "40002") t)
+    (unless (search marker ir-string)
+      (format *error-output* "FAIL: warp-role marker ~a absent — a role body did not lower~%" marker)
+      (return-from validate-warp-roles nil))))
+
 (defun validate-ptx-linear-ring (file ptx-string)
   "Endeavor 138 (Chapter 2) — validates the :linear (cp.async) RING pipeline lowering: each
    load-tile commits a group (cp.async.commit_group), and (await) keeps stages in flight via

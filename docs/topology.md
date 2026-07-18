@@ -646,9 +646,10 @@ Matrix Multiplication
 
 ### `make-register-tile` ✅
 ```
-(make-register-tile <type> <dimensions> <initial-value>)
+(make-register-tile <type> <dimensions> <initial-value> &key warps)
 
 (make-register-tile float (128 128) 0.0)
+(make-register-tile float (64 64) 0.0 :warps '(false true true))   ; warp-specialized: tile on the 2 consumer warps
 ```
 `make-register-tile` reserves a space of registers and wraps their memory in a tensor.  
 The `<dimensions>` argument is a list of integers, which must be known at compile-time. They cannot be runtime variables.
@@ -667,6 +668,38 @@ The hardware profile stays optional in general — this is simply one of the few
 needs the SIMD width to be knowable. When a profile *is* supplied, its `:simd-width` and
 `:max-registers-per-thread` additionally let the compiler verify at compile time that the
 distributed fragments actually fit the physical register file.
+
+#### `:warps` — the warp participation mask (for warp specialization)
+
+By default the tile distributes across **every** warp of the workgroup.  That is wrong under
+**warp specialization**: if only the *consumer* warps run the MMA, any fragment the compiler
+placed on a producer warp would never be computed — a wrong result.  `:warps` fixes that by
+letting you say **exactly which warps hold the tile**, as a flat boolean **topology map**,
+positional over the workgroup's warp layout:
+
+```
+(make-register-tile float (64 64) 0.0 :warps '(false true true))
+;; warp 0 holds no fragment; warps 1 and 2 split the tile.  Pairs with a
+;; (with-warp-specialization (:producer 1 :consumer 2) ...) whose producer is warp 0.
+```
+
+- **Elements** are `true` / `false` (or, equivalently, `1` / `0`).  The mask is deliberately
+  decoupled from `with-warp-specialization` — `make-register-tile` is declared in the outer
+  `let`, outside any role block, so it references warps *positionally*, not by role name.  It is
+  **your** responsibility to line the `true`s up with the warps that actually run the MMA (the
+  same discipline as `:arrivals` — the compiler checks shape, not intent).
+- **Length** must equal the workgroup's warp count (`local-size / warp-size`).  When `local-size`
+  is statically known this is a **compile-time** error; otherwise it is deferred to an
+  `--runtime-checks` assertion.
+- **Even division (compile-time).**  An `(M N K)` MMA fragment is `M×N`, computed collectively by
+  one whole warp, so a tile is a grid of `(tile-M / frag-M) × (tile-N / frag-N)` fragments (e.g.
+  a 64×64 tile with `(16 8 8)` = `4×8 = 32` fragments).  The number of `true` warps **must evenly
+  divide** that fragment count, or it is a compile error.  So a 32-fragment tile allows 1 / 2 / 4 /
+  8 / 16 / 32 consumers — **not 3** (this is why the warp-spec example below uses `:consumer 2`,
+  not the `:consumer 3` an earlier draft showed).
+- **Occupancy note.**  More `true` (consumer) warps sharing one C-tile ⇒ fewer fragments per warp
+  ⇒ fewer registers per thread ⇒ higher occupancy.  So the consumer count is the real lever
+  against the single-warp register wall (Endeavor 138's 4096 plateau) — worth sweeping.
 
 ### matrix-multiply-tile-stride ✅
 ```
@@ -994,32 +1027,39 @@ We use rings to set up a load/execute pipeline.
     (declare #'((mat T) (mat T) (mat T))
                (global-size :derive-from C :strategy :strided)) 
 
-    (let ((pipeline-stages 3)
-          (A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count pipeline-stages))
-          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count pipeline-stages))
-          (C-tile (make-register-tile T (128 128) (identity T)))
+    ;; ring depth 3 is a repeated LITERAL (:ring-count needs a compile-time integer — see Chapter 2).
+    (let ((A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count 3))
+          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count 3))
+          ;; C-tile lives on the 2 CONSUMER warps only (warp 0 is the producer, holds no fragment).
+          ;; 128x128 with (16 8 8) = 8x16 = 128 fragments; 2 consumers -> 64 each (evenly divides).
+          (C-tile (make-register-tile T (128 128) (identity T) :warps '(false true true)))
           (M N (outer-dimensions A B))
           (K (inner-dimension A B))
+          (n-k-steps (/ K 128))   ; k-step is the 128-wide staging tile; producer & consumer share this count
           
-        ;; 1. The Barriers
-        ;; Starts 'empty' (signaled) so the Producer can immediately begin fetching
-        (empty-barrier-ring (make-async-barrier-ring :ring-count pipeline-stages :initial-state :signaled))
-        ;; Starts 'waiting' so the Consumer doesn't read garbage data
-        (full-barrier-ring  (make-async-barrier-ring :ring-count pipeline-stages :initial-state :waiting)))
+        ;; 1. The Barriers.  Both are ring depth 3; :arrivals is how many transfers land on each
+        ;; slot per stage (Chapter 2 makes it required for every barrier ring).
+        ;; empty starts 'signaled' so the Producer can immediately begin fetching; the Consumer
+        ;;   arrives it ONCE per slot (its single `signal`), so :arrivals 1.
+        (empty-barrier-ring (make-async-barrier-ring :ring-count 3 :arrivals 1 :initial-state :signaled))
+        ;; full starts 'waiting' so the Consumer doesn't read garbage; the Producer's two loads
+        ;;   (A + B) arrive it, so :arrivals 2.
+        (full-barrier-ring  (make-async-barrier-ring :ring-count 3 :arrivals 2 :initial-state :waiting)))
 
     ;; Outer loop
     (tile-stride C C-tile (grid-y grid-x) 
       
-      ;; Split the execution! 
-      ;; The compiler will physically map these to different warps in the Workgroup.
-      (with-warp-specialization (:producer 1 :consumer 3)
+      ;; Split the execution!  The compiler physically maps these to different warps.
+      ;; :consumer 2 (not 3) so the 128-fragment C-tile divides evenly across the consumers;
+      ;; the workgroup is (1 + 2) * warp-size = 3 warps.
+      (with-warp-specialization (:producer 1 :consumer 2)
         
         ;; ==========================================
         ;; THE PRODUCER BLOCK (Memory only)
         ;; ==========================================
         (:producer
           (let ((ring-idx 0))
-            (do-times (grid-k K)
+            (dotimes (grid-k n-k-steps)
               
               ;; 1. Wait for the Consumer to say this SLM slot is empty/safe.
               (await (ring-get empty-barrier-ring ring-idx))
@@ -1030,14 +1070,14 @@ We use rings to set up a load/execute pipeline.
               (load-tile B (ring-get B-tile-ring ring-idx) (grid-k grid-x) :barrier (ring-get full-barrier-ring ring-idx))
               
               ;; 3. Move to the next ring slot
-              (set! ring-idx (mod (+ ring-idx 1) pipeline-stages)))))
+              (set! ring-idx (mod (+ ring-idx 1) 3)))))
         
         ;; ==========================================
         ;; THE CONSUMER BLOCK (Math only)
         ;; ==========================================
         (:consumer
           (let ((ring-idx 0))
-            (do-times (grid-k K-tiles)
+            (dotimes (grid-k n-k-steps)
               
               ;; 1. Wait for the hardware DMA to say the bytes have arrived.
               (await (ring-get full-barrier-ring ring-idx))
@@ -1052,7 +1092,7 @@ We use rings to set up a load/execute pipeline.
               (signal (ring-get empty-barrier-ring ring-idx))
               
               ;; 4. Move to the next ring slot
-              (set! ring-idx (mod (+ ring-idx 1) pipeline-stages)))
+              (set! ring-idx (mod (+ ring-idx 1) 3)))
           
           ;; EPILOGUE (Only the Consumer writes back to Global Memory!)
           (add-bias C-tile bias-tile) ;; <-- fictional operation for illustrative purposes
