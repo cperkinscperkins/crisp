@@ -92,9 +92,12 @@ handshake).  Intel's fast path is a different animal (LSC 2D block loads, no SLM
       >>> GOTCHA: on Windows the incremental build can keep a STALE fasl (same-second mtime) — a
           control.lisp/codegen.lisp edit silently didn't recompile until I rm'd the cached fasl
           under AppData/.../cache/common-lisp/.../src/.  When an edit "doesn't take", clear the fasl.
-    [ ] 01b (metal, dev BMG / L0) — behavioral: local-size 64 (2 warps), producer writes 111 to
-            C[0..31], consumer writes 222 to C[32..63].  Proves the branch actually split the warps
-            (no-split would make every slot the same).  No pod.
+    [x] 01b (metal, dev BMG / L0) — DONE 2026-07-17.  Each thread writes its role marker to
+            C[warp-id]: producer warp -> C[0]=40001, consumer -> C[1]=40002.  On BMG (subgroup 32
+            for this kernel) got `BUFFER c: 40001 40002 2 3` (C[2],C[3] = harness init) -> the
+            split is REAL on metal, and the stable-warp-id fix works on hardware.  HOIST-EXPECT
+            `BUFFER c: 40001 40002`.  (buffer prints LOWERCASE param name; hoist L0 vector buffer
+            is a fixed 4 elems, so index by warp-id, not thread-id.)  2/2.
     [ ] 02  :initial-state + signal + the empty/full ring pair — a SIMPLE data hand-off (producer
             load-tiles a slot to SLM, consumer reads it to output).  "Hello producer/consumer", NO
             MMA.  This is where the handshake semantics get pinned (arrivals for empty=1 / full=2,

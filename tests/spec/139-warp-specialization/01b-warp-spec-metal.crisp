@@ -1,0 +1,31 @@
+;; Endeavor 139 (Chapter 3) — 01b: the BEHAVIORAL / on-metal proof that the warp split is real.
+;;
+;; 01 proved the branch LOWERS (both role bodies, warp-id gate).  This proves it actually SPLITS
+;; the warps on hardware.  Each thread writes its role marker to C[warp-id]:
+;;   - warp 0 is the producer -> C[0] = 40001 (only warp 0 ever touches C[0]).
+;;   - warps >= 1 are consumers -> C[1..] = 40002.
+;; So C[0]==40001 is the discriminator: if the warp split were broken (e.g. warp-id regressed to
+;; the volatile %warpid), warp 0 would not reliably take the producer branch and C[0] would be
+;; 40002 (the consumer marker).  C[1]==40002 confirms a consumer warp ran.
+;;
+;; local-size 64 = 2 warps on NVIDIA (subgroup 32) or 4 subgroups on Intel BMG (subgroup 16), so
+;; there are always >= 2 warps and the C[warp-id] indices stay within the hoist's 4-element buffer.
+;;
+;; Runs on the dev BMG box via the L0 hoist (no pod).  CUDA hoist would confirm it on NVIDIA too.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "warp specialization is forward-only control flow"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 40001 40002
+
+(def-type vec-t (vector int :address-space :global :align :compact))
+
+(def-kernel warp_roles_metal (&out C)
+  (declare #'(&out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))          ; >= 2 warps on both vendors
+  (let ((w (to-int (warp-id))))
+    (with-warp-specialization (:producer 1 :consumer 1)
+      (:producer (set! (~ C w) 40001))         ; warp 0 -> C[0]
+      (:consumer (set! (~ C w) 40002)))))       ; warps >= 1 -> C[1..]
