@@ -98,10 +98,20 @@ handshake).  Intel's fast path is a different animal (LSC 2D block loads, no SLM
             split is REAL on metal, and the stable-warp-id fix works on hardware.  HOIST-EXPECT
             `BUFFER c: 40001 40002`.  (buffer prints LOWERCASE param name; hoist L0 vector buffer
             is a fixed 4 elems, so index by warp-id, not thread-id.)  2/2.
-    [ ] 02  :initial-state + signal + the empty/full ring pair — a SIMPLE data hand-off (producer
+    [~] 02  :initial-state + signal + the empty/full ring pair — a SIMPLE data hand-off (producer
             load-tiles a slot to SLM, consumer reads it to output).  "Hello producer/consumer", NO
-            MMA.  This is where the handshake semantics get pinned (arrivals for empty=1 / full=2,
-            the initial phase).  Metal on dev BMG where possible; :block path needs sm_90.
+            MMA.  Red test 02-producer-consumer written (pins the API; currently red at :initial-state).
+            Modeled on CUTLASS (agreed): `full` = TRANSACTION mbarrier (TMA expect_tx arrives it),
+            `empty` = ARRIVAL mbarrier (consumer signal arrives it), per-slot phase.  Metal = H100
+            (:block/TMA needs sm_90); build + IR-verify pod-free first.
+        [x] 2a divergence scope (decision B) DONE 2026-07-18 — *in-warp-spec-block* dynamic var,
+            bound around the role-block analysis in analyze-with-warp-specialization;
+            %tlc-check-not-divergent relaxes when set (a :block load is leader-issued, warp-safe).
+            :block load-tile inside a role block now compiles.  No regression (906/906 + 201 neg;
+            normal divergence rejections intact).  STILL TODO: forbid sync-workgroup + :linear loads
+            in a role block (deadlock), and enforce :block-only.
+        [ ] 2b :initial-state key (initial mbarrier phase) + signal (mbarrier.arrive on empty).
+        [ ] 2c the CUTLASS phase-model handshake wiring -> 02 green.
     [ ] 03  make-register-tile :warps — the mask, length check, even-only, fragment distribution
             across true warps.  Compile + IR-verify the fragment->warp mapping.
     [ ] 04  the full warp-spec MMA matmul (NVIDIA :block).  <-- NEEDS H100.

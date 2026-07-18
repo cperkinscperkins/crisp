@@ -1,0 +1,40 @@
+;; Endeavor 139 (Chapter 3) — 02: the producer/consumer HANDSHAKE (no MMA yet).
+;;
+;; A "hello producer/consumer": the producer warp stages a tile from A into SLM; the consumer warp
+;; waits for it, copies it out to C, and releases the slot.  A round-trip A -> SLM -> C, so on metal
+;; C == A iff the handshake is correct.  This pins the three net-new primitives:
+;;   - make-async-barrier-ring :initial-state :signaled / :waiting  (empty starts free, full starts held)
+;;   - signal  (the consumer's manual mbarrier.arrive on the empty ring)
+;;   - await / load-tile / store-tile INSIDE warp-specialization role blocks (needs the decision-B
+;;     divergence scope: :block loads are leader-issued + mbarrier-tracked, no workgroup sync).
+;;
+;; Modeled on the CUTLASS pipeline: `full` is a TRANSACTION mbarrier (the TMA's expect_tx arrives it),
+;; `empty` is an ARRIVAL mbarrier (the consumer's signal arrives it); each ring slot tracks its own
+;; phase.  :block/TMA => needs sm_90; metal verification batches with the step 4/5 H100 session.
+;;
+;; RED until :initial-state + signal + the warp-spec load scope are implemented.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "warp specialization is forward-only control flow"
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90]
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel producer_consumer (A &out C)
+  (declare #'(vec-t &out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))          ; 1 producer warp + 1 consumer warp
+  (let ((tiles (make-scratch-vector-ring float 8 :ring-count 2))
+        ;; empty starts SIGNALED so the producer may fetch immediately;
+        ;; full  starts WAITING  so the consumer blocks until the bytes land.
+        (empty (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1 :initial-state :signaled))
+        (full  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1 :initial-state :waiting)))
+    (with-warp-specialization (:producer 1 :consumer 1)
+      (:producer
+        (await (ring-get empty 0))                                  ; slot free?
+        (load-tile A (ring-get tiles 0) (0) :barrier (ring-get full 0)))  ; stage; TMA arrives `full`
+      (:consumer
+        (await (ring-get full 0))                                   ; bytes landed?
+        (store-tile (ring-get tiles 0) C (0))                        ; copy out
+        (signal (ring-get empty 0))))))                              ; release the slot

@@ -454,6 +454,14 @@
    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the
    internal %uniform-when form instead, whose analyzer does NOT set this flag.")
 
+(defvar *in-warp-spec-block* nil
+        "Endeavor 139 (Chapter 3), decision B: T when analyzing the body of a
+   with-warp-specialization role block.  Such a block is warp-DIVERGENT (different warps run
+   different roles), which sets *in-divergent-conditional* — but a :block (TMA) load-tile there is
+   SAFE: it is leader-issued and mbarrier-tracked, with no workgroup collective to deadlock.  So
+   %tlc-check-not-divergent relaxes when this is set.  A workgroup collective (sync-workgroup, a
+   cooperative :linear load) inside a role block WOULD deadlock and is rejected separately.")
+
 (defun analyze-%uniform-if-impl (expr env context location)
   "Internal-use: structurally identical to analyze-if-expression-impl but
    does NOT bind *in-divergent-conditional* on the two-branch path.  Use
@@ -491,8 +499,11 @@
 
 (defun %tlc-check-not-divergent (op-name location)
   "Signals a clear compile error if (op-name) appears inside a thread-divergent
-   conditional.  Call from load-tile-at / store-tile-at analyzers."
-  (when *in-divergent-conditional*
+   conditional.  Call from load-tile-at / store-tile-at analyzers.
+   Endeavor 139 (decision B): a with-warp-specialization role block sets *in-divergent-conditional*
+   too (warps diverge by role), but a :block/TMA load there is leader-issued and mbarrier-tracked
+   — no workgroup collective — so it is safe.  Relax the check inside a warp-spec block."
+  (when (and *in-divergent-conditional* (not *in-warp-spec-block*))
         (error 'crisp-compiler-error
           :message (format nil
                        "~A cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It contains an internal sync-workgroup that would deadlock when only some threads enter the branch.  Compile-time conditionals (if+ / when+ / unless+) are safe.  If you need a guarded copy, use a non-divergent condition (e.g. one based on get-workgroup-id, not get-local-id) or restructure the kernel."
@@ -3307,10 +3318,15 @@
       ;; (warp-id) is the STABLE block-local warp index — on PTX it now synthesizes
       ;; local-linear-id/32 (Endeavor 139 fixed it from the volatile %warpid); on SPV it is
       ;; SubgroupId.  Either way it is safe for the producer/consumer split.
-      (analyze-expression
-       (list let-sym (list (list wsid (list to-int-sym (list warp-id-sym))))
-             nest)
-       env context location))))
+      ;;
+      ;; Decision B: bind *in-warp-spec-block* around the role-block analysis so a :block load-tile
+      ;; inside a role block is permitted (leader-issued, no workgroup sync) despite the
+      ;; warp-divergent branch the expansion introduces.
+      (let ((*in-warp-spec-block* t))
+        (analyze-expression
+         (list let-sym (list (list wsid (list to-int-sym (list warp-id-sym))))
+               nest)
+         env context location)))))
 
 (defun analyze-make-c-handle (expr env context location)
   "Analyzer for (make-c-handle <held-ptr-type>)."
