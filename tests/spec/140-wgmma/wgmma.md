@@ -179,14 +179,27 @@ survive that.  (Chris's direction.)
               (2) LLVM IR inline-asm has no '+f'; '=f' output + tied input means the tied inputs
                   OCCUPY operand slots, so the 2 'l' descriptors are $2*nacc / $2*nacc+1, NOT
                   $nacc/$nacc+1 (they were hitting the accumulator regs).
-        [ ] METAL (needs H100): hoist 01 (--mma-test=64,64,8) -> MMA_CORRECT.  The store mapping +
-            core-matrix scatter are unverified on metal (silent-MMA_WRONG risk) — one focused session.
-    [ ] 2  wgmma fed from a TMA-staged tile (:block) — get the descriptor/swizzle agreement right
-           (NOTE: our TMA currently uses CU_TENSOR_MAP_SWIZZLE_NONE — hoist-cuda/main.lisp:926,
-           metadata.lisp:580).  Single-tile :block wgmma matmul, MMA_CORRECT.
-    [ ] 3  ASYNC wgmma (commit_group/wait_group, likely via the :mode :wgmma idea) over a multi-K
-           loop.  Pin the async interface here.
-    [ ] 4  grid-strided GEMM + BENCHMARK vs cuBLAS.  Where the big jump should show.
+        [x] METAL MMA_CORRECT 2026-07-19 (H100) — hoisted 01 (--mma-test=64,64,8), C==A*B on silicon.
+            The Crisp-emitted wgmma (descriptor + mma_async + core-matrix scatter + warp-tiled store)
+            is CORRECT first metal try after the port.  STEP 1 COMPLETE — the Crisp compiler emits
+            working Hopper wgmma.  (Rebuild crisp-hoist-cuda.exe after the codegen change — it embeds
+            the compiler.)
+    >>> REORDERING PROPOSED 2026-07-19 (measure before optimizing the load): the agreed Step 2 was
+        TMA-staged, but TMA+wgmma layout agreement needs the 128B SWIZZLE (wgmma no-swizzle wants
+        core-matrix order; TMA SWIZZLE_NONE gives row-major — they DON'T match), a meaty silent-
+        MMA_WRONG sub-project.  So measure raw wgmma throughput FIRST with the (working) core-matrix
+        SCATTER load; if load-bound, that justifies TMA+swizzle.  New order: 2 multi-K correctness,
+        2b grid-strided BENCHMARK, THEN 3 TMA+swizzle, 4 async.  (Pending Chris's ok.)
+    [~] 2  multi-K wgmma GEMM (single 64x64 tile) — K-loop accumulates into the SAME D (scaleD=1),
+           synchronous per-K wgmma, per-K core-matrix scatter.  Kernel BUILT (02-wgmma-multik, 1
+           mma_async in the loop).  Needs metal MMA_CORRECT (validates the K-accumulation + per-K
+           scatter).
+    [~] 2b grid-strided BENCHMARK kernel BUILT (benchmarks/matmul/crisp/matmul_wgmma.crisp) — tile-
+           stride + per-tile D reset (set! D (make-wgmma-accumulator ...)) + the multi-K wgmma loop.
+           Needs metal: correctness + GFLOPS vs the 139 ws2/pipe + cuBLAS.  THE payoff measurement.
+    [ ] 3  TMA + 128B SWIZZLE (if 2b is load-bound): CuTensorMap SWIZZLE_128B in the hoist + wgmma
+           descriptor swizzle=1.  Reference-first in raw CUDA.
+    [ ] 4  ASYNC wgmma (commit_group/wait_group, the :mode :wgmma idea) over the multi-K loop.
     [ ] 5  fold in WARP SPECIALIZATION — producer warp feeding a consumer WARPGROUP (the full Hopper
            CUTLASS shape).  Multi-warpgroup CTAs.
 
