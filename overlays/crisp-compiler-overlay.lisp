@@ -168,3 +168,97 @@
       (llvm-position-builder-at-end builder cont-bb)
       (%ptx-barrier builder module))
     (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+
+;;; ===========================================================================
+;;; Endeavor 139 (Chapter 3) — STEP 4 PERF: static per-warp fragment addressing
+;;; ===========================================================================
+;;;
+;;; The register-tile DISTRIBUTION (n-true>1) computed each fragment's (mi nj)
+;;; from the RUNTIME warp-position (wp = warp-id - first-true), so the SMEM
+;;; operand addresses were runtime-derived and ptxas could not reuse (CSE) the
+;;; A-row / B-col loads shared across fragments.  Measured cost: ws2 did 94
+;;; ld.shared for 16 mma (5.9 loads/mma) vs ws1's 50 for 32 (1.6) — ~4x the
+;;; operand traffic per MMA.
+;;;
+;;; FIX: wp is inherently runtime (warp identity comes from threadIdx), so branch
+;;; on it ONCE — a `<`-cascade, exactly the with-warp-specialization role-branch
+;;; pattern — and inside each of the n-true arms fold the fragment coordinates to
+;;; integer LITERALS.  After the single runtime branch every operand address is a
+;;; compile-time constant, so ptxas reuses the shared loads (the n-true=1 path
+;;; already did this; now the distributed path matches it per warp).
+
+;;; src/mma.lisp
+(defun %emit-frag-loop-distributed (syms n-frags first-true n-true per-frag-fn)
+  "Endeavor 139 step-4 perf: emit a COMPILE-TIME-STATIC per-warp switch (was a runtime
+   fragment-index loop).  wp = warp-position is runtime, so branch on it once via a `<`-cascade
+   (the role-branch pattern, last warp = bare else since wp is gated into [0,n-true)); inside each
+   arm the fragment (mi nj) fold to integer LITERALS so the SMEM operand loads get static addresses
+   and ptxas can CSE them.  PER-FRAG-FN is called with (fv mi nj) where mi/nj are INTEGERS (same
+   contract as the n-true=1 static path)."
+  (let* ((cl        (find-package :crisp-language))
+         (progn-sym (intern "PROGN" cl))  (let-sym (intern "LET" cl))
+         (if-sym    (intern "IF" cl))     (lt-sym  (intern "<" cl))
+         (minus-sym (intern "-" cl))      (to-int-sym (intern "TO-INT" cl))
+         (warp-id-sym (intern "WARP-ID" cl))
+         (per-warp  (length syms))
+         (wp        (gensym "WP")))
+    (labels ((arm (k)
+               `(,progn-sym
+                  ,@(loop for l below per-warp
+                          for fv = (nth l syms)
+                          for logical = (+ (* k per-warp) l)
+                          for mi = (floor logical n-frags)
+                          for nj = (mod logical n-frags)
+                          append (funcall per-frag-fn fv mi nj))))
+             (chain (k)
+               (if (>= k (1- n-true))
+                   (arm k)                                   ; last warp = bare else
+                   `(,if-sym (,lt-sym ,wp ,(1+ k))
+                             ,(arm k)
+                             ,(chain (1+ k))))))
+      `(,let-sym ((,wp (,minus-sym (,to-int-sym (,warp-id-sym)) ,first-true)))
+         ,(chain 0)))))
+
+;;; src/mma.lisp — pass n-true through to the (now static) distributed emitter.
+(defun %emit-per-frag-accumulate (a b entry &optional accum-binding body)
+  "Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is now
+   a static per-warp switch (n-true threaded to %emit-frag-loop-distributed)."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
+    (destructuring-bind (fm . fn) (%frag-mn)
+      (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
+        (flet ((one-frag (fv mi-form nj-form)
+                 (let ((acc-set `(set! ,fv (mma-accumulate ,fv
+                                                           (load-fragment-a ,a (,mi-form 0))
+                                                           (load-fragment-b ,b (0 ,nj-form))))))
+                   (if body
+                       (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                       (list acc-set)))))
+          (if (> n-true 1)
+              (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
+              `(progn
+                 ,@(loop for mi below m-frags append
+                         (loop for nj below n-frags
+                               for idx = (+ (* mi n-frags) nj)
+                               append (one-frag (nth idx syms) mi nj))))))))))
+
+;;; src/mma.lisp — same n-true threading for the distributed store.
+(defun %emit-per-frag-store (dest tile-id entry)
+  "Per-fragment expansion of (store-tile V DEST (BTY BTX)).  Endeavor 139 step-4: distributed path
+   is now a static per-warp switch."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
+    (destructuring-bind (fm . fn) (%frag-mn)
+      (let* ((to-int-sym (intern "TO-INT" (find-package :crisp-language)))
+             (m-frags (floor m fm)) (n-frags (floor n fn))
+             (bty (list to-int-sym (first tile-id)))
+             (btx (list to-int-sym (second tile-id))))
+        (flet ((one-frag (fv mi-form nj-form)
+                 (list `(store-fragment ,fv ,dest
+                                        ((+ (* ,bty ,m-frags) ,mi-form)
+                                         (+ (* ,btx ,n-frags) ,nj-form))))))
+          (if (> n-true 1)
+              (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
+              `(progn
+                 ,@(loop for mi below m-frags append
+                         (loop for nj below n-frags
+                               for idx = (+ (* mi n-frags) nj)
+                               append (one-frag (nth idx syms) mi nj))))))))))

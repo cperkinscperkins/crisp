@@ -270,41 +270,47 @@ N CONSUMER warps do the MMA, split via the `:warps` topology mask (CUTLASS two-m
 `empty`/`full` + compiler-injected multi-lap phase flipping).  `wsN` = 1 producer + N consumers,
 the 64×64 C-tile (32 fragments) split 32/N per consumer.  All wsN are MMA_CORRECT.
 
-GFLOPS (H100 80GB HBM3, `nvcc -O3 -arch=sm_90a … -lcuda`):
+GFLOPS (H100 80GB HBM3, `nvcc -O3 -arch=sm_90a … -lcuda`), with STATIC per-warp fragment addressing:
 
 | size | cuBLAS | :block (Ch1.5) | pipe (Ch2) | ws1 (1P+1C) | ws2 (1P+2C) | ws4 (1P+4C) |
 |------|--------|----------------|------------|-------------|-------------|-------------|
-| 1024 | 135743 | 28208          | 31412      | **48127**   | 20758       | 27207       |
-| 2048 | 359705 | 75680          | 72831      | 69698       | 28688       | 28532       |
-| 4096 | 428420 | 80141          | 78487      | 71948       | 29668       | 29515       |
+| 1024 | 141490 | 27973          | 30835      | 47515       | **61072**   | 43000       |
+| 2048 | 361422 | 74980          | 72073      | 68774       | **79420**   | 45040       |
+| 4096 | 432823 | 80305          | 78423      | 72232       | **83252**   | 49482       |
 
-`ptxas -v` (registers/thread): pipe 250, ws1 252, **ws2 167, ws4 128** — the `:warps` split *does*
-cut per-thread registers as designed.
+`ptxas -v` (registers/thread): pipe 250, ws1 252, **ws2 167, ws4 128** — the `:warps` split cuts
+per-thread registers as designed.
 
-Findings (the Chapter-2 prediction that splitting the tile would raise occupancy and win was WRONG):
-- **The dedicated-producer LATENCY-HIDING lever is real but only when latency-bound.**  ws1 (same
-  32-fragment consumer as pipe, plus a producer warp that does nothing but TMA) is **+53% at 1024**
-  (48.1K vs 31.4K) — the consumer never stalls on memory.  The win fades to break-even by 2048 and
-  ws1 slips ~8% behind pipe at 4096, exactly the latency-bound→throughput-bound crossover.
-- **The OCCUPANCY lever (splitting a FIXED tile across consumers) BACKFIRES.**  ws2/ws4 run at
-  *half* of pipe (29K vs 78K at 4096) despite lower per-thread registers.  Why: each CTA still
-  computes ONE 64×64 output tile, now spread over more warps, and the idle producer warp reserves
-  the kernel's max register allocation too.  So the register footprint *per CTA* rises
-  (250×64 pipe → 167×96 ws2 → 128×160 ws4), which *lowers* the number of output tiles resident per
-  SM (pipe ≈8 → ws1/ws2 ≈4 → ws4 ≈3).  Raw warp-occupancy went up but **useful-tiles-per-SM went
-  down** — the split traded throughput for occupancy that does no extra work.
-- **The register cut didn't help because the tile size was held fixed.**  Fewer regs/thread only
-  buys throughput if the freed registers compute MORE output.  Splitting the same 64×64 tile
-  thinner keeps output/CTA constant while adding warps + a producer + handshake — strictly more
-  overhead for the same work.
+**ws2 (1 producer + 2 consumers) is the fastest Crisp kernel at every size** — 2.0× pipe at 1024,
++10% at 2048, +6% at 4096 (83.3K vs 78.4K, stable across reps) — beating both the Ch-2 ring and the
+Ch-1.5 `:block` floor.  The occupancy lever *works*.
 
-Conclusion / next lever: warp specialization pays for latency hiding (ws1 @ small sizes), not for
-splitting a fixed tile.  The CUTLASS-correct use is **BIGGER tiles per CTA** — e.g. a 128×128 tile
-across 4 consumers, each still holding ~32 fragments (~250 regs, the pipe sweet spot) but the CTA
-now producing 4× the output with ONE shared producer and higher arithmetic intensity (128×128 tile
-= 8 MACs/elem loaded vs 4 for 64×64).  Plus **register reallocation** (`setmaxnreg.dec` on the
-producer, `.inc` on consumers) so the idle producer stops reserving the consumer's register budget.
-Both are Chapter-4 directions, not a tweak to this sweep.
+A false start got us here.  The FIRST cut of the distribution computed each fragment's `(mi,nj)` from
+the **runtime** warp-position, so the SMEM operand addresses were runtime-derived and ptxas could not
+CSE the A-row / B-col loads shared across fragments.  That made ws2 do **5.9 `ld.shared`/mma** (vs
+ws1's 1.6) — ~4× the operand traffic — and ws2/ws4 ran at *half* of pipe (29K @4096), which looked
+like the occupancy lever "backfiring."  It wasn't the lever; it was our codegen.  The fix
+(`%emit-frag-loop-distributed`): `wp` is inherently runtime (warp identity comes from `threadIdx`),
+so branch on it ONCE — a `<`-cascade, the `with-warp-specialization` role-branch pattern — and fold
+each arm's fragment coordinates to integer LITERALS.  ws2 dropped to **1.5 `ld.shared`/mma**; ptxas
+hoists the now-static loads and the numbers above followed.
+
+Findings:
+- **Splitting a fixed 64×64 tile across 2 consumers pays** (ws2) once operand addressing is static —
+  the register cut (250→167) buys real occupancy without extra operand traffic.  This corrects the
+  first-pass conclusion that the split "backfires": that was the dynamic-addressing bug, not physics.
+- **2 consumers is the sweet spot; 4 regresses.**  ws4 (43–49K) trails ws2 badly — with 5 warps/CTA
+  the per-CTA register footprint + handshake overhead outweigh the extra split, and only 1/5 of the
+  warps issue TMA.  More consumers is not monotonically better.
+- **ws1's dedicated-producer latency hiding still helps at small sizes** (47.5K @1024, +54% vs pipe)
+  but ws2 dominates it everywhere — splitting *and* running a producer ahead beats either alone.
+- **cuBLAS is still ~5.2× ahead @4096** (433K vs 83K).  The remaining gap is not tile shape — it is
+  the instruction: we emit Ampere-era warp-level `mma.sync.m16n8k8`; cuBLAS uses Hopper `wgmma`
+  (warpgroup async MMA, a far larger tile per instruction with the accumulator spread across 128
+  threads).  Closing that is a `wgmma` endeavor, not a tweak here.
+
+Next levers: `wgmma` (the big one), bigger tiles per CTA for higher arithmetic intensity, and
+register reallocation (`setmaxnreg.dec` on the producer so it stops reserving the consumer budget).
 
 Reproduce: `put_temp_files_here/bench06.sh "1024 2048 4096"` (correctness gate @512 + GFLOPS sweep;
 same `crisp-hoist-cuda --mma-bench=M,N,K --grid-tile=64` → `nvcc -arch=sm_90a … -lcuda` flow).
