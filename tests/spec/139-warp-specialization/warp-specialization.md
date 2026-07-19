@@ -145,18 +145,31 @@ handshake).  Intel's fast path is a different animal (LSC 2D block loads, no SLM
             parity to `bfe.u32 bit1(visit)` (consumer, init 0) / `not; bfe` (producer, init 1).
             Tests: 05-warp-spec-matmul (1P+1C, MMA_CORRECT H100), 06-warp-spec-distributed
             (1P+2C split C-tile, MMA_CORRECT H100).  915/915 + 916/916 diff + 206 neg.
-    [x] 05  benchmark DONE 2026-07-18 (H100).  Swept ws1/ws2/ws4 consumers vs pipe(138)/block(137)/
-            cuBLAS at 1024/2048/4096.  **THE CHAPTER-2 PREDICTION WAS WRONG.**  Splitting a FIXED
-            64x64 tile across consumers cuts regs/thread (250->167->128) BUT backfires: ws2/ws4 run
-            at HALF of pipe (29K vs 78K @4096).  Each CTA still computes one 64x64 tile spread over
-            more warps + an idle producer that reserves max regs -> per-CTA register footprint RISES
-            -> fewer output-tiles-per-SM (8->4->3).  The one real win: ws1's dedicated-producer
-            LATENCY HIDING = +53% @1024 (48K vs 31K), fading to break-even by 4096.  Full table +
-            analysis in benchmarks/matmul/README.md (Chapter 3).  Next lever = BIGGER tiles per CTA
-            (128x128 over 4 consumers, ~32 frags each = pipe's reg sweet spot, 4x output/CTA, higher
-            arithmetic intensity) + register reallocation (setmaxnreg) — Chapter 4, not this sweep.
+    [x] 05  benchmark DONE 2026-07-18/19 (H100).  Swept ws1/ws2/ws4 consumers vs pipe(138)/block(137)/
+            cuBLAS at 1024/2048/4096.  FALSE START then FIX (see 05b): the first cut ran ws2/ws4 at
+            HALF of pipe and I wrongly concluded the split "backfires."  After the static-addressing
+            fix, **ws2 (1 producer + 2 consumers) is the FASTEST Crisp kernel at every size** — GFLOPS
+            @4096: cuBLAS 433K, ws2 83K, block 80K, pipe 78K, ws1 72K, ws4 49K (ws2 = 2.0x pipe @1024,
+            +6% @4096, stable across reps).  The occupancy lever PAYS once addressing is static.  2
+            consumers is the sweet spot (ws4 regresses).  Full table + analysis in
+            benchmarks/matmul/README.md (Chapter 3).
+    [x] 05b STATIC PER-WARP FRAGMENT ADDRESSING (the fix) DONE 2026-07-19.  ROOT CAUSE of the "backfire":
+            the distribution (%emit-frag-loop-distributed) computed each fragment's (mi,nj) from the
+            RUNTIME warp-position, so SMEM operand addresses were runtime-derived and ptxas could NOT
+            CSE the shared A-row/B-col loads -> ws2 did 5.9 ld.shared/mma vs ws1's 1.6 (~4x operand
+            traffic).  FIX: wp is inherently runtime (warp identity from threadIdx), so branch on it
+            ONCE (a `<`-cascade = the role-branch pattern) and fold each arm's fragment coords to
+            integer LITERALS -> static addresses -> ptxas hoists/CSEs the loads (ws2 -> 1.5 ld/mma).
+            Threaded n-true into the 2 callers; relaxed 04's validator (static switch emits both arms
+            = 4 mma, or ptxas merges to per-warp 2 — accept either).  916/916.  See
+            [[139-static-frag-addressing]].  LESSON: a perf "backfire" that contradicts the register/
+            occupancy math is a codegen smell — check the ld.shared/mma ratio before concluding physics.
 
 Only 04/05 need Hopper.  01-03 are pod-free (compile/IR + dev-BMG metal).
+
+NEXT: cuBLAS is still ~5.2x ahead — the remaining gap is the INSTRUCTION (Ampere mma.sync vs Hopper
+wgmma), not tile shape.  That is Chapter 4 (endeavor 140, wgmma) — see tests/spec/140-wgmma/wgmma.md.
+Stays on this branch.
 
 ## Open design threads (to pin as we go)
 - Step 2: exact mbarrier semantics of :initial-state (:signaled = start arrived so producer's first
