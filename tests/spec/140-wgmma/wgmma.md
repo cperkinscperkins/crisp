@@ -112,8 +112,23 @@ survive that.  (Chris's direction.)
 ## TDD SEQUENCE (all on the 139 branch; only Step 0 + front-end bits are pod-free — wgmma
 ## correctness is METAL-BOUND: bad descriptor/accumulator bits are silent MMA_WRONG, invisible in PTX)
 
-    [ ] 0  front-end scaffolding: the two forms, semantic node, shape/dtype validation.  Decide
-           intrinsic vs inline-asm.  Pod-free (IR-verify the shape checks + a stub emission).
+    [x] 0  front-end scaffolding DONE 2026-07-19 — ALL OVERLAY (crisp-compiler-overlay.lisp).
+           make-wgmma-accumulator (mints WGMMA-ACC-F32-64xN record = N/2 flat f32 fields, via
+           register-struct-definition + %construct-struct), analyze-wgmma-accumulate (reuses
+           semantic-mma-accumulate typed as the accumulator; codegen dispatches by %wgmma-acc-type-p),
+           analyze-wgmma-accumulate-via-tile (-> (set! D (wgmma-accumulate D A B)), no fragment walk),
+           %check-wgmma-shape (M=64, N mult-of-8 in [8,256], K=8), register-mma-analyzers overridden
+           with the 3 entries, generate-node-ir (semantic-mma-accumulate) overridden with a wgmma
+           branch = NO-OP STUB (returns the accumulator; Step 1 fills the real emission).
+           - NO package.lisp patch needed: register-mma-analyzers interns the form names in
+             crisp-language and the kernel reader resolves to the same symbols — the "Unsupported
+             form" gotcha did NOT bite (unlike 138's ring-get).  Confirmed by direct compile.
+           - Decision on emission: INLINE ASM (137 pattern) for Step 1 — leaning that way; final call
+             when I build the descriptor.
+           - Tests: 00-wgmma-forms (compile smoke, stub) + errors/01-03 (bad M / N / K — each gives
+             the exact wgmma message).  Verified via direct crisp-compile (ci-stop is 139, so the
+             runner skips 140 until Chris advances it).  110/110 on the 13x MMA specs (the
+             register-mma-analyzers + mma codegen overrides did not regress 132/135/137/138/139).
     [ ] 1  (THE CRUX) a minimal single m64n64k8 wgmma: one warpgroup (local-size 128), A/B from a
            PLAIN SMEM copy (no TMA, no async, no warp-spec), accumulate -> store.  TDD: tiny fixed
            matmul, MMA_CORRECT on H100.  Isolates the instruction + descriptor + accumulator layout +

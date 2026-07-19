@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "M must be 64"
+;; Endeavor 140 — wgmma M is fixed at 64 (wgmma is always m64).
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_bad_m (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (32 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (D (make-wgmma-accumulator float (32 64) 0.0)))
+    (wgmma-accumulate-via-tile (32 64 8) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))

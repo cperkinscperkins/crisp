@@ -262,3 +262,142 @@
                          (loop for nj below n-frags
                                for idx = (+ (* mi n-frags) nj)
                                append (one-frag (nth idx syms) mi nj))))))))))
+
+;;; ===========================================================================
+;;; Endeavor 140 (Chapter 4) -- STEP 0: wgmma front-end scaffolding
+;;; ===========================================================================
+;;;
+;;; Two user forms mirroring make-register-tile / mma-accumulate-via-tile:
+;;;   (make-wgmma-accumulator float (64 N) 0.0)    -> a warpgroup D accumulator
+;;;   (wgmma-accumulate-via-tile (64 N 8) D A B)   -> D += A*B  (A,B are SMEM tiles)
+;;; PROTOTYPE reuses the semantic-mma-accumulate node (dispatched to wgmma codegen by the
+;;; accumulator TYPE) so Step 0/1 stay entirely in the overlay -- no struct patch during metal
+;;; iteration.  Step 0 = forms + shape/dtype validation + accumulator minting + a NO-OP codegen
+;;; stub (so it compiles); Step 1 fills in the real descriptor + wgmma emission.
+
+(defvar *wgmma-acc-dims* (make-hash-table :test 'eq)
+  "wgmma accumulator type symbol -> (list M N K).")
+
+(defun %wgmma-acc-type-name (n)
+  (intern (format nil "WGMMA-ACC-F32-64X~d" n) (find-package :crisp.compiler)))
+
+(defun %wgmma-acc-type-p (type-name)
+  "T if TYPE-NAME is a minted wgmma accumulator record type."
+  (and (symbolp type-name) (nth-value 1 (gethash type-name *wgmma-acc-dims*))))
+
+(defun %ensure-wgmma-acc-type (n)
+  "Mint (once) the WGMMA-ACC-F32-64xN record -- N/2 flat f32 fields (the wgmma D accumulator, N/2
+   f32 registers per thread across the 128-thread warpgroup).  Returns the type symbol."
+  (let ((name (%wgmma-acc-type-name n)))
+    (unless (gethash name *crisp-structs*)
+      (register-struct-definition
+       name
+       (loop for i below (floor n 2)
+             collect (list (intern (format nil "D~d" i) (find-package :crisp.compiler)) 'float))
+       :record))
+    (setf (gethash name *wgmma-acc-dims*) (list 64 n 8))
+    name))
+
+(defun %check-wgmma-shape (shape location)
+  "Validate a wgmma (M N K) shape -- grounded in machine truth: M is fixed 64; N a multiple of 8 in
+   [8,256] (the m64nNk8 family); K by dtype (tf32 -> 8, the only dtype implemented now)."
+  (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+    (error 'crisp-compiler-error
+           :message (format nil "wgmma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." shape)
+           :source-location location))
+  (destructuring-bind (m n k) shape
+    (unless (= m 64)
+      (error 'crisp-compiler-error
+             :message (format nil "wgmma: M must be 64 (wgmma is always m64), got ~a." m)
+             :source-location location))
+    (unless (and (>= n 8) (<= n 256) (zerop (mod n 8)))
+      (error 'crisp-compiler-error
+             :message (format nil "wgmma: N must be a multiple of 8 in [8,256] (the m64nNk8 family), got ~a." n)
+             :source-location location))
+    (unless (= k 8)
+      (error 'crisp-compiler-error
+             :message (format nil "wgmma: K must be 8 for tf32 (the only dtype implemented), got ~a." k)
+             :source-location location))))
+
+(defun analyze-make-wgmma-accumulator (expr env context location)
+  "(make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,
+   each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct."
+  (destructuring-bind (elem dims init) (cdr expr)
+    (declare (ignore elem))              ; tf32/f32 fixed for now
+    (destructuring-bind (m n) dims
+      (%check-wgmma-shape (list m n 8) location)
+      (let ((type-name (%ensure-wgmma-acc-type n)))
+        (analyze-expression
+         `(%construct-struct ,type-name ,@(loop repeat (floor n 2) collect init))
+         env context location)))))
+
+(defun analyze-wgmma-accumulate (expr env context location)
+  "(wgmma-accumulate D A B) -- the primitive.  D is a wgmma accumulator record; A,B are SMEM tiles.
+   Reuses semantic-mma-accumulate typed as the wgmma accumulator; generate-node-ir dispatches to the
+   wgmma instruction by that type.  (Prototype: node reuse -- see wgmma.md.)"
+  (destructuring-bind (d a b) (cdr expr)
+    (let* ((d-node (analyze-expression d env context (append location '(1))))
+           (d-type (semantic-node-type d-node)))
+      (unless (%wgmma-acc-type-p d-type)
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate: D (1st arg) must be a make-wgmma-accumulator, got type ~a." d-type)
+               :source-location location))
+      (make-semantic-mma-accumulate
+       :type d-type
+       :c-node d-node
+       :a-node (analyze-expression a env context (append location '(2)))
+       :b-node (analyze-expression b env context (append location '(3)))
+       :source-location location))))
+
+(defun analyze-wgmma-accumulate-via-tile (expr env context location)
+  "(wgmma-accumulate-via-tile (64 N 8) D A B) -> (set! D (wgmma-accumulate D A B)).  The warpgroup
+   analog of mma-accumulate-via-tile, but NO fragment walk -- one wgmma over the whole accumulator."
+  (destructuring-bind (shape d a b) (cdr expr)
+    (%check-wgmma-shape shape location)
+    (analyze-expression `(set! ,d (wgmma-accumulate ,d ,a ,b)) env context location)))
+
+;;; Registration: reproduce register-mma-analyzers + the 3 wgmma entries.
+(defun register-mma-analyzers ()
+  "Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms."
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
+                         (cons "STORE-FRAGMENT"          #'analyze-store-fragment)
+                         (cons "LOAD-FRAGMENT-A"         #'analyze-load-fragment-a)
+                         (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)
+                         (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
+                         (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
+                         (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
+                         (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
+                         (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
+                         ;; Endeavor 140 (Chapter 4) -- wgmma forms
+                         (cons "MAKE-WGMMA-ACCUMULATOR"    #'analyze-make-wgmma-accumulator)
+                         (cons "WGMMA-ACCUMULATE"          #'analyze-wgmma-accumulate)
+                         (cons "WGMMA-ACCUMULATE-VIA-TILE" #'analyze-wgmma-accumulate-via-tile)
+                         (cons "STORE-TILE"              #'analyze-store-tile-mma)
+                         (cons "LET"                     #'analyze-let-with-tile-explosion)
+                         (cons "LET*"                    #'analyze-let-with-tile-explosion)))
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) (cdr entry)))))))
+
+;;; Codegen: reproduce generate-node-ir (semantic-mma-accumulate) + a wgmma dispatch.  Step 0 =
+;;; NO-OP stub (return the accumulator unchanged so it compiles); Step 1 emits the real wgmma.
+(defmethod generate-node-ir ((node semantic-mma-accumulate)
+                             builder module var-env di-builder di-scope location-map)
+  "F-SPV / NVVM mma.sync + Endeavor 140 wgmma dispatch (by accumulator type)."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let ((acc-type (semantic-mma-accumulate-type node)))
+      (if (%wgmma-acc-type-p acc-type)
+          ;; Endeavor 140 STEP 0 STUB -- return the accumulator unchanged (no-op) so the front-end
+          ;; compiles; Step 1 replaces this with wgmma.fence + descriptors + mma_async + commit/wait.
+          (values (gen (semantic-mma-accumulate-c-node node)) nil)
+          (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+                (a-val (gen (semantic-mma-accumulate-a-node node)))
+                (b-val (gen (semantic-mma-accumulate-b-node node))))
+            (if (eq *target-backend* :spirv)
+                (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                  (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
+                (%emit-nvvm-mma builder module a-val b-val c-val)))))))
