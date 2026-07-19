@@ -27,13 +27,19 @@ def run_bin(path, M, N, K, warmup, iters, env_extra=None):
         return None
 
 def build_harness():
-    # We assume PTX files are already compiled for this first pass since crisp-compile
-    # is Windows only and we are executing on the RunPod linux environment.
+    # Crisp harness
     sh(["nvcc", "-O3", "-arch=sm_90", str(HERE/"crisp/bench_harness.cu"), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
+    
+    # CUDA Apples-to-Apples (Chap 0 Baseline)
+    if (HERE / "chap0_sync" / "cuda_apples.cu").exists():
+        sh(["nvcc", "-O3", "-arch=sm_90", str(HERE/"chap0_sync/cuda_apples.cu"), "-o", str(HERE/"chap0_sync/cuda_apples")], check=True)
 
-def run_sweep(chapter: str, ptx_file: str, sizes: list, warmup: int, iters: int) -> BenchmarkSweep:
+    # CUBLAS Optimal (Vendor Ceiling)
+    if (HERE / "chap0_sync" / "cublas_optimal.cu").exists():
+        sh(["nvcc", "-O3", "-arch=sm_90", str(HERE/"chap0_sync/cublas_optimal.cu"), "-lcublas", "-o", str(HERE/"chap0_sync/cublas_optimal")], check=True)
+
+def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, env_extra: dict = None) -> BenchmarkSweep:
     meta = create_metadata()
-    # If runpod, use the env var or detect it. For now, hardcode H100 since we're on runpod.
     meta.hardware.gpu_model = "NVIDIA H100"
     meta.hardware.arch_target = "sm_90"
     meta.hardware.environment = "runpod"
@@ -41,19 +47,15 @@ def run_sweep(chapter: str, ptx_file: str, sizes: list, warmup: int, iters: int)
     results = []
     for s in sizes:
         S = int(s)
-        # Execute
-        out = run_bin(HERE/"crisp/matmul_crisp", S, S, S, warmup, iters, {"CRISP_MATMUL_PTX": str(HERE / chapter / ptx_file)})
+        out = run_bin(exe_path, S, S, S, warmup, iters, env_extra)
         if not out: continue
         
-        # Parse output and put into standard metrics format
-        # Current harness prints: kernel_median_us, gflops, etc.
-        # We don't have compile times in the C++ output yet, but we'll mock them or set to 0
         point = SweepPoint(
             configuration={"m": S, "n": S, "k": S, "warmup": warmup, "iters": iters},
             metrics=BenchmarkMetrics(
-                compile_time=CompileTimeMetrics(device_compile_ms=0.0, all_compile_ms=0.0), # TODO: add to C++ driver
-                runtime=RuntimeMetrics(wall_time_ms=0.0, kernel_execution_ms=out["kernel_median_us"]/1000.0),
-                throughput=ThroughputMetrics(tflops=out["gflops"]/1000.0)
+                compile_time=CompileTimeMetrics(device_compile_ms=0.0, all_compile_ms=0.0), 
+                runtime=RuntimeMetrics(wall_time_ms=0.0, kernel_execution_ms=out.get("kernel_median_us", 0.0)/1000.0),
+                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0)/1000.0)
             )
         )
         results.append(point)
@@ -62,7 +64,7 @@ def run_sweep(chapter: str, ptx_file: str, sizes: list, warmup: int, iters: int)
         run_metadata=meta,
         benchmark_suite="matmul",
         chapter=chapter,
-        competitor="Crisp",
+        competitor=competitor_name,
         precision="fast",
         denormal_handling="ftz",
         results=results
@@ -81,17 +83,29 @@ def main():
 
     out_dir = Path(a.output_dir)
 
-    # Chap 0
+    # Chap 0 (Crisp)
     if (HERE / "chap0_sync" / "matmul.ptx").exists():
-        sweep_0 = run_sweep("chap0_sync", "matmul.ptx", sizes, a.warmup, a.iters)
-        sweep_0.save(out_dir)
-        print(f"Saved Chap0 sweep to {out_dir}")
+        sweep = run_sweep("chap0_sync", HERE/"crisp/matmul_crisp", "Crisp", sizes, a.warmup, a.iters, {"CRISP_MATMUL_PTX": str(HERE / "chap0_sync" / "matmul.ptx")})
+        sweep.save(out_dir)
+        print(f"Saved Chap0 (Crisp) sweep to {out_dir}")
 
-    # Chap 1
+    # Chap 0 (CUDA Apples)
+    if (HERE / "chap0_sync" / "cuda_apples").exists():
+        sweep = run_sweep("chap0_sync", HERE/"chap0_sync/cuda_apples", "CUDA_Apples", sizes, a.warmup, a.iters)
+        sweep.save(out_dir)
+        print(f"Saved Chap0 (CUDA Apples) sweep to {out_dir}")
+
+    # CUBLAS Optimal
+    if (HERE / "chap0_sync" / "cublas_optimal").exists():
+        sweep = run_sweep("chap0_sync", HERE/"chap0_sync/cublas_optimal", "CUBLAS_Optimal", sizes, a.warmup, a.iters)
+        sweep.save(out_dir)
+        print(f"Saved CUBLAS Optimal sweep to {out_dir}")
+
+    # Chap 1 (Crisp)
     if (HERE / "chap1_async_linear" / "matmul_async.ptx").exists():
-        sweep_1 = run_sweep("chap1_async_linear", "matmul_async.ptx", sizes, a.warmup, a.iters)
-        sweep_1.save(out_dir)
-        print(f"Saved Chap1 sweep to {out_dir}")
+        sweep = run_sweep("chap1_async_linear", HERE/"crisp/matmul_crisp", "Crisp", sizes, a.warmup, a.iters, {"CRISP_MATMUL_PTX": str(HERE / "chap1_async_linear" / "matmul_async.ptx")})
+        sweep.save(out_dir)
+        print(f"Saved Chap1 (Crisp) sweep to {out_dir}")
 
 if __name__ == "__main__":
     main()

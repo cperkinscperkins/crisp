@@ -24,24 +24,32 @@ int main(int argc, char** argv) {
 
   // tf32 tensor cores via CUBLAS_COMPUTE_32F_FAST_TF32.  Layout is irrelevant for a peak
   // throughput reference (same 2·M·N·K FLOPs); we treat everything column-major NxN.
+  int warmup = argc > 4 ? atoi(argv[4]) : 20;
+  int iters = argc > 5 ? atoi(argv[5]) : 100;
+
   auto gemm = [&]() {
     cublasGemmEx(h, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &alpha,
                  dA, CUDA_R_32F, M, dB, CUDA_R_32F, K, &beta,
                  dC, CUDA_R_32F, M, CUBLAS_COMPUTE_32F_FAST_TF32, CUBLAS_GEMM_DEFAULT);
   };
 
-  for (int i = 0; i < 20; i++) gemm();
+  for (int i = 0; i < warmup; i++) gemm();
   cudaDeviceSynchronize();
 
   cudaEvent_t s, e;
   cudaEventCreate(&s); cudaEventCreate(&e);
   cudaEventRecord(s);
-  for (int i = 0; i < 100; i++) gemm();
+  for (int i = 0; i < iters; i++) gemm();
   cudaEventRecord(e); cudaEventSynchronize(e);
   float ms = 0.0f; cudaEventElapsedTime(&ms, s, e);
 
-  double gflops = (2.0 * M * N * K * 100) / (ms * 1.0e6);
-  printf("CUBLAS %dx%dx%d: %.1f GFLOPS (%.5f ms/iter)\n", M, N, K, gflops, ms / 100);
+  float iter_ms = ms / iters;
+  double gflops = (2.0 * M * N * K) / (iter_ms * 1e-3) / 1e9;
+
+  printf("{\n  \"algorithm\": \"matmul\",\n  \"implementation\": \"cublas\",\n");
+  printf("  \"M\": %d, \"N\": %d, \"K\": %d,\n", M,N,K);
+  printf("  \"kernel_median_us\": %.2f,\n", iter_ms * 1000.0);
+  printf("  \"gflops\": %.2f\n}\n", gflops);
 
   cublasDestroy(h);
   cudaFree(dA); cudaFree(dB); cudaFree(dC);
