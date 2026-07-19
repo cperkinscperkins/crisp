@@ -132,8 +132,29 @@ handshake).  Intel's fast path is a different animal (LSC 2D block loads, no SLM
                 +l -> mi/nj).  IR-verified: a 32x16 #true=2 tile emits 2 mma.sync per warp (not 4).
                 Test 04-register-tile-distributed (validate-ptx-distributed-mma).  913/913, 139 10/10.
                 Contiguous true warps only; metal correctness = step 4.
-    [ ] 04  the full warp-spec MMA matmul (NVIDIA :block).  <-- NEEDS H100.
-    [ ] 05  benchmark: sweep consumer count (the occupancy lever) vs 138's ring + cuBLAS.  <-- H100.
+    [x] 04  the full warp-spec MMA matmul (NVIDIA :block) — DONE 2026-07-18, METAL-CORRECT H100.
+            Net-new = MULTI-LAP PHASE FLIPPING: a warp-spec ring slot is reused every ring-count
+            K-steps and try_wait.parity flips each lap, but 138's re-init trick is impossible
+            (producer/consumer are separate warps).  Compiler injects a per-ring VISIT COUNTER
+            (entry-block i32 alloca, ++ per await) and derives parity = init XOR ((visit/ring-count)
+            & 1).  Round-robin slot access makes it exact; degrades to the constant initial phase at
+            visit 0 (so 139/02 single-step unchanged).  All overlay (no struct patch): phase field
+            now carries (init ring-count) instead of a bare int; codegen reads the list.  Added 2
+            LLVM bindings (LLVMGetEntryBasicBlock, LLVMPositionBuilderBefore) — NOT exported (that
+            triggers a package-variance fatal in package.lisp; use ::-qualified).  ptxas folds the
+            parity to `bfe.u32 bit1(visit)` (consumer, init 0) / `not; bfe` (producer, init 1).
+            Tests: 05-warp-spec-matmul (1P+1C, MMA_CORRECT H100), 06-warp-spec-distributed
+            (1P+2C split C-tile, MMA_CORRECT H100).  915/915 + 916/916 diff + 206 neg.
+    [x] 05  benchmark DONE 2026-07-18 (H100).  Swept ws1/ws2/ws4 consumers vs pipe(138)/block(137)/
+            cuBLAS at 1024/2048/4096.  **THE CHAPTER-2 PREDICTION WAS WRONG.**  Splitting a FIXED
+            64x64 tile across consumers cuts regs/thread (250->167->128) BUT backfires: ws2/ws4 run
+            at HALF of pipe (29K vs 78K @4096).  Each CTA still computes one 64x64 tile spread over
+            more warps + an idle producer that reserves max regs -> per-CTA register footprint RISES
+            -> fewer output-tiles-per-SM (8->4->3).  The one real win: ws1's dedicated-producer
+            LATENCY HIDING = +53% @1024 (48K vs 31K), fading to break-even by 4096.  Full table +
+            analysis in benchmarks/matmul/README.md (Chapter 3).  Next lever = BIGGER tiles per CTA
+            (128x128 over 4 consumers, ~32 frags each = pipe's reg sweet spot, 4x output/CTA, higher
+            arithmetic intensity) + register reallocation (setmaxnreg) — Chapter 4, not this sweep.
 
 Only 04/05 need Hopper.  01-03 are pod-free (compile/IR + dev-BMG metal).
 

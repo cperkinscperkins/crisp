@@ -1,0 +1,45 @@
+;; Crisp tiled matmul (grid-stride) — WARP-SPECIALIZED :block TMA (NVIDIA sm_90), tf32.
+;; Endeavor 139 (Chapter 3): 138's single-warp pipelined ring hit the register wall (64x64 tile =
+;; 254 regs/thread -> ~12.5% occupancy, and pipelining crossed over to NEGATIVE at 4096).  Here a
+;; dedicated PRODUCER warp runs the TMA loads while N CONSUMER warps split the 64x64 C-tile (32
+;; fragments) so each holds 32/N fragments = ~1/N the registers.  That is the occupancy lever this
+;; benchmark sweeps (matmul_warpspec1 / 2 / 4 consumers) against the 138 ring and cuBLAS.
+;;
+;; This file = 2 consumers: the 64x64 tile splits 16/16 fragments across the two consumer warps.
+;; CUTLASS handshake: `empty` (initial :signaled) lets the producer run ahead filling the ring;
+;; `full` (initial :waiting) blocks the consumers until each stage lands.  Multi-lap phase flipping
+;; (compiler-injected per-ring visit counter) handles the ring wrap across the K-loop.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 96))          ; 1 producer + 2 consumers (32*3)
+  (let ((A-ring (make-scratch-matrix-ring float (64 8) :ring-count 2))   ; SLM: 2 x (64 x k-step)
+        (B-ring (make-scratch-matrix-ring float (8 64) :ring-count 2))   ; SLM: 2 x (k-step x 64)
+        (C-tile (make-register-tile float (64 64) 0.0 :warps '(false true true)))
+        (K      (inner-dimension A B))
+        (empty  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :signaled))
+        (full   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 64) (grid-y grid-x)
+      (with-warp-specialization (:producer 1 :consumer 2)
+
+        ;; PRODUCER — stream A/B K-steps into the ring one stage ahead of the consumers.
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot))
+              (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot)))))
+
+        ;; CONSUMER (x2) — reset this tile's fragment share, accumulate over K, release each slot.
+        (:consumer
+          (fill-tile C-tile 0.0)
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (mma-accumulate-via-tile (16 8 8) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+              (signal (ring-get empty slot))))
+          (store-tile C-tile C (grid-y grid-x)))))))

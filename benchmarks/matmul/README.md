@@ -260,3 +260,51 @@ tall-thin-strided BMG case above; then pipelining / warp-specialization (the "th
 specialization (producer/consumer over the rings, no second full SLM tile per stage) rather than a
 deeper ring.  A tf32-MMA / cuBLAS / oneMKL "best-known" reference is the natural follow-on for a
 peak-vs-peak ratio.
+
+---
+
+## Chapter 3 — Warp specialization (Endeavor 139), H100 sm_90a, tf32
+
+Producer/consumer over the Chapter-2 rings: a dedicated PRODUCER warp issues the TMA loads while
+N CONSUMER warps do the MMA, split via the `:warps` topology mask (CUTLASS two-mbarrier handshake
+`empty`/`full` + compiler-injected multi-lap phase flipping).  `wsN` = 1 producer + N consumers,
+the 64×64 C-tile (32 fragments) split 32/N per consumer.  All wsN are MMA_CORRECT.
+
+GFLOPS (H100 80GB HBM3, `nvcc -O3 -arch=sm_90a … -lcuda`):
+
+| size | cuBLAS | :block (Ch1.5) | pipe (Ch2) | ws1 (1P+1C) | ws2 (1P+2C) | ws4 (1P+4C) |
+|------|--------|----------------|------------|-------------|-------------|-------------|
+| 1024 | 135743 | 28208          | 31412      | **48127**   | 20758       | 27207       |
+| 2048 | 359705 | 75680          | 72831      | 69698       | 28688       | 28532       |
+| 4096 | 428420 | 80141          | 78487      | 71948       | 29668       | 29515       |
+
+`ptxas -v` (registers/thread): pipe 250, ws1 252, **ws2 167, ws4 128** — the `:warps` split *does*
+cut per-thread registers as designed.
+
+Findings (the Chapter-2 prediction that splitting the tile would raise occupancy and win was WRONG):
+- **The dedicated-producer LATENCY-HIDING lever is real but only when latency-bound.**  ws1 (same
+  32-fragment consumer as pipe, plus a producer warp that does nothing but TMA) is **+53% at 1024**
+  (48.1K vs 31.4K) — the consumer never stalls on memory.  The win fades to break-even by 2048 and
+  ws1 slips ~8% behind pipe at 4096, exactly the latency-bound→throughput-bound crossover.
+- **The OCCUPANCY lever (splitting a FIXED tile across consumers) BACKFIRES.**  ws2/ws4 run at
+  *half* of pipe (29K vs 78K at 4096) despite lower per-thread registers.  Why: each CTA still
+  computes ONE 64×64 output tile, now spread over more warps, and the idle producer warp reserves
+  the kernel's max register allocation too.  So the register footprint *per CTA* rises
+  (250×64 pipe → 167×96 ws2 → 128×160 ws4), which *lowers* the number of output tiles resident per
+  SM (pipe ≈8 → ws1/ws2 ≈4 → ws4 ≈3).  Raw warp-occupancy went up but **useful-tiles-per-SM went
+  down** — the split traded throughput for occupancy that does no extra work.
+- **The register cut didn't help because the tile size was held fixed.**  Fewer regs/thread only
+  buys throughput if the freed registers compute MORE output.  Splitting the same 64×64 tile
+  thinner keeps output/CTA constant while adding warps + a producer + handshake — strictly more
+  overhead for the same work.
+
+Conclusion / next lever: warp specialization pays for latency hiding (ws1 @ small sizes), not for
+splitting a fixed tile.  The CUTLASS-correct use is **BIGGER tiles per CTA** — e.g. a 128×128 tile
+across 4 consumers, each still holding ~32 fragments (~250 regs, the pipe sweet spot) but the CTA
+now producing 4× the output with ONE shared producer and higher arithmetic intensity (128×128 tile
+= 8 MACs/elem loaded vs 4 for 64×64).  Plus **register reallocation** (`setmaxnreg.dec` on the
+producer, `.inc` on consumers) so the idle producer stops reserving the consumer's register budget.
+Both are Chapter-4 directions, not a tweak to this sweep.
+
+Reproduce: `put_temp_files_here/bench06.sh "1024 2048 4096"` (correctness gate @512 + GFLOPS sweep;
+same `crisp-hoist-cuda --mma-bench=M,N,K --grid-tile=64` → `nvcc -arch=sm_90a … -lcuda` flow).

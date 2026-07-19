@@ -1,0 +1,58 @@
+;; Endeavor 139 (Chapter 3) — 06: the DISTRIBUTED warp-spec :block MMA matmul.  The occupancy lever.
+;;
+;; 05 proved the producer/consumer handshake + multi-lap phase flipping with ONE consumer warp
+;; holding the whole C-tile.  Here TWO consumer warps split the C-tile (decision A, the :warps mask):
+;; a 32x16 C-tile is (32/16)x(16/8) = 2x2 = 4 fragments, so each consumer holds/computes/stores only
+;; 2 fragments = half the register pressure.  This is what actually attacks the 138 register wall
+;; (254 regs/thread -> ~12.5% occupancy); step 5 sweeps the consumer count to measure it.
+;;
+;; The producer streams the FULL A(32x8) and B(8x16) K-step tiles into the ring; both consumer warps
+;; await the same `full` slot, each MMAs its fragment share, and one leader signals `empty` per slot.
+;; 139/04 IR-verified the split (2 mma.sync per warp, not 4); this is its metal correctness check.
+;;
+;; Shape: K=32 / k-step=8 -> FOUR K-steps over a TWO-deep ring (multi-lap, as 05).  3 warps total:
+;; 1 producer + 2 consumers -> local-size 96.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals; warp specialization is forward-only control flow"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-distributed-mma
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 32 16 32
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel warp_spec_distributed (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 96)
+           (local-size  :set-to 96))          ; 3 warps: 1 producer + 2 consumers
+  (let ((A-ring  (make-scratch-matrix-ring float (32 8) :ring-count 2))   ; SLM: 2 x (M x k-step)
+        (B-ring  (make-scratch-matrix-ring float (8 16) :ring-count 2))   ; SLM: 2 x (k-step x N)
+        (C-tile  (make-register-tile float (32 16) 0.0 :warps '(false true true)))  ; split across consumers
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (32 16) (grid-y grid-x)
+      (with-warp-specialization (:producer 1 :consumer 2)
+
+        ;; PRODUCER — stream A/B K-steps into the ring one stage ahead.
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot))
+              (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot)))))
+
+        ;; CONSUMER (x2) — each warp accumulates its fragment share of the C-tile, then releases.
+        (:consumer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (mma-accumulate-via-tile (16 8 8) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+              (signal (ring-get empty slot))))
+          (store-tile C-tile C (grid-y grid-x)))))))

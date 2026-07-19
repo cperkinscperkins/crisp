@@ -1,0 +1,71 @@
+;; Endeavor 139 (Chapter 3) — 05: the full WARP-SPECIALIZED :block MMA matmul.  The payoff.
+;;
+;; 138/04 pipelined the ring with ONE warp doing both the TMA loads and the tensor-core math.
+;; Here the two roles are split across warps: a dedicated PRODUCER warp runs the TMA loads ahead,
+;; keeping the ring full, while the CONSUMER warp does nothing but MMA — it never stalls on memory.
+;; This is the classic CUTLASS producer/consumer pipeline, and the foundation of the occupancy
+;; lever (06 splits the C-tile across N consumers).
+;;
+;; The handshake is the CUTLASS two-mbarrier pattern:
+;;   - `full`  (initial :waiting)  — the producer's TMA expect_tx arrives it; the consumer awaits it.
+;;   - `empty` (initial :signaled) — the consumer's signal arrives it; the producer awaits it before
+;;     overwriting a slot.  `empty` starting SIGNALED is what lets the producer run ahead and fill
+;;     the whole ring before the consumer has touched anything — it replaces 138/04's explicit
+;;     prologue.
+;;
+;; MULTI-LAP PHASE FLIPPING (the net-new piece): each slot is reused every ring-count K-steps, and
+;; an mbarrier's try_wait.parity flips each lap.  138/04 side-stepped this by RE-INITing the barrier
+;; each step, but that is impossible here — producer and consumer are separate warps, so neither can
+;; re-init on the other's behalf.  Instead the compiler injects a per-ring visit counter and derives
+;; the parity: phase = initial XOR ((visit / ring-count) & 1).  Round-robin slot access makes this
+;; exact, and it degrades to the constant initial phase on the first (single-step) await.
+;;
+;; Shape: K=32 / k-step=8 -> FOUR K-steps over a TWO-deep ring, so each slot is visited TWICE — the
+;; smallest shape that exercises a phase flip (lap 0 parity, lap 1 flipped parity).  Same M=16 N=8
+;; single output tile as 137/05 and 138/04, so it reuses their metal harness dims.
+;;
+;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals; warp specialization is forward-only control flow"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 16 8 32
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel warp_spec_matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))          ; 2 warps: 1 producer + 1 consumer
+  (let ((A-ring  (make-scratch-matrix-ring float (16 8) :ring-count 2))   ; SLM: 2 x (M x k-step)
+        (B-ring  (make-scratch-matrix-ring float (8 8)  :ring-count 2))   ; SLM: 2 x (k-step x N)
+        (C-tile  (make-register-tile float (16 8) 0.0 :warps '(false true)))  ; consumer warp holds it
+        (K       (inner-dimension A B))
+        ;; empty starts SIGNALED so the producer may fill the ring ahead of the consumer;
+        ;; full  starts WAITING  so the consumer blocks until each stage's bytes land.
+        (empty   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (16 8) (grid-y grid-x)
+      (with-warp-specialization (:producer 1 :consumer 1)
+
+        ;; PRODUCER — stream A/B K-steps into the ring, one stage ahead of the consumer.
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))     ; wait until the consumer freed this slot
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot))
+              (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot)))))
+
+        ;; CONSUMER — await each landed stage, accumulate, release the slot.
+        (:consumer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))      ; wait until this stage's bytes landed
+              (mma-accumulate-via-tile (16 8 8) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+              (signal (ring-get empty slot))))  ; release the slot back to the producer
+          (store-tile C-tile C (grid-y grid-x)))))))
