@@ -52,7 +52,7 @@ def generate_markdown(results_dir: Path, out_file: Path = None):
                 compile_times[gpu][chapter][prec_key][competitor]['dev'].append(dev_c_ms)
                 compile_times[gpu][chapter][prec_key][competitor]['all'].append(all_c_ms)
                 
-                if chapter == "vendor_ceiling":
+                if chapter == "vendor_ceiling" or competitor.startswith("CUBLAS_") or competitor.startswith("OneMKL_"):
                     vendor_ceilings[gpu][prec_key][sz][competitor] = metrics
                 else:
                     hardware_groups[gpu][chapter][prec_key][sz][competitor] = metrics
