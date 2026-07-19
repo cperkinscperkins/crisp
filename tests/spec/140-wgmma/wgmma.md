@@ -161,12 +161,26 @@ survive that.  (Chris's direction.)
             - STORE: warp = (tid%128)/32 -> rows [16*warp,16*warp+16); lane=tid%32; row_lo=lane/4;
               col=(lane%4)*2; per n8 group j in [0,N/8): d[4j+0..3] -> (row_lo, col),(row_lo,col+1),
               (row_lo+8, col),(row_lo+8,col+1) at base (16*warp, 8*j).  (= mma.sync m16n8 C, tiled.)
-        [ ] PORT to Crisp codegen (pod-free): (1) recover the addrspace(3) SMEM base of A/B tiles in
-            the wgmma generate-node-ir branch; (2) emit the descriptor bit-pack + the 4 asm strings +
-            the 32 accumulator in/out; (3) store-tile wgmma-accumulator branch = the store mapping
-            above; (4) the A/B SMEM tiles MUST be filled in CORE-MATRIX order by the kernel (Step 1
-            kernel does an explicit scatter; Step 2's TMA will produce it).  Then re-verify MMA_CORRECT
-            (test 01) on metal.
+        [x] PORT to Crisp codegen DONE (pod-free, IR-verified) 2026-07-19 — all overlay:
+            - %emit-nvvm-wgmma: descriptors via %wgmma-make-desc (ptrtoint addrspace(3) base ->
+              (addr>>4)&0x3FFF | const(=(8<<16)|(16<<32))); fence/mma_async/commit/wait via
+              %build-inline-asm-call; 32 accumulator "=f" out + tied in + 2 "l" desc; ~{memory}
+              clobber on fence/commit/wait (the async hazard).  A/B base ptrs from analyze-wgmma-
+              accumulate analyzing (~ tile 0) -> the aref's 3rd codegen value.  store-tile wgmma
+              branch = %wgmma-store-rewrite (warp-tiled m16n8 C).  Added bitwise LLVM bindings
+              (And/Or/LShr/Shl).  validate-ptx-wgmma added.
+            - PTX VERIFIED: bfe.u32 %r,%r,4,14 (= (addr>>4)&0x3FFF) then or.b64 %rd, %rd, 68720001024;
+              wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32 {32 regs}, %rd1, %rd2, 1,1,1 (descs
+              correctly i64).  916/916 regression (the mma.sync codegen override didn't regress
+              132/135/137/138/139).  Test 01-wgmma-single.
+            - TWO BUGS FOUND + FIXED pod-free (would've been silent on metal or a confusing crash):
+              (1) `(loop ... finally (return agg))` — `return` is SHADOWED in :crisp.compiler by
+                  Crisp's RETURN macro (-> explicit-return); use dotimes, never `return` in overlay code.
+              (2) LLVM IR inline-asm has no '+f'; '=f' output + tied input means the tied inputs
+                  OCCUPY operand slots, so the 2 'l' descriptors are $2*nacc / $2*nacc+1, NOT
+                  $nacc/$nacc+1 (they were hitting the accumulator regs).
+        [ ] METAL (needs H100): hoist 01 (--mma-test=64,64,8) -> MMA_CORRECT.  The store mapping +
+            core-matrix scatter are unverified on metal (silent-MMA_WRONG risk) — one focused session.
     [ ] 2  wgmma fed from a TMA-staged tile (:block) — get the descriptor/swizzle agreement right
            (NOTE: our TMA currently uses CU_TENSOR_MAP_SWIZZLE_NONE — hoist-cuda/main.lisp:926,
            metadata.lisp:580).  Single-tile :block wgmma matmul, MMA_CORRECT.

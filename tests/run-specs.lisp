@@ -2202,6 +2202,20 @@
                        count)
                nil))))
 
+(defun validate-ptx-wgmma (file ptx-string)
+  "Endeavor 140 (Chapter 4) — the Hopper wgmma path lowered: assert the async warpgroup MMA
+   instruction (wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32) plus its fence / commit_group /
+   wait_group bracketing are all present in the PTX.  (Correctness = the metal MMA_CORRECT hoist.)"
+  (declare (ignore file))
+  (dolist (needle '("wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32"
+                    "wgmma.fence.sync.aligned"
+                    "wgmma.commit_group.sync.aligned"
+                    "wgmma.wait_group.sync.aligned")
+                  t)
+    (unless (search needle ptx-string)
+      (format *error-output* "FAIL: wgmma PTX missing ~s~%" needle)
+      (return-from validate-ptx-wgmma nil))))
+
 (defun validate-warp-roles (file ir-string)
   "Endeavor 139 (Chapter 3) — the warp-specialization role SKELETON.  Asserts BOTH role bodies
    lowered: the producer marker (40001) and the consumer marker (40002) both survive to the IR.

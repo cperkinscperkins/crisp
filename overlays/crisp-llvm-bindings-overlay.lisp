@@ -26,4 +26,16 @@
 ;; package-variance warning (fatal under ASDF).  Callers use the ::-qualified
 ;; name instead.
 
+;;; src/llvm-bindings.lisp
+;;; Endeavor 140 (Chapter 4) — bitwise builders the wgmma SMEM descriptor bit-pack needs
+;;; (start = (addr >> 4) & 0x3FFF, then OR the compile-time LBO/SBO/swizzle constant).
+(defcfun ("LLVMBuildAnd" llvm-build-and) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(defcfun ("LLVMBuildOr" llvm-build-or) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(defcfun ("LLVMBuildLShr" llvm-build-l-shr) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(defcfun ("LLVMBuildShl" llvm-build-shl) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+
 
