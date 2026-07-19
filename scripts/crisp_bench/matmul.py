@@ -110,7 +110,7 @@ def main():
     build_harness()
     
     # Absolute path to crisp-compile binary (assumes ran from repo root)
-    repo_root = HERE.parent.parent.parent
+    repo_root = HERE.parent.parent
     crisp_compiler = str(repo_root / "bin" / "crisp-compile")
     
     for prec, ftz in matrix:
