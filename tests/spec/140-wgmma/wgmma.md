@@ -190,13 +190,23 @@ survive that.  (Chris's direction.)
         MMA_WRONG sub-project.  So measure raw wgmma throughput FIRST with the (working) core-matrix
         SCATTER load; if load-bound, that justifies TMA+swizzle.  New order: 2 multi-K correctness,
         2b grid-strided BENCHMARK, THEN 3 TMA+swizzle, 4 async.  (Pending Chris's ok.)
-    [~] 2  multi-K wgmma GEMM (single 64x64 tile) — K-loop accumulates into the SAME D (scaleD=1),
-           synchronous per-K wgmma, per-K core-matrix scatter.  Kernel BUILT (02-wgmma-multik, 1
-           mma_async in the loop).  Needs metal MMA_CORRECT (validates the K-accumulation + per-K
-           scatter).
-    [~] 2b grid-strided BENCHMARK kernel BUILT (benchmarks/matmul/crisp/matmul_wgmma.crisp) — tile-
-           stride + per-tile D reset (set! D (make-wgmma-accumulator ...)) + the multi-K wgmma loop.
-           Needs metal: correctness + GFLOPS vs the 139 ws2/pipe + cuBLAS.  THE payoff measurement.
+    [x] 2  multi-K wgmma GEMM DONE 2026-07-19, METAL MMA_CORRECT (H100).  K-loop accumulates into the
+           SAME D (scaleD=1), synchronous per-K wgmma, per-K core-matrix scatter.  Test 02-wgmma-multik.
+           >>> BUG (silent, NON-DETERMINISTIC MMA_WRONG — only multi-K, high rows): the scatter writes
+               SMEM via the GENERIC proxy; wgmma reads via the ASYNC proxy; bar.sync alone does NOT
+               make generic writes visible across proxies.  FIX: emit fence.proxy.async.shared::cta +
+               a barrier before the wgmma (in %emit-nvvm-wgmma).  Step 1's single wgmma got LUCKY;
+               K=8/K=16 (unrolled/few iters) passed; K=64 raced.  A FUNDAMENTAL wgmma requirement when
+               operands come from generic stores (not TMA).  K=64 MMA_CORRECT x3 after the fix.
+    [x] 2b BENCHMARK DONE 2026-07-19 (H100) — matmul_wgmma vs 139/138 + cuBLAS.  **wgmma-NAIVE is SLOW.**
+           GFLOPS: cuBLAS 144/364/434K, ws2 61/79/83K, pipe 31/73/79K, WGMMA 18.6/22.4/35.3K @1024/2048/4096.
+           wgmma is 2-4x SLOWER than ws2 despite GOOD occupancy (ptxas: 72 regs/thread -> ~44% occ vs
+           ws2's 164).  So NOT occupancy-bound — LOAD + SYNC-bound: the core-matrix SCATTER arithmetic
+           + 3 barriers/K-step (scatter-sync + proxy-fence-barrier + wgmma-wait-sync) + NO load/compute
+           overlap swamp the fast instruction.  The low reg footprint IS wgmma's promised occupancy
+           advantage — unrealized until the load/sync overhead is removed.  MEASURE-FIRST VINDICATED:
+           wgmma needs its ECOSYSTEM (async TMA load + async wgmma overlap + bigger tiles), not just
+           the instruction.  Full table in benchmarks/matmul/README.md (to append).
     [ ] 3  TMA + 128B SWIZZLE (if 2b is load-bound): CuTensorMap SWIZZLE_128B in the hoist + wgmma
            descriptor swizzle=1.  Reference-first in raw CUDA.
     [ ] 4  ASYNC wgmma (commit_group/wait_group, the :mode :wgmma idea) over the multi-K loop.

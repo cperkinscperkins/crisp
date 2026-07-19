@@ -450,6 +450,13 @@
          (descB (%wgmma-make-desc builder b-ptr))
          (c-ops (loop for i below nacc collect
                       (llvm-build-extract-value builder d-val i (format nil "wc~d" i)))))
+    ;; The A/B SMEM tiles are written by GENERIC st.shared (the kernel's scatter/load); wgmma reads
+    ;; them via the ASYNC proxy.  fence.proxy.async.shared::cta makes each thread's generic writes
+    ;; visible to the async proxy, then a workgroup barrier makes ALL threads' writes visible before
+    ;; the collective wgmma reads.  (Without this, a single wgmma got lucky (Step 1) but the multi-K
+    ;; loop raced -> non-deterministic MMA_WRONG.)  Harmless/redundant for a TMA-staged tile (Step 3).
+    (%gen-nvvm-fence-proxy-async-shared builder)
+    (%ptx-barrier builder module)
     ;; wgmma.fence establishes the accumulator registers before the async MMA.
     (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.fence.sync.aligned;" "~{memory}")
     (let* ((asm-str     (%wgmma-asm-string nacc n))
