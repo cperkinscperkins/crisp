@@ -19,9 +19,12 @@
 #include <cstdlib>
 #include <vector>
 
+#include <chrono>
+
 constexpr int TS = 16;
 
 int main(int argc, char** argv) {
+    auto wall_start = std::chrono::high_resolution_clock::now();
     int Size   = argc > 1 ? atoi(argv[1]) : 256;
     int warmup = argc > 2 ? atoi(argv[2]) : 20;
     int iters  = argc > 3 ? atoi(argv[3]) : 100;
@@ -83,9 +86,13 @@ int main(int argc, char** argv) {
     double k_med = kt[iters / 2], k_min = kt[0];
     double gflops = (2.0 * M * N * K) / (k_med / 1e6) / 1e9;
 
+    auto wall_end = std::chrono::high_resolution_clock::now();
+    double wall_time_ms = std::chrono::duration<double, std::milli>(wall_end - wall_start).count();
+
     printf("{\n  \"algorithm\": \"matmul\",\n  \"implementation\": \"sycl\",\n");
     printf("  \"N\": %d, \"M\": %d, \"K\": %d,\n", N, M, K);
     printf("  \"correct\": %s,\n  \"max_abs_err\": %.3e,\n", correct ? "true" : "false", maxerr);
+    printf("  \"wall_time_ms\": %.2f,\n", wall_time_ms);
     printf("  \"kernel_median_us\": %.2f,\n  \"kernel_min_us\": %.2f,\n", k_med, k_min);
     printf("  \"gflops\": %.2f\n}\n", gflops);
 
