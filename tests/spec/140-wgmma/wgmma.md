@@ -129,10 +129,44 @@ survive that.  (Chris's direction.)
              the exact wgmma message).  Verified via direct crisp-compile (ci-stop is 139, so the
              runner skips 140 until Chris advances it).  110/110 on the 13x MMA specs (the
              register-mma-analyzers + mma codegen overrides did not regress 132/135/137/138/139).
-    [ ] 1  (THE CRUX) a minimal single m64n64k8 wgmma: one warpgroup (local-size 128), A/B from a
-           PLAIN SMEM copy (no TMA, no async, no warp-spec), accumulate -> store.  TDD: tiny fixed
-           matmul, MMA_CORRECT on H100.  Isolates the instruction + descriptor + accumulator layout +
-           store — the correctness core.
+    [~] 1  (THE CRUX) a minimal single m64n64k8 wgmma.  APPROACH = REFERENCE-FIRST (wgmma is silent-
+           MMA_WRONG on bad bits, so iterate in RAW CUDA where edit->nvcc->run is seconds, THEN port
+           the exact working logic into the Crisp codegen).
+        [x] pod-free prep DONE 2026-07-19:
+            - DESCRIPTOR bit layout CONFIRMED (decoded a forum descriptor 0x0000010000100040 ->
+              start[0:13]=64, LBO[16:29]=16, SBO[32:45]=256, swizzle[62:63]=0): start address [0:13],
+              leading byte offset [16:29], stride byte offset [32:45], base offset [49:51], swizzle
+              [62:63]; each byte value is encoded (val>>4)&0x3FFF.  (= CUTLASS GmmaDescriptor.)
+            - tf32 is K-MAJOR only (matches Crisp a-mat row-major / b-mat col-major).
+            - ACCUMULATOR store = standard mma m16n8 C fragment (lane: row=lane/4, col=(lane%4)*2,
+              regs c0/c1 row r, c2/c3 row r+8) TILED by 4 warps (warp w -> rows [16w,16w+16)) x N/8
+              column groups.  N=64 -> 32 f32 regs/thread.
+            - INSTRUCTION seq: wgmma.fence.sync.aligned -> wgmma.mma_async.sync.aligned.m64n64k8.f32.
+              tf32.tf32 {d0..d31}, descA, descB, scaleD=1, scaleA=1, scaleB=1 -> commit_group ->
+              wait_group 0.
+            - Reference kernel: put_temp_files_here/wgmma_ref.cu (host C=A*B check, LBO/SBO as #define
+              knobs).  SMEM = plain contiguous K-major (A 64x8 row-major, B^T 64x8 row-major).
+        [x] METAL REFERENCE MMA_CORRECT 2026-07-19 (H100) — put_temp_files_here/wgmma_ref.cu.  THE
+            WORKING RECIPE (m64n64k8 tf32, no swizzle, SS):
+            - SMEM LAYOUT = CORE-MATRIX ORDER (the thing plain row-major got wrong): each 8x4 tf32
+              core matrix is 128B CONTIGUOUS + K-major within; cores strided by LBO/SBO.  Scatter:
+              A[m][k] -> sA[(m/8)*64 + (k/4)*32 + (m%8)*4 + (k%4)]; B^T[n][k] -> same formula (n for m).
+              (Colfax tutorial: wA = 8x2 cores, wB = 2x(N/8) cores.)
+            - DESCRIPTOR: start=(smem_addr>>4)&0x3FFF [0:13]; LBO=128B (K dir) -> (128>>4)=8 at [16:29];
+              SBO=256B (M/N dir) -> (256>>4)=16 at [32:45]; swizzle=0 [62:63].  LBO/SBO were RIGHT the
+              whole time; the SMEM layout was the bug.
+            - INSTR: wgmma.fence.sync.aligned; wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32
+              {%0..%31}, descA, descB, 1(scaleD), 1(scaleA), 1(scaleB); wgmma.commit_group.sync.aligned;
+              wgmma.wait_group.sync.aligned 0;  (accumulator = 32 f32 "+f" regs; descs "l").
+            - STORE: warp = (tid%128)/32 -> rows [16*warp,16*warp+16); lane=tid%32; row_lo=lane/4;
+              col=(lane%4)*2; per n8 group j in [0,N/8): d[4j+0..3] -> (row_lo, col),(row_lo,col+1),
+              (row_lo+8, col),(row_lo+8,col+1) at base (16*warp, 8*j).  (= mma.sync m16n8 C, tiled.)
+        [ ] PORT to Crisp codegen (pod-free): (1) recover the addrspace(3) SMEM base of A/B tiles in
+            the wgmma generate-node-ir branch; (2) emit the descriptor bit-pack + the 4 asm strings +
+            the 32 accumulator in/out; (3) store-tile wgmma-accumulator branch = the store mapping
+            above; (4) the A/B SMEM tiles MUST be filled in CORE-MATRIX order by the kernel (Step 1
+            kernel does an explicit scatter; Step 2's TMA will produce it).  Then re-verify MMA_CORRECT
+            (test 01) on metal.
     [ ] 2  wgmma fed from a TMA-staged tile (:block) — get the descriptor/swizzle agreement right
            (NOTE: our TMA currently uses CU_TENSOR_MAP_SWIZZLE_NONE — hoist-cuda/main.lisp:926,
            metadata.lisp:580).  Single-tile :block wgmma matmul, MMA_CORRECT.
