@@ -4,51 +4,39 @@
 
 ### chap0_sync
 
-#### Precision: fast (ftz=ftz)
-
-| Size | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp (Wall ms) | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | Crisp vs Apples (%) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 2.53 | 0.01 | 0.00 | 0.10 | 0.34 | 0.00 | 5.99 | 0.01 | 0.00 | 3.9% |
-| 512x512x512 | 4.73 | 0.06 | 0.00 | 0.39 | 0.70 | 0.00 | 34.64 | 0.01 | 0.00 | 8.1% |
-| 1024x1024x1024 | 5.45 | 0.39 | 0.00 | 1.53 | 1.40 | 0.00 | 136.01 | 0.02 | 0.00 | 28.1% |
-| 2048x2048x2048 | 5.72 | 3.00 | 0.00 | 5.58 | 3.08 | 0.00 | 359.68 | 0.05 | 0.00 | 97.6% |
-| 4096x4096x4096 | 5.79 | 23.75 | 0.00 | 5.63 | 24.40 | 0.00 | 436.17 | 0.32 | 0.00 | 97.3% |
-
-
-
 #### Precision: fast (ftz=preserve)
 
-| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
-|---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 6.13 | 0.01 | 0.00 | 2.51 | 0.01 | 372.91 |
-| 512x512x512 | 34.20 | 0.01 | 0.00 | 4.71 | 0.06 | 276.84 |
-| 1024x1024x1024 | 136.03 | 0.02 | 0.00 | 5.45 | 0.39 | 327.98 |
-| 2048x2048x2048 | 360.81 | 0.05 | 0.00 | 5.72 | 3.00 | 673.61 |
-| 4096x4096x4096 | 436.24 | 0.32 | 0.00 | 5.79 | 23.75 | 3280.85 |
+| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp (Wall ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 6.11 | 0.01 | 0.00 | 2.49 | 0.01 | 464.32 | 0.10 | 0.34 | 620.82 | 1.6% | 4.0% |
+| 512x512x512 | 34.64 | 0.01 | 0.00 | 4.71 | 0.06 | 429.32 | 0.38 | 0.70 | 408.25 | 1.1% | 8.1% |
+| 1024x1024x1024 | 135.06 | 0.02 | 0.00 | 5.45 | 0.39 | 353.01 | 1.52 | 1.41 | 496.77 | 1.1% | 28.0% |
+| 2048x2048x2048 | 359.73 | 0.05 | 0.00 | 5.72 | 3.00 | 694.75 | 5.58 | 3.08 | 728.76 | 1.6% | 97.6% |
+| 4096x4096x4096 | 436.35 | 0.31 | 0.00 | 5.79 | 23.75 | 3314.07 | 5.63 | 24.41 | 3392.12 | 1.3% | 97.3% |
 
 
 
 #### Precision: ieee (ftz=ftz)
 
-| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
-|---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 2.85 | 0.01 | 0.00 | 2.52 | 0.01 | 370.51 |
-| 512x512x512 | 17.89 | 0.01 | 0.00 | 4.74 | 0.06 | 277.98 |
-| 1024x1024x1024 | 38.55 | 0.06 | 0.00 | 5.49 | 0.39 | 327.65 |
-| 2048x2048x2048 | 50.74 | 0.34 | 0.00 | 5.76 | 2.98 | 653.34 |
-| 4096x4096x4096 | 52.34 | 2.63 | 0.00 | 5.79 | 23.75 | 3274.60 |
+| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp (Wall ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 2.82 | 0.01 | 0.00 | 2.49 | 0.01 | 304.10 | 0.10 | 0.34 | 326.58 | 3.5% | 4.0% |
+| 512x512x512 | 17.79 | 0.02 | 0.00 | 4.72 | 0.06 | 289.87 | 0.38 | 0.70 | 361.50 | 2.2% | 8.2% |
+| 1024x1024x1024 | 38.31 | 0.06 | 0.00 | 5.45 | 0.39 | 338.71 | 1.52 | 1.41 | 456.32 | 4.0% | 27.9% |
+| 2048x2048x2048 | 50.41 | 0.34 | 0.00 | 5.72 | 3.00 | 677.97 | 5.58 | 3.08 | 677.37 | 11.1% | 97.6% |
+| 4096x4096x4096 | 51.99 | 2.64 | 0.00 | 5.74 | 23.92 | 3338.17 | 5.63 | 24.42 | 3344.17 | 10.8% | 97.9% |
 
 
 
 #### Precision: ieee (ftz=preserve)
 
-| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
-|---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 2.88 | 0.01 | 0.00 | 2.51 | 0.01 | 374.37 |
-| 512x512x512 | 18.18 | 0.01 | 0.00 | 4.74 | 0.06 | 274.52 |
-| 1024x1024x1024 | 38.55 | 0.06 | 0.00 | 5.49 | 0.39 | 318.25 |
-| 2048x2048x2048 | 50.74 | 0.34 | 0.00 | 5.76 | 2.98 | 660.63 |
-| 4096x4096x4096 | 52.33 | 2.63 | 0.00 | 5.79 | 23.75 | 3276.17 |
+| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp (Wall ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 2.80 | 0.01 | 0.00 | 2.46 | 0.01 | 302.88 | 0.10 | 0.34 | 345.30 | 3.5% | 4.0% |
+| 512x512x512 | 18.29 | 0.01 | 0.00 | 4.70 | 0.06 | 301.68 | 0.38 | 0.71 | 378.89 | 2.1% | 8.1% |
+| 1024x1024x1024 | 38.27 | 0.06 | 0.00 | 5.45 | 0.39 | 352.02 | 1.54 | 1.40 | 465.62 | 4.0% | 28.2% |
+| 2048x2048x2048 | 50.42 | 0.34 | 0.00 | 5.72 | 3.01 | 695.07 | 5.58 | 3.08 | 694.82 | 11.1% | 97.6% |
+| 4096x4096x4096 | 51.98 | 2.64 | 0.00 | 5.74 | 23.92 | 3323.27 | 5.63 | 24.43 | 3373.51 | 10.8% | 97.9% |
 
 
 ### chap1.5_async_block
@@ -57,11 +45,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 6.13 | 0.01 | 0.00 | 2.37 | 0.01 | 268.04 |
-| 512x512x512 | 34.20 | 0.01 | 0.00 | 4.04 | 0.07 | 286.16 |
-| 1024x1024x1024 | 136.03 | 0.02 | 0.00 | 4.58 | 0.47 | 334.11 |
-| 2048x2048x2048 | 360.81 | 0.05 | 0.00 | 4.78 | 3.59 | 743.89 |
-| 4096x4096x4096 | 436.24 | 0.32 | 0.00 | 4.81 | 28.57 | 3845.10 |
+| 256x256x256 | 6.11 | 0.01 | 0.00 | 2.34 | 0.01 | 405.74 |
+| 512x512x512 | 34.64 | 0.01 | 0.00 | 4.02 | 0.07 | 301.11 |
+| 1024x1024x1024 | 135.06 | 0.02 | 0.00 | 4.58 | 0.47 | 362.47 |
+| 2048x2048x2048 | 359.73 | 0.05 | 0.00 | 4.78 | 3.59 | 775.15 |
+| 4096x4096x4096 | 436.35 | 0.31 | 0.00 | 4.81 | 28.57 | 3904.46 |
 
 
 
@@ -69,11 +57,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 2.85 | 0.01 | 0.00 | 2.36 | 0.01 | 269.70 |
-| 512x512x512 | 17.89 | 0.01 | 0.00 | 4.03 | 0.07 | 277.55 |
-| 1024x1024x1024 | 38.55 | 0.06 | 0.00 | 4.58 | 0.47 | 339.26 |
-| 2048x2048x2048 | 50.74 | 0.34 | 0.00 | 4.78 | 3.59 | 730.03 |
-| 4096x4096x4096 | 52.34 | 2.63 | 0.00 | 4.81 | 28.57 | 3857.64 |
+| 256x256x256 | 2.82 | 0.01 | 0.00 | 2.39 | 0.01 | 408.65 |
+| 512x512x512 | 17.79 | 0.02 | 0.00 | 4.00 | 0.07 | 299.71 |
+| 1024x1024x1024 | 38.31 | 0.06 | 0.00 | 4.54 | 0.47 | 353.84 |
+| 2048x2048x2048 | 50.41 | 0.34 | 0.00 | 4.74 | 3.62 | 767.51 |
+| 4096x4096x4096 | 51.99 | 2.64 | 0.00 | 4.78 | 28.78 | 3958.43 |
 
 
 
@@ -81,60 +69,48 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 2.88 | 0.01 | 0.00 | 2.37 | 0.01 | 282.60 |
-| 512x512x512 | 18.18 | 0.01 | 0.00 | 4.03 | 0.07 | 272.19 |
-| 1024x1024x1024 | 38.55 | 0.06 | 0.00 | 4.58 | 0.47 | 342.15 |
-| 2048x2048x2048 | 50.74 | 0.34 | 0.00 | 4.78 | 3.59 | 735.97 |
-| 4096x4096x4096 | 52.33 | 2.63 | 0.00 | 4.81 | 28.57 | 3860.28 |
+| 256x256x256 | 2.80 | 0.01 | 0.00 | 2.34 | 0.01 | 417.36 |
+| 512x512x512 | 18.29 | 0.01 | 0.00 | 4.03 | 0.07 | 305.18 |
+| 1024x1024x1024 | 38.27 | 0.06 | 0.00 | 4.58 | 0.47 | 347.23 |
+| 2048x2048x2048 | 50.42 | 0.34 | 0.00 | 4.78 | 3.59 | 778.09 |
+| 4096x4096x4096 | 51.98 | 2.64 | 0.00 | 4.81 | 28.57 | 3902.19 |
 
 
 ### chap1_async_linear
 
-#### Precision: fast (ftz=ftz)
-
-| Size | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp (Wall ms) |
-|---|---:|---:|---:|
-| 256x256x256 | 0.15 | 0.22 | 0.00 |
-| 512x512x512 | 0.62 | 0.43 | 0.00 |
-| 1024x1024x1024 | 2.52 | 0.85 | 0.00 |
-| 2048x2048x2048 | 8.91 | 1.93 | 0.00 |
-| 4096x4096x4096 | 9.06 | 15.17 | 0.00 |
-
-
-
 #### Precision: fast (ftz=preserve)
 
-| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
-|---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 6.13 | 0.01 | 0.00 | 2.37 | 0.01 | 269.90 |
-| 512x512x512 | 34.20 | 0.01 | 0.00 | 4.04 | 0.07 | 276.03 |
-| 1024x1024x1024 | 136.03 | 0.02 | 0.00 | 4.58 | 0.47 | 335.00 |
-| 2048x2048x2048 | 360.81 | 0.05 | 0.00 | 4.78 | 3.59 | 736.80 |
-| 4096x4096x4096 | 436.24 | 0.32 | 0.00 | 4.81 | 28.57 | 3873.54 |
+| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp (Wall ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 6.11 | 0.01 | 0.00 | 2.33 | 0.01 | 429.88 | 0.15 | 0.22 | 500.61 | 2.5% | 6.5% |
+| 512x512x512 | 34.64 | 0.01 | 0.00 | 4.03 | 0.07 | 332.82 | 0.62 | 0.43 | 360.55 | 1.8% | 15.4% |
+| 1024x1024x1024 | 135.06 | 0.02 | 0.00 | 4.57 | 0.47 | 377.93 | 2.49 | 0.86 | 418.58 | 1.8% | 54.3% |
+| 2048x2048x2048 | 359.73 | 0.05 | 0.00 | 4.78 | 3.59 | 778.36 | 8.90 | 1.93 | 569.11 | 2.5% | 186.3% |
+| 4096x4096x4096 | 436.35 | 0.31 | 0.00 | 4.81 | 28.57 | 3903.67 | 9.05 | 15.18 | 2285.99 | 2.1% | 188.1% |
 
 
 
 #### Precision: ieee (ftz=ftz)
 
-| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
-|---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 2.85 | 0.01 | 0.00 | 2.38 | 0.01 | 291.21 |
-| 512x512x512 | 17.89 | 0.01 | 0.00 | 4.04 | 0.07 | 277.13 |
-| 1024x1024x1024 | 38.55 | 0.06 | 0.00 | 4.58 | 0.47 | 340.88 |
-| 2048x2048x2048 | 50.74 | 0.34 | 0.00 | 4.78 | 3.59 | 737.22 |
-| 4096x4096x4096 | 52.34 | 2.63 | 0.00 | 4.81 | 28.57 | 3941.22 |
+| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp (Wall ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 2.82 | 0.01 | 0.00 | 2.36 | 0.01 | 395.00 | 0.15 | 0.22 | 306.95 | 5.4% | 6.5% |
+| 512x512x512 | 17.79 | 0.02 | 0.00 | 4.00 | 0.07 | 295.27 | 0.62 | 0.43 | 327.00 | 3.5% | 15.5% |
+| 1024x1024x1024 | 38.31 | 0.06 | 0.00 | 4.55 | 0.47 | 355.08 | 2.50 | 0.86 | 382.35 | 6.5% | 55.1% |
+| 2048x2048x2048 | 50.41 | 0.34 | 0.00 | 4.74 | 3.62 | 756.03 | 8.98 | 1.91 | 531.43 | 17.8% | 189.3% |
+| 4096x4096x4096 | 51.99 | 2.64 | 0.00 | 4.78 | 28.78 | 3892.33 | 9.07 | 15.16 | 2230.98 | 17.4% | 189.9% |
 
 
 
 #### Precision: ieee (ftz=preserve)
 
-| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
-|---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 2.88 | 0.01 | 0.00 | 2.37 | 0.01 | 266.78 |
-| 512x512x512 | 18.18 | 0.01 | 0.00 | 4.04 | 0.07 | 270.91 |
-| 1024x1024x1024 | 38.55 | 0.06 | 0.00 | 4.58 | 0.47 | 320.36 |
-| 2048x2048x2048 | 50.74 | 0.34 | 0.00 | 4.78 | 3.59 | 724.35 |
-| 4096x4096x4096 | 52.33 | 2.63 | 0.00 | 4.81 | 28.57 | 3849.97 |
+| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp (Wall ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 2.80 | 0.01 | 0.00 | 2.23 | 0.02 | 606.53 | 0.15 | 0.22 | 306.31 | 5.4% | 6.8% |
+| 512x512x512 | 18.29 | 0.01 | 0.00 | 4.04 | 0.07 | 299.44 | 0.62 | 0.43 | 361.07 | 3.4% | 15.4% |
+| 1024x1024x1024 | 38.27 | 0.06 | 0.00 | 4.58 | 0.47 | 353.37 | 2.52 | 0.85 | 402.12 | 6.6% | 54.9% |
+| 2048x2048x2048 | 50.42 | 0.34 | 0.00 | 4.78 | 3.59 | 772.41 | 8.99 | 1.91 | 535.59 | 17.8% | 188.1% |
+| 4096x4096x4096 | 51.98 | 2.64 | 0.00 | 4.81 | 28.57 | 3902.75 | 9.07 | 15.15 | 2230.71 | 17.4% | 188.5% |
 
 
 ### chap2_pipelined_block
@@ -143,11 +119,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 6.13 | 0.01 | 0.00 | 2.21 | 0.02 | 271.82 |
-| 512x512x512 | 34.20 | 0.01 | 0.00 | 3.57 | 0.08 | 280.21 |
-| 1024x1024x1024 | 136.03 | 0.02 | 0.00 | 3.98 | 0.54 | 340.00 |
-| 2048x2048x2048 | 360.81 | 0.05 | 0.00 | 4.15 | 4.14 | 798.52 |
-| 4096x4096x4096 | 436.24 | 0.32 | 0.00 | 4.22 | 32.58 | 4335.20 |
+| 256x256x256 | 6.11 | 0.01 | 0.00 | 2.19 | 0.02 | 397.82 |
+| 512x512x512 | 34.64 | 0.01 | 0.00 | 3.58 | 0.08 | 292.04 |
+| 1024x1024x1024 | 135.06 | 0.02 | 0.00 | 3.98 | 0.54 | 360.51 |
+| 2048x2048x2048 | 359.73 | 0.05 | 0.00 | 4.15 | 4.14 | 813.86 |
+| 4096x4096x4096 | 436.35 | 0.31 | 0.00 | 4.22 | 32.58 | 4373.71 |
 
 
 
@@ -155,11 +131,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 2.85 | 0.01 | 0.00 | 2.18 | 0.02 | 284.90 |
-| 512x512x512 | 17.89 | 0.01 | 0.00 | 3.58 | 0.08 | 291.06 |
-| 1024x1024x1024 | 38.55 | 0.06 | 0.00 | 3.98 | 0.54 | 334.06 |
-| 2048x2048x2048 | 50.74 | 0.34 | 0.00 | 4.15 | 4.14 | 791.84 |
-| 4096x4096x4096 | 52.34 | 2.63 | 0.00 | 4.22 | 32.58 | 4333.79 |
+| 256x256x256 | 2.82 | 0.01 | 0.00 | 2.17 | 0.02 | 397.59 |
+| 512x512x512 | 17.79 | 0.02 | 0.00 | 3.55 | 0.08 | 291.28 |
+| 1024x1024x1024 | 38.31 | 0.06 | 0.00 | 3.95 | 0.54 | 352.68 |
+| 2048x2048x2048 | 50.41 | 0.34 | 0.00 | 4.12 | 4.17 | 824.14 |
+| 4096x4096x4096 | 51.99 | 2.64 | 0.00 | 4.19 | 32.82 | 4406.42 |
 
 
 
@@ -167,34 +143,36 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUBLAS_Optimal (Wall ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | CUDA_Apples (Wall ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 2.88 | 0.01 | 0.00 | 2.18 | 0.02 | 273.14 |
-| 512x512x512 | 18.18 | 0.01 | 0.00 | 3.58 | 0.08 | 275.52 |
-| 1024x1024x1024 | 38.55 | 0.06 | 0.00 | 3.98 | 0.54 | 342.90 |
-| 2048x2048x2048 | 50.74 | 0.34 | 0.00 | 4.15 | 4.14 | 794.82 |
-| 4096x4096x4096 | 52.33 | 2.63 | 0.00 | 4.22 | 32.58 | 4330.21 |
+| 256x256x256 | 2.80 | 0.01 | 0.00 | 2.19 | 0.02 | 405.89 |
+| 512x512x512 | 18.29 | 0.01 | 0.00 | 3.58 | 0.07 | 295.11 |
+| 1024x1024x1024 | 38.27 | 0.06 | 0.00 | 3.98 | 0.54 | 353.93 |
+| 2048x2048x2048 | 50.42 | 0.34 | 0.00 | 4.15 | 4.14 | 815.03 |
+| 4096x4096x4096 | 51.98 | 2.64 | 0.00 | 4.22 | 32.58 | 4367.62 |
 
 
 ### Compile Times
 
 | Chapter | Precision | Competitor | Avg Device Compile (ms) | Avg All Compile (ms) |
 |---|---|---|---:|---:|
-| chap0_sync | fast (ftz=ftz) | CUBLAS_Optimal | 0.00 | 0.00 |
-| chap0_sync | fast (ftz=ftz) | CUDA_Apples | 0.00 | 0.00 |
-| chap0_sync | fast (ftz=ftz) | Crisp | 0.00 | 0.00 |
-| chap0_sync | fast (ftz=preserve) | CUDA_Apples | 0.00 | 0.00 |
-| chap0_sync | ieee (ftz=ftz) | CUDA_Apples | 0.00 | 0.00 |
-| chap0_sync | ieee (ftz=preserve) | CUDA_Apples | 0.00 | 0.00 |
-| chap1.5_async_block | fast (ftz=preserve) | CUDA_Apples | 0.00 | 0.00 |
-| chap1.5_async_block | ieee (ftz=ftz) | CUDA_Apples | 0.00 | 0.00 |
-| chap1.5_async_block | ieee (ftz=preserve) | CUDA_Apples | 0.00 | 0.00 |
-| chap1_async_linear | fast (ftz=ftz) | Crisp | 0.00 | 0.00 |
-| chap1_async_linear | fast (ftz=preserve) | CUDA_Apples | 0.00 | 0.00 |
-| chap1_async_linear | ieee (ftz=ftz) | CUDA_Apples | 0.00 | 0.00 |
-| chap1_async_linear | ieee (ftz=preserve) | CUDA_Apples | 0.00 | 0.00 |
-| chap2_pipelined_block | fast (ftz=preserve) | CUDA_Apples | 0.00 | 0.00 |
-| chap2_pipelined_block | ieee (ftz=ftz) | CUDA_Apples | 0.00 | 0.00 |
-| chap2_pipelined_block | ieee (ftz=preserve) | CUDA_Apples | 0.00 | 0.00 |
-| vendor_ceiling | fast (ftz=preserve) | CUBLAS_Optimal | 0.00 | 0.00 |
-| vendor_ceiling | ieee (ftz=ftz) | CUBLAS_Optimal | 0.00 | 0.00 |
-| vendor_ceiling | ieee (ftz=preserve) | CUBLAS_Optimal | 0.00 | 0.00 |
+| chap0_sync | fast (ftz=preserve) | CUBLAS_Optimal | 1287.59 | 1287.59 |
+| chap0_sync | fast (ftz=preserve) | CUDA_Apples | 1447.27 | 1447.27 |
+| chap0_sync | fast (ftz=preserve) | Crisp | 310.69 | 339.95 |
+| chap0_sync | ieee (ftz=ftz) | CUBLAS_Optimal | 1270.60 | 1270.60 |
+| chap0_sync | ieee (ftz=ftz) | CUDA_Apples | 1451.96 | 1451.96 |
+| chap0_sync | ieee (ftz=ftz) | Crisp | 314.49 | 314.87 |
+| chap0_sync | ieee (ftz=preserve) | CUBLAS_Optimal | 1252.67 | 1252.67 |
+| chap0_sync | ieee (ftz=preserve) | CUDA_Apples | 1431.04 | 1431.04 |
+| chap0_sync | ieee (ftz=preserve) | Crisp | 314.90 | 315.29 |
+| chap1.5_async_block | fast (ftz=preserve) | CUDA_Apples | 2413.47 | 2413.47 |
+| chap1.5_async_block | ieee (ftz=ftz) | CUDA_Apples | 2376.04 | 2376.04 |
+| chap1.5_async_block | ieee (ftz=preserve) | CUDA_Apples | 2407.40 | 2407.40 |
+| chap1_async_linear | fast (ftz=preserve) | CUDA_Apples | 2395.24 | 2395.24 |
+| chap1_async_linear | fast (ftz=preserve) | Crisp | 316.59 | 346.71 |
+| chap1_async_linear | ieee (ftz=ftz) | CUDA_Apples | 2399.43 | 2399.43 |
+| chap1_async_linear | ieee (ftz=ftz) | Crisp | 316.27 | 316.65 |
+| chap1_async_linear | ieee (ftz=preserve) | CUDA_Apples | 2414.15 | 2414.15 |
+| chap1_async_linear | ieee (ftz=preserve) | Crisp | 310.47 | 310.86 |
+| chap2_pipelined_block | fast (ftz=preserve) | CUDA_Apples | 2412.61 | 2412.61 |
+| chap2_pipelined_block | ieee (ftz=ftz) | CUDA_Apples | 2409.37 | 2409.37 |
+| chap2_pipelined_block | ieee (ftz=preserve) | CUDA_Apples | 2410.62 | 2410.62 |
 
