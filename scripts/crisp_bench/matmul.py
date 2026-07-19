@@ -26,19 +26,30 @@ def run_bin(path, M, N, K, warmup, iters, env_extra=None):
         print(p.stdout, p.stderr, file=sys.stderr)
         return None
 
-def build_harness():
+def build_harness(precision: str, ftz: bool):
     # Crisp harness
     sh(["nvcc", "-O3", "-arch=sm_90", str(HERE/"crisp/bench_harness.cu"), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
     
+    # Precision flags for CUDA
+    nvcc_flags = ["-O3", "-arch=sm_90"]
+    if precision == "fast":
+        nvcc_flags.append("-use_fast_math")
+    elif ftz:
+        nvcc_flags.append("-ftz=true")
+        
     # CUDA Apples-to-Apples (Chap 0 Baseline)
     if (HERE / "chap0_sync" / "cuda_apples.cu").exists():
-        sh(["nvcc", "-O3", "-arch=sm_90", str(HERE/"chap0_sync/cuda_apples.cu"), "-o", str(HERE/"chap0_sync/cuda_apples")], check=True)
+        sh(["nvcc"] + nvcc_flags + [str(HERE/"chap0_sync/cuda_apples.cu"), "-o", str(HERE/"chap0_sync/cuda_apples")], check=True)
 
     # CUBLAS Optimal (Vendor Ceiling)
+    cublas_flags = ["-O3", "-arch=sm_90", "-lcublas"]
+    if precision == "fast":
+        cublas_flags.append("-DFAST_MATH")
+    
     if (HERE / "chap0_sync" / "cublas_optimal.cu").exists():
-        sh(["nvcc", "-O3", "-arch=sm_90", str(HERE/"chap0_sync/cublas_optimal.cu"), "-lcublas", "-o", str(HERE/"chap0_sync/cublas_optimal")], check=True)
+        sh(["nvcc"] + cublas_flags + [str(HERE/"chap0_sync/cublas_optimal.cu"), "-o", str(HERE/"chap0_sync/cublas_optimal")], check=True)
 
-def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, env_extra: dict = None) -> BenchmarkSweep:
+def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, precision: str, ftz: bool, env_extra: dict = None) -> BenchmarkSweep:
     meta = create_metadata()
     meta.hardware.gpu_model = "NVIDIA H100"
     meta.hardware.arch_target = "sm_90"
@@ -53,8 +64,8 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
         point = SweepPoint(
             configuration={"m": S, "n": S, "k": S, "warmup": warmup, "iters": iters},
             metrics=BenchmarkMetrics(
-                compile_time=CompileTimeMetrics(device_compile_ms=0.0, all_compile_ms=0.0), 
-                runtime=RuntimeMetrics(wall_time_ms=0.0, kernel_execution_ms=out.get("kernel_median_us", 0.0)/1000.0),
+                compile_time=CompileTimeMetrics(device_compile_ms=0.0, all_compile_ms=out.get("driver_jit_ms", 0.0)), 
+                runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0), kernel_execution_ms=out.get("kernel_median_us", 0.0)/1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0)/1000.0)
             )
         )
@@ -65,8 +76,8 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
         benchmark_suite="matmul",
         chapter=chapter,
         competitor=competitor_name,
-        precision="fast",
-        denormal_handling="ftz",
+        precision=precision,
+        denormal_handling="ftz" if ftz else "preserve",
         results=results
     )
 
@@ -76,34 +87,36 @@ def main():
     ap.add_argument("--warmup", type=int, default=20)
     ap.add_argument("--iters", type=int, default=100)
     ap.add_argument("--output-dir", default=str(HERE.parent / "results"))
+    ap.add_argument("--precision", choices=["ieee", "fast"], default="fast")
+    ap.add_argument("--ftz", action="store_true", help="Enable Flush-To-Zero")
     a = ap.parse_args()
 
     sizes = a.sizes.split(",")
-    build_harness()
+    build_harness(a.precision, a.ftz)
 
     out_dir = Path(a.output_dir)
 
     # Chap 0 (Crisp)
     if (HERE / "chap0_sync" / "matmul.ptx").exists():
-        sweep = run_sweep("chap0_sync", HERE/"crisp/matmul_crisp", "Crisp", sizes, a.warmup, a.iters, {"CRISP_MATMUL_PTX": str(HERE / "chap0_sync" / "matmul.ptx")})
+        sweep = run_sweep("chap0_sync", HERE/"crisp/matmul_crisp", "Crisp", sizes, a.warmup, a.iters, a.precision, a.ftz, {"CRISP_MATMUL_PTX": str(HERE / "chap0_sync" / "matmul.ptx")})
         sweep.save(out_dir)
         print(f"Saved Chap0 (Crisp) sweep to {out_dir}")
 
     # Chap 0 (CUDA Apples)
     if (HERE / "chap0_sync" / "cuda_apples").exists():
-        sweep = run_sweep("chap0_sync", HERE/"chap0_sync/cuda_apples", "CUDA_Apples", sizes, a.warmup, a.iters)
+        sweep = run_sweep("chap0_sync", HERE/"chap0_sync/cuda_apples", "CUDA_Apples", sizes, a.warmup, a.iters, a.precision, a.ftz)
         sweep.save(out_dir)
         print(f"Saved Chap0 (CUDA Apples) sweep to {out_dir}")
 
     # CUBLAS Optimal
     if (HERE / "chap0_sync" / "cublas_optimal").exists():
-        sweep = run_sweep("chap0_sync", HERE/"chap0_sync/cublas_optimal", "CUBLAS_Optimal", sizes, a.warmup, a.iters)
+        sweep = run_sweep("chap0_sync", HERE/"chap0_sync/cublas_optimal", "CUBLAS_Optimal", sizes, a.warmup, a.iters, a.precision, a.ftz)
         sweep.save(out_dir)
         print(f"Saved CUBLAS Optimal sweep to {out_dir}")
 
     # Chap 1 (Crisp)
     if (HERE / "chap1_async_linear" / "matmul_async.ptx").exists():
-        sweep = run_sweep("chap1_async_linear", HERE/"crisp/matmul_crisp", "Crisp", sizes, a.warmup, a.iters, {"CRISP_MATMUL_PTX": str(HERE / "chap1_async_linear" / "matmul_async.ptx")})
+        sweep = run_sweep("chap1_async_linear", HERE/"crisp/matmul_crisp", "Crisp", sizes, a.warmup, a.iters, a.precision, a.ftz, {"CRISP_MATMUL_PTX": str(HERE / "chap1_async_linear" / "matmul_async.ptx")})
         sweep.save(out_dir)
         print(f"Saved Chap1 (Crisp) sweep to {out_dir}")
 

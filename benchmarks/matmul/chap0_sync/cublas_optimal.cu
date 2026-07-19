@@ -22,15 +22,20 @@ int main(int argc, char** argv) {
   cublasCreate(&h);
   float alpha = 1.0f, beta = 0.0f;
 
-  // tf32 tensor cores via CUBLAS_COMPUTE_32F_FAST_TF32.  Layout is irrelevant for a peak
-  // throughput reference (same 2·M·N·K FLOPs); we treat everything column-major NxN.
   int warmup = argc > 4 ? atoi(argv[4]) : 20;
   int iters = argc > 5 ? atoi(argv[5]) : 100;
+
+  // Precision toggles
+#ifdef FAST_MATH
+  cublasComputeType_t comp = CUBLAS_COMPUTE_32F_FAST_TF32;
+#else
+  cublasComputeType_t comp = CUBLAS_COMPUTE_32F;
+#endif
 
   auto gemm = [&]() {
     cublasGemmEx(h, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &alpha,
                  dA, CUDA_R_32F, M, dB, CUDA_R_32F, K, &beta,
-                 dC, CUDA_R_32F, M, CUBLAS_COMPUTE_32F_FAST_TF32, CUBLAS_GEMM_DEFAULT);
+                 dC, CUDA_R_32F, M, comp, CUBLAS_GEMM_DEFAULT);
   };
 
   for (int i = 0; i < warmup; i++) gemm();
