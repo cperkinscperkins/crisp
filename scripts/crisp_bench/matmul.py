@@ -143,7 +143,7 @@ def main():
                     print(f"Skipping {comp_name} because {crisp_compiler} not found.")
                     return
                 # Crisp compile (device compile)
-                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--log-level=off", str(src_path)])
+                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", "--log-level=off", str(src_path)])
                 all_c_ms = dev_c_ms # Harness adds driver_jit later
                 exe_path = str(HERE / "crisp" / "matmul_crisp")
                 env_ext = {"CRISP_MATMUL_PTX": str(bin_path)}
