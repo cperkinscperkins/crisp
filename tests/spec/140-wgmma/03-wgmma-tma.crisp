@@ -1,0 +1,30 @@
+;; Endeavor 140 (Chapter 4) Step 3 — TMA + 128B swizzle wgmma.  One warpgroup loads a 64x32 A K-block
+;; and a 64x32 B^T K-block via TMA (128B swizzle), then 4 wgmma.m64n64k8 iterate the K-slices.  This
+;; is the fast path: hardware bulk load (no scatter) + wgmma-native swizzled layout.  Ports the
+;; metal-verified wgmma_tma_swizzle_ref.cu recipe.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "wgmma is forward-only MMA"
+;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma
+;;
+;; MMA-DIMS: 64 64 32
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_tma (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 32)))
+        (B-tile (make-scratch-matrix float (64 32)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 32) D A-tile B-tile :swizzle :128b)
+    (store-tile D C (0 0))))

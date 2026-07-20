@@ -720,3 +720,153 @@
                 (multiple-value-bind (sm sn sk) (%spv-mma-shape)
                   (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
                 (%emit-nvvm-mma builder module a-val b-val c-val)))))))
+
+;;; ===========================================================================
+;;; Endeavor 140 Step 3 — thread :swizzle from load-tile -> scan -> resolve -> metadata so a wgmma
+;;; tile's CuTensorMap gets SWIZZLE_128B.  Three reproductions, each = original + one :swizzle line.
+;;; ===========================================================================
+
+;;; src/analysis/core.lisp — %scan-register-tma-descriptor: capture the load-tile's :swizzle key.
+(defun %scan-register-tma-descriptor (args)
+  "Endeavor 137/140: register a CUtensorMap descriptor for a :block load-tile's SRC; capture the
+   optional :swizzle key (:128b for wgmma) so the hoist emits CU_TENSOR_MAP_SWIZZLE_128B."
+  (let* ((src     (first args))
+         (tile    (second args))
+         (barrier (getf (cdddr args) :barrier))
+         (swizzle (getf (cdddr args) :swizzle))
+         (bar-ring  (%barrier-ring-form-p barrier))
+         (bar-key   (or bar-ring (and (symbolp barrier) barrier)))
+         (tile-ring (and (consp tile) (symbolp (first tile))
+                         (string-equal (symbol-name (first tile)) "RING-GET")
+                         (symbolp (second tile))
+                         (second tile)))
+         (tile-key  (or tile-ring (and (symbolp tile) tile))))
+    (when (and (symbolp src) bar-key
+               (eq (async-barrier-mode-of barrier) :block)
+               (eq *target-backend* :ptx))
+      (setf *scan-is-originator* t)
+      (unless bar-ring
+        (incf (gethash bar-key *async-barrier-load-count* 0)))
+      (let* ((fn-name  (compiler-context-scanning-function-name *compiler-context*))
+             (existing (gethash fn-name *implicit-arg-map*))
+             (already  (find-if (lambda (e)
+                                  (let ((spec (cdr e)))
+                                    (and (consp spec)
+                                         (symbolp (first spec))
+                                         (string-equal (symbol-name (first spec)) "TENSOR-MAP")
+                                         (eq (second spec) src))))
+                                existing)))
+        (unless already
+          (let* ((uname (intern (format nil "~a_TENSORMAP_FROM_~a" src fn-name)
+                                (symbol-package src)))
+                 (spec  (list (intern "TENSOR-MAP" (find-package :crisp.compiler)) src)))
+            (log:info "Pass 1: :block load-tile of ~a (tile ~a, swizzle ~a) -> CUtensorMap descriptor ~a"
+                      src tile swizzle uname)
+            (push (cons uname spec) (gethash fn-name *implicit-arg-map*))
+            (setf (gethash uname *tma-descriptor-info*)
+                  (list :originator fn-name :describes-sym src
+                        :tile-sym (or tile-key tile)
+                        :tile-via-ring (and tile-ring t)
+                        :swizzle swizzle))))))))
+
+;;; src/analysis/core.lisp — resolve-tma-descriptors: carry :swizzle into *tma-resolved*.
+(defun resolve-tma-descriptors ()
+  "Endeavor 137/140: resolve describes + box-dims through the carrier chain into *tma-resolved*,
+   carrying the :swizzle marking from *tma-descriptor-info*."
+  (loop for kernel being the hash-keys of *implicit-arg-map*
+        when (%fn-is-kernel-p kernel)
+          do (dolist (entry (gethash kernel *implicit-arg-map*))
+               (let ((uname (car entry)))
+                 (when (gethash uname *tma-descriptor-info*)
+                   (let ((d (%tma-resolve-ref kernel uname :describes))
+                         (til (%tma-resolve-ref kernel uname :tile)))
+                     (cond
+                       ((and d (eq (first d) :tensor) til (eq (first til) :tile))
+                        (let* ((via-ring (getf (gethash uname *tma-descriptor-info*) :tile-via-ring))
+                               (swizzle  (getf (gethash uname *tma-descriptor-info*) :swizzle))
+                               (dims     (second til))
+                               (box      (if via-ring (rest dims) dims)))
+                          (setf (gethash (cons kernel uname) *tma-resolved*)
+                                (list :describes (second d)
+                                      :element-type (third til)
+                                      :rank (length box)
+                                      :box-dims box
+                                      :layout (%kernel-param-contiguous-term kernel (second d))
+                                      :swizzle swizzle))))
+                       (t
+                        (log:warn "Endeavor 137: unresolved CUtensorMap descriptor ~a in kernel ~a (describes=~a tile=~a)"
+                                  uname kernel d til)))))))))
+
+;;; src/metadata.lisp — generate-implicit-signature: emit :swizzle from the resolved info (was :none).
+(defun generate-implicit-signature (sig declared-params)
+  "Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap
+   descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded."
+  (declare (ignore declared-params))
+  (let ((implicit-args nil)
+        (phys-index 0)
+        (implicit-params (function-signature-implicit-parameters sig)))
+    (dolist (param-def implicit-params)
+      (let* ((name (parameter-def-name param-def))
+             (type (parameter-def-type param-def))
+             (width (get-physical-width type))
+             (start phys-index)
+             (end (+ phys-index width -1))
+             (type-head (when (consp type) (symbol-name (first type)))))
+        (cond
+          ((and type-head (string-equal type-head "TENSOR-MAP"))
+           (let ((info (gethash (cons (function-signature-name sig) name) *tma-resolved*)))
+             (push (list :name (string-downcase (symbol-name name))
+                         :kind :tensor-map
+                         :describes (and (getf info :describes)
+                                         (string-downcase (symbol-name (getf info :describes))))
+                         :element-type (strip-package-qualifiers (getf info :element-type))
+                         :rank (getf info :rank)
+                         :box-dims (getf info :box-dims)
+                         :layout (or (getf info :layout) :row-major)
+                         :swizzle (or (getf info :swizzle) :none)
+                         :address-space :global
+                         :range (list start end))
+                   implicit-args)))
+          (t
+           (let ((address-space
+                   (cond
+                     ((and (consp type) (string-equal type-head "CELL") (>= (length type) 3))
+                      (nth 2 type))
+                     ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                                :test #'string-equal)
+                           (>= (length type) 4))
+                      (nth 3 type))
+                     (t :local)))
+                 (size-expr (gethash name *implicit-scratch-size-expr-map*)))
+             (push (list :name (string-downcase (symbol-name name))
+                         :type (strip-package-qualifiers type)
+                         :size-expr size-expr
+                         :address-space address-space
+                         :range (list start end))
+                   implicit-args))))
+        (incf phys-index width)))
+    (nreverse implicit-args)))
+
+;;; Endeavor 140 Step 3: the base-ptr aref is rank-aware — swizzle tiles are TMA-loaded scratch
+;;; MATRICES (64xK) so use (~ A 0 0); scatter tiles are flat scratch VECTORS so use (~ A 0).
+(defun analyze-wgmma-accumulate (expr env context location)
+  "(wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 0) for a swizzle (matrix) tile or
+   (~ tile 0) for a scatter (vector) tile, so codegen's 3rd value is the addrspace(3) base."
+  (destructuring-bind (d a b &rest kwargs) (cdr expr)
+    (let* ((d-node (analyze-expression d env context (append location '(1))))
+           (d-type (semantic-node-type d-node))
+           (swz    (getf kwargs :swizzle))
+           (aref-a (if swz `(~ ,a 0 0) `(~ ,a 0)))
+           (aref-b (if swz `(~ ,b 0 0) `(~ ,b 0))))
+      (unless (%wgmma-acc-type-p d-type)
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate: D (1st arg) must be a make-wgmma-accumulator, got type ~a." d-type)
+               :source-location location))
+      (let ((node (make-semantic-mma-accumulate
+                   :type d-type
+                   :c-node d-node
+                   :a-node (analyze-expression aref-a env context (append location '(2)))
+                   :b-node (analyze-expression aref-b env context (append location '(3)))
+                   :source-location location)))
+        (setf (gethash node *wgmma-node-swizzle*) (list swz (or (getf kwargs :k) 8)))
+        node))))
