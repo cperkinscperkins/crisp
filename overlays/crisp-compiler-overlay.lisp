@@ -578,3 +578,145 @@
             env context location))))
       (t
        (analyze-store-tile-expression expr env context location)))))
+
+;;; ===========================================================================
+;;; Endeavor 140 (Chapter 4) — STEP 3: TMA + 128B swizzle wgmma (port of the metal-verified recipe)
+;;; ===========================================================================
+;;; A :swizzle :128b tile is TMA-loaded (async proxy) into a 128B-swizzled 64xK-block SMEM tile; the
+;;; wgmma reads it with the SWIZZLE descriptor (SBO=1024, base_offset=0, swizzle bits=1) and iterates
+;;; K/8 k-slices (start advances kk*32 bytes).  NO fence.proxy.async (TMA + wgmma are both async proxy;
+;;; the scatter path still needs it).  Swizzle+k threaded node->codegen via *wgmma-node-swizzle*.
+
+(defvar *wgmma-node-swizzle* (make-hash-table :test 'eq)
+  "semantic-mma-accumulate node -> (list swizzle-mode k-block) for the wgmma path.")
+
+;;; src/mma.lisp / overlay — descriptor now parameterized by swizzle + per-k-slice byte offset.
+(defun %wgmma-make-desc (builder base-ptr &optional swizzle-p (kslice-byte-off 0))
+  "Build the 64-bit wgmma SMEM matrix descriptor.  NO-SWIZZLE (Step 1, scatter/core-matrix): LBO=128B
+   (enc 8), SBO=256B (enc 16), swizzle=0.  128B-SWIZZLE (Step 3, TMA, CUTLASS make_gmma_desc<K>):
+   LBO=16B (enc 1), SBO=1024B (enc 64), swizzle bits=1, base_offset=0; the k-slice ADVANCES the start
+   address by KSLICE-BYTE-OFF (kk*32).  start = ((addr+off)>>4)&0x3FFF at [0:13]."
+  (let* ((i32 (llvm-int32-type)) (i64 (llvm-int64-type))
+         (const-val (if swizzle-p
+                        (logior (ash 1 16) (ash 64 32) (ash 1 62))    ; LBO=16,SBO=1024,swz=128B,base=0
+                        (logior (ash 8 16) (ash 16 32))))             ; LBO=128,SBO=256,swz=0
+         (addr0 (llvm-build-ptr-to-int builder base-ptr i32 "wg_addr"))
+         (addr  (if (zerop kslice-byte-off) addr0
+                    (llvm-build-add builder addr0 (llvm-const-int i32 kslice-byte-off nil) "wg_addr_k")))
+         (sh    (crisp.llvm-bindings::llvm-build-l-shr builder addr (llvm-const-int i32 4 nil) "wg_sh"))
+         (msk   (crisp.llvm-bindings::llvm-build-and builder sh (llvm-const-int i32 #x3FFF nil) "wg_start"))
+         (st64  (llvm-build-zext builder msk i64 "wg_start64")))
+    (crisp.llvm-bindings::llvm-build-or builder st64 (llvm-const-int i64 const-val nil) "wg_desc")))
+
+(defun %emit-one-wgmma (builder module d-val a-ptr b-ptr acc-type n swizzle-p kslice-off)
+  "One m64nNk8 wgmma: fence + mma_async (N/2 accumulators in/out + 2 descs) + commit + wait; return
+   the new D record.  The k-slice offset (kk*32 bytes) advances the swizzle descriptor start address."
+  (let* ((f32 (llvm-float-type)) (i64 (llvm-int64-type))
+         (nacc (floor n 2))
+         (descA (%wgmma-make-desc builder a-ptr swizzle-p kslice-off))
+         (descB (%wgmma-make-desc builder b-ptr swizzle-p kslice-off))
+         (c-ops (loop for i below nacc collect
+                      (llvm-build-extract-value builder d-val i (format nil "wc~d" i)))))
+    (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.fence.sync.aligned;" "~{memory}")
+    (let* ((asm-str     (%wgmma-asm-string nacc n))
+           (constraints (%wgmma-constraints nacc))
+           (ret-ty      (%wgmma-struct-of-floats module nacc))
+           (ptypes      (append (loop repeat nacc collect f32) (list i64 i64)))
+           (args        (append c-ops (list descA descB)))
+           (call        (%build-inline-asm-call builder ret-ty ptypes args asm-str constraints)))
+      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.commit_group.sync.aligned;" "~{memory}")
+      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.wait_group.sync.aligned 0;" "~{memory}")
+      (let ((agg (llvm-get-undef (crisp-type-to-llvm-type acc-type module))))
+        (dotimes (i nacc)
+          (setf agg (llvm-build-insert-value builder agg
+                      (llvm-build-extract-value builder call i (format nil "wo~d" i))
+                      i (format nil "wr~d" i))))
+        agg))))
+
+(defun %emit-nvvm-wgmma (builder module d-val a-ptr b-ptr acc-type n &optional swizzle-p (k 8))
+  "Emit the wgmma accumulate.  NO-SWIZZLE (scatter): a proxy fence + barrier (generic->async proxy
+   visibility) + ONE k8 wgmma.  128B-SWIZZLE (TMA): NO proxy fence (both async proxy) + K/8 k-slice
+   wgmmas, D accumulating across them (scaleD=1), each with the start advanced kk*32 bytes.
+   Returns (values D nil)."
+  (let ((n-slices (if swizzle-p (max 1 (floor k 8)) 1)))
+    (unless swizzle-p
+      ;; scatter path: generic st.shared writes must be made visible to wgmma's async-proxy read.
+      (%gen-nvvm-fence-proxy-async-shared builder)
+      (%ptx-barrier builder module))
+    (let ((cur-d d-val))
+      (dotimes (kk n-slices)
+        (setf cur-d (%emit-one-wgmma builder module cur-d a-ptr b-ptr acc-type n swizzle-p (* kk 32))))
+      (values cur-d nil))))
+
+;;; %check-wgmma-shape: K is now a positive multiple of 8 (8 = one wgmma; 32 = a 128B-swizzle K-block).
+(defun %check-wgmma-shape (shape location)
+  "Validate a wgmma (M N K) shape.  M fixed 64; N a multiple of 8 in [8,256]; K a positive multiple
+   of 8 (8 for a single k8 wgmma / scatter path; a K-block e.g. 32 for the TMA+swizzle path)."
+  (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+    (error 'crisp-compiler-error
+           :message (format nil "wgmma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." shape)
+           :source-location location))
+  (destructuring-bind (m n k) shape
+    (unless (= m 64)
+      (error 'crisp-compiler-error :message (format nil "wgmma: M must be 64 (wgmma is always m64), got ~a." m)
+             :source-location location))
+    (unless (and (>= n 8) (<= n 256) (zerop (mod n 8)))
+      (error 'crisp-compiler-error :message (format nil "wgmma: N must be a multiple of 8 in [8,256], got ~a." n)
+             :source-location location))
+    (unless (and (plusp k) (zerop (mod k 8)))
+      (error 'crisp-compiler-error :message (format nil "wgmma: K must be a positive multiple of 8, got ~a." k)
+             :source-location location))))
+
+;;; analyze-wgmma-accumulate: accepts :swizzle / :k, stashed on the node for codegen.
+(defun analyze-wgmma-accumulate (expr env context location)
+  "(wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0) so codegen's 3rd value is the
+   addrspace(3) base; :swizzle/:k stashed in *wgmma-node-swizzle* keyed by the node."
+  (destructuring-bind (d a b &rest kwargs) (cdr expr)
+    (let* ((d-node (analyze-expression d env context (append location '(1))))
+           (d-type (semantic-node-type d-node)))
+      (unless (%wgmma-acc-type-p d-type)
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate: D (1st arg) must be a make-wgmma-accumulator, got type ~a." d-type)
+               :source-location location))
+      (let ((node (make-semantic-mma-accumulate
+                   :type d-type
+                   :c-node d-node
+                   :a-node (analyze-expression `(~ ,a 0) env context (append location '(2)))
+                   :b-node (analyze-expression `(~ ,b 0) env context (append location '(3)))
+                   :source-location location)))
+        (setf (gethash node *wgmma-node-swizzle*) (list (getf kwargs :swizzle) (or (getf kwargs :k) 8)))
+        node))))
+
+(defun analyze-wgmma-accumulate-via-tile (expr env context location)
+  "(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B
+   :swizzle MODE :k K)).  K is the K-block (8 = single wgmma; 32 = 128B-swizzle 4-slice block)."
+  (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
+    (%check-wgmma-shape shape location)
+    (analyze-expression `(set! ,d (wgmma-accumulate ,d ,a ,b :swizzle ,(getf kwargs :swizzle) :k ,(third shape)))
+                        env context location)))
+
+;;; generate-node-ir dispatch: read swizzle/k from the table, pass to %emit-nvvm-wgmma.
+(defmethod generate-node-ir ((node semantic-mma-accumulate)
+                             builder module var-env di-builder di-scope location-map)
+  "F-SPV / NVVM mma.sync + Endeavor 140 wgmma (dispatched by accumulator type; swizzle/k from table)."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let ((acc-type (semantic-mma-accumulate-type node)))
+      (if (%wgmma-acc-type-p acc-type)
+          (destructuring-bind (&optional swizzle-mode (k 8)) (gethash node *wgmma-node-swizzle*)
+            (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+                  (swizzle-p (and swizzle-mode (string-equal (string swizzle-mode) "128B"))))
+              (multiple-value-bind (av al a-ptr) (gen (semantic-mma-accumulate-a-node node))
+                (declare (ignore av al))
+                (multiple-value-bind (bv bl b-ptr) (gen (semantic-mma-accumulate-b-node node))
+                  (declare (ignore bv bl))
+                  (unless (and a-ptr b-ptr)
+                    (error "wgmma: A/B (~ tile 0) did not yield an SMEM element pointer (a ~A b ~A)" a-ptr b-ptr))
+                  (%emit-nvvm-wgmma builder module c-val a-ptr b-ptr acc-type
+                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k)))))
+          (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+                (a-val (gen (semantic-mma-accumulate-a-node node)))
+                (b-val (gen (semantic-mma-accumulate-b-node node))))
+            (if (eq *target-backend* :spirv)
+                (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                  (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
+                (%emit-nvvm-mma builder module a-val b-val c-val)))))))

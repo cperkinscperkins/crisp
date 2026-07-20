@@ -207,8 +207,72 @@ survive that.  (Chris's direction.)
            advantage — unrealized until the load/sync overhead is removed.  MEASURE-FIRST VINDICATED:
            wgmma needs its ECOSYSTEM (async TMA load + async wgmma overlap + bigger tiles), not just
            the instruction.  Full table in benchmarks/matmul/README.md (to append).
-    [ ] 3  TMA + 128B SWIZZLE (if 2b is load-bound): CuTensorMap SWIZZLE_128B in the hoist + wgmma
-           descriptor swizzle=1.  Reference-first in raw CUDA.
+    [~] 3  TMA + 128B SWIZZLE (2b IS load-bound -> approved to go deep, Chris 2026-07-19).  REDESIGN:
+           one TMA loads a 64x64 K-block into 128B-swizzled SMEM, then 8x wgmma.m64n64k8 iterate the
+           K-slices.  (64x8 per-K tiles are too small for 128B swizzle — leading dim 32B < 128B.)
+           SWIZZLE RESEARCH: 128B = 8x16-byte units permuted by row; needs leading dim >=128B; Colfax:
+           SBO = 128*8 = 1024 (vs 256 no-swizzle), LBO nominally 128, base_offset for alignment; the
+           swizzle PERMUTATION is hardware (CuTensorMap SWIZZLE_128B + wgmma desc swizzle bits=1) — we
+           only set start-addr/SBO/base_offset, the k-slice advancement is the unknown.
+           REFERENCE-FIRST (raw CUDA, built pod-free, NOT yet metal-validated — needs a pod):
+             - put_temp_files_here/wgmma_tma_ref.cu = INCREMENT 1: TMA machinery alone (CuTensorMap +
+               cp.async.bulk.tensor + mbarrier), SWIZZLE_NONE, plain copy -> TMA_COPY_CORRECT.  Validate
+               the TMA wiring FIRST.
+             - put_temp_files_here/wgmma_tma_swizzle_ref.cu = INCREMENT 3: full TMA-128B-swizzle 64x64
+               K-block -> 8x wgmma -> store.  Descriptor params (SWIZZLE/SBO/LBO/KSLICE_BYTES) are
+               #defines to SWEEP on metal like Step-1's LBO/SBO.  THE crux = the per-k-slice descriptor
+               offset + base_offset under swizzle.
+           THEN port: CuTensorMap SWIZZLE_128B in the hoist (currently SWIZZLE_NONE, hoist-cuda/main.lisp
+           :926) + wgmma desc swizzle=1 + the K-block load-tile (reuse 137 TMA) feeding wgmma.
+           >>> INTEGRATION DESIGN 2026-07-19 (recipe cracked; now the port).  5 pieces:
+             1. `:swizzle :128b` key on LOAD-TILE -> the descriptor's :swizzle (scan/*tma-resolved*).
+                metadata.lisp:580 already emits :swizzle (hardcoded :none) -> make it (or info :swizzle).
+             2. HOIST honors :swizzle: CU_TENSOR_MAP_SWIZZLE_128B + box innermost = 32 tf32 (128B)
+                when :128b (override the descriptor emitter in the hoist overlay; hoist-cuda/main.lisp
+                ~894 %emit...tensor-map-descriptor).
+             3. `:swizzle :128b` key on WGMMA-ACCUMULATE-VIA-TILE -> node-keyed table
+                (*wgmma-node-swizzle*) -> %emit-nvvm-wgmma uses the SWIZZLE descriptor (start=base+kk*32,
+                SBO=1024, base_offset=0, swizzle bits=1) and ITERATES K/8 wgmmas (K-block).
+             4. SHAPE (64 N 32): the swizzle path's K = the K-block (mult of 8, 4 k-slices); the codegen
+                loops kk in 0..K/8-1 with per-k-slice start advance.  (Scatter path keeps K=8.)
+             5. KERNEL: load-tile :block :swizzle -> wgmma-accumulate-via-tile :swizzle -> store.  NO
+                fence.proxy.async (TMA + wgmma both async proxy).
+           REFERENCE-PROVEN so the port is mechanical; metal-verify then benchmark vs ws2/cuBLAS.
+           >>> METAL DEBUG 2026-07-19 (H100, PARTIAL — swizzle NOT cracked, needs CUTLASS-exact desc):
+             - INCREMENT 1 (TMA copy, no swizzle) = TMA_COPY_CORRECT.  The TMA machinery (CuTensorMap
+               encode + cp.async.bulk.tensor + mbarrier) is RIGHT and reusable.
+             - CuTensorMap SWIZZLE_128B REQUIRES boxDim[0]*elemsize == 128 bytes -> box innermost = 32
+               tf32.  So the K-BLOCK must be 32 (not 64); 4 wgmma k-slices over a 64x32 tile.
+             - 128B swizzle descriptor: k-slice selected by BASE_OFFSET (=kk*2), NOT by advancing the
+               start address (start stays 128B-aligned).  With that, C[0][0] is CORRECT.
+             - BUT still 50% WRONG in a precise pattern: C[m][n] wrong iff (m%4 in {2,3}) OR (n%4 in
+               {2,3}) — i.e. within an 8-row core matrix, rows/cols 2,3,6,7 wrong, 0,1,4,5 right.  The
+               discriminator is ROW/COL BIT 1.  LBO confirmed IGNORED (0/16/128 identical); SBO sweep
+               (256/512/1024/2048) does NOT fix it (256 and 1024 both give the same 50%).
+             - DIAGNOSIS: the base_offset / swizzle-phase isn't accounting for the row-bit-1 term of
+               the 128B swizzle permutation (Swizzle<3,4,3>).  I've been GUESSING the descriptor; need
+               the EXACT CUTLASS make_gmma_desc formula for tf32 K-major 128B (base_offset + how the
+               swizzle maps row bits), then ONE confirm pod run.
+             - Reference at put_temp_files_here/wgmma_tma_swizzle_ref.cu.  FALLBACK if swizzle stays
+               intractable: cp.async into CORE-MATRIX order (reuses Step-1's PROVEN no-swizzle
+               descriptor, async overlap, no swizzle) — sidesteps the rabbit hole.
+           >>> CUTLASS SOURCE CRACKED IT 2026-07-19 (make_gmma_desc<Major::K> B128, mma_traits_sm90_gmma.hpp):
+             - Canonical K-SW128 atom = Shape<8,1024>:Stride<1024,1> in BITS = 8 rows x 128 bytes, FLAT
+               (row m_in at m_in*128).  So the flat 64x32 tile is CORRECT — the core-matrix hypothesis
+               was WRONG.
+             - base_offset = 0 (constexpr, NOT kk*2 — that was my bug); LBO field = 1 (16 bytes, hw-
+               ignored); SBO = stride_01 = 1024 bytes.
+             - k-block ADVANCES the start_address directly (DescriptorIterator::operator+ adds to
+               reg32_[0]) by kk*32 bytes; base_offset stays 0.
+             - So the FIX: dA = desc(sA_base + kk*32, /*LBO*/16, /*SBO*/1024, /*swz*/1, /*base_off*/0).
+           >>> SWIZZLE RECIPE CONFIRMED MMA_CORRECT 2026-07-19 (H100).  TMA-128B-swizzle 64x32 K-block ->
+               4x wgmma -> store, C==A*B.  RECIPE:
+               - CuTensorMap SWIZZLE_128B, box innermost = 32 tf32 (128 bytes; boxDim[0]*elemsize==128).
+               - wgmma desc per k-slice kk: start = tile_base + kk*32 bytes, LBO=16, SBO=1024, swizzle
+                 bits=1 (128B), base_offset=0.  SMEM tile flat, alignas(1024).
+               - NO fence.proxy.async needed (unlike the scatter): TMA writes via the ASYNC proxy and
+                 wgmma reads via the async proxy — same proxy.  Cleaner than Step 2.
+               - K>32 needs multiple 32-wide swizzle boxes (or a tiled box) — a port detail.
     [ ] 4  ASYNC wgmma (commit_group/wait_group, the :mode :wgmma idea) over the multi-K loop.
     [ ] 5  fold in WARP SPECIALIZATION — producer warp feeding a consumer WARPGROUP (the full Hopper
            CUTLASS shape).  Multi-warpgroup CTAs.
