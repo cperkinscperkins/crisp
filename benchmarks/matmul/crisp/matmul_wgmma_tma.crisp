@@ -1,0 +1,30 @@
+;; Crisp tiled matmul (grid-stride) — Hopper WGMMA (m64n64k8 tf32) + TMA 128B-swizzle staging.
+;; Endeavor 140 Chapter 4, Step 3.  One warpgroup (local-size 128) computes a 64x64 output tile.
+;; Each K-BLOCK (32 tf32 = 128B, the swizzle innermost) is TMA-loaded (async proxy) into a
+;; 128B-swizzled 64x32 SMEM tile for A and B^T; then wgmma-accumulate-via-tile fires 4 m64n64k8
+;; k-slices into D (scaleD=1).  This is the FAST path — hardware bulk load (no scatter) + wgmma's
+;; native swizzled layout — the port of the metal-verified 03-wgmma-tma recipe to a full GEMM.
+;; B is :col-major so its global is K-contiguous (what the wgmma descriptor reads); the harness/
+;; hoist give B the col-major CuTensorMap (gdim K-innermost).  Single-buffered K-loop for now
+;; (pipelining via rings is a later optimization).
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 32)))   ; SLM: 64(M) x 32(K) A K-block
+        (B-tile (make-scratch-matrix float (64 32)))   ; SLM: 64(N) x 32(K) B^T K-block
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block))
+        (K      (inner-dimension A B)))
+    (tile-stride C (64 64) (grid-y grid-x)
+      (set! D (make-wgmma-accumulator float (64 64) 0.0))     ; reset per output tile
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+        (load-tile A A-tile (grid-y grid-k) :barrier bar :swizzle :128b)   ; A[gy-blk][gk-blk]
+        (load-tile B B-tile (grid-x grid-k) :barrier bar :swizzle :128b)   ; B^T[gx-blk][gk-blk]
+        (await bar)
+        (wgmma-accumulate-via-tile (64 64 32) D A-tile B-tile :swizzle :128b)
+        (sync-workgroup))                                      ; free tiles before next K-block
+      (store-tile D C (grid-y grid-x)))))
