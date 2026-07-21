@@ -50,12 +50,19 @@ int main(int argc, char** argv) {
         used = c; ptx.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()); break; } }
     if (!used) { fprintf(stderr, "Cannot find matmul.ptx\n"); return 1; }
 
+    auto wall_start = std::chrono::high_resolution_clock::now();
+
     CUDA_CHECK(cuInit(0));
     CUdevice dev; CUDA_CHECK(cuDeviceGet(&dev, 0));
     char name[256]; CUDA_CHECK(cuDeviceGetName(name, sizeof(name), dev));
     fprintf(stderr, "Device: %s\n", name);
     CUcontext ctx; CUDA_CHECK(cuCtxCreate(&ctx, 0, dev));
+    
+    auto jit_start = std::chrono::high_resolution_clock::now();
     CUmodule mod; CUDA_CHECK(cuModuleLoadData(&mod, ptx.c_str()));
+    auto jit_end = std::chrono::high_resolution_clock::now();
+    double driver_jit_ms = std::chrono::duration<double, std::milli>(jit_end - jit_start).count();
+
     CUfunction kernel; CUDA_CHECK(cuModuleGetFunction(&kernel, mod, "matmul"));
 
     // --- host inputs: A = B = 1.0 (row-major A [MxK], col-major B [KxN]) ---
@@ -121,9 +128,14 @@ int main(int argc, char** argv) {
     // 2*M*N*K flops
     double gflops = (2.0*M*N*K) / (k_med/1e3) / 1e9;
 
+    auto wall_end = std::chrono::high_resolution_clock::now();
+    double wall_time_ms = std::chrono::duration<double, std::milli>(wall_end - wall_start).count();
+
     printf("{\n  \"algorithm\": \"matmul\",\n  \"implementation\": \"crisp\",\n");
     printf("  \"M\": %d, \"N\": %d, \"K\": %d,\n", M, N, K);
     printf("  \"correct\": %s,\n  \"max_abs_err\": %.3e,\n", correct?"true":"false", maxerr);
+    printf("  \"driver_jit_ms\": %.2f,\n", driver_jit_ms);
+    printf("  \"wall_time_ms\": %.2f,\n", wall_time_ms);
     printf("  \"kernel_median_us\": %.2f,\n  \"kernel_min_us\": %.2f,\n", k_med*1000.0, k_min*1000.0);
     printf("  \"gflops\": %.2f\n}\n", gflops);
 

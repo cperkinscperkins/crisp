@@ -200,7 +200,7 @@ case "${BENCH}" in
     python3 benchmarks/reduction/run.py \${PY_ARGS}
     ;;
   matmul)
-    python3 benchmarks/matmul/run.py --sizes=${SIZES} --iters=${ITERS}
+    python3 scripts/crisp_bench/matmul.py --sizes=${SIZES} --iters=${ITERS} --sweep-all
     ;;
 esac
 RUNBENCH
