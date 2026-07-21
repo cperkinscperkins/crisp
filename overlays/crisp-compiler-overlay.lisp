@@ -956,3 +956,73 @@
         (llvm-build-br builder cont-bb)
         (llvm-position-builder-at-end builder cont-bb)
         (values nil nil)))))
+
+;;; Endeavor 140 fix (2026-07-21) — %check-wgmma-shape is now SWIZZLE-AWARE for the K rule.  Step 3
+;;; relaxed K to "positive multiple of 8" for the swizzle K-BLOCK path, but that let a NON-swizzle
+;;; wgmma (single k8 slice) through with K=16/32 — which then silently does only 1 k8 slice (dropping
+;;; the rest) or dies later on the aref.  Correct rule: no :swizzle -> K must be exactly 8; :swizzle
+;;; :128b -> K a positive multiple of 8 (the K-block, decomposed into K/8 k8 slices).  Restores the
+;;; tests/spec/140-wgmma/errors/03-wgmma-bad-k "K must be 8" for K=16 with no swizzle.
+(defun %check-wgmma-shape (shape location &optional swizzle)
+  "Validate a wgmma (M N K) shape.  M fixed 64; N a multiple of 8 in [8,256].  K: with :swizzle a
+   positive multiple of 8 (the K-block = K/8 k8 slices); without :swizzle exactly 8 (a single k8 wgmma)."
+  (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+    (error 'crisp-compiler-error
+           :message (format nil "wgmma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." shape)
+           :source-location location))
+  (destructuring-bind (m n k) shape
+    (unless (= m 64)
+      (error 'crisp-compiler-error :message (format nil "wgmma: M must be 64 (wgmma is always m64), got ~a." m)
+             :source-location location))
+    (unless (and (>= n 8) (<= n 256) (zerop (mod n 8)))
+      (error 'crisp-compiler-error :message (format nil "wgmma: N must be a multiple of 8 in [8,256], got ~a." n)
+             :source-location location))
+    (if swizzle
+        (unless (and (plusp k) (zerop (mod k 8)))
+          (error 'crisp-compiler-error
+                 :message (format nil "wgmma: with :swizzle, K (the K-block) must be a positive multiple of 8, got ~a." k)
+                 :source-location location))
+        (unless (= k 8)
+          (error 'crisp-compiler-error
+                 :message (format nil "wgmma: K must be 8 (tf32 m64nNk8, a single k8 slice); use :swizzle :128b for a multi-k8 K-block, got ~a." k)
+                 :source-location location)))))
+
+(defun analyze-wgmma-accumulate-via-tile (expr env context location)
+  "(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B
+   :swizzle MODE :k K)).  K rule is swizzle-aware (see %check-wgmma-shape)."
+  (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
+    (%check-wgmma-shape shape location (getf kwargs :swizzle))
+    (analyze-expression `(set! ,d (wgmma-accumulate ,d ,a ,b :swizzle ,(getf kwargs :swizzle) :k ,(third shape)))
+                        env context location)))
+
+;;; Endeavor 140 fix (2026-07-21) — analyze-wgmma-accumulate base-aref is now RANK-AWARE (not gated on
+;;; :swizzle).  The scatter path uses flat VECTOR tiles (~ t 0); the swizzle path + the Step-0 forms
+;;; smoke use MATRIX tiles (~ t 0 0).  Gating on :swizzle mis-built (~ t 0) for a MATRIX tile with no
+;;; swizzle (00-wgmma-forms), dying with "requires 2 indexs, got 1".  Fix: pick the index count from the
+;;; tile's actual %get-tensor-arity, so both tile ranks work regardless of :swizzle.
+(defun analyze-wgmma-accumulate (expr env context location)
+  "(wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 [0]) with one 0 per tile dimension
+   (rank-aware) so codegen's 3rd value is the addrspace(3) base — works for flat VECTOR tiles (scatter)
+   AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle."
+  (destructuring-bind (d a b &rest kwargs) (cdr expr)
+    (let* ((d-node (analyze-expression d env context (append location '(1))))
+           (d-type (semantic-node-type d-node))
+           (swz    (getf kwargs :swizzle))
+           (a-rank (or (%get-tensor-arity
+                        (semantic-node-type (analyze-expression a env context (append location '(2))))) 1))
+           (b-rank (or (%get-tensor-arity
+                        (semantic-node-type (analyze-expression b env context (append location '(3))))) 1))
+           (aref-a (if (>= a-rank 2) `(~ ,a 0 0) `(~ ,a 0)))
+           (aref-b (if (>= b-rank 2) `(~ ,b 0 0) `(~ ,b 0))))
+      (unless (%wgmma-acc-type-p d-type)
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate: D (1st arg) must be a make-wgmma-accumulator, got type ~a." d-type)
+               :source-location location))
+      (let ((node (make-semantic-mma-accumulate
+                   :type d-type
+                   :c-node d-node
+                   :a-node (analyze-expression aref-a env context (append location '(2)))
+                   :b-node (analyze-expression aref-b env context (append location '(3)))
+                   :source-location location)))
+        (setf (gethash node *wgmma-node-swizzle*) (list swz (or (getf kwargs :k) 8)))
+        node))))

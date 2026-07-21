@@ -227,6 +227,7 @@
                           :base      param-name-cpp))
         (values current-idx (nreverse arg-names) alloc)))))
 
+
 (defun emit-launch (stream dispatch-info shared-bytes &optional compute-units kernel-name out-tile)
   "Endeavor 140 (dynamic-SMEM opt-in): a kernel needing >48KB SMEM (n128-pipe, n256, ...) must
    cuFuncSetAttribute MAX_DYNAMIC_SHARED_SIZE_BYTES or the launch silently fails.  Emit it, then
@@ -237,3 +238,4 @@
     (format stream "    CUDA_CHECK(cuFuncSetAttribute(kernel, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, ~d));~%"
             shared-bytes))
   (funcall 'orig-emit-launch stream dispatch-info shared-bytes compute-units kernel-name out-tile))
+  
