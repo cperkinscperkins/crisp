@@ -49,16 +49,44 @@ benchmarks/
 The benchmarking system is automated via Python scripts that execute parameter sweeps across sizes and precision flags.
 
 ### 1. Run the Benchmarks
-To run the `matmul` suite and generate JSON sweeps in `benchmarks/results/`:
+
+**Run everything at once (recommended).** The `--sweep-all` flag runs the full
+precision matrix (Fast, IEEE+FTZ, IEEE) in a single invocation — no need to call
+it once per precision:
 ```bash
-# Run with Fast Math (peak throughput, enables Tensor Cores for CUBLAS)
+python scripts/crisp_bench/matmul.py --sweep-all
+```
+For each precision it sweeps **every chapter** (chap0, chap1, chap1.5, chap2) ×
+**every competitor** (Crisp, CUDA_Apples, SYCL_Apples, CUBLAS_Optimal,
+OneMKL_Optimal) × **every size** (default `256,512,1024,2048,4096`), dropping all
+the JSONs into `results/`.  Any target whose source or compiler is missing (e.g.
+SYCL/OneMKL without `icpx`) is quietly skipped.  So one command = the whole matmul
+story.  Useful knobs: `--sizes=...`, `--iters=N`, `--warmup=N`.
+
+**Targeted single-config runs** (when you only want one precision):
+```bash
+# Fast Math (peak throughput, enables Tensor Cores for CUBLAS)
 python scripts/crisp_bench/matmul.py --precision=fast
 
-# Run with strict IEEE math and Flush-to-Zero (high accuracy, prevents denormal stalls)
+# Strict IEEE math + Flush-to-Zero (high accuracy, prevents denormal stalls)
 python scripts/crisp_bench/matmul.py --precision=ieee --ftz
 ```
 
-*Note: For remote environments like RunPod, you can run the sweep remotely, then use `bash scripts/pull-runpod-results.sh` to download the JSON files back to your local `results/` folder.*
+**On a remote GPU (RunPod).** `bench-on-pod.sh` SSHes in, installs deps, builds
+the compiler, and runs the sweep remotely (it calls `matmul.py --sweep-all` for
+you):
+```bash
+./scripts/bench-on-pod.sh <host> <port> <branch> ~/.ssh/id_ed25519 --bench=matmul
+```
+> ⚠️  `--bench` **defaults to `reduction`** — pass `--bench=matmul` for the matmul
+> suite (or run the script twice, once per benchmark, to cover both algorithms).
+
+*Note: after a remote sweep, use `bash scripts/pull-runpod-results.sh` to download
+the JSON files back to your local `results/` folder.*
+
+```
+$ ./scripts/pull-runpod-results.sh 103.207.149.79 16881  ~/.ssh/id_ed25519
+```
 
 ### 2. Generate the Markdown Report
 The `.json` files are machine-readable but hard to digest. To print a pretty Markdown table comparing all algorithms:
