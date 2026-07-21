@@ -870,3 +870,89 @@
                    :source-location location)))
         (setf (gethash node *wgmma-node-swizzle*) (list swz (or (getf kwargs :k) 8)))
         node))))
+
+;;; ===========================================================================
+;;; Endeavor 140 Step 5 FIX — warp-spec-aware :block TMA leader election.
+;;; The load-tile :block TMA/expect_tx was guarded by GLOBAL tid==0, which fires only from thread 0.
+;;; In a consumer-first with-warp-specialization, tid 0 is a CONSUMER -> no producer thread issues the
+;;; TMA -> `full` never flips -> deadlock (Endeavor-140 root cause).  FIX: inside a warp-spec role block
+;;; the producer is a single dedicated warp, so elect LANE 0 of that warp (laneid==0) — the unique
+;;; role-local leader — instead of global tid 0.  Outside a role block, keep global tid==0 (all warps
+;;; participate; lane-0-per-warp would issue redundant TMAs).  The node is tagged at analysis time when
+;;; *in-warp-spec-block* is bound.  This makes consumer-first first-class and removes the producer-first
+;;; workaround (and its wasted warps).
+;;; ===========================================================================
+
+(defvar *tma-copy-ws-leader* (make-hash-table :test 'eq)
+  "semantic-nvvm-tma-tile-copy node -> T when the load-tile :block sits inside a with-warp-specialization
+   role block (elect laneid==0 of the producer warp, not global tid==0).")
+
+;; Tag TMA-copy nodes created inside a warp-spec role block (wrapper-capture; no reproduction).
+(unless (fboundp 'orig-analyze-nvvm-tma-load-tile-at)
+  (setf (fdefinition 'orig-analyze-nvvm-tma-load-tile-at) (fdefinition '%analyze-nvvm-tma-load-tile-at)))
+(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+  "Endeavor 140: as the original, plus tag the node WS-leader when analyzed inside a role block."
+  (let ((node (funcall 'orig-analyze-nvvm-tma-load-tile-at expr env context location)))
+    (when *in-warp-spec-block*
+      (setf (gethash node *tma-copy-ws-leader*) t))
+    node))
+
+;; Reproduce the TMA-copy codegen (src codegen.lisp:3814) with the role-aware leader election.
+(defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 137 + 140 — one bulk TMA copy issued by a single elected leader.  Leader = laneid==0 (the
+   producer warp's lane 0) inside a warp-spec role block, else global tid==0."
+  (multiple-value-bind (dv di dst-ptr)
+      (generate-node-ir (semantic-nvvm-tma-tile-copy-dst-aref-node node) builder module var-env
+                        di-builder di-scope location-map)
+    (declare (ignore dv di))
+    (multiple-value-bind (sv si src-ptr)
+        (generate-node-ir (semantic-nvvm-tma-tile-copy-src-aref-node node) builder module var-env
+                          di-builder di-scope location-map)
+      (declare (ignore sv si))
+      (unless (and dst-ptr src-ptr)
+        (error "nvvm-tma-tile-copy: aref did not yield an element pointer (dst ~A src ~A)" dst-ptr src-ptr))
+      (let* ((i32-type   (llvm-int32-type))
+             (ptr-as3    (llvm-pointer-type (llvm-int8-type) 3))
+             (ptr-gen    (llvm-pointer-type (llvm-int8-type) 0))
+             (ptr-glob   (llvm-pointer-type (llvm-int8-type) 1))
+             (desc-ptr   (%tma-lookup-descriptor-ptr builder var-env
+                          (semantic-nvvm-tma-tile-copy-src-name node) ptr-glob))
+             (tmap-ptr   (llvm-build-addrspace-cast builder (or desc-ptr src-ptr) ptr-gen "tma_map"))
+             (barrier-i  (generate-node-ir (semantic-nvvm-tma-tile-copy-barrier-node node) builder module var-env
+                                           di-builder di-scope location-map))
+             (mbar-ptr   (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
+             (coord-vals (loop for cn in (semantic-nvvm-tma-tile-copy-coord-nodes node)
+                               collect (%coerce-to-i32 builder
+                                          (generate-node-ir cn builder module var-env
+                                                             di-builder di-scope location-map))))
+             (coord0     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))
+             (coord1     (or (first coord-vals)  (llvm-const-int i32-type 0 nil)))
+             ;; Endeavor 140: role-aware leader.  WS role block -> laneid==0 (producer warp's lane 0);
+             ;; else global tid==0.
+             (ws-leader  (gethash node *tma-copy-ws-leader*))
+             (is-leader  (if ws-leader
+                             (llvm-build-icmp builder +llvm-int-eq+
+                                (%ptx-read-warp-sreg builder module "laneid")
+                                (llvm-const-int i32-type 0 nil) "is_lane0")
+                             (let* ((tid-x (%gen-nvvm-read-tid-x builder module))
+                                    (tid-y (%gen-nvvm-read-tid-y builder module))
+                                    (tid-z (%gen-nvvm-read-tid-z builder module))
+                                    (tid-sum (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz")))
+                               (llvm-build-icmp builder +llvm-int-eq+ tid-sum
+                                  (llvm-const-int i32-type 0 nil) "is_tid_0"))))
+             (issue-bb   (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_issue"))
+             (cont-bb    (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_cont")))
+        (llvm-build-cond-br builder is-leader issue-bb cont-bb)
+        (llvm-position-builder-at-end builder issue-bb)
+        (let* ((len-val   (generate-node-ir (semantic-nvvm-tma-tile-copy-tile-length-node node) builder module var-env
+                                            di-builder di-scope location-map))
+               (elem-b    (semantic-nvvm-tma-tile-copy-elem-bytes node))
+               (len-i32   (%coerce-to-i32 builder len-val))
+               (tx-bytes  (llvm-build-mul builder len-i32 (llvm-const-int i32-type elem-b nil) "tma_tx_bytes"))
+               (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr")))
+          (%gen-nvvm-mbarrier-arrive-expect-tx builder mbar-addr tx-bytes))
+        (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1)
+        (llvm-build-br builder cont-bb)
+        (llvm-position-builder-at-end builder cont-bb)
+        (values nil nil)))))
