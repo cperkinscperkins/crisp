@@ -1,0 +1,23 @@
+;; Crisp matmul — Hopper WGMMA m64n256k8 tf32 + TMA 128B-swizzle.  Endeavor 140 Step 4b: MAX tile
+;; width (64x256, m64n256 = 128 f32 accumulators/thread) for the large-N regime.  Single-buffered.
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 32)))
+        (B-tile (make-scratch-matrix float (256 32)))   ; 256(N) x 32(K) B^T
+        (D      (make-wgmma-accumulator float (64 256) 0.0))
+        (bar    (make-async-barrier :mode :block))
+        (K      (inner-dimension A B)))
+    (tile-stride C (64 256) (grid-y grid-x)
+      (set! D (make-wgmma-accumulator float (64 256) 0.0))
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+        (load-tile A A-tile (grid-y grid-k) :barrier bar :swizzle :128b)
+        (load-tile B B-tile (grid-x grid-k) :barrier bar :swizzle :128b)
+        (await bar)
+        (wgmma-accumulate-via-tile (64 256 32) D A-tile B-tile :swizzle :128b)
+        (sync-workgroup))
+      (store-tile D C (grid-y grid-x)))))
