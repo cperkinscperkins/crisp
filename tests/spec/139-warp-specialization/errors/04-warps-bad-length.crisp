@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "must name every warp"
+;; Endeavor 139 (decision A) — negative: :warps must have one entry per workgroup warp.
+;; local-size 64 = 2 warps, but the mask has 3 entries.
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel warps_bad_len (&out C)
+  (declare #'(&out mt) (global-size :set-to 64) (local-size :set-to 64))
+  (let ((tile (make-register-tile float (16 8) 0.0 :warps '(false true true))))
+    (store-tile tile C (0 0))))

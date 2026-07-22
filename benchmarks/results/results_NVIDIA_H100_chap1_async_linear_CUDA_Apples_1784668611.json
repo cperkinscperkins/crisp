@@ -1,0 +1,86 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-07-21T21:16:49.584363Z",
+    "hardware": {
+      "gpu_model": "NVIDIA H100",
+      "arch_target": "sm_90",
+      "environment": "runpod"
+    }
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "chap1_async_linear",
+  "competitor": "CUDA_Apples",
+  "precision": "ieee",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 256,
+        "n": 256,
+        "k": 256,
+        "warmup": 20,
+        "iters": 100
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 2516.2971019744873,
+          "all_compile_ms": 2516.2971019744873
+        },
+        "runtime": {
+          "wall_time_ms": 474.16,
+          "kernel_execution_ms": 0.01411
+        },
+        "throughput": {
+          "tflops": 2.3777199999999996,
+          "bandwidth_gbps": null
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "warmup": 20,
+        "iters": 100
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 2516.2971019744873,
+          "all_compile_ms": 2516.2971019744873
+        },
+        "runtime": {
+          "wall_time_ms": 356.13,
+          "kernel_execution_ms": 0.06666
+        },
+        "throughput": {
+          "tflops": 4.0271799999999995,
+          "bandwidth_gbps": null
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "warmup": 20,
+        "iters": 100
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 2516.2971019744873,
+          "all_compile_ms": 2516.2971019744873
+        },
+        "runtime": {
+          "wall_time_ms": 406.26,
+          "kernel_execution_ms": 0.47213
+        },
+        "throughput": {
+          "tflops": 4.548520000000001,
+          "bandwidth_gbps": null
+        }
+      }
+    }
+  ]
+}

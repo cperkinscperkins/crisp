@@ -1,0 +1,38 @@
+;; Endeavor 140 (Chapter 4) Step 2 — multi-K wgmma GEMM (single 64x64 output tile), METAL check.
+;; Extends 01 to a real K: a K-loop accumulates each 64x8-by-8x64 wgmma into the SAME D accumulator
+;; (scaleD=1 => D += A_k * B_k).  Synchronous per-K wgmma for correctness (async overlap is Step 3).
+;; Each K-step scatter-loads its A/B slice into flat SMEM tiles in core-matrix order.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "wgmma is forward-only MMA"
+;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma
+;;
+;; MMA-DIMS: 64 64 64
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_multik (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-vector float 512))
+        (B-tile (make-scratch-vector float 512))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (K      (inner-dimension A B)))
+    (let ((llid (+ (* (to-int (warp-id)) 32) (to-int (warp-lane)))))
+      (dotimes (kk (/ (to-ulong K) (to-ulong 8)))
+        (dotimes (i 4)
+          (let ((li (+ (* i 128) llid)))
+            (let ((r (/ li 8)) (k (rem li 8)))
+              (let ((core (+ (+ (+ (* (/ r 8) 64) (* (/ k 4) 32)) (* (rem r 8) 4)) (rem k 4)))
+                    (gk (+ (* (to-int kk) 8) k)))
+                (set! (~ A-tile core) (~ A r gk))       ; A[r][kk*8+k]
+                (set! (~ B-tile core) (~ B gk r))))))   ; B[kk*8+k][r]  (col-major)
+        (sync-workgroup)
+        (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
+        (sync-workgroup)))
+    (store-tile D C (0 0))))

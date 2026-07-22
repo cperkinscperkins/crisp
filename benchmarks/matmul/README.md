@@ -260,3 +260,57 @@ tall-thin-strided BMG case above; then pipelining / warp-specialization (the "th
 specialization (producer/consumer over the rings, no second full SLM tile per stage) rather than a
 deeper ring.  A tf32-MMA / cuBLAS / oneMKL "best-known" reference is the natural follow-on for a
 peak-vs-peak ratio.
+
+---
+
+## Chapter 3 — Warp specialization (Endeavor 139), H100 sm_90a, tf32
+
+Producer/consumer over the Chapter-2 rings: a dedicated PRODUCER warp issues the TMA loads while
+N CONSUMER warps do the MMA, split via the `:warps` topology mask (CUTLASS two-mbarrier handshake
+`empty`/`full` + compiler-injected multi-lap phase flipping).  `wsN` = 1 producer + N consumers,
+the 64×64 C-tile (32 fragments) split 32/N per consumer.  All wsN are MMA_CORRECT.
+
+GFLOPS (H100 80GB HBM3, `nvcc -O3 -arch=sm_90a … -lcuda`), with STATIC per-warp fragment addressing:
+
+| size | cuBLAS | :block (Ch1.5) | pipe (Ch2) | ws1 (1P+1C) | ws2 (1P+2C) | ws4 (1P+4C) |
+|------|--------|----------------|------------|-------------|-------------|-------------|
+| 1024 | 141490 | 27973          | 30835      | 47515       | **61072**   | 43000       |
+| 2048 | 361422 | 74980          | 72073      | 68774       | **79420**   | 45040       |
+| 4096 | 432823 | 80305          | 78423      | 72232       | **83252**   | 49482       |
+
+`ptxas -v` (registers/thread): pipe 250, ws1 252, **ws2 167, ws4 128** — the `:warps` split cuts
+per-thread registers as designed.
+
+**ws2 (1 producer + 2 consumers) is the fastest Crisp kernel at every size** — 2.0× pipe at 1024,
++10% at 2048, +6% at 4096 (83.3K vs 78.4K, stable across reps) — beating both the Ch-2 ring and the
+Ch-1.5 `:block` floor.  The occupancy lever *works*.
+
+A false start got us here.  The FIRST cut of the distribution computed each fragment's `(mi,nj)` from
+the **runtime** warp-position, so the SMEM operand addresses were runtime-derived and ptxas could not
+CSE the A-row / B-col loads shared across fragments.  That made ws2 do **5.9 `ld.shared`/mma** (vs
+ws1's 1.6) — ~4× the operand traffic — and ws2/ws4 ran at *half* of pipe (29K @4096), which looked
+like the occupancy lever "backfiring."  It wasn't the lever; it was our codegen.  The fix
+(`%emit-frag-loop-distributed`): `wp` is inherently runtime (warp identity comes from `threadIdx`),
+so branch on it ONCE — a `<`-cascade, the `with-warp-specialization` role-branch pattern — and fold
+each arm's fragment coordinates to integer LITERALS.  ws2 dropped to **1.5 `ld.shared`/mma**; ptxas
+hoists the now-static loads and the numbers above followed.
+
+Findings:
+- **Splitting a fixed 64×64 tile across 2 consumers pays** (ws2) once operand addressing is static —
+  the register cut (250→167) buys real occupancy without extra operand traffic.  This corrects the
+  first-pass conclusion that the split "backfires": that was the dynamic-addressing bug, not physics.
+- **2 consumers is the sweet spot; 4 regresses.**  ws4 (43–49K) trails ws2 badly — with 5 warps/CTA
+  the per-CTA register footprint + handshake overhead outweigh the extra split, and only 1/5 of the
+  warps issue TMA.  More consumers is not monotonically better.
+- **ws1's dedicated-producer latency hiding still helps at small sizes** (47.5K @1024, +54% vs pipe)
+  but ws2 dominates it everywhere — splitting *and* running a producer ahead beats either alone.
+- **cuBLAS is still ~5.2× ahead @4096** (433K vs 83K).  The remaining gap is not tile shape — it is
+  the instruction: we emit Ampere-era warp-level `mma.sync.m16n8k8`; cuBLAS uses Hopper `wgmma`
+  (warpgroup async MMA, a far larger tile per instruction with the accumulator spread across 128
+  threads).  Closing that is a `wgmma` endeavor, not a tweak here.
+
+Next levers: `wgmma` (the big one), bigger tiles per CTA for higher arithmetic intensity, and
+register reallocation (`setmaxnreg.dec` on the producer so it stops reserving the consumer budget).
+
+Reproduce: `put_temp_files_here/bench06.sh "1024 2048 4096"` (correctness gate @512 + GFLOPS sweep;
+same `crisp-hoist-cuda --mma-bench=M,N,K --grid-tile=64` → `nvcc -arch=sm_90a … -lcuda` flow).

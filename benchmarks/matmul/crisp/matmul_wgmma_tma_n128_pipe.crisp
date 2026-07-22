@@ -1,0 +1,36 @@
+;; Crisp matmul — Hopper WGMMA m64n128k8 tf32 + TMA 128B-swizzle + DEPTH-2 PIPELINE.  Endeavor 140
+;; Step 4: combines the two levers — bigger tile (64x128, wins large) AND double-buffered ring (wins
+;; small).  One warpgroup, 64 f32 accumulators/thread; ring slot = (mod grid-k 2), :arrivals 2.
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 128))
+  (let ((A-ring (make-scratch-matrix-ring float (64 32)  :ring-count 2))   ; 2 x 64(M) x 32(K)
+        (B-ring (make-scratch-matrix-ring float (128 32) :ring-count 2))   ; 2 x 128(N) x 32(K) B^T
+        (D      (make-wgmma-accumulator float (64 128) 0.0))
+        (K      (inner-dimension A B))
+        (bars   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2)))
+    (tile-stride C (64 128) (grid-y grid-x)
+      (set! D (make-wgmma-accumulator float (64 128) 0.0))
+      (dotimes (i 2)
+        (load-tile A (ring-get A-ring (to-ulong i)) (grid-y (to-ulong i))
+                   :barrier (ring-get bars (to-ulong i)) :swizzle :128b)
+        (load-tile B (ring-get B-ring (to-ulong i)) (grid-x (to-ulong i))
+                   :barrier (ring-get bars (to-ulong i)) :swizzle :128b))
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+        (let ((slot (mod grid-k (to-ulong 2))))
+          (await (ring-get bars slot))
+          (wgmma-accumulate-via-tile (64 128 32) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                     :swizzle :128b)
+          (sync-workgroup)
+          (let ((next-k (+ grid-k (to-ulong 2))))
+            (let ((more-k? (to-workgroup-uniform (< next-k (/ (to-ulong K) (to-ulong 32))))))
+              (when more-k?
+                (load-tile A (ring-get A-ring slot) (grid-y next-k)
+                           :barrier (ring-get bars slot) :swizzle :128b)
+                (load-tile B (ring-get B-ring slot) (grid-x next-k)
+                           :barrier (ring-get bars slot) :swizzle :128b))))))
+      (store-tile D C (grid-y grid-x)))))

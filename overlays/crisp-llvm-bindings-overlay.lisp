@@ -7,5 +7,4 @@
 
 (in-package :crisp.llvm-bindings)
 
-
-
+;;; (empty) — all prior overlay bindings have been folded into src/llvm-bindings.lisp.

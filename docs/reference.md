@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-17T20:58:00.831191Z
+Generated on 2026-07-22T02:08:18.746269Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -74,6 +74,12 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 
 ---
+### DEFVAR `*IN-WARP-SPEC-BLOCK*`
+
+  > Endeavor 139 (Chapter 3), decision B: T when analyzing the body of a  >    with-warp-specialization role block.  Such a block is warp-DIVERGENT (different warps run  >    different roles), which sets *in-divergent-conditional* — but a :block (TMA) load-tile there is  >    SAFE: it is leader-issued and mbarrier-tracked, with no workgroup collective to deadlock.  So  >    %tlc-check-not-divergent relaxes when this is set.  A workgroup collective (sync-workgroup, a  >    cooperative :linear load) inside a role block WOULD deadlock and is rejected separately.
+
+
+---
 ### DEFUN `ANALYZE-%UNIFORM-IF-IMPL`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
@@ -91,7 +97,21 @@ Generated on 2026-07-17T20:58:00.831191Z
 ### DEFUN `%TLC-CHECK-NOT-DIVERGENT`
 - **Args**: `(OP-NAME LOCATION)`
 
-  > Signals a clear compile error if (op-name) appears inside a thread-divergent  >    conditional.  Call from load-tile-at / store-tile-at analyzers.
+  > Signals a clear compile error if (op-name) appears inside a thread-divergent  >    conditional.  Call from load-tile-at / store-tile-at analyzers.  >    NOTE (Endeavor 139): a with-warp-specialization role block ALSO sets *in-divergent-conditional*,  >    but its callers gate this on (not *in-warp-spec-block*) and apply the mode-aware  >    %warp-spec-check-block-only instead — a :block load there is leader-issued and safe.
+
+
+---
+### DEFUN `%WARP-SPEC-CHECK-SYNC`
+- **Args**: `(BUILTIN-KW NAME-STR LOCATION)`
+
+  > Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective  >    (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped  >    ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, defer to the normal  >    thread-divergent check.
+
+
+---
+### DEFUN `%WARP-SPEC-CHECK-BLOCK-ONLY`
+- **Args**: `(OP-NAME MODE LOCATION)`
+
+  > Endeavor 139 (decision B): inside a with-warp-specialization role block, only a :block (TMA,  >    leader-issued) tile op is safe.  A synchronous (no-barrier) or :linear tile op is a WORKGROUP  >    COLLECTIVE — its cooperative copy has all threads participate — so with only one role's warps  >    present it deadlocks.  MODE is the resolved barrier :mode, or NIL for a synchronous op.
 
 
 ---
@@ -147,7 +167,7 @@ Generated on 2026-07-17T20:58:00.831191Z
 ### DEFUN `ANALYZE-AWAIT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.
+  > Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.  >    Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is  >    (initial-phase ring-count) so codegen can inject the multi-lap flipping parity.
 
 
 ---
@@ -634,10 +654,45 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 
 ---
+### DEFUN `ANALYZE-SIGNAL-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive on an  >    empty ring slot, releasing it to the producer.  PTX/:block only (mbarrier); a no-op on other  >    backends (the generic compile-check pass has no mbarriers).
+
+
+---
+### DEFUN `BARRIER-INITIAL-PHASE-OF`
+- **Args**: `(BARRIER-FORM)`
+
+  > Endeavor 139: the initial await phase (0/1) of the barrier a load-tile/await refers to, or NIL  >    if it is a plain 138 ring (no :initial-state).  BARRIER-FORM is the barrier SYMBOL or a  >    (ring-get RING i) form.  A non-NIL value selects the warp-spec await (phase-tracked, no re-init).
+
+
+---
 ### DEFUN `ASYNC-BARRIER-MODE-OF`
 - **Args**: `(BARRIER-FORM)`
 
   > Endeavor 137/138: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.  >    BARRIER-FORM is either the barrier variable SYMBOL, or — Endeavor 138 — a  >    (ring-get BARRIER-RING i) form, in which case the mode is the RING's (every slot shares it).  >    Defaults to :linear when unknown (bare/older barriers).
+
+
+---
+### DEFUN `%ROLE-NAME-EQ`
+- **Args**: `(A B)`
+
+  > Role identity: package-insensitive symbol-name compare, so :producer (keyword) and a  >    bare producer symbol both match.  Roles are normally keywords.
+
+
+---
+### DEFUN `%PARSE-WARP-SPECIALIZATION`
+- **Args**: `(EXPR LOCATION)`
+
+  > Parse (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).  >    Returns (values role-counts role-blocks): role-counts an ordered list of (role . count);  >    role-blocks an alist role -> body-forms.  Validates: even ROLE/COUNT plist with positive  >    integer counts; every block names a declared role; every declared role has exactly one block;  >    no duplicate blocks.
+
+
+---
+### DEFUN `ANALYZE-WITH-WARP-SPECIALIZATION-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 139: (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).  Splits the  >    workgroup by WARP — warp k runs the role whose cumulative count range contains k.  Lowers to a  >    warp-id-gated nested if: (let ((wsid (to-int (warp-id)))) (if (< wsid t1) BODY1 (if (< wsid t2)  >    BODY2 ...))) where t_i is the running sum of role counts.  Role blocks are warp-UNIFORM (all  >    lanes of a warp take the same branch) but workgroup-DIVERGENT — so an internal workgroup  >    collective (sync-workgroup, a cooperative load-tile) inside a block would DEADLOCK.  Forbidding  >    those is decision B, enforced when the load path is added (Chapter 3 step 2); the skeleton here  >    just lowers the branch.
 
 
 ---
@@ -831,6 +886,12 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 
 ---
+### DEFVAR `*ASYNC-BARRIER-INITIAL-PHASE*`
+
+  > Endeavor 139: map of async-barrier-RING binding SYMBOL -> initial await phase (0 :waiting /  >          1 :signaled).  Presence marks a WARP-SPEC producer/consumer ring, whose await is  >          phase-tracked and does NOT re-init (unlike a plain 138 ring).  Rebound per module.
+
+
+---
 ### DEFVAR `*SCRATCH-TILE-DIMS*`
 
   > Endeavor 137: scan-time map of (fn . scratch-tile-binding-SYMBOL) -> plist  >          (:element-type E :box-dims (D...) :rank N).  Populated when scanning a  >          make-scratch-{vector,matrix,tensor} binding; consulted when a :block load-tile mints  >          a CUtensorMap descriptor to record the tile-box shape.  Rebound per module.
@@ -852,6 +913,12 @@ Generated on 2026-07-17T20:58:00.831191Z
 ### DEFVAR `*TMA-RESOLVED*`
 
   > Endeavor 137: map (kernel-name . descriptor-uname) -> plist (:describes NAME  >          :element-type E :rank N :box-dims (D...)), resolved through the carrier chain by  >          resolve-tma-descriptors; read by generate-implicit-signature.  PERSISTENT (cleared via  >          clrhash in the compiler reset) — metadata emit runs after compile-module returns.
+
+
+---
+### DEFVAR `*TMA-COPY-WS-LEADER*`
+
+  > Endeavor 140 (warp-spec leader): semantic-nvvm-tma-tile-copy node -> T when the load-tile  >          :block sits inside a with-warp-specialization role block.  Populated by  >          %analyze-nvvm-tma-load-tile-at (control.lisp); read by the tile-copy codegen (codegen.lisp)  >          to elect laneid==0 of the producer warp rather than global tid==0.  Defined here in core so  >          it is a declared special before both control.lisp and codegen.lisp load.
 
 
 ---
@@ -919,7 +986,7 @@ Generated on 2026-07-17T20:58:00.831191Z
 ---
 ### DEFUN `RESOLVE-TMA-DESCRIPTORS`
 
-  > Endeavor 137 Phase 2c: for every kernel carrying a CUtensorMap descriptor, resolve its  >    describes tensor + tile box-dims through the carrier call chain into *tma-resolved*.  >    Element-type / rank come from the resolved tile (they match the source).  Subsumes the 2b  >    same-function case as a zero-hop resolution (originator == kernel).
+  > Endeavor 137/140: resolve describes + box-dims through the carrier chain into *tma-resolved*,  >    carrying the :swizzle marking from *tma-descriptor-info*.
 
 
 ---
@@ -971,7 +1038,7 @@ Generated on 2026-07-17T20:58:00.831191Z
 ### DEFUN `%SCAN-REGISTER-TMA-DESCRIPTOR`
 - **Args**: `(ARGS)`
 
-  > Endeavor 137 Phase 2b: when a (load-tile[-at] SRC TILE COORDS ... :barrier BAR) references a  >    :block barrier on PTX, register a CUtensorMap descriptor implicit arg for SRC in the current  >    scanning function, deduped per SRC name, and mark the fn a side-channel originator.  The  >    descriptor's canonical spec is (tensor-map SRC) — one physical slot (option A = a pointer);  >    its element-type / rank / box-dims are resolved later (metadata + hoist) from SRC's declared  >    type and the staging tile, so scan only needs SRC + the barrier's resolved mode.
+  > Endeavor 137/140: register a CUtensorMap descriptor for a :block load-tile's SRC; capture the  >    optional :swizzle key (:128b for wgmma) so the hoist emits CU_TENSOR_MAP_SWIZZLE_128B.
 
 
 ---
@@ -3212,6 +3279,13 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 
 ---
+### DEFUN `%PTX-SYNTHESIZE-WARP-ID`
+- **Args**: `(BUILDER MODULE)`
+
+  > Synthesizes the STABLE block-local warp index on PTX: local-linear-id / 32.  Endeavor 139  >    FIX: warp-id previously read %warpid, the volatile PHYSICAL-SM warp register the PTX ISA warns  >    'may change during execution ... should not be used for work scheduling'.  Warp specialization  >    IS work scheduling and needs a stable per-block index — which is exactly SPV's SubgroupId.  >    local-linear-id is %tid-derived and stable; /32 gives the block-local warp index.  i32 (uint).
+
+
+---
 ### DEFUN `%GEN-NVVM-CP-ASYNC-ELEM`
 - **Args**: `(BUILDER MODULE DST-PTR SRC-PTR ELEM-BYTES)`
 
@@ -4087,6 +4161,12 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 
 ---
+### DEFVAR `*MMA-SWIZZLE-DESCRIBES*`
+
+  > Endeavor 140 (col-major B): tensor names (strings) feeding a :128b + :col-major swizzle descriptor  >    (wgmma's B).  Such a matrix must be K-CONTIGUOUS in global memory (the wgmma descriptor reads SMEM  >    directly), so the mma-bench harness emits col-major (dim-0 contiguous) strides for it.  Populated by  >    emit-kernel-args pre-scanning the sig; consumed by %cuda-emit-tensor-arg.  Gated on swizzle-fed +  >    col-major so 137/138's nominal :col-major (mma.sync, row-major SMEM) path is untouched.
+
+
+---
 ### DEFUN `%MMA-PARSE-ARGS`
 - **Args**: `(ARGS)`
 
@@ -4329,14 +4409,14 @@ Generated on 2026-07-17T20:58:00.831191Z
 ### DEFUN `%CUDA-EMIT-TENSOR-MAP-ENCODE`
 - **Args**: `(STREAM PARAM)`
 
-  > Endeavor 137 Phase 2b.3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map  >    descriptor and copy the 128-byte descriptor to device global (option A), leaving the device  >    pointer in <name> (forward-declared earlier at the descriptor's ABI slot).  References the  >    DESCRIBED tensor's already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).  Uses the  >    innermost-dimension-first convention (globalDim / boxDim reversed vs the row-major extents),  >    matching the nvcc-verified H100 reference.
+  > Endeavor 137 Phase 2b.3 + 140 Step 3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map  >    descriptor and copy the 128-byte descriptor to device global (option A), leaving the device pointer  >    in <name> (forward-declared earlier at the descriptor's ABI slot).  References the DESCRIBED tensor's  >    already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).  >      - Swizzle from (getf param :swizzle): :128b -> CU_TENSOR_MAP_SWIZZLE_128B (wgmma), else NONE.  >      - Layout: a 128B-swizzle col-major describes (wgmma's B) has K contiguous, so gdim = extents  >        in-order and gstride = the outer (N) stride.  Otherwise the row-major reversal (extents reversed,  >        gstride = dim-0 stride), matching the nvcc-verified H100 reference.  Gated on :128b so the  >        battle-tested 137/138 :none col-major path (symmetric tiles) is untouched.
 
 
 ---
 ### DEFUN `EMIT-KERNEL-ARGS`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS DISPATCH-INFO)`
 
-  > Emit host-side variable declarations and fill the kernelParams[] array.  >    Returns a list of allocation plists for readback.  >    Bug 034: resets *cuda-shared-scratch-offset* so each kernel's LOCAL tiles get  >    distinct, non-overlapping shared-memory offsets.
+  > Emit host-side variable declarations and fill the kernelParams[] array.  >    Returns a list of allocation plists for readback.  >    Bug 034: resets *cuda-shared-scratch-offset* so each kernel's LOCAL tiles get  >    distinct, non-overlapping shared-memory offsets.  >    Endeavor 140 (col-major B): pre-scans the sig for swizzle-fed col-major tensors into  >    *mma-swizzle-describes* so %cuda-emit-tensor-arg emits K-contiguous strides for wgmma's B.
 
 
 ---
@@ -4379,7 +4459,7 @@ Generated on 2026-07-17T20:58:00.831191Z
 - **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS
               KERNEL-NAME OUT-TILE)`
 
-  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    OUT-TILE (TM TN), when set (--mma-bench), OVERRIDES the grid with a (M/TM x N/TN) 2-D grid.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).  >    COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units;  >    the :strided strategy then uses that fixed SM count instead of querying the  >    device (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT), so a shrunken profile takes  >    effect host-side.
+  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    OUT-TILE (TM TN), when set (--mma-bench), OVERRIDES the grid with a (M/TM x N/TN) 2-D grid.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).  >    COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units;  >    the :strided strategy then uses that fixed SM count instead of querying the  >    device (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT), so a shrunken profile takes  >    effect host-side.  >    Endeavor 140 (dynamic-SMEM opt-in): a kernel needing >48KB SMEM (n128-pipe, n256, wgmma  >    big-tile, ...) must cuFuncSetAttribute MAX_DYNAMIC_SHARED_SIZE_BYTES or the launch silently  >    fails (CUDA_ERROR_INVALID_VALUE).
 
 
 ---
@@ -6398,7 +6478,7 @@ Generated on 2026-07-17T20:58:00.831191Z
 ### DEFUN `GENERATE-IMPLICIT-SIGNATURE`
 - **Args**: `(SIG DECLARED-PARAMS)`
 
-  > Generates the :implicit-params plist for metadata serialization.  >    Omits :access — storage handles are always treated as read-write by hoist code.
+  > Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap  >    descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded.
 
 
 ---
@@ -6517,17 +6597,52 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 
 ---
+### DEFUN `%NORMALIZE-WARP-MASK`
+- **Args**: `(MASK LOCATION)`
+
+  > Endeavor 139 (decision A): normalize a :warps topology mask to a list of booleans (t/nil).  >    Elements are true/false or 1/0 (Crisp's bool-is-int).  Any other element errors.
+
+
+---
+### DEFUN `%RESOLVE-WORKGROUP-WARP-COUNT`
+- **Args**: `(CONTEXT)`
+
+  > The workgroup's warp count = local-size / warp-size, or NIL if local-size is not statically  >    known.  warp-size is the active profile's :simd-width, else 32.
+
+
+---
+### DEFUN `%WARP-MASK-UNQUOTE`
+- **Args**: `(V)`
+
+  > The :warps value is a quoted literal — '(false true) reads as (quote (false true)).  Unwrap.
+
+
+---
+### DEFUN `%WARP-MASK-CONTIGUOUS-TRUE-P`
+- **Args**: `(MASK)`
+
+  > T if the TRUE entries of MASK form a single contiguous run — the only layout the fragment  >    distribution supports today (warp_position = warp_id - first_true).
+
+
+---
+### DEFUN `%VALIDATE-WARP-MASK`
+- **Args**: `(MASK NFRAGS N-WARPS M N LOCATION)`
+
+  > Endeavor 139 (decision A): validate a normalized :warps mask.  Returns (values n-true first-true).  >    Checks: length == n-warps (when statically known); >= 1 true; contiguous true run; n-true evenly  >    divides nfrags.
+
+
+---
 ### DEFUN `ANALYZE-MAKE-REGISTER-TILE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P3a: (make-register-tile T (M N) INIT) -> a record-of-fragments accumulator tile,  >    each fragment initialized to INIT.  Mints the tile type on demand; rewrites to  >    %construct-struct of make-register-fragment fields.
+  > P3a: (make-register-tile T (M N) INIT &key warps) -> a record-of-fragments accumulator tile,  >    each fragment initialized to INIT.  Mints the tile type on demand; rewrites to  >    %construct-struct of make-register-fragment fields.  >    Endeavor 139 (decision A): :warps is a flat topology mask of which warps hold the tile.  For a  >    single participating warp (or no mask) the tile is the full (M/16)x(N/8) fragment set on that  >    warp — the current build.  Distributing across >= 2 participating warps (the occupancy lever)  >    is sub-step 2.
 
 
 ---
 ### DEFUN `ANALYZE-STORE-TILE-MMA`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Overload of store-tile: if the source is a register-tile, store each fragment via  >    store-fragment at its (row-tile, col-tile) offset; otherwise delegate to the existing  >    (SLM / async) store-tile analyzer.
+  > store-tile overload: register-tile (mma.sync) OR wgmma-accumulator (Endeavor 140) OR delegate.
 
 
 ---
@@ -6555,7 +6670,7 @@ Generated on 2026-07-17T20:58:00.831191Z
 ### DEFUN `%REGISTER-TILE-INIT-FORM-P`
 - **Args**: `(FORM)`
 
-  > T if FORM is a (make-register-tile T (M N) INIT) constructor.
+  > T if FORM is a (make-register-tile T (M N) INIT &key warps) constructor.
 
 
 ---
@@ -6566,9 +6681,9 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 ---
 ### DEFUN `%REGISTER-TILE-FRAG-SYMS`
-- **Args**: `(VAR M N)`
+- **Args**: `(VAR COUNT)`
 
-  > The N per-fragment variable symbols for tile VAR of shape MxN (row-major fragment  >    grid), interned in VAR's package with a `$F<i>' suffix.  Fragment dims are the  >    target's per-fragment (M . N).
+  > COUNT per-fragment variable symbols for tile VAR, interned in VAR's package with a `$F<i>`  >    suffix.  Endeavor 139: COUNT is the PER-WARP fragment count (= nfrags / #participating-warps),  >    so a warp-distributed tile allocates only its share (the register drop that raises occupancy).
 
 
 ---
@@ -6592,17 +6707,24 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 
 ---
+### DEFUN `%EMIT-FRAG-LOOP-DISTRIBUTED`
+- **Args**: `(SYMS N-FRAGS FIRST-TRUE N-TRUE PER-FRAG-FN)`
+
+  > Endeavor 139 step-4 perf: emit a COMPILE-TIME-STATIC per-warp switch (was a runtime  >    fragment-index loop).  wp = warp-position is runtime, so branch on it once via a `<`-cascade  >    (the role-branch pattern, last warp = bare else since wp is gated into [0,n-true)); inside each  >    arm the fragment (mi nj) fold to integer LITERALS so the SMEM operand loads get static addresses  >    and ptxas can CSE them.  PER-FRAG-FN is called with (fv mi nj) where mi/nj are INTEGERS (same  >    contract as the n-true=1 static path).
+
+
+---
 ### DEFUN `%EMIT-PER-FRAG-ACCUMULATE`
 - **Args**: `(A B ENTRY &OPTIONAL ACCUM-BINDING BODY)`
 
-  > Per-fragment expansion of mma-accumulate-via-tile (fragment dims = target per-fragment  >    M/N).  Bodyless: one accumulate set!/frag; with ACCUM-BINDING+BODY: splice the body.
+  > Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is now  >    a static per-warp switch (n-true threaded to %emit-frag-loop-distributed).
 
 
 ---
 ### DEFUN `%EMIT-PER-FRAG-STORE`
 - **Args**: `(DEST TILE-ID ENTRY)`
 
-  > Per-fragment expansion of (store-tile V DEST (BTY BTX)) — fragment dims = target M/N.
+  > Per-fragment expansion of (store-tile V DEST (BTY BTX)).  Endeavor 139 step-4: distributed path  >    is now a static per-warp switch.
 
 
 ---
@@ -6621,9 +6743,9 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 ---
 ### DEFUN `%EXPLODE-REGISTER-TILES`
-- **Args**: `(LET-EXPR &OPTIONAL LOCATION)`
+- **Args**: `(LET-EXPR &OPTIONAL LOCATION CONTEXT)`
 
-  > Source->source: explode any (V (make-register-tile T (M N) INIT)) binding in  >    LET-EXPR into N (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite  >    the body's via-tile/store-tile references to V into per-fragment progns.  Runs the  >    register FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no  >    register-tile binding is present.
+  > Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in  >    LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the  >    body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register  >    FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.  >    Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp  >    allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions  >    to reconstruct each warp's logical fragment range).
 
 
 ---
@@ -6678,7 +6800,115 @@ Generated on 2026-07-17T20:58:00.831191Z
 ---
 ### DEFUN `REGISTER-MMA-ANALYZERS`
 
-  > Registers the MMA expression analyzers in *expression-analyzers* for both  >    :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers  >    (which clrhash-es the table on every compiler init, so a load-time setf would not  >    survive).  Overlay: adds the let/let* wrapper for register-tile residency.
+  > Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms.
+
+
+---
+### DEFVAR `*WGMMA-ACC-DIMS*`
+
+  > wgmma accumulator type symbol -> (list M N K).
+
+
+---
+### DEFUN `%WGMMA-ACC-TYPE-NAME`
+- **Args**: `(N)`
+
+---
+### DEFUN `%WGMMA-ACC-TYPE-P`
+- **Args**: `(TYPE-NAME)`
+
+  > T if TYPE-NAME is a minted wgmma accumulator record type.
+
+
+---
+### DEFUN `%ENSURE-WGMMA-ACC-TYPE`
+- **Args**: `(N)`
+
+  > Mint (once) the WGMMA-ACC-F32-64xN record -- N/2 flat f32 fields (the wgmma D accumulator, N/2  >    f32 registers per thread across the 128-thread warpgroup).  Returns the type symbol.
+
+
+---
+### DEFUN `%CHECK-WGMMA-SHAPE`
+- **Args**: `(SHAPE LOCATION &OPTIONAL SWIZZLE)`
+
+  > Validate a wgmma (M N K) shape.  M fixed 64; N a multiple of 8 in [8,256].  K: with :swizzle a  >    positive multiple of 8 (the K-block = K/8 k8 slices); without :swizzle exactly 8 (a single k8 wgmma).
+
+
+---
+### DEFUN `ANALYZE-MAKE-WGMMA-ACCUMULATOR`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,  >    each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.
+
+
+---
+### DEFUN `ANALYZE-WGMMA-ACCUMULATE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 [0]) with one 0 per tile dimension  >    (rank-aware) so codegen's 3rd value is the addrspace(3) base — works for flat VECTOR tiles (scatter)  >    AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle.
+
+
+---
+### DEFUN `ANALYZE-WGMMA-ACCUMULATE-VIA-TILE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B  >    :swizzle MODE :k K)).  K rule is swizzle-aware (see %check-wgmma-shape).
+
+
+---
+### DEFUN `%WGMMA-MAKE-DESC`
+- **Args**: `(BUILDER BASE-PTR &OPTIONAL SWIZZLE-P (KSLICE-BYTE-OFF 0))`
+
+  > Build the 64-bit wgmma SMEM matrix descriptor.  NO-SWIZZLE (Step 1, scatter/core-matrix): LBO=128B  >    (enc 8), SBO=256B (enc 16), swizzle=0.  128B-SWIZZLE (Step 3, TMA, CUTLASS make_gmma_desc<K>):  >    LBO=16B (enc 1), SBO=1024B (enc 64), swizzle bits=1, base_offset=0; the k-slice ADVANCES the start  >    address by KSLICE-BYTE-OFF (kk*32).  start = ((addr+off)>>4)&0x3FFF at [0:13].
+
+
+---
+### DEFUN `%WGMMA-STRUCT-OF-FLOATS`
+- **Args**: `(MODULE NACC)`
+
+  > The LLVM struct type { float x NACC } — the wgmma inline-asm result (NACC = N/2 accumulators).
+
+
+---
+### DEFUN `%WGMMA-ASM-STRING`
+- **Args**: `(NACC N)`
+
+  > wgmma.mma_async.sync.aligned.m64nNk8.f32.tf32.tf32 {$0..$nacc-1}, descA, descB, 1,1,1;  >    NB on operand numbering: LLVM IR inline-asm has no '+f'; a read-write accumulator is an '=f'  >    OUTPUT ($0..$nacc-1) PLUS a matching tied INPUT ($nacc..$2*nacc-1).  The tied inputs DO occupy  >    operand slots, so the two 'l' descriptors are $2*nacc and $2*nacc+1 (not $nacc/$nacc+1).
+
+
+---
+### DEFUN `%WGMMA-CONSTRAINTS`
+- **Args**: `(NACC)`
+
+  > NACC '=f' outputs, NACC tied inputs (0..nacc-1), 2 'l' descriptor inputs, memory clobber.
+
+
+---
+### DEFUN `%EMIT-NVVM-WGMMA`
+- **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N &OPTIONAL SWIZZLE-P
+              (K 8))`
+
+  > Emit the wgmma accumulate.  NO-SWIZZLE (scatter): a proxy fence + barrier (generic->async proxy  >    visibility) + ONE k8 wgmma.  128B-SWIZZLE (TMA): NO proxy fence (both async proxy) + K/8 k-slice  >    wgmmas, D accumulating across them (scaleD=1), each with the start advanced kk*32 bytes.  >    Returns (values D nil).
+
+
+---
+### DEFUN `%WGMMA-STORE-REWRITE`
+- **Args**: `(TILE DEST TILE-ID N)`
+
+  > Store the m64xN wgmma accumulator TILE to DEST at grid tile-id (BTY BTX).  warp w (within the  >    warpgroup) -> rows [16w,16w+16); per n8 group the standard mma m16n8 C fragment.  (= wgmma_ref.cu.)
+
+
+---
+### DEFVAR `*WGMMA-NODE-SWIZZLE*`
+
+  > semantic-mma-accumulate node -> (list swizzle-mode k-block) for the wgmma path.
+
+
+---
+### DEFUN `%EMIT-ONE-WGMMA`
+- **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF)`
+
+  > One m64nNk8 wgmma: fence + mma_async (N/2 accumulators in/out + 2 descs) + commit + wait; return  >    the new D record.  The k-slice offset (kk*32 bytes) advances the swizzle descriptor start address.
 
 
 ---
@@ -6961,6 +7191,9 @@ Generated on 2026-07-17T20:58:00.831191Z
 
 ---
 ### DEFSTRUCT `SEMANTIC-MAKE-ASYNC-BARRIER`
+
+---
+### DEFSTRUCT `SEMANTIC-SIGNAL`
 
 ---
 ### DEFSTRUCT `SEMANTIC-SPIRV-ASYNC-COPY`

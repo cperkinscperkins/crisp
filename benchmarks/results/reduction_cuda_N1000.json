@@ -1,0 +1,17 @@
+{
+  "algorithm": "reduction",
+  "implementation": "cuda",
+  "N": 1000,
+  "warmup": 50,
+  "iterations": 100,
+  "correct": true,
+  "result": 1000.0,
+  "expected": 1000.0,
+  "kernel_median_us": 7.74,
+  "kernel_min_us": 7.04,
+  "kernel_mean_us": 7.89,
+  "kernel_stddev_us": 0.69,
+  "throughput_gb_s": 0.52,
+  "wall_median_us": 25.9,
+  "wall_min_us": 25.02
+}

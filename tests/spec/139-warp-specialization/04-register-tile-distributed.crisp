@@ -1,0 +1,28 @@
+;; Endeavor 139 (Chapter 3) — 04: make-register-tile :warps DISTRIBUTION (#true>=2, decision A).
+;;
+;; The C-tile (32x16 = (32/16)x(16/8) = 2x2 = 4 fragments) is SPLIT across the 2 consumer warps:
+;; each holds only 2 fragments, computes 2, stores 2.  This is the occupancy lever — half the
+;; register pressure per warp.  warp_position = warp-id - first_true (=1); local fragment l maps to
+;; logical index warp_position*2 + l -> (mi, nj).  IR-verified: 2 mma.sync per warp (not 4), and the
+;; store distributes.  (Full producer/consumer data flow is step 4; here the focus is the split.)
+;; local-size 96 = 3 warps; (:producer 1 :consumer 2) + :warps '(false true true).
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "warp specialization is forward-only"
+;; SKIP-WITH[--debug]: "register-tile/MMA path hits the pre-existing --debug DIBuilder fault (plan/bugs.md #033)"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-distributed-mma
+
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel distributed_tile (&out C)
+  (declare #'(&out mt)
+           (global-size :set-to 96)
+           (local-size  :set-to 96))          ; 3 warps: 1 producer + 2 consumers
+  (let ((A-tile (make-scratch-matrix float (32 8)))
+        (B-tile (make-scratch-matrix float (8 16)))
+        (C-tile (make-register-tile float (32 16) 0.0 :warps '(false true true))))
+    (with-warp-specialization (:producer 1 :consumer 2)
+      (:producer (set! (~ A-tile 0 0) 1.0))
+      (:consumer
+        (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+        (store-tile C-tile C (0 0))))))

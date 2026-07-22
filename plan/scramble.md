@@ -745,8 +745,8 @@ MMA
 [x] CUTensorMap as implicit arg for kernels. 
 [x] Chapter 1 - async tile   cp.async and OpGroupAsyncCopy
 [x] Chapter 1.5 - async tiles  with CuTensorMap 
-[ ] Chapter 2 - pipelined async tile
-[ ] chapter 3 - warp specialization pipelining
+[x] Chapter 2 - pipelined async tile
+[x] chapter 3 - warp specialization pipelining
 [ ] Intel  LSC 2D Block Loads in Intel Xe
 [ ] precision?  
 [ ] auto-differentiation?
@@ -754,23 +754,25 @@ MMA
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] don't forget bug 033 ( --debug )
 
-[ ] run-on-pod.sh has lost its summary?
+[x] run-on-pod.sh has lost its summary?
+
+[ ] extract_status.py -> add a % summary.
 
 [ ] benchmarking
-[ ] How to collect and recollect data? runpod.io gives us LOTS of different GPUs to test against,
-    which is cool. Should we track all that? Where/how?
-[ ] report compile times!!  (used to be tracked, seemingly no longer?)
-[ ] benchmarking (all) probably needs fast math vs. non. And explicit flags for ALL. The defaults may NOT be what we think they be, now or in the future.
-[ ] Vendor Optimal ( CUBLAS for MMA, CUB for Reduction, not sure for Intel)
-- [ ] for Optimal, does Crisp experiment with number of pipelines and occupancy?
+[x] How to collect and recollect data? runpod.io gives us LOTS of different GPUs to test against,
+    which is cool. Should we track all that? Where/how?  .csv?
+[x] report compile times!!  (used to be tracked, seemingly no longer?)
+[x] benchmarking (all) probably needs fast math vs. non. And explicit flags for ALL. The defaults may NOT be what we think they be, now or in the future.
+[x] Vendor Optimal ( CUBLAS for MMA, CUB for Reduction, not sure for Intel)
+- [x] for Optimal, does Crisp experiment with number of pipelines and occupancy?
 - [ ] 
-[ ] apples to apples
-- [ ] chapter 0 - synchronous. CUDA vs. Crisp. Intel vs Crisp
+[x] apples to apples
+- [x] chapter 0 - synchronous. CUDA vs. Crisp. Intel vs Crisp
 - CUDA
-- [ ] chapter 1 - basic async (tile :linear) CUDA vs Crisp.
-- [ ] chapter 1.5 - :block CUDA vs Crisp
-- [ ] chapter 2 - pipelined :block  CUDA vs Crisp
-- [ ] chapter 3 - warp specialized CUDA vs Crisp
+- [x] chapter 1 - basic async (tile :linear) CUDA vs Crisp.
+- [x] chapter 1.5 - :block CUDA vs Crisp
+- [x] chapter 2 - pipelined :block  CUDA vs Crisp
+- [x] chapter 3 - warp specialized CUDA vs Crisp
 - Intel
 - [ ] prefetch  Intel vs. Crisp
 

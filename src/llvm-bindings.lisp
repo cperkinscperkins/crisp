@@ -168,6 +168,12 @@
 (defcfun ("LLVMGetBasicBlockTerminator" llvm-get-basic-block-terminator) :pointer
          (block :pointer))
 
+;; Endeavor 139 (Chapter 3, step 4): the multi-lap phase counter hoists its
+;; per-ring visit counter alloca into the function's entry block so it persists
+;; across loop iterations rather than re-allocating each pass.
+(defcfun ("LLVMGetEntryBasicBlock" llvm-get-entry-basic-block) :pointer
+         (func :pointer))
+
 
 ;; --- Builder ---
 (defcfun ("LLVMCreateBuilder" llvm-create-builder) :pointer)
@@ -175,6 +181,13 @@
 (defcfun ("LLVMPositionBuilderAtEnd" llvm-position-builder-at-end) :void
          (builder :pointer)
          (block :pointer))
+
+;; Insert before an instruction (we insert before the entry block's terminator,
+;; i.e. after param setup, before the body branch) — pairs with the entry-block
+;; alloca hoisting above.
+(defcfun ("LLVMPositionBuilderBefore" llvm-position-builder-before) :void
+         (builder :pointer)
+         (instr :pointer))
 
 (defcfun ("LLVMDisposeBuilder" llvm-dispose-builder) :void
          (builder :pointer))
@@ -264,6 +277,18 @@
          (lhs :pointer)
          (rhs :pointer)
          (name :string))
+
+;; Endeavor 140 (Chapter 4): bitwise builders the wgmma SMEM descriptor bit-pack
+;; needs — start = (addr >> 4) & 0x3FFF, then OR the compile-time LBO/SBO/swizzle
+;; constant.
+(defcfun ("LLVMBuildAnd" llvm-build-and) :pointer
+         (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(defcfun ("LLVMBuildOr" llvm-build-or) :pointer
+         (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(defcfun ("LLVMBuildLShr" llvm-build-l-shr) :pointer
+         (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(defcfun ("LLVMBuildShl" llvm-build-shl) :pointer
+         (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
 
 (defcfun ("LLVMBuildFAdd" llvm-build-fadd) :pointer
          (builder :pointer)

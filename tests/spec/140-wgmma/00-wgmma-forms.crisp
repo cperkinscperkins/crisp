@@ -1,0 +1,18 @@
+;; Endeavor 140 (Chapter 4) Step 0 — wgmma FRONT-END smoke: make-wgmma-accumulator +
+;; wgmma-accumulate-via-tile parse, validate (M=64, N mult-of-8 in [8,256], K=8 tf32), the
+;; accumulator record mints (N/2 f32 fields), and the node compiles.  Codegen is a NO-OP STUB in
+;; Step 0 (returns the accumulator unchanged) — the real descriptor + wgmma emission is Step 1, so
+;; this is compile-only (no metal).  local-size 128 = one warpgroup.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "wgmma is forward-only MMA"
+;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90]
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_forms (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))

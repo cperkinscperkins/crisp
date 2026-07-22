@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "must use a :block barrier"
+;; Endeavor 139 (decision B) — negative: a synchronous store-tile in a role block is a
+;; workgroup-collective cooperative store -> deadlock.  Use per-thread stores for the write-back.
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel store_tile_in_role (A &out C)
+  (declare #'(mt &out mt) (global-size :set-to 64) (local-size :set-to 64))
+  (let ((tile (make-scratch-matrix float (4 4))))
+    (with-warp-specialization (:producer 1 :consumer 1)
+      (:producer (set! (~ tile 0 0) 1.0))
+      (:consumer (store-tile tile C (0 0))))))

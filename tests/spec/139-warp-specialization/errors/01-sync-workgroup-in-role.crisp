@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "role block"
+;; Endeavor 139 (decision B) — negative: sync-workgroup inside a warp-spec role block DEADLOCKS
+;; (only one role's warps reach it).  The producer/consumer synchronize via the barrier rings.
+(def-type vt (vector float :address-space :global :align :compact))
+(def-kernel sync_wg_in_role (&out C)
+  (declare #'(&out vt) (global-size :set-to 64) (local-size :set-to 64))
+  (with-warp-specialization (:producer 1 :consumer 1)
+    (:producer (sync-workgroup) (set! (~ C 0) 1.0))
+    (:consumer (set! (~ C 1) 2.0))))

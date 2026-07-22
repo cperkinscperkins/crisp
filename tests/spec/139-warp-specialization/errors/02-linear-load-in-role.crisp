@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "must use a :block barrier"
+;; Endeavor 139 (decision B) — negative: a :linear (cp.async cooperative) load in a role block is a
+;; workgroup collective -> deadlock.  Only :block (TMA, leader-issued) staging is safe.
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel linear_load_in_role (A &out C)
+  (declare #'(mt &out mt) (global-size :set-to 64) (local-size :set-to 64))
+  (let ((tile (make-scratch-matrix float (4 4))) (bar (make-async-barrier :mode :linear)))
+    (with-warp-specialization (:producer 1 :consumer 1)
+      (:producer (load-tile A tile (0 0) :barrier bar) (await bar))
+      (:consumer (set! (~ C 0) 1.0)))))

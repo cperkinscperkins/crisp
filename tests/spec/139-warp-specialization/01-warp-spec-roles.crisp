@@ -1,0 +1,32 @@
+;; Endeavor 139 (Chapter 3) — the FIRST warp-specialization test: the role SKELETON.
+;;
+;; (with-warp-specialization (:producer 1 :consumer 1) (:producer ...) (:consumer ...)) splits the
+;; workgroup by WARP: warp 0 runs the :producer block, warp 1 runs the :consumer block.  No barriers
+;; yet — this is purely "does the role branch lower".  Each role writes a DISTINCT marker to C[tid];
+;; both markers must survive to the IR (proof both role bodies lowered, neither was dropped).
+;;
+;; local-size 64 = 2 warps (2 * warp-size 32); (:producer 1 :consumer 1) = 2 warps.  They match, which
+;; is decision C's workgroup-size rule.
+;;
+;; This is the general case — backend-agnostic, so it must lower on BOTH ptx (NVIDIA) and spv (Intel).
+;; The BEHAVIORAL proof that the branch actually split the warps (producer marker only in C[0..31],
+;; consumer only in C[32..63]) is the follow-on metal test 01b on the dev BMG box — a no-split
+;; implementation would make every slot the same, which the marker regions catch.
+;;
+;; RED until with-warp-specialization is implemented (currently "Unsupported form").
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "warp specialization is forward-only control flow"
+;; TEST-WITH[--ir-target=ptx] : validate-warp-roles
+;; TEST-WITH[--ir-target=spv]
+
+(def-type vec-t (vector int :address-space :global :align :compact))
+
+(def-kernel warp_roles (&out C)
+  (declare #'(&out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))          ; 2 warps
+  (let ((tid (to-int (get-local-linear-id))))
+    (with-warp-specialization (:producer 1 :consumer 1)
+      (:producer (set! (~ C tid) 40001))       ; warp 0 threads write the producer marker
+      (:consumer (set! (~ C tid) 40002)))))    ; warp 1 threads write the consumer marker

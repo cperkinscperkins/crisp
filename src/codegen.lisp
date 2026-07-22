@@ -2958,6 +2958,19 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (sum       (llvm-build-add builder total c31 "block_plus_31")))
     (llvm-build-udiv builder sum c32 "warp_count")))
 
+(defun %ptx-synthesize-warp-id (builder module)
+  "Synthesizes the STABLE block-local warp index on PTX: local-linear-id / 32.  Endeavor 139
+   FIX: warp-id previously read %warpid, the volatile PHYSICAL-SM warp register the PTX ISA warns
+   'may change during execution ... should not be used for work scheduling'.  Warp specialization
+   IS work scheduling and needs a stable per-block index — which is exactly SPV's SubgroupId.
+   local-linear-id is %tid-derived and stable; /32 gives the block-local warp index.  i32 (uint)."
+  (let* ((i32-type (llvm-int32-type))
+         (i64-type (llvm-int64-type))
+         (llid     (%gen-local-linear-id builder module))          ; i64 (ulong convention)
+         (c32      (llvm-const-int i64-type 32 nil))
+         (wid64    (crisp.llvm-bindings::llvm-build-udiv builder llid c32 "warp_id64")))
+    (crisp.llvm-bindings::llvm-build-trunc builder wid64 i32-type "warp_id")))
+
 (defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
   "Generates LLVM IR for a GPU built-in function call.
    Endeavor 115 Phase 2: full PTX dispatch for all builtins."
@@ -3011,7 +3024,8 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         ;; --- 110: warp helpers ---
         (:warp-id
          (if (eq *target-backend* :ptx)
-             (values (%ptx-read-warp-sreg builder module "warpid") nil)
+             ;; Endeavor 139: synthesize local-linear-id/32 (stable), NOT %warpid (volatile).
+             (values (%ptx-synthesize-warp-id builder module) nil)
              (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil)))
         (:warp-lane
          (if (eq *target-backend* :ptx)
@@ -3799,14 +3813,8 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 137 (Chapter 1.5, Phase 2a) — one bulk TMA copy into the SLM tile, issued by a
-   single elected leader thread (tid == 0).  Recovers the dest SLM base (addrspace 3) and the
-   STAND-IN tensormap ptr (source tensor base, addrspace 1 -> generic) from the two aref nodes'
-   3rd return value, the tile-box {x,y} coords from the coord nodes (as i32), and the mbarrier
-   pointer from the barrier value (i64 -> addrspace 3).  Emits
-   cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes.
-   NOTE: the tensormap is a stand-in here (Phase 2b wires the real CUtensorMap implicit arg),
-   so this is not yet runnable — the point is the instruction shape."
+  "Endeavor 137 + 140 — one bulk TMA copy issued by a single elected leader.  Leader = laneid==0 (the
+   producer warp's lane 0) inside a warp-spec role block, else global tid==0."
   (multiple-value-bind (dv di dst-ptr)
       (generate-node-ir (semantic-nvvm-tma-tile-copy-dst-aref-node node) builder module var-env
                         di-builder di-scope location-map)
@@ -3816,46 +3824,40 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                           di-builder di-scope location-map)
       (declare (ignore sv si))
       (unless (and dst-ptr src-ptr)
-        (error "nvvm-tma-tile-copy: aref did not yield an element pointer (dst ~A src ~A)"
-               dst-ptr src-ptr))
+        (error "nvvm-tma-tile-copy: aref did not yield an element pointer (dst ~A src ~A)" dst-ptr src-ptr))
       (let* ((i32-type   (llvm-int32-type))
-             (i64-type   (llvm-int64-type))
              (ptr-as3    (llvm-pointer-type (llvm-int8-type) 3))
              (ptr-gen    (llvm-pointer-type (llvm-int8-type) 0))
              (ptr-glob   (llvm-pointer-type (llvm-int8-type) 1))
-             ;; Real CUtensorMap descriptor (option A pointer-to-global implicit arg); falls back
-             ;; to the Phase-2a stand-in (source tensor base) only if the descriptor is absent.
              (desc-ptr   (%tma-lookup-descriptor-ptr builder var-env
                           (semantic-nvvm-tma-tile-copy-src-name node) ptr-glob))
              (tmap-ptr   (llvm-build-addrspace-cast builder (or desc-ptr src-ptr) ptr-gen "tma_map"))
-             ;; mbarrier ptr from the barrier value (i64 address -> addrspace(3) ptr).
              (barrier-i  (generate-node-ir (semantic-nvvm-tma-tile-copy-barrier-node node) builder module var-env
                                            di-builder di-scope location-map))
              (mbar-ptr   (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
-             ;; tile-box coords -> i32.  Missing dims default to 0 (1-D tile).
              (coord-vals (loop for cn in (semantic-nvvm-tma-tile-copy-coord-nodes node)
                                collect (%coerce-to-i32 builder
                                           (generate-node-ir cn builder module var-env
                                                              di-builder di-scope location-map))))
-             ;; TMA coords are INNERMOST-first: {x,y} where x indexes the fastest-varying
-             ;; dimension.  The load-tile origin is (dim0 dim1) = (row col) for a row-major tile,
-             ;; so x = col = origin[1], y = row = origin[0] — i.e. the origin order REVERSED.
-             ;; (The descriptor's gdim / box are innermost-first too, so this stays consistent.)
-             (coord0     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))   ; x (innermost)
-             (coord1     (or (first coord-vals)  (llvm-const-int i32-type 0 nil)))   ; y (outer)
-             ;; Leader-thread guard: only tid == 0 issues the bulk copy.
-             (tid-x      (%gen-nvvm-read-tid-x builder module))
-             (tid-y      (%gen-nvvm-read-tid-y builder module))
-             (tid-z      (%gen-nvvm-read-tid-z builder module))
-             (tid-sum    (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz"))
-             (is-zero    (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "is_tid_0"))
+             (coord0     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))
+             (coord1     (or (first coord-vals)  (llvm-const-int i32-type 0 nil)))
+             ;; Endeavor 140: role-aware leader.  WS role block -> laneid==0 (producer warp's lane 0);
+             ;; else global tid==0.
+             (ws-leader  (gethash node *tma-copy-ws-leader*))
+             (is-leader  (if ws-leader
+                             (llvm-build-icmp builder +llvm-int-eq+
+                                (%ptx-read-warp-sreg builder module "laneid")
+                                (llvm-const-int i32-type 0 nil) "is_lane0")
+                             (let* ((tid-x (%gen-nvvm-read-tid-x builder module))
+                                    (tid-y (%gen-nvvm-read-tid-y builder module))
+                                    (tid-z (%gen-nvvm-read-tid-z builder module))
+                                    (tid-sum (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz")))
+                               (llvm-build-icmp builder +llvm-int-eq+ tid-sum
+                                  (llvm-const-int i32-type 0 nil) "is_tid_0"))))
              (issue-bb   (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_issue"))
              (cont-bb    (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_cont")))
-        (declare (ignore i64-type))
-        (llvm-build-cond-br builder is-zero issue-bb cont-bb)
+        (llvm-build-cond-br builder is-leader issue-bb cont-bb)
         (llvm-position-builder-at-end builder issue-bb)
-        ;; expect_tx: announce the transaction byte count (tile elements * elem-bytes) before
-        ;; the bulk copy, so the mbarrier's try_wait.parity observes completion.
         (let* ((len-val   (generate-node-ir (semantic-nvvm-tma-tile-copy-tile-length-node node) builder module var-env
                                             di-builder di-scope location-map))
                (elem-b    (semantic-nvvm-tma-tile-copy-elem-bytes node))
@@ -3870,12 +3872,7 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-nvvm-tma-wait) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 137 (Chapter 1.5, Phase 2b/2d) — (await bar) for a :block TMA barrier.  Recovers the
-   mbarrier's 32-bit shared address from the barrier value and spins on try_wait.parity (phase 0)
-   until the bulk transaction completes, then bar.sync so every thread sees the staged tile.
-   Phase 2d: after the sync it RE-INITS the mbarrier (arrival count = #loads) — so a barrier
-   REUSED across K-steps restarts at phase 0 every iteration, keeping try_wait.parity(0) valid
-   (instead of tracking an alternating phase bit).  Matches the nvcc-verified completion."
+  "Endeavor 137/2d + 139/step4 — (await bar) for a :block TMA barrier."
   (let* ((i32-type  (llvm-int32-type))
          (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
          (barrier-i (generate-node-ir (semantic-nvvm-tma-wait-barrier-node node) builder module var-env
@@ -3883,9 +3880,64 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
          (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr"))
          (load-cnt  (max 1 (semantic-nvvm-tma-wait-load-count node)))
+         (ws-phase  (semantic-nvvm-tma-wait-phase node))
          (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
          (wait-bb   (llvm-append-basic-block parent "tma_wait"))
          (exit-bb   (llvm-append-basic-block parent "tma_wait_done")))
+    (when ws-phase
+      ;; ---- Endeavor 139 multi-lap flipping parity ----------------------------
+      ;; Compute the runtime parity from a per-ring visit counter, spin on
+      ;; try_wait.parity(parity), increment the counter, return.  NO workgroup
+      ;; bar.sync (only one role's warps reach here) and NO re-init.
+      (let* ((is-list  (consp ws-phase))
+             (init     (if is-list (first ws-phase) ws-phase))
+             (ring-n   (if is-list (max 1 (second ws-phase)) 1))
+             (parity
+              (if (not is-list)
+                  ;; Legacy constant parity.
+                  (llvm-const-int i32-type init nil)
+                  ;; Entry-block counter (persists across loop iterations): alloca +
+                  ;; init-store hoisted before the entry block's terminator.
+                  (let* ((saved (llvm-get-insert-block builder))
+                         (entry (crisp.llvm-bindings::llvm-get-entry-basic-block parent))
+                         (term  (llvm-get-basic-block-terminator entry)))
+                    (if (cffi:null-pointer-p term)
+                        (llvm-position-builder-at-end builder entry)
+                        (crisp.llvm-bindings::llvm-position-builder-before builder term))
+                    (let ((ctr (llvm-build-alloca builder i32-type "ws_pctr")))
+                      (llvm-build-store builder (llvm-const-int i32-type 0 nil) ctr)
+                      (llvm-position-builder-at-end builder saved)
+                      ;; visit = load ctr; q = visit / N; lap = q - (q/2)*2  (= q mod 2)
+                      (let* ((visit (llvm-build-load2 builder i32-type ctr "ws_visit"))
+                             (q     (llvm-build-udiv builder visit (llvm-const-int i32-type ring-n nil) "ws_lap_q"))
+                             (q2    (llvm-build-udiv builder q (llvm-const-int i32-type 2 nil) "ws_lap_q2"))
+                             (q2x2  (llvm-build-mul builder q2 (llvm-const-int i32-type 2 nil) "ws_lap_q2x2"))
+                             (lap   (llvm-build-sub builder q q2x2 "ws_lap"))
+                             ;; parity = init XOR lap; init is a compile-time 0/1:
+                             ;;   init 0 -> lap ; init 1 -> 1 - lap
+                             (par   (if (zerop init)
+                                        lap
+                                        (llvm-build-sub builder (llvm-const-int i32-type 1 nil) lap "ws_parity"))))
+                        ;; Stash the counter + visit on locals for the post-wait increment.
+                        (setf (gethash '%ws-ctr var-env) ctr
+                              (gethash '%ws-visit var-env) visit)
+                        par))))))
+        (llvm-build-br builder wait-bb)
+        (llvm-position-builder-at-end builder wait-bb)
+        (let* ((complete (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr parity))
+               (done     (llvm-build-icmp builder +llvm-int-ne+ complete (llvm-const-int i32-type 0 nil) "ws_done")))
+          (llvm-build-cond-br builder done exit-bb wait-bb))
+        (llvm-position-builder-at-end builder exit-bb)
+        ;; Increment the visit counter for the next lap (list path only).
+        (when is-list
+          (let* ((ctr   (gethash '%ws-ctr var-env))
+                 (visit (gethash '%ws-visit var-env))
+                 (next  (llvm-build-add builder visit (llvm-const-int i32-type 1 nil) "ws_visit_next")))
+            (llvm-build-store builder next ctr)
+            (remhash '%ws-ctr var-env)
+            (remhash '%ws-visit var-env)))
+        (return-from generate-node-ir (values (llvm-const-int (llvm-int64-type) 0 nil) nil))))
+    ;; ---- 138 path (unchanged): try_wait.parity(0) + bar.sync + re-init --------
     (llvm-build-br builder wait-bb)
     (llvm-position-builder-at-end builder wait-bb)
     (let* ((complete (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr (llvm-const-int i32-type 0 nil)))
@@ -3893,7 +3945,6 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
       (llvm-build-cond-br builder done exit-bb wait-bb))
     (llvm-position-builder-at-end builder exit-bb)
     (%ptx-barrier builder module)
-    ;; Re-init the mbarrier for the next K-step (reset phase to 0), leader-guarded + fence + sync.
     (let* ((tid-x   (%gen-nvvm-read-tid-x builder module))
            (tid-y   (%gen-nvvm-read-tid-y builder module))
            (tid-z   (%gen-nvvm-read-tid-z builder module))
@@ -3908,6 +3959,28 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
       (llvm-build-br builder cont-bb)
       (llvm-position-builder-at-end builder cont-bb)
       (%ptx-barrier builder module))
+    (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+
+(defmethod generate-node-ir ((node semantic-signal) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 139 (Chapter 3) — (signal (ring-get empty slot)): a leader-guarded mbarrier.arrive on
+   the slot's mbarrier, releasing it to the producer.  One thread per warp (lane 0) arrives, so the
+   arrival count matches :arrivals (one release per consumer warp)."
+  (let* ((i32-type  (llvm-int32-type))
+         (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
+         (barrier-i (generate-node-ir (semantic-signal-barrier-node node) builder module var-env
+                                      di-builder di-scope location-map))
+         (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "sig_mbar"))
+         (lane      (%ptx-read-warp-sreg builder module "laneid"))
+         (is-leader (llvm-build-icmp builder +llvm-int-eq+ lane (llvm-const-int i32-type 0 nil) "sig_leader"))
+         (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (arrive-bb (llvm-append-basic-block parent "sig_arrive"))
+         (cont-bb   (llvm-append-basic-block parent "sig_cont")))
+    (llvm-build-cond-br builder is-leader arrive-bb cont-bb)
+    (llvm-position-builder-at-end builder arrive-bb)
+    (%gen-nvvm-mbarrier-arrive-shared builder module mbar-ptr)
+    (llvm-build-br builder cont-bb)
+    (llvm-position-builder-at-end builder cont-bb)
     (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
 
 (defmethod generate-node-ir ((node semantic-make-c-handle) builder module var-env di-builder di-scope location-map)

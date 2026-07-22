@@ -454,6 +454,14 @@
    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the
    internal %uniform-when form instead, whose analyzer does NOT set this flag.")
 
+(defvar *in-warp-spec-block* nil
+        "Endeavor 139 (Chapter 3), decision B: T when analyzing the body of a
+   with-warp-specialization role block.  Such a block is warp-DIVERGENT (different warps run
+   different roles), which sets *in-divergent-conditional* — but a :block (TMA) load-tile there is
+   SAFE: it is leader-issued and mbarrier-tracked, with no workgroup collective to deadlock.  So
+   %tlc-check-not-divergent relaxes when this is set.  A workgroup collective (sync-workgroup, a
+   cooperative :linear load) inside a role block WOULD deadlock and is rejected separately.")
+
 (defun analyze-%uniform-if-impl (expr env context location)
   "Internal-use: structurally identical to analyze-if-expression-impl but
    does NOT bind *in-divergent-conditional* on the two-branch path.  Use
@@ -491,7 +499,10 @@
 
 (defun %tlc-check-not-divergent (op-name location)
   "Signals a clear compile error if (op-name) appears inside a thread-divergent
-   conditional.  Call from load-tile-at / store-tile-at analyzers."
+   conditional.  Call from load-tile-at / store-tile-at analyzers.
+   NOTE (Endeavor 139): a with-warp-specialization role block ALSO sets *in-divergent-conditional*,
+   but its callers gate this on (not *in-warp-spec-block*) and apply the mode-aware
+   %warp-spec-check-block-only instead — a :block load there is leader-issued and safe."
   (when *in-divergent-conditional*
         (error 'crisp-compiler-error
           :message (format nil
@@ -499,19 +510,46 @@
                      op-name)
           :source-location location)))
 
+(defun %warp-spec-check-sync (builtin-kw name-str location)
+  "Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective
+   (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped
+   ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, defer to the normal
+   thread-divergent check."
+  (if *in-warp-spec-block*
+      (when (eq builtin-kw :sync-workgroup)
+        (error 'crisp-compiler-error
+          :message "sync-workgroup cannot appear inside a with-warp-specialization role block — it is a workgroup collective and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering."
+          :source-location location))
+      (%tlc-check-not-divergent name-str location)))
+
+
+(defun %warp-spec-check-block-only (op-name mode location)
+  "Endeavor 139 (decision B): inside a with-warp-specialization role block, only a :block (TMA,
+   leader-issued) tile op is safe.  A synchronous (no-barrier) or :linear tile op is a WORKGROUP
+   COLLECTIVE — its cooperative copy has all threads participate — so with only one role's warps
+   present it deadlocks.  MODE is the resolved barrier :mode, or NIL for a synchronous op."
+  (when (and *in-warp-spec-block* (not (eq mode :block)))
+    (error 'crisp-compiler-error
+      :message (format nil
+                   "~A inside a with-warp-specialization role block must use a :block barrier — a ~A tile op is a workgroup-collective cooperative copy that deadlocks when only some warps run the block.  Stage with (make-async-barrier[-ring] :mode :block) on the producer; for the consumer's write-back use per-thread stores or a warp-scoped path (there is no :block store yet)."
+                   op-name (if mode (string-downcase (symbol-name mode)) "synchronous"))
+      :source-location location)))
 
 (defun analyze-load-tile-at-expression (expr env context location)
   "Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
    Rejects placement inside a thread-divergent conditional. If :barrier is provided
    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
    codegen via %expand-load-tile-at-form."
-  (%tlc-check-not-divergent "load-tile-at" location)
+  ;; Endeavor 139: inside a warp-spec block, %warp-spec-check-block-only (after mode resolution)
+  ;; governs instead of the thread-divergent check.
+  (unless *in-warp-spec-block* (%tlc-check-not-divergent "load-tile-at" location))
   (let* ((key-args (nthcdr 4 expr))
          (barrier-form (%extract-key-arg key-args :barrier nil)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
        (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
     ;; Endeavor 137: the barrier's :mode (looked up via its binding) picks the lowering.
     (let ((mode (and barrier-form (async-barrier-mode-of barrier-form))))
+      (%warp-spec-check-block-only "load-tile" mode location)
       (cond
         ;; :block on PTX (Chapter 1.5, Phase 2) — NVIDIA TMA: one bulk descriptor-driven copy
         ;; (cp.async.bulk.tensor...mbarrier::complete_tx::bytes) issued by an elected leader,
@@ -571,16 +609,23 @@
                          (t (error 'crisp-compiler-error
                               :message (format nil "load-tile :block: element type ~S needs 4 or 8 bytes" elem-type)
                               :source-location location)))))
-    (make-semantic-nvvm-tma-tile-copy
-     :dst-aref-node dst-node
-     :src-aref-node src-node
-     :coord-nodes coord-nodes
-     :barrier-node barrier-node
-     :tile-length-node len-node
-     :elem-bytes elem-bytes
-     :src-name (and (symbolp src-form) src-form)
-     :type 'nil
-     :source-location location)))
+    ;; Endeavor 140 (warp-spec leader): tag the copy node when it is analyzed inside a
+    ;; with-warp-specialization role block, so codegen elects laneid==0 of the producer warp
+    ;; (not global tid==0) — making consumer-first warp specialization first-class and removing
+    ;; the producer-first ordering constraint.
+    (let ((node (make-semantic-nvvm-tma-tile-copy
+                 :dst-aref-node dst-node
+                 :src-aref-node src-node
+                 :coord-nodes coord-nodes
+                 :barrier-node barrier-node
+                 :tile-length-node len-node
+                 :elem-bytes elem-bytes
+                 :src-name (and (symbolp src-form) src-form)
+                 :type 'nil
+                 :source-location location)))
+      (when *in-warp-spec-block*
+        (setf (gethash node *tma-copy-ws-leader*) t))
+      node)))
 
 (defun %expand-spirv-async-load-tile-at-form (expr location)
   "Endeavor 136 (Chapter 1, SPV) — async load-tile-at via OpGroupAsyncCopy.
@@ -692,41 +737,41 @@
    codegen via %expand-store-tile-at-form."
   (let ((key-args (nthcdr 4 expr)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
-          (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location)))
-  (%tlc-check-not-divergent "store-tile-at" location)
+          (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
+    (unless *in-warp-spec-block* (%tlc-check-not-divergent "store-tile-at" location))
+    ;; Endeavor 139 (decision B): a store-tile in a role block is a workgroup-collective cooperative
+    ;; store (there is no :block store path) — resolve its mode for the message and reject.
+    (%warp-spec-check-block-only "store-tile"
+                                 (let ((b (%extract-key-arg key-args :barrier nil)))
+                                   (and b (async-barrier-mode-of b)))
+                                 location))
   (analyze-expression (%expand-store-tile-at-form expr location)
                       env context location))
 
 (defun analyze-await-expression (expr env context location)
-  "Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere."
+  "Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.
+   Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is
+   (initial-phase ring-count) so codegen can inject the multi-lap flipping parity."
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error
       :message (format nil "await: expected (await BARRIER), got ~S" expr)
       :source-location location))
   (let ((barrier-node (analyze-expression (second expr) env context (append location '(1))))
-        ;; Endeavor 137: match the load-tile lowering picked for this barrier's :mode.
         (mode (async-barrier-mode-of (second expr))))
     (cond
-      ;; :block on PTX (Chapter 1.5, Phase 2) — wait on the barrier's SLM mbarrier for the
-      ;; bulk TMA transaction to complete, then re-init it (count = #loads) so a looped barrier
-      ;; restarts at phase 0 each K-step.
       ((and (eq mode :block) (eq *target-backend* :ptx))
        (make-semantic-nvvm-tma-wait
         :barrier-node barrier-node
-        ;; Endeavor 138: resolve through (ring-get R i) — a ring slot's count is the RING's.
         :load-count (barrier-load-count-of (second expr))
+        ;; Endeavor 139: a warp-spec ring -> (initial-phase ring-count) for the flipping await;
+        ;; a plain 138 ring -> NIL (re-init await).
+        :phase (let ((ip (barrier-initial-phase-of (second expr))))
+                 (when ip (list ip (barrier-ring-count-of (second expr)))))
         :type 'ulong
         :source-location location))
-      ;; :block on the GENERIC compile-check pass fell to the sync staging (which already
-      ;; synchronized), so the await is a no-op.
       ((eq mode :block)
        (analyze-expression nil env context location))
       ((eq *target-backend* :ptx)
-       ;; Endeavor 138: :linear on PTX.  A plain barrier keeps 0 groups in flight (wait for
-       ;; everything).  A :linear RING keeps (ring-count - 1) STAGES in flight — the canonical
-       ;; cp.async software-pipeline idiom — so it overlaps stage k+N's DMA with stage k's math.
-       ;; Our :linear load-tile commits one group PER LOAD, so the group count multiplies the ring
-       ;; depth by the loads-per-stage (= :arrivals, published under the ring binding).
        (make-semantic-nvvm-cp-async-wait
         :barrier-node barrier-node
         :group-count (* (1- (barrier-ring-count-of (second expr)))
@@ -734,7 +779,6 @@
         :type 'ulong
         :source-location location))
       ((eq *target-backend* :spirv)
-       ;; Endeavor 136 SPV: (await bar) -> OpGroupWaitEvents on the barrier's chained event.
        (make-semantic-spirv-group-wait
         :barrier-node barrier-node
         :type 'ulong
@@ -3109,9 +3153,19 @@
   (let* ((keys (rest expr))
          (n    (getf keys :ring-count))
          (arr  (getf keys :arrivals))
+         (init-state (getf keys :initial-state))
+         ;; Endeavor 139: :initial-state -> the awaiter's starting try_wait.parity phase.
+         ;; :waiting -> 0 (blocks until first arrival); :signaled -> 1 (passes immediately on a
+         ;; fresh mbarrier).  Absent -> NIL (a plain 138 ring whose await re-inits each step).
+         (init-phase (cond ((null init-state) nil)
+                           ((eq init-state :waiting)  0)
+                           ((eq init-state :signaled) 1)
+                           (t (error 'crisp-compiler-error
+                                :message (format nil "make-async-barrier-ring: :initial-state must be :signaled or :waiting, got ~S" init-state)
+                                :source-location location))))
          (bmode (%parse-async-barrier-keys
                  ;; reuse the single-barrier key parser (validation + arch gating) by handing it
-                 ;; just the :mode pair — :ring-count / :arrivals are ours.
+                 ;; just the :mode pair — :ring-count / :arrivals / :initial-state are ours.
                  (list* (first expr)
                         (let ((m (getf keys :mode)))
                           (when m (list :mode m))))
@@ -3121,9 +3175,9 @@
         :message "make-async-barrier-ring: keys must be :key value pairs"
         :source-location location))
     (loop for (k nil) on keys by #'cddr do
-      (unless (member k '(:ring-count :mode :arrivals))
+      (unless (member k '(:ring-count :mode :arrivals :initial-state))
         (error 'crisp-compiler-error
-          :message (format nil "make-async-barrier-ring: unknown key ~S (expected :ring-count, :mode or :arrivals)" k)
+          :message (format nil "make-async-barrier-ring: unknown key ~S (expected :ring-count, :mode, :arrivals or :initial-state)" k)
           :source-location location)))
     (unless (and (integerp n) (plusp n))
       (error 'crisp-compiler-error
@@ -3146,13 +3200,16 @@
         ;; every consumer (notably await's re-init) from the one table — a ring slot re-armed with
         ;; a count that disagrees with its init is exactly the hang/torn-tile bug :arrivals exists
         ;; to prevent.
-        (setf (gethash bname *async-barrier-load-count*) count))
+        (setf (gethash bname *async-barrier-load-count*) count)
+        ;; Endeavor 139: the ring's initial await phase (marks it a warp-spec producer/consumer ring).
+        (when init-phase (setf (gethash bname *async-barrier-initial-phase*) init-phase)))
       (make-semantic-make-async-barrier
        :cell-node nil
        :barrier-mode bmode
        :ring-count n
        ;; Endeavor 138: EXPLICIT for a ring (never scan-counted — see the check above).
        :load-count count
+       :initial-phase init-phase
        :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
        :type 'ulong
        :source-location location))))
@@ -3195,6 +3252,31 @@
                (and (symbolp barrier-form) (gethash barrier-form *async-barrier-ring-counts*))
                1))))
 
+(defun analyze-signal-expression (expr env context location)
+  "Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive on an
+   empty ring slot, releasing it to the producer.  PTX/:block only (mbarrier); a no-op on other
+   backends (the generic compile-check pass has no mbarriers)."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message (format nil "signal: expected (signal BARRIER), got ~S" expr)
+      :source-location location))
+  (let ((barrier-node (analyze-expression (second expr) env context (append location '(1)))))
+    (if (eq *target-backend* :ptx)
+        (make-semantic-signal
+         :barrier-node barrier-node
+         :type 'ulong
+         :source-location location)
+        ;; No mbarriers off the PTX/:block path — signal is a no-op there.
+        (analyze-expression nil env context location))))
+
+(defun barrier-initial-phase-of (barrier-form)
+  "Endeavor 139: the initial await phase (0/1) of the barrier a load-tile/await refers to, or NIL
+   if it is a plain 138 ring (no :initial-state).  BARRIER-FORM is the barrier SYMBOL or a
+   (ring-get RING i) form.  A non-NIL value selects the warp-spec await (phase-tracked, no re-init)."
+  (let ((ring (%barrier-ring-form-p barrier-form)))
+    (or (and ring (gethash ring *async-barrier-initial-phase*))
+        (and (symbolp barrier-form) (gethash barrier-form *async-barrier-initial-phase*)))))
+
 (defun async-barrier-mode-of (barrier-form)
   "Endeavor 137/138: resolved :mode (:linear/:block) of the barrier a load-tile/await refers to.
    BARRIER-FORM is either the barrier variable SYMBOL, or — Endeavor 138 — a
@@ -3205,6 +3287,117 @@
         (and (symbolp barrier-form) (gethash barrier-form *async-barrier-modes*))
         :linear)))
 
+
+;;; ===================================================================
+;;; Endeavor 139 (Chapter 3) — warp specialization.
+;;; ===================================================================
+
+(defun %role-name-eq (a b)
+  "Role identity: package-insensitive symbol-name compare, so :producer (keyword) and a
+   bare producer symbol both match.  Roles are normally keywords."
+  (and (symbolp a) (symbolp b) (string-equal (symbol-name a) (symbol-name b))))
+
+(defun %parse-warp-specialization (expr location)
+  "Parse (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).
+   Returns (values role-counts role-blocks): role-counts an ordered list of (role . count);
+   role-blocks an alist role -> body-forms.  Validates: even ROLE/COUNT plist with positive
+   integer counts; every block names a declared role; every declared role has exactly one block;
+   no duplicate blocks."
+  (let ((role-spec (second expr))
+        (blocks    (cddr expr)))
+    (unless (and (listp role-spec) (plusp (length role-spec)) (evenp (length role-spec)))
+      (error 'crisp-compiler-error
+        :message "with-warp-specialization: first argument must be a (ROLE COUNT ...) list, e.g. (:producer 1 :consumer 3)"
+        :source-location location))
+    (let ((role-counts (loop for (role count) on role-spec by #'cddr
+                             do (unless (and (symbolp role) (integerp count) (plusp count))
+                                  (error 'crisp-compiler-error
+                                    :message (format nil "with-warp-specialization: each ROLE COUNT must be a symbol and a positive integer, got ~S ~S" role count)
+                                    :source-location location))
+                             collect (cons role count))))
+      (unless blocks
+        (error 'crisp-compiler-error
+          :message "with-warp-specialization: expected one (ROLE BODY...) block per declared role"
+          :source-location location))
+      (let ((role-blocks
+             (loop for blk in blocks
+                   do (unless (and (consp blk) (symbolp (first blk)))
+                        (error 'crisp-compiler-error
+                          :message (format nil "with-warp-specialization: each role block must be (ROLE BODY...), got ~S" blk)
+                          :source-location location))
+                   collect (cons (first blk) (rest blk)))))
+        ;; every block names a declared role
+        (dolist (blk role-blocks)
+          (unless (assoc (car blk) role-counts :test #'%role-name-eq)
+            (error 'crisp-compiler-error
+              :message (format nil "with-warp-specialization: block role ~S is not one of the declared roles ~S"
+                               (car blk) (mapcar #'car role-counts))
+              :source-location location)))
+        ;; exactly one block per declared role
+        (dolist (rc role-counts)
+          (let ((matches (count (car rc) role-blocks :key #'car :test #'%role-name-eq)))
+            (when (zerop matches)
+              (error 'crisp-compiler-error
+                :message (format nil "with-warp-specialization: declared role ~S has no (~S ...) block" (car rc) (car rc))
+                :source-location location))
+            (when (> matches 1)
+              (error 'crisp-compiler-error
+                :message (format nil "with-warp-specialization: role ~S has ~a blocks; expected exactly one" (car rc) matches)
+                :source-location location))))
+        (values role-counts role-blocks)))))
+
+(defun analyze-with-warp-specialization-expression (expr env context location)
+  "Endeavor 139: (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).  Splits the
+   workgroup by WARP — warp k runs the role whose cumulative count range contains k.  Lowers to a
+   warp-id-gated nested if: (let ((wsid (to-int (warp-id)))) (if (< wsid t1) BODY1 (if (< wsid t2)
+   BODY2 ...))) where t_i is the running sum of role counts.  Role blocks are warp-UNIFORM (all
+   lanes of a warp take the same branch) but workgroup-DIVERGENT — so an internal workgroup
+   collective (sync-workgroup, a cooperative load-tile) inside a block would DEADLOCK.  Forbidding
+   those is decision B, enforced when the load path is added (Chapter 3 step 2); the skeleton here
+   just lowers the branch."
+  (multiple-value-bind (role-counts role-blocks) (%parse-warp-specialization expr location)
+    (let* ((cl        (find-package :crisp-language))
+           (let-sym   (intern "LET" cl))
+           (if-sym    (intern "IF" cl))
+           (lt-sym    (intern "<" cl))
+           (progn-sym (intern "PROGN" cl))
+           (to-int-sym (intern "TO-INT" cl))
+           (warp-id-sym (intern "WARP-ID" cl))
+           (wsid      (gensym "WSID"))
+           (n         (length role-counts))
+           ;; each role's body wrapped in a progn (in declaration order)
+           (bodies    (loop for (role . count) in role-counts
+                            do (progn count)
+                            collect (cons progn-sym
+                                          (cdr (assoc role role-blocks :test #'%role-name-eq)))))
+           ;; running-sum upper bounds t_1..t_n
+           (thresholds (let ((acc 0))
+                         (loop for (role . count) in role-counts
+                               do (progn role) (incf acc count)
+                               collect acc)))
+           ;; Nested if with the LAST role as the final else — decision C guarantees warps
+           ;; [t_{n-1}, t_n) are exactly that role and there are none beyond t_n, so we need no
+           ;; numeric fall-through (which would clash types with the void role bodies).  For a
+           ;; single role there is no branch at all.
+           (nest (let ((acc (car (last bodies))))
+                   (loop for i from (- n 2) downto 0
+                         do (setf acc (list if-sym
+                                            (list lt-sym wsid (nth i thresholds))
+                                            (nth i bodies)
+                                            acc)))
+                   acc)))
+      ;; (warp-id) is the STABLE block-local warp index — on PTX it now synthesizes
+      ;; local-linear-id/32 (Endeavor 139 fixed it from the volatile %warpid); on SPV it is
+      ;; SubgroupId.  Either way it is safe for the producer/consumer split.
+      ;;
+      ;; Decision B: bind *in-warp-spec-block* around the role-block analysis so a :block load-tile
+      ;; inside a role block is permitted (leader-issued, no workgroup sync) despite the
+      ;; warp-divergent branch the expansion introduces.
+      (let ((*in-warp-spec-block* t))
+        (analyze-expression
+         (list let-sym (list (list wsid (list to-int-sym (list warp-id-sym))))
+               nest)
+         env context location)))))
 
 (defun analyze-make-c-handle (expr env context location)
   "Analyzer for (make-c-handle <held-ptr-type>)."
@@ -3403,6 +3596,12 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-with-precision-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-with-precision-expression)))
+  ;; Endeavor 139 (Chapter 3): warp specialization — the warp-role split.
+  (let ((sym-cl (intern "WITH-WARP-SPECIALIZATION" (find-package :crisp-language)))
+        (sym-cc (intern "WITH-WARP-SPECIALIZATION" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-with-warp-specialization-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-with-warp-specialization-expression)))
   (def-expression-analyzer uniformity-state analyze-uniformity-state)
   (def-expression-analyzer provably-uniform? analyze-provably-uniform?)
   (def-expression-analyzer provably-divergent? analyze-provably-divergent?)
@@ -3517,6 +3716,12 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-expression)))
+  ;; Endeavor 139 (Chapter 3): signal — the consumer's manual mbarrier.arrive on an empty ring.
+  (let ((sym-cl (intern "SIGNAL" (find-package :crisp-language)))
+        (sym-cc (intern "SIGNAL" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-signal-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-signal-expression)))
   (let ((sym-cl (intern "LOAD-TILE-AT" (find-package :crisp-language)))
         (sym-cc (intern "LOAD-TILE-AT" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-at-expression)

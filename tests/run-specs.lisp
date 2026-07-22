@@ -1203,6 +1203,24 @@
 
 ;;; ======================================================================
 
+(defun %intel-l0-gpu-available-p ()
+  "T if an Intel GPU (PCI vendor 0x8086) is present so TEST-HOIST[L0] can actually run on metal.
+   Explicit override: CRISP_L0_AVAILABLE=true|false.  Linux: scan /sys/class/drm/*/device/vendor.
+   Non-Linux (can't probe): assume available so local runs are unchanged (the explicit SKIP_L0_HOIST
+   env still applies in run-spec-with-hoist)."
+  (let ((ov (uiop:getenv "CRISP_L0_AVAILABLE")))
+    (cond
+      ((and ov (string-equal ov "false")) nil)
+      ((and ov (plusp (length ov))) t)                 ; any non-empty, non-"false" value forces on
+      ((not (uiop:os-unix-p)) t)                        ; Windows/local: don't auto-skip
+      (t (and (ignore-errors
+                (some (lambda (vf)
+                        (let ((v (with-open-file (s vf :if-does-not-exist nil)
+                                   (and s (read-line s nil "")))))
+                          (and v (search "0x8086" v))))
+                      (directory #P"/sys/class/drm/*/device/vendor")))
+              t)))))
+
 (defun run-spec-with-hoist (file backend &optional bc-files)
   "Compiles .crisp file with --hoist=backend flag and returns list of generated output files.
    For L0: discovers .cpp files.  For CUDA: discovers .cu files.
@@ -1215,6 +1233,14 @@
     (when (and skip-env (string-not-equal skip-env "false"))
       (format t "SKIP (~a hoist disabled via SKIP_~a_HOIST)~%" backend (symbol-name backend))
       (return-from run-spec-with-hoist :skipped)))
+  ;; Endeavor 140 reconcile: auto-skip the L0 backend on non-Intel hardware — the CUDA
+  ;; validators already skip-gate on nvcc, but L0 had no equivalent, so -bmg (Intel Level-Zero)
+  ;; tests HARD-FAILED on NVIDIA pods.  Skips on NVIDIA (H100/B300), still RUNS on Intel (BMG)
+  ;; where the GPU is detected — real Intel regressions are not masked.
+  (when (and (string-equal (symbol-name backend) "L0")
+             (not (%intel-l0-gpu-available-p)))
+    (format t "SKIP (Intel L0 GPU not available — mirrors the CUDA nvcc skip-gate)~%")
+    (return-from run-spec-with-hoist :skipped))
   (let* ((hoist-arg (format nil "--hoist=~a" backend))
          (bin (get-binary-path))
          (args (append (mapcar #'uiop:native-namestring bc-files)
@@ -2181,6 +2207,51 @@
         (format *error-output* "FAIL: Expected PTX string not found:~%  '~a'~%" exp)
         (return-from validate-ptx-tma nil)))
     t))
+
+(defun validate-ptx-distributed-mma (file ptx-string)
+  "Endeavor 139 (Chapter 3, decision A) — a warp-distributed register tile.  The kernel's 32x16 tile
+   is 4 fragments split across 2 consumer warps, so each warp computes only 2 (not the full 4).
+   Endeavor 139 step-4 perf made the distribution a STATIC per-warp switch (compile-time fragment
+   coordinates so ptxas can CSE the SMEM operand loads).  That emits both warp arms — n-true*per-warp
+   = 4 mma.sync in the text — which ptxas then EITHER keeps as-is (2 arms x 2) OR merges back to the
+   per-warp 2 with the loads hoisted.  Both are correct distributions, so accept per-warp (2) or the
+   both-arms total (4); reject the un-distributed / redundant counts (0, or >= 8 = every warp doing
+   the whole tile in every arm)."
+  (declare (ignore file))
+  (let ((count 0) (start 0))
+    (loop for pos = (search "mma.sync" ptx-string :start2 start)
+          while pos do (incf count) (setf start (+ pos 8)))
+    (if (or (= count 2) (= count 4))
+        t
+        (progn (format *error-output*
+                       "FAIL: expected 2 (per-warp) or 4 (both static arms) mma.sync for a 4-frag/2-warp tile, got ~a~%"
+                       count)
+               nil))))
+
+(defun validate-ptx-wgmma (file ptx-string)
+  "Endeavor 140 (Chapter 4) — the Hopper wgmma path lowered: assert the async warpgroup MMA
+   instruction (wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32) plus its fence / commit_group /
+   wait_group bracketing are all present in the PTX.  (Correctness = the metal MMA_CORRECT hoist.)"
+  (declare (ignore file))
+  (dolist (needle '("wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32"
+                    "wgmma.fence.sync.aligned"
+                    "wgmma.commit_group.sync.aligned"
+                    "wgmma.wait_group.sync.aligned")
+                  t)
+    (unless (search needle ptx-string)
+      (format *error-output* "FAIL: wgmma PTX missing ~s~%" needle)
+      (return-from validate-ptx-wgmma nil))))
+
+(defun validate-warp-roles (file ir-string)
+  "Endeavor 139 (Chapter 3) — the warp-specialization role SKELETON.  Asserts BOTH role bodies
+   lowered: the producer marker (40001) and the consumer marker (40002) both survive to the IR.
+   (Neither block was dropped.)  Target-agnostic — works on the PTX or the SPV/IR string.  The
+   branch-actually-split-the-warps proof is the metal test 01b, not this shape check."
+  (declare (ignore file))
+  (dolist (marker '("40001" "40002") t)
+    (unless (search marker ir-string)
+      (format *error-output* "FAIL: warp-role marker ~a absent — a role body did not lower~%" marker)
+      (return-from validate-warp-roles nil))))
 
 (defun validate-ptx-linear-ring (file ptx-string)
   "Endeavor 138 (Chapter 2) — validates the :linear (cp.async) RING pipeline lowering: each

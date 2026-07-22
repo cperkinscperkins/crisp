@@ -615,7 +615,7 @@ exactly what makes a ring a ring.
 > lands with that chapter rather than here.
 
 
-Warp Specialization
+Warp Specialization ✅
 -------------------
 
 ```
@@ -641,14 +641,15 @@ When `--runtime-checks` is enabled, the compiler will insert a check to ensure t
 
 
 
-Matrix Multiplication
+Matrix Multiplication ✅
 ---------------------
 
 ### `make-register-tile` ✅
 ```
-(make-register-tile <type> <dimensions> <initial-value>)
+(make-register-tile <type> <dimensions> <initial-value> &key warps)
 
 (make-register-tile float (128 128) 0.0)
+(make-register-tile float (64 64) 0.0 :warps '(false true true))   ; warp-specialized: tile on the 2 consumer warps
 ```
 `make-register-tile` reserves a space of registers and wraps their memory in a tensor.  
 The `<dimensions>` argument is a list of integers, which must be known at compile-time. They cannot be runtime variables.
@@ -667,6 +668,38 @@ The hardware profile stays optional in general — this is simply one of the few
 needs the SIMD width to be knowable. When a profile *is* supplied, its `:simd-width` and
 `:max-registers-per-thread` additionally let the compiler verify at compile time that the
 distributed fragments actually fit the physical register file.
+
+#### `:warps` — the warp participation mask (for warp specialization)
+
+By default the tile distributes across **every** warp of the workgroup.  That is wrong under
+**warp specialization**: if only the *consumer* warps run the MMA, any fragment the compiler
+placed on a producer warp would never be computed — a wrong result.  `:warps` fixes that by
+letting you say **exactly which warps hold the tile**, as a flat boolean **topology map**,
+positional over the workgroup's warp layout:
+
+```
+(make-register-tile float (64 64) 0.0 :warps '(false true true))
+;; warp 0 holds no fragment; warps 1 and 2 split the tile.  Pairs with a
+;; (with-warp-specialization (:producer 1 :consumer 2) ...) whose producer is warp 0.
+```
+
+- **Elements** are `true` / `false` (or, equivalently, `1` / `0`).  The mask is deliberately
+  decoupled from `with-warp-specialization` — `make-register-tile` is declared in the outer
+  `let`, outside any role block, so it references warps *positionally*, not by role name.  It is
+  **your** responsibility to line the `true`s up with the warps that actually run the MMA (the
+  same discipline as `:arrivals` — the compiler checks shape, not intent).
+- **Length** must equal the workgroup's warp count (`local-size / warp-size`).  When `local-size`
+  is statically known this is a **compile-time** error; otherwise it is deferred to an
+  `--runtime-checks` assertion.
+- **Even division (compile-time).**  An `(M N K)` MMA fragment is `M×N`, computed collectively by
+  one whole warp, so a tile is a grid of `(tile-M / frag-M) × (tile-N / frag-N)` fragments (e.g.
+  a 64×64 tile with `(16 8 8)` = `4×8 = 32` fragments).  The number of `true` warps **must evenly
+  divide** that fragment count, or it is a compile error.  So a 32-fragment tile allows 1 / 2 / 4 /
+  8 / 16 / 32 consumers — **not 3** (this is why the warp-spec example below uses `:consumer 2`,
+  not the `:consumer 3` an earlier draft showed).
+- **Occupancy note.**  More `true` (consumer) warps sharing one C-tile ⇒ fewer fragments per warp
+  ⇒ fewer registers per thread ⇒ higher occupancy.  So the consumer count is the real lever
+  against the single-warp register wall (Endeavor 138's 4096 plateau) — worth sweeping.
 
 ### matrix-multiply-tile-stride ✅
 ```
@@ -984,7 +1017,7 @@ We use rings to set up a load/execute pipeline.
         (store-tile C-Tile C (grid-y grid-x))))))
 ```
 
-### Matrix Multiply with Pipelining via Warp Specialization
+### Matrix Multiply with Pipelining via Warp Specialization ✅
 
 ```
 (with-template-type (T)
@@ -994,32 +1027,39 @@ We use rings to set up a load/execute pipeline.
     (declare #'((mat T) (mat T) (mat T))
                (global-size :derive-from C :strategy :strided)) 
 
-    (let ((pipeline-stages 3)
-          (A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count pipeline-stages))
-          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count pipeline-stages))
-          (C-tile (make-register-tile T (128 128) (identity T)))
+    ;; ring depth 3 is a repeated LITERAL (:ring-count needs a compile-time integer — see Chapter 2).
+    (let ((A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count 3))
+          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count 3))
+          ;; C-tile lives on the 2 CONSUMER warps only (warp 0 is the producer, holds no fragment).
+          ;; 128x128 with (16 8 8) = 8x16 = 128 fragments; 2 consumers -> 64 each (evenly divides).
+          (C-tile (make-register-tile T (128 128) (identity T) :warps '(false true true)))
           (M N (outer-dimensions A B))
           (K (inner-dimension A B))
+          (n-k-steps (/ K 128))   ; k-step is the 128-wide staging tile; producer & consumer share this count
           
-        ;; 1. The Barriers
-        ;; Starts 'empty' (signaled) so the Producer can immediately begin fetching
-        (empty-barrier-ring (make-async-barrier-ring :ring-count pipeline-stages :initial-state :signaled))
-        ;; Starts 'waiting' so the Consumer doesn't read garbage data
-        (full-barrier-ring  (make-async-barrier-ring :ring-count pipeline-stages :initial-state :waiting)))
+        ;; 1. The Barriers.  Both are ring depth 3; :arrivals is how many transfers land on each
+        ;; slot per stage (Chapter 2 makes it required for every barrier ring).
+        ;; empty starts 'signaled' so the Producer can immediately begin fetching; the Consumer
+        ;;   arrives it ONCE per slot (its single `signal`), so :arrivals 1.
+        (empty-barrier-ring (make-async-barrier-ring :ring-count 3 :arrivals 1 :initial-state :signaled))
+        ;; full starts 'waiting' so the Consumer doesn't read garbage; the Producer's two loads
+        ;;   (A + B) arrive it, so :arrivals 2.
+        (full-barrier-ring  (make-async-barrier-ring :ring-count 3 :arrivals 2 :initial-state :waiting)))
 
     ;; Outer loop
     (tile-stride C C-tile (grid-y grid-x) 
       
-      ;; Split the execution! 
-      ;; The compiler will physically map these to different warps in the Workgroup.
-      (with-warp-specialization (:producer 1 :consumer 3)
+      ;; Split the execution!  The compiler physically maps these to different warps.
+      ;; :consumer 2 (not 3) so the 128-fragment C-tile divides evenly across the consumers;
+      ;; the workgroup is (1 + 2) * warp-size = 3 warps.
+      (with-warp-specialization (:producer 1 :consumer 2)
         
         ;; ==========================================
         ;; THE PRODUCER BLOCK (Memory only)
         ;; ==========================================
         (:producer
           (let ((ring-idx 0))
-            (do-times (grid-k K)
+            (dotimes (grid-k n-k-steps)
               
               ;; 1. Wait for the Consumer to say this SLM slot is empty/safe.
               (await (ring-get empty-barrier-ring ring-idx))
@@ -1030,14 +1070,14 @@ We use rings to set up a load/execute pipeline.
               (load-tile B (ring-get B-tile-ring ring-idx) (grid-k grid-x) :barrier (ring-get full-barrier-ring ring-idx))
               
               ;; 3. Move to the next ring slot
-              (set! ring-idx (mod (+ ring-idx 1) pipeline-stages)))))
+              (set! ring-idx (mod (+ ring-idx 1) 3)))))
         
         ;; ==========================================
         ;; THE CONSUMER BLOCK (Math only)
         ;; ==========================================
         (:consumer
           (let ((ring-idx 0))
-            (do-times (grid-k K-tiles)
+            (dotimes (grid-k n-k-steps)
               
               ;; 1. Wait for the hardware DMA to say the bytes have arrived.
               (await (ring-get full-barrier-ring ring-idx))
@@ -1052,7 +1092,7 @@ We use rings to set up a load/execute pipeline.
               (signal (ring-get empty-barrier-ring ring-idx))
               
               ;; 4. Move to the next ring slot
-              (set! ring-idx (mod (+ ring-idx 1) pipeline-stages)))
+              (set! ring-idx (mod (+ ring-idx 1) 3)))
           
           ;; EPILOGUE (Only the Consumer writes back to Global Memory!)
           (add-bias C-tile bias-tile) ;; <-- fictional operation for illustrative purposes
@@ -1083,6 +1123,66 @@ and the Arc B580 loads through it into registers (an SLM destination is rejected
 targets registers, not SLM).  The Crisp surface for this — the fragment-load / prefetch forms and
 how they compose with `mma-accumulate-via-tile` — and whether there is anything past the initial
 block-load win, is the "Optimizing Intel MMA" arc still to be mapped out.
+
+
+### Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile` ✅
+
+On NVIDIA **Hopper (sm_90a)** the tensor-core unit is driven by `wgmma` (4th-gen *warpgroup*
+async MMA) rather than the `mma.sync` used by `mma-accumulate-via-tile`.  The difference is
+scope: one `wgmma` instruction spans a **warpgroup** — 4 warps / **128 threads** — and produces
+a `64×N` output in a single issue (an `m64n128k8` is 64×128 = 8192 results), with the accumulator
+spread across all 128 threads.  It is the instruction cuBLAS uses; on the benchmark ladder the
+Crisp wgmma matmul reaches ~⅔ of the cuBLAS tf32 ceiling, versus a few percent for the naive
+`mma.sync` chapters.
+
+Two forms mirror the `make-register-tile` / `mma-accumulate-via-tile` pair:
+
+```
+(make-wgmma-accumulator <elem> (64 N) <init>)          ; the D matrix — a warpgroup accumulator
+(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b])   ; D += A·B ; A, B are SMEM tiles
+```
+
+`make-wgmma-accumulator` mints (on demand) a `64×N` warpgroup accumulator record — `N/2` flat
+`f32` registers per thread, the wgmma D thread→element mapping across the 128-thread warpgroup —
+each field initialized to `<init>`.  `<elem>` is `float` (tf32) for now.  It is a **dedicated**
+constructor, not a flag on `make-register-tile`, precisely because the per-thread layout is the
+warpgroup one, not the per-warp fragment layout.
+
+`wgmma-accumulate-via-tile` does `D += A·B` over the whole accumulator in one shot — **no fragment
+walk** (contrast `mma-accumulate-via-tile`, which loops the fragment grid for you).  It is
+**synchronous**: the macro wraps the `wgmma.fence` / `commit_group` / `wait_group` around the
+accumulate, so one call is a complete `D += A·B`.  `A` and `B` are SMEM scratch tiles (from
+`make-scratch-matrix`, `load-tile`, or a `:block` TMA load).
+
+Shape rules — grounded in the ISA, checked at compile time:
+
+- **M is fixed at 64** (wgmma is always `m64`); anything else is a compile error.
+- **N is a multiple of 8 in `[8, 256]`** (the `m64nNk8` family).
+- **K depends on `:swizzle`.**  Without it, `K` must be exactly **8** — a single `k8` slice fed
+  from a plain row/col-major SMEM tile.  With `:swizzle :128b`, `K` may be any positive multiple
+  of 8: the tile is a **K-block** of `K/8` slices, and the accumulate emits the 128-byte-swizzle
+  SMEM descriptor + a `wgmma` per `k8` slice.  (`:128b` swizzle also requires the innermost 32
+  tf32 elements to be 128-byte contiguous — already true for a `64×32` K-block load.)
+- **local-size must be a multiple of 128** — a warpgroup is 128 threads.  A single-warpgroup
+  kernel declares `(local-size :set-to 128)`; multiple warpgroups (and the producer-warp +
+  consumer-warpgroup split under `with-warp-specialization`) scale that up.
+
+```
+;; one warpgroup, a single k8 tf32 accumulate
+(def-kernel wgmma_min (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
+    ...))
+
+;; a 32-wide K-block (4 k8 slices) over a big n256 tile, swizzled
+(wgmma-accumulate-via-tile (64 256 32) D A-tile B-tile :swizzle :128b)
+```
+
+wgmma is **forward-only** (no autodiff) and NVIDIA-Hopper-only; on other targets use
+`mma-accumulate-via-tile`.
 
 
 ### Deferred: topology-aware orchestration (`def-topology` / `def-orchestration`)
