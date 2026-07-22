@@ -46,6 +46,13 @@
    --mma-bench harness launches a (M/TM x N/TN) 2-D grid.  When NIL the tile is DERIVED from the
    two local staging tiles (%derive-output-tile).")
 
+(defvar *mma-swizzle-describes* nil
+  "Endeavor 140 (col-major B): tensor names (strings) feeding a :128b + :col-major swizzle descriptor
+   (wgmma's B).  Such a matrix must be K-CONTIGUOUS in global memory (the wgmma descriptor reads SMEM
+   directly), so the mma-bench harness emits col-major (dim-0 contiguous) strides for it.  Populated by
+   emit-kernel-args pre-scanning the sig; consumed by %cuda-emit-tensor-arg.  Gated on swizzle-fed +
+   col-major so 137/138's nominal :col-major (mma.sync, row-major SMEM) path is untouched.")
+
 (defun %mma-parse-args (args)
   "Return (values metacrisp-path (M N K)-or-NIL scale bench-p grid-tile), extracting --mma-test,
    --mma-bench (implies test + timing), --mma-scale=S, and --grid-tile=T[,TN]."
@@ -780,11 +787,19 @@ overrides the runtime SM-count query in the grid-size heuristic."
                  lst))))
     (multiple-value-bind (extents strides)
         (%tensor-compact-extents-strides rank extents-list)
-      (let* ((total-elems (* (first strides) (first extents)))
+      (let* ((total-elems (* (first strides) (first extents)))   ; row-major sizing FIRST
              (elem-bytes  (if (or (string-equal elem-str "double")
                                   (string-equal elem-str "int64_t")
                                   (string-equal elem-str "uint64_t")) 8 4))
              (byte-size   (* total-elems elem-bytes)))
+        ;; Endeavor 140 (wgmma B): swap to col-major (K-contiguous) strides AFTER row-major
+        ;; sizing, so the buffer stays full-size while addressing becomes K-contiguous (the
+        ;; wgmma descriptor reads SMEM directly).  Gated on *mma-swizzle-describes* (swizzle-fed
+        ;; col-major tensors) so 137/138's row-major SMEM path is untouched.  (Swapping BEFORE
+        ;; sizing was the earlier bug: total-elems = 1*ext0 undersized B's buffer -> MMA_WRONG.)
+        (when (and (= rank 2)
+                   (member param-name *mma-swizzle-describes* :test #'string-equal))
+          (setf strides (list 1 (first extents))))
         (format stream "~%    // Tensor: ~a (rank=~d, ~a, ~d elements)~%"
                 param-name rank elem-str total-elems)
         (format stream "    CUdeviceptr ~a;~%" ptr-var)
@@ -891,31 +906,43 @@ overrides the runtime SM-count query in the grid-size heuristic."
                     elem-type)))))
 
 (defun %cuda-emit-tensor-map-encode (stream param)
-  "Endeavor 137 Phase 2b.3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map
-   descriptor and copy the 128-byte descriptor to device global (option A), leaving the device
-   pointer in <name> (forward-declared earlier at the descriptor's ABI slot).  References the
-   DESCRIBED tensor's already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).  Uses the
-   innermost-dimension-first convention (globalDim / boxDim reversed vs the row-major extents),
-   matching the nvcc-verified H100 reference."
+  "Endeavor 137 Phase 2b.3 + 140 Step 3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map
+   descriptor and copy the 128-byte descriptor to device global (option A), leaving the device pointer
+   in <name> (forward-declared earlier at the descriptor's ABI slot).  References the DESCRIBED tensor's
+   already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).
+     - Swizzle from (getf param :swizzle): :128b -> CU_TENSOR_MAP_SWIZZLE_128B (wgmma), else NONE.
+     - Layout: a 128B-swizzle col-major describes (wgmma's B) has K contiguous, so gdim = extents
+       in-order and gstride = the outer (N) stride.  Otherwise the row-major reversal (extents reversed,
+       gstride = dim-0 stride), matching the nvcc-verified H100 reference.  Gated on :128b so the
+       battle-tested 137/138 :none col-major path (symmetric tiles) is untouched."
   (let* ((name      (substitute #\_ #\- (getf param :name)))
          (describes (substitute #\_ #\- (getf param :describes)))
          (rank      (getf param :rank))
          (box       (getf param :box-dims))
          (elem      (getf param :element-type))
          (elem-str  (crisp-type-to-cpp-type elem))
-         (dtype     (%cuda-tensor-map-data-type elem)))
-    (format stream "~%    // CUtensorMap descriptor for '~a' (box ~a) — Endeavor 137 :block TMA~%"
-            describes box)
+         (dtype     (%cuda-tensor-map-data-type elem))
+         (swz-p     (eq (getf param :swizzle) :128b))
+         (col-p     (and swz-p (eq (getf param :layout) :col-major)))
+         (swz       (if swz-p "CU_TENSOR_MAP_SWIZZLE_128B" "CU_TENSOR_MAP_SWIZZLE_NONE")))
+    (format stream "~%    // CUtensorMap descriptor for '~a' (box ~a, swizzle ~a, ~a) — Endeavor 137/140~%"
+            describes box swz (if col-p "col-major K-contiguous" "row-major"))
     (format stream "    CUtensorMap ~a_host;~%" name)
-    ;; globalDim: fastest-varying (innermost) dim first -> reverse the row-major extents.
+    ;; gdim: col-major swizzle -> in-order (K innermost); else reversed (row-major, last dim innermost).
     (format stream "    uint64_t ~a_gdim[~d] = { ~{~a~^, ~} };~%" name rank
-            (loop for k from (1- rank) downto 0 collect (format nil "~a_ext~d" describes k)))
-    ;; globalStrides: tensorRank-1 entries, in BYTES.  For rank 2 row-major: { str0 * sizeof(e) }.
+            (if col-p
+                (loop for k from 0 below rank collect (format nil "~a_ext~d" describes k))
+                (loop for k from (1- rank) downto 0 collect (format nil "~a_ext~d" describes k))))
+    ;; gstride: tensorRank-1 entries, in BYTES, of the non-innermost dims.  col-major -> dims
+    ;; 1..rank-1 (outer=N=str1); row-major -> dims 0..rank-2 (outer=M=str0).
     (when (> rank 1)
       (format stream "    uint64_t ~a_gstr[~d] = { ~{~a~^, ~} };~%" name (1- rank)
-              (loop for k from (- rank 2) downto 0
-                    collect (format nil "~a_str~d * sizeof(~a)" describes k elem-str))))
-    ;; boxDim: fastest-varying first -> reverse the tile box dims.
+              (if col-p
+                  (loop for k from (1- rank) downto 1
+                        collect (format nil "~a_str~d * sizeof(~a)" describes k elem-str))
+                  (loop for k from (- rank 2) downto 0
+                        collect (format nil "~a_str~d * sizeof(~a)" describes k elem-str)))))
+    ;; boxDim: tile dims innermost-first (reversed) — correct for both layouts.
     (format stream "    uint32_t ~a_box[~d] = { ~{~a~^, ~} };~%" name rank
             (loop for k from (1- rank) downto 0 collect (nth k box)))
     (format stream "    uint32_t ~a_elstr[~d] = { ~{~a~^, ~} };~%" name rank
@@ -923,7 +950,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
     (format stream "    CUDA_CHECK(cuTensorMapEncodeTiled(&~a_host, ~a, ~d,~%" name dtype rank)
     (format stream "        (void*)~a_ptr, ~a_gdim, ~a, ~a_box, ~a_elstr,~%"
             describes name (if (> rank 1) (format nil "~a_gstr" name) "nullptr") name name)
-    (format stream "        CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,~%")
+    (format stream "        CU_TENSOR_MAP_INTERLEAVE_NONE, ~a,~%" swz)
     (format stream "        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE));~%")
     (format stream "    CUDA_CHECK(cuMemAlloc(&~a, sizeof(CUtensorMap)));~%" name)
     (format stream "    CUDA_CHECK(cuMemcpyHtoD(~a, &~a_host, sizeof(CUtensorMap)));~%" name name)))
@@ -932,7 +959,18 @@ overrides the runtime SM-count query in the grid-size heuristic."
   "Emit host-side variable declarations and fill the kernelParams[] array.
    Returns a list of allocation plists for readback.
    Bug 034: resets *cuda-shared-scratch-offset* so each kernel's LOCAL tiles get
-   distinct, non-overlapping shared-memory offsets."
+   distinct, non-overlapping shared-memory offsets.
+   Endeavor 140 (col-major B): pre-scans the sig for swizzle-fed col-major tensors into
+   *mma-swizzle-describes* so %cuda-emit-tensor-arg emits K-contiguous strides for wgmma's B."
+  ;; Endeavor 140: which tensors feed a :128b + :col-major swizzle descriptor (wgmma's B)?
+  ;; Those must be K-contiguous in global memory (the wgmma descriptor reads SMEM directly).
+  (setf *mma-swizzle-describes*
+        (loop for p in declared-sig
+              when (and (eq (getf p :kind) :tensor-map)
+                        (eq (getf p :swizzle) :128b)
+                        (eq (getf p :layout) :col-major)
+                        (getf p :describes))
+                collect (string (getf p :describes))))
   (format stream "    // Set up kernel arguments~%")
   (setf *cuda-shared-scratch-offset* 0)
   (let ((arg-index 0)
@@ -1112,7 +1150,6 @@ overrides the runtime SM-count query in the grid-size heuristic."
   "Returns T if :derive-from was supplied as a bare symbol (tensor name)."
   (and raw (symbolp raw)))
 
-
 (defun emit-launch (stream dispatch-info shared-bytes &optional compute-units kernel-name out-tile)
   "Emit cuLaunchKernel call with grid/block dims from dispatch-info.
    OUT-TILE (TM TN), when set (--mma-bench), OVERRIDES the grid with a (M/TM x N/TN) 2-D grid.
@@ -1126,7 +1163,16 @@ overrides the runtime SM-count query in the grid-size heuristic."
    COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units;
    the :strided strategy then uses that fixed SM count instead of querying the
    device (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT), so a shrunken profile takes
-   effect host-side."
+   effect host-side.
+   Endeavor 140 (dynamic-SMEM opt-in): a kernel needing >48KB SMEM (n128-pipe, n256, wgmma
+   big-tile, ...) must cuFuncSetAttribute MAX_DYNAMIC_SHARED_SIZE_BYTES or the launch silently
+   fails (CUDA_ERROR_INVALID_VALUE)."
+  ;; sm_90 reserves ~1KB of the 48KB default, so even exactly-48KB (49152) dynamic SMEM needs the
+  ;; opt-in; n64-pipe (32768) launches fine without it, so 32768 is the safe cutoff.  Emitted
+  ;; before the grid/launch code so the attribute is set prior to cuLaunchKernel.
+  (when (and shared-bytes (> shared-bytes 32768))
+    (format stream "    CUDA_CHECK(cuFuncSetAttribute(kernel, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, ~d));~%"
+            shared-bytes))
   (let* ((global-decl     (when dispatch-info (getf dispatch-info :global-size)))
          (local-decl      (when dispatch-info (getf dispatch-info :local-size)))
          (num-groups-decl (when dispatch-info (getf dispatch-info :num-groups)))

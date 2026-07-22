@@ -365,6 +365,13 @@
          resolve-tma-descriptors; read by generate-implicit-signature.  PERSISTENT (cleared via
          clrhash in the compiler reset) — metadata emit runs after compile-module returns.")
 
+(defvar *tma-copy-ws-leader* (make-hash-table :test 'eq)
+        "Endeavor 140 (warp-spec leader): semantic-nvvm-tma-tile-copy node -> T when the load-tile
+         :block sits inside a with-warp-specialization role block.  Populated by
+         %analyze-nvvm-tma-load-tile-at (control.lisp); read by the tile-copy codegen (codegen.lisp)
+         to elect laneid==0 of the producer warp rather than global tid==0.  Defined here in core so
+         it is a declared special before both control.lisp and codegen.lisp load.")
+
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms.
    When --differentiate is enabled, pre-injects shadow def-struct forms for
@@ -534,22 +541,19 @@
                 (t nil))))))))
 
 (defun resolve-tma-descriptors ()
-  "Endeavor 137 Phase 2c: for every kernel carrying a CUtensorMap descriptor, resolve its
-   describes tensor + tile box-dims through the carrier call chain into *tma-resolved*.
-   Element-type / rank come from the resolved tile (they match the source).  Subsumes the 2b
-   same-function case as a zero-hop resolution (originator == kernel)."
+  "Endeavor 137/140: resolve describes + box-dims through the carrier chain into *tma-resolved*,
+   carrying the :swizzle marking from *tma-descriptor-info*."
   (loop for kernel being the hash-keys of *implicit-arg-map*
         when (%fn-is-kernel-p kernel)
           do (dolist (entry (gethash kernel *implicit-arg-map*))
                (let ((uname (car entry)))
-                 (when (gethash uname *tma-descriptor-info*)   ;; it is a tensor-map descriptor
+                 (when (gethash uname *tma-descriptor-info*)
                    (let ((d (%tma-resolve-ref kernel uname :describes))
                          (til (%tma-resolve-ref kernel uname :tile)))
                      (cond
                        ((and d (eq (first d) :tensor) til (eq (first til) :tile))
-                        ;; Endeavor 138: a ring tile's dims are (slots . box) — dim 0 is the ring
-                        ;; slot, so the TMA box is the remainder (and the rank drops by one).
                         (let* ((via-ring (getf (gethash uname *tma-descriptor-info*) :tile-via-ring))
+                               (swizzle  (getf (gethash uname *tma-descriptor-info*) :swizzle))
                                (dims     (second til))
                                (box      (if via-ring (rest dims) dims)))
                           (setf (gethash (cons kernel uname) *tma-resolved*)
@@ -557,7 +561,8 @@
                                       :element-type (third til)
                                       :rank (length box)
                                       :box-dims box
-                                      :layout (%kernel-param-contiguous-term kernel (second d))))))
+                                      :layout (%kernel-param-contiguous-term kernel (second d))
+                                      :swizzle swizzle))))
                        (t
                         (log:warn "Endeavor 137: unresolved CUtensorMap descriptor ~a in kernel ~a (describes=~a tile=~a)"
                                   uname kernel d til)))))))))
@@ -764,18 +769,12 @@
   nil)
 
 (defun %scan-register-tma-descriptor (args)
-  "Endeavor 137 Phase 2b: when a (load-tile[-at] SRC TILE COORDS ... :barrier BAR) references a
-   :block barrier on PTX, register a CUtensorMap descriptor implicit arg for SRC in the current
-   scanning function, deduped per SRC name, and mark the fn a side-channel originator.  The
-   descriptor's canonical spec is (tensor-map SRC) — one physical slot (option A = a pointer);
-   its element-type / rank / box-dims are resolved later (metadata + hoist) from SRC's declared
-   type and the staging tile, so scan only needs SRC + the barrier's resolved mode."
+  "Endeavor 137/140: register a CUtensorMap descriptor for a :block load-tile's SRC; capture the
+   optional :swizzle key (:128b for wgmma) so the hoist emits CU_TENSOR_MAP_SWIZZLE_128B."
   (let* ((src     (first args))
          (tile    (second args))
-         (barrier (getf (cdddr args) :barrier))   ;; args = SRC TILE COORDS &key ... :barrier BAR
-         ;; Endeavor 138: the barrier/tile may come through a ring — `(ring-get R i)` is NOT a
-         ;; symbol, so resolve to the RING (needed for the descriptor, which is per-ring).  A ring
-         ;; TILE's box is the ring's dims minus dim 0 (dim 0 IS the slot).
+         (barrier (getf (cdddr args) :barrier))
+         (swizzle (getf (cdddr args) :swizzle))
          (bar-ring  (%barrier-ring-form-p barrier))
          (bar-key   (or bar-ring (and (symbolp barrier) barrier)))
          (tile-ring (and (consp tile) (symbolp (first tile))
@@ -787,9 +786,6 @@
                (eq (async-barrier-mode-of barrier) :block)
                (eq *target-backend* :ptx))
       (setf *scan-is-originator* t)
-      ;; Count this :block load against its barrier -> mbarrier arrival count.  RINGS ARE EXEMPT:
-      ;; a ring's prologue and main loop both load it, so the textual tally is NOT the per-stage
-      ;; arrival count — a ring states it explicitly via :arrivals (Endeavor 138).
       (unless bar-ring
         (incf (gethash bar-key *async-barrier-load-count* 0)))
       (let* ((fn-name  (compiler-context-scanning-function-name *compiler-context*))
@@ -805,17 +801,14 @@
           (let* ((uname (intern (format nil "~a_TENSORMAP_FROM_~a" src fn-name)
                                 (symbol-package src)))
                  (spec  (list (intern "TENSOR-MAP" (find-package :crisp.compiler)) src)))
-            (log:info "Pass 1: :block load-tile of ~a (tile ~a) -> CUtensorMap descriptor ~a"
-                      src tile uname)
+            (log:info "Pass 1: :block load-tile of ~a (tile ~a, swizzle ~a) -> CUtensorMap descriptor ~a"
+                      src tile swizzle uname)
             (push (cons uname spec) (gethash fn-name *implicit-arg-map*))
-            ;; Store ORIGINATOR-frame refs; resolve-tma-descriptors walks the carrier chain to
-            ;; concrete kernel-frame describes/box-dims/elem/rank.  Endeavor 138: when the tile
-            ;; came through (ring-get R i), the tile ref is the RING R and its box is the ring's
-            ;; dims minus dim 0 (dim 0 IS the ring slot) — :tile-via-ring says to drop it.
             (setf (gethash uname *tma-descriptor-info*)
                   (list :originator fn-name :describes-sym src
                         :tile-sym (or tile-key tile)
-                        :tile-via-ring (and tile-ring t)))))))))
+                        :tile-via-ring (and tile-ring t)
+                        :swizzle swizzle))))))))
 
 
 

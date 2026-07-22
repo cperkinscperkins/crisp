@@ -609,16 +609,23 @@
                          (t (error 'crisp-compiler-error
                               :message (format nil "load-tile :block: element type ~S needs 4 or 8 bytes" elem-type)
                               :source-location location)))))
-    (make-semantic-nvvm-tma-tile-copy
-     :dst-aref-node dst-node
-     :src-aref-node src-node
-     :coord-nodes coord-nodes
-     :barrier-node barrier-node
-     :tile-length-node len-node
-     :elem-bytes elem-bytes
-     :src-name (and (symbolp src-form) src-form)
-     :type 'nil
-     :source-location location)))
+    ;; Endeavor 140 (warp-spec leader): tag the copy node when it is analyzed inside a
+    ;; with-warp-specialization role block, so codegen elects laneid==0 of the producer warp
+    ;; (not global tid==0) — making consumer-first warp specialization first-class and removing
+    ;; the producer-first ordering constraint.
+    (let ((node (make-semantic-nvvm-tma-tile-copy
+                 :dst-aref-node dst-node
+                 :src-aref-node src-node
+                 :coord-nodes coord-nodes
+                 :barrier-node barrier-node
+                 :tile-length-node len-node
+                 :elem-bytes elem-bytes
+                 :src-name (and (symbolp src-form) src-form)
+                 :type 'nil
+                 :source-location location)))
+      (when *in-warp-spec-block*
+        (setf (gethash node *tma-copy-ws-leader*) t))
+      node)))
 
 (defun %expand-spirv-async-load-tile-at-form (expr location)
   "Endeavor 136 (Chapter 1, SPV) — async load-tile-at via OpGroupAsyncCopy.
@@ -742,38 +749,29 @@
                       env context location))
 
 (defun analyze-await-expression (expr env context location)
-  "Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere."
+  "Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.
+   Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is
+   (initial-phase ring-count) so codegen can inject the multi-lap flipping parity."
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error
       :message (format nil "await: expected (await BARRIER), got ~S" expr)
       :source-location location))
   (let ((barrier-node (analyze-expression (second expr) env context (append location '(1))))
-        ;; Endeavor 137: match the load-tile lowering picked for this barrier's :mode.
         (mode (async-barrier-mode-of (second expr))))
     (cond
-      ;; :block on PTX (Chapter 1.5, Phase 2) — wait on the barrier's SLM mbarrier for the
-      ;; bulk TMA transaction to complete, then re-init it (count = #loads) so a looped barrier
-      ;; restarts at phase 0 each K-step.
       ((and (eq mode :block) (eq *target-backend* :ptx))
        (make-semantic-nvvm-tma-wait
         :barrier-node barrier-node
-        ;; Endeavor 138: resolve through (ring-get R i) — a ring slot's count is the RING's.
         :load-count (barrier-load-count-of (second expr))
-        ;; Endeavor 139: a warp-spec ring (has :initial-state) -> phase-tracked, no re-init.
-        ;; For the single-step handshake the phase is the ring's constant initial phase.
-        :phase (barrier-initial-phase-of (second expr))
+        ;; Endeavor 139: a warp-spec ring -> (initial-phase ring-count) for the flipping await;
+        ;; a plain 138 ring -> NIL (re-init await).
+        :phase (let ((ip (barrier-initial-phase-of (second expr))))
+                 (when ip (list ip (barrier-ring-count-of (second expr)))))
         :type 'ulong
         :source-location location))
-      ;; :block on the GENERIC compile-check pass fell to the sync staging (which already
-      ;; synchronized), so the await is a no-op.
       ((eq mode :block)
        (analyze-expression nil env context location))
       ((eq *target-backend* :ptx)
-       ;; Endeavor 138: :linear on PTX.  A plain barrier keeps 0 groups in flight (wait for
-       ;; everything).  A :linear RING keeps (ring-count - 1) STAGES in flight — the canonical
-       ;; cp.async software-pipeline idiom — so it overlaps stage k+N's DMA with stage k's math.
-       ;; Our :linear load-tile commits one group PER LOAD, so the group count multiplies the ring
-       ;; depth by the loads-per-stage (= :arrivals, published under the ring binding).
        (make-semantic-nvvm-cp-async-wait
         :barrier-node barrier-node
         :group-count (* (1- (barrier-ring-count-of (second expr)))
@@ -781,7 +779,6 @@
         :type 'ulong
         :source-location location))
       ((eq *target-backend* :spirv)
-       ;; Endeavor 136 SPV: (await bar) -> OpGroupWaitEvents on the barrier's chained event.
        (make-semantic-spirv-group-wait
         :barrier-node barrier-node
         :type 'ulong

@@ -31,11 +31,12 @@ Benchmarks are organized topologically by algorithm and "Chapter" (representing 
 ```text
 benchmarks/
   matmul/
-    chap0_sync/             # Basic synchronous tiling
+    chap0_sync/             # Basic synchronous tiling (no tensor cores)
     chap1_async_linear/     # Asynchronous linear pipelining
-    chap1.5_async_block/    # Block-level asynchronous execution
-    chap2_pipelined_block/  # Deep software pipelining
-    crisp/                  # The Crisp C++ runner harnesses
+    chap1.5_async_block/    # Block-level async (TMA) + tf32 MMA tensor cores
+    chap2_pipelined_block/  # Deep software pipelining + tf32 MMA
+    chap3_wgmma/            # Hopper warpgroup async MMA (wgmma) — the tensor-core headline
+    crisp/                  # The Crisp C++ runner harnesses (chap0/chap1 only)
   results/                  # Output directory for raw JSON sweeps
   scripts/
     crisp_bench/
@@ -56,12 +57,27 @@ it once per precision:
 ```bash
 python scripts/crisp_bench/matmul.py --sweep-all
 ```
-For each precision it sweeps **every chapter** (chap0, chap1, chap1.5, chap2) ×
-**every competitor** (Crisp, CUDA_Apples, SYCL_Apples, CUBLAS_Optimal,
+For each precision it sweeps **every chapter** (chap0, chap1, chap1.5, chap2,
+chap3) × **every competitor** (Crisp, CUDA_Apples, SYCL_Apples, CUBLAS_Optimal,
 OneMKL_Optimal) × **every size** (default `256,512,1024,2048,4096`), dropping all
 the JSONs into `results/`.  Any target whose source or compiler is missing (e.g.
 SYCL/OneMKL without `icpx`) is quietly skipped.  So one command = the whole matmul
 story.  Useful knobs: `--sizes=...`, `--iters=N`, `--warmup=N`.
+
+**Two Crisp launch paths.**  The simple chapters (chap0, chap1) share one fixed
+`crisp/bench_harness.cu` launcher — a single 45-slot param layout (2 SLM tiles +
+A/B/C), kernel picked at runtime by the `CRISP_MATMUL_PTX` env var.  The advanced
+chapters (chap1.5 TMA, chap2 rings, chap3 wgmma) can't use it — they have their own
+param layouts (CuTensorMap descriptors, ring tiles, >48KB dynamic SMEM, 128+
+threads).  For those, `matmul.py` passes `crisp_grid_tile=...` to `run_target`,
+which routes through `run_crisp_autobench`: it runs `crisp-hoist-cuda --mma-bench`
+to auto-generate a *per-kernel* harness (reading the real params + col-major B +
+the `cuFuncSetAttribute` SMEM opt-in straight from the kernel's metacrisp), then
+nvcc-compiles and runs it.  Note: this compiles once per kernel and reuses the
+PTX/metacrisp across all sizes/precisions, so the auto-bench chapters report the
+same Crisp throughput at every precision (the kernel is tf32 regardless — the
+`fast` column is the honest tensor-core-vs-tensor-core comparison; under `ieee`
+cuBLAS drops to fp32, so Crisp's tf32 wgmma "beats" it, which is apples-to-oranges).
 
 **Targeted single-config runs** (when you only want one precision):
 ```bash

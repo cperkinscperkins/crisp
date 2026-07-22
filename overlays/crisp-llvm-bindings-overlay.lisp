@@ -7,35 +7,4 @@
 
 (in-package :crisp.llvm-bindings)
 
-;;; src/llvm-bindings.lisp
-;;; Endeavor 139 (Chapter 3, step 4) — two bindings the multi-lap phase counter needs to hoist
-;;; its per-ring visit counter into the function's entry block (an alloca must live in the entry
-;;; block to persist across loop iterations rather than re-allocate each pass).
-;;;   LLVMGetEntryBasicBlock    — the function's entry (first) block.
-;;;   LLVMPositionBuilderBefore — insert before an instruction (we insert before the entry
-;;;                               block's terminator, i.e. after param setup, before the body br).
-(defcfun ("LLVMGetEntryBasicBlock" llvm-get-entry-basic-block) :pointer
-  (func :pointer))
-
-(defcfun ("LLVMPositionBuilderBefore" llvm-position-builder-before) :void
-  (builder :pointer)
-  (instr :pointer))
-
-;; NOTE: intentionally NOT exported.  Exporting from an overlay mutates the
-;; package's export list, which makes src/package.lisp's DEFPACKAGE signal a
-;; package-variance warning (fatal under ASDF).  Callers use the ::-qualified
-;; name instead.
-
-;;; src/llvm-bindings.lisp
-;;; Endeavor 140 (Chapter 4) — bitwise builders the wgmma SMEM descriptor bit-pack needs
-;;; (start = (addr >> 4) & 0x3FFF, then OR the compile-time LBO/SBO/swizzle constant).
-(defcfun ("LLVMBuildAnd" llvm-build-and) :pointer
-  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
-(defcfun ("LLVMBuildOr" llvm-build-or) :pointer
-  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
-(defcfun ("LLVMBuildLShr" llvm-build-l-shr) :pointer
-  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
-(defcfun ("LLVMBuildShl" llvm-build-shl) :pointer
-  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
-
-
+;;; (empty) — all prior overlay bindings have been folded into src/llvm-bindings.lisp.

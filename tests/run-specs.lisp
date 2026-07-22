@@ -1203,6 +1203,24 @@
 
 ;;; ======================================================================
 
+(defun %intel-l0-gpu-available-p ()
+  "T if an Intel GPU (PCI vendor 0x8086) is present so TEST-HOIST[L0] can actually run on metal.
+   Explicit override: CRISP_L0_AVAILABLE=true|false.  Linux: scan /sys/class/drm/*/device/vendor.
+   Non-Linux (can't probe): assume available so local runs are unchanged (the explicit SKIP_L0_HOIST
+   env still applies in run-spec-with-hoist)."
+  (let ((ov (uiop:getenv "CRISP_L0_AVAILABLE")))
+    (cond
+      ((and ov (string-equal ov "false")) nil)
+      ((and ov (plusp (length ov))) t)                 ; any non-empty, non-"false" value forces on
+      ((not (uiop:os-unix-p)) t)                        ; Windows/local: don't auto-skip
+      (t (and (ignore-errors
+                (some (lambda (vf)
+                        (let ((v (with-open-file (s vf :if-does-not-exist nil)
+                                   (and s (read-line s nil "")))))
+                          (and v (search "0x8086" v))))
+                      (directory #P"/sys/class/drm/*/device/vendor")))
+              t)))))
+
 (defun run-spec-with-hoist (file backend &optional bc-files)
   "Compiles .crisp file with --hoist=backend flag and returns list of generated output files.
    For L0: discovers .cpp files.  For CUDA: discovers .cu files.
@@ -1215,6 +1233,14 @@
     (when (and skip-env (string-not-equal skip-env "false"))
       (format t "SKIP (~a hoist disabled via SKIP_~a_HOIST)~%" backend (symbol-name backend))
       (return-from run-spec-with-hoist :skipped)))
+  ;; Endeavor 140 reconcile: auto-skip the L0 backend on non-Intel hardware — the CUDA
+  ;; validators already skip-gate on nvcc, but L0 had no equivalent, so -bmg (Intel Level-Zero)
+  ;; tests HARD-FAILED on NVIDIA pods.  Skips on NVIDIA (H100/B300), still RUNS on Intel (BMG)
+  ;; where the GPU is detected — real Intel regressions are not masked.
+  (when (and (string-equal (symbol-name backend) "L0")
+             (not (%intel-l0-gpu-available-p)))
+    (format t "SKIP (Intel L0 GPU not available — mirrors the CUDA nvcc skip-gate)~%")
+    (return-from run-spec-with-hoist :skipped))
   (let* ((hoist-arg (format nil "--hoist=~a" backend))
          (bin (get-binary-path))
          (args (append (mapcar #'uiop:native-namestring bc-files)

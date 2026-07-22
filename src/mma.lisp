@@ -303,15 +303,28 @@
 
 (defmethod generate-node-ir ((node semantic-mma-accumulate)
                              builder module var-env di-builder di-scope location-map)
-  "F-SPV: on :spirv emit CooperativeMatrixMulAddKHR; else the tf32 NVVM intrinsic (132)."
+  "F-SPV / NVVM mma.sync + Endeavor 140 wgmma (dispatched by accumulator type; swizzle/k from table)."
   (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
-    (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
-          (a-val (gen (semantic-mma-accumulate-a-node node)))
-          (b-val (gen (semantic-mma-accumulate-b-node node))))
-      (if (eq *target-backend* :spirv)
-          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
-            (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
-          (%emit-nvvm-mma builder module a-val b-val c-val)))))
+    (let ((acc-type (semantic-mma-accumulate-type node)))
+      (if (%wgmma-acc-type-p acc-type)
+          (destructuring-bind (&optional swizzle-mode (k 8)) (gethash node *wgmma-node-swizzle*)
+            (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+                  (swizzle-p (and swizzle-mode (string-equal (string swizzle-mode) "128B"))))
+              (multiple-value-bind (av al a-ptr) (gen (semantic-mma-accumulate-a-node node))
+                (declare (ignore av al))
+                (multiple-value-bind (bv bl b-ptr) (gen (semantic-mma-accumulate-b-node node))
+                  (declare (ignore bv bl))
+                  (unless (and a-ptr b-ptr)
+                    (error "wgmma: A/B (~ tile 0) did not yield an SMEM element pointer (a ~A b ~A)" a-ptr b-ptr))
+                  (%emit-nvvm-wgmma builder module c-val a-ptr b-ptr acc-type
+                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k)))))
+          (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+                (a-val (gen (semantic-mma-accumulate-a-node node)))
+                (b-val (gen (semantic-mma-accumulate-b-node node))))
+            (if (eq *target-backend* :spirv)
+                (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                  (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
+                (%emit-nvvm-mma builder module a-val b-val c-val)))))))
 
 ;;; ===================================================================
 ;;; P3a — make-register-tile (record-of-fragments) + store-tile overload.
@@ -451,40 +464,36 @@
          env context location)))))
 
 (defun analyze-store-tile-mma (expr env context location)
-  "Overload of store-tile: if the source is a register-tile, store each fragment via
-   store-fragment at its (row-tile, col-tile) offset; otherwise delegate to the existing
-   (SLM / async) store-tile analyzer."
+  "store-tile overload: register-tile (mma.sync) OR wgmma-accumulator (Endeavor 140) OR delegate."
   (let* ((src-node (analyze-expression (second expr) env context (append location '(1))))
          (src-type (semantic-node-type src-node)))
-    (if (%register-tile-type-p src-type)
-        (destructuring-bind (m n) (gethash src-type *register-tile-dims*)
-          (let* ((tile    (second expr))
-                 (dest    (third expr))
-                 (tile-id (fourth expr))
-                 (to-int-sym (intern "TO-INT" (find-package :crisp-language)))
-                 ;; The tile-ID coords (bty btx) are grid tile-IDs (often ulong from
-                 ;; workgroup-id).  Endeavor 137: since the user now writes the store-tile
-                 ;; explicitly with plain grid-y/grid-x (auto-store, which pre-coerced with
-                 ;; to-int, is gone), coerce them here — the fragment offset math multiplies
-                 ;; by an INT fragment count, so the coord must be int too.
-                 (bty (list to-int-sym (first tile-id)))
-                 (btx (list to-int-sym (second tile-id)))
-                 (m-frags (floor m 16)) (n-frags (floor n 8)))
-            (analyze-expression
-             `(let ((tv ,tile))
-                (progn
-                  ,@(loop for mi below m-frags
-                          append (loop for nj below n-frags
-                                       for idx = (+ (* mi n-frags) nj)
-                                       ;; tile-id (bty btx) may be RUNTIME (e.g. gy/gx
-                                       ;; from workgroup-id), so emit the offset as a FORM
-                                       ;; (bty*m-frags + mi), not an evaluated constant.
-                                       collect `(store-fragment (%extract-struct-member tv ,idx)
-                                                                ,dest
-                                                                ((+ (* ,bty ,m-frags) ,mi)
-                                                                 (+ (* ,btx ,n-frags) ,nj)))))))
-             env context location)))
-        (analyze-store-tile-expression expr env context location))))
+    (cond
+      ((%wgmma-acc-type-p src-type)
+       (let ((n (second (gethash src-type *wgmma-acc-dims*))))
+         (analyze-expression (%wgmma-store-rewrite (second expr) (third expr) (fourth expr) n)
+                             env context location)))
+      ((%register-tile-type-p src-type)
+       (destructuring-bind (m n) (gethash src-type *register-tile-dims*)
+         (let* ((tile    (second expr))
+                (dest    (third expr))
+                (tile-id (fourth expr))
+                (to-int-sym (intern "TO-INT" (find-package :crisp-language)))
+                (bty (list to-int-sym (first tile-id)))
+                (btx (list to-int-sym (second tile-id)))
+                (m-frags (floor m 16)) (n-frags (floor n 8)))
+           (analyze-expression
+            `(let ((tv ,tile))
+               (progn
+                 ,@(loop for mi below m-frags
+                         append (loop for nj below n-frags
+                                      for idx = (+ (* mi n-frags) nj)
+                                      collect `(store-fragment (%extract-struct-member tv ,idx)
+                                                               ,dest
+                                                               ((+ (* ,bty ,m-frags) ,mi)
+                                                                (+ (* ,btx ,n-frags) ,nj)))))))
+            env context location))))
+      (t
+       (analyze-store-tile-expression expr env context location)))))
 
 ;;; ===================================================================
 ;;; P3b — mma-accumulate-via-tile (bodyless): walk the register C-tile in MMA
@@ -616,35 +625,40 @@
 
 
 
-(defun %emit-frag-loop-distributed (syms n-frags first-true per-frag-fn)
-  "Endeavor 139 (decision A): emit a WARP-DISTRIBUTED per-fragment loop.  The tile's fragments are
-   split across its participating warps; this warp holds only (length SYMS) of them.  Bind
-   wp = warp_position = (warp-id - first-true) once (contiguous true warps), then for each local
-   fragment l compute the LOGICAL fragment index = wp*(#syms) + l and its (mi, nj) =
-   (logical / n-frags, logical mod n-frags), and splice (funcall PER-FRAG-FN fv mi-form nj-form)
-   (a LIST of forms) into the progn."
+(defun %emit-frag-loop-distributed (syms n-frags first-true n-true per-frag-fn)
+  "Endeavor 139 step-4 perf: emit a COMPILE-TIME-STATIC per-warp switch (was a runtime
+   fragment-index loop).  wp = warp-position is runtime, so branch on it once via a `<`-cascade
+   (the role-branch pattern, last warp = bare else since wp is gated into [0,n-true)); inside each
+   arm the fragment (mi nj) fold to integer LITERALS so the SMEM operand loads get static addresses
+   and ptxas can CSE them.  PER-FRAG-FN is called with (fv mi nj) where mi/nj are INTEGERS (same
+   contract as the n-true=1 static path)."
   (let* ((cl        (find-package :crisp-language))
-         (let-sym   (intern "LET" cl))   (progn-sym (intern "PROGN" cl))
-         (minus-sym (intern "-" cl))     (plus-sym  (intern "+" cl))
-         (mul-sym   (intern "*" cl))     (div-sym   (intern "/" cl))
-         (mod-sym   (intern "MOD" cl))   (to-int-sym (intern "TO-INT" cl))
+         (progn-sym (intern "PROGN" cl))  (let-sym (intern "LET" cl))
+         (if-sym    (intern "IF" cl))     (lt-sym  (intern "<" cl))
+         (minus-sym (intern "-" cl))      (to-int-sym (intern "TO-INT" cl))
          (warp-id-sym (intern "WARP-ID" cl))
          (per-warp  (length syms))
-         (wp        (gensym "WP"))       (base (gensym "FBASE")))
-    `(,let-sym ((,wp (,minus-sym (,to-int-sym (,warp-id-sym)) ,first-true)))
-       (,let-sym ((,base (,mul-sym ,wp ,per-warp)))
-         (,progn-sym
-           ,@(loop for l below per-warp
-                   for fv = (nth l syms)
-                   for logical = `(,plus-sym ,base ,l)
-                   for mi-form = `(,div-sym ,logical ,n-frags)
-                   for nj-form = `(,mod-sym ,logical ,n-frags)
-                   append (funcall per-frag-fn fv mi-form nj-form)))))))
+         (wp        (gensym "WP")))
+    (labels ((arm (k)
+               `(,progn-sym
+                  ,@(loop for l below per-warp
+                          for fv = (nth l syms)
+                          for logical = (+ (* k per-warp) l)
+                          for mi = (floor logical n-frags)
+                          for nj = (mod logical n-frags)
+                          append (funcall per-frag-fn fv mi nj))))
+             (chain (k)
+               (if (>= k (1- n-true))
+                   (arm k)                                   ; last warp = bare else
+                   `(,if-sym (,lt-sym ,wp ,(1+ k))
+                             ,(arm k)
+                             ,(chain (1+ k))))))
+      `(,let-sym ((,wp (,minus-sym (,to-int-sym (,warp-id-sym)) ,first-true)))
+         ,(chain 0)))))
 
 (defun %emit-per-frag-accumulate (a b entry &optional accum-binding body)
-  "Per-fragment expansion of mma-accumulate-via-tile (fragment dims = target per-fragment M/N).
-   Bodyless: one accumulate set!/frag; with ACCUM-BINDING+BODY: splice the body.  Endeavor 139:
-   n-true>1 distributes the fragments across the participating warps (runtime logical index)."
+  "Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is now
+   a static per-warp switch (n-true threaded to %emit-frag-loop-distributed)."
   (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
     (destructuring-bind (fm . fn) (%frag-mn)
       (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
@@ -656,7 +670,7 @@
                        (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
                        (list acc-set)))))
           (if (> n-true 1)
-              (%emit-frag-loop-distributed syms n-frags first-true #'one-frag)
+              (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
               `(progn
                  ,@(loop for mi below m-frags append
                          (loop for nj below n-frags
@@ -664,13 +678,10 @@
                                append (one-frag (nth idx syms) mi nj))))))))))
 
 (defun %emit-per-frag-store (dest tile-id entry)
-  "Per-fragment expansion of (store-tile V DEST (BTY BTX)) — fragment dims = target M/N.
-   Endeavor 139: n-true>1 distributes — each warp stores only its share, to the logical positions."
+  "Per-fragment expansion of (store-tile V DEST (BTY BTX)).  Endeavor 139 step-4: distributed path
+   is now a static per-warp switch."
   (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
     (destructuring-bind (fm . fn) (%frag-mn)
-      ;; Endeavor 137: the user now writes the store-tile explicitly with plain grid-y/grid-x
-      ;; (often ulong from workgroup-id); auto-store, which pre-coerced with to-int, is gone.
-      ;; The fragment offset multiplies by an INT fragment count, so coerce the coord to int.
       (let* ((to-int-sym (intern "TO-INT" (find-package :crisp-language)))
              (m-frags (floor m fm)) (n-frags (floor n fn))
              (bty (list to-int-sym (first tile-id)))
@@ -680,7 +691,7 @@
                                         ((+ (* ,bty ,m-frags) ,mi-form)
                                          (+ (* ,btx ,n-frags) ,nj-form))))))
           (if (> n-true 1)
-              (%emit-frag-loop-distributed syms n-frags first-true #'one-frag)
+              (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
               `(progn
                  ,@(loop for mi below m-frags append
                          (loop for nj below n-frags
@@ -918,10 +929,7 @@
 
 
 (defun register-mma-analyzers ()
-  "Registers the MMA expression analyzers in *expression-analyzers* for both
-   :crisp-language and :crisp.compiler.  Called from initialize-expression-analyzers
-   (which clrhash-es the table on every compiler init, so a load-time setf would not
-   survive).  Overlay: adds the let/let* wrapper for register-tile residency."
+  "Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms."
   (let ((cl-pkg (find-package :crisp-language))
         (cc-pkg (find-package :crisp.compiler)))
     (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
@@ -933,11 +941,11 @@
                          (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
                          (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
                          (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
-                         ;; store-tile OVERLOAD: runs after register-control-analyzers,
-                         ;; so this wins; it delegates to the SLM store-tile for non-tiles.
+                         ;; Endeavor 140 (Chapter 4) -- wgmma forms
+                         (cons "MAKE-WGMMA-ACCUMULATOR"    #'analyze-make-wgmma-accumulator)
+                         (cons "WGMMA-ACCUMULATE"          #'analyze-wgmma-accumulate)
+                         (cons "WGMMA-ACCUMULATE-VIA-TILE" #'analyze-wgmma-accumulate-via-tile)
                          (cons "STORE-TILE"              #'analyze-store-tile-mma)
-                         ;; let/let* WRAPPER: explode register-tile accumulators into
-                         ;; per-fragment mutable vars before the normal let analysis.
                          (cons "LET"                     #'analyze-let-with-tile-explosion)
                          (cons "LET*"                    #'analyze-let-with-tile-explosion)))
       (let ((sym-cl (intern (car entry) cl-pkg))
@@ -945,3 +953,208 @@
         (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
         (unless (eq sym-cl sym-cc)
           (setf (gethash sym-cc *expression-analyzers*) (cdr entry)))))))
+
+
+;;; ===========================================================================
+;;; Endeavor 140 (Chapter 4) — wgmma (Hopper warpgroup async MMA) support.
+;;; Folded from overlays/crisp-compiler-overlay.lisp (2026-07-21).
+;;; ===========================================================================
+
+(defvar *wgmma-acc-dims* (make-hash-table :test 'eq)
+  "wgmma accumulator type symbol -> (list M N K).")
+
+(defun %wgmma-acc-type-name (n)
+  (intern (format nil "WGMMA-ACC-F32-64X~d" n) (find-package :crisp.compiler)))
+
+(defun %wgmma-acc-type-p (type-name)
+  "T if TYPE-NAME is a minted wgmma accumulator record type."
+  (and (symbolp type-name) (nth-value 1 (gethash type-name *wgmma-acc-dims*))))
+
+(defun %ensure-wgmma-acc-type (n)
+  "Mint (once) the WGMMA-ACC-F32-64xN record -- N/2 flat f32 fields (the wgmma D accumulator, N/2
+   f32 registers per thread across the 128-thread warpgroup).  Returns the type symbol."
+  (let ((name (%wgmma-acc-type-name n)))
+    (unless (gethash name *crisp-structs*)
+      (register-struct-definition
+       name
+       (loop for i below (floor n 2)
+             collect (list (intern (format nil "D~d" i) (find-package :crisp.compiler)) 'float))
+       :record))
+    (setf (gethash name *wgmma-acc-dims*) (list 64 n 8))
+    name))
+
+(defun %check-wgmma-shape (shape location &optional swizzle)
+  "Validate a wgmma (M N K) shape.  M fixed 64; N a multiple of 8 in [8,256].  K: with :swizzle a
+   positive multiple of 8 (the K-block = K/8 k8 slices); without :swizzle exactly 8 (a single k8 wgmma)."
+  (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+    (error 'crisp-compiler-error
+           :message (format nil "wgmma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." shape)
+           :source-location location))
+  (destructuring-bind (m n k) shape
+    (unless (= m 64)
+      (error 'crisp-compiler-error :message (format nil "wgmma: M must be 64 (wgmma is always m64), got ~a." m)
+             :source-location location))
+    (unless (and (>= n 8) (<= n 256) (zerop (mod n 8)))
+      (error 'crisp-compiler-error :message (format nil "wgmma: N must be a multiple of 8 in [8,256], got ~a." n)
+             :source-location location))
+    (if swizzle
+        (unless (and (plusp k) (zerop (mod k 8)))
+          (error 'crisp-compiler-error
+                 :message (format nil "wgmma: with :swizzle, K (the K-block) must be a positive multiple of 8, got ~a." k)
+                 :source-location location))
+        (unless (= k 8)
+          (error 'crisp-compiler-error
+                 :message (format nil "wgmma: K must be 8 (tf32 m64nNk8, a single k8 slice); use :swizzle :128b for a multi-k8 K-block, got ~a." k)
+                 :source-location location)))))
+
+(defun analyze-make-wgmma-accumulator (expr env context location)
+  "(make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,
+   each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct."
+  (destructuring-bind (elem dims init) (cdr expr)
+    (declare (ignore elem))              ; tf32/f32 fixed for now
+    (destructuring-bind (m n) dims
+      (%check-wgmma-shape (list m n 8) location)
+      (let ((type-name (%ensure-wgmma-acc-type n)))
+        (analyze-expression
+         `(%construct-struct ,type-name ,@(loop repeat (floor n 2) collect init))
+         env context location)))))
+
+(defun analyze-wgmma-accumulate (expr env context location)
+  "(wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 [0]) with one 0 per tile dimension
+   (rank-aware) so codegen's 3rd value is the addrspace(3) base — works for flat VECTOR tiles (scatter)
+   AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle."
+  (destructuring-bind (d a b &rest kwargs) (cdr expr)
+    (let* ((d-node (analyze-expression d env context (append location '(1))))
+           (d-type (semantic-node-type d-node))
+           (swz    (getf kwargs :swizzle))
+           (a-rank (or (%get-tensor-arity
+                        (semantic-node-type (analyze-expression a env context (append location '(2))))) 1))
+           (b-rank (or (%get-tensor-arity
+                        (semantic-node-type (analyze-expression b env context (append location '(3))))) 1))
+           (aref-a (if (>= a-rank 2) `(~ ,a 0 0) `(~ ,a 0)))
+           (aref-b (if (>= b-rank 2) `(~ ,b 0 0) `(~ ,b 0))))
+      (unless (%wgmma-acc-type-p d-type)
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate: D (1st arg) must be a make-wgmma-accumulator, got type ~a." d-type)
+               :source-location location))
+      (let ((node (make-semantic-mma-accumulate
+                   :type d-type
+                   :c-node d-node
+                   :a-node (analyze-expression aref-a env context (append location '(2)))
+                   :b-node (analyze-expression aref-b env context (append location '(3)))
+                   :source-location location)))
+        (setf (gethash node *wgmma-node-swizzle*) (list swz (or (getf kwargs :k) 8)))
+        node))))
+
+(defun analyze-wgmma-accumulate-via-tile (expr env context location)
+  "(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B
+   :swizzle MODE :k K)).  K rule is swizzle-aware (see %check-wgmma-shape)."
+  (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
+    (%check-wgmma-shape shape location (getf kwargs :swizzle))
+    (analyze-expression `(set! ,d (wgmma-accumulate ,d ,a ,b :swizzle ,(getf kwargs :swizzle) :k ,(third shape)))
+                        env context location)))
+
+(defun %wgmma-make-desc (builder base-ptr &optional swizzle-p (kslice-byte-off 0))
+  "Build the 64-bit wgmma SMEM matrix descriptor.  NO-SWIZZLE (Step 1, scatter/core-matrix): LBO=128B
+   (enc 8), SBO=256B (enc 16), swizzle=0.  128B-SWIZZLE (Step 3, TMA, CUTLASS make_gmma_desc<K>):
+   LBO=16B (enc 1), SBO=1024B (enc 64), swizzle bits=1, base_offset=0; the k-slice ADVANCES the start
+   address by KSLICE-BYTE-OFF (kk*32).  start = ((addr+off)>>4)&0x3FFF at [0:13]."
+  (let* ((i32 (llvm-int32-type)) (i64 (llvm-int64-type))
+         (const-val (if swizzle-p
+                        (logior (ash 1 16) (ash 64 32) (ash 1 62))    ; LBO=16,SBO=1024,swz=128B,base=0
+                        (logior (ash 8 16) (ash 16 32))))             ; LBO=128,SBO=256,swz=0
+         (addr0 (llvm-build-ptr-to-int builder base-ptr i32 "wg_addr"))
+         (addr  (if (zerop kslice-byte-off) addr0
+                    (llvm-build-add builder addr0 (llvm-const-int i32 kslice-byte-off nil) "wg_addr_k")))
+         (sh    (crisp.llvm-bindings::llvm-build-l-shr builder addr (llvm-const-int i32 4 nil) "wg_sh"))
+         (msk   (crisp.llvm-bindings::llvm-build-and builder sh (llvm-const-int i32 #x3FFF nil) "wg_start"))
+         (st64  (llvm-build-zext builder msk i64 "wg_start64")))
+    (crisp.llvm-bindings::llvm-build-or builder st64 (llvm-const-int i64 const-val nil) "wg_desc")))
+
+(defun %wgmma-struct-of-floats (module nacc)
+  "The LLVM struct type { float x NACC } — the wgmma inline-asm result (NACC = N/2 accumulators)."
+  (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count nacc)))
+    (dotimes (i nacc) (setf (cffi:mem-aref elts 'llvm-type-ref i) (llvm-float-type)))
+    (llvm-struct-type-in-context (llvm-get-module-context module) elts nacc nil)))
+
+(defun %wgmma-asm-string (nacc n)
+  "wgmma.mma_async.sync.aligned.m64nNk8.f32.tf32.tf32 {$0..$nacc-1}, descA, descB, 1,1,1;
+   NB on operand numbering: LLVM IR inline-asm has no '+f'; a read-write accumulator is an '=f'
+   OUTPUT ($0..$nacc-1) PLUS a matching tied INPUT ($nacc..$2*nacc-1).  The tied inputs DO occupy
+   operand slots, so the two 'l' descriptors are $2*nacc and $2*nacc+1 (not $nacc/$nacc+1)."
+  (let ((accs (format nil "~{$~d~^,~}" (loop for i below nacc collect i))))
+    (format nil "wgmma.mma_async.sync.aligned.m64n~dk8.f32.tf32.tf32 {~a}, $~d, $~d, 1, 1, 1;"
+            n accs (* 2 nacc) (1+ (* 2 nacc)))))
+
+(defun %wgmma-constraints (nacc)
+  "NACC '=f' outputs, NACC tied inputs (0..nacc-1), 2 'l' descriptor inputs, memory clobber."
+  (let ((outs (loop for i below nacc collect "=f"))
+        (ties (loop for i below nacc collect (format nil "~d" i))))
+    (format nil "~{~a~^,~},~{~a~^,~},l,l,~~{memory}" outs ties)))
+
+(defun %emit-nvvm-wgmma (builder module d-val a-ptr b-ptr acc-type n &optional swizzle-p (k 8))
+  "Emit the wgmma accumulate.  NO-SWIZZLE (scatter): a proxy fence + barrier (generic->async proxy
+   visibility) + ONE k8 wgmma.  128B-SWIZZLE (TMA): NO proxy fence (both async proxy) + K/8 k-slice
+   wgmmas, D accumulating across them (scaleD=1), each with the start advanced kk*32 bytes.
+   Returns (values D nil)."
+  (let ((n-slices (if swizzle-p (max 1 (floor k 8)) 1)))
+    (unless swizzle-p
+      ;; scatter path: generic st.shared writes must be made visible to wgmma's async-proxy read.
+      (%gen-nvvm-fence-proxy-async-shared builder)
+      (%ptx-barrier builder module))
+    (let ((cur-d d-val))
+      (dotimes (kk n-slices)
+        (setf cur-d (%emit-one-wgmma builder module cur-d a-ptr b-ptr acc-type n swizzle-p (* kk 32))))
+      (values cur-d nil))))
+
+(defun %wgmma-store-rewrite (tile dest tile-id n)
+  "Store the m64xN wgmma accumulator TILE to DEST at grid tile-id (BTY BTX).  warp w (within the
+   warpgroup) -> rows [16w,16w+16); per n8 group the standard mma m16n8 C fragment.  (= wgmma_ref.cu.)"
+  (let* ((to-int (intern "TO-INT" (find-package :crisp-language)))
+         (n8 (floor n 8))
+         (bty `(,to-int ,(first tile-id)))
+         (btx `(,to-int ,(second tile-id))))
+    `(let ((wgv ,tile))
+       (let ((wgw (rem (,to-int (warp-id)) 4))
+             (lane (,to-int (warp-lane))))
+         (let ((rlo (/ lane 4)) (col (* (rem lane 4) 2)))
+           (let ((r0 (+ (+ (* ,bty 64) (* wgw 16)) rlo)))
+             (let ((r8 (+ r0 8))
+                   (c0 (+ (* ,btx ,n) col)))
+               (progn
+                 ,@(loop for j below n8
+                         for base = (* j 4)
+                         append (list
+                                 `(set! (~ ,dest r0 (+ c0 ,(* 8 j)))         (%extract-struct-member wgv ,(+ base 0)))
+                                 `(set! (~ ,dest r0 (+ (+ c0 ,(* 8 j)) 1))   (%extract-struct-member wgv ,(+ base 1)))
+                                 `(set! (~ ,dest r8 (+ c0 ,(* 8 j)))         (%extract-struct-member wgv ,(+ base 2)))
+                                 `(set! (~ ,dest r8 (+ (+ c0 ,(* 8 j)) 1))   (%extract-struct-member wgv ,(+ base 3)))))))))))))
+
+(defvar *wgmma-node-swizzle* (make-hash-table :test 'eq)
+  "semantic-mma-accumulate node -> (list swizzle-mode k-block) for the wgmma path.")
+
+(defun %emit-one-wgmma (builder module d-val a-ptr b-ptr acc-type n swizzle-p kslice-off)
+  "One m64nNk8 wgmma: fence + mma_async (N/2 accumulators in/out + 2 descs) + commit + wait; return
+   the new D record.  The k-slice offset (kk*32 bytes) advances the swizzle descriptor start address."
+  (let* ((f32 (llvm-float-type)) (i64 (llvm-int64-type))
+         (nacc (floor n 2))
+         (descA (%wgmma-make-desc builder a-ptr swizzle-p kslice-off))
+         (descB (%wgmma-make-desc builder b-ptr swizzle-p kslice-off))
+         (c-ops (loop for i below nacc collect
+                      (llvm-build-extract-value builder d-val i (format nil "wc~d" i)))))
+    (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.fence.sync.aligned;" "~{memory}")
+    (let* ((asm-str     (%wgmma-asm-string nacc n))
+           (constraints (%wgmma-constraints nacc))
+           (ret-ty      (%wgmma-struct-of-floats module nacc))
+           (ptypes      (append (loop repeat nacc collect f32) (list i64 i64)))
+           (args        (append c-ops (list descA descB)))
+           (call        (%build-inline-asm-call builder ret-ty ptypes args asm-str constraints)))
+      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.commit_group.sync.aligned;" "~{memory}")
+      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.wait_group.sync.aligned 0;" "~{memory}")
+      (let ((agg (llvm-get-undef (crisp-type-to-llvm-type acc-type module))))
+        (dotimes (i nacc)
+          (setf agg (llvm-build-insert-value builder agg
+                      (llvm-build-extract-value builder call i (format nil "wo~d" i))
+                      i (format nil "wr~d" i))))
+        agg))))
+

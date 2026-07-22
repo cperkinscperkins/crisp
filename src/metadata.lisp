@@ -549,8 +549,8 @@
     (nreverse declared-args)))
 
 (defun generate-implicit-signature (sig declared-params)
-  "Generates the :implicit-params plist for metadata serialization.
-   Omits :access — storage handles are always treated as read-write by hoist code."
+  "Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap
+   descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded."
   (declare (ignore declared-params))
   (let ((implicit-args nil)
         (phys-index 0)
@@ -563,11 +563,7 @@
              (end (+ phys-index width -1))
              (type-head (when (consp type) (symbol-name (first type)))))
         (cond
-          ;; Endeavor 137: CUtensorMap descriptor implicit — emit the :kind :tensor-map entry
-          ;; (option A pointer-to-global, one slot).  The hoist runs cuTensorMapEncodeTiled from
-          ;; :describes (reads that tensor's runtime base/extents/strides) + :box-dims.
           ((and type-head (string-equal type-head "TENSOR-MAP"))
-           ;; Resolved (through the carrier chain) per (kernel . uname) in *tma-resolved*.
            (let ((info (gethash (cons (function-signature-name sig) name) *tma-resolved*)))
              (push (list :name (string-downcase (symbol-name name))
                          :kind :tensor-map
@@ -577,14 +573,11 @@
                          :rank (getf info :rank)
                          :box-dims (getf info :box-dims)
                          :layout (or (getf info :layout) :row-major)
-                         :swizzle :none
+                         :swizzle (or (getf info :swizzle) :none)
                          :address-space :global
                          :range (list start end))
                    implicit-args)))
           (t
-           ;; Extract address-space positionally:
-           ;;   CELL:   (cell elem ADDR)             — addr at index 2
-           ;;   TENSOR: (tensor elem N ADDR aln ct)  — addr at index 3
            (let ((address-space
                    (cond
                      ((and (consp type) (string-equal type-head "CELL") (>= (length type) 3))
