@@ -276,8 +276,16 @@ def _compile_section(gpu, compile_times):
 
 
 if __name__ == "__main__":
+    # The report contains non-ASCII (⚠, ×, —).  On Windows, stdout defaults to cp1252, so
+    # `report.py > REPORT.md` crashes with UnicodeEncodeError.  Force UTF-8 on stdout so the
+    # print path doesn't die.  (NOTE: PowerShell `>` still re-encodes the captured text to
+    # UTF-16 — prefer `--output REPORT.md`, which writes UTF-8 directly and bypasses the shell.)
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir", default=str(Path(__file__).resolve().parent.parent.parent / "benchmarks" / "results"))
-    ap.add_argument("--output", default=None, help="File to save the markdown report to (default: stdout)")
+    ap.add_argument("--output", default=None, help="File to save the markdown report to (UTF-8; recommended over `>`).")
     a = ap.parse_args()
     generate_markdown(Path(a.results_dir), Path(a.output) if a.output else None)

@@ -93,6 +93,10 @@ the compiler, and runs the sweep remotely (it calls `matmul.py --sweep-all` for
 you):
 ```bash
 ./scripts/bench-on-pod.sh <host> <port> <branch> ~/.ssh/id_ed25519 --bench=matmul
+
+
+./scripts/bench-on-pod.sh <host> <port> <branch> ~/.ssh/id_ed25519 256,512,1024,2048,4096 100 --bench=matmul
+
 ```
 > ⚠️  `--bench` **defaults to `reduction`** — pass `--bench=matmul` for the matmul
 > suite (or run the script twice, once per benchmark, to cover both algorithms).
@@ -111,7 +115,8 @@ The `.json` files are machine-readable but hard to digest. To print a pretty Mar
 python scripts/crisp_bench/report.py
 
 # Or pipe it to a file
-python scripts/crisp_bench/report.py > REPORT.md
+python scripts/crisp_bench/report.py --output benchmarks/REPORT.md
+
 ```
 
 ### 3. Cleanup Old Results
