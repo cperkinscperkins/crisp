@@ -1,0 +1,22 @@
+;; Endeavor 140 (precision): wgmma is tf32 by construction, so under a non-fast precision context
+;; the requested IEEE accuracy is silently NOT honored (results are tf32).  The compiler warns at
+;; codegen.  Sibling of 18/19 (flag-level precision warnings), but this one is SITE-level: it reads
+;; the resolved *math-precision* (respecting force > with-precision > declaim > flag > default:ieee),
+;; so (with-precision (fast) ...) or (declaim (precision fast)) silences it — see 140-wgmma/*, which
+;; declare fast and compile clean.
+;;
+;; Here there is NO precision declaration, so it defaults to ieee and the warning MUST fire.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "wgmma is forward-only MMA"
+;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90]
+;; EXPECT-STDERR[--ir-target=ptx --ir-target-arch=sm_90]: "uses tf32 tensor cores"
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_warn (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))

@@ -2,16 +2,16 @@
 """
 Benchmark Report Generator
 
-Aggregates all JSON sweeps in `benchmarks/results/` and generates a Markdown table
-comparing the different algorithms across configurations. Groups by hardware and applies
-vendor optimal results as a universal ceiling.
+Aggregates all JSON sweeps in `benchmarks/results/` and generates a Markdown report
+comparing the implementations across configurations. Groups by hardware and applies
+vendor optimal results (cuBLAS / OneMKL) as a universal ceiling.
 
 Usage:
   # Output to terminal
   python scripts/crisp_bench/report.py
 
   # Save to a file
-  python scripts/crisp_bench/report.py --output benchmarks/results/REPORT.md
+  python scripts/crisp_bench/report.py --output benchmarks/REPORT.md
 """
 import json
 import argparse
@@ -19,179 +19,261 @@ import sys
 from pathlib import Path
 from collections import defaultdict
 
+# Logical chapter order + human labels (the optimization ladder).  Anything not
+# listed sorts after these, alphabetically.
+CHAPTER_ORDER = [
+    "chap0_sync",
+    "chap1_async_linear",
+    "chap1.5_async_block",
+    "chap2_pipelined_block",
+    "chap3_wgmma",
+]
+CHAPTER_LABEL = {
+    "chap0_sync":            "Synchronous tiling (fp32, no tensor cores)",
+    "chap1_async_linear":    "Async linear pipelining (fp32)",
+    "chap1.5_async_block":   "Block TMA load + tf32 MMA",
+    "chap2_pipelined_block": "Pipelined block + tf32 MMA",
+    "chap3_wgmma":           "Hopper warpgroup MMA (wgmma, tf32)",
+}
+# Chapters whose Crisp kernel uses tf32 tensor cores — so an IEEE (fp32) cuBLAS
+# ceiling is an apples-to-oranges comparison for those precision tables.
+MMA_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block", "chap3_wgmma"}
+# Chapters where CUDA_Apples is a *naive* kernel, not a tensor-core mirror.
+NAIVE_APPLES_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block"}
+
+
+def chapter_sort_key(ch):
+    return (CHAPTER_ORDER.index(ch) if ch in CHAPTER_ORDER else len(CHAPTER_ORDER), ch)
+
+
 def generate_markdown(results_dir: Path, out_file: Path = None):
-    # hardware_groups: [GPU] -> [Chapter] -> [Precision] -> [Size] -> [Competitor] -> Metrics
-    # Metrics: (tflops, kernel_ms, wall_ms)
+    # hardware_groups: [GPU][Chapter][Precision][Size][Competitor] -> (tflops, kernel_ms)
     hardware_groups = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
     vendor_ceilings = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-
-    # For compile time table: [GPU] -> [Chapter] -> [Precision] -> [Competitor] -> (list of dev_c_ms, list of all_c_ms)
-    compile_times = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {'dev': [], 'all': []}))))
+    # compile_times: [GPU][Chapter][Competitor] -> list of all_compile_ms (averaged across precision)
+    compile_times = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
     for f in results_dir.glob("results_*.json"):
         with open(f, "r") as fh:
             data = json.load(fh)
-            gpu = data["run_metadata"]["hardware"]["gpu_model"]
-            chapter = data["chapter"]
-            
-            competitor = data["competitor"]
-            prec = data.get("precision", "unknown")
-            ftz = data.get("denormal_handling", "unknown")
-            prec_key = f"{prec} (ftz={ftz})"
-            
-            for point in data["results"]:
-                sz = f"{point['configuration']['m']}x{point['configuration']['n']}x{point['configuration']['k']}"
-                tflops = point["metrics"]["throughput"]["tflops"]
-                k_ms = point["metrics"]["runtime"]["kernel_execution_ms"]
-                wall_ms = point["metrics"]["runtime"].get("wall_time_ms", 0.0)
-                dev_c_ms = point["metrics"]["compile_time"]["device_compile_ms"]
-                all_c_ms = point["metrics"]["compile_time"]["all_compile_ms"]
-                
-                metrics = (tflops, k_ms, wall_ms)
-                
-                compile_times[gpu][chapter][prec_key][competitor]['dev'].append(dev_c_ms)
-                compile_times[gpu][chapter][prec_key][competitor]['all'].append(all_c_ms)
-                
-                if chapter == "vendor_ceiling" or competitor.startswith("CUBLAS_") or competitor.startswith("OneMKL_"):
-                    vendor_ceilings[gpu][prec_key][sz][competitor] = metrics
-                else:
-                    hardware_groups[gpu][chapter][prec_key][sz][competitor] = metrics
+        gpu = data["run_metadata"]["hardware"]["gpu_model"]
+        chapter = data["chapter"]
+        competitor = data["competitor"]
+        prec = data.get("precision", "unknown")
+        ftz = data.get("denormal_handling", "unknown")
+        prec_key = f"{prec} (ftz={ftz})"
+
+        for point in data["results"]:
+            sz = f"{point['configuration']['m']}x{point['configuration']['n']}x{point['configuration']['k']}"
+            tflops = point["metrics"]["throughput"]["tflops"]
+            k_ms = point["metrics"]["runtime"]["kernel_execution_ms"]
+            all_c_ms = point["metrics"]["compile_time"]["all_compile_ms"]
+            metrics = (tflops, k_ms)
+
+            compile_times[gpu][chapter][competitor].append(all_c_ms)
+
+            if chapter == "vendor_ceiling" or competitor.startswith("CUBLAS_") or competitor.startswith("OneMKL_"):
+                vendor_ceilings[gpu][prec_key][sz][competitor] = metrics
+            else:
+                hardware_groups[gpu][chapter][prec_key][sz][competitor] = metrics
 
     lines = ["# Crisp Benchmark Report\n"]
-    
+
     for gpu in sorted(hardware_groups.keys()):
         lines.append(f"## Hardware: {gpu}\n")
-        
-        for chapter in sorted(hardware_groups[gpu].keys()):
-            lines.append(f"### {chapter}")
-            
-            for prec_key in sorted(hardware_groups[gpu][chapter].keys()):
+
+        # ---- Summary (the optimization ladder) --------------------------------
+        lines.extend(_summary_section(gpu, hardware_groups, vendor_ceilings))
+
+        # ---- Per-chapter throughput tables ------------------------------------
+        for chapter in sorted(hardware_groups[gpu].keys(), key=chapter_sort_key):
+            label = CHAPTER_LABEL.get(chapter)
+            lines.append(f"### {chapter}" + (f" — {label}" if label else ""))
+
+            for prec_key in _precision_order(hardware_groups[gpu][chapter].keys()):
                 lines.append(f"\n#### Precision: {prec_key}\n")
-                
-                competitors = set()
-                for sz, comps in hardware_groups[gpu][chapter][prec_key].items():
-                    competitors.update(comps.keys())
-                
-                # Ceiling competitors
-                ceiling_list = []
-                if prec_key in vendor_ceilings[gpu]:
-                    ceilings_present = set()
-                    for sz, comps in vendor_ceilings[gpu][prec_key].items():
-                        ceilings_present.update(comps.keys())
-                    ceiling_list = sorted(list(ceilings_present))
-                
-                # Determine columns to show in order: Optimal -> Apples -> Crisp
-                comp_order = []
-                comp_order.extend(ceiling_list)
-                base_order = ["CUDA_Apples", "SYCL_Apples", "Crisp"]
-                for b in base_order:
-                    if b in competitors:
-                        comp_order.append(b)
-                for c in sorted(competitors):
-                    if c not in comp_order and c not in ceiling_list:
-                        comp_order.append(c)
-                
-                # Header
-                header_cols = ["Size"]
-                sep_cols = ["---"]
-                
-                for c in comp_order:
-                    header_cols.extend([f"{c} (TFLOPS)", f"{c} (Kernel ms)", f"{c} (Wall ms)"])
-                    sep_cols.extend(["---:", "---:", "---:"])
-                
-                # Add percentage columns if Crisp and Apples/Optimal exist
-                has_crisp = "Crisp" in competitors
-                has_apples = "CUDA_Apples" in competitors or "SYCL_Apples" in competitors
-                has_optimal = len(ceiling_list) > 0
-                
-                if has_crisp and has_optimal:
-                    header_cols.append("Crisp vs Optimal (%)")
-                    sep_cols.append("---:")
-                if has_crisp and has_apples:
-                    header_cols.append("Crisp vs Apples (%)")
-                    sep_cols.append("---:")
-                    
-                lines.append("| " + " | ".join(header_cols) + " |")
-                lines.append("|" + "|".join(sep_cols) + "|")
-                
-                def size_key(sz_str):
-                    return int(sz_str.split("x")[0])
-                    
-                all_sizes = set(hardware_groups[gpu][chapter][prec_key].keys())
-                if prec_key in vendor_ceilings[gpu]:
-                    all_sizes = all_sizes.union(vendor_ceilings[gpu][prec_key].keys())
-                
-                for sz in sorted(all_sizes, key=size_key):
-                    if sz not in hardware_groups[gpu][chapter][prec_key] and not ceiling_list:
-                        continue
-                        
-                    row_cols = [sz]
-                    
-                    crisp_tflops = None
-                    apples_tflops = None
-                    optimal_tflops = None
-                    
-                    for c in comp_order:
-                        # Find metrics
-                        tflops, k_ms, wall_ms = None, None, None
-                        if c in ceiling_list:
-                            if prec_key in vendor_ceilings[gpu] and sz in vendor_ceilings[gpu][prec_key] and c in vendor_ceilings[gpu][prec_key][sz]:
-                                tflops, k_ms, wall_ms = vendor_ceilings[gpu][prec_key][sz][c]
-                                optimal_tflops = tflops if optimal_tflops is None else max(optimal_tflops, tflops)
-                        else:
-                            if sz in hardware_groups[gpu][chapter][prec_key] and c in hardware_groups[gpu][chapter][prec_key][sz]:
-                                tflops, k_ms, wall_ms = hardware_groups[gpu][chapter][prec_key][sz][c]
-                                if c == "Crisp":
-                                    crisp_tflops = tflops
-                                elif c in ["CUDA_Apples", "SYCL_Apples"]:
-                                    apples_tflops = tflops if apples_tflops is None else max(apples_tflops, tflops)
-                        
-                        if tflops is not None:
-                            row_cols.extend([f"{tflops:.2f}", f"{k_ms:.2f}", f"{wall_ms:.2f}"])
-                        else:
-                            row_cols.extend(["-", "-", "-"])
-                            
-                    # Percentages
-                    if has_crisp and has_optimal:
-                        if crisp_tflops and optimal_tflops:
-                            row_cols.append(f"{(crisp_tflops / optimal_tflops * 100):.1f}%")
-                        else:
-                            row_cols.append("-")
-                            
-                    if has_crisp and has_apples:
-                        if crisp_tflops and apples_tflops:
-                            row_cols.append(f"{(crisp_tflops / apples_tflops * 100):.1f}%")
-                        else:
-                            row_cols.append("-")
-                            
-                    lines.append("| " + " | ".join(row_cols) + " |")
-                
-                lines.append("\n")
-                
-        # Compile times section per GPU
-        lines.append(f"### Compile Times\n")
-        lines.append("| Chapter | Precision | Competitor | Avg Device Compile (ms) | Avg All Compile (ms) |")
-        lines.append("|---|---|---|---:|---:|")
-        
-        for chapter in sorted(compile_times[gpu].keys()):
-            for prec_key in sorted(compile_times[gpu][chapter].keys()):
-                for comp in sorted(compile_times[gpu][chapter][prec_key].keys()):
-                    dev_list = compile_times[gpu][chapter][prec_key][comp]['dev']
-                    all_list = compile_times[gpu][chapter][prec_key][comp]['all']
-                    
-                    avg_dev = sum(dev_list) / len(dev_list) if dev_list else 0.0
-                    avg_all = sum(all_list) / len(all_list) if all_list else 0.0
-                    
-                    lines.append(f"| {chapter} | {prec_key} | {comp} | {avg_dev:.2f} | {avg_all:.2f} |")
-        lines.append("\n")
+                lines.extend(_throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings))
+                lines.extend(_annotations(chapter, prec_key))
+            lines.append("")
+
+        # ---- Compile times (collapsed across precision) -----------------------
+        lines.extend(_compile_section(gpu, compile_times))
 
     report_text = "\n".join(lines)
-    
     if out_file:
-        out_file.write_text(report_text)
+        out_file.write_text(report_text, encoding="utf-8")
         print(f"Report saved to {out_file}")
     else:
         print(report_text)
+
+
+def _precision_order(prec_keys):
+    """fast first, then ieee+ftz, then ieee+preserve — most-permissive to strictest."""
+    def key(pk):
+        fast = 0 if pk.startswith("fast") else 1
+        ftz = 0 if "ftz=ftz" in pk else 1
+        return (fast, ftz, pk)
+    return sorted(prec_keys, key=key)
+
+
+def _fast_key(gpu, chapter, hardware_groups):
+    for pk in hardware_groups[gpu][chapter].keys():
+        if pk.startswith("fast"):
+            return pk
+    return None
+
+
+def _summary_section(gpu, hardware_groups, vendor_ceilings):
+    """One row per chapter at the largest common size under the `fast` precision:
+    Crisp throughput and its fraction of the cuBLAS tf32 ceiling — the headline ladder."""
+    out = ["### Summary — Crisp vs. cuBLAS ceiling (fast / tf32)\n"]
+    out.append("| Chapter | Technique | Size | Crisp (TFLOPS) | cuBLAS (TFLOPS) | Crisp % of cuBLAS |")
+    out.append("|---|---|---:|---:|---:|---:|")
+    any_row = False
+    for chapter in sorted(hardware_groups[gpu].keys(), key=chapter_sort_key):
+        fk = _fast_key(gpu, chapter, hardware_groups)
+        if not fk:
+            continue
+        sizes = hardware_groups[gpu][chapter][fk].keys()
+        if not sizes:
+            continue
+        # largest size present for this chapter under fast
+        big = max(sizes, key=lambda s: int(s.split("x")[0]))
+        crisp = hardware_groups[gpu][chapter][fk][big].get("Crisp")
+        if not crisp:
+            continue
+        crisp_t = crisp[0]
+        # matching cuBLAS ceiling at the same size/precision
+        cub = None
+        if fk in vendor_ceilings[gpu] and big in vendor_ceilings[gpu][fk]:
+            c = vendor_ceilings[gpu][fk][big].get("CUBLAS_Optimal")
+            cub = c[0] if c else None
+        pct = f"{crisp_t / cub * 100:.1f}%" if (cub and crisp_t) else "—"
+        label = CHAPTER_LABEL.get(chapter, "")
+        out.append(f"| {chapter} | {label} | {big.split('x')[0]} | {crisp_t:.1f} | "
+                   f"{cub:.1f} | {pct}" if cub else
+                   f"| {chapter} | {label} | {big.split('x')[0]} | {crisp_t:.1f} | — | —")
+        out[-1] += " |"
+        any_row = True
+    out.append("\n> Largest measured size per chapter, `fast` precision (Crisp and cuBLAS both tf32). "
+               "The ladder runs from naive fp32 tiling to Hopper wgmma.\n")
+    return out if any_row else []
+
+
+def _throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings):
+    lines = []
+    competitors = set()
+    for sz, comps in hardware_groups[gpu][chapter][prec_key].items():
+        competitors.update(comps.keys())
+
+    ceiling_list = []
+    if prec_key in vendor_ceilings[gpu]:
+        present = set()
+        for sz, comps in vendor_ceilings[gpu][prec_key].items():
+            present.update(comps.keys())
+        ceiling_list = sorted(present)
+
+    comp_order = list(ceiling_list)
+    for b in ["CUDA_Apples", "SYCL_Apples", "Crisp"]:
+        if b in competitors:
+            comp_order.append(b)
+    for c in sorted(competitors):
+        if c not in comp_order and c not in ceiling_list:
+            comp_order.append(c)
+
+    header = ["Size"]
+    sep = ["---"]
+    for c in comp_order:
+        header += [f"{c} (TFLOPS)", f"{c} (Kernel ms)"]
+        sep += ["---:", "---:"]
+
+    has_crisp = "Crisp" in competitors
+    has_apples = "CUDA_Apples" in competitors or "SYCL_Apples" in competitors
+    has_optimal = len(ceiling_list) > 0
+    if has_crisp and has_optimal:
+        header.append("Crisp vs Optimal (%)"); sep.append("---:")
+    if has_crisp and has_apples:
+        header.append("Crisp vs Apples (%)"); sep.append("---:")
+
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "|".join(sep) + "|")
+
+    all_sizes = set(hardware_groups[gpu][chapter][prec_key].keys())
+    if prec_key in vendor_ceilings[gpu]:
+        all_sizes |= set(vendor_ceilings[gpu][prec_key].keys())
+
+    for sz in sorted(all_sizes, key=lambda s: int(s.split("x")[0])):
+        if sz not in hardware_groups[gpu][chapter][prec_key] and not ceiling_list:
+            continue
+        row = [sz]
+        crisp_t = apples_t = optimal_t = None
+        for c in comp_order:
+            tflops = k_ms = None
+            if c in ceiling_list:
+                cd = vendor_ceilings[gpu].get(prec_key, {}).get(sz, {}).get(c)
+                if cd:
+                    tflops, k_ms = cd
+                    optimal_t = tflops if optimal_t is None else max(optimal_t, tflops)
+            else:
+                hd = hardware_groups[gpu][chapter][prec_key].get(sz, {}).get(c)
+                if hd:
+                    tflops, k_ms = hd
+                    if c == "Crisp":
+                        crisp_t = tflops
+                    elif c in ("CUDA_Apples", "SYCL_Apples"):
+                        apples_t = tflops if apples_t is None else max(apples_t, tflops)
+            row += ([f"{tflops:.2f}", f"{k_ms:.2f}"] if tflops is not None else ["-", "-"])
+
+        if has_crisp and has_optimal:
+            row.append(f"{crisp_t / optimal_t * 100:.1f}%" if (crisp_t and optimal_t) else "-")
+        if has_crisp and has_apples:
+            row.append(f"{crisp_t / apples_t * 100:.1f}%" if (crisp_t and apples_t) else "-")
+        lines.append("| " + " | ".join(row) + " |")
+    return lines
+
+
+def _annotations(chapter, prec_key):
+    notes = []
+    if chapter in MMA_CHAPTERS and not prec_key.startswith("fast"):
+        notes.append("> ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 "
+                     "tensor cores by construction, so it does *not* honor the IEEE request (a Crisp "
+                     "kernel would emit a precision warning); meanwhile IEEE cuBLAS drops to true fp32. "
+                     "So the \">100% of Optimal\" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` "
+                     "table is the only honest tensor-core comparison.")
+    if chapter in NAIVE_APPLES_CHAPTERS:
+        notes.append("> ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a "
+                     "tensor-core mirror of the Crisp algorithm — the \"Crisp vs Apples\" figures are not "
+                     "apples-to-apples.")
+    if notes:
+        return ["\n".join(notes), ""]
+    return []
+
+
+def _compile_section(gpu, compile_times):
+    """One row per (chapter, competitor), averaged across precision (compile time is
+    ~precision-invariant), with each competitor's slowdown relative to Crisp."""
+    lines = ["### Compile Times (avg across precision)\n"]
+    lines.append("| Chapter | Competitor | Avg Compile (ms) | × vs Crisp |")
+    lines.append("|---|---|---:|---:|")
+    for chapter in sorted(compile_times[gpu].keys(), key=chapter_sort_key):
+        comps = compile_times[gpu][chapter]
+        crisp_avg = (sum(comps["Crisp"]) / len(comps["Crisp"])) if comps.get("Crisp") else None
+        # Crisp first, then the rest alphabetically
+        ordered = (["Crisp"] if "Crisp" in comps else []) + sorted(c for c in comps if c != "Crisp")
+        for comp in ordered:
+            vals = comps[comp]
+            avg = sum(vals) / len(vals) if vals else 0.0
+            if comp == "Crisp":
+                ratio = "1.0× (baseline)"
+            elif crisp_avg:
+                ratio = f"{avg / crisp_avg:.1f}× slower"
+            else:
+                ratio = "—"
+            lines.append(f"| {chapter} | {comp} | {avg:.0f} | {ratio} |")
+    lines.append("\n> Crisp compiles a kernel to PTX; the native competitors invoke `nvcc`. "
+                 "Lower is better; `× vs Crisp` is how much longer than Crisp that toolchain takes.\n")
+    return lines
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

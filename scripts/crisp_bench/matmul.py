@@ -100,21 +100,24 @@ def _hoist_cuda_bin(crisp_compiler):
     p = Path(crisp_compiler)
     return str(p.parent / ("crisp-hoist-cuda" + (".exe" if p.suffix == ".exe" else "")))
 
-def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, crisp_compiler: str):
+def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, crisp_compiler: str,
+                        prec_flags=()):
     """Compile + hoist + --mma-bench + nvcc + run one advanced Crisp matmul kernel.
     The mma-bench harness fills A/B, launches with the kernel's real params, checks
     C == A.B, and warmup+times.  Returns a dict shaped like run_bin's JSON (gflops,
-    kernel_median_us, correct), or None on failure."""
+    kernel_median_us, correct), or None on failure.  PREC_FLAGS are the Crisp precision
+    flags (--math-precision / --denormal-handling) for the compile."""
     chap_dir = src_path.parent
     base = src_path.stem
     ptx = chap_dir / f"{base}.ptx"
     metacrisp = chap_dir / f"{base}_matmul.metacrisp"
-    # device PTX + the hoist metacrisp (param layout / descriptor metadata).
-    # Both are size- and precision-invariant, so compile once per kernel and reuse
-    # across every size/precision point in the sweep (the sweep is slow otherwise).
+    # device PTX + the hoist metacrisp (param layout / descriptor metadata).  Size-invariant,
+    # so compile once per kernel and reuse across sizes (the sweep is slow otherwise) — but the
+    # PRECISION flags change the kernel, so run_autobench_sweep clears the metacrisp between
+    # precisions, forcing a fresh compile+hoist for each precision's first size.
     if not (ptx.exists() and metacrisp.exists()):
-        sh([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", "--log-level=off", str(src_path)], check=True)
-        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90", "--log-level=off", str(src_path)], check=True)
+        sh([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", *prec_flags, "--log-level=off", str(src_path)], check=True)
+        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90", *prec_flags, "--log-level=off", str(src_path)], check=True)
     if not metacrisp.exists():
         print(f"autobench: no metacrisp {metacrisp}", file=sys.stderr); return None
     sh([_hoist_cuda_bin(crisp_compiler), f"--mma-bench={M},{N},{K}", f"--grid-tile={grid_tile}", str(metacrisp)])
@@ -144,10 +147,19 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
     meta.hardware.gpu_model = "NVIDIA H100"
     meta.hardware.arch_target = "sm_90"
     meta.hardware.environment = "runpod"
+    # Crisp precision flags for this pass — a DIFFERENT flag set than nvcc's (Crisp defaults to
+    # ieee, so we must pass these or Crisp competes at IEEE against fast-math cuBLAS).
+    prec_flags = [f"--math-precision={precision}",
+                  f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
+    # Invalidate the per-kernel compile cache for THIS precision (the kernel differs by precision).
+    src = Path(src_path)
+    stale = src.parent / f"{src.stem}_matmul.metacrisp"
+    if stale.exists():
+        stale.unlink()
     results = []
     for s in sizes:
         S = int(s)
-        out = run_crisp_autobench(Path(src_path), grid_tile, S, S, S, crisp_compiler)
+        out = run_crisp_autobench(src, grid_tile, S, S, S, crisp_compiler, prec_flags)
         if not out:
             continue
         if not out.get("correct", False):
@@ -180,8 +192,11 @@ def main():
     
     matrix = [(a.precision, a.ftz)]
     if a.sweep_all:
+        # Fast math implies flush-to-zero (nvcc --use_fast_math flushes denormals), so the
+        # coherent "peak" point is fast+ftz, not fast+preserve.  The three meaningful math
+        # configs: peak (fast+ftz), sweet-spot (ieee+ftz), strict (ieee+preserve).
         matrix = [
-            ("fast", False),
+            ("fast", True),
             ("ieee", True),
             ("ieee", False)
         ]
@@ -223,7 +238,11 @@ def main():
                     print(f"Skipping {comp_name} because {crisp_compiler} not found.")
                     return
                 # Crisp compile (device compile) — also measures device compile time
-                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", "--log-level=off", str(src_path)])
+                # Crisp precision flags (Crisp's own axis — distinct from nvcc's — defaulting to
+                # ieee, so we must pass them or Crisp competes at IEEE vs fast-math cuBLAS).
+                crisp_prec = [f"--math-precision={prec}",
+                              f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
+                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", *crisp_prec, "--log-level=off", str(src_path)])
                 all_c_ms = dev_c_ms # Harness adds driver_jit later
                 if crisp_grid_tile:
                     # Advanced kernel (TMA / rings / wgmma): the fixed-layout bench_harness.cu
