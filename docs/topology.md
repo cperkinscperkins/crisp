@@ -615,7 +615,7 @@ exactly what makes a ring a ring.
 > lands with that chapter rather than here.
 
 
-Warp Specialization
+Warp Specialization ✅
 -------------------
 
 ```
@@ -641,7 +641,7 @@ When `--runtime-checks` is enabled, the compiler will insert a check to ensure t
 
 
 
-Matrix Multiplication
+Matrix Multiplication ✅
 ---------------------
 
 ### `make-register-tile` ✅
@@ -1017,7 +1017,7 @@ We use rings to set up a load/execute pipeline.
         (store-tile C-Tile C (grid-y grid-x))))))
 ```
 
-### Matrix Multiply with Pipelining via Warp Specialization
+### Matrix Multiply with Pipelining via Warp Specialization ✅
 
 ```
 (with-template-type (T)
