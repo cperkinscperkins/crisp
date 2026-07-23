@@ -200,6 +200,11 @@ case "${BENCH}" in
     python3 benchmarks/reduction/run.py \${PY_ARGS}
     ;;
   matmul)
+    ## MATH-FLAG POLICY: this sweep NEVER relies on a compiler's default precision or denormal
+    ## behavior.  nvcc / icpx / crisp-compile have different (and inconsistently documented)
+    ## defaults, so matmul.py passes a COMPLETE, explicit set of precision + denormal flags to
+    ## every compiler on every precision pass (see nvcc_math_flags / icpx_math_flags and the
+    ## MATH-FLAG POLICY block in scripts/crisp_bench/matmul.py).  A bare `nvcc -O3` is never emitted.
     python3 scripts/crisp_bench/matmul.py --sizes=${SIZES} --iters=${ITERS} --sweep-all
     ;;
 esac

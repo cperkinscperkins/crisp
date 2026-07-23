@@ -46,8 +46,13 @@ def run_bin(path, M, N, K, warmup, iters, env_extra=None):
         return None
 
 def build_harness():
-    # Build the crisp harness (needed for running Crisp kernels)
-    sh(["nvcc", "-O3", "-arch=sm_90", str(HERE/"crisp/bench_harness.cu"), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
+    # Build the crisp harness (chap0/chap1 launcher — loads the Crisp PTX and times it).
+    # It is precision-agnostic (the measured kernel is the Crisp PTX, compiled separately with its
+    # own explicit flags), and it's built once, so it has no per-pass precision.  Still, per the
+    # MATH-FLAG POLICY we never emit a bare nvcc: pin it to the strict/reference config (ieee +
+    # preserve) so the harness's A=B=1 -> C=K correctness check is exact.
+    sh(["nvcc", "-O3", "-arch=sm_90", *nvcc_math_flags("ieee", False),
+        str(HERE/"crisp/bench_harness.cu"), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
 
 def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, precision: str, ftz: bool, compile_dev_ms: float, compile_all_ms: float, env_extra: dict = None) -> BenchmarkSweep:
     meta = create_metadata()
@@ -101,12 +106,14 @@ def _hoist_cuda_bin(crisp_compiler):
     return str(p.parent / ("crisp-hoist-cuda" + (".exe" if p.suffix == ".exe" else "")))
 
 def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, crisp_compiler: str,
-                        prec_flags=()):
+                        prec_flags=(), nvcc_math=()):
     """Compile + hoist + --mma-bench + nvcc + run one advanced Crisp matmul kernel.
     The mma-bench harness fills A/B, launches with the kernel's real params, checks
     C == A.B, and warmup+times.  Returns a dict shaped like run_bin's JSON (gflops,
     kernel_median_us, correct), or None on failure.  PREC_FLAGS are the Crisp precision
-    flags (--math-precision / --denormal-handling) for the compile."""
+    flags (--math-precision / --denormal-handling) for the kernel compile; NVCC_MATH are
+    the explicit nvcc FP flags for the bench-harness compile (the C=A.B reference math) —
+    both always passed, never elided (see MATH-FLAG POLICY)."""
     chap_dir = src_path.parent
     base = src_path.stem
     ptx = chap_dir / f"{base}.ptx"
@@ -129,7 +136,7 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
     txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.ptx"', '"' + str(ptx).replace("\\", "/") + '"', txt)
     cu.write_text(txt)
     exe = chap_dir / f"{base}_bench"
-    c = sh(["nvcc", "-O3", "-arch=sm_90a", str(cu), "-o", str(exe), "-lcuda"], capture_output=True, text=True)
+    c = sh(["nvcc", "-O3", "-arch=sm_90a", *nvcc_math, str(cu), "-o", str(exe), "-lcuda"], capture_output=True, text=True)
     if c.returncode != 0:
         print("autobench nvcc failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
     p = sh([str(exe)], capture_output=True, text=True)
@@ -151,6 +158,8 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
     # ieee, so we must pass these or Crisp competes at IEEE against fast-math cuBLAS).
     prec_flags = [f"--math-precision={precision}",
                   f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
+    # Explicit nvcc FP flags for the bench-harness compile (the C=A.B reference) — same policy.
+    nvcc_math = nvcc_math_flags(precision, ftz)
     # Invalidate the per-kernel compile cache for THIS precision (the kernel differs by precision).
     src = Path(src_path)
     stale = src.parent / f"{src.stem}_matmul.metacrisp"
@@ -159,7 +168,7 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
     results = []
     for s in sizes:
         S = int(s)
-        out = run_crisp_autobench(src, grid_tile, S, S, S, crisp_compiler, prec_flags)
+        out = run_crisp_autobench(src, grid_tile, S, S, S, crisp_compiler, prec_flags, nvcc_math)
         if not out:
             continue
         if not out.get("correct", False):
@@ -175,6 +184,48 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
+
+# ===========================================================================
+# MATH-FLAG POLICY — ALWAYS explicit, NEVER rely on a compiler's defaults.
+# ---------------------------------------------------------------------------
+# nvcc, icpx, and crisp-compile each have their OWN default precision and
+# denormal behavior, they are NOT the same across compilers, and the documented/
+# reported defaults conflict (asking different sources gives different answers).
+# So every compile in this driver passes a COMPLETE, explicit set of flags for
+# BOTH precision AND denormal handling — a bare `nvcc -O3 ...` (relying on the
+# default) is never emitted.  If you add a compiler, give it an explicit builder
+# here too.  (crisp-compile's explicit flags are --math-precision / --denormal-
+# handling, applied on both Crisp paths in run_target / run_autobench_sweep.)
+# ===========================================================================
+
+def nvcc_math_flags(prec, ftz):
+    """Explicit nvcc floating-point flags — never rely on nvcc's defaults.  Four independent knobs:
+         -ftz=<b>       : flush denormals to zero (true) vs keep them (false)
+         -prec-div=<b>  : IEEE-correct division (true) vs fast approximation (false)
+         -prec-sqrt=<b> : IEEE-correct sqrt (true) vs fast approximation (false)
+         -fmad=<b>      : fuse mul+add into an FMA (single-rounding, IEEE-754 conformant)
+       'fast' is the explicit expansion of -use_fast_math (approx div/sqrt + flush).  -fmad is kept
+       ON for every mode: an FMA is a single correctly-rounded op (more accurate than mul-then-add),
+       and it's what the tensor-core path uses — the precision axis here is div/sqrt + denormals."""
+    b = lambda x: "true" if x else "false"
+    return [f"-ftz={b(ftz)}",
+            f"-prec-div={b(prec != 'fast')}",
+            f"-prec-sqrt={b(prec != 'fast')}",
+            "-fmad=true"]
+
+def icpx_math_flags(prec, ftz):
+    """Explicit icpx (Intel DPC++/SYCL) floating-point flags — never rely on icpx's defaults.
+         -fp-model=<fast|precise> : overall FP model (fast permits reassociation + approximations)
+         -ffp-contract=<fast|on>  : FMA contraction (kept on; single-rounding, IEEE-safe)
+         -ftz / -no-ftz           : flush denormals to zero (true) vs preserve (false)
+       CONFIDENCE NOTE: -fp-model and -ffp-contract are solid.  -ftz/-no-ftz are the documented
+       Intel-compiler denormal knobs and icpx accepts them, but whether they reach the SYCL *device*
+       (SPIR-V DenormFlushToZero/Preserve) rather than just host code is NOT something I want to
+       assert — VERIFY on Intel HW before trusting the ftz-vs-preserve split for SYCL.  (Moot on the
+       NVIDIA pods, where SYCL/icpx is absent and these targets are skipped.)"""
+    return [f"-fp-model={'fast' if prec == 'fast' else 'precise'}",
+            "-ffp-contract=fast",
+            ("-ftz" if ftz else "-no-ftz")]
 
 def main():
     ap = argparse.ArgumentParser()
@@ -211,18 +262,17 @@ def main():
     for prec, ftz in matrix:
         print(f"\n--- Running Suite with precision={prec}, ftz={ftz} ---")
         
-        # Flags
-        nvcc_flags = ["-O3", "-arch=sm_90"]
+        # Flags — ALWAYS explicit for precision AND denormals (see MATH-FLAG POLICY above);
+        # never a bare `nvcc -O3` / `icpx -O3` that would inherit an unknown default.
+        nv_math = nvcc_math_flags(prec, ftz)
+        nvcc_flags   = ["-O3", "-arch=sm_90", *nv_math]
+        cublas_flags = ["-O3", "-arch=sm_90", "-lcublas", *nv_math]
         if prec == "fast":
-            nvcc_flags.append("-use_fast_math")
-        elif ftz:
-            nvcc_flags.append("-ftz=true")
-            
-        cublas_flags = ["-O3", "-arch=sm_90", "-lcublas"]
-        if prec == "fast":
+            # -DFAST_MATH selects the tf32 tensor-core math mode inside cublas_optimal.cu
+            # (cublasSetMathMode).  cuBLAS's own GEMM ignores the nvcc FP flags above, so this
+            # tf32-vs-fp32 choice — not -ftz — is what actually moves cuBLAS between precisions.
             cublas_flags.append("-DFAST_MATH")
-            
-        sycl_flags = ["-fsycl", "-O3"]
+        sycl_flags   = ["-fsycl", "-O3", *icpx_math_flags(prec, ftz)]
 
         def run_target(chapter, source_name, bin_name, comp_name, flags, is_sycl=False, is_cublas=False, is_crisp=False, crisp_grid_tile=None):
             src_path = HERE / chapter / source_name
