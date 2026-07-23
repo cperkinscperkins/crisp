@@ -136,7 +136,10 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
     txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.ptx"', '"' + str(ptx).replace("\\", "/") + '"', txt)
     cu.write_text(txt)
     exe = chap_dir / f"{base}_bench"
-    c = sh(["nvcc", "-O3", "-arch=sm_90a", *nvcc_math, str(cu), "-o", str(exe), "-lcuda"], capture_output=True, text=True)
+    # -Xcompiler -fopenmp: the generated harness parallelizes its O(N^3) host C=A.B reference
+    # with OpenMP (else 4096 verification is single-threaded minutes).  Forwarded to the host
+    # compiler for both compile and link (libgomp).
+    c = sh(["nvcc", "-O3", "-arch=sm_90a", "-Xcompiler", "-fopenmp", *nvcc_math, str(cu), "-o", str(exe), "-lcuda"], capture_output=True, text=True)
     if c.returncode != 0:
         print("autobench nvcc failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
     p = sh([str(exe)], capture_output=True, text=True)
