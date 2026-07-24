@@ -222,5 +222,29 @@ REMAINING (metal-bound — needs a BMG pod to verify MMA_CORRECT):
     for a first metal-correct baseline, then swap to the 2D block load in Phase B for prefetchability.)
  3. mma-accumulate-via-tile reading register-tile operands (pre-loaded) instead of global A/B — today
     11-matmul-bmg hands the mma GLOBAL matrices; the register-resident-operand path is new.
- Then 01-register-mma-metal -> HOIST-EXPECT: MMA_CORRECT on BMG.  The A/B fragment layout is the
- metal-verification crux — can't be confirmed locally.
+ Then 01-register-mma-metal -> HOIST-EXPECT: MMA_CORRECT on BMG.
+
+METAL LOOP (confirmed working locally on this Windows+BMG machine, 2026-07-24):
+  crisp-compile --hoist=l0 --hardware-profile=bmg --ir-target=spv <k>   # -> <k>_<kernel>.metacrisp + _L0.cpp
+  crisp-hoist-l0 --mma-test=M,N,K <metacrisp>                           # regen .cpp as C=A.B harness
+  clang++ <cpp> -I C:/Users/cperk/Documents/level-zero/include C:/Windows/System32/ze_loader.dll -static -o e.exe
+  ./e.exe | grep MMA_CORRECT                                            # 133/11 -> MMA_CORRECT
+(clang++ = C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe)
+
+PROGRESS (2026-07-24):
+  [DONE] make-register-fragment gains :operand (a|b|acc, default acc) -> coop-matrix Use 0/1/2 + shape
+         (A sm×sk / B sk×sn / Acc sm×sn, matching load-fragment-a/b).  :acc default metal-confirmed
+         unchanged (133/11 MMA_CORRECT).
+  [NEXT] operand-aware register-tile tiling — the whole tile machinery is Acc-shaped and must branch on
+         the tile's :operand.  For BMG (%spv-mma-shape = 8 16 8):
+           Acc tile (M×N): nfrags=(M/8)×(N/16), frag 8×16 Use2   (today's path)
+           A   tile (M×K): nfrags=(M/8)×(K/8),  frag 8×8  Use0
+           B   tile (K×N): nfrags=(K/8)×(N/16), frag 8×16 Use1
+         Touch: analyze-make-register-tile (parse :operand), %ensure-register-tile-type +
+         %register-tile-fit-check + %frag-mn + %explode-register-tiles (operand-aware nfrags/frag-dims +
+         pass :operand to make-register-fragment), and store the operand in *register-tile-dims*.
+  [NEXT] %emit-per-frag-block-load: per fragment -> (set! Tile$Fk (load-fragment-a/b SRC (coords))),
+         reusing CooperativeMatrixLoad for the first MMA_CORRECT (swap to Subgroup2DBlockLoad in Phase B).
+  [NEXT] %emit-per-frag-accumulate register-operand variant: when a/b are register-tiles, read the
+         pre-loaded fragment vars directly instead of (load-fragment-a a ...).
+  Then 01-register-mma-metal -> MMA_CORRECT locally.

@@ -80,25 +80,33 @@
         (values 16 8 8))))
 
 (defun analyze-make-register-fragment (expr env context location)
-  "P1 / F-SPV: (make-register-fragment M N INIT).  :spirv -> a filled accumulator coop
-   matrix; else the NVIDIA %construct-struct record."
-  (destructuring-bind (m n init) (cdr expr)
-    (if (eq *target-backend* :spirv)
-        ;; accumulator = MxN from the active profile's mma-shape (the source m/n is a
-        ;; logical hint; the hardware shape wins so one source runs on both vendors).
-        (multiple-value-bind (sm sn sk) (%spv-mma-shape)
-          (declare (ignore sk))
-          (make-semantic-coop-op
-           :type (list 'coop-matrix 'float sm sn 2) :kind :fill
-           :value-node (analyze-expression init env context (append location '(1)))
-           :rows sm :cols sn :use 2 :layout 0 :source-location location))
-        (progn
-          (unless (and (eql m 16) (eql n 8))
-            (error 'crisp-compiler-error
-                   :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
-          (analyze-expression
-           `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init)
-           env context location)))))
+  "P1 / F-SPV: (make-register-fragment M N INIT &key operand).  :spirv -> a filled coop matrix;
+   else the NVIDIA %construct-struct record.  Endeavor 142: :operand (a|b|acc, default acc) picks
+   the coop-matrix Use + shape so an A/B operand tile mints fragments matching load-fragment-a/b —
+   A = sm×sk Use 0, B = sk×sn Use 1, Acc = sm×sn Use 2."
+  (destructuring-bind (m n init &rest kwargs) (cdr expr)
+    (let* ((operand (getf kwargs :operand :acc))
+           (use (ecase operand (:a 0) (:b 1) (:acc 2))))
+      (if (eq *target-backend* :spirv)
+          ;; shape from the active profile's mma-shape (the source m/n is a logical hint; the
+          ;; hardware shape wins so one source runs on both vendors).
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (let ((fr (ecase operand (:a sm) (:b sk) (:acc sm)))    ; fragment rows
+                  (fc (ecase operand (:a sk) (:b sn) (:acc sn))))   ; fragment cols
+              (make-semantic-coop-op
+               :type (list 'coop-matrix 'float fr fc use) :kind :fill
+               :value-node (analyze-expression init env context (append location '(1)))
+               :rows fr :cols fc :use use :layout 0 :source-location location)))
+          (progn
+            (unless (and (eql m 16) (eql n 8))
+              (error 'crisp-compiler-error
+                     :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
+            (analyze-expression
+             (ecase operand
+               (:acc `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init))
+               (:a   `(%construct-struct register-fragment-a-tf32-16x8 ,init ,init ,init ,init))
+               (:b   `(%construct-struct register-fragment-b-tf32-8x8 ,init ,init)))
+             env context location))))))
 
 ;;; ===================================================================
 ;;; P1 — store-fragment analyzer.
