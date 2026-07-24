@@ -25,10 +25,10 @@
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
            (global-size :set-to 16) (local-size :set-to 16))
-  (let ((A-tile (make-register-tile float (16 8) 0.0))
-        (B-tile (make-register-tile float (8 16) 0.0))
-        (C-tile (make-register-tile float (16 16) 0.0)))
-    (load-tile A A-tile (0 0))                              ; global -> GRF (Subgroup2DBlockLoadINTEL)
+  (let ((A-tile (make-register-tile float (16 8) 0.0 :operand :a))    ; Use-0 A fragments
+        (B-tile (make-register-tile float (8 16) 0.0 :operand :b))    ; Use-1 B fragments
+        (C-tile (make-register-tile float (16 16) 0.0)))             ; Use-2 accumulator (default)
+    (load-tile A A-tile (0 0))                              ; global -> GRF (per-fragment load, Phase A)
     (load-tile B B-tile (0 0))
     (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile) ; DPAS on the register-resident operands
     (store-tile C-tile C (0 0))))

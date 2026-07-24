@@ -594,6 +594,19 @@
       (multiple-value-bind (m n k) (%spv-mma-shape) (declare (ignore k)) (cons m n))
       (cons 16 8)))
 
+(defun %frag-mn-for-operand (operand)
+  "Endeavor 142 — per-fragment (rows . cols) for a register-tile of :operand (a|b|acc).  From the
+   active profile's mma-shape (sm sn sk): A = sm×sk (Use 0), B = sk×sn (Use 1), Acc = sm×sn (Use 2)
+   — matching load-fragment-a/b and make-register-fragment.  NVIDIA: 16x8 (A/B on PTX is rejected
+   earlier for the block-load path)."
+  (if (eq *target-backend* :spirv)
+      (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+        (ecase operand
+          (:a   (cons sm sk))
+          (:b   (cons sk sn))
+          (:acc (cons sm sn))))
+      (cons 16 8)))
+
 (defun %register-tile-frag-syms (var count)
   "COUNT per-fragment variable symbols for tile VAR, interned in VAR's package with a `$F<i>`
    suffix.  Endeavor 139: COUNT is the PER-WARP fragment count (= nfrags / #participating-warps),
@@ -674,31 +687,52 @@
       `(,let-sym ((,wp (,minus-sym (,to-int-sym (,warp-id-sym)) ,first-true)))
          ,(chain 0)))))
 
-(defun %emit-per-frag-accumulate (a b entry &optional accum-binding body)
-  "Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is now
-   a static per-warp switch (n-true threaded to %emit-frag-loop-distributed)."
-  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
+(defun %emit-per-frag-accumulate (a b entry tiles &optional accum-binding body)
+  "Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a
+   static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B
+   are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its
+   pre-loaded fragment var (A fragment (mi,k=0), B fragment (k=0,nj)) instead of load-fragment-a/b."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
     (destructuring-bind (fm . fn) (%frag-mn)
-      (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
-        (flet ((one-frag (fv mi-form nj-form)
-                 (let ((acc-set `(set! ,fv (mma-accumulate ,fv
-                                                           (load-fragment-a ,a (,mi-form 0))
-                                                           (load-fragment-b ,b (0 ,nj-form))))))
-                   (if body
-                       (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
-                       (list acc-set)))))
-          (if (> n-true 1)
-              (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
-              `(progn
-                 ,@(loop for mi below m-frags append
-                         (loop for nj below n-frags
-                               for idx = (+ (* mi n-frags) nj)
-                               append (one-frag (nth idx syms) mi nj))))))))))
+      (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+        (declare (ignore sm sn))
+        (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
+          (labels ((a-operand (mi)
+                     (let ((ta (and (symbolp a) (assoc a tiles))))
+                       (if ta
+                           (nth (* mi (max 1 (floor (third ta) sk))) (fourth ta))  ; A frag (mi, k=0)
+                           `(load-fragment-a ,a (,mi 0)))))
+                   (b-operand (nj)
+                     (let ((tb (and (symbolp b) (assoc b tiles))))
+                       (if tb
+                           (nth nj (fourth tb))                                     ; B frag (k=0, nj)
+                           `(load-fragment-b ,b (0 ,nj)))))
+                   (one-frag (fv mi-form nj-form)
+                     (let ((acc-set `(set! ,fv (mma-accumulate ,fv
+                                                               ,(a-operand mi-form)
+                                                               ,(b-operand nj-form)))))
+                       (if body
+                           (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                           (list acc-set)))))
+            (if (> n-true 1)
+                (progn
+                  (when (or (and (symbolp a) (assoc a tiles)) (and (symbolp b) (assoc b tiles)))
+                    (error 'crisp-compiler-error
+                      :message "register-resident A/B operands are not yet supported with a warp-distributed accumulator (n-true > 1)."
+                      :source-location nil))
+                  (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag))
+                `(progn
+                   ,@(loop for mi below m-frags append
+                           (loop for nj below n-frags
+                                 for idx = (+ (* mi n-frags) nj)
+                                 append (one-frag (nth idx syms) mi nj)))))))))))
 
 (defun %emit-per-frag-store (dest tile-id entry)
   "Per-fragment expansion of (store-tile V DEST (BTY BTX)).  Endeavor 139 step-4: distributed path
    is now a static per-warp switch."
-  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
     (destructuring-bind (fm . fn) (%frag-mn)
       (let* ((to-int-sym (intern "TO-INT" (find-package :crisp-language)))
              (m-frags (floor m fm)) (n-frags (floor n fn))
@@ -740,9 +774,9 @@
                                           :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
                                           :source-location nil)))
                   (body (nthcdr 6 form)))
-             (%emit-per-frag-accumulate a b (assoc v tiles) binding-sym body))
+             (%emit-per-frag-accumulate a b (assoc v tiles) tiles binding-sym body))
            ;; bodyless (implicit single accum-op)
-           (%emit-per-frag-accumulate a b (assoc v tiles)))))
+           (%emit-per-frag-accumulate a b (assoc v tiles) tiles))))
     ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
           (assoc (second form) tiles))
      (destructuring-bind (v dest tile-id) (cdr form)
@@ -769,8 +803,8 @@
 (defun %emit-per-frag-fill (entry val)
   "Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment
    of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init)."
-  (destructuring-bind (m n syms &optional n-true first-true) (cdr entry)
-    (declare (ignore m n n-true first-true))
+  (destructuring-bind (m n syms &optional n-true first-true operand) (cdr entry)
+    (declare (ignore m n n-true first-true operand))
     ;; fill just resets every fragment this warp holds — no logical index needed.
     `(progn
        ,@(loop for s in syms
@@ -778,17 +812,34 @@
 
 
 (defun %emit-per-frag-block-load (src entry coords)
-  "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS) into Intel
-   Subgroup2DBlockLoadINTEL block loads (global -> GRF), one per fragment of the register-tile,
-   using the tile's :operand (A / B) coop-matrix Use + layout.  ENTRY is the exploded-tile record
-   (V m n syms) from TILES; COORDS is the grid/origin position of the block in SRC."
-  (declare (ignore src entry coords))
-  ;; TODO(Phase A, metal-bound on BMG): emit the per-fragment Subgroup2DBlockLoad.  The A/B fragment
-  ;; layout that feeds DPAS correctly is verified via HOIST-EXPECT: MMA_CORRECT on Intel hardware —
-  ;; needs a def-hardware-profile :operand-aware register-tile (Use 0/1) + a BMG pod to iterate.
-  (error 'crisp-compiler-error
-    :message "TODO: register-tile load-tile (Subgroup2DBlockLoadINTEL) codegen not yet implemented (endeavor 142 Phase A, metal-bound)."
-    :source-location nil))
+  "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS): load each fragment
+   of the A/B register-tile from global SRC.  For the first MMA_CORRECT this reuses load-fragment-a/b
+   (CooperativeMatrixLoadKHR); the Subgroup2DBlockLoad swap is Phase B.  COORDS is the tile's grid
+   block position — its fragment-row/col offset (grid-idx × per-tile fragment count) is added to the
+   in-tile fragment index."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) (operand :acc)) (cdr entry)
+    (declare (ignore n-true first-true))
+    (let ((cl (find-package :crisp-language)))
+      (destructuring-bind (fr . fc) (%frag-mn-for-operand operand)
+        (let ((frag-fn (ecase operand
+                         (:a (intern "LOAD-FRAGMENT-A" cl))
+                         (:b (intern "LOAD-FRAGMENT-B" cl))
+                         (:acc (error 'crisp-compiler-error
+                                 :message "load-tile into an accumulator register-tile is not supported (only :operand :a / :b tiles are load targets)."
+                                 :source-location nil))))
+              (to-int  (intern "TO-INT" cl))
+              (n-rows  (floor m fr))
+              (n-cols  (floor n fc))
+              (gy      (first coords))
+              (gx      (second coords)))
+          `(progn
+             ,@(loop for ri below n-rows append
+                     (loop for ci below n-cols
+                           for idx = (+ (* ri n-cols) ci)
+                           collect `(set! ,(nth idx syms)
+                                          (,frag-fn ,src
+                                                    ((+ (* (,to-int ,gy) ,n-rows) ,ri)
+                                                     (+ (* (,to-int ,gx) ,n-cols) ,ci))))))))))))
 
 (defun %explode-rewrite-body-form (form tiles)
   "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references
@@ -809,8 +860,8 @@
                                           :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
                                           :source-location nil)))
                   (body (nthcdr 6 form)))
-             (%emit-per-frag-accumulate a b (assoc v tiles) binding-sym body))
-           (%emit-per-frag-accumulate a b (assoc v tiles)))))
+             (%emit-per-frag-accumulate a b (assoc v tiles) tiles binding-sym body))
+           (%emit-per-frag-accumulate a b (assoc v tiles) tiles))))
     ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
           (assoc (second form) tiles))
      (destructuring-bind (v dest tile-id) (cdr form)
@@ -860,12 +911,13 @@
                                  (dims    (third form))
                                  (init    (fourth form))
                                  (m       (first dims)) (n (second dims))
-                                 ;; nfrags MUST use the target's per-fragment dims (%frag-mn):
-                                 ;; NVIDIA 16x8, Intel BMG 8x16 — the emit functions use the same,
-                                 ;; so the syms count and the emit loop must agree (hardcoding 16x8
-                                 ;; here broke BMG: nth returned NIL -> "Unknown variable NIL").
-                                 (nfrags  (destructuring-bind (fm . fn) (%frag-mn)
-                                            (* (floor m fm) (floor n fn))))
+                                 ;; Endeavor 142: :operand (a|b|acc, default acc) picks the fragment
+                                 ;; shape/Use.  nfrags MUST use the operand's per-fragment dims: Acc
+                                 ;; M×N, A M×K, B K×N (BMG 8×16 / 8×8 / 8×16) — the emit functions use
+                                 ;; the same helper so the syms count and the emit loop agree.
+                                 (operand (getf (nthcdr 4 form) :operand :acc))
+                                 (nfrags  (destructuring-bind (fr . fc) (%frag-mn-for-operand operand)
+                                            (* (floor m fr) (floor n fc))))
                                  (warps-in (getf (nthcdr 4 form) :warps))
                                  (mask    (and warps-in
                                                (%normalize-warp-mask (%warp-mask-unquote warps-in) location))))
@@ -878,9 +930,9 @@
                                     (values 1 0))
                               (let* ((per-warp (floor nfrags n-true))
                                      (syms     (%register-tile-frag-syms (first b) per-warp)))
-                                (push (list (first b) m n syms n-true first-true) tiles)
+                                (push (list (first b) m n syms n-true first-true operand) tiles)
                                 (loop for s in syms
-                                      collect (list s `(make-register-fragment 16 8 ,init))))))
+                                      collect (list s `(make-register-fragment 16 8 ,init :operand ,operand))))))
                           (list b)))))
           (if (null tiles)
               let-expr

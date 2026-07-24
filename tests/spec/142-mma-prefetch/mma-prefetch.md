@@ -235,16 +235,21 @@ PROGRESS (2026-07-24):
   [DONE] make-register-fragment gains :operand (a|b|acc, default acc) -> coop-matrix Use 0/1/2 + shape
          (A sm×sk / B sk×sn / Acc sm×sn, matching load-fragment-a/b).  :acc default metal-confirmed
          unchanged (133/11 MMA_CORRECT).
-  [NEXT] operand-aware register-tile tiling — the whole tile machinery is Acc-shaped and must branch on
-         the tile's :operand.  For BMG (%spv-mma-shape = 8 16 8):
-           Acc tile (M×N): nfrags=(M/8)×(N/16), frag 8×16 Use2   (today's path)
-           A   tile (M×K): nfrags=(M/8)×(K/8),  frag 8×8  Use0
-           B   tile (K×N): nfrags=(K/8)×(N/16), frag 8×16 Use1
-         Touch: analyze-make-register-tile (parse :operand), %ensure-register-tile-type +
-         %register-tile-fit-check + %frag-mn + %explode-register-tiles (operand-aware nfrags/frag-dims +
-         pass :operand to make-register-fragment), and store the operand in *register-tile-dims*.
-  [NEXT] %emit-per-frag-block-load: per fragment -> (set! Tile$Fk (load-fragment-a/b SRC (coords))),
-         reusing CooperativeMatrixLoad for the first MMA_CORRECT (swap to Subgroup2DBlockLoad in Phase B).
-  [NEXT] %emit-per-frag-accumulate register-operand variant: when a/b are register-tiles, read the
-         pre-loaded fragment vars directly instead of (load-fragment-a a ...).
-  Then 01-register-mma-metal -> MMA_CORRECT locally.
+  [DONE] operand-aware register-tile tiling.  %frag-mn-for-operand returns per-operand frag dims
+         (:a sm×sk / :b sk×sn / :acc sm×sn on :spirv; 16×8 elsewhere).  %explode-register-tiles reads
+         (getf ... :operand :acc), sizes nfrags via %frag-mn-for-operand, carries operand as the 7th
+         element of each tiles entry, and threads it to make-register-fragment.  %emit-per-frag-store /
+         -fill accept + ignore the operand field (was the destructuring-bind arg-count break).
+  [DONE] %emit-per-frag-block-load (real): per fragment -> (set! Tile$Fk (load-fragment-a/b SRC (coords)))
+         with operand-selected frag-fn and (n-rows n-cols) tiling from %frag-mn-for-operand.  Reuses
+         CooperativeMatrixLoad for the first MMA_CORRECT; swaps to Subgroup2DBlockLoad in Phase B.
+  [DONE] %emit-per-frag-accumulate register-operand variant: takes the tiles list; when a/b are
+         register-tiles it reads the pre-loaded fragment vars directly (nth into the tile's syms)
+         instead of (load-fragment-a/b ...).  Guards n-true>1 register operands with an error.
+  [DONE] load-tile OVERLOAD in the explosion pass (%explode-rewrite-body-form LOAD-TILE clause): dest is a
+         register-tile -> %emit-per-frag-block-load; errors without an active hardware profile; errors on
+         non-:spirv backends ("Intel/SPV-only").  02 (no-profile) + 03 (ptx) fail correctly.
+  [GREEN] 01-register-mma-metal -> MMA_CORRECT on local BMG (C = A.B host-reference verified).  All 4
+         Phase A specs pass (00 compile, 01 metal, 02 FAIL profile, 03 FAIL Intel).  133/11 unregressed.
+  ==> Phase A COMPLETE.  Next: Phase B — make-register-tile-ring, prefetch-tile (Subgroup2DBlockPrefetch),
+      the pipelined loop, and swap CooperativeMatrixLoad -> Subgroup2DBlockLoad for the real async path.
