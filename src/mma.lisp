@@ -769,9 +769,22 @@
                collect `(set! ,s (make-register-fragment 16 8 ,val))))))
 
 
+(defun %emit-per-frag-block-load (src entry coords)
+  "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS) into Intel
+   Subgroup2DBlockLoadINTEL block loads (global -> GRF), one per fragment of the register-tile,
+   using the tile's :operand (A / B) coop-matrix Use + layout.  ENTRY is the exploded-tile record
+   (V m n syms) from TILES; COORDS is the grid/origin position of the block in SRC."
+  (declare (ignore src entry coords))
+  ;; TODO(Phase A, metal-bound on BMG): emit the per-fragment Subgroup2DBlockLoad.  The A/B fragment
+  ;; layout that feeds DPAS correctly is verified via HOIST-EXPECT: MMA_CORRECT on Intel hardware —
+  ;; needs a def-hardware-profile :operand-aware register-tile (Use 0/1) + a BMG pod to iterate.
+  (error 'crisp-compiler-error
+    :message "TODO: register-tile load-tile (Subgroup2DBlockLoadINTEL) codegen not yet implemented (endeavor 142 Phase A, metal-bound)."
+    :source-location nil))
+
 (defun %explode-rewrite-body-form (form tiles)
-  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile references to
-   any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
+  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references
+   to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
    otherwise recurse structurally."
   (cond
     ((not (consp form)) form)
@@ -797,6 +810,23 @@
     ((and (%head-name-eq (first form) "FILL-TILE") (= (length form) 3)
           (assoc (second form) tiles))
      (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
+    ;; Endeavor 142 (Intel MMA prefetch): load-tile with a register-tile DEST (third form) -> Intel
+    ;; block-load (Subgroup2DBlockLoadINTEL, global -> GRF, hardware-scoreboard async, no :barrier).
+    ;; Handled in the explosion (like store-tile), before the whole-tile var is gone.  The tile's
+    ;; :operand (A/B) picks the coop-matrix Use/layout.  Requires the SPV/Intel target + an active
+    ;; hardware profile (its GRF/L1 limits drive the Phase-C register-pipeline safety analysis);
+    ;; PTX has no mapping for this register-pipeline model.
+    ((and (%head-name-eq (first form) "LOAD-TILE") (= (length form) 4)
+          (assoc (third form) tiles))
+     (unless (active-hardware-profile)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile requires a hardware profile (pass --hardware-profile): its GRF / L1 limits drive the register-pipeline safety analysis."
+         :source-location nil))
+     (unless (eq *target-backend* :spirv)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile lowers to Subgroup2DBlockLoadINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping in this register-pipeline model."
+         :source-location nil))
+     (%emit-per-frag-block-load (second form) (assoc (third form) tiles) (fourth form)))
     (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
 
 (defun %explode-register-tiles (let-expr &optional location context)

@@ -195,3 +195,32 @@ double-buffer, Phase B).  Groundwork: add `:l1-cache-size` to the def-hardware-p
  20-block-store-metal.crisp          store-tile register-tile -> global via Subgroup2DBlockStoreINTEL;
      MMA_CORRECT with the block-store epilogue; update 11 to use it.
  + topology.md: document prefetch-tile / make-register-tile-ring / the load-tile register overload.
+
+
+IMPLEMENTATION NOTES — Phase A (discovered 2026-07-23/24)
+=========================================================
+KEY: register-tiles are NOT analyzed as a whole var — a pre-pass, `%explode-rewrite-body-form`
+(src/mma.lisp), SROA-explodes each into fragment vars (V$Fi) and rewrites the forms that use it.
+It had clauses for MMA-ACCUMULATE-VIA-TILE / STORE-TILE / FILL-TILE but NOT LOAD-TILE — so
+load-tile into a register-tile fell through to the whole-tile var -> "Unknown variable A-TILE".
+The overload therefore lives HERE, not in the load-tile analyzer.
+
+DONE + verified locally:
+ - Added a LOAD-TILE clause to %explode-rewrite-body-form (mirrors store-tile: DEST = third form,
+   `(assoc (third form) tiles)`).  Front-end guards fire there: no --hardware-profile -> error;
+   non-SPV target -> "Intel/SPV-only" error.  -> tests 02, 03 GREEN; 00 reaches the codegen stub;
+   133/11 (register matmul) unregressed.  `%emit-per-frag-block-load` is the stub.
+
+REMAINING (metal-bound — needs a BMG pod to verify MMA_CORRECT):
+ 1. make-register-tile[-ring] `:operand` (a|b|acc, default acc) -> coop-matrix Use (0/1/2).  Today
+    the register-tile is Accumulator-only: `%ensure-register-tile-type` mints
+    register-tile-acc-f32-MxN of register-fragment-acc-f32-16x8 (Use 2), and make-register-fragment
+    (src/mma.lisp:82) hardcodes Use 2 / shape from %spv-mma-shape.  A/B operands need A/B fragment
+    TYPES (Use 0 -> M×K, Use 1 -> K×N) + operand stored in the tile metadata (extend *register-tile-dims*).
+ 2. `%emit-per-frag-block-load`: per-fragment Subgroup2DBlockLoadINTEL global->GRF, using the tile's
+    Use/layout.  (Phase-A shortcut option: reuse per-fragment CooperativeMatrixLoadKHR (load-fragment-a/b)
+    for a first metal-correct baseline, then swap to the 2D block load in Phase B for prefetchability.)
+ 3. mma-accumulate-via-tile reading register-tile operands (pre-loaded) instead of global A/B — today
+    11-matmul-bmg hands the mma GLOBAL matrices; the register-resident-operand path is new.
+ Then 01-register-mma-metal -> HOIST-EXPECT: MMA_CORRECT on BMG.  The A/B fragment layout is the
+ metal-verification crux — can't be confirmed locally.
