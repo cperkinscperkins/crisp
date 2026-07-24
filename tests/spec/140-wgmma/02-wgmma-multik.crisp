@@ -12,6 +12,8 @@
 ;; HOIST-ARCH: sm_90
 ;; TEST-HOIST[CUDA]: validate-cuda-mma-run
 ;; HOIST-EXPECT: MMA_CORRECT
+;; wgmma is tf32 — declare fast so the tf32/precision warning stays silent (see 126-precision/20).
+(declaim (precision fast))
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
 (def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))

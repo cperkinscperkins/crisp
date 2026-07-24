@@ -753,6 +753,7 @@ MMA
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] don't forget bug 033 ( --debug )
+[ ] opportunities for using def-hardware-profile ??
 
 [x] run-on-pod.sh has lost its summary?
 
@@ -775,6 +776,10 @@ MMA
 - [x] chapter 3 - warp specialized CUDA vs Crisp
 - Intel
 - [ ] prefetch  Intel vs. Crisp
+
+- [x] ALWAYS use explicit math flag for everything. Crisp (--math-precision), nvcc (-f(no-)fast-math), icpx (-f(no-)fast-math).   for ieee and fast.  NEVER ASSUME. Document. Same for denormal handling
+- [ ] reductions?
+
 
 FMA
 ===

@@ -307,6 +307,16 @@
   (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
     (let ((acc-type (semantic-mma-accumulate-type node)))
       (if (%wgmma-acc-type-p acc-type)
+          (progn
+            ;; Endeavor 140 (precision): wgmma is tf32 by construction, so under a non-fast
+            ;; precision context the requested IEEE accuracy is silently NOT honored (results are
+            ;; tf32).  Warn.  *math-precision* here is the resolved effective precision at codegen
+            ;; — it already respects the full chain (force > with-precision > declaim > flag >
+            ;; default(:ieee)), the same value that stamps the fast-math flags in codegen.lisp.
+            (unless (eq *math-precision* :fast)
+              (format *error-output*
+                      "WARNING: wgmma-accumulate-via-tile uses tf32 tensor cores, but math-precision is '~(~a~)' — the IEEE accuracy request is not honored (results are tf32). Use (with-precision (fast) ...), (declaim (precision fast)), or --math-precision=fast.~%"
+                      *math-precision*))
           (destructuring-bind (&optional swizzle-mode (k 8)) (gethash node *wgmma-node-swizzle*)
             (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
                   (swizzle-p (and swizzle-mode (string-equal (string swizzle-mode) "128B"))))
@@ -317,7 +327,7 @@
                   (unless (and a-ptr b-ptr)
                     (error "wgmma: A/B (~ tile 0) did not yield an SMEM element pointer (a ~A b ~A)" a-ptr b-ptr))
                   (%emit-nvvm-wgmma builder module c-val a-ptr b-ptr acc-type
-                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k)))))
+                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k))))))
           (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
                 (a-val (gen (semantic-mma-accumulate-a-node node)))
                 (b-val (gen (semantic-mma-accumulate-b-node node))))

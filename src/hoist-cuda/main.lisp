@@ -1366,7 +1366,11 @@ overrides the runtime SM-count query in the grid-size heuristic."
           (format stream "      float* ~a_h = new float[~d]; CUDA_CHECK(cuMemcpyDtoH(~a_h, ~a_ptr, ~d * sizeof(float)));~%" ab ac ab ab ac)
           (format stream "      float* ~a_h = new float[~d]; CUDA_CHECK(cuMemcpyDtoH(~a_h, ~a_ptr, ~d * sizeof(float)));~%" bb bc bb bb bc)
           (format stream "      float* ~a_h = new float[~d]; CUDA_CHECK(cuMemcpyDtoH(~a_h, ~a_ptr, ~d * sizeof(float)));~%" cb cc cb cb cc)
-          (format stream "      int mma_ok = 1; int mma_bad = 0;~%")
+          ;; OpenMP-parallel: this O(N^3) host C=A.B check dominated the large-size sweep (68
+          ;; GFLOP at 4096 = minutes single-threaded).  reduction(+:mma_bad) avoids data races;
+          ;; the pragma is a harmless no-op if the harness is built without -fopenmp.
+          (format stream "      uint64_t mma_bad = 0;~%")
+          (format stream "      #pragma omp parallel for schedule(static) reduction(+:mma_bad)~%")
           (format stream "      for (uint64_t i = 0; i < ~dULL; i++) for (uint64_t j = 0; j < ~dULL; j++) {~%" m n)
           (format stream "        float acc = 0.0f;~%")
           (format stream "        for (uint64_t kk = 0; kk < ~dULL; kk++)~%" k)
@@ -1375,10 +1379,11 @@ overrides the runtime SM-count query in the grid-size heuristic."
             (format stream "        acc = acc * ~d.0f;   // --mma-scale (MMA fired ~:*~d× per fragment)~%" *mma-scale*))
           (format stream "        float got = ~a_h[i*~a_str0 + j*~a_str1];~%" cb cb cb)
           (format stream "        float d = got - acc; if (d < 0) d = -d;~%")
-          (format stream "        if (d > 1e-2f * (acc < 0 ? -acc : acc) + 1e-3f) { mma_ok = 0;~%")
-          (format stream "            if (mma_bad < 4) { std::cout << \"  C[\" << i << \"][\" << j << \"]=\" << got << \" ref \" << acc << std::endl; mma_bad++; } }~%")
+          (format stream "        if (d > 1e-2f * (acc < 0 ? -acc : acc) + 1e-3f) mma_bad++;~%")
           (format stream "      }~%")
-          (format stream "      std::cout << (mma_ok ? \"MMA_CORRECT\" : \"MMA_WRONG\") << std::endl;~%")
+          (format stream "      std::cout << (mma_bad == 0 ? \"MMA_CORRECT\" : \"MMA_WRONG\");~%")
+          (format stream "      if (mma_bad) std::cout << \" (\" << mma_bad << \" mismatches)\";~%")
+          (format stream "      std::cout << std::endl;~%")
           (format stream "      delete[] ~a_h; delete[] ~a_h; delete[] ~a_h;~%" ab bb cb)
           (format stream "    }~%"))))))
 

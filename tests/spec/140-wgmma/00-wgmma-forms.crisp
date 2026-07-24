@@ -8,6 +8,8 @@
 ;; SKIP-WITH[--differentiate]: "wgmma is forward-only MMA"
 ;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90]
+;; wgmma is tf32 — declare fast so the tf32/precision warning stays silent (see 126-precision/20).
+(declaim (precision fast))
 (def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-kernel wgmma_forms (&out C)
   (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
