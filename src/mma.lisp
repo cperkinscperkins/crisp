@@ -232,6 +232,40 @@
                     (~ ,src r c) (~ ,src (+ r 4) c)))))
            env context location)))))
 
+(defun analyze-prefetch-tile (expr env context location)
+  "Endeavor 142 (Phase B): (prefetch-tile SRC (COORD-Y COORD-X) :size (H W)) -> an Intel L1 cache
+   prefetch (Subgroup2DBlockPrefetchINTEL).  A fire-and-forget hint with NO destination — it warms the
+   LSC so a subsequent register block-load (load-tile -> GRF) hits L1 instead of stalling on global
+   memory; it never changes results.  Intel/SPV-only + hardware-profile-required (the profile's L1 size
+   feeds the Phase-C thrash analysis).  Lowered by reusing the coop-op node with a :prefetch kind."
+  (unless (active-hardware-profile)
+    (error 'crisp-compiler-error
+      :message "prefetch-tile requires a hardware profile (pass --hardware-profile): its L1 / GRF limits drive the register-pipeline safety analysis."
+      :source-location location))
+  (unless (eq *target-backend* :spirv)
+    (error 'crisp-compiler-error
+      :message "prefetch-tile lowers to Subgroup2DBlockPrefetchINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping (NVIDIA's prefetch model is cp.async into SLM, a different concept)."
+      :source-location location))
+  (destructuring-bind (src coords &key size) (cdr expr)
+    (unless (and (listp coords) (= (length coords) 2))
+      (error 'crisp-compiler-error
+        :message (format nil "prefetch-tile: coords must be a two-element (COORD-Y COORD-X), got ~S" coords)
+        :source-location location))
+    (unless (and (listp size) (= (length size) 2) (every #'integerp size))
+      (error 'crisp-compiler-error
+        :message (format nil "prefetch-tile: :size must be a compile-time (H W) of integers, got ~S" size)
+        :source-location location))
+    (let* ((h (first size)) (w (second size))
+           (ty (first coords)) (tx (second coords))
+           (tnode (analyze-expression src env context (append location '(1)))))
+      (make-semantic-coop-op
+       :type 'void :kind :prefetch
+       :tensor-node tnode
+       :rows h :cols w :use 0 :layout (%coop-layout-of tnode)
+       :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+       :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+       :source-location location))))
+
 ;;; ===================================================================
 ;;; P2 — mma-accumulate: the one GENUINE-codegen piece.
 ;;;
@@ -1039,6 +1073,8 @@
                          (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
                          (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
                          (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
+                         ;; Endeavor 142 (Phase B) — Intel L1 prefetch (Subgroup2DBlockPrefetchINTEL)
+                         (cons "PREFETCH-TILE"           #'analyze-prefetch-tile)
                          (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
                          (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
                          ;; Endeavor 140 (Chapter 4) -- wgmma forms

@@ -1,0 +1,20 @@
+;; Endeavor 142 Phase B (negative) — prefetch-tile is Intel/SPV-specific (OpSubgroup2DBlockPrefetchINTEL
+;; has no PTX/NVIDIA mapping; NVIDIA's prefetch model is cp.async into SLM, a different concept), so
+;; targeting PTX with a prefetch-tile is a hard compile error.  Profile is present, so the error is the
+;; target, not the profile.  (Twin of 03-register-load-on-ptx, for the prefetch form.)
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=ptx]: FAIL "Intel"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "negative test"
+;; SKIP-WITH[--debug]: "negative test"
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel prefetch_probe (A &out C)
+  (declare #'(mat &out mat) (global-size :set-to 16) (local-size :set-to 16))
+  (prefetch-tile A (0 0) :size (16 8))
+  (let ((A-tile (make-register-tile float (16 8) 0.0 :operand :a)))
+    (load-tile A A-tile (0 0))
+    (store-tile A-tile C (0 0))))

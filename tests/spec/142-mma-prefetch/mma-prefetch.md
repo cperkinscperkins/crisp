@@ -253,3 +253,38 @@ PROGRESS (2026-07-24):
          Phase A specs pass (00 compile, 01 metal, 02 FAIL profile, 03 FAIL Intel).  133/11 unregressed.
   ==> Phase A COMPLETE.  Next: Phase B — make-register-tile-ring, prefetch-tile (Subgroup2DBlockPrefetch),
       the pipelined loop, and swap CooperativeMatrixLoad -> Subgroup2DBlockLoad for the real async path.
+
+PHASE B PROGRESS (2026-07-24):
+  RING DESIGN DECISION (Chris): (a) USER-managed ring index — ring-get takes an explicit index, lowering
+    PRESERVES (ring, index-expr) structure so Phase C can VERIFY the WAW hazard.  (b) compiler-managed
+    rotation is a possible FUTURE endeavor (Chris will revisit the macros) but may be overfitted; (a)
+    gives the freedom some users need, and keeps the WAW hazard expressible (the Phase-C "superpower").
+  DE-RISK (empirical): local llvm-spirv (LLVM 22) SUPPORTS --spirv-ext=+SPV_INTEL_2d_block_io (bogus ext
+    -> "Unknown extension"; the real one passes).  Probed the exact ABI through llvm-as -> llvm-spirv
+    --to-text -> confirmed OpSubgroup2DBlockPrefetchINTEL + Capability Subgroup2DBlockIOINTEL emitted from:
+      void __spirv_Subgroup2DBlockPrefetchINTEL(i32 ElementSize, i32 BlockWidth, i32 BlockHeight,
+        i32 BlockCount, ptr addrspace(1) SrcBase, i32 MemWidth, i32 MemHeight, i32 MemPitch, <2 x i32> Coord)
+      spir_func, UNMANGLED __spirv_ name (same convention as the coop-matrix calls).  This ABI convention
+      carries all three 2d_block_io ops (prefetch / load / store) — foundational for the rest of Phase B.
+  [DONE] prefetch-tile.  (prefetch-tile SRC (COORD-Y COORD-X) :size (H W)) -> Subgroup2DBlockPrefetchINTEL.
+    Reuses the coop-op node with a NEW :prefetch kind (no new semantic node -> no etypecase churn): void
+    statement, reads no matrix / writes no reg, warms L1 for the H×W block at origin (ty*H, tx*W).
+    - src/mma.lisp: analyze-prefetch-tile (guards: active-hardware-profile required, *target-backend*
+      :spirv only) + registered "PREFETCH-TILE" in register-mma-analyzers.
+    - src/codegen.lisp: %block-prefetch helper (the intrinsic call) + :prefetch branch in the coop-op
+      generate-node-ir ecase (mirrors :store: ptr+stride from %coop-tensor-ptr+stride, then emit).
+    - src/compiler.lisp: %module-uses-2d-block-io-p predicate + adds --spirv-ext=+SPV_INTEL_2d_block_io
+      to the llvm-spirv flags only when a Subgroup2DBlock* call is present.
+    Specs 11-prefetch-tile-compile (COMPILE-WITH bmg+spv PASS) + 13-prefetch-on-ptx (FAIL "Intel").  6/6
+    in-dir.  MANUALLY verified: 2 Subgroup2DBlockPrefetchINTEL opcodes (A+B) + capability + extension in
+    the .spt.  01 still MMA_CORRECT.  TODO(green): validate-spv-prefetch IR-grep to guard against silent
+    drop (COMPILE-WITH PASS proves it translates, not that it's present — manual grep covers it for now).
+  [NEXT] 10-register-tile-ring-forms: make-register-tile-ring + ring-get for REGISTER tiles.  KEY
+    CONSTRAINT (differs from the SLM scratch ring in topology.md ~L950, which ring-gets a RUNTIME index
+    via base+i*stride): register-tiles SROA-explode to STATIC fragment vars — the GRF cannot be runtime-
+    indexed.  So a register ring = ring-count independent fragment-var SETS, and ring-get's index must
+    resolve to a compile-time slot (loop unroll-by-ring-count OR phase-flip predication, cf. 139 multi-lap
+    static frag addressing).  Register (shape,count,dtype) as metadata (feeds Phase-C spill/WAW/L1).
+  [NEXT] swap the Phase-A CooperativeMatrixLoad shortcut in %emit-per-frag-block-load -> real
+    Subgroup2DBlockLoadINTEL (so the prefetched L1 data is what the load consumes).
+  [NEXT] 12-prefetch-pipeline-metal: prologue + K-loop (mod-slot, no set!) + epilogue -> MMA_CORRECT + bench.

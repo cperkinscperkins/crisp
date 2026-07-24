@@ -4099,6 +4099,39 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                       (crisp.llvm-bindings::llvm-const-int i32 0 nil)))))
 
 
+(defun %block-prefetch (builder module ptr stride-val rows cols)
+  "Endeavor 142 (Phase B): emit Subgroup2DBlockPrefetchINTEL for an f32 ROWS x COLS block whose
+   element origin is PTR (addrspace(1)), STRIDE-VAL the i64 leading dim in elements.  A fire-and-forget
+   L1 cache hint — no result, never changes data (so it can be interleaved freely into the K-loop).
+   ABI (verified against llvm-spirv --spirv-ext=+SPV_INTEL_2d_block_io -> OpSubgroup2DBlockPrefetchINTEL):
+     void __spirv_Subgroup2DBlockPrefetchINTEL(i32 ElementSize, i32 BlockWidth, i32 BlockHeight,
+       i32 BlockCount, ptr addrspace(N) SrcBase, i32 MemWidth, i32 MemHeight, i32 MemPitch, <2 x i32> Coord)
+   The surface is described AS the block itself (origin PTR, MemW/H = block, Coord = <0,0>); the driver
+   only needs a valid region to warm — the operand values are perf hints, not correctness."
+  (let* ((i32   (crisp.llvm-bindings::llvm-int32-type))
+         (i64   (crisp.llvm-bindings::llvm-int64-type))
+         (as    (%ptr-as ptr))
+         (v2i32 (crisp.llvm-bindings::llvm-vector-type i32 2))
+         ;; MemoryPitch is in BYTES: leading-dim-elements * sizeof(f32).
+         (pitch-bytes (crisp.llvm-bindings::llvm-build-trunc
+                       builder
+                       (crisp.llvm-bindings::llvm-build-mul
+                        builder stride-val (crisp.llvm-bindings::llvm-const-int i64 4 nil) "pf_pitch64")
+                       i32 "pf_pitch")))
+    (%coop-call builder module
+                "__spirv_Subgroup2DBlockPrefetchINTEL"
+                (crisp.llvm-bindings::llvm-void-type)
+                (list i32 i32 i32 i32 (%coop-ptr-type as) i32 i32 i32 v2i32)
+                (list (crisp.llvm-bindings::llvm-const-int i32 4 nil)      ; ElementSize (bytes, f32)
+                      (crisp.llvm-bindings::llvm-const-int i32 cols nil)   ; BlockWidth  (cols)
+                      (crisp.llvm-bindings::llvm-const-int i32 rows nil)   ; BlockHeight (rows)
+                      (crisp.llvm-bindings::llvm-const-int i32 1 nil)      ; BlockCount
+                      ptr                                                  ; SrcBasePointer
+                      (crisp.llvm-bindings::llvm-const-int i32 cols nil)   ; MemoryWidth  (elements)
+                      (crisp.llvm-bindings::llvm-const-int i32 rows nil)   ; MemoryHeight (rows)
+                      pitch-bytes                                          ; MemoryPitch  (bytes)
+                      (crisp.llvm-bindings::llvm-const-null v2i32)))))     ; Coordinate <0,0>
+
 (defun %coop-fill (builder module init-val elem-llvm rows cols use)
   "Construct a coop matrix filled with INIT-VAL (scalar) via __spirv_CompositeConstruct."
   (%coop-call builder module
@@ -4141,4 +4174,15 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (multiple-value-bind (ptr stride)
                  (%coop-tensor-ptr+stride builder tv orow ocol layout)
                (%coop-store builder module ptr mat stride f32 rows cols use layout)
+               (values nil nil))))
+          ;; Endeavor 142 (Phase B): prefetch-tile -> Subgroup2DBlockPrefetchINTEL.  Like :store it is a
+          ;; void statement, but it WRITES no registers and READS no matrix value — just warms L1 for the
+          ;; ROWS x COLS block whose origin is (ty*rows, tx*cols).
+          (:prefetch
+           (let* ((tv   (gen (semantic-coop-op-tensor-node node)))
+                  (orow (origin (semantic-coop-op-ty node) rows))
+                  (ocol (origin (semantic-coop-op-tx node) cols)))
+             (multiple-value-bind (ptr stride)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
+               (%block-prefetch builder module ptr stride rows cols)
                (values nil nil)))))))))
