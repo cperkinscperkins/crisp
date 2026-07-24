@@ -781,6 +781,26 @@ MMA
 - [ ] reductions?
 
 
+
+NVIDIA TEST FAILURES
+These are BMG tests which are being run on NVidia, for some reason. We supposedly fixed this earlier, but maybe not or the fix was overwritten?
+
+============================================================
+  RUN SUMMARY
+============================================================
+  specs (binary)                     FAIL
+  specs (binary, --differentiate)    ok
+  negative specs                     ok
+
+  ALL FAILED SPECS (across phases):
+    - 133-mma-spv/10-hello-mma-bmg
+    - 133-mma-spv/11-matmul-bmg
+    - 133-mma-spv/12-tiled-matmul-bmg
+    - 135-matrix-multiply-tile-stride/04-tiled-matmul-bmg
+    - 135-matrix-multiply-tile-stride/08-fill-tile-register-bmg
+    - 135-matrix-multiply-tile-stride/09-strided-matmul-bmg
+
+
 FMA
 ===
 [ ] needs definition (where)

@@ -15,7 +15,7 @@ into the GRF. There is an example of the aspirational example code in the topolo
 
 [ ] What should happen if targeting PTX?  ( compilation error, presumably for `prefetch-tile` )
 [ ] What TDD tests and in what order?
-
+[ ] Need to document in topology.md the final `prefetch-tile` and `make-register-tile-ring`.  Further, if we adjust `load-tile` we should document that too.
 
 
 
@@ -140,3 +140,58 @@ Write-After-Write / Ring Collisions (100% Detectable): Because you explicitly de
 L1 Cache Thrashing (Highly Detectable): Just like register counting, Crisp can calculate the spatial footprint of your prefetches. If you prefetch K+8 of a 128x128 TF32 tile, Crisp can calculate that you are requesting hundreds of kilobytes. If the hardware profile states the L1 cache is only 128KB, the compiler can emit a warning that your prefetch depth mathematically guarantees cache evictions.
 The One Static Blindspot:
 The only hazard Crisp cannot perfectly analyze statically is Load-to-Use Starvation (the math finishing faster than the load). You cannot perfectly predict runtime memory latency (LSC fabric congestion, global memory bandwidth contention) against DPAS math cycles without a cycle-accurate hardware simulator. However, Crisp could easily emit a heuristic warning if the pipeline depth is dangerously shallow (e.g., pipeline-stages = 1 for a global memory load).
+
+
+TDD Plan (phases -> spec files)
+===============================
+
+All specs live in `tests/spec/142-mma-prefetch/` (ci-stop advances here as each goes green; today
+ci-stop = 140-wgmma).  Target is Intel/SPV: compile tests use `--ir-target=spv`; metal tests use
+`TEST-HOIST[L0]: validate-l0-mma-run` + `HOIST-EXPECT: MMA_CORRECT` on BMG (auto-skips on non-Intel
+HW via the L0 skip-gate).  Every Intel-prefetch form REQUIRES a hardware profile
+(`--hardware-profile=bmg` / `HOIST-HARDWARE-PROFILE: bmg`); compiling one without a profile is a hard
+error.  PTX target -> hard error for `prefetch-tile` and register-`load-tile`.  (`bmg` is currently
+`def-hardware-profile`'d inline in each spec, as the 133/134 specs do; a real built-in `bmg` is a
+nice-to-have we can add.)
+
+DESIGN INVARIANTS to keep now so Phase C's static analysis isn't fought later:
+ - `make-register-tile-ring` records `(shape, ring-count, dtype)` as compile-time metadata (a registry,
+   like `*register-tile-dims*` / `*wgmma-acc-dims*`).  -> feeds the spill / L1 / shallow checks.
+ - lowering PRESERVES per-op `(ring, index-expr)` structure through to codegen — never flatten
+   `ring-get` to an opaque register/pointer before a data-flow pass could read it.  -> feeds the WAW check.
+ - hardware profile is required, so the analysis always has its GRF/L1 limits.
+
+--- Phase A — block-load into registers + register-MMA (no ring, no prefetch) ---
+The minimal new capability: `load-tile` overloaded on a register-tile dest -> Subgroup2DBlockLoadINTEL
+(global->GRF, hardware-async, no :barrier), then mma reads that register-tile.  No ring yet (that's the
+double-buffer, Phase B).  Groundwork: add `:l1-cache-size` to the def-hardware-profile schema + `bmg`
+(GRF ceiling already exists as `:max-registers-per-thread`; decide the tile-bytes->registers conversion).
+ 00-block-load-compile.crisp         load-tile A -> a make-register-tile -> Subgroup2DBlockLoadINTEL appears
+     in the SPV IR (overload dispatch on dest-type + SPV).  IR-grep validator, compile-only.
+     COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS, SKIP-DEFAULT-PASS, SKIP-WITH[--differentiate]/[--debug].
+ 01-register-mma-metal.crisp         load A,B (one K-block) into register-tiles -> mma-accumulate -> store C.
+     MMA-DIMS / HOIST-HARDWARE-PROFILE: bmg / TEST-HOIST[L0] / HOIST-EXPECT: MMA_CORRECT.  (Phase A capstone.)
+ errors/01-no-hardware-profile.crisp register-load-tile without --hardware-profile -> compile error.
+ errors/02-register-load-on-ptx.crisp load-tile into a register-tile with --ir-target=ptx -> compile error.
+
+--- Phase B — rings + prefetch + pipeline ---
+ 10-register-tile-ring-forms.crisp   make-register-tile-ring + ring-get parse; ring (shape,count,dtype)
+     metadata registered; ring-tiles feed load-tile + mma.  compile-only.
+ 11-prefetch-tile-compile.crisp      prefetch-tile (no dest) -> Subgroup2DBlockPrefetchINTEL in the SPV IR.
+ 12-prefetch-pipeline-metal.crisp    the full intel-prefetch-matrix-multiply (prologue + K-loop + epilogue);
+     TEST-HOIST[L0] / HOIST-EXPECT: MMA_CORRECT.  + wire into the benchmark suite (Intel chapter) vs Phase A.
+ errors/03-prefetch-on-ptx.crisp     prefetch-tile with --ir-target=ptx -> compile error.
+
+--- Phase C — static safety net (the "Crisp superpower") ---
+ errors/04-register-spill.crisp      ring config whose live GRF bytes exceed bmg's ceiling -> hard error.
+ errors/05-ring-collision.crisp      load-tile targets a ring index still live in an mma read -> WAW error.
+ 12-l1-thrash-warning.crisp          over-eager prefetch (K+8) beyond bmg L1 -> EXPECT-STDERR warning.
+ 13-shallow-pipeline-warning.crisp   pipeline-stages=1 for a global load -> EXPECT-STDERR warning.
+ (+ positive counterparts: a valid config compiles clean, no warning.)
+ DECIDE before Phase B: user-managed ring-idx (example; needs the WAW *verify*) vs compiler-managed
+ rotation (WAW impossible by construction).  Groundwork supports both.
+
+--- Phase D — 2D block store + docs ---
+ 20-block-store-metal.crisp          store-tile register-tile -> global via Subgroup2DBlockStoreINTEL;
+     MMA_CORRECT with the block-store epilogue; update 11 to use it.
+ + topology.md: document prefetch-tile / make-register-tile-ring / the load-tile register overload.
