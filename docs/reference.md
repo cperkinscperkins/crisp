@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-22T02:08:18.746269Z
+Generated on 2026-07-25T16:11:47.833958Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -3538,6 +3538,13 @@ Generated on 2026-07-22T02:08:18.746269Z
 
 
 ---
+### DEFUN `%BLOCK-PREFETCH`
+- **Args**: `(BUILDER MODULE PTR STRIDE-VAL ROWS COLS)`
+
+  > Endeavor 142 (Phase B): emit Subgroup2DBlockPrefetchINTEL for an f32 ROWS x COLS block whose  >    element origin is PTR (addrspace(1)), STRIDE-VAL the i64 leading dim in elements.  A fire-and-forget  >    L1 cache hint — no result, never changes data (so it can be interleaved freely into the K-loop).  >    ABI (verified against llvm-spirv --spirv-ext=+SPV_INTEL_2d_block_io -> OpSubgroup2DBlockPrefetchINTEL):  >      void __spirv_Subgroup2DBlockPrefetchINTEL(i32 ElementSize, i32 BlockWidth, i32 BlockHeight,  >        i32 BlockCount, ptr addrspace(N) SrcBase, i32 MemWidth, i32 MemHeight, i32 MemPitch, <2 x i32> Coord)  >    The surface is described AS the block itself (origin PTR, MemW/H = block, Coord = <0,0>); the driver  >    only needs a valid region to warm — the operand values are perf hints, not correctness.
+
+
+---
 ### DEFUN `%COOP-FILL`
 - **Args**: `(BUILDER MODULE INIT-VAL ELEM-LLVM ROWS COLS USE)`
 
@@ -3743,6 +3750,13 @@ Generated on 2026-07-22T02:08:18.746269Z
 - **Args**: `(MODULE)`
 
   > T if MODULE declares/calls any __spirv_CooperativeMatrix* builtin (Endeavor 133) — used  >    to add --spirv-ext=+SPV_KHR_cooperative_matrix only when needed.
+
+
+---
+### DEFUN `%MODULE-USES-2D-BLOCK-IO-P`
+- **Args**: `(MODULE)`
+
+  > T if MODULE declares/calls any __spirv_Subgroup2DBlock* builtin (Endeavor 142 — prefetch / block  >    load / block store) — used to add --spirv-ext=+SPV_INTEL_2d_block_io only when needed.
 
 
 ---
@@ -4487,6 +4501,12 @@ Generated on 2026-07-22T02:08:18.746269Z
 
 
 ---
+### DEFVAR `*MMA-BENCH-ITERS*`
+
+  > Endeavor 142 (Phase B, Q1): iteration count when --mma-bench[=N] is passed — the launcher then wraps  >    the (already-closed) command list in a warmup + timed re-execution loop and prints  >    `BENCH M N K <gflops> GFLOPS`.  Requires --mma-test=M,N,K for the FLOPS count.  NIL = no benchmark.
+
+
+---
 ### DEFVAR `*MMA-INPUT-COUNTER*`
 
   > Per-kernel input-tensor counter for A(0)/B(1) role assignment.
@@ -4502,7 +4522,7 @@ Generated on 2026-07-22T02:08:18.746269Z
 ### DEFUN `%MMA-PARSE-ARGS`
 - **Args**: `(ARGS)`
 
-  > Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an  >    optional --mma-scale=S flag.
+  > Return (values metacrisp-path (M N K)-or-NIL scale bench-iters), extracting --mma-test=M,N,K, an  >    optional --mma-scale=S flag, and an optional --mma-bench[=N] flag (Endeavor 142; default 100 iters).
 
 
 ---
@@ -6520,7 +6540,7 @@ Generated on 2026-07-22T02:08:18.746269Z
 ### DEFUN `ANALYZE-MAKE-REGISTER-FRAGMENT`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P1 / F-SPV: (make-register-fragment M N INIT).  :spirv -> a filled accumulator coop  >    matrix; else the NVIDIA %construct-struct record.
+  > P1 / F-SPV: (make-register-fragment M N INIT &key operand).  :spirv -> a filled coop matrix;  >    else the NVIDIA %construct-struct record.  Endeavor 142: :operand (a|b|acc, default acc) picks  >    the coop-matrix Use + shape so an A/B operand tile mints fragments matching load-fragment-a/b —  >    A = sm×sk Use 0, B = sk×sn Use 1, Acc = sm×sn Use 2.
 
 
 ---
@@ -6549,6 +6569,13 @@ Generated on 2026-07-22T02:08:18.746269Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > P2 / F-SPV: (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,  >    8x8, col-major); else the NVIDIA per-lane read.
+
+
+---
+### DEFUN `ANALYZE-PREFETCH-TILE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 142 (Phase B): (prefetch-tile SRC (COORD-Y COORD-X) :size (H W)) -> an Intel L1 cache  >    prefetch (Subgroup2DBlockPrefetchINTEL).  A fire-and-forget hint with NO destination — it warms the  >    LSC so a subsequent register block-load (load-tile -> GRF) hits L1 instead of stalling on global  >    memory; it never changes results.  Intel/SPV-only + hardware-profile-required (the profile's L1 size  >    feeds the Phase-C thrash analysis).  Lowered by reusing the coop-op node with a :prefetch kind.
 
 
 ---
@@ -6674,9 +6701,30 @@ Generated on 2026-07-22T02:08:18.746269Z
 
 
 ---
+### DEFUN `%REGISTER-TILE-RING-INIT-FORM-P`
+- **Args**: `(FORM)`
+
+  > T if FORM is a (make-register-tile-ring T (M N) &key ring-count operand) constructor (Endeavor 142).  >    Distinct from make-register-tile: NO positional INIT (ring slots are load-targets), keys start at 4th.
+
+
+---
+### DEFUN `%RESOLVE-TILE-REF`
+- **Args**: `(REF TILES)`
+
+  > Endeavor 142: resolve a tile operand REF to a per-slot tiles entry (V m n syms n-true first-true  >    operand).  REF is either a bare exploded register-tile symbol, or (ring-get RING SLOT) with a  >    COMPILE-TIME integer SLOT into a register-tile-RING (a ring entry is (RSYM :ring m n slot-syms-list  >    operand)).  The GRF cannot be runtime-indexed, so a register ring-get with a non-constant slot is a  >    hard error here — the Phase-C pipeline supplies static slots by unrolling / phase-flip.  Returns NIL  >    if REF names no exploded register tile/ring (a normal scratch operand).
+
+
+---
 ### DEFUN `%FRAG-MN`
 
   > Per-fragment (M . N) for register-tile decomposition: the active profile's mma-shape  >    (M N) on :spirv, else NVIDIA 16x8.
+
+
+---
+### DEFUN `%FRAG-MN-FOR-OPERAND`
+- **Args**: `(OPERAND)`
+
+  > Endeavor 142 — per-fragment (rows . cols) for a register-tile of :operand (a|b|acc).  From the  >    active profile's mma-shape (sm sn sk): A = sm×sk (Use 0), B = sk×sn (Use 1), Acc = sm×sn (Use 2)  >    — matching load-fragment-a/b and make-register-fragment.  NVIDIA: 16x8 (A/B on PTX is rejected  >    earlier for the block-load path).
 
 
 ---
@@ -6715,9 +6763,9 @@ Generated on 2026-07-22T02:08:18.746269Z
 
 ---
 ### DEFUN `%EMIT-PER-FRAG-ACCUMULATE`
-- **Args**: `(A B ENTRY &OPTIONAL ACCUM-BINDING BODY)`
+- **Args**: `(A B ENTRY TILES &OPTIONAL ACCUM-BINDING BODY)`
 
-  > Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is now  >    a static per-warp switch (n-true threaded to %emit-frag-loop-distributed).
+  > Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a  >    static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B  >    are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its  >    pre-loaded fragment var (A fragment (mi,k=0), B fragment (k=0,nj)) instead of load-fragment-a/b.
 
 
 ---
@@ -6735,10 +6783,59 @@ Generated on 2026-07-22T02:08:18.746269Z
 
 
 ---
+### DEFUN `%EMIT-PER-FRAG-BLOCK-LOAD`
+- **Args**: `(SRC ENTRY COORDS)`
+
+  > Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS): load each fragment  >    of the A/B register-tile from global SRC.  For the first MMA_CORRECT this reuses load-fragment-a/b  >    (CooperativeMatrixLoadKHR); the Subgroup2DBlockLoad swap is Phase B.  COORDS is the tile's grid  >    block position — its fragment-row/col offset (grid-idx × per-tile fragment count) is added to the  >    in-tile fragment index.
+
+
+---
+### DEFUN `%REGISTER-RING-REF-P`
+- **Args**: `(FORM TILES)`
+
+  > T if FORM is (ring-get RING ...) naming a REGISTER ring (a :ring entry) in TILES.
+
+
+---
+### DEFUN `%BODY-REFS-REGISTER-RING-P`
+- **Args**: `(FORM TILES)`
+
+  > T if FORM contains any register-ring ring-get anywhere in its tree.
+
+
+---
+### DEFUN `%COLLECT-REGISTER-RING-COUNTS`
+- **Args**: `(FORM TILES)`
+
+  > List the :ring-counts of every register ring ring-getted in FORM (ring entry = (RSYM :ring m n  >    slot-syms-list operand); (fifth entry) is the slot-syms-list, whose length is the ring-count).
+
+
+---
+### DEFUN `%FOLD-STATIC-SLOT`
+- **Args**: `(EXPR LOOP-VAR J)`
+
+  > Evaluate a register-ring SLOT EXPR to a compile-time integer with LOOP-VAR bound to J.  Supports  >    integer literals, LOOP-VAR, (+ - * a b), (mod a b), and (to-ulong/to-int x) (identity).  Errors if  >    EXPR does not fold — a register-ring slot MUST be static (the GRF is not runtime-indexable).
+
+
+---
+### DEFUN `%SUBST-LOOP-BODY-COPY`
+- **Args**: `(FORM LOOP-VAR J TILES)`
+
+  > Copy J of a register-ring loop body: register-ring ring-get SLOTS fold to the static literal  >    (%fold-static-slot with LOOP-VAR:=J); every OTHER LOOP-VAR use becomes the absolute block  >    (+ LOOP-VAR (to-ulong J)).  J=0 leaves data coords as bare LOOP-VAR.
+
+
+---
+### DEFUN `%UNROLL-REGISTER-RING-LOOPS`
+- **Args**: `(FORM TILES)`
+
+  > Source->source: unroll any (dotimes (KVAR LIMIT) BODY...) whose BODY ring-gets a REGISTER ring by  >    that ring's :ring-count RC — KVAR steps by RC and RC body-copies run per step (copy j: absolute block  >    KVAR+j, slot j).  v1: the loop must be written stride-1 (we set the stride), all register rings in it  >    must share RC, and LIMIT is assumed divisible by RC (K is a multiple of the tile-K).
+
+
+---
 ### DEFUN `%EXPLODE-REWRITE-BODY-FORM`
 - **Args**: `(FORM TILES)`
 
-  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile references to  >    any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
+  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references  >    to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
 
 
 ---

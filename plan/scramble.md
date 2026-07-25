@@ -759,7 +759,7 @@ MMA
 
 [x] run-on-pod.sh has lost its summary?
 
-[ ] extract_status.py -> add a % summary.
+[x] extract_status.py -> add a % summary.
 
 [ ] benchmarking
 [x] How to collect and recollect data? runpod.io gives us LOTS of different GPUs to test against,
@@ -778,6 +778,7 @@ MMA
 - [x] chapter 3 - warp specialized CUDA vs Crisp
 - Intel
 - [ ] prefetch  Intel vs. Crisp
+- [ ] did we hit the aspirational, with ring pipelining? 
 - [ ] new benchmarking (via .json) doesn't include Intel.
 
 - [x] ALWAYS use explicit math flag for everything. Crisp (--math-precision), nvcc (-f(no-)fast-math), icpx (-f(no-)fast-math).   for ieee and fast.  NEVER ASSUME. Document. Same for denormal handling

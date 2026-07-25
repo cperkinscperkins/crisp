@@ -492,6 +492,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%BLOCK-PREFETCH BUILDER MODULE PTR STRIDE-VAL ROWS COLS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%PTR-AS PTR-VAL)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp
 - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-WGMMA BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N &OPTIONAL SWIZZLE-P (K
                                                                                                                          8))  mma.lisp
@@ -879,6 +883,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp
 - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp
 - - - - (%MODULE-USES-COOP-MATRIX-P MODULE)  compiler.lisp
+- - - - (%MODULE-USES-2D-BLOCK-IO-P MODULE)  compiler.lisp
 - - - (COMPILE-TO-PTX MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)  compiler.lisp
 - - - - (%PTX-FINALIZE-LIBDEVICE MODULE)  codegen.lisp
 - - - - - (%SET-NVVM-REFLECT-FTZ MODULE FTZ-P)  codegen.lisp
@@ -1395,7 +1400,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%EXPLODE-REGISTER-TILES LET-EXPR &OPTIONAL LOCATION CONTEXT)  mma.lisp
 - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp
 - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp
-- - - (%FRAG-MN)  mma.lisp
+- - - (%FRAG-MN-FOR-OPERAND OPERAND)  mma.lisp
 - - - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
 - - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp
 - - - (%WARP-MASK-UNQUOTE V)  mma.lisp
@@ -1407,6 +1412,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
 - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - - (%REGISTER-TILE-FRAG-SYMS VAR COUNT)  mma.lisp
+- - - (%REGISTER-TILE-RING-INIT-FORM-P FORM)  mma.lisp
+- - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
 - - (%EXPAND-MATMUL-TILE-STRIDE-REGISTER-FORMS LET-EXPR LOCATION)  mma.lisp
 - - - (%MMTS-REGISTER-DIMS-MAP BINDINGS)  mma.lisp
 - - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
@@ -1541,6 +1548,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-OUTER-DIMENSIONS-EXPRESSION EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-PREFETCH-TILE EXPR ENV CONTEXT LOCATION)  mma.lisp
+- - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
 
 - (ANALYZE-PROGN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%STRIP-EXECUTION-CONTEXT-DECLARES BODY-FORMS)  analysis/control.lisp [See above]

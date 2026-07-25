@@ -1,3 +1,5 @@
+# python .\scripts\extract_status.py
+
 import re
 import csv
 from pathlib import Path
