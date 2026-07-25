@@ -915,6 +915,103 @@
                                                     ((+ (* (,to-int ,gy) ,n-rows) ,ri)
                                                      (+ (* (,to-int ,gx) ,n-cols) ,ci))))))))))))
 
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 142 (Phase B, decision b): source-level unroll-by-ring-count.
+;;; A register ring's slot must be a compile-time constant (the GRF is not runtime-indexable), yet the
+;;; natural pipeline idiom (shared with the SLM scratch ring) writes it as (mod grid-k RING-COUNT).  We
+;;; UNROLL the K-loop by the ring-count so each copy's slot folds to a literal (copy j -> slot j), while
+;;; data coordinates keep the absolute block (grid-k + j).  Runs BEFORE %explode-rewrite-body-form, so
+;;; the exploder then sees only static ring-get slots.
+;;; ---------------------------------------------------------------------------
+
+(defun %register-ring-ref-p (form tiles)
+  "T if FORM is (ring-get RING ...) naming a REGISTER ring (a :ring entry) in TILES."
+  (and (consp form) (%head-name-eq (first form) "RING-GET") (>= (length form) 3)
+       (let ((e (assoc (second form) tiles))) (and e (eq (second e) :ring)))))
+
+(defun %body-refs-register-ring-p (form tiles)
+  "T if FORM contains any register-ring ring-get anywhere in its tree."
+  (cond ((%register-ring-ref-p form tiles) t)
+        ((consp form) (some (lambda (f) (%body-refs-register-ring-p f tiles)) form))
+        (t nil)))
+
+(defun %collect-register-ring-counts (form tiles)
+  "List the :ring-counts of every register ring ring-getted in FORM (ring entry = (RSYM :ring m n
+   slot-syms-list operand); (fifth entry) is the slot-syms-list, whose length is the ring-count)."
+  (let ((counts '()))
+    (labels ((walk (f)
+               (when (consp f)
+                 (when (%register-ring-ref-p f tiles)
+                   (push (length (fifth (assoc (second f) tiles))) counts))
+                 (mapc #'walk f))))
+      (walk form))
+    (nreverse counts)))
+
+(defun %fold-static-slot (expr loop-var j)
+  "Evaluate a register-ring SLOT EXPR to a compile-time integer with LOOP-VAR bound to J.  Supports
+   integer literals, LOOP-VAR, (+ - * a b), (mod a b), and (to-ulong/to-int x) (identity).  Errors if
+   EXPR does not fold — a register-ring slot MUST be static (the GRF is not runtime-indexable)."
+  (labels ((nm (s) (and (symbolp s) (symbol-name s)))
+           (ev (e)
+             (cond
+               ((integerp e) e)
+               ((and (symbolp e) (string-equal (nm e) (nm loop-var))) j)
+               ((and (consp e) (= (length e) 2)
+                     (member (nm (first e)) '("TO-ULONG" "TO-INT") :test #'string-equal))
+                (ev (second e)))
+               ((and (consp e) (= (length e) 3)
+                     (member (nm (first e)) '("+" "-" "*" "MOD") :test #'string-equal))
+                (let ((a (ev (second e))) (b (ev (third e))))
+                  (cond ((string-equal (nm (first e)) "+")   (+ a b))
+                        ((string-equal (nm (first e)) "-")   (- a b))
+                        ((string-equal (nm (first e)) "*")   (* a b))
+                        (t                                   (mod a b)))))
+               (t (error 'crisp-compiler-error
+                    :message (format nil "register-ring ring-get slot ~S does not fold to a compile-time integer (with ~a := ~a).  A register-ring slot must be static — write it as (mod LOOPVAR ring-count) or a constant."
+                                     expr loop-var j)
+                    :source-location nil)))))
+    (ev expr)))
+
+(defun %subst-loop-body-copy (form loop-var j tiles)
+  "Copy J of a register-ring loop body: register-ring ring-get SLOTS fold to the static literal
+   (%fold-static-slot with LOOP-VAR:=J); every OTHER LOOP-VAR use becomes the absolute block
+   (+ LOOP-VAR (to-ulong J)).  J=0 leaves data coords as bare LOOP-VAR."
+  (let ((cl (find-package :crisp-language)))
+    (cond
+      ((and (symbolp form) (string-equal (symbol-name form) (symbol-name loop-var)))
+       (if (zerop j) loop-var (list (intern "+" cl) loop-var (list (intern "TO-ULONG" cl) j))))
+      ((not (consp form)) form)
+      ((%register-ring-ref-p form tiles)
+       (list (first form) (second form) (%fold-static-slot (third form) loop-var j)))
+      (t (mapcar (lambda (f) (%subst-loop-body-copy f loop-var j tiles)) form)))))
+
+(defun %unroll-register-ring-loops (form tiles)
+  "Source->source: unroll any (dotimes (KVAR LIMIT) BODY...) whose BODY ring-gets a REGISTER ring by
+   that ring's :ring-count RC — KVAR steps by RC and RC body-copies run per step (copy j: absolute block
+   KVAR+j, slot j).  v1: the loop must be written stride-1 (we set the stride), all register rings in it
+   must share RC, and LIMIT is assumed divisible by RC (K is a multiple of the tile-K)."
+  (cond
+    ((not (consp form)) form)
+    ((and (%head-name-eq (first form) "DOTIMES") (>= (length form) 2)
+          (consp (second form)) (>= (length (second form)) 2)
+          (null (third (second form)))            ; user wrote stride-1; we install the RC stride
+          (%body-refs-register-ring-p (cddr form) tiles))
+     (let* ((binding  (second form))
+            (loop-var (first binding))
+            (limit    (second binding))
+            (body     (cddr form))
+            (rcs      (remove-duplicates (%collect-register-ring-counts body tiles)))
+            (cl       (find-package :crisp-language)))
+       (unless (= 1 (length rcs))
+         (error 'crisp-compiler-error
+           :message (format nil "register-ring K-loop mixes rings of different :ring-count ~S — v1 requires a single ring-count per pipelined loop." rcs)
+           :source-location nil))
+       (let ((rc (first rcs)))
+         `(,(first form) (,loop-var ,limit (,(intern "TO-ULONG" cl) ,rc))
+           ,@(loop for j below rc
+                   append (mapcar (lambda (f) (%subst-loop-body-copy f loop-var j tiles)) body))))))
+    (t (mapcar (lambda (f) (%unroll-register-ring-loops f tiles)) form))))
+
 (defun %explode-rewrite-body-form (form tiles)
   "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references
    to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
@@ -1042,8 +1139,13 @@
                               (list b))))))
           (if (null tiles)
               let-expr
+              ;; Endeavor 142: unroll register-ring K-loops FIRST (so ring-get slots are static
+              ;; literals), THEN rewrite the tile-ops per fragment.
               `(,head ,new-bindings
-                      ,@(mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) body)))))))
+                      ,@(mapcar (lambda (f)
+                                  (%explode-rewrite-body-form
+                                   (%unroll-register-ring-loops f tiles) tiles))
+                                body)))))))
 
 
 (defun analyze-inner-dimension (expr env context location)

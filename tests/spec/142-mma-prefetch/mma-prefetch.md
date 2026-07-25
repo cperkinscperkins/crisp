@@ -292,7 +292,37 @@ PHASE B PROGRESS (2026-07-24):
     Spec 10-register-tile-ring-forms (COMPILE-WITH bmg+spv PASS, ring-count=2 ping-pong, slots 0+1 loaded
     + accumulated).  7/7 in-dir.  MANUALLY verified in the .spt: 6 CooperativeMatrixLoad (both slots' A+B
     frags = distinct storage) + 4 MulAdd (2 mma x 2 C-frags).  133/11 + 142/01 unregressed.
-  [NEXT] swap the Phase-A CooperativeMatrixLoad shortcut in %emit-per-frag-block-load -> real
-    Subgroup2DBlockLoadINTEL (so the prefetched L1 data is what the load consumes).
-  [NEXT] 12-prefetch-pipeline-metal: prologue + K-loop (STATIC slots via unroll/phase, no set!) +
-    epilogue -> MMA_CORRECT + bench.  The runtime-slot-into-static-GRF puzzle lives here.
+  DECISIONS (Chris, 2026-07-24): Q1 do the block-load-swap measurement NOW (empirically, not defer);
+    Q2 build the GENERAL unroll transform NOW (decision b), not a hand-unrolled test.  Ring idiom:
+    REUSE the SLM pipeline idiom (compiler auto-unrolls when it sees a register ring) — one idiom, the
+    ring TYPE picks runtime-slot-view (SLM) vs unroll-to-static (register).  NOT a dedicated pipeline form.
+  [DONE] Unroll-by-ring-count transform (decision b).  A register-ring K-loop written as the SLM idiom
+    (dotimes (grid-k n-k-steps) ... (ring-get RING (mod grid-k RC)) ...) is UNROLLED by RC so each copy's
+    slot folds to a compile-time literal (copy j -> slot j) while data coords keep the absolute block
+    (grid-k + j); the loop stride becomes RC.  All in src/mma.lisp, run inside %explode-register-tiles
+    BEFORE %explode-rewrite-body-form:
+    - %fold-static-slot (evaluates a slot expr with loop-var:=j over +/-/*/mod + to-ulong/to-int identity
+      -> literal; errors if not static — the register-ring-slot-must-be-constant guard);
+    - %register-ring-ref-p / %body-refs-register-ring-p / %collect-register-ring-counts (detect + get RC);
+    - %subst-loop-body-copy (ring-get slots -> folded literal; other loop-var uses -> (+ loop-var (to-ulong j)));
+    - %unroll-register-ring-loops (rewrites the dotimes; v1: stride-1 loops only, one RC per loop, LIMIT
+      assumed divisible by RC).
+    Spec 12-ring-kloop-metal (MMA-DIMS 16 16 32 -> n-k-steps=4, unrolled-by-2 loop runs 2 OUTER trips ->
+    proves multi-iteration accumulation, not a 1-trip fold).  MMA_CORRECT on BMG.  8/8 in-dir.  Verified
+    IR: 6 CooperativeMatrixLoad + 4 MulAdd per outer iter (2 copies), n-k-steps runtime (ulong).  NOTE:
+    inner-dimension is ULONG, so the loop is ulong -> the transform coerces j with (to-ulong j).
+  [DONE — Q1 harness (a)] L0 GFLOPS bench.  Chris chose (a): add timing to the existing L0 --mma-test
+    harness (not scripts/crisp_bench, not VTune — those under a later "Intel benchmarking generally"
+    discussion).  src/hoist-l0/main.lisp: *mma-bench-iters* + --mma-bench[=N] (default 100; requires
+    --mma-test for the FLOPS count) -> the launcher warms up 5x then times N back-to-back
+    zeCommandQueueExecuteCommandLists on the closed cmdList + one sync, prints
+    `BENCH M N K <gflops> GFLOPS (N iters, S s)`.  Correctness check still runs after (reads last launch).
+    Verified on 12: BENCH 16 16 32 -> 11.6 GFLOPS + MMA_CORRECT.
+  FINDING: 16x16xK is LAUNCH-OVERHEAD-BOUND (~1.4us/launch), far too small for prefetch to show — the
+    problem fits in registers/L1 with no memory latency to hide.  A meaningful Q1 measurement needs BOTH
+    (i) an OVERLAPPED pipeline (12 loads+uses the same block per copy — no overlap) and (ii) real scale.
+    The single-workgroup 16x16-output kernel only scales via K; a real grid needs the tile-stride outer
+    loop.  -> folds into the "benchmarking Intel generally" discussion Chris flagged next.
+  [NEXT] Discuss Intel benchmarking generally, then: prefetch-overlapped pipeline (prologue slot0 + per-K
+    prefetch K+rc + load-next OVERLAPPING compute-K) at scale -> Q1 answer (coop-load+prefetch vs the
+    Subgroup2DBlockLoad swap).

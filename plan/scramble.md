@@ -776,6 +776,7 @@ MMA
 - [x] chapter 3 - warp specialized CUDA vs Crisp
 - Intel
 - [ ] prefetch  Intel vs. Crisp
+- [ ] new benchmarking (via .json) doesn't include Intel.
 
 - [x] ALWAYS use explicit math flag for everything. Crisp (--math-precision), nvcc (-f(no-)fast-math), icpx (-f(no-)fast-math).   for ieee and fast.  NEVER ASSUME. Document. Same for denormal handling
 - [ ] reductions?

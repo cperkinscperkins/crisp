@@ -3,22 +3,30 @@
 
 
 (defvar *mma-test-dims* nil "(M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.")
+(defvar *mma-bench-iters* nil
+  "Endeavor 142 (Phase B, Q1): iteration count when --mma-bench[=N] is passed — the launcher then wraps
+   the (already-closed) command list in a warmup + timed re-execution loop and prints
+   `BENCH M N K <gflops> GFLOPS`.  Requires --mma-test=M,N,K for the FLOPS count.  NIL = no benchmark.")
 (defvar *mma-input-counter* 0 "Per-kernel input-tensor counter for A(0)/B(1) role assignment.")
 (defvar *mma-scale* 1 "Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.
    Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).")
 
 (defun %mma-parse-args (args)
-  "Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an
-   optional --mma-scale=S flag."
-  (let ((dims nil) (path nil) (scale 1))
+  "Return (values metacrisp-path (M N K)-or-NIL scale bench-iters), extracting --mma-test=M,N,K, an
+   optional --mma-scale=S flag, and an optional --mma-bench[=N] flag (Endeavor 142; default 100 iters)."
+  (let ((dims nil) (path nil) (scale 1) (bench nil))
     (dolist (a args)
       (cond
         ((and (>= (length a) 11) (string= (subseq a 0 11) "--mma-test="))
          (setf dims (mapcar #'parse-integer (uiop:split-string (subseq a 11) :separator ","))))
         ((and (>= (length a) 12) (string= (subseq a 0 12) "--mma-scale="))
          (setf scale (parse-integer (subseq a 12))))
+        ((and (>= (length a) 12) (string= (subseq a 0 12) "--mma-bench="))
+         (setf bench (parse-integer (subseq a 12))))
+        ((string= a "--mma-bench")
+         (setf bench 100))
         (t (unless path (setf path a)))))
-    (values path dims scale)))
+    (values path dims scale bench)))
 
 (defun %mma-out-dir-p (dir)
   "T if the param direction is an output (&out)."
@@ -33,9 +41,13 @@
         (unless args
           (format t "Usage: crisp-hoist-l0 [--mma-test=M,N,K] <path-to-metacrisp-file>~%")
           (uiop:quit 1))
-        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args args)
+        (multiple-value-bind (metacrisp-path dims scale bench) (%mma-parse-args args)
           (setf *mma-test-dims* dims)
           (setf *mma-scale* scale)
+          (setf *mma-bench-iters* bench)
+          (when (and bench (not dims))
+            (format t "Error: --mma-bench requires --mma-test=M,N,K (for the FLOPS count).~%")
+            (uiop:quit 1))
           (unless (and metacrisp-path (probe-file metacrisp-path))
             (format t "Error: File not found: ~a~%" metacrisp-path)
             (uiop:quit 1))
@@ -230,7 +242,8 @@
   (format stream "#include <fstream>~%")
   (format stream "#include <vector>~%")
   (format stream "#include <cstring>~%")
-  (format stream "#include <cstdint>~%~%"))
+  (format stream "#include <cstdint>~%")
+  (format stream "#include <chrono>~%~%"))
 
 
 (defun generate-cpp-structs (stream structs)
@@ -730,6 +743,26 @@
     (format stream "    zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%~%")
 
     (format stream "    std::cout << \"Kernel executed successfully\" << std::endl;~%~%")
+
+    ;; Endeavor 142 (Q1): timed re-execution of the (closed) command list.  Warm up, then time N
+    ;; back-to-back submits on the single queue (they serialize) + one sync -> sustained throughput.
+    ;; The correctness check (emitted after this) reads C from the LAST launch, still deterministic.
+    (when (and *mma-bench-iters* *mma-test-dims*)
+      (destructuring-bind (m n k) *mma-test-dims*
+        (format stream "    // --mma-bench: warmup + timed launch loop (Endeavor 142)~%")
+        (format stream "    {~%")
+        (format stream "        const int BENCH_ITERS = ~d;~%" *mma-bench-iters*)
+        (format stream "        for (int w = 0; w < 5; ++w) { zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr); }~%")
+        (format stream "        zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
+        (format stream "        auto _t0 = std::chrono::high_resolution_clock::now();~%")
+        (format stream "        for (int it = 0; it < BENCH_ITERS; ++it) { zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr); }~%")
+        (format stream "        zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
+        (format stream "        auto _t1 = std::chrono::high_resolution_clock::now();~%")
+        (format stream "        double _secs = std::chrono::duration<double>(_t1 - _t0).count();~%")
+        (format stream "        double _flops = 2.0 * ~d.0 * ~d.0 * ~d.0 * (double)BENCH_ITERS;~%" m n k)
+        (format stream "        double _gflops = (_secs > 0.0) ? (_flops / _secs / 1e9) : 0.0;~%")
+        (format stream "        std::cout << \"BENCH ~d ~d ~d \" << _gflops << \" GFLOPS (\" << BENCH_ITERS << \" iters, \" << _secs << \" s)\" << std::endl;~%" m n k)
+        (format stream "    }~%~%")))
 
     allocations))
 
