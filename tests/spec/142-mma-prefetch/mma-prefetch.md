@@ -279,12 +279,20 @@ PHASE B PROGRESS (2026-07-24):
     in-dir.  MANUALLY verified: 2 Subgroup2DBlockPrefetchINTEL opcodes (A+B) + capability + extension in
     the .spt.  01 still MMA_CORRECT.  TODO(green): validate-spv-prefetch IR-grep to guard against silent
     drop (COMPILE-WITH PASS proves it translates, not that it's present — manual grep covers it for now).
-  [NEXT] 10-register-tile-ring-forms: make-register-tile-ring + ring-get for REGISTER tiles.  KEY
-    CONSTRAINT (differs from the SLM scratch ring in topology.md ~L950, which ring-gets a RUNTIME index
-    via base+i*stride): register-tiles SROA-explode to STATIC fragment vars — the GRF cannot be runtime-
-    indexed.  So a register ring = ring-count independent fragment-var SETS, and ring-get's index must
-    resolve to a compile-time slot (loop unroll-by-ring-count OR phase-flip predication, cf. 139 multi-lap
-    static frag addressing).  Register (shape,count,dtype) as metadata (feeds Phase-C spill/WAW/L1).
+  [DONE] 10-register-tile-ring-forms: make-register-tile-ring + ring-get for REGISTER tiles.  A register
+    ring = :ring-count INDEPENDENT slot-sets of SROA-exploded fragment vars (<ring>$S<slot>$F<i>) — the
+    GRF is NOT runtime-indexable (unlike the SLM scratch ring in topology.md ~L950 whose ring-get is a
+    base+i*stride view).  So ring-get into a register ring REQUIRES a compile-time integer slot.
+    - src/mma.lisp: %register-tile-ring-init-form-p recognizer; %resolve-tile-ref (resolves a bare tile
+      symbol OR (ring-get RING const-slot) to a per-slot entry, ERRORS on a non-constant register slot /
+      out-of-range / bare-ring-ref); %explode-register-tiles explodes the ring binding into rc slot-sets +
+      records a :ring tiles entry (RSYM :ring m n (slot0-syms slot1-syms ...) operand) = the compile-time
+      metadata Phase C reads; the LOAD-TILE explosion clause + %emit-per-frag-accumulate a/b operands now
+      go through %resolve-tile-ref, so a ring slot feeds both load-tile and mma.
+    Spec 10-register-tile-ring-forms (COMPILE-WITH bmg+spv PASS, ring-count=2 ping-pong, slots 0+1 loaded
+    + accumulated).  7/7 in-dir.  MANUALLY verified in the .spt: 6 CooperativeMatrixLoad (both slots' A+B
+    frags = distinct storage) + 4 MulAdd (2 mma x 2 C-frags).  133/11 + 142/01 unregressed.
   [NEXT] swap the Phase-A CooperativeMatrixLoad shortcut in %emit-per-frag-block-load -> real
     Subgroup2DBlockLoadINTEL (so the prefetched L1 data is what the load consumes).
-  [NEXT] 12-prefetch-pipeline-metal: prologue + K-loop (mod-slot, no set!) + epilogue -> MMA_CORRECT + bench.
+  [NEXT] 12-prefetch-pipeline-metal: prologue + K-loop (STATIC slots via unroll/phase, no set!) +
+    epilogue -> MMA_CORRECT + bench.  The runtime-slot-into-static-GRF puzzle lives here.

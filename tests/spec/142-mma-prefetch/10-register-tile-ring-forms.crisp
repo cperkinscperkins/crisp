@@ -1,0 +1,34 @@
+;; Endeavor 142 Phase B — make-register-tile-ring + ring-get for REGISTER tiles (the double-buffer).
+;; Unlike an SLM scratch ring (topology.md ~L950), which is ONE tensor whose dim-0 is the slot and whose
+;; ring-get takes a RUNTIME index (base + i*stride, the GRF-free addressable path), a REGISTER ring is
+;; ring-count INDEPENDENT sets of SROA-exploded fragment vars — the GRF cannot be runtime-indexed.  So
+;; ring-get into a register ring REQUIRES a compile-time integer slot; the explosion pass resolves it to
+;; that slot's fragment vars.  (The K-loop pipeline in 12 gets its static slots by unrolling / phase-flip.)
+;;
+;; This compile-only test proves: the ring parses, ring (shape,count,dtype,operand) registers as metadata,
+;; and ring-get with a static slot feeds BOTH load-tile (block-load into a slot) and mma (read a slot).
+;; ring-count=2 (ping-pong); slots 0 and 1 are each loaded and accumulated, proving per-slot resolution.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "forward-only ring / MMA"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel ring_forms (A B &out C)
+  (declare #'(mat mat &out mat) (global-size :set-to 16) (local-size :set-to 16))
+  (let ((A-ring (make-register-tile-ring float (16 8) :ring-count 2 :operand :a))
+        (B-ring (make-register-tile-ring float (8 16) :ring-count 2 :operand :b))
+        (C-tile (make-register-tile float (16 16) 0.0)))
+    ;; block-load two K-blocks into ring slots 0 and 1 (static indices)
+    (load-tile A (ring-get A-ring 0) (0 0))
+    (load-tile B (ring-get B-ring 0) (0 0))
+    (load-tile A (ring-get A-ring 1) (0 0))
+    (load-tile B (ring-get B-ring 1) (0 0))
+    ;; accumulate from each slot in turn — proves per-slot fragment-var resolution
+    (mma-accumulate-via-tile (8 16 8) C-tile (ring-get A-ring 0) (ring-get B-ring 0))
+    (mma-accumulate-via-tile (8 16 8) C-tile (ring-get A-ring 1) (ring-get B-ring 1))
+    (store-tile C-tile C (0 0))))

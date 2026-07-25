@@ -619,6 +619,46 @@
        (or (= (length form) 4)
            (and (>= (length form) 6) (keywordp (fifth form))))))
 
+(defun %register-tile-ring-init-form-p (form)
+  "T if FORM is a (make-register-tile-ring T (M N) &key ring-count operand) constructor (Endeavor 142).
+   Distinct from make-register-tile: NO positional INIT (ring slots are load-targets), keys start at 4th."
+  (and (consp form) (>= (length form) 4) (%head-name-eq (first form) "MAKE-REGISTER-TILE-RING")
+       (listp (third form)) (= (length (third form)) 2)
+       (keywordp (fourth form))))
+
+(defun %resolve-tile-ref (ref tiles)
+  "Endeavor 142: resolve a tile operand REF to a per-slot tiles entry (V m n syms n-true first-true
+   operand).  REF is either a bare exploded register-tile symbol, or (ring-get RING SLOT) with a
+   COMPILE-TIME integer SLOT into a register-tile-RING (a ring entry is (RSYM :ring m n slot-syms-list
+   operand)).  The GRF cannot be runtime-indexed, so a register ring-get with a non-constant slot is a
+   hard error here — the Phase-C pipeline supplies static slots by unrolling / phase-flip.  Returns NIL
+   if REF names no exploded register tile/ring (a normal scratch operand)."
+  (cond
+    ((symbolp ref)
+     (let ((e (assoc ref tiles)))
+       (when (and e (eq (second e) :ring))
+         (error 'crisp-compiler-error
+           :message (format nil "~a is a register-tile-ring — index it with (ring-get ~a SLOT), it is not a plain tile." ref ref)
+           :source-location nil))
+       e))
+    ((and (consp ref) (%head-name-eq (first ref) "RING-GET") (= (length ref) 3))
+     (let ((ring-entry (assoc (second ref) tiles))
+           (slot (third ref)))
+       (when (and ring-entry (eq (second ring-entry) :ring))
+         (destructuring-bind (rsym marker m n slot-syms-list operand) ring-entry
+           (declare (ignore marker))
+           (unless (integerp slot)
+             (error 'crisp-compiler-error
+               :message (format nil "ring-get into the REGISTER ring ~a needs a compile-time integer slot (the GRF is not runtime-indexable); got ~S.  Unroll the K-loop by :ring-count or use a static phase index."
+                                rsym slot)
+               :source-location nil))
+           (unless (< -1 slot (length slot-syms-list))
+             (error 'crisp-compiler-error
+               :message (format nil "ring-get slot ~a is out of range 0..~a for ring ~a." slot (1- (length slot-syms-list)) rsym)
+               :source-location nil))
+           (list rsym m n (nth slot slot-syms-list) 1 0 operand)))))
+    (t nil)))
+
 
 
 (defun %frag-mn ()
@@ -733,12 +773,12 @@
         (declare (ignore sm sn))
         (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
           (labels ((a-operand (mi)
-                     (let ((ta (and (symbolp a) (assoc a tiles))))
+                     (let ((ta (%resolve-tile-ref a tiles)))
                        (if ta
                            (nth (* mi (max 1 (floor (third ta) sk))) (fourth ta))  ; A frag (mi, k=0)
                            `(load-fragment-a ,a (,mi 0)))))
                    (b-operand (nj)
-                     (let ((tb (and (symbolp b) (assoc b tiles))))
+                     (let ((tb (%resolve-tile-ref b tiles)))
                        (if tb
                            (nth nj (fourth tb))                                     ; B frag (k=0, nj)
                            `(load-fragment-b ,b (0 ,nj)))))
@@ -751,7 +791,7 @@
                            (list acc-set)))))
             (if (> n-true 1)
                 (progn
-                  (when (or (and (symbolp a) (assoc a tiles)) (and (symbolp b) (assoc b tiles)))
+                  (when (or (%resolve-tile-ref a tiles) (%resolve-tile-ref b tiles))
                     (error 'crisp-compiler-error
                       :message "register-resident A/B operands are not yet supported with a warp-distributed accumulator (n-true > 1)."
                       :source-location nil))
@@ -909,8 +949,10 @@
     ;; :operand (A/B) picks the coop-matrix Use/layout.  Requires the SPV/Intel target + an active
     ;; hardware profile (its GRF/L1 limits drive the Phase-C register-pipeline safety analysis);
     ;; PTX has no mapping for this register-pipeline model.
+    ;; Endeavor 142: the DEST may be a bare register-tile OR (ring-get RING SLOT) into a register ring —
+    ;; %resolve-tile-ref handles both (and errors on a non-constant register-ring slot).
     ((and (%head-name-eq (first form) "LOAD-TILE") (= (length form) 4)
-          (assoc (third form) tiles))
+          (%resolve-tile-ref (third form) tiles))
      (unless (active-hardware-profile)
        (error 'crisp-compiler-error
          :message "load-tile into a register-tile requires a hardware profile (pass --hardware-profile): its GRF / L1 limits drive the register-pipeline safety analysis."
@@ -919,7 +961,7 @@
        (error 'crisp-compiler-error
          :message "load-tile into a register-tile lowers to Subgroup2DBlockLoadINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping in this register-pipeline model."
          :source-location nil))
-     (%emit-per-frag-block-load (second form) (assoc (third form) tiles) (fourth form)))
+     (%emit-per-frag-block-load (second form) (%resolve-tile-ref (third form) tiles) (fourth form)))
     (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
 
 (defun %explode-register-tiles (let-expr &optional location context)
@@ -967,7 +1009,37 @@
                                 (push (list (first b) m n syms n-true first-true operand) tiles)
                                 (loop for s in syms
                                       collect (list s `(make-register-fragment 16 8 ,init :operand ,operand))))))
-                          (list b)))))
+                          ;; Endeavor 142: a register-tile-RING explodes into :ring-count INDEPENDENT
+                          ;; slot-sets of fragment vars (<ring>$S<slot>$F<i>).  ring-get resolves a static
+                          ;; slot to one set (%resolve-tile-ref).  The ring is recorded as a :ring tiles
+                          ;; entry (RSYM :ring m n (slot0-syms slot1-syms ...) operand) — the compile-time
+                          ;; (shape,count,dtype,operand) metadata Phase C's spill/WAW/L1 analysis reads.
+                          (if (and (consp b) (= (length b) 2) (symbolp (first b))
+                                   (%register-tile-ring-init-form-p (second b)))
+                              (let* ((form    (second b))
+                                     (dims    (third form))
+                                     (m       (first dims)) (n (second dims))
+                                     (keys    (nthcdr 3 form))
+                                     (operand (getf keys :operand :acc))
+                                     (rc      (getf keys :ring-count)))
+                                (unless (and (integerp rc) (plusp rc))
+                                  (error 'crisp-compiler-error
+                                    :message (format nil "make-register-tile-ring: :ring-count must be a positive compile-time integer, got ~S." rc)
+                                    :source-location location))
+                                (%register-tile-fit-check m n location)
+                                (destructuring-bind (fr . fc) (%frag-mn-for-operand operand)
+                                  (let* ((nfrags (* (floor m fr) (floor n fc)))
+                                         (slot-syms-list
+                                           (loop for slot below rc
+                                                 collect (%register-tile-frag-syms
+                                                          (intern (format nil "~a$S~d" (symbol-name (first b)) slot)
+                                                                  (symbol-package (first b)))
+                                                          nfrags))))
+                                    (push (list (first b) :ring m n slot-syms-list operand) tiles)
+                                    (loop for syms in slot-syms-list
+                                          append (loop for s in syms
+                                                       collect (list s `(make-register-fragment 16 8 0.0 :operand ,operand)))))))
+                              (list b))))))
           (if (null tiles)
               let-expr
               `(,head ,new-bindings
