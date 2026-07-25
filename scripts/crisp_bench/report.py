@@ -27,6 +27,7 @@ CHAPTER_ORDER = [
     "chap1.5_async_block",
     "chap2_pipelined_block",
     "chap3_wgmma",
+    "chap_intel_prefetch",
 ]
 CHAPTER_LABEL = {
     "chap0_sync":            "Synchronous tiling (fp32, no tensor cores)",
@@ -34,12 +35,44 @@ CHAPTER_LABEL = {
     "chap1.5_async_block":   "Block TMA load + tf32 MMA",
     "chap2_pipelined_block": "Pipelined block + tf32 MMA",
     "chap3_wgmma":           "Hopper warpgroup MMA (wgmma, tf32)",
+    "chap_intel_prefetch":   "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
 }
-# Chapters whose Crisp kernel uses tf32 tensor cores — so an IEEE (fp32) cuBLAS
-# ceiling is an apples-to-oranges comparison for those precision tables.
+# Intel/BMG technique overrides (Endeavor 143): the shared chapter keys mean DIFFERENT things per
+# platform — Intel chap0/chap1 use XMX coop-matrix tf32 tensor cores, not the fp32 non-tensor-core
+# NVIDIA path — so the label must differ by hardware section.
+INTEL_CHAPTER_LABEL = {
+    "chap0_sync":         "Synchronous coop-matrix tiling (XMX tf32)",
+    "chap1_async_linear": "OpGroupAsyncCopy staging (XMX tf32)",
+}
+# Chapters whose Crisp kernel uses tf32 tensor cores — so an IEEE (fp32) vendor ceiling is an
+# apples-to-oranges comparison for those precision tables.  On Intel EVERY chapter is XMX tf32
+# (see _is_mma_chapter); this NVIDIA set only lists NVIDIA's tensor-core chapters.
 MMA_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block", "chap3_wgmma"}
 # Chapters where CUDA_Apples is a *naive* kernel, not a tensor-core mirror.
 NAIVE_APPLES_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block"}
+
+
+def _platform_of(gpu):
+    """Derive the platform from the hardware section's gpu_model (report.py groups by GPU)."""
+    return "intel" if "intel" in gpu.lower() else "nvidia"
+
+def _vendor_label(platform):
+    """Human name of the vendor-library ceiling for this platform."""
+    return "oneMKL" if platform == "intel" else "cuBLAS"
+
+def _vendor_competitor(platform):
+    """The competitor key that carries the vendor ceiling in the JSON."""
+    return "OneMKL_Optimal" if platform == "intel" else "CUBLAS_Optimal"
+
+def _chapter_label(platform, chapter):
+    if platform == "intel" and chapter in INTEL_CHAPTER_LABEL:
+        return INTEL_CHAPTER_LABEL[chapter]
+    return CHAPTER_LABEL.get(chapter, "")
+
+def _is_mma_chapter(platform, chapter):
+    """True if this chapter's Crisp kernel is tf32 tensor-core (so an IEEE-fp32 ceiling is
+    apples-to-oranges).  Intel: always (XMX).  NVIDIA: only the listed tensor-core chapters."""
+    return True if platform == "intel" else (chapter in MMA_CHAPTERS)
 
 
 def chapter_sort_key(ch):
@@ -80,6 +113,7 @@ def generate_markdown(results_dir: Path, out_file: Path = None):
     lines = ["# Crisp Benchmark Report\n"]
 
     for gpu in sorted(hardware_groups.keys()):
+        platform = _platform_of(gpu)
         lines.append(f"## Hardware: {gpu}\n")
 
         # ---- Summary (the optimization ladder) --------------------------------
@@ -87,13 +121,13 @@ def generate_markdown(results_dir: Path, out_file: Path = None):
 
         # ---- Per-chapter throughput tables ------------------------------------
         for chapter in sorted(hardware_groups[gpu].keys(), key=chapter_sort_key):
-            label = CHAPTER_LABEL.get(chapter)
+            label = _chapter_label(platform, chapter)
             lines.append(f"### {chapter}" + (f" — {label}" if label else ""))
 
             for prec_key in _precision_order(hardware_groups[gpu][chapter].keys()):
                 lines.append(f"\n#### Precision: {prec_key}\n")
                 lines.extend(_throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings))
-                lines.extend(_annotations(chapter, prec_key))
+                lines.extend(_annotations(platform, chapter, prec_key))
             lines.append("")
 
         # ---- Compile times (collapsed across precision) -----------------------
@@ -125,9 +159,12 @@ def _fast_key(gpu, chapter, hardware_groups):
 
 def _summary_section(gpu, hardware_groups, vendor_ceilings):
     """One row per chapter at the largest common size under the `fast` precision:
-    Crisp throughput and its fraction of the cuBLAS tf32 ceiling — the headline ladder."""
-    out = ["### Summary — Crisp vs. cuBLAS ceiling (fast / tf32)\n"]
-    out.append("| Chapter | Technique | Size | Crisp (TFLOPS) | cuBLAS (TFLOPS) | Crisp % of cuBLAS |")
+    Crisp throughput and its fraction of the vendor tf32 ceiling — the headline ladder."""
+    platform = _platform_of(gpu)
+    vendor = _vendor_label(platform)                 # cuBLAS (NVIDIA) / oneMKL (Intel)
+    vcomp  = _vendor_competitor(platform)            # CUBLAS_Optimal / OneMKL_Optimal
+    out = [f"### Summary — Crisp vs. {vendor} ceiling (fast / tf32)\n"]
+    out.append(f"| Chapter | Technique | Size | Crisp (TFLOPS) | {vendor} (TFLOPS) | Crisp % of {vendor} |")
     out.append("|---|---|---:|---:|---:|---:|")
     any_row = False
     for chapter in sorted(hardware_groups[gpu].keys(), key=chapter_sort_key):
@@ -143,20 +180,20 @@ def _summary_section(gpu, hardware_groups, vendor_ceilings):
         if not crisp:
             continue
         crisp_t = crisp[0]
-        # matching cuBLAS ceiling at the same size/precision
+        # matching vendor ceiling at the same size/precision
         cub = None
         if fk in vendor_ceilings[gpu] and big in vendor_ceilings[gpu][fk]:
-            c = vendor_ceilings[gpu][fk][big].get("CUBLAS_Optimal")
+            c = vendor_ceilings[gpu][fk][big].get(vcomp)
             cub = c[0] if c else None
         pct = f"{crisp_t / cub * 100:.1f}%" if (cub and crisp_t) else "—"
-        label = CHAPTER_LABEL.get(chapter, "")
+        label = _chapter_label(platform, chapter)
         out.append(f"| {chapter} | {label} | {big.split('x')[0]} | {crisp_t:.1f} | "
                    f"{cub:.1f} | {pct}" if cub else
                    f"| {chapter} | {label} | {big.split('x')[0]} | {crisp_t:.1f} | — | —")
         out[-1] += " |"
         any_row = True
-    out.append("\n> Largest measured size per chapter, `fast` precision (Crisp and cuBLAS both tf32). "
-               "The ladder runs from naive fp32 tiling to Hopper wgmma.\n")
+    out.append(f"\n> Largest measured size per chapter, `fast` precision (Crisp and {vendor} both tf32). "
+               "The ladder runs low-to-high on the optimization axis for this hardware.\n")
     return out if any_row else []
 
 
@@ -232,12 +269,13 @@ def _throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings):
     return lines
 
 
-def _annotations(chapter, prec_key):
+def _annotations(platform, chapter, prec_key):
     notes = []
-    if chapter in MMA_CHAPTERS and not prec_key.startswith("fast"):
+    vendor = _vendor_label(platform)
+    if _is_mma_chapter(platform, chapter) and not prec_key.startswith("fast"):
         notes.append("> ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 "
                      "tensor cores by construction, so it does *not* honor the IEEE request (a Crisp "
-                     "kernel would emit a precision warning); meanwhile IEEE cuBLAS drops to true fp32. "
+                     f"kernel would emit a precision warning); meanwhile IEEE {vendor} drops to true fp32. "
                      "So the \">100% of Optimal\" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` "
                      "table is the only honest tensor-core comparison.")
     if chapter in NAIVE_APPLES_CHAPTERS:
@@ -252,6 +290,7 @@ def _annotations(chapter, prec_key):
 def _compile_section(gpu, compile_times):
     """One row per (chapter, competitor), averaged across precision (compile time is
     ~precision-invariant), with each competitor's slowdown relative to Crisp."""
+    platform = _platform_of(gpu)
     lines = ["### Compile Times (avg across precision)\n"]
     lines.append("| Chapter | Competitor | Avg Compile (ms) | × vs Crisp |")
     lines.append("|---|---|---:|---:|")
@@ -270,8 +309,14 @@ def _compile_section(gpu, compile_times):
             else:
                 ratio = "—"
             lines.append(f"| {chapter} | {comp} | {avg:.0f} | {ratio} |")
-    lines.append("\n> Crisp compiles a kernel to PTX; the native competitors invoke `nvcc`. "
-                 "Lower is better; `× vs Crisp` is how much longer than Crisp that toolchain takes.\n")
+    if platform == "intel":
+        footnote = ("\n> Crisp compiles a kernel to SPIR-V; the native competitors invoke `icpx` "
+                    "(SYCL / oneMKL). Lower is better; `× vs Crisp` is how much longer than Crisp that "
+                    "toolchain takes.\n")
+    else:
+        footnote = ("\n> Crisp compiles a kernel to PTX; the native competitors invoke `nvcc`. "
+                    "Lower is better; `× vs Crisp` is how much longer than Crisp that toolchain takes.\n")
+    lines.append(footnote)
     return lines
 
 

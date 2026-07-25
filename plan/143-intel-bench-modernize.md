@@ -62,15 +62,21 @@ NVIDIA unchanged (native on the RunPod).
   compile times) with ZERO report changes.
 
 ## Remaining
-- [ ] Wire `bench-intel.sh` + `bench-intel-entrypoint.sh` → `matmul.py --platform=intel` (retire the
-  bench-intel-driver.py call).  Decide the CLI: matmul-focused (--sizes/--iters/--sweep-all) vs the old
-  algo-generic interface.  This is the DOCKER delivery — where SYCL_Apples + OneMKL actually run (icpx).
-  Can't be validated from the Windows host (no Docker/oneAPI) — Chris runs the container sweep.
-- [ ] report.py Intel-label polish: the summary says "vs cuBLAS" + chap0 label "no tensor cores" (both
-  NVIDIA-flavored); Intel wants the oneMKL ceiling + "coop-matrix/XMX tf32".  Cosmetic (data is right).
+- [DONE] Wired `bench-intel.sh` + `bench-intel-entrypoint.sh` → `matmul.py --platform=intel` (retired the
+  bench-intel-driver.py call).  CLI became matmul-focused: `bench-intel.sh [sizes] [iters] [precision]`
+  (precision "all" → --sweep-all).  Entrypoint exports CRISP_USE_SYSTEM_TOOLS=true (Linux crisp-compile
+  finds llc/llvm-spirv on PATH) + runs matmul.py in-container; JSON → benchmarks/results (bind-mounted).
+  bash -n clean; NOT run in Docker from the Windows host — Chris runs the container sweep to validate the
+  SYCL_Apples + OneMKL_Optimal (icpx) targets end-to-end.
+- [DONE] report.py platform-aware (derives platform from gpu_model): `_platform_of` / `_vendor_label`
+  (cuBLAS↔oneMKL) / `_vendor_competitor` (CUBLAS_Optimal↔OneMKL_Optimal) / `_chapter_label`
+  (INTEL_CHAPTER_LABEL overrides: chap0 "coop-matrix XMX tf32", chap1 "OpGroupAsyncCopy XMX tf32") /
+  `_is_mma_chapter` (Intel = always tf32).  Summary header/column, per-chapter labels, IEEE annotation,
+  and the compile-times footnote (SPIR-V/icpx vs PTX/nvcc) all switch by section.  chap_intel_prefetch
+  added to CHAPTER_ORDER/LABEL.  Verified: Intel section renders oneMKL/XMX/SPIR-V; NVIDIA UNCHANGED.
 - [ ] Step 4: chap_intel_prefetch (142 register-ring pipeline) — needs its own harness (different param
   layout than the fixed one) or a --grid-tile L0 hoist path.  This answers Q1.
-- [ ] Docs: benchmarks/README.md Intel section + bench-intel.sh header.
+- [ ] Docs: benchmarks/README.md Intel section + bench-intel.sh header (header done; README pending).
 
 ## Plan (original order of work)
 - [ ] **Step 0 — locate the Intel matmul kernels.**  The old driver references
