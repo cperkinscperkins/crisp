@@ -20,7 +20,9 @@
 
 set -e
 
-SIZES="${1:-256,512,1024,2048,4096}"
+# DEFAULT stops at 1024: the BMG is the Windows display GPU here, and a large GEMM pins it long enough
+# to freeze the desktop (see bench-intel.sh).  2048/4096 are an explicit opt-in.
+SIZES="${1:-256,512,1024}"
 ITERS="${2:-100}"
 PRECISION="${3:-all}"
 

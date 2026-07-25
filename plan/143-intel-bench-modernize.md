@@ -119,3 +119,4 @@ NVIDIA unchanged (native on the RunPod).
 ## Success = one command in Docker sweeps Intel matmul across precisions, drops JSON into
 `benchmarks/results/`, and `report.py` prints a `## Hardware: Intel BMG` section with the
 `chap0_sync → chap1_async → chap_intel_prefetch` ladder — Crisp vs SYCL (vs OneMKL later).
+

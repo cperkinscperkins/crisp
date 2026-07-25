@@ -47,9 +47,24 @@ export MSYS2_ARG_CONV_EXCL='*'
 # --- Parse arguments ---
 # Endeavor 143: matmul-only, driven by the unified cross-platform matmul.py (--platform=intel).
 # Square GEMM sizes (multiples of 32).  Precision "all" runs the full sweep (fast / ieee+ftz / ieee).
-SIZES="${1:-256,512,1024,2048,4096}"
+#
+# ⚠️  DISPLAY-GPU WARNING: on this machine the BMG is BOTH the compute device AND the Windows display
+# GPU (the WSL2/Docker passthrough shares the one physical GPU).  A large square GEMM pins the GPU for
+# tens of seconds — size^3 scaling means 4096 pins ~64x longer than 1024 — during which Windows cannot
+# composite the desktop and the WHOLE MACHINE FREEZES.  So the DEFAULT stops at 1024.  2048/4096 are an
+# EXPLICIT opt-in only (`bench-intel.sh 256,512,1024,2048`); expect a multi-second-to-minutes freeze,
+# and prefer fewer iters at those sizes.  (On a dedicated compute GPU / RunPod there's no display to
+# starve, so the NVIDIA matmul.py default keeps the full 256..4096.)
+SIZES="${1:-256,512,1024}"
 ITERS="${2:-100}"
 PRECISION="${3:-all}"   # all -> full precision sweep (--sweep-all); or fast | ieee for a single pass
+
+case ",${SIZES}," in
+  *,2048,*|*,4096,*|*,8192,*)
+    echo "⚠️  bench-intel.sh: sizes >= 2048 pin the BMG (your DISPLAY GPU) for a long time — the desktop"
+    echo "    may freeze for the duration.  Ctrl-C won't repaint until the GPU frees.  Continuing in 5s..."
+    sleep 5 ;;
+esac
 
 # Locate the repo root from this script's directory.  Use cygpath where
 # available to convert to Windows-form paths — with MSYS_NO_PATHCONV=1 set

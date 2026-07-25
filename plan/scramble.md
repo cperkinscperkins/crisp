@@ -754,6 +754,8 @@ MMA
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] don't forget bug 033 ( --debug )
 [ ] opportunities for using def-hardware-profile ??
+[ ] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
+[ ] empty room fallacy?  GPU display? GPU monitoring?
 
 [x] run-on-pod.sh has lost its summary?
 

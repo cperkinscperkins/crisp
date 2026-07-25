@@ -42,6 +42,24 @@ def _apply_hw(meta):
     meta.hardware.environment = HW["environment"]
     return meta
 
+# Per-size iteration scaling (Endeavor 143).  Matmul work ~ size^3, so a fixed iter count pins the GPU
+# for time ~ size^3.  On the Intel BMG that GPU is ALSO the Windows display, so a big GEMM at full iters
+# FREEZES the desktop; on any GPU, 4096 at 100 iters can wall the harness on time.  So above a reference
+# size we scale warmup+iters down cubically (keeping GPU-time-per-run roughly bounded) to a floor.  The
+# JSON records the ACTUAL counts, so a smaller-sample large-size point is transparent, not hidden.
+SIZE_SCALE_REF = 2048   # sizes <= this keep full counts.  Set by main(): 1024 (intel/display GPU) / 2048 (nvidia).
+WARMUP_MIN = 2
+ITERS_MIN  = 5
+
+def scaled_counts(base_warmup, base_iters, size):
+    """(warmup, iters) for SIZE: full counts up to SIZE_SCALE_REF, cubic falloff beyond, floored at
+    (WARMUP_MIN, ITERS_MIN)."""
+    if size <= SIZE_SCALE_REF:
+        return base_warmup, base_iters
+    frac = (SIZE_SCALE_REF / size) ** 3
+    return (max(WARMUP_MIN, round(base_warmup * frac)),
+            max(ITERS_MIN,  round(base_iters  * frac)))
+
 def sh(cmd, **kw):
     print("  $", " ".join(str(c) for c in cmd), file=sys.stderr)
     return subprocess.run([str(c) for c in cmd], **kw)
@@ -78,15 +96,16 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
     results = []
     for s in sizes:
         S = int(s)
-        out = run_bin(exe_path, S, S, S, warmup, iters, env_extra)
+        w, it = scaled_counts(warmup, iters, S)   # bound GPU pin time at large sizes
+        out = run_bin(exe_path, S, S, S, w, it, env_extra)
         if not out: continue
-        
+
         # If the harness returns driver_jit_ms, we add it to the measured all_compile_ms
         driver_jit = out.get("driver_jit_ms", 0.0)
         final_all_compile_ms = compile_all_ms + driver_jit
-        
+
         point = SweepPoint(
-            configuration={"m": S, "n": S, "k": S, "warmup": warmup, "iters": iters},
+            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it},
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(device_compile_ms=compile_dev_ms, all_compile_ms=final_all_compile_ms), 
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0), kernel_execution_ms=out.get("kernel_median_us", 0.0)/1000.0),
@@ -272,11 +291,12 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
     results = []
     for s in sizes:
         S = int(s)
-        out = run_l0_bin(harness_bin, S, warmup, iters, env_ext)
+        w, it = scaled_counts(warmup, iters, S)   # bound GPU pin time (BMG is the display GPU)
+        out = run_l0_bin(harness_bin, S, w, it, env_ext)
         if not out:
             continue
         results.append(SweepPoint(
-            configuration={"m": S, "n": S, "k": S, "warmup": warmup, "iters": iters},
+            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it},
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms, all_compile_ms=dev_c_ms),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
@@ -341,8 +361,11 @@ def main():
                          "intel: icpx SYCL/oneMKL + Crisp SPIR-V/L0, runs inside the bench Docker container (BMG).")
     a = ap.parse_args()
 
-    global HW
+    global HW, SIZE_SCALE_REF
     HW = HW_BY_PLATFORM[a.platform]
+    # Intel BMG is the display GPU here, so 2048 at full iters already freezes the desktop — scale from
+    # 1024.  NVIDIA runs on a dedicated pod (no display to starve), so only 4096 needs bounding.
+    SIZE_SCALE_REF = 1024 if a.platform == "intel" else 2048
 
     sizes = a.sizes.split(",")
     out_dir = Path(a.output_dir)
