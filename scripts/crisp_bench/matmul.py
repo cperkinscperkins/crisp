@@ -23,6 +23,24 @@ sys.path.append(str(Path(__file__).resolve().parent))
 from harness import BenchmarkSweep, SweepPoint, BenchmarkMetrics, CompileTimeMetrics, RuntimeMetrics, ThroughputMetrics, create_metadata
 
 HERE = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "matmul"
+import platform as _platform
+
+# Hardware metadata stamped into every BenchmarkSweep's run_metadata.  Set by main() from
+# --platform so the JSON is tagged per platform (report.py groups by hardware.gpu_model).
+# Endeavor 143: the Intel path runs inside the bench Docker container on a BMG.
+HW = {"gpu_model": "NVIDIA H100", "arch_target": "sm_90", "environment": "runpod"}
+HW_BY_PLATFORM = {
+    "nvidia": {"gpu_model": "NVIDIA H100", "arch_target": "sm_90", "environment": "runpod"},
+    "intel":  {"gpu_model": "Intel BMG",   "arch_target": "bmg",   "environment": "docker"},
+}
+
+def _apply_hw(meta):
+    """Stamp the active platform's hardware info onto a run_metadata (replaces the old hardcoded
+    'NVIDIA H100' so the same sweep builders serve both platforms)."""
+    meta.hardware.gpu_model   = HW["gpu_model"]
+    meta.hardware.arch_target = HW["arch_target"]
+    meta.hardware.environment = HW["environment"]
+    return meta
 
 def sh(cmd, **kw):
     print("  $", " ".join(str(c) for c in cmd), file=sys.stderr)
@@ -55,10 +73,7 @@ def build_harness():
         str(HERE/"crisp/bench_harness.cu"), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
 
 def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, precision: str, ftz: bool, compile_dev_ms: float, compile_all_ms: float, env_extra: dict = None) -> BenchmarkSweep:
-    meta = create_metadata()
-    meta.hardware.gpu_model = "NVIDIA H100"
-    meta.hardware.arch_target = "sm_90"
-    meta.hardware.environment = "runpod"
+    meta = _apply_hw(create_metadata())
 
     results = []
     for s in sizes:
@@ -153,10 +168,7 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
 def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, iters,
                         precision, ftz, dev_c_ms, crisp_compiler):
     """run_sweep twin that drives run_crisp_autobench per size (advanced Crisp kernels)."""
-    meta = create_metadata()
-    meta.hardware.gpu_model = "NVIDIA H100"
-    meta.hardware.arch_target = "sm_90"
-    meta.hardware.environment = "runpod"
+    meta = _apply_hw(create_metadata())
     # Crisp precision flags for this pass — a DIFFERENT flag set than nvcc's (Crisp defaults to
     # ieee, so we must pass these or Crisp competes at IEEE against fast-math cuBLAS).
     prec_flags = [f"--math-precision={precision}",
@@ -182,6 +194,91 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms,
                                                 all_compile_ms=dev_c_ms + out.get("driver_jit_ms", 0.0)),
+                runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
+                                       kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
+                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
+    return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
+                          precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
+
+# ---------------------------------------------------------------------------
+# Endeavor 143 — Intel/L0 Crisp path (fixed-harness twin of the NVIDIA chap0/chap1 CRISP_MATMUL_PTX path).
+# benchmarks/matmul/crisp/bench_harness_l0.cpp launches the (M/32, N/32) sub-group tile-grid the
+# matmul_bmg kernels expect, times with GPU timestamps, and emits {gflops, kernel_median_us}.  The .spv
+# is selected at runtime via CRISP_MATMUL_SPV, so the harness builds ONCE (precision-agnostic) and the
+# kernel recompiles per precision.  Compiled with icpx in the Docker container / clang++ for a native
+# Windows-BMG smoke test.  (Advanced kernels with a different param layout — e.g. the register-ring
+# prefetch chapter — will need their own harness / a --grid-tile hoist path, added in Step 4.)
+# ---------------------------------------------------------------------------
+
+def _resolve_cxx_and_l0_link():
+    """(cxx, link_pre, link_post) for the L0 harness compile.  Container(Linux): icpx + -lze_loader
+    (system Level Zero headers).  Windows(native smoke test): clang++ (llvm-mingw) + the L0 include dir
+    + ze_loader.dll (-static).  All overridable via CRISP_CLANGXX / CRISP_L0_INCLUDE / CRISP_ZE_LOADER."""
+    if _platform.system() == "Windows":
+        clang  = os.environ.get("CRISP_CLANGXX",
+                 "C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe")
+        lz_inc = os.environ.get("CRISP_L0_INCLUDE", "C:/Users/cperk/Documents/level-zero/include")
+        ze     = os.environ.get("CRISP_ZE_LOADER", "C:/Windows/System32/ze_loader.dll")
+        return clang, ["-I", lz_inc], [ze, "-static"]
+    cxx = shutil.which("icpx") or shutil.which("clang++") or "g++"
+    return cxx, [], ["-lze_loader"]
+
+def run_l0_bin(path, size, warmup, iters, env_extra=None):
+    """Run the fixed L0 harness — its args are [Size, warmup, iters] (square), NOT [M,N,K,...].
+    JSON on stdout ({gflops, kernel_median_us, ...}); the device name goes to stderr."""
+    env = dict(os.environ)
+    if env_extra: env.update(env_extra)
+    p = sh([path, str(size), str(warmup), str(iters)], capture_output=True, text=True, env=env)
+    try:
+        return json.loads(p.stdout)
+    except Exception:
+        print(p.stdout, (p.stderr or "")[-600:], file=sys.stderr)
+        return None
+
+def build_l0_harness(crisp_compiler):
+    """Compile benchmarks/matmul/crisp/bench_harness_l0.cpp once -> the timed L0 launcher binary.
+    Precision-agnostic (it measures whatever .spv CRISP_MATMUL_SPV points at).  Returns the binary
+    path, or None if the harness source / a C++ compiler is unavailable."""
+    harness = HERE / "crisp" / "bench_harness_l0.cpp"
+    if not harness.exists():
+        print(f"Skipping Intel Crisp — {harness} not found."); return None
+    cxx, link_pre, link_post = _resolve_cxx_and_l0_link()
+    binexe = HERE / "crisp" / ("matmul_crisp_l0" + (".exe" if _platform.system() == "Windows" else ""))
+    c = sh([cxx, "-O3", str(harness), *link_pre, "-o", str(binexe), *link_post], capture_output=True, text=True)
+    if c.returncode != 0:
+        print("L0 harness build failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
+    return str(binexe)
+
+def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmup, iters,
+                       precision, ftz, crisp_compiler):
+    """Compile the Crisp kernel -> SPV (bmg, explicit precision flags), then run the fixed L0 harness
+    per size (CRISP_MATMUL_SPV env) and collect {gflops, kernel_median_us} into a BenchmarkSweep."""
+    meta = _apply_hw(create_metadata())
+    src = Path(kernel_src)
+    spv = src.parent / f"{src.stem}.spv"
+    prec_flags = [f"--math-precision={precision}",
+                  f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
+    empty = BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter,
+                           competitor=comp_name, precision=precision,
+                           denormal_handling="ftz" if ftz else "preserve", results=[])
+    try:
+        dev_c_ms = time_compile([crisp_compiler, "--ir-target=spv", "--hardware-profile=bmg",
+                                 *prec_flags, "--log-level=off", str(src)])
+    except subprocess.CalledProcessError:
+        print(f"l0-fixed: crisp-compile failed for {src.name}", file=sys.stderr); return empty
+    if not spv.exists():
+        print(f"l0-fixed: no spv {spv}", file=sys.stderr); return empty
+    env_ext = {"CRISP_MATMUL_SPV": str(spv)}
+    results = []
+    for s in sizes:
+        S = int(s)
+        out = run_l0_bin(harness_bin, S, warmup, iters, env_ext)
+        if not out:
+            continue
+        results.append(SweepPoint(
+            configuration={"m": S, "n": S, "k": S, "warmup": warmup, "iters": iters},
+            metrics=BenchmarkMetrics(
+                compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms, all_compile_ms=dev_c_ms),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
@@ -239,11 +336,17 @@ def main():
     ap.add_argument("--precision", choices=["ieee", "fast"], default="fast")
     ap.add_argument("--ftz", action="store_true", help="Enable Flush-To-Zero")
     ap.add_argument("--sweep-all", action="store_true", help="Run full precision matrix (Fast, IEEE+FTZ, IEEE)")
+    ap.add_argument("--platform", choices=["nvidia", "intel"], default="nvidia",
+                    help="nvidia (default): nvcc/cuBLAS + Crisp PTX, runs natively on a RunPod. "
+                         "intel: icpx SYCL/oneMKL + Crisp SPIR-V/L0, runs inside the bench Docker container (BMG).")
     a = ap.parse_args()
+
+    global HW
+    HW = HW_BY_PLATFORM[a.platform]
 
     sizes = a.sizes.split(",")
     out_dir = Path(a.output_dir)
-    
+
     matrix = [(a.precision, a.ftz)]
     if a.sweep_all:
         # Fast math implies flush-to-zero (nvcc --use_fast_math flushes denormals), so the
@@ -255,13 +358,21 @@ def main():
             ("ieee", False)
         ]
 
-    # Pre-build harness
-    build_harness()
-    
-    # Absolute path to crisp-compile binary (assumes ran from repo root)
+    # Absolute path to crisp-compile binary (assumes ran from repo root).  .exe on Windows (native Intel
+    # smoke test), unadorned in the Linux container / on the pod.
     repo_root = HERE.parent.parent
-    crisp_compiler = str(repo_root / "bin" / "crisp-compile")
-    
+    crisp_compiler = str(repo_root / "bin" / "crisp-compile.exe") \
+        if (repo_root / "bin" / "crisp-compile.exe").exists() else str(repo_root / "bin" / "crisp-compile")
+
+    # Pre-build the Crisp launcher harness ONCE (precision-agnostic — it measures the separately-compiled
+    # device code).  NVIDIA: the nvcc PTX harness.  Intel: the L0 fixed harness (nvcc is absent in the
+    # bench container).
+    l0_harness = None
+    if a.platform == "nvidia":
+        build_harness()
+    else:
+        l0_harness = build_l0_harness(crisp_compiler)
+
     for prec, ftz in matrix:
         print(f"\n--- Running Suite with precision={prec}, ftz={ftz} ---")
         
@@ -324,30 +435,61 @@ def main():
             sweep.save(out_dir)
             print(f"Saved {chapter} ({comp_name}) sweep to {out_dir}")
 
-        # Chap 0
-        run_target("chap0_sync", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True)
-        run_target("chap0_sync", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
-        run_target("chap0_sync", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
-        run_target("chap0_sync", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
-        run_target("chap0_sync", "onemkl_optimal.cpp", "onemkl_optimal", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
-        
-        # Chap 1
-        run_target("chap1_async_linear", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True)
-        run_target("chap1_async_linear", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
-        run_target("chap1_async_linear", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
-        
-        # Chap 1.5 — TMA :block; needs the auto-bench (CuTensorMap params, 64x64 out tile)
-        run_target("chap1.5_async_block", "matmul_async_block.crisp", "matmul_async_block.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
-        run_target("chap1.5_async_block", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+        # Endeavor 143: the Intel Crisp path is SPIR-V/L0 (not PTX/CUDA) — the fixed L0 harness.
+        def run_l0_crisp(chapter, source_name, comp_name="Crisp"):
+            src = HERE / chapter / source_name
+            if not src.exists():
+                return
+            if not Path(crisp_compiler).exists():
+                print(f"Skipping {comp_name} ({chapter}) — {crisp_compiler} not found."); return
+            if not l0_harness:
+                print(f"Skipping {comp_name} ({chapter}) — L0 harness not built."); return
+            sweep = run_l0_fixed_sweep(chapter, src, comp_name, l0_harness, sizes, a.warmup, a.iters,
+                                       prec, ftz, crisp_compiler)
+            sweep.save(out_dir)
+            print(f"Saved {chapter} ({comp_name}) L0 sweep to {out_dir}")
 
-        # Chap 2 — pipelined rings; auto-bench (ring tiles, 64x64 out tile)
-        run_target("chap2_pipelined_block", "matmul_pipe.crisp", "matmul_pipe.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
-        run_target("chap2_pipelined_block", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+        if a.platform == "nvidia":
+            # Chap 0
+            run_target("chap0_sync", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True)
+            run_target("chap0_sync", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+            run_target("chap0_sync", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+            run_target("chap0_sync", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
+            run_target("chap0_sync", "onemkl_optimal.cpp", "onemkl_optimal", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
 
-        # Chap 3 — wgmma tensor cores (Hopper warpgroup async MMA). Auto-bench: 64x256 out tile,
-        # tf32.  cuBLAS tf32 is the vendor ceiling.  This is the tensor-core headline.
-        run_target("chap3_wgmma", "matmul_wgmma.crisp", "matmul_wgmma.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
-        run_target("chap3_wgmma", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
+            # Chap 1
+            run_target("chap1_async_linear", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True)
+            run_target("chap1_async_linear", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+            run_target("chap1_async_linear", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+
+            # Chap 1.5 — TMA :block; needs the auto-bench (CuTensorMap params, 64x64 out tile)
+            run_target("chap1.5_async_block", "matmul_async_block.crisp", "matmul_async_block.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap1.5_async_block", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+
+            # Chap 2 — pipelined rings; auto-bench (ring tiles, 64x64 out tile)
+            run_target("chap2_pipelined_block", "matmul_pipe.crisp", "matmul_pipe.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap2_pipelined_block", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+
+            # Chap 3 — wgmma tensor cores (Hopper warpgroup async MMA). Auto-bench: 64x256 out tile,
+            # tf32.  cuBLAS tf32 is the vendor ceiling.  This is the tensor-core headline.
+            run_target("chap3_wgmma", "matmul_wgmma.crisp", "matmul_wgmma.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
+            run_target("chap3_wgmma", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
+        else:
+            # --- Intel/BMG ladder (endeavor 143) ---
+            # chap0_sync — synchronous coop-matrix tiling.  Crisp (SPV/L0) vs SYCL_Apples vs OneMKL ceiling.
+            run_l0_crisp("chap0_sync", "matmul_bmg.crisp")
+            run_target("chap0_sync", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+            run_target("chap0_sync", "onemkl_optimal.cpp", "onemkl_optimal", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
+
+            # chap1_async_linear — OpGroupAsyncCopy staging.
+            run_l0_crisp("chap1_async_linear", "matmul_bmg_async.crisp")
+            run_target("chap1_async_linear", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+
+            # chap_intel_prefetch — the endeavor-142 register-ring + Subgroup2DBlockPrefetch pipeline.
+            # STEP 4 (this is where Q1 gets answered): the register-ring kernel has a DIFFERENT param
+            # layout than the fixed bench_harness_l0.cpp (no scratch tiles), so it needs its own harness
+            # (or a --grid-tile hoist path).  Parked until the chap0/chap1 plumbing is proven.
+            # run_l0_crisp("chap_intel_prefetch", "matmul_bmg_prefetch.crisp")
 
 if __name__ == "__main__":
     main()
