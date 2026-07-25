@@ -2,7 +2,7 @@
  * OneMKL Optimal reference for SYCL (Intel Ceiling).
  * Uses oneapi::mkl::blas::column_major::gemm to provide the absolute hardware ceiling.
  *
- * Build: icpx -fsycl -O3 onemkl_optimal.cpp -onemkl -o onemkl_optimal
+ * Build: icpx -fsycl -O3 onemkl_optimal.cpp -qmkl -o onemkl_optimal
  */
 #include <sycl/sycl.hpp>
 #include <oneapi/mkl.hpp>

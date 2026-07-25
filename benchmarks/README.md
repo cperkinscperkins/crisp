@@ -33,9 +33,10 @@ benchmarks/
   matmul/
     chap0_sync/             # Basic synchronous tiling (no tensor cores)
     chap1_async_linear/     # Asynchronous linear pipelining
-    chap1.5_async_block/    # Block-level async (TMA) + tf32 MMA tensor cores
-    chap2_pipelined_block/  # Deep software pipelining + tf32 MMA
-    chap3_wgmma/            # Hopper warpgroup async MMA (wgmma) — the tensor-core headline
+    chap1.5_async_block/    # (NVIDIA-only) Block-level async (TMA) + tf32 MMA tensor cores
+    chap2_pipelined_block/  # (NVIDIA-only) Deep software pipelining + tf32 MMA
+    chap3_wgmma/            # (NVIDIA-only) Hopper warpgroup async MMA (wgmma) — the tensor-core headline
+    intel_prefetch/         # (Intel-only) Register-ring + Subgroup2DBlockPrefetch pipeline
     crisp/                  # The Crisp C++ runner harnesses (chap0/chap1 only)
   results/                  # Output directory for raw JSON sweeps
   scripts/
@@ -55,8 +56,11 @@ The benchmarking system is automated via Python scripts that execute parameter s
 precision matrix (Fast, IEEE+FTZ, IEEE) in a single invocation — no need to call
 it once per precision:
 ```bash
+# For NVIDIA (default platform)
 python scripts/crisp_bench/matmul.py --sweep-all
 ```
+`matmul.py` is the unified cross-platform driver. It determines what to build and run depending on the `--platform` argument.
+
 For each precision it sweeps **every chapter** (chap0, chap1, chap1.5, chap2,
 chap3) × **every competitor** (Crisp, CUDA_Apples, SYCL_Apples, CUBLAS_Optimal,
 OneMKL_Optimal) × **every size** (default `256,512,1024,2048,4096`), dropping all
@@ -107,6 +111,16 @@ the JSON files back to your local `results/` folder.*
 ```
 $ ./scripts/pull-runpod-results.sh 103.207.149.79 16881  ~/.ssh/id_ed25519
 ```
+
+**Intel Local Benchmarking (WSL2 + Docker).** For Intel GPUs (e.g. BMG, Arc), we test locally using a Docker container passing through the Windows WSL2 GPU device. Use `bench-intel.sh` to build the required image and run `matmul.py --platform=intel` inside it:
+```bash
+# Run full precision sweep (sizes 256, 512, 1024)
+./scripts/bench-intel.sh
+
+# Run specific sizes for a specific precision
+./scripts/bench-intel.sh 256,512,1024 100 fast
+```
+The results are mapped back directly into `benchmarks/results/` just like native local runs.
 
 ### 2. Generate the Markdown Report
 The `.json` files are machine-readable but hard to digest. To print a pretty Markdown table comparing all algorithms:

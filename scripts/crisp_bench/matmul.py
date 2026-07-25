@@ -447,7 +447,7 @@ def main():
                 if is_sycl and not shutil.which("icpx"): return
                 
                 cmd = [compiler] + flags + [str(src_path), "-o", str(bin_path)]
-                if is_sycl and is_cublas: cmd.insert(1, "-onemkl") # OneMKL Optimal
+                if is_sycl and is_cublas: cmd.insert(1, "-qmkl") # OneMKL Optimal
                 
                 all_c_ms = time_compile(cmd)
                 dev_c_ms = all_c_ms # No separate device stage measurable here
