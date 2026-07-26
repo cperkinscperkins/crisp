@@ -259,3 +259,51 @@ predates tonight as far as we can tell.
 compiler rebuild, then 0.276 warm. It is process-startup dominated, so a freshly written 57 MB
 .exe pays cold file cache + AV scan. Re-run warm before believing a compile-time regression. The
 ratchet correctly did NOT record the bad value.
+
+
+---
+
+## Phase 4 (2026-07-26) — CUDA/H100: deferred items 1-4 resolved
+
+**(4) `%cuda-emit-launch` HAS the same axis bug** — its `:strided` branch emits
+`gridY = 1, gridZ = 1` and references `tile-shape` zero times, exactly as L0 did. Differences:
+CUDA has NO units bug (`cuOccupancyMaxActiveBlocksPerMultiprocessor` x `numSMs` is dimensionally
+correct and per-kernel register-aware), and the bug is MASKED for every benchmarked chapter by the
+`--mma-bench` out-tile override above it (`gridX=ceil(M/tm), gridY=ceil(N/tn)`), which is why
+chap1.5/2/3 numbers are sound. Same latent flaw in `:exact` + tensor derive-from (flat `_length`
+/ tile-x, gridY=1). NOT YET FIXED — the L0 fix ports over nearly unchanged.
+
+The out-tile override's comment ("gridX = row-tiles, gridY = col-tiles") independently confirms
+**axis x <- dim 0**, now agreed by three sources: BMG measurement (1.31x), the hand-written L0
+harness, and this.
+
+**H100 limits: `maxGridDim X/Y/Z = 2147483647 / 65535 / 65535`.** Unlike BMG's uniform UINT32_MAX,
+the Y/Z ceiling is REACHABLE — a 32-tile cover exceeds gridDimY at N ~ 2.1M. So the
+strided-clamps / exact-errors guard has real teeth on NVIDIA, and axis assignment affects
+reachability (whichever dim lands on Y hits its limit 32768x sooner).
+
+**(1)(2)(3) `:occupancy` RESOLVED — no API change needed.** Both vendors want ~1.0; see
+docs/ideal_001.md for both curves. The worry that occupancy is kernel x device and one scalar
+can't serve both did NOT materialize, so no per-target values and no profile default.
+`:occupancy 0.15` removed from BOTH sum-reduce.crisp copies AND from the hardcoded
+`constexpr double OCCUPANCY` in `performance/reduction-bmg/harness.cpp` (it was duplicated in
+three places).
+
+**reduction-bmg re-baselined:** kernel_median_us 22.568 -> **5.928** (3.8x), throughput
+174.8 -> **674.8 GB/s**. (>DRAM because a 1M-float reduction is 4 MB, L2-resident.)
+
+**Pod note:** 12 spec failures on the pod are ALL `--ir-target=spv`, failing with `llvm-spirv`
+exit 127 — the SPIRV-LLVM-Translator is a separate project, not part of `apt install llvm-21`, and
+`run-on-pod.sh` also strips the repo's bundled `tools/llvm-spirv-linux`. Environmental, not a
+regression; ALL CUDA specs passed. `run-on-pod.sh`'s header wrongly claims SPIR-V checks are
+"skipped" — they run and fail.
+
+### Deferred stack now
+- (5) `matrix-multiply-tile-stride` tile-shape inference — 22 kernels. STILL OPEN, and now more
+  attractive: do it together with the CUDA dispatch port below.
+- (NEW) Port the tile-grid dispatch fix to `%cuda-emit-launch`, incl. the 65535 Y/Z clamp.
+- (6) remaining zeDeviceGetComputeProperties validations (maxTotalGroupSize, subGroupSizes).
+- (9-partial) `benchmarks/reduction/crisp/bench_harness_l0.cpp` `baseGroups = totalEUs` still
+  disagrees ~2x with the corrected hoist formula (160 vs 80 groups at R=1.0). NOTE: 160 measured
+  FASTER than 80 on BMG, i.e. oversubscription beat resident-capacity for the reduction too —
+  same pattern as the tiled case. Worth revisiting what "max occupancy" should even mean.

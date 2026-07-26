@@ -21,7 +21,7 @@
 
 (def-kernel sum_reduce (input &out result)
   (declare #'(in-vec &out out-cell) 
-           (global-size :derive-from input :strategy :strided :occupancy 0.15)
+           (global-size :derive-from input :strategy :strided)
            (local-size :set-to (256)))
   (let ((acc     0.0f)
         (lid     (to-ulong (get-local-id 0))))

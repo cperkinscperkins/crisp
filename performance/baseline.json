@@ -1,16 +1,16 @@
 {
   "reduction-bmg": {
     "kernel_median_us": {
-      "best": 22.568,
+      "best": 5.928,
       "tolerance": 0.1,
-      "set_on": "2026-06-13",
-      "sha": "eb47947"
+      "set_on": "2026-07-26",
+      "sha": "d53649d"
     },
     "throughput_gb_s": {
-      "best": 174.825,
+      "best": 674.764,
       "tolerance": 0.1,
-      "set_on": "2026-06-01",
-      "sha": "3aaccae"
+      "set_on": "2026-07-26",
+      "sha": "d53649d"
     },
     "device_compile_s": {
       "best": 0.246,

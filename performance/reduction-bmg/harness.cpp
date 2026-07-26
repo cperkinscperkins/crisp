@@ -61,7 +61,11 @@ int main(int argc, char** argv) {
     int iterations = argc > 2 ? atoi(argv[2]) : 100;
 
     constexpr int N = 1000000;
-    constexpr double OCCUPANCY = 0.15;  // matches :occupancy in sum-reduce.crisp
+    // Endeavor 143: was 0.15, to match a since-removed :occupancy declaration.  Measured
+    // 2026-07-26 on BOTH vendors, that derate was a large pessimization -- BMG 3.3x slower
+    // at 1M / 4.9x at 16M, H100 2.4x at 16M / 2.9x at 64M -- so the kernel now uses the 1.0
+    // default and this mirrors it.  See docs/ideal_001.md :occupancy for the curves.
+    constexpr double OCCUPANCY = 1.0;   // matches sum-reduce.crisp (no :occupancy = 1.0)
     constexpr uint32_t BLOCK_SIZE = 256;
 
     // --- L0 init ---

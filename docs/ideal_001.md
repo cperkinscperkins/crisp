@@ -4371,10 +4371,29 @@ i.e. precisely the pattern the theory says should prefer a small grid, and on th
 the opposite. The curve has not flattened at `1.0` either, which suggests the optimum lies beyond the
 largest grid the ratio can express.
 
-So on Intel, the default of `1.0` is right and derating is a pessimization in the one case tested.
-The often-repeated "≈0.2 for reductions" figure comes from NVIDIA experience and has **not** been
-re-verified here since the measurement methodology was corrected; treat it as unproven on either
-vendor until it appears in this table. Bandwidth-bound kernels without atomics benefit from `1.0`.
+**Measured — NVIDIA H100 PCIe (114 SMs), the same kernel, median kernel µs:**
+
+| `:occupancy` | blocks | N = 1M | N = 16M | N = 64M |
+|---|---:|---:|---:|---:|
+| 0.05 | 34 | 21.60 | 311.46 | 1204.29 |
+| 0.15 | 102 | 15.36 | 116.32 | 427.33 |
+| 0.50 | 342 | 14.46 | 52.90 | 170.30 |
+| 0.75 | 513 | **13.92** | **48.13** | 152.10 |
+| 1.00 | 684 | 14.72 | 48.13 | **146.94** |
+
+**Both vendors agree, so the guidance is settled: keep the `1.0` default.** A `0.15` derate costs
+2.4× at 16M and 2.9× at 64M on H100, and 3.3–4.9× on BMG. The often-repeated "≈0.2 for reductions"
+figure does not survive measurement on either vendor — including NVIDIA, where it originated.
+
+The atomic-pressure effect is real but small: on H100 the curve turns over slightly at small N
+(`0.75` beats `1.00` by ~5% at 1M, they tie at 16M, and `1.00` wins at 64M). That is worth a knob,
+not a recommendation — which is exactly what `:occupancy` now is. Reach for it when you have a
+measurement, not on theory. Bandwidth-bound kernels without atomics benefit from `1.0`.
+
+> Because both vendors want the same value, a single scalar in kernel source is sufficient today —
+> there is no need for per-target occupancy values or a `def-hardware-profile` default. If a future
+> kernel is ever found where the two vendors genuinely disagree, that is the point at which this
+> key needs to grow, and not before.
 
 Note that `:occupancy` derates the *occupancy-sized* `:strided` grid — the one used when no
 `:tile-shape` is given. It is not applied as a clamp on a tile-grid dispatch, because measurement
