@@ -240,9 +240,16 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     base = src_path.stem
     spv = chap_dir / f"{base}.spv"
     metacrisp = chap_dir / f"{base}_matmul.metacrisp"
+    # Endeavor 143: actually MEASURE the Crisp compile instead of reporting 0.  Only the
+    # --ir-target=spv pass is device-code compilation (the analogue of what icpx/nvcc are timed
+    # for); the --hoist=l0 pass emits the host harness, so it is timed separately and not folded
+    # into device_compile_ms.  0.0 when the artifacts were already on disk and we skipped the work
+    # — the caller carries the first measured value across the sweep rather than reporting a zero.
+    compile_ms = 0.0
+    hoist_ms = 0.0
     if not (spv.exists() and metacrisp.exists()):
-        sh([crisp_compiler, "--ir-target=spv", "--hardware-profile=bmg", *prec_flags, "--log-level=off", str(src_path)], check=True)
-        sh([crisp_compiler, "--hoist=l0", "--hardware-profile=bmg", *prec_flags, "--log-level=off", str(src_path)], check=True)
+        compile_ms = time_compile([crisp_compiler, "--ir-target=spv", "--hardware-profile=bmg", *prec_flags, "--log-level=off", str(src_path)])
+        hoist_ms = time_compile([crisp_compiler, "--hoist=l0", "--hardware-profile=bmg", *prec_flags, "--log-level=off", str(src_path)])
     if not metacrisp.exists():
         print(f"autobench-l0: no metacrisp {metacrisp}", file=sys.stderr); return None
     
@@ -269,8 +276,14 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     gflops = float(m.group(4))
     secs = float(m.group(6))
     iters_ran = int(m.group(5))
-    k_us = (secs / iters_ran) * 1e6
+    # Endeavor 143: the harness now emits a true per-launch median (kernel-timestamp events).
+    # Prefer it; fall back to secs/iters only for a harness generated before that fix.
+    mm = re.search(r'median_us=([\d.eE+-]+)', out)
+    k_us = float(mm.group(1)) if mm else (secs / iters_ran) * 1e6
+    method = re.search(r'method=(\w+)', out)
     return {"gflops": gflops, "kernel_median_us": k_us,
+            "timing_method": method.group(1) if method else "batched_submit_legacy",
+            "compile_ms": compile_ms, "hoist_ms": hoist_ms,
             "correct": ("MMA_CORRECT" in out), "wall_time_ms": 0.0, "driver_jit_ms": 0.0}
 
 def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
@@ -283,23 +296,42 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
     if stale.exists():
         stale.unlink()
     results = []
+    # Endeavor 143: the .spv is compiled once per sweep (the first size), so only that call
+    # returns a nonzero compile time.  Carry it across every point of the sweep — it is the cost
+    # of compiling THIS kernel, which does not vary with M/N/K — instead of reporting 0 ms and
+    # making Crisp look infinitely faster than icpx in the compile-time table.
+    measured_c_ms = 0.0
+    measured_hoist_ms = 0.0
     for s in sizes:
         S = int(s)
         w, it = scaled_counts(warmup, iters, S)
         out = run_l0_autobench(src, S, S, S, w, it, crisp_compiler, prec_flags, [])
         if not out:
             continue
+        if out.get("compile_ms", 0.0) > 0.0:
+            measured_c_ms = out["compile_ms"]
+            measured_hoist_ms = out.get("hoist_ms", 0.0)
+        if out.get("timing_method") == "batched_submit_legacy":
+            print(f"  ! {chapter} ({comp_name}) {S}^3: harness predates the Endeavor-143 timing fix — "
+                  f"GFLOPS is inflated by the iteration count.  Rebuild crisp-hoist-l0.", file=sys.stderr)
         if not out.get("correct", False):
             print(f"  ! {chapter} ({comp_name}) {S}^3: NOT MMA_CORRECT — skipping point", file=sys.stderr)
             continue
         results.append(SweepPoint(
             configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it},
             metrics=BenchmarkMetrics(
-                compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms,
-                                                all_compile_ms=dev_c_ms),
+                compile_time=CompileTimeMetrics(device_compile_ms=measured_c_ms or dev_c_ms,
+                                                all_compile_ms=(measured_c_ms + measured_hoist_ms) or dev_c_ms),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
+    # Backfill: points measured before the compile landed (none today, since the first size
+    # triggers the compile, but robust if artifact caching changes).
+    if measured_c_ms > 0.0:
+        for p in results:
+            if p.metrics.compile_time.device_compile_ms == 0.0:
+                p.metrics.compile_time.device_compile_ms = measured_c_ms
+                p.metrics.compile_time.all_compile_ms = measured_c_ms + measured_hoist_ms
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
 
