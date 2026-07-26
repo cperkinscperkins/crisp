@@ -2,6 +2,10 @@
 ;; This proves the compiler's auto-unrolling and static slot folding can express
 ;; the ping-pong pipeline without any new compiler forms, and achieves scale.
 ;;
+;; SKIP-DEFAULT-PASS: register-tile load needs a hardware profile; no GENERIC lowering
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-WITH[--differentiate]: "forward-only prefetch pipeline / MMA"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;; MMA-DIMS: 1024 1024 1024
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; TEST-HOIST[L0]: validate-l0-mma-run

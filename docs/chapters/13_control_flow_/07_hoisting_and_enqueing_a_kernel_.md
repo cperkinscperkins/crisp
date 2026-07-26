@@ -121,8 +121,10 @@ It can be one of five possible values.
 - `:one-thread-per`  This strategy means we expect there to be at least one global thread for each element of the vector. See [One Thread Per Element](#one-thread-per-element) discussion below.
 
 - `:strided` This strategy tells the hoisting code that we are expecting to use a grid stride pattern to walk
-the vector. (Read more at [Looping -- Grid Stride](#looping---grid-stride)). In this case the hoisting code
-will try to size the global work size near the number of threads actually available on the hardware for MAXIMUM OCCUPANCY. 
+the vector. (Read more at [Looping -- Grid Stride](#looping---grid-stride)). **Without** a `:tile-shape` this
+sizes the global work size near the number of threads actually available on the hardware for MAXIMUM OCCUPANCY.
+**With** a `:tile-shape` the grid instead covers the tile grid exactly — see [:tile-shape](#tile-shape) below,
+which now governs grid *shape* for every strategy.
 
 But note that while maximum occupancy results in ideal performance for many workloads, it is not ideal for all workloads. In particular, if atomics are used, then a maximum occupancy stride might result in less work performed per atomic and more net atomic operations performed. Lower occupancy might be better for performance. See [:occupancy](#occupancy) below.
 
@@ -130,22 +132,62 @@ But note that while maximum occupancy results in ideal performance for many work
 - `:exact` This strategy tells the hoisting code to set the global work size to be exactly the size, no more no less. This
 strategy could also be used with the `:set-to` key. If combined with `:tile-shape`, `:exact` calculates exactly enough workgroups to cover the number of tiles.
 
-`:tile-shape`
+If the `:strategy` is not provided, then the default assumption is `:one-thread-per`.
+
+
+##### :tile-shape ✅
+
 ```
-(declare (global-size :derive-from '(width height) :strategy :strided :tile-shape '(64 64)))
+(declare (global-size :derive-from (width height) :strategy :strided :tile-shape (64 64)))
+;; or derived from an output tensor, which supplies its own per-dimension extents:
+(declare (global-size :derive-from C :strategy :strided :tile-shape (32 32)))
 ```
 
-The `:tile-shape` key defines the geometric extents of the work being processed by a single workgroup. It is an orthogonal modifier to the `:strategy`.
+The `:tile-shape` key defines the geometric extents of the work processed by a single workgroup.
 
-When used with `:strategy :exact`, the hoisting code divides the input dimensions by the `:tile-shape` to determine the exact number of workgroups to launch `(CEIL(dimension / tile_extent))`.
+**`:tile-shape` determines the RANK and SHAPE of the dispatch grid; `:strategy` only determines
+sizing policy along it.** When a `:tile-shape` is present, the launch is rank-N with
 
-When used with `:strategy :strided`, the host relies on hardware occupancy to determine the launch size, but uses the `:tile-shape` to configure any necessary tile-based dynamic memory allocations.
+```
+group_count[k] = CEIL(extent[k] / tile_shape[k])
+```
 
-This declaration should always be used when utilizing the `tile-stride` or `matrix-multiply-tile-stride` macros so the host orchestrator understands the block partitioning.
+— **dispatch axis `k` is drawn from dimension `k` of the `:derive-from` source.** A tensor
+`:derive-from` supplies `extent[k]` per dimension; a scalar list supplies its k'th parameter.
+Axes beyond the tile-shape's rank are 1.
 
+This holds for **both** `:exact` and `:strided`. They converge when a `:tile-shape` is given, and
+that is deliberate: the difference between them is intent (does the kernel loop over tiles?), not
+launch geometry.
 
+This declaration should always be used when utilizing the `tile-stride` or `matrix-multiply-tile-stride`
+macros so the host orchestrator understands the block partitioning. **Omitting it on an N-dimensional
+`tile-stride` kernel is a performance trap, not merely a missing hint** — see below.
 
-If the `:strategy` is not provided, then the default assumption is `:one-thread-per`. 
+###### Why `:strided` covers the tile grid rather than max occupancy
+
+Earlier, `:strided` ignored `:tile-shape` and always emitted a *one-dimensional*, occupancy-sized grid.
+Under an N-dimensional `tile-stride` loop a 1-D grid does not simply under-dispatch: the axes with
+extent 1 are **serialized inside each workgroup**. Results stay correct — the stride loop still covers
+every tile — so the only symptom is lost throughput, which is why it went unnoticed for a long time.
+
+Measured on Intel BMG (Arc B580, 640 hardware threads), `matmul_bmg_prefetch`, tf32, TFLOPS:
+
+| size | tile grid | 1-D occupancy grid | occupancy-clamped 2-D | **exact tile cover** |
+|---|---|---:|---:|---:|
+| 1024³ | 32×32 | 1.40 | 8.10 `(32,20)` | **10.52** `(32,32)` |
+| 2048³ | 64×64 | 1.40 | 6.26 `(64,10)` | **8.64** `(64,64)` |
+| 4096³ | 128×128 | 1.37 | 4.26 `(128,5)` | **7.46** `(128,128)` |
+
+At 4096 the exact grid is 16384 workgroups — 25× oversubscribed against the occupancy budget of 640 —
+and it still wins by 75%. The margin *widens* with size, so there is no crossover at which clamping
+starts to pay (up to 4096, the largest measured). **For tiled kernels, "cover the tile grid" beats
+"fill the machine."** `:occupancy` remains available if you measure a case that wants fewer groups.
+
+The axis mapping was likewise measured, on a non-square 512×2048 problem (16 row-tiles × 64 col-tiles):
+`(16,64)` gave 12.28 TFLOPS versus `(64,16)` at 9.41. So axis 0 tracks dimension 0 (rows) — the
+opposite of the CUDA `x = columns` convention. Both orderings compute correct results; getting it
+backwards costs ~1.3× and nothing else. Do not "correct" it without re-measuring.
 
 
 ##### `:occupancy` ✅
@@ -173,6 +215,12 @@ For reduction-pattern kernels (those ending in a global atomic), the sweet
 spot is often `:occupancy 0.2` or even lower. Bandwidth-bound kernels without
 atomics generally benefit from the default `1.0`.
 
+Note that `:occupancy` derates the *occupancy-sized* `:strided` grid — the one used when no
+`:tile-shape` is given. It is not applied as a clamp on a tile-grid dispatch, because measurement
+showed clamping a tiled launch below its tile count to be a pessimization at every size tested
+(see [:tile-shape](#tile-shape)). Tiled kernels that genuinely want fewer groups should say so
+with an explicit `:set-to`.
+
 Remember, these declarations influence any hoisting code that Crisp outputs (`--hoist=L0` or `--hoist=CUDA`), the kernel itself is NOT effected in any way. 
 
 ```
@@ -185,10 +233,12 @@ Remember, these declarations influence any hoisting code that Crisp outputs (`--
 ```
 
 
-##### :tile-shape ⚠️
+##### :tile-shape
 
-`:tile-shape`  When  using the `:tiled` strategy you can provide the extents of the tile so the host can 
-calculate accordingly.  
+Documented above, with the strategy keys it modifies: see [:tile-shape](#tile-shape).
+
+(This stub previously referred to a `:tiled` strategy, which does not exist — the five strategies are
+`:one-thread-per`, `:strided`, `:exact`, `:interleaved` and the `:one-thread-per` default.)
 
 #### num-groups 📝
 ```

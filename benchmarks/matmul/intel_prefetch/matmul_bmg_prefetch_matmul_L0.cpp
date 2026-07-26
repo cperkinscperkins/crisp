@@ -273,7 +273,14 @@ int main() {
     }
 
     // Compute dispatch group count
-    ze_group_count_t groupCount = { _hw_threads / 16, 1, 1 };
+    // :tile-shape (32 32) — one workgroup per output tile; axis k <- dimension k.
+    // Endeavor 143: exact tile cover measured strictly better than an
+    // occupancy-clamped grid at every size up to 4096 (see overlay notes).
+    uint32_t _gx = (uint32_t)(((uint64_t)c_ext0 + 31) / 32);
+    if (_gx < 1) _gx = 1;
+    uint32_t _gy = (uint32_t)(((uint64_t)c_ext1 + 31) / 32);
+    if (_gy < 1) _gy = 1;
+    ze_group_count_t groupCount = { _gx, _gy, 1 };
     result = zeCommandListAppendLaunchKernel(cmdList, kernel, &groupCount, nullptr, 0, nullptr);
     if (result != ZE_RESULT_SUCCESS) {
         std::cerr << "ERROR: zeCommandListAppendLaunchKernel failed: " << result << std::endl;

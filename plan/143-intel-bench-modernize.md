@@ -120,3 +120,61 @@ NVIDIA unchanged (native on the RunPod).
 `benchmarks/results/`, and `report.py` prints a `## Hardware: Intel BMG` section with the
 `chap0_sync → chap1_async → chap_intel_prefetch` ladder — Crisp vs SYCL (vs OneMKL later).
 
+
+
+---
+
+## Phase 2 (2026-07-26) — the first Intel numbers were wrong, twice over
+
+Two independent defects, found by cross-checking Crisp against its own `sycl_apples.cpp` mirror.
+That cross-check is the durable lesson: **chap0 agreed with its mirror to 2.5%, intel_prefetch
+diverged 10x.** Two implementations of the same algorithm on the same silicon do not differ 10x.
+When they do, suspect the harness before believing the number.
+
+### 1. Timing — reported GFLOPS inflated by exactly `iters`
+The generated `--mma-bench` harness submitted the same closed command list N times and synced once,
+commented "they serialize". Level Zero **coalesces re-submission of an in-flight command list**: a
+probe measured a constant ~3.07 ms of wall time for N = 1, 2, 5, 10, 25, 50, 100 submits of a 1024^3
+GEMM. Correctness could not catch it — every iteration reads the same A/B and writes the same C, so
+`MMA_CORRECT` passes either way.
+
+Fixed in `overlays/hoist-l0/crisp-hoist-l0-overlay.lisp` (`generate-kernel-launch`): per-launch L0
+kernel-timestamp events, median of N — the method `benchmarks/matmul/crisp/bench_harness_l0.cpp`
+already used, which is why chap0/chap1 were never affected. The CUDA twin is NOT affected (it
+re-issues `cuLaunchKernel` per iteration on an in-order stream), so all H100 numbers stand.
+
+Also fixed: `run_l0_autobench` in `scripts/crisp_bench/matmul.py` reported `device_compile_ms = 0.0`.
+
+### 2. Dispatch — a 1-D grid under a 2-D tile-stride loop
+`:strided` emitted `{_hw_threads / wg_total, 1, 1}` and ignored `:tile-shape`. Under an N-D
+`tile-stride` loop the axes with extent 1 are **serialized inside each workgroup** — at 1024 only the
+32 column-tiles had any parallelism out of 640 resident hardware threads. Separately, `_hw_threads`
+counts SIMD16 hardware threads but was divided by the workgroup size in *work-items* (16x low).
+The two do not compose: `(640,1)` measured identical to `(40,1)`, so fixing the units alone bought
+nothing.
+
+Fixed via `%l0-emit-group-count` + new `%l0-emit-tile-grid-group-count`: when `:tile-shape` is
+present the grid is the rank-N tile grid, axis k <- dimension k. API semantics recorded in
+`docs/ideal_001.md` under `:strategy` / `:tile-shape` / `:occupancy` (chapters regenerated).
+
+### Net effect, intel_prefetch @1024 fast/tf32
+| | TFLOPS | vs oneMKL (11.97) |
+|---|---:|---:|
+| as first reported | 69.65 | 581.8% (fiction) |
+| after timing fix | 1.40 | 11.7% |
+| after dispatch fix | **10.36** | **~87%** |
+
+For reference the hand-written SYCL mirror is 6.88, so Crisp now runs ~1.5x its own apples-to-apples
+mirror. `benchmarks/REPORT.md` predates all of this and must be regenerated.
+
+### Open / follow-up
+- `tests/spec/089-strategy/14-hoist-strided` and `20-derive-from-vector-strided-occupancy` expect the
+  literal string `zeDeviceGetComputeProperties`, which the compiler has never emitted (it calls
+  `zeDeviceGetProperties`; the string appears only in source comments). **Pre-existing failures**, not
+  caused by this work. Decide whether the specs' expectation is wrong or the implementation should
+  additionally query compute properties — the latter is real: `maxGroupCountX/Y/Z` from
+  `zeDeviceGetComputeProperties` would be the natural clamp for a tile grid on very large problems,
+  which exact-cover dispatch now makes reachable.
+- The units error means any **1-D `:strided`** kernel (no tile-shape) was dispatching 16x under on
+  BMG. `benchmarks/reduction/` is exactly that shape and may have a second free win sitting in it.
+- CUDA's `%cuda-emit-group-count` has not been checked for the same shape bug.

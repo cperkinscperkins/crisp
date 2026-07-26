@@ -181,3 +181,177 @@
         (format stream "    }~%~%")))
 
     allocations))
+
+;;; =====================================================================
+;;; Endeavor 143 — dispatch geometry for tiled kernels
+;;;
+;;; MEASURED ON BMG (Arc B580, _hw_threads=640), matmul_bmg_prefetch, tf32, TFLOPS:
+;;;
+;;;   size    tile grid   current (40,1)   occupancy-clamped     exact tile cover
+;;;   1024      32x32          1.40        8.10  (32,20)        10.52  (32,32)
+;;;   2048      64x64          1.40        6.26  (64,10)         8.64  (64,64)
+;;;   4096    128x128          1.37        4.26  (128,5)         7.46  (128,128)
+;;;
+;;; Two independent defects, and they do NOT compose:
+;;;
+;;; 1. AXIS SERIALIZATION (the big one).  `:strided` emitted a 1-D group count
+;;;    `{_hw_threads / wg_total, 1, 1}` and ignored :tile-shape entirely.  Under an
+;;;    N-D `tile-stride` loop a 1-D grid does not merely under-dispatch — the axes with
+;;;    extent 1 are SERIALIZED inside each workgroup.  At 1024 only the 32 column-tiles
+;;;    had any parallelism, out of 640 resident hardware threads.  Every result was
+;;;    still correct, which is why it survived: tile-stride covers the tiles either way.
+;;;
+;;; 2. A UNITS ERROR.  `_hw_threads` counts hardware threads, each executing
+;;;    physicalEUSimdWidth (16) work-items, but it was divided by the workgroup size in
+;;;    WORK-ITEMS.  With local-size 16 one workgroup *is* one hardware thread, so the
+;;;    resident capacity is 640 groups and the code emitted 40 — 16x low.
+;;;
+;;; Measured (640,1,1) == (40,1,1) == 1537 us: fixing #2 alone buys exactly nothing,
+;;; because #1 dominates.  Both are fixed below.
+;;;
+;;; WHY EXACT-COVER RATHER THAN OCCUPANCY.  The occupancy budget is 640 groups; the
+;;; exact tile grid at 4096 is 16384 groups — 25x oversubscribed — and it still wins,
+;;; by 75%.  The margin WIDENS with size, so there is no crossover to clamp at (up to
+;;; 4096, the largest measured).  For tiled kernels "cover the tile grid" beats "fill
+;;; the machine".  `:occupancy` remains available as a manual derate.
+;;;
+;;; AXIS MAPPING: dispatch axis k <- tensor dimension k.  Measured on a NON-SQUARE
+;;; 512x2048 problem (16 row-tiles x 64 col-tiles): (16,64) = 12.28 TFLOPS vs
+;;; (64,16) = 9.41.  So gx <- extent0 (ROWS), gy <- extent1 (COLS) — the opposite of
+;;; the CUDA x=columns convention.  BOTH orderings return MMA_CORRECT; the only symptom
+;;; of getting it backwards is 1.31x, so do not "fix" this without re-measuring.
+
+;; src/hoist-l0/main.lisp
+(defun %l0-tensor-extent-cpp-var (sym k)
+  "Convert a tensor parameter symbol to its C++ extent variable for dimension K.
+   The L0 hoist emits 'uint64_t <name>_ext<k> = N;' for each tensor param dimension
+   (see generate-kernel-arguments-with-usm).  Companion to %l0-tensor-length-cpp-var,
+   which yields the flat length and is therefore useless for rank-N grid geometry."
+  (format nil "~a_ext~d" (substitute #\_ #\- (string-downcase (symbol-name sym))) k))
+
+;; src/hoist-l0/main.lisp
+(defun %l0-emit-tile-grid-group-count (stream derive-from derive-from-is-tensor tile-shape)
+  "Emit a rank-N ze_group_count_t covering the OUTPUT TILE GRID: one workgroup per tile,
+   ceil(extent_k / tile_k) along each axis, with dispatch axis k drawn from dimension k
+   of the :derive-from source.
+
+   DERIVE-FROM-IS-TENSOR selects the source of each extent: a tensor contributes
+   <name>_ext<k> (per-dimension), a scalar list contributes its k'th parameter.  Note the
+   tensor case must NOT use <name>_length — the flat element count carries no shape, and
+   dividing it by tile-x is what the old :exact tensor branch did.
+
+   Rank comes from the length of TILE-SHAPE, clamped to the 3 axes L0 dispatches.  Axes
+   beyond that rank are the literal 1 in the initializer rather than a declared variable,
+   so a rank-2 kernel emits `{ _gx, _gy, 1 }` and carries no unused _gz."
+  (let* ((axis-vars '("_gx" "_gy" "_gz"))
+         (rank (min (length tile-shape) 3))
+         (inits (list "1" "1" "1")))
+    (format stream "    // :tile-shape ~a — one workgroup per output tile; axis k <- dimension k.~%"
+      tile-shape)
+    (format stream "    // Endeavor 143: exact tile cover measured strictly better than an~%")
+    (format stream "    // occupancy-clamped grid at every size up to 4096 (see overlay notes).~%")
+    (dotimes (k rank)
+      (let* ((var (nth k axis-vars))
+             (tk  (or (nth k tile-shape) 1))
+             (src (if derive-from-is-tensor
+                      (when (first derive-from)
+                        (%l0-tensor-extent-cpp-var (first derive-from) k))
+                      (when (nth k derive-from)
+                        (%dispatch-sym-to-cpp-var (nth k derive-from))))))
+        (when (and src (> tk 0))
+          (format stream "    uint32_t ~a = (uint32_t)(((uint64_t)~a + ~d) / ~d);~%"
+            var src (1- tk) tk)
+          (format stream "    if (~a < 1) ~a = 1;~%" var var)
+          (setf (nth k inits) var))))
+    (format stream "    ze_group_count_t groupCount = { ~a, ~a, ~a };~%"
+      (first inits) (second inits) (third inits))))
+
+;; src/hoist-l0/main.lisp
+(defun %l0-emit-group-count (stream is-strided is-interleaved is-exact is-one-thread-per dispatch-decl set-to derive-from derive-from-is-tensor tile-shape local-x local-y)
+  "Emit group count logic for ze_group_count_t groupCount.
+
+   Endeavor 143: when :tile-shape is present on a :strided or :exact kernel, the grid is
+   the rank-N tile grid (see %l0-emit-tile-grid-group-count) regardless of strategy —
+   :tile-shape now determines grid SHAPE, :strategy only sizing policy along it.  The
+   bare :strided path (no tile-shape, e.g. 1-D vector grid-stride) keeps occupancy sizing
+   but corrects the hardware-thread/work-item units error described in the overlay notes."
+  (cond
+   ;; :tile-shape — rank-N tile-grid dispatch.  Takes precedence over the strategy's own
+   ;; sizing: a 1-D grid under an N-D tile-stride loop serializes the missing axes.
+   ((and tile-shape derive-from (or is-strided is-exact))
+     (%l0-emit-tile-grid-group-count stream derive-from derive-from-is-tensor tile-shape))
+
+   ;; :strided without :tile-shape — occupancy-based 1-D grid (vector grid-stride).
+   (is-strided
+     (let ((wg-total (* local-x (max 1 local-y))))
+       (format stream "    // Occupancy sizing: _hw_threads counts SIMD hardware threads, so~%")
+       (format stream "    // convert the workgroup size from work-items to threads before dividing.~%")
+       (format stream "    uint32_t _simd_w = _deviceProps.physicalEUSimdWidth ? _deviceProps.physicalEUSimdWidth : 16;~%")
+       (format stream "    uint32_t _threads_per_group = (~d + _simd_w - 1) / _simd_w;~%" wg-total)
+       (format stream "    if (_threads_per_group < 1) _threads_per_group = 1;~%")
+       (format stream "    uint32_t _gx = _hw_threads / _threads_per_group;~%")
+       (format stream "    if (_gx < 1) _gx = 1;~%")
+       (format stream "    ze_group_count_t groupCount = { _gx, 1, 1 };~%")))
+
+   (is-interleaved
+     (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%"))
+
+   ((null dispatch-decl)
+     (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%"))
+
+   ;; :exact with tensor :derive-from and NO tile-shape — flat length / local-x.  Only
+   ;; meaningful for rank-1 work; a tiled kernel must declare :tile-shape to get shape.
+   ((and is-exact derive-from-is-tensor)
+     (let ((tx (if tile-shape (or (first tile-shape) 1) local-x))
+           (tensor-var (%l0-tensor-length-cpp-var (first derive-from))))
+       (format stream "    uint32_t _gx = ((uint32_t)~a + ~d) / ~d;~%"
+         tensor-var (1- tx) tx)
+       (format stream "    ze_group_count_t groupCount = { _gx, 1, 1 };~%")))
+
+   ;; :exact with scalar derive-from list
+   (is-exact
+     (let* ((d0 (first derive-from))
+            (d1 (second derive-from))
+            (d2 (third derive-from))
+            (tx (if tile-shape (or (first tile-shape) 1) local-x))
+            (ty (if tile-shape (or (second tile-shape) 1) (if (> local-y 1) local-y 1))))
+       (when d0
+             (format stream "    uint32_t _gx = ((uint32_t)~a + ~a) / ~a;~%"
+               (%dispatch-sym-to-cpp-var d0) (1- tx) tx))
+       (when d1
+             (format stream "    uint32_t _gy = ((uint32_t)~a + ~a) / ~a;~%"
+               (%dispatch-sym-to-cpp-var d1) (1- ty) ty))
+       (when d2
+             (format stream "    uint32_t _gz = ((uint32_t)~a + 0) / 1;~%"
+               (%dispatch-sym-to-cpp-var d2)))
+       (format stream "    ze_group_count_t groupCount = { ~a, ~a, ~a };~%"
+         (if d0 "_gx" "1")
+         (if d1 "_gy" "1")
+         (if d2 "_gz" "1"))))
+
+   ;; :one-thread-per with tensor :derive-from
+   ((and is-one-thread-per derive-from-is-tensor)
+     (let ((tensor-var (%l0-tensor-length-cpp-var (first derive-from))))
+       (if (> local-x 1)
+           (format stream "    ze_group_count_t groupCount = { ((uint32_t)~a + ~d) / ~d, 1, 1 };~%"
+             tensor-var (1- local-x) local-x)
+           (format stream "    ze_group_count_t groupCount = { (uint32_t)~a, 1, 1 };~%"
+             tensor-var))))
+
+   ((integerp set-to)
+     (let ((g0 (%l0-dim-to-gc set-to local-x)))
+       (format stream "    ze_group_count_t groupCount = { ~a, 1, 1 };~%" g0)))
+
+   ;; :set-to list OR :derive-from (scalar list)
+   (t
+     (let* ((dims (cond
+                   ((consp set-to) set-to)
+                   (derive-from derive-from)
+                   (t nil)))
+            (d0 (first dims))
+            (d1 (second dims))
+            (d2 (third dims))
+            (g0 (%l0-dim-to-gc d0 local-x))
+            (g1 (%l0-dim-to-gc d1 (if (> local-y 1) local-y 1)))
+            (g2 (%l0-dim-to-gc d2 1)))
+       (format stream "    ze_group_count_t groupCount = { ~a, ~a, ~a };~%" g0 g1 g2)))))
