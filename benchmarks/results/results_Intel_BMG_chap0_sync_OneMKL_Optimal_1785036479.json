@@ -1,6 +1,6 @@
 {
   "run_metadata": {
-    "timestamp": "2026-07-26T03:10:59.242224Z",
+    "timestamp": "2026-07-26T03:27:57.552672Z",
     "hardware": {
       "gpu_model": "Intel BMG",
       "arch_target": "bmg",
@@ -9,7 +9,7 @@
   },
   "benchmark_suite": "matmul",
   "chapter": "chap0_sync",
-  "competitor": "Crisp",
+  "competitor": "OneMKL_Optimal",
   "precision": "ieee",
   "denormal_handling": "preserve",
   "results": [
@@ -23,15 +23,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 750.877857208252,
-          "all_compile_ms": 750.877857208252
+          "device_compile_ms": 7944.803476333618,
+          "all_compile_ms": 7944.803476333618
         },
         "runtime": {
-          "wall_time_ms": 0.0,
-          "kernel_execution_ms": 0.29505000000000003
+          "wall_time_ms": 244.8,
+          "kernel_execution_ms": 0.00634
         },
         "throughput": {
-          "tflops": 0.11373,
+          "tflops": 5.28916,
           "bandwidth_gbps": null
         }
       }
@@ -46,15 +46,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 750.877857208252,
-          "all_compile_ms": 750.877857208252
+          "device_compile_ms": 7944.803476333618,
+          "all_compile_ms": 7944.803476333618
         },
         "runtime": {
-          "wall_time_ms": 0.0,
-          "kernel_execution_ms": 0.64449
+          "wall_time_ms": 343.28,
+          "kernel_execution_ms": 0.027350000000000003
         },
         "throughput": {
-          "tflops": 0.41651,
+          "tflops": 9.814110000000001,
           "bandwidth_gbps": null
         }
       }
@@ -69,15 +69,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 750.877857208252,
-          "all_compile_ms": 750.877857208252
+          "device_compile_ms": 7944.803476333618,
+          "all_compile_ms": 7944.803476333618
         },
         "runtime": {
-          "wall_time_ms": 0.0,
-          "kernel_execution_ms": 1.44685
+          "wall_time_ms": 874.6,
+          "kernel_execution_ms": 0.17981999999999998
         },
         "throughput": {
-          "tflops": 1.48425,
+          "tflops": 11.94267,
           "bandwidth_gbps": null
         }
       }

@@ -1,6 +1,6 @@
 {
   "run_metadata": {
-    "timestamp": "2026-07-26T02:50:28.755782Z",
+    "timestamp": "2026-07-26T03:27:16.460105Z",
     "hardware": {
       "gpu_model": "Intel BMG",
       "arch_target": "bmg",
@@ -8,9 +8,9 @@
     }
   },
   "benchmark_suite": "matmul",
-  "chapter": "chap1_async_linear",
-  "competitor": "SYCL_Apples",
-  "precision": "fast",
+  "chapter": "chap0_sync",
+  "competitor": "OneMKL_Optimal",
+  "precision": "ieee",
   "denormal_handling": "ftz",
   "results": [
     {
@@ -19,19 +19,19 @@
         "n": 256,
         "k": 256,
         "warmup": 20,
-        "iters": 20
+        "iters": 100
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 5983.6907386779785,
-          "all_compile_ms": 5983.6907386779785
+          "device_compile_ms": 6761.154413223267,
+          "all_compile_ms": 6761.154413223267
         },
         "runtime": {
-          "wall_time_ms": 221.22,
-          "kernel_execution_ms": 0.02538
+          "wall_time_ms": 219.5,
+          "kernel_execution_ms": 0.00634
         },
         "throughput": {
-          "tflops": 1.32229,
+          "tflops": 5.28916,
           "bandwidth_gbps": null
         }
       }
@@ -42,19 +42,19 @@
         "n": 512,
         "k": 512,
         "warmup": 20,
-        "iters": 20
+        "iters": 100
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 5983.6907386779785,
-          "all_compile_ms": 5983.6907386779785
+          "device_compile_ms": 6761.154413223267,
+          "all_compile_ms": 6761.154413223267
         },
         "runtime": {
-          "wall_time_ms": 405.34,
-          "kernel_execution_ms": 0.18303999999999998
+          "wall_time_ms": 290.55,
+          "kernel_execution_ms": 0.027350000000000003
         },
         "throughput": {
-          "tflops": 1.46654,
+          "tflops": 9.814110000000001,
           "bandwidth_gbps": null
         }
       }
@@ -65,19 +65,19 @@
         "n": 1024,
         "k": 1024,
         "warmup": 20,
-        "iters": 20
+        "iters": 100
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 5983.6907386779785,
-          "all_compile_ms": 5983.6907386779785
+          "device_compile_ms": 6761.154413223267,
+          "all_compile_ms": 6761.154413223267
         },
         "runtime": {
-          "wall_time_ms": 3344.19,
-          "kernel_execution_ms": 1.40702
+          "wall_time_ms": 755.85,
+          "kernel_execution_ms": 0.17930000000000001
         },
         "throughput": {
-          "tflops": 1.52627,
+          "tflops": 11.97731,
           "bandwidth_gbps": null
         }
       }
