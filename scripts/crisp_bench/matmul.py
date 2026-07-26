@@ -229,6 +229,80 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
 # prefetch chapter — will need their own harness / a --grid-tile hoist path, added in Step 4.)
 # ---------------------------------------------------------------------------
 
+def _hoist_l0_bin(crisp_compiler):
+    """Sibling crisp-hoist-l0 binary next to crisp-compile."""
+    p = Path(crisp_compiler)
+    return str(p.parent / ("crisp-hoist-l0" + (".exe" if p.suffix == ".exe" else "")))
+
+def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters: int, crisp_compiler: str,
+                     prec_flags=(), cxx_flags=()):
+    chap_dir = src_path.parent
+    base = src_path.stem
+    spv = chap_dir / f"{base}.spv"
+    metacrisp = chap_dir / f"{base}_matmul.metacrisp"
+    if not (spv.exists() and metacrisp.exists()):
+        sh([crisp_compiler, "--ir-target=spv", "--hardware-profile=bmg", *prec_flags, "--log-level=off", str(src_path)], check=True)
+        sh([crisp_compiler, "--hoist=l0", "--hardware-profile=bmg", *prec_flags, "--log-level=off", str(src_path)], check=True)
+    if not metacrisp.exists():
+        print(f"autobench-l0: no metacrisp {metacrisp}", file=sys.stderr); return None
+    
+    sh([_hoist_l0_bin(crisp_compiler), f"--mma-test={M},{N},{K}", f"--mma-bench={iters}", str(metacrisp)])
+    cpp = chap_dir / f"{base}_matmul_L0.cpp"
+    if not cpp.exists():
+        print(f"autobench-l0: no bench .cpp {cpp}", file=sys.stderr); return None
+    
+    txt = cpp.read_text()
+    txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.spv"', '"' + str(spv).replace("\\", "/") + '"', txt)
+    cpp.write_text(txt)
+    
+    exe = chap_dir / f"{base}_bench_l0"
+    cxx, link_pre, link_post = _resolve_cxx_and_l0_link()
+    c = sh([cxx, "-O3", *cxx_flags, str(cpp), *link_pre, "-o", str(exe), *link_post], capture_output=True, text=True)
+    if c.returncode != 0:
+        print("autobench-l0 build failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
+    
+    p = sh([str(exe)], capture_output=True, text=True)
+    out = (p.stdout or "") + (p.stderr or "")
+    m = re.search(r'BENCH\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s*GFLOPS\s*\((\d+)\s*iters,\s*([\d.]+)\s*s\)', out)
+    if not m:
+        print("autobench-l0 parse failed:\n" + out[-800:], file=sys.stderr); return None
+    gflops = float(m.group(4))
+    secs = float(m.group(6))
+    iters_ran = int(m.group(5))
+    k_us = (secs / iters_ran) * 1e6
+    return {"gflops": gflops, "kernel_median_us": k_us,
+            "correct": ("MMA_CORRECT" in out), "wall_time_ms": 0.0, "driver_jit_ms": 0.0}
+
+def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
+                           precision, ftz, dev_c_ms, crisp_compiler):
+    meta = _apply_hw(create_metadata())
+    prec_flags = [f"--math-precision={precision}",
+                  f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
+    src = Path(src_path)
+    stale = src.parent / f"{src.stem}_matmul.metacrisp"
+    if stale.exists():
+        stale.unlink()
+    results = []
+    for s in sizes:
+        S = int(s)
+        w, it = scaled_counts(warmup, iters, S)
+        out = run_l0_autobench(src, S, S, S, w, it, crisp_compiler, prec_flags, [])
+        if not out:
+            continue
+        if not out.get("correct", False):
+            print(f"  ! {chapter} ({comp_name}) {S}^3: NOT MMA_CORRECT — skipping point", file=sys.stderr)
+            continue
+        results.append(SweepPoint(
+            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it},
+            metrics=BenchmarkMetrics(
+                compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms,
+                                                all_compile_ms=dev_c_ms),
+                runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
+                                       kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
+                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
+    return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
+                          precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
+
 def _resolve_cxx_and_l0_link():
     """(cxx, link_pre, link_post) for the L0 harness compile.  Container(Linux): icpx + -lze_loader
     (system Level Zero headers).  Windows(native smoke test): clang++ (llvm-mingw) + the L0 include dir
@@ -459,16 +533,23 @@ def main():
             print(f"Saved {chapter} ({comp_name}) sweep to {out_dir}")
 
         # Endeavor 143: the Intel Crisp path is SPIR-V/L0 (not PTX/CUDA) — the fixed L0 harness.
-        def run_l0_crisp(chapter, source_name, comp_name="Crisp"):
+        def run_l0_crisp(chapter, source_name, comp_name="Crisp", use_autobench=False):
             src = HERE / chapter / source_name
             if not src.exists():
                 return
             if not Path(crisp_compiler).exists():
                 print(f"Skipping {comp_name} ({chapter}) — {crisp_compiler} not found."); return
-            if not l0_harness:
-                print(f"Skipping {comp_name} ({chapter}) — L0 harness not built."); return
-            sweep = run_l0_fixed_sweep(chapter, src, comp_name, l0_harness, sizes, a.warmup, a.iters,
-                                       prec, ftz, crisp_compiler)
+            
+            if use_autobench:
+                dev_c_ms = 0.0 # Will be measured during sweep if needed
+                sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
+                                               prec, ftz, dev_c_ms, crisp_compiler)
+            else:
+                if not l0_harness:
+                    print(f"Skipping {comp_name} ({chapter}) — L0 harness not built."); return
+                sweep = run_l0_fixed_sweep(chapter, src, comp_name, l0_harness, sizes, a.warmup, a.iters,
+                                           prec, ftz, crisp_compiler)
+                
             sweep.save(out_dir)
             print(f"Saved {chapter} ({comp_name}) L0 sweep to {out_dir}")
 
@@ -512,7 +593,7 @@ def main():
             # STEP 4 (this is where Q1 gets answered): the register-ring kernel has a DIFFERENT param
             # layout than the fixed bench_harness_l0.cpp (no scratch tiles), so it needs its own harness
             # (or a --grid-tile hoist path).  Parked until the chap0/chap1 plumbing is proven.
-            # run_l0_crisp("chap_intel_prefetch", "matmul_bmg_prefetch.crisp")
+            run_l0_crisp("intel_prefetch", "matmul_bmg_prefetch.crisp", use_autobench=True)
 
 if __name__ == "__main__":
     main()

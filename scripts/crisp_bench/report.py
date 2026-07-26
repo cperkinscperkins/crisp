@@ -27,7 +27,7 @@ CHAPTER_ORDER = [
     "chap1.5_async_block",
     "chap2_pipelined_block",
     "chap3_wgmma",
-    "chap_intel_prefetch",
+    "intel_prefetch",
 ]
 CHAPTER_LABEL = {
     "chap0_sync":            "Synchronous tiling (fp32, no tensor cores)",
@@ -35,7 +35,7 @@ CHAPTER_LABEL = {
     "chap1.5_async_block":   "Block TMA load + tf32 MMA",
     "chap2_pipelined_block": "Pipelined block + tf32 MMA",
     "chap3_wgmma":           "Hopper warpgroup MMA (wgmma, tf32)",
-    "chap_intel_prefetch":   "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
+    "intel_prefetch":        "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
 }
 # Intel/BMG technique overrides (Endeavor 143): the shared chapter keys mean DIFFERENT things per
 # platform — Intel chap0/chap1 use XMX coop-matrix tf32 tensor cores, not the fp32 non-tensor-core
@@ -43,6 +43,7 @@ CHAPTER_LABEL = {
 INTEL_CHAPTER_LABEL = {
     "chap0_sync":         "Synchronous coop-matrix tiling (XMX tf32)",
     "chap1_async_linear": "OpGroupAsyncCopy staging (XMX tf32)",
+    "intel_prefetch":     "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
 }
 # Chapters whose Crisp kernel uses tf32 tensor cores — so an IEEE (fp32) vendor ceiling is an
 # apples-to-oranges comparison for those precision tables.  On Intel EVERY chapter is XMX tf32

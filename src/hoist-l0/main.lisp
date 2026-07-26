@@ -237,7 +237,11 @@
 
 (defun generate-cpp-includes (stream)
   "Generate C++ includes"
+  (format stream "#if __has_include(<level_zero/ze_api.h>)~%")
+  (format stream "#include <level_zero/ze_api.h>~%")
+  (format stream "#else~%")
   (format stream "#include <ze_api.h>~%")
+  (format stream "#endif~%")
   (format stream "#include <iostream>~%")
   (format stream "#include <fstream>~%")
   (format stream "#include <vector>~%")
@@ -537,9 +541,9 @@
           ;; should override numSubslices, map to Xe-cores, or use a distinct Intel key
           ;; is left until we actually benchmark on BMG (per user, 2026-07-04).  Until
           ;; then L0 keeps the runtime zeDeviceGetComputeProperties query unconditionally.
-          (format stream "    ze_device_compute_properties_t _computeProps = { ZE_STRUCTURE_TYPE_DEVICE_COMPUTE_PROPERTIES };~%")
-          (format stream "    zeDeviceGetComputeProperties(device, &_computeProps);~%")
-          (format stream "    uint32_t _hw_threads = _computeProps.numSubslices * _computeProps.numEUsPerSubslice * _computeProps.numThreadsPerEU;~%")
+          (format stream "    ze_device_properties_t _deviceProps = { ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES };~%")
+          (format stream "    zeDeviceGetProperties(device, &_deviceProps);~%")
+          (format stream "    uint32_t _hw_threads = _deviceProps.numSlices * _deviceProps.numSubslicesPerSlice * _deviceProps.numEUsPerSubslice * _deviceProps.numThreadsPerEU;~%")
           (format stream "    // Refine with kernel resource footprint (privateMemSize, spillMemSize)~%")
           (format stream "    ze_kernel_properties_t _kernelProps = { ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES };~%")
           (format stream "    zeKernelGetProperties(kernel, &_kernelProps);~%")
