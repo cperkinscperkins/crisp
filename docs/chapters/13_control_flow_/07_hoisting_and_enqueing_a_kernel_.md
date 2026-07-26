@@ -116,7 +116,7 @@ The `:strategy` key is most useful when used in conjunction with `:derive-from` 
 With `:derive-from` we are telling the hoisting code, "take such-and-such vectors size into consideration when setting the
 global work size".  And the `:strategy` tells it _how_ that should be done.
 
-It can be one of five possible values.
+It can be one of four possible values.
 
 - `:one-thread-per`  This strategy means we expect there to be at least one global thread for each element of the vector. See [One Thread Per Element](#one-thread-per-element) discussion below.
 
@@ -126,11 +126,17 @@ sizes the global work size near the number of threads actually available on the 
 **With** a `:tile-shape` the grid instead covers the tile grid exactly — see [:tile-shape](#tile-shape) below,
 which now governs grid *shape* for every strategy.
 
-But note that while maximum occupancy results in ideal performance for many workloads, it is not ideal for all workloads. In particular, if atomics are used, then a maximum occupancy stride might result in less work performed per atomic and more net atomic operations performed. Lower occupancy might be better for performance. See [:occupancy](#occupancy) below.
-
+Maximum occupancy is not automatically ideal. Kernels ending in a global atomic, in particular, do more
+atomic traffic as the group count rises, and *in principle* a smaller grid can win. Whether that actually
+happens is hardware-dependent and should be measured rather than assumed — on Intel BMG it does not
+(see [:occupancy](#occupancy), which carries the numbers). Use `:occupancy` when you have measured a case
+that wants fewer groups.
 
 - `:exact` This strategy tells the hoisting code to set the global work size to be exactly the size, no more no less. This
 strategy could also be used with the `:set-to` key. If combined with `:tile-shape`, `:exact` calculates exactly enough workgroups to cover the number of tiles.
+
+- `:interleaved` Accepted by the parser but **not yet implemented** — it currently falls back to the
+default dispatch of a single workgroup. Do not rely on it.
 
 If the `:strategy` is not provided, then the default assumption is `:one-thread-per`.
 
@@ -156,9 +162,12 @@ group_count[k] = CEIL(extent[k] / tile_shape[k])
 `:derive-from` supplies `extent[k]` per dimension; a scalar list supplies its k'th parameter.
 Axes beyond the tile-shape's rank are 1.
 
-This holds for **both** `:exact` and `:strided`. They converge when a `:tile-shape` is given, and
-that is deliberate: the difference between them is intent (does the kernel loop over tiles?), not
-launch geometry.
+This holds for **both** `:exact` and `:strided`: given the same `:tile-shape` and the same extents,
+they compute the *same* grid. What still separates them is whether the kernel **loops** — `:strided`
+has a `tile-stride` loop, `:exact` does not — and that is not a documentation nicety. It decides what
+the host is permitted to do when the computed grid will not fit the device (see
+[Device dispatch limits](#device-dispatch-limits--where-strided-and-exact-genuinely-differ) below).
+So: same formula, different licence.
 
 This declaration should always be used when utilizing the `tile-stride` or `matrix-multiply-tile-stride`
 macros so the host orchestrator understands the block partitioning. **Omitting it on an N-dimensional
@@ -189,6 +198,26 @@ The axis mapping was likewise measured, on a non-square 512×2048 problem (16 ro
 opposite of the CUDA `x = columns` convention. Both orderings compute correct results; getting it
 backwards costs ~1.3× and nothing else. Do not "correct" it without re-measuring.
 
+###### Device dispatch limits — where `:strided` and `:exact` genuinely differ
+
+A tile grid scales with the **problem**, not the hardware, so unlike an occupancy-sized grid it can
+in principle exceed what the device will accept (`maxGroupCountX/Y/Z` from
+`zeDeviceGetComputeProperties`). The two strategies must handle that differently, and the
+difference is one of correctness rather than taste:
+
+- **`:strided`** has a `tile-stride` loop that covers any tile the grid does not reach, so the host
+  **clamps** the grid to the device limit and notes it. The cost is throughput, not correctness.
+- **`:exact`** launches one workgroup per tile with no loop, so a clamped grid would **silently skip
+  tiles**. Exceeding the limit is therefore a hard **error** directing you to `:strided`.
+
+This is the one place the two strategies diverge once a `:tile-shape` is present, and it is the
+reason to keep them distinct rather than collapsing them into one key.
+
+For scale: Intel BMG (Arc B580) reports `maxGroupCountX/Y/Z` of `UINT32_MAX`, so a 32×32-tile cover
+would not reach the limit until roughly N = 1.4 × 10¹¹. The guard is effectively inert on that part
+today — it exists because the bound became *reachable in principle* the moment grid size started
+tracking the problem, and because the strided/exact split above must never be silent.
+
 
 ##### `:occupancy` ✅
 
@@ -197,8 +226,17 @@ Accepts a number from `0.0` to `1.0` (default `1.0`).
 
 When the hoisting code calculates "near the number of threads actually
 available on the hardware" (via `cuOccupancyMaxActiveBlocksPerMultiprocessor`
-on CUDA or `zeDeviceGetComputeProperties` + `zeKernelGetProperties` on Level
-Zero), it multiplies the result by the `:occupancy` ratio.
+on CUDA, or `zeDeviceGetProperties` + `zeKernelGetProperties` on Level Zero),
+it multiplies the result by the `:occupancy` ratio.
+
+> **Note on the Level Zero call.** This used to say `zeDeviceGetComputeProperties`. That is a
+> different query and cannot do this job: `ze_device_compute_properties_t` returns *dispatch
+> limits* (`maxTotalGroupSize`, `maxGroupSizeX/Y/Z`, `maxGroupCountX/Y/Z`, `maxSharedLocalMemory`,
+> `subGroupSizes`) and contains nothing about how many threads the device has. Machine capacity —
+> `numSlices × numSubslicesPerSlice × numEUsPerSubslice × numThreadsPerEU`, each thread
+> `physicalEUSimdWidth` wide — comes from `zeDeviceGetProperties`. Unlike CUDA, Level Zero has no
+> single per-kernel occupancy query; Crisp approximates one by derating that capacity when
+> `zeKernelGetProperties` reports register spill.
 
 Maximum theoretical occupancy is necessary but not
 sufficient for peak performance. Real workloads compete for shared resources
@@ -211,9 +249,29 @@ that don't scale with thread count:
 - Per-block fixed overhead amortization - shared-memory setup and
   barriers cost the same regardless of how much work each thread does.
 
-For reduction-pattern kernels (those ending in a global atomic), the sweet
-spot is often `:occupancy 0.2` or even lower. Bandwidth-bound kernels without
-atomics generally benefit from the default `1.0`.
+Those pressures are real, but whether they add up to "use a smaller grid" is a question about a
+specific kernel on specific hardware, and it must be measured. **Do not reach for a low `:occupancy`
+on the theory above.**
+
+**Measured — Intel BMG (Arc B580), `benchmarks/reduction` `sum_reduce`, median kernel µs:**
+
+| `:occupancy` | groups | N = 1M | N = 16M |
+|---|---:|---:|---:|
+| 0.05 | 8 | 65.83 | 2737.07 |
+| 0.15 | 24 | 29.22 | 941.30 |
+| 0.50 | 80 | 11.54 | 306.07 |
+| **1.00** | **160** | **8.84** | **191.46** |
+
+Monotonic: more groups is better at every step, and the advantage *widens* with N — 7.4× at 1M and
+14.3× at 16M between the lowest and highest setting. This is a reduction that ends in a global atomic,
+i.e. precisely the pattern the theory says should prefer a small grid, and on this hardware it does
+the opposite. The curve has not flattened at `1.0` either, which suggests the optimum lies beyond the
+largest grid the ratio can express.
+
+So on Intel, the default of `1.0` is right and derating is a pessimization in the one case tested.
+The often-repeated "≈0.2 for reductions" figure comes from NVIDIA experience and has **not** been
+re-verified here since the measurement methodology was corrected; treat it as unproven on either
+vendor until it appears in this table. Bandwidth-bound kernels without atomics benefit from `1.0`.
 
 Note that `:occupancy` derates the *occupancy-sized* `:strided` grid — the one used when no
 `:tile-shape` is given. It is not applied as a clamp on a tile-grid dispatch, because measurement
@@ -225,6 +283,9 @@ Remember, these declarations influence any hoisting code that Crisp outputs (`--
 
 ```
 ;; -- sum_reduce_tree --
+;; NOTE: the 0.5 here is illustrative SYNTAX, not a recommendation.  On BMG this kernel
+;; is fastest at the 1.0 default (see the table above); a derate should follow a
+;; measurement on your hardware, not this example.
 (def-kernel sum_reduce_tree (input &out result)
   (declare #'(in-vec &out out-cell => nil))
   (declare (global-size :derive-from input :strategy :strided :occupancy 0.5)
@@ -232,13 +293,6 @@ Remember, these declarations influence any hoisting code that Crisp outputs (`--
   ...)
 ```
 
-
-##### :tile-shape
-
-Documented above, with the strategy keys it modifies: see [:tile-shape](#tile-shape).
-
-(This stub previously referred to a `:tiled` strategy, which does not exist — the five strategies are
-`:one-thread-per`, `:strided`, `:exact`, `:interleaved` and the `:one-thread-per` default.)
 
 #### num-groups 📝
 ```

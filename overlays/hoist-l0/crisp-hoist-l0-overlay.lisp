@@ -230,7 +230,49 @@
   (format nil "~a_ext~d" (substitute #\_ #\- (string-downcase (symbol-name sym))) k))
 
 ;; src/hoist-l0/main.lisp
-(defun %l0-emit-tile-grid-group-count (stream derive-from derive-from-is-tensor tile-shape)
+(defun %l0-emit-tile-grid-limit-guard (stream can-stride declared-axes)
+  "Emit the ze_device_compute_properties_t guard for a tile-grid dispatch.
+
+   DECLARED-AXES is the subset of (var limit label) triples whose group-count variable was
+   actually emitted — a rank-2 kernel declares only _gx/_gy, so guarding _gz would not compile.
+
+   CAN-STRIDE distinguishes the two cases, and the distinction is a CORRECTNESS one:
+
+     :strided — the kernel's tile-stride loop covers any tile the grid does not reach, so
+                clamping the grid to the device limit is SAFE.  It costs throughput, not
+                correctness.  We clamp and warn.
+     :exact   — one workgroup per tile, no loop.  A clamped grid would SILENTLY SKIP TILES,
+                so exceeding the limit must be a hard error, not a clamp.
+
+   Measured on BMG (Arc B580) 2026-07-26: maxGroupCountX/Y/Z all report UINT32_MAX, so a
+   32x32-tile cover would not reach the limit until N ~ 1.4e11.  This guard is therefore
+   inert on that part — it is here because exact-cover dispatch made the grid scale with the
+   PROBLEM rather than with the hardware, so the bound is now reachable in principle where
+   it previously was not, and because the strided/exact split above must not be silent."
+  (format stream "    // Device dispatch limits (Endeavor 143).  The tile grid scales with the~%")
+  (format stream "    // problem, not the hardware, so bound it by what the device will accept.~%")
+  (format stream "    ze_device_compute_properties_t _cmpProps = { ZE_STRUCTURE_TYPE_DEVICE_COMPUTE_PROPERTIES };~%")
+  (format stream "    if (zeDeviceGetComputeProperties(device, &_cmpProps) == ZE_RESULT_SUCCESS) {~%")
+  (dolist (axis declared-axes)
+    (destructuring-bind (var limit label) axis
+      (format stream "        if (~a > _cmpProps.~a) {~%" var limit)
+      (if can-stride
+          (progn
+            ;; Safe: the tile-stride loop picks up the remainder.
+            (format stream "            std::cerr << \"NOTE: ~a group count \" << ~a << \" exceeds device ~a (\"~%" label var limit)
+            (format stream "                      << _cmpProps.~a << \"); clamping — the tile-stride loop covers the rest.\" << std::endl;~%" limit)
+            (format stream "            ~a = _cmpProps.~a;~%" var limit))
+          (progn
+            ;; Unsafe: :exact has no stride loop, so a clamp would drop tiles.
+            (format stream "            std::cerr << \"ERROR: ~a group count \" << ~a << \" exceeds device ~a (\"~%" label var limit)
+            (format stream "                      << _cmpProps.~a << \"). :strategy :exact has no stride loop, so clamping\"~%" limit)
+            (format stream "                      << \" would skip tiles.  Use :strategy :strided for a problem this large.\" << std::endl;~%")
+            (format stream "            return 1;~%")))
+      (format stream "        }~%")))
+  (format stream "    }~%"))
+
+;; src/hoist-l0/main.lisp
+(defun %l0-emit-tile-grid-group-count (stream derive-from derive-from-is-tensor tile-shape &optional can-stride)
   "Emit a rank-N ze_group_count_t covering the OUTPUT TILE GRID: one workgroup per tile,
    ceil(extent_k / tile_k) along each axis, with dispatch axis k drawn from dimension k
    of the :derive-from source.
@@ -244,8 +286,11 @@
    beyond that rank are the literal 1 in the initializer rather than a declared variable,
    so a rank-2 kernel emits `{ _gx, _gy, 1 }` and carries no unused _gz."
   (let* ((axis-vars '("_gx" "_gy" "_gz"))
+         (axis-limits '("maxGroupCountX" "maxGroupCountY" "maxGroupCountZ"))
+         (axis-labels '("x" "y" "z"))
          (rank (min (length tile-shape) 3))
-         (inits (list "1" "1" "1")))
+         (inits (list "1" "1" "1"))
+         (declared '()))
     (format stream "    // :tile-shape ~a — one workgroup per output tile; axis k <- dimension k.~%"
       tile-shape)
     (format stream "    // Endeavor 143: exact tile cover measured strictly better than an~%")
@@ -262,7 +307,12 @@
           (format stream "    uint32_t ~a = (uint32_t)(((uint64_t)~a + ~d) / ~d);~%"
             var src (1- tk) tk)
           (format stream "    if (~a < 1) ~a = 1;~%" var var)
-          (setf (nth k inits) var))))
+          (setf (nth k inits) var)
+          (push (list var (nth k axis-limits) (nth k axis-labels)) declared))))
+    ;; Guard before the initializer, so the clamp/error applies to the values actually used,
+    ;; and only over axes we really declared.
+    (when declared
+      (%l0-emit-tile-grid-limit-guard stream can-stride (nreverse declared)))
     (format stream "    ze_group_count_t groupCount = { ~a, ~a, ~a };~%"
       (first inits) (second inits) (third inits))))
 
@@ -278,8 +328,11 @@
   (cond
    ;; :tile-shape — rank-N tile-grid dispatch.  Takes precedence over the strategy's own
    ;; sizing: a 1-D grid under an N-D tile-stride loop serializes the missing axes.
+   ;; CAN-STRIDE = is-strided: only a strided kernel has the tile-stride loop that makes
+   ;; clamping the grid safe.  :exact must hard-error instead of silently dropping tiles.
    ((and tile-shape derive-from (or is-strided is-exact))
-     (%l0-emit-tile-grid-group-count stream derive-from derive-from-is-tensor tile-shape))
+     (%l0-emit-tile-grid-group-count stream derive-from derive-from-is-tensor tile-shape
+                                     is-strided))
 
    ;; :strided without :tile-shape — occupancy-based 1-D grid (vector grid-stride).
    (is-strided
