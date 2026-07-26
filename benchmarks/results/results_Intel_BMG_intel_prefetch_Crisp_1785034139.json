@@ -1,0 +1,40 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-07-26T02:48:53.703974Z",
+    "hardware": {
+      "gpu_model": "Intel BMG",
+      "arch_target": "bmg",
+      "environment": "docker"
+    }
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "intel_prefetch",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "warmup": 20,
+        "iters": 20
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 0.0,
+          "all_compile_ms": 0.0
+        },
+        "runtime": {
+          "wall_time_ms": 0.0,
+          "kernel_execution_ms": 0.15352000000000002
+        },
+        "throughput": {
+          "tflops": 13.988299999999999,
+          "bandwidth_gbps": null
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-07-26T02:50:47.299519Z",
+    "hardware": {
+      "gpu_model": "Intel BMG",
+      "arch_target": "bmg",
+      "environment": "docker"
+    }
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "intel_prefetch",
+  "competitor": "SYCL_Apples",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "m": 256,
+        "n": 256,
+        "k": 256,
+        "warmup": 20,
+        "iters": 20
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 6186.895132064819,
+          "all_compile_ms": 6186.895132064819
+        },
+        "runtime": {
+          "wall_time_ms": 289.52,
+          "kernel_execution_ms": 0.01654
+        },
+        "throughput": {
+          "tflops": 2.02917,
+          "bandwidth_gbps": null
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "warmup": 20,
+        "iters": 20
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 6186.895132064819,
+          "all_compile_ms": 6186.895132064819
+        },
+        "runtime": {
+          "wall_time_ms": 277.96,
+          "kernel_execution_ms": 0.06396
+        },
+        "throughput": {
+          "tflops": 4.19693,
+          "bandwidth_gbps": null
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "warmup": 20,
+        "iters": 20
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 6186.895132064819,
+          "all_compile_ms": 6186.895132064819
+        },
+        "runtime": {
+          "wall_time_ms": 959.95,
+          "kernel_execution_ms": 0.31251999999999996
+        },
+        "throughput": {
+          "tflops": 6.87151,
+          "bandwidth_gbps": null
+        }
+      }
+    }
+  ]
+}

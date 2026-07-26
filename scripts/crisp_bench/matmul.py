@@ -484,6 +484,8 @@ def main():
             # tf32-vs-fp32 choice — not -ftz — is what actually moves cuBLAS between precisions.
             cublas_flags.append("-DFAST_MATH")
         sycl_flags   = ["-fsycl", "-O3", *icpx_math_flags(prec, ftz)]
+        if prec == "fast":
+            sycl_flags.append("-DFAST_MATH")
 
         def run_target(chapter, source_name, bin_name, comp_name, flags, is_sycl=False, is_cublas=False, is_crisp=False, crisp_grid_tile=None):
             src_path = HERE / chapter / source_name
@@ -594,6 +596,7 @@ def main():
             # layout than the fixed bench_harness_l0.cpp (no scratch tiles), so it needs its own harness
             # (or a --grid-tile hoist path).  Parked until the chap0/chap1 plumbing is proven.
             run_l0_crisp("intel_prefetch", "matmul_bmg_prefetch.crisp", use_autobench=True)
+            run_target("intel_prefetch", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
 if __name__ == "__main__":
     main()

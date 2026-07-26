@@ -44,7 +44,7 @@ export CRISP_USE_SYSTEM_TOOLS=true
 
 echo '=== Building Crisp inside container ==='
 rm -rf /root/.cache/common-lisp
-sbcl --non-interactive --load build/build.lisp 2>&1 | tail -8
+sbcl --non-interactive --load build/build.lisp
 
 # Trap a cleanup hook so the Linux ELF binaries the build just dropped into
 # bin/ are removed before we exit.  Otherwise they shadow the host's
