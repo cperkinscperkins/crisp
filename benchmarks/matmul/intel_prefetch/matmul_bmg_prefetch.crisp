@@ -6,7 +6,7 @@
 
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
-           (global-size :derive-from C :strategy :strided :tile-shape (32 32))
+           (global-size :derive-from C :strategy :strided)
            (local-size :set-to 16))
   (let ((K      (inner-dimension A B))
         (n-k-steps (/ (inner-dimension A B) (to-ulong 8))))
