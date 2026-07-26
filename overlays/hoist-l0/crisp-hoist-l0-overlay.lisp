@@ -408,3 +408,75 @@
             (g1 (%l0-dim-to-gc d1 (if (> local-y 1) local-y 1)))
             (g2 (%l0-dim-to-gc d2 1)))
        (format stream "    ze_group_count_t groupCount = { ~a, ~a, ~a };~%" g0 g1 g2)))))
+
+;; src/hoist-l0/main.lisp
+;;
+;; Endeavor 143 follow-up: when :tile-shape drives the grid, do NOT emit the occupancy preamble.
+;; %l0-emit-group-count's tile-grid branch ignores _hw_threads entirely, so emitting it left an
+;; unused variable in the generated C++ underneath a comment reading "grid uses occupancy" —
+;; directly above a grid that does not use occupancy.  That is the same species of comment/code
+;; drift that sent us chasing zeDeviceGetComputeProperties for hours, so it gets fixed rather
+;; than tolerated.  The preamble is still emitted for a bare :strided kernel (no tile-shape),
+;; which genuinely needs _hw_threads.
+(defun %l0-emit-dispatch (stream global-decl local-decl num-groups-decl)
+  "Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.
+   Supports:
+     :strategy :strided        — max occupancy (zeDeviceGetProperties +
+                                 optional zeKernelGetProperties)
+     :strategy :one-thread-per — grid sized to derive-from source
+     :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)
+     :strategy :interleaved    — not yet implemented (default dispatch)
+   :set-to scalar/list       — fixed grid
+   :derive-from can be a single tensor symbol (uses <name>_length) or a list
+   of scalar parameter names (uses <name>_arg).
+
+   Endeavor 143: a :tile-shape on a :strided/:exact kernel makes the grid the rank-N tile grid,
+   so the occupancy preamble is suppressed in that case — it would be dead code."
+  (let* ((ls-rest (when local-decl (cdr local-decl)))
+         (ls-set-to (when ls-rest (getf ls-rest :set-to)))
+         (local-x (cond
+                   ((integerp ls-set-to) ls-set-to)
+                   ((and (listp ls-set-to) (first ls-set-to)) (first ls-set-to))
+                   (t 1)))
+         (local-y (cond
+                   ((and (listp ls-set-to) (second ls-set-to)) (second ls-set-to))
+                   (t 1)))
+
+         (dispatch-decl (or global-decl num-groups-decl))
+         (disp-rest (when dispatch-decl (cdr dispatch-decl)))
+         (strategy (when disp-rest (getf disp-rest :strategy)))
+         (strat-name (when strategy (symbol-name strategy)))
+
+         (is-strided (and strat-name (string-equal strat-name "STRIDED")))
+         (is-exact (and strat-name (string-equal strat-name "EXACT")))
+         (is-interleaved (and strat-name (string-equal strat-name "INTERLEAVED")))
+         (is-one-thread-per (and strat-name (string-equal strat-name "ONE-THREAD-PER")))
+
+         (set-to (when disp-rest (getf disp-rest :set-to)))
+         (raw-derive-from (when disp-rest (getf disp-rest :derive-from)))
+         (derive-from-is-tensor (%l0-derive-from-is-tensor-p raw-derive-from))
+         (derive-from (%l0-normalize-derive-from raw-derive-from))
+         (tile-shape (when disp-rest (getf disp-rest :tile-shape)))
+         (occupancy (when disp-rest (getf disp-rest :occupancy)))
+         ;; True when %l0-emit-group-count will take the tile-grid branch below.
+         (tile-grid-p (and tile-shape derive-from (or is-strided is-exact))))
+
+    (%l0-emit-occupancy-and-strategy stream
+                                     (and is-strided (not tile-grid-p))
+                                     is-interleaved occupancy
+                                     derive-from-is-tensor derive-from)
+
+    (let ((wg-x (format nil "~a" local-x))
+          (wg-y (format nil "~a" local-y)))
+
+      (format stream "    // Set group (workgroup) size~%")
+      (format stream "    result = zeKernelSetGroupSize(kernel, ~a, ~a, 1);~%" wg-x wg-y)
+      (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+      (format stream "        std::cerr << \"ERROR: zeKernelSetGroupSize failed: \" << result << std::endl;~%")
+      (format stream "        return 1;~%")
+      (format stream "    }~%~%")
+
+      (format stream "    // Compute dispatch group count~%")
+      (%l0-emit-group-count stream is-strided is-interleaved is-exact is-one-thread-per
+                            dispatch-decl set-to derive-from derive-from-is-tensor tile-shape
+                            local-x local-y))))

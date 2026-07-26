@@ -1,11 +1,14 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-HOIST[L0]: validate-l0-strategy-content
 ;; STRATEGY-EXPECT[L0]: zeKernelSetGroupSize(kernel, 16, 1, 1)
-;; STRATEGY-EXPECT[L0]: // :derive-from tensor 'IN' (length=in_length) used for check-thread-bounds; grid uses occupancy
+;; Endeavor 143: this kernel declares :tile-shape (16), so the grid is now the rank-N TILE
+;; GRID -- ceil(in_ext0/16) blocks, one per tile -- not an occupancy-sized 1-D grid.  The
+;; occupancy preamble is correctly no longer emitted on either backend.
+;; STRATEGY-EXPECT[L0]: uint32_t _gx = (uint32_t)(((uint64_t)in_ext0 + 15) / 16);
+;; STRATEGY-EXPECT[L0]: ze_group_count_t groupCount = { _gx, 1, 1 };
 ;; STRATEGY-EXPECT[L0]: zeKernelSetArgumentValue(kernel, 0, 64ULL, nullptr);
 ;; TEST-HOIST[CUDA]: validate-cuda-strategy-content
-;; STRATEGY-EXPECT[CUDA]: // derive-from tensor 'IN' (length=in_length) used for check-thread-bounds; grid uses occupancy
-;; STRATEGY-EXPECT[CUDA]: cuOccupancyMaxActiveBlocksPerMultiprocessor(&_blocksPerSM, kernel, 16, 64)
+;; STRATEGY-EXPECT[CUDA]: unsigned int gridX = (unsigned int)(((unsigned long long)in_ext0 + 15) / 16);
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 (def-type tile-t (vector float :address-space :local :align :compact))

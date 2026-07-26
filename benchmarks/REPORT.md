@@ -116,17 +116,17 @@
 
 > Crisp compiles a kernel to SPIR-V; the native competitors invoke `icpx` (SYCL / oneMKL). Lower is better; `× vs Crisp` is how much longer than Crisp that toolchain takes.
 
-## Hardware: NVIDIA H100
+## Hardware: NVIDIA H100 PCIe
 
 ### Summary — Crisp vs. cuBLAS ceiling (fast / tf32)
 
 | Chapter | Technique | Size | Crisp (TFLOPS) | cuBLAS (TFLOPS) | Crisp % of cuBLAS |
 |---|---|---:|---:|---:|---:|
-| chap0_sync | Synchronous tiling (fp32, no tensor cores) | 2048 | 5.6 | 363.6 | 1.5% |
-| chap1_async_linear | Async linear pipelining (fp32) | 2048 | 8.9 | 363.6 | 2.4% |
-| chap1.5_async_block | Block TMA load + tf32 MMA | 2048 | 75.2 | 363.6 | 20.7% |
-| chap2_pipelined_block | Pipelined block + tf32 MMA | 2048 | 72.6 | 363.6 | 20.0% |
-| chap3_wgmma | Hopper warpgroup MMA (wgmma, tf32) | 2048 | 241.7 | 363.6 | 66.5% |
+| chap0_sync | Synchronous tiling (fp32, no tensor cores) | 2048 | 2.6 | 200.1 | 1.3% |
+| chap1_async_linear | Async linear pipelining (fp32) | 2048 | 4.0 | 200.1 | 2.0% |
+| chap1.5_async_block | Block TMA load + tf32 MMA | 2048 | 36.1 | 200.1 | 18.0% |
+| chap2_pipelined_block | Pipelined block + tf32 MMA | 2048 | 39.5 | 200.1 | 19.8% |
+| chap3_wgmma | Hopper warpgroup MMA (wgmma, tf32) | 2048 | 127.2 | 200.1 | 63.6% |
 
 > Largest measured size per chapter, `fast` precision (Crisp and cuBLAS both tf32). The ladder runs low-to-high on the optimization axis for this hardware.
 
@@ -136,28 +136,28 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 6.10 | 0.01 | 2.50 | 0.01 | 0.10 | 0.34 | 1.6% | 3.9% |
-| 512x512x512 | 34.31 | 0.01 | 4.71 | 0.06 | 0.39 | 0.69 | 1.1% | 8.2% |
-| 1024x1024x1024 | 143.73 | 0.01 | 5.45 | 0.39 | 1.55 | 1.39 | 1.1% | 28.4% |
-| 2048x2048x2048 | 363.64 | 0.05 | 5.72 | 3.00 | 5.62 | 3.06 | 1.5% | 98.2% |
+| 256x256x256 | 5.32 | 0.01 | 2.07 | 0.02 | 0.09 | 0.38 | 1.7% | 4.3% |
+| 512x512x512 | 30.12 | 0.01 | 3.49 | 0.08 | 0.34 | 0.79 | 1.1% | 9.7% |
+| 1024x1024x1024 | 108.69 | 0.02 | 4.27 | 0.50 | 1.32 | 1.62 | 1.2% | 30.9% |
+| 2048x2048x2048 | 200.07 | 0.09 | 4.40 | 3.91 | 2.61 | 6.59 | 1.3% | 59.3% |
 
 #### Precision: ieee (ftz=ftz)
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.02 | 0.01 | 2.51 | 0.01 | 0.10 | 0.34 | 3.3% | 4.0% |
-| 512x512x512 | 17.99 | 0.01 | 4.73 | 0.06 | 0.39 | 0.70 | 2.1% | 8.2% |
-| 1024x1024x1024 | 38.61 | 0.06 | 5.46 | 0.39 | 1.54 | 1.40 | 4.0% | 28.2% |
-| 2048x2048x2048 | 50.81 | 0.34 | 5.72 | 3.00 | 5.63 | 3.05 | 11.1% | 98.4% |
+| 256x256x256 | 3.57 | 0.01 | 2.10 | 0.02 | 0.09 | 0.38 | 2.5% | 4.2% |
+| 512x512x512 | 13.96 | 0.02 | 3.50 | 0.08 | 0.34 | 0.79 | 2.4% | 9.7% |
+| 1024x1024x1024 | 27.33 | 0.08 | 4.29 | 0.50 | 1.32 | 1.62 | 4.8% | 30.8% |
+| 2048x2048x2048 | 34.08 | 0.50 | 4.40 | 3.91 | 2.63 | 6.53 | 7.7% | 59.9% |
 
 #### Precision: ieee (ftz=preserve)
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.04 | 0.01 | 2.51 | 0.01 | 0.10 | 0.34 | 3.3% | 4.0% |
-| 512x512x512 | 18.35 | 0.01 | 4.73 | 0.06 | 0.38 | 0.70 | 2.1% | 8.1% |
-| 1024x1024x1024 | 38.34 | 0.06 | 5.46 | 0.39 | 1.53 | 1.40 | 4.0% | 28.1% |
-| 2048x2048x2048 | 50.44 | 0.34 | 5.72 | 3.00 | 5.63 | 3.05 | 11.2% | 98.5% |
+| 256x256x256 | 3.60 | 0.01 | 2.08 | 0.02 | 0.09 | 0.38 | 2.5% | 4.3% |
+| 512x512x512 | 13.99 | 0.02 | 3.50 | 0.08 | 0.34 | 0.79 | 2.4% | 9.7% |
+| 1024x1024x1024 | 27.47 | 0.08 | 4.29 | 0.50 | 1.31 | 1.63 | 4.8% | 30.6% |
+| 2048x2048x2048 | 34.03 | 0.50 | 4.39 | 3.91 | 2.61 | 6.57 | 7.7% | 59.5% |
 
 ### chap1_async_linear — Async linear pipelining (fp32)
 
@@ -165,28 +165,28 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 6.10 | 0.01 | 2.40 | 0.01 | 0.15 | 0.22 | 2.5% | 6.3% |
-| 512x512x512 | 34.31 | 0.01 | 4.04 | 0.07 | 0.62 | 0.43 | 1.8% | 15.4% |
-| 1024x1024x1024 | 143.73 | 0.01 | 4.58 | 0.47 | 2.51 | 0.86 | 1.7% | 54.7% |
-| 2048x2048x2048 | 363.64 | 0.05 | 4.78 | 3.59 | 8.91 | 1.93 | 2.4% | 186.4% |
+| 256x256x256 | 5.32 | 0.01 | 1.82 | 0.02 | 0.14 | 0.25 | 2.5% | 7.4% |
+| 512x512x512 | 30.12 | 0.01 | 3.23 | 0.08 | 0.54 | 0.49 | 1.8% | 16.9% |
+| 1024x1024x1024 | 108.69 | 0.02 | 3.56 | 0.60 | 2.12 | 1.01 | 2.0% | 59.5% |
+| 2048x2048x2048 | 200.07 | 0.09 | 3.65 | 4.71 | 3.97 | 4.33 | 2.0% | 108.8% |
 
 #### Precision: ieee (ftz=ftz)
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.02 | 0.01 | 2.39 | 0.01 | 0.15 | 0.22 | 5.0% | 6.4% |
-| 512x512x512 | 17.99 | 0.01 | 4.04 | 0.07 | 0.62 | 0.43 | 3.5% | 15.4% |
-| 1024x1024x1024 | 38.61 | 0.06 | 4.58 | 0.47 | 2.50 | 0.86 | 6.5% | 54.6% |
-| 2048x2048x2048 | 50.81 | 0.34 | 4.78 | 3.59 | 9.04 | 1.90 | 17.8% | 189.2% |
+| 256x256x256 | 3.57 | 0.01 | 1.80 | 0.02 | 0.14 | 0.25 | 3.8% | 7.5% |
+| 512x512x512 | 13.96 | 0.02 | 3.24 | 0.08 | 0.54 | 0.49 | 3.9% | 16.8% |
+| 1024x1024x1024 | 27.33 | 0.08 | 3.56 | 0.60 | 2.11 | 1.02 | 7.7% | 59.3% |
+| 2048x2048x2048 | 34.08 | 0.50 | 3.65 | 4.71 | 3.84 | 4.47 | 11.3% | 105.3% |
 
 #### Precision: ieee (ftz=preserve)
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.04 | 0.01 | 2.39 | 0.01 | 0.15 | 0.22 | 5.0% | 6.4% |
-| 512x512x512 | 18.35 | 0.01 | 4.02 | 0.07 | 0.62 | 0.43 | 3.4% | 15.5% |
-| 1024x1024x1024 | 38.34 | 0.06 | 4.55 | 0.47 | 2.51 | 0.86 | 6.5% | 55.1% |
-| 2048x2048x2048 | 50.44 | 0.34 | 4.74 | 3.62 | 9.08 | 1.89 | 18.0% | 191.4% |
+| 256x256x256 | 3.60 | 0.01 | 1.80 | 0.02 | 0.13 | 0.25 | 3.7% | 7.4% |
+| 512x512x512 | 13.99 | 0.02 | 3.22 | 0.08 | 0.55 | 0.49 | 3.9% | 17.0% |
+| 1024x1024x1024 | 27.47 | 0.08 | 3.58 | 0.60 | 2.11 | 1.02 | 7.7% | 59.0% |
+| 2048x2048x2048 | 34.03 | 0.50 | 3.65 | 4.71 | 3.85 | 4.46 | 11.3% | 105.7% |
 
 ### chap1.5_async_block — Block TMA load + tf32 MMA
 
@@ -194,10 +194,10 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 6.10 | 0.01 | 2.37 | 0.01 | 1.63 | 0.02 | 26.7% | 68.8% |
-| 512x512x512 | 34.31 | 0.01 | 4.03 | 0.07 | 7.14 | 0.04 | 20.8% | 176.9% |
-| 1024x1024x1024 | 143.73 | 0.01 | 4.58 | 0.47 | 28.17 | 0.08 | 19.6% | 615.0% |
-| 2048x2048x2048 | 363.64 | 0.05 | 4.78 | 3.59 | 75.19 | 0.23 | 20.7% | 1573.2% |
+| 256x256x256 | 5.32 | 0.01 | 1.80 | 0.02 | 1.44 | 0.02 | 27.1% | 79.9% |
+| 512x512x512 | 30.12 | 0.01 | 3.24 | 0.08 | 6.30 | 0.04 | 20.9% | 194.7% |
+| 1024x1024x1024 | 108.69 | 0.02 | 3.56 | 0.60 | 24.21 | 0.09 | 22.3% | 679.9% |
+| 2048x2048x2048 | 200.07 | 0.09 | 3.65 | 4.71 | 36.10 | 0.48 | 18.0% | 989.2% |
 > ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a tensor-core mirror of the Crisp algorithm — the "Crisp vs Apples" figures are not apples-to-apples.
 
 
@@ -205,10 +205,10 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.02 | 0.01 | 2.39 | 0.01 | 1.61 | 0.02 | 53.3% | 67.5% |
-| 512x512x512 | 17.99 | 0.01 | 4.03 | 0.07 | 7.17 | 0.04 | 39.8% | 177.9% |
-| 1024x1024x1024 | 38.61 | 0.06 | 4.58 | 0.47 | 28.41 | 0.08 | 73.6% | 620.6% |
-| 2048x2048x2048 | 50.81 | 0.34 | 4.78 | 3.59 | 75.17 | 0.23 | 148.0% | 1572.7% |
+| 256x256x256 | 3.57 | 0.01 | 1.81 | 0.02 | 1.43 | 0.02 | 40.0% | 79.0% |
+| 512x512x512 | 13.96 | 0.02 | 3.22 | 0.08 | 6.33 | 0.04 | 45.3% | 196.4% |
+| 1024x1024x1024 | 27.33 | 0.08 | 3.56 | 0.60 | 24.21 | 0.09 | 88.6% | 679.9% |
+| 2048x2048x2048 | 34.08 | 0.50 | 3.65 | 4.71 | 35.91 | 0.48 | 105.4% | 984.3% |
 > ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE cuBLAS drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
 > ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a tensor-core mirror of the Crisp algorithm — the "Crisp vs Apples" figures are not apples-to-apples.
 
@@ -217,10 +217,10 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.04 | 0.01 | 2.38 | 0.01 | 1.60 | 0.02 | 52.7% | 67.2% |
-| 512x512x512 | 18.35 | 0.01 | 4.03 | 0.07 | 7.04 | 0.04 | 38.4% | 174.5% |
-| 1024x1024x1024 | 38.34 | 0.06 | 4.58 | 0.47 | 27.96 | 0.08 | 72.9% | 610.9% |
-| 2048x2048x2048 | 50.44 | 0.34 | 4.78 | 3.59 | 75.18 | 0.23 | 149.1% | 1573.1% |
+| 256x256x256 | 3.60 | 0.01 | 1.80 | 0.02 | 1.43 | 0.02 | 39.6% | 79.5% |
+| 512x512x512 | 13.99 | 0.02 | 3.21 | 0.08 | 6.34 | 0.04 | 45.3% | 197.4% |
+| 1024x1024x1024 | 27.47 | 0.08 | 3.57 | 0.60 | 24.20 | 0.09 | 88.1% | 678.2% |
+| 2048x2048x2048 | 34.03 | 0.50 | 3.64 | 4.71 | 35.81 | 0.48 | 105.2% | 982.6% |
 > ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE cuBLAS drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
 > ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a tensor-core mirror of the Crisp algorithm — the "Crisp vs Apples" figures are not apples-to-apples.
 
@@ -231,10 +231,10 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 6.10 | 0.01 | 2.19 | 0.02 | 1.79 | 0.02 | 29.4% | 81.8% |
-| 512x512x512 | 34.31 | 0.01 | 3.50 | 0.08 | 7.94 | 0.03 | 23.1% | 226.9% |
-| 1024x1024x1024 | 143.73 | 0.01 | 3.95 | 0.54 | 31.07 | 0.07 | 21.6% | 786.1% |
-| 2048x2048x2048 | 363.64 | 0.05 | 4.12 | 4.17 | 72.59 | 0.24 | 20.0% | 1762.6% |
+| 256x256x256 | 5.32 | 0.01 | 1.58 | 0.02 | 1.56 | 0.02 | 29.4% | 99.0% |
+| 512x512x512 | 30.12 | 0.01 | 2.85 | 0.09 | 7.00 | 0.04 | 23.2% | 245.6% |
+| 1024x1024x1024 | 108.69 | 0.02 | 3.11 | 0.69 | 25.84 | 0.08 | 23.8% | 831.3% |
+| 2048x2048x2048 | 200.07 | 0.09 | 3.16 | 5.43 | 39.53 | 0.43 | 19.8% | 1249.7% |
 > ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a tensor-core mirror of the Crisp algorithm — the "Crisp vs Apples" figures are not apples-to-apples.
 
 
@@ -242,10 +242,10 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.02 | 0.01 | 2.21 | 0.02 | 1.78 | 0.02 | 58.9% | 80.5% |
-| 512x512x512 | 17.99 | 0.01 | 3.59 | 0.07 | 7.96 | 0.03 | 44.3% | 221.6% |
-| 1024x1024x1024 | 38.61 | 0.06 | 3.98 | 0.54 | 31.05 | 0.07 | 80.4% | 779.1% |
-| 2048x2048x2048 | 50.81 | 0.34 | 4.15 | 4.14 | 72.68 | 0.24 | 143.1% | 1751.6% |
+| 256x256x256 | 3.57 | 0.01 | 1.58 | 0.02 | 1.58 | 0.02 | 44.2% | 100.0% |
+| 512x512x512 | 13.96 | 0.02 | 2.86 | 0.09 | 7.02 | 0.04 | 50.3% | 245.7% |
+| 1024x1024x1024 | 27.33 | 0.08 | 3.10 | 0.69 | 25.77 | 0.08 | 94.3% | 832.2% |
+| 2048x2048x2048 | 34.08 | 0.50 | 3.16 | 5.43 | 38.85 | 0.44 | 114.0% | 1228.6% |
 > ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE cuBLAS drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
 > ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a tensor-core mirror of the Crisp algorithm — the "Crisp vs Apples" figures are not apples-to-apples.
 
@@ -254,10 +254,10 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.04 | 0.01 | 2.19 | 0.02 | 1.78 | 0.02 | 58.6% | 81.2% |
-| 512x512x512 | 18.35 | 0.01 | 3.59 | 0.07 | 7.94 | 0.03 | 43.3% | 221.2% |
-| 1024x1024x1024 | 38.34 | 0.06 | 3.98 | 0.54 | 31.16 | 0.07 | 81.3% | 782.3% |
-| 2048x2048x2048 | 50.44 | 0.34 | 4.15 | 4.14 | 72.03 | 0.24 | 142.8% | 1736.1% |
+| 256x256x256 | 3.60 | 0.01 | 1.58 | 0.02 | 1.57 | 0.02 | 43.4% | 98.8% |
+| 512x512x512 | 13.99 | 0.02 | 2.85 | 0.09 | 6.96 | 0.04 | 49.8% | 244.6% |
+| 1024x1024x1024 | 27.47 | 0.08 | 3.11 | 0.69 | 25.72 | 0.08 | 93.6% | 827.2% |
+| 2048x2048x2048 | 34.03 | 0.50 | 3.16 | 5.43 | 38.76 | 0.44 | 113.9% | 1225.0% |
 > ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE cuBLAS drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
 > ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a tensor-core mirror of the Crisp algorithm — the "Crisp vs Apples" figures are not apples-to-apples.
 
@@ -268,19 +268,19 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
 |---|---:|---:|---:|---:|---:|
-| 256x256x256 | 6.10 | 0.01 | 2.75 | 0.01 | 45.1% |
-| 512x512x512 | 34.31 | 0.01 | 16.68 | 0.02 | 48.6% |
-| 1024x1024x1024 | 143.73 | 0.01 | 88.38 | 0.02 | 61.5% |
-| 2048x2048x2048 | 363.64 | 0.05 | 241.73 | 0.07 | 66.5% |
+| 256x256x256 | 5.32 | 0.01 | 2.47 | 0.01 | 46.4% |
+| 512x512x512 | 30.12 | 0.01 | 14.65 | 0.02 | 48.6% |
+| 1024x1024x1024 | 108.69 | 0.02 | 78.29 | 0.03 | 72.0% |
+| 2048x2048x2048 | 200.07 | 0.09 | 127.17 | 0.14 | 63.6% |
 
 #### Precision: ieee (ftz=ftz)
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
 |---|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.02 | 0.01 | 2.74 | 0.01 | 90.8% |
-| 512x512x512 | 17.99 | 0.01 | 16.61 | 0.02 | 92.3% |
-| 1024x1024x1024 | 38.61 | 0.06 | 89.11 | 0.02 | 230.8% |
-| 2048x2048x2048 | 50.81 | 0.34 | 242.28 | 0.07 | 476.9% |
+| 256x256x256 | 3.57 | 0.01 | 2.46 | 0.01 | 68.8% |
+| 512x512x512 | 13.96 | 0.02 | 14.62 | 0.02 | 104.7% |
+| 1024x1024x1024 | 27.33 | 0.08 | 79.10 | 0.03 | 289.4% |
+| 2048x2048x2048 | 34.08 | 0.50 | 127.45 | 0.13 | 373.9% |
 > ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE cuBLAS drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
 
 
@@ -288,10 +288,10 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
 |---|---:|---:|---:|---:|---:|
-| 256x256x256 | 3.04 | 0.01 | 2.78 | 0.01 | 91.6% |
-| 512x512x512 | 18.35 | 0.01 | 16.62 | 0.02 | 90.6% |
-| 1024x1024x1024 | 38.34 | 0.06 | 88.38 | 0.02 | 230.5% |
-| 2048x2048x2048 | 50.44 | 0.34 | 242.77 | 0.07 | 481.3% |
+| 256x256x256 | 3.60 | 0.01 | 2.47 | 0.01 | 68.5% |
+| 512x512x512 | 13.99 | 0.02 | 14.61 | 0.02 | 104.5% |
+| 1024x1024x1024 | 27.47 | 0.08 | 78.37 | 0.03 | 285.3% |
+| 2048x2048x2048 | 34.03 | 0.50 | 127.27 | 0.13 | 374.0% |
 > ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE cuBLAS drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
 
 
@@ -299,16 +299,16 @@
 
 | Chapter | Competitor | Avg Compile (ms) | × vs Crisp |
 |---|---|---:|---:|
-| chap0_sync | Crisp | 354 | 1.0× (baseline) |
-| chap0_sync | CUBLAS_Optimal | 1435 | 4.1× slower |
-| chap0_sync | CUDA_Apples | 1625 | 4.6× slower |
-| chap1_async_linear | Crisp | 354 | 1.0× (baseline) |
-| chap1_async_linear | CUDA_Apples | 2581 | 7.3× slower |
-| chap1.5_async_block | Crisp | 333 | 1.0× (baseline) |
-| chap1.5_async_block | CUDA_Apples | 2595 | 7.8× slower |
-| chap2_pipelined_block | Crisp | 403 | 1.0× (baseline) |
-| chap2_pipelined_block | CUDA_Apples | 2607 | 6.5× slower |
-| chap3_wgmma | Crisp | 442 | 1.0× (baseline) |
-| chap3_wgmma | CUBLAS_Optimal | 1418 | 3.2× slower |
+| chap0_sync | Crisp | 321 | 1.0× (baseline) |
+| chap0_sync | CUBLAS_Optimal | 1272 | 4.0× slower |
+| chap0_sync | CUDA_Apples | 1513 | 4.7× slower |
+| chap1_async_linear | Crisp | 321 | 1.0× (baseline) |
+| chap1_async_linear | CUDA_Apples | 2525 | 7.9× slower |
+| chap1.5_async_block | Crisp | 300 | 1.0× (baseline) |
+| chap1.5_async_block | CUDA_Apples | 2516 | 8.4× slower |
+| chap2_pipelined_block | Crisp | 378 | 1.0× (baseline) |
+| chap2_pipelined_block | CUDA_Apples | 2550 | 6.8× slower |
+| chap3_wgmma | Crisp | 387 | 1.0× (baseline) |
+| chap3_wgmma | CUBLAS_Optimal | 1257 | 3.2× slower |
 
 > Crisp compiles a kernel to PTX; the native competitors invoke `nvcc`. Lower is better; `× vs Crisp` is how much longer than Crisp that toolchain takes.

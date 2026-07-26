@@ -307,3 +307,55 @@ regression; ALL CUDA specs passed. `run-on-pod.sh`'s header wrongly claims SPIR-
   disagrees ~2x with the corrected hoist formula (160 vs 80 groups at R=1.0). NOTE: 160 measured
   FASTER than 80 on BMG, i.e. oversubscription beat resident-capacity for the reduction too —
   same pattern as the tiled case. Worth revisiting what "max occupancy" should even mean.
+
+
+---
+
+## Phase 5 (2026-07-26) — CUDA dispatch port, NVIDIA re-benchmark, hardware-labelling fix
+
+**CUDA dispatch port DONE** (`overlays/hoist-cuda/crisp-hoist-cuda-overlay.lisp`). `emit-launch`
+was EXTRACTED programmatically from src and one cond branch spliced in
+(`put_temp_files_here/make_cuda_overlay.py`) rather than retyping ~190 lines. New branch sits
+AFTER the --mma-bench out-tile override, so `--grid-tile` still wins. `:strided` occupancy sizing
+untouched — CUDA's `cuOccupancyMaxActiveBlocksPerMultiprocessor` is a real per-kernel query and is
+correct. Clamp uses `CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_{X,Y,Z}`; strided clamps, exact errors.
+
+**`matrix-multiply-tile-stride` inference: DROPPED, not deferred.** Checked who would benefit
+before building it: **zero kernels**. All 22 mmts kernels either declare `:set-to` (16) or have no
+global-size/num-groups declaration at all (6), and inference requires a tiled `:strategy`. The item
+was mis-scoped. The real question underneath is different and is an AUTHORING decision, not a
+compiler feature: those 16 declare a fixed grid, and `performance/matmul-bmg` dispatching
+`:set-to 16` — one workgroup for an entire matmul — is very likely leaving a lot on the table.
+
+**NVIDIA re-benchmarked. Numbers halved — because the pod is a DIFFERENT H100.**
+
+| Chapter | prev % of cuBLAS | new % | prev TFLOPS | new TFLOPS |
+|---|---:|---:|---:|---:|
+| chap0_sync | 1.5% | 1.3% | 5.6 | 2.6 |
+| chap1_async_linear | 2.4% | 2.0% | 8.9 | 4.0 |
+| chap1.5_async_block | 20.7% | 18.0% | 75.2 | 36.1 |
+| chap2_pipelined_block | 20.0% | 19.8% | 72.6 | 39.5 |
+| chap3_wgmma | 66.5% | 63.6% | 241.7 | 127.2 |
+| cuBLAS ceiling | — | — | 363.6 | 200.1 |
+
+**cuBLAS itself halved**, and it is not our code — so this is silicon, not regression. This pod is
+**H100 PCIe** (nvidia-smi confirmed, 1755 MHz, 80 GB); the earlier run was almost certainly SXM.
+Ratios are broadly preserved, which is the signal that the ladder is intact.
+
+**Metadata bug found and fixed:** `gpu_model` was the hardcoded string `"NVIDIA H100"` for every
+nvidia run. Since `report.py` groups by that name, SXM and PCIe results were indistinguishable AND
+would silently overwrite each other in the report dict. `matmul.py` now queries `nvidia-smi` for
+the real device name (`_detect_gpu_model`). This run's 33 JSONs relabelled to `NVIDIA H100 PCIe`;
+REPORT.md now has a correctly-titled `## Hardware: NVIDIA H100 PCIe` section. Previous NVIDIA
+results moved to `benchmarks/results/archive_nvidia_prev/` (user authorised deletion; archived
+instead so the SXM figures remain recoverable).
+
+### Deferred stack after Phase 5
+1. Remaining `zeDeviceGetComputeProperties` validations (maxTotalGroupSize, subGroupSizes).
+2. `bench_harness_l0.cpp` `baseGroups = totalEUs` still disagrees ~2x with the corrected hoist
+   formula — and 160 measured FASTER than 80, so this feeds (3).
+3. **What should "max occupancy" mean?** Two kernel classes, two vendors, and the optimum keeps
+   landing at or beyond the largest grid the API can express. Resident-capacity may simply be the
+   wrong objective for grid-stride kernels. Biggest open question; not urgent.
+4. `performance/matmul-bmg` (and 15 sibling mmts kernels) declare a fixed `:set-to` grid — worth
+   asking per-kernel whether that is deliberate.

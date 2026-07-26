@@ -34,6 +34,24 @@ HW_BY_PLATFORM = {
     "intel":  {"gpu_model": "Intel BMG",   "arch_target": "bmg",   "environment": "docker"},
 }
 
+def _detect_gpu_model(fallback):
+    """Ask the driver what this actually is, instead of trusting a hardcoded string.
+
+    Endeavor 143: 'NVIDIA H100' was stamped on every nvidia run, but H100 SXM and H100 PCIe
+    differ by ~2x — a 2026-07-26 PCIe run reported cuBLAS at 200 TFLOPS where an earlier run
+    (same label) had 364.  Since report.py groups by gpu_model, two variants under one name
+    silently OVERWRITE each other and any cross-run comparison is meaningless.  Record the real
+    device name so the variant is visible and the two never merge."""
+    try:
+        p = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=20)
+        name = (p.stdout or "").strip().splitlines()[0].strip()
+        if name:
+            return name
+    except Exception:
+        pass
+    return fallback
+
 def _apply_hw(meta):
     """Stamp the active platform's hardware info onto a run_metadata (replaces the old hardcoded
     'NVIDIA H100' so the same sweep builders serve both platforms)."""
@@ -468,7 +486,11 @@ def main():
     a = ap.parse_args()
 
     global HW, SIZE_SCALE_REF
-    HW = HW_BY_PLATFORM[a.platform]
+    HW = dict(HW_BY_PLATFORM[a.platform])   # copy: we mutate gpu_model below
+    if a.platform == "nvidia":
+        # Record the real device (H100 PCIe vs H100 SXM differ ~2x) — see _detect_gpu_model.
+        HW["gpu_model"] = _detect_gpu_model(HW["gpu_model"])
+        print(f"Hardware detected: {HW['gpu_model']}")
     # Intel BMG is the display GPU here, so 2048 at full iters already freezes the desktop — scale from
     # 1024.  NVIDIA runs on a dedicated pod (no display to starve), so only 4096 needs bounding.
     SIZE_SCALE_REF = 1024 if a.platform == "intel" else 2048
