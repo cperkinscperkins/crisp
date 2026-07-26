@@ -483,11 +483,22 @@
 ;;
 ;;   :strategy :strided      — max occupancy.  L0 has no single-call equivalent
 ;;                             of CUDA's cuOccupancyMaxActiveBlocksPerMultiprocessor,
-;;                             so we compute it from zeDeviceGetComputeProperties
-;;                             plus optional zeKernelGetProperties for register
-;;                             pressure awareness.
+;;                             so we compute it from zeDeviceGetProperties (numSlices ×
+;;                             numSubslicesPerSlice × numEUsPerSubslice × numThreadsPerEU,
+;;                             each thread physicalEUSimdWidth wide) plus optional
+;;                             zeKernelGetProperties for register pressure awareness.
+;;                             NOT zeDeviceGetComputeProperties — that returns dispatch
+;;                             LIMITS (maxTotalGroupSize, maxGroupCountX/Y/Z, subGroupSizes)
+;;                             and carries no thread count, so it cannot size occupancy.
+;;                             This comment previously named it, and that error propagated
+;;                             into ideal_001.md and into two 089-strategy specs that then
+;;                             failed for months.  It is used, correctly, for the tile-grid
+;;                             dispatch limit guard (Endeavor 143).
 ;;   :strategy :one-thread-per — grid = ceil(length / wg_x)
 ;;   :strategy :exact        — grid = ceil(length / local-size[0]) or ceil(length / tile-shape[0]) if present
+;;   :tile-shape present     — grid is the rank-N tile grid, ceil(extent[k] / tile[k]), axis k
+;;                             from dimension k.  Overrides the strategy's own sizing; see the
+;;                             hoist-l0 overlay for the measurements behind that.
 
 (defun %l0-tensor-length-cpp-var (sym)
   "Convert a tensor parameter symbol to its C++ length variable.

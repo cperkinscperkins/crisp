@@ -178,3 +178,84 @@ mirror. `benchmarks/REPORT.md` predates all of this and must be regenerated.
 - The units error means any **1-D `:strided`** kernel (no tile-shape) was dispatching 16x under on
   BMG. `benchmarks/reduction/` is exactly that shape and may have a second free win sitting in it.
 - CUDA's `%cuda-emit-group-count` has not been checked for the same shape bug.
+
+
+---
+
+## DEFERRED STACK (as of 2026-07-26) — keep this short
+
+Explicit list so these don't live only in conversation. Roughly ordered by how much they'd cost
+to forget.
+
+### Blocked on CUDA measurement (deliberate — do not resolve early)
+1. **`:occupancy` API shape.** BMG says the knob loses everywhere tested (reduction: 0.15 is
+   3.3–4.9x slower than 1.0, monotonic). NVIDIA may disagree — the "≈0.2 for reductions" figure
+   originated there. The deeper gap: `:occupancy` is ONE scalar in kernel source but the right
+   value is kernel × device. A single number cannot serve both vendors. Options: per-target
+   values, a `def-hardware-profile` default the kernel overrides, or drop the knob.
+2. **`sum-reduce.crisp` declares `:occupancy 0.15`** — a large pessimization on BMG, possibly
+   correct on NVIDIA. Blocked on (1); the same file feeds both benchmark paths.
+3. **Re-baseline `reduction-bmg`** (`kernel_median_us/best = 22.568`). Blocked on (2). Expect
+   roughly 8.8 µs once occupancy is settled — reset ONCE, not twice.
+4. **`%cuda-emit-group-count`** — never inspected for the same 1-D-grid-under-N-D-loop bug that
+   cost 7.6x on L0. First thing to check on the pod. Note CUDA *timing* is already correct.
+
+### Deferred by choice, no blocker
+5. **`matrix-multiply-tile-stride` tile-shape inference.** Inference reaches 39 of 61 kernels;
+   the other 22 (20 of them mmts, incl. matmul chap0/1/2) specify the tile via a tile TENSOR whose
+   extents the parser cannot read. Usually knowable from an enclosing
+   `make-register-tile float (32 32)`. Deferred so both tile-spec forms can be done in one pass
+   across both backends after CUDA.
+6. **Remaining `zeDeviceGetComputeProperties` validations.** We now clamp `maxGroupCountX/Y/Z`.
+   Unused from the same struct: `maxTotalGroupSize` / `maxGroupSizeX/Y/Z` (would validate
+   local-size — currently only caught as an opaque `zeKernelSetGroupSize` failure) and
+   `subGroupSizes` (would validate a hardware profile's `:simd-width` against the device).
+
+### Small corrections, cheap, easy to lose
+7. ~~`src/hoist-l0/main.lisp:485-488` stale `zeDeviceGetComputeProperties` comment~~ **DONE
+   2026-07-26** — corrected at source (comment-only, so no overlay was possible). It was the
+   origin of the doc error and both bad specs.
+8. **[DECLINED by user — "no big deal, just a rebuild from time to time"]**
+   `build/build-{compiler,hoist-l0,hoist-cuda}.lisp` hardcode `bin/*.exe` in their
+   delete-old-executable step regardless of platform, so every container build eats the host
+   Windows binaries. One line each:
+   `(format nil "bin/crisp-compile~a" (if (uiop:os-windows-p) ".exe" ""))`.
+   User's call: "no big deal, just a rebuild from time to time."
+9. `benchmarks/reduction/crisp/bench_harness_l0.cpp` — ~~printed `totalEUs × 8 × occupancy`
+   while computing `totalEUs × occupancy`~~ **message DONE 2026-07-26**. STILL OPEN: its
+   `baseGroups = totalEUs` heuristic disagrees with the corrected hoist formula by 2x
+   (160 vs 80 max-resident groups at R=1.0); reconcile when (1) is settled.
+10. **64M reduction data point** never completed (killed mid-run). User: don't worry about it.
+
+
+---
+
+## Phase 3 (2026-07-26) — :tile-shape inference + final BMG state
+
+`:tile-shape` is now inferred from the `tile-stride` form (see the compiler overlay). Coverage
+39/61; the remaining 22 use a tile-tensor spec — deferred item (5).
+
+**Verification:** specs 933/933. All four BMG performance ratchets pass.
+
+**benchmarks/REPORT.md regenerated, Intel BMG, fast/tf32 @1024:**
+
+| Chapter | Crisp | oneMKL | % |
+|---|---:|---:|---:|
+| chap0_sync | 1.5 | 12.0 | 12.5% |
+| chap1_async_linear | 0.8 | 12.0 | 6.6% |
+| intel_prefetch | **10.4** | 12.0 | **86.5%** |
+
+intel_prefetch is 150.7% of its own `sycl_apples.cpp` mirror. Its `:tile-shape` declaration was
+REMOVED before this run, so the number is produced by inference — 10.36 vs 10.48 hand-declared,
+i.e. equivalent. chap0/chap1 unchanged as predicted (mmts + their own hand-written harness).
+
+**`performance/matmul-bmg` needs NO re-baseline.** It declares `(global-size :set-to 16)` with no
+`:strategy`, uses `matrix-multiply-tile-stride`, and drives its own harness.cpp — three independent
+reasons tonight's work can't touch it. Measured 890.7/891.5 µs vs an 868.6 baseline: a consistent
+~2.5% drift, inside the 10% gate, and present across both runs rather than noise. Not investigated;
+predates tonight as far as we can tell.
+
+**Ratchet gotcha:** `device_compile_s` read 0.753 (FAIL, "206% regression") immediately after a
+compiler rebuild, then 0.276 warm. It is process-startup dominated, so a freshly written 57 MB
+.exe pays cold file cache + AV scan. Re-run warm before believing a compile-time regression. The
+ratchet correctly did NOT record the bad value.

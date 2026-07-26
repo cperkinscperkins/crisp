@@ -1,6 +1,6 @@
 {
   "run_metadata": {
-    "timestamp": "2026-07-26T17:55:07.865521Z",
+    "timestamp": "2026-07-26T20:59:08.661250Z",
     "hardware": {
       "gpu_model": "Intel BMG",
       "arch_target": "bmg",
@@ -8,10 +8,10 @@
     }
   },
   "benchmark_suite": "matmul",
-  "chapter": "chap0_sync",
+  "chapter": "chap1_async_linear",
   "competitor": "SYCL_Apples",
   "precision": "ieee",
-  "denormal_handling": "ftz",
+  "denormal_handling": "preserve",
   "results": [
     {
       "configuration": {
@@ -23,15 +23,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 3949.160099029541,
-          "all_compile_ms": 3949.160099029541
+          "device_compile_ms": 3917.7567958831787,
+          "all_compile_ms": 3917.7567958831787
         },
         "runtime": {
-          "wall_time_ms": 245.98,
-          "kernel_execution_ms": 0.02538
+          "wall_time_ms": 168.68,
+          "kernel_execution_ms": 0.02558
         },
         "throughput": {
-          "tflops": 1.32229,
+          "tflops": 1.31154,
           "bandwidth_gbps": null
         }
       }
@@ -46,11 +46,11 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 3949.160099029541,
-          "all_compile_ms": 3949.160099029541
+          "device_compile_ms": 3917.7567958831787,
+          "all_compile_ms": 3917.7567958831787
         },
         "runtime": {
-          "wall_time_ms": 364.45,
+          "wall_time_ms": 365.84,
           "kernel_execution_ms": 0.18294
         },
         "throughput": {
@@ -69,15 +69,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 3949.160099029541,
-          "all_compile_ms": 3949.160099029541
+          "device_compile_ms": 3917.7567958831787,
+          "all_compile_ms": 3917.7567958831787
         },
         "runtime": {
-          "wall_time_ms": 3275.21,
-          "kernel_execution_ms": 1.40223
+          "wall_time_ms": 3286.76,
+          "kernel_execution_ms": 1.40306
         },
         "throughput": {
-          "tflops": 1.53148,
+          "tflops": 1.53057,
           "bandwidth_gbps": null
         }
       }

@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
     // BMG has fewer SMs than NVIDIA's count.
     uint32_t baseGroups = std::max(1u, totalEUs);
     uint32_t gridSize   = std::max(1u, (uint32_t)(baseGroups * occupancy));
-    fprintf(stderr, "Grid: %u groups (totalEUs=%u × 8 × occupancy=%.2f), block=%u\n",
+    fprintf(stderr, "Grid: %u groups (totalEUs=%u × occupancy=%.2f), block=%u\n",
             gridSize, totalEUs, occupancy, blockSize);
 
     ze_group_count_t groupCount = { gridSize, 1, 1 };
