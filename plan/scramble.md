@@ -747,15 +747,22 @@ MMA
 [x] Chapter 1.5 - async tiles  with CuTensorMap 
 [x] Chapter 2 - pipelined async tile
 [x] chapter 3 - warp specialization pipelining
-[ ] Intel  LSC 2D Block Loads in Intel Xe
-[ ] precision?  
+[x] Intel  LSC 2D Block Loads in Intel Xe
+[x] precision?  
+[ ] opportunities for using def-hardware-profile ??
+[ ] empty room fallacy?  GPU display? GPU monitoring?
 [ ] auto-differentiation?
+[ ] out of core orchestration 
+
+[ ] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
+[ ] move MMA out of topology.md into main docs
+
 [ ] don't forget bug 033 ( --debug )
-[ ] opportunities for using def-hardware-profile ??
-[ ] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
-[ ] empty room fallacy?  GPU display? GPU monitoring?
+
+
+
 
 [x] run-on-pod.sh has lost its summary?
 
@@ -777,12 +784,13 @@ MMA
 - [x] chapter 2 - pipelined :block  CUDA vs Crisp
 - [x] chapter 3 - warp specialized CUDA vs Crisp
 - Intel
-- [ ] prefetch  Intel vs. Crisp
-- [ ] did we hit the aspirational, with ring pipelining? 
-- [ ] new benchmarking (via .json) doesn't include Intel.
+- [x] prefetch  Intel vs. Crisp
+- [x] did we hit the aspirational, with ring pipelining? 
+- [x] new benchmarking (via .json) doesn't include Intel.
 
 - [x] ALWAYS use explicit math flag for everything. Crisp (--math-precision), nvcc (-f(no-)fast-math), icpx (-f(no-)fast-math).   for ieee and fast.  NEVER ASSUME. Document. Same for denormal handling
 - [ ] reductions?
+- [ ] some of the Crisp Apples tests aren't actually apples-to-apples for what Crisp is doing. Fix.
 
 
 
@@ -832,8 +840,8 @@ Async Ops \ Named Barriers \ Rings
 - [ ] def-orchestration
 - [ ] primitives
 - [ ] TESTING?  
-- [ ] rings
-- [ ] warp specializations
+- [x] rings
+- [x] warp specializations
 - [ ] out of core orchestration 
 
 
