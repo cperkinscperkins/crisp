@@ -1,0 +1,20 @@
+;; Endeavor 142 Phase A (negative) — the register block-load path is Intel/SPV-specific
+;; (Subgroup2DBlockLoadINTEL has no sensible PTX/NVIDIA mapping in this register-pipeline model), so
+;; targeting PTX with a register-tile load-tile is a hard compile error.  (Loading into a scratch-matrix
+;; on PTX is of course still fine — this is specifically the register-tile overload.)
+;;
+;; Same kernel as 00 but with a PTX target (profile present, so the error is the target, not the profile):
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=ptx]: FAIL "Intel"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "negative test"
+;; SKIP-WITH[--debug]: "negative test"
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel block_load (A &out C)
+  (declare #'(mat &out mat) (global-size :set-to 16) (local-size :set-to 16))
+  (let ((A-tile (make-register-tile float (16 8) 0.0)))
+    (load-tile A A-tile (0 0))
+    (store-tile A-tile C (0 0))))

@@ -80,25 +80,33 @@
         (values 16 8 8))))
 
 (defun analyze-make-register-fragment (expr env context location)
-  "P1 / F-SPV: (make-register-fragment M N INIT).  :spirv -> a filled accumulator coop
-   matrix; else the NVIDIA %construct-struct record."
-  (destructuring-bind (m n init) (cdr expr)
-    (if (eq *target-backend* :spirv)
-        ;; accumulator = MxN from the active profile's mma-shape (the source m/n is a
-        ;; logical hint; the hardware shape wins so one source runs on both vendors).
-        (multiple-value-bind (sm sn sk) (%spv-mma-shape)
-          (declare (ignore sk))
-          (make-semantic-coop-op
-           :type (list 'coop-matrix 'float sm sn 2) :kind :fill
-           :value-node (analyze-expression init env context (append location '(1)))
-           :rows sm :cols sn :use 2 :layout 0 :source-location location))
-        (progn
-          (unless (and (eql m 16) (eql n 8))
-            (error 'crisp-compiler-error
-                   :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
-          (analyze-expression
-           `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init)
-           env context location)))))
+  "P1 / F-SPV: (make-register-fragment M N INIT &key operand).  :spirv -> a filled coop matrix;
+   else the NVIDIA %construct-struct record.  Endeavor 142: :operand (a|b|acc, default acc) picks
+   the coop-matrix Use + shape so an A/B operand tile mints fragments matching load-fragment-a/b —
+   A = sm×sk Use 0, B = sk×sn Use 1, Acc = sm×sn Use 2."
+  (destructuring-bind (m n init &rest kwargs) (cdr expr)
+    (let* ((operand (getf kwargs :operand :acc))
+           (use (ecase operand (:a 0) (:b 1) (:acc 2))))
+      (if (eq *target-backend* :spirv)
+          ;; shape from the active profile's mma-shape (the source m/n is a logical hint; the
+          ;; hardware shape wins so one source runs on both vendors).
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (let ((fr (ecase operand (:a sm) (:b sk) (:acc sm)))    ; fragment rows
+                  (fc (ecase operand (:a sk) (:b sn) (:acc sn))))   ; fragment cols
+              (make-semantic-coop-op
+               :type (list 'coop-matrix 'float fr fc use) :kind :fill
+               :value-node (analyze-expression init env context (append location '(1)))
+               :rows fr :cols fc :use use :layout 0 :source-location location)))
+          (progn
+            (unless (and (eql m 16) (eql n 8))
+              (error 'crisp-compiler-error
+                     :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
+            (analyze-expression
+             (ecase operand
+               (:acc `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init))
+               (:a   `(%construct-struct register-fragment-a-tf32-16x8 ,init ,init ,init ,init))
+               (:b   `(%construct-struct register-fragment-b-tf32-8x8 ,init ,init)))
+             env context location))))))
 
 ;;; ===================================================================
 ;;; P1 — store-fragment analyzer.
@@ -223,6 +231,40 @@
                   (%construct-struct register-fragment-b-tf32-8x8
                     (~ ,src r c) (~ ,src (+ r 4) c)))))
            env context location)))))
+
+(defun analyze-prefetch-tile (expr env context location)
+  "Endeavor 142 (Phase B): (prefetch-tile SRC (COORD-Y COORD-X) :size (H W)) -> an Intel L1 cache
+   prefetch (Subgroup2DBlockPrefetchINTEL).  A fire-and-forget hint with NO destination — it warms the
+   LSC so a subsequent register block-load (load-tile -> GRF) hits L1 instead of stalling on global
+   memory; it never changes results.  Intel/SPV-only + hardware-profile-required (the profile's L1 size
+   feeds the Phase-C thrash analysis).  Lowered by reusing the coop-op node with a :prefetch kind."
+  (unless (active-hardware-profile)
+    (error 'crisp-compiler-error
+      :message "prefetch-tile requires a hardware profile (pass --hardware-profile): its L1 / GRF limits drive the register-pipeline safety analysis."
+      :source-location location))
+  (unless (eq *target-backend* :spirv)
+    (error 'crisp-compiler-error
+      :message "prefetch-tile lowers to Subgroup2DBlockPrefetchINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping (NVIDIA's prefetch model is cp.async into SLM, a different concept)."
+      :source-location location))
+  (destructuring-bind (src coords &key size) (cdr expr)
+    (unless (and (listp coords) (= (length coords) 2))
+      (error 'crisp-compiler-error
+        :message (format nil "prefetch-tile: coords must be a two-element (COORD-Y COORD-X), got ~S" coords)
+        :source-location location))
+    (unless (and (listp size) (= (length size) 2) (every #'integerp size))
+      (error 'crisp-compiler-error
+        :message (format nil "prefetch-tile: :size must be a compile-time (H W) of integers, got ~S" size)
+        :source-location location))
+    (let* ((h (first size)) (w (second size))
+           (ty (first coords)) (tx (second coords))
+           (tnode (analyze-expression src env context (append location '(1)))))
+      (make-semantic-coop-op
+       :type 'void :kind :prefetch
+       :tensor-node tnode
+       :rows h :cols w :use 0 :layout (%coop-layout-of tnode)
+       :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+       :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+       :source-location location))))
 
 ;;; ===================================================================
 ;;; P2 — mma-accumulate: the one GENUINE-codegen piece.
@@ -577,6 +619,46 @@
        (or (= (length form) 4)
            (and (>= (length form) 6) (keywordp (fifth form))))))
 
+(defun %register-tile-ring-init-form-p (form)
+  "T if FORM is a (make-register-tile-ring T (M N) &key ring-count operand) constructor (Endeavor 142).
+   Distinct from make-register-tile: NO positional INIT (ring slots are load-targets), keys start at 4th."
+  (and (consp form) (>= (length form) 4) (%head-name-eq (first form) "MAKE-REGISTER-TILE-RING")
+       (listp (third form)) (= (length (third form)) 2)
+       (keywordp (fourth form))))
+
+(defun %resolve-tile-ref (ref tiles)
+  "Endeavor 142: resolve a tile operand REF to a per-slot tiles entry (V m n syms n-true first-true
+   operand).  REF is either a bare exploded register-tile symbol, or (ring-get RING SLOT) with a
+   COMPILE-TIME integer SLOT into a register-tile-RING (a ring entry is (RSYM :ring m n slot-syms-list
+   operand)).  The GRF cannot be runtime-indexed, so a register ring-get with a non-constant slot is a
+   hard error here — the Phase-C pipeline supplies static slots by unrolling / phase-flip.  Returns NIL
+   if REF names no exploded register tile/ring (a normal scratch operand)."
+  (cond
+    ((symbolp ref)
+     (let ((e (assoc ref tiles)))
+       (when (and e (eq (second e) :ring))
+         (error 'crisp-compiler-error
+           :message (format nil "~a is a register-tile-ring — index it with (ring-get ~a SLOT), it is not a plain tile." ref ref)
+           :source-location nil))
+       e))
+    ((and (consp ref) (%head-name-eq (first ref) "RING-GET") (= (length ref) 3))
+     (let ((ring-entry (assoc (second ref) tiles))
+           (slot (third ref)))
+       (when (and ring-entry (eq (second ring-entry) :ring))
+         (destructuring-bind (rsym marker m n slot-syms-list operand) ring-entry
+           (declare (ignore marker))
+           (unless (integerp slot)
+             (error 'crisp-compiler-error
+               :message (format nil "ring-get into the REGISTER ring ~a needs a compile-time integer slot (the GRF is not runtime-indexable); got ~S.  Unroll the K-loop by :ring-count or use a static phase index."
+                                rsym slot)
+               :source-location nil))
+           (unless (< -1 slot (length slot-syms-list))
+             (error 'crisp-compiler-error
+               :message (format nil "ring-get slot ~a is out of range 0..~a for ring ~a." slot (1- (length slot-syms-list)) rsym)
+               :source-location nil))
+           (list rsym m n (nth slot slot-syms-list) 1 0 operand)))))
+    (t nil)))
+
 
 
 (defun %frag-mn ()
@@ -584,6 +666,19 @@
    (M N) on :spirv, else NVIDIA 16x8."
   (if (eq *target-backend* :spirv)
       (multiple-value-bind (m n k) (%spv-mma-shape) (declare (ignore k)) (cons m n))
+      (cons 16 8)))
+
+(defun %frag-mn-for-operand (operand)
+  "Endeavor 142 — per-fragment (rows . cols) for a register-tile of :operand (a|b|acc).  From the
+   active profile's mma-shape (sm sn sk): A = sm×sk (Use 0), B = sk×sn (Use 1), Acc = sm×sn (Use 2)
+   — matching load-fragment-a/b and make-register-fragment.  NVIDIA: 16x8 (A/B on PTX is rejected
+   earlier for the block-load path)."
+  (if (eq *target-backend* :spirv)
+      (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+        (ecase operand
+          (:a   (cons sm sk))
+          (:b   (cons sk sn))
+          (:acc (cons sm sn))))
       (cons 16 8)))
 
 (defun %register-tile-frag-syms (var count)
@@ -666,31 +761,52 @@
       `(,let-sym ((,wp (,minus-sym (,to-int-sym (,warp-id-sym)) ,first-true)))
          ,(chain 0)))))
 
-(defun %emit-per-frag-accumulate (a b entry &optional accum-binding body)
-  "Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is now
-   a static per-warp switch (n-true threaded to %emit-frag-loop-distributed)."
-  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
+(defun %emit-per-frag-accumulate (a b entry tiles &optional accum-binding body)
+  "Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a
+   static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B
+   are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its
+   pre-loaded fragment var (A fragment (mi,k=0), B fragment (k=0,nj)) instead of load-fragment-a/b."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
     (destructuring-bind (fm . fn) (%frag-mn)
-      (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
-        (flet ((one-frag (fv mi-form nj-form)
-                 (let ((acc-set `(set! ,fv (mma-accumulate ,fv
-                                                           (load-fragment-a ,a (,mi-form 0))
-                                                           (load-fragment-b ,b (0 ,nj-form))))))
-                   (if body
-                       (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
-                       (list acc-set)))))
-          (if (> n-true 1)
-              (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
-              `(progn
-                 ,@(loop for mi below m-frags append
-                         (loop for nj below n-frags
-                               for idx = (+ (* mi n-frags) nj)
-                               append (one-frag (nth idx syms) mi nj))))))))))
+      (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+        (declare (ignore sm sn))
+        (let ((m-frags (floor m fm)) (n-frags (floor n fn)))
+          (labels ((a-operand (mi)
+                     (let ((ta (%resolve-tile-ref a tiles)))
+                       (if ta
+                           (nth (* mi (max 1 (floor (third ta) sk))) (fourth ta))  ; A frag (mi, k=0)
+                           `(load-fragment-a ,a (,mi 0)))))
+                   (b-operand (nj)
+                     (let ((tb (%resolve-tile-ref b tiles)))
+                       (if tb
+                           (nth nj (fourth tb))                                     ; B frag (k=0, nj)
+                           `(load-fragment-b ,b (0 ,nj)))))
+                   (one-frag (fv mi-form nj-form)
+                     (let ((acc-set `(set! ,fv (mma-accumulate ,fv
+                                                               ,(a-operand mi-form)
+                                                               ,(b-operand nj-form)))))
+                       (if body
+                           (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                           (list acc-set)))))
+            (if (> n-true 1)
+                (progn
+                  (when (or (%resolve-tile-ref a tiles) (%resolve-tile-ref b tiles))
+                    (error 'crisp-compiler-error
+                      :message "register-resident A/B operands are not yet supported with a warp-distributed accumulator (n-true > 1)."
+                      :source-location nil))
+                  (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag))
+                `(progn
+                   ,@(loop for mi below m-frags append
+                           (loop for nj below n-frags
+                                 for idx = (+ (* mi n-frags) nj)
+                                 append (one-frag (nth idx syms) mi nj)))))))))))
 
 (defun %emit-per-frag-store (dest tile-id entry)
   "Per-fragment expansion of (store-tile V DEST (BTY BTX)).  Endeavor 139 step-4: distributed path
    is now a static per-warp switch."
-  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0)) (cdr entry)
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
     (destructuring-bind (fm . fn) (%frag-mn)
       (let* ((to-int-sym (intern "TO-INT" (find-package :crisp-language)))
              (m-frags (floor m fm)) (n-frags (floor n fn))
@@ -732,9 +848,9 @@
                                           :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
                                           :source-location nil)))
                   (body (nthcdr 6 form)))
-             (%emit-per-frag-accumulate a b (assoc v tiles) binding-sym body))
+             (%emit-per-frag-accumulate a b (assoc v tiles) tiles binding-sym body))
            ;; bodyless (implicit single accum-op)
-           (%emit-per-frag-accumulate a b (assoc v tiles)))))
+           (%emit-per-frag-accumulate a b (assoc v tiles) tiles))))
     ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
           (assoc (second form) tiles))
      (destructuring-bind (v dest tile-id) (cdr form)
@@ -761,17 +877,144 @@
 (defun %emit-per-frag-fill (entry val)
   "Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment
    of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init)."
-  (destructuring-bind (m n syms &optional n-true first-true) (cdr entry)
-    (declare (ignore m n n-true first-true))
+  (destructuring-bind (m n syms &optional n-true first-true operand) (cdr entry)
+    (declare (ignore m n n-true first-true operand))
     ;; fill just resets every fragment this warp holds — no logical index needed.
     `(progn
        ,@(loop for s in syms
                collect `(set! ,s (make-register-fragment 16 8 ,val))))))
 
 
+(defun %emit-per-frag-block-load (src entry coords)
+  "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS): load each fragment
+   of the A/B register-tile from global SRC.  For the first MMA_CORRECT this reuses load-fragment-a/b
+   (CooperativeMatrixLoadKHR); the Subgroup2DBlockLoad swap is Phase B.  COORDS is the tile's grid
+   block position — its fragment-row/col offset (grid-idx × per-tile fragment count) is added to the
+   in-tile fragment index."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) (operand :acc)) (cdr entry)
+    (declare (ignore n-true first-true))
+    (let ((cl (find-package :crisp-language)))
+      (destructuring-bind (fr . fc) (%frag-mn-for-operand operand)
+        (let ((frag-fn (ecase operand
+                         (:a (intern "LOAD-FRAGMENT-A" cl))
+                         (:b (intern "LOAD-FRAGMENT-B" cl))
+                         (:acc (error 'crisp-compiler-error
+                                 :message "load-tile into an accumulator register-tile is not supported (only :operand :a / :b tiles are load targets)."
+                                 :source-location nil))))
+              (to-int  (intern "TO-INT" cl))
+              (n-rows  (floor m fr))
+              (n-cols  (floor n fc))
+              (gy      (first coords))
+              (gx      (second coords)))
+          `(progn
+             ,@(loop for ri below n-rows append
+                     (loop for ci below n-cols
+                           for idx = (+ (* ri n-cols) ci)
+                           collect `(set! ,(nth idx syms)
+                                          (,frag-fn ,src
+                                                    ((+ (* (,to-int ,gy) ,n-rows) ,ri)
+                                                     (+ (* (,to-int ,gx) ,n-cols) ,ci))))))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 142 (Phase B, decision b): source-level unroll-by-ring-count.
+;;; A register ring's slot must be a compile-time constant (the GRF is not runtime-indexable), yet the
+;;; natural pipeline idiom (shared with the SLM scratch ring) writes it as (mod grid-k RING-COUNT).  We
+;;; UNROLL the K-loop by the ring-count so each copy's slot folds to a literal (copy j -> slot j), while
+;;; data coordinates keep the absolute block (grid-k + j).  Runs BEFORE %explode-rewrite-body-form, so
+;;; the exploder then sees only static ring-get slots.
+;;; ---------------------------------------------------------------------------
+
+(defun %register-ring-ref-p (form tiles)
+  "T if FORM is (ring-get RING ...) naming a REGISTER ring (a :ring entry) in TILES."
+  (and (consp form) (%head-name-eq (first form) "RING-GET") (>= (length form) 3)
+       (let ((e (assoc (second form) tiles))) (and e (eq (second e) :ring)))))
+
+(defun %body-refs-register-ring-p (form tiles)
+  "T if FORM contains any register-ring ring-get anywhere in its tree."
+  (cond ((%register-ring-ref-p form tiles) t)
+        ((consp form) (some (lambda (f) (%body-refs-register-ring-p f tiles)) form))
+        (t nil)))
+
+(defun %collect-register-ring-counts (form tiles)
+  "List the :ring-counts of every register ring ring-getted in FORM (ring entry = (RSYM :ring m n
+   slot-syms-list operand); (fifth entry) is the slot-syms-list, whose length is the ring-count)."
+  (let ((counts '()))
+    (labels ((walk (f)
+               (when (consp f)
+                 (when (%register-ring-ref-p f tiles)
+                   (push (length (fifth (assoc (second f) tiles))) counts))
+                 (mapc #'walk f))))
+      (walk form))
+    (nreverse counts)))
+
+(defun %fold-static-slot (expr loop-var j)
+  "Evaluate a register-ring SLOT EXPR to a compile-time integer with LOOP-VAR bound to J.  Supports
+   integer literals, LOOP-VAR, (+ - * a b), (mod a b), and (to-ulong/to-int x) (identity).  Errors if
+   EXPR does not fold — a register-ring slot MUST be static (the GRF is not runtime-indexable)."
+  (labels ((nm (s) (and (symbolp s) (symbol-name s)))
+           (ev (e)
+             (cond
+               ((integerp e) e)
+               ((and (symbolp e) (string-equal (nm e) (nm loop-var))) j)
+               ((and (consp e) (= (length e) 2)
+                     (member (nm (first e)) '("TO-ULONG" "TO-INT") :test #'string-equal))
+                (ev (second e)))
+               ((and (consp e) (= (length e) 3)
+                     (member (nm (first e)) '("+" "-" "*" "MOD") :test #'string-equal))
+                (let ((a (ev (second e))) (b (ev (third e))))
+                  (cond ((string-equal (nm (first e)) "+")   (+ a b))
+                        ((string-equal (nm (first e)) "-")   (- a b))
+                        ((string-equal (nm (first e)) "*")   (* a b))
+                        (t                                   (mod a b)))))
+               (t (error 'crisp-compiler-error
+                    :message (format nil "register-ring ring-get slot ~S does not fold to a compile-time integer (with ~a := ~a).  A register-ring slot must be static — write it as (mod LOOPVAR ring-count) or a constant."
+                                     expr loop-var j)
+                    :source-location nil)))))
+    (ev expr)))
+
+(defun %subst-loop-body-copy (form loop-var j tiles)
+  "Copy J of a register-ring loop body: register-ring ring-get SLOTS fold to the static literal
+   (%fold-static-slot with LOOP-VAR:=J); every OTHER LOOP-VAR use becomes the absolute block
+   (+ LOOP-VAR (to-ulong J)).  J=0 leaves data coords as bare LOOP-VAR."
+  (let ((cl (find-package :crisp-language)))
+    (cond
+      ((and (symbolp form) (string-equal (symbol-name form) (symbol-name loop-var)))
+       (if (zerop j) loop-var (list (intern "+" cl) loop-var (list (intern "TO-ULONG" cl) j))))
+      ((not (consp form)) form)
+      ((%register-ring-ref-p form tiles)
+       (list (first form) (second form) (%fold-static-slot (third form) loop-var j)))
+      (t (mapcar (lambda (f) (%subst-loop-body-copy f loop-var j tiles)) form)))))
+
+(defun %unroll-register-ring-loops (form tiles)
+  "Source->source: unroll any (dotimes (KVAR LIMIT) BODY...) whose BODY ring-gets a REGISTER ring by
+   that ring's :ring-count RC — KVAR steps by RC and RC body-copies run per step (copy j: absolute block
+   KVAR+j, slot j).  v1: the loop must be written stride-1 (we set the stride), all register rings in it
+   must share RC, and LIMIT is assumed divisible by RC (K is a multiple of the tile-K)."
+  (cond
+    ((not (consp form)) form)
+    ((and (%head-name-eq (first form) "DOTIMES") (>= (length form) 2)
+          (consp (second form)) (>= (length (second form)) 2)
+          (null (third (second form)))            ; user wrote stride-1; we install the RC stride
+          (%body-refs-register-ring-p (cddr form) tiles))
+     (let* ((binding  (second form))
+            (loop-var (first binding))
+            (limit    (second binding))
+            (body     (cddr form))
+            (rcs      (remove-duplicates (%collect-register-ring-counts body tiles)))
+            (cl       (find-package :crisp-language)))
+       (unless (= 1 (length rcs))
+         (error 'crisp-compiler-error
+           :message (format nil "register-ring K-loop mixes rings of different :ring-count ~S — v1 requires a single ring-count per pipelined loop." rcs)
+           :source-location nil))
+       (let ((rc (first rcs)))
+         `(,(first form) (,loop-var ,limit (,(intern "TO-ULONG" cl) ,rc))
+           ,@(loop for j below rc
+                   append (mapcar (lambda (f) (%subst-loop-body-copy f loop-var j tiles)) body))))))
+    (t (mapcar (lambda (f) (%unroll-register-ring-loops f tiles)) form))))
+
 (defun %explode-rewrite-body-form (form tiles)
-  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile references to
-   any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
+  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references
+   to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
    otherwise recurse structurally."
   (cond
     ((not (consp form)) form)
@@ -788,8 +1031,8 @@
                                           :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
                                           :source-location nil)))
                   (body (nthcdr 6 form)))
-             (%emit-per-frag-accumulate a b (assoc v tiles) binding-sym body))
-           (%emit-per-frag-accumulate a b (assoc v tiles)))))
+             (%emit-per-frag-accumulate a b (assoc v tiles) tiles binding-sym body))
+           (%emit-per-frag-accumulate a b (assoc v tiles) tiles))))
     ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
           (assoc (second form) tiles))
      (destructuring-bind (v dest tile-id) (cdr form)
@@ -797,6 +1040,25 @@
     ((and (%head-name-eq (first form) "FILL-TILE") (= (length form) 3)
           (assoc (second form) tiles))
      (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
+    ;; Endeavor 142 (Intel MMA prefetch): load-tile with a register-tile DEST (third form) -> Intel
+    ;; block-load (Subgroup2DBlockLoadINTEL, global -> GRF, hardware-scoreboard async, no :barrier).
+    ;; Handled in the explosion (like store-tile), before the whole-tile var is gone.  The tile's
+    ;; :operand (A/B) picks the coop-matrix Use/layout.  Requires the SPV/Intel target + an active
+    ;; hardware profile (its GRF/L1 limits drive the Phase-C register-pipeline safety analysis);
+    ;; PTX has no mapping for this register-pipeline model.
+    ;; Endeavor 142: the DEST may be a bare register-tile OR (ring-get RING SLOT) into a register ring —
+    ;; %resolve-tile-ref handles both (and errors on a non-constant register-ring slot).
+    ((and (%head-name-eq (first form) "LOAD-TILE") (= (length form) 4)
+          (%resolve-tile-ref (third form) tiles))
+     (unless (active-hardware-profile)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile requires a hardware profile (pass --hardware-profile): its GRF / L1 limits drive the register-pipeline safety analysis."
+         :source-location nil))
+     (unless (eq *target-backend* :spirv)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile lowers to Subgroup2DBlockLoadINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping in this register-pipeline model."
+         :source-location nil))
+     (%emit-per-frag-block-load (second form) (%resolve-tile-ref (third form) tiles) (fourth form)))
     (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
 
 (defun %explode-register-tiles (let-expr &optional location context)
@@ -822,12 +1084,13 @@
                                  (dims    (third form))
                                  (init    (fourth form))
                                  (m       (first dims)) (n (second dims))
-                                 ;; nfrags MUST use the target's per-fragment dims (%frag-mn):
-                                 ;; NVIDIA 16x8, Intel BMG 8x16 — the emit functions use the same,
-                                 ;; so the syms count and the emit loop must agree (hardcoding 16x8
-                                 ;; here broke BMG: nth returned NIL -> "Unknown variable NIL").
-                                 (nfrags  (destructuring-bind (fm . fn) (%frag-mn)
-                                            (* (floor m fm) (floor n fn))))
+                                 ;; Endeavor 142: :operand (a|b|acc, default acc) picks the fragment
+                                 ;; shape/Use.  nfrags MUST use the operand's per-fragment dims: Acc
+                                 ;; M×N, A M×K, B K×N (BMG 8×16 / 8×8 / 8×16) — the emit functions use
+                                 ;; the same helper so the syms count and the emit loop agree.
+                                 (operand (getf (nthcdr 4 form) :operand :acc))
+                                 (nfrags  (destructuring-bind (fr . fc) (%frag-mn-for-operand operand)
+                                            (* (floor m fr) (floor n fc))))
                                  (warps-in (getf (nthcdr 4 form) :warps))
                                  (mask    (and warps-in
                                                (%normalize-warp-mask (%warp-mask-unquote warps-in) location))))
@@ -840,14 +1103,49 @@
                                     (values 1 0))
                               (let* ((per-warp (floor nfrags n-true))
                                      (syms     (%register-tile-frag-syms (first b) per-warp)))
-                                (push (list (first b) m n syms n-true first-true) tiles)
+                                (push (list (first b) m n syms n-true first-true operand) tiles)
                                 (loop for s in syms
-                                      collect (list s `(make-register-fragment 16 8 ,init))))))
-                          (list b)))))
+                                      collect (list s `(make-register-fragment 16 8 ,init :operand ,operand))))))
+                          ;; Endeavor 142: a register-tile-RING explodes into :ring-count INDEPENDENT
+                          ;; slot-sets of fragment vars (<ring>$S<slot>$F<i>).  ring-get resolves a static
+                          ;; slot to one set (%resolve-tile-ref).  The ring is recorded as a :ring tiles
+                          ;; entry (RSYM :ring m n (slot0-syms slot1-syms ...) operand) — the compile-time
+                          ;; (shape,count,dtype,operand) metadata Phase C's spill/WAW/L1 analysis reads.
+                          (if (and (consp b) (= (length b) 2) (symbolp (first b))
+                                   (%register-tile-ring-init-form-p (second b)))
+                              (let* ((form    (second b))
+                                     (dims    (third form))
+                                     (m       (first dims)) (n (second dims))
+                                     (keys    (nthcdr 3 form))
+                                     (operand (getf keys :operand :acc))
+                                     (rc      (getf keys :ring-count)))
+                                (unless (and (integerp rc) (plusp rc))
+                                  (error 'crisp-compiler-error
+                                    :message (format nil "make-register-tile-ring: :ring-count must be a positive compile-time integer, got ~S." rc)
+                                    :source-location location))
+                                (%register-tile-fit-check m n location)
+                                (destructuring-bind (fr . fc) (%frag-mn-for-operand operand)
+                                  (let* ((nfrags (* (floor m fr) (floor n fc)))
+                                         (slot-syms-list
+                                           (loop for slot below rc
+                                                 collect (%register-tile-frag-syms
+                                                          (intern (format nil "~a$S~d" (symbol-name (first b)) slot)
+                                                                  (symbol-package (first b)))
+                                                          nfrags))))
+                                    (push (list (first b) :ring m n slot-syms-list operand) tiles)
+                                    (loop for syms in slot-syms-list
+                                          append (loop for s in syms
+                                                       collect (list s `(make-register-fragment 16 8 0.0 :operand ,operand)))))))
+                              (list b))))))
           (if (null tiles)
               let-expr
+              ;; Endeavor 142: unroll register-ring K-loops FIRST (so ring-get slots are static
+              ;; literals), THEN rewrite the tile-ops per fragment.
               `(,head ,new-bindings
-                      ,@(mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) body)))))))
+                      ,@(mapcar (lambda (f)
+                                  (%explode-rewrite-body-form
+                                   (%unroll-register-ring-loops f tiles) tiles))
+                                body)))))))
 
 
 (defun analyze-inner-dimension (expr env context location)
@@ -949,6 +1247,8 @@
                          (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
                          (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
                          (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
+                         ;; Endeavor 142 (Phase B) — Intel L1 prefetch (Subgroup2DBlockPrefetchINTEL)
+                         (cons "PREFETCH-TILE"           #'analyze-prefetch-tile)
                          (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
                          (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
                          ;; Endeavor 140 (Chapter 4) -- wgmma forms

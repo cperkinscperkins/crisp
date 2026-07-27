@@ -1,0 +1,45 @@
+;; Endeavor 142 Phase B CAPSTONE (part 1) — a runtime-K register-ring matmul, auto-unrolled.
+;; The K-loop uses the SAME idiom as the SLM scratch ring (topology.md ~L950): a plain dotimes whose
+;; ring-get slot is (mod grid-k RING-COUNT).  Because the ring here is a REGISTER ring (GRF, not runtime-
+;; indexable), the compiler UNROLLS the loop by :ring-count so each copy's slot folds to a compile-time
+;; literal (copy j -> slot j) — the double-buffer becomes ring-count independent fragment-var sets.  Data
+;; coords keep the absolute K block (grid-k + j).  n-k-steps is RUNTIME ((inner-dimension A B) / tile-K),
+;; so this proves the general runtime-K path, not a hand-unrolled constant.
+;;
+;; This first capstone verifies CORRECTNESS (C = sum_k A[k].B[k]) with the ring rotating across K; the
+;; prefetch-overlapped / benchmarked pipeline is the next step (it decides the Subgroup2DBlockLoad swap).
+;; Requires n-k-steps divisible by :ring-count (v1 contract; K is always a multiple of the tile-K).
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "forward-only ring / MMA"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; On-metal correctness (host-reference C = A.B, K=32 = four 8-wide K-blocks -> n-k-steps=4, so the
+;; unrolled-by-2 loop runs 2 outer iterations: proves multi-iteration accumulation, not a 1-trip fold):
+;; MMA-DIMS: 16 16 32
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16) (local-size :set-to 16))
+  (let ((A-ring (make-register-tile-ring float (16 8) :ring-count 2 :operand :a))
+        (B-ring (make-register-tile-ring float (8 16) :ring-count 2 :operand :b))
+        (C-tile (make-register-tile float (16 16) 0.0))
+        (n-k-steps (/ (inner-dimension A B) (to-ulong 8))))   ; K / tile-K  (runtime ulong)
+    (dotimes (grid-k n-k-steps)
+      ;; slot = (mod grid-k 2) — the compiler unrolls by 2 so this is static per copy
+      (load-tile A (ring-get A-ring (mod grid-k 2)) (0 grid-k))
+      (load-tile B (ring-get B-ring (mod grid-k 2)) (grid-k 0))
+      (mma-accumulate-via-tile (8 16 8) C-tile
+                               (ring-get A-ring (mod grid-k 2))
+                               (ring-get B-ring (mod grid-k 2))))
+    (store-tile C-tile C (0 0))))

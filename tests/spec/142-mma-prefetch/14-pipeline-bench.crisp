@@ -1,0 +1,62 @@
+;; Endeavor 142 Phase B CAPSTONE (part 2) — an overlapped prefetch pipeline at scale.
+;; This proves the compiler's auto-unrolling and static slot folding can express
+;; the ping-pong pipeline without any new compiler forms, and achieves scale.
+;;
+;; SKIP-DEFAULT-PASS: register-tile load needs a hardware profile; no GENERIC lowering
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-WITH[--differentiate]: "forward-only prefetch pipeline / MMA"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;; MMA-DIMS: 1024 1024 1024
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K      (inner-dimension A B))
+        (n-k-steps (/ (inner-dimension A B) (to-ulong 8))))
+
+    (tile-stride C (32 32) (grid-y grid-x)
+      (let ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
+            (B-ring (make-register-tile-ring float (8 32) :ring-count 2 :operand :b))
+            (C-tile (make-register-tile float (32 32) 0.0)))
+      
+      ;; Prologue
+      (prefetch-tile A (grid-y 0) :size (32 8))
+      (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (8 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16))
+      (prefetch-tile A (grid-y 1) :size (32 8))
+      (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (8 16))
+      (prefetch-tile B (1 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16))
+      (load-tile A (ring-get A-ring 0) (grid-y 0))
+      (load-tile B (ring-get B-ring 0) (0 grid-x))
+
+      (dotimes (grid-k n-k-steps)
+        (let ((next-k (+ grid-k (to-ulong 1)))
+              (prefetch-k (+ grid-k (to-ulong 2))))
+          
+          ;; 1. Issue prefetch for future K.
+          (when (< prefetch-k n-k-steps)
+            (prefetch-tile A (grid-y prefetch-k) :size (32 8))
+            (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (8 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16)))
+
+          ;; 2. Issue register load for the NEXT k.
+          (when (< next-k n-k-steps)
+            (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
+            (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
+
+          ;; 3. Compute on the CURRENT k.
+          (mma-accumulate-via-tile (8 16 8) C-tile
+                                   (ring-get A-ring (mod grid-k (to-ulong 2)))
+                                   (ring-get B-ring (mod grid-k (to-ulong 2))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x))))))

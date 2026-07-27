@@ -1,5 +1,5 @@
 ;; TEST-HOIST[L0]: validate-l0-strategy-content
-;; STRATEGY-EXPECT: zeDeviceGetComputeProperties
+;; STRATEGY-EXPECT: zeDeviceGetProperties
 ;; STRATEGY-EXPECT: zeKernelGetProperties
 ;; STRATEGY-EXPECT: spillMemSize
 ;; SKIP-WITH[--differentiate]: "forward-only stride test"

@@ -1,0 +1,30 @@
+;; SKIP-DEFAULT-PASS: hoist-only spec; the GENERIC pass has no dispatch to inspect
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; SKIP-WITH[--differentiate]: "dispatch-shape spec, nothing to differentiate"
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT[L0]: uint32_t _gx = (uint32_t)(((uint64_t)c_ext0 + 31) / 32);
+;; STRATEGY-EXPECT[L0]: uint32_t _gy = (uint32_t)(((uint64_t)c_ext1 + 31) / 32);
+;; STRATEGY-EXPECT[L0]: ze_group_count_t groupCount = { _gx, _gy, 1 };
+;; TEST-HOIST[CUDA]: validate-cuda-strategy-content
+;; STRATEGY-EXPECT[CUDA]: unsigned int gridX = (unsigned int)(((unsigned long long)c_ext0 + 31) / 32);
+;; STRATEGY-EXPECT[CUDA]: unsigned int gridY = (unsigned int)(((unsigned long long)c_ext1 + 31) / 32);
+;;
+;; Endeavor 143 — :tile-shape is INFERRED from the tile-stride form.
+;;
+;; This kernel declares NO :tile-shape, yet must still get a rank-2 tile grid, because the
+;; extents are already stated in `(tile-stride C (32 32) ...)`.  Before inference, 59 of 61
+;; tile-stride kernels in the repo omitted the declaration and silently received a ONE-
+;; dimensional occupancy grid, which serializes the un-dispatched axis inside each workgroup
+;; (measured 7.6x on Intel BMG).  Correctness was unaffected, so nothing caught it.
+;;
+;; Also pins the AXIS MAPPING: axis 0 <- dimension 0 (c_ext0, rows).  Getting this backwards
+;; still computes correct results and merely costs ~1.3x, so only a test can hold it in place.
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tile_shape_inferred (A &out C)
+  (declare #'(mat &out mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (tile-stride C (32 32) (grid-y grid-x)
+    (set! (~ C grid-y grid-x) 1.0f)))

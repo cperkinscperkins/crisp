@@ -2,7 +2,7 @@
  * OneMKL Optimal reference for SYCL (Intel Ceiling).
  * Uses oneapi::mkl::blas::column_major::gemm to provide the absolute hardware ceiling.
  *
- * Build: icpx -fsycl -O3 onemkl_optimal.cpp -onemkl -o onemkl_optimal
+ * Build: icpx -fsycl -O3 onemkl_optimal.cpp -qmkl -o onemkl_optimal
  */
 #include <sycl/sycl.hpp>
 #include <oneapi/mkl.hpp>
@@ -22,11 +22,23 @@ int main(int argc, char** argv) {
 
     sycl::queue q{sycl::gpu_selector_v, sycl::property::queue::enable_profiling{}};
 
-    float* A = sycl::malloc_shared<float>((size_t)M * K, q);
-    float* B = sycl::malloc_shared<float>((size_t)K * N, q);
-    float* C = sycl::malloc_shared<float>((size_t)M * N, q);
-    for (size_t i = 0; i < (size_t)M * K; i++) A[i] = 1.0f;
-    for (size_t i = 0; i < (size_t)K * N; i++) B[i] = 1.0f;
+    float* A = sycl::malloc_device<float>((size_t)M * K, q);
+    float* B = sycl::malloc_device<float>((size_t)K * N, q);
+    float* C = sycl::malloc_device<float>((size_t)M * N, q);
+
+    std::vector<float> h_A((size_t)M * K, 1.0f);
+    std::vector<float> h_B((size_t)K * N, 1.0f);
+    std::vector<float> h_C((size_t)M * N, 0.0f);
+
+    q.memcpy(A, h_A.data(), (size_t)M * K * sizeof(float)).wait();
+    q.memcpy(B, h_B.data(), (size_t)K * N * sizeof(float)).wait();
+    q.memcpy(C, h_C.data(), (size_t)M * N * sizeof(float)).wait();
+
+#ifdef FAST_MATH
+    auto comp_mode = oneapi::mkl::blas::compute_mode::float_to_tf32;
+#else
+    auto comp_mode = oneapi::mkl::blas::compute_mode::standard;
+#endif
 
     auto launch = [&]() {
         // Crisp benchmark uses Row-Major A, B, C.
@@ -40,7 +52,8 @@ int main(int argc, char** argv) {
             A, K,
             B, N,
             0.0f,
-            C, N
+            C, N,
+            comp_mode
         );
     };
 
@@ -57,9 +70,10 @@ int main(int argc, char** argv) {
         kt[i] = (double)(t1 - t0) / 1000.0;   // ns -> us
     }
 
+    q.memcpy(h_C.data(), C, (size_t)M * N * sizeof(float)).wait();
     double expected = (double)K, maxerr = 0.0;
     for (size_t i = 0; i < (size_t)M * N; i++)
-        maxerr = std::max(maxerr, (double)std::fabs(C[i] - expected));
+        maxerr = std::max(maxerr, (double)std::fabs(h_C[i] - expected));
     bool correct = maxerr < expected * 1e-3;
 
     std::sort(kt.begin(), kt.end());

@@ -1,5 +1,5 @@
 ;; TEST-HOIST[L0]: validate-l0-strategy-content
-;; STRATEGY-EXPECT: zeDeviceGetComputeProperties
+;; STRATEGY-EXPECT: zeDeviceGetProperties
 ;; STRATEGY-EXPECT: _hw_threads
 ;;
 ;; Hoist: :strided strategy queries hardware compute properties for optimal group count.

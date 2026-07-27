@@ -754,10 +754,12 @@ MMA
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] don't forget bug 033 ( --debug )
 [ ] opportunities for using def-hardware-profile ??
+[ ] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
+[ ] empty room fallacy?  GPU display? GPU monitoring?
 
 [x] run-on-pod.sh has lost its summary?
 
-[ ] extract_status.py -> add a % summary.
+[x] extract_status.py -> add a % summary.
 
 [ ] benchmarking
 [x] How to collect and recollect data? runpod.io gives us LOTS of different GPUs to test against,
@@ -776,9 +778,31 @@ MMA
 - [x] chapter 3 - warp specialized CUDA vs Crisp
 - Intel
 - [ ] prefetch  Intel vs. Crisp
+- [ ] did we hit the aspirational, with ring pipelining? 
+- [ ] new benchmarking (via .json) doesn't include Intel.
 
 - [x] ALWAYS use explicit math flag for everything. Crisp (--math-precision), nvcc (-f(no-)fast-math), icpx (-f(no-)fast-math).   for ieee and fast.  NEVER ASSUME. Document. Same for denormal handling
 - [ ] reductions?
+
+
+
+NVIDIA TEST FAILURES
+These are BMG tests which are being run on NVidia, for some reason. We supposedly fixed this earlier, but maybe not or the fix was overwritten?
+
+============================================================
+  RUN SUMMARY
+============================================================
+  specs (binary)                     FAIL
+  specs (binary, --differentiate)    ok
+  negative specs                     ok
+
+  ALL FAILED SPECS (across phases):
+    - 133-mma-spv/10-hello-mma-bmg
+    - 133-mma-spv/11-matmul-bmg
+    - 133-mma-spv/12-tiled-matmul-bmg
+    - 135-matrix-multiply-tile-stride/04-tiled-matmul-bmg
+    - 135-matrix-multiply-tile-stride/08-fill-tile-register-bmg
+    - 135-matrix-multiply-tile-stride/09-strided-matmul-bmg
 
 
 FMA

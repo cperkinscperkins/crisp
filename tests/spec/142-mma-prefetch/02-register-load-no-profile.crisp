@@ -1,0 +1,19 @@
+;; Endeavor 142 Phase A (negative) — the Intel register-pipeline forms REQUIRE a hardware profile.
+;; The GRF / L1 limits from def-hardware-profile drive the static safety analysis (spill / thrash /
+;; shallow-pipeline checks in Phase C), so a register-load-tile with NO --hardware-profile is a hard
+;; compile error rather than a silent best-effort.  (Uses COMPILE-WITH[..]: FAIL because the error is
+;; flag-conditional — the error-spec runner can't vary flags.)
+;;
+;; Same kernel as 00 but compiled WITHOUT --hardware-profile:
+;; COMPILE-WITH[--ir-target=spv]: FAIL "hardware profile"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "negative test"
+;; SKIP-WITH[--debug]: "negative test"
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel block_load (A &out C)
+  (declare #'(mat &out mat) (global-size :set-to 16) (local-size :set-to 16))
+  (let ((A-tile (make-register-tile float (16 8) 0.0)))
+    (load-tile A A-tile (0 0))
+    (store-tile A-tile C (0 0))))

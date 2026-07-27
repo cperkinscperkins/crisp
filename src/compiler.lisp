@@ -495,6 +495,17 @@ Returns modified IR text with metadata."
       (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
     nil))
 
+(defun %module-uses-2d-block-io-p (module)
+  "T if MODULE declares/calls any __spirv_Subgroup2DBlock* builtin (Endeavor 142 — prefetch / block
+   load / block store) — used to add --spirv-ext=+SPV_INTEL_2d_block_io only when needed."
+  (let ((fn (crisp.llvm-bindings::llvm-get-first-function module)))
+    (loop until (cffi:null-pointer-p fn) do
+      (let ((name (crisp.llvm-bindings::llvm-get-value-name fn)))
+        (when (and name (search "Subgroup2DBlock" name))
+          (return-from %module-uses-2d-block-io-p t)))
+      (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
+    nil))
+
 (defun compile-to-spirv (module output-path &key debug-p)
   "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
@@ -522,7 +533,9 @@ Returns modified IR text with metadata."
            (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
            (ext-flags (append '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
                               (when (%module-uses-coop-matrix-p module)
-                                '("--spirv-ext=+SPV_KHR_cooperative_matrix"))))
+                                '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
+                              (when (%module-uses-2d-block-io-p module)
+                                '("--spirv-ext=+SPV_INTEL_2d_block_io"))))
            (flags (append debug-flags ext-flags)))
       (run-tool-command
        (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))

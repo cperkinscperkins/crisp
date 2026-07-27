@@ -1125,6 +1125,91 @@ how they compose with `mma-accumulate-via-tile` — and whether there is anythin
 block-load win, is the "Optimizing Intel MMA" arc still to be mapped out.
 
 
+### Reusing the "Ring" Meme
+
+We reuse the ring concept, but we are not building a ring of scratch-matrices (SLM) and do not need async-barriers.
+Instead, we build a ring of Register Tiles (a double-buffer). We issue a load into the "pong" register while the DPAS computes on the "ping" register, and we issue a prefetch into the cache for a tile even further in the future.
+
+### The Optimal Intel Pipelined MMA
+
+The goal here is to stretch the synchronous baseline to achieve the optimal LSC 2D Block Prefetch pipeline on Intel hardware.
+
+```
+(with-template-type (T)
+  (def-type mat (matrix T :address-space :global :align :compact :contiguous-term :row-major))
+
+  (def-grid-function intel-prefetch-matrix-multiply (A B &out C)
+    (declare #'((mat T) (mat T) &out (mat T))
+               (global-size :derive-from C :strategy :strided)) 
+
+    ;; Ping-Pong Register Double Buffering. 
+    ;; Notice: We use make-register-tile-ring, NOT scratch-matrix-ring.
+    (let ((pipeline-stages 2) 
+          (A-reg-ring (make-register-tile-ring T (128 128) :ring-count pipeline-stages))
+          (B-reg-ring (make-register-tile-ring T (128 128) :ring-count pipeline-stages))
+          (C-tile (make-register-tile T (128 128) (identity T)))
+          (M N (outer-dimensions A B))
+          (K (inner-dimension A B)))
+
+      ;; ==========================================
+      ;; THE PROLOGUE (Prime the Pump)
+      ;; ==========================================
+      ;; 1. Fire cache prefetches for k=0 and k=1
+      (prefetch-tile A (grid-y 0) :size (128 128))
+      (prefetch-tile B (0 grid-x) :size (128 128))
+      (prefetch-tile A (grid-y 1) :size (128 128))
+      (prefetch-tile B (1 grid-x) :size (128 128))
+
+      ;; 2. Issue the actual register block-loads for k=0
+      (load-tile A (ring-get A-reg-ring 0) (grid-y 0))
+      (load-tile B (ring-get B-reg-ring 0) (0 grid-x))
+
+      (tile-stride C C-tile (grid-y grid-x) 
+        
+        ;; ==========================================
+        ;; THE K-LOOP PIPELINE
+        ;; ==========================================
+        (let ((ring-idx 0))
+          (do-times (grid-k K)
+            (let ((next-k (+ grid-k 1))
+                  (prefetch-k (+ grid-k 2))
+                  (next-ring-idx (mod next-k pipeline-stages)))
+
+              ;; 1. Issue prefetch for future K.
+              ;; This lowers to OpSubgroup2DBlockPrefetchINTEL (Fire and forget into L1)
+              (when (< prefetch-k K)
+                (prefetch-tile A (grid-y prefetch-k) :size (128 128))
+                (prefetch-tile B (prefetch-k grid-x) :size (128 128)))
+
+              ;; 2. Issue register load for the NEXT k.
+              ;; This lowers to OpSubgroup2DBlockLoadINTEL (L1 -> GRF).
+              ;; The hardware scoreboard tracks this dependency automatically.
+              (when (< next-k K)
+                (load-tile A (ring-get A-reg-ring next-ring-idx) (grid-y next-k))
+                (load-tile B (ring-get B-reg-ring next-ring-idx) (next-k grid-x)))
+
+              ;; 3. Compute on the CURRENT k.
+              ;; DPAS executes against the 'ping' registers while the 'pong' registers are loading.
+              (mma-accumulate-via-tile (16 8 8) C-tile 
+                                       (ring-get A-reg-ring ring-idx) 
+                                       (ring-get B-reg-ring ring-idx))
+              
+              ;; 4. Swap buffers
+              (setf ring-idx next-ring-idx))))
+
+        :epilogue
+          (relu C-tile) 
+          (store-tile C-tile C (grid-y grid-x))))))
+```
+
+### Why this is the optimal shape for Intel
+
+No Warp Specialization: You don't need a producer/consumer warp split because the LSC data port and the Math/FPU data ports operate concurrently inside the same Xe Core. A single subgroup can issue the memory instructions and the math instructions without blocking itself (until the register is actually read).
+No Barriers: Intel's dependency tracking is managed in hardware via the register scoreboard. When `mma-accumulate-via-tile` executes, if `ring-idx 0` hasn't finished loading from the L1 cache, the thread simply sleeps.
+Register Pressure is the Only Limit: On NVIDIA, your pipelining depth is usually constrained by how much SLM you can allocate per block. On Intel, your pipeline depth is constrained by the physical size of the GRF (which is why `pipeline-stages` is set to 2 here—ping-ponging a 128x128 register tile consumes a massive amount of the GRF).
+
+
+
 ### Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile` ✅
 
 On NVIDIA **Hopper (sm_90a)** the tensor-core unit is driven by `wgmma` (4th-gen *warpgroup*

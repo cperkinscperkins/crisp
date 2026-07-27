@@ -1150,6 +1150,64 @@ overrides the runtime SM-count query in the grid-size heuristic."
   "Returns T if :derive-from was supplied as a bare symbol (tensor name)."
   (and raw (symbolp raw)))
 
+
+
+(defun %cuda-tensor-extent-cpp-var (sym k)
+  "C++ per-dimension extent variable for a tensor parameter: <name>_ext<k>.
+   The flat <name>_length that %tensor-length-cpp-var yields carries no shape and so cannot
+   size a rank-N grid — dividing it by a tile width is what the old :exact tensor branch did."
+  (format nil "~a_ext~d" (substitute #\_ #\- (string-downcase (symbol-name sym))) k))
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-emit-tile-grid (stream derive-from derive-from-is-tensor tile-shape can-stride)
+  "Emit gridX/gridY/gridZ covering the output tile grid: ceil(extent[k] / tile[k]) per axis,
+   axis k drawn from dimension k of the :derive-from source, then guard against the device's
+   maxGridDim.  CAN-STRIDE (i.e. :strided) decides clamp-vs-error; see the header comment."
+  (let* ((axis-vars '("gridX" "gridY" "gridZ"))
+         (axis-attrs '("CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X"
+                       "CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y"
+                       "CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z"))
+         (rank (min (length tile-shape) 3))
+         (declared '()))
+    (format stream "    // :tile-shape ~a — one block per output tile; axis k <- dimension k.~%"
+            tile-shape)
+    (dotimes (k 3)
+      (let* ((var (nth k axis-vars))
+             (tk  (when (< k rank) (or (nth k tile-shape) 1)))
+             (src (when (< k rank)
+                    (if derive-from-is-tensor
+                        (when (first derive-from)
+                          (%cuda-tensor-extent-cpp-var (first derive-from) k))
+                        (when (nth k derive-from)
+                          (%dispatch-sym-to-cpp-var (nth k derive-from)))))))
+        (if (and src tk (> tk 0))
+            (progn
+              (format stream "    unsigned int ~a = (unsigned int)(((unsigned long long)~a + ~d) / ~d);~%"
+                      var src (1- tk) tk)
+              (format stream "    if (~a < 1) ~a = 1;~%" var var)
+              (push (list var (nth k axis-attrs)) declared))
+            ;; Axes past the tile-shape rank are a literal 1 — still declared, because
+            ;; cuLaunchKernel below references all three unconditionally.
+            (format stream "    unsigned int ~a = 1;~%" var))))
+    (when declared
+      (format stream "    // Device grid limits.  H100: X=2^31-1 but Y/Z=65535, so a tile grid~%")
+      (format stream "    // (which scales with the PROBLEM, not the hardware) can genuinely exceed them.~%")
+      (dolist (axis (nreverse declared))
+        (destructuring-bind (var attr) axis
+          (format stream "    { int _lim = 0; cuDeviceGetAttribute(&_lim, ~a, device);~%" attr)
+          (format stream "      if (_lim > 0 && ~a > (unsigned int)_lim) {~%" var)
+          (if can-stride
+              (progn
+                (format stream "        std::cerr << \"NOTE: ~a \" << ~a << \" exceeds device limit \" << _lim~%" var var)
+                (format stream "                  << \"; clamping — the tile-stride loop covers the rest.\" << std::endl;~%")
+                (format stream "        ~a = (unsigned int)_lim;~%" var))
+              (progn
+                (format stream "        std::cerr << \"ERROR: ~a \" << ~a << \" exceeds device limit \" << _lim~%" var var)
+                (format stream "                  << \". :strategy :exact has no stride loop, so clamping would skip\"~%")
+                (format stream "                  << \" tiles.  Use :strategy :strided for a problem this large.\" << std::endl;~%")
+                (format stream "        return;~%")))
+          (format stream "      } }~%"))))))
+
 (defun emit-launch (stream dispatch-info shared-bytes &optional compute-units kernel-name out-tile)
   "Emit cuLaunchKernel call with grid/block dims from dispatch-info.
    OUT-TILE (TM TN), when set (--mma-bench), OVERRIDES the grid with a (M/TM x N/TN) 2-D grid.
@@ -1214,6 +1272,13 @@ overrides the runtime SM-count query in the grid-size heuristic."
          (destructuring-bind (tm tn) out-tile
            (format stream "    unsigned int gridX = ~d, gridY = ~d, gridZ = 1;  // (M/~d, N/~d) output-tile grid~%"
                    (ceiling m tm) (ceiling n tn) tm tn))))
+
+      ;; --- :tile-shape — rank-N tile grid (Endeavor 143; ported from the L0 hoist) ---
+      ;; Must precede :strided.  A 1-D grid under an N-D tile-stride loop does not merely
+      ;; under-dispatch, it SERIALIZES the missing axes (measured 7.6x on Intel BMG).  The
+      ;; --mma-bench out-tile override above still wins when it is set.
+      ((and tile-shape derive-from (or is-strided is-exact))
+       (%cuda-emit-tile-grid stream derive-from derive-from-is-tensor tile-shape is-strided))
 
       ;; --- :strategy :strided — max occupancy (optionally derated by :occupancy) ---
       (is-strided

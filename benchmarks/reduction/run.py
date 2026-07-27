@@ -410,7 +410,7 @@ def main():
     parser.add_argument("--impl", default="all",
                         help="Implementations to run: all, cuda, cub, crisp")
     parser.add_argument("--crisp-tree-occupancy", type=float, default=None,
-                        help="Override occupancy ratio (0.0..1.0).  Wins over "
+                        help="Override occupancy ratio (>0.0; values above 1.0 oversubscribe).  Wins over "
                              "--tune and the cache.  Default: resolve via "
                              "--tune cache, then the .crisp source's :occupancy.")
     parser.add_argument("--tune", action="store_true",

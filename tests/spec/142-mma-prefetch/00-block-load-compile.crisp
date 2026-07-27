@@ -1,0 +1,31 @@
+;; Endeavor 142 (Intel MMA prefetch) Phase A — load-tile OVERLOADED on a register-tile destination.
+;; When the dest of load-tile is a make-register-tile (not a scratch-matrix), on the SPV/Intel target
+;; it lowers to Subgroup2DBlockLoadINTEL: a hardware-async block load global -> GRF, tracked by the
+;; hardware scoreboard (NO :barrier — that's a NVIDIA SLM-staging concept).  This is the dispatch-on-
+;; destination decision (Q2).  Compile-only here: 01 loads + verifies C=A.B on BMG.
+;;
+;; The Intel register-pipeline forms REQUIRE a hardware profile (02 covers the no-profile error).
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "forward-only block load / MMA"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; TODO(green): strengthen to an IR-grep validator (validate-spv-block-load) asserting the
+;; Subgroup2DBlockLoad opcode actually appears — PASS alone could hide a cooperative-loop fallback.
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel block_load (A B &out C)
+  (declare #'(mat mat &out mat) (global-size :set-to 16) (local-size :set-to 16))
+  ;; Full register-MMA (compile-only here; 01 verifies C=A.B on metal): block-load A/B into
+  ;; :operand a/b register-tiles, DPAS, store.  Exercises the load-tile register overload codegen.
+  (let ((A-tile (make-register-tile float (16 8) 0.0 :operand :a))
+        (B-tile (make-register-tile float (8 16) 0.0 :operand :b))
+        (C-tile (make-register-tile float (16 16) 0.0)))
+    (load-tile A A-tile (0 0))       ; global A[16x8] -> GRF (register-tile overload, no :barrier)
+    (load-tile B B-tile (0 0))
+    (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

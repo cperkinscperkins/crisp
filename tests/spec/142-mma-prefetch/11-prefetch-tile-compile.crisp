@@ -1,0 +1,35 @@
+;; Endeavor 142 Phase B — prefetch-tile lowers to OpSubgroup2DBlockPrefetchINTEL (SPV_INTEL_2d_block_io).
+;; A "fire-and-forget" L1 cache prefetch: it has NO destination (it does not write registers) — it just
+;; warms the LSC so a subsequent register block-load (load-tile -> GRF) hits L1 instead of stalling on
+;; global memory.  Purely a performance hint; it never changes results (which is why 12's metal test
+;; can prove MMA_CORRECT with prefetches interleaved).  Intel/SPV-only + hardware-profile-required, same
+;; as the register block-load (13 covers the PTX error).
+;;
+;; Shape: (prefetch-tile SRC (COORD-Y COORD-X) :size (H W)) — SRC is a global matrix, the coords are the
+;; same tile grid coords load-tile uses, :size is the block (rows cols).  Here we prefetch A[16x8] and
+;; B[8x16] for k=0, then actually block-load + DPAS + store so the kernel is a valid producer of C.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "forward-only prefetch / MMA"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; NOTE: COMPILE-WITH PASS runs the full binary -> opt -> llvm-as -> llvm-spirv pipeline, so it fails if
+;; the Subgroup2DBlockPrefetchINTEL intrinsic doesn't translate.  TODO(green): add validate-spv-prefetch
+;; (IR-grep for the opcode) to also assert the prefetch is actually emitted, not silently dropped.
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel prefetch_probe (A B &out C)
+  (declare #'(mat mat &out mat) (global-size :set-to 16) (local-size :set-to 16))
+  (let ((A-tile (make-register-tile float (16 8) 0.0 :operand :a))
+        (B-tile (make-register-tile float (8 16) 0.0 :operand :b))
+        (C-tile (make-register-tile float (16 16) 0.0)))
+    (prefetch-tile A (0 0) :size (16 8))   ; warm L1 for A's k=0 block
+    (prefetch-tile B (0 0) :size (8 16))   ; warm L1 for B's k=0 block
+    (load-tile A A-tile (0 0))
+    (load-tile B B-tile (0 0))
+    (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

@@ -144,8 +144,8 @@ global-size / local-size,140,implemented
 :set-to,143,implemented
 :derive-from,144,implemented
 :strategy,145,implemented
-`:occupancy`,146,implemented
-:tile-shape,147,partially implemented
+:tile-shape,146,implemented
+`:occupancy`,147,implemented
 num-groups,148,not implemented
 check-thread-bounds,149,not implemented
 check-wg-bounds,150,not implemented
@@ -470,4 +470,4 @@ max-pool,468,not implemented
 Average Pool,469,not implemented
 ReLU,470,not implemented
 Acknowledgements,471,implemented
-SUMMARY (Total: 471),Impl: 186 (39.5%),Not Impl: 261 (55.4%) | Part: 24 (5.1%)
+SUMMARY (Total: 471),Impl: 187 (39.7%),Not Impl: 261 (55.4%) | Part: 23 (4.9%)
