@@ -10,7 +10,9 @@
  * the CUDA / SYCL harnesses.
  *
  * Usage: ./sum_reduce_crisp_l0 [N] [warmup] [iterations] [occupancy]
- *   occupancy = 0.0..1.0 ratio for grid sizing (default: 1.0 = max).
+ *   occupancy = grid-size ratio vs the device's MAX RESIDENT WORKGROUPS for this
+ *               kernel (default 1.0).  >1.0 is legal and oversubscribes, which
+ *               measured faster in every case tested (Endeavor 143).
  *               Mirrors what the Crisp L0 hoist would emit for
  *               (global-size :derive-from input :strategy :strided :occupancy R).
  *
@@ -98,8 +100,8 @@ int main(int argc, char** argv) {
     int    warmup     = argc > 2 ? atoi(argv[2]) : 50;
     int    iterations = argc > 3 ? atoi(argv[3]) : 100;
     double occupancy  = argc > 4 ? atof(argv[4]) : 1.0;
-    if (occupancy <= 0.0 || occupancy > 1.0) {
-        fprintf(stderr, "occupancy must be in (0.0, 1.0], got %f\n", occupancy);
+    if (occupancy <= 0.0) {   // >1.0 is legal: oversubscription (Endeavor 143)
+        fprintf(stderr, "occupancy must be > 0.0, got %f\n", occupancy);
         return 1;
     }
 
@@ -236,15 +238,21 @@ int main(int argc, char** argv) {
     // ------------------------------------------------------------------
     L0_CHECK(zeKernelSetGroupSize(kernel, blockSize, 1, 1));
 
-    uint32_t totalEUs = devProps.numSlices * devProps.numSubslicesPerSlice * devProps.numEUsPerSubslice;
-    // Conservative heuristic for reduction with SLM: 1 workgroup per EU is
-    // already 4-8x oversubscribed (each EU runs 4-8 hardware threads).
-    // Scale by occupancy.  Tighter than CUDA's "blocks per SM ~32" because
-    // BMG has fewer SMs than NVIDIA's count.
-    uint32_t baseGroups = std::max(1u, totalEUs);
-    uint32_t gridSize   = std::max(1u, (uint32_t)(baseGroups * occupancy));
-    fprintf(stderr, "Grid: %u groups (totalEUs=%u × occupancy=%.2f), block=%u\n",
-            gridSize, totalEUs, occupancy, blockSize);
+    // Endeavor 143: :occupancy is a fraction of the device's MAXIMUM RESIDENT WORKGROUPS for
+    // this kernel -- the same denominator the L0 hoist and both CUDA paths use.  This harness
+    // previously used `totalEUs` (one workgroup per EU), which ignores numThreadsPerEU and the
+    // workgroup size entirely and came out 2x different on BMG (160 vs 80 at R=1.0).  One name,
+    // one meaning.  Values ABOVE 1.0 are legal and deliberately so: they oversubscribe, which
+    // measured faster in every case tested.
+    uint32_t hwThreads       = devProps.numSlices * devProps.numSubslicesPerSlice
+                             * devProps.numEUsPerSubslice * devProps.numThreadsPerEU;
+    uint32_t simdW           = devProps.physicalEUSimdWidth ? devProps.physicalEUSimdWidth : 16;
+    uint32_t threadsPerGroup = (blockSize + simdW - 1) / simdW;
+    if (threadsPerGroup < 1) threadsPerGroup = 1;
+    uint32_t maxResident     = std::max(1u, hwThreads / threadsPerGroup);
+    uint32_t gridSize        = std::max(1u, (uint32_t)(maxResident * occupancy));
+    fprintf(stderr, "Grid: %u groups (maxResident=%u x occ=%.2f), block=%u\n",
+            gridSize, maxResident, (double)occupancy, blockSize);
 
     ze_group_count_t groupCount = { gridSize, 1, 1 };
 

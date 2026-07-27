@@ -359,3 +359,50 @@ instead so the SXM figures remain recoverable).
    wrong objective for grid-stride kernels. Biggest open question; not urgent.
 4. `performance/matmul-bmg` (and 15 sibling mmts kernels) declare a fixed `:set-to` grid — worth
    asking per-kernel whether that is deliberate.
+
+
+---
+
+## COMPLETE 2026-07-26 — Definition-of-Done pass
+
+| Suite | Result |
+|---|---|
+| Unit tests (`run-ci.lisp`) | 253/253 |
+| E2E specs | **936/936** |
+| E2E `--single-pass` | 933/933 |
+| E2E `--debug` | 933/933 |
+| Negative specs (`run-error-specs.lisp`) | 209/209 |
+| BMG performance ratchets | 4/4 pass |
+| CUDA specs on pod | all pass (12 SPIR-V failures are environmental) |
+
+Generated docs regenerated: `reference.md`, `call_graph.md`, `globals_matrix.csv` (all were stale
+from 2026-07-25). **They need `sbcl --non-interactive --load`, NOT `--script`** — `--script` skips
+the init file so Quicklisp is absent and they die with "Package QL does not exist".
+
+`run-all-tests.bat` and `.github/workflows/ci.yml` need no change: neither enumerates spec
+directories, so new specs are picked up automatically.
+
+### New specs (tests/spec/089-strategy, now 27/27)
+- `24-tile-shape-inferred` — inference fires with no declaration; also PINS THE AXIS MAPPING
+  (axis 0 <- dim 0), which nothing else holds in place since reversing it is merely ~1.3% slower
+  and still correct.
+- `25-tile-shape-explicit-wins` — a declared :tile-shape overrides a disagreeing body.
+- `26-tile-grid-uses-extents-not-length` — the tensor path uses per-dimension extents, never the
+  flat length (the old `:exact` branch divided total element count by a tile WIDTH).
+
+NOTE: a negative `STRATEGY-REJECT` directive was drafted for (26) and removed — the spec runner has
+no such directive, and an unrecognised one is SILENTLY IGNORED, i.e. fake coverage. If negative
+content assertions are wanted, the runner needs the directive first.
+
+### Remaining (new work, not unfinished work)
+1. **What should "max occupancy" mean?** Two kernel classes, two vendors: the optimum kept landing
+   at or beyond the largest grid the API can express. Resident-capacity may be the wrong objective
+   for grid-stride kernels. Biggest open question.
+2. `bench_harness_l0.cpp` `baseGroups = totalEUs` disagrees ~2x with the corrected hoist formula
+   (and the larger value measured FASTER, which feeds (1)).
+3. Remaining `zeDeviceGetComputeProperties` validations (maxTotalGroupSize, subGroupSizes).
+4. 16 mmts kernels declare a fixed `:set-to` grid — `performance/matmul-bmg` dispatches
+   `:set-to 16`, one workgroup for a whole matmul. Per-kernel authoring question.
+5. Small: `run-on-pod.sh` header claims SPIR-V checks are "skipped" (they run and fail);
+   `scripts/call-graph.lisp` doesn't know `CRISP.HOIST.CUDA` so the call graph is incomplete;
+   `tests/spec/089-strategy/strategy.md` still references a `:tiled` strategy that does not exist.

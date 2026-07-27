@@ -1,0 +1,25 @@
+;; SKIP-DEFAULT-PASS: hoist-only spec; the GENERIC pass has no dispatch to inspect
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; SKIP-WITH[--differentiate]: "dispatch-shape spec, nothing to differentiate"
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT[L0]: (uint64_t)c_ext0 + 31) / 32
+;; STRATEGY-EXPECT[L0]: (uint64_t)c_ext1 + 31) / 32
+;;
+;; Endeavor 143 — a tensor :derive-from must supply PER-DIMENSION EXTENTS, never its flat length.
+;;
+;; The old :exact-with-tensor branch computed ceil(<tensor>_length / tile_x) with gridY pinned to
+;; 1, i.e. it divided a total element count by a tile WIDTH.  That is geometrically meaningless:
+;; a 1024x1024 matrix has length 1048576, so it produced 32768 groups on one axis instead of a
+;; 32x32 grid.  The two expectations above ARE the regression guard: if _length ever returns to the
+;; grid computation, c_ext0/c_ext1 vanish from the output and both fail.
+;; (A negative STRATEGY-REJECT directive would state this more directly, but the runner has no
+;;  such directive and an unrecognised one would be silently ignored — i.e. fake coverage.)
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tile_grid_extents (A &out C)
+  (declare #'(mat &out mat)
+           (global-size :derive-from C :strategy :exact :tile-shape (32 32))
+           (local-size :set-to 16))
+  (tile-stride C (32 32) (grid-y grid-x)
+    (set! (~ C grid-y grid-x) 1.0f)))

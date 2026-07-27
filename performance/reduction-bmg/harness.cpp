@@ -7,8 +7,10 @@
  * Unlike benchmarks/reduction/crisp/bench_harness_l0.cpp (which is
  * cross-platform-comparison shaped and accepts an occupancy CLI arg),
  * this harness:
- *   - hardcodes occupancy=0.15 (matches the :occupancy declaration in
- *     sum-reduce.crisp; the perf test must be repeatable, not tunable)
+ *   - hardcodes occupancy=2.0 (matches the :occupancy declaration in
+ *     sum-reduce.crisp; the perf test must be repeatable, not tunable).
+ *     :occupancy is a ratio against MAX RESIDENT WORKGROUPS for this kernel,
+ *     so 2.0 means 2x oversubscribed — the measured optimum, not a typo.
  *   - hardcodes N=1000000 (single representative size — anything below
  *     this is dominated by launch overhead, anything above adds noise
  *     without isolating new codegen paths)
@@ -64,8 +66,11 @@ int main(int argc, char** argv) {
     // Endeavor 143: was 0.15, to match a since-removed :occupancy declaration.  Measured
     // 2026-07-26 on BOTH vendors, that derate was a large pessimization -- BMG 3.3x slower
     // at 1M / 4.9x at 16M, H100 2.4x at 16M / 2.9x at 64M -- so the kernel now uses the 1.0
-    // default and this mirrors it.  See docs/ideal_001.md :occupancy for the curves.
-    constexpr double OCCUPANCY = 1.0;   // matches sum-reduce.crisp (no :occupancy = 1.0)
+    // default and this mirrors it.  A later sweep with the 1.0 cap LIFTED found the true
+    // optimum at R=2.0 (2x oversubscribed): BMG N=1M 11.54 us at 1.0 vs 8.84 at 2.0;
+    // N=16M 307.0 vs 192.5.  Past 2x it degrades again (16x -> 22.98 us at 1M), so this
+    // is a real interior optimum, not 'more is always better'.
+    constexpr double OCCUPANCY = 2.0;   // matches :occupancy 2.0 in sum-reduce.crisp
     constexpr uint32_t BLOCK_SIZE = 256;
 
     // --- L0 init ---
@@ -176,11 +181,21 @@ int main(int argc, char** argv) {
 
     L0_CHECK(zeKernelSetGroupSize(kernel, BLOCK_SIZE, 1, 1));
 
-    uint32_t totalEUs   = devProps.numSlices * devProps.numSubslicesPerSlice * devProps.numEUsPerSubslice;
-    uint32_t baseGroups = std::max(1u, totalEUs);
-    uint32_t gridSize   = std::max(1u, (uint32_t)(baseGroups * OCCUPANCY));
-    fprintf(stderr, "Grid: %u groups (EUs=%u x occ=%.2f), block=%u, N=%d\n",
-            gridSize, totalEUs, OCCUPANCY, BLOCK_SIZE, N);
+    // Endeavor 143: :occupancy is a fraction of the device's MAXIMUM RESIDENT WORKGROUPS for
+    // this kernel -- the same denominator the L0 hoist and both CUDA paths use.  This harness
+    // previously used `totalEUs` (one workgroup per EU), which ignores numThreadsPerEU and the
+    // workgroup size entirely and came out 2x different on BMG (160 vs 80 at R=1.0).  One name,
+    // one meaning.  Values ABOVE 1.0 are legal and deliberately so: they oversubscribe, which
+    // measured faster in every case tested.
+    uint32_t hwThreads       = devProps.numSlices * devProps.numSubslicesPerSlice
+                             * devProps.numEUsPerSubslice * devProps.numThreadsPerEU;
+    uint32_t simdW           = devProps.physicalEUSimdWidth ? devProps.physicalEUSimdWidth : 16;
+    uint32_t threadsPerGroup = (BLOCK_SIZE + simdW - 1) / simdW;
+    if (threadsPerGroup < 1) threadsPerGroup = 1;
+    uint32_t maxResident     = std::max(1u, hwThreads / threadsPerGroup);
+    uint32_t gridSize        = std::max(1u, (uint32_t)(maxResident * OCCUPANCY));
+    fprintf(stderr, "Grid: %u groups (maxResident=%u x occ=%.2f), block=%u\n",
+            gridSize, maxResident, (double)OCCUPANCY, BLOCK_SIZE);
 
     ze_group_count_t groupCount = { gridSize, 1, 1 };
 

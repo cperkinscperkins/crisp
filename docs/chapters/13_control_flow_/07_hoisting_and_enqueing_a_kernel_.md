@@ -121,16 +121,18 @@ It can be one of four possible values.
 - `:one-thread-per`  This strategy means we expect there to be at least one global thread for each element of the vector. See [One Thread Per Element](#one-thread-per-element) discussion below.
 
 - `:strided` This strategy tells the hoisting code that we are expecting to use a grid stride pattern to walk
-the vector. (Read more at [Looping -- Grid Stride](#looping---grid-stride)). **Without** a `:tile-shape` this
-sizes the global work size near the number of threads actually available on the hardware for MAXIMUM OCCUPANCY.
+the vector. (Read more at [Looping -- Grid Stride](#looping---grid-stride)). **Without** a `:tile-shape` the
+global work size defaults to filling the machine once — one grid's worth of resident workgroups.
 **With** a `:tile-shape` the grid instead covers the tile grid exactly — see [:tile-shape](#tile-shape) below,
-which now governs grid *shape* for every strategy.
+which governs grid *shape* for every strategy.
 
-Maximum occupancy is not automatically ideal. Kernels ending in a global atomic, in particular, do more
-atomic traffic as the group count rises, and *in principle* a smaller grid can win. Whether that actually
-happens is hardware-dependent and should be measured rather than assumed — on Intel BMG it does not
-(see [:occupancy](#occupancy), which carries the numbers). Use `:occupancy` when you have measured a case
-that wants fewer groups.
+**"Fill the machine once" is a starting point, not a target.** It is a reasonable default precisely
+because it needs no measurement, but it is not what "fastest" means and Crisp does not claim it is.
+Measured, the best grid for a kernel has landed *both* below and above it: kernels ending in a global
+atomic do more atomic traffic as the group count rises, while latency-bound kernels often keep improving
+past full occupancy. On Intel BMG a reduction was fastest at **2× oversubscribed**, and degraded on either
+side of that. Use [`:occupancy`](#occupancy) to say where your kernel actually wants to sit — it scales
+this default in either direction, and it carries the numbers.
 
 - `:exact` This strategy tells the hoisting code to set the global work size to be exactly the size, no more no less. This
 strategy could also be used with the `:set-to` key. If combined with `:tile-shape`, `:exact` calculates exactly enough workgroups to cover the number of tiles.
@@ -221,13 +223,32 @@ tracking the problem, and because the strided/exact split above must never be si
 
 ##### `:occupancy` ✅
 
-The `:occupancy` key is a manual derating factor for the `:strided` strategy.
-Accepts a number from `0.0` to `1.0` (default `1.0`).
+The `:occupancy` key is a **grid-size multiplier** for the `:strided` strategy.
+Accepts any number greater than `0.0` (default `1.0`). **Values above `1.0` are legal and
+useful** — see [oversubscription](#oversubscription-values-above-10) below.
 
-When the hoisting code calculates "near the number of threads actually
-available on the hardware" (via `cuOccupancyMaxActiveBlocksPerMultiprocessor`
-on CUDA, or `zeDeviceGetProperties` + `zeKernelGetProperties` on Level Zero),
-it multiplies the result by the `:occupancy` ratio.
+**The denominator, stated exactly.** `:occupancy` is a ratio against the **maximum number of
+workgroups of this kernel that the device can hold resident simultaneously**:
+
+```
+group_count = :occupancy × max_resident_workgroups
+```
+
+- **CUDA** — `cuOccupancyMaxActiveBlocksPerMultiprocessor(kernel, block_size, smem) × SM count`.
+  A real per-kernel query, so register and shared-memory pressure are accounted for.
+- **Level Zero** — `numSlices × numSubslicesPerSlice × numEUsPerSubslice × numThreadsPerEU`,
+  divided by the hardware threads one workgroup occupies
+  (`ceil(local_size / physicalEUSimdWidth)`), then halved if `zeKernelGetProperties` reports
+  register spill. Level Zero has no single per-kernel occupancy query, so this approximates one.
+
+It is worth being precise about this because the denominator is the whole meaning of the number:
+"0.5" says nothing without "of what?". An earlier version of two hand-written benchmark harnesses
+used *EU count* instead, which is a different quantity — on Intel BMG the two answers differed by
+exactly 2×, so the same declaration meant two different grids depending on who read it.
+
+`:occupancy` scales only the **occupancy-sized** grid, i.e. `:strided` **without** a
+`:tile-shape`. When a `:tile-shape` is present the grid is the tile grid and `:occupancy` does not
+apply — see [:tile-shape](#tile-shape).
 
 > **Note on the Level Zero call.** This used to say `zeDeviceGetComputeProperties`. That is a
 > different query and cannot do this job: `ze_device_compute_properties_t` returns *dispatch
@@ -278,9 +299,40 @@ largest grid the ratio can express.
 | 0.75 | 513 | **13.92** | **48.13** | 152.10 |
 | 1.00 | 684 | 14.72 | 48.13 | **146.94** |
 
-**Both vendors agree, so the guidance is settled: keep the `1.0` default.** A `0.15` derate costs
-2.4× at 16M and 2.9× at 64M on H100, and 3.3–4.9× on BMG. The often-repeated "≈0.2 for reductions"
-figure does not survive measurement on either vendor — including NVIDIA, where it originated.
+**Both vendors agree: derating is a pessimization here.** A `0.15` derate costs 2.4× at 16M and
+2.9× at 64M on H100, and 3.3–4.9× on BMG. The often-repeated "≈0.2 for reductions" figure does not
+survive measurement on either vendor — including NVIDIA, where it originated.
+
+###### Oversubscription: values above 1.0
+
+`1.0` means "exactly fill the machine once". That is a natural *default*, but it is **not** the
+optimum, and it is worth knowing that you can ask for more — many readers will not realise the
+possibility, since a ratio reads like something that ought to be capped at one whole machine.
+
+Re-running the Intel BMG reduction with the cap removed (`local-size 256`, so
+`max_resident_workgroups` = 80):
+
+| `:occupancy` | groups | N = 1M | N = 16M |
+|---|---:|---:|---:|
+| 0.50 | 40 | 17.26 | 589.58 |
+| 1.00 | 80 | 11.54 | 307.01 |
+| **2.00** | **160** | **8.84** | **192.50** |
+| 4.00 | 320 | 11.96 | 238.26 |
+| 8.00 | 640 | 15.39 | 211.22 |
+| 16.00 | 1280 | 22.98 | 213.20 |
+
+**The optimum is 2× oversubscribed** — 1.3× faster than filling the machine at 1M, 1.6× at 16M —
+and it degrades again beyond that. So this is a genuine interior optimum, not "more is always
+better": you cannot reach it by clamping, and you cannot reach it by removing the knob.
+
+That is the case for keeping `:occupancy`. It expresses something the compiler cannot infer — how
+far past resident capacity *this* kernel's latency-hiding keeps paying — and the answer is neither
+the default nor unbounded. `benchmarks/reduction`'s `sum_reduce` therefore declares
+`:occupancy 2.0`, and its performance ratchet mirrors it.
+
+Two caveats worth carrying: the optimum is per-kernel and per-device, so 2.0 is *this* kernel's
+answer on *this* GPU, not a new rule of thumb; and oversubscription is only safe because
+`:strided` kernels loop — a grid larger than the problem is covered by the stride loop.
 
 The atomic-pressure effect is real but small: on H100 the curve turns over slightly at small N
 (`0.75` beats `1.00` by ~5% at 1M, they tie at 16M, and `1.00` wins at 64M). That is worth a knob,

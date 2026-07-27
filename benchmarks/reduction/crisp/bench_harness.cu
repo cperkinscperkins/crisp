@@ -3,7 +3,7 @@
  * Loads sum-reduce.ptx and calls the sum_reduce kernel.
  *
  * Usage: ./sum_reduce_crisp [N] [warmup] [iterations] [occupancy]
- *   occupancy = 0.0..1.0 ratio for grid sizing (default: 1.0 = max occupancy)
+ *   occupancy = grid-size ratio vs max resident blocks (default 1.0); >1.0 oversubscribes
  *               Mirrors what the Crisp CUDA hoist would emit for
  *               (global-size :derive-from input :strategy :strided :occupancy R).
  *
@@ -36,8 +36,8 @@ int main(int argc, char** argv) {
     int    warmup     = argc > 2 ? atoi(argv[2]) : 50;
     int    iterations = argc > 3 ? atoi(argv[3]) : 100;
     double occupancy  = argc > 4 ? atof(argv[4]) : 1.0;
-    if (occupancy <= 0.0 || occupancy > 1.0) {
-        fprintf(stderr, "occupancy must be in (0.0, 1.0], got %f\n", occupancy);
+    if (occupancy <= 0.0) {   // >1.0 is legal: oversubscription (Endeavor 143)
+        fprintf(stderr, "occupancy must be > 0.0, got %f\n", occupancy);
         return 1;
     }
 
