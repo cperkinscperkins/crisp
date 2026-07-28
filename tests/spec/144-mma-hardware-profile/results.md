@@ -573,6 +573,41 @@ wrong half the time.  D1 stays intact: still no kernel syntax, still a profile-l
 
 Nothing shipped is affected — Phase 1 and the builtins are uncommitted.
 
+### NVIDIA benchmark extended to 4096 (2026-07-28) — the ladder's top rung is now 69.5%
+
+Run with the CORRECTED gating (h100 omits `:tile-visit-strip-width`, so linear), `fast`/ftz,
+sizes 1024/2048/4096.  `scaled_counts` cubically reduces warmup/iters above 2048 automatically,
+so 4096 cost ~1/8 of a full-count run and the correctness check did NOT have to be weakened.
+
+| Chapter | Crisp @2048 | % cuBLAS | Crisp @4096 | % cuBLAS |
+|---|---:|---:|---:|---:|
+| chap0_sync | 2.6 | 1.3% | 4.0 | 1.3% |
+| chap1_async_linear | 4.0 | 2.0% | 6.5 | 2.2% |
+| chap1.5_async_block | 36.9 | 18.5% | 59.7 | 20.0% |
+| chap2_pipelined_block | 39.2 | 19.6% | 55.8 | 18.7% |
+| **chap3_wgmma** | 124.8 | 62.4% | **207.6** | **69.5%** |
+
+cuBLAS scales 199.9 → **298.7** TFLOPS over the same range.
+
+**Correcting an earlier speculation of mine:** having seen chap3 reach 207.4 TFLOPS at 4096, I
+noted it exceeded the 199.85 cuBLAS figure REPORT.md carried — and flagged that as
+apples-to-oranges since that figure was measured at 2048.  Measured at the SAME size, cuBLAS is
+298.7, so Crisp does **not** beat it; it reaches 69.5%.  The caution was warranted and the
+cross-size comparison would have been wrong by ~50%.
+
+#### A pre-existing data hazard found while merging
+
+`benchmarks/results/` held **22** NVIDIA `fast`/ftz files for **11** distinct
+(chapter, competitor, precision, size) keys — two runs' worth.  `report.py` assigns rather than
+reduces (report.py:112) over an unsorted `glob`, so which run won was **arbitrary**, which is
+why REPORT.md numbers drifted slightly between regenerations with no code change.  The 22
+superseded files were moved to `benchmarks/results/archive-pre-144-phase1/` and replaced by the
+11 new ones.
+
+**Still outstanding:** the `ieee`/ftz and `ieee`/preserve sets have the same 22-for-11
+duplication.  Left alone deliberately (not this endeavor's data, and no code change touches
+them), but they should be deduped or report.py should prefer the newest timestamp per key.
+
 ### Methodology note — a bogus first sweep, and why
 
 The first sweep reported 26.8–27.0 TFLOPS for *every* setting including linear, i.e. "the
