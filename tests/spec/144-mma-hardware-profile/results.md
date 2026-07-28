@@ -529,6 +529,50 @@ consistent with 114 SMs giving a much larger resident set than BMG's 20 Xe-cores
 deliberately NOT retuned on this data: fitting a width to a measurement taken at the cache
 boundary, where the total effect is ~3%, would be fitting noise.
 
+### H100 at 4096 — the hypothesis is REFUTED, and grouping actively HURTS
+
+| Chapter @4096 | linear | W=2 | W=4 | W=8 | W=16 |
+|---|---:|---:|---:|---:|---:|
+| chap1.5_async_block | 59.60 | 59.34 | 59.26 | **60.01** | 59.32 |
+| chap2_pipelined_block | **55.83** | 54.95 | 55.38 | 54.73 | 54.94 |
+| chap3_wgmma | **207.41** | 208.34 | 190.22 | 184.76 | 177.64 |
+
+All `MMA_CORRECT`.  Three conclusions, the first of which kills the prediction:
+
+1. **There is no cliff on H100.**  Linear order keeps scaling right through 4096 —
+   chap1.5 goes 36.95 (2048) → 59.60 (4096), chap3 → 207.41.  The predicted 4x-L2 cliff simply
+   does not appear.  So "working set > L2" is NOT the mechanism behind the BMG result; H100 pairs
+   a 2.8x larger L2 with far more HBM bandwidth, and something in that combination absorbs the
+   re-streaming that costs the B580 40% of its throughput.
+2. **Grouping is neutral-to-harmful here.**  chap2 is worse at every width.  chap3 degrades
+   MONOTONICALLY with strip width: −8.3% at W=4, −10.9% at W=8, **−14.4% at W=16**.  A clean
+   monotonic trend across four points is a real effect, not noise.
+3. **The chap3 trend has a plausible mechanism.**  Its tile is 64x256 — four times wider than
+   chap2's 64x64 — so a W-wide strip spans 256·W columns of C.  At W=16 that is 4096 columns, the
+   entire matrix: the "strip" degenerates to the whole width and the mapping contributes pure
+   arithmetic while discarding the locality linear order already had.  This is the direction the
+   `W = sqrt(R · tile_M / tile_N)` algebra predicts (wide tiles want narrow strips), though not
+   the magnitude — for chap3 it suggests ~5 where the measurement wants 1.
+
+### CONSEQUENCE — a live regression, and why the gate is wrong
+
+The gate is "the profile supplies `:l2-cache-size`", and the `h100` builtin supplies it.  So Phase 1
+engaged on NVIDIA with the derived W=4 and **cost chap3_wgmma ~8%**.  That is a defect in the
+gating, not in the mapping (which is correct and bijective on both vendors — every row above is
+MMA_CORRECT).
+
+L2 size is refuted as a predictor: BMG +63% and H100 −14%, both with `:l2-cache-size` present.
+Bandwidth-per-FLOP was also considered and does not separate them (B580 ~456 GB/s / ~58 TFLOPS
+tf32 vs H100 PCIe ~2000 / ~400 — broadly similar ratios).
+
+**Proposed fix (needs a decision, D4-style):** replace the inference with an explicit measured
+machine fact — a profile key `:tile-visit-strip-width <N>`, absent meaning linear.  `bmg` gets 4;
+`h100` omits it.  With two devices showing opposite outcomes and no surviving predictor, recording
+"this machine wants strip width N" where machine facts live is more honest than a formula that is
+wrong half the time.  D1 stays intact: still no kernel syntax, still a profile-level decision.
+
+Nothing shipped is affected — Phase 1 and the builtins are uncommitted.
+
 ### Methodology note — a bogus first sweep, and why
 
 The first sweep reported 26.8–27.0 TFLOPS for *every* setting including linear, i.e. "the

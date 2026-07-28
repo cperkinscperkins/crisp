@@ -774,3 +774,125 @@
             n tile-spec-kind tile-spec strip-width
             (if (> strip-width 1) "GROUPED" "linear"))
   strip-width)
+
+;;; ===================================================================
+;;; ENDEAVOR 144 Phase 1 REVISION (2026-07-28) — the visit-order gate becomes an
+;;; EXPLICIT, MEASURED profile fact instead of an inference from :l2-cache-size.
+;;;
+;;; WHY.  The original gate was "the profile supplies :l2-cache-size", on the theory that the
+;;; win appears once the working set outgrows L2.  Measured on two devices, that theory is
+;;; REFUTED and the gate actively caused a regression:
+;;;
+;;;   Arc B580 (18 MB L2) @2048, 50 MB working set = 2.8x L2 : linear 17.1 -> W4 27.9  (+63%)
+;;;   H100 PCIe (50 MB L2) @4096, 200 MB           = 4.0x L2 : linear 207.4 -> W4 190.2 (-8.3%)
+;;;                                                            and W16 177.6 (-14.4%, MONOTONIC)
+;;;
+;;; H100 at 4096 is FURTHER past its cache than BMG was when it fell off, and shows no cliff at
+;;; all — linear keeps scaling (36.95 -> 59.60 TFLOPS on one chapter, 207.4 on another).  So L2
+;;; multiples do not govern this, and neither does bandwidth-per-FLOP (the two parts have broadly
+;;; similar GB/s-per-TFLOP).  Tile shape matters too: the 64x256 wgmma tile degrades monotonically
+;;; with width, because a W-wide strip spans 256*W columns and degenerates to the whole matrix.
+;;;
+;;; With two devices, opposite outcomes, and no predictor that survives both, the honest design is
+;;; a measured per-machine number recorded where machine facts live — NOT a formula that is right
+;;; half the time.  Absent key => linear, so a profile that says nothing gets the old behaviour.
+;;;
+;;; D1 is intact: this is a PROFILE key (a fact about the target), not kernel syntax.  A kernel
+;;; still cannot encode a machine-tuning constant.
+;;; ===================================================================
+
+;; src/hardware-profile.lisp
+(defparameter *hardware-profile-schema*
+  '((:simd-width                  . :pos-int)
+    (:compute-units               . :pos-int)
+    (:max-registers-per-cu        . :pos-int)
+    (:max-registers-per-thread    . :pos-int-or-modes)  ; 144 D4: scalar OR (mode ...)
+    (:max-total-threads-per-block . :pos-int)
+    (:max-concurrent-kernels      . :pos-int)
+    (:native-cache-line-size      . :pos-int)   ; bytes
+    (:max-shared-memory-per-block . :size)      ; KB/MB/GB/TB literal -> bytes
+    (:l2-cache-size               . :size)
+    (:tile-visit-strip-width      . :pos-int)   ; 144 Phase 1: measured; absent/1 => linear
+    (:max-work-group-dims         . :dims3)     ; (x y z) positive ints
+    (:mma-shapes                  . :mma-shapes)) ; list of (M N K) triples
+  "Endeavor 130: canonical hardware-profile keys and their value types.
+
+   Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) — a scalar
+   for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose
+   register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the
+   MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent
+   means walk linearly.  It is deliberately a measured constant rather than a derived one — see
+   the block comment above for the two-device data that refuted the derivation.")
+
+;; src/compiler.lisp
+(defun %tile-visit-strip-width (n tile-sizes)
+  "Endeavor 144 Phase 1: the column-strip width for a rank-N tile-stride whose tile is
+   TILE-SIZES.  1 means 'walk linearly' (the caller then emits the untouched expansion).
+
+   Reads the ACTIVE PROFILE's measured :tile-visit-strip-width.  Absent => 1 => linear, so any
+   profile that does not explicitly opt in keeps the original behaviour.  This replaced a
+   derivation from :l2-cache-size, which was refuted by measurement on two devices (+63% on one,
+   -14% on the other, both supplying that key) — see the block comment above.
+
+   Still gated to rank 2 with a compile-time (M N) size-list: the swizzled expansion is written
+   for a 2-D tile grid, and the width is meaningless without knowing the tile shape.
+   CRISP_TILE_VISIT overrides everything, for bisecting and for sweeping the width empirically."
+  (let ((override (%tile-visit-override)))
+    (cond
+      ((eq override :linear) 1)
+      ((integerp override) override)
+      ((/= n 2) 1)
+      ((not (and (listp tile-sizes) (= (length tile-sizes) 2)
+                 (every (lambda (x) (and (integerp x) (plusp x))) tile-sizes)))
+       1)
+      (t (let* ((profile (active-hardware-profile))
+                (w (and profile (getf profile :tile-visit-strip-width))))
+           (if (and (integerp w) (plusp w))
+               (min w *tile-visit-max-strip-width*)
+               1))))))
+
+;; src/mma.lisp
+(defun register-builtin-hardware-profiles ()
+  "Endeavor 144 Phase 0 (D2): register Crisp's predefined hardware profiles.
+
+   Called from register-mma-types, which initialize-compiler invokes AFTER it clrhash-es
+   *hardware-profiles* — so builtins survive the clear and a same-named user profile still
+   overrides them.
+
+   NOTE FOR THE SRC PATCH: this belongs as its own call in initialize-compiler next to
+   register-builtins."
+  ;; Intel Arc B580 (Battlemage / Xe2).  Device-queried 2026-07-27.
+  ;; :tile-visit-strip-width 4 — MEASURED: grouped visit order is worth +63% at 2048 here
+  ;; (linear 17.1 -> 27.9 TFLOPS), and 4 beat 2/8/16 across both sizes tested.
+  (register-hardware-profile
+   'bmg
+   '(:simd-width 16                        ; subGroupSizes reports BOTH 16 and 32
+     :compute-units 20                     ; Xe-cores (5 slices x 4 subslices)
+     :max-registers-per-thread (128 256)   ; GRF registers (32 B each) — selectable modes
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 1024)
+     :max-shared-memory-per-block 128KB
+     :l2-cache-size 18MB
+     :native-cache-line-size 64            ; Xe2 LSC line; not queryable
+     :tile-visit-strip-width 4             ; measured; see the Phase 1 revision comment
+     :mma-shapes ((8 16 8))))              ; XMX tf32
+  ;; NVIDIA H100 PCIe (Hopper).  Device-queried 2026-07-28.
+  ;; :compute-units 114 is the PCIe part (SXM is 132); this value OVERRIDES the device SM query
+  ;; in the generated CUDA launch grid, so the variant distinction is load-bearing.
+  ;; :max-shared-memory-per-block is the OPT-IN cap, not the 48KB default (chap2/chap3 exceed 48KB).
+  ;; :mma-shapes MUST include (16 8 8) — chap0/1/1.5/2 all pass that tf32 shape.
+  ;; NO :tile-visit-strip-width — MEASURED: grouped order is neutral-to-harmful here (chap2 worse
+  ;; at every width; chap3_wgmma -8.3% at W=4 degrading monotonically to -14.4% at W=16), and no
+  ;; cliff appears even at 4x L2.  Omitting the key means linear, which is what this part wants.
+  (register-hardware-profile
+   'h100
+   '(:simd-width 32
+     :compute-units 114
+     :max-registers-per-cu 65536
+     :max-registers-per-thread 255
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 64)
+     :max-shared-memory-per-block 227KB
+     :l2-cache-size 50MB
+     :native-cache-line-size 128
+     :mma-shapes ((16 8 8) (16 8 4) (16 8 16)))))

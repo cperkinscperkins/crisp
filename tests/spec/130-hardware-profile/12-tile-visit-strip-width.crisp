@@ -1,0 +1,46 @@
+;; COMPILE-WITH[--hardware-profile=grouped-gpu --ir-target=spv]: PASS
+;; EXPECT-STDERR[--hardware-profile=grouped-gpu --ir-target=spv --log-level=info]: "strip-width=4 (GROUPED)"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "visit-order gating is AD-independent; this is a dispatch-shape test"
+;;
+;; Endeavor 144 Phase 1 (revision) — `:tile-visit-strip-width` gates grouped tile visit order.
+;;
+;; THE KEY EXISTS BECAUSE A DERIVATION FAILED.  The first version of this optimization inferred
+;; the strip width from `:l2-cache-size`, reasoning that grouped order pays once the working set
+;; outgrows L2.  Measured on two devices that theory is refuted, and badly:
+;;
+;;   Arc B580  (18MB L2) @2048 = 2.8x L2 : linear 17.1 -> W4 27.9 TFLOPS   (+63%)
+;;   H100 PCIe (50MB L2) @4096 = 4.0x L2 : linear 207.4 -> W4 190.2        (-8.3%)
+;;                                          ... monotonically to W16 177.6 (-14.4%)
+;;
+;; The H100 case is FURTHER past its cache yet shows no cliff at all, so L2 multiples do not
+;; govern the effect.  Since `:l2-cache-size` is present on BOTH devices, inferring from it
+;; produced a real ~8% regression on NVIDIA.  Hence an explicitly MEASURED per-machine width,
+;; recorded where machine facts belong.  Absent (or 1) means walk linearly, so any profile that
+;; does not opt in keeps the original behaviour — which is what the `h100` builtin does.
+;;
+;; This stays a PROFILE key, never kernel syntax (endeavor 144 decision D1): `tile-stride`
+;; guarantees COVERAGE, not order, so the walk order is the compiler's to choose — but a kernel
+;; must not hard-code a machine-tuning constant.
+;;
+;; The companion negative (errors/07) covers a malformed value.
+
+(def-hardware-profile grouped-gpu
+  :simd-width 16
+  :mma-shapes ((8 16 8))
+  :l2-cache-size 18MB
+  :tile-visit-strip-width 4)
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel visit_grouped (A &out C)
+  (declare #'(mat &out mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  ;; A rank-2 tile-stride with a compile-time (M N) size-list — the only shape the grouped
+  ;; expansion covers.  The body just copies, so the ONLY thing under test is the visit order.
+  (tile-stride C (32 32) (grid-y grid-x)
+    (let ((tile (make-scratch-matrix float (32 32))))
+      (load-tile A tile (grid-y grid-x))
+      (sync-workgroup)
+      (store-tile tile C (grid-y grid-x)))))

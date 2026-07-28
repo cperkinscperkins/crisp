@@ -39,6 +39,36 @@ on an 18 MB L2, exactly where `3·N²·4 bytes` crosses the cache size.  Below i
 ~2% (pure index arithmetic, no reuse to win).  Above it, not grouping costs ~40% of achievable
 throughput.
 
+### …but this does NOT generalize, and "working set > L2" is not the mechanism
+
+We tested the same change on an H100 PCIe (114 SMs, 50 MB L2) expecting a bigger version of the
+same cliff at 4096 (200 MB = 4× L2).  **It never appears.**  Linear order keeps scaling cleanly —
+one chapter goes 36.95 TFLOPS at 2048 → 59.60 at 4096, another reaches 207.41 — and grouping is
+neutral to actively harmful:
+
+| H100 @4096 | linear | W=2 | W=4 | W=8 | W=16 |
+|---|---:|---:|---:|---:|---:|
+| TMA + tf32 MMA, 64×64 tile | 59.60 | 59.34 | 59.26 | **60.01** | 59.32 |
+| pipelined, 64×64 tile | **55.83** | 54.95 | 55.38 | 54.73 | 54.94 |
+| warpgroup MMA, 64×256 tile | **207.41** | 208.34 | 190.22 | 184.76 | 177.64 |
+
+The last row degrades **monotonically** with strip width — −14.4% at W=16 — which is a real
+effect, not scatter.  Its likely mechanism: with a 64×**256** tile, a W-wide strip spans 256·W
+columns, so at W=16 the "strip" is 4096 columns wide — the entire matrix.  The grouping
+degenerates and contributes only arithmetic while discarding the locality linear order already
+had.  Wide tiles want narrow strips.
+
+**So the honest version of this finding is:** tile rasterization was worth +63% on one device and
+−14% on another, and we cannot currently predict which from any machine property we have.  L2 size
+does not predict it (both devices report one; outcomes are opposite).  Bandwidth-per-FLOP does not
+separate them either (~456 GB/s / ~58 TFLOPS tf32 vs ~2000 / ~400 — similar ratios).  If you are
+adding rasterization to a code generator, **measure it per target and per tile shape**; do not
+infer it from cache size, and do not assume the CUTLASS-style win transfers to a
+bandwidth-rich part or to a very wide output tile.
+
+We ship it gated on an explicitly measured per-machine width rather than on a derived formula,
+because a formula that is right on one of two devices is worse than an honest table.
+
 
 2. The strip width barely matters.  Engaging at all is what matters
 ------------------------------------------------------------------
