@@ -204,10 +204,39 @@ where there is no SPIR-V toolchain.
 144/03 and 144/04 are in this set for exactly this reason, not because of a Phase 4 bug — both
 pass locally where `llvm-spirv` exists.
 
-**Recommended fix: auto-detect, not an env var.**  `COMPILE-WITH` / `EXPECT-STDERR` should SKIP
-a `--ir-target=spv` run when the translator is unavailable, the way L0-hoist specs skip without
-Level Zero and FFI specs skip without clang.  Auto-detection beats `SKIP_SPIRV_TESTS` because
-an env var must be remembered on every new pod; detection is self-correcting.
+### FIXED 2026-07-28 — auto-detected SPIR-V availability
+
+`spirv-toolchain-available-p` probes `llvm-spirv --version` through the compiler's own
+`resolve-tool-executable`, so it honors the same `bin/`-then-PATH search and the
+`CRISP_LLVM_SPIRV` override the real compile path uses.  Result cached per runner invocation.
+Detection rather than an env var because a var must be remembered on every new pod; probing is
+self-correcting.  `SKIP_SPIRV_TESTS` is still honored as an explicit opt-out.
+
+Wired into all FOUR SPIR-V entry points so the harness agrees with itself about what the
+machine can do:
+
+| Entry point | Directive | Was |
+|---|---|---|
+| `run-spec-compile-with-pass` | `COMPILE-WITH[--ir-target=spv]` | no guard → exit 127 FAIL |
+| `run-spec-expect-stderr-pass` | `EXPECT-STDERR[--ir-target=spv]` | no guard → exit 127 FAIL |
+| `run-single-spec-pass` | `TEST-WITH[--ir-target=spv]` | env var only, no detection |
+| `run-spec-with-hoist` (L0) | `TEST-HOIST[L0]` | needs a .spv; only probed for an Intel *GPU* |
+
+Note the L0-hoist auto-skip on non-Intel hardware **already existed** (endeavor 140
+reconcile, run-specs.lisp:1301) and worked correctly on the pod — the 133/10-12 failures came
+from their `COMPILE-WITH[--ir-target=spv]` pass, not from the hoist.  So the remembered "that
+was fixed a while ago" was right about the hoist and the gap was elsewhere.  The new hoist
+guard covers the remaining case (Intel GPU present, translator missing).
+
+Verified both directions:
+
+| | 144 | 142 | 133 | 135 | full suite |
+|---|---|---|---|---|---|
+| translator FORCED MISSING (`CRISP_LLVM_SPIRV=/nonexistent`) | 5/5 | 9/9 | 10/10 | 10/10 | — |
+| translator present (normal local run) | — | — | — | — | **941/941, 0 spurious skips** |
+
+Plus 253/253 unit and 210/210 negative.  The "forced missing" column is the pod's condition
+reproduced locally; before the fix those same filters gave 5/5, 6/9, 1/10, 5/10.
 
 
 FINDING — every BMG benchmark kernel spills registers
