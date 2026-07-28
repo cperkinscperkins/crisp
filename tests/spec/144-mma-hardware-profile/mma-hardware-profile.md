@@ -124,12 +124,22 @@ not here.
 Phases
 ------
 
-### [~] Phase 0 — profiles exist, and the flag reaches the benchmarks.  MEASURE ALONE.
+### [x] Phase 0 — profiles exist, and the flag reaches the benchmarks.  DONE 2026-07-28
 
-STATUS 2026-07-27: **BMG half queried and recorded** (results.md has real device values and
-a proposed complete `bmg` profile).  **H100 half DEFERRED** — needs a runpod.io instance.
-Still to do on the BMG side: register the profile as a builtin and parameterize the
-hardcoded `--hardware-profile=bmg` in the bench driver.
+`bmg` + `h100` are compiler BUILTINS, both queried from real devices (B580 2026-07-27,
+H100 PCIe 2026-07-28).  Inline copies removed from the three BMG benchmark kernels; bench
+driver wired via `NVIDIA_HW_PROFILE` / `INTEL_HW_PROFILE` constants.
+
+MEASURED ALONE, as the plan required — and the answer is that on NVIDIA the profile is
+**behaviourally neutral on the benchmark path**: `.ptx` and the generated launcher are
+byte-identical with and without it, because `:compute-units` only reaches the launcher
+through the `:strided` occupancy path and `--mma-bench` overrides the grid outright.  So no
+re-sweep was needed (identical artifacts cannot produce different numbers), and Phase 0's
+NVIDIA value is validation + unblocking Phases 1 and 3.
+
+Also settled a wrong hypothesis: chap0/chap1 do NOT want large-GRF (forcing it costs 38% /
+11%), so the Phase 4 model is correct to leave them in the default allocation.  Details in
+`results.md`.
 
 
 There is currently NO NVIDIA profile anywhere, and the CUDA bench path cannot forward one:

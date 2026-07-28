@@ -442,3 +442,94 @@
           (format stream "~%   :selected-registers-per-thread ~s" chosen)))
       (format stream "))~%~%"))))
 
+
+;;; ===================================================================
+;;; ENDEAVOR 144 Phase 0 — BUILTIN hardware profiles (decision D2).
+;;;
+;;; topology.md has always advertised `bmg` as a Crisp-predefined profile.  That was
+;;; untrue: NOTHING was builtin, and the benchmark kernels each carried their own inline
+;;; 2-key `def-hardware-profile bmg`.  That drift is exactly how Phase 4's win reached only
+;;; ONE of the three BMG kernels — `matmul_bmg_prefetch.crisp` got
+;;; `:max-registers-per-thread (128 256)` and chap0 / chap1 did not, so those two kept
+;;; spilling (2560 B / 2752 B) and their numbers did not move.
+;;;
+;;; Both profiles are QUERIED, not spec-sheet — see results.md:
+;;;   bmg   — Level Zero zeDeviceGetProperties on an Arc B580 (2026-07-27)
+;;;   h100  — cudaGetDeviceProperties on an H100 PCIe on runpod (2026-07-28)
+;;;
+;;; A user's own `def-hardware-profile` with the same name still WINS: register-hardware-profile
+;;; simply setf-s the hash entry, and the current file's forms register after
+;;; initialize-compiler's clrhash.  So every existing spec that defines an inline `bmg`
+;;; keeps its exact previous behaviour and needs no edit.
+;;; ===================================================================
+
+;; src/mma.lisp  (piggybacked — see the note below)
+(defun register-builtin-hardware-profiles ()
+  "Endeavor 144 Phase 0 (D2): register Crisp's predefined hardware profiles.
+
+   Called from register-mma-types, which initialize-compiler invokes AFTER it clrhash-es
+   *hardware-profiles* (src/compiler.lisp:938 vs :1022) — so builtins survive the clear and
+   a same-named user profile still overrides them.
+
+   NOTE FOR THE SRC PATCH: this belongs as its own call in initialize-compiler next to
+   register-builtins; it is invoked from register-mma-types here only so the overlay does
+   not have to redefine the whole initialize-compiler function."
+  ;; Intel Arc B580 (Battlemage / Xe2).  Queried 2026-07-27.
+  ;; :max-registers-per-thread is the SELECTABLE-MODE list form (D4): Xe2's register file is
+  ;; a JIT-time choice — 128 GRF/thread default, 256 with -ze-opt-large-register-file, which
+  ;; halves threads-per-EU.  Phase 4's model picks between them from register demand.
+  (register-hardware-profile
+   'bmg
+   '(:simd-width 16                        ; subGroupSizes reports BOTH 16 and 32
+     :compute-units 20                     ; Xe-cores (5 slices x 4 subslices)
+     :max-registers-per-thread (128 256)   ; GRF registers (32 B each) — selectable modes
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 1024)
+     :max-shared-memory-per-block 128KB
+     :l2-cache-size 18MB
+     :native-cache-line-size 64            ; Xe2 LSC line; not queryable
+     :mma-shapes ((8 16 8))))              ; XMX tf32
+  ;; NVIDIA H100 PCIe (Hopper).  Queried 2026-07-28.
+  ;; :compute-units 114 is the PCIe part — the SXM is 132.  This value OVERRIDES the device
+  ;; SM query in the generated CUDA launch grid, so the variant distinction is load-bearing.
+  ;; :max-registers-per-thread is a SCALAR: NVIDIA's per-thread allocation is fixed at 255.
+  ;; :max-shared-memory-per-block is the OPT-IN cap (227KB), not the 48KB default — chap2 and
+  ;; chap3 both exceed 48KB.
+  ;; :mma-shapes MUST include (16 8 8): chap0/1/1.5/2 all pass that tf32 shape.  (wgmma's
+  ;; m64nNk8 family is validated by %check-wgmma-shape and does not consult this key.)
+  (register-hardware-profile
+   'h100
+   '(:simd-width 32
+     :compute-units 114
+     :max-registers-per-cu 65536
+     :max-registers-per-thread 255
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 64)
+     :max-shared-memory-per-block 227KB
+     :l2-cache-size 50MB
+     :native-cache-line-size 128
+     :mma-shapes ((16 8 8) (16 8 4) (16 8 16)))))
+
+;; src/mma.lisp
+(defun register-mma-types ()
+  "Registers the MMA register-fragment record types.  Called from initialize-compiler
+   AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every
+   init, so a load-time registration would not survive).
+
+   tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4
+   regs.  tf32 is fp32-stored, so all fragment fields are float.
+
+   Endeavor 144 Phase 0: also registers the BUILTIN hardware profiles, which must happen
+   after initialize-compiler's clrhash of *hardware-profiles* — this is the first hook that
+   runs there.  See register-builtin-hardware-profiles for the src-patch note."
+  (register-struct-definition 'register-fragment-acc-f32-16x8
+                              '((r0 float) (r1 float) (r2 float) (r3 float))
+                              :record)
+  (register-struct-definition 'register-fragment-a-tf32-16x8
+                              '((a0 float) (a1 float) (a2 float) (a3 float))
+                              :record)
+  (register-struct-definition 'register-fragment-b-tf32-8x8
+                              '((b0 float) (b1 float))
+                              :record)
+  (register-builtin-hardware-profiles))
+

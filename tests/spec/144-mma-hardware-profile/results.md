@@ -66,13 +66,148 @@ Note this contradicts the current 2-key inline `bmg` in
 `benchmarks/matmul/intel_prefetch/matmul_bmg_prefetch.crisp:1` only by ADDING keys — the
 two it sets (`:simd-width 16`, `:mma-shapes ((8 16 8))`) are both confirmed correct.
 
-### H100 — DEFERRED
+### H100 PCIe — queried 2026-07-28 on runpod
 
-Needs a runpod.io instance (user, 2026-07-27).  The Phase-0 NVIDIA half is blocked on it.
-Open question when we get there: [REPORT.md](../../../benchmarks/REPORT.md) says **H100
-PCIe** (114 SMs) but topology.md's example profile says `132`, which is the **SXM** part.
-Since `:compute-units` now overrides the device SM query in the CUDA launch grid, that
-distinction directly mis-sizes the grid if wrong — query it, don't assume.
+Queried with `put_temp_files_here/hw-profile-query/query_cuda.cu` (`cudaGetDeviceProperties`).
+**Measured, not spec-sheet.**  Confirms the PCIe part: **114 SMs**, not the 132 of topology.md's
+SXM example — and since `:compute-units` overrides the device SM query in the CUDA launch grid,
+that distinction would have mis-sized every grid.
+
+| Property | Value | Profile key |
+|---|---|---|
+| name / cc | NVIDIA H100 PCIe / sm_90 | — |
+| multiProcessorCount | **114** | `:compute-units` |
+| warpSize | 32 | `:simd-width` |
+| regsPerMultiprocessor | 65536 | `:max-registers-per-cu` |
+| maxThreadsPerBlock | 1024 | `:max-total-threads-per-block` |
+| maxThreadsDim | 1024 / 1024 / 64 | `:max-work-group-dims` |
+| sharedMemPerBlock | 49152 B (48 KB) | ← the DEFAULT, **not** the cap |
+| **sharedMemPerBlockOptin** | **232448 B (227 KB)** | `:max-shared-memory-per-block` |
+| l2CacheSize | 52428800 B (**50 MB**) | `:l2-cache-size` — Phase 1 depends on this |
+| totalGlobalMem | 79.2 GB | — |
+| concurrentKernels | 1 (a BOOLEAN, not a count) | reinforces the out-of-scope call |
+
+Not queryable, from the ISA: `:max-registers-per-thread` **255** (a SCALAR on NVIDIA per D4 —
+the list form is specifically for Intel's mode-selectable register file),
+`:native-cache-line-size` **128 B**.
+
+**Proposed `h100` builtin:**
+
+```lisp
+(def-hardware-profile h100
+  :simd-width 32
+  :compute-units 114                    ; PCIe.  SXM is 132 — do not copy topology.md's example
+  :max-registers-per-cu 65536
+  :max-registers-per-thread 255         ; architectural; scalar on NVIDIA (D4)
+  :max-total-threads-per-block 1024
+  :max-work-group-dims '(1024 1024 64)
+  :max-shared-memory-per-block 227KB    ; the OPT-IN cap, not the 48KB default
+  :l2-cache-size 50MB
+  :native-cache-line-size 128
+  :mma-shapes '((16 8 8) (16 8 4) (16 8 16)))   ; (16 8 8) MANDATORY — chap0/1/1.5/2 pass it
+```
+
+Toolchain note for future pod sessions: `nvcc` is NOT on `PATH`; it lives at
+`/usr/local/cuda/bin/nvcc`.
+
+
+Phase 0 — COMPLETE 2026-07-28
+-----------------------------
+
+### What landed
+
+- **Builtin profiles (D2).**  `bmg` and `h100` are now compiler builtins, registered from
+  `register-builtin-hardware-profiles` (called by `register-mma-types`, which
+  `initialize-compiler` invokes *after* its `clrhash` of `*hardware-profiles*`).  A user's
+  same-named `def-hardware-profile` still WINS, so every existing spec with an inline `bmg`
+  is unaffected and needed no edit.  topology.md's long-standing claim that `bmg` is
+  predefined is finally true.
+- **Inline copies removed** from all three BMG benchmark kernels.  That drift is exactly why
+  Phase 4's win initially reached only `intel_prefetch`.
+- **Bench driver wired.**  `NVIDIA_HW_PROFILE` / `INTEL_HW_PROFILE` constants replace three
+  hardcoded `"bmg"` literals and add the profile to the two NVIDIA compile sites
+  (matmul.py:178/179 autobench, :562 fixed-harness), which previously forwarded NO profile at
+  all — leaving five consumers dormant on that backend.
+
+### NVIDIA measurement: the profile is behaviourally NEUTRAL on the benchmark path
+
+Measured on the H100 PCIe pod, all five chapters:
+
+| Artifact | With vs without `--hardware-profile=h100` |
+|---|---|
+| `.ptx` (all 5 chapters) | **byte-identical** |
+| generated `_matmul_CUDA.cu` (chap0) | **byte-identical** |
+| `_numSMs` occurrences in the launcher | **0** |
+
+Mechanism: `:compute-units` only reaches the launcher through the `:strided` occupancy path,
+and the benchmark harness drives these kernels via `--mma-bench` / `--grid-tile`, which
+override the grid outright — so that code path is never emitted.  The other four consumers
+(workgroup bounds, SLM cap, mma-shape membership, register fit-check) are *validators*: they
+accept or reject, they never change codegen.  All five kernels pass them.
+
+**Consequence: a NVIDIA benchmark re-run would measure pure noise, so we did not spend pod
+time on one.**  If the compiled artifacts are identical, the numbers cannot move.
+
+So Phase 0's value on NVIDIA is (a) five dormant consumers now actively validating, (b) the
+wgmma occupancy diagnostic firing on chap3, and (c) unblocking Phase 1 (`:l2-cache-size`
+50 MB) and Phase 3 (`:max-registers-per-cu` 65536), which is where NVIDIA perf change will
+actually come from.
+
+### Intel: chap0/chap1 do NOT want large-GRF — the model is right to stay silent
+
+Both now resolve the full builtin `bmg` (with the `(128 256)` modes), yet neither triggers a
+mode change: their `32x32` C-tile is 1024 elements = **exactly 128** registers, equal to the
+default allocation, so `%spv-decide-register-mode` correctly says nothing.
+
+That looked like an undercount at first — both kernels measurably spill (2560 B / 2752 B) from
+transients the model does not track (SLM-staged operand fragments), so a naive reading says
+"they'd benefit from large-GRF too."  **Measured, they do not:**
+
+| Kernel @1024 | default | large-GRF forced | |
+|---|---:|---:|---|
+| `chap0_sync` | 1.66 TFLOPS | 1.03 | **−38%** |
+| `chap1_async_linear` | 0.95 TFLOPS | 0.85 | **−11%** |
+
+Large-GRF halves threads-per-EU, and these two are occupancy-bound (SLM staging, many
+threads) rather than register-bound like the register-resident prefetch kernel.  So:
+
+- The "free money" hypothesis from the previous session was **wrong**, and measuring first
+  avoided shipping a regression.
+- A global "always request large-GRF" flag would have cost chap0 **38%**.  The
+  demand-driven, compiler-computed decision (D4 / Phase 4) is vindicated — this is precisely
+  the case it exists to get right.
+- No model change is warranted.  Counting transients would push these two over 128 and
+  wrongly select the larger mode.
+
+### Regression: clean
+
+941/941 E2E, 253/253 unit, 210/210 negative — with the builtins live.  Confirmed no
+profile-name collisions: 130's negatives use `bogus` / `tiny` / `big` / `nomem` / `test-gpu`.
+
+
+### Pod run 2026-07-28 — 14 spec FAILURES, all environmental (NOT regressions)
+
+Every failing spec shares one directive: `COMPILE-WITH[… --ir-target=spv]`.  Root cause chain:
+
+1. `.gitignore` excludes `bin/` wholesale, so the 41 MB `llvm-spirv` translator is never
+   checked in and a fresh pod clone does not have it.
+2. `./bin/crisp-compile --ir-target=spv …` therefore dies with **exit 127** (command not found)
+   on the llvm-spirv invocation.  Confirmed directly on the pod.
+3. `run-spec-compile-with-pass` (run-specs.lisp:642) does **not** honor `SKIP_SPIRV_TESTS`,
+   unlike `run-single-spec-pass` (line 717) which does.  `SKIP_SPIRV_TESTS` was not set on the
+   pod either way.
+
+So SPV-targeted specs hard-FAIL on a CUDA-only box where they should SKIP.  This is the same
+defect as the remembered "BMG tests are somehow being run on NVIDIA" — SPV/Intel specs running
+where there is no SPIR-V toolchain.
+
+144/03 and 144/04 are in this set for exactly this reason, not because of a Phase 4 bug — both
+pass locally where `llvm-spirv` exists.
+
+**Recommended fix: auto-detect, not an env var.**  `COMPILE-WITH` / `EXPECT-STDERR` should SKIP
+a `--ir-target=spv` run when the translator is unavailable, the way L0-hoist specs skip without
+Level Zero and FFI specs skip without clang.  Auto-detection beats `SKIP_SPIRV_TESTS` because
+an env var must be remembered on every new pod; detection is self-correcting.
 
 
 FINDING — every BMG benchmark kernel spills registers

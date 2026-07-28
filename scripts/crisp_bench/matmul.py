@@ -25,6 +25,19 @@ from harness import BenchmarkSweep, SweepPoint, BenchmarkMetrics, CompileTimeMet
 HERE = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "matmul"
 import platform as _platform
 
+# Endeavor 144 Phase 0 — the Crisp hardware profile forwarded to every device compile.
+#
+# Both names are compiler BUILTINS (decision D2), queried from real devices rather than spec
+# sheets, so nothing needs to define them in a .crisp file.  Named constants rather than
+# literals-at-each-call-site on purpose: the Intel path used to hardcode "bmg" at three
+# separate places while each benchmark kernel ALSO carried its own inline definition, and that
+# drift is why Phase 4's large-GRF win initially reached only one of the three BMG chapters.
+#
+# The NVIDIA path previously forwarded NO profile at all — it passed only
+# --ir-target-arch=sm_90 — so five profile consumers sat dormant on that backend.
+NVIDIA_HW_PROFILE = "h100"     # H100 PCIe: 114 SMs (the SXM part is 132)
+INTEL_HW_PROFILE  = "bmg"      # Arc B580 (Xe2)
+
 # Hardware metadata stamped into every BenchmarkSweep's run_metadata.  Set by main() from
 # --platform so the JSON is tagged per platform (report.py groups by hardware.gpu_model).
 # Endeavor 143: the Intel path runs inside the bench Docker container on a BMG.
@@ -175,8 +188,8 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
     # PRECISION flags change the kernel, so run_autobench_sweep clears the metacrisp between
     # precisions, forcing a fresh compile+hoist for each precision's first size.
     if not (ptx.exists() and metacrisp.exists()):
-        sh([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", *prec_flags, "--log-level=off", str(src_path)], check=True)
-        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90", *prec_flags, "--log-level=off", str(src_path)], check=True)
+        sh([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)], check=True)
+        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)], check=True)
     if not metacrisp.exists():
         print(f"autobench: no metacrisp {metacrisp}", file=sys.stderr); return None
     sh([_hoist_cuda_bin(crisp_compiler), f"--mma-bench={M},{N},{K}", f"--grid-tile={grid_tile}", str(metacrisp)])
@@ -266,8 +279,8 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     compile_ms = 0.0
     hoist_ms = 0.0
     if not (spv.exists() and metacrisp.exists()):
-        compile_ms = time_compile([crisp_compiler, "--ir-target=spv", "--hardware-profile=bmg", *prec_flags, "--log-level=off", str(src_path)])
-        hoist_ms = time_compile([crisp_compiler, "--hoist=l0", "--hardware-profile=bmg", *prec_flags, "--log-level=off", str(src_path)])
+        compile_ms = time_compile([crisp_compiler, "--ir-target=spv", f"--hardware-profile={INTEL_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)])
+        hoist_ms = time_compile([crisp_compiler, "--hoist=l0", f"--hardware-profile={INTEL_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)])
     if not metacrisp.exists():
         print(f"autobench-l0: no metacrisp {metacrisp}", file=sys.stderr); return None
     
@@ -405,7 +418,7 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
                            competitor=comp_name, precision=precision,
                            denormal_handling="ftz" if ftz else "preserve", results=[])
     try:
-        dev_c_ms = time_compile([crisp_compiler, "--ir-target=spv", "--hardware-profile=bmg",
+        dev_c_ms = time_compile([crisp_compiler, "--ir-target=spv", f"--hardware-profile={INTEL_HW_PROFILE}",
                                  *prec_flags, "--log-level=off", str(src)])
     except subprocess.CalledProcessError:
         print(f"l0-fixed: crisp-compile failed for {src.name}", file=sys.stderr); return empty
@@ -559,7 +572,7 @@ def main():
                 # ieee, so we must pass them or Crisp competes at IEEE vs fast-math cuBLAS).
                 crisp_prec = [f"--math-precision={prec}",
                               f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
-                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", *crisp_prec, "--log-level=off", str(src_path)])
+                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *crisp_prec, "--log-level=off", str(src_path)])
                 all_c_ms = dev_c_ms # Harness adds driver_jit later
                 if crisp_grid_tile:
                     # Advanced kernel (TMA / rings / wgmma): the fixed-layout bench_harness.cu
