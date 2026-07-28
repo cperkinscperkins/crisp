@@ -431,12 +431,88 @@ the modes and no selection happens.  Per D2 the durable fix is a **builtin** `bm
 (Phase 0's remaining Intel half); this inline key is the interim.
 
 
-Phase 1 prerequisite — tile-stride order-dependence survey
-----------------------------------------------------------
+Phase 1 — IMPLEMENTED 2026-07-28.  It removes an L2 CLIFF.
+---------------------------------------------------------
+
+### The headline
+
+Linear tile order has a **performance cliff** when the problem outgrows L2.  Grouping removes
+it.  B580, `intel_prefetch`, tf32/fast, `MMA_CORRECT` throughout:
+
+| Size | working set | linear | grouped (W=4) | |
+|---|---|---:|---:|---|
+| 1024 | 12.6 MB — **fits** 18 MB L2 | 23.63 TFLOPS | 23.18 | −1.9% |
+| 2048 | 50 MB — **exceeds** L2 | **17.16** | **27.96** | **+63%** |
+
+Read the columns vertically: under **linear**, going 1024 → 2048 makes the kernel *slower*
+(23.6 → 17.2) even though a bigger GEMM has strictly better arithmetic intensity — that is the
+cliff, the moment A/B stop being re-read from L2.  Under **grouped** the scaling is restored
+(23.2 → 28.0).  Phase 1 is not a few-percent tuning win; it is the difference between having
+that cliff and not.
+
+### Width sweep at 2048 — the win is essentially BINARY
+
+| W | 1 (linear) | 2 | 4 | 8 | 16 |
+|---|---:|---:|---:|---:|---:|
+| TFLOPS | 17.14 | 27.62 | 27.89 | 26.87 | 28.05 |
+
+Any `W >= 2` captures nearly all of it: grouped-vs-linear is worth ~60%, the width *within*
+2..16 only ~4%.  W=8 sits in a reproducible local dip (confirmed at 1024 too: W=4 23.2 vs
+W=8 22.4), so `*tile-visit-max-strip-width*` was moved from 8 to **4**.
+
+**This inverts the theory-first conclusion.**  Before measuring, the algebra said the optimal
+width is `sqrt(R · tile_M / tile_N)` with R the resident block count — i.e. that Phase 1 needed
+Phase 3's occupancy model to pick W properly.  Measured, the width barely matters; only
+*engaging at all* does.  So Phase 3 is a refinement of Phase 1, **not** a prerequisite.
+
+### Implementation
+
+`%expand-tile-stride-form` now chooses between the untouched linear expansion and
+`%expand-tile-stride-swizzled`.  The swizzled form replaces the per-axis nest with ONE
+grid-strided loop over the flat tile index, delinearized through a W-wide column strip
+(`tpg = W·nt_rows`, `grp = tid/tpg`, `gc = min(W, nt_cols − grp·W)`, `row = idg/gc`,
+`col = grp·W + idg mod gc`).
+
+That mapping is a **bijection** over `[0, nt_rows·nt_cols)`, which is why coverage survives any
+grid size — including oversubscribed or under-dispatched ones, where the cheaper "swizzle the
+per-axis start" trick would double-visit or miss tiles.  Bijectivity holds because every strip
+but the last has exactly `tpg` tiles and the partial strip is last, so `tid/tpg` never
+mis-assigns.
+
+Scope: rank-2 `tile-stride` with a compile-time `(M N)` size-list and an active profile
+supplying `:l2-cache-size`.  Everything else falls through to the original expansion, which is
+why this hooks the short `%expand-tile-stride-form` rather than rewriting the 100-line loop
+builder.  Per D1 there is NO new kernel syntax; `CRISP_TILE_VISIT=linear|grouped|grouped:N` is
+the bisect/sweep hatch and should graduate to `--tile-visit=`.
+
+### Known cost, stated plainly
+
+Grouping costs ~2% when the working set already fits L2, and the compiler cannot know the
+runtime problem size, so that is unavoidable without a runtime switch.  Net strongly positive
+(−2% below the cliff, +63% above it), but it is a real trade, not free.
+
+### Regression: clean
+
+941/941 E2E, 253/253 unit, 210/210 negative — with the swizzle live, which changes the emitted
+loop for every rank-2 tile-stride kernel under a profile.  Notably that includes the on-metal
+BMG `MMA_CORRECT` specs (133/10-12, 135/04, 135/08, 135/09, 142/01, 142/12), so the reordering
+is hardware-verified correct, not merely compile-clean.
+
+### Methodology note — a bogus first sweep, and why
+
+The first sweep reported 26.8–27.0 TFLOPS for *every* setting including linear, i.e. "the
+swizzle does nothing."  Cause: `crisp-compile` resolves `bin/LLVM-C.dll` **relative to CWD**, so
+every compile I ran from inside the chapter directory died before doing anything and I
+re-measured one stale `.spv` five times.  It looked like a plausible negative result.
+
+Two lessons worth keeping: **check the compiler's exit status** (stderr had been sent to
+/dev/null), and **hash artifacts against a known-different control** — the identical md5s were
+the tell, and chasing them is what exposed it.  The `tile-visit:` log line now makes the
+decision visible so this cannot masquerade as a measurement again.
 
 
-Phase 1 prerequisite — tile-stride order-dependence survey
-----------------------------------------------------------
+Phase 1 prerequisite — tile-stride order-dependence survey (done 2026-07-27)
+---------------------------------------------------------------------------
 
 Phase 1 reorders `tile-stride`'s workgroup→tile mapping.  That is within the macro's
 contract (coverage, not order — decision D1), but a body whose writes are NOT a pure

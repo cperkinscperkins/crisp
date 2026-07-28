@@ -160,7 +160,22 @@ There is currently NO NVIDIA profile anywhere, and the CUDA bench path cannot fo
 - **Regression gate:** full spec + negative + unit suites here, not just at the end.
   Baseline from 143: 936/936 E2E, 253 unit, 209 negative.
 
-### [ ] Phase 1 — `:l2-cache-size` → grouped tile visit order (finding #3)
+### [x] Phase 1 — `:l2-cache-size` → grouped tile visit order  DONE 2026-07-28
+
+RESULT: **+63% at 2048 on BMG** (17.16 → 27.96 TFLOPS), MMA_CORRECT.  It removes an L2 CLIFF —
+under linear order the kernel gets *slower* from 1024 to 2048 (23.6 → 17.2) despite better
+arithmetic intensity; grouped restores the scaling (23.2 → 28.0).  Costs ~2% at sizes that
+already fit L2, which is unavoidable without runtime size knowledge.
+
+Width sweep says the win is essentially BINARY (any W>=2 captures ~60%; width within 2..16 is
+worth ~4%), so **Phase 3 is a refinement here, not a prerequisite** — the opposite of what the
+theory predicted.  Clamp fitted to 4.  Implemented as a bijective linearize→strip→delinearize
+mapping so coverage holds for any grid.  Details + the methodology post-mortem in `results.md`.
+
+Still open: confirm on H100 (more SMs ⇒ larger resident set ⇒ possibly a wider strip), and
+graduate `CRISP_TILE_VISIT` to a real `--tile-visit=` flag.
+
+### [~] Phase 1 (original plan text, kept for the record)
 
 Per D1: implicit, profile-gated, inside `tile-stride`.  Derive strip width from L2 bytes,
 tile bytes, and resident-block count.

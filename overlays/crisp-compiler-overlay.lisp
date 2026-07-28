@@ -533,3 +533,244 @@
                               :record)
   (register-builtin-hardware-profiles))
 
+
+;;; ===================================================================
+;;; ENDEAVOR 144 Phase 1 — L2-aware tile VISIT ORDER inside tile-stride.
+;;;
+;;; WHAT.  `tile-stride` currently maps workgroups to output tiles per-axis and
+;;; independently: start_i = get-workgroup-id(i), stride_i = get-num-groups(i).  With an exact
+;;; tile cover that is a row-major walk, so the workgroups resident at any instant span ONE
+;;; row-band of C — they share an A row-block but collectively stream ALL of B.  Grouping the
+;;; walk into column strips of width W makes the resident set a W-wide, (R/W)-tall
+;;; NEIGHBOURHOOD, which re-reads A and B out of L2 instead of HBM.
+;;;
+;;; DECISION D1: no user-facing key.  `tile-stride`'s contract is COVERAGE, NOT ORDER — it
+;;; promises every tile is visited, never that consecutive workgroups get consecutive tiles —
+;;; so reordering is inside the existing contract.  The A/B switch is `--hardware-profile`
+;;; itself (no profile -> no :l2-cache-size -> linear).  A survey of all 64 tile-stride kernels
+;;; found ZERO order-dependence (exact set intersection with atomic-using kernels is empty).
+;;;
+;;; THE MAPPING (a bijection, so coverage is preserved exactly).  Linearize the workgroup id,
+;;; grid-stride over the FLAT tile count, then delinearize through the strip:
+;;;     tpg = W * nt_rows                      tiles per full strip
+;;;     grp = tid / tpg ;  idg = tid mod tpg
+;;;     fc  = grp * W                          first column of this strip
+;;;     gc  = min(W, nt_cols - fc)             the LAST strip may be narrower
+;;;     row = idg / gc ;  col = fc + (idg mod gc)
+;;; Bijectivity holds because every strip but the last has exactly tpg tiles and the partial
+;;; strip is last, so `tid / tpg` never mis-assigns.  (Worked example: nt=(3 rows,5 cols),
+;;; W=2 -> strips of 6,6,3 tiles = 15 = 3*5, each tile hit once.)
+;;;
+;;; SCOPE.  Rank-2 tile-stride with a compile-time `(M N)` size-list only.  Anything else
+;;; (rank != 2, a tile-TENSOR spec whose extents are runtime) falls through to the untouched
+;;; linear expansion — which is also why this is a hook on the short %expand-tile-stride-form
+;;; rather than a rewrite of the 100-line loop builder.
+;;; ===================================================================
+
+;; src/compiler.lisp
+(defparameter *tile-visit-max-strip-width* 4
+  "Endeavor 144 Phase 1: ceiling on the derived strip width.
+
+   MEASUREMENT-FITTED, not derived.  Swept on a B580 at 2048 (working set 50 MB vs 18 MB L2),
+   TFLOPS: linear 17.1, W=2 27.6, W=4 27.9, W=8 26.9, W=16 28.0.  So (a) essentially the WHOLE
+   win is captured by any W >= 2 — the grouped/linear distinction is worth ~60%, the width
+   within 2..16 only ~4% — and (b) W=8 sits in a reproducible local dip, confirmed at 1024 too
+   (W=4 23.2 vs W=8 22.4).  Hence 4 rather than the 8 this started at.
+
+   Because the win is essentially BINARY (grouped at all vs not), Phase 3's occupancy-derived
+   width would be a refinement, NOT a prerequisite — which is the opposite of what the
+   theory-first analysis suggested.  Re-check the clamp on H100: more SMs means a larger
+   resident set, which may prefer a wider strip.")
+
+;; src/compiler.lisp
+(defun %tile-visit-override ()
+  "Endeavor 144 Phase 1: read the CRISP_TILE_VISIT escape hatch.  Returns :linear (force the
+   old order), an INTEGER (force that strip width), or NIL (derive it).
+
+   Per decision D1 the escape hatch is a compiler-level knob, never kernel syntax — a kernel
+   must not encode a machine-tuning constant.  It is an env var rather than a CLI flag only
+   because that needs no main.lisp surgery; it should GRADUATE to `--tile-visit=linear|grouped|grouped:N`
+   once the width formula settles.  Its real job right now is sweeping W empirically so the
+   formula can be fitted to measurements instead of guessed."
+  (let ((v (uiop:getenv "CRISP_TILE_VISIT")))
+    (when (and v (plusp (length v)))
+      (let ((s (string-downcase v)))
+        (cond
+          ((string= s "linear") :linear)
+          ((string= s "grouped") nil)                  ; derive
+          ((and (> (length s) 8) (string= (subseq s 0 8) "grouped:"))
+           (let ((n (ignore-errors (parse-integer (subseq s 8)))))
+             (if (and n (plusp n)) n :linear)))
+          (t nil))))))
+
+;; src/compiler.lisp
+(defun %tile-visit-strip-width (n tile-sizes)
+  "Endeavor 144 Phase 1: the column-strip width for a rank-N tile-stride whose tile is
+   TILE-SIZES.  1 means 'walk linearly' (the caller then emits the untouched expansion).
+
+   Gates: rank exactly 2, all tile dims compile-time integers, an active profile that supplies
+   :l2-cache-size, and the whole thing overridable via CRISP_TILE_VISIT.
+
+   WIDTH FORMULA — HONEST STATUS.  The theoretically right width comes from the RESIDENT block
+   count R and the tile aspect ratio: minimizing the concurrent footprint
+   (H*tile_M + W*tile_N)*K subject to H*W = R gives W = sqrt(R * tile_M / tile_N).  R is
+   exactly what endeavor 144 PHASE 3 computes (:max-registers-per-cu + SLM + local-size), so
+   this function is deliberately the ONE place that has to change when Phase 3 lands.
+   Until then it uses the cache-capacity proxy sqrt(L2 / tile-bytes), clamped — which on both
+   current targets saturates at the clamp (BMG 18MB/4KB -> 67; H100 50MB/16KB -> 56), i.e.
+   today it is effectively 'the clamp'.  That is why the CRISP_TILE_VISIT sweep exists: measure
+   the curve first, then fit."
+  (let ((override (%tile-visit-override)))
+    (cond
+      ((eq override :linear) 1)
+      ((integerp override) override)
+      ((/= n 2) 1)
+      ((not (and (listp tile-sizes) (= (length tile-sizes) 2)
+                 (every (lambda (x) (and (integerp x) (plusp x))) tile-sizes)))
+       1)
+      (t
+       (let* ((profile (active-hardware-profile))
+              (l2      (and profile (getf profile :l2-cache-size))))
+         (if (not (and l2 (plusp l2)))
+             1
+             (let* ((tile-bytes (* (first tile-sizes) (second tile-sizes) 4))
+                    (w (isqrt (max 1 (floor l2 (max 1 tile-bytes))))))
+               (max 1 (min *tile-visit-max-strip-width* w)))))))))
+
+
+;; src/analysis/control.lisp
+(defun %expand-tile-stride-swizzled (tensor-form bindings body-forms ts-syms
+                                     tile-size-expr-fn strip-width location)
+  "Endeavor 144 Phase 1: the GROUPED (column-strip) rank-2 tile-stride expansion.
+
+   Replaces the per-axis nest with ONE grid-strided loop over the flat tile index, then
+   delinearizes through a STRIP-WIDTH-wide column strip.  See the header block for the mapping
+   and its bijectivity argument; because the map is a bijection over [0, nt_rows*nt_cols) and
+   the loop grid-strides that flat range, coverage is exactly preserved for ANY grid size —
+   including an oversubscribed or under-dispatched one, where a naive 'swizzle the per-axis
+   start' would double-visit or miss tiles."
+  (declare (ignore location))
+  (let* ((cl-pkg (find-package :crisp-language))
+         (let-sym      (intern "LET" cl-pkg))
+         (declare-sym  (intern "DECLARE" cl-pkg))
+         (wg-level-sym (intern "WORKGROUP-LEVEL" cl-pkg))
+         (dotimes-sym  (intern "DOTIMES" cl-pkg))
+         (progn-sym    (intern "PROGN" cl-pkg))
+         (aref-sym     (intern "~" cl-pkg))
+         (extents-sym  (intern "EXTENTS~" cl-pkg))
+         (wgid-sym     (intern "GET-WORKGROUP-ID" cl-pkg))
+         (numgrp-sym   (intern "GET-NUM-GROUPS" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+         (if-sym       (intern "IF" cl-pkg))
+         (lt-sym       (intern "<" cl-pkg))
+         (plus-sym     (intern "+" cl-pkg))
+         (minus-sym    (intern "-" cl-pkg))
+         (mul-sym      (intern "*" cl-pkg))
+         (div-sym      (intern "/" cl-pkg))
+         (rem-sym      (intern "REM" cl-pkg))
+         (t-sym    (gensym "TSW"))
+         (e0 (gensym "E0")) (e1 (gensym "E1"))
+         (nt0 (gensym "NT0")) (nt1 (gensym "NT1"))
+         (total (gensym "TOTAL")) (lwg (gensym "LWG")) (nwg (gensym "NWG"))
+         (iters (gensym "ITERS")) (k (gensym "K")) (tid (gensym "TID"))
+         (wsym (gensym "W")) (tpg (gensym "TPG"))
+         (grp (gensym "GRP")) (idg (gensym "IDG"))
+         (fc (gensym "FC")) (gc (gensym "GC"))
+         (row-sym (first bindings)) (col-sym (second bindings))
+         (ts0 (first ts-syms)) (ts1 (second ts-syms))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms))))
+    (list let-sym
+          (list
+           (list t-sym tensor-form)
+           (list ts0 (funcall tile-size-expr-fn 0))
+           (list ts1 (funcall tile-size-expr-fn 1))
+           (list e0 (list aref-sym (list extents-sym t-sym) 0))
+           (list e1 (list aref-sym (list extents-sym t-sym) 1))
+           ;; nt_i = ceil(e_i / ts_i) — tile ROWS and tile COLS of the output
+           (list nt0 (list div-sym (list plus-sym e0 (list minus-sym ts0 (list to-ulong-sym 1))) ts0))
+           (list nt1 (list div-sym (list plus-sym e1 (list minus-sym ts1 (list to-ulong-sym 1))) ts1))
+           (list total (list mul-sym nt0 nt1))
+           ;; Flatten the workgroup id and the grid, so one loop grid-strides the flat tile range.
+           (list lwg (list plus-sym
+                           (list mul-sym (list wgid-sym 1) (list numgrp-sym 0))
+                           (list wgid-sym 0)))
+           (list nwg (list mul-sym (list numgrp-sym 0) (list numgrp-sym 1)))
+           (list iters (%build-exact-iter-count-form lwg nwg total cl-pkg)))
+          (list declare-sym (list wg-level-sym))
+          (list dotimes-sym (list k iters)
+                (list let-sym (list (list tid (list plus-sym lwg (list mul-sym k nwg)))
+                                    (list wsym (list to-ulong-sym strip-width)))
+                      (list let-sym (list (list tpg (list mul-sym wsym nt0)))
+                            (list let-sym (list (list grp (list div-sym tid tpg))
+                                                (list idg (list rem-sym tid tpg)))
+                                  (list let-sym (list (list fc (list mul-sym grp wsym)))
+                                        ;; gc = min(W, nt1 - fc): the final strip may be narrower.
+                                        (list let-sym
+                                              (list (list gc (list if-sym
+                                                                   (list lt-sym (list minus-sym nt1 fc) wsym)
+                                                                   (list minus-sym nt1 fc)
+                                                                   wsym)))
+                                              (list let-sym
+                                                    (list (list row-sym (list div-sym idg gc))
+                                                          (list col-sym (list plus-sym fc (list rem-sym idg gc))))
+                                                    inner-body))))))))))
+
+;; src/analysis/control.lisp
+(defun %expand-tile-stride-form (expr ct location)
+  "Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
+   Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the
+   body to rewrite bare load-tile / store-tile into their -coords forms using
+   the tile-stride's binding syms as the origin.
+
+   Endeavor 144 Phase 1: when the visit order should be GROUPED (rank 2, compile-time tile
+   size-list, an active profile with :l2-cache-size — see %tile-visit-strip-width), emit the
+   L2-aware column-strip walk instead.  Everything else takes the original linear expansion
+   completely unchanged."
+  (declare (ignore ct))
+  (multiple-value-bind (strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)
+      (%tile-stride-parse expr)
+    (declare (ignore strict-p layout-tag))
+    (unless (and (listp bindings)
+                 (every #'symbolp bindings)
+                 (>= (length bindings) 1))
+      (error 'crisp-compiler-error
+        :message "Malformed tile-stride: expected (tile-stride TENSOR [LAYOUT-TAG] <TILE-SPEC> (BINDING ...) BODY...)"
+        :source-location location))
+    (let* ((n (length bindings))
+           (cl-pkg (find-package :crisp-language))
+           (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+           (ts-syms (loop for i from 0 below n
+                          collect (gensym (format nil "TS~A" i))))
+           (tile-size-expr-fn
+            (ecase tile-spec-kind
+              (:size-list
+               (let ((sizes tile-spec))
+                 (lambda (k) (list to-ulong-sym (nth k sizes)))))
+              (:tile-tensor
+               (let ((tile-form tile-spec))
+                 (lambda (k)
+                   (list aref-sym (list extents-tilde-sym tile-form) k))))))
+           (strip-width (%tile-visit-log-decision
+                         n tile-spec-kind tile-spec
+                         (%tile-visit-strip-width
+                          n (when (eq tile-spec-kind :size-list) tile-spec)))))
+      (if (> strip-width 1)
+          (%expand-tile-stride-swizzled tensor-form bindings body-forms ts-syms
+                                        tile-size-expr-fn strip-width location)
+          (%expand-workgroup-strided-outer-loop-with-ts-syms
+           tensor-form n bindings body-forms ts-syms tile-size-expr-fn location)))))
+
+;; src/analysis/control.lisp
+;; Endeavor 144 Phase 1 — visibility on the visit-order decision.  Logged (log4cl, so it
+;; costs nothing at --log-level=off) because "did the swizzle actually engage?" is otherwise
+;; invisible: the choice leaves no trace in the kernel source and only a subtle one in the IR.
+(defun %tile-visit-log-decision (n tile-spec-kind tile-spec strip-width)
+  "Report the tile visit-order decision for one tile-stride expansion."
+  (log:info "tile-visit: rank=~a spec-kind=~a spec=~a -> strip-width=~a (~a)"
+            n tile-spec-kind tile-spec strip-width
+            (if (> strip-width 1) "GROUPED" "linear"))
+  strip-width)
