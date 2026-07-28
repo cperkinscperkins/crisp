@@ -1,0 +1,49 @@
+;; COMPILE-WITH[--hardware-profile=bmgmodes --ir-target=spv]: PASS
+;; EXPECT-STDERR[--hardware-profile=bmgmodes --ir-target=spv]: "SPILL in any mode"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "forward-only MMA"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; Endeavor 144 Phase 4 — demand beyond EVERY selectable register-file mode.
+;;
+;; C-tile 64x64 = 4096 elements -> 4096/8 = 512 registers/thread, above both of this
+;; profile's allocations (128, 256).  No mode can hold it, so the compiler WARNS that the
+;; kernel will spill whichever mode is chosen, and names the remedies (smaller tile,
+;; shallower ring, or distribute across more warps via :warps).
+;;
+;; It WARNS rather than ERRORS deliberately (endeavor 144 decision D3): spilling is legal
+;; and sometimes the right trade — it is a performance fact, not a correctness bound — so
+;; this must never break a kernel that works.  The compiler still picks the largest mode,
+;; which is strictly the best available choice.
+;;
+;; This is the diagnostic that was entirely missing before Phase 4: the three shipped BMG
+;; benchmark kernels spilled silently, and the only symptom was the L0 hoist's runtime
+;; `spillMemSize > 0` 2x occupancy derate firing host-side, after the fact.
+
+(def-hardware-profile bmgmodes
+  :simd-width 16
+  :mma-shapes ((8 16 8))
+  :max-registers-per-thread (128 256))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul_grf_over (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one sub-group
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))   ; 4096 elements -> 512 regs/thread
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0))
+        (fill-tile C-tile 0.0))
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

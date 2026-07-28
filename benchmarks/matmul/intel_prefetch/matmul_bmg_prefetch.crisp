@@ -1,4 +1,4 @@
-(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)) :max-registers-per-thread (128 256))
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))

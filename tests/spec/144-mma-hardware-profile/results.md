@@ -115,6 +115,162 @@ probe, plus `_hw_threads` recovering 640 → 1280.  Recommend promoting the prob
 `scripts/` since it is a reusable oracle for that phase.
 
 
+Phase 4 — BEFORE/AFTER: large-GRF eliminates the spill (measured 2026-07-27)
+---------------------------------------------------------------------------
+
+### Theory
+
+`intel_prefetch` at `local-size 16` (one SIMD16 subgroup) holds, per lane:
+
+| Tile | Shape | floats/lane |
+|---|---|---:|
+| `C-tile` | 32×32 register tile | 1024/16 = **64** |
+| `A-ring` | 2 × (32×8) | 512/16 = **32** |
+| `B-ring` | 2 × (8×32) | 512/16 = **32** |
+| | | **128 floats/lane** |
+
+On Xe2 a GRF register is 32 B, so one float-per-lane across a SIMD16 subgroup is
+16 × 4 = 64 B = **2 GRF registers**.  128 × 2 = **256 GRF registers required** — against
+**128** in IGC's default mode.  Exactly 2x over, and exactly what large-GRF mode (256)
+provides.
+
+### Test 1 — does the mode fix the spill?  YES, all three kernels
+
+Same `.spv`, rebuilt under each IGC register-file mode via `kernel-probe.cpp`:
+
+| Kernel | default (128 GRF) | `-ze-opt-large-register-file` |
+|---|---:|---:|
+| `intel_prefetch` | 1792 B | **0 B** |
+| `chap0_sync` | 2560 B | **0 B** |
+| `chap1_async_linear` | 2752 B | **0 B** |
+
+### Test 2 — does it make it FASTER?  YES, 1.5–2x
+
+Hoist-generated launcher (`--mma-test=S,S,S --mma-bench=100`), patched only to read IGC
+build flags from `CRISP_L0_BUILD_FLAGS`.  **Same kernel, same .spv, same binary, same
+grid, same iteration counts — only `pBuildFlags` differs.**
+
+| Size | default | large-GRF | speedup | correctness |
+|---|---:|---:|---:|---|
+| 256 | 2.52 TFLOPS (13.31 µs) | **4.08 TFLOPS** (8.22 µs) | **1.62x** | MMA_CORRECT both |
+| 512 | 9.06 TFLOPS (29.64 µs) | **14.03 TFLOPS** (19.14 µs) | **1.55x** | MMA_CORRECT both |
+| 1024 | 11.61 TFLOPS (184.91 µs) | **24.01 TFLOPS** (89.44 µs) | **2.07x** | MMA_CORRECT both |
+
+**Confound ruled out:** the generated launcher for this kernel uses 143's *exact tile cover*
+(`_gx = ceil(c_ext0/32)`, `_gy = ceil(c_ext1/32)`) — it never queries `spillMemSize` and
+never applies the occupancy derate.  So the grid is identical in both runs and the gain is
+attributable to spill elimination alone, not to a changed dispatch.
+
+### Caveats — read before quoting these numbers
+
+- **The RATIO is solid; the ABSOLUTE numbers are not directly comparable to REPORT.md.**  My
+  default-mode 1024 reading is 11.61 TFLOPS where REPORT.md records 10.36, because the
+  official driver uses `scaled_counts` warmup/iters and I used a fixed 100.  Trust the 1.5–2x;
+  re-derive the absolutes from a real `scripts/crisp_bench/matmul.py` run.
+- **24 TFLOPS would be ~2x oneMKL's 11.98 at 1024.**  That is a large claim and it is NOT
+  confirmed yet.  It is not *implausible* — B580 tf32 peak is well above this, so 24 TFLOPS
+  is a plausible fraction of peak, and oneMKL's tf32 path on consumer Battlemage may simply
+  be immature — but an official head-to-head run is required before we put it in REPORT.md.
+- **Large-GRF is not free.** It halves threads/EU (8 → 4), so it trades occupancy for
+  registers.  It wins here because this kernel was spilling; it would LOSE on a
+  low-register-pressure kernel.  That is precisely why the decision must be
+  compiler-computed from register demand, not a global flag.
+
+### Consequence for the phase
+
+The mechanism was proven end-to-end BEFORE any compiler code was written.  Phase 4's job was
+then well-defined: compute per-thread GRF demand, compare against the profile's budget, and
+select the register-file mode — carrying the choice through the metacrisp so the hoist emits
+`pBuildFlags` (was hardcoded `nullptr` at hoist-l0/main.lisp:458).
+
+
+Phase 4 — IMPLEMENTED 2026-07-27
+--------------------------------
+
+Four steps, all landed as overlay appends:
+
+1. **Schema (D4).**  `:max-registers-per-thread` now takes a scalar OR an ascending list of
+   selectable modes (`:pos-int-or-modes`).  Accessors `%hp-register-modes` /
+   `%hp-registers-per-thread-default` / `%hp-registers-per-thread-max`; both pre-existing
+   consumers (`%register-tile-fit-check`, `%wgmma-acc-fit-check`) were switched to the
+   accessor so a list value cannot break them.
+2. **Accounting.**  Tallied in `analyze-make-register-fragment`, because
+   `%explode-register-tiles` already emits one fragment per slot *per ring slot* and already
+   divides by participating warps — so per-thread demand falls out exactly, ring depth and
+   `:warps` distribution included, without redefining the 90-line explosion.  Keyed on
+   (kernel . source-location) and **assigned, not incremented**, so multipass re-analysis is
+   idempotent.  Units: elements × 4 B / 32 B per GRF register.
+3. **Metacrisp.**  `:selected-registers-per-thread` rides inside the existing
+   `(:hardware-profile …)` form — `parse-metacrisp-file`'s cond silently DROPS unknown
+   top-level forms, so a new form would need a reader change while the profile plist already
+   passes through whole.  The value is the MAX over the module's kernels, which is exact
+   rather than approximate: IGC's register mode is a per-MODULE build flag.
+4. **Hoist.**  `generate-module-loading` emits `pBuildFlags` when the selected allocation
+   exceeds the profile's default mode.
+
+### Verified: the compiler derives the same number three independent ways agreed on
+
+| Kernel | hand-computed | compiler | IGC evidence |
+|---|---:|---:|---|
+| `intel_prefetch` | 256 | **256** | spills at 128, clean at 256 |
+
+### END-TO-END perf, no manual patching anywhere
+
+Compile → hoist → build → run, with the compiler choosing the mode:
+
+| Size | before (default GRF) | after (compiler-selected) | speedup |
+|---|---:|---:|---:|
+| 256 | 2.52 TFLOPS | **4.08** | 1.62x |
+| 512 | 9.06 TFLOPS | **14.03** | 1.55x |
+| 1024 | 11.61 TFLOPS | **23.33** | **2.01x** |
+
+All `MMA_CORRECT`.  Reproduces the manual A/B (4.08 / 14.03 / 24.01) within run-to-run
+variance, confirming the compiler-driven path and the hand experiment agree.
+
+### A real model flaw caught by the tests (worth recording)
+
+The first spec run reported **272** registers for a 32×64 tile instead of 256 — one extra
+8×16 fragment.  Cause: `%emit-per-frag-fill` expands `fill-tile` into a `set!` of every
+fragment the tile ALREADY owns, and each `set!` re-enters `make-register-fragment`.  Those
+allocate nothing, so counting them charged a tile extra registers merely for being filled.
+
+Two things worth noting.  First, the over-count was only **+1** fragment rather than +16
+because all sixteen synthesized forms share one source location and collapsed into a single
+hash entry — i.e. the idempotence keying accidentally masked most of the error, which is
+exactly the kind of thing that hides a modelling bug.  Second, the measured kernel was
+unaffected (`intel_prefetch` has no `fill-tile`), so the validated 256 was never wrong —
+the flaw only showed on kernels that fill.
+
+Fixed properly rather than by adjusting the expectation: fill-emitted fragments are tagged
+`:tally nil` and the analyzer skips them.  Post-fix all three kernels report their exact
+hand-computed values (256 / 512 / 256 unchanged).
+
+### Tests
+
+- `03-grf-selects-large-mode.crisp` — 32×64 tile → 256 regs → selects the larger mode.
+- `04-grf-exceeds-every-mode.crisp` — 64×64 tile → 512 regs → warns (spills in any mode).
+- `errors/01-register-modes-descending.crisp` — descending mode list is a definition error.
+
+### Regression: clean
+
+| Suite | Result | Baseline |
+|---|---|---|
+| E2E specs | **941/941** | 936 + 5 new |
+| Unit | **253/253** | 253 |
+| Negative | **210/210** | 209 + 1 new |
+
+### Repo change beyond the overlays
+
+`benchmarks/matmul/intel_prefetch/matmul_bmg_prefetch.crisp` — its inline `bmg` profile
+gained `:max-registers-per-thread (128 256)`.  Without that key the profile cannot express
+the modes and no selection happens.  Per D2 the durable fix is a **builtin** `bmg` profile
+(Phase 0's remaining Intel half); this inline key is the interim.
+
+
+Phase 1 prerequisite — tile-stride order-dependence survey
+----------------------------------------------------------
+
+
 Phase 1 prerequisite — tile-stride order-dependence survey
 ----------------------------------------------------------
 

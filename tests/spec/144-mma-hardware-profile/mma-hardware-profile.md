@@ -192,7 +192,21 @@ live-fire check of the profile plumbing.  Compile-time only — no perf measurem
 - Feeds the hoist: replaces the runtime `spillMemSize > 0` 2x derate guesswork with a
   compile-time number.
 
-### [ ] Phase 4 — Intel GRF model (finding #5)  ← RECOMMEND PROMOTING
+### [x] Phase 4 — Intel GRF model (finding #5)  DONE 2026-07-27  ← PROMOTED, ran 2nd
+
+RESULT: **1.55–2.01x on BMG, end-to-end, all MMA_CORRECT** (256: 2.52→4.08, 512: 9.06→14.03,
+1024: 11.61→23.33 TFLOPS).  Mechanism proven by experiment BEFORE any compiler code was
+written; then implemented in 4 steps (schema/D4, accounting, metacrisp, hoist pBuildFlags).
+Regression 941/941 + 253 + 210.  Full detail in `results.md`.
+
+D4 resolved (user chose option B): `:max-registers-per-thread` takes a scalar OR an ascending
+list of selectable modes.  Register WIDTH stays a backend fact, not a profile key.
+
+Still open from this phase: the `:simd-width` 16-vs-32 lever on Intel (BMG reports both) is
+untouched — SIMD32 halves thread count but doubles per-thread GRF pressure.  Worth a sweep
+now that the demand model exists to predict it.
+
+
 
 **Promotion case (measured 2026-07-27, see results.md).**  This phase was scoped as a
 "plausible candidate for BMG's last 13.5%."  It is now a **measured defect**: all three BMG
