@@ -102,6 +102,63 @@ def time_compile(cmd, **kw):
     res.check_returncode()
     return (t1 - t0) * 1000.0
 
+def time_device_only_compile(compiler, flags, src_path, out_dir, is_sycl):
+    """Time the DEVICE-ONLY compile of a vendor source — the apples-to-apples counterpart of
+    Crisp's `--ir-target=ptx` / `--ir-target=spv`.
+
+    Endeavor 144: the compile-time table used to compare Crisp's source->IR against the
+    competitors' source->LINKED EXECUTABLE (nvcc/icpx were timed with `-o binary`, including
+    host C++ compilation and linking `-lcublas` / `-qmkl`).  That inflated the competitors by
+    everything Crisp never does, and the resulting "8.5x slower" claims would not survive an
+    adversarial reading.  Now both sides are timed to a device artifact.
+
+    Stops after device codegen:
+      nvcc -ptx                                          -> .ptx
+      icpx -fsycl -fsycl-device-only -fsycl-targets=spir64 -> SPIR-V
+    (Same convention already used by scripts/bench-intel-driver.py:build_sycl.)
+
+    Link flags are stripped: they are meaningless without a link step and `-ptx` rejects them.
+    Returns milliseconds, or None if the device-only compile is unavailable/fails — callers
+    then omit the datum rather than reporting a misleading zero."""
+    dev_out = Path(out_dir) / (Path(src_path).stem + (".devbc" if is_sycl else ".devptx"))
+    keep = [f for f in flags if not f.startswith("-l") and f != "-qmkl"]
+    if is_sycl:
+        # Some icpx versions reject -fsycl-targets without a matching toolchain config
+        # (noted in scripts/bench-intel-driver.py), so fall back to plain device-only rather
+        # than losing the row — it is the only meaningful compile comparison on this platform.
+        attempts = [[compiler, *keep, "-fsycl-device-only", "-fsycl-targets=spir64",
+                     str(src_path), "-o", str(dev_out)],
+                    [compiler, *keep, "-fsycl-device-only", str(src_path), "-o", str(dev_out)]]
+    else:
+        attempts = [[compiler, *keep, "-ptx", str(src_path), "-o", str(dev_out)]]
+
+    # This is an OPTIONAL measurement: it must never be able to fail the benchmark run.  A
+    # missing compiler raises FileNotFoundError rather than returning non-zero, so catch
+    # broadly and treat any problem as "no datum".
+    r, ms = None, 0.0
+    for cmd in attempts:
+        try:
+            t0 = time.time()
+            r = sh(cmd, capture_output=True, text=True)
+            ms = (time.time() - t0) * 1000.0
+        except Exception as e:                      # noqa: BLE001 - see comment above
+            print(f"  (device-only compile could not run: {e})", file=sys.stderr)
+            r = None
+            continue
+        if r.returncode == 0:
+            break
+    if dev_out.exists():
+        try: dev_out.unlink()
+        except OSError: pass
+    if r is None:
+        return None
+    if r.returncode != 0:
+        print(f"  (device-only compile failed for {Path(src_path).name}; omitting its compile "
+              f"time rather than reporting a misleading 0)", file=sys.stderr)
+        print("    " + (r.stderr or "")[-300:], file=sys.stderr)
+        return None
+    return ms
+
 def run_bin(path, M, N, K, warmup, iters, env_extra=None):
     env = dict(os.environ)
     if env_extra: env.update(env_extra)
@@ -591,9 +648,15 @@ def main():
                 
                 cmd = [compiler] + flags + [str(src_path), "-o", str(bin_path)]
                 if is_sycl and is_cublas: cmd.insert(1, "-qmkl") # OneMKL Optimal
-                
-                all_c_ms = time_compile(cmd)
-                dev_c_ms = all_c_ms # No separate device stage measurable here
+
+                all_c_ms = time_compile(cmd)          # source -> linked executable
+                # Endeavor 144: device-only timing is what the report compares against Crisp.
+                # NOTE for the LIBRARY competitors (cuBLAS / oneMKL): their GEMM kernels ship
+                # precompiled inside the vendor library, so a device-only compile of the caller
+                # measures almost nothing.  We still record it, and report.py excludes those
+                # rows from the compile table — see the note there.
+                dev_only = time_device_only_compile(compiler, flags, src_path, bin_path.parent, is_sycl)
+                dev_c_ms = dev_only if dev_only is not None else 0.0
                 exe_path = str(bin_path)
                 env_ext = None
                 

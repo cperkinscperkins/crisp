@@ -204,6 +204,33 @@ this — the results are right, only the timing is wrong.  If a number is off by
 count, suspect the loop, not the kernel.  (Both traps flatter you, which is why they survive.)
 
 
+5c. A third trap: comparing two different amounts of work
+---------------------------------------------------------
+
+Our compile-time table reported the competing toolchains as "4-8.5x slower than Crisp".  It was
+measuring **Crisp source → IR** against **competitor source → linked executable** — the vendor
+timings included host-side C++ compilation and linking (`-lcublas`, `-qmkl`), work Crisp never
+does at that stage.  Worse, most Crisp rows excluded the runtime JIT of the IR as well, so the
+comparison omitted device codegen on one side and included host codegen on the other.
+
+The fix is one flag per toolchain — `nvcc -ptx`, `icpx -fsycl -fsycl-device-only` — timed
+against `crisp-compile --ir-target=…`.
+
+Two things generalise:
+
+- **A performance claim should name both endpoints.**  "Compile time" is not a quantity; "source
+  to device IR" is.  The original column header named neither, which is exactly how the
+  asymmetry survived several readings, including ours.
+- **Library ceilings cannot participate in a compile-time comparison at all.**  cuBLAS and
+  oneMKL kernels ship precompiled inside the library, so a device-only compile of the *caller*
+  measures nothing.  Including them was unfair to the libraries under the old scheme and would
+  have been absurdly flattering to them under the new one.  They are now excluded, with the
+  reason stated in the report itself.
+
+This was found by asking "what exactly is on each side of this ratio?" — the same question that
+exposed traps 5(a) and 5(b).  It is worth asking of every number you intend to publish.
+
+
 6. Vendor-library context, offered carefully
 --------------------------------------------
 
