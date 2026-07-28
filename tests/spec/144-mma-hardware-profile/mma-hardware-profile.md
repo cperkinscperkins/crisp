@@ -1,6 +1,14 @@
 Endeavor 144 — Leveraging Hardware Profiles in MMA
 ==================================================
 
+> **Three documents here.**
+> - `mma-hardware-profile.md` (this file) — the plan: phases, decisions, status.
+> - `results.md` — the lab notebook: every measurement, in the order taken, with the wrong
+>   turns left in.
+> - **`FINDINGS.md` — the writeup for OUTSIDE readers.**  Portable, vendor-neutral lessons
+>   about GEMM tile rasterization, Intel GRF mode selection, and two measurement traps that
+>   produced convincing wrong answers.  Start there if you are not us.
+
 Premise: endeavors 132–143 built the MMA stack, and the benchmark ladder now runs
 1.3% → 63.6% of cuBLAS (H100) and 12.5% → 86.5% of oneMKL (BMG).  The remaining gap is
 partly *information the compiler already has but does not use*.  Hardware profiles
