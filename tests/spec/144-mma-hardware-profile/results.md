@@ -498,6 +498,37 @@ loop for every rank-2 tile-stride kernel under a profile.  Notably that includes
 BMG `MMA_CORRECT` specs (133/10-12, 135/04, 135/08, 135/09, 142/01, 142/12), so the reordering
 is hardware-verified correct, not merely compile-clean.
 
+### H100 confirmation attempt (2026-07-28) — NEUTRAL at 2048, unlike BMG
+
+Same sweep on an H100 PCIe, via `matmul.py`'s autobench path (identical flags, per-chapter
+`--grid-tile`, `nvcc -arch=sm_90a -fopenmp`).  All rows `MMA_CORRECT`.
+
+| Chapter @2048 | linear | W=2 | W=4 | W=8 | W=16 | best vs linear |
+|---|---:|---:|---:|---:|---:|---:|
+| chap1.5_async_block | 36.95 | 36.77 | 36.68 | 37.63 | **38.19** | +3.4% |
+| chap2_pipelined_block | **38.52** | 38.42 | 38.31 | 38.36 | 38.15 | −0.3% |
+| chap3_wgmma | 123.85 | 125.83 | 125.21 | **127.42** | 126.99 | +2.9% |
+
+**Essentially neutral** (−0.3% .. +3.4%) where BMG showed +63%.  Two things follow.
+
+First, **2048 is the wrong size on this device.**  Three fp32 matrices at 2048² = 50 MB, and
+H100's L2 is 50 MB — this measurement sits exactly AT the cache boundary, whereas BMG's 2048 was
+~3x past its 18 MB L2.  The comparable H100 size is 4096 (200 MB, 4x L2).
+
+Second, and more interesting: at 4096 **linear order does not fall off a cliff on H100** —
+chap1.5 linear reaches 59.6 TFLOPS at 4096 versus 36.95 at 2048, i.e. it keeps scaling.  On BMG
+linear went *backwards* (23.6 → 17.2).  So the BMG cliff is **not** explained by "working set >
+L2" alone; H100 pairs a 2.8x larger L2 with far higher HBM bandwidth, and the latter appears to
+absorb the re-streaming that strangled the B580.  If that reading is right, tile rasterization is
+worth most on **bandwidth-starved** parts, not simply on large problems — which is a more useful
+rule than the one we started with, and it argues for keeping the optimization profile-gated
+rather than making it unconditional.
+
+Note also that the derived W=4 was never the best pick on H100 (W=8 or W=16 won every chapter),
+consistent with 114 SMs giving a much larger resident set than BMG's 20 Xe-cores.  The clamp is
+deliberately NOT retuned on this data: fitting a width to a measurement taken at the cache
+boundary, where the total effect is ~3%, would be fitting noise.
+
 ### Methodology note — a bogus first sweep, and why
 
 The first sweep reported 26.8–27.0 TFLOPS for *every* setting including linear, i.e. "the
