@@ -96,10 +96,27 @@ if command -v sbcl &>/dev/null; then
         echo "SBCL $SBCL_VER is too old (need >= $SBCL_MIN_VERSION), upgrading..."
     fi
 fi
+# --- apt reachability preflight (endeavor 144) -------------------------------------------
+# Some RunPod images cannot reach archive.ubuntu.com / security.ubuntu.com at all.  apt has no
+# default timeout, so `apt-get update` then hangs FOREVER rather than failing -- this cost ~2h
+# of paid pod time on 2026-07-27 before it was diagnosed.  Fail fast, and fall back to a mirror
+# that responds.  APT_OPTS is applied to every apt call below.
+APT_OPTS="-o Acquire::http::Timeout=20 -o Acquire::http::ConnectionAttemptDelayMsec=500 -o Acquire::Retries=1"
+if ! curl -s -o /dev/null -m 8 http://archive.ubuntu.com/ubuntu/dists/jammy/Release; then
+    echo "archive.ubuntu.com unreachable from this pod; switching apt to mirrors.edge.kernel.org"
+    for M in mirrors.edge.kernel.org azure.archive.ubuntu.com mirror.arizona.edu; do
+        if curl -s -o /dev/null -m 8 "http://${M}/ubuntu/dists/jammy/Release"; then
+            sed -i "s|http://archive\.ubuntu\.com/ubuntu/|http://${M}/ubuntu/|g;                     s|http://security\.ubuntu\.com/ubuntu/|http://${M}/ubuntu/|g;                     s|http://us\.archive\.ubuntu\.com/ubuntu/|http://${M}/ubuntu/|g" /etc/apt/sources.list
+            echo "  apt now using ${M}"
+            break
+        fi
+    done
+fi
+
 if $NEED_SBCL; then
     echo "Installing SBCL $SBCL_INSTALL_VERSION from official binary..."
-    apt-get update -qq
-    apt-get install -y -qq wget gpg-agent software-properties-common lsb-release curl bzip2
+    apt-get update -qq $APT_OPTS
+    apt-get install -y -qq $APT_OPTS wget gpg-agent software-properties-common lsb-release curl bzip2
     cd /tmp
     wget -q "https://prdownloads.sourceforge.net/sbcl/sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
     tar xjf "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
@@ -118,8 +135,8 @@ else
     wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg 2>/dev/null || true
     CODENAME=$(lsb_release -cs 2>/dev/null || echo "jammy")
     echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-21 main" > /etc/apt/sources.list.d/llvm-21.list
-    apt-get update -qq
-    apt-get install -y -qq llvm-21 clang-21
+    apt-get update -qq $APT_OPTS
+    apt-get install -y -qq $APT_OPTS llvm-21 clang-21
     # Create unversioned symlinks
     ln -sf /usr/bin/llc-21 /usr/bin/llc
     ln -sf /usr/bin/llvm-as-21 /usr/bin/llvm-as

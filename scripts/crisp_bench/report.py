@@ -14,6 +14,7 @@ Usage:
   python scripts/crisp_bench/report.py --output benchmarks/REPORT.md
 """
 import json
+import re
 import argparse
 import sys
 from pathlib import Path
@@ -87,7 +88,18 @@ def generate_markdown(results_dir: Path, out_file: Path = None):
     # compile_times: [GPU][Chapter][Competitor] -> list of all_compile_ms (averaged across precision)
     compile_times = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
-    for f in results_dir.glob("results_*.json"):
+    # Endeavor 144: process files OLDEST-FIRST so that when two runs cover the same
+    # (gpu, chapter, competitor, precision, size) the NEWEST wins deterministically.
+    #
+    # The assignments below overwrite rather than reduce, and `glob` returns filesystem order,
+    # so previously the winner between duplicate runs was ARBITRARY — which is why regenerating
+    # this report could change numbers with no code or data change.  The results filenames end
+    # in a unix timestamp; sort on it, falling back to mtime for any file that lacks one.
+    def _run_stamp(path):
+        m = re.search(r"_(\d{9,})\.json$", path.name)
+        return int(m.group(1)) if m else int(path.stat().st_mtime)
+
+    for f in sorted(results_dir.glob("results_*.json"), key=_run_stamp):
         with open(f, "r") as fh:
             data = json.load(fh)
         gpu = data["run_metadata"]["hardware"]["gpu_model"]

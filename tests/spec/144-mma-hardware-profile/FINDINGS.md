@@ -58,8 +58,27 @@ columns, so at W=16 the "strip" is 4096 columns wide — the entire matrix.  The
 degenerates and contributes only arithmetic while discarding the locality linear order already
 had.  Wide tiles want narrow strips.
 
+We pushed further to test the obvious objection — *maybe the bigger machine just cliffs later.*
+At **8192** the working set is 800 MB = **16× the H100's L2**, versus the mere 2.8× at which the
+B580 fell off.  Still no cliff: linear scaling is monotone (one chapter 36.95 → 59.60 → 63.77
+TFLOPS, another 124.83 → 207.64 → **230.18**) and merely *flattens*, which is the signature of
+approaching a roofline rather than falling out of cache.
+
+But the 8192 data adds a real qualification.  The two chapters diverge by **tile shape**:
+
+| @8192 | linear | grouped W=4 | |
+|---|---:|---:|---|
+| 64×64 tile | 63.77 | **65.70** | **+3.0%** (was −0.6% at 4096) |
+| 64×256 tile | **230.18** | 190.17 | **−17.4%** (was −8.3% at 4096) |
+
+For the square tile, grouping *does* start to pay as size grows — asymptotically, not as a
+cliff.  For the wide tile it gets steadily worse.  Both follow if the useful strip width scales
+**inversely with tile width**: a W-wide strip spans `tile_N × W` columns, so a wide tile
+saturates the matrix and the grouping degenerates into pure index arithmetic.
+
 **So the honest version of this finding is:** tile rasterization was worth +63% on one device and
-−14% on another, and we cannot currently predict which from any machine property we have.  L2 size
+−17% on another, it depends on tile shape as well as machine, and we cannot currently predict
+which from any machine property we have.  L2 size
 does not predict it (both devices report one; outcomes are opposite).  Bandwidth-per-FLOP does not
 separate them either (~456 GB/s / ~58 TFLOPS tf32 vs ~2000 / ~400 — similar ratios).  If you are
 adding rasterization to a code generator, **measure it per target and per tile shape**; do not
@@ -200,7 +219,33 @@ fundamental gap — and if the oneMKL team reads this, findings 1 and 3 are prob
 actionable items above, since both are configuration-level rather than algorithmic.
 
 
-7. What we would tell someone starting this work
+7. "Maximize the resource that fits" is the wrong default, three times over
+---------------------------------------------------------------------------
+
+Three separate decisions in this endeavor had the same shape — *a resource is available; should
+the compiler take as much as fits?* — and the honest answer was different each time:
+
+| Decision | "Take the max" would have | Measured reality |
+|---|---|---|
+| Register file mode (Intel GRF) | always request 256 GRF | **2.01x win** on a register-resident kernel, **-38%** on an occupancy-bound one |
+| Tile visit strip width | pick the widest that fits L2 | +63% on one device, **-14%** on another; width itself worth only ~4% |
+| Pipeline ring depth | deepest ring that fits SLM | prior work measured a crossover: +7-9% throughput for **-6% occupancy**, sign flipping with problem size |
+
+The pattern: every one of these trades a resource the kernel *wants* against a resource
+(concurrency) that the kernel *also* wants, and which side wins depends on whether the kernel is
+latency-bound or throughput-bound — which a compiler cannot infer from a shape.
+
+So the design rule we ended on: **the compiler computes and reports; a measured per-machine
+constant decides.**  Two of the three consumers ended up gated on an explicitly measured profile
+value rather than a derived formula, and the third (ring depth) ships as a report rather than an
+optimizer.  That is less satisfying than a model, and it is what the measurements support.
+
+Corollary worth stating separately, because it is the one that surprised us most: **"the kernel
+spills" is not sufficient evidence to give it more registers.**  Two of our three Intel kernels
+spill *and* are made slower by a larger register file.  A spill detector is not a demand model.
+
+
+8. What we would tell someone starting this work
 ------------------------------------------------
 
 - **Measure the mechanism, not just the outcome.**  Diffing generated artifacts with and without

@@ -286,10 +286,17 @@
          ;; for the FFI compile-check + hoist (e.g. fast PTX transcendentals ->
          ;; __nv_fast_*). Bound here since FFI specs bypass run-spec-file's hoist path.
          (*compile-math-precision* (or (parse-hoist-precision directives) *compile-math-precision*))
-         ;; Honor SKIP_SPIRV_TESTS (e.g. a CUDA-only box with no SPIR-V tooling):
-         ;; drop spv compile-checks just as run-single-spec-pass does. (L0 hoist
-         ;; is skipped separately via SKIP_L0_HOIST in run-spec-with-hoist.)
-         (skip-spv (and (uiop:getenv "SKIP_SPIRV_TESTS") t))
+         ;; Drop spv compile-checks on a machine that cannot do them, exactly as the other
+         ;; SPIR-V entry points do.  (L0 hoist is skipped separately via SKIP_L0_HOIST.)
+         ;;
+         ;; Endeavor 144: this used to test SKIP_SPIRV_TESTS *only*, so on a CUDA-only box —
+         ;; where bin/ is gitignored and llvm-spirv is simply absent — the 7 FFI specs FAILED
+         ;; with the translator's exit 127 instead of skipping.  Now it also auto-detects, so
+         ;; the harness needs no env var to notice what the machine can do.  This was the fifth
+         ;; SPIR-V entry point; the other four are run-single-spec-pass,
+         ;; run-spec-compile-with-pass, run-spec-expect-stderr-pass and run-spec-with-hoist.
+         (skip-spv (or (and (uiop:getenv "SKIP_SPIRV_TESTS") t)
+                       (not (spirv-toolchain-available-p))))
          (compile-targets (if skip-spv
                               (remove "spv" requested :test #'string=)
                               requested))
@@ -298,7 +305,7 @@
          (artifacts '()))
 
     (when (and skip-spv (member "spv" requested :test #'string=))
-      (format t "~&Running Spec: ~a (FFI[spv])... SKIP (SKIP_SPIRV_TESTS)~%"
+      (format t "~&Running Spec: ~a (FFI[spv])... SKIP (no SPIR-V toolchain on this machine)~%"
               (pathname-name crisp-file)))
 
     ;; 1. Compile-check runs (TEST-WITH[--ir-target=...]).

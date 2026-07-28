@@ -768,6 +768,7 @@
 ;; Endeavor 144 Phase 1 — visibility on the visit-order decision.  Logged (log4cl, so it
 ;; costs nothing at --log-level=off) because "did the swizzle actually engage?" is otherwise
 ;; invisible: the choice leaves no trace in the kernel source and only a subtle one in the IR.
+;; src/analysis/control.lisp
 (defun %tile-visit-log-decision (n tile-spec-kind tile-spec strip-width)
   "Report the tile visit-order decision for one tile-stride expansion."
   (log:info "tile-visit: rank=~a spec-kind=~a spec=~a -> strip-width=~a (~a)"
@@ -896,3 +897,380 @@
      :l2-cache-size 50MB
      :native-cache-line-size 128
      :mma-shapes ((16 8 8) (16 8 4) (16 8 16)))))
+
+;;; ===================================================================
+;;; ENDEAVOR 144 Phase 5 — RE-SCOPED (decision 2026-07-28, made unattended under standing
+;;; authorization; rationale recorded so it can be reversed knowingly).
+;;;
+;;; PLANNED: `:ring-count :max` — the compiler picks the deepest pipeline ring that fits
+;;; :max-shared-memory-per-block.  NOT SHIPPED.  Three reasons, two of them measured inside
+;;; this very endeavor:
+;;;
+;;;   1. Endeavor 138 already measured a pipelining/occupancy CROSSOVER on this exact axis:
+;;;      deeper rings bought +7-9% but cost -6% occupancy, and the sign flipped by 4096.
+;;;      "Deepest that fits" is therefore not a maximum of anything the user cares about.
+;;;   2. Phase 4 measured that granting more of a resource can LOSE badly: large-GRF is a
+;;;      2.01x win on a register-resident kernel and a -38% loss on an occupancy-bound one.
+;;;      Same shape of decision, opposite answers, from the same "more is better" instinct.
+;;;   3. Phase 1 measured that occupancy REASONING (as opposed to occupancy measurement)
+;;;      predicted the wrong sign twice in one session — the L2 cliff that wasn't, and the
+;;;      strip width that didn't matter.
+;;;
+;;; The plan document's own framing was "the profile lets the compiler BOUND AND REPORT the
+;;; tradeoff, not blindly maximize."  That is what ships.  (Secondary, but not the reason:
+;;; `:max` would need src/macros.lisp patched, since the ring constructors are macros and the
+;;; overlay cannot late-bind them.)
+;;;
+;;; WHAT SHIPS: per-kernel SLM utilization against the profile cap.
+;;;   - Always logged (log4cl, free at --log-level=off).
+;;;   - stderr WARNING only above *slm-high-water-fraction*, where the number is ACTIONABLE:
+;;;     near the cap, SLM is what limits resident blocks.
+;;;   - Low utilization is reported, NOT warned.  chap2_pipelined_block using 8 KB of a
+;;;     227 KB budget is the observation that motivated this phase, but "you have headroom"
+;;;     is information, not a defect — see reasons 1-3 for why we do not act on it for you.
+;;; ===================================================================
+
+;; src/hardware-profile.lisp
+(defparameter *slm-high-water-fraction* 3/4
+  "Endeavor 144 Phase 5: warn when a kernel's local/shared memory reaches this fraction of the
+   profile's :max-shared-memory-per-block.  Above it, SLM (not registers) is what caps resident
+   blocks per compute unit, which is worth saying out loud.  Below it the utilization is only
+   logged.")
+
+;; src/hardware-profile.lisp
+(defun %hp-report-shared-memory (kernel-name profile)
+  "Endeavor 144 Phase 5: report KERNEL-NAME's local/shared memory against the profile cap.
+
+   Reports utilization; does NOT choose a ring depth or tile size.  Returns the byte total, or
+   NIL when the profile omits the cap or the total is not compile-time-known (symbolic scratch
+   sizes)."
+  (let ((cap  (and profile (getf profile :max-shared-memory-per-block)))
+        (used (%hp-kernel-shared-bytes kernel-name)))
+    (when (and cap used (plusp cap))
+      (let ((frac (/ (cl:float used) cap)))   ; cl: REQUIRED — `float` in :crisp.compiler is the Crisp TYPE symbol
+        (log:info "slm: kernel ~a uses ~a of ~a bytes (~,1f%) of :max-shared-memory-per-block"
+                  kernel-name used cap (* 100.0 frac))
+        (when (>= frac *slm-high-water-fraction*)
+          (format *error-output*
+                  "WARNING: kernel ~a reserves ~a of ~a bytes of local/shared memory (~,1f%).  Above ~,0f% of the cap, SLM is what limits how many blocks can be resident per compute unit — deeper pipeline rings or larger tiles will now cost occupancy rather than add overlap.~%"
+                  kernel-name used cap (* 100.0 frac)
+                  (* 100.0 *slm-high-water-fraction*)))
+        used))))
+
+;; src/hardware-profile.lisp
+(defun %hp-check-all-shared-memory ()
+  "Endeavor 130 Phase 2: after a module compiles (all signatures, incl. implicit scratch,
+   finalized), validate every kernel's local memory against the active hardware profile.
+
+   Endeavor 144 also runs, from this same end-of-module hook: the SPV register-mode decision
+   (Phase 4) and the SLM utilization report (Phase 5).
+
+   NOTE FOR THE SRC PATCH: in src/ these belong as their OWN calls in compile-module (after
+   %hp-check-all-shared-memory, analysis/core.lisp:424).  They are folded in here only so the
+   overlay does not have to redefine the whole compile-module function."
+  (let ((profile (active-hardware-profile)))
+    (when profile
+      (dolist (k *compiled-kernels*)
+        (%hp-check-shared-memory k profile)
+        (%hp-report-shared-memory k profile))
+      (when (eq *target-backend* :spirv)
+        (dolist (k *compiled-kernels*)
+          (%spv-decide-register-mode k profile))))))
+
+;;; ===================================================================
+;;; ENDEAVOR 144 Phase 3 — RE-SCOPED (decision 2026-07-28, unattended, rationale recorded).
+;;;
+;;; PLANNED: a full occupancy model — resident blocks per compute unit from registers AND
+;;; shared memory — feeding Phase 1's strip-width formula.
+;;;
+;;; WHY RE-SCOPED, two independent reasons:
+;;;   1. Its consumer evaporated.  Phase 3 existed largely to supply
+;;;      W = sqrt(R * tile_M / tile_N) for Phase 1.  Phase 1 then MEASURED that the width
+;;;      barely matters (grouped-vs-linear ~60%, width within 2..16 ~4%) and that the whole
+;;;      optimization is device-specific anyway.  Building a model to feed a formula we
+;;;      retired would be building the wrong thing carefully.
+;;;   2. The SLM half needs a NEW SCHEMA KEY.  Resident blocks per CU wants shared memory per
+;;;      COMPUTE UNIT; `:max-shared-memory-per-block` is per BLOCK (227KB on H100, where the
+;;;      per-SM figure is a different 228KB).  Inventing a schema key unattended is exactly
+;;;      the class of decision the user asked to make deliberately (cf. D4), and Phase 5 now
+;;;      reports SLM utilization directly, which covers the practical need.
+;;;
+;;; WHAT SHIPS: a REGISTER-side occupancy diagnostic built only from keys that already exist
+;;; (`:max-registers-per-cu`, the per-thread demand this endeavor already tallies, and
+;;; local-size).  It answers the one question the register work kept raising and could not
+;;; answer — "how many blocks of this kernel actually fit on a compute unit?" — and it warns
+;;; only when the answer is 1, which is the case where the kernel cannot hide any latency.
+;;;
+;;; Accounted demand is what the developer EXPLICITLY reserved (register tiles, rings, wgmma
+;;; accumulators), never what ptxas finally allocates.  So the reported occupancy is an UPPER
+;;; bound: the real figure can only be worse.  Stated in the message, because an occupancy
+;;; number that looks authoritative but is optimistic would be worse than none.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defvar *ptx-register-demand* (make-hash-table :test 'equal)
+  "Endeavor 144 Phase 3: (kernel-name . source-location) -> 32-bit registers/thread explicitly
+   reserved at that site on the NVIDIA path (register tiles and wgmma accumulators).  Keyed per
+   site and ASSIGNED, so Crisp's multipass re-analysis is idempotent — same discipline as
+   *spv-register-demand*.")
+
+;; src/mma.lisp
+(defun %ptx-note-register-demand (regs context location)
+  "Record REGS 32-bit registers/thread reserved at LOCATION for the kernel being compiled.
+   No-op off the NVIDIA path or without a current function."
+  (unless (eq *target-backend* :spirv)
+    (let ((fn (and context (compiler-context-current-compiling-function context))))
+      (when (and fn (plusp regs))
+        (setf (gethash (cons fn location) *ptx-register-demand*) regs)))))
+
+;; src/mma.lisp
+(defun %kernel-registers-per-thread (kernel-name)
+  "Total explicitly-reserved registers/thread for KERNEL-NAME.  NVIDIA: 32-bit registers from
+   *ptx-register-demand*.  Intel/SPV: derived from the GRF element tally.  0 when nothing was
+   reserved."
+  (if (eq *target-backend* :spirv)
+      (values (%spv-kernel-register-demand kernel-name))
+      (let ((total 0))
+        (maphash (lambda (k v) (when (equal (car k) kernel-name) (incf total v)))
+                 *ptx-register-demand*)
+        total)))
+
+;; src/hardware-profile.lisp
+(defun %hp-report-register-occupancy (kernel-name profile)
+  "Endeavor 144 Phase 3: report how many blocks of KERNEL-NAME fit on one compute unit, as
+   limited by REGISTERS.
+
+     blocks/CU = :max-registers-per-cu / (registers-per-thread * threads-per-block)
+
+   Skipped unless the profile supplies :max-registers-per-cu, the kernel reserved registers,
+   and local-size is compile-time known.  Warns only at 1 block/CU — the case where there is no
+   second block to hide latency behind.  The figure is an UPPER bound (explicit reservations
+   only, not the final ptxas allocation)."
+  (let ((per-cu (and profile (getf profile :max-registers-per-cu)))
+        (regs   (%kernel-registers-per-thread kernel-name))
+        (dims   (let ((d (gethash kernel-name *kernel-dispatch-declarations*)))
+                  (and d (%hp-local-size-dims (getf d :local-size))))))
+    (when (and per-cu (plusp per-cu) regs (plusp regs) dims)
+      (let* ((threads (reduce #'* dims))
+             (per-block (* regs threads))
+             (blocks (floor per-cu (max 1 per-block))))
+        (log:info "occupancy: kernel ~a reserves ~a regs/thread x ~a threads = ~a regs/block; ~a of ~a regs/CU -> ~a block(s)/CU (upper bound)"
+                  kernel-name regs threads per-block per-block per-cu blocks)
+        (when (<= blocks 1)
+          (format *error-output*
+                  "WARNING: kernel ~a reserves ~a registers/thread x ~a threads = ~a registers per block, against ~a per compute unit — so at most ~a block~:p can be resident.  With a single resident block there is nothing to overlap its memory stalls against; consider a smaller tile/accumulator, or distributing it across more warps (:warps).  (Upper bound: counts only explicit reservations, not the final register allocation.)~%"
+                  kernel-name regs threads per-block per-cu blocks))
+        blocks))))
+
+;; src/mma.lisp
+(defun %register-tile-fit-check (m n location)
+  "F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque
+   cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is
+   separate (Phase 4).  Else: (M/16)x(N/8) accumulator fragments x 4 fp32 regs <=
+   :max-registers-per-thread.
+
+   Endeavor 144: reads the budget through %hp-registers-per-thread-default (D4 made the key a
+   scalar OR a list of selectable modes), and Phase 3 TALLIES the reservation for the
+   per-compute-unit occupancy report."
+  (unless (eq *target-backend* :spirv)
+    (let* ((nfrags        (* (floor m 16) (floor n 8)))
+           (regs-per-frag 4)
+           (total-regs    (* nfrags regs-per-frag))
+           (budget        (or (%hp-registers-per-thread-default)
+                              *default-max-registers-per-thread*)))
+      (%ptx-note-register-demand total-regs *current-compiler-context* location)
+      (when (> total-regs budget)
+        (error 'crisp-compiler-error
+               :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs), exceeding the register budget of ~a.  Use a smaller tile shape or a hardware profile with a larger :max-registers-per-thread."
+                                m n total-regs nfrags regs-per-frag budget)
+               :source-location location)))))
+
+;;; --- Phase 3 correction: tally where CONTEXT is actually available -------------------------
+;;; %register-tile-fit-check takes only (m n location) — there is no current-context special to
+;;; reach the kernel name from, and adding a parameter would mean redefining the 90-line
+;;; %explode-register-tiles.  The fragment/accumulator ANALYZERS already receive context and are
+;;; already overridden here, so the PTX tally goes there instead — exactly mirroring how the SPV
+;;; side works, which keeps one mental model for both backends.
+
+;; src/mma.lisp
+(defun %register-tile-fit-check (m n location)
+  "F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque
+   cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is
+   separate (Phase 4).  Else: (M/16)x(N/8) accumulator fragments x 4 fp32 regs <=
+   :max-registers-per-thread.
+
+   Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since
+   :max-registers-per-thread may be a scalar OR a list of selectable modes."
+  (unless (eq *target-backend* :spirv)
+    (let* ((nfrags        (* (floor m 16) (floor n 8)))
+           (regs-per-frag 4)
+           (total-regs    (* nfrags regs-per-frag))
+           (budget        (or (%hp-registers-per-thread-default)
+                              *default-max-registers-per-thread*)))
+      (when (> total-regs budget)
+        (error 'crisp-compiler-error
+               :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs), exceeding the register budget of ~a.  Use a smaller tile shape or a hardware profile with a larger :max-registers-per-thread."
+                                m n total-regs nfrags regs-per-frag budget)
+               :source-location location)))))
+
+;; src/mma.lisp
+(defun analyze-make-register-fragment (expr env context location)
+  "P1 / F-SPV: (make-register-fragment M N INIT &key operand).  :spirv -> a filled coop matrix;
+   else the NVIDIA %construct-struct record.  Endeavor 142: :operand (a|b|acc, default acc) picks
+   the coop-matrix Use + shape so an A/B operand tile mints fragments matching load-fragment-a/b.
+
+   Endeavor 144: each fragment is tallied against the current kernel — as coop-matrix ELEMENTS on
+   SPV (Phase 4's GRF model) and as 32-bit REGISTERS on PTX (Phase 3's occupancy model).  Both
+   skip when the form carries :tally nil, which marks fill-tile's per-fragment set!s: those
+   RE-INITIALIZE fragments the tile already owns and allocate nothing."
+  (destructuring-bind (m n init &rest kwargs) (cdr expr)
+    (let* ((operand (getf kwargs :operand :acc))
+           (tally-p (getf kwargs :tally t))
+           (use (ecase operand (:a 0) (:b 1) (:acc 2))))
+      (if (eq *target-backend* :spirv)
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (let ((fr (ecase operand (:a sm) (:b sk) (:acc sm)))
+                  (fc (ecase operand (:a sk) (:b sn) (:acc sn))))
+              (when tally-p (%spv-note-register-fragment fr fc context location))
+              (make-semantic-coop-op
+               :type (list 'coop-matrix 'float fr fc use) :kind :fill
+               :value-node (analyze-expression init env context (append location '(1)))
+               :rows fr :cols fc :use use :layout 0 :source-location location)))
+          (progn
+            (unless (and (eql m 16) (eql n 8))
+              (error 'crisp-compiler-error
+                     :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
+            ;; PTX fragment register counts, matching the records minted below:
+            ;; acc 16x8 f32 -> 4, A tf32 16x8 -> 4, B tf32 8x8 -> 2 (per lane, 32-bit each).
+            (when tally-p
+              (%ptx-note-register-demand (ecase operand (:acc 4) (:a 4) (:b 2)) context location))
+            (analyze-expression
+             (ecase operand
+               (:acc `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init))
+               (:a   `(%construct-struct register-fragment-a-tf32-16x8 ,init ,init ,init ,init))
+               (:b   `(%construct-struct register-fragment-b-tf32-8x8 ,init ,init)))
+             env context location))))))
+
+;; src/mma.lisp
+(defun analyze-make-wgmma-accumulator (expr env context location)
+  "(make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,
+   each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.
+
+   Endeavor 144: runs the Phase 2 register accounting, and tallies N/2 registers/thread for the
+   Phase 3 per-compute-unit occupancy report."
+  (destructuring-bind (elem dims init) (cdr expr)
+    (declare (ignore elem))              ; tf32/f32 fixed for now
+    (destructuring-bind (m n) dims
+      (%check-wgmma-shape (list m n 8) location)
+      (%wgmma-acc-fit-check m n location)
+      (%ptx-note-register-demand (floor n 2) context location)
+      (let ((type-name (%ensure-wgmma-acc-type n)))
+        (analyze-expression
+         `(%construct-struct ,type-name ,@(loop repeat (floor n 2) collect init))
+         env context location)))))
+
+;; src/hardware-profile.lisp
+(defun %hp-check-all-shared-memory ()
+  "Endeavor 130 Phase 2: after a module compiles (all signatures, incl. implicit scratch,
+   finalized), validate every kernel's local memory against the active hardware profile.
+
+   Endeavor 144 runs three further per-kernel reports from this same end-of-module hook:
+   the SPV register-mode decision (Phase 4), SLM utilization (Phase 5), and register-limited
+   occupancy (Phase 3).
+
+   NOTE FOR THE SRC PATCH: in src/ these belong as their OWN calls in compile-module (after
+   %hp-check-all-shared-memory, analysis/core.lisp:424); they are folded in here only so the
+   overlay need not redefine compile-module."
+  (let ((profile (active-hardware-profile)))
+    (when profile
+      (dolist (k *compiled-kernels*)
+        (%hp-check-shared-memory k profile)
+        (%hp-report-shared-memory k profile)
+        (%hp-report-register-occupancy k profile))
+      (when (eq *target-backend* :spirv)
+        (dolist (k *compiled-kernels*)
+          (%spv-decide-register-mode k profile))))))
+
+;;; --- Phase 3 correction #2: wgmma accumulators are keyed by SHAPE, not by site -------------
+;;; Caught by the diagnostic's own first run: chap3_wgmma reported 256 regs/thread for a 128-reg
+;;; accumulator, because the kernel legitimately contains TWO construction sites for ONE
+;;; accumulator —
+;;;     (let ((D (make-wgmma-accumulator float (64 256) 0.0))) ...
+;;;       (:consumer (set! D (make-wgmma-accumulator float (64 256) 0.0)) ...
+;;; — the second being a per-tile RE-INITIALIZATION of D's existing storage.  Same class as
+;;; fill-tile's per-fragment set!s, but written by the USER, so it cannot be tagged :tally nil.
+;;;
+;;; Fix: key the wgmma tally on (kernel, shape) rather than (kernel, site), so repeated
+;;; constructions of the same accumulator collapse to one reservation.  Register FRAGMENTS keep
+;;; per-site keying, because there each site really is distinct storage.
+;;;
+;;; Known limitation, stated rather than hidden: a kernel holding two GENUINELY distinct
+;;; accumulators of identical shape would be counted once.  That under-counts, which conflicts
+;;; with the "upper bound" framing — so the report says "distinct reservations by shape".  The
+;;; alternative (summing sites) demonstrably over-counted our best kernel by 2x and fired a
+;;; spurious warning on it, and a diagnostic that cries wolf on the flagship kernel is worse
+;;; than one with a documented edge case.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun %ptx-note-register-demand-keyed (regs context key)
+  "Record REGS 32-bit registers/thread for the kernel being compiled, under KEY.  KEY is the
+   identity of the RESERVATION: a source location where each site is distinct storage
+   (fragments), or a shape where repeated construction means re-initialization (wgmma)."
+  (unless (eq *target-backend* :spirv)
+    (let ((fn (and context (compiler-context-current-compiling-function context))))
+      (when (and fn (plusp regs))
+        (setf (gethash (cons fn key) *ptx-register-demand*) regs)))))
+
+;; src/mma.lisp
+(defun %ptx-note-register-demand (regs context location)
+  "Per-SITE reservation (register fragments): each source location is distinct storage."
+  (%ptx-note-register-demand-keyed regs context location))
+
+;; src/mma.lisp
+(defun analyze-make-wgmma-accumulator (expr env context location)
+  "(make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,
+   each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.
+
+   Endeavor 144: runs the Phase 2 register accounting, and tallies N/2 registers/thread for the
+   Phase 3 occupancy report — keyed by SHAPE so a per-tile `(set! D (make-wgmma-accumulator ...))`
+   re-initialization is not counted as a second accumulator."
+  (destructuring-bind (elem dims init) (cdr expr)
+    (declare (ignore elem))              ; tf32/f32 fixed for now
+    (destructuring-bind (m n) dims
+      (%check-wgmma-shape (list m n 8) location)
+      (%wgmma-acc-fit-check m n location)
+      (%ptx-note-register-demand-keyed (floor n 2) context (list :wgmma-acc m n))
+      (let ((type-name (%ensure-wgmma-acc-type n)))
+        (analyze-expression
+         `(%construct-struct ,type-name ,@(loop repeat (floor n 2) collect init))
+         env context location)))))
+
+;; src/hardware-profile.lisp
+(defun %hp-report-register-occupancy (kernel-name profile)
+  "Endeavor 144 Phase 3: report how many blocks of KERNEL-NAME fit on one compute unit, as
+   limited by REGISTERS.
+
+     blocks/CU = :max-registers-per-cu / (registers-per-thread * threads-per-block)
+
+   Skipped unless the profile supplies :max-registers-per-cu, the kernel reserved registers, and
+   local-size is compile-time known.  Warns only at 1 block/CU — the case where there is no
+   second block to hide memory stalls behind.
+
+   Counts DISTINCT explicit reservations (fragments per site, wgmma accumulators per shape) —
+   never the final ptxas allocation, which can only be larger."
+  (let ((per-cu (and profile (getf profile :max-registers-per-cu)))
+        (regs   (%kernel-registers-per-thread kernel-name))
+        (dims   (let ((d (gethash kernel-name *kernel-dispatch-declarations*)))
+                  (and d (%hp-local-size-dims (getf d :local-size))))))
+    (when (and per-cu (plusp per-cu) regs (plusp regs) dims)
+      (let* ((threads (reduce #'* dims))
+             (per-block (* regs threads))
+             (blocks (floor per-cu (max 1 per-block))))
+        (log:info "occupancy: kernel ~a reserves ~a regs/thread x ~a threads = ~a regs/block; ~a regs/CU -> ~a block(s)/CU"
+                  kernel-name regs threads per-block per-cu blocks)
+        (when (<= blocks 1)
+          (format *error-output*
+                  "WARNING: kernel ~a reserves ~a registers/thread x ~a threads = ~a registers per block, against ~a per compute unit — so at most ~a block~:p can be resident.  With a single resident block there is nothing to overlap its memory stalls against; consider a smaller tile/accumulator, or distributing it across more warps (:warps).  (Counts explicit reservations only; the final allocation can only be larger.)~%"
+                  kernel-name regs threads per-block per-cu blocks))
+        blocks))))

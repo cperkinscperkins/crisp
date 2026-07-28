@@ -129,6 +129,87 @@ must split or gain backend-dependent units (see Phase 4), update
 not here.
 
 
+STATUS 2026-07-28 (morning session — ALL PHASES COMPLETE)
+---------------------------------------------------------
+
+**All six phases are done.**  Phase 0 (builtin queried profiles + bench wiring), Phase 1
+(grouped tile visit order), Phase 2 (wgmma register accounting), Phase 3 (register-occupancy
+diagnostic — RE-SCOPED), Phase 4 (Intel GRF mode selection), Phase 5 (SLM utilization reporting
+— RE-SCOPED), Phase 6 (`:compute-units` on L0).
+
+Two phases were deliberately RE-SCOPED during the unattended session, under standing
+authorization to decide and document.  Both are reversible; rationale is in `results.md` and in
+the overlay block comments:
+
+- **Phase 5** was `:ring-count :max` (auto-pick the deepest ring that fits SLM).  Not shipped:
+  endeavor 138 already measured a pipelining/occupancy crossover on that exact axis, Phase 4
+  measured that more-of-a-resource can cost -38%, and Phase 1 measured that occupancy REASONING
+  got the sign wrong twice.  Ships as SLM utilization reporting — the plan's own "bound and
+  report, do not blindly maximize".
+- **Phase 3** was a full occupancy model feeding Phase 1's strip-width formula.  That formula
+  was retired by Phase 1's measurement, and the SLM half needs a new schema key.  Ships as a
+  register-side occupancy diagnostic using only existing keys.
+
+### Cross-cutting, also done
+
+- `run-on-pod.sh` hardened: apt reachability preflight + mirror fallback + timeouts.  Bootstrap
+  went from ~2 hours (hung on an unreachable Ubuntu mirror) to **~7 minutes, all green**.
+- `report.py` made **deterministic**: files are processed oldest-first so the newest run wins
+  per key, instead of `glob` order deciding arbitrarily.  Verified byte-identical across three
+  regenerations.  This is why REPORT.md numbers used to drift with no code change; the `ieee`
+  duplicate sets are now harmless and your data was left untouched.
+- Hardware-profile query tools promoted to `scripts/hw-profile/` with a README explaining what
+  each answers and, for the kernel probe, why `spillMemSize > 0` is NOT an instruction to widen
+  the register file.
+
+### Validated on real hardware
+
+| Suite | local (BMG box) | H100 pod (CUDA-only) |
+|---|---|---|
+| E2E specs | **943/943** | **943/943** |
+| Unit | 253/253 | — |
+| Negative | 211/211 | — |
+
+The pod run matters independently: it is the only machine that exercises the SPIR-V *skip*
+paths, and it caught a fifth un-wired entry point (the FFI harness) that the local suite
+structurally cannot see.
+
+### Still open for you
+
+- **`CRISP_TILE_VISIT` should graduate** to `--tile-visit=linear|grouped|grouped:N`.  Env var
+  only because a real flag needs `main.lisp` surgery.
+- ~~The 8192 cliff question~~ **ANSWERED**: no cliff at 16x L2 (linear keeps scaling,
+  230.18 TFLOPS at 8192).  But the data added a nuance worth a future experiment — grouping's
+  sign depends on TILE SHAPE (+3.0% for a 64x64 tile at 8192, -17.4% for 64x256), suggesting
+  strip width should scale inversely with tile width rather than being purely per-machine.
+- The overlay blocks are all tagged with their `src/` destinations for when you apply them;
+  three note that they are folded into an existing hook only to avoid redefining
+  `compile-module` / `initialize-compiler`.
+
+Net measured effect, BMG @2048: **8.37 -> 28.01 TFLOPS (3.35x)**, no kernel source change.
+NVIDIA: the same phases are behaviourally neutral (Phase 4 is SPV-only; Phase 1 is gated off by
+measurement), and the ladder now reaches **69.5% of cuBLAS at 4096**.
+
+Suites green at this state: 943/943 E2E, 253/253 unit, 211/211 negative.
+
+### Decisions still needing you
+
+- **Phase 3 needs a schema decision** and is therefore NOT started.  A real occupancy model wants
+  resident-blocks-per-CU, which needs shared memory per *CU* — `:max-shared-memory-per-block` is
+  per-block (227KB) and the per-SM figure (228KB on H100) is a different quantity.  That is a new
+  key, i.e. a D4-class decision, so it waits for you rather than being invented unattended.
+  Phase 1's measurement also removed Phase 3's original justification (width turned out not to
+  matter), so its remaining value is diagnostic — worth re-scoping before building.
+- **`ieee` result duplication**: `benchmarks/results/` still holds 22 files for 11 keys in each
+  `ieee` set, so those REPORT.md tables are nondeterministic (report.py assigns over an unsorted
+  glob).  The `fast`/ftz set was fixed; the `ieee` sets are your data and untouched.
+- **Pod script robustness** (offered, not done): `run-on-pod.sh` has no apt timeout — a pod with an
+  unreachable default mirror hangs indefinitely — and `matmul.py` invokes `nvcc` bare although
+  these images keep it at `/usr/local/cuda/bin`.  Both cost real time this session.
+- **`CRISP_TILE_VISIT` should graduate** to a `--tile-visit=linear|grouped|grouped:N` flag.  It is
+  an env var only because that needed no `main.lisp` surgery.
+
+
 Phases
 ------
 

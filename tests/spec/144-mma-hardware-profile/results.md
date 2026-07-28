@@ -1,7 +1,159 @@
 Endeavor 144 — Measurements
 ===========================
 
-Baselines and per-phase before/after numbers.  See `mma-hardware-profile.md` for the plan.
+Baselines and per-phase before/after numbers.  See `mma-hardware-profile.md` for the plan and
+`FINDINGS.md` for the outside-reader writeup.
+
+
+HEADLINE — BMG, 2048, measured end-to-end through the shipped code path
+----------------------------------------------------------------------
+
+`intel_prefetch`, tf32/`fast`, `MMA_CORRECT` at every step.  The baseline row is a genuine
+pre-endeavor configuration, reproduced by giving the kernel its ORIGINAL two-key inline `bmg`
+profile (a user profile overrides the builtin, so this is the real old behaviour, not a
+simulation) plus `CRISP_TILE_VISIT=linear`:
+
+| Configuration | TFLOPS | step |
+|---|---:|---|
+| linear + default GRF — **pre-endeavor** | **8.37** | baseline |
+| linear + large GRF — Phase 4 | 17.16 | **2.05x** |
+| grouped W=4 + large GRF — Phase 4 + Phase 1 | **28.01** | **1.63x** |
+| | | **3.35x total** |
+
+Both wins come from the hardware profile telling the compiler something it could not otherwise
+know: the register file is mode-selectable (Phase 4) and this machine wants a 4-wide tile strip
+(Phase 1).  Neither required a kernel source change.
+
+Regression at this state: **943/943 E2E, 253/253 unit, 211/211 negative.**
+
+NOTE the same two phases are NEUTRAL-to-HARMFUL on H100 — see the H100 sections below.  That
+asymmetry is the endeavor's most portable finding and is why both consumers are profile-gated.
+
+
+Phases 3, 5, 6 — completed 2026-07-28 (unattended session)
+----------------------------------------------------------
+
+All three were completed under standing authorization to decide and document rather than wait.
+TWO OF THE THREE WERE DELIBERATELY RE-SCOPED; the rationale is recorded here and in the overlay
+so either can be reversed knowingly.
+
+### Phase 6 — `:compute-units` on the L0 launcher.  Implemented as planned.
+
+Endeavor 130 Phase 5 wired `:compute-units` into the CUDA launcher but deferred Intel, because
+CUDA has one obvious "compute unit" and Intel's occupancy formula is
+`numSlices × numSubslicesPerSlice × numEUsPerSubslice × numThreadsPerEU`.
+
+**DECISION: `:compute-units` means Xe-cores** — it replaces `numSlices × numSubslicesPerSlice`;
+the per-Xe-core terms stay queried.  Reasons:
+
+- It is the same *semantic* as CUDA's SM count ("how many independent compute units do I get"),
+  so one key means one thing on both backends.
+- The queried terms are micro-architectural.  A user shrinking a profile is saying "I get part
+  of the machine", never "EUs are built differently".
+- It makes topology.md's shrunken-profile / Empty Room case work: `:compute-units 10` on a
+  20-Xe-core B580 yields exactly half the threads.
+- Verified no-op for a full-size profile: 5 slices × 4 subslices = 20 Xe-cores, and
+  20 × 8 EUs × 8 threads = **1280**, exactly what the unmodified formula produces.
+
+Verified: without a profile the launcher emits the queried product; with `bmg` it emits
+`uint32_t _xe_cores = 20;`.  On-metal 089-strategy **27/27**.
+
+Scope: only the `:strided` occupancy path.  Endeavor 143 showed tiled kernels prefer exact tile
+cover (`:tile-shape`), which never consults `_hw_threads` — so matmul is unaffected and the
+consumers are vector/reduction-shaped kernels.
+
+### Phase 5 — RE-SCOPED from `:ring-count :max` to SLM utilization reporting
+
+**Not shipped: auto-selecting the deepest ring that fits SLM.**  Three reasons, two measured
+inside this endeavor:
+
+1. Endeavor 138 already measured a pipelining/occupancy **crossover** on exactly this axis:
+   deeper rings bought +7-9% but cost -6% occupancy, and the sign flipped by 4096.  "Deepest
+   that fits" is not a maximum of anything the user wants.
+2. Phase 4 measured that granting more of a resource can lose badly — large-GRF is 2.01x on a
+   register-resident kernel and **-38%** on an occupancy-bound one.
+3. Phase 1 measured that occupancy *reasoning* predicted the wrong sign twice in one session.
+
+The plan document's own words were "bound and report the tradeoff, not blindly maximize".  That
+is what ships.  (Secondary: `:max` would need `src/macros.lisp` patched, as the ring
+constructors are macros the overlay cannot late-bind.)
+
+**Ships instead:** per-kernel SLM utilization against the profile cap — always logged, warning
+only above 75% where the number is actionable (SLM, not registers, is then capping residency).
+Low utilization is reported, never warned.
+
+Measured on the NVIDIA chapters with `h100`:
+
+| Kernel | SLM used | of cap | |
+|---|---:|---:|---|
+| chap3_wgmma | 81920 B | 232448 B | 35.2% |
+| chap2_pipelined_block | 8192 B | 232448 B | 3.5% |
+
+chap2's 3.5% is the observation that motivated this phase — now surfaced by the compiler
+instead of by reading source.
+
+### Phase 3 — RE-SCOPED from a full occupancy model to a register-side diagnostic
+
+**Not shipped as planned**, for two independent reasons:
+
+1. **Its consumer evaporated.**  Phase 3 existed largely to supply
+   `W = sqrt(R · tile_M / tile_N)` to Phase 1 — and Phase 1 then measured that the width barely
+   matters and the whole optimization is device-specific.  Building a model to feed a retired
+   formula would be building the wrong thing carefully.
+2. **The SLM half needs a NEW SCHEMA KEY.**  Resident-blocks-per-CU wants shared memory per
+   *compute unit*; `:max-shared-memory-per-block` is per *block*.  Inventing a schema key
+   unattended is the class of decision to make deliberately (cf. D4), and Phase 5 now reports
+   SLM utilization directly, covering the practical need.
+
+**Ships:** a register-side occupancy report built only from existing keys —
+`:max-registers-per-cu`, the per-thread demand this endeavor already tallies, and local-size:
+
+```
+blocks/CU = :max-registers-per-cu / (registers-per-thread × threads-per-block)
+```
+
+Warns only at 1 block/CU, where there is no second block to hide memory stalls behind.
+
+| Kernel | regs/thread | threads | regs/block | blocks/CU |
+|---|---:|---:|---:|---:|
+| chap3_wgmma | 128 | 160 | 20480 | **3** |
+| chap2_pipelined_block | 128 | 32 | 4096 | 16 |
+| chap1.5_async_block | 128 | 32 | 4096 | 16 |
+
+#### The diagnostic caught a bug in itself on its first run
+
+It initially reported **256** regs/thread for chap3 — double the truth — and fired a spurious
+warning on our best kernel.  Cause: the kernel contains two `make-wgmma-accumulator` sites for
+ONE accumulator (the `let` binding, plus a per-tile
+`(set! D (make-wgmma-accumulator …))` re-initialization), and the tally summed sites.  Same
+class as `fill-tile`'s per-fragment `set!`s, except the user writes this one, so it cannot be
+tagged `:tally nil`.
+
+Fixed by keying wgmma reservations on **shape** rather than source site, so repeated
+construction of the same accumulator collapses.  Fragments keep per-site keying, since there
+each site really is distinct storage.
+
+Known limitation, stated rather than hidden: two genuinely distinct accumulators of identical
+shape would be counted once.  That under-counts, which conflicts with an "upper bound" framing —
+so the report says "counts explicit reservations".  The alternative over-counted the flagship
+kernel by 2x and cried wolf on it, which is worse than a documented edge case.
+
+### One self-inflicted bug worth recording
+
+Phase 5's first build broke `130/08-slm-in-budget` with *"The function CRISP.COMPILER:FLOAT is
+undefined"* — because I wrote `(float used)`, and `float` in `:crisp.compiler` is the **Crisp
+type symbol**, not `cl:float`.  This is the exact trap `docs/crisp-curios.md` documents.
+Isolated by rebuilding with the previous overlay (1/1 passed), then fixed with `cl:float`.
+Cost ~10 minutes; would have cost far more without the suite catching it immediately.
+
+### Regression after all three phases
+
+**943/943 E2E, 253/253 unit, 211/211 negative.**
+
+One run emitted an SBCL `CORRUPTION WARNING` / memory fault in a *foreign function* at image
+exit, AFTER reporting 943/943.  Not reproducible: a full re-run and two filtered runs were
+clean.  Consistent with the `LLVM-C.dll` teardown flakiness CLAUDE.md already documents.
+Recorded rather than ignored, since it was absent from every previous run.
 
 
 Phase 0 — device-queried hardware facts
@@ -212,7 +364,7 @@ pass locally where `llvm-spirv` exists.
 Detection rather than an env var because a var must be remembered on every new pod; probing is
 self-correcting.  `SKIP_SPIRV_TESTS` is still honored as an explicit opt-out.
 
-Wired into all FOUR SPIR-V entry points so the harness agrees with itself about what the
+Wired into all FIVE SPIR-V entry points so the harness agrees with itself about what the
 machine can do:
 
 | Entry point | Directive | Was |
@@ -221,6 +373,18 @@ machine can do:
 | `run-spec-expect-stderr-pass` | `EXPECT-STDERR[--ir-target=spv]` | no guard → exit 127 FAIL |
 | `run-single-spec-pass` | `TEST-WITH[--ir-target=spv]` | env var only, no detection |
 | `run-spec-with-hoist` (L0) | `TEST-HOIST[L0]` | needs a .spv; only probed for an Intel *GPU* |
+| `run-spec-ffi` | `FFI-LINK` + `TEST-WITH[--ir-target=spv]` | env var only, no detection |
+
+**The fifth was found the hard way, and it was my miss.**  I wrote "all four SPIR-V entry
+points" on 2026-07-28 and the first full run on a real CUDA-only H100 came back **936/943** —
+seven FFI specs (122-ffi x2, 123-ffi-ad x5) failing on the translator's exit 127.  The FFI
+harness has its OWN skip path (`run-spec-ffi`, run-specs.lisp:292) which tested
+`SKIP_SPIRV_TESTS` alone.  Fixed the same way; verified in both directions locally (present ->
+`FFI[spv] PASS`, simulated-absent -> `SKIP`) and then on the pod.
+
+**Final state: 943/943 on the CUDA-only H100, identical to local.**  Worth noting that the
+local suite could never have caught this — the machine has a working translator, so the FFI spv
+path always ran.  Only the CUDA-only box exercises the skip.
 
 Note the L0-hoist auto-skip on non-Intel hardware **already existed** (endeavor 140
 reconcile, run-specs.lisp:1301) and worked correctly on the pod — the 133/10-12 failures came
@@ -553,6 +717,49 @@ All `MMA_CORRECT`.  Three conclusions, the first of which kills the prediction:
    arithmetic while discarding the locality linear order already had.  This is the direction the
    `W = sqrt(R · tile_M / tile_N)` algebra predicts (wide tiles want narrow strips), though not
    the magnitude — for chap3 it suggests ~5 where the measurement wants 1.
+
+### 8192 (16x L2) — the "cliff is just later" hypothesis is REFUTED, with one nuance
+
+The user's reading was that H100 is simply far more powerful, so its cliff sits at a larger
+size rather than being absent.  Tested at 8192, where the working set is 800 MB = **16x** the
+50 MB L2 — against BMG, which fell off at only **2.8x** its 18 MB.
+
+| Chapter @8192 | linear | grouped W=4 | |
+|---|---:|---:|---|
+| chap1.5_async_block (64x64 tile) | 63.77 | **65.70** | **+3.0%** |
+| chap3_wgmma (64x256 tile) | **230.18** | 190.17 | **-17.4%** |
+
+Both `MMA_CORRECT`.  Linear scaling across all three sizes:
+
+| | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|
+| chap1.5 linear | 36.95 | 59.60 | 63.77 |
+| chap3 linear | 124.83 | 207.64 | **230.18** |
+
+**No cliff, at four times BMG's crossover multiple.**  Throughput rises monotonically and
+merely FLATTENS (chap3: +66% then +11%), which is the signature of approaching a roofline, not
+of falling out of cache.  So the BMG cliff is not explained by "working set > L2" at any
+multiple, and the H100 result is a genuine difference in kind rather than in degree.
+
+**The nuance, which partly vindicates the intuition:** for the SQUARE 64x64 tile, grouping goes
+-0.6% at 4096 to **+3.0%** at 8192 — the benefit does grow with size, just asymptotically
+rather than as a cliff.  For the 64x256 tile it goes the other way (-8.3% at 4096 to **-17.4%**
+at 8192), the monotonic degradation getting worse.  Both are consistent with strip width having
+to scale INVERSELY with tile width: a W-wide strip spans `tile_N x W` columns, so a wide tile
+saturates the matrix and the grouping degenerates.
+
+Net: the measured-per-machine gate (`:tile-visit-strip-width`, absent on `h100`) remains
+correct.  A future refinement could make the width tile-shape-aware rather than per-machine,
+which the chap1.5-vs-chap3 divergence at 8192 argues for — but that is a new experiment, not a
+conclusion from this data.
+
+#### Measurement note: a 671 MB shell variable
+
+The first 8192 sweep appeared to hang for 15+ minutes on one config, with a `grep` pegged at
+94% CPU.  Not a kernel or correctness problem: the generated harness dumps every buffer, so a
+single 8192 run emits **671 MB** of text, and capturing that into `$(...)` and regexing it was
+quadratic.  Fixed by streaming the binary's output through `grep` instead of capturing it.
+Worth remembering before benchmarking any large size through this harness.
 
 ### CONSEQUENCE — a live regression, and why the gate is wrong
 
