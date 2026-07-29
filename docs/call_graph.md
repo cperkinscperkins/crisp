@@ -765,6 +765,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp [See above]
 - - - - - - - (CALCULATE-NATIVE-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp
 - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - (REGISTER-BUILTIN-HARDWARE-PROFILES)  mma.lisp
+- - - - - - (REGISTER-HARDWARE-PROFILE NAME PROPLIST)  hardware-profile.lisp
+- - - - - - - (%HP-VALIDATE-VALUE PROFILE-NAME KEY TYPE RAW)  hardware-profile.lisp
+- - - - - - - - (%HP-UNQUOTE V)  hardware-profile.lisp
+- - - - - - - - (%HP-PARSE-SIZE V)  hardware-profile.lisp
+- - - - - - - - (%HP-3-POS-INTS-P X)  hardware-profile.lisp
 - - (COMPILE-FILES FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P HOIST-TARGETS &OPTIONAL BC-FILES) :CRISP.MAIN  main.lisp
 - - - (INITIALIZE-DEBUG-CONTEXT MODULE DI-BUILDER FILEPATH) :CRISP.MAIN  main.lisp
 - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
@@ -864,6 +870,16 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
 - - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
 - - - - - - - (%HP-SCRATCH-ELEM-BYTES ELEM-TYPE)  hardware-profile.lisp
+- - - - - (%HP-REPORT-SHARED-MEMORY KERNEL-NAME PROFILE)  hardware-profile.lisp
+- - - - - - (%HP-KERNEL-SHARED-BYTES KERNEL-NAME)  hardware-profile.lisp [See above]
+- - - - - (%HP-REPORT-REGISTER-OCCUPANCY KERNEL-NAME PROFILE)  hardware-profile.lisp
+- - - - - - (%KERNEL-REGISTERS-PER-THREAD KERNEL-NAME)  mma.lisp
+- - - - - - - (%SPV-KERNEL-REGISTER-DEMAND KERNEL-NAME)  mma.lisp
+- - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
+- - - - - (%SPV-DECIDE-REGISTER-MODE KERNEL-NAME PROFILE)  mma.lisp
+- - - - - - (%HP-REGISTER-MODES &OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp
+- - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - (%SPV-KERNEL-REGISTER-DEMAND KERNEL-NAME)  mma.lisp [See above]
 - - - (LINK-FOREIGN-BITCODE MODULE BC-FILES) :CRISP.MAIN  main.lisp
 - - - (COMPILE-TO-SPIRV MODULE OUTPUT-PATH &KEY DEBUG-P)  compiler.lisp
 - - - - (%REMOVE-DEAD-ARRAY-RETURNING-FUNCTIONS MODULE)  compiler.lisp
@@ -924,6 +940,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
 - - - - (%HP-SERIALIZE-ACTIVE-PROFILE STREAM)  hardware-profile.lisp
 - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - (%HP-SELECTED-REGISTERS-PER-THREAD)  hardware-profile.lisp
 - - - - (SERIALIZE-KERNELS OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)  metadata.lisp
 - - - - - (GENERATE-PHYSICAL-SIGNATURE SIG-OR-PARAMS)  metadata.lisp
 - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
@@ -1016,6 +1033,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%TS-MAYBE-INFER-TILE-SHAPE TENSOR-FORM TILE-SPEC TILE-SPEC-KIND)  analysis/control.lisp
 - - - - - - - (%TS-DERIVE-FROM-AGREES-P DERIVE TENSOR-FORM TILE-SPEC)  analysis/control.lisp
 - - - - - - - - (%TS-NORMALIZE-DERIVE-FROM DERIVE)  analysis/control.lisp
+- - - - - (%TILE-VISIT-LOG-DECISION N TILE-SPEC-KIND TILE-SPEC STRIP-WIDTH)  analysis/control.lisp
+- - - - - (%TILE-VISIT-STRIP-WIDTH N TILE-SIZES)  compiler.lisp
+- - - - - - (%TILE-VISIT-OVERRIDE)  compiler.lisp
+- - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - (%EXPAND-TILE-STRIDE-SWIZZLED TENSOR-FORM BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN STRIP-WIDTH LOCATION)  analysis/control.lisp
+- - - - - - (%BUILD-EXACT-ITER-COUNT-FORM START-SYM STRIDE-SYM LEN-SYM CL-PKG)  analysis/control.lisp [See above]
 - - - - - (%EXPAND-WORKGROUP-STRIDED-OUTER-LOOP-WITH-TS-SYMS TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN LOCATION)  analysis/control.lisp
 - - - - - - (%BUILD-EXACT-ITER-COUNT-FORM START-SYM STRIDE-SYM LEN-SYM CL-PKG)  analysis/control.lisp [See above]
 - - - (%EXPAND-HARDWARE-STRIDE-OP FORM TYPE-RESOLVER-FN LOCATION)  macros.lisp
@@ -1128,6 +1151,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%HAS-EXPLICIT-N ARGS)  autodiff.lisp
 - - (%IS-TENSOR-ALIAS SYM)  autodiff.lisp
 - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+
+- (%HP-REGISTERS-PER-THREAD-MAX &OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp
+- - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - (%HP-REGISTER-MODES &OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp [See above]
 
 - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp
 - - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp
@@ -1411,7 +1438,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp
 - - - (%WARP-MASK-UNQUOTE V)  mma.lisp
 - - - (%REGISTER-TILE-FIT-CHECK M N LOCATION)  mma.lisp
-- - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - (%HP-REGISTERS-PER-THREAD-DEFAULT &OPTIONAL (PROFILE
+                                                     (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp
+- - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - (%HP-REGISTER-MODES &OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp [See above]
 - - - (%VALIDATE-WARP-MASK MASK NFRAGS N-WARPS M N LOCATION)  mma.lisp
 - - - - (%WARP-MASK-CONTIGUOUS-TRUE-P MASK)  mma.lisp
 - - - (%RESOLVE-WORKGROUP-WARP-COUNT CONTEXT)  mma.lisp
@@ -1487,7 +1517,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-MAKE-REGISTER-FRAGMENT EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
+- - (%SPV-NOTE-REGISTER-FRAGMENT ROWS COLS CONTEXT LOCATION)  mma.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%PTX-NOTE-REGISTER-DEMAND REGS CONTEXT LOCATION)  mma.lisp
+- - - (%PTX-NOTE-REGISTER-DEMAND-KEYED REGS CONTEXT KEY)  mma.lisp
 
 - (ANALYZE-MAKE-REGISTER-TILE EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%ENSURE-REGISTER-TILE-TYPE M N)  mma.lisp
@@ -1525,6 +1558,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-MAKE-WGMMA-ACCUMULATOR EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%CHECK-WGMMA-SHAPE SHAPE LOCATION &OPTIONAL SWIZZLE)  mma.lisp
+- - (%WGMMA-ACC-FIT-CHECK M N LOCATION)  mma.lisp
+- - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - (%HP-REGISTERS-PER-THREAD-DEFAULT &OPTIONAL (PROFILE
+                                                   (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp [See above]
+- - (%PTX-NOTE-REGISTER-DEMAND-KEYED REGS CONTEXT KEY)  mma.lisp [See above]
 - - (%ENSURE-WGMMA-ACC-TYPE N)  mma.lisp
 - - - (%WGMMA-ACC-TYPE-NAME N)  mma.lisp
 - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
@@ -1925,11 +1963,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (DEF-HARDWARE-PROFILE NAME &REST PROPLIST)  macros.lisp
-- - (REGISTER-HARDWARE-PROFILE NAME PROPLIST)  hardware-profile.lisp
-- - - (%HP-VALIDATE-VALUE PROFILE-NAME KEY TYPE RAW)  hardware-profile.lisp
-- - - - (%HP-PARSE-SIZE V)  hardware-profile.lisp
-- - - - (%HP-UNQUOTE V)  hardware-profile.lisp
-- - - - (%HP-3-POS-INTS-P X)  hardware-profile.lisp
+- - (REGISTER-HARDWARE-PROFILE NAME PROPLIST)  hardware-profile.lisp [See above]
 
 - (DEF-KERNEL NAME PARAMS &REST BODY)  macros.lisp
 - - (PARSE-KERNEL-SIGNATURE NAME PARAMS BODY)  macros.lisp

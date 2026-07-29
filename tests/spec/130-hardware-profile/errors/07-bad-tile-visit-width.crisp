@@ -1,0 +1,14 @@
+;; CHECK-FAIL: "positive integer"
+;;
+;; Endeavor 144 Phase 1 (revision) — `:tile-visit-strip-width` is a positive integer.
+;;
+;; Worth a negative test because the value is a MEASURED machine constant, so a typo would be
+;; silently plausible: a bad width does not make a kernel wrong (the mapping is a bijection at
+;; any width), it just makes it slower — exactly the class of mistake that survives testing.
+;; Rejecting it at the definition keeps that from happening.
+;;
+;; Fires at the def-hardware-profile itself, so no flag is needed.
+
+(def-hardware-profile bad-visit
+  :simd-width 16
+  :tile-visit-strip-width 0)

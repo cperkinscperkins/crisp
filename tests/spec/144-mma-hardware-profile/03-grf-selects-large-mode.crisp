@@ -1,0 +1,53 @@
+;; COMPILE-WITH[--hardware-profile=bmgmodes --ir-target=spv]: PASS
+;; EXPECT-STDERR[--hardware-profile=bmgmodes --ir-target=spv]: "selecting the 256-register mode"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "forward-only MMA"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; Endeavor 144 Phase 4 — the Intel GRF model selects a larger register-file mode.
+;;
+;; MEASURED MOTIVATION: all three BMG benchmark kernels were SPILLING (intel_prefetch
+;; 1792 B, chap0_sync 2560 B, chap1_async_linear 2752 B) because %register-tile-fit-check
+;; SKIPS :spirv, so Crisp had no GRF model on the one backend whose own doctrine says
+;; "Register Pressure is the Only Limit".  IGC was left in its default 128-GRF mode for
+;; kernels demanding 256, and spilled rather than being asked for the larger file.
+;; Requesting it measured 1.5-2.07x faster on a B580 (see results.md).
+;;
+;; THE ARITHMETIC.  A register tile is SUBGROUP-collective and one Xe2 GRF register is
+;; 32 B, so demand = (total fragment elements x 4 B) / 32 B = elements / 8 — SIMD-width
+;; independent, because the EU thread IS the subgroup.  Here:
+;;   C-tile 32x64 = 2048 elements -> 2048/8 = 256 registers/thread
+;; which is ABOVE the profile's default allocation (128) but fits its larger mode (256),
+;; so the compiler selects 256 and says so.
+;;
+;; D4 (decision, 2026-07-27): :max-registers-per-thread takes a SCALAR (NVIDIA: one fixed
+;; allocation) or an ascending LIST of SELECTABLE modes (Intel: the register file is a
+;; JIT-time mode).  Register WIDTH (4 B vs 32 B) stays a backend fact, not a profile key.
+
+(def-hardware-profile bmgmodes
+  :simd-width 16
+  :mma-shapes ((8 16 8))
+  :max-registers-per-thread (128 256))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul_grf_large (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one sub-group
+  (let ((A-tile (make-scratch-matrix float (32 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (C-tile (make-register-tile float (32 64) 0.0))   ; 2048 elements -> 256 regs/thread
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0))
+        (fill-tile C-tile 0.0))
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

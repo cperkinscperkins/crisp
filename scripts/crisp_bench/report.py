@@ -14,6 +14,7 @@ Usage:
   python scripts/crisp_bench/report.py --output benchmarks/REPORT.md
 """
 import json
+import re
 import argparse
 import sys
 from pathlib import Path
@@ -84,10 +85,24 @@ def generate_markdown(results_dir: Path, out_file: Path = None):
     # hardware_groups: [GPU][Chapter][Precision][Size][Competitor] -> (tflops, kernel_ms)
     hardware_groups = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
     vendor_ceilings = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-    # compile_times: [GPU][Chapter][Competitor] -> list of all_compile_ms (averaged across precision)
+    # compile_times: [GPU][Chapter][Competitor] -> list of DEVICE compile ms (avg across precision).
+    # Endeavor 144: this used to read all_compile_ms, which for the vendor toolchains was a full
+    # source->linked-executable build (host C++ + linking -lcublas / -qmkl) while Crisp's was
+    # source->IR.  device_compile_ms is the like-for-like quantity on both sides.
     compile_times = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
-    for f in results_dir.glob("results_*.json"):
+    # Endeavor 144: process files OLDEST-FIRST so that when two runs cover the same
+    # (gpu, chapter, competitor, precision, size) the NEWEST wins deterministically.
+    #
+    # The assignments below overwrite rather than reduce, and `glob` returns filesystem order,
+    # so previously the winner between duplicate runs was ARBITRARY — which is why regenerating
+    # this report could change numbers with no code or data change.  The results filenames end
+    # in a unix timestamp; sort on it, falling back to mtime for any file that lacks one.
+    def _run_stamp(path):
+        m = re.search(r"_(\d{9,})\.json$", path.name)
+        return int(m.group(1)) if m else int(path.stat().st_mtime)
+
+    for f in sorted(results_dir.glob("results_*.json"), key=_run_stamp):
         with open(f, "r") as fh:
             data = json.load(fh)
         gpu = data["run_metadata"]["hardware"]["gpu_model"]
@@ -101,10 +116,10 @@ def generate_markdown(results_dir: Path, out_file: Path = None):
             sz = f"{point['configuration']['m']}x{point['configuration']['n']}x{point['configuration']['k']}"
             tflops = point["metrics"]["throughput"]["tflops"]
             k_ms = point["metrics"]["runtime"]["kernel_execution_ms"]
-            all_c_ms = point["metrics"]["compile_time"]["all_compile_ms"]
+            dev_c_ms = point["metrics"]["compile_time"]["device_compile_ms"]
             metrics = (tflops, k_ms)
 
-            compile_times[gpu][chapter][competitor].append(all_c_ms)
+            compile_times[gpu][chapter][competitor].append(dev_c_ms)
 
             if chapter == "vendor_ceiling" or competitor.startswith("CUBLAS_") or competitor.startswith("OneMKL_"):
                 vendor_ceilings[gpu][prec_key][sz][competitor] = metrics
@@ -299,10 +314,19 @@ def _compile_section(gpu, compile_times):
         comps = compile_times[gpu][chapter]
         crisp_avg = (sum(comps["Crisp"]) / len(comps["Crisp"])) if comps.get("Crisp") else None
         # Crisp first, then the rest alphabetically
-        ordered = (["Crisp"] if "Crisp" in comps else []) + sorted(c for c in comps if c != "Crisp")
+        # Endeavor 144: EXCLUDE the library ceilings (cuBLAS / oneMKL).  Their GEMM kernels ship
+        # precompiled inside the vendor library, so a device-only compile of the caller measures
+        # essentially nothing -- reporting it would flatter them as much as the old full-build
+        # number unfairly penalised them.  The meaningful compile comparison is against the
+        # hand-written kernel competitors, which contain real device code.
+        ordered = (["Crisp"] if "Crisp" in comps else []) + sorted(
+            c for c in comps
+            if c != "Crisp" and not (c.startswith("CUBLAS_") or c.startswith("OneMKL_")))
         for comp in ordered:
-            vals = comps[comp]
-            avg = sum(vals) / len(vals) if vals else 0.0
+            vals = [v for v in comps[comp] if v and v > 0.0]
+            if not vals:
+                continue          # device-only compile unavailable; omit rather than print 0
+            avg = sum(vals) / len(vals)
             if comp == "Crisp":
                 ratio = "1.0× (baseline)"
             elif crisp_avg:
@@ -311,12 +335,18 @@ def _compile_section(gpu, compile_times):
                 ratio = "—"
             lines.append(f"| {chapter} | {comp} | {avg:.0f} | {ratio} |")
     if platform == "intel":
-        footnote = ("\n> Crisp compiles a kernel to SPIR-V; the native competitors invoke `icpx` "
-                    "(SYCL / oneMKL). Lower is better; `× vs Crisp` is how much longer than Crisp that "
-                    "toolchain takes.\n")
+        footnote = ("\n> **Device-only compilation on both sides.**  Crisp `--ir-target=spv`; the "
+                    "competitor `icpx -fsycl -fsycl-device-only -fsycl-targets=spir64`.  Neither "
+                    "figure includes host-code compilation, linking, or the runtime JIT of the "
+                    "resulting IR.  Library ceilings (oneMKL) are omitted — their kernels ship "
+                    "precompiled inside the library, so there is no device compile to measure.  "
+                    "Lower is better.\n")
     else:
-        footnote = ("\n> Crisp compiles a kernel to PTX; the native competitors invoke `nvcc`. "
-                    "Lower is better; `× vs Crisp` is how much longer than Crisp that toolchain takes.\n")
+        footnote = ("\n> **Device-only compilation on both sides.**  Crisp `--ir-target=ptx`; the "
+                    "competitor `nvcc -ptx`.  Neither figure includes host-code compilation, "
+                    "linking, or the driver's JIT of the resulting IR.  Library ceilings (cuBLAS) "
+                    "are omitted — their kernels ship precompiled inside the library, so there is "
+                    "no device compile to measure.  Lower is better.\n")
     lines.append(footnote)
     return lines
 

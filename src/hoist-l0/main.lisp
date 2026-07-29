@@ -2,6 +2,42 @@
 
 
 
+(defvar *l0-selected-registers-per-thread* nil
+  "Endeavor 144 Phase 4: the per-thread register allocation the COMPILER selected for this
+   module, read from the metacrisp's (:hardware-profile ... :selected-registers-per-thread N).
+   NIL when no profile was active or no kernel needed more than the default allocation.
+   Consumed by generate-module-loading to set ze_module_desc_t.pBuildFlags.")
+
+(defvar *l0-register-modes* nil
+  "Endeavor 144 Phase 4: the profile's selectable :max-registers-per-thread modes (a list),
+   so the hoist can tell whether the selected allocation IS the default (emit nothing) or a
+   larger mode (emit the IGC flag).")
+
+(defvar *l0-compute-units* nil
+  "Endeavor 144 Phase 6: the active profile's :compute-units (Xe-cores on Intel), or NIL.
+   Latched by %l0-latch-hardware-profile; consumed by %l0-emit-occupancy-and-strategy to
+   replace the queried numSlices*numSubslicesPerSlice product.")
+
+(defun %l0-latch-hardware-profile (data)
+  "Endeavor 144: cache the active hardware profile's L0-relevant decisions in the specials
+   above, from an already-parsed metacrisp plist.
+
+   This lives HERE rather than in parse-metacrisp-file (src/hoist/common.lisp) on purpose.
+   `common` is shared by BOTH hoist backends, and crisp-hoist-cuda depends only on
+   crisp-hoist-common — it never loads this package.  An earlier version latched from
+   common.lisp via (find-symbol ... :crisp.hoist.l0), which is a PACKAGE-ERROR in the CUDA
+   binary and broke every TEST-HOIST spec on both backends.  Backend-specific state belongs in
+   the backend; the dependency only ever points hoist-l0 -> hoist-common."
+  (let* ((profile (metacrisp-hardware-profile data))
+         (modes   (getf profile :max-registers-per-thread)))
+    (setf *l0-register-modes*
+          (if (listp modes) modes (and modes (list modes)))
+          *l0-selected-registers-per-thread*
+          (getf profile :selected-registers-per-thread)
+          *l0-compute-units*
+          (getf profile :compute-units))
+    profile))
+
 (defvar *mma-test-dims* nil "(M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.")
 (defvar *mma-bench-iters* nil
   "Endeavor 142 (Phase B, Q1): iteration count when --mma-bench[=N] is passed — the launcher then wraps
@@ -163,9 +199,12 @@
   "Generate Level Zero C++ launcher code from metacrisp file.
    Extended to extract and pass dispatch declarations to generate-cpp-main."
   (let* ((data (parse-metacrisp-file metacrisp-path))
+         ;; Endeavor 144: cache the profile's L0 decisions before any emitter runs.
+         (ignore-profile (%l0-latch-hardware-profile data))
          (kernels (metacrisp-kernels data))
          (aliases (metacrisp-aliases data))
          (base-name (pathname-name metacrisp-path)))
+    (declare (ignore ignore-profile))
 
     (format t "Processing ~a~%" metacrisp-path)
     (format t "  Kernels: ~a~%" (length kernels))
@@ -437,8 +476,27 @@
   (format stream "        return 1;~%")
   (format stream "    }~%~%"))
 
+
+
+
+(defun %l0-register-build-flags ()
+  "Endeavor 144 Phase 4: the IGC build-flag string for the compiler-selected register
+   allocation, or NIL when nothing needs to be requested.
+
+   Emits `-ze-opt-large-register-file` only when the selected allocation is ABOVE the
+   profile's default (first) mode.  Returning NIL for the default case matters: large-GRF
+   is not free — it halves threads-per-EU — so it must be requested only for kernels whose
+   register demand actually exceeds the default allocation."
+  (let ((sel   *l0-selected-registers-per-thread*)
+        (modes *l0-register-modes*))
+    (when (and sel modes (> sel (first modes)))
+      "-ze-opt-large-register-file")))
+
 (defun generate-module-loading (stream spv-path)
-  "Generate SPIR-V module loading code"
+  "Generate SPIR-V module loading code.
+
+   Endeavor 144 Phase 4: pBuildFlags now carries the compiler-selected register allocation
+   (see %l0-register-build-flags) instead of being unconditionally nullptr."
   (format stream "    // Load SPIR-V module~%")
   (format stream "    const char* spv_path = \"~a\";~%" (namestring spv-path))
   (format stream "    std::vector<uint8_t> spirv_data;~%")
@@ -449,15 +507,24 @@
   (format stream "        return 1;~%")
   (format stream "    }~%~%")
 
-  (format stream "    ze_module_desc_t moduleDesc = {~%")
-  (format stream "        ZE_STRUCTURE_TYPE_MODULE_DESC,~%")
-  (format stream "        nullptr,~%")
-  (format stream "        ZE_MODULE_FORMAT_IL_SPIRV,~%")
-  (format stream "        spirv_data.size(),~%")
-  (format stream "        spirv_data.data(),~%")
-  (format stream "        nullptr,~%")
-  (format stream "        nullptr~%")
-  (format stream "    };~%~%")
+  (let ((flags (%l0-register-build-flags)))
+    (when flags
+      (format stream "    // Endeavor 144: the kernel's register-tile demand (~a registers/thread)~%"
+              *l0-selected-registers-per-thread*)
+      (format stream "    // exceeds this target's default allocation (~a), so ask IGC for the larger~%"
+              (first *l0-register-modes*))
+      (format stream "    // register file.  Without this the JIT spills instead (measured 1.5-2x slower).~%")
+      (format stream "    const char* _buildFlags = \"~a\";~%" flags))
+
+    (format stream "    ze_module_desc_t moduleDesc = {~%")
+    (format stream "        ZE_STRUCTURE_TYPE_MODULE_DESC,~%")
+    (format stream "        nullptr,~%")
+    (format stream "        ZE_MODULE_FORMAT_IL_SPIRV,~%")
+    (format stream "        spirv_data.size(),~%")
+    (format stream "        spirv_data.data(),~%")
+    (format stream "        ~a,~%" (if flags "_buildFlags" "nullptr"))
+    (format stream "        nullptr~%")
+    (format stream "    };~%~%"))
 
   (format stream "    ze_module_handle_t module;~%")
   (format stream "    result = zeModuleCreate(context, device, &moduleDesc, &module, nullptr);~%")
@@ -535,26 +602,31 @@
            (format nil "(uint32_t)~a" cpp-var))))
    (t "1")))
 
+
+
+
 (defun %l0-emit-occupancy-and-strategy (stream is-strided is-interleaved occupancy derive-from-is-tensor derive-from)
-  "Emit strategy descriptions and max-occupancy calculation."
+  "Emit strategy descriptions and max-occupancy calculation.
+
+   Endeavor 144 Phase 6: when a hardware profile supplies :compute-units, it REPLACES the
+   queried numSlices*numSubslicesPerSlice (Xe-core count) in the occupancy formula; the
+   per-Xe-core terms stay queried.  See the decision block above."
   (when is-strided
         (let ((ratio (cond ((null occupancy) 1.0)
                            ((numberp occupancy) (float occupancy))
                            (t 1.0))))
           (format stream "    // Strategy: :strided — max occupancy~%")
-          ;; Endeavor 130 Phase 5 (DEFERRED for L0): a CUDA hardware profile's
-          ;; :compute-units overrides the device SM query (see hoist-cuda emit-launch,
-          ;; `int _numSMs = <N>;`).  The active profile ALREADY travels into the
-          ;; metacrisp (metacrisp-hardware-profile), so the wiring is ready here too.
-          ;; What's undecided is the mapping: CUDA :compute-units == SM count (1:1 with
-          ;; _numSMs), but Intel has no single "compute unit" — the occupancy below is
-          ;; numSubslices × numEUsPerSubslice × numThreadsPerEU.  Whether :compute-units
-          ;; should override numSubslices, map to Xe-cores, or use a distinct Intel key
-          ;; is left until we actually benchmark on BMG (per user, 2026-07-04).  Until
-          ;; then L0 keeps the runtime zeDeviceGetComputeProperties query unconditionally.
           (format stream "    ze_device_properties_t _deviceProps = { ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES };~%")
           (format stream "    zeDeviceGetProperties(device, &_deviceProps);~%")
-          (format stream "    uint32_t _hw_threads = _deviceProps.numSlices * _deviceProps.numSubslicesPerSlice * _deviceProps.numEUsPerSubslice * _deviceProps.numThreadsPerEU;~%")
+          (if *l0-compute-units*
+              (progn
+                (format stream "    // Endeavor 144 Phase 6: hardware profile active — :compute-units (~a Xe-cores)~%"
+                        *l0-compute-units*)
+                (format stream "    //   replaces the queried numSlices*numSubslicesPerSlice; EUs/core and~%")
+                (format stream "    //   threads/EU remain queried (micro-architectural, not user-shrinkable).~%")
+                (format stream "    uint32_t _xe_cores = ~d;~%" *l0-compute-units*)
+                (format stream "    uint32_t _hw_threads = _xe_cores * _deviceProps.numEUsPerSubslice * _deviceProps.numThreadsPerEU;~%"))
+              (format stream "    uint32_t _hw_threads = _deviceProps.numSlices * _deviceProps.numSubslicesPerSlice * _deviceProps.numEUsPerSubslice * _deviceProps.numThreadsPerEU;~%"))
           (format stream "    // Refine with kernel resource footprint (privateMemSize, spillMemSize)~%")
           (format stream "    ze_kernel_properties_t _kernelProps = { ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES };~%")
           (format stream "    zeKernelGetProperties(kernel, &_kernelProps);~%")
@@ -571,7 +643,6 @@
 
   (when is-interleaved
         (format stream "    // Strategy: :interleaved not yet implemented — using default dispatch~%")))
-
 
 
 ;;; =====================================================================

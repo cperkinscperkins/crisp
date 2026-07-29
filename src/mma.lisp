@@ -38,13 +38,52 @@
 ;; MMA metadata (role / shape / regs-per-lane / layout) is carried by the analyzer +
 ;; codegen keyed on the record NAME for now (it encodes acc / f32 / 16x8 / 4-regs);
 ;; it graduates to a richer minting when we generalize across shapes.
+
+
+
+(defun %spv-decide-register-mode (kernel-name profile)
+  "Endeavor 144 Phase 4: pick the per-thread register allocation for KERNEL-NAME from the
+   profile's selectable :max-registers-per-thread modes, and record it in
+   *kernel-register-mode* for the metacrisp.
+
+   Three outcomes:
+     demand <= default mode       -> default; silent (nothing to trade).
+     default < demand <= a larger -> select the SMALLEST mode that fits, and say so.
+                                     This is the case that was silently costing 1.5-2x
+                                     on BMG: IGC spilled rather than being asked for the
+                                     larger allocation.
+     demand > every mode          -> WARN; it will spill whatever we choose.
+   Returns the chosen mode, or NIL when there is nothing to decide."
+  (let ((modes (%hp-register-modes profile)))
+    (when modes
+      (multiple-value-bind (demand elements) (%spv-kernel-register-demand kernel-name)
+        (when (plusp demand)
+          (let* ((default-mode (first modes))
+                 (fitting      (find-if (lambda (mode) (<= demand mode)) modes))
+                 (chosen       (or fitting (reduce #'max modes))))
+            (setf (gethash kernel-name *kernel-register-mode*) chosen)
+            (cond
+              ((null fitting)
+               (format *error-output*
+                       "WARNING: kernel ~a needs ~a registers/thread (~a register-tile elements x 4 B / ~a B per GRF register), exceeding every selectable allocation ~a in the hardware profile — it will SPILL in any mode.  Reduce the register-tile shape, the ring depth, or distribute the tile across more warps (:warps).~%"
+                       kernel-name demand elements *spv-grf-register-bytes* modes))
+              ((> demand default-mode)
+               (format *error-output*
+                       "NOTE: kernel ~a needs ~a registers/thread, above the default allocation of ~a — selecting the ~a-register mode.  (Larger allocations trade threads-per-EU for registers; without this the JIT would spill instead.)~%"
+                       kernel-name demand default-mode chosen)))
+            chosen))))))
+
 (defun register-mma-types ()
   "Registers the MMA register-fragment record types.  Called from initialize-compiler
    AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every
    init, so a load-time registration would not survive).
 
    tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4
-   regs.  tf32 is fp32-stored, so all fragment fields are float."
+   regs.  tf32 is fp32-stored, so all fragment fields are float.
+
+   Endeavor 144 Phase 0: also registers the BUILTIN hardware profiles, which must happen
+   after initialize-compiler's clrhash of *hardware-profiles* — this is the first hook that
+   runs there.  See register-builtin-hardware-profiles for the src-patch note."
   (register-struct-definition 'register-fragment-acc-f32-16x8
                               '((r0 float) (r1 float) (r2 float) (r3 float))
                               :record)
@@ -53,7 +92,78 @@
                               :record)
   (register-struct-definition 'register-fragment-b-tf32-8x8
                               '((b0 float) (b1 float))
-                              :record))
+                              :record)
+  (register-builtin-hardware-profiles))
+
+
+
+
+(defun register-builtin-hardware-profiles ()
+  "Endeavor 144 Phase 0 (D2): register Crisp's predefined hardware profiles.
+
+   Called from register-mma-types, which initialize-compiler invokes AFTER it clrhash-es
+   *hardware-profiles* — so builtins survive the clear and a same-named user profile still
+   overrides them.
+
+   NOTE FOR THE SRC PATCH: this belongs as its own call in initialize-compiler next to
+   register-builtins."
+  ;; Intel Arc B580 (Battlemage / Xe2).  Device-queried 2026-07-27.
+  ;; :tile-visit-strip-width 4 — MEASURED: grouped visit order is worth +63% at 2048 here
+  ;; (linear 17.1 -> 27.9 TFLOPS), and 4 beat 2/8/16 across both sizes tested.
+  (register-hardware-profile
+   'bmg
+   '(:simd-width 16                        ; subGroupSizes reports BOTH 16 and 32
+     :compute-units 20                     ; Xe-cores (5 slices x 4 subslices)
+     :max-registers-per-thread (128 256)   ; GRF registers (32 B each) — selectable modes
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 1024)
+     :max-shared-memory-per-block 128KB
+     :l2-cache-size 18MB
+     :native-cache-line-size 64            ; Xe2 LSC line; not queryable
+     :tile-visit-strip-width 4             ; measured; see the Phase 1 revision comment
+     :mma-shapes ((8 16 8))))              ; XMX tf32
+  ;; NVIDIA H100 PCIe (Hopper).  Device-queried 2026-07-28.
+  ;; :compute-units 114 is the PCIe part (SXM is 132); this value OVERRIDES the device SM query
+  ;; in the generated CUDA launch grid, so the variant distinction is load-bearing.
+  ;; :max-shared-memory-per-block is the OPT-IN cap, not the 48KB default (chap2/chap3 exceed 48KB).
+  ;; :mma-shapes MUST include (16 8 8) — chap0/1/1.5/2 all pass that tf32 shape.
+  ;; NO :tile-visit-strip-width — MEASURED: grouped order is neutral-to-harmful here (chap2 worse
+  ;; at every width; chap3_wgmma -8.3% at W=4 degrading monotonically to -14.4% at W=16), and no
+  ;; cliff appears even at 4x L2.  Omitting the key means linear, which is what this part wants.
+  (register-hardware-profile
+   'h100
+   '(:simd-width 32
+     :compute-units 114
+     :max-registers-per-cu 65536
+     :max-registers-per-thread 255
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 64)
+     :max-shared-memory-per-block 227KB
+     :l2-cache-size 50MB
+     :native-cache-line-size 128
+     :mma-shapes ((16 8 8) (16 8 4) (16 8 16)))))
+
+
+
+;; src/mma.lisp
+(defvar *ptx-register-demand* (make-hash-table :test 'equal)
+  "Endeavor 144 Phase 3: (kernel-name . source-location) -> 32-bit registers/thread explicitly
+   reserved at that site on the NVIDIA path (register tiles and wgmma accumulators).  Keyed per
+   site and ASSIGNED, so Crisp's multipass re-analysis is idempotent — same discipline as
+   *spv-register-demand*.")
+
+
+;; src/mma.lisp
+(defun %kernel-registers-per-thread (kernel-name)
+  "Total explicitly-reserved registers/thread for KERNEL-NAME.  NVIDIA: 32-bit registers from
+   *ptx-register-demand*.  Intel/SPV: derived from the GRF element tally.  0 when nothing was
+   reserved."
+  (if (eq *target-backend* :spirv)
+      (values (%spv-kernel-register-demand kernel-name))
+      (let ((total 0))
+        (maphash (lambda (k v) (when (equal (car k) kernel-name) (incf total v)))
+                 *ptx-register-demand*)
+        total)))
 
 
 ;;; ===================================================================
@@ -79,20 +189,27 @@
         (values-list (first shapes))
         (values 16 8 8))))
 
+
+
+;; src/mma.lisp
 (defun analyze-make-register-fragment (expr env context location)
   "P1 / F-SPV: (make-register-fragment M N INIT &key operand).  :spirv -> a filled coop matrix;
    else the NVIDIA %construct-struct record.  Endeavor 142: :operand (a|b|acc, default acc) picks
-   the coop-matrix Use + shape so an A/B operand tile mints fragments matching load-fragment-a/b —
-   A = sm×sk Use 0, B = sk×sn Use 1, Acc = sm×sn Use 2."
+   the coop-matrix Use + shape so an A/B operand tile mints fragments matching load-fragment-a/b.
+
+   Endeavor 144: each fragment is tallied against the current kernel — as coop-matrix ELEMENTS on
+   SPV (Phase 4's GRF model) and as 32-bit REGISTERS on PTX (Phase 3's occupancy model).  Both
+   skip when the form carries :tally nil, which marks fill-tile's per-fragment set!s: those
+   RE-INITIALIZE fragments the tile already owns and allocate nothing."
   (destructuring-bind (m n init &rest kwargs) (cdr expr)
     (let* ((operand (getf kwargs :operand :acc))
+           (tally-p (getf kwargs :tally t))
            (use (ecase operand (:a 0) (:b 1) (:acc 2))))
       (if (eq *target-backend* :spirv)
-          ;; shape from the active profile's mma-shape (the source m/n is a logical hint; the
-          ;; hardware shape wins so one source runs on both vendors).
           (multiple-value-bind (sm sn sk) (%spv-mma-shape)
-            (let ((fr (ecase operand (:a sm) (:b sk) (:acc sm)))    ; fragment rows
-                  (fc (ecase operand (:a sk) (:b sn) (:acc sn))))   ; fragment cols
+            (let ((fr (ecase operand (:a sm) (:b sk) (:acc sm)))
+                  (fc (ecase operand (:a sk) (:b sn) (:acc sn))))
+              (when tally-p (%spv-note-register-fragment fr fc context location))
               (make-semantic-coop-op
                :type (list 'coop-matrix 'float fr fc use) :kind :fill
                :value-node (analyze-expression init env context (append location '(1)))
@@ -101,6 +218,10 @@
             (unless (and (eql m 16) (eql n 8))
               (error 'crisp-compiler-error
                      :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
+            ;; PTX fragment register counts, matching the records minted below:
+            ;; acc 16x8 f32 -> 4, A tf32 16x8 -> 4, B tf32 8x8 -> 2 (per lane, 32-bit each).
+            (when tally-p
+              (%ptx-note-register-demand (ecase operand (:acc 4) (:a 4) (:b 2)) context location))
             (analyze-expression
              (ecase operand
                (:acc `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init))
@@ -695,16 +816,20 @@
 
 
 
+
 (defun %register-tile-fit-check (m n location)
-  "F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile
-   is opaque cooperative matrices (the driver owns register residency), so SKIP.  Else:
-   (M/16)x(N/8) accumulator fragments x 4 fp32 regs <= :max-registers-per-thread."
+  "F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque
+   cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is
+   separate (Phase 4).  Else: (M/16)x(N/8) accumulator fragments x 4 fp32 regs <=
+   :max-registers-per-thread.
+
+   Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since
+   :max-registers-per-thread may be a scalar OR a list of selectable modes."
   (unless (eq *target-backend* :spirv)
     (let* ((nfrags        (* (floor m 16) (floor n 8)))
            (regs-per-frag 4)
            (total-regs    (* nfrags regs-per-frag))
-           (profile       (active-hardware-profile))
-           (budget        (or (and profile (getf profile :max-registers-per-thread))
+           (budget        (or (%hp-registers-per-thread-default)
                               *default-max-registers-per-thread*)))
       (when (> total-regs budget)
         (error 'crisp-compiler-error
@@ -824,39 +949,7 @@
                                for idx = (+ (* mi n-frags) nj)
                                append (one-frag (nth idx syms) mi nj))))))))))
 
-                                                   #|
-
-(defun %explode-rewrite-body-form (form tiles)
-  "Recursively rewrite body FORM: replace via-tile / store-tile references to
-   any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
-   otherwise recurse structurally."
-  (cond
-    ((not (consp form)) form)
-    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
-          (assoc (third form) tiles))
-     (let ((shape (nth 1 form)) (v (nth 2 form)) (a (nth 3 form)) (b (nth 4 form)))
-       ;; Still enforce the shape check the analyzer would have run — the explosion
-       ;; pre-empts analyze-mma-accumulate-via-tile, so validate here too.
-       (%check-mma-shape shape nil)
-       (if (>= (length form) 6)
-           ;; F3 body form: (via-tile shape v a b (binding) body…)
-           (let* ((binding-form (nth 5 form))
-                  (binding-sym (if (and (consp binding-form) (= (length binding-form) 1)
-                                        (symbolp (first binding-form)))
-                                   (first binding-form)
-                                   (error 'crisp-compiler-error
-                                          :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
-                                          :source-location nil)))
-                  (body (nthcdr 6 form)))
-             (%emit-per-frag-accumulate a b (assoc v tiles) tiles binding-sym body))
-           ;; bodyless (implicit single accum-op)
-           (%emit-per-frag-accumulate a b (assoc v tiles) tiles))))
-    ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
-          (assoc (second form) tiles))
-     (destructuring-bind (v dest tile-id) (cdr form)
-       (%emit-per-frag-store dest tile-id (assoc v tiles))))
-    (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
-    |#
+                                                  
 
 
 ;; ======================================================================
@@ -874,15 +967,103 @@
 ;;   - Scratch/SLM tile (real tensor): a workgroup-collective write of every element.
 ;;     NO barrier is inserted — the caller syncs before reading.
 
+
+;; src/mma.lisp
+(defparameter *wgmma-acc-occupancy-warn-fraction* 1/2
+  "Endeavor 144 Phase 2: warn when a wgmma accumulator alone occupies at least this
+   fraction of the per-thread register budget.  At 1/2, an m64n256 accumulator (128 of
+   255 registers) warns and an m64n128 (64) does not — so the advisory fires precisely on
+   the tile widths where occupancy, not fit, is the binding constraint.")
+
+;; src/mma.lisp
+(defun %wgmma-acc-fit-check (m n location)
+  "Endeavor 144 Phase 2: register accounting for a wgmma (M N) warpgroup accumulator.
+
+   A wgmma D accumulator holds N/2 flat f32 registers PER THREAD across the 128-thread
+   warpgroup (the wgmma D thread->element mapping).  Errors when that alone exceeds the
+   per-thread budget (the active profile's :max-registers-per-thread, else
+   *default-max-registers-per-thread*); warns when it consumes at least
+   *wgmma-acc-occupancy-warn-fraction* of it.
+
+   Deliberately accounts for the ACCUMULATOR ONLY — operand fragments, addressing, and
+   whatever ptxas adds ride on top, so the real per-thread count is strictly higher.  Like
+   %register-tile-fit-check, this checks what the developer explicitly reserved."
+  (let* ((threads-per-warpgroup 128)
+         (regs-per-thread    (floor n 2))
+         (regs-per-warpgroup (* regs-per-thread threads-per-warpgroup))
+         (profile (active-hardware-profile))
+         ;; Endeavor 144 D4: the key may now be a LIST of selectable modes, so read it
+         ;; through the accessor.  A wgmma kernel is NVIDIA-only (one fixed allocation),
+         ;; so the DEFAULT mode is the right budget here.
+         (budget  (or (%hp-registers-per-thread-default profile)
+                      *default-max-registers-per-thread*)))
+    (when (> regs-per-thread budget)
+      (error 'crisp-compiler-error
+             :message (format nil "make-wgmma-accumulator: a ~ax~a warpgroup accumulator needs ~a registers/thread (N/2 flat f32), exceeding the register budget of ~a.  Use a smaller N, or a hardware profile with a larger :max-registers-per-thread."
+                              m n regs-per-thread budget)
+             :source-location location))
+    (when (>= regs-per-thread (* budget *wgmma-acc-occupancy-warn-fraction*))
+      (format *error-output*
+              "WARNING: make-wgmma-accumulator ~ax~a reserves ~a of ~a registers/thread (~,1f%) for the ACCUMULATOR ALONE; operand fragments and addressing are additional.  That is ~a registers per 128-thread warpgroup, which bounds how many warpgroups can be resident per compute unit.  Consider a smaller N if occupancy matters more than arithmetic intensity for your problem size.~%"
+              m n regs-per-thread budget
+              (* 100.0 (/ regs-per-thread budget))
+              regs-per-warpgroup))
+    regs-per-thread))
+
+;; src/mma.lisp
+(defvar *spv-register-demand* (make-hash-table :test 'equal)
+  "Endeavor 144 Phase 4: (kernel-name . source-location) -> fragment ELEMENT count, for
+   the SPV/Intel GRF model.  Keyed per source site and assigned (not incremented) so
+   multipass re-analysis is idempotent.  Summed per kernel by %spv-kernel-register-demand.")
+
+;; src/mma.lisp
+(defvar *kernel-register-mode* (make-hash-table :test 'equal)
+  "Endeavor 144 Phase 4: kernel-name -> the selected per-thread register allocation (an
+   element of the profile's :max-registers-per-thread modes).  Written by
+   %spv-decide-register-mode and carried to the hoist via the metacrisp so the L0
+   launcher can ask IGC for that allocation (-ze-opt-large-register-file).")
+
+(defparameter *spv-grf-register-bytes* 32
+  "Bytes per architectural GRF register on Intel Xe/Xe2.  A BACKEND fact, deliberately
+   NOT a hardware-profile key: the profile counts registers, the target defines their
+   width (4 B on NVIDIA, 32 B here).  See Endeavor 144 decision D4.")
+
+;; src/mma.lisp
+(defun %spv-note-register-fragment (rows cols context location)
+  "Endeavor 144 Phase 4: record one register FRAGMENT's element count against the kernel
+   being compiled, for the Intel GRF model.  No-op off the SPV backend or without a
+   current function.  Assigned per (kernel . location) so re-analysis is idempotent.
+
+   Only ALLOCATIONS reach here — see the :tally nil guard in analyze-make-register-fragment
+   for why re-initializing an existing fragment must not be counted."
+  (when (eq *target-backend* :spirv)
+    (let ((fn (and context (compiler-context-current-compiling-function context))))
+      (when fn
+        (setf (gethash (cons fn location) *spv-register-demand*) (* rows cols))))))
+
+
 (defun %emit-per-frag-fill (entry val)
   "Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment
-   of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init)."
+   of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init).
+
+   Endeavor 144 Phase 4: tagged :tally nil.  These forms RE-INITIALIZE fragments the tile
+   already owns — a set! of an existing register, not a new allocation — so counting them
+   in the GRF demand model would inflate a tile's cost purely for having been filled."
   (destructuring-bind (m n syms &optional n-true first-true operand) (cdr entry)
     (declare (ignore m n n-true first-true operand))
     ;; fill just resets every fragment this warp holds — no logical index needed.
     `(progn
        ,@(loop for s in syms
-               collect `(set! ,s (make-register-fragment 16 8 ,val))))))
+               collect `(set! ,s (make-register-fragment 16 8 ,val :tally nil))))))
+
+;; src/mma.lisp
+(defun %spv-kernel-register-demand (kernel-name)
+  "Endeavor 144 Phase 4: (values GRF-REGISTERS ELEMENTS) demanded per thread by
+   KERNEL-NAME's register tiles / rings, or (values 0 0) if it has none."
+  (let ((elements 0))
+    (maphash (lambda (k v) (when (equal (car k) kernel-name) (incf elements v)))
+             *spv-register-demand*)
+    (values (ceiling (* elements 4) *spv-grf-register-bytes*) elements)))
 
 
 (defun %emit-per-frag-block-load (src entry coords)
@@ -1317,13 +1498,36 @@
                  :message (format nil "wgmma: K must be 8 (tf32 m64nNk8, a single k8 slice); use :swizzle :128b for a multi-k8 K-block, got ~a." k)
                  :source-location location)))))
 
+
+
+(defun %ptx-note-register-demand-keyed (regs context key)
+  "Record REGS 32-bit registers/thread for the kernel being compiled, under KEY.  KEY is the
+   identity of the RESERVATION: a source location where each site is distinct storage
+   (fragments), or a shape where repeated construction means re-initialization (wgmma)."
+  (unless (eq *target-backend* :spirv)
+    (let ((fn (and context (compiler-context-current-compiling-function context))))
+      (when (and fn (plusp regs))
+        (setf (gethash (cons fn key) *ptx-register-demand*) regs)))))
+
+;; src/mma.lisp
+(defun %ptx-note-register-demand (regs context location)
+  "Per-SITE reservation (register fragments): each source location is distinct storage."
+  (%ptx-note-register-demand-keyed regs context location))
+
+;; src/mma.lisp
 (defun analyze-make-wgmma-accumulator (expr env context location)
   "(make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,
-   each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct."
+   each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.
+
+   Endeavor 144: runs the Phase 2 register accounting, and tallies N/2 registers/thread for the
+   Phase 3 occupancy report — keyed by SHAPE so a per-tile `(set! D (make-wgmma-accumulator ...))`
+   re-initialization is not counted as a second accumulator."
   (destructuring-bind (elem dims init) (cdr expr)
     (declare (ignore elem))              ; tf32/f32 fixed for now
     (destructuring-bind (m n) dims
       (%check-wgmma-shape (list m n 8) location)
+      (%wgmma-acc-fit-check m n location)
+      (%ptx-note-register-demand-keyed (floor n 2) context (list :wgmma-acc m n))
       (let ((type-name (%ensure-wgmma-acc-type n)))
         (analyze-expression
          `(%construct-struct ,type-name ,@(loop repeat (floor n 2) collect init))

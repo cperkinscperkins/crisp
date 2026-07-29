@@ -1,4 +1,7 @@
-(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+;; Endeavor 144 Phase 0 (D2): `bmg` is now a Crisp BUILTIN hardware profile (queried on an
+;; Arc B580), so the inline 2-key definition that used to live here is gone.  That inline copy
+;; is why Phase 4's large-GRF win reached only the prefetch chapter: each kernel carried its
+;; own profile and they drifted.  The builtin carries :max-registers-per-thread (128 256).
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))

@@ -1,0 +1,17 @@
+;; CHECK-FAIL: "ascending order"
+;;
+;; Endeavor 144 Phase 4 (decision D4) — :max-registers-per-thread as a list of SELECTABLE
+;; register-file modes must be in strictly ASCENDING order.
+;;
+;; The order is load-bearing, not cosmetic: the FIRST element is the default allocation a
+;; kernel gets unless a larger mode is deliberately requested, and the LAST is the ceiling
+;; beyond which it spills regardless.  A descending list would silently invert both — the
+;; compiler would treat 256 as the default and 128 as the ceiling, so a 200-register kernel
+;; would be reported as fitting the default when in fact it needs the larger mode.
+;;
+;; Fires at the DEFINITION, so no flag is needed (which is why this is a plain CHECK-FAIL
+;; negative rather than a COMPILE-WITH).
+
+(def-hardware-profile backwards
+  :simd-width 16
+  :max-registers-per-thread (256 128))

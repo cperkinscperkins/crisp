@@ -2340,11 +2340,96 @@
                           iters-let)))
     outer-let))
 
+
+
+(defun %expand-tile-stride-swizzled (tensor-form bindings body-forms ts-syms
+                                     tile-size-expr-fn strip-width location)
+  "Endeavor 144 Phase 1: the GROUPED (column-strip) rank-2 tile-stride expansion.
+
+   Replaces the per-axis nest with ONE grid-strided loop over the flat tile index, then
+   delinearizes through a STRIP-WIDTH-wide column strip.  See the header block for the mapping
+   and its bijectivity argument; because the map is a bijection over [0, nt_rows*nt_cols) and
+   the loop grid-strides that flat range, coverage is exactly preserved for ANY grid size —
+   including an oversubscribed or under-dispatched one, where a naive 'swizzle the per-axis
+   start' would double-visit or miss tiles."
+  (declare (ignore location))
+  (let* ((cl-pkg (find-package :crisp-language))
+         (let-sym      (intern "LET" cl-pkg))
+         (declare-sym  (intern "DECLARE" cl-pkg))
+         (wg-level-sym (intern "WORKGROUP-LEVEL" cl-pkg))
+         (dotimes-sym  (intern "DOTIMES" cl-pkg))
+         (progn-sym    (intern "PROGN" cl-pkg))
+         (aref-sym     (intern "~" cl-pkg))
+         (extents-sym  (intern "EXTENTS~" cl-pkg))
+         (wgid-sym     (intern "GET-WORKGROUP-ID" cl-pkg))
+         (numgrp-sym   (intern "GET-NUM-GROUPS" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+         (if-sym       (intern "IF" cl-pkg))
+         (lt-sym       (intern "<" cl-pkg))
+         (plus-sym     (intern "+" cl-pkg))
+         (minus-sym    (intern "-" cl-pkg))
+         (mul-sym      (intern "*" cl-pkg))
+         (div-sym      (intern "/" cl-pkg))
+         (rem-sym      (intern "REM" cl-pkg))
+         (t-sym    (gensym "TSW"))
+         (e0 (gensym "E0")) (e1 (gensym "E1"))
+         (nt0 (gensym "NT0")) (nt1 (gensym "NT1"))
+         (total (gensym "TOTAL")) (lwg (gensym "LWG")) (nwg (gensym "NWG"))
+         (iters (gensym "ITERS")) (k (gensym "K")) (tid (gensym "TID"))
+         (wsym (gensym "W")) (tpg (gensym "TPG"))
+         (grp (gensym "GRP")) (idg (gensym "IDG"))
+         (fc (gensym "FC")) (gc (gensym "GC"))
+         (row-sym (first bindings)) (col-sym (second bindings))
+         (ts0 (first ts-syms)) (ts1 (second ts-syms))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms))))
+    (list let-sym
+          (list
+           (list t-sym tensor-form)
+           (list ts0 (funcall tile-size-expr-fn 0))
+           (list ts1 (funcall tile-size-expr-fn 1))
+           (list e0 (list aref-sym (list extents-sym t-sym) 0))
+           (list e1 (list aref-sym (list extents-sym t-sym) 1))
+           ;; nt_i = ceil(e_i / ts_i) — tile ROWS and tile COLS of the output
+           (list nt0 (list div-sym (list plus-sym e0 (list minus-sym ts0 (list to-ulong-sym 1))) ts0))
+           (list nt1 (list div-sym (list plus-sym e1 (list minus-sym ts1 (list to-ulong-sym 1))) ts1))
+           (list total (list mul-sym nt0 nt1))
+           ;; Flatten the workgroup id and the grid, so one loop grid-strides the flat tile range.
+           (list lwg (list plus-sym
+                           (list mul-sym (list wgid-sym 1) (list numgrp-sym 0))
+                           (list wgid-sym 0)))
+           (list nwg (list mul-sym (list numgrp-sym 0) (list numgrp-sym 1)))
+           (list iters (%build-exact-iter-count-form lwg nwg total cl-pkg)))
+          (list declare-sym (list wg-level-sym))
+          (list dotimes-sym (list k iters)
+                (list let-sym (list (list tid (list plus-sym lwg (list mul-sym k nwg)))
+                                    (list wsym (list to-ulong-sym strip-width)))
+                      (list let-sym (list (list tpg (list mul-sym wsym nt0)))
+                            (list let-sym (list (list grp (list div-sym tid tpg))
+                                                (list idg (list rem-sym tid tpg)))
+                                  (list let-sym (list (list fc (list mul-sym grp wsym)))
+                                        ;; gc = min(W, nt1 - fc): the final strip may be narrower.
+                                        (list let-sym
+                                              (list (list gc (list if-sym
+                                                                   (list lt-sym (list minus-sym nt1 fc) wsym)
+                                                                   (list minus-sym nt1 fc)
+                                                                   wsym)))
+                                              (list let-sym
+                                                    (list (list row-sym (list div-sym idg gc))
+                                                          (list col-sym (list plus-sym fc (list rem-sym idg gc))))
+                                                    inner-body))))))))))
+
 (defun %expand-tile-stride-form (expr ct location)
   "Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
    Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the
    body to rewrite bare load-tile / store-tile into their -coords forms using
-   the tile-stride's binding syms as the origin."
+   the tile-stride's binding syms as the origin.
+
+   Endeavor 144 Phase 1: when the visit order should be GROUPED (rank 2, compile-time tile
+   size-list, an active profile with :l2-cache-size — see %tile-visit-strip-width), emit the
+   L2-aware column-strip walk instead.  Everything else takes the original linear expansion
+   completely unchanged."
   (declare (ignore ct))
   (multiple-value-bind (strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)
       (%tile-stride-parse expr)
@@ -2370,9 +2455,28 @@
               (:tile-tensor
                (let ((tile-form tile-spec))
                  (lambda (k)
-                   (list aref-sym (list extents-tilde-sym tile-form) k)))))))
-      (%expand-workgroup-strided-outer-loop-with-ts-syms
-       tensor-form n bindings body-forms ts-syms tile-size-expr-fn location))))
+                   (list aref-sym (list extents-tilde-sym tile-form) k))))))
+           (strip-width (%tile-visit-log-decision
+                         n tile-spec-kind tile-spec
+                         (%tile-visit-strip-width
+                          n (when (eq tile-spec-kind :size-list) tile-spec)))))
+      (if (> strip-width 1)
+          (%expand-tile-stride-swizzled tensor-form bindings body-forms ts-syms
+                                        tile-size-expr-fn strip-width location)
+          (%expand-workgroup-strided-outer-loop-with-ts-syms
+           tensor-form n bindings body-forms ts-syms tile-size-expr-fn location)))))
+
+;; src/analysis/control.lisp
+;; Endeavor 144 Phase 1 — visibility on the visit-order decision.  Logged (log4cl, so it
+;; costs nothing at --log-level=off) because "did the swizzle actually engage?" is otherwise
+;; invisible: the choice leaves no trace in the kernel source and only a subtle one in the IR.
+;; src/analysis/control.lisp
+(defun %tile-visit-log-decision (n tile-spec-kind tile-spec strip-width)
+  "Report the tile visit-order decision for one tile-stride expansion."
+  (log:info "tile-visit: rank=~a spec-kind=~a spec=~a -> strip-width=~a (~a)"
+            n tile-spec-kind tile-spec strip-width
+            (if (> strip-width 1) "GROUPED" "linear"))
+  strip-width)
 
 ;; src/analysis/control.lisp
 (defun analyze-tile-stride-expression (expr env context location)

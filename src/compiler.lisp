@@ -278,6 +278,102 @@ Returns modified IR text with metadata."
           (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
 
 
+;;; ===================================================================
+;;; ENDEAVOR 144 Phase 1 — L2-aware tile VISIT ORDER inside tile-stride.
+;;;
+;;; WHAT.  `tile-stride` currently maps workgroups to output tiles per-axis and
+;;; independently: start_i = get-workgroup-id(i), stride_i = get-num-groups(i).  With an exact
+;;; tile cover that is a row-major walk, so the workgroups resident at any instant span ONE
+;;; row-band of C — they share an A row-block but collectively stream ALL of B.  Grouping the
+;;; walk into column strips of width W makes the resident set a W-wide, (R/W)-tall
+;;; NEIGHBOURHOOD, which re-reads A and B out of L2 instead of HBM.
+;;;
+;;; DECISION D1: no user-facing key.  `tile-stride`'s contract is COVERAGE, NOT ORDER — it
+;;; promises every tile is visited, never that consecutive workgroups get consecutive tiles —
+;;; so reordering is inside the existing contract.  The A/B switch is `--hardware-profile`
+;;; itself (no profile -> no :l2-cache-size -> linear).  A survey of all 64 tile-stride kernels
+;;; found ZERO order-dependence (exact set intersection with atomic-using kernels is empty).
+;;;
+;;; THE MAPPING (a bijection, so coverage is preserved exactly).  Linearize the workgroup id,
+;;; grid-stride over the FLAT tile count, then delinearize through the strip:
+;;;     tpg = W * nt_rows                      tiles per full strip
+;;;     grp = tid / tpg ;  idg = tid mod tpg
+;;;     fc  = grp * W                          first column of this strip
+;;;     gc  = min(W, nt_cols - fc)             the LAST strip may be narrower
+;;;     row = idg / gc ;  col = fc + (idg mod gc)
+;;; Bijectivity holds because every strip but the last has exactly tpg tiles and the partial
+;;; strip is last, so `tid / tpg` never mis-assigns.  (Worked example: nt=(3 rows,5 cols),
+;;; W=2 -> strips of 6,6,3 tiles = 15 = 3*5, each tile hit once.)
+;;;
+;;; SCOPE.  Rank-2 tile-stride with a compile-time `(M N)` size-list only.  Anything else
+;;; (rank != 2, a tile-TENSOR spec whose extents are runtime) falls through to the untouched
+;;; linear expansion — which is also why this is a hook on the short %expand-tile-stride-form
+;;; rather than a rewrite of the 100-line loop builder.
+;;; ===================================================================
+
+;; src/compiler.lisp
+(defparameter *tile-visit-max-strip-width* 4
+  "Endeavor 144 Phase 1: ceiling on the derived strip width.
+
+   MEASUREMENT-FITTED, not derived.  Swept on a B580 at 2048 (working set 50 MB vs 18 MB L2),
+   TFLOPS: linear 17.1, W=2 27.6, W=4 27.9, W=8 26.9, W=16 28.0.  So (a) essentially the WHOLE
+   win is captured by any W >= 2 — the grouped/linear distinction is worth ~60%, the width
+   within 2..16 only ~4% — and (b) W=8 sits in a reproducible local dip, confirmed at 1024 too
+   (W=4 23.2 vs W=8 22.4).  Hence 4 rather than the 8 this started at.
+
+   Because the win is essentially BINARY (grouped at all vs not), Phase 3's occupancy-derived
+   width would be a refinement, NOT a prerequisite — which is the opposite of what the
+   theory-first analysis suggested.  Re-check the clamp on H100: more SMs means a larger
+   resident set, which may prefer a wider strip.")
+
+;; src/compiler.lisp
+(defun %tile-visit-override ()
+  "Endeavor 144 Phase 1: read the CRISP_TILE_VISIT escape hatch.  Returns :linear (force the
+   old order), an INTEGER (force that strip width), or NIL (derive it).
+
+   Per decision D1 the escape hatch is a compiler-level knob, never kernel syntax — a kernel
+   must not encode a machine-tuning constant.  It is an env var rather than a CLI flag only
+   because that needs no main.lisp surgery; it should GRADUATE to `--tile-visit=linear|grouped|grouped:N`
+   once the width formula settles.  Its real job right now is sweeping W empirically so the
+   formula can be fitted to measurements instead of guessed."
+  (let ((v (uiop:getenv "CRISP_TILE_VISIT")))
+    (when (and v (plusp (length v)))
+      (let ((s (string-downcase v)))
+        (cond
+          ((string= s "linear") :linear)
+          ((string= s "grouped") nil)                  ; derive
+          ((and (> (length s) 8) (string= (subseq s 0 8) "grouped:"))
+           (let ((n (ignore-errors (parse-integer (subseq s 8)))))
+             (if (and n (plusp n)) n :linear)))
+          (t nil))))))
+
+
+(defun %tile-visit-strip-width (n tile-sizes)
+  "Endeavor 144 Phase 1: the column-strip width for a rank-N tile-stride whose tile is
+   TILE-SIZES.  1 means 'walk linearly' (the caller then emits the untouched expansion).
+
+   Reads the ACTIVE PROFILE's measured :tile-visit-strip-width.  Absent => 1 => linear, so any
+   profile that does not explicitly opt in keeps the original behaviour.  This replaced a
+   derivation from :l2-cache-size, which was refuted by measurement on two devices (+63% on one,
+   -14% on the other, both supplying that key) — see the block comment above.
+
+   Still gated to rank 2 with a compile-time (M N) size-list: the swizzled expansion is written
+   for a 2-D tile grid, and the width is meaningless without knowing the tile shape.
+   CRISP_TILE_VISIT overrides everything, for bisecting and for sweeping the width empirically."
+  (let ((override (%tile-visit-override)))
+    (cond
+      ((eq override :linear) 1)
+      ((integerp override) override)
+      ((/= n 2) 1)
+      ((not (and (listp tile-sizes) (= (length tile-sizes) 2)
+                 (every (lambda (x) (and (integerp x) (plusp x))) tile-sizes)))
+       1)
+      (t (let* ((profile (active-hardware-profile))
+                (w (and profile (getf profile :tile-visit-strip-width))))
+           (if (and (integerp w) (plusp w))
+               (min w *tile-visit-max-strip-width*)
+               1))))))
+
 
 ;; ======================================================================
 ;; opt -O3 pass between LLVM IR generation and target codegen

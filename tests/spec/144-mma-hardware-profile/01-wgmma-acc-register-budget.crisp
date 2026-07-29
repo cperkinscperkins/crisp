@@ -1,0 +1,40 @@
+;; COMPILE-WITH[--hardware-profile=small-regs]: FAIL "register budget"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "wgmma is forward-only (no autodiff)"
+;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
+;;
+;; (SKIP-DEFAULT-PASS as in every 140-wgmma spec: the default pass validates GENERIC LLVM IR,
+;; which cannot digest the NVVM wgmma intrinsics.  The profile paths below carry the real
+;; assertions.)
+;;
+;; Endeavor 144 Phase 2 — wgmma accumulator register accounting, ERROR tier.
+;;
+;; Before this endeavor, `make-wgmma-accumulator` had NO register accounting whatsoever:
+;; `%register-tile-fit-check` was only ever called from the make-register-tile analyzers, so
+;; the Hopper warpgroup accumulator — the form chap3_wgmma (our best NVIDIA kernel) is built
+;; on — was entirely outside the profile's reach.  Finding #2 of the endeavor.
+;;
+;; A wgmma D accumulator is N/2 flat f32 registers PER THREAD across the 128-thread
+;; warpgroup.  m64n256 => 256/2 = 128 registers/thread.  That FITS the NVIDIA default
+;; budget (255), so the plain compile passes — but a profile pinning
+;; :max-registers-per-thread to 100 rejects it.  Same accumulator, budget from the profile.
+;;
+;; NOTE the error tier is reachable ONLY through a profile: %check-wgmma-shape caps N at
+;; 256, so the worst legal accumulator is 128 registers/thread — always under the 255
+;; default.  That is not a defect; it is the deliberately-shrunken-profile case topology.md
+;; calls out (the "Empty Room Fallacy" note).  The DEFAULT-budget signal is the occupancy
+;; WARNING instead — see 02-wgmma-acc-occupancy-warn.crisp.
+
+(def-hardware-profile small-regs :max-registers-per-thread 100)
+
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_acc_budget (&out C)
+  (declare #'(&out mt)
+           (global-size :set-to 128)
+           (local-size :set-to 128))          ; one warpgroup
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 256)))
+        (D      (make-wgmma-accumulator float (64 256) 0.0)))
+    (wgmma-accumulate-via-tile (64 256 8) D A-tile B-tile)
+    (store-tile D C (0 0))))

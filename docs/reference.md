@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-27T03:22:35.040020Z
+Generated on 2026-07-29T03:36:47.822372Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -499,10 +499,25 @@ Generated on 2026-07-27T03:22:35.040020Z
 
 
 ---
+### DEFUN `%EXPAND-TILE-STRIDE-SWIZZLED`
+- **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN
+              STRIP-WIDTH LOCATION)`
+
+  > Endeavor 144 Phase 1: the GROUPED (column-strip) rank-2 tile-stride expansion.  >   >    Replaces the per-axis nest with ONE grid-strided loop over the flat tile index, then  >    delinearizes through a STRIP-WIDTH-wide column strip.  See the header block for the mapping  >    and its bijectivity argument; because the map is a bijection over [0, nt_rows*nt_cols) and  >    the loop grid-strides that flat range, coverage is exactly preserved for ANY grid size —  >    including an oversubscribed or under-dispatched one, where a naive 'swizzle the per-axis  >    start' would double-visit or miss tiles.
+
+
+---
 ### DEFUN `%EXPAND-TILE-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
-  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the  >    body to rewrite bare load-tile / store-tile into their -coords forms using  >    the tile-stride's binding syms as the origin.
+  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the  >    body to rewrite bare load-tile / store-tile into their -coords forms using  >    the tile-stride's binding syms as the origin.  >   >    Endeavor 144 Phase 1: when the visit order should be GROUPED (rank 2, compile-time tile  >    size-list, an active profile with :l2-cache-size — see %tile-visit-strip-width), emit the  >    L2-aware column-strip walk instead.  Everything else takes the original linear expansion  >    completely unchanged.
+
+
+---
+### DEFUN `%TILE-VISIT-LOG-DECISION`
+- **Args**: `(N TILE-SPEC-KIND TILE-SPEC STRIP-WIDTH)`
+
+  > Report the tile visit-order decision for one tile-stride expansion.
 
 
 ---
@@ -3714,6 +3729,25 @@ Generated on 2026-07-27T03:22:35.040020Z
 
 
 ---
+### DEFPARAMETER `*TILE-VISIT-MAX-STRIP-WIDTH*`
+
+  > Endeavor 144 Phase 1: ceiling on the derived strip width.  >   >    MEASUREMENT-FITTED, not derived.  Swept on a B580 at 2048 (working set 50 MB vs 18 MB L2),  >    TFLOPS: linear 17.1, W=2 27.6, W=4 27.9, W=8 26.9, W=16 28.0.  So (a) essentially the WHOLE  >    win is captured by any W >= 2 — the grouped/linear distinction is worth ~60%, the width  >    within 2..16 only ~4% — and (b) W=8 sits in a reproducible local dip, confirmed at 1024 too  >    (W=4 23.2 vs W=8 22.4).  Hence 4 rather than the 8 this started at.  >   >    Because the win is essentially BINARY (grouped at all vs not), Phase 3's occupancy-derived  >    width would be a refinement, NOT a prerequisite — which is the opposite of what the  >    theory-first analysis suggested.  Re-check the clamp on H100: more SMs means a larger  >    resident set, which may prefer a wider strip.
+
+
+---
+### DEFUN `%TILE-VISIT-OVERRIDE`
+
+  > Endeavor 144 Phase 1: read the CRISP_TILE_VISIT escape hatch.  Returns :linear (force the  >    old order), an INTEGER (force that strip width), or NIL (derive it).  >   >    Per decision D1 the escape hatch is a compiler-level knob, never kernel syntax — a kernel  >    must not encode a machine-tuning constant.  It is an env var rather than a CLI flag only  >    because that needs no main.lisp surgery; it should GRADUATE to `--tile-visit=linear|grouped|grouped:N`  >    once the width formula settles.  Its real job right now is sweeping W empirically so the  >    formula can be fitted to measurements instead of guessed.
+
+
+---
+### DEFUN `%TILE-VISIT-STRIP-WIDTH`
+- **Args**: `(N TILE-SIZES)`
+
+  > Endeavor 144 Phase 1: the column-strip width for a rank-N tile-stride whose tile is  >    TILE-SIZES.  1 means 'walk linearly' (the caller then emits the untouched expansion).  >   >    Reads the ACTIVE PROFILE's measured :tile-visit-strip-width.  Absent => 1 => linear, so any  >    profile that does not explicitly opt in keeps the original behaviour.  This replaced a  >    derivation from :l2-cache-size, which was refuted by measurement on two devices (+63% on one,  >    -14% on the other, both supplying that key) — see the block comment above.  >   >    Still gated to rank 2 with a compile-time (M N) size-list: the swizzled expansion is written  >    for a 2-D tile grid, and the width is meaningless without knowing the tile shape.  >    CRISP_TILE_VISIT overrides everything, for bisecting and for sweeping the width empirically.
+
+
+---
 ### DEFUN `%OPT-AVAILABLE-P`
 
   > Returns the resolved opt tool path if findable, NIL otherwise.  >    We probe rather than assume, so machines without opt installed still  >    produce PTX / SPV (just unoptimized).
@@ -4105,7 +4139,28 @@ Generated on 2026-07-27T03:22:35.040020Z
 ### DEFUN `%HP-VALIDATE-VALUE`
 - **Args**: `(PROFILE-NAME KEY TYPE RAW)`
 
-  > Validate/normalize RAW for KEY of TYPE.  Signals a clear compile error on a  >    malformed value; returns the normalized value (sizes in bytes, lists unquoted).
+  > Validate/normalize RAW for KEY of TYPE.  Signals a clear compile error on a  >    malformed value; returns the normalized value (sizes in bytes, lists unquoted).  >   >    Endeavor 144 (D4): :pos-int-or-modes accepts a positive integer OR a list of  >    positive integers in STRICTLY ASCENDING order (selectable register-file modes;  >    ascending so 'first' is the default mode and 'last' is the largest).
+
+
+---
+### DEFUN `%HP-REGISTER-MODES`
+- **Args**: `(&OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))`
+
+  > Endeavor 144 (D4): the active profile's :max-registers-per-thread as an ascending  >    LIST of selectable per-thread register allocations.  A scalar becomes a one-element  >    list, so every consumer can treat the value uniformly.  NIL when no profile is  >    active or the key is absent.
+
+
+---
+### DEFUN `%HP-REGISTERS-PER-THREAD-DEFAULT`
+- **Args**: `(&OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))`
+
+  > The DEFAULT per-thread register allocation (the first / smallest selectable mode),  >    or NIL.  This is what a plain fit-check should measure against — it is what the  >    kernel gets unless a larger mode is deliberately selected.
+
+
+---
+### DEFUN `%HP-REGISTERS-PER-THREAD-MAX`
+- **Args**: `(&OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))`
+
+  > The LARGEST selectable per-thread register allocation, or NIL.  Exceeding this means  >    the kernel will spill no matter which mode is chosen.
 
 
 ---
@@ -4157,16 +4212,48 @@ Generated on 2026-07-27T03:22:35.040020Z
 
 
 ---
+### DEFPARAMETER `*HARDWARE-PROFILE-SCHEMA*`
+
+  > Endeavor 130: canonical hardware-profile keys and their value types.  >   >    Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) — a scalar  >    for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose  >    register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the  >    MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent  >    means walk linearly.  It is deliberately a measured constant rather than a derived one — see  >    the block comment above for the two-device data that refuted the derivation.
+
+
+---
+### DEFPARAMETER `*SLM-HIGH-WATER-FRACTION*`
+
+  > Endeavor 144 Phase 5: warn when a kernel's local/shared memory reaches this fraction of the  >    profile's :max-shared-memory-per-block.  Above it, SLM (not registers) is what caps resident  >    blocks per compute unit, which is worth saying out loud.  Below it the utilization is only  >    logged.
+
+
+---
+### DEFUN `%HP-REPORT-SHARED-MEMORY`
+- **Args**: `(KERNEL-NAME PROFILE)`
+
+  > Endeavor 144 Phase 5: report KERNEL-NAME's local/shared memory against the profile cap.  >   >    Reports utilization; does NOT choose a ring depth or tile size.  Returns the byte total, or  >    NIL when the profile omits the cap or the total is not compile-time-known (symbolic scratch  >    sizes).
+
+
+---
 ### DEFUN `%HP-CHECK-ALL-SHARED-MEMORY`
 
-  > Endeavor 130 Phase 2: after a module compiles (all signatures, incl. implicit  >    scratch, finalized), validate every kernel's local memory against the active  >    hardware profile.
+  > Endeavor 130 Phase 2: after a module compiles (all signatures, incl. implicit scratch,  >    finalized), validate every kernel's local memory against the active hardware profile.  >   >    Endeavor 144 runs three further per-kernel reports from this same end-of-module hook:  >    the SPV register-mode decision (Phase 4), SLM utilization (Phase 5), and register-limited  >    occupancy (Phase 3).  >   >    NOTE FOR THE SRC PATCH: in src/ these belong as their OWN calls in compile-module (after  >    %hp-check-all-shared-memory, analysis/core.lisp:424); they are folded in here only so the  >    overlay need not redefine compile-module.
+
+
+---
+### DEFUN `%HP-SELECTED-REGISTERS-PER-THREAD`
+
+  > Endeavor 144 Phase 4: the largest register allocation any kernel in this module needs  >    (from *kernel-register-mode*), or NIL if no kernel selected one.  MAX because IGC's  >    register-file mode is a per-MODULE build flag, so the module must satisfy its most  >    demanding kernel.
 
 
 ---
 ### DEFUN `%HP-SERIALIZE-ACTIVE-PROFILE`
 - **Args**: `(STREAM)`
 
-  > Emit the active hardware profile (the one --hardware-profile / a topology named)  >    as a top-level metacrisp form, keeping its name.  Values are the normalized  >    (already-parsed) form: sizes in bytes, lists resolved.  Emits nothing when no  >    profile is active.
+  > Emit the active hardware profile (the one --hardware-profile / a topology named)  >    as a top-level metacrisp form, keeping its name.  Values are the normalized  >    (already-parsed) form: sizes in bytes, lists resolved.  Emits nothing when no  >    profile is active.  >   >    Endeavor 144 Phase 4: also emits :selected-registers-per-thread — the per-thread  >    register allocation the compiler chose for this module (see  >    %hp-selected-registers-per-thread).  It is a DERIVED value, not a user-supplied profile  >    key, so it is written only here and never accepted by register-hardware-profile.
+
+
+---
+### DEFUN `%HP-REPORT-REGISTER-OCCUPANCY`
+- **Args**: `(KERNEL-NAME PROFILE)`
+
+  > Endeavor 144 Phase 3: report how many blocks of KERNEL-NAME fit on one compute unit, as  >    limited by REGISTERS.  >   >      blocks/CU = :max-registers-per-cu / (registers-per-thread * threads-per-block)  >   >    Skipped unless the profile supplies :max-registers-per-cu, the kernel reserved registers, and  >    local-size is compile-time known.  Warns only at 1 block/CU — the case where there is no  >    second block to hide memory stalls behind.  >   >    Counts DISTINCT explicit reservations (fragments per site, wgmma accumulators per shape) —  >    never the final ptxas allocation, which can only be larger.
 
 
 ---
@@ -4536,6 +4623,31 @@ Generated on 2026-07-27T03:22:35.040020Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\main.lisp`
 
+### DEFVAR `*L0-SELECTED-REGISTERS-PER-THREAD*`
+
+  > Endeavor 144 Phase 4: the per-thread register allocation the COMPILER selected for this  >    module, read from the metacrisp's (:hardware-profile ... :selected-registers-per-thread N).  >    NIL when no profile was active or no kernel needed more than the default allocation.  >    Consumed by generate-module-loading to set ze_module_desc_t.pBuildFlags.
+
+
+---
+### DEFVAR `*L0-REGISTER-MODES*`
+
+  > Endeavor 144 Phase 4: the profile's selectable :max-registers-per-thread modes (a list),  >    so the hoist can tell whether the selected allocation IS the default (emit nothing) or a  >    larger mode (emit the IGC flag).
+
+
+---
+### DEFVAR `*L0-COMPUTE-UNITS*`
+
+  > Endeavor 144 Phase 6: the active profile's :compute-units (Xe-cores on Intel), or NIL.  >    Latched by %l0-latch-hardware-profile; consumed by %l0-emit-occupancy-and-strategy to  >    replace the queried numSlices*numSubslicesPerSlice product.
+
+
+---
+### DEFUN `%L0-LATCH-HARDWARE-PROFILE`
+- **Args**: `(DATA)`
+
+  > Endeavor 144: cache the active hardware profile's L0-relevant decisions in the specials  >    above, from an already-parsed metacrisp plist.  >   >    This lives HERE rather than in parse-metacrisp-file (src/hoist/common.lisp) on purpose.  >    `common` is shared by BOTH hoist backends, and crisp-hoist-cuda depends only on  >    crisp-hoist-common — it never loads this package.  An earlier version latched from  >    common.lisp via (find-symbol ... :crisp.hoist.l0), which is a PACKAGE-ERROR in the CUDA  >    binary and broke every TEST-HOIST spec on both backends.  Backend-specific state belongs in  >    the backend; the dependency only ever points hoist-l0 -> hoist-common.
+
+
+---
 ### DEFVAR `*MMA-TEST-DIMS*`
 
   > (M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.
@@ -4699,10 +4811,16 @@ Generated on 2026-07-27T03:22:35.040020Z
 
 
 ---
+### DEFUN `%L0-REGISTER-BUILD-FLAGS`
+
+  > Endeavor 144 Phase 4: the IGC build-flag string for the compiler-selected register  >    allocation, or NIL when nothing needs to be requested.  >   >    Emits `-ze-opt-large-register-file` only when the selected allocation is ABOVE the  >    profile's default (first) mode.  Returning NIL for the default case matters: large-GRF  >    is not free — it halves threads-per-EU — so it must be requested only for kernels whose  >    register demand actually exceeds the default allocation.
+
+
+---
 ### DEFUN `GENERATE-MODULE-LOADING`
 - **Args**: `(STREAM SPV-PATH)`
 
-  > Generate SPIR-V module loading code
+  > Generate SPIR-V module loading code.  >   >    Endeavor 144 Phase 4: pBuildFlags now carries the compiler-selected register allocation  >    (see %l0-register-build-flags) instead of being unconditionally nullptr.
 
 
 ---
@@ -4745,7 +4863,7 @@ Generated on 2026-07-27T03:22:35.040020Z
 - **Args**: `(STREAM IS-STRIDED IS-INTERLEAVED OCCUPANCY DERIVE-FROM-IS-TENSOR
               DERIVE-FROM)`
 
-  > Emit strategy descriptions and max-occupancy calculation.
+  > Emit strategy descriptions and max-occupancy calculation.  >   >    Endeavor 144 Phase 6: when a hardware profile supplies :compute-units, it REPLACES the  >    queried numSlices*numSubslicesPerSlice (Xe-core count) in the occupancy formula; the  >    per-Xe-core terms stay queried.  See the decision block above.
 
 
 ---
@@ -4970,7 +5088,7 @@ Generated on 2026-07-27T03:22:35.040020Z
 ### DEFUN `PARSE-METACRISP-FILE`
 - **Args**: `(FILEPATH)`
 
-  > Parse a .metacrisp file and return the data structure.
+  > Parse a .metacrisp file and return the data structure.  >   >    Endeavor 130 Phase 5: the active hardware profile (only the selected one) travels in as  >    (:hardware-profile (:name "X" ...)) and is returned whole under :hardware-profile.  >   >    NOTE: this file is shared by BOTH hoist backends, so it must not reference anything in a  >    backend package.  Backend-specific caching of profile values belongs in that backend — see  >    %l0-latch-hardware-profile in src/hoist-l0/main.lisp.
 
 
 ---
@@ -6588,9 +6706,35 @@ Generated on 2026-07-27T03:22:35.040020Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\mma.lisp`
 
+### DEFUN `%SPV-DECIDE-REGISTER-MODE`
+- **Args**: `(KERNEL-NAME PROFILE)`
+
+  > Endeavor 144 Phase 4: pick the per-thread register allocation for KERNEL-NAME from the  >    profile's selectable :max-registers-per-thread modes, and record it in  >    *kernel-register-mode* for the metacrisp.  >   >    Three outcomes:  >      demand <= default mode       -> default; silent (nothing to trade).  >      default < demand <= a larger -> select the SMALLEST mode that fits, and say so.  >                                      This is the case that was silently costing 1.5-2x  >                                      on BMG: IGC spilled rather than being asked for the  >                                      larger allocation.  >      demand > every mode          -> WARN; it will spill whatever we choose.  >    Returns the chosen mode, or NIL when there is nothing to decide.
+
+
+---
 ### DEFUN `REGISTER-MMA-TYPES`
 
-  > Registers the MMA register-fragment record types.  Called from initialize-compiler  >    AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every  >    init, so a load-time registration would not survive).  >   >    tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4  >    regs.  tf32 is fp32-stored, so all fragment fields are float.
+  > Registers the MMA register-fragment record types.  Called from initialize-compiler  >    AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every  >    init, so a load-time registration would not survive).  >   >    tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4  >    regs.  tf32 is fp32-stored, so all fragment fields are float.  >   >    Endeavor 144 Phase 0: also registers the BUILTIN hardware profiles, which must happen  >    after initialize-compiler's clrhash of *hardware-profiles* — this is the first hook that  >    runs there.  See register-builtin-hardware-profiles for the src-patch note.
+
+
+---
+### DEFUN `REGISTER-BUILTIN-HARDWARE-PROFILES`
+
+  > Endeavor 144 Phase 0 (D2): register Crisp's predefined hardware profiles.  >   >    Called from register-mma-types, which initialize-compiler invokes AFTER it clrhash-es  >    *hardware-profiles* — so builtins survive the clear and a same-named user profile still  >    overrides them.  >   >    NOTE FOR THE SRC PATCH: this belongs as its own call in initialize-compiler next to  >    register-builtins.
+
+
+---
+### DEFVAR `*PTX-REGISTER-DEMAND*`
+
+  > Endeavor 144 Phase 3: (kernel-name . source-location) -> 32-bit registers/thread explicitly  >    reserved at that site on the NVIDIA path (register tiles and wgmma accumulators).  Keyed per  >    site and ASSIGNED, so Crisp's multipass re-analysis is idempotent — same discipline as  >    *spv-register-demand*.
+
+
+---
+### DEFUN `%KERNEL-REGISTERS-PER-THREAD`
+- **Args**: `(KERNEL-NAME)`
+
+  > Total explicitly-reserved registers/thread for KERNEL-NAME.  NVIDIA: 32-bit registers from  >    *ptx-register-demand*.  Intel/SPV: derived from the GRF element tally.  0 when nothing was  >    reserved.
 
 
 ---
@@ -6603,7 +6747,7 @@ Generated on 2026-07-27T03:22:35.040020Z
 ### DEFUN `ANALYZE-MAKE-REGISTER-FRAGMENT`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P1 / F-SPV: (make-register-fragment M N INIT &key operand).  :spirv -> a filled coop matrix;  >    else the NVIDIA %construct-struct record.  Endeavor 142: :operand (a|b|acc, default acc) picks  >    the coop-matrix Use + shape so an A/B operand tile mints fragments matching load-fragment-a/b —  >    A = sm×sk Use 0, B = sk×sn Use 1, Acc = sm×sn Use 2.
+  > P1 / F-SPV: (make-register-fragment M N INIT &key operand).  :spirv -> a filled coop matrix;  >    else the NVIDIA %construct-struct record.  Endeavor 142: :operand (a|b|acc, default acc) picks  >    the coop-matrix Use + shape so an A/B operand tile mints fragments matching load-fragment-a/b.  >   >    Endeavor 144: each fragment is tallied against the current kernel — as coop-matrix ELEMENTS on  >    SPV (Phase 4's GRF model) and as 32-bit REGISTERS on PTX (Phase 3's occupancy model).  Both  >    skip when the form carries :tally nil, which marks fill-tile's per-fragment set!s: those  >    RE-INITIALIZE fragments the tile already owns and allocate nothing.
 
 
 ---
@@ -6807,7 +6951,7 @@ Generated on 2026-07-27T03:22:35.040020Z
 ### DEFUN `%REGISTER-TILE-FIT-CHECK`
 - **Args**: `(M N LOCATION)`
 
-  > F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile  >    is opaque cooperative matrices (the driver owns register residency), so SKIP.  Else:  >    (M/16)x(N/8) accumulator fragments x 4 fp32 regs <= :max-registers-per-thread.
+  > F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque  >    cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is  >    separate (Phase 4).  Else: (M/16)x(N/8) accumulator fragments x 4 fp32 regs <=  >    :max-registers-per-thread.  >   >    Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since  >    :max-registers-per-thread may be a scalar OR a list of selectable modes.
 
 
 ---
@@ -6839,10 +6983,55 @@ Generated on 2026-07-27T03:22:35.040020Z
 
 
 ---
+### DEFPARAMETER `*WGMMA-ACC-OCCUPANCY-WARN-FRACTION*`
+
+  > Endeavor 144 Phase 2: warn when a wgmma accumulator alone occupies at least this  >    fraction of the per-thread register budget.  At 1/2, an m64n256 accumulator (128 of  >    255 registers) warns and an m64n128 (64) does not — so the advisory fires precisely on  >    the tile widths where occupancy, not fit, is the binding constraint.
+
+
+---
+### DEFUN `%WGMMA-ACC-FIT-CHECK`
+- **Args**: `(M N LOCATION)`
+
+  > Endeavor 144 Phase 2: register accounting for a wgmma (M N) warpgroup accumulator.  >   >    A wgmma D accumulator holds N/2 flat f32 registers PER THREAD across the 128-thread  >    warpgroup (the wgmma D thread->element mapping).  Errors when that alone exceeds the  >    per-thread budget (the active profile's :max-registers-per-thread, else  >    *default-max-registers-per-thread*); warns when it consumes at least  >    *wgmma-acc-occupancy-warn-fraction* of it.  >   >    Deliberately accounts for the ACCUMULATOR ONLY — operand fragments, addressing, and  >    whatever ptxas adds ride on top, so the real per-thread count is strictly higher.  Like  >    %register-tile-fit-check, this checks what the developer explicitly reserved.
+
+
+---
+### DEFVAR `*SPV-REGISTER-DEMAND*`
+
+  > Endeavor 144 Phase 4: (kernel-name . source-location) -> fragment ELEMENT count, for  >    the SPV/Intel GRF model.  Keyed per source site and assigned (not incremented) so  >    multipass re-analysis is idempotent.  Summed per kernel by %spv-kernel-register-demand.
+
+
+---
+### DEFVAR `*KERNEL-REGISTER-MODE*`
+
+  > Endeavor 144 Phase 4: kernel-name -> the selected per-thread register allocation (an  >    element of the profile's :max-registers-per-thread modes).  Written by  >    %spv-decide-register-mode and carried to the hoist via the metacrisp so the L0  >    launcher can ask IGC for that allocation (-ze-opt-large-register-file).
+
+
+---
+### DEFPARAMETER `*SPV-GRF-REGISTER-BYTES*`
+
+  > Bytes per architectural GRF register on Intel Xe/Xe2.  A BACKEND fact, deliberately  >    NOT a hardware-profile key: the profile counts registers, the target defines their  >    width (4 B on NVIDIA, 32 B here).  See Endeavor 144 decision D4.
+
+
+---
+### DEFUN `%SPV-NOTE-REGISTER-FRAGMENT`
+- **Args**: `(ROWS COLS CONTEXT LOCATION)`
+
+  > Endeavor 144 Phase 4: record one register FRAGMENT's element count against the kernel  >    being compiled, for the Intel GRF model.  No-op off the SPV backend or without a  >    current function.  Assigned per (kernel . location) so re-analysis is idempotent.  >   >    Only ALLOCATIONS reach here — see the :tally nil guard in analyze-make-register-fragment  >    for why re-initializing an existing fragment must not be counted.
+
+
+---
 ### DEFUN `%EMIT-PER-FRAG-FILL`
 - **Args**: `(ENTRY VAL)`
 
-  > Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment  >    of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init).
+  > Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment  >    of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init).  >   >    Endeavor 144 Phase 4: tagged :tally nil.  These forms RE-INITIALIZE fragments the tile  >    already owns — a set! of an existing register, not a new allocation — so counting them  >    in the GRF demand model would inflate a tile's cost purely for having been filled.
+
+
+---
+### DEFUN `%SPV-KERNEL-REGISTER-DEMAND`
+- **Args**: `(KERNEL-NAME)`
+
+  > Endeavor 144 Phase 4: (values GRF-REGISTERS ELEMENTS) demanded per thread by  >    KERNEL-NAME's register tiles / rings, or (values 0 0) if it has none.
 
 
 ---
@@ -6995,10 +7184,24 @@ Generated on 2026-07-27T03:22:35.040020Z
 
 
 ---
+### DEFUN `%PTX-NOTE-REGISTER-DEMAND-KEYED`
+- **Args**: `(REGS CONTEXT KEY)`
+
+  > Record REGS 32-bit registers/thread for the kernel being compiled, under KEY.  KEY is the  >    identity of the RESERVATION: a source location where each site is distinct storage  >    (fragments), or a shape where repeated construction means re-initialization (wgmma).
+
+
+---
+### DEFUN `%PTX-NOTE-REGISTER-DEMAND`
+- **Args**: `(REGS CONTEXT LOCATION)`
+
+  > Per-SITE reservation (register fragments): each source location is distinct storage.
+
+
+---
 ### DEFUN `ANALYZE-MAKE-WGMMA-ACCUMULATOR`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > (make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,  >    each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.
+  > (make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,  >    each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.  >   >    Endeavor 144: runs the Phase 2 register accounting, and tallies N/2 registers/thread for the  >    Phase 3 occupancy report — keyed by SHAPE so a per-tile `(set! D (make-wgmma-accumulator ...))`  >    re-initialization is not counted as a second accumulator.
 
 
 ---

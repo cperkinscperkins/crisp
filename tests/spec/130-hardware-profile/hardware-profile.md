@@ -62,22 +62,39 @@ Phases
     - Test: in-budget compiles; over-budget -> FAIL-WITH[--hardware-profile].
     - Buildable now: yes (the compiler already knows scratch sizes).
 
-[ ] Phase 3 — `:max-registers-per-thread` (register-tile bounds)
+[x] Phase 3 — `:max-registers-per-thread` (register-tile bounds)  DONE by ENDEAVOR 132 (MMA
+    fundamentals), not by 130 itself — checkbox corrected 2026-07-27 during endeavor 144's
+    audit.
     Sum explicit `make-register-tile` reservations, validate against the cap. Scope to
     EXPLICIT reservations — true register pressure isn't known until ptxas, so this checks
     what the developer explicitly reserved, not the final count.
+    - Implemented: `%register-tile-fit-check` (src/mma.lisp:698), called from the
+      make-register-tile analyzers (mma.lisp:1097, 1126).  Falls back to
+      `*default-max-registers-per-thread*` = 255 when no profile pins the key.  SKIPPED on
+      :spirv (the tile is opaque cooperative matrices there).
+    - Test: tests/spec/132-mma-fundamentals/07-fit-check-profile.crisp
+    - KNOWN GAPS (endeavor 144 findings #2 and #5):
+      * `make-wgmma-accumulator` (mma.lisp:1320) does NO register accounting at all — the
+        Hopper warpgroup accumulator is entirely outside this check.  144 Phase 2.
+      * The :spirv skip means Intel has no GRF model, on the one backend where register
+        pressure is the stated binding constraint.  All three BMG benchmark kernels are
+        MEASURED to spill (144 results.md).  144 Phase 4.
     - Hoisting: no.
-    - Test: register-tile size drives positive/negative.
-    - Buildable now: yes (with that caveat).
 
-[ ] Phase 4 — `:simd-width` (PARTIAL)
-    Real consumer is warp-specialization divisibility (workgroup a multiple of
-    Σlabels × simd-width) — but `with-warp-specialization` isn't implemented, so the strong
-    check is future. A lighter check (warn when `local-size` isn't a multiple of `simd-width`)
-    is doable now if wanted; otherwise defer.
+[x] Phase 4 — `:simd-width`  DONE by ENDEAVORS 132/139, not by 130 itself — checkbox
+    corrected 2026-07-27 during endeavor 144's audit.
+    Originally scoped as warp-specialization divisibility and deferred because
+    `with-warp-specialization` did not exist.  It now does (endeavor 139), and `:simd-width`
+    acquired a second, more central consumer along the way:
+    - Implemented: `%resolve-workgroup-warp-count` (src/mma.lisp:435-446) — the workgroup's
+      warp count (local-size / simd-width) that drives register-tile fragment distribution
+      and validates the `:warps` participation mask.  Defaults to 32 with no profile.
+      `make-register-tile` REQUIRES a knowable SIMD width (see topology.md).
     - Hoisting: no.
-    - Test: the strong version waits on warp-spec; the light version is a positive/warn check.
-    - Buildable now: partial — light check yes, real check deferred.
+    - NOTE: BMG reports subGroupSizes of BOTH 16 and 32 (144 results.md), so on Intel
+      `:simd-width` is selecting among hardware-supported options, not recording a fixed
+      fact.  Relevant to 144 Phase 4 (SIMD32 halves thread count but doubles per-thread
+      GRF pressure).
 
 [x] Phase 5 — `:compute-units`: occupancy / grid-size — HOISTING ENTERS HERE  (CUDA) DONE 2026-07-04
     The first key that drives *launch configuration*: the grid-size heuristic uses the
@@ -108,11 +125,31 @@ Can't support yet — known keys, consumer deferred
 Parse-and-store from Phase 0 (valid, typo-checked, but inert). Their checks / optimizations
 wait for their respective future endeavors:
 
-[ ] :mma-shapes             — consumer is `mma-accumulate-via-tile` (future MMA / tensor-core work).
-                              Validated as a list of (M N K) triples now; the shape-membership check waits.
-[ ] :cache-line-size        — consumer is `check-coalesce` static analysis (not implemented).
-[ ] :l2-cache-size          — no consumer yet (tiling heuristics are future).
+[x] :mma-shapes             — DONE by ENDEAVORS 132/133 (checkbox corrected 2026-07-27).  TWO
+                              consumers now: the shape-membership check in `%check-mma-shape`
+                              (mma.lisp:558 — with no profile, `(16 8 8)` is forced), and
+                              `%spv-mma-shape` (mma.lisp:70), which takes the FIRST entry as
+                              the SPV cooperative-matrix instruction shape so one source
+                              picks Intel `(8 16 8)` vs NVIDIA `(16 8 8)` per profile.
+                              CAVEAT: first-entry-wins is fragile if a profile ever lists
+                              several SPV shapes.  NOT consulted by
+                              `wgmma-accumulate-via-tile`, which validates via its own
+                              `%check-wgmma-shape` (mma.lisp:1296) — so the m64nNk8 wgmma
+                              family is outside profile validation entirely.
+[ ] :native-cache-line-size — consumer is `check-coalesce` static analysis (not implemented).
+                              (Doc previously called this `:cache-line-size`; the schema key
+                              is `:native-cache-line-size`.)  Endeavor 144 scopes it OUT for
+                              now — diagnostic rather than perf.
+[ ] :l2-cache-size          — no consumer yet.  ENDEAVOR 144 PHASE 1 claims it: profile-driven
+                              grouped tile visit order inside `tile-stride` (L2-aware
+                              rasterization).  Implicit + profile-gated, no new user syntax
+                              (144 decision D1).
+[ ] :max-registers-per-cu   — no consumer yet.  ENDEAVOR 144 PHASE 3 claims it: a compile-time
+                              occupancy model (resident blocks per CU), replacing the L0
+                              hoist's runtime `spillMemSize > 0` 2x derate guesswork.
 [ ] :max-concurrent-kernels — consumer is orchestration / scheduling (not implemented).
+                              Endeavor 144 scopes it OUT: BMG reports a single compute queue
+                              group with numQueues 1, which is not a useful concurrency count.
 
 
 Shape of the endeavor

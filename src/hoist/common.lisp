@@ -1,14 +1,20 @@
 (in-package :crisp.hoist)
 
 (defun parse-metacrisp-file (filepath)
-  "Parse a .metacrisp file and return the data structure."
+  "Parse a .metacrisp file and return the data structure.
+
+   Endeavor 130 Phase 5: the active hardware profile (only the selected one) travels in as
+   (:hardware-profile (:name \"X\" ...)) and is returned whole under :hardware-profile.
+
+   NOTE: this file is shared by BOTH hoist backends, so it must not reference anything in a
+   backend package.  Backend-specific caching of profile values belongs in that backend — see
+   %l0-latch-hardware-profile in src/hoist-l0/main.lisp."
   (with-open-file (stream filepath :direction :input)
     (let ((aliases '())
           (structs '())
           (records '())
           (kernels '())
           (hardware-profile nil))
-      ;; Read all forms from the file
       (loop for form = (read stream nil :eof)
             until (eq form :eof)
             do (cond
@@ -20,11 +26,8 @@
                   (setf records (or (rest form) '())))
                 ((and (consp form) (eq (first form) :kernels))
                   (setf kernels (or (rest form) '())))
-                ;; Endeavor 130 Phase 5: the active hardware profile (only the
-                ;; selected one) travels in as (:hardware-profile (:name "X" ...)).
                 ((and (consp form) (eq (first form) :hardware-profile))
                   (setf hardware-profile (second form)))))
-      ;; Return as plist for easy access
       (list :aliases aliases :structs structs :records records :kernels kernels
             :hardware-profile hardware-profile))))
 

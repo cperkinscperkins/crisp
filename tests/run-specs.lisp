@@ -286,10 +286,17 @@
          ;; for the FFI compile-check + hoist (e.g. fast PTX transcendentals ->
          ;; __nv_fast_*). Bound here since FFI specs bypass run-spec-file's hoist path.
          (*compile-math-precision* (or (parse-hoist-precision directives) *compile-math-precision*))
-         ;; Honor SKIP_SPIRV_TESTS (e.g. a CUDA-only box with no SPIR-V tooling):
-         ;; drop spv compile-checks just as run-single-spec-pass does. (L0 hoist
-         ;; is skipped separately via SKIP_L0_HOIST in run-spec-with-hoist.)
-         (skip-spv (and (uiop:getenv "SKIP_SPIRV_TESTS") t))
+         ;; Drop spv compile-checks on a machine that cannot do them, exactly as the other
+         ;; SPIR-V entry points do.  (L0 hoist is skipped separately via SKIP_L0_HOIST.)
+         ;;
+         ;; Endeavor 144: this used to test SKIP_SPIRV_TESTS *only*, so on a CUDA-only box —
+         ;; where bin/ is gitignored and llvm-spirv is simply absent — the 7 FFI specs FAILED
+         ;; with the translator's exit 127 instead of skipping.  Now it also auto-detects, so
+         ;; the harness needs no env var to notice what the machine can do.  This was the fifth
+         ;; SPIR-V entry point; the other four are run-single-spec-pass,
+         ;; run-spec-compile-with-pass, run-spec-expect-stderr-pass and run-spec-with-hoist.
+         (skip-spv (or (and (uiop:getenv "SKIP_SPIRV_TESTS") t)
+                       (not (spirv-toolchain-available-p))))
          (compile-targets (if skip-spv
                               (remove "spv" requested :test #'string=)
                               requested))
@@ -298,7 +305,7 @@
          (artifacts '()))
 
     (when (and skip-spv (member "spv" requested :test #'string=))
-      (format t "~&Running Spec: ~a (FFI[spv])... SKIP (SKIP_SPIRV_TESTS)~%"
+      (format t "~&Running Spec: ~a (FFI[spv])... SKIP (no SPIR-V toolchain on this machine)~%"
               (pathname-name crisp-file)))
 
     ;; 1. Compile-check runs (TEST-WITH[--ir-target=...]).
@@ -608,6 +615,48 @@
       (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
 
+;;; -------------------------------------------------------------------
+;;; Endeavor 144 — SPIR-V toolchain availability, for the FLAG-CARRYING directives.
+;;;
+;;; `run-single-spec-pass` honors SKIP_SPIRV_TESTS (see the check near its top), but
+;;; COMPILE-WITH / EXPECT-STDERR invoke the binary directly with their own flags and had no
+;;; such guard.  On a CUDA-only box (a runpod H100) `bin/` is gitignored, so `llvm-spirv` is
+;;; absent and EVERY `--ir-target=spv` compile dies with exit 127 — which surfaced as 14
+;;; "failures" that were really an environment gap (2026-07-28 pod run).
+;;;
+;;; Detected rather than gated on SKIP_SPIRV_TESTS: an env var has to be remembered on every
+;;; new pod, whereas probing is self-correcting.  The explicit env var is still honored, so a
+;;; box WITH the toolchain can still opt out.  Same spirit as the L0-hoist and FFI skips.
+;;; -------------------------------------------------------------------
+
+(defvar *spirv-toolchain-available* :unknown
+  "Cached tri-state: :unknown until first probed, then T / NIL.  Probing runs a process, so
+   it is done once per runner invocation.")
+
+(defun spirv-toolchain-available-p ()
+  "T when the SPIR-V translator can actually be INVOKED (not merely named).  Probes
+   `llvm-spirv --version` through the compiler's own resolver, so it honors the same
+   bin/-then-PATH search and CRISP_LLVM_SPIRV override the real compile path uses.  Any
+   failure to launch (missing file, not on PATH, not executable) reads as unavailable."
+  (when (eq *spirv-toolchain-available* :unknown)
+    (setf *spirv-toolchain-available*
+          (handler-case
+              (let ((tool (crisp.compiler::resolve-tool-executable "llvm-spirv")))
+                (and tool
+                     (zerop (nth-value 2
+                              (uiop:run-program (list (uiop:native-namestring tool) "--version")
+                                                :output nil :error-output nil
+                                                :ignore-error-status t)))))
+            (error () nil))))
+  *spirv-toolchain-available*)
+
+(defun %spv-flags-unsupported-p (flags)
+  "T when FLAGS ask for a SPIR-V compile that this machine cannot perform — so the caller
+   should SKIP rather than FAIL.  Honors SKIP_SPIRV_TESTS as an explicit override."
+  (and (member "--ir-target=spv" flags :test #'string=)
+       (or (and (uiop:getenv "SKIP_SPIRV_TESTS") t)
+           (not (spirv-toolchain-available-p)))))
+
 (defun run-spec-expect-stderr-pass (file flags expected-substring)
   "Endeavor 126: compile FILE through the binary with FLAGS active; PASS iff the
    compile SUCCEEDS (exit 0) AND EXPECTED-SUBSTRING appears on stderr. Used to lock
@@ -618,6 +667,9 @@
    passed, so the binary emits generic LLVM IR to stdout (no artifact file to clean
    up); exit 0 confirms the warning is non-fatal, and the warning fires during CLI
    parsing regardless of target."
+  (when (%spv-flags-unsupported-p flags)
+    (format t "SKIP (no SPIR-V toolchain on this machine)~%")
+    (return-from run-spec-expect-stderr-pass t))
   (let* ((bin (get-binary-path))
          (args (append flags
                        (list (format nil "--log-level=~a" cl-user::*log-level*)
@@ -644,7 +696,13 @@
    outcome.  EXPECT is :pass (require exit 0) or :fail (require exit != 0 AND
    SUBSTRING on stderr).  This is the flag-carrying test path for hardware-profile
    validation — the negative runner can't inject a --hardware-profile flag, and the
-   check fires during analysis (so no --ir-target is needed, hence no artifact)."
+   check fires during analysis (so no --ir-target is needed, hence no artifact).
+
+   Endeavor 144: a spv-targeted run SKIPs on a machine with no SPIR-V translator (see
+   %spv-flags-unsupported-p) instead of failing with the toolchain's exit 127."
+  (when (%spv-flags-unsupported-p flags)
+    (format t "SKIP (no SPIR-V toolchain on this machine)~%")
+    (return-from run-spec-compile-with-pass t))
   (let* ((bin (get-binary-path))
          (args (append flags
                        (list (format nil "--log-level=~a" cl-user::*log-level*)
@@ -714,8 +772,14 @@
                      ((member "--metadata"         flags :test #'string=) :spirv)
                      (t nil))))
 
-    (when (and (eq ir-target :spirv) (uiop:getenv "SKIP_SPIRV_TESTS"))
-      (format t "SKIP (SPIRV tests disabled via SKIP_SPIRV_TESTS)~%")
+    ;; Endeavor 144: skip a SPIR-V pass when this machine cannot do one — either because
+    ;; SKIP_SPIRV_TESTS says so, or because the translator is not actually invocable (a
+    ;; CUDA-only box: bin/ is gitignored, so llvm-spirv is simply absent).  Detection keeps
+    ;; the three SPIR-V entry points (here, COMPILE-WITH, EXPECT-STDERR) consistent.
+    (when (and (eq ir-target :spirv)
+               (or (and (uiop:getenv "SKIP_SPIRV_TESTS") t)
+                   (not (spirv-toolchain-available-p))))
+      (format t "SKIP (no SPIR-V toolchain on this machine)~%")
       (return-from run-single-spec-pass t))
 
     (if *use-binary*
@@ -1228,6 +1292,14 @@
    gracefully on machines that don't have the target SDK.
    Endeavor 122: BC-FILES (foreign .bc) are prepended to the compiler args so
    FFI device functions are linked into the hoisted kernel."
+  ;; Endeavor 144: an L0 hoist compiles the kernel to SPIR-V first, so it is impossible
+  ;; without the translator — skip rather than report a hoist "failure" (a CUDA-only box has
+  ;; no llvm-spirv, since bin/ is gitignored).  Same detection as the three SPIR-V compile
+  ;; entry points, so the whole harness agrees on what this machine can do.
+  (when (and (string-equal (symbol-name backend) "L0")
+             (not (spirv-toolchain-available-p)))
+    (format t "SKIP (no SPIR-V toolchain on this machine)~%")
+    (return-from run-spec-with-hoist :skipped))
   ;; Check for SKIP env var (e.g. SKIP_L0_HOIST, SKIP_CUDA_HOIST)
   (let ((skip-env (uiop:getenv (format nil "SKIP_~a_HOIST" (symbol-name backend)))))
     (when (and skip-env (string-not-equal skip-env "false"))
