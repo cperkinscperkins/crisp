@@ -8,7 +8,7 @@
 |---|---|---:|---:|---:|---:|
 | chap0_sync | Synchronous coop-matrix tiling (XMX tf32) | 2048 | 1.5 | 13.8 | 10.9% |
 | chap1_async_linear | OpGroupAsyncCopy staging (XMX tf32) | 2048 | 0.8 | 13.8 | 6.1% |
-| intel_prefetch | Register-ring + Subgroup2DBlockPrefetch (XMX tf32) | 2048 | 24.9 | 13.8 | 180.1% |
+| intel_prefetch | Register-ring + Subgroup2DBlockPrefetch (XMX tf32) | 2048 | 24.2 | 13.8 | 175.0% |
 
 > Largest measured size per chapter, `fast` precision (Crisp and oneMKL both tf32). The ladder runs low-to-high on the optimization axis for this hardware.
 
@@ -18,10 +18,10 @@
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 5.20 | 0.01 | 1.32 | 0.03 | 0.11 | 0.30 | 2.2% | 8.6% |
-| 512x512x512 | 9.78 | 0.03 | 1.47 | 0.18 | 0.41 | 0.65 | 4.2% | 28.1% |
-| 1024x1024x1024 | 11.98 | 0.18 | 1.53 | 1.40 | 1.46 | 1.47 | 12.2% | 94.9% |
-| 2048x2048x2048 | 13.82 | 1.24 | 1.48 | 11.58 | 1.51 | 11.41 | 10.9% | 101.5% |
+| 256x256x256 | 5.29 | 0.01 | 1.33 | 0.03 | 0.11 | 0.30 | 2.1% | 8.5% |
+| 512x512x512 | 9.81 | 0.03 | 1.47 | 0.18 | 0.41 | 0.66 | 4.2% | 27.9% |
+| 1024x1024x1024 | 11.98 | 0.18 | 1.53 | 1.40 | 1.46 | 1.47 | 12.2% | 95.5% |
+| 2048x2048x2048 | 13.82 | 1.24 | 1.48 | 11.58 | 1.50 | 11.42 | 10.9% | 101.5% |
 
 ### chap1_async_linear — OpGroupAsyncCopy staging (XMX tf32)
 
@@ -29,10 +29,10 @@
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 5.20 | 0.01 | 1.31 | 0.03 | 0.08 | 0.41 | 1.6% | 6.2% |
-| 512x512x512 | 9.78 | 0.03 | 1.47 | 0.18 | 0.26 | 1.03 | 2.7% | 17.8% |
-| 1024x1024x1024 | 11.98 | 0.18 | 1.53 | 1.40 | 0.81 | 2.66 | 6.7% | 52.8% |
-| 2048x2048x2048 | 13.82 | 1.24 | 1.48 | 11.59 | 0.84 | 20.40 | 6.1% | 56.8% |
+| 256x256x256 | 5.29 | 0.01 | 1.32 | 0.03 | 0.08 | 0.41 | 1.5% | 6.2% |
+| 512x512x512 | 9.81 | 0.03 | 1.47 | 0.18 | 0.26 | 1.02 | 2.7% | 18.0% |
+| 1024x1024x1024 | 11.98 | 0.18 | 1.53 | 1.40 | 0.80 | 2.68 | 6.7% | 52.4% |
+| 2048x2048x2048 | 13.82 | 1.24 | 1.48 | 11.59 | 0.84 | 20.55 | 6.1% | 56.4% |
 
 ### intel_prefetch — Register-ring + Subgroup2DBlockPrefetch (XMX tf32)
 
@@ -40,21 +40,21 @@
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 5.20 | 0.01 | 2.02 | 0.02 | 3.04 | 0.01 | 58.5% | 150.9% |
-| 512x512x512 | 9.78 | 0.03 | 4.19 | 0.06 | 9.56 | 0.03 | 97.8% | 228.1% |
-| 1024x1024x1024 | 11.98 | 0.18 | 6.89 | 0.31 | 21.62 | 0.10 | 180.5% | 313.7% |
-| 2048x2048x2048 | 13.82 | 1.24 | 7.51 | 2.29 | 24.89 | 0.69 | 180.1% | 331.3% |
+| 256x256x256 | 5.29 | 0.01 | 1.99 | 0.02 | 3.07 | 0.01 | 58.1% | 154.3% |
+| 512x512x512 | 9.81 | 0.03 | 4.19 | 0.06 | 9.56 | 0.03 | 97.4% | 228.1% |
+| 1024x1024x1024 | 11.98 | 0.18 | 6.84 | 0.31 | 21.44 | 0.10 | 179.0% | 313.5% |
+| 2048x2048x2048 | 13.82 | 1.24 | 7.54 | 2.28 | 24.19 | 0.71 | 175.0% | 320.8% |
 
 ### Compile Times (avg across precision)
 
 | Chapter | Competitor | Avg Compile (ms) | × vs Crisp |
 |---|---|---:|---:|
-| chap0_sync | Crisp | 1140 | 1.0× (baseline) |
-| chap0_sync | SYCL_Apples | 3342 | 2.9× slower |
-| chap1_async_linear | Crisp | 665 | 1.0× (baseline) |
-| chap1_async_linear | SYCL_Apples | 2943 | 4.4× slower |
-| intel_prefetch | Crisp | 692 | 1.0× (baseline) |
-| intel_prefetch | SYCL_Apples | 2856 | 4.1× slower |
+| chap0_sync | Crisp | 678 | 1.0× (baseline) |
+| chap0_sync | SYCL_Apples | 1894 | 2.8× slower |
+| chap1_async_linear | Crisp | 760 | 1.0× (baseline) |
+| chap1_async_linear | SYCL_Apples | 1828 | 2.4× slower |
+| intel_prefetch | Crisp | 659 | 1.0× (baseline) |
+| intel_prefetch | SYCL_Apples | 1884 | 2.9× slower |
 
 > **Device-only compilation on both sides.**  Crisp `--ir-target=spv`; the competitor `icpx -fsycl -fsycl-device-only -fsycl-targets=spir64`.  Neither figure includes host-code compilation, linking, or the runtime JIT of the resulting IR.  Library ceilings (oneMKL) are omitted — their kernels ship precompiled inside the library, so there is no device compile to measure.  Lower is better.
 
