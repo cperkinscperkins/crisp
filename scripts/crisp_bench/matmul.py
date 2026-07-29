@@ -726,7 +726,9 @@ def main():
             # layout than the fixed bench_harness_l0.cpp (no scratch tiles), so it needs its own harness
             # (or a --grid-tile hoist path).  Parked until the chap0/chap1 plumbing is proven.
             run_l0_crisp("intel_prefetch", "matmul_bmg_prefetch.crisp", use_autobench=True)
-            run_target("intel_prefetch", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+            # Endeavor 144 Phase 4: Pass large register file mode (-ze-opt-large-register-file)
+            # to IGC so SYCL_Apples gets 256 GRF registers per thread, matching Crisp's hardware profile.
+            run_target("intel_prefetch", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
 
 if __name__ == "__main__":
     main()

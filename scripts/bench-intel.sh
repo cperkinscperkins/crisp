@@ -9,7 +9,7 @@
 # Examples:
 #   ./scripts/bench-intel.sh                          # full sweep, default sizes, precision matrix
 #   ./scripts/bench-intel.sh 256,512,1024 100         # smaller sizes
-#   ./scripts/bench-intel.sh 256,512,1024 100 fast    # single precision pass
+#   ./scripts/bench-intel.sh 256,512,1024,2048 100 fast    # single precision pass
 #
 # Requirements:
 #   - Docker Desktop on Windows with WSL2 backend

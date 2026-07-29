@@ -6,10 +6,12 @@
  *  - sycl::ext::oneapi::experimental::matrix::joint_matrix (XMX tf32 DPAS)
  *  - joint_matrix_prefetch (Subgroup2DBlockPrefetchINTEL)
  *  - joint_matrix_load / joint_matrix_store (Subgroup2DBlockLoadINTEL / Store)
+ *  - Grouped tile visit order (W=4 column strip mining swizzle) to match Crisp's L2 cache locality
  *
- * Matches matmul_bmg_prefetch.crisp 32x32 tile shape and double-buffered register ring.
+ * Matches matmul_bmg_prefetch.crisp 32x32 tile shape, double-buffered register ring, W=4 tile swizzle,
+ * and large GRF allocation (256 registers/thread via -Xs "-ze-opt-large-register-file").
  *
- * Build: icpx -fsycl -O3 sycl_apples.cpp -o sycl_apples
+ * Build: icpx -fsycl -O3 -Xs "-ze-opt-large-register-file" sycl_apples.cpp -o sycl_apples
  * Run:   ./sycl_apples [size] [warmup] [iters]
  */
 #include <sycl/sycl.hpp>
@@ -49,8 +51,21 @@ int main(int argc, char** argv) {
                 sycl::nd_range<2>(sycl::range<2>(M / 32, (N / 32) * 16), sycl::range<2>(1, 16)),
                 [=](sycl::nd_item<2> item) {
                     auto sg = item.get_sub_group();
-                    int row = item.get_group(0) * 32;
-                    int col = item.get_group(1) * 32;
+                    // Endeavor 144 Phase 1: Grouped tile visit order (W=4 column strip mining)
+                    // Matches Crisp's automatic swizzled tile schedule for L2 cache locality at large sizes.
+                    int nt0 = M / 32;
+                    int nt1 = N / 32;
+                    int tid = (int)item.get_group_linear_id();
+                    int wsym = 4;
+                    int tpg = wsym * nt0;
+                    int grp = tid / tpg;
+                    int idg = tid % tpg;
+                    int fc = grp * wsym;
+                    int gc = std::min(wsym, nt1 - fc);
+                    int tile_row = idg / gc;
+                    int tile_col = fc + (idg % gc);
+                    int row = tile_row * 32;
+                    int col = tile_col * 32;
 
                     using tA_t = joint_matrix<sycl::sub_group, precision::tf32, use::a, 8, 8, layout::row_major>;
                     using tB_t = joint_matrix<sycl::sub_group, precision::tf32, use::b, 8, 16, layout::row_major>;

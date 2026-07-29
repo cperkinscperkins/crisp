@@ -245,6 +245,17 @@ not yet tuned there.  The honest claim is "an untuned vendor path on new hardwar
 fundamental gap — and if the oneMKL team reads this, findings 1 and 3 are probably the two most
 actionable items above, since both are configuration-level rather than algorithmic.
 
+Even when comparing Crisp against an apples-to-apples SYCL reference kernel (`SYCL_Apples` with identical `W=4` swizzling and 256 GRF large register file allocation), Crisp maintains an approximate **~2.16× speedup** (~24.1 TFLOPS vs. ~11.2 TFLOPS at 2048³). Three compiler and IR-level differences account for this gap:
+
+1. **Explicit 3-Stage Pipeline Scheduling vs. DPC++ Dependency Conservatism**  
+   Crisp's generated IR emits an explicit 3-stage software pipeline using double-buffered register rings (`A-ring`, `B-ring`) with independent virtual SSA registers for ring 0 and ring 1, allowing IGC to schedule $k+1$ memory loads and $k+2$ L1 prefetches to overlap concurrently with $k$ XMX DPAS execution. In contrast, high-level C++ SYCL `joint_matrix` wrappers often introduce conservative dependency scheduling or implicit barrier semantics across loop iterations in IGC, preventing true asynchronous overlap of memory latency.
+
+2. **Whole-Module `opt -O3` IR Optimization vs. C++ ABI Preservation**  
+   Crisp runs an explicit whole-module LLVM `opt -O3` pass on its emitted IR before generating SPIR-V via `llvm-spirv`, stripping dead allocas, performing aggressive `mem2reg` promotion of index computations, and unrolling constant-trip loops. `icpx -fsycl`, by comparison, must preserve C++ ABI conventions, SYCL runtime exception metadata, and generic address-space wrappers that can inhibit aggressive loop unrolling and register promotion in the SPIR-V backend.
+
+3. **Direct Constant-Extent Subgroup2DBlock IO vs. Runtime Layout Checking**  
+   Crisp emits specialized `__spirv_Subgroup2DBlockLoadINTEL` and `__spirv_Subgroup2DBlockPrefetchINTEL` instructions with compile-time constant tile extents, element sizes, and byte pitches, allowing IGC to emit unguarded, maximum-bandwidth block-read messages directly to the Xe-core memory controller. The SYCL reference relies on generic `sycl::address_space_cast` and `joint_matrix_load` calls that emit more general 2D block intrinsics, which may carry extra pitch/stride checking or boundary clamping in IGC.
+
 
 7. "Maximize the resource that fits" is the wrong default, three times over
 ---------------------------------------------------------------------------
