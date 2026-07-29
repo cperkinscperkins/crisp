@@ -177,8 +177,38 @@ Phases (SPV-first)
       differentiable kernel reports "not differentiable".  An int->float conversion has a real
       (zero) derivative the engine has no rule for.  Noted, not fixed — the P1 specs use the
       shape values as loop bounds instead.
-[ ] P2 — **`load-fragment-acc`** (inverse of `store-fragment`), both backends.
-    Prerequisite for seeding dC.
+[x] P2 — **`load-fragment-acc`** (inverse of `store-fragment`), both backends.  DONE
+    2026-07-28.  Prerequisite for seeding dC.
+    - `(load-fragment-acc SRC (TY TX))`.  SPV -> `CooperativeMatrixLoadKHR` with Use=2 and
+      layout from the source tensor's `:contiguous-term`, mirroring `analyze-store-fragment`
+      so a Load/Store pair always agrees.  PTX -> the per-lane read at the m16n8 fp32
+      accumulator layout, a pure REWRITE (no new codegen), like its sibling.  Tallied against
+      the register budget exactly as `make-register-fragment` is — a LOADED accumulator
+      occupies the same registers as a constructed one, and 144's fit-check must see both.
+    - Overlay: `analyze-load-fragment-acc` (new) + `register-mma-analyzers` (verbatim + one
+      entry).
+    - VERIFIED, both backends.  PTX (structural, by hand): four `ld.global.b32` before the
+      `mma.sync` at `shr(lane,2)` / `and(lane,3)` / `shl(...,1)` / `or(...,1)` / `or(g,8)` —
+      i.e. `(g,2t) (g,2t+1) (g+8,2t) (g+8,2t+1)`, the exact addresses `store-fragment` writes;
+      the `mma.sync` C operand is `{%r5,%r7,%r9,%r10}`, those four loads; the first store
+      reuses the first load's address register.  SPV: disassembled to 3 `CooperativeMatrixLoadKHR`
+      (A, B, accumulator) + `MulAddKHR` whose C operand IS the accumulator load, same
+      pointer/stride as the Store.  **ON METAL (BMG): MMA_CORRECT.**
+    - Suite: E2E 943/943, --differentiate 943/943, unit 253/253, negative 211/211.
+
+    **GOTCHA worth keeping — you cannot test a fragment layout by round-tripping it.**
+    The first cut of spec 03 "laundered" a real MMA result through memory
+    (`store -> sync -> load-fragment-acc -> store`), expecting a wrong mapping to permute C.
+    It cannot work: a store followed by a load of the SAME address in the SAME thread is
+    always store-to-load forwardable, and a CORRECT layout makes the round-trip provably the
+    identity — so `-O3` deleted the reload AND the second store outright (confirmed in the
+    emitted PTX, which ended at `bar.sync; ret`).  More generally, **any self-consistent
+    load/store pair is observationally equivalent to any other**, so the element->lane mapping
+    is simply not observable in isolation.  It becomes observable only when the loaded value is
+    a NON-ZERO seed whose contribution the host can predict — which is exactly the P3 backward
+    test with a real dC.  The specs were rebuilt around the shape the backward actually uses
+    (seed the accumulator from a global matrix, then MMA into it) and are explicit about
+    proving REGION/COUNT correctness now and MAPPING correctness in P3.
 [ ] P3 — **fragment-level rule: `mma-accumulate` backward.** Target: `02-hello-mma` /
     `10-hello-mma-bmg` differentiate. Verify the emitted SPV/PTX by hand.
 [ ] P4 — **tile-level rule: `mma-accumulate-via-tile` backward.** Two backward GEMM loops

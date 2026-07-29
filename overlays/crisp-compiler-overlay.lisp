@@ -276,3 +276,99 @@
                                           (return)))))))))))))
 
 
+
+;;; ===================================================================
+;;; Endeavor 145 (MMA autodiff) — P2: load-fragment-acc.
+;;;
+;;; The backward pass must get dC (the `C_grad` global matrix) INTO a register
+;;; accumulator before either backward GEMM can run, and nothing did that:
+;;;   - store-fragment is accumulator -> memory only.
+;;;   - load-fragment-a / -b read the A / B OPERAND layouts, not the accumulator's.
+;;;   - load-tile into a register tile is Intel/SPV-only (Subgroup2DBlockLoadINTEL) and
+;;;     has no PTX mapping at all.
+;;;
+;;; So this is the exact inverse of store-fragment: same accumulator layout, same
+;;; (TY TX) tile addressing, reads instead of writes.  Like its sibling it is a pure
+;;; REWRITE on PTX (no new codegen) and a coop-op node on SPV.
+;;;
+;;; Specs: tests/spec/145-mma-autodiff/03-load-fragment-acc-bmg.crisp  (on-metal)
+;;;        tests/spec/145-mma-autodiff/04-load-fragment-acc-ptx.crisp  (IR-checked)
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun analyze-load-fragment-acc (expr env context location)
+  "P2 (145): (load-fragment-acc SRC (TY TX)) reads a fp32 ACCUMULATOR fragment from the
+   SRC matrix at logical tile (TY TX).  The exact inverse of store-fragment.
+
+   :spirv -> CooperativeMatrixLoadKHR with Use=2 (accumulator), rows/cols from the active
+   profile's shape and layout from the source tensor's :contiguous-term — mirroring
+   analyze-store-fragment so a Load/Store pair always agrees.
+
+   else   -> the NVIDIA per-lane read at the m16n8 fp32 accumulator layout.  With
+   g = lane/4 and t = lane%4 this lane's four registers live at
+     (g, 2t) (g, 2t+1) (g+8, 2t) (g+8, 2t+1)
+   offset by the tile origin (TY*16, TX*8) — byte-for-byte the addresses store-fragment
+   writes, only feeding %construct-struct instead of set!.
+
+   The fragment is tallied against the kernel's register budget exactly as
+   make-register-fragment tallies one: a LOADED accumulator occupies the same registers
+   as a constructed one, and endeavor 144's fit-check must see both."
+  (destructuring-bind (src tile-id) (cdr expr)
+    (let ((ty (first tile-id)) (tx (second tile-id)))
+      (if (eq *target-backend* :spirv)
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (declare (ignore sk))
+            (let ((tnode (analyze-expression src env context (append location '(1)))))
+              (%spv-note-register-fragment sm sn context location)
+              (make-semantic-coop-op
+               :type (list 'coop-matrix 'float sm sn 2) :kind :load
+               :tensor-node tnode
+               :rows sm :cols sn :use 2 :layout (%coop-layout-of tnode)
+               :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+               :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+               :source-location location)))
+          (progn
+            (%ptx-note-register-demand 4 context location)
+            (analyze-expression
+             `(let ((lane (to-int (warp-lane))))
+                (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                  (let ((row (+ (* ,ty 16) g)) (col (+ (* ,tx 8) t2)))
+                    (%construct-struct register-fragment-acc-f32-16x8
+                      (~ ,src row col)
+                      (~ ,src row (+ col 1))
+                      (~ ,src (+ row 8) col)
+                      (~ ,src (+ row 8) (+ col 1))))))
+             env context location))))))
+
+;; src/mma.lisp
+;; VERBATIM re-definition of the src/ original, with ONE added entry: LOAD-FRAGMENT-ACC.
+(defun register-mma-analyzers ()
+  "Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms.
+   Endeavor 145 P2: adds LOAD-FRAGMENT-ACC (the store-fragment inverse)."
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
+                         (cons "STORE-FRAGMENT"          #'analyze-store-fragment)
+                         (cons "LOAD-FRAGMENT-A"         #'analyze-load-fragment-a)
+                         (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)
+                         ;; Endeavor 145 (P2) — the accumulator READ, inverse of store-fragment.
+                         (cons "LOAD-FRAGMENT-ACC"       #'analyze-load-fragment-acc)
+                         (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
+                         (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
+                         (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
+                         ;; Endeavor 142 (Phase B) — Intel L1 prefetch (Subgroup2DBlockPrefetchINTEL)
+                         (cons "PREFETCH-TILE"           #'analyze-prefetch-tile)
+                         (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
+                         (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
+                         ;; Endeavor 140 (Chapter 4) -- wgmma forms
+                         (cons "MAKE-WGMMA-ACCUMULATOR"    #'analyze-make-wgmma-accumulator)
+                         (cons "WGMMA-ACCUMULATE"          #'analyze-wgmma-accumulate)
+                         (cons "WGMMA-ACCUMULATE-VIA-TILE" #'analyze-wgmma-accumulate-via-tile)
+                         (cons "STORE-TILE"              #'analyze-store-tile-mma)
+                         (cons "LET"                     #'analyze-let-with-tile-explosion)
+                         (cons "LET*"                    #'analyze-let-with-tile-explosion)))
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) (cdr entry)))))))
