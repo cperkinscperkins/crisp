@@ -1,0 +1,214 @@
+We've been working on various matrix multiplication things since endeavor 132-mma-fundamentals.
+
+Many of these tests are marked
+;; SKIP-WITH[--differentiate]: "some excuse"
+
+but now it is the time to get MMA working with auto differentiation.
+
+Crisp already has very good support for auto differentiation. It prioritized mathematically correct differentiation. For example it can apply A|D down through subfunctions,  and even supports A|D for integer data types. The test system has custom directives so A|D results can even be check on metal
+e.g.
+;; TEST-WITH[--ir-target=spv --differentiate]
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=2.0 output-vec=4
+
+
+Orientation
+-----------
+
+### Where AD hooks in
+
+`generate-backward-walk` (src/autodiff.lisp:838) is a **source-to-source** transform over
+flat ANF, and it runs **before** semantic analysis. That matters: `%explode-register-tiles`
+(src/mma.lisp:1245) is invoked from the **LET analyzer**, so the AD walk sees the
+*unexploded* `(make-register-tile …)` / `(mma-accumulate-via-tile …)` forms — the whole-tile
+variable is still intact.
+
+So MMA autodiff is a source-rewrite problem at exactly the same altitude as the existing
+`load-tile-at` → `%load-tile-at-bwd` rules (src/autodiff.lisp:991-1027). No new codegen is
+required for the *rules* themselves; the backward emits ordinary Crisp MMA forms which then
+go through the normal forward analysis/explosion path.
+
+### Today's failure modes (measured, 2026-07-28)
+
+| spec | dies on |
+| --- | --- |
+| `132/02-hello-mma` | `Function LOAD-FRAGMENT-B is not differentiable` |
+| `132/06-tiled-matmul` | `Function INNER-DIMENSION is not differentiable` |
+
+Both come from `%handle-single-value-backward … :error-on-unknown t`. Note that `06` does
+not even reach the MMA — it trips on *metadata* (`inner-dimension`), which is
+gradient-inert and belongs in `%backward-skip-fn-p` (src/autodiff.lisp:1535). Hence P1.
+
+
+The math
+--------
+
+C = A·B  ⟹  dA = dC·Bᵀ ,  dB = Aᵀ·dC
+
+Both backward products are themselves GEMMs, so both *can* run on the tensor cores. Two
+things constrain how.
+
+### 1. Transposes are free at the fragment level
+
+- **PTX**: `load-fragment-a/b` are per-lane index rewrites (src/mma.lisp:303-354), so a
+  transpose is just swapping `(r,c)` in the address math. Zero cost.
+- **SPV**: they are `CooperativeMatrixLoadKHR` with a `layout` operand
+  (`%coop-layout-of`, src/mma.lisp:249), so a transpose is flipping 0↔1. Zero cost —
+  *except* for the Intel B-operand restriction below.
+
+### 2. Shape algebra — the K-tile contract
+
+Let the hardware instruction shape be `(M_n N_n K_n)` and the workgroup tile be
+`(M_f N_f K_f)`. Mapping the backward GEMMs onto the instruction:
+
+| GEMM | shape (M N K) | new requirement |
+| --- | --- | --- |
+| forward  C = A·B   | (M_f, N_f, K_f) | `M_f % M_n`, `N_f % N_n`, `K_f % K_n` |
+| backward dA = dC·Bᵀ | (M_f, K_f, N_f) | **`K_f % N_n`**, `N_f % K_n` |
+| backward dB = Aᵀ·dC | (K_f, N_f, M_f) | **`K_f % M_n`**, `M_f % K_n` |
+
+Everything except the two bolded terms is already implied by the forward's own
+constraints. So the *entire* additional contract is:
+
+> **`K_tile % lcm(M_n, N_n) == 0`**
+
+Evaluated on the two profiles we support:
+
+- NVIDIA `(16 8 8)` → `lcm(16,8)` = **16**. Binding constraint comes from **dB**.
+- Intel BMG `(8 16 8)` → `lcm(8,16)` = **16**. Binding constraint comes from **dA**.
+
+Same number, opposite reasons. This is a **hard contract**: violating it is a compile
+error naming the K-tile, the profile shape, and the required multiple. It is *not* silently
+downgraded to a scalar-FMA fallback.
+
+Consequence: `132/06-tiled-matmul` and `133/12-tiled-matmul-bmg` both use K-tile = 8 and
+therefore **cannot** simply be un-skipped. New specs are needed. (See Testing, below.)
+
+### 3. Intel cannot read a transposed B operand
+
+Intel has no ColumnMajor-B cooperative-matrix builtin, so a B operand must be declared
+`:row-major` (src/mma.lisp:334). But `dA = dC·Bᵀ` wants exactly the forbidden read: B is
+stored row-major `(K_f × N_f)` and the backward wants it as a row-major `(N_f × K_f)`,
+i.e. a ColumnMajor load.
+
+Fix: **stage Bᵀ through SLM.** `load-tile-at … :transpose` already exists and is already
+AD-aware — `%tlc-extract-transpose-key` is threaded through the backward walk
+(src/autodiff.lisp:760, 998, 1017). So the SPV backward pays one transposing SLM staging
+step that PTX gets for free via index math. Known before we start, not discovered in P5.
+
+### 4. The reduction axis flips
+
+The forward parallelizes over (m,n) and reduces over k. The backward's dA reduces over
+**n** (the forward's grid-x) and dB reduces over **m** (grid-y). A workgroup that owns
+C-tile (gy,gx) therefore contributes *partial* dA to every (gy,k) and partial dB to every
+(k,gx) — those partials must be summed across the grid.
+
+That is exactly the atomic accumulation into `&out` grad handles that the AD engine
+already documents as its default. Single-workgroup kernels dodge the issue entirely, so
+it is deferred to P8.
+
+### 5. Seeding dC has no PTX path
+
+The backward must get `C_grad` (a global matrix) *into* a register tile. `load-tile` into
+a register tile exists but is **Intel/SPV-only** (`Subgroup2DBlockLoadINTEL`,
+src/mma.lisp:1231). PTX has no such path.
+
+Fix: a new `load-fragment-acc` primitive — the exact inverse of `store-fragment`, whose
+per-lane accumulator layout is already spelled out (src/mma.lisp:259-286). Reverse the
+`set!`s into reads. Small, well-defined, and needed on both backends for symmetry. Hence P2.
+
+### 6. Register pressure
+
+The backward holds dC, dA and dB accumulators simultaneously — roughly 3× the forward's
+accumulator budget. `%register-tile-fit-check` (src/mma.lisp:820) must account for the
+backward's tiles under `--differentiate`, otherwise a kernel that fits forward silently
+blows the budget in its gradient. Folded into P4.
+
+
+Decisions taken (2026-07-28, with Chris)
+----------------------------------------
+
+1. **K-tile contract is hard** — compile error, no silent non-MMA fallback for dB.
+2. **`--mma-grad-test` (P6) lands before VERIFY-AUTODIFF matrices (P9).** Both eventually.
+3. **SPV/BMG leads.** The dev machine is BMG, so SPV is testable immediately; PTX work is
+   batched into P7 against a rented pod. Note the endeavor does **not** need sm_90 — the
+   tf32 `mma.sync.m16n8k8` path is sm_80+, and wgmma (the only sm_90a construct) is out of
+   scope. An A10 / L4 / RTX 3090 / 4090 pod suffices.
+4. **No dedicated `matmul-backward` form.** The AD engine derives the backward from
+   `mma-accumulate-via-tile`. This is deliberate: Crisp's MMA lets users fuse their own
+   epilogues (ReLU, bias) via the `(acc)` body API (F3), and they must stay differentiable.
+   A predefined GEMM-backward form would break that.
+
+
+Phases (SPV-first)
+------------------
+
+[x] P1 — **gradient-inert shape queries.**  DONE 2026-07-28.  `inner-dimension` and
+    `outer-dimensions` differentiate.  Scoped DOWN from the original sketch: the register-tile
+    constructors (`make-register-tile` / `make-register-fragment` / `fill-tile`) are NOT
+    gradient-inert — a register tile needs a paired `_ADJ` tile, not a skip — so they move to
+    P4/P5 where they are actually exercised.
+    - The two forms fail for DIFFERENT reasons, which is the whole content of the phase:
+      `inner-dimension` (single-value) is rejected by the backward WALK -> a
+      `%backward-skip-fn-p` entry.  `outer-dimensions` (multi-value) is already ignored
+      correctly by the walk, but the backward kernel's primal REPLAY drops it -> "Unknown
+      variable M".
+    - The replay bug is general, not MMA-specific: `forward-bindings` in
+      `%generate-backward-kernel-ast` collected only TWO-element ANF forms, so NO multi-value
+      binding has ever been replayed into a backward kernel (`floor`, `truncate`, and
+      multi-return user functions are all equally affected).
+    - GOTCHA (cost a false start, broke 111/14 + 111/15): a multi-value binding CANNOT be
+      recognized by shape after flattening.  `flatten-anf-body` (src/anf-transform.lisp:369)
+      pushes real LET bindings and bare statement forms into the same flat list, and they are
+      structurally identical — `(M N (outer-dimensions A B))` is a binding, but
+      `(load-tile-at A tile (0))` and `(set! acc (+ acc x))` are statements, and all three are
+      "symbols then a cons".  Fix: collect genuine bindings from the PRE-FLATTEN anf-body
+      (where a binding is by construction an element of a LET binding list), then filter
+      flat-anf by EQ so source order is preserved.  The two-element rule is kept VERBATIM so
+      existing kernels replay byte-identically.
+    - Overlay: `%backward-skip-fn-p`, `%collect-multi-value-anf-bindings` (new),
+      `%collect-forward-primal-bindings` (new), `%generate-backward-kernel-ast`.  All defuns —
+      no macro patch needed.
+    - IR-VERIFIED by hand, not just exit codes: in `dot_inner_dim_grad`, A.extents[1] is read
+      and drives the backward loop bound; the chain rule emits `B[k,0]*acc_adj` and
+      `A[0,k]*acc_adj` into two `atomicrmw fadd` on addrspace(1).  In `dot_outer_dims_grad`,
+      `{i64,i64}` is extractvalue'd into M and N, both driving nested backward loops.
+    - Suite: E2E 943/943, --differentiate 943/943, unit 253/253, negative 211/211.
+    - OBSERVED, out of scope: `to-float` is NOT in the skip list, so `(to-float <int>)` in a
+      differentiable kernel reports "not differentiable".  An int->float conversion has a real
+      (zero) derivative the engine has no rule for.  Noted, not fixed — the P1 specs use the
+      shape values as loop bounds instead.
+[ ] P2 — **`load-fragment-acc`** (inverse of `store-fragment`), both backends.
+    Prerequisite for seeding dC.
+[ ] P3 — **fragment-level rule: `mma-accumulate` backward.** Target: `02-hello-mma` /
+    `10-hello-mma-bmg` differentiate. Verify the emitted SPV/PTX by hand.
+[ ] P4 — **tile-level rule: `mma-accumulate-via-tile` backward.** Two backward GEMM loops
+    with transposed operand reads; the K-tile contract enforced; AD-aware fit-check.
+[ ] P5 — **whole-kernel.** `store-tile`(register) backward + the K-loop + transposed SLM
+    staging. A full tiled matmul differentiates end-to-end on one workgroup.
+[ ] P6 — **on-metal verification.** `--mma-grad-test` in the hoist (host-computes dA/dB,
+    prints `MMA_GRAD_CORRECT`), mirroring 134's `--mma-test`. L0/BMG first.
+[ ] P7 — **PTX parity.** Index-math transposes, `mma.sync` backward, rented sm_80+ pod.
+[ ] P8 — **multi-workgroup + atomics;** un-skip 135's `matrix-multiply-tile-stride`.
+[ ] P9 (stretch) — **VERIFY-AUTODIFF matrix inputs** (`A=[[…][…]]`, `at.A=(r c)`). The
+    runner is scalar-cell + 1-D-vector only today.
+
+**Out of scope** (a future endeavor): AD over the Chapter 1-4 optimizations — async
+staging (136), pipeline rings (138), warp specialization (139), wgmma (140), Intel
+prefetch (142). 145 ends with a differentiable *synchronous* tiled matmul on both
+backends; optimizing that gradient is a second pass over the same math.
+
+
+Testing
+-------
+
+**New 145 specs lead, per phase, written before the implementation.** Un-skipping the
+existing MMA specs is the *closing* move of the endeavor, not the mechanism — those
+kernels were not built for AD (132/06 and 133/12 both violate the K-tile contract), and
+editing them to fit would rewrite the record of endeavors 132-134.
+
+So the endeavor finishes with a sweep over 132 / 133 / 135, dropping
+`SKIP-WITH[--differentiate]` from every spec that genuinely satisfies the contract and
+replacing the rest's reason string with an *accurate* one ("K-tile 8 violates the
+K % lcm(M,N) contract") instead of the current blanket "forward-only MMA".
+
+ci-stop stays at `144-mma-hardware-profile` until P5 lands.

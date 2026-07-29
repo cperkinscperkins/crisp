@@ -749,12 +749,13 @@ MMA
 [x] chapter 3 - warp specialization pipelining
 [x] Intel  LSC 2D Block Loads in Intel Xe
 [x] precision?  
-[ ] opportunities for using def-hardware-profile ??
+[x] opportunities for using def-hardware-profile ??
 [ ] empty room fallacy?  GPU display? GPU monitoring?
 [ ] auto-differentiation?
-[ ] out of core orchestration 
+[ ] new macro for rings (prefetch/pipeline) that handles rings
+[/] out of core orchestration 
 
-[ ] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
+[x] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] move MMA out of topology.md into main docs
@@ -794,23 +795,6 @@ MMA
 
 
 
-NVIDIA TEST FAILURES
-These are BMG tests which are being run on NVidia, for some reason. We supposedly fixed this earlier, but maybe not or the fix was overwritten?
-
-============================================================
-  RUN SUMMARY
-============================================================
-  specs (binary)                     FAIL
-  specs (binary, --differentiate)    ok
-  negative specs                     ok
-
-  ALL FAILED SPECS (across phases):
-    - 133-mma-spv/10-hello-mma-bmg
-    - 133-mma-spv/11-matmul-bmg
-    - 133-mma-spv/12-tiled-matmul-bmg
-    - 135-matrix-multiply-tile-stride/04-tiled-matmul-bmg
-    - 135-matrix-multiply-tile-stride/08-fill-tile-register-bmg
-    - 135-matrix-multiply-tile-stride/09-strided-matmul-bmg
 
 
 FMA

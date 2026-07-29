@@ -1,0 +1,43 @@
+;; P1 (MMA autodiff) — `outer-dimensions` is GRADIENT-INERT, and the MULTI-VALUE case.
+;;
+;; `(outer-dimensions A B) => M N` is the two-value sibling of `inner-dimension`: both
+;; extents are pure shape queries with identically-zero gradient contribution.  But it
+;; fails for a DIFFERENT reason than 01, and the difference is the point of this spec.
+;;
+;; Measured during orientation, this kernel does NOT report "not differentiable" — it
+;; reports:
+;;     Unknown variable M.
+;;
+;; Why: the def-kernel AD expansion replays the forward's primal bindings into the
+;; backward kernel, but `forward-bindings` (src/macros.lisp:961-964) collects only
+;; TWO-element ANF forms `(sym expr)`.  A multi-value binding is a THREE-element form
+;; `(M N (outer-dimensions A B))`, so it is never replayed and M/N are unbound in the
+;; backward body.  (The backward WALK already ignores it correctly — the multi-value
+;; clause at src/autodiff.lisp:1112 only fires for registered differentiable functions.)
+;;
+;; So P1 has two distinct fixes:
+;;   01 -> a %backward-skip-fn-p entry (the walk).
+;;   02 -> widening forward-bindings to collect multi-value bindings (the replay).
+;; Both live in defuns (%generate-backward-kernel-ast), so both are overlay-able.
+;;
+;; M and N are used as LOOP BOUNDS rather than folded into the result, because
+;; `to-float` is itself not currently in the skip list — an int->float conversion has a
+;; real (zero) derivative the engine has no rule for.  Out of scope here; noted in
+;; mma-autodiff.md as an observation, not a P1 deliverable.
+;;
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-cell (cell float :address-space :global))
+
+(def-kernel dot_outer_dims (A B &out C)
+  (declare #'(a-mat b-mat &out c-cell)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((M N (outer-dimensions A B))
+        (acc 0.0))
+    (dotimes (i (to-int M))
+      (dotimes (j (to-int N))
+        (set! acc (+ acc (* (~ A i 0) (~ B 0 j))))))
+    (set! (~ C) acc)))

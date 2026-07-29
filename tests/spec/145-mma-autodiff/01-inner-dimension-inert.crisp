@@ -1,0 +1,42 @@
+;; P1 (MMA autodiff) — `inner-dimension` is GRADIENT-INERT.
+;;
+;; The first thing that stops an MMA kernel from differentiating is not the MMA at all:
+;; it is the shape query.  132/06-tiled-matmul dies with
+;;   "Function INNER-DIMENSION is not differentiable"
+;; before it ever reaches mma-accumulate-via-tile.
+;;
+;; `(inner-dimension A B)` returns K — a ULONG read out of A's extents.  It is a pure
+;; shape query with no dependence on the matrices' VALUES, so its gradient contribution
+;; is identically zero and it belongs in %backward-skip-fn-p alongside extents~ /
+;; strides~ / num-rows (src/autodiff.lisp:1535).
+;;
+;; This spec deliberately contains NO MMA.  It is the plain-scalar dot product
+;;   C = sum_k A[0,k] * B[k,0]
+;; with K sourced from `inner-dimension` instead of a literal.  Verified during
+;; orientation: the identical kernel with `(dotimes (k 8) ...)` ALREADY differentiates,
+;; so this spec isolates exactly one new thing.
+;;
+;; The forward value of K is available in the backward for free: the def-kernel AD
+;; expansion replays every single-value ANF binding as `forward-bindings`
+;; (src/macros.lisp:961).  So a skip-list entry is the whole fix.
+;;
+;; NOTE: gradient VALUES are not checked here — VERIFY-AUTODIFF's runner handles scalar
+;; cells and 1-D vectors only, and this kernel's inputs are matrices.  On-metal gradient
+;; checking arrives in P6 (--mma-grad-test).  This spec is compile-level plus a manual
+;; IR read of the emitted _grad kernel.
+;;
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-cell (cell float :address-space :global))
+
+(def-kernel dot_inner_dim (A B &out C)
+  (declare #'(a-mat b-mat &out c-cell)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((K   (to-int (inner-dimension A B)))
+        (acc 0.0))
+    (dotimes (k K)
+      (set! acc (+ acc (* (~ A 0 k) (~ B k 0)))))
+    (set! (~ C) acc)))
