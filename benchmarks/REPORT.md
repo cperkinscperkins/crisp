@@ -7,8 +7,8 @@
 | Chapter | Technique | Size | Crisp (TFLOPS) | oneMKL (TFLOPS) | Crisp % of oneMKL |
 |---|---|---:|---:|---:|---:|
 | chap0_sync | Synchronous coop-matrix tiling (XMX tf32) | 2048 | 1.5 | 13.8 | 10.9% |
-| chap1_async_linear | OpGroupAsyncCopy staging (XMX tf32) | 2048 | 0.8 | 13.8 | 6.0% |
-| intel_prefetch | Register-ring + Subgroup2DBlockPrefetch (XMX tf32) | 2048 | 24.9 | 13.8 | 179.9% |
+| chap1_async_linear | OpGroupAsyncCopy staging (XMX tf32) | 2048 | 0.8 | 13.8 | 6.1% |
+| intel_prefetch | Register-ring + Subgroup2DBlockPrefetch (XMX tf32) | 2048 | 24.9 | 13.8 | 180.1% |
 
 > Largest measured size per chapter, `fast` precision (Crisp and oneMKL both tf32). The ladder runs low-to-high on the optimization axis for this hardware.
 
@@ -18,10 +18,10 @@
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 5.29 | 0.01 | 1.32 | 0.03 | 0.11 | 0.30 | 2.1% | 8.6% |
-| 512x512x512 | 9.81 | 0.03 | 1.47 | 0.18 | 0.42 | 0.65 | 4.2% | 28.3% |
-| 1024x1024x1024 | 11.85 | 0.18 | 1.54 | 1.40 | 1.46 | 1.47 | 12.3% | 94.8% |
-| 2048x2048x2048 | 13.82 | 1.24 | 1.48 | 11.60 | 1.51 | 11.41 | 10.9% | 101.7% |
+| 256x256x256 | 5.20 | 0.01 | 1.32 | 0.03 | 0.11 | 0.30 | 2.2% | 8.6% |
+| 512x512x512 | 9.78 | 0.03 | 1.47 | 0.18 | 0.41 | 0.65 | 4.2% | 28.1% |
+| 1024x1024x1024 | 11.98 | 0.18 | 1.53 | 1.40 | 1.46 | 1.47 | 12.2% | 94.9% |
+| 2048x2048x2048 | 13.82 | 1.24 | 1.48 | 11.58 | 1.51 | 11.41 | 10.9% | 101.5% |
 
 ### chap1_async_linear — OpGroupAsyncCopy staging (XMX tf32)
 
@@ -29,10 +29,10 @@
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 5.29 | 0.01 | 1.32 | 0.03 | 0.08 | 0.41 | 1.5% | 6.2% |
-| 512x512x512 | 9.81 | 0.03 | 1.47 | 0.18 | 0.26 | 1.02 | 2.7% | 17.9% |
-| 1024x1024x1024 | 11.85 | 0.18 | 1.53 | 1.40 | 0.80 | 2.67 | 6.8% | 52.5% |
-| 2048x2048x2048 | 13.82 | 1.24 | 1.48 | 11.60 | 0.82 | 20.89 | 6.0% | 55.6% |
+| 256x256x256 | 5.20 | 0.01 | 1.31 | 0.03 | 0.08 | 0.41 | 1.6% | 6.2% |
+| 512x512x512 | 9.78 | 0.03 | 1.47 | 0.18 | 0.26 | 1.03 | 2.7% | 17.8% |
+| 1024x1024x1024 | 11.98 | 0.18 | 1.53 | 1.40 | 0.81 | 2.66 | 6.7% | 52.8% |
+| 2048x2048x2048 | 13.82 | 1.24 | 1.48 | 11.59 | 0.84 | 20.40 | 6.1% | 56.8% |
 
 ### intel_prefetch — Register-ring + Subgroup2DBlockPrefetch (XMX tf32)
 
@@ -40,24 +40,23 @@
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 5.29 | 0.01 | 2.02 | 0.02 | 3.04 | 0.01 | 57.5% | 150.9% |
-| 512x512x512 | 9.81 | 0.03 | 4.20 | 0.06 | 9.60 | 0.03 | 97.8% | 228.6% |
-| 1024x1024x1024 | 11.85 | 0.18 | 6.87 | 0.31 | 21.62 | 0.10 | 182.5% | 314.8% |
-| 2048x2048x2048 | 13.82 | 1.24 | 7.44 | 2.31 | 24.86 | 0.69 | 179.9% | 334.0% |
+| 256x256x256 | 5.20 | 0.01 | 2.02 | 0.02 | 3.04 | 0.01 | 58.5% | 150.9% |
+| 512x512x512 | 9.78 | 0.03 | 4.19 | 0.06 | 9.56 | 0.03 | 97.8% | 228.1% |
+| 1024x1024x1024 | 11.98 | 0.18 | 6.89 | 0.31 | 21.62 | 0.10 | 180.5% | 313.7% |
+| 2048x2048x2048 | 13.82 | 1.24 | 7.51 | 2.29 | 24.89 | 0.69 | 180.1% | 331.3% |
 
 ### Compile Times (avg across precision)
 
 | Chapter | Competitor | Avg Compile (ms) | × vs Crisp |
 |---|---|---:|---:|
-| chap0_sync | Crisp | 1210 | 1.0× (baseline) |
-| chap0_sync | OneMKL_Optimal | 6726 | 5.6× slower |
-| chap0_sync | SYCL_Apples | 4845 | 4.0× slower |
-| chap1_async_linear | Crisp | 689 | 1.0× (baseline) |
-| chap1_async_linear | SYCL_Apples | 3960 | 5.7× slower |
-| intel_prefetch | Crisp | 1503 | 1.0× (baseline) |
-| intel_prefetch | SYCL_Apples | 3969 | 2.6× slower |
+| chap0_sync | Crisp | 1140 | 1.0× (baseline) |
+| chap0_sync | SYCL_Apples | 3342 | 2.9× slower |
+| chap1_async_linear | Crisp | 665 | 1.0× (baseline) |
+| chap1_async_linear | SYCL_Apples | 2943 | 4.4× slower |
+| intel_prefetch | Crisp | 692 | 1.0× (baseline) |
+| intel_prefetch | SYCL_Apples | 2856 | 4.1× slower |
 
-> Crisp compiles a kernel to SPIR-V; the native competitors invoke `icpx` (SYCL / oneMKL). Lower is better; `× vs Crisp` is how much longer than Crisp that toolchain takes.
+> **Device-only compilation on both sides.**  Crisp `--ir-target=spv`; the competitor `icpx -fsycl -fsycl-device-only -fsycl-targets=spir64`.  Neither figure includes host-code compilation, linking, or the runtime JIT of the resulting IR.  Library ceilings (oneMKL) are omitted — their kernels ship precompiled inside the library, so there is no device compile to measure.  Lower is better.
 
 ## Hardware: NVIDIA H100 PCIe
 
@@ -237,16 +236,14 @@
 
 | Chapter | Competitor | Avg Compile (ms) | × vs Crisp |
 |---|---|---:|---:|
-| chap0_sync | Crisp | 354 | 1.0× (baseline) |
-| chap0_sync | CUBLAS_Optimal | 1400 | 4.0× slower |
-| chap0_sync | CUDA_Apples | 1648 | 4.7× slower |
-| chap1_async_linear | Crisp | 350 | 1.0× (baseline) |
-| chap1_async_linear | CUDA_Apples | 2960 | 8.5× slower |
+| chap0_sync | Crisp | 342 | 1.0× (baseline) |
+| chap0_sync | CUDA_Apples | 1648 | 4.8× slower |
+| chap1_async_linear | Crisp | 339 | 1.0× (baseline) |
+| chap1_async_linear | CUDA_Apples | 2960 | 8.7× slower |
 | chap1.5_async_block | Crisp | 336 | 1.0× (baseline) |
 | chap1.5_async_block | CUDA_Apples | 2847 | 8.5× slower |
 | chap2_pipelined_block | Crisp | 413 | 1.0× (baseline) |
 | chap2_pipelined_block | CUDA_Apples | 2761 | 6.7× slower |
 | chap3_wgmma | Crisp | 430 | 1.0× (baseline) |
-| chap3_wgmma | CUBLAS_Optimal | 1466 | 3.4× slower |
 
-> Crisp compiles a kernel to PTX; the native competitors invoke `nvcc`. Lower is better; `× vs Crisp` is how much longer than Crisp that toolchain takes.
+> **Device-only compilation on both sides.**  Crisp `--ir-target=ptx`; the competitor `nvcc -ptx`.  Neither figure includes host-code compilation, linking, or the driver's JIT of the resulting IR.  Library ceilings (cuBLAS) are omitted — their kernels ship precompiled inside the library, so there is no device compile to measure.  Lower is better.
