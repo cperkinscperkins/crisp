@@ -377,12 +377,52 @@ fragment-level backward" below.
       **backward = 4 MulAdd / 9 Load** — exactly the predicted dA (1 fragment x 2 K-steps) +
       dB (2 fragments x 1 K-step), plus the ONE accumulator-seed load from `C_GRAD`.
       Spec 06 passes both COMPILE-WITH runs and its forward is still MMA_CORRECT on BMG.
-[ ] P3c — **raw `mma-accumulate` under `--differentiate` is a clear compile error**, naming the
-    tile form as the differentiable surface. Negative spec.
+[x] P3c — **raw `mma-accumulate` under `--differentiate` is a clear compile error.**  DONE
+    2026-07-28.  Spec `07-fragment-mma-not-differentiable.crisp`.
+    - The generic "Function MMA-ACCUMULATE is not differentiable.  Wrap the kernel in
+      'forward-only' …" gave exactly the WRONG advice: the multiply IS differentiable (spec 06),
+      just not at that altitude, and `forward-only` steers the user away from the thing that
+      works.  The new message states the shape reason and names `mma-accumulate-via-tile` plus
+      the K >= lcm(M_n,N_n) requirement.  Covers all six fragment-level forms.
+    - The spec is a negative test that CANNOT live in `errors/`: `run-error-specs.lisp` invokes
+      a fixed arg list (file + `--log-level=off`) and cannot inject `--differentiate`, so the
+      kernel would compile forward-only and fail for the wrong reason.
+      `COMPILE-WITH[…]: FAIL "substring"` is the mechanism that carries the flag.
+[x] P5 — **whole-kernel: the realistic K-LOOP shape.**  DONE 2026-07-28.  Spec
+    `08-k-loop-matmul-diff-bmg.crisp`; forward MMA_CORRECT on BMG over a runtime K=32.
+    - Wrapping the multiply in a `dotimes` broke the backward SILENTLY.  `flatten-anf-body`
+      flattens LET and PROGN but leaves a DOTIMES body NESTED, and the rule's tile maps scanned
+      only the TOP LEVEL of flat-anf — so in a loop the `load-tile-at` forms were invisible, the
+      rule declared itself "not applicable", and the walk's fallthrough DROPPED the form.  The
+      emitted backward had **zero** `CooperativeMatrixMulAddKHR` and would have returned a zero
+      gradient.
+    - Fixes: (1) the maps walk the whole tree (`%mma-ad-walk-forms`); (2) the "not applicable"
+      path is now a HARD ERROR naming which operand could not be resolved.  (2) is the important
+      one — returning NIL let a silent zero gradient through, the same class of failure as the
+      P3a data-drop.  A quietly-wrong gradient is far worse than a kernel that will not compile.
+    - Verified per function in the _grad module: forward 2 MulAdd / 4 Load / 1 Store; backward
+      4 MulAdd / 9 Load / 4 Store (dC->SLM, dA, and dB's two fragments).
 [ ] P5 — **whole-kernel.** `store-tile`(register) backward + the K-loop + transposed SLM
     staging. A full tiled matmul differentiates end-to-end on one workgroup.
-[ ] P6 — **on-metal verification.** `--mma-grad-test` in the hoist (host-computes dA/dB,
-    prints `MMA_GRAD_CORRECT`), mirroring 134's `--mma-test`. L0/BMG first.
+[ ] P6 — **on-metal NUMERIC gradient verification.**  RE-PLANNED 2026-07-28: **P6 and P9 are the
+    same phase**, and it is NOT a hoist feature.
+    - The original plan (`--mma-grad-test` in the hoist, mirroring 134's `--mma-test`) cannot
+      work: `--differentiate` and `--hoist` are HARD-INCOMPATIBLE (src/main.lisp:144), so the
+      hoist never sees a backward kernel.  Making it work would mean lifting that restriction —
+      a much larger architectural change than the phase was scoped for.
+    - The established on-metal AD path is VERIFY-AUTODIFF, which compiles `<spec>.spv` and
+      `<spec>_grad.spv` itself and drives them through its own L0 bindings, no hoist involved.
+      Extending IT to 2-D matrices is the real remaining work — i.e. what was listed as P9.
+    - SIZE (measured, so this is not a guess): the backward kernel of the K-looped matmul has
+      **117 parameters** — six matrices at 9 exploded args each plus the implicit scratch tiles
+      (the forward's two, their `_ADJ` pairs, and the backward's three staging temporaries).
+      The runner binds arguments by KIND, so this wants a proper `:matrix-float` kind, not a
+      bespoke launcher.  Hand-rolling one would be exactly the sort of thing that yields a
+      verification you cannot trust.
+    - **This is the one gap that matters.**  Everything through P5 is verified structurally (the
+      right MMAs, in the right shapes, in the right places) and the FORWARD is metal-correct —
+      but no gradient VALUE has been checked on hardware yet.  "4 MulAdds in the right shape"
+      is not the same as "correct gradients".
 [ ] P7 — **PTX parity.** Index-math transposes, `mma.sync` backward, rented sm_80+ pod.
 [ ] P8 — **multi-workgroup + atomics;** un-skip 135's `matrix-multiply-tile-stride`.
 [ ] P9 (stretch) — **VERIFY-AUTODIFF matrix inputs** (`A=[[…][…]]`, `at.A=(r c)`). The

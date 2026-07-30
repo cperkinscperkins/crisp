@@ -632,39 +632,65 @@
 ;;; ===================================================================
 
 ;; src/autodiff.lisp
+(defun %mma-ad-walk-forms (tree fn)
+  "Endeavor 145 P3b: apply FN to every cons subform of TREE, outermost first.
+
+   The tile maps below MUST see the whole tree, not just the top level of flat-anf.
+   `flatten-anf-body` flattens LET and PROGN but leaves a DOTIMES / IF / WHEN body NESTED —
+   so in a K-looped matmul (the realistic shape) the load-tile-at forms live inside the loop
+   and a top-level-only scan finds nothing."
+  (labels ((walk (x)
+             (when (consp x)
+               (funcall fn x)
+               (dolist (sub x) (walk sub)))))
+    (walk tree)))
+
+;; src/autodiff.lisp
 (defun %mma-ad-tile-dims-map (flat-anf)
-  "Endeavor 145 P3b: alist SYM -> (ROWS COLS) for every compile-time-shaped tile bound in
-   FLAT-ANF — both `(V (make-register-tile T (M N) INIT))` and
+  "Endeavor 145 P3b: alist SYM -> (ROWS COLS) for every compile-time-shaped tile bound
+   anywhere in FLAT-ANF — both `(V (make-register-tile T (M N) INIT))` and
    `(V (make-scratch-matrix T (R C)))`.
 
    The backward rule needs Mt/Nt from the accumulator tile and Kt from the A operand in
    order to size its own temporaries, and those shapes only exist at the source level."
-  (loop for form in flat-anf
-          when (and (consp form) (= (length form) 2) (symbolp (first form))
-                    (consp (second form)) (symbolp (first (second form)))
-                    (member (symbol-name (first (second form)))
-                            '("MAKE-REGISTER-TILE" "MAKE-SCRATCH-MATRIX")
-                            :test #'string=)
-                    (let ((d (third (second form))))
-                      (and (listp d) (= (length d) 2) (every #'integerp d))))
-        collect (list (first form)
-                      (first (third (second form)))
-                      (second (third (second form))))))
+  (let ((acc nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form))
+                  (consp (second form)) (symbolp (first (second form)))
+                  (member (symbol-name (first (second form)))
+                          '("MAKE-REGISTER-TILE" "MAKE-SCRATCH-MATRIX")
+                          :test #'string=)
+                  (let ((d (third (second form))))
+                    (and (listp d) (= (length d) 2) (every #'integerp d)))
+                  (not (assoc (first form) acc)))
+         (push (list (first form)
+                     (first (third (second form)))
+                     (second (third (second form))))
+               acc))))
+    (nreverse acc)))
 
 ;; src/autodiff.lisp
 (defun %mma-ad-tile-source-map (flat-anf)
   "Endeavor 145 P3b: alist TILE-SYM -> (GLOBAL-SRC ORIGIN-FORMS) for every
-   `(load-tile-at SRC TILE (ORIGIN...))` in FLAT-ANF.
+   `(load-tile-at SRC TILE (ORIGIN...))` anywhere in FLAT-ANF.
 
    This is what lets the backward stage a TRANSPOSED operand without reconstructing the
    forward's staging: it reads the original global matrix at the same origin.  The origin
-   forms are carried through verbatim, so loop-dependent origins keep working."
-  (loop for form in flat-anf
-          when (and (consp form) (>= (length form) 4) (symbolp (first form))
-                    (string-equal (symbol-name (first form)) "LOAD-TILE-AT")
-                    (symbolp (second form)) (symbolp (third form))
-                    (listp (fourth form)))
-        collect (list (third form) (second form) (fourth form))))
+   forms are carried through verbatim, so a loop-dependent origin like (* kt 16) still
+   resolves against the backward's own loop variable."
+  (let ((acc nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (>= (length form) 4) (symbolp (first form))
+                  (string-equal (symbol-name (first form)) "LOAD-TILE-AT")
+                  (symbolp (second form)) (symbolp (third form))
+                  (listp (fourth form))
+                  (not (assoc (third form) acc)))
+         (push (list (third form) (second form) (fourth form)) acc))))
+    (nreverse acc)))
 
 ;; src/autodiff.lisp
 (defun %mma-ad-transposed-stage (dst src origin rows cols)
@@ -715,8 +741,12 @@
    B_GRAD.  Because the walk runs in reverse, this rule's emission lands BEFORE those
    scatters in the generated backward — which is the order the chain rule needs.
 
-   Returns NIL (rule not applicable) when a shape or a staging source is not compile-time
-   recoverable, so the caller can fall through rather than emit something wrong."
+   ERRORS when a shape or a staging source is not compile-time recoverable.  It used to
+   return NIL and let the caller fall through — but the walk's fallthrough DROPS the form,
+   which hands back a silent ZERO gradient.  That is the same silent-wrong-answer class as
+   the K-step bug P3a fixed, and it actually bit: a K-LOOPED matmul emitted a backward with
+   no MMA in it at all, because the maps only scanned the top level of flat-anf and the
+   loop body is nested.  Better to refuse to compile than to quietly return zeros."
   (destructuring-bind (shape c-tile a-tile b-tile &rest ignored) (cdr form)
     (declare (ignore ignored))
     (let* ((c-dims (assoc c-tile dims-map))
@@ -725,6 +755,15 @@
            (b-src  (assoc b-tile src-map)))
       (log:debug "145 P3b via-tile bwd: c-tile=~a dims=~a | a-tile=~a dims=~a src=~a | b-tile=~a src=~a"
                  c-tile c-dims a-tile a-dims a-src b-tile b-src)
+      (unless (and c-dims a-dims a-src b-src
+                   (symbolp c-tile) (symbolp a-tile) (symbolp b-tile))
+        (error 'crisp-compiler-error
+          :message (format nil "mma-accumulate-via-tile: cannot differentiate this tile multiply — ~a.  The backward needs the accumulator tile's (Mt Nt) and the A operand's Kt as COMPILE-TIME shapes, and needs each staged operand's originating global matrix (from its load-tile-at) so it can stage the transpose.  Give the tiles literal make-register-tile / make-scratch-matrix dimensions and stage both operands with load-tile-at."
+                           (cond ((not c-dims) (format nil "the accumulator tile ~a has no compile-time (M N)" c-tile))
+                                 ((not a-dims) (format nil "the A operand ~a has no compile-time shape" a-tile))
+                                 ((not a-src)  (format nil "the A operand ~a was not staged by a load-tile-at" a-tile))
+                                 (t            (format nil "the B operand ~a was not staged by a load-tile-at" b-tile))))
+          :source-location nil))
       (when (and c-dims a-dims a-src b-src
                  (symbolp c-tile) (symbolp a-tile) (symbolp b-tile))
         (let* ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims))
@@ -1390,3 +1429,80 @@
      (%emit-per-frag-block-load (second form) (%resolve-tile-ref (third form) tiles) (fourth form)))
     (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
 
+
+;; src/autodiff.lisp
+;; Re-definition of the src/ original.  CHANGE: one added clause giving the fragment-level
+;; MMA forms an actionable error instead of the generic "not differentiable" advice.
+(defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
+                                        &key hof-handler-fn (error-on-unknown t)
+                                        tensor-inputs-ht
+                                        scratch-tile-syms)
+  "Generates backward-pass adjoint updates for a single ANF binding (v := expr)."
+  (cond
+   ((and (consp expr) (member (car expr)
+                              ;; Endeavor 128: transcendentals join the math/trig backward.
+                              '(+ - * / sin cos exp log log2 tan asin acos atan pow atan2)
+                              :test #'eq))
+     (%handle-math-and-trig-backward v expr emit-fn local-adj-fn adjoint-map))
+   ((and (consp expr) (eq (car expr) '~))
+     (%handle-tilde-backward v expr emit-fn local-adj-fn tensor-inputs-ht scratch-tile-syms))
+   ((and (consp expr)
+         (symbolp (car expr))
+         (gethash (car expr) *differentiable-functions*))
+     (%handle-sub-fn-call-backward v expr emit-fn local-adj-fn hof-handler-fn))
+   ((%is-accessor-p expr)
+     (%handle-accessor-backward v expr emit-fn local-adj-fn adjoint-map))
+   ((and (consp expr) (symbolp (car expr))
+         (string-equal (symbol-name (car expr)) "%CONSTRUCT-STRUCT")
+         *record-param-field-adjs*
+         (gethash v *record-param-field-adjs*))
+     (%handle-constructor-backward v expr emit-fn local-adj-fn adjoint-map))
+   ((and (consp expr) (symbolp (car expr))
+         (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
+     nil)
+   ;; Endeavor 124 (AD issues) A1: value-producing if / if+ / when[+] / unless[+]
+   ;; and value-producing let. These bind a compound expression to V; the seed
+   ;; V_adj must flow through the branches / let body (previously dropped, giving
+   ;; a silent zero gradient, or erroring for the + variants).
+   ((%value-if-p expr)
+     (%handle-value-if-backward v expr adjoint-map emit-fn local-adj-fn
+                                :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+   ((%value-let-p expr)
+     (%handle-value-let-backward v expr adjoint-map emit-fn local-adj-fn
+                                 :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
+                                 :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
+   ((and (consp expr) (symbolp (car expr))
+         (%backward-skip-fn-p (car expr)))
+     nil)
+   ;; Endeavor 120: gradient-inert calls.
+   ;;  - *inert-functions*: user functions with no differentiable params
+   ;;    (zero gradient), recorded by %generate-backward-function-ast.
+   ;;  - the compile-time uniformity intrinsics, which fold to constants and
+   ;;    carry no gradient.
+   ((and (consp expr) (symbolp (car expr))
+         (or (gethash (car expr) *inert-functions*)
+             (member (symbol-name (car expr))
+                     '("PROVABLY-UNIFORM?" "PROVABLY-DIVERGENT?" "UNIFORMITY-STATE"
+                       "TO-WARP-UNIFORM" "TO-WORKGROUP-UNIFORM")
+                     :test #'string=)))
+     nil)
+   ;; Endeavor 145 P3c: the FRAGMENT-level MMA forms are forward-only by construction, and
+   ;; the generic "not differentiable" message sends users toward `forward-only`, which is
+   ;; the wrong advice — the operation IS differentiable, just at a different altitude.
+   ;; Explain that instead.  (See mma-autodiff.md: on a single fragment M/N/K are the native
+   ;; shape, so dA=(M,K,N) and dB=(K,N,M), and on either vendor exactly one of the two fails
+   ;; the shape check — NVIDIA (16 8 8) fails dB, Intel (8 16 8) fails dA.  A non-MMA
+   ;; fragment backward is no better: it contracts over an index that spans lanes.)
+   ((and (consp expr) (symbolp (car expr))
+         (member (symbol-name (car expr))
+                 '("MMA-ACCUMULATE" "LOAD-FRAGMENT-A" "LOAD-FRAGMENT-B"
+                   "LOAD-FRAGMENT-ACC" "STORE-FRAGMENT" "MAKE-REGISTER-FRAGMENT")
+                 :test #'string=))
+     (when error-on-unknown
+       (error "~A is a FRAGMENT-level MMA form and has no backward: on a single fragment one of the two backward GEMMs (dA = dC.B^T, dB = A^T.dC) always violates the hardware shape contract.  Autodiff of MMA is supported at the TILE level -- express the multiply with mma-accumulate-via-tile over a register tile whose K spans at least lcm(M_n,N_n) (16 on both current profiles).  If this kernel really is forward-only, use the spec directive SKIP-WITH[--differentiate] or a (declare forward-only)."
+              (car expr))))
+   ((and (consp expr) (symbolp (car expr)))
+     (when error-on-unknown
+           (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
+   (t nil)))
