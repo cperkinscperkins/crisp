@@ -2,11 +2,47 @@
 INSTALL and BUILD
 =================
 
-These instructions are, ummm, "fresh".
+You can install Crisp using pre-built binaries (quickest) or build from source using SBCL.
 
 Clone This
 ----------
 `git clone https://github.com/cperkinscperkins/crisp.git`
+`cd crisp`
+
+INSTALL BINARY (Recommended)
+============================
+
+Crisp provides pre-compiled binary releases for Windows and Linux x86_64.
+
+### 1. Fetch & Deploy Binaries
+
+Run the binary initialization script from the root of the repository:
+```
+python init_bin.py
+```
+*(Alternatively, you can run `init_bin.bat` on Windows or `./init_bin.sh` on Linux).*
+
+This script will:
+- Download **Crisp Prerelease 001** (`crisp-prerelease-001.zip`) from GitHub Releases.
+- Extract the platform tools into `./tools/`.
+- Automatically create `./bin/` and populate it with the Crisp compiler (`crisp-compile`), hoisting applications (`crisp-hoist-l0`, `crisp-hoist-cuda`), and required LLVM supporting tools (`LLVM-C`, `llc`, `llvm-as`, `llvm-spirv`) configured for your operating system.
+
+### 2. Verify Installation
+
+Test that the Crisp compiler is working:
+```
+# Windows
+.\bin\crisp-compile.exe ./tests/return_7.crisp
+
+# Linux
+./bin/crisp-compile ./tests/return_7.crisp
+```
+
+You are ready to compile kernels and generate hoisting C++ code! Skip down to **INVOKING THE COMPILER** below.
+
+
+INSTALL FROM SOURCE
+===================
 
 Supporting Tools
 ----------------
@@ -15,6 +51,7 @@ These are release as a tools download. After cloning Crisp, `cd` to its director
 `python init_tools.py`  to fetch the supporting tools and their license files.
 
 Or, simply download https://github.com/cperkinscperkins/crisp/releases/tag/tools-v1 and unzip the .zip to a directory named `tools`.  (ie  `crisp/tools/`)
+
 
 
 🚀 Dependencies
