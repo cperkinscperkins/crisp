@@ -35,7 +35,10 @@
 ;;; ===================================================================
 
 ;; src/autodiff.lisp
-(defun %backward-skip-fn-p (fn-sym)
+;; NOTE (145 P3b): this is the P1 body, renamed so the final %backward-skip-fn-p (further
+;; down, which adds MAKE-REGISTER-TILE) can delegate to it instead of duplicating the list.
+;; When folding back into src/, merge the two into one definition.
+(defun %backward-skip-fn-p-145p1 (fn-sym)
   "Returns T if FN-SYM should be silently skipped in the AD backward walk.
 
    Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS join the gradient-inert shape
@@ -605,3 +608,609 @@
                                   (%explode-rewrite-body-form
                                    (%unroll-register-ring-loops f tiles) tiles))
                                 body)))))))
+
+;;; ===================================================================
+;;; Endeavor 145 (MMA autodiff) — P3b: the tile-level backward rule.
+;;;
+;;; C-tile += A-tile . B-tile   =>   dA = dC . B^T   and   dB = A^T . dC
+;;;
+;;; Both backward GEMMs need one TRANSPOSED operand and the orientation is forced — the
+;;; "transpose the output instead" reformulation fails the shape check on Intel (dA^T =
+;;; B.dC^T is (Kt, Mt, Nt) and Mt=8 < N_n=16).  Rather than depend on ColumnMajor
+;;; cooperative loads (BUG 035: :col-major is silently ignored on SPV), the transposed
+;;; operands are STAGED into SLM explicitly, so every operand read is row-major and the
+;;; emission is backend-neutral.
+;;;
+;;; A subtlety that shapes the whole design: the backward kernel replays the forward's
+;;; BINDINGS but not its STATEMENTS, so the staged primal tiles (filled by load-tile-at)
+;;; are EMPTY in the backward.  That would be fatal — dA needs B and dB needs A — except
+;;; that both GEMMs need only the TRANSPOSES.  So the backward never reconstructs the
+;;; primal tiles at all: it stages the transposes straight from the ORIGINAL GLOBAL source,
+;;; recovered from the forward's load-tile-at forms.  Its origin expression is replayed
+;;; verbatim, so a loop-dependent origin like (* kt 16) still resolves against the
+;;; backward's own loop variable.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %mma-ad-tile-dims-map (flat-anf)
+  "Endeavor 145 P3b: alist SYM -> (ROWS COLS) for every compile-time-shaped tile bound in
+   FLAT-ANF — both `(V (make-register-tile T (M N) INIT))` and
+   `(V (make-scratch-matrix T (R C)))`.
+
+   The backward rule needs Mt/Nt from the accumulator tile and Kt from the A operand in
+   order to size its own temporaries, and those shapes only exist at the source level."
+  (loop for form in flat-anf
+          when (and (consp form) (= (length form) 2) (symbolp (first form))
+                    (consp (second form)) (symbolp (first (second form)))
+                    (member (symbol-name (first (second form)))
+                            '("MAKE-REGISTER-TILE" "MAKE-SCRATCH-MATRIX")
+                            :test #'string=)
+                    (let ((d (third (second form))))
+                      (and (listp d) (= (length d) 2) (every #'integerp d))))
+        collect (list (first form)
+                      (first (third (second form)))
+                      (second (third (second form))))))
+
+;; src/autodiff.lisp
+(defun %mma-ad-tile-source-map (flat-anf)
+  "Endeavor 145 P3b: alist TILE-SYM -> (GLOBAL-SRC ORIGIN-FORMS) for every
+   `(load-tile-at SRC TILE (ORIGIN...))` in FLAT-ANF.
+
+   This is what lets the backward stage a TRANSPOSED operand without reconstructing the
+   forward's staging: it reads the original global matrix at the same origin.  The origin
+   forms are carried through verbatim, so loop-dependent origins keep working."
+  (loop for form in flat-anf
+          when (and (consp form) (>= (length form) 4) (symbolp (first form))
+                    (string-equal (symbol-name (first form)) "LOAD-TILE-AT")
+                    (symbolp (second form)) (symbolp (third form))
+                    (listp (fourth form)))
+        collect (list (third form) (second form) (fourth form))))
+
+;; src/autodiff.lisp
+(defun %mma-ad-transposed-stage (dst src origin rows cols)
+  "Endeavor 145 P3b: a workgroup-collective TRANSPOSING copy of the ROWS x COLS block of SRC
+   at ORIGIN into DST (which is COLS x ROWS).
+
+   Plain element moves via workgroup-stride — the same collective the scratch `fill-tile`
+   uses — so it costs no MMA and needs no ColumnMajor support.  Emitted as source, so it
+   lowers through the ordinary analyzer path on both backends."
+  (let* ((cl-pkg (find-package :crisp-language))
+         (ws  (intern "WORKGROUP-STRIDE" cl-pkg))
+         (aref (intern "~" cl-pkg))
+         (set! (intern "SET!" cl-pkg))
+         (plus (intern "+" cl-pkg))
+         (i (intern "%MMA_BW_TI" cl-pkg))
+         (j (intern "%MMA_BW_TJ" cl-pkg))
+         (oy (first origin))
+         (ox (second origin)))
+    (declare (ignore rows cols))
+    ;; Iterate DST's index space (COLS x ROWS): dst[j][i] = src[oy+i][ox+j].
+    (list ws dst (list j i)
+          (list set! (list aref dst j i)
+                (list aref src (list plus oy i) (list plus ox j))))))
+
+;; src/autodiff.lisp
+(defun %mma-via-tile-backward (form dims-map src-map inputs outputs local-adj-fn kernel-pkg)
+  "Endeavor 145 P3b: the backward for
+   `(mma-accumulate-via-tile (M N K) C-TILE A-TILE B-TILE ...)`.
+
+   Emits ONE nested LET holding the backward's temporaries and the two backward GEMMs:
+
+       dC-slm (Mt x Nt) <- store-tile C-tile_ADJ      ; register accumulator -> SLM
+       AT-slm (Kt x Mt) <- transposed stage of A's global source
+       BT-slm (Nt x Kt) <- transposed stage of B's global source
+         dA-reg (Mt x Kt) : mma-accumulate-via-tile  dA-reg  dC-slm  BT-slm
+         dB-reg (Kt x Nt) : mma-accumulate-via-tile  dB-reg  AT-slm  dC-slm
+       store-tile dA-reg -> A-tile_ADJ ;  store-tile dB-reg -> B-tile_ADJ
+
+   From there the existing endeavor-111 machinery finishes the job: A-tile_ADJ / B-tile_ADJ
+   are already auto-allocated, and %load-tile-at-bwd already scatters them into A_GRAD /
+   B_GRAD.  Because the walk runs in reverse, this rule's emission lands BEFORE those
+   scatters in the generated backward — which is the order the chain rule needs.
+
+   Returns NIL (rule not applicable) when a shape or a staging source is not compile-time
+   recoverable, so the caller can fall through rather than emit something wrong."
+  (destructuring-bind (shape c-tile a-tile b-tile &rest ignored) (cdr form)
+    (declare (ignore ignored))
+    (let* ((c-dims (assoc c-tile dims-map))
+           (a-dims (assoc a-tile dims-map))
+           (a-src  (assoc a-tile src-map))
+           (b-src  (assoc b-tile src-map)))
+      (log:debug "145 P3b via-tile bwd: c-tile=~a dims=~a | a-tile=~a dims=~a src=~a | b-tile=~a src=~a"
+                 c-tile c-dims a-tile a-dims a-src b-tile b-src)
+      (when (and c-dims a-dims a-src b-src
+                 (symbolp c-tile) (symbolp a-tile) (symbolp b-tile))
+        (let* ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims))
+               (pkg (or kernel-pkg (symbol-package c-tile)))
+               (cl-pkg (find-package :crisp-language))
+               (nm (lambda (fmt sym) (intern (format nil fmt (symbol-name sym)) pkg)))
+               (dc-slm (funcall nm "~A_BWDC"  c-tile))
+               (at-slm (funcall nm "~A_BWT"   a-tile))
+               (bt-slm (funcall nm "~A_BWT"   b-tile))
+               (da-reg (funcall nm "~A_BWACC" a-tile))
+               (db-reg (funcall nm "~A_BWACC" b-tile))
+               (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj-fn kernel-pkg))
+               (a-adj (%tlc-bwd-adj-name a-tile inputs outputs local-adj-fn kernel-pkg))
+               (b-adj (%tlc-bwd-adj-name b-tile inputs outputs local-adj-fn kernel-pkg))
+               (let-sym  (intern "LET" cl-pkg))
+               (msm      (intern "MAKE-SCRATCH-MATRIX" cl-pkg))
+               (mrt      (intern "MAKE-REGISTER-TILE" cl-pkg))
+               (float-s  (intern "FLOAT" cl-pkg))
+               (store-t  (intern "STORE-TILE" cl-pkg))
+               (via      (intern "MMA-ACCUMULATE-VIA-TILE" cl-pkg))
+               (sync     (intern "SYNC-WORKGROUP" cl-pkg)))
+          `(,let-sym ((,dc-slm (,msm ,float-s (,mt ,nt)))
+                      (,at-slm (,msm ,float-s (,kt ,mt)))
+                      (,bt-slm (,msm ,float-s (,nt ,kt)))
+                      (,da-reg (,mrt ,float-s (,mt ,kt) 0.0))
+                      (,db-reg (,mrt ,float-s (,kt ,nt) 0.0)))
+             ;; dC: the accumulator's adjoint, register -> SLM (so it can be an MMA operand).
+             (,store-t ,c-adj ,dc-slm (0 0))
+             ;; The transposed operands, staged from the ORIGINAL global sources.
+             ,(%mma-ad-transposed-stage at-slm (second a-src) (third a-src) mt kt)
+             ,(%mma-ad-transposed-stage bt-slm (second b-src) (third b-src) kt nt)
+             (,sync)
+             ;; dA = dC . B^T      (Mt, Kt, Nt)
+             (,via ,shape ,da-reg ,dc-slm ,bt-slm)
+             ;; dB = A^T . dC      (Kt, Nt, Mt)
+             (,via ,shape ,db-reg ,at-slm ,dc-slm)
+             (,sync)
+             (,store-t ,da-reg ,a-adj (0 0))
+             (,store-t ,db-reg ,b-adj (0 0)))))))
+  )
+
+;; src/autodiff.lisp
+(defun %mma-via-tile-backward-logged (form dims-map src-map inputs outputs local-adj-fn kernel-pkg)
+  "Endeavor 145 P3b: %mma-via-tile-backward plus a log of the emitted backward AST.
+   The tile-level backward is the most intricate emission in the AD engine, and it is
+   assembled from source forms that then go through the ordinary analyzer + SROA explosion —
+   so seeing the pre-analysis AST is the single most useful debugging artifact when a
+   backward fails to compile.  Run the compiler with --log-level=debug to see it."
+  (let ((r (%mma-via-tile-backward form dims-map src-map inputs outputs local-adj-fn kernel-pkg)))
+    (log:debug "145 P3b emitted backward AST:~%~s" r)
+    r))
+
+;; src/autodiff.lisp
+(defun %mma-ad-adj-init (init-form)
+  "Endeavor 145 P3b: the adjoint allocator paired with a forward tile binding.
+
+   Scratch tiles keep the existing behaviour (%promote-scratch-init-for-ad, which also
+   promotes e.g. ulong -> double).  A REGISTER tile gets a same-shaped register tile zeroed
+   to 0.0 — fragments are fp32, and an adjoint always starts at zero."
+  (if (and (consp init-form) (symbolp (car init-form))
+           (string-equal (symbol-name (car init-form)) "MAKE-REGISTER-TILE"))
+      (let ((cl-pkg (find-package :crisp-language)))
+        (list (intern "MAKE-REGISTER-TILE" cl-pkg)
+              (intern "FLOAT" cl-pkg)
+              (third init-form)
+              0.0))
+      (%promote-scratch-init-for-ad init-form)))
+
+;; src/autodiff.lisp
+(defun %augment-scratch-adj-bindings (bindings kernel-pkg)
+  "For each binding (var (make-scratch-X ...)), inject a paired (var_ADJ (make-scratch-X ...))
+   binding right after.  For other bindings, pass through unchanged.  Promotes element type
+   (e.g., ulong -> double) so gradients use correct FP precision.
+
+   Endeavor 145 P3b: MAKE-REGISTER-TILE joins the list, so a register accumulator declared in
+   a NESTED let gets its paired adjoint tile the same way a scratch tile does.  (A top-level
+   register tile is handled by the scratch-adj-bindings collection in generate-backward-walk.)"
+  (loop for b in bindings
+          if (and (consp b) (= (length b) 2) (symbolp (car b))
+                  (consp (cadr b)) (symbolp (caadr b))
+                  (member (symbol-name (caadr b))
+                          '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX"
+                            "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL"
+                            "MAKE-REGISTER-TILE")
+                          :test #'string=))
+          append (list b
+                       (let* ((var (car b))
+                              (var-adj (intern (format nil "~A_ADJ" (symbol-name var))
+                                               (or kernel-pkg (symbol-package var)))))
+                         (list var-adj (%mma-ad-adj-init (cadr b)))))
+          else collect b))
+
+;; src/autodiff.lisp
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
+
+   Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS are gradient-inert shape queries.
+   Endeavor 145 P3b: MAKE-REGISTER-TILE is an ALLOCATOR, gradient-inert like the
+   make-scratch-* constructors above it — its paired adjoint tile is created by
+   %mma-ad-adj-init, not by the walk."
+  (or (let ((name (symbol-name fn-sym)))
+        (member name '("MAKE-REGISTER-TILE") :test #'string=))
+      (%backward-skip-fn-p-145p1 fn-sym)))
+
+;; src/autodiff.lisp
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
+                                        &key kernel-pkg)
+  "Walks an ANF body backwards to accumulate adjoints.
+   Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form
+   that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct
+   adjoint symbols.  Also extends the LET case to auto-allocate paired
+   <var>_ADJ scratch tensors for make-scratch-* bindings.
+
+   Bug 032 fix: SET! on a local-scratch tile (target neither input nor
+   output) now emits a proper consume + reset pair so the RHS chain rule
+   propagates through tile mutations."
+  (let* ((record-temp-entries
+          (loop for form in flat-anf
+                  when (and (consp form) (= (length form) 2)
+                            (symbolp (car form))
+                            (consp (cadr form))
+                            (symbolp (caadr form))
+                            (string-equal (symbol-name (caadr form)) "%CONSTRUCT-STRUCT"))
+                collect
+                  (let* ((temp-sym (car form))
+                         (expr (cadr form))
+                         (record-name (second expr))
+                         (pkg (or kernel-pkg (symbol-package temp-sym))))
+                    (when (or (%crisp-record-type-p record-name)
+                              (%crisp-struct-type-p record-name))
+                          (let* ((fields (%get-record-runtime-fields record-name))
+                                 (field-alist
+                                  (loop for (fname ftype) in fields
+                                        collect (cons (symbol-name fname)
+                                                      (intern (format nil "~a_~a_ADJ"
+                                                                (symbol-name temp-sym)
+                                                                (symbol-name fname))
+                                                              pkg)))))
+                            (cons temp-sym field-alist))))))
+         (record-temp-entries (remove nil record-temp-entries))
+         (record-param-field-adjs-ht
+          (let ((ht (when (or record-temp-entries *record-param-field-adjs*)
+                          (make-hash-table :test 'eq))))
+            (when ht
+                  (when *record-param-field-adjs*
+                        (maphash (lambda (k v) (setf (gethash k ht) v))
+                                 *record-param-field-adjs*))
+                  (dolist (entry record-temp-entries)
+                    (setf (gethash (car entry) ht) (cdr entry))))
+            ht)))
+    (let ((*record-param-field-adjs* record-param-field-adjs-ht)
+          ;; Endeavor 123 (FFI-AD): map each pointer temp bound via
+          ;; (t (base-ptr~ src)) to its source storage sym, so a foreign call's
+          ;; pointer arg can route its shadow to <src>_GRAD.
+          (*ffi-baseptr-src*
+           (let ((ht (make-hash-table :test 'eq)))
+             (loop for form in flat-anf
+                     when (and (consp form) (= (length form) 2)
+                               (symbolp (car form))
+                               (consp (cadr form)) (symbolp (caadr form))
+                               (string-equal (symbol-name (caadr form)) "BASE-PTR~")
+                               (symbolp (second (cadr form))))
+                   do (setf (gethash (car form) ht) (second (cadr form))))
+             ht)))
+      (let ((backward-forms nil)
+            (adjoint-map (make-hash-table :test 'equal))
+            (tensor-inputs-ht
+             (let ((ht (make-hash-table :test 'eq)))
+               (loop for sym in inputs
+                     for typ in input-types
+                       when (%crisp-float-tensor-type-p typ)
+                     do (setf (gethash sym ht) typ))
+               ht))
+            ;; Bug 032: collect locally-bound scratch tile syms (those
+            ;; bound via make-scratch-vector / -matrix / -tensor / -cell
+            ;; anywhere in flat-anf) so the `~` and SET! backward cases
+            ;; can route indexed accesses on them to their _ADJ tensor
+            ;; instead of polluting the scalar adjoint-map.
+            (scratch-tile-syms
+             (let ((ht (make-hash-table :test 'eq)))
+               (loop for form in flat-anf
+                       when (and (consp form) (= (length form) 2)
+                                 (symbolp (car form))
+                                 (consp (cadr form)) (symbolp (caadr form))
+                                 (member (symbol-name (caadr form))
+                                         '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX"
+                                                                 "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL")
+                                         :test #'string=))
+                     do (setf (gethash (car form) ht) t))
+               ht)))
+        ;; Endeavor 124 C/A2: the adjoint-typing decision now lives in one place
+        ;; (%ad-promotes-to-double-p / %ad-zero) shared with the sub-fn, FFI and
+        ;; value-if/let paths.
+        (flet ((promotes-to-double-p (t-spec) (%ad-promotes-to-double-p t-spec)))
+          (let* ((any-output-double (some #'promotes-to-double-p output-types))
+                 (*ad-any-output-double* any-output-double)
+                 (intermediate-zero (%ad-zero any-output-double)))
+            (labels ((local-adj (v)
+                                (or (gethash v adjoint-map)
+                                    (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
+                                                       (or kernel-pkg (symbol-package v)))))
+                                      (setf (gethash v adjoint-map) adv)
+                                      adv)))
+                     (emit (form)
+                           (push form backward-forms))
+                     (hof-inline-backward (fn args v)
+                                          (let* ((hof-data (gethash fn *differentiable-hof-store*)))
+                                            (unless hof-data
+                                              (error "HOF ~A not found in *differentiable-hof-store*" fn))
+                                            (let* ((param-syms (getf hof-data :param-syms))
+                                                   (fn-param-idx (getf hof-data :fn-param-idx))
+                                                   (body-forms (getf hof-data :body-forms))
+                                                   (fn-arg (nth fn-param-idx args))
+                                                   (concrete-fn (cond
+                                                                 ((and (consp fn-arg) (eq (car fn-arg) 'function))
+                                                                   (cadr fn-arg))
+                                                                 ((symbolp fn-arg) fn-arg)
+                                                                 (t nil))))
+                                              (unless concrete-fn
+                                                (error "Cannot inline-differentiate HOF ~A:  could not resolve concrete fn from arg ~A" fn fn-arg))
+                                              (let* ((fn-param (nth fn-param-idx param-syms))
+                                                     (subst-alist
+                                                      (loop for p in param-syms
+                                                            for a in args
+                                                            for i from 0
+                                                              unless (= i fn-param-idx)
+                                                            collect (cons p a)))
+                                                     (subst-body (mapcar (lambda (f) (%subst-form f subst-alist)) body-forms))
+                                                     (concrete-body (mapcar (lambda (f) (%remove-funcall f fn-param concrete-fn))
+                                                                        subst-body))
+                                                     (anf-body (mapcar #'anf-transform concrete-body))
+                                                     (hof-flat (flatten-anf-body anf-body))
+                                                     (hof-flat-norm
+                                                      (let ((last-f (car (last hof-flat))))
+                                                        (if (or (symbolp last-f)
+                                                                (and (consp last-f) (eq (first last-f) 'return)))
+                                                            hof-flat
+                                                            (let ((ret-sym (intern (format nil "%HOF_RET_~A" (symbol-name v))
+                                                                                   (symbol-package v))))
+                                                              (append (butlast hof-flat)
+                                                                (list (list ret-sym last-f) ret-sym))))))
+                                                     (return-vars (%extract-return-vars hof-flat-norm)))
+                                                (dolist (rv return-vars)
+                                                  (setf (gethash rv adjoint-map) (local-adj v)))
+                                                (dolist (hf-form (reverse hof-flat-norm))
+                                                  (when (and (consp hf-form) (= (length hf-form) 2) (symbolp (car hf-form)))
+                                                        (let ((hv (car hf-form))
+                                                              (hexpr (cadr hf-form)))
+                                                          (%handle-single-value-backward hv hexpr adjoint-map #'emit #'local-adj
+                                                                                         :hof-handler-fn #'hof-inline-backward
+                                                                                         :error-on-unknown t
+                                                                                         :tensor-inputs-ht nil
+                                                                                         :scratch-tile-syms scratch-tile-syms))))))))
+                     (process-form (form emit-fn)
+                                   (cond
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "DECLARE")) nil)
+
+                                    ;; Endeavor 145 P3b: the tile-level MMA backward.
+                                    ;; C-tile += A-tile . B-tile  =>  dA = dC.B^T, dB = A^T.dC.
+                                    ;; Falls through to the old silent-drop only when the
+                                    ;; shapes / staging sources are not compile-time
+                                    ;; recoverable, so a kernel we cannot differentiate
+                                    ;; correctly is never given a bogus gradient.
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form))
+                                                        "MMA-ACCUMULATE-VIA-TILE")
+                                          (>= (length form) 5))
+                                      (let ((bwd (%mma-via-tile-backward-logged
+                                                  form
+                                                  (%mma-ad-tile-dims-map flat-anf)
+                                                  (%mma-ad-tile-source-map flat-anf)
+                                                  inputs outputs #'local-adj kernel-pkg)))
+                                        (when bwd (funcall emit-fn bwd))))
+
+                                    ;; Phase 1c: load-tile-at forward → backward.
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "LOAD-TILE-AT"))
+                                      (let* ((src (second form))
+                                             (tile (third form))
+                                             (origins (fourth form))
+                                             (key-args (nthcdr 4 form))
+                                             (transpose-v (%tlc-extract-transpose-key key-args))
+                                             (src-adj (%tlc-bwd-adj-name src inputs outputs
+                                                                         #'local-adj kernel-pkg))
+                                             (tile-adj (%tlc-bwd-adj-name tile inputs outputs
+                                                                          #'local-adj kernel-pkg))
+                                             (bwd-sym (intern "%LOAD-TILE-AT-BWD"
+                                                              (find-package :crisp-language)))
+                                             (bwd-form (if transpose-v
+                                                           (list bwd-sym src-adj tile-adj origins :transpose transpose-v)
+                                                           (list bwd-sym src-adj tile-adj origins))))
+                                        (funcall emit-fn bwd-form)))
+
+                                    ;; Phase 1c: store-tile-at forward → backward.
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "STORE-TILE-AT"))
+                                      (let* ((tile (second form))
+                                             (dest (third form))
+                                             (origins (fourth form))
+                                             (key-args (nthcdr 4 form))
+                                             (transpose-v (%tlc-extract-transpose-key key-args))
+                                             (tile-adj (%tlc-bwd-adj-name tile inputs outputs
+                                                                          #'local-adj kernel-pkg))
+                                             (dest-adj (%tlc-bwd-adj-name dest inputs outputs
+                                                                          #'local-adj kernel-pkg))
+                                             (bwd-sym (intern "%STORE-TILE-AT-BWD"
+                                                              (find-package :crisp-language)))
+                                             (bwd-form (if transpose-v
+                                                           (list bwd-sym tile-adj dest-adj origins :transpose transpose-v)
+                                                           (list bwd-sym tile-adj dest-adj origins))))
+                                        (funcall emit-fn bwd-form)))
+
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "SET!"))
+                                      (%gfw-process-set! form emit-fn #'local-adj inputs outputs scratch-tile-syms intermediate-zero kernel-pkg))
+
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "LET"))
+                                      (let* ((bindings (cadr form))
+                                             (augmented-bindings (%augment-scratch-adj-bindings bindings kernel-pkg))
+                                             (body (cddr form)))
+                                        (%gfw-process-let form emit-fn #'process-form bindings augmented-bindings body)))
+
+                                    ((and (consp form) (symbolp (car form))
+                                          (or (string-equal (symbol-name (car form)) "DOTIMES")
+                                              (string-equal (symbol-name (car form)) "DOTIMES+")))
+                                      (let* ((binding (cadr form))
+                                             (body (cddr form))
+                                             (local-vars (%collect-locally-bound-vars body)))
+                                        (%gfw-process-dotimes form emit-fn #'process-form binding body local-vars adjoint-map intermediate-zero)))
+
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "IF"))
+                                      (let* ((cond-form (cadr form))
+                                             (then-form (caddr form))
+                                             (else-form (cadddr form)))
+                                        (%gfw-process-if form emit-fn #'process-form cond-form then-form else-form)))
+
+                                    ;; Bug 032 fix part 2: WHEN and UNLESS were not handled
+                                    ;; by the AD walker, so any forms inside them (including
+                                    ;; the load/store-tile-at inner body's set!s after
+                                    ;; workgroup-stride expansion) were silently dropped.
+                                    ;; Desugar them to IF + PROGN here and let the IF case
+                                    ;; handle the rest.
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "WHEN"))
+                                      (let* ((pkg (find-package :crisp-language))
+                                             (if-sym (intern "IF" pkg))
+                                             (progn-sym (intern "PROGN" pkg))
+                                             (cond-form (cadr form))
+                                             (body (cddr form))
+                                             (then (cond ((null body) 'nil)
+                                                         ((= (length body) 1) (first body))
+                                                         (t (cons progn-sym body)))))
+                                        (process-form (list if-sym cond-form then 'nil) emit-fn)))
+
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "UNLESS"))
+                                      (let* ((pkg (find-package :crisp-language))
+                                             (if-sym (intern "IF" pkg))
+                                             (progn-sym (intern "PROGN" pkg))
+                                             (cond-form (cadr form))
+                                             (body (cddr form))
+                                             (then (cond ((null body) 'nil)
+                                                         ((= (length body) 1) (first body))
+                                                         (t (cons progn-sym body)))))
+                                        ;; (unless C B) = (if C nil B) — pass B as the else slot.
+                                        (process-form (list if-sym cond-form 'nil then) emit-fn)))
+
+                                    ((and (consp form) (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "PROGN"))
+                                      (dolist (sub (reverse (cdr form)))
+                                        (process-form sub emit-fn)))
+
+                                    ;; Endeavor 123 (FFI-AD): a foreign function called as a
+                                    ;; VOID STATEMENT (=> nil), e.g. (c_vsin n inptr outptr).
+                                    ;; It is not a value binding, so it must be recognized by
+                                    ;; its head being a registered foreign function — otherwise
+                                    ;; it is misparsed as a multi-value binding below and
+                                    ;; silently dropped. There is no return seed (void).
+                                    ((and (consp form) (symbolp (car form))
+                                          (let ((info (gethash (car form) *differentiable-functions*)))
+                                            (and info (getf info :foreign))))
+                                      (%emit-foreign-backward (car form) (cdr form) nil
+                                                              (symbol-package (car form))
+                                                              emit-fn #'local-adj))
+
+                                    ((and (listp form) (= (length form) 2) (symbolp (car form)))
+                                      (%handle-single-value-backward (car form) (cadr form)
+                                                                     adjoint-map emit-fn #'local-adj
+                                                                     :hof-handler-fn #'hof-inline-backward
+                                                                     :error-on-unknown t
+                                                                     :tensor-inputs-ht tensor-inputs-ht
+                                                                     :scratch-tile-syms scratch-tile-syms))
+
+                                    ((and (listp form) (>= (length form) 3)
+                                          (symbolp (car form))
+                                          (every #'symbolp (butlast form)))
+                                      (let* ((result-vars (butlast form))
+                                             (expr (car (last form))))
+                                        (when (and (consp expr)
+                                                   (symbolp (car expr))
+                                                   (gethash (car expr) *differentiable-functions*))
+                                              (let* ((fn (car expr))
+                                                     (args (cdr expr))
+                                                     (info (gethash fn *differentiable-functions*))
+                                                     (bkwd (getf info :bkwd-name))
+                                                     (n-fp (getf info :n-float-params))
+                                                     (pkg (symbol-package (car result-vars)))
+                                                     (t-adjs (mapcar #'local-adj result-vars)))
+                                                ;; Endeavor 123 (FFI-AD): foreign multi-return
+                                                ;; routes through the shadow-aware emitter.
+                                                (if (getf info :foreign)
+                                                    (%emit-foreign-backward fn args t-adjs pkg
+                                                                            emit-fn #'local-adj)
+                                                    (%emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg
+                                                                           emit-fn #'local-adj "BW"))))))
+
+                                    (t nil))))
+
+              (let ((reversed-body (reverse flat-anf)))
+                (dolist (form reversed-body)
+                  (process-form form #'emit)))
+
+              (loop for in in inputs
+                    for in-type in input-types do
+                      (let* ((in-grad (intern (format nil "~A_GRAD" (symbol-name in))
+                                              (or kernel-pkg (symbol-package in))))
+                             (canon-type (canonicalize-type-specifier
+                                          (if (listp in-type) in-type (list in-type))))
+                             (is-cell-input
+                              (and (consp canon-type)
+                                   (string-equal (symbol-name (first canon-type)) "CELL")))
+                             (is-tensor-input
+                              (or (%crisp-float-tensor-type-p in-type)
+                                  (%crisp-integer-tensor-type-p in-type)))
+                             (is-scalar-wrapped
+                              (and (not is-cell-input) (not is-tensor-input)
+                                   (or (%crisp-integer-scalar-type-p in-type)
+                                       (%crisp-float-type-p in-type)))))
+                        ;; Endeavor 124 (AD issues) C: under any-output-double the
+                        ;; adjoint runs in double, but a float/small-int input's grad
+                        ;; cell is float — down-cast at the write to match the cell.
+                        (let ((write-val
+                               (if (and any-output-double
+                                        (not (promotes-to-double-p in-type))
+                                        (or is-cell-input is-scalar-wrapped))
+                                   `(to-float ,(local-adj in))
+                                   (local-adj in))))
+                          (cond
+                           (is-tensor-input nil)
+                           (is-cell-input (emit `(set! (~ ,in-grad) ,write-val)))
+                           (is-scalar-wrapped (emit `(set! (~ ,in-grad) ,write-val)))
+                           (t (emit `(set! ,in-grad ,write-val)))))))
+
+              (let* ((typed-zero-for
+                      (lambda (orig-sym)
+                        (let* ((idx (position orig-sym inputs))
+                               (in-type (when idx (nth idx input-types))))
+                          ;; Endeavor 124 (AD issues) C: when ANY output promotes to
+                          ;; double, the whole backward chain runs in double — INCLUDING
+                          ;; float-input adjoints — so the adjoint accumulations don't mix
+                          ;; float and double. The narrower grad cell is reconciled by a
+                          ;; down-cast at the grad-cell write below.
+                          (cond
+                           (in-type
+                             (%ad-zero (or (promotes-to-double-p in-type) any-output-double)))
+                           (any-output-double (%ad-zero t))
+                           (t (%ad-zero nil))))))
+                     (local-bindings (loop for v being the hash-keys of adjoint-map
+                                           using (hash-value adv)
+                                           collect `(,adv ,(funcall typed-zero-for v))))
+                     ;; Phase 1c: auto-allocate <var>_ADJ paired scratch
+                     ;; tensors for each make-scratch-* binding in flat-anf.
+                     ;; The forward let-bindings already give us <var>; the
+                     ;; backward wants both <var> and <var>_ADJ.
+                     ;; Phase 1c initial: assumes same element-type (no
+                     ;; ulong→double promotion yet; defer to a sub-step).
+                     (scratch-adj-bindings
+                      (loop for form in flat-anf
+                              when (and (consp form) (= (length form) 2)
+                                        (symbolp (car form))
+                                        (consp (cadr form)) (symbolp (caadr form))
+                                        (member (symbol-name (caadr form))
+                                                '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX"
+                                                                        "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL"
+                                                                        "MAKE-REGISTER-TILE")
+                                                :test #'string=))
+                            collect (let* ((var (car form))
+                                           (var-adj (intern (format nil "~A_ADJ" (symbol-name var))
+                                                            (or kernel-pkg (symbol-package var)))))
+                                      (list var-adj (%mma-ad-adj-init (cadr form))))))
+                     (result `(let ,(append scratch-adj-bindings local-bindings)
+                                ,@(nreverse backward-forms))))
+                result))))))))

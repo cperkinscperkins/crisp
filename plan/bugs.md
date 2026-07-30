@@ -508,3 +508,49 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         STATUS: 132/06's TEST-HOIST[CUDA] wiring is CORRECT (it went red on a real bug).
         Locally 06 SKIPs (no NVIDIA GPU), so the local suite stays green; only GPU-CI/RunPod
         sees the red.  Left wired (visible reminder) pending the morning's investigation.
+
+[ ] 035 - :contiguous-term :col-major is silently ignored by the SPV cooperative-matrix loads.
+
+        FOUND 2026-07-28 during endeavor 145 (MMA autodiff) P3b design, while checking
+        whether the backward's transposed operands could ride a ColumnMajor operand read
+        instead of an explicit transposing SLM staging.  NOT chased — 145 P3b routes around
+        it by staging transposes explicitly — but it is a forward-path correctness concern
+        that deserves its own look.
+
+        SYMPTOM: declare a matrix (matrix float ... :contiguous-term :col-major), load a B
+        fragment from it on BMG, and the emitted CooperativeMatrixLoadKHR carries
+        MemoryLayout = 0 (RowMajorKHR) — the SAME constant as the row-major A operand:
+
+            4 Constant 15 125 0
+            7 CooperativeMatrixLoadKHR 292 293 256 125 260 0   ; A, row-major
+            7 CooperativeMatrixLoadKHR 294 295 265 125 260 0   ; B, declared COL-major
+
+        Expected MemoryLayout = 1 (ColumnMajorKHR) on the second load.
+
+        WHY IT LOOKS LIKE A REAL BUG (the chain should work):
+          - :col-major DOES canonicalize to :first — src/types/validation.lisp:143.
+          - %get-tensor-ct reads index 5 of the canonical 6-tuple — src/analysis/structs.lisp:1307.
+          - %coop-layout-of maps :first -> 1, else 0 — src/mma.lisp:249.
+        So the declared intent is being lost somewhere between the def-type and the analyzed
+        tensor node that %coop-layout-of inspects.  Prime suspect: the node handed to
+        %coop-layout-of does not carry the declared c-t (get-single-value-type /
+        canonicalize-type-specifier returning a shorter or defaulted tuple, which
+        %get-tensor-ct silently reports as :last).
+
+        WHY IT WAS NOT CAUGHT: an on-metal probe of exactly this kernel still printed
+        MMA_CORRECT.  The hoist's host reference is STRIDE-AGNOSTIC (it indexes
+        b_ptr[kk*b_str0 + j*b_str1] using the same declared strides), so a wrong layout and
+        wrong strides can CANCEL in the comparison.  That makes the bug invisible to the
+        --mma-test harness and means "MMA_CORRECT on a col-major operand" is not evidence
+        that the col-major path works.  This is the same class of masking as bug 034's
+        A=B=1 fill.
+
+        SCOPE: SPV/cooperative-matrix only.  PTX is unaffected — the layout there is baked
+        into the mma.sync intrinsic variant (row.col), not read from the tensor type, which
+        is why 132/02's col-major B has always been correct.  All shipped SPV MMA specs
+        (133/*, 142/*, 144/*) declare B :row-major, so nothing in the suite exercises the
+        broken path — which is also why no test went red.
+
+        SUGGESTED FIRST STEP: in %coop-layout-of, log (or assert on) the canonical type it
+        receives for a known col-major operand; that immediately distinguishes "the node
+        lost the c-t" from "%get-tensor-ct read the wrong index".

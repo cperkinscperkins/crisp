@@ -146,6 +146,66 @@ fallback) and costs nothing user-facing: the epilogue-fusion story (ReLU, bias) 
 fragment-level gradient is ever wanted, the natural route is a user-supplied VJP, exactly as
 endeavor 123 did for FFI.
 
+### 5c. The P3b emission plan (settled 2026-07-28)
+
+Both backward GEMMs need one TRANSPOSED operand, and the orientation is forced — the
+"transpose the output instead" trick does not survive the shape check on Intel:
+
+| formulation | GEMM shape on BMG (Mt=8, Nt=16, Kt=16) | verdict |
+| --- | --- | --- |
+| dA = dC·Bᵀ | (Mt, Kt, Nt) = (8, 16, 16) | fits — but needs Bᵀ as the B operand |
+| dAᵀ = B·dCᵀ | (Kt, Mt, Nt) = (16, **8**, 16) | **N'=8 < N_n=16 — fails** |
+| dB = Aᵀ·dC | (Kt, Nt, Mt) = (16, 16, 8) | fits — but needs Aᵀ as the A operand |
+| dBᵀ = dCᵀ·A | (Nt, Kt, Mt) = (16, 16, 8) | fits, all row-major |
+
+So dA has no transpose-free formulation on Intel. Rather than depend on ColumnMajor
+cooperative loads (see the finding below), the backward stages the transposed operands into
+SLM explicitly — plain workgroup-collective element copies, no MMA, cheap next to the GEMMs:
+
+```
+dC-slm  (Mt x Nt)  <- store-tile C-tile_ADJ        ; register -> SLM
+AT-slm  (Kt x Mt)  <- transposing copy of A-tile
+BT-slm  (Nt x Kt)  <- transposing copy of B-tile
+   dA-reg (Mt x Kt) : mma-accumulate-via-tile (M N K) dA-reg dC-slm BT-slm
+   dB-reg (Kt x Nt) : mma-accumulate-via-tile (M N K) dB-reg AT-slm dC-slm
+store-tile dA-reg -> A-tile_ADJ ;  store-tile dB-reg -> B-tile_ADJ
+```
+
+Every operand read is row-major, so the emission is backend-neutral. Fragment decomposition
+checks out on BMG: dA's A-operand is 8x16 read as 8x8 A-fragments (2 K-steps — which is
+exactly what P3a unlocked), its B-operand 16x16 as 8x16 B-fragments, its accumulator 8x16 as
+one acc fragment; dB's operands are 16x8 / 8x16 with a 2-fragment accumulator.
+
+The existing 111 machinery then does the rest: `A-tile_ADJ` / `B-tile_ADJ` are already
+auto-allocated by `%augment-scratch-adj-bindings`, and `%load-tile-at-bwd` already scatters
+them back into `A_GRAD` / `B_GRAD`. `C-tile_ADJ` is seeded from `C_GRAD` by the `store-tile`
+backward, using P2's `load-fragment-acc`.
+
+Two transposing copies per K-tile is a real cost. It is deliberate: correctness first, and
+the transposes are the obvious later optimization (a ColumnMajor operand read once that path
+is trustworthy, or a swizzled staging), exactly as the forward's SLM swizzle was deferred in
+132.
+
+### 5d. OBSERVED — `:col-major` is silently ignored by the SPV cooperative loads
+
+Found while checking whether the transposes could ride a ColumnMajor operand read.
+Declaring a matrix `:contiguous-term :col-major` and loading a B fragment from it on BMG
+emits `MemoryLayout = 0` (RowMajorKHR) — the same constant as the row-major A operand:
+
+```
+4 Constant 15 125 0
+7 CooperativeMatrixLoadKHR 292 293 256 125 260 0    ; A, row-major
+7 CooperativeMatrixLoadKHR 294 295 265 125 260 0    ; B, declared COL-major -> still 0
+```
+
+`:col-major` does canonicalize to `:first` (src/types/validation.lisp:143) and
+`%coop-layout-of` maps `:first` -> 1, so the intent is not reaching the node. NOT chased —
+P3b routes around it entirely — but it is worth a look on its own: a user declaring a
+col-major operand on SPV today gets a RowMajor load with no diagnostic. (The on-metal probe
+still printed MMA_CORRECT, because the host reference is stride-agnostic and follows the
+same declared strides, so the two errors may be cancelling. That makes it more worth
+investigating, not less.)
+
 ### 6. Register pressure
 
 The backward holds dC, dA and dB accumulators simultaneously — roughly 3× the forward's
@@ -268,8 +328,34 @@ fragment-level backward" below.
       `%explode-register-tiles` (re-definitions).
     - **ON METAL (BMG): spec 05 went MMA_WRONG -> MMA_CORRECT.**  Suite: E2E 943/943,
       --differentiate 943/943, unit 253/253, negative 211/211.
-[ ] P3b — **tile-level rule: `mma-accumulate-via-tile` backward.** The real rule: two backward
-    GEMM loops with transposed operand reads, the K-tile contract enforced, AD-aware fit-check.
+[/] P3b — **tile-level rule: `mma-accumulate-via-tile` backward.** IN PROGRESS 2026-07-28.
+    Spec `06-via-tile-backward-bmg.crisp` (forward already MMA_CORRECT on metal; the
+    `--differentiate` COMPILE-WITH is the red TDD test).
+    - DONE: `%mma-ad-tile-dims-map` / `%mma-ad-tile-source-map` / `%mma-ad-transposed-stage` /
+      `%mma-via-tile-backward` (+ a `-logged` wrapper — run with `--log-level=debug` to dump the
+      emitted backward AST, which is by far the most useful artifact when this fails); the walk
+      clause, spliced into `generate-backward-walk`; register-tile adjoint allocation
+      (`%mma-ad-adj-init`, `%augment-scratch-adj-bindings`, the `scratch-adj-bindings`
+      collection, and `MAKE-REGISTER-TILE` in `%backward-skip-fn-p`).
+    - The emission is VERIFIED CORRECT (dumped and read by hand): all five temporaries carry
+      the right shapes — dC 8x16, A^T 16x8, B^T 16x16, dA-acc 8x16, dB-acc 16x16 — with both
+      GEMMs in the right operand order.
+    - REMAINING, and precisely diagnosed. The forward `(store-tile C-tile C (0 0))` is rewritten
+      by the endeavor-107 AD PRE-PASS (`%expand-stride-macros-in-form`, which runs only on the
+      AD path) into a `store-tile-at` with element coords computed the SCRATCH way:
+
+          (%STORE-TILE-AT-BWD C-TILE_ADJ C_GRAD
+            ((* (TO-ULONG 0) (~ (EXTENTS~ C-TILE) 0)) ...))
+
+      But `C-tile` is a REGISTER tile. Two faults from that one root cause: `extents~` is
+      invalid on a register tile, and `C-TILE_ADJ` is SROA-exploded into per-fragment vars so
+      the bare name no longer exists — hence "Unknown variable C-TILE_ADJ". The three fixes:
+        1. the AD pre-pass must NOT expand a `store-tile` whose tile is a register tile;
+        2. the walk's `store-tile` backward needs a register-tile branch that seeds the adjoint
+           fragments from `C_GRAD` — which is exactly what P2's `load-fragment-acc` was built
+           for, and where the fragment element->lane MAPPING finally becomes observable;
+        3. a `%load-register-tile-acc` internal form + `%emit-per-frag-acc-load` in
+           `%explode-rewrite-body-form` (the mirror of `%emit-per-frag-store`).
 [ ] P3c — **raw `mma-accumulate` under `--differentiate` is a clear compile error**, naming the
     tile form as the differentiable surface. Negative spec.
 [ ] P5 — **whole-kernel.** `store-tile`(register) backward + the K-loop + transposed SLM
