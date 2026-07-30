@@ -206,7 +206,7 @@
     (check-cl (cl-set-kernel-arg kernel (+ base-index 1) (cffi:foreign-type-size :uint64) arg1))
     (check-cl (cl-set-kernel-arg kernel (+ base-index 2) (cffi:foreign-type-size :uint64) arg2))))
 
-(defun opencl-launch-kernel-1d (queue kernel &key (global-size 1))
+(defun opencl-launch-kernel-1d (queue kernel &key (global-size 1) (group-size 1))
   "Launches KERNEL with a 1D ND-range of GLOBAL-SIZE and waits for it to finish."
   (cffi:with-foreign-object (gs :size 1)
     (setf (cffi:mem-aref gs :size 0) global-size)
@@ -268,6 +268,32 @@
     (check-cl (cl-set-kernel-arg kernel (+ base-index 3) (cffi:foreign-type-size :uint64) arg3))
     (check-cl (cl-set-kernel-arg kernel (+ base-index 4) (cffi:foreign-type-size :uint64) arg4))
     (check-cl (cl-set-kernel-arg kernel (+ base-index 5) (cffi:foreign-type-size :uint64) arg5))))
+
+(defun opencl-bind-matrix-arg (kernel base-index buffer rows cols)
+  "Endeavor 145 (P6): binds a 2-D contiguous-compact row-major float matrix to KERNEL
+   starting at BASE-INDEX.  9 args, in the order the tensor record declares its fields:
+   parent ptr, parent byte_size, offset[0], offset[1], stride[0], stride[1],
+   extent[0], extent[1], length.
+
+   Row-major strides are (cols, 1).  An :align :compact tensor's `~` accessor ignores the
+   strides, but the arguments still exist in the ABI and must be bound."
+  (cffi:with-foreign-objects ((a0 :pointer) (a1 :uint64) (a2 :uint64) (a3 :uint64)
+                              (a4 :uint64) (a5 :uint64) (a6 :uint64) (a7 :uint64)
+                              (a8 :uint64))
+    (setf (cffi:mem-ref a0 :pointer) buffer
+          (cffi:mem-ref a1 :uint64) (* 4 rows cols)
+          (cffi:mem-ref a2 :uint64) 0
+          (cffi:mem-ref a3 :uint64) 0
+          (cffi:mem-ref a4 :uint64) cols
+          (cffi:mem-ref a5 :uint64) 1
+          (cffi:mem-ref a6 :uint64) rows
+          (cffi:mem-ref a7 :uint64) cols
+          (cffi:mem-ref a8 :uint64) (* rows cols))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 0) (cffi:foreign-type-size :pointer) a0))
+    (loop for k from 1 below 9
+          for obj in (list a1 a2 a3 a4 a5 a6 a7 a8)
+          do (check-cl (cl-set-kernel-arg kernel (+ base-index k)
+                                          (cffi:foreign-type-size :uint64) obj)))))
 
 (defun opencl-bind-uint64-scalar-arg (kernel arg-index value)
   "Binds a plain i64 / uint64 scalar at ARG-INDEX."
@@ -338,10 +364,33 @@
 ;;;   - Real value, dot in name             => :scalar-float-plain (record field)
 ;;;   - Real value, no dot                  => :scalar-float (cell-wrapped)
 
+(defun %vad-flatten-values (value)
+  "Endeavor 145 (P6): a matrix input's directive value is a list of ROW lists; the device
+   buffer is flat row-major.  Flattens one level when needed, leaving a 1-D vector's value
+   untouched, so the matrix and vector paths can share the FD / write code."
+  (if (and (listp value) value (listp (first value)))
+      (apply #'append value)
+      value))
+
 (defun %vad-classify-input (value at-points name)
   "Returns plist describing input kind given the parsed VALUE.
    AT-POINTS is the parser's at-points alist; used to attach :perturb-i."
   (cond
+    ;; Endeavor 145 (P6): a list of LISTS is a 2-D matrix.  Checked before the vector
+    ;; case, which would otherwise take it and report a length of ROWS.
+    ((and (listp value) value (listp (first value)))
+     (let ((at (cdr (assoc name at-points :test #'string=)))
+           (rows (length value))
+           (cols (length (first value))))
+       (list :kind :matrix-float
+             :rows rows
+             :cols cols
+             :length (* rows cols)
+             ;; :perturb-i is the FLAT index; the directive gives (row col).
+             :perturb-i (and at (consp at) (+ (* (first at) cols) (second at)))
+             :perturb-rc at
+             :arg-width 9
+             :grad-arg-width 9)))
     ((listp value)
      (let ((at (cdr (assoc name at-points :test #'string=))))
        (list :kind :vector-float
@@ -421,6 +470,7 @@
       (write-float-cell queue grad-buf seed-value)))
 
 (defun %vad-make-descriptors (inputs at-points &optional structs output-vec-length
+                                                        output-mat-dims
                               &key (fwd-prefix-args 0) (bwd-prefix-args 0))
   "Builds the per-input descriptor list, threading cumulative arg offsets.
 
@@ -504,7 +554,10 @@
                          :value value
                          :kind (getf cls :kind)
                          :length (getf cls :length)
+                         :rows (getf cls :rows)
+                         :cols (getf cls :cols)
                          :perturb-i (getf cls :perturb-i)
+                         :perturb-rc (getf cls :perturb-rc)
                          :arg-width (getf cls :arg-width)
                          :fwd-arg-base fwd-base
                          :bwd-arg-base bwd-base
@@ -520,7 +573,7 @@
     ;; 1D-compact vector (6 args: ptr, byte-size, offset, stride, extent, length).
     ;; output-vec-length non-nil triggers the vector ABI for the output AND
     ;; its grad (107: per-element kernels need a vector seed).
-    (let* ((output-width (if output-vec-length 6 3))
+    (let* ((output-width (cond (output-mat-dims 9) (output-vec-length 6) (t 3)))
            (output-fwd-base fwd-base)
            (output-bwd-base bwd-base)
            (grad-output-bwd-base (+ output-bwd-base output-width))
@@ -537,6 +590,7 @@
   (case (getf desc :kind)
     (:scalar-float       1)
     (:vector-float       (getf desc :length))
+    (:matrix-float       (getf desc :length))   ; rows*cols (145 P6)
     (:scalar-float-plain nil)   ; no forward buffer; bound on each launch
     (:scalar-int32-plain nil)   ; no forward buffer; bound on each launch
     (:scalar-ulong       nil)
@@ -550,6 +604,7 @@
     (:scalar-int32-plain 4)                            ; cell of float (int->float-grad)
     (:scalar-ulong       8)                            ; cell of double
     (:vector-float       (* 4 (getf desc :length)))    ; vector of float
+    (:matrix-float       (* 4 (getf desc :length)))    ; matrix of float (145 P6)
     (:struct-by-value    (getf desc :grad-bytes))))    ; shadow struct bytes
 
 
@@ -560,6 +615,14 @@
                          at-points
                          structs
                          output-vec-length
+                         ;; 145 (P6): (ROWS COLS) when the kernel's output is a 2-D
+                         ;; matrix.  output-vec-length is set to ROWS*COLS alongside it,
+                         ;; so every buffer-sized path (read-y, zero, seed) works
+                         ;; unchanged; this only widens the ABI to 9 args and switches
+                         ;; the binding.
+                         output-mat-dims
+                         ;; 145 (P6): threads per group.  1 = pre-145 behaviour.
+                         (group-size 1)
                          fwd-implicit-params
                          bwd-implicit-params
                          (seed-grad 1.0)
@@ -621,6 +684,7 @@
                           :initial-value 0)))
              (multiple-value-setq (descs output-fwd-base output-bwd-base grad-output-bwd-base)
                (%vad-make-descriptors inputs at-points structs output-vec-length
+                                      output-mat-dims
                                       :fwd-prefix-args fwd-prefix-args
                                       :bwd-prefix-args bwd-prefix-args)))
 
@@ -688,8 +752,10 @@
                        (bind-int32-scalar-arg kernel (arg-base-for d kernel) (getf d :value)))
                       (:scalar-ulong
                        (bind-uint64-scalar-arg kernel (arg-base-for d kernel) (getf d :value)))
-                      (:vector-float
-                       (let* ((vals (getf d :value))
+                      ;; 145 (P6): matrices share this path — :perturb-i is a FLAT index
+                      ;; and the device buffer is flat row-major.
+                      ((:vector-float :matrix-float)
+                       (let* ((vals (%vad-flatten-values (getf d :value)))
                               (i    (getf d :perturb-i))
                               (perturbed
                                (if (eq d perturb-desc)
@@ -723,7 +789,10 @@
                     (let ((base (arg-base-for d kernel)))
                       (case (getf d :kind)
                         (:scalar-float (bind-cell-arg kernel base (getf d :buffer)))
-                        (:vector-float (bind-vector-arg kernel base (getf d :buffer) (getf d :length)))))))
+                        (:vector-float (bind-vector-arg kernel base (getf d :buffer) (getf d :length)))
+                        ;; 145 (P6)
+                        (:matrix-float (bind-matrix-arg kernel base (getf d :buffer)
+                                                        (getf d :rows) (getf d :cols)))))))
                 (bind-grad-args ()
                   (dolist (d descs)
                     (let ((base (getf d :grad-arg-base)))
@@ -736,6 +805,10 @@
                         (:vector-float
                          (bind-vector-arg bwd-kernel base (getf d :grad-buffer)
                                           (getf d :length)))
+                        ;; 145 (P6)
+                        (:matrix-float
+                         (bind-matrix-arg bwd-kernel base (getf d :grad-buffer)
+                                          (getf d :rows) (getf d :cols)))
                         (:struct-by-value
                          ;; Shadow grad cell: cell-of-shadow-struct (byte_size = sum
                          ;; of shadow-promoted field sizes, 4 per field for phase B).
@@ -746,9 +819,10 @@
                     (case (getf d :kind)
                       ((:scalar-float :scalar-float-plain :scalar-int32-plain)
                        (write-float-cell queue (getf d :grad-buffer) 0.0))
-                      (:vector-float (write-float-vector queue (getf d :grad-buffer)
-                                                         (make-list (getf d :length)
-                                                                    :initial-element 0.0)))
+                      ((:vector-float :matrix-float)   ; 145 (P6)
+                       (write-float-vector queue (getf d :grad-buffer)
+                                           (make-list (getf d :length)
+                                                      :initial-element 0.0)))
                       (:scalar-ulong
                        (cffi:with-foreign-object (data :uint64 1)
                          (setf (cffi:mem-aref data :uint64 0) 0)
@@ -765,39 +839,54 @@
              ;; Must precede static input binds so the declared input slots
              ;; line up.
              (dolist (p fwd-implicit-params)
-               (if (= (getf p :arg-width) 6)
-                   (bind-local-scratch-vector-arg
-                    fwd-kernel
-                    (getf p :base)
-                    (getf p :n-elements)
-                    (getf p :elem-bytes))
-                   (bind-local-scratch-cell-arg
-                    fwd-kernel
-                    (getf p :base)
-                    (getf p :elem-bytes))))
+               (case (getf p :arg-width)
+                 ;; 145 (P6): a 2-D local scratch tile is 9 args.  An MMA backward has
+                 ;; several (the forward's staged tiles, their _ADJ pairs, and the
+                 ;; backward's own transposed-operand staging).
+                 (9 (bind-local-scratch-matrix-arg
+                     fwd-kernel (getf p :base)
+                     (getf p :rows) (getf p :cols) (getf p :elem-bytes)))
+                 (6 (bind-local-scratch-vector-arg
+                     fwd-kernel (getf p :base)
+                     (getf p :n-elements) (getf p :elem-bytes)))
+                 (t (bind-local-scratch-cell-arg
+                     fwd-kernel (getf p :base) (getf p :elem-bytes)))))
              ;; Static binds: buffer-backed inputs bound once.
              (bind-static-input-args fwd-kernel)
-             (if output-vec-length
-                 (bind-vector-arg fwd-kernel output-fwd-base output-buf output-vec-length)
-                 (bind-cell-arg fwd-kernel output-fwd-base output-buf))
+             (cond
+               (output-mat-dims                                   ; 145 (P6)
+                (bind-matrix-arg fwd-kernel output-fwd-base output-buf
+                                 (first output-mat-dims) (second output-mat-dims)))
+               (output-vec-length
+                (bind-vector-arg fwd-kernel output-fwd-base output-buf output-vec-length))
+               (t (bind-cell-arg fwd-kernel output-fwd-base output-buf)))
              ;; Backward-kernel implicit-params: the original scratch tiles
              ;; PLUS any AD-minted tile_ADJ shadows.
              (dolist (p bwd-implicit-params)
-               (if (= (getf p :arg-width) 6)
-                   (bind-local-scratch-vector-arg
-                    bwd-kernel
-                    (getf p :base)
-                    (getf p :n-elements)
-                    (getf p :elem-bytes))
-                   (bind-local-scratch-cell-arg
-                    bwd-kernel
-                    (getf p :base)
-                    (getf p :elem-bytes))))
+               (case (getf p :arg-width)
+                 ;; 145 (P6): a 2-D local scratch tile is 9 args.  An MMA backward has
+                 ;; several (the forward's staged tiles, their _ADJ pairs, and the
+                 ;; backward's own transposed-operand staging).
+                 (9 (bind-local-scratch-matrix-arg
+                     bwd-kernel (getf p :base)
+                     (getf p :rows) (getf p :cols) (getf p :elem-bytes)))
+                 (6 (bind-local-scratch-vector-arg
+                     bwd-kernel (getf p :base)
+                     (getf p :n-elements) (getf p :elem-bytes)))
+                 (t (bind-local-scratch-cell-arg
+                     bwd-kernel (getf p :base) (getf p :elem-bytes)))))
              (bind-static-input-args bwd-kernel)
              (if output-vec-length
                  (progn
-                   (bind-vector-arg bwd-kernel output-bwd-base       output-buf      output-vec-length)
-                   (bind-vector-arg bwd-kernel grad-output-bwd-base  output-grad-buf output-vec-length))
+                   (if output-mat-dims                            ; 145 (P6)
+                       (progn
+                         (bind-matrix-arg bwd-kernel output-bwd-base output-buf
+                                          (first output-mat-dims) (second output-mat-dims))
+                         (bind-matrix-arg bwd-kernel grad-output-bwd-base output-grad-buf
+                                          (first output-mat-dims) (second output-mat-dims)))
+                       (progn
+                         (bind-vector-arg bwd-kernel output-bwd-base       output-buf      output-vec-length)
+                         (bind-vector-arg bwd-kernel grad-output-bwd-base  output-grad-buf output-vec-length))))
                  (progn
                    (bind-cell-arg bwd-kernel output-bwd-base       output-buf)
                    (bind-cell-arg bwd-kernel grad-output-bwd-base  output-grad-buf)))
@@ -814,7 +903,7 @@
                  (write-float-vector queue output-buf
                                      (make-list output-vec-length :initial-element 0.0))
                  (%vad-zero-output queue output-buf output-vec-length))
-             (launch-kernel-1d queue fwd-kernel)
+             (launch-kernel-1d queue fwd-kernel :group-size group-size)
              (let ((y-at-primals (%vad-read-y queue output-buf output-vec-length)))
                (vlog "~&;   y(primals) = ~a~%" y-at-primals)
 
@@ -838,26 +927,26 @@
                      ((:scalar-float :scalar-float-plain)
                       (apply-primals fwd-kernel d h)
                       (%vad-zero-output queue output-buf output-vec-length)
-                      (launch-kernel-1d queue fwd-kernel)
+                      (launch-kernel-1d queue fwd-kernel :group-size group-size)
                       (let ((y-plus (%vad-read-y queue output-buf output-vec-length)))
                         (apply-primals fwd-kernel d (- h))
                         (%vad-zero-output queue output-buf output-vec-length)
-                        (launch-kernel-1d queue fwd-kernel)
+                        (launch-kernel-1d queue fwd-kernel :group-size group-size)
                         (let* ((y-minus (%vad-read-y queue output-buf output-vec-length))
                                (grad (/ (- y-plus y-minus) (* 2.0 h))))
                           (push (cons (getf d :name) grad) fd-rows)
                           (vlog "~&;   d/d~a: y+=~a y-=~a num=~a~%"
                                 (getf d :name) y-plus y-minus grad))))
-                     (:vector-float
+                     ((:vector-float :matrix-float)     ; 145 (P6)
                       (let ((at (getf d :perturb-i)))
                         (when at
                           (apply-primals fwd-kernel d h)
                           (%vad-zero-output queue output-buf output-vec-length)
-                          (launch-kernel-1d queue fwd-kernel)
+                          (launch-kernel-1d queue fwd-kernel :group-size group-size)
                           (let ((y-plus (%vad-read-y queue output-buf output-vec-length)))
                             (apply-primals fwd-kernel d (- h))
                             (%vad-zero-output queue output-buf output-vec-length)
-                            (launch-kernel-1d queue fwd-kernel)
+                            (launch-kernel-1d queue fwd-kernel :group-size group-size)
                             (let* ((y-minus (%vad-read-y queue output-buf output-vec-length))
                                    (grad (/ (- y-plus y-minus) (* 2.0 h))))
                               (push (cons (getf d :name) grad) fd-rows)
@@ -875,11 +964,11 @@
                             (:float
                              (apply-primals fwd-kernel d h fname)
                              (%vad-zero-output queue output-buf output-vec-length)
-                             (launch-kernel-1d queue fwd-kernel)
+                             (launch-kernel-1d queue fwd-kernel :group-size group-size)
                              (let ((y-plus (%vad-read-y queue output-buf output-vec-length)))
                                (apply-primals fwd-kernel d (- h) fname)
                                (%vad-zero-output queue output-buf output-vec-length)
-                               (launch-kernel-1d queue fwd-kernel)
+                               (launch-kernel-1d queue fwd-kernel :group-size group-size)
                                (let* ((y-minus (%vad-read-y queue output-buf output-vec-length))
                                       (grad (/ (- y-plus y-minus) (* 2.0 h))))
                                  (push (cons fname grad) fd-rows)
@@ -897,12 +986,12 @@
                      (progn
                        (apply-primals fwd-kernel nil 0.0)
                        (%vad-zero-output queue output-buf output-vec-length)
-                       (launch-kernel-1d queue fwd-kernel))
+                       (launch-kernel-1d queue fwd-kernel :group-size group-size))
                      (write-float-cell queue output-buf y-at-primals))
                  (%vad-seed-grad-output queue output-grad-buf output-vec-length
                                         (cl:float seed-grad 1.0))
                  (zero-grads)
-                 (launch-kernel-1d queue bwd-kernel)
+                 (launch-kernel-1d queue bwd-kernel :group-size group-size)
 
                  ;; --- Read analytical grads per perturbable input.
                  (let ((ana-rows nil))
@@ -913,7 +1002,7 @@
                         (push (cons (getf d :name)
                                     (read-float-cell queue (getf d :grad-buffer)))
                               ana-rows))
-                       (:vector-float
+                       ((:vector-float :matrix-float)   ; 145 (P6)
                         (let ((at (getf d :perturb-i)))
                           (when at
                             (push (cons (getf d :name)
@@ -1140,6 +1229,27 @@
     (check-ze (ze-kernel-set-argument-value kernel (+ base-index 5)
                                             (cffi:foreign-type-size :uint64) p-len))))
 
+(defun l0-bind-matrix-arg (kernel base-index buffer rows cols)
+  "L0 2-D matrix binding: 9 args.  Mirrors OPENCL-BIND-MATRIX-ARG exactly."
+  (cffi:with-foreign-objects ((a0 :pointer) (a1 :uint64) (a2 :uint64) (a3 :uint64)
+                              (a4 :uint64) (a5 :uint64) (a6 :uint64) (a7 :uint64)
+                              (a8 :uint64))
+    (setf (cffi:mem-ref a0 :pointer) buffer
+          (cffi:mem-ref a1 :uint64) (* 4 rows cols)
+          (cffi:mem-ref a2 :uint64) 0
+          (cffi:mem-ref a3 :uint64) 0
+          (cffi:mem-ref a4 :uint64) cols
+          (cffi:mem-ref a5 :uint64) 1
+          (cffi:mem-ref a6 :uint64) rows
+          (cffi:mem-ref a7 :uint64) cols
+          (cffi:mem-ref a8 :uint64) (* rows cols))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 0)
+                                            (cffi:foreign-type-size :pointer) a0))
+    (loop for k from 1 below 9
+          for obj in (list a1 a2 a3 a4 a5 a6 a7 a8)
+          do (check-ze (ze-kernel-set-argument-value kernel (+ base-index k)
+                                                     (cffi:foreign-type-size :uint64) obj)))))
+
 (defun l0-bind-uint64-scalar-arg (kernel arg-index value)
   (cffi:with-foreign-object (p :uint64)
     (setf (cffi:mem-ref p :uint64) value)
@@ -1173,7 +1283,7 @@
           (t (error "l0-bind-struct-by-value-arg: unsupported ftype ~A" ftype)))))
     (check-ze (ze-kernel-set-argument-value kernel arg-index total-bytes data))))
 
-(defun l0-opencl-launch-kernel-1d (queue kernel &key (global-size 1))
+(defun l0-opencl-launch-kernel-1d (queue kernel &key (global-size 1) (group-size 1))
   "L0 launch: sets group size to (1,1,1), launches with (GLOBAL-SIZE,1,1)
    groups.  Creates a fresh command queue + list per call (cheap; pool
    later if needed)."
@@ -1182,7 +1292,9 @@
     ;; We need the context for queue/list creation.  *ad-context* is bound
     ;; by RUNTIME-INIT.
     (setf context *ad-context*)
-    (check-ze (ze-kernel-set-group-size kernel 1 1 1))
+    ;; 145 (P6): GROUP-SIZE threads per group.  Default 1 (pre-145 behaviour); an MMA
+    ;; kernel needs its full sub-group or the cooperative ops do nothing at all.
+    (check-ze (ze-kernel-set-group-size kernel group-size 1 1))
     (cffi:with-foreign-objects ((gc '(:struct ze-group-count))
                                 (cl-desc '(:struct ze-command-list-desc))
                                 (cq-desc '(:struct ze-command-queue-desc))
@@ -1264,11 +1376,11 @@
              (:l0     'l0-bind-cell-arg))
            kernel base-index buffer :byte-size byte-size :offset offset))
 
-(defun launch-kernel-1d (queue kernel &key (global-size 1))
+(defun launch-kernel-1d (queue kernel &key (global-size 1) (group-size 1))
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-launch-kernel-1d)
              (:l0     'l0-opencl-launch-kernel-1d))
-           queue kernel :global-size global-size))
+           queue kernel :global-size global-size :group-size group-size))
 
 (defun create-float-buffer (context n-elements)
   (funcall (ecase *ad-runtime*
@@ -1299,6 +1411,18 @@
              (:opencl 'opencl-bind-vector-arg)
              (:l0     'l0-bind-vector-arg))
            kernel base-index buffer length))
+
+(defun bind-matrix-arg (kernel base-index buffer rows cols)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-matrix-arg)
+             (:l0     'l0-bind-matrix-arg))
+           kernel base-index buffer rows cols))
+
+(defun bind-local-scratch-matrix-arg (kernel base-index rows cols elem-bytes)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-local-scratch-matrix-arg)
+             (:l0     'l0-bind-local-scratch-matrix-arg))
+           kernel base-index rows cols elem-bytes))
 
 (defun bind-uint64-scalar-arg (kernel arg-index value)
   (funcall (ecase *ad-runtime*
@@ -1416,6 +1540,47 @@
     (check-cl (cl-set-kernel-arg kernel (+ base-index 3) (cffi:foreign-type-size :uint64) arg3))
     (check-cl (cl-set-kernel-arg kernel (+ base-index 4) (cffi:foreign-type-size :uint64) arg4))
     (check-cl (cl-set-kernel-arg kernel (+ base-index 5) (cffi:foreign-type-size :uint64) arg5))))
+
+(defun opencl-bind-local-scratch-matrix-arg (kernel base-index rows cols elem-bytes)
+  "Endeavor 145 (P6): binds a :local addrspace 2-D compact scratch matrix (9 args).
+   Slot 0 is the local-memory allocation (size, NULL pointer); the rest is the tensor
+   record, row-major."
+  (check-cl (cl-set-kernel-arg kernel (+ base-index 0) (* rows cols elem-bytes)
+                               (cffi:null-pointer)))
+  (cffi:with-foreign-objects ((a1 :uint64) (a2 :uint64) (a3 :uint64) (a4 :uint64)
+                              (a5 :uint64) (a6 :uint64) (a7 :uint64) (a8 :uint64))
+    (setf (cffi:mem-ref a1 :uint64) (* rows cols elem-bytes)
+          (cffi:mem-ref a2 :uint64) 0
+          (cffi:mem-ref a3 :uint64) 0
+          (cffi:mem-ref a4 :uint64) cols
+          (cffi:mem-ref a5 :uint64) 1
+          (cffi:mem-ref a6 :uint64) rows
+          (cffi:mem-ref a7 :uint64) cols
+          (cffi:mem-ref a8 :uint64) (* rows cols))
+    (loop for k from 1 below 9
+          for obj in (list a1 a2 a3 a4 a5 a6 a7 a8)
+          do (check-cl (cl-set-kernel-arg kernel (+ base-index k)
+                                          (cffi:foreign-type-size :uint64) obj)))))
+
+(defun l0-bind-local-scratch-matrix-arg (kernel base-index rows cols elem-bytes)
+  "L0 counterpart: NULL pArgValue + byte-size for the local mem alloc, then the 8
+   tensor-record scalars."
+  (check-ze (ze-kernel-set-argument-value kernel (+ base-index 0)
+                                          (* rows cols elem-bytes) (cffi:null-pointer)))
+  (cffi:with-foreign-objects ((a1 :uint64) (a2 :uint64) (a3 :uint64) (a4 :uint64)
+                              (a5 :uint64) (a6 :uint64) (a7 :uint64) (a8 :uint64))
+    (setf (cffi:mem-ref a1 :uint64) (* rows cols elem-bytes)
+          (cffi:mem-ref a2 :uint64) 0
+          (cffi:mem-ref a3 :uint64) 0
+          (cffi:mem-ref a4 :uint64) cols
+          (cffi:mem-ref a5 :uint64) 1
+          (cffi:mem-ref a6 :uint64) rows
+          (cffi:mem-ref a7 :uint64) cols
+          (cffi:mem-ref a8 :uint64) (* rows cols))
+    (loop for k from 1 below 9
+          for obj in (list a1 a2 a3 a4 a5 a6 a7 a8)
+          do (check-ze (ze-kernel-set-argument-value kernel (+ base-index k)
+                                                     (cffi:foreign-type-size :uint64) obj)))))
 
 (defun l0-bind-local-scratch-vector-arg (kernel base-index n-elements elem-bytes)
   "L0 counterpart: NULL pArgValue + byte-size for the local mem alloc."

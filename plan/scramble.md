@@ -172,7 +172,7 @@ LOOSE PRIORITIES
 - [x] def-struct
 - [x] cond  ( we can make all other divergent control flows from that: when, if, unless)
 - [ ] bool true false.  ( macros can still use T/nil ? )
-- [ ] precision selections (declare / declaim / flags )
+- [x] precision selections (declare / declaim / flags )
 - [x] .crisp files.  basic flag for crisp-compiler.exe
 - [x] SIDE CHANNEL MECHANISM.  probably sooner, rather than later. 
 - [x] Literals: use suffix ?   0.0f  INSTEAD of (type a float) in a let clause?
@@ -200,8 +200,8 @@ SHORT TERM PLAN
 - [x] defmacro - Get it in now. Shouldn't be difficult, paves way to "crisp in crisp"
 - [x] conditionals - LLVM Blocks and branches. Will be needed for "crisp-in-crisp" vectors etc.
 - - [/] anaphoric support
-- - [ ] star `*` variants - uniform across warp
-- - [x] plus `+` variants - compile time calculable
+- - [/] star `*` variants - 
+- - [x] plus `+` variants -  uniform across warp or compile time calculable
 - [x] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
 - [x] compile time assert mightn't be the worst idea. Pretty handy. 
 - [x] refactor? compiler.lisp is nearly 2000 lines. maybe analysis.lisp and compiler.lisp ?

@@ -419,10 +419,35 @@ fragment-level backward" below.
       The runner binds arguments by KIND, so this wants a proper `:matrix-float` kind, not a
       bespoke launcher.  Hand-rolling one would be exactly the sort of thing that yields a
       verification you cannot trust.
-    - **This is the one gap that matters.**  Everything through P5 is verified structurally (the
-      right MMAs, in the right shapes, in the right places) and the FORWARD is metal-correct —
-      but no gradient VALUE has been checked on hardware yet.  "4 MulAdds in the right shape"
-      is not the same as "correct gradients".
+    - **DONE 2026-07-28.**  Spec `09-verify-autodiff-matmul-bmg.crisp`:
+      **`PASS (A: analytical=1.1994476 numerical=1.1989746 diff=4.7e-4)`** against an
+      `expect.A` of exactly 1.2 — the residual is tf32's 10-bit mantissa.  **The MMA backward
+      computes correct gradients on real hardware.**  It also finally closes P2's open gap:
+      the seed is non-zero, so the fragment element->lane MAPPING is load-bearing and a wrong
+      one would change the answer.
+
+    What VERIFY-AUTODIFF learned (all generic, none of it MMA-specific):
+      - matrix literals `[[..][..]]` — the tokenizer now tracks bracket DEPTH, not a boolean,
+        which is what let a 2-D literal survive as one token;
+      - `RxC@START:STEP`, a compact row-major ramp generator.  Needed because the smallest
+        contract-satisfying shapes are 8x16 and 16x16 — 384 literals would make a spec
+        unreadable.  Deliberately NON-uniform: a uniform matrix equals its own transpose and
+        so could not catch a transposed operand;
+      - `at.<name>=row,col`, `output-mat=RxC`;
+      - a `:matrix-float` input kind on the 9-arg tensor ABI, plus 9-arg binding for :local
+        scratch tiles.  Shapes and arg ranges come from the .metacrisp, so nothing is
+        hand-wired — which is what made a 117-parameter kernel tractable at all;
+      - the verify compile now forwards `--hardware-profile` (from HOIST-HARDWARE-PROFILE).
+        Without it an MMA kernel falls back to the NVIDIA default shape and is rejected.
+
+    **The bug this phase existed to catch.**  With everything above working, the first
+    on-metal run returned `analytical=0.0`.  The runner launches with
+    `ze-kernel-set-group-size 1 1 1` and one group — a SINGLE THREAD.  That is fine for the
+    scalar/vector elementwise kernels it was built for, but MMA is SUB-GROUP COLLECTIVE and
+    with one thread the cooperative ops do nothing at all, so the gradient was exactly zero.
+    Hence the new `group=<n>` directive key (default 1, so every pre-145 spec is unchanged).
+    No amount of IR inspection would have found this — it is precisely the class of failure
+    that only numeric on-metal checking catches.
 [ ] P7 — **PTX parity.** Index-math transposes, `mma.sync` backward, rented sm_80+ pod.
 [ ] P8 — **multi-workgroup + atomics;** un-skip 135's `matrix-multiply-tile-stride`.
 [ ] P9 (stretch) — **VERIFY-AUTODIFF matrix inputs** (`A=[[…][…]]`, `at.A=(r c)`). The

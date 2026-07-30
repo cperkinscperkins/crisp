@@ -1,0 +1,69 @@
+;; P6 (MMA autodiff) — NUMERIC on-metal gradient verification of an MMA matmul.
+;;
+;; Everything before this verified the backward STRUCTURALLY: the right MMAs, in the right
+;; shapes, in the right places.  This is the first spec that checks a gradient VALUE on real
+;; hardware, and it is what finally makes the fragment element->lane MAPPING observable — the
+;; gap P2 documented and deliberately left open, because a zero seed is invariant under
+;; permutation and a load/store round-trip is a tautology.
+;;
+;; WHY NOT THE HOIST.  The plan originally called for `--mma-grad-test` alongside 134's
+;; `--mma-test`.  That cannot work: `--differentiate` and `--hoist` are hard-incompatible
+;; (src/main.lisp:144), so the hoist never sees a backward kernel.  VERIFY-AUTODIFF already
+;; compiles `<spec>_grad.spv` and drives it through its own L0 bindings, so P6 and the old P9
+;; are one phase: teach VERIFY-AUTODIFF about 2-D matrices.
+;;
+;; WHAT THE HARNESS LEARNED (generic, none of it MMA-specific):
+;;   - matrix literals `[[..][..]]` — the tokenizer now tracks bracket DEPTH, not a boolean;
+;;   - `RxC@START:STEP`, a compact row-major ramp generator (see below for why non-uniform);
+;;   - `at.<name>=row,col` for a 2-D perturbation / comparison point;
+;;   - `output-mat=RxC` for a 2-D output;
+;;   - a `:matrix-float` input kind on the 9-arg tensor ABI, plus 9-arg binding for :local
+;;     scratch tiles.  This backward has SEVEN of those (the forward's two staged tiles,
+;;     their _ADJ pairs, and the backward's three transposed-operand temporaries) — most of
+;;     its 117 parameters.  Their shapes and arg ranges are read from the .metacrisp, so
+;;     nothing here is hand-wired.
+;;
+;; THE CHECK.  f(A,B) = sum(A.B), so dC is all ones and
+;;     dA[m,k] = sum_n B[k,n]
+;; With B[i][j] = 0.01*(i*16+j), dA[1,0] = sum_{n=0..15} 0.01*n = 1.2.  `expect.A` pins that
+;; absolute value, so the test is not merely FD-vs-analytical agreement — which could pass
+;; with both sides wrong in the same way.
+;;
+;; WHY THE RAMP IS NON-UNIFORM: a uniform matrix equals its own transpose, so it could not
+;; catch a transposed operand — precisely the error the backward's staged B^T might carry.
+;;
+;; WHY h IS LARGE (0.5, not the 1e-3 default): f is EXACTLY bilinear in A, so the central
+;; difference has zero truncation error and a big step is strictly better.  It has to be big:
+;; f is ~1.6e3 here while a default-h perturbation moves it by ~1e-3, which is below fp32
+;; resolution — the FD would have been pure noise.  Values are scaled by 0.01 for the same
+;; reason.  atol is loose enough for tf32's ~10-bit mantissa on both the FD and the
+;; MMA-computed analytical gradient.
+;;
+;; Shapes are the smallest the contract allows on BMG (8 16 8): Mt=8, Nt=16 (a multiple of
+;; N_n=16), Kt=16 (a multiple of lcm(M_n,N_n)).
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;; HOIST-HARDWARE-PROFILE: bmg
+;;   (the verify pass honours this too, so its fwd/bwd compiles select the BMG shape)
+;; VERIFY-AUTODIFF: A=8x16@0:0.01 B=16x16@0:0.01 at.A=1,0 group=16 h=0.5 atol=2e-2 expect.A=1.2 output-mat=8x16
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((A-tile (make-scratch-matrix float (8 16)))    ; Mt x Kt
+        (B-tile (make-scratch-matrix float (16 16)))   ; Kt x Nt
+        (C-tile (make-register-tile float (8 16) 0.0)))
+    (load-tile-at A A-tile (0 0))
+    (load-tile-at B B-tile (0 0))
+    (sync-workgroup)
+    (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

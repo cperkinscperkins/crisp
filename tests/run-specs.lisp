@@ -1073,8 +1073,15 @@
                                            ((int ulong long) 8)
                                            (t (error "%vad-read-implicit-params: unsupported elem-type ~A in ~A"
                                                      elem-type type-spec)))
+                        ;; Endeavor 145 (P6): a 2-D scratch tile's :size-expr is a LIST
+                        ;; (ROWS COLS), not an integer.  Carry :rows / :cols through for
+                        ;; the 9-arg matrix binding and make :n-elements their product so
+                        ;; every consumer still sees an element count.
+                        for dims = (and (listp size) size)
                         collect (list :base (first range)
-                                      :n-elements size
+                                      :n-elements (if dims (reduce #'* dims) size)
+                                      :rows (and dims (first dims))
+                                      :cols (and dims (second dims))
                                       :elem-bytes elem-bytes
                                       :arg-width (1+ (- (second range) (first range))))))))))))))
 
@@ -1098,6 +1105,12 @@
                      ;; list to bind backward-kernel local-scratch tiles.
                      "--metadata"
                      (format nil "--log-level=~a" cl-user::*log-level*))))
+    ;; Endeavor 145 (P6): an MMA kernel's shape comes from the active hardware profile, so
+    ;; the verify compile must SELECT it exactly as the hoist path does — otherwise
+    ;; mma-accumulate-via-tile falls back to the NVIDIA default and rejects the spec's
+    ;; shape.  Driven by the spec's HOIST-HARDWARE-PROFILE directive.
+    (when *compile-hardware-profile*
+      (push (format nil "--hardware-profile=~a" *compile-hardware-profile*) args))
     (when differentiate (push "--differentiate" args))
     (when precision
       (push (format nil "--math-precision=~a" (string-downcase (symbol-name precision))) args))
@@ -1162,8 +1175,13 @@
    so non-GPU CI doesn't fail.
 
    Phase 5a scope (endeavor 103): N scalar cell inputs, one scalar cell
-   output.  Tensor / record / struct inputs come in later phases."
-  (case (%vad-ensure-runner-loaded)
+   output.  Tensor / record / struct inputs come in later phases.
+   Endeavor 145 (P6): 2-D matrix inputs and outputs, and the spec's
+   HOIST-HARDWARE-PROFILE is honoured so an MMA kernel compiles with its shape."
+  (let ((*compile-hardware-profile*
+          (or (parse-hoist-hardware-profile (extract-test-directives file))
+              *compile-hardware-profile*)))
+   (case (%vad-ensure-runner-loaded)
     (:unavailable
      (format t "SKIP (OpenCL runner unavailable)~%")
      t)
@@ -1175,6 +1193,11 @@
             (at-points (getf spec :at-points))
             (structs (getf spec :structs))
             (output-vec (getf spec :output-vec))
+            ;; Endeavor 145 (P6): a 2-D matrix output.  ROWS*COLS also feeds
+            ;; output-vec-length so every buffer-sized path in the runner (read-y,
+            ;; zero, seed) keeps working; output-mat-dims only widens the ABI.
+            (output-mat (getf spec :output-mat))
+            (group-size (or (getf spec :group-size) 1))
             (expected-grads (getf spec :expected-grads))
             ;; Endeavor 128 (Phase 5): compile fwd + bwd under a chosen FP mode.
             (precision (getf spec :precision))
@@ -1188,6 +1211,13 @@
                        (let ((v (cdr entry)))
                          (cons (car entry)
                                (cond
+                                ;; Endeavor 145 (P6): a MATRIX value is a list of ROW
+                                ;; lists — coerce one level deeper, or (float row) blows
+                                ;; up on the row itself.
+                                ((and (listp v) v (listp (first v)))
+                                 (mapcar (lambda (row)
+                                           (mapcar (lambda (x) (cl:float x 1.0)) row))
+                                         v))
                                 ((listp v)    (mapcar (lambda (x) (cl:float x 1.0)) v))
                                 ((integerp v) v)
                                 (t            (cl:float v 1.0))))))
@@ -1219,7 +1249,11 @@
                                  :inputs coerced-inputs
                                  :at-points at-points
                                  :structs structs
-                                 :output-vec-length output-vec
+                                 :output-vec-length (if output-mat
+                                                        (* (first output-mat) (second output-mat))
+                                                        output-vec)
+                                 :output-mat-dims output-mat
+                                 :group-size group-size
                                  :fwd-implicit-params
                                  (%vad-read-implicit-params file kernel-name :grad nil)
                                  :bwd-implicit-params
@@ -1263,7 +1297,7 @@
                      (bwd-meta (%vad-metacrisp-path file kernel-name :grad t)))
                  (when (probe-file fwd-meta) (delete-file fwd-meta))
                  (when (probe-file bwd-meta) (delete-file bwd-meta)))))
-           result)))))))
+           result))))))))
 
 ;;; ======================================================================
 
