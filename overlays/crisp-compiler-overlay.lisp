@@ -372,3 +372,236 @@
         (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
         (unless (eq sym-cl sym-cc)
           (setf (gethash sym-cc *expression-analyzers*) (cdr entry)))))))
+
+;;; ===================================================================
+;;; Endeavor 145 (MMA autodiff) — P3a: mma-accumulate-via-tile walks K within a tile.
+;;;
+;;; A forward capability, but a hard PREREQUISITE for the backward — and a latent forward
+;;; bug fix in its own right.
+;;;
+;;; With a workgroup tile (Mt x Nt) accumulating over K in steps of Kt:
+;;;     forward   C-tile += A-tile . B-tile     -> (Mt, Nt, Kt)
+;;;     backward  dA-tile = dC-tile . B-tileT   -> (Mt, Kt, Nt)
+;;;     backward  dB-tile = A-tileT . dC-tile   -> (Kt, Nt, Mt)
+;;; Every requirement of the two backward GEMMs is already implied by the forward EXCEPT
+;;; Kt % N_n (from dA) and Kt % M_n (from dB) — i.e. Kt % lcm(M_n, N_n) == 0, which is 16 on
+;;; both supported profiles.  K_n is 8, so a DIFFERENTIABLE tile spans at least two native
+;;; K-steps.
+;;;
+;;; But %emit-per-frag-accumulate fired exactly ONE native K-step per fragment position: it
+;;; read its operands at a hardcoded K tile-index 0.  Every shipped forward kernel got away
+;;; with that by staging Kt = K_n = 8 and running the K-loop externally.  Stage anything
+;;; WIDER and the surplus was silently ignored — no error, no warning, a wrong answer.
+;;; (Measured on BMG: an 8x16 A-tile emitted ONE MulAdd and the host reference said
+;;; MMA_WRONG.)
+;;;
+;;; The K-step count is COMPILE-TIME (scratch tile dims are compile-time constants), so this
+;;; is a pure unroll — no new syntax, no runtime cost, and one-K-step tiles expand exactly as
+;;; before.
+;;;
+;;; Spec: tests/spec/145-mma-autodiff/05-multi-k-step-tile-bmg.crisp
+;;; ===================================================================
+
+;; src/mma.lisp
+(defvar *mma-scratch-tile-dims* nil
+  "Endeavor 145 P3a: alist (SYM ROWS COLS) of the SLM scratch tiles bound by the LET currently
+   being exploded.  %emit-per-frag-accumulate reads it to learn a staged operand's K extent so it
+   can walk K WITHIN the tile.  Bound by %explode-register-tiles; NIL elsewhere, in which case a
+   staged operand is assumed to span exactly one native K-step (the pre-145 behaviour).
+
+   A special variable rather than a threaded parameter so %explode-rewrite-body-form — which
+   carries the endeavor-142 register block-load branches — does not have to change.")
+
+;; src/mma.lisp
+(defun %mma-scratch-tile-dims-from-bindings (bindings)
+  "Endeavor 145 P3a: the (SYM ROWS COLS) dims of every compile-time-shaped
+   (V (make-scratch-matrix <elem> (ROWS COLS))) binding in BINDINGS.
+
+   Only literal integer 2-lists are recorded; a scratch tile whose shape is derived from another
+   tensor contributes nothing and falls back to the one-K-step assumption."
+  (loop for b in bindings
+          when (and (consp b) (= (length b) 2) (symbolp (first b))
+                    (consp (second b))
+                    (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX")
+                    (let ((d (third (second b))))
+                      (and (listp d) (= (length d) 2) (every #'integerp d))))
+        collect (list (first b)
+                      (first (third (second b)))
+                      (second (third (second b))))))
+
+;; src/mma.lisp
+(defun %mma-operand-extent (ref tiles which)
+  "Endeavor 145 P3a: the compile-time extent (WHICH = :rows | :cols) of an
+   mma-accumulate-via-tile operand REF, or NIL if not compile-time known.
+
+   Handles both operand flavours: a register tile / ring slot (normalized to
+   (V m n syms ...) by %resolve-tile-ref) and an SLM scratch tile (via
+   *mma-scratch-tile-dims*)."
+  (let ((rt (%resolve-tile-ref ref tiles)))
+    (if rt
+        (ecase which (:rows (second rt)) (:cols (third rt)))
+        (let ((sd (and (symbolp ref) (assoc ref *mma-scratch-tile-dims*))))
+          (when sd
+            (ecase which (:rows (second sd)) (:cols (third sd))))))))
+
+;; src/mma.lisp
+(defun %mma-k-steps (a b tiles sk location)
+  "Endeavor 145 P3a: how many native K-steps the staged operands span — A's COLUMN extent (Kt)
+   divided by the instruction's K.  Defaults to 1 when the shape is not compile-time known,
+   reproducing the pre-145 behaviour exactly.
+
+   Also cross-checks the operands: A is Mt x Kt and B is Kt x Nt, so A's column extent must equal
+   B's row extent.  Such a mismatch used to be silently truncated to one K-step; it is a hard error
+   now, since it can only mean the staged tiles disagree about the contraction length."
+  (let ((a-k (%mma-operand-extent a tiles :cols))
+        (b-k (%mma-operand-extent b tiles :rows)))
+    (when (and a-k b-k (/= a-k b-k))
+      (error 'crisp-compiler-error
+        :message (format nil "mma-accumulate-via-tile: operand K extents disagree — A is ~a wide but B is ~a tall.  A must be Mt x Kt and B must be Kt x Nt."
+                         a-k b-k)
+        :source-location location))
+    (let ((kt (or a-k b-k)))
+      (if (and kt (plusp sk)) (max 1 (floor kt sk)) 1))))
+
+;; src/mma.lisp
+;; Re-definition of the src/ original.  CHANGE: the operand readers take a K-step index, and a
+;; fragment's accumulate is the compile-time SEQUENCE of its K-steps rather than one MMA at
+;; K-index 0.
+(defun %emit-per-frag-accumulate (a b entry tiles &optional accum-binding body)
+  "Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a
+   static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B
+   are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its
+   pre-loaded fragment var instead of load-fragment-a/b.
+
+   Endeavor 145 P3a: the staged operands may span SEVERAL native K-steps (Kt / K_n, compile-time)
+   and every one of them now fires.  Previously only K-index 0 was emitted and any surplus staged
+   data was silently dropped.  For the F3 body/accum-op API this means (accum-op) fires the
+   fragment's WHOLE contraction — all of its K-steps — which keeps the promise that the body
+   controls WHEN a fragment accumulates, not how its contraction is chopped up."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
+    (destructuring-bind (fm . fn) (%frag-mn)
+      (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+        (declare (ignore sm))
+        (let* ((m-frags (floor m fm))
+               (n-frags (floor n fn))
+               (k-steps (%mma-k-steps a b tiles sk nil)))
+          (labels ((a-operand (mi ks)
+                     (let ((ta (%resolve-tile-ref a tiles)))
+                       (if ta
+                           ;; A register tile is Mt x Kt of sm x sk fragments: row-major over
+                           ;; (mi, ks), row stride = its own K-step count.
+                           (nth (+ (* mi (max 1 (floor (third ta) sk))) ks) (fourth ta))
+                           `(load-fragment-a ,a (,mi ,ks)))))
+                   (b-operand (nj ks)
+                     (let ((tb (%resolve-tile-ref b tiles)))
+                       (if tb
+                           ;; A register tile is Kt x Nt of sk x sn fragments: row-major over
+                           ;; (ks, nj), row stride = its own column-fragment count.
+                           (nth (+ (* ks (max 1 (floor (third tb) sn))) nj) (fourth tb))
+                           `(load-fragment-b ,b (,ks ,nj)))))
+                   (one-frag (fv mi-form nj-form)
+                     (let* ((sets (loop for ks below k-steps
+                                        collect `(set! ,fv (mma-accumulate ,fv
+                                                                           ,(a-operand mi-form ks)
+                                                                           ,(b-operand nj-form ks)))))
+                            (acc-set (if (= (length sets) 1) (first sets) `(progn ,@sets))))
+                       (if body
+                           (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                           (list acc-set)))))
+            (if (> n-true 1)
+                (progn
+                  (when (or (%resolve-tile-ref a tiles) (%resolve-tile-ref b tiles))
+                    (error 'crisp-compiler-error
+                      :message "register-resident A/B operands are not yet supported with a warp-distributed accumulator (n-true > 1)."
+                      :source-location nil))
+                  (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag))
+                `(progn
+                   ,@(loop for mi below m-frags append
+                           (loop for nj below n-frags
+                                 for idx = (+ (* mi n-frags) nj)
+                                 append (one-frag (nth idx syms) mi nj)))))))))))
+
+;; src/mma.lisp
+;; Re-definition of the src/ original.  CHANGE: one added LET* binding that makes the LET's
+;; SLM scratch-tile shapes visible to %emit-per-frag-accumulate (145 P3a).  Because
+;; *mma-scratch-tile-dims* is special, the LET* establishes a dynamic binding covering the
+;; whole expansion, including the %explode-rewrite-body-form calls at the end.
+(defun %explode-register-tiles (let-expr &optional location context)
+  "Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in
+   LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the
+   body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register
+   FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.
+   Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp
+   allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions
+   to reconstruct each warp's logical fragment range).
+   Endeavor 145 P3a: also publishes the LET's SLM scratch-tile shapes in *mma-scratch-tile-dims* so
+   the accumulate expansion can walk K within a staged tile."
+  (if (not (and (consp let-expr) (>= (length let-expr) 2) (listp (second let-expr))))
+      let-expr
+      (let* ((head (first let-expr))
+             (bindings (second let-expr))
+             (body (cddr let-expr))
+             ;; 145 P3a: SLM tile shapes for the K-step count (special -> dynamically scoped).
+             (*mma-scratch-tile-dims* (%mma-scratch-tile-dims-from-bindings bindings))
+             (tiles '()))
+        (let ((new-bindings
+                (loop for b in bindings
+                      append
+                      (if (and (consp b) (= (length b) 2) (symbolp (first b))
+                               (%register-tile-init-form-p (second b)))
+                          (let* ((form    (second b))
+                                 (dims    (third form))
+                                 (init    (fourth form))
+                                 (m       (first dims)) (n (second dims))
+                                 (operand (getf (nthcdr 4 form) :operand :acc))
+                                 (nfrags  (destructuring-bind (fr . fc) (%frag-mn-for-operand operand)
+                                            (* (floor m fr) (floor n fc))))
+                                 (warps-in (getf (nthcdr 4 form) :warps))
+                                 (mask    (and warps-in
+                                               (%normalize-warp-mask (%warp-mask-unquote warps-in) location))))
+                            (%register-tile-fit-check m n location)
+                            (multiple-value-bind (n-true first-true)
+                                (if mask
+                                    (%validate-warp-mask mask nfrags
+                                                         (%resolve-workgroup-warp-count context)
+                                                         m n location)
+                                    (values 1 0))
+                              (let* ((per-warp (floor nfrags n-true))
+                                     (syms     (%register-tile-frag-syms (first b) per-warp)))
+                                (push (list (first b) m n syms n-true first-true operand) tiles)
+                                (loop for s in syms
+                                      collect (list s `(make-register-fragment 16 8 ,init :operand ,operand))))))
+                          (if (and (consp b) (= (length b) 2) (symbolp (first b))
+                                   (%register-tile-ring-init-form-p (second b)))
+                              (let* ((form    (second b))
+                                     (dims    (third form))
+                                     (m       (first dims)) (n (second dims))
+                                     (keys    (nthcdr 3 form))
+                                     (operand (getf keys :operand :acc))
+                                     (rc      (getf keys :ring-count)))
+                                (unless (and (integerp rc) (plusp rc))
+                                  (error 'crisp-compiler-error
+                                    :message (format nil "make-register-tile-ring: :ring-count must be a positive compile-time integer, got ~S." rc)
+                                    :source-location location))
+                                (%register-tile-fit-check m n location)
+                                (destructuring-bind (fr . fc) (%frag-mn-for-operand operand)
+                                  (let* ((nfrags (* (floor m fr) (floor n fc)))
+                                         (slot-syms-list
+                                           (loop for slot below rc
+                                                 collect (%register-tile-frag-syms
+                                                          (intern (format nil "~a$S~d" (symbol-name (first b)) slot)
+                                                                  (symbol-package (first b)))
+                                                          nfrags))))
+                                    (push (list (first b) :ring m n slot-syms-list operand) tiles)
+                                    (loop for syms in slot-syms-list
+                                          append (loop for s in syms
+                                                       collect (list s `(make-register-fragment 16 8 0.0 :operand ,operand)))))))
+                              (list b))))))
+          (if (null tiles)
+              let-expr
+              `(,head ,new-bindings
+                      ,@(mapcar (lambda (f)
+                                  (%explode-rewrite-body-form
+                                   (%unroll-register-ring-loops f tiles) tiles))
+                                body)))))))

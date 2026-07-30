@@ -116,6 +116,36 @@ Fix: a new `load-fragment-acc` primitive — the exact inverse of `store-fragmen
 per-lane accumulator layout is already spelled out (src/mma.lisp:259-286). Reverse the
 `set!`s into reads. Small, well-defined, and needed on both backends for symmetry. Hence P2.
 
+### 5b. Why there is no fragment-level backward
+
+Worked through 2026-07-28, and it killed the original P3.
+
+Run the shape algebra on a SINGLE fragment, where by definition `M = M_n`, `N = N_n`,
+`K = K_n`:
+
+| | dA = dD·Bᵀ → (M, K, N) | dB = Aᵀ·dD → (K, N, M) |
+| --- | --- | --- |
+| NVIDIA (16 8 8) | (16, 8, 8) — **fits** | (8, 8, 16) → M'=8 < M_n=16 — **no** |
+| Intel BMG (8 16 8) | (8, 8, 16) → N'=8 < N_n=16 — **no** | (8, 16, 8) — **fits** |
+
+Exact mirror images, because the two vendors' shapes are transposes of one another. And it
+is just the general contract firing: a single fragment has `K = K_n = 8`, and
+`8 % lcm(M_n, N_n) = 8 % 16 ≠ 0`. **On both backends, one of the two backward GEMMs cannot
+be expressed as a native MMA.**
+
+Nor is a non-MMA fragment backward the answer: `dA[m,k] = Σ_n dD[m,n]·B[k,n]` contracts over
+`n`, but a lane holds only two of the accumulator's columns and a single B column — the
+reduction spans lanes, making it a warp-shuffle problem. Slow, intricate, and the wrong
+altitude.
+
+So the AD rule lives at the TILE level, where operands are in memory (SLM or a register
+tile), the transposes are free, and `Kt % 16` can be enforced. Raw `mma-accumulate` stays a
+forward-only escape hatch — which is consistent with Decision 1 (hard contract, no silent
+fallback) and costs nothing user-facing: the epilogue-fusion story (ReLU, bias) rides the
+`(acc)` body API on `mma-accumulate-via-tile`, not on raw `mma-accumulate`. If a raw
+fragment-level gradient is ever wanted, the natural route is a user-supplied VJP, exactly as
+endeavor 123 did for FFI.
+
 ### 6. Register pressure
 
 The backward holds dC, dA and dB accumulators simultaneously — roughly 3× the forward's
@@ -209,10 +239,39 @@ Phases (SPV-first)
     test with a real dC.  The specs were rebuilt around the shape the backward actually uses
     (seed the accumulator from a global matrix, then MMA into it) and are explicit about
     proving REGION/COUNT correctness now and MAPPING correctness in P3.
-[ ] P3 — **fragment-level rule: `mma-accumulate` backward.** Target: `02-hello-mma` /
-    `10-hello-mma-bmg` differentiate. Verify the emitted SPV/PTX by hand.
-[ ] P4 — **tile-level rule: `mma-accumulate-via-tile` backward.** Two backward GEMM loops
-    with transposed operand reads; the K-tile contract enforced; AD-aware fit-check.
+**P3 was re-planned on 2026-07-28** after the shape algebra was worked through at the
+FRAGMENT level. The original P3 ("fragment-level rule: `mma-accumulate` backward") is
+**impossible**, and the original P4 absorbed what remains. See "Why there is no
+fragment-level backward" below.
+
+[x] P3a — **`mma-accumulate-via-tile` walks K WITHIN a staged tile.**  DONE 2026-07-28.
+    A forward capability, but a hard prerequisite for the backward AND a latent forward
+    bug fix.
+    - The contract needs `Kt % 16`, i.e. at least TWO native K-steps per tile. But
+      `%emit-per-frag-accumulate` fired exactly ONE, reading its operands at a hardcoded K
+      tile-index 0 (`(load-fragment-a A (mi 0))`). Every shipped forward kernel got away
+      with it by staging `Kt = K_n = 8` and looping K externally. **Stage anything wider and
+      the surplus was silently dropped — no error, no warning, a wrong answer.** Measured on
+      BMG: an 8x16 A-tile emitted ONE MulAdd; spec 05 reported `MMA_WRONG` (got 11, ref 30).
+    - Fix: the K-step count is compile-time (`Kt / K_n` from the operand shapes), so the
+      expansion is a pure unroll. Both operand flavours handled — SLM scratch tiles (via the
+      new `*mma-scratch-tile-dims*`, published by `%explode-register-tiles`) and endeavor-142
+      register tiles / ring slots (whose fragment indexing already had the stride, it just
+      never used a non-zero K index). One-K-step tiles expand exactly as before.
+    - Added a guard that used to be silent truncation: A's column extent must equal B's row
+      extent (A is Mt x Kt, B is Kt x Nt) — a mismatch is now a hard error.
+    - F3 semantics preserved: `(accum-op)` fires the fragment's WHOLE contraction — all its
+      K-steps — keeping the promise that the body controls WHEN a fragment accumulates, not
+      how its contraction is chopped up.
+    - Overlay: `*mma-scratch-tile-dims*`, `%mma-scratch-tile-dims-from-bindings`,
+      `%mma-operand-extent`, `%mma-k-steps` (all new), `%emit-per-frag-accumulate` and
+      `%explode-register-tiles` (re-definitions).
+    - **ON METAL (BMG): spec 05 went MMA_WRONG -> MMA_CORRECT.**  Suite: E2E 943/943,
+      --differentiate 943/943, unit 253/253, negative 211/211.
+[ ] P3b — **tile-level rule: `mma-accumulate-via-tile` backward.** The real rule: two backward
+    GEMM loops with transposed operand reads, the K-tile contract enforced, AD-aware fit-check.
+[ ] P3c — **raw `mma-accumulate` under `--differentiate` is a clear compile error**, naming the
+    tile form as the differentiable surface. Negative spec.
 [ ] P5 — **whole-kernel.** `store-tile`(register) backward + the K-loop + transposed SLM
     staging. A full tiled matmul differentiates end-to-end on one workgroup.
 [ ] P6 — **on-metal verification.** `--mma-grad-test` in the hoist (host-computes dA/dB,
