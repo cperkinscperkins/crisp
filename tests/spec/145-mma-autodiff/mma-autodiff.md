@@ -328,10 +328,11 @@ fragment-level backward" below.
       `%explode-register-tiles` (re-definitions).
     - **ON METAL (BMG): spec 05 went MMA_WRONG -> MMA_CORRECT.**  Suite: E2E 943/943,
       --differentiate 943/943, unit 253/253, negative 211/211.
-[/] P3b — **tile-level rule: `mma-accumulate-via-tile` backward.** IN PROGRESS 2026-07-28.
-    Spec `06-via-tile-backward-bmg.crisp` (forward already MMA_CORRECT on metal; the
-    `--differentiate` COMPILE-WITH is the red TDD test).
-    - DONE: `%mma-ad-tile-dims-map` / `%mma-ad-tile-source-map` / `%mma-ad-transposed-stage` /
+[x] P3b — **tile-level rule: `mma-accumulate-via-tile` backward.**  DONE 2026-07-28.  The heart
+    of the endeavor: an MMA kernel differentiates end to end.  Spec
+    `06-via-tile-backward-bmg.crisp`.  Suite: E2E 943/943, --differentiate 943/943, unit
+    253/253, negative 211/211, and 145 6/6 with the forward still MMA_CORRECT on BMG.
+    - `%mma-ad-tile-dims-map` / `%mma-ad-tile-source-map` / `%mma-ad-transposed-stage` /
       `%mma-via-tile-backward` (+ a `-logged` wrapper — run with `--log-level=debug` to dump the
       emitted backward AST, which is by far the most useful artifact when this fails); the walk
       clause, spliced into `generate-backward-walk`; register-tile adjoint allocation
@@ -340,22 +341,42 @@ fragment-level backward" below.
     - The emission is VERIFIED CORRECT (dumped and read by hand): all five temporaries carry
       the right shapes — dC 8x16, A^T 16x8, B^T 16x16, dA-acc 8x16, dB-acc 16x16 — with both
       GEMMs in the right operand order.
-    - REMAINING, and precisely diagnosed. The forward `(store-tile C-tile C (0 0))` is rewritten
-      by the endeavor-107 AD PRE-PASS (`%expand-stride-macros-in-form`, which runs only on the
-      AD path) into a `store-tile-at` with element coords computed the SCRATCH way:
+    - THE REGISTER-TILE STORE (the blocker, now fixed).  The forward
+      `(store-tile C-tile C (0 0))` reached the AD walk already rewritten to `store-tile-at`
+      with SCRATCH-convention element coords:
 
           (%STORE-TILE-AT-BWD C-TILE_ADJ C_GRAD
             ((* (TO-ULONG 0) (~ (EXTENTS~ C-TILE) 0)) ...))
 
-      But `C-tile` is a REGISTER tile. Two faults from that one root cause: `extents~` is
-      invalid on a register tile, and `C-TILE_ADJ` is SROA-exploded into per-fragment vars so
-      the bare name no longer exists — hence "Unknown variable C-TILE_ADJ". The three fixes:
-        1. the AD pre-pass must NOT expand a `store-tile` whose tile is a register tile;
-        2. the walk's `store-tile` backward needs a register-tile branch that seeds the adjoint
-           fragments from `C_GRAD` — which is exactly what P2's `load-fragment-acc` was built
-           for, and where the fragment element->lane MAPPING finally becomes observable;
-        3. a `%load-register-tile-acc` internal form + `%emit-per-frag-acc-load` in
-           `%explode-rewrite-body-form` (the mirror of `%emit-per-frag-store`).
+      Two faults from one root cause: `extents~` is invalid on a register tile, and
+      `C-TILE_ADJ` is SROA-exploded into per-fragment vars so the bare name no longer exists
+      ("Unknown variable C-TILE_ADJ").
+
+      ROOT CAUSE — and it is NOT the endeavor-107 stride pre-pass, which was the first guess.
+      `store-tile` is a CL `defmacro` (src/macros.lisp:1857) that scales tile-IDs by the tile's
+      extents.  On the FORWARD path it never expands: STORE-TILE has its own analyzer and the
+      SROA explosion matches the un-expanded form.  The AD path runs ANF first, and
+      `anf-normalize` (src/anf-transform.lisp:174) macroexpands ANY symbol carrying a
+      `macro-function` BEFORE reaching its own opaque-passthrough list — a list that already
+      names "STORE-TILE"/"LOAD-TILE" (line 187).  The intent was there; the expansion just
+      fires first and the entry is unreachable.
+
+      FIXED IN THE WALK, NOT IN `anf-normalize`.  Dropping STORE-TILE from that macroexpansion
+      would change flat-anf for every SCRATCH-tile kernel using the sugar, and those depend on
+      STORE-TILE-AT reaching the endeavor-111 rules — a silent gradient regression.  So the walk
+      gained a register-tile branch (ordered BEFORE the scratch rule) that recovers the original
+      tile-IDs with `%mma-ad-unscale-tile-origin` (unwrapping `(* (to-ulong G) (~ (extents~ T) i))`
+      back to `G`) and emits `%load-register-tile-acc`, expanded per fragment by
+      `%emit-per-frag-acc-load` — the mirror of `%emit-per-frag-store`, reading with P2's
+      `load-fragment-acc`.  Note the `anf-normalize` unreachable-entry is left as-is and is worth
+      a separate look.
+    - One more fix: the transposing stage coerces both addends with `to-int`.  A load-tile-at
+      origin can be a ULONG extent expression while the collective's loop vars are INT, and `+`
+      will not mix them.
+    - VERIFIED in the emitted SPIR-V, per function: forward = 2 MulAdd / 4 Load (2 K-steps);
+      **backward = 4 MulAdd / 9 Load** — exactly the predicted dA (1 fragment x 2 K-steps) +
+      dB (2 fragments x 1 K-step), plus the ONE accumulator-seed load from `C_GRAD`.
+      Spec 06 passes both COMPILE-WITH runs and its forward is still MMA_CORRECT on BMG.
 [ ] P3c — **raw `mma-accumulate` under `--differentiate` is a clear compile error**, naming the
     tile form as the differentiable surface. Negative spec.
 [ ] P5 — **whole-kernel.** `store-tile`(register) backward + the K-loop + transposed SLM

@@ -679,15 +679,22 @@
          (aref (intern "~" cl-pkg))
          (set! (intern "SET!" cl-pkg))
          (plus (intern "+" cl-pkg))
+         (to-int (intern "TO-INT" cl-pkg))
          (i (intern "%MMA_BW_TI" cl-pkg))
          (j (intern "%MMA_BW_TJ" cl-pkg))
          (oy (first origin))
          (ox (second origin)))
     (declare (ignore rows cols))
     ;; Iterate DST's index space (COLS x ROWS): dst[j][i] = src[oy+i][ox+j].
+    ;; Both addends are coerced to INT: the load-tile-at origin may be a ULONG expression
+    ;; (extent arithmetic) while the collective's loop variables are INT, and `+` will not
+    ;; mix the two.  Tile coordinates are small, so INT is the right common type — it is
+    ;; also what the `~` accessor takes.
     (list ws dst (list j i)
           (list set! (list aref dst j i)
-                (list aref src (list plus oy i) (list plus ox j))))))
+                (list aref src
+                      (list plus (list to-int oy) (list to-int i))
+                      (list plus (list to-int ox) (list to-int j)))))))
 
 ;; src/autodiff.lisp
 (defun %mma-via-tile-backward (form dims-map src-map inputs outputs local-adj-fn kernel-pkg)
@@ -1012,6 +1019,33 @@
                                                            (list bwd-sym src-adj tile-adj origins))))
                                         (funcall emit-fn bwd-form)))
 
+                                    ;; Endeavor 145 P3b: a REGISTER-tile store.  Must be caught
+                                    ;; BEFORE the scratch-tensor rule below, which would emit
+                                    ;; %STORE-TILE-AT-BWD against an adjoint whose name is about
+                                    ;; to be SROA-exploded away.  The backward of "write the
+                                    ;; accumulator out to C" is "seed the accumulator's adjoint
+                                    ;; from C_GRAD", fragment by fragment.  The origin coords are
+                                    ;; unscaled first: the store-tile macro multiplied the tile-ID
+                                    ;; by (~ (extents~ TILE) i), which is meaningless for a
+                                    ;; register tile — the tile-ID inside is what we want.
+                                    ((and (consp form) (symbolp (car form))
+                                          (or (string-equal (symbol-name (car form)) "STORE-TILE-AT")
+                                              (string-equal (symbol-name (car form)) "STORE-TILE"))
+                                          (%mma-ad-register-tile-p (second form) flat-anf))
+                                      (let* ((tile (second form))
+                                             (dest (third form))
+                                             (origins (mapcar #'%mma-ad-unscale-tile-origin
+                                                              (fourth form)))
+                                             (tile-adj (%tlc-bwd-adj-name tile inputs outputs
+                                                                          #'local-adj kernel-pkg))
+                                             (dest-adj (%tlc-bwd-adj-name dest inputs outputs
+                                                                          #'local-adj kernel-pkg))
+                                             (bwd-sym (intern "%LOAD-REGISTER-TILE-ACC"
+                                                              (find-package :crisp-language))))
+                                        (log:debug "145 P3b register-tile store bwd: ~a <- ~a origins=~a"
+                                                   tile-adj dest-adj origins)
+                                        (funcall emit-fn (list bwd-sym tile-adj dest-adj origins))))
+
                                     ;; Phase 1c: store-tile-at forward → backward.
                                     ((and (consp form) (symbolp (car form))
                                           (string-equal (symbol-name (car form)) "STORE-TILE-AT"))
@@ -1214,3 +1248,145 @@
                      (result `(let ,(append scratch-adj-bindings local-bindings)
                                 ,@(nreverse backward-forms))))
                 result))))))))
+
+;;; ===================================================================
+;;; Endeavor 145 (MMA autodiff) — P3b part 2: seeding a register accumulator from
+;;; the output gradient.
+;;;
+;;; ROOT CAUSE this solves.  `store-tile` is a CL defmacro that scales tile-IDs by the
+;;; tile's extents and expands to `store-tile-at`.  On the FORWARD path that expansion
+;;; never happens — STORE-TILE has its own expression analyzer (analyze-store-tile-mma)
+;;; and the SROA explosion matches the un-expanded form.  But the AD path runs ANF first,
+;;; and anf-normalize (src/anf-transform.lisp:174) macroexpands ANY symbol carrying a
+;;; macro-function before it reaches its own opaque-passthrough list — which DOES name
+;;; "STORE-TILE" (line 187), so the intent was already there; the expansion just fires
+;;; first and the entry is unreachable.
+;;;
+;;; The result for a REGISTER tile is nonsense in two ways: the coords become
+;;; `(* (to-ulong G) (~ (extents~ C-tile) i))` and a register tile has no extents~, and
+;;; the walk's scratch-tensor rule then emits %STORE-TILE-AT-BWD against C-TILE_ADJ,
+;;; whose name no longer exists once the adjoint tile is SROA-exploded ("Unknown variable
+;;; C-TILE_ADJ").
+;;;
+;;; FIXED IN THE WALK, NOT IN anf-normalize.  Removing STORE-TILE from that macroexpansion
+;;; would change flat-anf for every SCRATCH-tile kernel that uses the sugar, and those rely
+;;; on STORE-TILE-AT reaching the endeavor-111 rules — a silent gradient regression.  So the
+;;; walk instead detects a register-tile store and recovers the original tile-IDs by
+;;; unwrapping the scaling the macro applied.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun %emit-per-frag-acc-load (src tile-id entry)
+  "Endeavor 145 P3b: per-fragment expansion of
+   (%load-register-tile-acc TILE SRC (TY TX)) — the exact mirror of %emit-per-frag-store,
+   reading each accumulator fragment back out of SRC with P2's load-fragment-acc instead of
+   writing it.  This is where the fragment element->lane MAPPING finally becomes
+   load-bearing: the seeded gradient is non-zero, so a wrong mapping changes the answer
+   (unlike the zero-seed of P2's own spec)."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
+    (destructuring-bind (fm . fn) (%frag-mn)
+      (let* ((to-int-sym (intern "TO-INT" (find-package :crisp-language)))
+             (m-frags (floor m fm)) (n-frags (floor n fn))
+             (bty (list to-int-sym (first tile-id)))
+             (btx (list to-int-sym (second tile-id))))
+        (flet ((one-frag (fv mi-form nj-form)
+                 (list `(set! ,fv (load-fragment-acc ,src
+                                                     ((+ (* ,bty ,m-frags) ,mi-form)
+                                                      (+ (* ,btx ,n-frags) ,nj-form)))))))
+          (if (> n-true 1)
+              (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
+              `(progn
+                 ,@(loop for mi below m-frags append
+                         (loop for nj below n-frags
+                               for idx = (+ (* mi n-frags) nj)
+                               append (one-frag (nth idx syms) mi nj))))))))))
+
+;; src/autodiff.lisp
+(defun %mma-ad-register-tile-p (sym flat-anf)
+  "Endeavor 145 P3b: T when SYM is bound in FLAT-ANF by a make-register-tile constructor.
+   Distinguishes a register accumulator tile from an SLM scratch tile, which the AD walk
+   must treat completely differently at a store."
+  (and (symbolp sym)
+       (loop for form in flat-anf
+               thereis (and (consp form) (= (length form) 2)
+                            (eq (first form) sym)
+                            (consp (second form)) (symbolp (first (second form)))
+                            (string-equal (symbol-name (first (second form)))
+                                          "MAKE-REGISTER-TILE")))))
+
+;; src/autodiff.lisp
+(defun %mma-ad-unscale-tile-origin (origin)
+  "Endeavor 145 P3b: recover the original tile-ID G from the coordinate the `store-tile`
+   macro produced, `(* (to-ulong G) (~ (extents~ TILE) i))`.
+
+   A register tile has no extents~, so that scaled coordinate is meaningless for it — but
+   the tile-ID inside is exactly what the register store/load path wants.  Anything that
+   does not match the shape is returned unchanged, so an already-absolute coordinate still
+   works."
+  (if (and (consp origin) (= (length origin) 3)
+           (symbolp (first origin)) (string-equal (symbol-name (first origin)) "*")
+           (consp (second origin)) (symbolp (first (second origin)))
+           (string-equal (symbol-name (first (second origin))) "TO-ULONG"))
+      (second (second origin))
+      origin))
+
+;; src/mma.lisp
+;; Re-definition of the src/ original.  CHANGE: one added clause for %load-register-tile-acc.
+(defun %explode-rewrite-body-form (form tiles)
+  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references
+   to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
+   otherwise recurse structurally."
+  (cond
+    ((not (consp form)) form)
+    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
+          (assoc (third form) tiles))
+     (let ((shape (nth 1 form)) (v (nth 2 form)) (a (nth 3 form)) (b (nth 4 form)))
+       (%check-mma-shape shape nil)
+       (if (>= (length form) 6)
+           (let* ((binding-form (nth 5 form))
+                  (binding-sym (if (and (consp binding-form) (= (length binding-form) 1)
+                                        (symbolp (first binding-form)))
+                                   (first binding-form)
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
+                                          :source-location nil)))
+                  (body (nthcdr 6 form)))
+             (%emit-per-frag-accumulate a b (assoc v tiles) tiles binding-sym body))
+           (%emit-per-frag-accumulate a b (assoc v tiles) tiles))))
+    ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v dest tile-id) (cdr form)
+       (%emit-per-frag-store dest tile-id (assoc v tiles))))
+    ;; Endeavor 145 P3b: (%load-register-tile-acc TILE SRC (TY TX)) — the inverse of the
+    ;; store-tile clause above, and the only way to get a global matrix INTO a register
+    ;; accumulator tile.  Emitted by the AD walk to seed C-tile_ADJ from C_GRAD.  Compiler-
+    ;; internal (leading %), so it is gradient-inert to the backward walk by construction.
+    ((and (%head-name-eq (first form) "%LOAD-REGISTER-TILE-ACC") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v src tile-id) (cdr form)
+       (%emit-per-frag-acc-load src tile-id (assoc v tiles))))
+    ((and (%head-name-eq (first form) "FILL-TILE") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
+    ;; Endeavor 142 (Intel MMA prefetch): load-tile with a register-tile DEST (third form) -> Intel
+    ;; block-load (Subgroup2DBlockLoadINTEL, global -> GRF, hardware-scoreboard async, no :barrier).
+    ;; Handled in the explosion (like store-tile), before the whole-tile var is gone.  The tile's
+    ;; :operand (A/B) picks the coop-matrix Use/layout.  Requires the SPV/Intel target + an active
+    ;; hardware profile (its GRF/L1 limits drive the Phase-C register-pipeline safety analysis);
+    ;; PTX has no mapping for this register-pipeline model.
+    ;; Endeavor 142: the DEST may be a bare register-tile OR (ring-get RING SLOT) into a register ring —
+    ;; %resolve-tile-ref handles both (and errors on a non-constant register-ring slot).
+    ((and (%head-name-eq (first form) "LOAD-TILE") (= (length form) 4)
+          (%resolve-tile-ref (third form) tiles))
+     (unless (active-hardware-profile)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile requires a hardware profile (pass --hardware-profile): its GRF / L1 limits drive the register-pipeline safety analysis."
+         :source-location nil))
+     (unless (eq *target-backend* :spirv)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile lowers to Subgroup2DBlockLoadINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping in this register-pipeline model."
+         :source-location nil))
+     (%emit-per-frag-block-load (second form) (%resolve-tile-ref (third form) tiles) (fourth form)))
+    (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
+
