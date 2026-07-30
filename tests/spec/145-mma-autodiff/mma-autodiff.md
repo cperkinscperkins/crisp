@@ -448,7 +448,45 @@ fragment-level backward" below.
     Hence the new `group=<n>` directive key (default 1, so every pre-145 spec is unchanged).
     No amount of IR inspection would have found this — it is precisely the class of failure
     that only numeric on-metal checking catches.
-[ ] P7 — **PTX parity.** Index-math transposes, `mma.sync` backward, rented sm_80+ pod.
+[x] P7 — **PTX / NVIDIA parity.**  DONE 2026-07-30 on a rented RTX PRO 4000 Blackwell (sm_120,
+    CUDA 12.4).  Spec `10-via-tile-backward-ptx.crisp`.
+    - The rule is backend-neutral by construction (the backward is emitted as ordinary Crisp
+      forms that then take the normal forward path), so what this phase really tests is the
+      SHAPE ALGEBRA on the other vendor's instruction.  NVIDIA (16 8 8) is the TRANSPOSE of
+      Intel's (8 16 8), so the smallest legal tile mirrors it: Mt=16, Nt=8, Kt=16 (vs BMG's
+      Mt=8, Nt=16, Kt=16).  Both backward GEMMs fit: dA (16,16,8), dB (16,8,16).
+    - The 2-K-step operand lands on the OTHER backward GEMM than it does on BMG (dB's A^T
+      here, dA's dC there), so this is a genuinely different path through
+      `%emit-per-frag-accumulate` — which is why it earns its own spec rather than being
+      assumed from the Intel result.
+    - **NO COMPILER CHANGE WAS NEEDED.**  Both COMPILE-WITH runs and the on-metal forward
+      passed against the code as written for BMG.
+    - VERIFIED: PTX `mma.sync` counts per entry — forward 2, **backward 4** (dA 2 fragments x
+      1 K-step, dB 1 fragment x 2 K-steps), exactly the predicted decomposition.
+      **ON METAL (Blackwell): MMA_CORRECT.**  145 suite 10/10 on the pod (the BMG specs
+      SKIP cleanly there).
+    - Whole-suite regression on the pod: **946/953**, with 7 failures — ALL in 137 / 138 / 139 /
+      140, all `--ir-target-arch=sm_90` specs, and all failing at PTX **JIT time on the device**
+      after PTX generation PASSED.  wgmma and TMA/CuTensorMap are Hopper (sm_90a) constructs, so
+      they cannot run on a Blackwell part — or on the RTX 4090 originally planned.  VERIFIED
+      pre-existing rather than assumed: the same specs fail identically at the pre-endeavor
+      commit `e05dd58`.  Every MMA spec that actually exercises the changed
+      `%emit-per-frag-accumulate` (132 / 133 / 135 / 136 / 142 / 144) passed.
+    - HARNESS GAP worth its own fix: those CUDA specs skip-gate on missing `nvcc` but NOT on
+      insufficient compute capability, so a Hopper-only spec hard-FAILS on any lesser NVIDIA
+      part instead of SKIPping.  Endeavor 140 added exactly this kind of gate for L0/Intel
+      (`%intel-l0-gpu-available-p`); the CUDA side needs the arch equivalent.
+
+    **Honest limit — the PTX backward is verified structurally, not numerically.**  The numeric
+    gradient proof (P6) is BMG-only, because VERIFY-AUTODIFF drives SPIR-V through L0/OpenCL and
+    NVIDIA offers no cooperative-matrix path.  The `--mma-grad-test` route is closed for the same
+    reason it was on Intel (`--differentiate` and `--hoist` are incompatible).  Closing this
+    would mean adding a CUDA driver-API runtime as a third `*ad-runtime*` beside `:l0` and
+    `:opencl`.  That is tractable and NOT a redesign — the descriptor, ABI and metacrisp-driven
+    binding logic added in P6 is runtime-agnostic; only the low-level alloc / set-arg / launch
+    layer differs (~the size of the existing `l0-*` block).  The 117-parameter kernel is handled
+    by that machinery either way.  Worth its own phase; the mathematical rule it would be
+    re-checking is already numerically proven on BMG.
 [ ] P8 — **multi-workgroup + atomics;** un-skip 135's `matrix-multiply-tile-stride`.
 [ ] P9 (stretch) — **VERIFY-AUTODIFF matrix inputs** (`A=[[…][…]]`, `at.A=(r c)`). The
     runner is scalar-cell + 1-D-vector only today.
