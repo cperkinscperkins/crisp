@@ -205,14 +205,13 @@ Supports one or more .crisp source files: the last file is treated as the primar
     (values source-files nil debug-p single-pass-p targets metadata-p hoist-targets bc-files)))
 
 (defun get-hoister-binary-path (hoist-id)
-  "Returns path to crisp-hoist-{id}.exe (or .bin on Unix)"
+  "Returns path to crisp-hoist-{id}.exe on Windows or crisp-hoist-{id} on Unix"
   (let* ((bin-name (format nil "crisp-hoist-~(~a~)" hoist-id))
-         (exe-path (merge-pathnames (format nil "bin/~a.exe" bin-name) (uiop:getcwd)))
-         (unix-path (merge-pathnames (format nil "bin/~a" bin-name) (uiop:getcwd))))
+         (target-path (merge-pathnames (format nil "bin/~a~a" bin-name (if (uiop:os-windows-p) ".exe" ""))
+                                       (uiop:getcwd))))
     (cond
-     ((probe-file exe-path) exe-path)
-     ((probe-file unix-path) unix-path)
-     (t (format *error-output* "~&ERROR: Hoister binary not found: ~a~%" bin-name)
+     ((probe-file target-path) target-path)
+     (t (format *error-output* "~&ERROR: Hoister binary not found: ~a~%" target-path)
         nil))))
 
 (defun invoke-hoister (hoist-id metacrisp-file)

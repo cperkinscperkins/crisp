@@ -582,8 +582,8 @@ def main():
     # Absolute path to crisp-compile binary (assumes ran from repo root).  .exe on Windows (native Intel
     # smoke test), unadorned in the Linux container / on the pod.
     repo_root = HERE.parent.parent
-    crisp_compiler = str(repo_root / "bin" / "crisp-compile.exe") \
-        if (repo_root / "bin" / "crisp-compile.exe").exists() else str(repo_root / "bin" / "crisp-compile")
+    exe_name = "crisp-compile.exe" if sys.platform.startswith("win") else "crisp-compile"
+    crisp_compiler = str(repo_root / "bin" / exe_name)
 
     # Pre-build the Crisp launcher harness ONCE (precision-agnostic — it measures the separately-compiled
     # device code).  NVIDIA: the nvcc PTX harness.  Intel: the L0 fixed harness (nvcc is absent in the
