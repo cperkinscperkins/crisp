@@ -22,36 +22,42 @@ REQUIRED_TOOLS = [
 CRISP_BINARIES = {
     "crisp-compile-windows.exe": [
         "tools/crisp-compile-windows.exe",
+        "bin/crisp-compile-windows.exe",
         "bin/crisp-compile.exe",
         "dist/crisp-compile-windows.exe",
         "crisp-compile-windows.exe",
     ],
     "crisp-compile-linux": [
         "tools/crisp-compile-linux",
+        "bin/crisp-compile-linux",
         "bin/crisp-compile",
         "dist/crisp-compile-linux",
         "crisp-compile-linux",
     ],
     "crisp-hoist-l0-windows.exe": [
         "tools/crisp-hoist-l0-windows.exe",
+        "bin/crisp-hoist-l0-windows.exe",
         "bin/crisp-hoist-l0.exe",
         "dist/crisp-hoist-l0-windows.exe",
         "crisp-hoist-l0-windows.exe",
     ],
     "crisp-hoist-l0-linux": [
         "tools/crisp-hoist-l0-linux",
+        "bin/crisp-hoist-l0-linux",
         "bin/crisp-hoist-l0",
         "dist/crisp-hoist-l0-linux",
         "crisp-hoist-l0-linux",
     ],
     "crisp-hoist-cuda-windows.exe": [
         "tools/crisp-hoist-cuda-windows.exe",
+        "bin/crisp-hoist-cuda-windows.exe",
         "bin/crisp-hoist-cuda.exe",
         "dist/crisp-hoist-cuda-windows.exe",
         "crisp-hoist-cuda-windows.exe",
     ],
     "crisp-hoist-cuda-linux": [
         "tools/crisp-hoist-cuda-linux",
+        "bin/crisp-hoist-cuda-linux",
         "bin/crisp-hoist-cuda",
         "dist/crisp-hoist-cuda-linux",
         "crisp-hoist-cuda-linux",
