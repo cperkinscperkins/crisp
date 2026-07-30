@@ -12,7 +12,7 @@
 
 ;; delete old executable
 (uiop::ensure-directories-exist "bin/")
-(let ((exe (merge-pathnames "bin/crisp-hoist-l0.exe" *default-pathname-defaults*)))
+(let ((exe (merge-pathnames (if (uiop:os-windows-p) "bin/crisp-hoist-l0.exe" "bin/crisp-hoist-l0") *default-pathname-defaults*)))
   (when (probe-file exe)
         (format t "~&; Deleting old executable: ~a~%" exe)
         (delete-file exe)))

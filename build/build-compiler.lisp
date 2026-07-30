@@ -19,7 +19,7 @@
 
 
 (uiop::ensure-directories-exist "bin/")
-(let ((exe (merge-pathnames "bin/crisp-compile.exe" *default-pathname-defaults*)))
+(let ((exe (merge-pathnames (if (uiop:os-windows-p) "bin/crisp-compile.exe" "bin/crisp-compile") *default-pathname-defaults*)))
   (when (probe-file exe)
         (format t "~&; Deleting old executable: ~a~%" exe)
         (delete-file exe)))
