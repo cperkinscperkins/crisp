@@ -487,7 +487,47 @@ fragment-level backward" below.
     layer differs (~the size of the existing `l0-*` block).  The 117-parameter kernel is handled
     by that machinery either way.  Worth its own phase; the mathematical rule it would be
     re-checking is already numerically proven on BMG.
-[ ] P8 — **multi-workgroup + atomics;** un-skip 135's `matrix-multiply-tile-stride`.
+[x] P8 — **multi-workgroup + atomics.**  DONE 2026-07-30.  Spec
+    `11-multi-workgroup-matmul-bmg.crisp`: **`PASS (A: analytical=4.9577484
+    numerical=4.9560547 diff=1.7e-3)`** vs `expect.A` 4.96, dispatched to **2 workgroups**.
+    - The atomics needed NO new work.  `%load-tile-at-bwd` (endeavor 111) has always scattered
+      a tile adjoint into its global gradient with an ATOMIC add, and each workgroup accumulates
+      into its own :local SLM adjoint tile first.  Confirmed in the emitted SPIR-V: backward
+      carries 2 `AtomicFAdd`, forward none.
+    - WHAT DID BREAK — `matrix-multiply-tile-stride` was mangled by ANF.  The endeavor-107 AD
+      pre-pass knows tile-stride / grid-stride / workgroup-stride etc. but NOT the endeavor-135
+      matmul macro, so it survived into ANF, which treated it as an ordinary call and normalised
+      its arguments.  The BINDING-NAME LIST became a call —
+      `(%ANF-T-1 (GRID-Y GRID-X GRID-K))`, hence "Function GRID-Y is not differentiable" — and
+      every body form was hoisted into a temp OUTSIDE the loop binding those names.  Fixed by
+      pre-lowering the macro ahead of the AD pre-pass (`%mma-ad-prelower-mmts`), exactly as the
+      forward path already does before analysis.
+    - Two further AD-path gaps from the same kernel, both fixed generically: a tile load/store
+      in ANF VALUE position (the macro's `:epilogue` ends with `store-tile`, so it arrives as
+      `(%t (store-tile-at ...))`, not a statement) and the same for `mma-accumulate-via-tile`.
+      Both are VOID, so the walk unwraps the temp and re-dispatches — which repairs the
+      scratch-tile path too, not just the register one.
+    - VERIFY-AUTODIFF gained `groups=N` (workgroup count, default 1) alongside `group=N`
+      (threads per group).  >1 is what makes the cross-workgroup accumulation real.
+
+    **FOUND EN ROUTE — BUG 036, a pre-existing FORWARD bug.**  `matrix-multiply-tile-stride`
+    never resets the register C-tile accumulator between output tiles, so ANY matmul wider than
+    one output tile is silently wrong: the second tile returns with the first tile's partial sums
+    added on top (`C[0][16]=60 ref 30` on BMG).  Reproduced with the SHIPPED 135/04 spec
+    unmodified apart from widening the harness dims, and confirmed by construction — the same
+    kernel hand-rolled with `(fill-tile C-tile 0.0)` per tile is MMA_CORRECT.  Never caught
+    because every shipped spec uses exactly ONE output tile, so the loop body runs once.  Filed
+    rather than fixed: it is a shipped forward macro and the fix has two decisions worth making
+    deliberately (reset to 0.0 or to the tile's declared INIT; the scratch path needs a barrier
+    the register path does not).  Spec 11 routes around it with an explicit `tile-stride` +
+    `fill-tile`, which keeps the AD work unblocked and the forward fix separately reviewable.
+    The finite difference is an independent witness: 6.154 (wrong) with the macro, 4.956 (right)
+    with the reset.
+
+[ ] Closing sweep — un-skip `SKIP-WITH[--differentiate]` across 132 / 133 / 135 wherever the
+    kernel satisfies the K-tile contract, and replace the rest's reason string with an accurate
+    one ("K-tile 8 violates K % lcm(M_n,N_n)") instead of the blanket "forward-only MMA".
+    NOTE: 135's specs additionally need BUG 036 fixed before their multi-tile forms are correct.
 [ ] P9 (stretch) — **VERIFY-AUTODIFF matrix inputs** (`A=[[…][…]]`, `at.A=(r c)`). The
     runner is scalar-cell + 1-D-vector only today.
 

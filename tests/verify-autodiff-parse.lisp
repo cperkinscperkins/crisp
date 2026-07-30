@@ -180,7 +180,7 @@
           (subseq token (1+ eq-pos)))))
 
 (defparameter *vad-reserved-keys*
-  '("atol" "h" "seed-grad" "output-vec" "output-mat" "group" "precision" "denormal")
+  '("atol" "h" "seed-grad" "output-vec" "output-mat" "group" "groups" "precision" "denormal")
   "Option keys that are not input names.")
 
 (defparameter *vad-prefix* "VERIFY-AUTODIFF:")
@@ -252,6 +252,7 @@
               (output-vec nil)
               (output-mat nil)
               (group-size 1)
+              (group-count 1)
               ;; Endeavor 128 (Phase 5): compile the fwd + bwd kernels under a chosen
               ;; precision / denormal mode so AD can be verified across the FP matrix.
               (precision nil)
@@ -286,6 +287,15 @@
                   (unless (and (integerp v) (> v 0))
                     (error "VERIFY-AUTODIFF: group must be a positive integer, got ~A" val-str))
                   (setf group-size v)))
+               ((string= key "groups")
+                ;; Endeavor 145 (P8): number of workgroups to dispatch.  Default 1.  >1 is what
+                ;; makes the backward's CROSS-WORKGROUP gradient accumulation real: dA reduces
+                ;; over the forward's grid-x and dB over grid-y, so several workgroups add into
+                ;; the same grad tile and the scatter must be atomic.
+                (let ((v (%vad-parse-float val-str token)))
+                  (unless (and (integerp v) (> v 0))
+                    (error "VERIFY-AUTODIFF: groups must be a positive integer, got ~A" val-str))
+                  (setf group-count v)))
                ((string= key "output-mat")
                 ;; 145 (P6): output is a 2-D ROWSxCOLS float matrix.  Without this (and
                 ;; without output-vec) the runner assumes a scalar cell output.  f(A) for a
@@ -360,5 +370,6 @@
                :output-vec output-vec
                :output-mat output-mat
                :group-size group-size
+               :group-count group-count
                :precision precision
                :denormal denormal))))))

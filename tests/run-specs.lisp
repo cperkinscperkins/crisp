@@ -1198,6 +1198,7 @@
             ;; zero, seed) keeps working; output-mat-dims only widens the ABI.
             (output-mat (getf spec :output-mat))
             (group-size (or (getf spec :group-size) 1))
+            (group-count (or (getf spec :group-count) 1))
             (expected-grads (getf spec :expected-grads))
             ;; Endeavor 128 (Phase 5): compile fwd + bwd under a chosen FP mode.
             (precision (getf spec :precision))
@@ -1254,6 +1255,7 @@
                                                         output-vec)
                                  :output-mat-dims output-mat
                                  :group-size group-size
+                                 :group-count group-count
                                  :fwd-implicit-params
                                  (%vad-read-implicit-params file kernel-name :grad nil)
                                  :bwd-implicit-params

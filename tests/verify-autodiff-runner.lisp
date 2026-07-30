@@ -623,6 +623,9 @@
                          output-mat-dims
                          ;; 145 (P6): threads per group.  1 = pre-145 behaviour.
                          (group-size 1)
+                         ;; 145 (P8): number of workgroups.  >1 exercises the backward's
+                         ;; cross-workgroup atomic gradient accumulation.
+                         (group-count 1)
                          fwd-implicit-params
                          bwd-implicit-params
                          (seed-grad 1.0)
@@ -903,7 +906,7 @@
                  (write-float-vector queue output-buf
                                      (make-list output-vec-length :initial-element 0.0))
                  (%vad-zero-output queue output-buf output-vec-length))
-             (launch-kernel-1d queue fwd-kernel :group-size group-size)
+             (launch-kernel-1d queue fwd-kernel :group-size group-size :global-size group-count)
              (let ((y-at-primals (%vad-read-y queue output-buf output-vec-length)))
                (vlog "~&;   y(primals) = ~a~%" y-at-primals)
 
@@ -927,11 +930,11 @@
                      ((:scalar-float :scalar-float-plain)
                       (apply-primals fwd-kernel d h)
                       (%vad-zero-output queue output-buf output-vec-length)
-                      (launch-kernel-1d queue fwd-kernel :group-size group-size)
+                      (launch-kernel-1d queue fwd-kernel :group-size group-size :global-size group-count)
                       (let ((y-plus (%vad-read-y queue output-buf output-vec-length)))
                         (apply-primals fwd-kernel d (- h))
                         (%vad-zero-output queue output-buf output-vec-length)
-                        (launch-kernel-1d queue fwd-kernel :group-size group-size)
+                        (launch-kernel-1d queue fwd-kernel :group-size group-size :global-size group-count)
                         (let* ((y-minus (%vad-read-y queue output-buf output-vec-length))
                                (grad (/ (- y-plus y-minus) (* 2.0 h))))
                           (push (cons (getf d :name) grad) fd-rows)
@@ -942,11 +945,11 @@
                         (when at
                           (apply-primals fwd-kernel d h)
                           (%vad-zero-output queue output-buf output-vec-length)
-                          (launch-kernel-1d queue fwd-kernel :group-size group-size)
+                          (launch-kernel-1d queue fwd-kernel :group-size group-size :global-size group-count)
                           (let ((y-plus (%vad-read-y queue output-buf output-vec-length)))
                             (apply-primals fwd-kernel d (- h))
                             (%vad-zero-output queue output-buf output-vec-length)
-                            (launch-kernel-1d queue fwd-kernel :group-size group-size)
+                            (launch-kernel-1d queue fwd-kernel :group-size group-size :global-size group-count)
                             (let* ((y-minus (%vad-read-y queue output-buf output-vec-length))
                                    (grad (/ (- y-plus y-minus) (* 2.0 h))))
                               (push (cons (getf d :name) grad) fd-rows)
@@ -964,11 +967,11 @@
                             (:float
                              (apply-primals fwd-kernel d h fname)
                              (%vad-zero-output queue output-buf output-vec-length)
-                             (launch-kernel-1d queue fwd-kernel :group-size group-size)
+                             (launch-kernel-1d queue fwd-kernel :group-size group-size :global-size group-count)
                              (let ((y-plus (%vad-read-y queue output-buf output-vec-length)))
                                (apply-primals fwd-kernel d (- h) fname)
                                (%vad-zero-output queue output-buf output-vec-length)
-                               (launch-kernel-1d queue fwd-kernel :group-size group-size)
+                               (launch-kernel-1d queue fwd-kernel :group-size group-size :global-size group-count)
                                (let* ((y-minus (%vad-read-y queue output-buf output-vec-length))
                                       (grad (/ (- y-plus y-minus) (* 2.0 h))))
                                  (push (cons fname grad) fd-rows)
@@ -986,12 +989,12 @@
                      (progn
                        (apply-primals fwd-kernel nil 0.0)
                        (%vad-zero-output queue output-buf output-vec-length)
-                       (launch-kernel-1d queue fwd-kernel :group-size group-size))
+                       (launch-kernel-1d queue fwd-kernel :group-size group-size :global-size group-count))
                      (write-float-cell queue output-buf y-at-primals))
                  (%vad-seed-grad-output queue output-grad-buf output-vec-length
                                         (cl:float seed-grad 1.0))
                  (zero-grads)
-                 (launch-kernel-1d queue bwd-kernel :group-size group-size)
+                 (launch-kernel-1d queue bwd-kernel :group-size group-size :global-size group-count)
 
                  ;; --- Read analytical grads per perturbable input.
                  (let ((ana-rows nil))

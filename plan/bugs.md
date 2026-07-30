@@ -554,3 +554,58 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         SUGGESTED FIRST STEP: in %coop-layout-of, log (or assert on) the canonical type it
         receives for a known col-major operand; that immediately distinguishes "the node
         lost the c-t" from "%get-tensor-ct read the wrong index".
+
+[ ] 036 - matrix-multiply-tile-stride never resets the C-tile accumulator between output tiles,
+          so any matmul LARGER THAN ONE OUTPUT TILE is silently wrong.
+
+        FOUND 2026-07-30 during endeavor 145 (MMA autodiff) P8, which needs a multi-tile /
+        multi-workgroup matmul.  PRE-EXISTING and unrelated to the AD work — reproduced with the
+        SHIPPED spec `tests/spec/135-matrix-multiply-tile-stride/04-tiled-matmul-bmg.crisp`
+        completely unmodified except for widening the harness dims.
+
+        SYMPTOM (BMG, host-reference --mma-test): widen C from one 8x16 output tile to 8x32
+        (two tiles) and the SECOND tile comes back doubled:
+
+            C[0][16]=60 ref 30
+            C[0][17]=60 ref 30
+            C[0][18]=60 ref 30
+            C[0][19]=60 ref 30
+            MMA_WRONG
+
+        Columns 0..15 (the first tile) are correct.
+
+        MECHANISM (confirmed structurally, then by construction):
+        %mmts-lower (src/analysis/control.lisp:3754) emits
+
+            (tile-stride C <spec> (grid-y grid-x)
+              (dotimes (grid-k (/ K k-step))
+                <reduction-body>)
+              <epilogue-body>)
+
+        The register C-tile is initialised ONCE, by its `make-register-tile T (M N) INIT`
+        binding OUTSIDE the tile-stride loop.  Nothing re-initialises it per output tile, so a
+        workgroup that visits a second tile keeps the first tile's partial sums and adds the new
+        tile's contribution on top.
+
+        CONFIRMED BY CONSTRUCTION: the identical kernel hand-rolled as an explicit `tile-stride`
+        with `(fill-tile C-tile 0.0)` as the first form of the tile body is MMA_CORRECT at 8x32.
+
+        WHY IT WAS NEVER CAUGHT: every shipped matrix-multiply-tile-stride spec uses exactly ONE
+        output tile (MMA-DIMS 8 16 16 on BMG / 16 8 16 on NVIDIA), so the tile-stride loop body
+        executes once per workgroup and the missing reset is invisible.  The macro's whole
+        purpose is striding over many output tiles, so this is the headline path.
+
+        SUGGESTED FIX: have %mmts-lower emit a per-tile reset as the first form inside the
+        tile-stride body, before the K-loop.  Two decisions worth making deliberately rather
+        than in passing:
+          1. WHAT VALUE.  0.0 is the correct additive identity for a matmul accumulator, but the
+             user wrote `(make-register-tile T (M N) INIT)` — should the reset use INIT?  The
+             macro does not currently see the binding.  (Endeavor 132's F3 accum-op API means a
+             non-zero INIT is a plausible user intent, e.g. a bias.)
+          2. THE SCRATCH C-TILE PATH.  fill-tile on a scratch/SLM tile is a workgroup-collective
+             write and needs a sync-workgroup before the K-loop reads it; the register path does
+             not.  The lowering handles both tile kinds through the same code.
+
+        NOT FIXED HERE: endeavor 145 P8 routes around it by using an explicit tile-stride +
+        fill-tile, so the AD work is not blocked and this stays a clean, separately-reviewable
+        forward fix.
