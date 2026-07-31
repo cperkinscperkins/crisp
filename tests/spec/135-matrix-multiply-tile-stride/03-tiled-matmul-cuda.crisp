@@ -9,7 +9,7 @@
 ;; k-step = 8 = the tiles' shared K-extent = the MMA shape's K.  MMA-DIMS 16 8 16 => K=16
 ;; => the macro loops K/8 = 2 K-steps through SLM.  NVIDIA MMA shape (16 8 8), B col-major.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; SKIP-WITH[--differentiate]: "K-tile 8 violates the K % lcm(M_n,N_n) == 16 AD contract (145); the backward dA/dB GEMMs need at least two native K-steps"
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

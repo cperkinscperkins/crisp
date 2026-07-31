@@ -1585,3 +1585,125 @@
      (when error-on-unknown
            (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
    (t nil)))
+
+;;; ===================================================================
+;;; BUG 036 — matrix-multiply-tile-stride must reset the C-tile per OUTPUT TILE.
+;;;
+;;; %mmts-lower emitted  (tile-stride C <spec> (gy gx) (dotimes (gk ...) BODY) EPILOGUE)
+;;; with nothing re-initialising the accumulator between tiles.  The register C-tile is
+;;; initialised ONCE by its make-register-tile binding OUTSIDE the loop, so a workgroup that
+;;; visits a second output tile keeps the first tile's partial sums and adds the new tile's
+;;; contribution on top.  Measured on BMG with the SHIPPED 135/04 spec, widened to a 2-tile C:
+;;; C[0][16]=60 against a reference of 30.  Invisible until now because every shipped spec
+;;; uses exactly ONE output tile, so the stride body runs once.
+;;;
+;;; The requirement was already KNOWN: the scratch-C-tile spec 135/02-matmul-grid-stride does
+;;; it by hand — `(when (= grid-k 0) (fill-tile C-tile 0.0))  ; reset accumulator at the start
+;;; of each tile`.  The macro simply never provided it, so the register specs omitted it.
+;;; Owning the tile-stride + K-loop bookkeeping is the macro's whole job, so it owns this too.
+;;;
+;;; RESET VALUE — a register tile resets to its DECLARED INIT, not to 0.0.  That makes
+;;; multi-tile behave exactly like single-tile, which is what a bug fix should do; hardcoding
+;;; 0.0 would silently change semantics for a non-zero init (endeavor 132's F3 accum-op API
+;;; makes a bias-valued init a real use).  A SCRATCH C-tile has no declared init
+;;; (make-scratch-matrix takes none), so it resets to 0.0.
+;;;
+;;; BARRIER — fill-tile on a scratch tile is a workgroup-COLLECTIVE write and its docstring is
+;;; explicit that it inserts no barrier ("the caller syncs before reading").  The macro is that
+;;; caller, so the scratch path gets a sync-workgroup after the fill.  The register path needs
+;;; none: each lane owns its own fragments.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun %mmts-register-dims-map (bindings)
+  "Alist var -> ((M N) INIT) for each register-tile binding in a let's BINDINGS.
+   BUG 036: now carries the declared INIT as well as the dims, so the lowering can reset each
+   output tile to the value the user actually asked for."
+  (loop for b in bindings
+        when (and (consp b) (= (length b) 2) (symbolp (first b))
+                  (%register-tile-init-form-p (second b)))
+          ;; (make-register-tile elem (M N) INIT &key ...)
+          collect (list (first b) (third (second b)) (fourth (second b)))))
+
+;; src/analysis/control.lisp
+(defun %mmts-lower (c-form c-tile tile-spec k-form k-step grid-y grid-x grid-k body location
+                    &optional (reset-value 0.0))
+  "The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO
+   auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit
+   store + any fusion.  Warns if the C-tile is never stored.
+
+   BUG 036: emits a per-OUTPUT-TILE reset of the accumulator to RESET-VALUE before the K-loop.
+   Without it a workgroup that strides onto a second tile carries the first tile's partial sums.
+   A scratch C-tile's fill is workgroup-collective, so it is followed by a sync-workgroup; a
+   register tile's is per-lane and needs none."
+  (declare (ignore location))
+  (multiple-value-bind (reduction-body epilogue-body) (%mmts-split-epilogue body)
+    (unless (%form-tree-mentions-store-tile-p epilogue-body)
+      (format *error-output*
+        "WARNING: matrix-multiply-tile-stride: the C-tile is computed but never stored — add an :epilogue with (store-tile ~a ~a (~a ~a)).~%"
+        (if (symbolp c-tile) c-tile 'C-tile) (if (symbolp c-form) c-form 'C) grid-y grid-x))
+    (let* ((cl-pkg          (find-package :crisp-language))
+           (tile-stride-sym (intern "TILE-STRIDE" cl-pkg))
+           (dotimes-sym     (intern "DOTIMES" cl-pkg))
+           (div-sym         (intern "/" cl-pkg))
+           (to-ulong-sym    (intern "TO-ULONG" cl-pkg))
+           (fill-sym        (intern "FILL-TILE" cl-pkg))
+           (sync-sym        (intern "SYNC-WORKGROUP" cl-pkg))
+           ;; A register tile's spec is the compile-time (M N) size list; a scratch tile's is
+           ;; the tile tensor itself.
+           (register-p      (and (listp tile-spec) tile-spec (every #'integerp tile-spec)))
+           ;; REGISTER TILES ONLY.  A scratch C-tile is deliberately left alone: endeavor 135
+           ;; documented that contract in 135/01-macro-envelope — "The macro does NOT auto-reset
+           ;; a scratch C-tile — the user owns init" — and 135/02 duly resets by hand.  The
+           ;; measured bug was a REGISTER tile, whose init lives in a make-register-tile binding
+           ;; OUTSIDE the loop where the user cannot reach it per-tile; that asymmetry is exactly
+           ;; why the register path needs the macro to own the reset and the scratch path does
+           ;; not.  (sync-sym is retained for the scratch path should that contract ever change;
+           ;; a collective fill would need it.)
+           (reset-forms     (when register-p
+                              (list (list fill-sym c-tile reset-value)))))
+      (declare (ignorable sync-sym))
+      (append (list tile-stride-sym c-form tile-spec (list grid-y grid-x))
+              reset-forms
+              (list (list* dotimes-sym
+                           (list grid-k
+                                 (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
+                           reduction-body))
+              epilogue-body))))
+
+;; src/mma.lisp
+(defun %expand-mmts-register-in-form (form reg-map location)
+  "Rewrite matrix-multiply-tile-stride forms whose C-tile is a register tile (in REG-MAP)
+   to their tile-stride + K-loop lowering with a compile-time (M N) size-list tile-spec,
+   so the generated store-tile/mma are visible to the register-tile SROA explosion.
+   BUG 036: forwards the tile's declared INIT as the per-output-tile reset value."
+  (cond
+    ((not (consp form)) form)
+    ((and (%mmts-head-p form) (assoc (third form) reg-map))
+     (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
+         (%mmts-parse form location)
+       (let ((entry (assoc c-tile reg-map)))
+         (%mmts-lower c-form c-tile (second entry) k-form k-step gy gx gk
+                      (mapcar (lambda (f) (%expand-mmts-register-in-form f reg-map location)) body)
+                      location
+                      (third entry)))))
+    (t (mapcar (lambda (f) (%expand-mmts-register-in-form f reg-map location)) form))))
+
+;; src/autodiff.lisp
+(defun %mma-ad-expand-mmts-in-form (form reg-map)
+  "Recursively lower every matrix-multiply-tile-stride in FORM (endeavor 145 P8: the AD path
+   must do this before ANF).  BUG 036: forwards the register tile's declared INIT as the
+   per-output-tile reset value; a scratch C-tile resets to the 0.0 default."
+  (cond
+    ((not (consp form)) form)
+    ((%mmts-head-p form)
+     (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
+         (%mmts-parse form nil)
+       (let ((entry (assoc c-tile reg-map)))
+         (%mmts-lower c-form c-tile
+                      (if entry (second entry) c-tile)
+                      k-form k-step gy gx gk
+                      (mapcar (lambda (f) (%mma-ad-expand-mmts-in-form f reg-map)) body)
+                      nil
+                      (if entry (third entry) 0.0)))))
+    (t (mapcar (lambda (f) (%mma-ad-expand-mmts-in-form f reg-map)) form))))

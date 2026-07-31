@@ -9,7 +9,7 @@
 ;;   walk unrolls load-fragment-a/b + mma-accumulate per fragment position and set!s
 ;;   the accumulated tile back.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; SKIP-WITH[--differentiate]: "operands are read straight from global, not staged via load-tile-at, so the backward cannot recover their sources to stage the transposes (145 P3b)"
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

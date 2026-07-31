@@ -8,7 +8,7 @@
 ;; store-tile walks the fragment grid and calls store-fragment per fragment at the
 ;; right (row-tile, col-tile) offset — a rewrite over P2's store-fragment.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; SKIP-WITH[--differentiate]: "fragment-level MMA has no backward (145 P3c) -- on ONE fragment M/N/K are the native shape, so one of dA=(M,K,N) / dB=(K,N,M) always fails the vendor shape check; use mma-accumulate-via-tile"
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 

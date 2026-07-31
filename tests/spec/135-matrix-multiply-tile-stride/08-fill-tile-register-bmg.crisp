@@ -8,7 +8,7 @@
 ;;
 ;; BMG XMX shape (8 16 8), B row-major.  MMA-DIMS 8 32 16 => K=16 => 2 K-steps per tile.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA"
+;; SKIP-WITH[--differentiate]: "K-tile 8 violates the K % lcm(M_n,N_n) == 16 AD contract (145); the backward dA/dB GEMMs need at least two native K-steps"
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

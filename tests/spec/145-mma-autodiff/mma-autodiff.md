@@ -524,10 +524,35 @@ fragment-level backward" below.
     The finite difference is an independent witness: 6.154 (wrong) with the macro, 4.956 (right)
     with the reset.
 
-[ ] Closing sweep — un-skip `SKIP-WITH[--differentiate]` across 132 / 133 / 135 wherever the
-    kernel satisfies the K-tile contract, and replace the rest's reason string with an accurate
-    one ("K-tile 8 violates K % lcm(M_n,N_n)") instead of the blanket "forward-only MMA".
-    NOTE: 135's specs additionally need BUG 036 fixed before their multi-tile forms are correct.
+[x] Closing sweep — DONE 2026-07-30.  Every `SKIP-WITH[--differentiate]` across 132 / 133 / 135
+    now states the ACTUAL reason instead of the blanket "forward-only MMA".  The honest outcome
+    is that almost nothing could be un-skipped, and the reasons say why:
+
+    | count | reason |
+    | --- | --- |
+    | 7 | fragment-level MMA has no backward (P3c) — on one fragment M/N/K are the native shape, so one of dA/dB always fails the vendor check |
+    | 7 | operands read straight from global, not staged via `load-tile-at`, so the backward cannot recover their sources to stage the transposes (P3b) |
+    | 7 | K-tile 8 violates the `K % lcm(M_n,N_n) == 16` contract |
+    | 1 | `to-float` has no AD rule — NOT an MMA limit (noted in P1) |
+    | 1 | negative test (register fit-check is a compile-time budget error) |
+
+    Un-skipped: `135/07-fill-tile-scratch` (its old reason, "ulong not differentiable", was
+    simply stale — it differentiates).  Tried and reverted with accurate reasons:
+    `132/08-outer-dimensions` (blocked on `to-float`, not on MMA) and `135/01` / `02` / `10`
+    (scratch-tile matmuls that reach further than before thanks to P8's mmts pre-lowering but
+    still do not differentiate).
+
+    These are DESIGN limits, not omissions: the fragment forms are forward-only by construction,
+    and a via-tile whose operands never touched `load-tile-at` gives the backward nothing to
+    transpose.  The 145 specs cover each supported path with a differentiable equivalent.
+
+BUG 036 — FIXED 2026-07-30 (see plan/bugs.md).  `%mmts-lower` now emits a per-output-tile reset
+before the K-loop, to the tile's DECLARED INIT so multi-tile matches single-tile semantics.
+**Register tiles only** — 135/01 documents the scratch contract in its own body ("The macro does
+NOT auto-reset a scratch C-tile — the user owns init") and 135/02 resets by hand; the register
+tile's init lives in a binding OUTSIDE the loop where the user cannot reach it per-tile, and that
+asymmetry is the whole justification.  An earlier cut reset both and broke 135/01 / 02 / 10.
+Regression spec: `135/11-multi-tile-matmul-bmg.crisp`.
 [ ] P9 (stretch) — **VERIFY-AUTODIFF matrix inputs** (`A=[[…][…]]`, `at.A=(r c)`). The
     runner is scalar-cell + 1-D-vector only today.
 

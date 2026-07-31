@@ -555,7 +555,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         receives for a known col-major operand; that immediately distinguishes "the node
         lost the c-t" from "%get-tensor-ct read the wrong index".
 
-[ ] 036 - matrix-multiply-tile-stride never resets the C-tile accumulator between output tiles,
+[x] 036 - matrix-multiply-tile-stride never resets the C-tile accumulator between output tiles,
           so any matmul LARGER THAN ONE OUTPUT TILE is silently wrong.
 
         FOUND 2026-07-30 during endeavor 145 (MMA autodiff) P8, which needs a multi-tile /
@@ -606,6 +606,27 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
              write and needs a sync-workgroup before the K-loop reads it; the register path does
              not.  The lowering handles both tile kinds through the same code.
 
-        NOT FIXED HERE: endeavor 145 P8 routes around it by using an explicit tile-stride +
-        fill-tile, so the AD work is not blocked and this stays a clean, separately-reviewable
-        forward fix.
+        FIXED 2026-07-30 (endeavor 145).  %mmts-lower now emits a per-output-tile reset as the
+        first form inside the tile-stride body, before the K-loop.  Both decisions above were
+        resolved by evidence rather than preference:
+
+          1. RESET VALUE = the tile's DECLARED INIT, not a hardcoded 0.0.  That makes multi-tile
+             behave exactly like single-tile, which is what a bug fix should do; forcing 0.0
+             would silently change semantics for a non-zero init (endeavor 132's F3 accum-op API
+             makes a bias-valued init a real use).  %mmts-register-dims-map now carries the INIT
+             alongside the dims so the lowering can see it.
+
+          2. REGISTER TILES ONLY — the scratch C-tile path is deliberately untouched.
+             135/01-macro-envelope documents the contract in its own body: "The macro does NOT
+             auto-reset a scratch C-tile -- the user owns init", and 135/02-matmul-grid-stride
+             duly resets by hand with `(when (= grid-k 0) (fill-tile C-tile 0.0))`.  The measured
+             bug was a REGISTER tile, whose init lives in a make-register-tile binding OUTSIDE
+             the loop where the user cannot reach it per-tile.  That asymmetry is the whole
+             reason the register path needs the macro to own the reset and the scratch path does
+             not.  (An earlier cut auto-reset both; it contradicted the documented design AND
+             broke 135/01 / 02 / 10 under --differentiate.)
+
+        REGRESSION SPEC: tests/spec/135-matrix-multiply-tile-stride/11-multi-tile-matmul-bmg.crisp
+        — 04-tiled-matmul-bmg with C widened to 8x32 so the tile-stride body runs twice.  It is
+        the smallest kernel that executes the loop more than once, which is precisely what no
+        shipped spec did.

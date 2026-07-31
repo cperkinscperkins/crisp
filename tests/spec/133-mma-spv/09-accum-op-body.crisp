@@ -9,7 +9,7 @@
 ;; Here the body fires `(accum-op)` TWICE on a single 16x8 fragment → two mma.sync,
 ;; proving the body splices per-fragment and controls the MMA firing count.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; SKIP-WITH[--differentiate]: "operands are read straight from global, not staged via load-tile-at, so the backward cannot recover their sources to stage the transposes (145 P3b)"
 ;; TEST-WITH[--ir-target=spv]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

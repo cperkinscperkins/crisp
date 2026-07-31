@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; SKIP-WITH[--differentiate]: "to-float has no AD rule -- an int->float conversion the engine lacks a derivative for; NOT an MMA limit (noted in 145 P1)"
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
