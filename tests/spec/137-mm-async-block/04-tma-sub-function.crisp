@@ -17,7 +17,7 @@
 ;; PTX TMA path is valid here, so validate ONLY via that (SKIP-DEFAULT-PASS).
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "forward-only async staging; tile AD is a later chapter"
+;; SKIP-WITH[--differentiate]: "BUG 038: the backward is EMPTY (zero global writes) -- a VOID sub-function call is silently dropped by the AD walk, so no gradient flows through the sub-function that stages the tile. Compiles, does not differentiate"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
 
 (def-type mat-t  (matrix float :address-space :global :align :compact :contiguous-term :row-major))

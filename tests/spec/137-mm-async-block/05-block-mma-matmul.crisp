@@ -12,7 +12,7 @@
 ;;   - grid-scaled TMA box coordinates (grid-k=1 -> a non-zero, innermost-first {x,y} origin).
 ;; Result: C == A·B on the H100 (MMA_CORRECT).
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals; async tile AD is a later chapter"
+;; SKIP-WITH[--differentiate]: "differentiates and its backward carries real gradient scatter, but TMA :block is sm_90a-only and VERIFY-AUTODIFF runs on SPV/L0 -- so the gradient VALUES cannot be checked on this machine. Un-skip after a Hopper pod run, not before"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

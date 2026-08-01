@@ -706,3 +706,45 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         value is never consumed as a VALUE (an ordinary C-tile) correctly does NOT error; the
         check tests whether the backward really uses the primal.  Closing this properly needs
         genuine primal recomputation / checkpointing, which is its own design.
+
+[ ] 038 - A VOID sub-function call is silently DROPPED by the AD walk, so no gradient flows
+          through it.
+
+        FOUND 2026-08-01 reviewing 137-mm-async-block for --differentiate clearance.
+
+        SYMPTOM: tests/spec/137-mm-async-block/04-tma-sub-function.crisp COMPILES under
+        --differentiate (with its own flags) but the generated backward kernel performs ZERO
+        global writes — it produces no gradient at all.  Its siblings are fine: 03 (kernel does
+        the TMA itself) emits 1 gradient write and 05 emits 2; only the SUB-FUNCTION variant is
+        empty.
+
+        MECHANISM (from the flat-anf the walk receives):
+
+            (TILE  (MAKE-SCRATCH-MATRIX FLOAT (4 4)))
+            (STAGE A TILE)                              <- void sub-function call, a STATEMENT
+            (STORE-TILE-AT TILE C (...))
+
+        `(STAGE A TILE)` has length 3 with an all-symbol BUTLAST, so generate-backward-walk's
+        MULTI-VALUE BINDING clause claims it: it reads STAGE and A as bound variables and TILE as
+        the producing expression.  TILE is a symbol rather than a cons, so that clause's body
+        never executes and the form is silently dropped.  Exactly the structural ambiguity that
+        caused the endeavor-145 P1 replay bug — a statement and a multi-value binding are
+        indistinguishable by shape after ANF.
+
+        Note there IS already a clause for a void FOREIGN call (endeavor 123), added for the same
+        reason; ordinary differentiable sub-functions never got one.
+
+        WHAT A FIX NEEDS — two parts, and the second is the substantial one:
+          1. A walk clause that recognises `(f arg ...)` as a VOID call when f is in
+             *differentiable-functions*, mirroring the existing foreign-void clause, and emits
+             the call to f's _GRAD companion.  Must be ordered BEFORE the multi-value-binding
+             clause, which currently swallows it.
+          2. `stage`'s gradient contribution is a MUTATED TILE PARAM: it fills `tile` from `src`.
+             The sub-function AD convention passes handle contributions as extra `&out`
+             grad-handles, so `stage_GRAD` has to accept `tile`'s adjoint and scatter it into
+             `src`'s gradient — the same operation %load-tile-at-bwd performs, but crossing the
+             call boundary.  Whether the existing _GRAD generation already emits that for a
+             staging body is unverified.
+
+        DO NOT un-skip 137/04 until this is fixed: it compiles, which makes it look
+        differentiable, and it returns silent zeros.
