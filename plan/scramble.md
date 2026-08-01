@@ -723,7 +723,7 @@ Binary Download / Release
 =========================
 We have a github release for the libraries, with a python script to fetch.
 Should we do something for the compiler itself?
-- [ ] update INSTALL.md instructions.
+- [x] update INSTALL.md instructions.
 - [ ] README.md should link to INSTALL.md
 - [x] handling of opt.exe / 
 
@@ -762,6 +762,11 @@ MMA
 
 [ ] don't forget bug 033 ( --debug )
 
+[ ] (benchmarking) the CUDA arch skip-gate (your Vera Rubin point — a capability check rather than an arch allowlist); 
+[ ] bug 035 (:col-major silently ignored on SPV); 
+[ ]  unreachable STORE-TILE entry in anf-normalize's opaque list; 
+[ ] to-float having no AD rule;
+[ ] a CUDA *ad-runtime* if you ever want the PTX backward proven numerically rather than structurally.
 
 
 

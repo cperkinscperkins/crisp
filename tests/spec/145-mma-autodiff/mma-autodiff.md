@@ -546,6 +546,35 @@ fragment-level backward" below.
     and a via-tile whose operands never touched `load-tile-at` gives the backward nothing to
     transpose.  The 145 specs cover each supported path with a differentiable equivalent.
 
+CORRECTION (2026-07-30, after Chris spot-checked 132/01) — THE CONTRACT WAS NEVER ENFORCED.
+The sweep above was first done by CLASSIFYING specs by which forms they contain, and only four
+were actually run.  That was wrong twice over:
+
+  1. `132/01` and `133/01` / `03` DO differentiate.  They have no differentiable INPUTS (their
+     only parameter is `&out`), so the engine takes its documented trivial-backward path and
+     emits a gradient kernel with no chain-rule body — vacuous, but CORRECT.  They are now
+     un-skipped rather than carrying a fabricated reason.
+
+  2. Far worse: `132/06`, `133/06`, `133/12`, `135/03`/`04`/`08`/`09` — every Kt=8 kernel —
+     also "differentiated".  They should not have.  The K-tile contract was specified in P3b,
+     documented above as "a HARD contract: violating it is a compile error", and **the check
+     was never written**.  The consequence was silent: on BMG (8 16 8) a Kt=8 tile makes the dA
+     accumulator Mt x Kt = 8x8, which decomposes into 8/16 = ZERO accumulator fragments, so that
+     entire backward GEMM emitted NOTHING.  Measured on 133/12: forward 1 MulAdd, backward also
+     1, where a correct backward needs both dA and dB.  The kernel compiled, ran, and returned a
+     gradient missing half of itself — exactly the silent-wrong-answer class this endeavor kept
+     turning up, this time introduced by the endeavor itself.
+
+  The check now lives in `%mma-via-tile-backward`, on the ACCUMULATOR decomposition (which is
+  what degenerates) rather than on the K-step count: `Kt % lcm(M_n,N_n)`, `Mt % M_n`, `Nt % N_n`.
+  Kt=8 now errors with the tile shape, the instruction shape and the required multiple; Kt=16
+  still compiles.
+
+  METHOD NOTE, since it caused this: three successive attempts to survey the specs by
+  pattern-matching (which forms they contain, then grepping stderr for known message text) each
+  gave a different and partly wrong answer.  Only checking the compiler's EXIT STATUS per spec
+  was trustworthy.
+
 BUG 036 — FIXED 2026-07-30 (see plan/bugs.md).  `%mmts-lower` now emits a per-output-tile reset
 before the K-loop, to the tile's DECLARED INIT so multi-tile matches single-tile semantics.
 **Register tiles only** — 135/01 documents the scratch contract in its own body ("The macro does
@@ -576,3 +605,63 @@ replacing the rest's reason string with an *accurate* one ("K-tile 8 violates th
 K % lcm(M,N) contract") instead of the current blanket "forward-only MMA".
 
 ci-stop stays at `144-mma-hardware-profile` until P5 lands.
+
+
+THE VJP REGISTRY — and the retraction of the "K-tile contract"  (2026-07-31)
+===========================================================================
+
+Chris asked why 132/06 was refused when the kernel is plainly differentiable.  It is, and the
+refusal was wrong.  Reviewing all nine 132 specs as INTENTIONS rather than as code, they are
+only three things — `C := constant` (01, 03, 07), `C = A·B` (02, 04, 05, 09, and 06 with
+staging and a K-loop), and one shape query (08).  There is exactly ONE derivative in the
+directory.
+
+WHAT WENT WRONG.  The backward was derived THROUGH a chosen lowering — register accumulator
+tiles decomposed into native fragments — and that lowering's shape requirements were then
+written up as "the K-tile contract", as though the hardware imposed them.  It does not.
+dA = dC·Bᵀ and dB = Aᵀ·dC hold at every shape.  Only the MMA REALISATION of them needs the
+tile dims to divide.  Three separate "fundamental limits" claimed in this document turned out
+to be artifacts of that one choice: the K-tile contract, "no fragment-level backward exists",
+and the demand that operands be staged via load-tile-at.
+
+THE FIX is structural, not a patch.  A general VJP REGISTRY: primitive name -> a function
+returning backward Crisp source, `:inert`, or NIL to decline.  The walk gained ONE dispatch
+that runs ahead of its hand-written clauses, so an empty registry is provably a no-op and
+migration proceeds one primitive at a time.  Scope is PRIMITIVES only — let / dotimes / if
+must be structurally mirrored by the walk and are not lookups.
+
+The load-bearing detail: **the lowering is chosen INSIDE the VJP.**  `mma-accumulate-via-tile`
+returns the MMA form when the accumulators decompose into whole fragments and a plain scalar
+triple-loop otherwise.  The walk never learns the fragment condition, so it cannot leak back
+out as a language-level contract.  Correct-but-slow is the default; MMA is the fast path.
+
+The scalar lowering is in fact SIMPLER than the MMA one — it indexes the original global
+operands directly, needing none of the transposed SLM staging.
+
+RESULT (all measured by compiler EXIT STATUS, not by reading the source or grepping stderr —
+three pattern-matching surveys each gave a different wrong answer):
+
+  * 14 specs across 132 / 133 / 135 that were skipped with fabricated reasons now differentiate,
+    and their skips became real `COMPILE-WITH[... --differentiate]: PASS` coverage.
+  * Numeric proof of the scalar path on metal — spec `12-scalar-vjp-kt8-bmg` at Kt=8, which the
+    MMA path cannot express: **analytical=1.2 numerical=1.198822**.  Note it is EXACTLY 1.2
+    where the MMA path (spec 09, same f and seed) gives 1.1994476 — that gap is fp32 versus
+    tf32, and is direct evidence the two lowerings were both exercised.
+  * Suites: E2E 944/944, --differentiate 944/944, unit 253/253, negative 211/211, 145 at 12/12
+    with three numeric gradient checks.
+
+WHAT GENUINELY REMAINS SKIPPED (8, each with a true reason):
+  3  fragment-level `mma-accumulate` — no VJP registered YET.  Not impossible: a fragment VJP
+     would route dC through memory exactly as the tile one does.  The earlier claim that this
+     was mathematically impossible was part of the same error.
+  3  scratch-C-tile matmul — the tile-stride backward resolves extents~ / ~ against a FLOAT.
+     A real gap, unrelated to MMA.
+  1  `C` is a reinterpreted view (`make-matrix` over the param), so its adjoint has nowhere to
+     land — views at the AD boundary.
+  1  `to-float` has no AD rule.
+  (plus one negative test, correctly skipped.)
+
+STILL OPEN, deliberately: padding the degenerate accumulator so the MMA fast path covers Kt=8
+too (pinned with Chris); `:gradient-lowering` in the metacrisp + an `EXPECT-GRADIENT-LOWERING`
+directive so a silent regression to the scalar path is caught by a test rather than a note —
+neither is implemented, so neither is documented in plan/ref.metacrisp yet.

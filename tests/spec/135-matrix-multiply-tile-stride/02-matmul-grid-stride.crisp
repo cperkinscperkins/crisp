@@ -16,7 +16,7 @@
 ;; macro does NOT auto-reset a scratch accumulator — the body clears C-tile on grid-k==0
 ;; via (fill-tile C-tile 0.0) (the accumulator-reset sugar).
 ;;
-;; SKIP-WITH[--differentiate]: "tile-macro AD is a later chapter; endeavor 135 is forward-only"
+;; SKIP-WITH[--differentiate]: "a SCRATCH C-tile matmul does not survive the AD path: its tile-stride backward resolves extents~ / ~ against a FLOAT. Gets further since 145 P8 pre-lowers the macro, but is still an open gap -- unrelated to MMA"
 ;;
 ;; MMA-DIMS: 8 8 8
 ;; TEST-HOIST[CUDA]: validate-cuda-mma-run

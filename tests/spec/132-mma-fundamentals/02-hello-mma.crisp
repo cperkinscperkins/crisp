@@ -10,7 +10,7 @@
 ;; to match the canonical row.col MMA.  mma-accumulate is the genuine
 ;; @llvm.nvvm.mma.m16n8k8.row.col.tf32 intrinsic.
 ;;
-;; SKIP-WITH[--differentiate]: "fragment-level MMA has no backward (145 P3c) -- on ONE fragment M/N/K are the native shape, so one of dA=(M,K,N) / dB=(K,N,M) always fails the vendor shape check; use mma-accumulate-via-tile"
+;; SKIP-WITH[--differentiate]: "fragment-level mma-accumulate has no VJP registered yet -- the tile-level form does; a fragment VJP would route dC through memory the same way"
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

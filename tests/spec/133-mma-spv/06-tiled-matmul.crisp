@@ -5,7 +5,9 @@
 ;; into SLM via sync load-tile-at, then mma-accumulate-via-tile adds its A·B into
 ;; the register C-tile.  Accumulation across the K-loop is automatic (mma = A·B + C).
 ;;
-;; SKIP-WITH[--differentiate]: "K-tile 8 violates the K % lcm(M_n,N_n) == 16 AD contract (145); the backward dA/dB GEMMs need at least two native K-steps"
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;;   (145: differentiates. The VJP picks its lowering — MMA where the tile dims
+;;    decompose into whole fragments, plain scalar loops otherwise.)
 ;; TEST-WITH[--ir-target=spv]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

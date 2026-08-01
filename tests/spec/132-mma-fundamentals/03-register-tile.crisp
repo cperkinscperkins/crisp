@@ -8,7 +8,10 @@
 ;; store-tile walks the fragment grid and calls store-fragment per fragment at the
 ;; right (row-tile, col-tile) offset — a rewrite over P2's store-fragment.
 ;;
-;; SKIP-WITH[--differentiate]: "fragment-level MMA has no backward (145 P3c) -- on ONE fragment M/N/K are the native shape, so one of dA=(M,K,N) / dB=(K,N,M) always fails the vendor shape check; use mma-accumulate-via-tile"
+;;   NOTE: differentiates cleanly.  The kernel has no differentiable INPUTS (its only
+;;   parameter is &out), so the engine emits its documented trivial backward — a gradient
+;;   kernel with no chain-rule body.  Vacuous but correct, and it keeps the fragment forms
+;;   under --differentiate coverage.
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 

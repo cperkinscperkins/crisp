@@ -819,6 +819,27 @@
           :source-location nil))
       (when (and c-dims a-dims a-src b-src
                  (symbolp c-tile) (symbolp a-tile) (symbolp b-tile))
+        ;; THE K-TILE CONTRACT, ENFORCED.  Designed and documented in P3b as "a hard contract:
+        ;; violating it is a compile error" — but the check itself was never written, and that
+        ;; omission was silent in the worst way.  A Kt=8 tile on BMG (8 16 8) makes the dA
+        ;; accumulator Mt x Kt = 8x8, which decomposes into 8/16 = ZERO 8x16 accumulator
+        ;; fragments, so that entire backward GEMM emitted NOTHING.  Measured on 133/12: the
+        ;; forward carried 1 MulAdd and the backward also 1, where a correct backward needs both
+        ;; dA and dB.  The kernel compiled, ran, and returned a gradient missing one of its two
+        ;; halves.  Checked here rather than at the K-step level because it is the ACCUMULATOR
+        ;; decomposition that degenerates.
+        (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+          (declare (ignore sk))
+          (let ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims)))
+            (unless (and (plusp sm) (plusp sn)
+                         (zerop (mod kt (lcm sm sn)))
+                         (zerop (mod mt sm))
+                         (zerop (mod nt sn)))
+              (error 'crisp-compiler-error
+                :message (format nil "mma-accumulate-via-tile: tile (Mt=~a Nt=~a Kt=~a) cannot be differentiated on instruction shape (~a ~a ~a).  The backward GEMMs are dA=(Mt,Kt,Nt) and dB=(Kt,Nt,Mt), so their accumulators are Mt x Kt and Kt x Nt — which requires Kt to be a multiple of lcm(M_n,N_n)=~a (got ~a), Mt a multiple of ~a, and Nt a multiple of ~a.  Widen the K-tile (stage ~a columns of A / rows of B instead of ~a), or mark the kernel forward-only."
+                                 mt nt kt sm sn (nth-value 2 (%spv-mma-shape))
+                                 (lcm sm sn) kt sm sn (lcm sm sn) kt)
+                :source-location nil))))
         (let* ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims))
                (pkg (or kernel-pkg (symbol-package c-tile)))
                (cl-pkg (find-package :crisp-language))
@@ -1071,7 +1092,19 @@
                                                                                          :tensor-inputs-ht nil
                                                                                          :scratch-tile-syms scratch-tile-syms))))))))
                      (process-form (form emit-fn)
-                                   (cond
+                       ;; VJP REGISTRY DISPATCH (see the registry block in this overlay).
+                       ;; Runs BEFORE the hand-written clauses and DECLINES (NIL) when nothing
+                       ;; applies, so an empty registry is provably a no-op and migration can
+                       ;; proceed one primitive at a time.
+                       (let ((%vjp (%try-vjp form
+                                             (list :flat-anf flat-anf
+                                                   :inputs inputs
+                                                   :outputs outputs
+                                                   :local-adj #'local-adj
+                                                   :kernel-pkg kernel-pkg))))
+                        (if %vjp
+                            (unless (eq %vjp :inert) (funcall emit-fn %vjp))
+                            (cond
                                     ((and (consp form) (symbolp (car form))
                                           (string-equal (symbol-name (car form)) "DECLARE")) nil)
 
@@ -1289,7 +1322,7 @@
                                                     (%emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg
                                                                            emit-fn #'local-adj "BW"))))))
 
-                                    (t nil))))
+                                    (t nil))))))
 
               (let ((reversed-body (reverse flat-anf)))
                 (dolist (form reversed-body)
@@ -1707,3 +1740,198 @@
                       nil
                       (if entry (third entry) 0.0)))))
     (t (mapcar (lambda (f) (%mma-ad-expand-mmts-in-form f reg-map)) form))))
+
+;;; ===================================================================
+;;; THE VJP REGISTRY  (endeavor 145, after the P3b post-mortem)
+;;;
+;;; WHY.  generate-backward-walk's process-form had grown ~12 special-case clauses, and every
+;;; endeavor that adds a primitive adds another.  Worse, endeavor 145 derived MMA's backward
+;;; THROUGH one chosen lowering (register accumulator tiles decomposed into native fragments)
+;;; and then reported that lowering's shape requirements as if they were the hardware's — the
+;;; "K-tile contract".  They are not.  dA = dD.B^T and dB = A^T.dD hold at every shape; only the
+;;; MMA-instruction REALISATION of them needs the shapes to divide.
+;;;
+;;; The registry separates those two things, which is the whole point:
+;;;   - WHAT the derivative is   -> one entry per primitive, math only.
+;;;   - HOW it is computed       -> chosen INSIDE that entry.
+;;; A VJP may return a shape-agnostic scalar lowering by default and an MMA lowering when the
+;;; shapes admit it.  The walk neither knows nor cares, so the lowering's constraints can never
+;;; again leak out as a language-level contract.
+;;;
+;;; SCOPE: PRIMITIVES, not control flow.  let / dotimes / if / when / progn must be structurally
+;;; MIRRORED by the walk and are not lookups.  The registry absorbs the leaf cases only.
+;;;
+;;; It is deliberately general rather than MMA-private: %backward-skip-fn-p is already a
+;;; degenerate registry ("these primitives have a zero VJP"), endeavor 123's FFI user-VJP is the
+;;; same concept built bespoke, and the deferred chapter-1..4 AD work (async / ring /
+;;; warp-specialisation / wgmma / prefetch) will each need entries.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defvar *vjp-registry* (make-hash-table :test 'equal)
+  "Primitive NAME (upcased string) -> VJP function of (FORM CTX).
+
+   CTX is a plist: :flat-anf :inputs :outputs :local-adj :kernel-pkg.
+
+   The function returns one of:
+     a FORM   -- the backward Crisp source to emit (wrap several in a progn);
+     :inert   -- handled, contributes no gradient (emit nothing);
+     NIL      -- DECLINE: not applicable to this particular form, so the walk's existing
+                 clauses run unchanged.  Declining is what lets a VJP dispatch on a property
+                 of its ARGUMENTS (e.g. store-tile on a register tile vs a scratch tile)
+                 rather than on the head symbol alone.")
+
+(defun register-vjp (name fn)
+  "Register FN as the VJP for primitive NAME (a string, matched case-insensitively)."
+  (setf (gethash (string-upcase name) *vjp-registry*) fn))
+
+(defun find-vjp (head)
+  "The registered VJP for form-head HEAD, or NIL."
+  (and (symbolp head) (gethash (string-upcase (symbol-name head)) *vjp-registry*)))
+
+(defun %try-vjp (form ctx)
+  "Dispatch FORM to its registered VJP.  Returns the backward form, :inert, or NIL (decline).
+   NIL is also returned when nothing is registered for the head, so the caller can fall
+   through to the walk's own clauses."
+  (when (and (consp form) (symbolp (car form)))
+    (let ((fn (find-vjp (car form))))
+      (when fn
+        (let ((r (funcall fn form ctx)))
+          (log:debug "VJP ~a -> ~a" (car form)
+                     (cond ((null r) "DECLINE") ((eq r :inert) ":inert") (t "form")))
+          r)))))
+
+;;; ===================================================================
+;;; VJP for mma-accumulate-via-tile — SCALAR by default, MMA as a fast path.
+;;;
+;;; C-tile += A.B  =>  dA[m,k] += sum_n dC[m,n]*B[k,n],  dB[k,n] += sum_m A[m,k]*dC[m,n].
+;;; That is true at EVERY shape.  Only the MMA realisation of it needs the tile dims to divide
+;;; into whole hardware fragments, so that condition now selects a LOWERING instead of gating
+;;; correctness.
+;;;
+;;; The scalar lowering is in some ways simpler than the MMA one: it indexes the ORIGINAL GLOBAL
+;;; operands directly, so it needs none of the transposed SLM staging the MMA path requires.
+;;; (It still reads the global sources rather than the staged primal tiles, because a backward
+;;; kernel replays the forward's BINDINGS but not its STATEMENTS — the staged tiles are empty.)
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %mma-vjp-operand-ref (op src-map dims-map inputs)
+  "Resolve an mma-accumulate-via-tile operand to (values SRC OY OX KIND).
+
+   Two flavours, both of which the scalar VJP indexes identically:
+     - STAGED  : the operand is a scratch tile filled by load-tile-at.  SRC is the ORIGINAL
+                 global matrix and (OY OX) the staging origin.
+     - DIRECT  : the operand IS a global matrix (a kernel parameter read straight by the
+                 fragment loads, as in 132/04-mma-via-tile).  Origin (0 0)."
+  (let ((entry (assoc op src-map)))
+    (cond
+      (entry (values (second entry) (first (third entry)) (second (third entry)) :staged))
+      ((and (symbolp op) (member op inputs)) (values op 0 0 :direct))
+      ((assoc op dims-map) (values op 0 0 :staged))
+      (t (values nil nil nil nil)))))
+
+;; src/autodiff.lisp
+(defun %mma-vjp-scalar-lowering (mt nt kt c-adj a-op b-op a-adj b-adj
+                                 a-src aoy aox b-src boy box pkg)
+  "The shape-agnostic scalar backward for a tile multiply.  Emitted as ordinary Crisp source,
+   so it lowers through the normal path on either backend and at ANY tile shape.
+
+   dC is materialised from the register accumulator into SLM once, then two collective loops
+   accumulate into the operand adjoints.  Index arithmetic is coerced with to-int because a
+   staging origin can be a ULONG extent expression while the collective's loop vars are INT."
+  (declare (ignore a-op b-op))
+  (let* ((cl (find-package :crisp-language))
+         (let* (intern "LET" cl))      (msm  (intern "MAKE-SCRATCH-MATRIX" cl))
+         (flt  (intern "FLOAT" cl))    (st   (intern "STORE-TILE" cl))
+         (sync (intern "SYNC-WORKGROUP" cl))
+         (ws   (intern "WORKGROUP-STRIDE" cl))  (dt (intern "DOTIMES" cl))
+         (aref (intern "~" cl))        (set! (intern "SET!" cl))
+         (plus (intern "+" cl))        (mul  (intern "*" cl))
+         (ti   (intern "TO-INT" cl))
+         (dc   (intern (format nil "~A_VJPDC" (symbol-name c-adj)) pkg))
+         (m (intern "%VJP_M" cl)) (n (intern "%VJP_N" cl)) (k (intern "%VJP_K" cl)))
+    (flet ((ix (base off) (list plus (list ti base) (list ti off))))
+      (list let* (list (list dc (list msm flt (list mt nt))))
+            (list st c-adj dc (list 0 0))
+            (list sync)
+            ;; dA[m,k] += sum_n dC[m,n] * B[k,n]
+            (list ws a-adj (list m k)
+                  (list dt (list n nt)
+                        (list set! (list aref a-adj m k)
+                              (list plus (list aref a-adj m k)
+                                    (list mul (list aref dc m n)
+                                          (list aref b-src (ix boy k) (ix box n)))))))
+            ;; dB[k,n] += sum_m A[m,k] * dC[m,n]
+            (list ws b-adj (list k n)
+                  (list dt (list m mt)
+                        (list set! (list aref b-adj k n)
+                              (list plus (list aref b-adj k n)
+                                    (list mul (list aref a-src (ix aoy m) (ix aox k))
+                                          (list aref dc m n))))))
+            (list sync)))))
+
+;; src/autodiff.lisp
+(defun %mma-vjp-mma-admissible-p (mt nt kt)
+  "T when the MMA fast path can realise the backward: both backward accumulators (Mt x Kt and
+   Kt x Nt) must decompose into whole hardware accumulator fragments.  This is a PERFORMANCE
+   predicate — declining it selects the scalar lowering, never an error."
+  (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+    (declare (ignore sk))
+    (and (plusp sm) (plusp sn)
+         (zerop (mod kt (lcm sm sn)))
+         (zerop (mod mt sm))
+         (zerop (mod nt sn)))))
+
+;; src/autodiff.lisp
+(defun %vjp-mma-accumulate-via-tile (form ctx)
+  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B ...).
+
+   Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk
+   never learns the MMA path's shape requirements, so they cannot leak back out as a
+   language-level contract the way the 'K-tile contract' did.
+
+     MMA fast path  -- when both backward accumulators decompose into whole fragments.
+     Scalar path    -- otherwise.  Correct at any shape, slower.
+
+   DECLINES (NIL) only when the tile shapes are not compile-time known, which the walk then
+   reports through its existing error."
+  (destructuring-bind (shape c-tile a-op b-op &rest ignored) (cdr form)
+    (declare (ignore ignored))
+    (let* ((flat-anf  (getf ctx :flat-anf))
+           (inputs    (getf ctx :inputs))
+           (outputs   (getf ctx :outputs))
+           (local-adj (getf ctx :local-adj))
+           (kernel-pkg (getf ctx :kernel-pkg))
+           (dims-map (%mma-ad-tile-dims-map flat-anf))
+           (src-map  (%mma-ad-tile-source-map flat-anf))
+           (c-dims   (assoc c-tile dims-map))
+           (a-dims   (assoc a-op dims-map)))
+      (when c-dims
+        (multiple-value-bind (a-src aoy aox a-kind)
+            (%mma-vjp-operand-ref a-op src-map dims-map inputs)
+          (multiple-value-bind (b-src boy box b-kind)
+              (%mma-vjp-operand-ref b-op src-map dims-map inputs)
+            (when (and a-src b-src)
+              (let* ((mt (second c-dims))
+                     (nt (third c-dims))
+                     ;; A staged operand's K is its own column extent.  A DIRECT global operand
+                     ;; has runtime extents, and the forward reads exactly one native K-step
+                     ;; from it, so its Kt is the instruction's K.
+                     (kt (if a-dims
+                             (third a-dims)
+                             (nth-value 2 (%spv-mma-shape))))
+                     (pkg (or kernel-pkg (symbol-package c-tile)))
+                     (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj kernel-pkg))
+                     (a-adj (%tlc-bwd-adj-name a-op  inputs outputs local-adj kernel-pkg))
+                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg)))
+                (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) mma-path=~a"
+                           mt nt kt a-op a-kind b-op b-kind
+                           (%mma-vjp-mma-admissible-p mt nt kt))
+                (if (%mma-vjp-mma-admissible-p mt nt kt)
+                    (%mma-via-tile-backward form dims-map src-map inputs outputs
+                                            local-adj kernel-pkg)
+                    (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
+                                              a-src aoy aox b-src boy box pkg))))))))))
+
+(register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
