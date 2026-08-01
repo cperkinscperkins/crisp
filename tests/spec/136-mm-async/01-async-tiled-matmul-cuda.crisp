@@ -19,7 +19,10 @@
 ;; k-step = 8 = the tiles' shared K-extent = the MMA shape's K.  MMA-DIMS 16 8 16 => K=16
 ;; => the macro loops K/8 = 2 K-steps through SLM.  NVIDIA MMA shape (16 8 8), B col-major.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals; async tile AD is a later chapter"
+;;   (145: differentiates. Async staging is recovered like any other — the backward
+;;    reads a staged tile's primal from its ORIGINAL GLOBAL source at the load-tile-at
+;;    origin, and the :barrier key-args do not hide it. Verified NUMERICALLY on metal by
+;;    145/15 (async scalar) and 145/16 (async + MMA), not merely by compiling.)
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

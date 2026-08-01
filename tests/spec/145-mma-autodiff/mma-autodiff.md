@@ -787,3 +787,41 @@ and the measured wrong value written down.
 
 Suites after both changes: E2E 944/944, --differentiate 944/944, unit 253/253, negative 211/211,
 145 at 14/14 with four numeric gradient checks.
+
+
+136-mm-async — cleared on NUMERIC evidence  (2026-08-01)
+=======================================================
+
+Chris: the four 136 specs are skipped saying "async tile AD is a later chapter" — true when
+written — and they now compile under --differentiate.  Can the skips come off?
+
+Compiling is not sufficient, and this endeavor has the receipts: 135/01 also compiled, AND its
+backward carried the expected atomic scatter, and it still returned a gradient of exactly 0.0
+(BUG 037) because the ATOMICS were right while the PRIMALS were empty.  Structural evidence
+cannot separate those two cases.  All four 136 backwards do carry real gradient scatter
+(2 AtomicFAdd each, 1 for the 1-D copy) — necessary, not sufficient.
+
+The specific risk was concrete rather than hypothetical: BUG 037's fix recovers a staged tile's
+primal by locating its `load-tile-at` and reading the ORIGINAL GLOBAL source at that origin.  An
+ASYNC staging carries extra `:barrier` key-args, so if the source map failed to match it the
+primal would silently read zeros — 037 all over again, in a spec we had just declared clean.
+
+So the combinations were pinned numerically before touching the skips:
+
+  145/15  async staging + SCALAR body    analytical=0.06     (identical to spec 14, its
+                                                              synchronous twin — so async is
+                                                              the only variable)
+  145/16  async staging + MMA            analytical=1.1994476 (identical to spec 09, likewise)
+
+Both match their synchronous counterparts exactly, which is what establishes that async changes
+nothing about gradient correctness.  Coverage of the four:
+
+  136/01  async + MMA + register tile  -> 145/16 (BMG analogue; 01 is PTX-only so it cannot be
+                                          gradient-checked here, and its combination is pinned
+                                          rather than inferred from the parts)
+  136/02  async + scalar + scratch tile + macro -> 145/14 + 145/15
+  136/03  async 1-D copy                        -> 145/15
+  136/04  async + scalar matmul 2-D             -> 145/15
+
+All four un-skipped.  Suites: E2E 944/944, --differentiate 944/944, unit 253/253, negative
+211/211, 145 at 16/16 with SEVEN numeric on-metal gradient checks.

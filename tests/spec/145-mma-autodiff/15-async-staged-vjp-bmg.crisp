@@ -1,0 +1,47 @@
+;; ASYNC-staged tile gradients — numeric proof.
+;;
+;; Deliberately the ASYNC TWIN of spec 14: same matmul, same shapes, same expected gradient,
+;; differing in exactly one thing — the tiles are staged with `:barrier` + `await` instead of
+;; synchronously.  That isolates the async path as the single variable.
+;;
+;; WHY THIS SPEC EXISTS.  Endeavor 136's four specs were skipped with "async tile AD is a later
+;; chapter", which was true when written.  They now compile under --differentiate, and their
+;; backwards contain real gradient scatter (2 AtomicFAdd each).  Neither fact is sufficient:
+;; 135/01 also compiled AND had the atomics, yet returned a gradient of exactly 0.0, because the
+;; ATOMICS were fine and the PRIMALS were empty (BUG 037).  Structural evidence cannot
+;; distinguish those two cases; only a numeric check can.
+;;
+;; The specific risk for async: the AD path rewrites async staging into its synchronous form
+;; (anf-normalize maps request-load-tile-at -> load-tile-at and await-request -> nil), and BUG
+;; 037's fix recovers a staged tile's primal by finding its `load-tile-at` and reading the
+;; ORIGINAL GLOBAL source at that origin.  An async `load-tile-at` carries extra `:barrier`
+;; key-args, so the question this spec settles is whether the source map still recognises it —
+;; if it did not, the primal would silently read zeros exactly as in 037.
+;;
+;; THE CHECK.  f(A,B) = sum(A.B), so dA[m,k] = sum_n B[k,n].  With B[i][j] = 0.01*(i*4+j),
+;; dA[1,0] = 0.01 * (0+1+2+3) = 0.06 — identical to spec 14, so any divergence between the two
+;; is attributable to async staging alone.
+;;
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;; VERIFY-AUTODIFF: A=4x4@0:0.01 B=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=0.06 output-mat=4x4
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel async_staged_matmul (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((A-tile (make-scratch-matrix float (4 4)))
+        (B-tile (make-scratch-matrix float (4 4)))
+        (C-tile (make-scratch-matrix float (4 4)))
+        (bar    (make-async-barrier :mode :linear)))
+    (load-tile-at A A-tile (0 0) :barrier bar)
+    (load-tile-at B B-tile (0 0) :barrier bar)
+    (await bar)
+    (dotimes (i 4)
+      (dotimes (j 4)
+        (dotimes (kk 4)
+          (set! (~ C-tile i j)
+                (+ (~ C-tile i j)
+                   (* (~ A-tile i kk) (~ B-tile kk j)))))))
+    (store-tile-at C-tile C (0 0))))

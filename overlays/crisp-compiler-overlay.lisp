@@ -91,42 +91,7 @@
                                         "SYNC-WORKGROUP" "SYNC-WARP" "MEM-FENCE")
                when (prefix-or-mangled-p prefix) return t)))))
 
-;;; ===================================================================
-;;; Endeavor 145 (P8) — matrix-multiply-tile-stride must be pre-lowered for AD.
-;;;
-;;; The FORWARD path lowers this macro in analyze-let-with-tile-explosion
-;;; (%expand-matmul-tile-stride-register-forms).  The AD path has its own pre-pass —
-;;; %expand-stride-macros-in-form, endeavor 107 — which knows TENSOR-STRIDE / GRID-STRIDE /
-;;; LOOP-VECTOR-STRIDE / TILE-STRIDE / HARDWARE-STRIDE / WORKGROUP-STRIDE, but NOT the
-;;; endeavor-135 matmul macro.  So it survived into ANF, where it was treated as an ordinary
-;;; function call and comprehensively mangled — the BINDING-NAME LIST became a call:
-;;;
-;;;   (%ANF-T-1 (GRID-Y GRID-X GRID-K))                       <- "Function GRID-Y ..."
-;;;   (%ANF-T-2 (LOAD-TILE-AT A A-TILE ...))                  <- body hoisted OUT of the loop
-;;;   (MATRIX-MULTIPLY-TILE-STRIDE C C-TILE K 16 %ANF-T-1 ... :EPILOGUE %ANF-T-7)
-;;;
-;;; i.e. every body form hoisted out of the very loop that binds grid-y/grid-x/grid-k.  Lowering
-;;; it before ANF — exactly as the forward does before analysis — makes the whole multi-workgroup
-;;; matmul just a tile-stride + dotimes the walk already understands.
-;;; ===================================================================
 
-;; src/autodiff.lisp
-(defun %mma-ad-expand-mmts-in-form (form reg-map)
-  "Recursively lower every matrix-multiply-tile-stride in FORM to its tile-stride + K-loop
-   expansion.  The tile-spec is the compile-time (M N) for a REGISTER C-tile (from REG-MAP,
-   which is what the SROA explosion needs to see) and the tile tensor itself otherwise —
-   matching the two forward paths in src/mma.lisp and src/analysis/control.lisp respectively."
-  (cond
-    ((not (consp form)) form)
-    ((%mmts-head-p form)
-     (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
-         (%mmts-parse form nil)
-       (%mmts-lower c-form c-tile
-                    (or (cdr (assoc c-tile reg-map)) c-tile)
-                    k-form k-step gy gx gk
-                    (mapcar (lambda (f) (%mma-ad-expand-mmts-in-form f reg-map)) body)
-                    nil)))
-    (t (mapcar (lambda (f) (%mma-ad-expand-mmts-in-form f reg-map)) form))))
 
 ;; src/autodiff.lisp
 (defun %mma-ad-prelower-mmts (form)
