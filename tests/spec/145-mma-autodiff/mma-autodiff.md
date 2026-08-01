@@ -825,3 +825,27 @@ nothing about gradient correctness.  Coverage of the four:
 
 All four un-skipped.  Suites: E2E 944/944, --differentiate 944/944, unit 253/253, negative
 211/211, 145 at 16/16 with SEVEN numeric on-metal gradient checks.
+
+
+H100 REGRESSION CHECK  (2026-08-01)
+===================================
+
+Ran the full suite on a rented H100 PCIe (sm_90a, CUDA 12.4) at commit acab8759:
+**944/944**.  Every sm_90a spec — 137 (TMA/:block), 138 (pipeline ring), 139 (warp
+specialisation), 140 (wgmma) — passes with all of endeavor 145's AD changes in place.  Those are
+exactly the seven that failed on the Blackwell box for arch reasons, so this closes the one
+regression risk that machine could not cover.
+
+WHAT THE POD COULD NOT SETTLE, and a correction to what I told Chris.  I had written "un-skip
+137/03 and 137/05 after a Hopper pod run".  That was imprecise: the blocker is NOT the GPU.
+VERIFY-AUTODIFF only has L0 and OpenCL runtimes, so it cannot drive a PTX backward on ANY NVIDIA
+card — a Hopper pod does not change that.  What is actually required is a CUDA driver-API
+`*ad-runtime*` alongside `:l0` / `:opencl`.  P6's descriptor / ABI / metacrisp-driven binding
+logic is runtime-agnostic, so only the alloc / set-arg / launch layer differs — but it is real
+work, and it can be WRITTEN locally and validated on a pod later, which is far cheaper than
+building it on a billed box.
+
+So 137/03 and 137/05 stay skipped.  They compile and their backwards carry real gradient scatter
+(1 and 2 global writes respectively), but their gradient VALUES remain unverified, and 137/04 in
+the same directory is a live demonstration that "compiles, has scatter" is compatible with an
+entirely empty backward.
