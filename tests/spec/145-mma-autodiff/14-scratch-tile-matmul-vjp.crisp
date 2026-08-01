@@ -36,12 +36,7 @@
 ;; This spec is kept as the record: compiling is NOT differentiating.
 ;;
 ;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
-;; SKIP-WITH[--differentiate]: "BUG 037 -- this kernel COMPILES but its gradient is silently ZERO"
-;;
-;; The VERIFY-AUTODIFF that belongs here is left commented out deliberately: it FAILS, and it is
-;; the evidence for BUG 037 rather than a regression to chase.  Restore it when 037 is fixed:
-;;   VERIFY-AUTODIFF: A=4x4@0:0.01 B=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=0.06 output-mat=4x4
-;;   measured 2026-07-31: analytical=0.0  numerical=0.059999973
+;; VERIFY-AUTODIFF: A=4x4@0:0.01 B=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=0.06 output-mat=4x4
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 

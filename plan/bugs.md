@@ -631,7 +631,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         the smallest kernel that executes the loop more than once, which is precisely what no
         shipped spec did.
 
-[ ] 037 - A backward kernel does not re-stage SLM tiles, so any gradient needing a staged
+[/] 037 - A backward kernel does not re-stage SLM tiles, so any gradient needing a staged
           tile's PRIMAL VALUES is silently ZERO.
 
         FOUND 2026-07-31 (endeavor 145 closing review, prompted by Chris asking why 135/01 was
@@ -684,6 +684,25 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         and have the `~`-backward resolve a staged tile read back to its global source.  The
         first is more general; the second is cheaper and already proven in the MMA VJP.
 
-        DO NOT un-skip 135/01, 135/02, 135/10 until this is fixed.  After the clause-ordering fix
-        of 2026-07-31 they COMPILE, which makes them look differentiable — they are not; they
-        return silent zeros.  Their SKIP-WITH reasons name this bug.
+        FIXED (staged-tile case) 2026-08-01, via the SECOND option above.  A replayed primal
+        `(~ A-TILE i k)` is now rewritten to read the ORIGINAL GLOBAL source at the staging
+        origin, `(~ A (+ oy i) (+ ox k))`, generalising what endeavor 145's MMA VJP already did.
+        Chosen over replaying the staging statements because it has the SAME coverage while
+        costing no extra SLM traffic, needing no barriers in the backward, and leaving the walk's
+        loop structure untouched.  Implemented in %gfw-process-let (loop-nested primals) and in
+        the top-level forward-bindings replay.
+
+        VERIFIED NUMERICALLY, not just by compiling — that distinction is the whole point of this
+        bug.  tests/spec/145-mma-autodiff/14-scratch-tile-matmul-vjp.crisp:
+            PASS (A: analytical=0.06  numerical=0.059999973  diff=2.6e-8)
+        135/01, 135/02 and 135/10 are now un-skipped.
+
+        STILL OPEN — a tile filled by COMPUTATION has no global source, so its primal remains
+        unrecoverable:
+            (set! (~ T-tile i j) (* (~ A-tile i j) 3.0))       ; T-tile is computed
+            (set! (~ C-tile i j) (* (~ T-tile i j) (~ A-tile i j)))  ; dA needs T's primal
+        That case now ERRORS with an actionable message naming the tile, instead of silently
+        returning zero — which was the actual damage this bug did.  A pure accumulator whose old
+        value is never consumed as a VALUE (an ordinary C-tile) correctly does NOT error; the
+        check tests whether the backward really uses the primal.  Closing this properly needs
+        genuine primal recomputation / checkpointing, which is its own design.

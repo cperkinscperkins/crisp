@@ -4,7 +4,8 @@
 ;; but it still compiles (a warning, not an error), which is why the default pass PASSES and the
 ;; EXPECT-STDERR compile succeeds while emitting the warning.
 ;;
-;; SKIP-WITH[--differentiate]: "BUG 037: the backward does not re-stage SLM tiles, so a gradient needing another staged tile's PRIMAL values reads an empty tile and comes back SILENTLY ZERO. It COMPILES since the 2026-07-31 clause-ordering fix -- do not mistake that for differentiable"
+;;   (145 / BUG 037: differentiates. Staged-tile primals are read back from their
+;;    original global source, since a backward replays bindings but not statements.)
 ;; EXPECT-STDERR[--log-level=off]: "never stored"
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))

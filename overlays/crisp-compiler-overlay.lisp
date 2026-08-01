@@ -300,7 +300,11 @@
                     (let* ((anf-body (mapcar #'anf-transform expanded-body))
                            (flat-anf (flatten-anf-body anf-body))
                            ;; 145 P1: was an inline 2-element-only LOOP here.
-                           (forward-bindings (%collect-forward-primal-bindings flat-anf anf-body))
+                           ;; BUG 037: staged-tile primal reads resolve to their global source.
+                           (forward-bindings
+                            (let ((*ad-tile-src-map* (%mma-ad-tile-source-map flat-anf)))
+                              (%ad-rewrite-primal-bindings
+                               (%collect-forward-primal-bindings flat-anf anf-body))))
                            (struct-shadow-ht
                             (when struct-shadow-info
                                   (let ((ht (make-hash-table :test 'eq)))
@@ -1053,6 +1057,10 @@
                                          :test #'string=))
                      do (setf (gethash (car form) ht) t))
                ht)))
+        ;; BUG 037: publish the staged-tile -> global-source map and the scratch-tile set so the
+        ;; primal replay can read a staged tile's values from where they actually came from.
+        (setf *ad-tile-src-map* (%mma-ad-tile-source-map flat-anf)
+              *ad-scratch-syms* scratch-tile-syms)
         ;; Endeavor 124 C/A2: the adjoint-typing decision now lives in one place
         ;; (%ad-promotes-to-double-p / %ad-zero) shared with the sub-fn, FFI and
         ;; value-if/let paths.
@@ -2126,3 +2134,115 @@
 
 (register-vjp "LOAD-FRAGMENT-A" #'%vjp-load-fragment)
 (register-vjp "LOAD-FRAGMENT-B" #'%vjp-load-fragment)
+
+;;; ===================================================================
+;;; BUG 037 — the backward must read staged tiles' primals from their GLOBAL SOURCE.
+;;;
+;;; A backward kernel replays the forward's BINDINGS but not its STATEMENTS.
+;;; `make-scratch-matrix` is a binding, so the tiles EXIST in the backward — but
+;;; `load-tile-at`, which FILLS them, is a statement and is never replayed.  So a replayed
+;;; primal like `(~ A-TILE i k)` read an EMPTY tile, and any gradient needing another operand's
+;;; primal value came back SILENTLY ZERO.  Measured on a 4x4 scalar matmul: analytical 0.0
+;;; against a correct finite difference of 0.06.
+;;;
+;;; Only visible when a primal is actually NEEDED: with a constant multiplier none is, which is
+;;; why every pre-existing AD-over-tiles spec passed.  Bisected — overwrite, accumulate, and
+;;; three-deep loops with ONE tile operand all give exact gradients; only TWO tile operands fail.
+;;;
+;;; FIX (option b, chosen over replaying the staging statements): rewrite the replayed primal
+;;; to read the ORIGINAL GLOBAL matrix at the staging origin —
+;;;     (~ A-TILE i k)  ->  (~ A (+ oy i) (+ ox k))
+;;; This generalises what endeavor 145's MMA VJP already does (and which is numerically verified
+;;; four ways).  It has the same coverage as replaying `load-tile-at` would, but costs no extra
+;;; SLM traffic, needs no barriers in the backward, and does not touch the walk's loop structure.
+;;;
+;;; WHAT IT DOES NOT COVER: a tile filled by COMPUTATION has no global source, so its primal is
+;;; still unavailable — e.g. `(set! (~ C i j) (* (~ C i j) (~ A i j)))`, where dA needs C's OLD
+;;; value.  That case now ERRORS rather than silently returning zero (see the check below).
+;;; Closing it properly means real primal recomputation / checkpointing, which is its own design.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defvar *ad-tile-src-map* nil
+  "Alist TILE-SYM -> (GLOBAL-SRC ORIGIN-FORMS) for tiles filled by load-tile-at in the kernel
+   being differentiated.  Bound by generate-backward-walk.")
+
+(defvar *ad-scratch-syms* nil
+  "Hash of scratch-tile symbols in the kernel being differentiated.  Bound by
+   generate-backward-walk.")
+
+;; src/autodiff.lisp
+(defun %ad-tile-read-p (expr)
+  "T when EXPR is an indexed tile read `(~ SYM idx ...)`."
+  (and (consp expr) (symbolp (car expr))
+       (string= (symbol-name (car expr)) "~")
+       (symbolp (second expr)) (second expr)
+       (cddr expr)))
+
+;; src/autodiff.lisp
+(defun %ad-rewrite-primal-tile-read (expr)
+  "Rewrite a staged-tile read to the equivalent read of its ORIGINAL GLOBAL source, or return
+   EXPR unchanged when the tile has no recoverable source.  Indices are coerced with to-int: a
+   staging origin can be a ULONG extent expression while the loop variables are INT."
+  (if (not (%ad-tile-read-p expr))
+      expr
+      (let ((entry (assoc (second expr) *ad-tile-src-map*)))
+        (if (null entry)
+            expr
+            (let* ((cl (find-package :crisp-language))
+                   (aref (intern "~" cl)) (plus (intern "+" cl)) (ti (intern "TO-INT" cl))
+                   (src (second entry)) (origin (third entry))
+                   (idxs (cddr expr)))
+              (if (/= (length origin) (length idxs))
+                  expr
+                  (list* aref src
+                         (loop for o in origin
+                               for i in idxs
+                               collect (list plus (list ti o) (list ti i))))))))))
+
+;; src/autodiff.lisp
+(defun %ad-rewrite-primal-bindings (bindings)
+  "Apply %ad-rewrite-primal-tile-read to each primal binding's VALUE."
+  (mapcar (lambda (b)
+            (if (and (consp b) (= (length b) 2))
+                (list (first b) (%ad-rewrite-primal-tile-read (second b)))
+                b))
+          bindings))
+
+;; src/autodiff.lisp
+(defun %ad-check-unresolved-primals (bindings body)
+  "ERROR when a primal bound to an UNRESOLVABLE scratch-tile read is actually USED as a value by
+   the backward BODY.
+
+   Silence here is what bug 037 was: an unavailable primal read as zero.  A tile whose primal is
+   never consumed (a pure accumulator like C-tile, whose old value matters only for its adjoint)
+   is fine and must NOT error — hence the usage test rather than a blanket check."
+  (dolist (b bindings)
+    (when (and (consp b) (= (length b) 2)
+               (%ad-tile-read-p (second b))
+               *ad-scratch-syms*
+               (gethash (second (second b)) *ad-scratch-syms*)
+               (null (assoc (second (second b)) *ad-tile-src-map*))
+               (%vjp-form-mentions-any-p body (list (first b))))
+      (error 'crisp-compiler-error
+        :message (format nil "cannot differentiate: the backward needs the PRIMAL value of ~a, a scratch tile that is not filled by load-tile-at, so its contents cannot be recovered (a backward kernel replays the forward's bindings but not its statements).  Tiles staged with load-tile-at are read back from their global source automatically; a tile filled by COMPUTATION is not recoverable.  Restructure so the value the gradient needs comes from a staged or global operand, or mark the kernel forward-only.  See plan/bugs.md #037."
+                         (second (second b)))
+        :source-location nil))))
+
+;; src/autodiff.lisp
+(defun %gfw-process-let (form emit-fn process-form-fn bindings augmented-bindings body)
+  "BUG 037: the replayed primal bindings now read staged tiles from their ORIGINAL GLOBAL source
+   instead of from the (empty) tile, and an unrecoverable primal that the backward actually uses
+   is a hard error rather than a silent zero."
+  (declare (ignore form))
+  (let ((local-forms nil))
+    (flet ((local-emit (f) (push f local-forms)))
+      (dolist (b (reverse body))
+        (funcall process-form-fn b #'local-emit))
+      (dolist (b (reverse bindings))
+        (when (and (consp b) (= (length b) 2) (symbolp (car b)))
+              (funcall process-form-fn b #'local-emit))))
+    (let ((backward-body (nreverse local-forms)))
+      (%ad-check-unresolved-primals augmented-bindings backward-body)
+      (funcall emit-fn `(let ,(%ad-rewrite-primal-bindings augmented-bindings)
+                          ,@backward-body)))))

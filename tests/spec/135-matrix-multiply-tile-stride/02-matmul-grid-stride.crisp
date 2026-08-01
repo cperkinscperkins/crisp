@@ -16,7 +16,8 @@
 ;; macro does NOT auto-reset a scratch accumulator — the body clears C-tile on grid-k==0
 ;; via (fill-tile C-tile 0.0) (the accumulator-reset sugar).
 ;;
-;; SKIP-WITH[--differentiate]: "BUG 037: the backward does not re-stage SLM tiles, so a gradient needing another staged tile's PRIMAL values reads an empty tile and comes back SILENTLY ZERO. It COMPILES since the 2026-07-31 clause-ordering fix -- do not mistake that for differentiable"
+;;   (145 / BUG 037: differentiates. Staged-tile primals are read back from their
+;;    original global source, since a backward replays bindings but not statements.)
 ;;
 ;; MMA-DIMS: 8 8 8
 ;; TEST-HOIST[CUDA]: validate-cuda-mma-run
