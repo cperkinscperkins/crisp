@@ -746,5 +746,42 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
              call boundary.  Whether the existing _GRAD generation already emits that for a
              staging body is unverified.
 
-        DO NOT un-skip 137/04 until this is fixed: it compiles, which makes it look
+        PROGRESS 2026-08-01 — the bug has THREE layers, not one.  Reproduced locally with a
+        plain void sub-function (no TMA, no sm_90a), so it is general rather than a 137 quirk:
+
+            (def-function scale_into (src &out dst) ... (set! (~ dst i j) (* (~ src i j) 2.0)) ...)
+            (def-kernel k (A &out C) (scale_into A C))
+            -> analytical=0.0, finite difference=2.0
+
+          LAYER 1 — the missing walk clause.  FIXED.  A void differentiable sub-function call is
+          now recognised before the multi-value-binding clause that used to swallow it, mirroring
+          endeavor 123's void-FOREIGN clause.  Verified firing.  Suites stay green (944/944 both
+          ways, 253 unit, 211 negative), so the clause is safe to keep even though the layers
+          below still block the end-to-end gradient.
+
+          LAYER 2 — TYPE ALIASES make a sub-function INVISIBLE to AD.  This is broader than 038
+          and probably deserves its own number.  %crisp-tensor-param-type-p recognises the list
+          form `(matrix float ...)` and mangled `TENSOR_*` symbols, but NOT a user alias from
+          `def-type` — despite its docstring claiming "plain symbol naming a registered tensor
+          type".  So with
+
+              (def-type mat-t (matrix float ...))
+              (def-function f (src &out dst) (declare #'(mat-t &out mat-t => ulong)) ...)
+
+          %has-tensor-diff-param-p returns NIL, %generate-backward-function-ast bails at its
+          `(zerop n-float-params)` guard, and NO _GRAD companion is generated at all — silently.
+          Substituting the inline `(matrix float ...)` type makes the companion appear
+          (`AUTODIFF: Generating _GRAD companion SCALE_INTO_GRAD ... n-tensor=2`).  Note
+          %is-tensor-alias already exists in the same file and resolves exactly this.
+          BOTH 137/04's `stage` and its `mat-t` / `tile-t` params are declared via aliases.
+
+          LAYER 3 — emission still produces nothing.  With the inline types the companion exists
+          AND the layer-1 clause fires, yet the assembled backward is `(LET ((A_ADJ 0.0)))` —
+          empty.  %emit-sub-fn-backward's tensor-only branch should emit
+          `(SCALE_INTO_GRAD A C A_GRAD C_GRAD)`.  Suspect the registration is overwritten between
+          passes (Crisp is multi-pass; *differentiable-functions* is written both by
+          %register-hof-differentiable-function and by the companion generator), so the `info`
+          the walk reads may lack :tensor-param-indices.  NOT yet confirmed.
+
+        DO NOT un-skip 137/04 until layers 2 and 3 are fixed: it compiles, which makes it look
         differentiable, and it returns silent zeros.

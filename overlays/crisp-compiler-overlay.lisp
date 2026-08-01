@@ -1294,6 +1294,40 @@
                                                               (symbol-package (car form))
                                                               emit-fn #'local-adj))
 
+                                    ;; BUG 038: an ordinary differentiable SUB-FUNCTION called as
+                                    ;; a VOID STATEMENT, e.g. (stage A tile) or (scale_into A C).
+                                    ;; Endeavor 123 added the clause above for the FOREIGN case
+                                    ;; and for exactly this reason; the non-foreign case never
+                                    ;; got one, so such a call fell through to the multi-value
+                                    ;; BINDING clause below — `(STAGE A TILE)` is length 3 with an
+                                    ;; all-symbol butlast, so that clause read STAGE and A as
+                                    ;; bound variables and TILE as the producing expression.  TILE
+                                    ;; is a symbol rather than a cons, so its body never ran and
+                                    ;; the call was SILENTLY DROPPED — no gradient flowed through
+                                    ;; the sub-function at all (137/04's backward had zero global
+                                    ;; writes).  Statements and multi-value bindings are
+                                    ;; indistinguishable by shape after ANF, which is the same
+                                    ;; trap as the 145 P1 replay bug.
+                                    ;;
+                                    ;; Void, so there is no return seed: t-adj-forms is NIL, as in
+                                    ;; the foreign case.  Handle (tensor) contributions are routed
+                                    ;; by %emit-sub-fn-backward through the callee's &out
+                                    ;; grad-handles, so the chain rule lands inside the sub-fn.
+                                    ;; A binding never matches here: its CAR is the bound temp,
+                                    ;; not a registered function.
+                                    ((and (consp form) (symbolp (car form))
+                                          (let ((info (gethash (car form) *differentiable-functions*)))
+                                            (and info (not (getf info :foreign)))))
+                                      (let* ((fn (car form))
+                                             (info (gethash fn *differentiable-functions*)))
+                                        (log:debug "038: void sub-fn call backward for ~a" fn)
+                                        (%emit-sub-fn-backward fn (cdr form)
+                                                               (getf info :bkwd-name)
+                                                               nil
+                                                               (getf info :n-float-params)
+                                                               (symbol-package fn)
+                                                               emit-fn #'local-adj "BW")))
+
                                     ((and (listp form) (= (length form) 2) (symbolp (car form)))
                                       (%handle-single-value-backward (car form) (cadr form)
                                                                      adjoint-map emit-fn #'local-adj
