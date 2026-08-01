@@ -6,7 +6,8 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "fragment-level mma-accumulate has no VJP registered yet -- the tile-level form does; a fragment VJP would route dC through memory the same way"
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;;   (145: differentiates via the VJP registry.)
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))

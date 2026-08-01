@@ -10,7 +10,8 @@
 ;; to match the canonical row.col MMA.  mma-accumulate is the genuine
 ;; @llvm.nvvm.mma.m16n8k8.row.col.tf32 intrinsic.
 ;;
-;; SKIP-WITH[--differentiate]: "fragment-level mma-accumulate has no VJP registered yet -- the tile-level form does; a fragment VJP would route dC through memory the same way"
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;;   (145: differentiates via the VJP registry.)
 ;; TEST-WITH[--ir-target=spv]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

@@ -173,6 +173,12 @@
       (dolist (form anf-body) (walk form)))
     found))
 
+(defun %vjp-form-mentions-any-p (form syms)
+  "T when FORM references any symbol in SYMS."
+  (cond ((symbolp form) (and form (member form syms) t))
+        ((consp form) (some (lambda (x) (%vjp-form-mentions-any-p x syms)) form))
+        (t nil)))
+
 ;; src/macros.lisp
 (defun %collect-forward-primal-bindings (flat-anf anf-body)
   "The forward primal bindings replayed at the head of a backward kernel.
@@ -191,11 +197,32 @@
    Filtering FLAT-ANF rather than appending the multi-value bindings keeps them in
    SOURCE ORDER, so a later binding may still reference an earlier one."
   (log:debug "145: flat-anf handed to the backward walk:~%~{  ~s~%~}" flat-anf)
-  (let ((mv-bindings (%collect-multi-value-anf-bindings anf-body)))
-    (loop for form in flat-anf
-            when (or (and (consp form) (= (length form) 2) (symbolp (car form)))
-                     (member form mv-bindings :test #'eq))
-          collect form)))
+  (let* ((mv-bindings (%collect-multi-value-anf-bindings anf-body))
+         (candidates (loop for form in flat-anf
+                             when (or (and (consp form) (= (length form) 2) (symbolp (car form)))
+                                      (member form mv-bindings :test #'eq))
+                           collect form))
+         ;; A binding whose VALUE is a cons with a NON-SYMBOL head is not a call — it is a bare
+         ;; list that anf-normalize bound as if it were one.  Coordinate lists do exactly this:
+         ;; (load-fragment-a A (0 0)) yields `(%ANF-T-1 (0 0))`, and replaying that makes the
+         ;; backward try to analyze `(0 0)` as an expression.  Such a binding cannot be
+         ;; replayed, and TRANSITIVELY neither can anything that references it.  Nothing in a
+         ;; backward needs them: the VJPs that want those coordinates resolve them straight
+         ;; out of flat-anf.
+         (dropped (loop for b in candidates
+                          for v = (car (last b))
+                          when (and (consp v) (not (symbolp (car v))))
+                        collect (car b)))
+         (kept candidates))
+    (loop for changed = nil
+          do (setf kept
+                   (loop for b in kept
+                           if (or (member (car b) dropped)
+                                  (%vjp-form-mentions-any-p (car (last b)) dropped))
+                         do (progn (pushnew (car b) dropped) (setf changed t))
+                         else collect b))
+          while changed)
+    kept))
 
 ;; src/macros.lisp
 ;; VERBATIM re-definition of the src/ original, with ONE change: the inline
@@ -819,26 +846,24 @@
           :source-location nil))
       (when (and c-dims a-dims a-src b-src
                  (symbolp c-tile) (symbolp a-tile) (symbolp b-tile))
-        ;; THE K-TILE CONTRACT, ENFORCED.  Designed and documented in P3b as "a hard contract:
-        ;; violating it is a compile error" — but the check itself was never written, and that
-        ;; omission was silent in the worst way.  A Kt=8 tile on BMG (8 16 8) makes the dA
-        ;; accumulator Mt x Kt = 8x8, which decomposes into 8/16 = ZERO 8x16 accumulator
-        ;; fragments, so that entire backward GEMM emitted NOTHING.  Measured on 133/12: the
-        ;; forward carried 1 MulAdd and the backward also 1, where a correct backward needs both
-        ;; dA and dB.  The kernel compiled, ran, and returned a gradient missing one of its two
-        ;; halves.  Checked here rather than at the K-step level because it is the ACCUMULATOR
-        ;; decomposition that degenerates.
+        ;; INTERNAL INVARIANT (not a user-facing contract).  This function emits the MMA
+        ;; lowering, which requires both backward accumulators (Mt x Kt and Kt x Nt) to
+        ;; decompose into whole hardware fragments.  %vjp-mma-accumulate-via-tile has already
+        ;; checked that via %mma-vjp-mma-admissible-p before routing here, so a violation means
+        ;; the VJP dispatch is wrong, not the user's kernel.
+        ;;
+        ;; This USED to be a hard user-facing error called "the K-tile contract" — a claim that
+        ;; a kernel with Kt=8 could not be differentiated at all.  That was wrong: dA = dC.B^T
+        ;; and dB = A^T.dC hold at every shape, and only this LOWERING needs the dims to divide.
+        ;; The condition now selects the scalar lowering instead.  See the retraction section in
+        ;; tests/spec/145-mma-autodiff/mma-autodiff.md.
         (multiple-value-bind (sm sn sk) (%spv-mma-shape)
           (declare (ignore sk))
           (let ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims)))
-            (unless (and (plusp sm) (plusp sn)
-                         (zerop (mod kt (lcm sm sn)))
-                         (zerop (mod mt sm))
-                         (zerop (mod nt sn)))
+            (unless (%mma-vjp-mma-admissible-p mt nt kt)
               (error 'crisp-compiler-error
-                :message (format nil "mma-accumulate-via-tile: tile (Mt=~a Nt=~a Kt=~a) cannot be differentiated on instruction shape (~a ~a ~a).  The backward GEMMs are dA=(Mt,Kt,Nt) and dB=(Kt,Nt,Mt), so their accumulators are Mt x Kt and Kt x Nt — which requires Kt to be a multiple of lcm(M_n,N_n)=~a (got ~a), Mt a multiple of ~a, and Nt a multiple of ~a.  Widen the K-tile (stage ~a columns of A / rows of B instead of ~a), or mark the kernel forward-only."
-                                 mt nt kt sm sn (nth-value 2 (%spv-mma-shape))
-                                 (lcm sm sn) kt sm sn (lcm sm sn) kt)
+                :message (format nil "INTERNAL: MMA backward lowering reached with a tile (Mt=~a Nt=~a Kt=~a) that does not decompose on shape (~a ~a) — the VJP should have selected the scalar lowering."
+                                 mt nt kt sm sn)
                 :source-location nil))))
         (let* ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims))
                (pkg (or kernel-pkg (symbol-package c-tile)))
@@ -1096,11 +1121,16 @@
                        ;; Runs BEFORE the hand-written clauses and DECLINES (NIL) when nothing
                        ;; applies, so an empty registry is provably a no-op and migration can
                        ;; proceed one primitive at a time.
-                       (let ((%vjp (%try-vjp form
+                       (let* ((%vjp-binding (when (and (consp form) (= (length form) 2)
+                                                       (symbolp (car form)) (consp (cadr form)))
+                                              (car form)))
+                              (%vjp-target (if %vjp-binding (cadr form) form))
+                              (%vjp (%try-vjp %vjp-target
                                              (list :flat-anf flat-anf
                                                    :inputs inputs
                                                    :outputs outputs
                                                    :local-adj #'local-adj
+                                                   :binding-var %vjp-binding
                                                    :kernel-pkg kernel-pkg))))
                         (if %vjp
                             (unless (eq %vjp :inert) (funcall emit-fn %vjp))
@@ -1798,7 +1828,7 @@
       (when fn
         (let ((r (funcall fn form ctx)))
           (log:debug "VJP ~a -> ~a" (car form)
-                     (cond ((null r) "DECLINE") ((eq r :inert) ":inert") (t "form")))
+                     (cond ((null r) "DECLINE") ((eq r :inert) ":inert") (t (format nil "~s" r))))
           r)))))
 
 ;;; ===================================================================
@@ -1935,3 +1965,148 @@
                                               a-src aoy aox b-src boy box pkg))))))))))
 
 (register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
+
+;;; ===================================================================
+;;; VJP for the FRAGMENT-level MMA chain  (133/02, 133/10, 132/02 — "hello mma")
+;;;
+;;; The earlier claim that no fragment-level backward exists was wrong in the same way the
+;;; "K-tile contract" was: it argued from one chosen realisation (keep everything in registers,
+;;; where dA's contraction over n spans lanes and needs shuffles) to a statement about the
+;;; mathematics.  Route through memory instead — exactly as the tile-level VJP already routes
+;;; dC — and the lane problem simply does not arise.
+;;;
+;;; WHY THIS IS FUSED RATHER THAN COMPOSITIONAL.  Measured from the ANF the walk actually
+;;; receives:
+;;;     (STORE-FRAGMENT (MMA-ACCUMULATE C-ACC A-FRAG B-FRAG) C (0 0))
+;;; store-fragment is opaque to ANF, so its value argument is NOT split into its own binding —
+;;; there is no intermediate variable to hang a fragment-valued adjoint on.  The whole chain
+;;; arrives as one statement, so one fused VJP is the natural shape here, not a shortcut.
+;;;
+;;; SCOPE, stated plainly: this covers `store-fragment` applied directly to an
+;;; `mma-accumulate` — the canonical hello-mma form.  An `mma-accumulate` whose result is held
+;;; in a register across a loop before being stored is NOT covered and still reports its (now
+;;; accurate) "no VJP registered" error.  That case wants genuine fragment-valued adjoints.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %vjp-resolve-anf-value (sym flat-anf)
+  "Resolve an ANF temp back to the literal it was bound to.
+
+   Coordinate lists reach the walk as temps — `(%ANF-T-1 (0 0))` — because anf-normalize treats
+   a bare list like `(0 0)` as a call and binds it.  (The same pathology turned
+   `(GRID-Y GRID-X GRID-K)` into a call in P8.)  Returns SYM unchanged if it is not such a temp."
+  (if (symbolp sym)
+      (or (loop for f in flat-anf
+                  when (and (consp f) (= (length f) 2) (eq (first f) sym))
+                return (second f))
+          sym)
+      sym))
+
+;; src/autodiff.lisp
+(defun %vjp-fragment-source (frag-sym flat-anf which)
+  "For a fragment variable bound by (load-fragment-a/b SRC COORDS), return the list
+   (SRC COORD-Y COORD-X), or NIL when FRAG-SYM was not bound that way.
+   WHICH is :a or :b and only selects the expected head."
+  (let ((head (ecase which (:a "LOAD-FRAGMENT-A") (:b "LOAD-FRAGMENT-B"))))
+    (dolist (f flat-anf nil)
+      (when (and (consp f) (= (length f) 2) (eq (first f) frag-sym)
+                 (consp (second f)) (symbolp (first (second f)))
+                 (string-equal (symbol-name (first (second f))) head))
+        (let ((coords (%vjp-resolve-anf-value (third (second f)) flat-anf)))
+          (cl:return (list (second (second f))
+                           (if (consp coords) (first coords) 0)
+                           (if (consp coords) (second coords) 0))))))))
+
+;; src/autodiff.lisp
+(defun %vjp-store-fragment (form ctx)
+  "VJP for (store-fragment (mma-accumulate C A-FRAG B-FRAG) DEST (TY TX)).
+
+   D = A.B + C stored to DEST, so with dD read from DEST_GRAD at the store's tile:
+       dA[m,k] += sum_n dD[m,n] * B[k,n]
+       dB[k,n] += sum_m A[m,k] * dD[m,n]
+   over one instruction-shaped block (M_n x N_n accumulator, M_n x K_n A, K_n x N_n B), reading
+   the ORIGINAL global operands at their load-fragment origins and scattering with atomic-add!
+   — the same collective + atomic discipline %load-tile-at-bwd uses.
+
+   DECLINES unless the stored value is literally an mma-accumulate over two load-fragment
+   results; anything else falls through to the walk's existing (accurate) error."
+  (destructuring-bind (value dest tile-id &rest ignored) (cdr form)
+    (declare (ignore ignored))
+    (when (and (consp value) (symbolp (car value))
+               (string-equal (symbol-name (car value)) "MMA-ACCUMULATE")
+               (= (length value) 4))
+      (let* ((flat-anf (getf ctx :flat-anf))
+             (inputs (getf ctx :inputs)) (outputs (getf ctx :outputs))
+             (local-adj (getf ctx :local-adj)) (kernel-pkg (getf ctx :kernel-pkg))
+             (a-frag (third value)) (b-frag (fourth value)))
+        (let ((ainfo (%vjp-fragment-source a-frag flat-anf :a))
+              (binfo (%vjp-fragment-source b-frag flat-anf :b)))
+          (when (and ainfo binfo)
+            (destructuring-bind (a-src ay ak) ainfo
+              (destructuring-bind (b-src bk bx) binfo
+              (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                (let* ((cl (find-package :crisp-language))
+                       (ws (intern "WORKGROUP-STRIDE" cl)) (dt (intern "DOTIMES" cl))
+                       (aref (intern "~" cl)) (aadd (intern "ATOMIC-ADD!" cl))
+                       (plus (intern "+" cl)) (mul (intern "*" cl))
+                       (ti (intern "TO-INT" cl)) (prog- (intern "PROGN" cl))
+                       (m (intern "%FVJP_M" cl)) (n (intern "%FVJP_N" cl)) (k (intern "%FVJP_K" cl))
+                       (d-adj (%tlc-bwd-adj-name dest inputs outputs local-adj kernel-pkg))
+                       (a-adj (%tlc-bwd-adj-name a-src inputs outputs local-adj kernel-pkg))
+                       (b-adj (%tlc-bwd-adj-name b-src inputs outputs local-adj kernel-pkg))
+                       (cy (* (if (consp tile-id) (or (first tile-id) 0) 0) sm))
+                       (cx (* (if (consp tile-id) (or (second tile-id) 0) 0) sn)))
+                  (flet ((ix (base off) (list plus (list ti base) (list ti off))))
+                    (list prog-
+                          ;; dA[m,k] += sum_n dD[m,n] * B[k,n]
+                          (list ws a-adj (list m k)
+                                (list dt (list n sn)
+                                      (list aadd (list aref a-adj (ix (* ay sm) m) (ix (* ak sk) k))
+                                            (list mul
+                                                  (list aref d-adj (ix cy m) (ix cx n))
+                                                  (list aref b-src (ix (* bk sk) k) (ix (* bx sn) n))))))
+                          ;; dB[k,n] += sum_m A[m,k] * dD[m,n]
+                          (list ws b-adj (list k n)
+                                (list dt (list m sm)
+                                      (list aadd (list aref b-adj (ix (* bk sk) k) (ix (* bx sn) n))
+                                            (list mul
+                                                  (list aref a-src (ix (* ay sm) m) (ix (* ak sk) k))
+                                                  (list aref d-adj (ix cy m) (ix cx n))))))))))))))))))
+
+(register-vjp "STORE-FRAGMENT" #'%vjp-store-fragment)
+(register-vjp "MAKE-REGISTER-FRAGMENT" (lambda (form ctx) (declare (ignore form ctx)) :inert))
+
+;; src/autodiff.lisp
+(defun %vjp-fragment-consumed-by-fused-store-p (frag-sym flat-anf)
+  "T when FRAG-SYM is an operand of an `(mma-accumulate ...)` that is stored directly by a
+   `store-fragment` — i.e. the chain %vjp-store-fragment already differentiates as a unit."
+  (dolist (f flat-anf nil)
+    (let ((form (if (and (consp f) (= (length f) 2) (consp (second f))) (second f) f)))
+      (when (and (consp form) (symbolp (car form))
+                 (string-equal (symbol-name (car form)) "STORE-FRAGMENT")
+                 (>= (length form) 2)
+                 (let ((v (second form)))
+                   (and (consp v) (symbolp (car v))
+                        (string-equal (symbol-name (car v)) "MMA-ACCUMULATE")
+                        (member frag-sym (cddr v)))))
+        (cl:return t)))))
+
+;; src/autodiff.lisp
+(defun %vjp-load-fragment (form ctx)
+  "VJP for load-fragment-a / load-fragment-b.
+
+   Returns :inert when this fragment feeds a fused store-fragment(mma-accumulate ...) chain —
+   %vjp-store-fragment has already scattered the gradient into this operand's global gradient,
+   so contributing again would double-count.
+
+   DECLINES otherwise, so an un-fused fragment use still raises the (accurate) 'no VJP
+   registered' error rather than silently yielding a zero gradient.  Silently dropping a
+   gradient is the failure mode this endeavor hit three times; it is not repeated here."
+  (declare (ignore form))
+  (let ((flat-anf (getf ctx :flat-anf))
+        (bound-to (getf ctx :binding-var)))
+    (when (and bound-to (%vjp-fragment-consumed-by-fused-store-p bound-to flat-anf))
+      :inert)))
+
+(register-vjp "LOAD-FRAGMENT-A" #'%vjp-load-fragment)
+(register-vjp "LOAD-FRAGMENT-B" #'%vjp-load-fragment)

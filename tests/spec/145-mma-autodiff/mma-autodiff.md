@@ -55,7 +55,15 @@ things constrain how.
   (`%coop-layout-of`, src/mma.lisp:249), so a transpose is flipping 0↔1. Zero cost —
   *except* for the Intel B-operand restriction below.
 
-### 2. Shape algebra — the K-tile contract
+### 2. Shape algebra — when the MMA *lowering* applies
+
+> **READ THIS FIRST.** An earlier version of this section called the rule below "the K-tile
+> contract" and declared it a hard, hardware-imposed limit on which kernels can be
+> differentiated. **That was wrong and has been retracted** — see "THE VJP REGISTRY" at the end
+> of this document. dA = dC·Bᵀ and dB = Aᵀ·dC hold at EVERY shape. The condition below decides
+> only whether the backward can be realised with MMA INSTRUCTIONS; when it cannot, a scalar
+> lowering is used instead and the kernel differentiates fine. It is a performance predicate,
+> not a correctness gate.
 
 Let the hardware instruction shape be `(M_n N_n K_n)` and the workgroup tile be
 `(M_f N_f K_f)`. Mapping the backward GEMMs onto the instruction:
@@ -76,12 +84,11 @@ Evaluated on the two profiles we support:
 - NVIDIA `(16 8 8)` → `lcm(16,8)` = **16**. Binding constraint comes from **dB**.
 - Intel BMG `(8 16 8)` → `lcm(8,16)` = **16**. Binding constraint comes from **dA**.
 
-Same number, opposite reasons. This is a **hard contract**: violating it is a compile
-error naming the K-tile, the profile shape, and the required multiple. It is *not* silently
-downgraded to a scalar-FMA fallback.
+Same number, opposite reasons.
 
-Consequence: `132/06-tiled-matmul` and `133/12-tiled-matmul-bmg` both use K-tile = 8 and
-therefore **cannot** simply be un-skipped. New specs are needed. (See Testing, below.)
+~~This is a hard contract: violating it is a compile error.~~ **RETRACTED.** This selects the
+MMA *lowering*. A tile that fails it is lowered to scalar loops and differentiates correctly —
+`132/06` and `133/12` both use K-tile = 8 and both differentiate today.
 
 ### 3. Intel cannot read a transposed B operand
 
@@ -116,7 +123,13 @@ Fix: a new `load-fragment-acc` primitive — the exact inverse of `store-fragmen
 per-lane accumulator layout is already spelled out (src/mma.lisp:259-286). Reverse the
 `set!`s into reads. Small, well-defined, and needed on both backends for symmetry. Hence P2.
 
-### 5b. Why there is no fragment-level backward
+### 5b. Why there is no fragment-level backward  — RETRACTED
+
+> **This section's conclusion is wrong**, in the same way section 2's was: it argues from one
+> chosen realisation (keeping everything in registers) to a claim about the mathematics. A
+> fragment-level VJP is possible — route the adjoints through memory, exactly as the tile-level
+> VJP already routes dC. It is currently UNREGISTERED, not impossible. Kept below as the
+> record of the reasoning error.
 
 Worked through 2026-07-28, and it killed the original P3.
 
@@ -217,7 +230,9 @@ blows the budget in its gradient. Folded into P4.
 Decisions taken (2026-07-28, with Chris)
 ----------------------------------------
 
-1. **K-tile contract is hard** — compile error, no silent non-MMA fallback for dB.
+1. ~~**K-tile contract is hard** — compile error, no silent non-MMA fallback for dB.~~
+   **REVERSED 2026-07-31.** Correct-but-slow is the default; MMA is a gated fast path. The
+   original decision baked one lowering's limits into the language.
 2. **`--mma-grad-test` (P6) lands before VERIFY-AUTODIFF matrices (P9).** Both eventually.
 3. **SPV/BMG leads.** The dev machine is BMG, so SPV is testable immediately; PTX work is
    batched into P7 against a rented pod. Note the endeavor does **not** need sm_90 — the
@@ -665,3 +680,52 @@ STILL OPEN, deliberately: padding the degenerate accumulator so the MMA fast pat
 too (pinned with Chris); `:gradient-lowering` in the metacrisp + an `EXPECT-GRADIENT-LOWERING`
 directive so a silent regression to the scalar path is caught by a test rather than a note —
 neither is implemented, so neither is documented in plan/ref.metacrisp yet.
+
+
+FRAGMENT-LEVEL VJP — the last MMA gap  (2026-07-31)
+===================================================
+
+Chris: "133-mma-spv has a few marked SKIP-WITH[--differentiate], yet they seem like they should
+be differentiable."  Both were `hello mma` — raw fragment forms, no tiles — and both were
+skipped on the strength of section 5b's claim that a fragment-level backward is IMPOSSIBLE.
+That claim was wrong for the same reason the K-tile contract was: it reasoned from ONE
+realisation (keep everything in registers, where dA's contraction over n spans lanes and would
+need warp shuffles) to a statement about the mathematics.  Route the adjoints through MEMORY —
+exactly as the tile-level VJP already routes dC — and the lane problem never arises.
+
+FUSED, and forced to be.  Measured from the ANF the walk actually receives:
+
+    (C-ACC   (MAKE-REGISTER-FRAGMENT 16 8 0.0))
+    (%ANF-T-1 (0 0))
+    (A-FRAG  (LOAD-FRAGMENT-A A %ANF-T-1))
+    (B-FRAG  (LOAD-FRAGMENT-B B %ANF-T-2))
+    (STORE-FRAGMENT (MMA-ACCUMULATE C-ACC A-FRAG B-FRAG) C (0 0))
+
+`store-fragment` is opaque to ANF, so its value argument is never split into its own binding —
+there is no intermediate variable on which to hang a fragment-valued adjoint.  One fused VJP is
+the natural shape here, not a shortcut.
+
+SCOPE, stated plainly: covers `store-fragment` applied DIRECTLY to an `mma-accumulate`.  An
+accumulator held in registers across a loop and stored later is NOT covered.  `load-fragment-a/b`
+return `:inert` only when their fragment feeds such a fused chain and DECLINE otherwise, so an
+unsupported shape errors loudly rather than silently producing a zero gradient.
+
+ONE MORE LATENT BUG FELL OUT.  A coordinate list reaches the walk as a pseudo-call binding —
+`(%ANF-T-1 (0 0))`, because anf-normalize treats a bare list as a call (the same pathology that
+turned `(GRID-Y GRID-X GRID-K)` into a call in P8).  The primal REPLAY then tried to analyze
+`(0 0)` as an expression.  Such a binding cannot be replayed and, transitively, neither can
+anything referencing it; `%collect-forward-primal-bindings` now drops both to a fixpoint.  This
+was latent for every fragment kernel, not just these.
+
+RESULT — 133-mma-spv is now FULLY CLEAR of --differentiate skips, and 132 is down to a negative
+test plus one unrelated `to-float` gap.  Numeric proof on metal: spec `13-fragment-vjp-bmg`
+**analytical=1.2 numerical=1.198822**.
+
+Suites: E2E 944/944, --differentiate 944/944, unit 253/253, negative 211/211, 145 at 13/13 with
+FOUR numeric gradient checks (MMA tile path, scalar tile path, multi-workgroup, fragment).
+
+EVERY REMAINING SKIP IS NOW A NON-MMA GAP (6 total):
+  3  scratch-C-tile matmul — the tile-stride backward resolves extents~ / ~ against a FLOAT.
+  1  `C` is a reinterpreted view (make-matrix over the param) — views at the AD boundary.
+  1  `to-float` has no AD rule.
+  1  negative test (register fit-check), correctly skipped.
