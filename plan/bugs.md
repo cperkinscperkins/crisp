@@ -630,3 +630,60 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         — 04-tiled-matmul-bmg with C widened to 8x32 so the tile-stride body runs twice.  It is
         the smallest kernel that executes the loop more than once, which is precisely what no
         shipped spec did.
+
+[ ] 037 - A backward kernel does not re-stage SLM tiles, so any gradient needing a staged
+          tile's PRIMAL VALUES is silently ZERO.
+
+        FOUND 2026-07-31 (endeavor 145 closing review, prompted by Chris asking why 135/01 was
+        marked non-differentiable).  PRE-EXISTING and unrelated to MMA.
+
+        SYMPTOM: a scalar tiled matmul differentiates and RUNS, but every input gradient comes
+        back 0.0 while the finite difference is correct:
+
+            FAIL: A: analytical=0.0  numerical=0.059999973
+            FAIL: B: analytical=0.0  numerical=0.23999998
+
+        MINIMAL REPRO (no MMA, no tile-stride macro, 4x4):
+
+            (let ((A-tile (make-scratch-matrix float (4 4)))
+                  (B-tile (make-scratch-matrix float (4 4)))
+                  (C-tile (make-scratch-matrix float (4 4))))
+              (load-tile-at A A-tile (0 0))
+              (load-tile-at B B-tile (0 0))
+              (dotimes (i 4) (dotimes (j 4) (dotimes (kk 4)
+                (set! (~ C-tile i j)
+                      (+ (~ C-tile i j) (* (~ A-tile i kk) (~ B-tile kk j)))))))
+              (store-tile-at C-tile C (0 0)))
+
+        BISECTED — these all PASS, which is what isolates it:
+          - tile -> tile scalar OVERWRITE       (set! (~ C i j) (* (~ A i j) 2.0))     -> 2.0 exact
+          - tile -> tile scalar ACCUMULATE      (set! (~ C i j) (+ (~ C i j) (* .. 2.0))) -> 2.0 exact
+          - THREE nested loops, ONE tile operand (* (~ A-tile i kk) 2.0)                -> 8.0 exact
+          - TWO tile operands (the repro above)                                          -> 0.0  WRONG
+
+        ROOT CAUSE: %generate-backward-kernel-ast replays the forward's BINDINGS
+        (`forward-bindings`) but NOT its STATEMENTS.  `make-scratch-matrix` is a binding, so the
+        tiles exist in the backward — but `load-tile-at`, which FILLS them, is a statement and is
+        never replayed.  The staged tiles are therefore EMPTY (zero) in the backward.  The
+        emitted chain rule is textually correct:
+
+            (SET! %T31_ADJ (+ %T31_ADJ (* %T32 %T33_ADJ)))     ; dA += B * dOut
+            (SET! %T32_ADJ (+ %T32_ADJ (* %T31 %T33_ADJ)))     ; dB += A * dOut
+
+        but %T31 / %T32 are replayed as `(~ A-TILE I KK)` / `(~ B-TILE KK J)` — reads of empty
+        tiles — so both products are zero.  It only shows up when a gradient needs the OTHER
+        operand's primal value: with a constant multiplier (the passing cases above) no primal
+        is required, which is exactly why every existing AD-over-tiles spec passes.
+
+        Endeavor 145's MMA path does not hit this because its VJP was written to read the
+        ORIGINAL GLOBAL operands at their load-tile-at origins rather than the staged tiles —
+        a workaround adopted there for this very reason.  The scalar path has no equivalent.
+
+        SUGGESTED FIX: replay the forward's tile-STAGING statements at the head of the backward
+        (the standard "recompute primals" step of reverse-mode AD), or generalize the 145 trick
+        and have the `~`-backward resolve a staged tile read back to its global source.  The
+        first is more general; the second is cheaper and already proven in the MMA VJP.
+
+        DO NOT un-skip 135/01, 135/02, 135/10 until this is fixed.  After the clause-ordering fix
+        of 2026-07-31 they COMPILE, which makes them look differentiable — they are not; they
+        return silent zeros.  Their SKIP-WITH reasons name this bug.

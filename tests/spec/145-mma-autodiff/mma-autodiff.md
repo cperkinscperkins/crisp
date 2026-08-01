@@ -729,3 +729,61 @@ EVERY REMAINING SKIP IS NOW A NON-MMA GAP (6 total):
   1  `C` is a reinterpreted view (make-matrix over the param) — views at the AD boundary.
   1  `to-float` has no AD rule.
   1  negative test (register fit-check), correctly skipped.
+
+
+135's SCRATCH-C-TILE SPECS — two bugs, one fixed, one filed  (2026-07-31)
+========================================================================
+
+Chris: "I don't see anything about the kernel algorithm there that would suggest it is not
+differentiable.  Remember, scratch memory results in implicit kernel args — so if you think of
+the signature as (scratch-A-tile scratch-B-tile scratch-C-tile A B &out C), what's the problem?"
+
+Correct framing, and there was no problem with the kernel.  My skip reason described a SYMPTOM
+("resolves extents~ against a FLOAT") that I had never actually diagnosed.  Diagnosing it found
+two separate bugs.
+
+BUG A — FIXED.  An adjoint-NAME COLLISION.  `%handle-single-value-backward` tested the
+record-ACCESSOR clause before the gradient-inert skip list.  `extents~` ends in a tilde, so
+%is-accessor-p claimed it and %handle-accessor-backward minted a SCALAR adjoint for its source.
+On a scratch tile that scalar `<tile>_ADJ` collided with the TENSOR `<tile>_ADJ` from
+scratch-adj-bindings, and because Crisp's LET is let*-like the scalar (bound second) SHADOWED
+the tensor:
+
+    (C-TILE_ADJ 0.0)                                  <- scalar, shadows the matrix
+    (SET! C-TILE_ADJ (+ C-TILE_ADJ %ANF-T-1_ADJ))
+
+Every later `(~ C-TILE_ADJ i j)` then indexed a float.  It hit ANY differentiable kernel reading
+a scratch tile's extents — every tile-stride matmul, since the expansion reads extents~ to size
+the grid.
+
+The FIRST fix attempt was to hoist the skip clause to the top of the cond.  That cost 11 specs
+(101/05, 101/06, 031/05 — record-field adjoints like PA_X_ADJ went missing), because the skip
+predicate also matches mangled sub-function names the later clauses need to see.  The shipped
+fix guards only the accessor clause.
+
+BUG B — FILED AS 037, NOT FIXED.  With the crash gone the kernel COMPILES — and returns a
+gradient of exactly **0.0** while the finite difference correctly gives 0.06.  A backward kernel
+replays the forward's BINDINGS but not its STATEMENTS: `make-scratch-matrix` is a binding so the
+tiles exist, but `load-tile-at`, which FILLS them, is a statement and is never replayed.  The
+staged tiles are EMPTY in the backward, so dA — which needs B's primal values — reads zeros.
+
+Bisected, and the bisection is what identifies it:
+  tile->tile scalar OVERWRITE .................... 2.0 exact
+  tile->tile scalar ACCUMULATE ................... 2.0 exact
+  THREE nested loops, ONE tile operand ........... 8.0 exact
+  TWO tile operands (a real matmul) .............. 0.0 WRONG
+Only the last needs the OTHER operand's primal value; with a constant multiplier none is
+required, which is exactly why every pre-existing AD-over-tiles spec passes.
+
+145's MMA path never hit this because its VJP reads the ORIGINAL GLOBAL operands at their
+load-tile-at origins rather than the staged tiles — a workaround adopted there for this very
+reason.  The scalar path has no equivalent.
+
+**135/01, 135/02 and 135/10 therefore stay SKIPPED.**  They compile now, which makes them look
+differentiable; they are not.  Un-skipping them would have turned a loud failure into a silently
+wrong gradient in a green suite — the single most valuable thing the numeric check bought here.
+Spec `14-scratch-tile-matmul-vjp` is kept as the record, with its VERIFY-AUTODIFF commented out
+and the measured wrong value written down.
+
+Suites after both changes: E2E 944/944, --differentiate 944/944, unit 253/253, negative 211/211,
+145 at 14/14 with four numeric gradient checks.

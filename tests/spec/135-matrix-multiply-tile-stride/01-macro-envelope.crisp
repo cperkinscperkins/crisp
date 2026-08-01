@@ -12,7 +12,7 @@
 ;; Real matmul CORRECTNESS is proved on metal by 02 (neutral, both backends) and the
 ;; MMA twins 03 (CUDA) / 04 (BMG).
 ;;
-;; SKIP-WITH[--differentiate]: "a SCRATCH C-tile matmul does not survive the AD path: its tile-stride backward resolves extents~ / ~ against a FLOAT. Gets further since 145 P8 pre-lowers the macro, but is still an open gap -- unrelated to MMA"
+;; SKIP-WITH[--differentiate]: "BUG 037: the backward does not re-stage SLM tiles, so a gradient needing another staged tile's PRIMAL values reads an empty tile and comes back SILENTLY ZERO. It COMPILES since the 2026-07-31 clause-ordering fix -- do not mistake that for differentiable"
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 

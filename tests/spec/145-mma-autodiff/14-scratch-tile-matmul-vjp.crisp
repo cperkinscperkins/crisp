@@ -1,0 +1,72 @@
+;; SCRATCH-C-TILE matmul — numeric proof, and the clause-ordering bug it exposed.
+;;
+;; No MMA anywhere in this kernel: a plain scalar tiled matmul whose C-tile is an ordinary SLM
+;; scratch matrix.  It is here because Chris pointed at 135/01 and said "I don't see anything
+;; about the kernel algorithm that would suggest it is not differentiable" — and framed the
+;; answer: scratch tiles become IMPLICIT KERNEL ARGS, so the signature is really
+;; (A-tile B-tile C-tile A B &out C).  Every construct in it is bread-and-butter AD that
+;; endeavor 111 already handles.  He was right; the skip reason was a symptom I had never
+;; diagnosed.
+;;
+;; THE BUG.  `%handle-single-value-backward` tested the record-ACCESSOR clause BEFORE the
+;; gradient-inert skip list.  `extents~` ends in a tilde, so %is-accessor-p claimed it and
+;; %handle-accessor-backward minted a SCALAR adjoint for its source.  On a scratch tile that
+;; scalar `<tile>_ADJ` collided with the TENSOR `<tile>_ADJ` from scratch-adj-bindings — and
+;; since Crisp's LET is let*-like, the scalar (bound second) SHADOWED the tensor:
+;;
+;;     (C-TILE_ADJ 0.0)                                    <- scalar, shadows the matrix
+;;     (SET! C-TILE_ADJ (+ C-TILE_ADJ %ANF-T-1_ADJ))
+;;
+;; Every later `(~ C-TILE_ADJ i j)` was then indexing a float, which is all the errors
+;; "No matching function overload for '~' / 'EXTENTS~' with argument types (FLOAT ...)" ever
+;; meant.  It hit ANY differentiable kernel that reads a scratch tile's extents — that is,
+;; every tile-stride matmul, since the expansion reads extents~ to size the grid.  Fixed by
+;; testing gradient-inertness FIRST: inertness must win over shape-based dispatch.
+;;
+;; WHAT THE NUMERIC CHECK THEN FOUND — BUG 037.  With the crash fixed, the kernel compiles and
+;; runs and returns a gradient of exactly 0.0 (the finite difference correctly gives 0.06).  A
+;; backward kernel replays the forward's BINDINGS but not its STATEMENTS: `make-scratch-matrix`
+;; is a binding so the tiles exist, but `load-tile-at` — which FILLS them — is a statement and is
+;; never replayed, so the staged tiles are EMPTY in the backward.  dA needs B's primal values and
+;; reads zeros.  Bisected: overwrite, accumulate, and three-deep loops with ONE tile operand all
+;; give exact gradients; only TWO tile operands fail, because only then is a primal needed.
+;; 145's MMA path dodges this by reading the ORIGINAL GLOBAL operands instead of the staged
+;; tiles.  See plan/bugs.md #037.
+;;
+;; This spec is kept as the record: compiling is NOT differentiating.
+;;
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;; SKIP-WITH[--differentiate]: "BUG 037 -- this kernel COMPILES but its gradient is silently ZERO"
+;;
+;; The VERIFY-AUTODIFF that belongs here is left commented out deliberately: it FAILS, and it is
+;; the evidence for BUG 037 rather than a regression to chase.  Restore it when 037 is fixed:
+;;   VERIFY-AUTODIFF: A=4x4@0:0.01 B=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=0.06 output-mat=4x4
+;;   measured 2026-07-31: analytical=0.0  numerical=0.059999973
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel scratch_tile_matmul (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((A-tile (make-scratch-matrix float (4 4)))
+        (B-tile (make-scratch-matrix float (4 4)))
+        (C-tile (make-scratch-matrix float (4 4)))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      ;; The macro does NOT auto-reset a SCRATCH C-tile — the user owns init (135/01's
+      ;; documented contract, and why BUG 036's fix is register-tile-only).
+      (when (= grid-k (to-ulong 0))
+        (dotimes (i 4)
+          (dotimes (j 4)
+            (set! (~ C-tile i j) 0.0))))
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (dotimes (i 4)
+        (dotimes (j 4)
+          (dotimes (kk 4)
+            (set! (~ C-tile i j)
+                  (+ (~ C-tile i j)
+                     (* (~ A-tile i kk) (~ B-tile kk j)))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

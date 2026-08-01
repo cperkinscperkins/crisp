@@ -1428,6 +1428,7 @@
                                       (list var-adj (%mma-ad-adj-init (cadr form))))))
                      (result `(let ,(append scratch-adj-bindings local-bindings)
                                 ,@(nreverse backward-forms))))
+                (log:debug "145: assembled backward AST:~%~s" result)
                 result))))))))
 
 ;;; ===================================================================
@@ -1592,7 +1593,22 @@
          (symbolp (car expr))
          (gethash (car expr) *differentiable-functions*))
      (%handle-sub-fn-call-backward v expr emit-fn local-adj-fn hof-handler-fn))
-   ((%is-accessor-p expr)
+   ;; An accessor that is GRADIENT-INERT must not be claimed here.  `extents~` ends in a
+   ;; tilde, so %is-accessor-p takes it and %handle-accessor-backward mints a SCALAR adjoint
+   ;; for its source.  On a scratch tile that scalar `<tile>_ADJ` COLLIDES with the tensor
+   ;; `<tile>_ADJ` from scratch-adj-bindings, and since Crisp's LET is let*-like the scalar
+   ;; (bound second) SHADOWS the tensor — after which every `(~ <tile>_ADJ i j)` indexes a
+   ;; float.  That is what "No matching function overload for '~' / 'EXTENTS~' with argument
+   ;; types (FLOAT ...)" meant, and it hit any differentiable kernel reading a scratch tile's
+   ;; extents, i.e. every tile-stride matmul.
+   ;;
+   ;; Guarded HERE rather than by hoisting the skip clause to the top of the cond: that was
+   ;; tried first and cost 11 specs (101/05, 101/06, 031/05 — record-field adjoints like
+   ;; PA_X_ADJ went missing), because the skip predicate also matches mangled sub-function
+   ;; names that the clauses below need to see.
+   ((and (%is-accessor-p expr)
+         (not (and (consp expr) (symbolp (car expr))
+                   (%backward-skip-fn-p (car expr)))))
      (%handle-accessor-backward v expr emit-fn local-adj-fn adjoint-map))
    ((and (consp expr) (symbolp (car expr))
          (string-equal (symbol-name (car expr)) "%CONSTRUCT-STRUCT")
@@ -1614,14 +1630,14 @@
      (%handle-value-let-backward v expr adjoint-map emit-fn local-adj-fn
                                  :hof-handler-fn hof-handler-fn :error-on-unknown error-on-unknown
                                  :tensor-inputs-ht tensor-inputs-ht :scratch-tile-syms scratch-tile-syms))
-   ((and (consp expr) (symbolp (car expr))
-         (%backward-skip-fn-p (car expr)))
-     nil)
    ;; Endeavor 120: gradient-inert calls.
    ;;  - *inert-functions*: user functions with no differentiable params
    ;;    (zero gradient), recorded by %generate-backward-function-ast.
    ;;  - the compile-time uniformity intrinsics, which fold to constants and
    ;;    carry no gradient.
+   ((and (consp expr) (symbolp (car expr))
+         (%backward-skip-fn-p (car expr)))
+     nil)
    ((and (consp expr) (symbolp (car expr))
          (or (gethash (car expr) *inert-functions*)
              (member (symbol-name (car expr))
