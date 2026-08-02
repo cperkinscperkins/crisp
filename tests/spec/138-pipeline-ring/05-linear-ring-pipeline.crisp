@@ -9,7 +9,7 @@
 ;; :linear runs on any sm_80+ (cp.async is Ampere+), so this needs no sm_90 / TMA.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "ring/pipelining is forward-only; tile AD is a later chapter"
+;; SKIP-WITH[--differentiate]: "Ring PIPELINING (as opposed to ring STAGING, which now differentiates -- see 145/18) needs a rule this kernel does not yet have: the ring is loaded from TWO sites with DIFFERENT origins (prologue and steady state), so recovering a slot primal by its staging origin -- the BUG 037 mechanism -- would silently take the prologue origin and give a WRONG gradient. The MMA VJP correctly DECLINES rather than guessing."
 ;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view + MMA surface it (plan/bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx] : validate-ptx-linear-ring
 

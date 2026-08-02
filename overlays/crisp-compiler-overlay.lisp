@@ -2686,3 +2686,127 @@
           (if (or (string= op-name "~") (string= op-name "~REF~"))
               (analyze-function-call op expr env context location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+
+
+;;; ======================================================================
+;;; 138 pipeline rings under --differentiate.
+;;;
+;;; Every 138 spec carried SKIP-WITH[--differentiate], and 03-06 failed with a raw Lisp type
+;;; error rather than a Crisp diagnostic:
+;;;
+;;;     The value (CRISP.COMPILER:RING-GET TILES 0) is not of type SYMBOL
+;;;
+;;; Nothing about a ring is undifferentiable.  A ring is rank+1 scratch and `ring-get` is a pure
+;;; VIEW selector — endeavor 138 says so itself, in the comment above `target-form` in
+;;; analyze-aref-expression: a compound tensor target is "a pure view constructor (make-view:
+;;; address arithmetic, no side effects)".  The forward path was taught that; the AD path was
+;;; not.  Two gaps, both mechanical:
+;;;
+;;;   1. %tlc-bwd-adj-name assumed its argument was a SYMBOL and called symbol-name on it, so a
+;;;      `(ring-get R i)` tile argument to load-tile / store-tile blew up.
+;;;   2. %augment-scratch-adj-bindings did not know the ring constructors, so no adjoint ring
+;;;      was allocated even once the naming worked.
+;;;
+;;; THE RULE, and it is the general one: THE ADJOINT OF A VIEW IS THE SAME VIEW OF THE ADJOINT.
+;;; `(ring-get TILES 0)` has adjoint `(ring-get TILES_ADJ 0)`.  This holds because ring-get is
+;;; pure address arithmetic: slot i of the adjoint ring is exactly the adjoint of slot i.  It
+;;; needs no new backward machinery — the existing %load-tile-at-bwd / %store-tile-at-bwd edges
+;;; then apply unchanged, which is why this is a naming fix and not a chapter of its own.
+;;; ======================================================================
+
+;; src/autodiff.lisp
+(defun %tlc-bwd-adj-name (sym inputs outputs local-adj-fn kernel-pkg)
+  "Returns the backward-pass adjoint for a forward tile argument SYM:
+     - SYM in INPUTS or OUTPUTS   → <SYM>_GRAD  (kernel param)
+     - other symbol (let-bound)   → <SYM>_ADJ   (direct intern; NOT via local-adj-fn, which
+       would add the sym to the adjoint-map and make the wrapping let scalar-initialize it —
+       wrong for a tensor adjoint.  The auto-allocated <var>_ADJ make-scratch-* binding is the
+       only initializer needed.)
+     - a VIEW form (ring-get R i) → the same view of R's adjoint, (ring-get <R-adj> i).
+
+   The view case is endeavor 138's rings.  ring-get is a pure view selector — address
+   arithmetic, no side effects — so slot i of the adjoint ring IS the adjoint of slot i, and
+   recursing on the ring lets the ordinary %load-tile-at-bwd / %store-tile-at-bwd edges apply
+   with no new machinery.  Recursion (rather than a single level) costs nothing and keeps the
+   rule true for a view of a view.
+
+   Anything else is a compound target we have no adjoint rule for.  That now raises a message
+   naming the form instead of letting symbol-name signal `The value (RING-GET ...) is not of
+   type SYMBOL`, which told the user nothing about what to do."
+  (declare (ignore local-adj-fn))
+  (cond
+   ((and (consp sym) (symbolp (car sym))
+         (string-equal (symbol-name (car sym)) "RING-GET"))
+     (list (car sym)
+           (%tlc-bwd-adj-name (second sym) inputs outputs nil kernel-pkg)
+           (third sym)))
+   ((not (symbolp sym))
+     (error "No adjoint rule for the tile expression ~s.  A tile argument must be a tensor ~
+             symbol or a view of one (e.g. (ring-get RING slot))." sym))
+   ((or (member sym inputs) (member sym outputs))
+     (intern (format nil "~A_GRAD" (symbol-name sym))
+             (or kernel-pkg (symbol-package sym))))
+   (t
+     (intern (format nil "~A_ADJ" (symbol-name sym))
+             (or kernel-pkg (symbol-package sym))))))
+
+;; src/autodiff.lisp
+(defun %augment-scratch-adj-bindings (bindings kernel-pkg)
+  "For each binding (var (make-scratch-X ...)), inject a paired (var_ADJ (make-scratch-X ...))
+   binding right after.  For other bindings, pass through unchanged.  Promotes element type
+   (e.g., ulong -> double) so gradients use correct FP precision.
+
+   Endeavor 145 P3b: MAKE-REGISTER-TILE joins the list, so a register accumulator declared in
+   a NESTED let gets its paired adjoint tile the same way a scratch tile does.  (A top-level
+   register tile is handled by the scratch-adj-bindings collection in generate-backward-walk.)
+
+   Endeavor 138 rings: the RING constructors join too.  A ring is rank+1 scratch, so its adjoint
+   is simply a ring of the same shape, and (ring-get R_ADJ i) is then the adjoint of
+   (ring-get R i) — see %tlc-bwd-adj-name.  Note the BARRIER ring (make-async-barrier-ring) is
+   deliberately NOT here: barriers are gradient-inert scheduling objects, and a barrier argument
+   reaches the backward only as a :barrier key-arg, which the load/store-tile-at clauses ignore."
+  (loop for b in bindings
+          if (and (consp b) (= (length b) 2) (symbolp (car b))
+                  (consp (cadr b)) (symbolp (caadr b))
+                  (member (symbol-name (caadr b))
+                          '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX"
+                            "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL"
+                            "MAKE-REGISTER-TILE"
+                            "MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
+                            "MAKE-SCRATCH-TENSOR-RING")
+                          :test #'string=))
+          append (list b
+                       (let* ((var (car b))
+                              (var-adj (intern (format nil "~A_ADJ" (symbol-name var))
+                                               (or kernel-pkg (symbol-package var)))))
+                         (list var-adj (%mma-ad-adj-init (cadr b)))))
+          else collect b))
+
+;; src/autodiff.lisp
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
+
+   Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS are gradient-inert shape queries.
+   Endeavor 145 P3b: MAKE-REGISTER-TILE is an ALLOCATOR, gradient-inert like the
+   make-scratch-* constructors above it — its paired adjoint tile is created by
+   %mma-ad-adj-init, not by the walk.
+
+   Endeavor 138 rings: the SCRATCH-RING constructors are allocators exactly as their non-ring
+   forms are (a ring is rank+1 scratch), and their paired adjoint rings likewise come from
+   %augment-scratch-adj-bindings rather than from the walk.  The BARRIER ring is inert for a
+   different reason: a barrier carries no value, only ordering.  Without these, 138/03 and
+   138/06 failed with
+
+       Function MAKE-ASYNC-BARRIER-RING is not differentiable.  Wrap the kernel in
+       'forward-only' if differentiation is not needed...
+
+   which is advice pointing away from the fix — the kernel IS differentiable; a scheduling
+   object simply has no gradient.  MAKE-ASYNC-BARRIER is listed alongside it: the plain barrier
+   only avoided this by never reaching the walk as a call, which is luck rather than design."
+  (or (let ((name (symbol-name fn-sym)))
+        (member name '("MAKE-REGISTER-TILE"
+                       "MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
+                       "MAKE-SCRATCH-TENSOR-RING"
+                       "MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING")
+                :test #'string=))
+      (%backward-skip-fn-p-145p1 fn-sym)))
