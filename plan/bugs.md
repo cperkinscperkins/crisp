@@ -783,5 +783,104 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
           %register-hof-differentiable-function and by the companion generator), so the `info`
           the walk reads may lack :tensor-param-indices.  NOT yet confirmed.
 
-        DO NOT un-skip 137/04 until layers 2 and 3 are fixed: it compiles, which makes it look
-        differentiable, and it returns silent zeros.
+        RESOLVED 2026-08-01 (the AD half) — by INLINING instead of repairing the companion.
+
+        Endeavor 111 Phase 1c had already put the AD splice in the right place: load-tile-at ->
+        %load-tile-at-bwd, store-tile-at -> %store-tile-at-bwd.  The kernel's `store-tile` was
+        already producing its backward edge.  The ONLY missing edge was the `load-tile` INSIDE
+        the sub-function, which the walk never saw.  So the backward now inlines the callee's
+        body at the call site (substitute actuals for formals, ANF, flatten) and walks it with
+        the ORDINARY STATEMENT walker.  Every per-construct rule then applies inside a
+        sub-function exactly as in a kernel, for free and for all of them.
+
+        This dissolves layers 2 and 3 rather than fixing them: both are properties of the _GRAD
+        companion path, which inlining does not use.  The companion is KEPT as the fallback —
+        still the right lowering for scalar math sub-functions, and MANDATORY for FFI, where
+        there is no body to inline.
+
+        A FOURTH layer surfaced during the fix and is worth recording, because it is the same
+        mistake in yet another costume.  %generate-backward-companion-ast-body rejects a callee
+        that writes through a tensor parameter:
+
+            Cannot differentiate function SCALE_INTO: it mutates parameter DST via cell write.
+            This function is not valid in a differentiable kernel.  Unregistering.
+
+        — and the UNREGISTERING then hid the call from the walk again.  The message overstates
+        its case: writing through a tensor param is what a staging or fill sub-function is FOR,
+        and it is not a problem for the derivative, only for a lowering that threads gradients
+        through return values and &out grad-handles.  Inlining handles it natively: after
+        substitution it is `(set! (~ C i j) ...)` on the caller's symbol.  So inlinability is now
+        keyed on the RETAINED BODY, not on *differentiable-functions* — a failed companion must
+        not veto the more expressive lowering.
+
+        Layer 2 (%crisp-tensor-param-type-p not resolving `def-type` aliases) was fixed anyway:
+        it is real on its own, since scalar sub-functions do still use companions.
+
+        MEASURED: the analytical gradient is now CORRECT — 2.0, against a hand-derived 2.0 — on
+        a locally-runnable analogue of 137/04 (spec 145/17).  Suites stay green: 944/944 both
+        ways, 253 unit, 211 negative.
+
+        STILL BLOCKED, on BUG 039 rather than on AD.  145/17's FINITE DIFFERENCE reads 0.0
+        because the FORWARD kernel is wrong: 2-D indexing inside a sub-function silently drops
+        the second index (see 039).  The analytical side is unaffected because the inlined body
+        is differentiated in the CALLER's frame, where the tensors carry mangled types and take
+        the correct 2-D path.  So 038's own machinery is done and verified as far as it can be.
+
+        DO NOT un-skip 137/04 until 039 is fixed: it compiles, which makes it look
+        differentiable, and its forward is silently wrong.
+
+[ ] 039 - 2-D (and N-D) tensor indexing INSIDE a def-function silently drops all but the FIRST
+        index when the parameter type is declared through a `def-type` ALIAS.  Not an AD bug:
+        the wrong element is read and written in ORDINARY forward code, on hardware, with no
+        error.  Found while fixing 038, 2026-08-01.
+
+        REPRO — a sub-function that fills a 4x4 matrix writes only FOUR cells:
+
+            (def-type mat-t (matrix float :address-space :global :align :compact
+                                          :contiguous-term :row-major))
+            (def-function fill_seven (src dst)
+              (declare #'(mat-t mat-t => ulong))
+              (dotimes (i 4) (dotimes (j 4) (set! (~ dst i j) 7.0)))
+              (to-ulong 0))
+
+        Read back on BMG: sum = 28.0, i.e. 4 cells, not 112.0 / 16 cells.  The identical body
+        written directly in a KERNEL gives the correct 16.  Both loops are fine; the ADDRESS is
+        wrong.  Emitted IR for the sub-function:
+
+            %i7        = load i32, ptr %i            ; i only — j is never read
+            %t_flat    = sext i32 %i7 to i64
+            %t_byte    = mul i64 %t_flat, sizeof(float)
+            %t_ptr     = getelementptr ... i64 %t_byte
+            store float 7.0, ptr addrspace(1) %t_ptr
+
+        so `(~ dst i j)` means `dst[i]`.  The same expression in a kernel emits the proper
+        Horner form (mul by the row extent, then add j).
+
+        ROOT CAUSE.  analyze-aref-expression (src/analysis/structs.lisp:405) dispatches on
+        (%get-tensor-arity array-type).  %get-tensor-arity (:250) recognises the list form
+        `(tensor elem N ...)` and mangled `TENSOR_*` symbols, but NOT a `def-type` alias, so it
+        returns NIL and the analyzer falls through to the "Cell / array path: single index",
+        which uses only the first index and DISCARDS the rest.  Confirmed by the debug log: a
+        kernel logs `AREF compact path (no offset): A (N=2)`, the sub-function logs nothing.
+        %get-tensor-align (:290) has the identical hole.
+
+        Why sub-functions specifically: kernel parameters are exploded and reassembled, so their
+        semantic type is the mangled `TENSOR_*` symbol; a sub-function parameter keeps whatever
+        the declare said, i.e. the alias.
+
+        Note the failure is silent ONLY because arity is UNKNOWN — line 414 already errors on a
+        known-but-mismatched arity.  A tightened version of that check would have caught this at
+        compile time.
+
+        FIX DIRECTION (not yet applied — wider blast radius than the AD overlay, wants review).
+        `canonicalize-type-specifier` (src/types/validation.lisp:318) already resolves aliases
+        and handles CELL/VECTOR/MATRIX/TENSOR, so the surgical change is to canonicalize the
+        symbol case in %get-tensor-arity and %get-tensor-align before giving up.  The
+        alternative — canonicalising parameter types once at declaration, so sub-function params
+        carry the same mangled type kernels do — is more invasive but would close the whole
+        FAMILY of these holes at once.  This is the THIRD alias hole found in two days
+        (%crisp-tensor-param-type-p was the AD one), which argues for the second option.
+
+        SCOPE: any def-function taking an aliased multi-dimensional tensor and indexing it with
+        `~`.  Aliases are the documented style and are used throughout tests/spec, so this is
+        likely reachable from well beyond 137/04.

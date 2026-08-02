@@ -1315,18 +1315,32 @@
                                     ;; grad-handles, so the chain rule lands inside the sub-fn.
                                     ;; A binding never matches here: its CAR is the bound temp,
                                     ;; not a registered function.
+                                    ;; The second disjunct matters: a sub-function whose companion
+                                    ;; could not be built has been UNREGISTERED, so the gethash
+                                    ;; alone would miss it and the call would be dropped exactly
+                                    ;; as before.  A retained body is sufficient on its own.
                                     ((and (consp form) (symbolp (car form))
-                                          (let ((info (gethash (car form) *differentiable-functions*)))
-                                            (and info (not (getf info :foreign)))))
+                                          (or (let ((info (gethash (car form) *differentiable-functions*)))
+                                                (and info (not (getf info :foreign))))
+                                              (%ad-sub-fn-inlinable-p (car form))))
                                       (let* ((fn (car form))
                                              (info (gethash fn *differentiable-functions*)))
                                         (log:debug "038: void sub-fn call backward for ~a" fn)
-                                        (%emit-sub-fn-backward fn (cdr form)
-                                                               (getf info :bkwd-name)
-                                                               nil
-                                                               (getf info :n-float-params)
-                                                               (symbol-package fn)
-                                                               emit-fn #'local-adj "BW")))
+                                        ;; Prefer INLINING the callee's body: it needs no
+                                        ;; companion, so it is immune to every way companion
+                                        ;; generation can quietly decline, and it gives the
+                                        ;; body's statements (load-tile above all) the same
+                                        ;; treatment they would get in a kernel.  Fall back to
+                                        ;; the companion when there is no body to inline —
+                                        ;; notably FFI, and recursion.
+                                        (unless (%ad-inline-sub-fn-backward fn (cdr form)
+                                                                            emit-fn #'process-form)
+                                          (%emit-sub-fn-backward fn (cdr form)
+                                                                 (getf info :bkwd-name)
+                                                                 nil
+                                                                 (getf info :n-float-params)
+                                                                 (symbol-package fn)
+                                                                 emit-fn #'local-adj "BW"))))
 
                                     ((and (listp form) (= (length form) 2) (symbolp (car form)))
                                       (%handle-single-value-backward (car form) (cadr form)
@@ -2245,3 +2259,224 @@
       (%ad-check-unresolved-primals augmented-bindings backward-body)
       (funcall emit-fn `(let ,(%ad-rewrite-primal-bindings augmented-bindings)
                           ,@backward-body)))))
+
+
+;;; ======================================================================
+;;; BUG 038 — gradients through a VOID SUB-FUNCTION call, by INLINING.
+;;;
+;;; 137/04's kernel copies a 4x4 tile of A into C through a staging sub-function.  That is the
+;;; identity, dA = dC, and there is nothing in it that is not differentiable — yet it returned a
+;;; gradient of exactly 0.0.  Three separate silent failures stacked on the one call; see
+;;; tests/spec/145-mma-autodiff/17-void-subfn-vjp-bmg.crisp for the full account.
+;;;
+;;; THE SHAPE OF THE FIX.  Endeavor 111 Phase 1c already put the AD splice in the right place:
+;;; `load-tile-at` -> %load-tile-at-bwd and `store-tile-at` -> %store-tile-at-bwd.  The kernel's
+;;; `store-tile` already produced its backward edge.  The ONLY missing edge was the `load-tile`
+;;; hidden inside the sub-function, which the walk never saw.  So rather than repair the _GRAD
+;;; companion path, we stop needing it: INLINE the callee's body at the call site and walk it
+;;; with the ordinary statement walker.  Every per-construct rule then applies inside a
+;;; sub-function exactly as it does inside a kernel, automatically and for all of them.
+;;;
+;;; This is the endeavor-145 lesson applied again: the previous design derived a sub-function's
+;;; backward THROUGH one chosen realisation (generate a companion, thread grad-outs through its
+;;; &out params, call it), and that realisation's requirements — a recognisable tensor param
+;;; type, a well-formed companion, correct tensor-param indices — became de-facto conditions for
+;;; a gradient existing at all.  They are conditions on the LOWERING, not on the derivative.
+;;; Inlining needs none of them.  The companion path is KEPT as the fallback: it is still the
+;;; right lowering for scalar math sub-functions (one copy of the code, not one per call site)
+;;; and it is MANDATORY for FFI, where there is no body to inline.
+;;; ======================================================================
+
+;; src/autodiff.lisp
+(defun %crisp-tensor-param-type-p (pd-type)
+  "Returns T if PD-TYPE is a tensor (float-element or integer-element) at the sub-function
+   level.  Used to decide whether a sub-fn param contributes a tensor grad-out (vs a scalar
+   delta).
+
+   Handles four forms:
+   - List form: (tensor float 1 ...) — caught by the existing helpers.
+   - Mangled-template-name symbol: TENSOR_FLOAT_1_GLOBAL_COMPACT_LAST — produced by Crisp's
+     template instantiation.  Detected by name prefix.
+   - Plain symbol naming a registered tensor type.
+   - BUG 038: a user `def-type` ALIAS of a tensor/vector/matrix type.  The docstring always
+     claimed the third case was handled, but nothing resolved aliases, so
+
+         (def-type mat-t (matrix float ...))
+         (def-function stage (src tile) (declare #'(mat-t tile-t => ulong)) ...)
+
+     looked like a function with NO differentiable parameters at all.  %generate-backward-
+     function-ast then took its `(zerop n-float-params)` early return, which does not merely skip
+     the companion — it marks the function gradient-INERT, so calls to it are skipped in the
+     backward walk deliberately and silently, as a documented zero.  Aliasing a parameter type is
+     not a semantic change, so it must not be an AD-visible one.  %is-tensor-alias already
+     existed for precisely this question."
+  (or (%crisp-float-tensor-type-p pd-type)
+      (%crisp-integer-tensor-type-p pd-type)
+      (and (symbolp pd-type)
+           (let ((name (symbol-name pd-type)))
+             (and (>= (length name) 7)
+                  (string-equal "TENSOR_" (subseq name 0 7)))))
+      (%is-tensor-alias pd-type)))
+
+;; src/autodiff.lisp
+(defun %generate-backward-function-ast (name params declarations body-forms)
+  "Generates the backward companion (def-function NAME_GRAD ...) for a differentiable user
+   function.
+
+   BUG 038: additionally RETAINS the callee's parameter symbols and body in
+   *differentiable-hof-store*, so the backward walk can inline it at a call site instead of
+   calling a companion.  Stored for every differentiable def-function, not just HOFs, and stored
+   BEFORE the gradient-inert early return — a function can be inline-differentiable even when it
+   has no companion, which is exactly the 137/04 case.  Reusing the HOF store rather than adding
+   a global keeps it on the existing initialize-compiler clrhash, so a body cannot leak between
+   two specs compiled in the same image (run-specs runs in-process).  The HOF reader is not
+   disturbed: it is only reached when *differentiable-functions* says :hof t."
+  (log:debug "%%GBFA called for ~a is-system=~a" name (member '(crisp-system-generated) declarations :test #'equal))
+  (when (%trivial-accessor-body-p body-forms)
+        (log:info "AUTODIFF: ~a is a trivial field-extraction accessor — skipping _GRAD generation." name)
+        (return-from %generate-backward-function-ast nil))
+  (let* ((pkg (symbol-package name)))
+    (multiple-value-bind (env return-types)
+        (parse-function-declarations params declarations)
+      (let* ((float-param-entries
+              (loop for pd in env
+                      when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                (%crisp-float-type-p (parameter-def-type pd)))
+                    collect pd))
+             (float-param-syms (mapcar #'parameter-def-name float-param-entries))
+             (record-param-info (%collect-record-param-info env pkg))
+             (active-set (%active-scalar-param-set (mapcar #'parameter-def-name env) body-forms))
+             (all-diff-param-syms-for-return
+              (%collect-all-diff-param-syms-for-return env record-param-info active-set))
+             (record-param-field-adjs-ht (%build-record-param-field-adjs-ht record-param-info))
+             (n-float-params
+              (loop for pd in env
+                      when (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                      sum (%count-active-contributions (parameter-def-type pd)
+                                                       (parameter-def-name pd) active-set)))
+             (return-types-non-void (remove nil return-types))
+             (n-return (length return-types-non-void))
+             (fn-param-entries
+              (loop for pd in env for i from 0
+                      when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                (%crisp-function-type-p (parameter-def-type pd)))
+                    collect (cons i pd)))
+             (is-hof (consp fn-param-entries)))
+
+        ;; BUG 038: retain the body for inline differentiation.  Cheap, additive, and done
+        ;; before any early return.  &OUT is a marker in the parameter list rather than a
+        ;; parameter, so it is dropped to keep :param-syms positionally aligned with the call
+        ;; arguments the walk will substitute.
+        (unless is-hof
+          (setf (gethash name *differentiable-hof-store*)
+                (list :param-syms (loop for pd in env
+                                          unless (string-equal (symbol-name (parameter-def-name pd)) "&OUT")
+                                        collect (parameter-def-name pd))
+                      :body-forms body-forms
+                      :inlinable t))
+          (log:debug "038: retained body of ~a for inline backward (~a forms)" name (length body-forms)))
+
+        (when (and (zerop n-float-params)
+                   (not (%has-tensor-diff-param-p env)))
+              (log:info "AUTODIFF: ~a has no differentiable params — skipping _GRAD generation (marking gradient-inert)." name)
+              (setf (gethash name *inert-functions*) t)
+              (return-from %generate-backward-function-ast nil))
+
+        (if is-hof
+            (%register-hof-differentiable-function name env float-param-syms fn-param-entries n-return body-forms)
+            (%generate-backward-companion-ast-body name params env declarations body-forms pkg n-float-params n-return
+                                                   return-types-non-void record-param-info record-param-field-adjs-ht all-diff-param-syms-for-return))))))
+
+;; src/autodiff.lisp
+(defvar *ad-inlining-fns* nil
+  "Names of sub-functions currently being inlined by the backward walk, innermost last.
+   Guards against unbounded expansion on a recursive or mutually-recursive call.")
+
+;; src/autodiff.lisp
+(defun %ad-sub-fn-inlinable-p (fn)
+  "Returns T if FN's body was retained and can be inlined into a backward walk.
+   NIL for foreign functions (no body exists), for HOFs (which have their own inline path keyed
+   on the function-valued parameter), and for anything already on the inline stack."
+  (let ((info (gethash fn *differentiable-functions*))
+        (store (gethash fn *differentiable-hof-store*)))
+    (and info
+         (not (getf info :foreign))
+         (not (getf info :hof))
+         (getf store :inlinable)
+         (getf store :body-forms)
+         (not (member fn *ad-inlining-fns* :test #'eq)))))
+
+;; src/autodiff.lisp
+(defun %ad-inline-sub-fn-backward (fn args emit-fn process-form-fn)
+  "BUG 038: emits the backward for a call to differentiable sub-function FN by INLINING its body
+   at the call site and walking it with PROCESS-FORM-FN, the caller's ordinary STATEMENT walker.
+
+   Why the statement walker and not %handle-single-value-backward.  The existing inline path,
+   hof-inline-backward, walks only two-element value bindings, because a HOF's inlined body is
+   consumed for its VALUE.  A staging sub-function has no value worth differentiating — its
+   whole gradient content is in its STATEMENTS, `load-tile` above all.  Routing through
+   process-form-fn means every construct the walker already knows (load/store-tile-at, set!,
+   let, dotimes, if/when, nested calls) applies inside a sub-function body for free, and stays
+   applying as the walker grows.
+
+   The body is substituted (formals -> actual call arguments), ANF-transformed and flattened
+   exactly as hof-inline-backward does, so the forms handed to the walker are the same shape it
+   sees for a kernel body.  Adjoints are NOT renamed: substitution has already rewritten the
+   callee's parameter references to the caller's symbols, so `(~ dst i j)` becomes `(~ C i j)`
+   and the walker mints C_ADJ in the caller's frame, which is where the gradient must land.
+
+   Statements are walked in reverse, matching the PROGN clause's convention that the CALLER
+   reverses.  Returns T when it emitted, NIL when FN cannot be inlined (the caller then falls
+   back to the _GRAD companion path)."
+  (unless (%ad-sub-fn-inlinable-p fn)
+    (return-from %ad-inline-sub-fn-backward nil))
+  (let* ((store (gethash fn *differentiable-hof-store*))
+         (param-syms (getf store :param-syms))
+         (body-forms (getf store :body-forms)))
+    (when (/= (length param-syms) (length args))
+      ;; Arity disagreement means the substitution would be positionally wrong, which would
+      ;; produce a confidently incorrect gradient rather than a missing one.  Decline instead.
+      (log:warn "038: not inlining ~a — ~a params but ~a args" fn (length param-syms) (length args))
+      (return-from %ad-inline-sub-fn-backward nil))
+    (let* ((*ad-inlining-fns* (cons fn *ad-inlining-fns*))
+           (subst-alist (loop for p in param-syms for a in args collect (cons p a)))
+           (subst-body (mapcar (lambda (f) (%subst-form f subst-alist)) body-forms))
+           (anf-body (mapcar #'anf-transform subst-body))
+           (flat (flatten-anf-body anf-body)))
+      (log:debug "038: inlining ~a for backward — ~a body form(s) -> ~a flat form(s)"
+                 fn (length body-forms) (length flat))
+      (dolist (f (reverse flat))
+        (funcall process-form-fn f emit-fn))
+      t)))
+
+;; src/autodiff.lisp
+(defun %ad-sub-fn-inlinable-p (fn)
+  "Returns T if FN's body was retained and can be inlined into a backward walk.
+
+   Keyed on the RETAINED BODY rather than on *differentiable-functions*, deliberately.  When
+   %generate-backward-companion-ast-body cannot build a companion it UNREGISTERS the function:
+
+       Cannot differentiate function SCALE_INTO: it mutates parameter DST via cell write.
+       This function is not valid in a differentiable kernel.  Unregistering.
+
+   That message overstates its case.  Writing through a tensor parameter is what a staging or
+   fill sub-function is FOR, and it is not a problem for the derivative — only for the companion
+   lowering, whose chain rule threads gradients through returned values and &out grad-handles
+   and so has nowhere to put an in-place write.  Inlining has no such difficulty: after
+   substitution the write is `(set! (~ C i j) ...)` on the CALLER's symbol, which is the same
+   form %gfw-process-set! already differentiates inside a kernel.  So a failed companion must
+   not veto the inline path — otherwise the more expressive lowering is disabled by the less
+   expressive one's limits.
+
+   Excluded: foreign functions (no body exists), HOFs (their own inline path is keyed on the
+   function-valued parameter), functions deliberately marked gradient-inert, and anything
+   already on the inline stack."
+  (let ((info (gethash fn *differentiable-functions*))
+        (store (gethash fn *differentiable-hof-store*)))
+    (and store
+         (getf store :inlinable)
+         (getf store :body-forms)
+         (not (getf info :foreign))
+         (not (getf info :hof))
+         (not (gethash fn *inert-functions*))
+         (not (member fn *ad-inlining-fns* :test #'eq)))))
