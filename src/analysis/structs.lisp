@@ -247,9 +247,45 @@
             (string-equal (subseq name 0 7) "TENSOR_"))))
     (t nil)))
 
+;;; ======================================================================
+;;; BUG 039 — N-D indexing inside a def-function silently dropped every index past the first.
+;;;
+;;; `(~ dst i j)` in a sub-function whose parameter type came from a `def-type` ALIAS compiled
+;;; to `dst[i]`: a 4x4 fill wrote FOUR cells instead of sixteen, on hardware, with no error.
+;;; The identical body in a KERNEL was correct, because kernel parameters are exploded and
+;;; reassembled and so carry the mangled `TENSOR_*` type, while a sub-function parameter keeps
+;;; whatever the declare said.
+;;;
+;;; analyze-aref-expression dispatches on (%get-tensor-arity array-type).  That helper knew the
+;;; list form `(tensor elem N ...)` and mangled symbols but not aliases, returned NIL, and the
+;;; analyzer fell through to the "Cell / array path: single index" — which uses only the first
+;;; index and DISCARDS the rest.  %get-tensor-align had the same hole.
+;;;
+;;; TWO CHANGES, because the fix and the failure MODE are separate problems.
+;;;
+;;; 1. Resolve aliases in both helpers, via canonicalize-type-specifier — which already resolves
+;;;    def-type aliases and re-mangles, and whose output %get-tensor-arity already understands.
+;;;
+;;;    NOT by canonicalising parameter types once at declaration, which was the other candidate.
+;;;    The emitted symbol for the repro is `fill_seven_mat_t_mat_t`: the ALIAS NAME is
+;;;    load-bearing for name mangling and overload resolution, so normalising param types at the
+;;;    declaration would change mangled names.  The alias must survive; only the QUERIES about
+;;;    it need to see through it.
+;;;
+;;; 2. Make the fall-through LOUD.  Silence here is not incidental — it is the whole reason 039
+;;;    reached hardware, and it is the THIRD time this exact path has bitten: endeavor 138 fixed
+;;;    it for compound tensor targets (see the comment above `target-form`, "silently DROPPED
+;;;    every index past the first"), 039 is the alias case, and each was found only by chasing a
+;;;    wrong NUMBER.  The tensor path already errors on a known-but-mismatched arity; the gap is
+;;;    that an UNKNOWN arity took the single-index path instead.  A cell or 1-D array is never
+;;;    indexed with two subscripts, so multiple indices arriving there now error with the type
+;;;    named.  Any future member of this family fails at compile time instead of computing a
+;;;    plausible wrong answer.
+;;; ======================================================================
 (defun %get-tensor-arity (type)
   "Returns the compile-time arity N of TYPE as an integer, or NIL.
-   Handles list form (tensor elem N ...) and mangled-symbol form."
+   Handles list form (tensor elem N ...), mangled-symbol form, and — BUG 039 — a `def-type`
+   ALIAS, resolved through canonicalize-type-specifier."
   (labels ((coerce-n (raw)
              (etypecase raw
                (integer raw)
@@ -261,9 +297,16 @@
        (coerce-n (third type)))
       ((symbolp type)
        (let ((unmangled (unmangle-template-struct-name type)))
-         (when (and (consp unmangled) (symbolp (first unmangled))
-                    (string-equal (symbol-name (first unmangled)) "TENSOR"))
-           (coerce-n (third unmangled)))))
+         (if (and (consp unmangled) (symbolp (first unmangled))
+                  (string-equal (symbol-name (first unmangled)) "TENSOR"))
+             (coerce-n (third unmangled))
+             ;; BUG 039: a def-type alias reaches here unrecognised.  Canonicalize and retry
+             ;; once.  Guarded and non-recursive: canonicalize-type-specifier can signal on a
+             ;; malformed or incomplete spec, and a type we cannot canonicalize is simply one
+             ;; whose arity is unknown — same answer as before, now reached deliberately.
+             (let ((canon (ignore-errors (canonicalize-type-specifier type))))
+               (when (and canon (not (equal canon type)))
+                 (%get-tensor-arity canon))))))
       (t nil))))
 
 (defun %build-tensor-flat-index-form (target-sym index-forms)
@@ -290,7 +333,11 @@
 (defun %get-tensor-align (type)
   "Extracts the :align keyword from a tensor type specifier.
    New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth type).
-   Handles both list form and mangled symbol."
+   Handles list form, mangled symbol, and — BUG 039 — a `def-type` ALIAS.
+
+   This matters as much as the arity: with the arity fixed but the align still unresolved the
+   analyzer would take the :strided fallback for a :compact tensor, which reads strides~ that a
+   compact type is not obliged to carry."
   (labels ((coerce-aln (raw)
              (cond
                ((eq raw :compact)         :compact)
@@ -306,9 +353,12 @@
        (coerce-aln (fifth type)))
       ((symbolp type)
        (let ((unmangled (unmangle-template-struct-name type)))
-         (when (and (consp unmangled) (symbolp (first unmangled))
-                    (string-equal (symbol-name (first unmangled)) "TENSOR"))
-           (coerce-aln (fifth unmangled)))))
+         (if (and (consp unmangled) (symbolp (first unmangled))
+                  (string-equal (symbol-name (first unmangled)) "TENSOR"))
+             (coerce-aln (fifth unmangled))
+             (let ((canon (ignore-errors (canonicalize-type-specifier type))))
+               (when (and canon (not (equal canon type)))
+                 (%get-tensor-align canon))))))
       (t nil))))
 
 
@@ -354,7 +404,10 @@
    Tensor path dispatches on resolved :align:
      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)
      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)
-     :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)"
+     :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)
+
+   BUG 039: the cell / single-index fall-through now REJECTS multiple indices instead of
+   silently discarding all but the first."
   (let* ((op          (first expr))
          (target-sym  (if (symbolp (second expr)) (second expr) nil))
          ;; Endeavor 138: the flat-index builders splice the target into (extents~ TARGET k)
@@ -432,10 +485,21 @@
                                         :source-location location)))
 
                 ;; ── Cell / array path: single index ─────────────────────────
-                (make-semantic-aref :type elem-type
-                                    :array-node array-node
-                                    :index-node index-node
-                                    :source-location location))))
+                ;; BUG 039: reaching here with more than one index means the target's ARITY
+                ;; could not be determined — the type is not a recognisable tensor.  Previously
+                ;; the extra indices were dropped without a word and the kernel computed a
+                ;; confident wrong answer on hardware.  A cell or 1-D array genuinely takes at
+                ;; most one index, so this is always a real error; naming the type is what makes
+                ;; it actionable, since the usual cause is a type the arity query cannot see
+                ;; through rather than a mis-written subscript.
+                (let ((index-forms (cddr expr)))
+                  (when (> (length index-forms) 1)
+                    (error "~a index~:p supplied to ~a, but its type ~s is not a tensor of known arity — a cell or 1-D array takes at most one index.  If this IS a multi-dimensional tensor, its arity could not be resolved from the declared type; check the type declaration (a `def-type` alias must resolve to a (tensor|matrix|vector ...) form)."
+                           (length index-forms) target-form array-type))
+                  (make-semantic-aref :type elem-type
+                                      :array-node array-node
+                                      :index-node index-node
+                                      :source-location location)))))
 
         ;; Fallback: not a known array/cell/tensor type → try as overloadable call
         (let ((op-name (symbol-name op)))
