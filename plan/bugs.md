@@ -826,10 +826,18 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         is differentiated in the CALLER's frame, where the tensors carry mangled types and take
         the correct 2-D path.  So 038's own machinery is done and verified as far as it can be.
 
-        DO NOT un-skip 137/04 until 039 is fixed: it compiles, which makes it look
-        differentiable, and its forward is silently wrong.
+        CLOSED 2026-08-01 once 039 was fixed.  145/17 now passes end to end on BMG:
+        analytical 2.0, numerical 2.0, diff 0.0.  137/04's SKIP-WITH[--differentiate] is removed
+        and replaced by a validator, validate-ptx-tma-grad, which asserts the backward contains
+        the gradient scatter (ld.shared feeding atom.global.add.f32) and that the forward TMA
+        copy survived.  That evidence is STRUCTURAL and is labelled as such in the spec: 137/04
+        cannot be gradient-checked numerically anywhere (VERIFY-AUTODIFF has only :l0/:opencl so
+        it cannot drive a PTX backward, and the kernel has no SPV lowering at all).  The
+        MECHANISM is proven numerically by 145/17; the validator only guards against the
+        backward silently going empty again, which is how this hid for a whole endeavor.
+        Verified to have teeth: stubbing the inline path out makes 137/04 fail.
 
-[ ] 039 - 2-D (and N-D) tensor indexing INSIDE a def-function silently drops all but the FIRST
+[x] 039 - 2-D (and N-D) tensor indexing INSIDE a def-function silently drops all but the FIRST
         index when the parameter type is declared through a `def-type` ALIAS.  Not an AD bug:
         the wrong element is read and written in ORDINARY forward code, on hardware, with no
         error.  Found while fixing 038, 2026-08-01.
@@ -884,3 +892,31 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         SCOPE: any def-function taking an aliased multi-dimensional tensor and indexing it with
         `~`.  Aliases are the documented style and are used throughout tests/spec, so this is
         likely reachable from well beyond 137/04.
+
+        FIXED 2026-08-01.  Two changes, because the fix and the failure MODE are separate
+        problems:
+
+          1. %get-tensor-arity and %get-tensor-align now resolve aliases, via
+             canonicalize-type-specifier — which already resolves def-type aliases and
+             re-mangles, and whose output %get-tensor-arity already understood.  Guarded with
+             ignore-errors and non-recursive: a type we cannot canonicalize simply has unknown
+             arity, the same answer as before but now reached deliberately.
+
+             NOT by canonicalising parameter types once at declaration, which was the other
+             candidate and the one first proposed.  The emitted symbol for the repro is
+             `fill_seven_mat_t_mat_t`: the ALIAS NAME is load-bearing for name mangling and
+             overload resolution, so normalising param types at the declaration would change
+             mangled names.  The alias must survive; only the QUERIES about it need to see
+             through it.
+
+          2. analyze-aref-expression's cell / single-index fall-through now ERRORS when handed
+             more than one index, naming the type.  Silence here is not incidental — it is the
+             whole reason 039 reached hardware, and this is the THIRD time this exact path has
+             bitten (endeavor 138 fixed it for compound tensor targets; see the comment above
+             `target-form`).  A cell or 1-D array never takes two subscripts, so this is always a
+             real error.  Any future member of the family now fails at COMPILE time instead of
+             computing a plausible wrong answer.
+
+        VERIFIED: the sub-function's IR now emits the same Horner form as a kernel
+        (`mul` by the row extent, then `add j`); 145/17 passes numerically end to end; suites
+        944/944 both ways, 253 unit, 211 negative.

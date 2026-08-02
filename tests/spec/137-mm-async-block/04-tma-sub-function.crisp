@@ -16,9 +16,28 @@
 ;; needs kernel dispatch context (get-local-id), which a device sub-function lacks.  Only the
 ;; PTX TMA path is valid here, so validate ONLY via that (SKIP-DEFAULT-PASS).
 ;;
+;; AUTODIFF (BUG 038, fixed 2026-08-01).  This kernel copies a tile of A into C, so it is the
+;; identity and dA = dC — there was never anything undifferentiable about it.  It nevertheless
+;; produced an EMPTY backward (zero global writes) because a VOID sub-function call was silently
+;; dropped by the AD walk: `(stage A tile)` is length 3 with an all-symbol butlast, so the
+;; multi-value BINDING clause claimed it, read `stage`/`A` as bound variables and `tile` as the
+;; producing expression, and — `tile` not being a cons — never ran its body.
+;;
+;; The fix INLINES a called sub-function's body into the backward walk instead of relying on a
+;; _GRAD companion, so the `load-tile` inside `stage` now yields its %load-tile-at-bwd edge just
+;; as it would in a kernel: read the tile's adjoint from SLM, atomically accumulate into A.
+;;
+;; The evidence here is STRUCTURAL, and deliberately labelled as such.  This spec cannot be
+;; gradient-checked numerically on any box: VERIFY-AUTODIFF has only :l0 and :opencl runtimes so
+;; it cannot drive a PTX backward, and the kernel has no SPV lowering at all (a :block load in a
+;; device sub-function needs `get-local-id`).  The MECHANISM is proven numerically by
+;; 145/17-void-subfn-vjp-bmg (analytical 2.0 vs finite-difference 2.0 on BMG); what the
+;; validator below adds is a guard that the backward does not silently become empty again —
+;; which is precisely how this hid for an entire endeavor.  Compiling is not differentiating.
+;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "BUG 038: the backward is EMPTY (zero global writes) -- a VOID sub-function call is silently dropped by the AD walk, so no gradient flows through the sub-function that stages the tile. Compiles, does not differentiate"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90 --differentiate] : validate-ptx-tma-grad
 
 (def-type mat-t  (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type tile-t (matrix float :address-space :local  :align :compact :contiguous-term :row-major))

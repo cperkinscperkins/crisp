@@ -46,7 +46,6 @@
 ;; Un-skip when 039 is fixed; the expectation below is already the right one.
 ;;
 ;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
-;; SKIP-WITH[--differentiate]: "BUG 039: the FORWARD is wrong -- 2-D indexing in a sub-function with an aliased param type drops the second index, so the finite difference is 0.0. The analytical gradient is already correct (measured 2.0)."
 ;; VERIFY-AUTODIFF: A=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=2.0 output-mat=4x4
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
