@@ -2810,3 +2810,454 @@
                        "MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING")
                 :test #'string=))
       (%backward-skip-fn-p-145p1 fn-sym)))
+
+
+;;; ======================================================================
+;;; Ring PIPELINING under --differentiate (138/04, 138/05).
+;;;
+;;; The kernel computes C = A.B.  The ring, the prologue, the two-deep prefetch and the barrier
+;;; phases are SCHEDULE, not semantics.  Reverse-mode AD is determined by the function, not by
+;;; how the operands were staged, so any correct matmul backward pairs with this forward.
+;;;
+;;; The previous refusal ("the ring is loaded from TWO sites with DIFFERENT origins, so the
+;;; primal origin is ambiguous — decline") asked the wrong question.  "Which load site filled
+;;; this slot?" is a question about the SCHEDULE and genuinely has two answers.  The derivative
+;;; needs a different one:
+;;;
+;;;     what global matrix does this operand DENOTE, and at what tile coordinate is it CONSUMED?
+;;;
+;;; Both have exactly one answer.  A-ring is only ever loaded from A; B-ring only ever from B.
+;;; And the consumption coordinate is (grid-y grid-k) — the enclosing loops the backward already
+;;; mirrors.  The prefetch origin (grid-y next-k), which the whole objection was built on, belongs
+;;; to a DIFFERENT PIPELINE STAGE than the one being consumed; reading it was reading the
+;;; producer's bookkeeping instead of the consumer's meaning.
+;;;
+;;; WHAT ACTUALLY NEEDED FIXING — only the PRIMAL.  The adjoint flow was already right: a
+;;; faithful reverse of the pipeline scatters slot-adjoint to A at the prefetch's origin
+;;; next-k, and the slot consumed at iteration grid-k is precisely the one the prefetch of
+;;; iteration grid-k-2 wrote with next-k = grid-k.  The mirror lands on the correct stage by
+;;; construction.  It is the operand PRIMAL — `(~ a-src (+ aoy m) (+ aox k))` in the scalar
+;;; lowering — that needs the consuming coordinate, and that is what was wrong.
+;;;
+;;; HOW THE CONSUMING COORDINATE IS RECOVERED, without new bookkeeping: across a ring's load
+;;; sites the origin components AGREE except in the K position — A is staged at
+;;; (grid-y <k>) from both sites, B at (<k> grid-x).  So the differing component IS the K index,
+;;; and it is replaced by the innermost enclosing loop variable at the consuming site.  Exactly
+;;; one component may differ; more than one is a genuine ambiguity and still declines.
+;;; ======================================================================
+
+;; src/autodiff.lisp
+(defvar *ad-loop-vars* nil
+  "Loop variables enclosing the form currently being walked backward, INNERMOST FIRST.
+   Bound by %gfw-process-dotimes.  Used to recover the coordinate at which a ring-staged
+   operand is CONSUMED, which is not recoverable from the forward's load sites (a pipelined
+   ring is filled by a prologue and a prefetch, both for other stages).")
+
+;; src/autodiff.lisp
+(defun %gfw-process-dotimes (form emit-fn process-form-fn binding body local-vars adjoint-map intermediate-zero)
+  "Unchanged except that it publishes the loop variable in *ad-loop-vars* while walking the
+   body, so a VJP dispatched inside can ask what coordinate it is being evaluated at.  A
+   pipelined ring operand needs this: its primal lives at the CONSUMING iteration, and the
+   forward's load sites record other stages' origins."
+  (declare (ignore form))
+  (let ((local-forms nil)
+        (*ad-loop-vars* (if (and (consp binding) (symbolp (car binding)))
+                            (cons (car binding) *ad-loop-vars*)
+                            *ad-loop-vars*)))
+    (flet ((local-emit (f) (push f local-forms)))
+      (dolist (b (reverse body))
+        (funcall process-form-fn b #'local-emit)))
+    (let ((zero-resets
+           (loop for v in local-vars
+                 for adv = (gethash v adjoint-map)
+                   when adv
+                 collect `(set! ,adv ,intermediate-zero))))
+      (funcall emit-fn `(dotimes ,binding ,@zero-resets ,@(nreverse local-forms))))))
+
+;; src/autodiff.lisp
+(defun %ad-tile-base (op)
+  "The underlying tile SYMBOL of a tile operand: itself if a symbol, the ring if a
+   `(ring-get RING i)` view.  Shape and staging questions are asked of the base — every slot of
+   a ring has the ring's element shape — while ADJOINT questions keep the view (see
+   %tlc-bwd-adj-name), because slot i's adjoint is slot i of the adjoint ring, not the whole
+   ring."
+  (cond
+    ((symbolp op) op)
+    ((and (consp op) (symbolp (car op))
+          (string-equal (symbol-name (car op)) "RING-GET"))
+      (%ad-tile-base (second op)))
+    (t nil)))
+
+;; src/autodiff.lisp
+(defun %ad-ring-load-sites (flat-anf)
+  "Alist RING-SYM -> list of (GLOBAL-SRC ORIGIN-FORMS), one entry per `load-tile-at` whose TILE
+   argument is a `(ring-get RING i)` view.  ALL sites are kept, unlike %mma-ad-tile-source-map
+   which keeps the first per tile: a pipelined ring has several, and it is their AGREEMENT that
+   carries the information (see %ad-reconcile-ring-origin)."
+  (let ((acc nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (>= (length form) 4) (symbolp (first form))
+                  (string-equal (symbol-name (first form)) "LOAD-TILE-AT")
+                  (symbolp (second form))
+                  (listp (fourth form)))
+         (let ((base (and (consp (third form)) (%ad-tile-base (third form)))))
+           (when base
+             (let ((entry (assoc base acc)))
+               (if entry
+                   (setf (cdr entry) (append (cdr entry) (list (list (second form) (fourth form)))))
+                   (push (list base (list (second form) (fourth form))) acc))))))))
+    (nreverse acc)))
+
+;; src/autodiff.lisp
+(defun %ad-reconcile-ring-origin (sites k-var)
+  "Given a ring's load SITES (each (SRC ORIGIN-FORMS)) and the innermost enclosing loop variable
+   K-VAR at the CONSUMING site, return (values SRC ORIGIN) or (values NIL NIL) to decline.
+
+   All sites must name the same GLOBAL SOURCE — that is the operand's identity, and a ring fed
+   from two different matrices really is ambiguous.  Origin components that agree across every
+   site are kept verbatim; the ONE component that differs is the pipeline stage index, and is
+   replaced by K-VAR, the coordinate at which the slot is actually consumed.  Zero differing
+   components means an unpipelined ring, and the common origin is already correct."
+  (let* ((srcs (remove-duplicates (mapcar #'first sites)))
+         (origins (mapcar #'second sites)))
+    (cond
+      ((/= (length srcs) 1)
+        (log:debug "ring origin: declining — ~a distinct sources ~a" (length srcs) srcs)
+        (values nil nil))
+      ((null origins) (values nil nil))
+      ((not (apply #'= (mapcar #'length origins)))
+        (log:debug "ring origin: declining — load sites disagree on rank")
+        (values nil nil))
+      (t
+        (let* ((n (length (first origins)))
+               (diff (loop for i from 0 below n
+                             unless (let ((c (mapcar (lambda (o) (nth i o)) origins)))
+                                      (every (lambda (x) (equal x (first c))) c))
+                           collect i)))
+          (cond
+            ((null diff) (values (first srcs) (first origins)))
+            ((> (length diff) 1)
+              (log:debug "ring origin: declining — ~a components differ across sites" (length diff))
+              (values nil nil))
+            ((null k-var)
+              (log:debug "ring origin: declining — no enclosing loop var for the K component")
+              (values nil nil))
+            (t
+              (values (first srcs)
+                      (loop for i from 0 below n
+                            collect (if (= i (first diff)) k-var (nth i (first origins))))))))))))
+
+;; src/autodiff.lisp
+(defun %mma-ad-tile-dims-map (flat-anf)
+  "Alist SYM -> (ROWS COLS) for every compile-time-shaped tile bound anywhere in FLAT-ANF:
+   `(V (make-register-tile T (M N) INIT))`, `(V (make-scratch-matrix T (R C)))`, and — endeavor
+   138 — the RING constructors, whose per-slot dimensions sit in the same position.  A ring is
+   keyed by its own symbol; every slot has the ring's element shape, so a `(ring-get R i)`
+   operand resolves through %ad-tile-base."
+  (let ((acc nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form))
+                  (consp (second form)) (symbolp (first (second form)))
+                  (member (symbol-name (first (second form)))
+                          '("MAKE-REGISTER-TILE" "MAKE-SCRATCH-MATRIX"
+                            "MAKE-SCRATCH-MATRIX-RING")
+                          :test #'string=)
+                  (let ((d (third (second form))))
+                    (and (listp d) (= (length d) 2) (every #'integerp d)))
+                  (not (assoc (first form) acc)))
+         (push (list (first form)
+                     (first (third (second form)))
+                     (second (third (second form))))
+               acc))))
+    (nreverse acc)))
+
+;; src/autodiff.lisp
+(defun %mma-vjp-operand-ref (op src-map dims-map inputs &optional ring-sites)
+  "Resolve an mma-accumulate-via-tile operand to (values SRC OY OX KIND).
+
+     - STAGED  : a scratch tile filled by load-tile-at.  SRC is the ORIGINAL global matrix and
+                 (OY OX) the staging origin.
+     - DIRECT  : the operand IS a global matrix (a kernel parameter read straight by the
+                 fragment loads, as in 132/04-mma-via-tile).  Origin (0 0).
+     - :RING   : a `(ring-get R i)` view.  SRC is the single global matrix every load site names;
+                 the origin is those sites' agreed components with the differing one replaced by
+                 the CONSUMING loop variable (see %ad-reconcile-ring-origin).  A pipelined ring's
+                 own load sites record OTHER stages' origins, which is what made this look
+                 undifferentiable.
+
+   RING-SITES is the %ad-ring-load-sites alist, threaded from the caller because it needs
+   flat-anf.  Absent, ring operands simply decline, which is the previous behaviour."
+  (let ((base (%ad-tile-base op)))
+    (cond
+      ((and (consp op) base)
+        (let ((sites (cdr (assoc base ring-sites))))
+          (if (null sites)
+              (values nil nil nil nil)
+              (multiple-value-bind (src origin)
+                  (%ad-reconcile-ring-origin sites (first *ad-loop-vars*))
+                (if (and src origin (= (length origin) 2))
+                    (values src (first origin) (second origin) :ring)
+                    (values nil nil nil nil))))))
+      (t
+        (let ((entry (assoc op src-map)))
+          (cond
+            (entry (values (second entry) (first (third entry)) (second (third entry)) :staged))
+            ((and (symbolp op) (member op inputs)) (values op 0 0 :direct))
+            ((assoc op dims-map) (values op 0 0 :staged))
+            (t (values nil nil nil nil))))))))
+
+;; src/autodiff.lisp
+(defun %vjp-mma-accumulate-via-tile (form ctx)
+  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B ...).
+
+   Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk
+   never learns the MMA path's shape requirements, so they cannot leak back out as a
+   language-level contract the way the 'K-tile contract' did.
+
+     MMA fast path  -- when both backward accumulators decompose into whole fragments.
+     Scalar path    -- otherwise.  Correct at any shape, slower.
+
+   Endeavor 138: operands may be RING VIEWS.  Shape and source questions resolve through
+   %ad-tile-base to the ring (every slot has the ring's element shape); the ADJOINT keeps the
+   view, because slot i's adjoint is slot i of the adjoint ring.  A ring operand also forces the
+   SCALAR lowering: the MMA path stages a transposed operand out of the tile it was given, and
+   for a pipelined ring that tile holds a DIFFERENT stage than the one being differentiated.
+   The scalar lowering indexes the original global operands directly, so it is immune — and
+   correct-but-slow was always the default anyway.
+
+   DECLINES (NIL) when the tile shapes are not compile-time known, or when a ring's load sites
+   do not agree on one global source, which the walk then reports through its existing error."
+  (destructuring-bind (shape c-tile a-op b-op &rest ignored) (cdr form)
+    (declare (ignore ignored shape))
+    (let* ((flat-anf  (getf ctx :flat-anf))
+           (inputs    (getf ctx :inputs))
+           (outputs   (getf ctx :outputs))
+           (local-adj (getf ctx :local-adj))
+           (kernel-pkg (getf ctx :kernel-pkg))
+           (dims-map (%mma-ad-tile-dims-map flat-anf))
+           (src-map  (%mma-ad-tile-source-map flat-anf))
+           (ring-sites (%ad-ring-load-sites flat-anf))
+           (c-dims   (assoc (%ad-tile-base c-tile) dims-map))
+           (a-dims   (assoc (%ad-tile-base a-op) dims-map)))
+      (when c-dims
+        (multiple-value-bind (a-src aoy aox a-kind)
+            (%mma-vjp-operand-ref a-op src-map dims-map inputs ring-sites)
+          (multiple-value-bind (b-src boy box b-kind)
+              (%mma-vjp-operand-ref b-op src-map dims-map inputs ring-sites)
+            (when (and a-src b-src)
+              (let* ((mt (second c-dims))
+                     (nt (third c-dims))
+                     ;; A staged operand's K is its own column extent.  A DIRECT global operand
+                     ;; has runtime extents, and the forward reads exactly one native K-step
+                     ;; from it, so its Kt is the instruction's K.
+                     (kt (if a-dims
+                             (third a-dims)
+                             (nth-value 2 (%spv-mma-shape))))
+                     (pkg (or kernel-pkg (symbol-package (or (%ad-tile-base c-tile) c-tile))))
+                     (ringp (or (eq a-kind :ring) (eq b-kind :ring)))
+                     (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj kernel-pkg))
+                     (a-adj (%tlc-bwd-adj-name a-op  inputs outputs local-adj kernel-pkg))
+                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg)))
+                (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) ring=~a mma-path=~a"
+                           mt nt kt a-op a-kind b-op b-kind ringp
+                           (%mma-vjp-mma-admissible-p mt nt kt))
+                (if (and (not ringp) (%mma-vjp-mma-admissible-p mt nt kt))
+                    (%mma-via-tile-backward form dims-map src-map inputs outputs
+                                            local-adj kernel-pkg)
+                    (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
+                                              a-src aoy aox b-src boy box pkg))))))))))
+
+(register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
+
+
+;;; Ring pipelining, part 2 — comparing load-site origins MODULO the slot index.
+;;;
+;;; The first cut compared origins componentwise and found TWO differing components where there
+;;; should be one.  The reason is that `load-tile` is rewritten to `load-tile-at` with PIXEL
+;;; coordinates, and that rewrite embeds the tile expression itself:
+;;;
+;;;     (* (to-ulong grid-y) (~ (extents~ (ring-get A-ring (to-ulong i))) 0))   ; prologue
+;;;     (* (to-ulong grid-y) (~ (extents~ (ring-get A-ring slot))        0))   ; steady state
+;;;
+;;; so the SLOT INDEX makes every component differ, including the ones that agree
+;;; mathematically.  The slot is scheduling, exactly like the stage origin, so it is normalised
+;;; away before comparing and substituted back afterwards from the CONSUMING operand's own
+;;; index.  What remains differing is then the genuine stage coordinate, and there is one.
+
+;; src/autodiff.lisp
+(defvar *ad-ring-slot-marker* '%ad-ring-slot
+  "Placeholder standing in for a ring-get index while load-site origins are compared.")
+
+;; src/autodiff.lisp
+(defun %ad-canon-ring-slots (form marker)
+  "Rewrite every `(ring-get R <idx>)` in FORM to `(ring-get R MARKER)`.
+   Two load sites of the same ring differ in their slot index by construction — that is what a
+   ring IS — so the index must be normalised away before their origins can be compared."
+  (cond
+    ((and (consp form) (symbolp (car form))
+          (string-equal (symbol-name (car form)) "RING-GET"))
+      (list (car form) (%ad-canon-ring-slots (second form) marker) marker))
+    ((consp form) (mapcar (lambda (f) (%ad-canon-ring-slots f marker)) form))
+    (t form)))
+
+;; src/autodiff.lisp
+(defun %ad-subst-ring-slot (form marker idx)
+  "Inverse of %ad-canon-ring-slots: put the consuming operand's own slot index back."
+  (cond
+    ((and (symbolp form) (eq form marker)) idx)
+    ((consp form) (mapcar (lambda (f) (%ad-subst-ring-slot f marker idx)) form))
+    (t form)))
+
+;; src/autodiff.lisp
+(defun %ad-form-merge (a b repl)
+  "A copy of A with the ONE subtree where A and B differ replaced by REPL, or :AMBIGUOUS when
+   they differ in more than one place.
+
+   Used to turn two load sites' stage coordinates into the CONSUMING one: the sites are
+   identical apart from the stage expression, so replacing exactly that with the enclosing loop
+   variable yields the coordinate at which the slot is actually read."
+  (cond
+    ((equal a b) a)
+    ((and (consp a) (consp b) (= (length a) (length b)))
+      (let ((diffs (loop for x in a for y in b count (not (equal x y)))))
+        (if (> diffs 1)
+            :ambiguous
+            (let ((merged (loop for x in a for y in b
+                                collect (if (equal x y) x (%ad-form-merge x y repl)))))
+              (if (find :ambiguous merged) :ambiguous merged)))))
+    (t repl)))
+
+;; src/autodiff.lisp
+(defun %ad-reconcile-ring-origin (sites k-var &optional slot-idx)
+  "Given a ring's load SITES (each (SRC ORIGIN-FORMS)), the innermost enclosing loop variable
+   K-VAR at the consuming site, and the consuming operand's own SLOT-IDX, return
+   (values SRC ORIGIN) or (values NIL NIL) to decline.
+
+   All sites must name the same GLOBAL SOURCE — that is the operand's identity, and a ring fed
+   from two different matrices is genuinely ambiguous.  Origins are compared MODULO the ring
+   slot index (see %ad-canon-ring-slots); components that then agree are kept verbatim, and the
+   single component that still differs is the pipeline stage, replaced by K-VAR.  Zero differing
+   components means an unpipelined ring whose common origin is already right."
+  (let* ((marker *ad-ring-slot-marker*)
+         (srcs (remove-duplicates (mapcar #'first sites)))
+         (origins (mapcar (lambda (s) (%ad-canon-ring-slots (second s) marker)) sites)))
+    (cond
+      ((/= (length srcs) 1)
+        (log:debug "ring origin: declining — ~a distinct sources ~a" (length srcs) srcs)
+        (values nil nil))
+      ((null origins) (values nil nil))
+      ((not (apply #'= (mapcar #'length origins)))
+        (log:debug "ring origin: declining — load sites disagree on rank")
+        (values nil nil))
+      (t
+        (let* ((n (length (first origins)))
+               (base (first origins))
+               (diff (loop for i from 0 below n
+                             unless (let ((c (mapcar (lambda (o) (nth i o)) origins)))
+                                      (every (lambda (x) (equal x (first c))) c))
+                           collect i)))
+          (cond
+            ((null diff)
+              (values (first srcs) (%ad-subst-ring-slot base marker slot-idx)))
+            ((> (length diff) 1)
+              (log:debug "ring origin: declining — ~a components differ across sites (~a)"
+                         (length diff) diff)
+              (values nil nil))
+            ((null k-var)
+              (log:debug "ring origin: declining — no enclosing loop var for the stage component")
+              (values nil nil))
+            (t
+              ;; Merge the differing component across every pair of sites, replacing the stage
+              ;; expression with the consuming loop variable.
+              (let* ((idx (first diff))
+                     (variants (remove-duplicates (mapcar (lambda (o) (nth idx o)) origins)
+                                                  :test #'equal))
+                     (merged (reduce (lambda (acc v) (if (eq acc :ambiguous)
+                                                         :ambiguous
+                                                         (%ad-form-merge acc v k-var)))
+                                     (rest variants) :initial-value (first variants))))
+                (if (eq merged :ambiguous)
+                    (progn
+                      (log:debug "ring origin: declining — stage component differs in >1 place")
+                      (values nil nil))
+                    (values (first srcs)
+                            (%ad-subst-ring-slot
+                             (loop for i from 0 below n
+                                   collect (if (= i idx) merged (nth i base)))
+                             marker slot-idx)))))))))))
+
+;; src/autodiff.lisp
+(defun %mma-vjp-operand-ref (op src-map dims-map inputs &optional ring-sites)
+  "Resolve an mma-accumulate-via-tile operand to (values SRC OY OX KIND).
+
+     - STAGED  : a scratch tile filled by load-tile-at.  SRC is the ORIGINAL global matrix and
+                 (OY OX) the staging origin.
+     - DIRECT  : the operand IS a global matrix (a kernel parameter read straight by the
+                 fragment loads, as in 132/04-mma-via-tile).  Origin (0 0).
+     - :RING   : a `(ring-get R i)` view.  SRC is the single global matrix every load site names;
+                 the origin is those sites' agreed components with the stage component replaced
+                 by the CONSUMING loop variable (see %ad-reconcile-ring-origin).  A pipelined
+                 ring's own load sites record OTHER stages' origins, which is exactly what made
+                 this look undifferentiable.
+
+   RING-SITES is the %ad-ring-load-sites alist, threaded from the caller because it needs
+   flat-anf.  Absent, ring operands decline, which is the previous behaviour."
+  (let ((base (%ad-tile-base op)))
+    (cond
+      ((and (consp op) base)
+        (let ((sites (cdr (assoc base ring-sites))))
+          (if (null sites)
+              (values nil nil nil nil)
+              (multiple-value-bind (src origin)
+                  (%ad-reconcile-ring-origin sites (first *ad-loop-vars*) (third op))
+                (if (and src origin (= (length origin) 2))
+                    (values src (first origin) (second origin) :ring)
+                    (values nil nil nil nil))))))
+      (t
+        (let ((entry (assoc op src-map)))
+          (cond
+            (entry (values (second entry) (first (third entry)) (second (third entry)) :staged))
+            ((and (symbolp op) (member op inputs)) (values op 0 0 :direct))
+            ((assoc op dims-map) (values op 0 0 :staged))
+            (t (values nil nil nil nil))))))))
+
+
+;; src/autodiff.lisp
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
+
+   Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS are gradient-inert shape queries.
+   Endeavor 145 P3b: MAKE-REGISTER-TILE is an ALLOCATOR, gradient-inert like the
+   make-scratch-* constructors above it — its paired adjoint tile is created by
+   %mma-ad-adj-init, not by the walk.
+
+   Endeavor 138 rings: the SCRATCH-RING constructors are allocators exactly as their non-ring
+   forms are (a ring is rank+1 scratch), and their paired adjoint rings likewise come from
+   %augment-scratch-adj-bindings.  The BARRIER ring is inert for a different reason: a barrier
+   carries no value, only ordering.  Without these, 138/03 and 138/06 failed with
+
+       Function MAKE-ASYNC-BARRIER-RING is not differentiable.  Wrap the kernel in
+       'forward-only' if differentiation is not needed...
+
+   which points away from the fix — the kernel IS differentiable; a scheduling object simply has
+   no gradient.  MAKE-ASYNC-BARRIER is listed alongside it: the plain barrier only avoided this
+   by never reaching the walk as a call, which is luck rather than design.
+
+   MOD joins them as INDEX arithmetic — `(mod grid-k 2)` selecting a ring slot.  Caveat worth
+   recording rather than hiding: this is the same treatment the TO-<int> conversions already
+   get, and it is only right because these are INTEGER index computations.  A float `mod` does
+   have a derivative (d/dx = 1 almost everywhere), so if one ever appeared in a value position
+   its gradient would be silently zero.  The walk cannot currently tell the two apart — it sees
+   ANF forms, not types.  A real rule for float mod belongs with the other math VJPs."
+  (or (let ((name (symbol-name fn-sym)))
+        (member name '("MAKE-REGISTER-TILE"
+                       "MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
+                       "MAKE-SCRATCH-TENSOR-RING"
+                       "MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING"
+                       "MOD")
+                :test #'string=))
+      (%backward-skip-fn-p-145p1 fn-sym)))

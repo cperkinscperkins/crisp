@@ -920,3 +920,43 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         VERIFIED: the sub-function's IR now emits the same Horner form as a kernel
         (`mul` by the row extent, then `add j`); 145/17 passes numerically end to end; suites
         944/944 both ways, 253 unit, 211 negative.
+
+[ ] 040 - MMA reading from a RING SLOT computes the WRONG RESULT on Intel/BMG.  Forward only —
+        no autodiff involved.  Found 2026-08-02 while trying to build a numeric proof for ring
+        gradients; reproduced at HEAD with no AD change in play, so it is pre-existing.
+
+        REPRO — spec 09's kernel with its two staged tiles replaced by ring slots, nothing else
+        changed:
+
+            (let ((A-ring (make-scratch-matrix-ring float (8 16)  :ring-count 2))
+                  (B-ring (make-scratch-matrix-ring float (16 16) :ring-count 2))
+                  (C-tile (make-register-tile float (8 16) 0.0)))
+              (load-tile-at A (ring-get A-ring (to-ulong 0)) (0 0))
+              (load-tile-at B (ring-get B-ring (to-ulong 0)) (0 0))
+              (sync-workgroup)
+              (mma-accumulate-via-tile (8 16 8) C-tile
+                                       (ring-get A-ring (to-ulong 0))
+                                       (ring-get B-ring (to-ulong 0)))
+              (store-tile C-tile C (0 0)))
+
+        On BMG via TEST-HOIST[L0] / validate-l0-mma-run:
+
+            C[0][0]=11 ref 30   C[0][1]=18 ref 30   C[0][2]=10 ref 30   C[0][3]=11 ref 30
+            MMA_WRONG
+
+        The identical kernel with plain `make-scratch-matrix` tiles is MMA_CORRECT (spec 09), and
+        ring STAGING without MMA is correct (145/18 gradient-checks exactly, which requires a
+        correct forward).  So the defect is specific to an MMA operand that is a ring VIEW.  The
+        wrong values are not garbage — they are small and plausible — which suggests the operand
+        is being read at a wrong offset or with a wrong row stride rather than from unwritten
+        memory.  A ring slot is a view with a non-zero base offset into rank+1 scratch, and the
+        fragment loads may be ignoring that offset (or the slot stride) when building their
+        addresses.  UNVERIFIED — that is the first thing to check.
+
+        WHY NOTHING CAUGHT IT: no spec combined a ring with MMA on SPIR-V.  138/05 does exactly
+        that but is PTX-only, and 138/06 records that :linear rings are not implemented on SPIR-V
+        at all, so the Intel path was never exercised.  The NVIDIA side is metal-verified
+        (138/04 MMA_CORRECT on H100), so this may well be Intel-specific.
+
+        BLOCKS: 145/19, and therefore the numeric proof for ring-pipelined gradients, and
+        therefore un-skipping 138/04 and 138/05 under --differentiate.
