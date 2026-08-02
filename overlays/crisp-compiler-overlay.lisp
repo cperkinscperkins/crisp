@@ -694,31 +694,6 @@
                (dolist (sub x) (walk sub)))))
     (walk tree)))
 
-;; src/autodiff.lisp
-(defun %mma-ad-tile-dims-map (flat-anf)
-  "Endeavor 145 P3b: alist SYM -> (ROWS COLS) for every compile-time-shaped tile bound
-   anywhere in FLAT-ANF — both `(V (make-register-tile T (M N) INIT))` and
-   `(V (make-scratch-matrix T (R C)))`.
-
-   The backward rule needs Mt/Nt from the accumulator tile and Kt from the A operand in
-   order to size its own temporaries, and those shapes only exist at the source level."
-  (let ((acc nil))
-    (%mma-ad-walk-forms
-     flat-anf
-     (lambda (form)
-       (when (and (= (length form) 2) (symbolp (first form))
-                  (consp (second form)) (symbolp (first (second form)))
-                  (member (symbol-name (first (second form)))
-                          '("MAKE-REGISTER-TILE" "MAKE-SCRATCH-MATRIX")
-                          :test #'string=)
-                  (let ((d (third (second form))))
-                    (and (listp d) (= (length d) 2) (every #'integerp d)))
-                  (not (assoc (first form) acc)))
-         (push (list (first form)
-                     (first (third (second form)))
-                     (second (third (second form))))
-               acc))))
-    (nreverse acc)))
 
 ;; src/autodiff.lisp
 (defun %mma-ad-tile-source-map (flat-anf)
@@ -900,41 +875,6 @@
               0.0))
       (%promote-scratch-init-for-ad init-form)))
 
-;; src/autodiff.lisp
-(defun %augment-scratch-adj-bindings (bindings kernel-pkg)
-  "For each binding (var (make-scratch-X ...)), inject a paired (var_ADJ (make-scratch-X ...))
-   binding right after.  For other bindings, pass through unchanged.  Promotes element type
-   (e.g., ulong -> double) so gradients use correct FP precision.
-
-   Endeavor 145 P3b: MAKE-REGISTER-TILE joins the list, so a register accumulator declared in
-   a NESTED let gets its paired adjoint tile the same way a scratch tile does.  (A top-level
-   register tile is handled by the scratch-adj-bindings collection in generate-backward-walk.)"
-  (loop for b in bindings
-          if (and (consp b) (= (length b) 2) (symbolp (car b))
-                  (consp (cadr b)) (symbolp (caadr b))
-                  (member (symbol-name (caadr b))
-                          '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX"
-                            "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL"
-                            "MAKE-REGISTER-TILE")
-                          :test #'string=))
-          append (list b
-                       (let* ((var (car b))
-                              (var-adj (intern (format nil "~A_ADJ" (symbol-name var))
-                                               (or kernel-pkg (symbol-package var)))))
-                         (list var-adj (%mma-ad-adj-init (cadr b)))))
-          else collect b))
-
-;; src/autodiff.lisp
-(defun %backward-skip-fn-p (fn-sym)
-  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
-
-   Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS are gradient-inert shape queries.
-   Endeavor 145 P3b: MAKE-REGISTER-TILE is an ALLOCATOR, gradient-inert like the
-   make-scratch-* constructors above it — its paired adjoint tile is created by
-   %mma-ad-adj-init, not by the walk."
-  (or (let ((name (symbol-name fn-sym)))
-        (member name '("MAKE-REGISTER-TILE") :test #'string=))
-      (%backward-skip-fn-p-145p1 fn-sym)))
 
 ;; src/autodiff.lisp
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
@@ -1883,22 +1823,6 @@
 ;;; ===================================================================
 
 ;; src/autodiff.lisp
-(defun %mma-vjp-operand-ref (op src-map dims-map inputs)
-  "Resolve an mma-accumulate-via-tile operand to (values SRC OY OX KIND).
-
-   Two flavours, both of which the scalar VJP indexes identically:
-     - STAGED  : the operand is a scratch tile filled by load-tile-at.  SRC is the ORIGINAL
-                 global matrix and (OY OX) the staging origin.
-     - DIRECT  : the operand IS a global matrix (a kernel parameter read straight by the
-                 fragment loads, as in 132/04-mma-via-tile).  Origin (0 0)."
-  (let ((entry (assoc op src-map)))
-    (cond
-      (entry (values (second entry) (first (third entry)) (second (third entry)) :staged))
-      ((and (symbolp op) (member op inputs)) (values op 0 0 :direct))
-      ((assoc op dims-map) (values op 0 0 :staged))
-      (t (values nil nil nil nil)))))
-
-;; src/autodiff.lisp
 (defun %mma-vjp-scalar-lowering (mt nt kt c-adj a-op b-op a-adj b-adj
                                  a-src aoy aox b-src boy box pkg)
   "The shape-agnostic scalar backward for a tile multiply.  Emitted as ordinary Crisp source,
@@ -1950,58 +1874,6 @@
          (zerop (mod mt sm))
          (zerop (mod nt sn)))))
 
-;; src/autodiff.lisp
-(defun %vjp-mma-accumulate-via-tile (form ctx)
-  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B ...).
-
-   Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk
-   never learns the MMA path's shape requirements, so they cannot leak back out as a
-   language-level contract the way the 'K-tile contract' did.
-
-     MMA fast path  -- when both backward accumulators decompose into whole fragments.
-     Scalar path    -- otherwise.  Correct at any shape, slower.
-
-   DECLINES (NIL) only when the tile shapes are not compile-time known, which the walk then
-   reports through its existing error."
-  (destructuring-bind (shape c-tile a-op b-op &rest ignored) (cdr form)
-    (declare (ignore ignored))
-    (let* ((flat-anf  (getf ctx :flat-anf))
-           (inputs    (getf ctx :inputs))
-           (outputs   (getf ctx :outputs))
-           (local-adj (getf ctx :local-adj))
-           (kernel-pkg (getf ctx :kernel-pkg))
-           (dims-map (%mma-ad-tile-dims-map flat-anf))
-           (src-map  (%mma-ad-tile-source-map flat-anf))
-           (c-dims   (assoc c-tile dims-map))
-           (a-dims   (assoc a-op dims-map)))
-      (when c-dims
-        (multiple-value-bind (a-src aoy aox a-kind)
-            (%mma-vjp-operand-ref a-op src-map dims-map inputs)
-          (multiple-value-bind (b-src boy box b-kind)
-              (%mma-vjp-operand-ref b-op src-map dims-map inputs)
-            (when (and a-src b-src)
-              (let* ((mt (second c-dims))
-                     (nt (third c-dims))
-                     ;; A staged operand's K is its own column extent.  A DIRECT global operand
-                     ;; has runtime extents, and the forward reads exactly one native K-step
-                     ;; from it, so its Kt is the instruction's K.
-                     (kt (if a-dims
-                             (third a-dims)
-                             (nth-value 2 (%spv-mma-shape))))
-                     (pkg (or kernel-pkg (symbol-package c-tile)))
-                     (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj kernel-pkg))
-                     (a-adj (%tlc-bwd-adj-name a-op  inputs outputs local-adj kernel-pkg))
-                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg)))
-                (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) mma-path=~a"
-                           mt nt kt a-op a-kind b-op b-kind
-                           (%mma-vjp-mma-admissible-p mt nt kt))
-                (if (%mma-vjp-mma-admissible-p mt nt kt)
-                    (%mma-via-tile-backward form dims-map src-map inputs outputs
-                                            local-adj kernel-pkg)
-                    (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
-                                              a-src aoy aox b-src boy box pkg))))))))))
-
-(register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
 
 ;;; ===================================================================
 ;;; VJP for the FRAGMENT-level MMA chain  (133/02, 133/10, 132/02 — "hello mma")
@@ -2392,19 +2264,6 @@
   "Names of sub-functions currently being inlined by the backward walk, innermost last.
    Guards against unbounded expansion on a recursive or mutually-recursive call.")
 
-;; src/autodiff.lisp
-(defun %ad-sub-fn-inlinable-p (fn)
-  "Returns T if FN's body was retained and can be inlined into a backward walk.
-   NIL for foreign functions (no body exists), for HOFs (which have their own inline path keyed
-   on the function-valued parameter), and for anything already on the inline stack."
-  (let ((info (gethash fn *differentiable-functions*))
-        (store (gethash fn *differentiable-hof-store*)))
-    (and info
-         (not (getf info :foreign))
-         (not (getf info :hof))
-         (getf store :inlinable)
-         (getf store :body-forms)
-         (not (member fn *ad-inlining-fns* :test #'eq)))))
 
 ;; src/autodiff.lisp
 (defun %ad-inline-sub-fn-backward (fn args emit-fn process-form-fn)
@@ -2782,34 +2641,6 @@
                          (list var-adj (%mma-ad-adj-init (cadr b)))))
           else collect b))
 
-;; src/autodiff.lisp
-(defun %backward-skip-fn-p (fn-sym)
-  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
-
-   Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS are gradient-inert shape queries.
-   Endeavor 145 P3b: MAKE-REGISTER-TILE is an ALLOCATOR, gradient-inert like the
-   make-scratch-* constructors above it — its paired adjoint tile is created by
-   %mma-ad-adj-init, not by the walk.
-
-   Endeavor 138 rings: the SCRATCH-RING constructors are allocators exactly as their non-ring
-   forms are (a ring is rank+1 scratch), and their paired adjoint rings likewise come from
-   %augment-scratch-adj-bindings rather than from the walk.  The BARRIER ring is inert for a
-   different reason: a barrier carries no value, only ordering.  Without these, 138/03 and
-   138/06 failed with
-
-       Function MAKE-ASYNC-BARRIER-RING is not differentiable.  Wrap the kernel in
-       'forward-only' if differentiation is not needed...
-
-   which is advice pointing away from the fix — the kernel IS differentiable; a scheduling
-   object simply has no gradient.  MAKE-ASYNC-BARRIER is listed alongside it: the plain barrier
-   only avoided this by never reaching the walk as a call, which is luck rather than design."
-  (or (let ((name (symbol-name fn-sym)))
-        (member name '("MAKE-REGISTER-TILE"
-                       "MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
-                       "MAKE-SCRATCH-TENSOR-RING"
-                       "MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING")
-                :test #'string=))
-      (%backward-skip-fn-p-145p1 fn-sym)))
 
 
 ;;; ======================================================================
@@ -2911,45 +2742,6 @@
     (nreverse acc)))
 
 ;; src/autodiff.lisp
-(defun %ad-reconcile-ring-origin (sites k-var)
-  "Given a ring's load SITES (each (SRC ORIGIN-FORMS)) and the innermost enclosing loop variable
-   K-VAR at the CONSUMING site, return (values SRC ORIGIN) or (values NIL NIL) to decline.
-
-   All sites must name the same GLOBAL SOURCE — that is the operand's identity, and a ring fed
-   from two different matrices really is ambiguous.  Origin components that agree across every
-   site are kept verbatim; the ONE component that differs is the pipeline stage index, and is
-   replaced by K-VAR, the coordinate at which the slot is actually consumed.  Zero differing
-   components means an unpipelined ring, and the common origin is already correct."
-  (let* ((srcs (remove-duplicates (mapcar #'first sites)))
-         (origins (mapcar #'second sites)))
-    (cond
-      ((/= (length srcs) 1)
-        (log:debug "ring origin: declining — ~a distinct sources ~a" (length srcs) srcs)
-        (values nil nil))
-      ((null origins) (values nil nil))
-      ((not (apply #'= (mapcar #'length origins)))
-        (log:debug "ring origin: declining — load sites disagree on rank")
-        (values nil nil))
-      (t
-        (let* ((n (length (first origins)))
-               (diff (loop for i from 0 below n
-                             unless (let ((c (mapcar (lambda (o) (nth i o)) origins)))
-                                      (every (lambda (x) (equal x (first c))) c))
-                           collect i)))
-          (cond
-            ((null diff) (values (first srcs) (first origins)))
-            ((> (length diff) 1)
-              (log:debug "ring origin: declining — ~a components differ across sites" (length diff))
-              (values nil nil))
-            ((null k-var)
-              (log:debug "ring origin: declining — no enclosing loop var for the K component")
-              (values nil nil))
-            (t
-              (values (first srcs)
-                      (loop for i from 0 below n
-                            collect (if (= i (first diff)) k-var (nth i (first origins))))))))))))
-
-;; src/autodiff.lisp
 (defun %mma-ad-tile-dims-map (flat-anf)
   "Alist SYM -> (ROWS COLS) for every compile-time-shaped tile bound anywhere in FLAT-ANF:
    `(V (make-register-tile T (M N) INIT))`, `(V (make-scratch-matrix T (R C)))`, and — endeavor
@@ -2975,40 +2767,6 @@
                acc))))
     (nreverse acc)))
 
-;; src/autodiff.lisp
-(defun %mma-vjp-operand-ref (op src-map dims-map inputs &optional ring-sites)
-  "Resolve an mma-accumulate-via-tile operand to (values SRC OY OX KIND).
-
-     - STAGED  : a scratch tile filled by load-tile-at.  SRC is the ORIGINAL global matrix and
-                 (OY OX) the staging origin.
-     - DIRECT  : the operand IS a global matrix (a kernel parameter read straight by the
-                 fragment loads, as in 132/04-mma-via-tile).  Origin (0 0).
-     - :RING   : a `(ring-get R i)` view.  SRC is the single global matrix every load site names;
-                 the origin is those sites' agreed components with the differing one replaced by
-                 the CONSUMING loop variable (see %ad-reconcile-ring-origin).  A pipelined ring's
-                 own load sites record OTHER stages' origins, which is what made this look
-                 undifferentiable.
-
-   RING-SITES is the %ad-ring-load-sites alist, threaded from the caller because it needs
-   flat-anf.  Absent, ring operands simply decline, which is the previous behaviour."
-  (let ((base (%ad-tile-base op)))
-    (cond
-      ((and (consp op) base)
-        (let ((sites (cdr (assoc base ring-sites))))
-          (if (null sites)
-              (values nil nil nil nil)
-              (multiple-value-bind (src origin)
-                  (%ad-reconcile-ring-origin sites (first *ad-loop-vars*))
-                (if (and src origin (= (length origin) 2))
-                    (values src (first origin) (second origin) :ring)
-                    (values nil nil nil nil))))))
-      (t
-        (let ((entry (assoc op src-map)))
-          (cond
-            (entry (values (second entry) (first (third entry)) (second (third entry)) :staged))
-            ((and (symbolp op) (member op inputs)) (values op 0 0 :direct))
-            ((assoc op dims-map) (values op 0 0 :staged))
-            (t (values nil nil nil nil))))))))
 
 ;; src/autodiff.lisp
 (defun %vjp-mma-accumulate-via-tile (form ctx)
