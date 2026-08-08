@@ -1,10 +1,22 @@
 # Crisp 🚧
 
-**A strictly evaluated, hardware-aware GPGPU compiler that eliminates the performance compromise.**
+**A new programming language for developing GPGPU kernels**
 
-Crisp is a Lisp for writing GPU kernels, compiling one source to both NVIDIA (PTX) and Intel (SPIR-V) hardware. Portability isn't the point, though — and neither is any single feature. The point is *unification*: the concerns that GPU computing normally scatters across a stack of incompatible tools — the kernel logic, automatic differentiation, numerical precision, memory layout and movement, and execution uniformity — all live inside one language, sharing one type system and one static analysis. Because it's a Lisp, there's no wall between "language" and "library": tiles, precision regions, and derivatives are all s-expressions in one substrate, added *as* the language rather than bolted beside it.
+Crisp is a Lisp for writing GPU kernels.  It is quite different than existing solutions and quite difficult to easily sum up in a paragraph or two. Kernels written in Crisp can be compiled to both PTX and SPIR-V, to support NVidia and Intel hardware. There is no Crisp runtime, instead the Crisp compiler can optionally generate "hoisting" example code. This is .cu / .cpp code that uses CUDA / LevelZero to load, enqueue, and read back results for the specified kernel.
 
-That's what makes the whole greater than the sum of its parts. Because differentiation, precision, tiling, and uniformity aren't separate frameworks but facets of a single semantic model, **they compose** — you can differentiate a fast-precision, tiled reduction that calls a foreign function, and the compiler reasons about all of it at once. The conventional path would have you glue a kernel language to an autodiff framework to manual half-float casts to hand-rolled shared memory to a separate host program, and hope the seams hold. Crisp's bet is that these should be *properties the compiler upholds*, declared once — not idioms you re-implement across a toolchain and hope you got right.
+Reading the preceding paragraph you might conclude that portability is a primary goal of Crisp, but that is mistaken. Crisp has several key intersecting goals and their sum is greater than their parts. Here are some of the more unique goals:
+
+- Auto Differentiation.  Crisp can automatically output the backward derivative of a kernel. Simply pass the `--differentiate` flag when compiling to generate the derivative kernel.  
+- Explicit hardware profiles for high performance. In addition to the kernel code, the exact profile and capabilities of GPU hardware can be provided to the Crisp compiler for maximum optimization. This aids in MMA shapes, loop unrolling, and countless other optimizations. See `def-hardware-profile` and related.
+- Common GPU memes explicitly provided by the Crisp language. Crisp directly exposes several different GPU memes like  grid strides, reductions, and warp specializations as macros that are directly usable. This both reduces errors and helps the compiler maximally optimize the code.
+- Meaningful meta declarations. Crisp code can declare certain variables or parameters as tunable, uniform in a workgroup, or constexpr, and more. Additionally kernels and functions can declare their desired enqueue "strategy". All of which serve to not only make the kernel code safe and correct, but also the hoisting example code more useful and, above all, the compilation optimal for performance.
+- Template types.  Crisp has C++ like type templating including type functions and constraints (ie C++ "concepts"), as well as advanced derived and branded types that have no comparable in C++.
+- Macros.  Crisp gives the user nearly full access to Common Lisp macros in their Crisp code. This is vastly superior to C++ SFINAE both in its power and ease of use. Furthermore, macros mean Crisp developers can write their own GPU memes, strides, reductions, strategies, etc. Crisp has many compile time inspection routines.
+- Crisp is not Turing complete.  You read that right. Crisp has no recursion, no unbound loops. This may seem like a liability, but for GPU kernels it simply does not matter. The gains from this decision are considerable: auto-differentiation, guaranteed termination, advanced compile-time analysis like detecting thread hazards and divergence. 
+
+OK, that is getting a little long. I'm trying to summarize Crisp goals, not give a laundry list of every feature (and there are so many more, like quantized types). The point of this list is not that Crisp sports a bunch of things, but rather that it composes them. For example, support for auto-differentiation is only possible because Crisp is not Turing complete and supports advanced type concepts like derived and branded types. Correctness and optimal performance are direct consequences of macro support and hardware profiles. The intersections of these goals is what makes Crisp work.
+
+
 
 ### Current Status: Active Implementation & E2E Validation
 
@@ -12,16 +24,7 @@ Crisp has moved far beyond the initial design phase. The core architecture—inc
 
 [Code Coverage Report](https://cperkinscperkins.github.io/crisp/coverage/)
 
-### The Vision: Eliminating the GPGPU Compromise 💡
-
-Historically, GPU programming forces a trade-off: you either write highly abstracted code that sacrifices performance, or you write rigid, low-level kernels that are dangerous and difficult to maintain. Crisp breaks this cycle.
-
-By treating the GPU as a fully integrated compute target rather than an isolated black box, Crisp separates the mathematics from the mechanics.
-
-* **Uncompromised Expressiveness:** Write algorithms in their purest mathematical form. Crisp's macro system, dominant/recessive type system, and scoped precision controls allow you to express complex logic natively. You focus purely on the math; Crisp engineers the silicon.
-* **Absolute Analytical Certainty:** By deliberately rejecting Turing completeness, Crisp turns runtime footguns into strict compile-time errors. It guarantees kernel termination and features a mathematically provable, built-in reverse-mode auto-differentiation engine.
-* **Hardware-Aware Execution:** The compiler absorbs the structural plumbing. Crisp deeply understands hardware topology (`def-hardware-profile`). It automatically handles Scalar Replacement of Aggregates (SROA), maps implicit memory allocations, unrolls loops to fit exact register limits, and generates the necessary C++ or Python host-side boilerplate.
-* **Transparent Observability:** High-performance partitioned debug logging allows you to inspect the exact state of your data across thousands of threads without mutating the silicon's execution characteristics or causing Heisenbugs.
+[Benchmarking Report](./benchmarks/REPORT.md)
 
 ### The Specification
 
@@ -29,9 +32,113 @@ The complete, in-progress design document can be found in the docs directory. Ea
 
 [View the Current Specification](./docs/ideal_001.md)
 
+### Just Show Me Some Code!
+
+Maybe reading the spec is a big ask. Understood. Here are two examples of Crisp code, one for Intel hardware, the other for Nvidia. These are real high performance kernels, not "hello world" examples. 
+
+#### Intel MMA
+
+The first is a MMA kernel that is optimized for Intel hardware. For matrices around 1024x1024 or 2048x2048, the code below will compile and execute FASTER than Intel's MKL on a BattleMage GPU.  As the matrix size increases the Crisp advantage will decrease. 
+
+```
+;; `bmg` is a Crisp BUILTIN hardware profile 
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K      (inner-dimension A B))
+        (n-k-steps (/ (inner-dimension A B) 8ul)))
+
+    (tile-stride C (32 32) (grid-y grid-x)
+      (let ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
+            (B-ring (make-register-tile-ring float (8 32) :ring-count 2 :operand :b))
+            (C-tile (make-register-tile float (32 32) 0.0)))
+      
+      ;; Prologue
+      (prefetch-tile A (grid-y 0) :size (32 8))
+      (prefetch-tile B (0 (* grid-x 2ul)) :size (8 16))
+      (prefetch-tile B (0 (+ (* grid-x 2ul) 1ul)) :size (8 16))
+      (prefetch-tile A (grid-y 1) :size (32 8))
+      (prefetch-tile B (1 (* grid-x 2ul)) :size (8 16))
+      (prefetch-tile B (1 (+ (* grid-x 2ul) 1ul)) :size (8 16))
+      (load-tile A (ring-get A-ring 0) (grid-y 0))
+      (load-tile B (ring-get B-ring 0) (0 grid-x))
+
+      (dotimes (grid-k n-k-steps)
+        (let ((next-k (+ grid-k 1ul))
+              (prefetch-k (+ grid-k 2ul)))
+          
+          ;; 1. Issue prefetch for future K.
+          (when (< prefetch-k n-k-steps)
+            (prefetch-tile A (grid-y prefetch-k) :size (32 8))
+            (prefetch-tile B (prefetch-k (* grid-x 2ul)) :size (8 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x 2ul) 1ul)) :size (8 16)))
+
+          ;; 2. Issue register load for the NEXT k.
+          (when (< next-k n-k-steps)
+            (load-tile A (ring-get A-ring (mod (+ grid-k 1ul) 2ul)) (grid-y next-k))
+            (load-tile B (ring-get B-ring (mod (+ grid-k 1ul) 2ul)) (next-k grid-x)))
+
+          ;; 3. Compute on the CURRENT k.
+          (mma-accumulate-via-tile (8 16 8) C-tile
+                                   (ring-get A-ring (mod grid-k 2ul))
+                                   (ring-get B-ring (mod grid-k 2ul))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x))))))
+
+```
+
+#### NVIdia MMA
+
+This second kernel is optimal on NVidia sm_90 hardware. Unlike the Intel one above which uses a prefetch pipeline, this uses warp specialization. This kernel performs well on NVidia hardware but not as well as cuBLAS. Hopefully we'll be matching it soon. 
+
+```
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 160))          ; 4 consumer warps (warpgroup 0) + 1 producer warp
+  (let ((A-ring (make-scratch-matrix-ring float (64 32)  :ring-count 2))   ; 2 x 64(M) x 32(K)
+        (B-ring (make-scratch-matrix-ring float (256 32) :ring-count 2))   ; 2 x 128(N) x 32(K) B^T
+        (D      (make-wgmma-accumulator float (64 256) 0.0))
+        (K      (inner-dimension A B))
+        (empty  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 4 :initial-state :signaled))
+        (full   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 256) (grid-y grid-x)
+      (with-warp-specialization (:consumer 4 :producer 1)
+        (:consumer
+          (set! D (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) 32ul))
+            (let ((slot (mod grid-k 2ul)))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 32) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile D C (grid-y grid-x)))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) 32ul))
+            (let ((slot (mod grid-k 2ul)))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b))))))))
+
+```
+
+
 ## Author
 
-Designed and implemented by **Chris Perkins**.
+Designed by **Chris Perkins**.
+
+## Development
+
+Implementation assisted by Claude Code and Google AntiGravity.
 
 ## License
 
