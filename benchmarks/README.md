@@ -112,13 +112,17 @@ the JSON files back to your local `results/` folder.*
 $ ./scripts/pull-runpod-results.sh 103.207.149.79 16881  ~/.ssh/id_ed25519
 ```
 
-**Intel Local Benchmarking (WSL2 + Docker).** For Intel GPUs (e.g. BMG, Arc), we test locally using a Docker container passing through the Windows WSL2 GPU device. Use `bench-intel.sh` to build the required image and run `matmul.py --platform=intel` inside it:
+**Intel Local Benchmarking (WSL2 + Docker).** For Intel GPUs (e.g. BMG, Arc), we test locally using a Docker container passing through the Windows WSL2 GPU device. Use `bench-intel.sh` to build the required image and run `matmul.py --platform=intel` inside it. 
+
+> [!NOTE]
+> On the Intel BMG architecture, Crisp's `intel_prefetch` kernel currently dominates the OneMKL Optimal baseline up to roughly $N=4096$ (16 TFLOPS vs 14 TFLOPS). However, it hits a severe cache cliff around $N=6144$, where MKL's tiling pulls ahead. The default sweep runs up to $8192$ to capture this crossover point.
+
 ```bash
-# Run full precision sweep (sizes 256, 512, 1024)
+# Run full precision sweep (sizes 256, 512, 1024, 2048, 4096, 8192)
 ./scripts/bench-intel.sh
 
 # Run specific sizes for a specific precision
-./scripts/bench-intel.sh 256,512,1024 100 fast
+./scripts/bench-intel.sh 4096,8192 100 fast
 ```
 The results are mapped back directly into `benchmarks/results/` just like native local runs.
 
