@@ -42,6 +42,13 @@ The first is a MMA kernel that is optimized for Intel hardware. For matrices aro
 
 ```
 ;; `bmg` is a Crisp BUILTIN hardware profile 
+;;
+;; To compile this kernel for a BattleMage GPU:
+;; crisp-compile --ir-target=spv --hardware-profile=bmg --math-precision=fast --denormal-handling=ftz matmul_bmg_prefetch.crisp
+;; 
+;; To generate the LevelZero host harness, pass `--hoist=l0`.
+;; crisp-compile --hoist=l0 --hardware-profile=bmg --math-precision=fast --denormal-handling=ftz matmul_bmg_prefetch.crisp
+;; The generated C++ code will load the SPIR-V module, manage device memory, and enqueue the kernel.
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
@@ -98,6 +105,13 @@ The first is a MMA kernel that is optimized for Intel hardware. For matrices aro
 This second kernel is optimal on NVidia sm_90 hardware. Unlike the Intel one above which uses a prefetch pipeline, this uses warp specialization. This kernel performs well on NVidia hardware but not as well as cuBLAS. Hopefully we'll be matching it soon. 
 
 ```
+;; To compile this kernel for a Hopper GPU:
+;; crisp-compile --ir-target=ptx --ir-target-arch=sm_90 --hardware-profile=h100 --math-precision=fast --denormal-handling=ftz matmul_wgmma.crisp
+;; 
+;; To generate the CUDA host harness, pass `--hoist=cuda`.
+;; crisp-compile --hoist=cuda --ir-target-arch=sm_90 --hardware-profile=h100 --math-precision=fast --denormal-handling=ftz matmul_wgmma.crisp
+;; The generated C++ code will load the PTX module, manage device memory, and launch the kernel.
+
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
 (def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
