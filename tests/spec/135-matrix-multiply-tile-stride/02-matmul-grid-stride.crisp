@@ -16,7 +16,8 @@
 ;; macro does NOT auto-reset a scratch accumulator — the body clears C-tile on grid-k==0
 ;; via (fill-tile C-tile 0.0) (the accumulator-reset sugar).
 ;;
-;; SKIP-WITH[--differentiate]: "tile-macro AD is a later chapter; endeavor 135 is forward-only"
+;;   (145 / BUG 037: differentiates. Staged-tile primals are read back from their
+;;    original global source, since a backward replays bindings but not statements.)
 ;;
 ;; MMA-DIMS: 8 8 8
 ;; TEST-HOIST[CUDA]: validate-cuda-mma-run

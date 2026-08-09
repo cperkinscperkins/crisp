@@ -1,0 +1,48 @@
+;; P3c (MMA autodiff) — a FRAGMENT-level MMA form under --differentiate must say something
+;; USEFUL.
+;;
+;; Before this, the kernel below failed with the engine's generic message:
+;;   "Function MMA-ACCUMULATE is not differentiable.  Wrap the kernel in 'forward-only' ..."
+;; which gives exactly the wrong advice.  The multiplication IS differentiable — Crisp
+;; differentiates matmul fine (spec 06) — just not at this altitude, and pointing the user at
+;; `forward-only` sends them away from the thing that would actually work.
+;;
+;; The reason is a hardware shape contract, not a missing feature.  On a SINGLE fragment
+;; M/N/K are the native instruction shape, so the two backward GEMMs come out as
+;; dA = (M,K,N) and dB = (K,N,M) — and on either vendor exactly one of them fails:
+;;   NVIDIA (16 8 8): dA fits, dB is (8,8,16) with M'=8 < M_n=16.
+;;   Intel  (8 16 8): dB fits, dA is (8,8,16) with N'=8 < N_n=16.
+;; Mirror images, because the two vendors' shapes are transposes of one another.  A non-MMA
+;; fragment backward is no better: dA[m,k] = sum_n dD[m,n]*B[k,n] contracts over n, but a lane
+;; holds only two of the accumulator's columns, so the reduction spans lanes.
+;;
+;; So the fragment forms stay a forward-only escape hatch and the error now names the tile
+;; form as the differentiable surface.  Nothing user-facing is lost: epilogue fusion (ReLU,
+;; bias) rides the `(acc)` body API on mma-accumulate-via-tile, not on raw mma-accumulate.
+;;
+;; NOTE ON THE DIRECTIVE: this is a negative test, but it CANNOT live in an errors/ directory.
+;; run-error-specs.lisp invokes the compiler with a fixed arg list (file + --log-level=off)
+;; and cannot inject --differentiate, so the kernel would compile forward-only and the
+;; negative test would fail for the wrong reason.  COMPILE-WITH[...]: FAIL "substring" is the
+;; mechanism that can carry the flag.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: FAIL "FRAGMENT-level MMA form"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "the --differentiate behaviour IS the test; see the COMPILE-WITH FAIL above"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel frag_mma_no_ad (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((C-acc  (make-register-fragment 16 8 0.0))
+        (A-frag (load-fragment-a A (0 0)))
+        (B-frag (load-fragment-b B (0 0))))
+    (store-fragment (mma-accumulate C-acc A-frag B-frag) C (0 0))))

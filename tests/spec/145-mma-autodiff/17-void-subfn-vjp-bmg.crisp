@@ -1,0 +1,64 @@
+;; VOID SUB-FUNCTION gradients — the locally-runnable analogue of 137/04 (BUG 038).
+;;
+;; 137/04 stages a tile through a sub-function with a TMA `load-tile`, which only lowers on the
+;; NVIDIA sm_90a path — the sync fallback needs `get-local-id`, which a device sub-function does
+;; not have — so its exact shape cannot be gradient-checked on any box we can run.  This spec
+;; keeps everything about it that AD cares about and drops the part that pins it to Hopper:
+;;
+;;   - a differentiable sub-function called as a STATEMENT, its return value discarded
+;;   - tensor in, tensor out, no float params at all
+;;   - parameter types declared through a `def-type` ALIAS, exactly as 137/04 declares them
+;;
+;; and replaces the TMA staging with an ordinary elementwise loop.
+;;
+;; WHAT IT CAUGHT.  Before the fix this compiled cleanly and returned a gradient of exactly 0.0
+;; against a finite difference of 2.0 — four independent silent failures stacked on one call:
+;;
+;;   1. No walk clause existed for a VOID differentiable sub-function call, so `(SCALE_INTO A C)`
+;;      — length 3 with an all-symbol butlast — was claimed by the MULTI-VALUE BINDING clause,
+;;      which read `SCALE_INTO`/`A` as bound variables and `C` as the producing expression.  `C`
+;;      is not a cons, so that clause's body never ran and the call was dropped.
+;;   2. `%crisp-tensor-param-type-p` did not resolve `def-type` aliases, so `mat-t` was not seen
+;;      as a tensor and `scale_into` was marked gradient-INERT — calls to it skipped on purpose.
+;;   3. The `_GRAD` companion produced an empty backward regardless.
+;;   4. Companion generation then REJECTED the function for writing through a tensor parameter
+;;      ("not valid in a differentiable kernel") and UNREGISTERED it, hiding the call again.
+;;
+;; THE FIX is not to repair that path but to stop needing it: the backward INLINES the
+;; sub-function's body at the call site and walks it with the ordinary statement walker, so the
+;; existing per-construct rules apply inside a sub-function exactly as they do inside a kernel.
+;; Nothing about a call boundary is special to the chain rule; the previous design made it so.
+;; Note (4) in particular: writing through a tensor param is what a staging function is FOR, and
+;; it troubles only a lowering that threads gradients through return values and &out handles.
+;;
+;; THE CHECK.  f(A) = sum(2A), so dA[1,0] = 2.0 for every element.  The ANALYTICAL gradient is
+;; now correct — measured 2.0 on BMG.
+;;
+;; WHY IT IS STILL SKIPPED — BUG 039, and it is NOT an AD bug.  The finite difference reads 0.0
+;; because the FORWARD kernel is wrong: `(~ dst i j)` inside a sub-function whose parameter type
+;; is an ALIAS silently compiles to `dst[i]`, dropping the second index, so `scale_into` writes
+;; four cells instead of sixteen.  %get-tensor-arity does not resolve aliases, analyze-aref-
+;; expression therefore falls to its single-index cell path, and no error is raised.  The
+;; analytical side is unaffected because the INLINED body is differentiated in the CALLER's
+;; frame, where the tensors carry mangled types and take the correct 2-D path — which is why
+;; this spec can report a correct 2.0 while its own forward is broken.
+;;
+;; Un-skip when 039 is fixed; the expectation below is already the right one.
+;;
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;; VERIFY-AUTODIFF: A=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=2.0 output-mat=4x4
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function scale_into (src dst)
+  (declare #'(mat-t mat-t => ulong))
+  (dotimes (i 4)
+    (dotimes (j 4)
+      (set! (~ dst i j) (* (~ src i j) 2.0))))
+  (to-ulong 0))
+
+(def-kernel void_subfn_copy (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (scale_into A C))

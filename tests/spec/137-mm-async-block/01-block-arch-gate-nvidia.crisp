@@ -4,7 +4,7 @@
 ;; no arch and compiles fine (it lowers :block to the sync fallback); the gate fires only
 ;; for a real backend + arch.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only async staging"
+;; SKIP-WITH[--differentiate]: "negative arch-gate test: the COMPILE-WITH FAIL is the assertion, and the sm_90 gate fires long before AD"
 ;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_80]: FAIL "sm_90"
 
 (def-type vec-t (vector float :address-space :global :align :compact))

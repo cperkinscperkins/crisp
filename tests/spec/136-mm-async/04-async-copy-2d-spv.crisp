@@ -11,7 +11,10 @@
 ;; OpGroupAsyncCopy opcode is present (RED under the sync fallback — the TDD driver),
 ;; then runs the --mma-test host-reference C=A.B check on metal (MMA_CORRECT).
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only async staging; tile AD is a later chapter"
+;;   (145: differentiates. Async staging is recovered like any other — the backward
+;;    reads a staged tile's primal from its ORIGINAL GLOBAL source at the load-tile-at
+;;    origin, and the :barrier key-args do not hide it. Verified NUMERICALLY on metal by
+;;    145/15 (async scalar) and 145/16 (async + MMA), not merely by compiling.)
 ;;
 ;; MMA-DIMS: 4 4 8
 ;; TEST-HOIST[L0]: validate-l0-mma-async

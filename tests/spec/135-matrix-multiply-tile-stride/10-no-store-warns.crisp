@@ -4,7 +4,8 @@
 ;; but it still compiles (a warning, not an error), which is why the default pass PASSES and the
 ;; EXPECT-STDERR compile succeeds while emitting the warning.
 ;;
-;; SKIP-WITH[--differentiate]: "tile-macro AD is a later chapter; forward-only"
+;;   (145 / BUG 037: differentiates. Staged-tile primals are read back from their
+;;    original global source, since a backward replays bindings but not statements.)
 ;; EXPECT-STDERR[--log-level=off]: "never stored"
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))

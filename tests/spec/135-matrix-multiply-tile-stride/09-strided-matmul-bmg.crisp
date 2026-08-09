@@ -14,7 +14,7 @@
 ;; (M=8, N=16, K=16 to match the directive below).  A=8x16, B=16x16, C=8x16, row-major.
 ;; BMG XMX shape (8 16 8), single 8x16 output tile.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA"
+;; SKIP-WITH[--differentiate]: "C is a REINTERPRETED VIEW (make-matrix over the param), so its adjoint has nowhere to land -- "Unknown variable C_ADJ". Views at the AD boundary, unrelated to MMA"
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

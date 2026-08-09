@@ -1,0 +1,57 @@
+;; P5 (MMA autodiff) — the REALISTIC shape: a differentiable matmul with a runtime K-LOOP.
+;;
+;; Spec 06 proved the tile-level backward rule on a single tile that covered all of K.  A real
+;; matmul loops: stage a K-slice, accumulate, repeat.  That is what this spec differentiates,
+;; with K a runtime multiple of the 16-wide tile.
+;;
+;; WHY IT IS A SEPARATE SPEC, AND WHAT IT CAUGHT.  Wrapping the multiply in a `dotimes` broke
+;; the backward — SILENTLY.  `flatten-anf-body` flattens LET and PROGN but leaves a DOTIMES
+;; body NESTED, and the rule's tile maps only scanned the TOP LEVEL of flat-anf.  So inside a
+;; loop the `load-tile-at` forms were invisible, the rule decided it was "not applicable",
+;; and the walk's fallthrough DROPPED the form: the emitted backward kernel contained no MMA
+;; at all and would have returned a zero gradient.  Measured before the fix — the _grad
+;; module had 0 CooperativeMatrixMulAddKHR.
+;;
+;; Two changes came out of that, and the second matters more than the first:
+;;   1. the tile maps now walk the whole tree (%mma-ad-walk-forms), not just the top level;
+;;   2. the "not applicable" path is now a hard ERROR naming exactly which operand could not
+;;      be resolved.  Returning NIL let a silent zero gradient through, which is the same
+;;      class of failure as the K-step data-drop that P3a fixed.  A gradient that is quietly
+;;      wrong is far worse than a kernel that refuses to compile.
+;;
+;; The forward is checked on metal (C = A.B over the full runtime K); the backward is checked
+;; structurally — the _grad module must carry the two backward GEMMs inside the loop.  Numeric
+;; gradient checking on hardware is its own phase; see mma-autodiff.md on why it belongs to
+;; VERIFY-AUTODIFF rather than the hoist (--differentiate and --hoist are mutually exclusive).
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 8 16 32
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel loop_matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one Intel SG16 sub-group
+  (let ((A-tile (make-scratch-matrix float (8 16)))    ; Mt x Kt, Kt=16 satisfies the contract
+        (B-tile (make-scratch-matrix float (16 16)))   ; Kt x Nt
+        (C-tile (make-register-tile float (8 16) 0.0))
+        (K      (to-int (inner-dimension A B))))
+    (dotimes (kt (/ K 16))
+      (load-tile-at A A-tile (0 (* kt 16)))
+      (load-tile-at B B-tile ((* kt 16) 0))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup))
+    (store-tile C-tile C (0 0))))

@@ -15,7 +15,10 @@
 ;; C-tiles — the multi-output-tile async path, not the degenerate grid==#tiles case.
 ;; K=8, k-step=4 => 2 grid-k reduction steps per tile.  Accumulator reset on grid-k==0.
 ;;
-;; SKIP-WITH[--differentiate]: "tile-macro AD is a later chapter; endeavor 136 is forward-only"
+;;   (145: differentiates. Async staging is recovered like any other — the backward
+;;    reads a staged tile's primal from its ORIGINAL GLOBAL source at the load-tile-at
+;;    origin, and the :barrier key-args do not hide it. Verified NUMERICALLY on metal by
+;;    145/15 (async scalar) and 145/16 (async + MMA), not merely by compiling.)
 ;;
 ;; MMA-DIMS: 8 8 8
 ;; TEST-HOIST[CUDA]: validate-cuda-mma-run

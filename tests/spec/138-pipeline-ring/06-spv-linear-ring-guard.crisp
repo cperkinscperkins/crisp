@@ -4,7 +4,14 @@
 ;; rejected — and only on the SPV backend.  The GENERIC default pass has no backend and compiles
 ;; fine (the ring lowers to the no-op await fallback), mirroring 137/02's :block-on-Intel guard.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only async staging"
+;; AUTODIFF: differentiable as of endeavor 145 (2026-08-01).  The skip here read "ring/
+;; pipelining is forward-only; tile AD is a later chapter" -- that chapter is now.  A ring is
+;; rank+1 scratch and `ring-get` a pure view selector, so the rule is just THE ADJOINT OF A
+;; VIEW IS THE SAME VIEW OF THE ADJOINT: (ring-get R i) has adjoint (ring-get R_ADJ i), and
+;; the existing %load-tile-at-bwd / %store-tile-at-bwd edges then apply unchanged.
+;; Proven NUMERICALLY by 145/18-ring-staged-vjp-bmg (analytical 1.0 vs finite-difference 1.0
+;; on BMG) -- not by this spec compiling, which would prove nothing (135/01 compiled, had the
+;; right atomics, and returned 0.0).
 ;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
 ;; COMPILE-WITH[--ir-target=spv]: FAIL "not yet implemented on SPIR-V"
 

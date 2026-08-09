@@ -172,7 +172,7 @@ LOOSE PRIORITIES
 - [x] def-struct
 - [x] cond  ( we can make all other divergent control flows from that: when, if, unless)
 - [ ] bool true false.  ( macros can still use T/nil ? )
-- [ ] precision selections (declare / declaim / flags )
+- [x] precision selections (declare / declaim / flags )
 - [x] .crisp files.  basic flag for crisp-compiler.exe
 - [x] SIDE CHANNEL MECHANISM.  probably sooner, rather than later. 
 - [x] Literals: use suffix ?   0.0f  INSTEAD of (type a float) in a let clause?
@@ -200,8 +200,8 @@ SHORT TERM PLAN
 - [x] defmacro - Get it in now. Shouldn't be difficult, paves way to "crisp in crisp"
 - [x] conditionals - LLVM Blocks and branches. Will be needed for "crisp-in-crisp" vectors etc.
 - - [/] anaphoric support
-- - [ ] star `*` variants - uniform across warp
-- - [x] plus `+` variants - compile time calculable
+- - [/] star `*` variants - 
+- - [x] plus `+` variants -  uniform across warp or compile time calculable
 - [x] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
 - [x] compile time assert mightn't be the worst idea. Pretty handy. 
 - [x] refactor? compiler.lisp is nearly 2000 lines. maybe analysis.lisp and compiler.lisp ?
@@ -723,7 +723,7 @@ Binary Download / Release
 =========================
 We have a github release for the libraries, with a python script to fetch.
 Should we do something for the compiler itself?
-- [ ] update INSTALL.md instructions.
+- [x] update INSTALL.md instructions.
 - [ ] README.md should link to INSTALL.md
 - [x] handling of opt.exe / 
 
@@ -749,18 +749,24 @@ MMA
 [x] chapter 3 - warp specialization pipelining
 [x] Intel  LSC 2D Block Loads in Intel Xe
 [x] precision?  
-[ ] opportunities for using def-hardware-profile ??
+[x] opportunities for using def-hardware-profile ??
 [ ] empty room fallacy?  GPU display? GPU monitoring?
 [ ] auto-differentiation?
-[ ] out of core orchestration 
+[ ] new macro for rings (prefetch/pipeline) that handles rings
+[/] out of core orchestration 
 
-[ ] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
+[x] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
 [ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] move MMA out of topology.md into main docs
 
 [ ] don't forget bug 033 ( --debug )
 
+[ ] (benchmarking) the CUDA arch skip-gate (your Vera Rubin point — a capability check rather than an arch allowlist); 
+[ ] bug 035 (:col-major silently ignored on SPV); 
+[ ]  unreachable STORE-TILE entry in anf-normalize's opaque list; 
+[ ] to-float having no AD rule;
+[ ] a CUDA *ad-runtime* if you ever want the PTX backward proven numerically rather than structurally.
 
 
 
@@ -794,23 +800,6 @@ MMA
 
 
 
-NVIDIA TEST FAILURES
-These are BMG tests which are being run on NVidia, for some reason. We supposedly fixed this earlier, but maybe not or the fix was overwritten?
-
-============================================================
-  RUN SUMMARY
-============================================================
-  specs (binary)                     FAIL
-  specs (binary, --differentiate)    ok
-  negative specs                     ok
-
-  ALL FAILED SPECS (across phases):
-    - 133-mma-spv/10-hello-mma-bmg
-    - 133-mma-spv/11-matmul-bmg
-    - 133-mma-spv/12-tiled-matmul-bmg
-    - 135-matrix-multiply-tile-stride/04-tiled-matmul-bmg
-    - 135-matrix-multiply-tile-stride/08-fill-tile-register-bmg
-    - 135-matrix-multiply-tile-stride/09-strided-matmul-bmg
 
 
 FMA

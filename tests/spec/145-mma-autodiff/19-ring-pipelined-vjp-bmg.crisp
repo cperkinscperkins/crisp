@@ -1,0 +1,89 @@
+;; RING-PIPELINED MMA gradients — numeric proof (138/04 and 138/05's structure, on BMG).
+;;
+;; Deliberately the PIPELINED TWIN of spec 09: same Mt/Nt/Kt, same ramp, same expected gradient,
+;; differing in exactly one thing — the operands are slots of a RING refilled inside the K-loop
+;; rather than two tiles staged once.  That isolates ring pipelining as the single variable.
+;;
+;; WHY THIS SPEC EXISTS — AND WHY IT IS CURRENTLY SKIPPED.  138/04 and 138/05 are the payoff
+;; kernels of Chapter 2, and both are sm_90a PTX, so no NVIDIA backward can be driven
+;; numerically (VERIFY-AUTODIFF has only :l0 and :opencl runtimes).  Un-skipping them on "it
+;; compiles" would be the 135/01 mistake — that one compiled, had the right atomics, and
+;; returned exactly 0.0.  This spec was written to supply the missing numeric proof on hardware
+;; we can actually run.
+;;
+;; It cannot yet do so.  Writing it turned up BUG 040: MMA reading from a RING SLOT is wrong in
+;; the FORWARD on BMG (metal MMA_WRONG, C[0][1]=18 against a reference of 30), reproduced at
+;; HEAD with no AD change in play.  So the finite difference here reads 0.0 for a reason that
+;; has nothing to do with gradients, and 138/04-05 stay skipped: their AD side now RESOLVES,
+;; but resolving is not the same as being right, and nothing yet demonstrates that it is.
+;; The spec is kept, ready, with the correct expectation already in place.
+;;
+;; WHAT WAS WRONG, and it was a mistake about MEANING rather than a missing feature.  The kernel
+;; computes C = A.B.  The ring, the prologue and the prefetch are SCHEDULE; reverse-mode AD is
+;; determined by the function, not by how operands were staged, so any correct matmul backward
+;; pairs with this forward.  The VJP nevertheless declined, because it asked
+;;
+;;     "which load site filled this slot?"
+;;
+;; — a question about the schedule, which genuinely has two answers (the prologue's and the
+;; prefetch's, with different origins), so it looked ambiguous and I recorded it as a hard trap.
+;; The question the derivative actually needs is
+;;
+;;     "what global matrix does this operand DENOTE, and at what tile coordinate is it CONSUMED?"
+;;
+;; Both have exactly one answer: A-ring is only ever loaded from A, and the consumption
+;; coordinate is the enclosing K-loop's, which the backward already mirrors.  The prefetch origin
+;; the objection was built on belongs to a DIFFERENT PIPELINE STAGE than the one being read.
+;;
+;; Only the PRIMAL needed fixing.  The adjoint flow was already correct: reversing the pipeline
+;; scatters a slot's adjoint at the prefetch's origin next-k, and the slot consumed at iteration
+;; k is exactly the one the prefetch of iteration k-2 wrote with next-k = k, so the mirror lands
+;; on the right stage by construction.
+;;
+;; THE CHECK.  f(A,B) = sum(A.B), so dA[m,k] = sum_n B[k,n].  With B[i][j] = 0.01*(i*16+j),
+;; dA[1,0] = 0.01 * (0+1+...+15) = 1.2 — identical to spec 09, so any divergence between the two
+;; is attributable to the ring alone.  K=48 over a 2-deep ring is THREE K-steps, the smallest
+;; shape where the ring actually WRAPS (with two steps the prologue would cover everything and
+;; nothing would be prefetched — the pipelining would be untested).
+;;
+;; atol is loose for the same reason as 09: tf32's ~10-bit mantissa on both the FD and the
+;; MMA-computed analytical gradient.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;; HOIST-HARDWARE-PROFILE: bmg
+;; SKIP-WITH[--differentiate]: "BUG 040: MMA reading from a RING SLOT is wrong IN THE FORWARD on BMG (metal MMA_WRONG, pre-existing -- reproduced at HEAD without any AD change), so the finite difference reads 0.0 and this cannot yet prove anything. The expectation below is already the right one; un-skip when 040 is fixed."
+;; VERIFY-AUTODIFF: A=8x48@0:0.01 B=48x16@0:0.01 at.A=1,0 group=16 h=0.5 atol=2e-2 expect.A=1.2 output-mat=8x16
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel ring_pipelined_matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((A-ring (make-scratch-matrix-ring float (8 16)  :ring-count 2))   ; Mt x Kt per slot
+        (B-ring (make-scratch-matrix-ring float (16 16) :ring-count 2))   ; Kt x Nt per slot
+        (C-tile (make-register-tile float (8 16) 0.0))
+        (K      (inner-dimension A B)))
+    ;; PROLOGUE — fill both slots before any math, so the loop always consumes a full slot.
+    (dotimes (i 2)
+      (load-tile A (ring-get A-ring (to-ulong i)) (0 (to-ulong i)))
+      (load-tile B (ring-get B-ring (to-ulong i)) ((to-ulong i) 0)))
+    ;; MAIN K-LOOP — consume slot k, then refill it for stage k+2 (the ring WRAPS).
+    (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+      (let ((slot (mod grid-k (to-ulong 2))))
+        (sync-workgroup)
+        (mma-accumulate-via-tile (8 16 8) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+        ;; Every thread must be done reading this slot before the refill overwrites it.
+        (sync-workgroup)
+        (let ((next-k (+ grid-k (to-ulong 2))))
+          (let ((more-k? (to-workgroup-uniform (< next-k (/ (to-ulong K) (to-ulong 16))))))
+            (when more-k?
+              (load-tile A (ring-get A-ring slot) (0 next-k))
+              (load-tile B (ring-get B-ring slot) (next-k 0)))))))
+    (store-tile C-tile C (0 0))))

@@ -13,7 +13,7 @@
 ;; --ir-target-arch=sm_90 auto-upgrades the PTX .target to sm_90a.)  Automated metal is not in
 ;; CI (no Hopper runner), so this stays a compile+PTX-shape check.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only async staging; tile AD is a later chapter"
+;; SKIP-WITH[--differentiate]: "differentiates and its backward carries real gradient scatter, but TMA :block is sm_90a-only and VERIFY-AUTODIFF runs on SPV/L0 -- so the gradient VALUES cannot be checked on this machine. Un-skip after a Hopper pod run, not before (135/01 compiled with correct-looking atomics and still returned 0.0)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))

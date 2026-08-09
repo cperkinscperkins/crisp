@@ -1,0 +1,63 @@
+;; P3b (MMA autodiff) — the TILE-LEVEL backward rule.  The heart of the endeavor.
+;;
+;;     C-tile += A-tile . B-tile   =>   dA = dC . B^T   and   dB = A^T . dC
+;;
+;; This is the ONLY altitude at which an MMA backward exists.  At the fragment level it is
+;; impossible: with M/N/K equal to the native shape, dA = (M,K,N) and dB = (K,N,M), and on
+;; NVIDIA (16 8 8) dA fits but dB does not (M'=8 < 16), while on Intel (8 16 8) dB fits but
+;; dA does not (N'=8 < 16) — exact mirror images, because the two vendors' shapes are
+;; transposes.  It is just the contract firing: one fragment has K = K_n = 8 and
+;; 8 % lcm(M_n,N_n) = 8 % 16 != 0.  Hence Kt = 16 here.
+;;
+;; TWO THINGS MAKE THIS WORK, AND BOTH ARE NON-OBVIOUS.
+;;
+;; 1. The transposes are STAGED, not read transposed.  Both backward GEMMs need one
+;;    transposed operand and the orientation is forced — dA^T = B.dC^T is (Kt, Mt, Nt) and
+;;    Mt=8 < N_n=16, so it fails the shape check on Intel.  Reading an operand ColumnMajor
+;;    would avoid the staging, but :col-major is silently ignored by the SPV cooperative
+;;    loads (plan/bugs.md #035), so the backward stages A^T / B^T into SLM with plain
+;;    workgroup-collective element copies.  Every operand read stays row-major, which also
+;;    makes the emission backend-neutral.
+;;
+;; 2. The backward never reconstructs the primal tiles.  A backward kernel replays the
+;;    forward's BINDINGS but not its STATEMENTS, so A-tile / B-tile — filled by load-tile-at
+;;    — are EMPTY in the backward.  That would be fatal, since dA needs B and dB needs A.
+;;    It is saved by the fact that both GEMMs need only the TRANSPOSES: the backward stages
+;;    those straight from the ORIGINAL GLOBAL matrices, recovering source and origin from the
+;;    forward's load-tile-at forms.
+;;
+;; WHAT IS CHECKED HERE.  The forward is verified on metal (C = A.B, K=16 — the same kernel
+;; as spec 05, which needs P3a's multi-K-step accumulate).  The backward is checked at the IR
+;; level in this phase: that it emits the two backward GEMMs, the transposing stages, and the
+;; dC seeding via P2's load-fragment-acc.  NUMERIC on-metal gradient checking arrives in P6
+;; (--mma-grad-test), which is where the fragment element->lane MAPPING finally becomes
+;; observable — the gap P2 documented and deliberately left open.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 8 16 16
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one Intel SG16 sub-group
+  (let ((A-tile (make-scratch-matrix float (8 16)))    ; Mt x Kt — Kt=16 satisfies the contract
+        (B-tile (make-scratch-matrix float (16 16)))   ; Kt x Nt
+        (C-tile (make-register-tile float (8 16) 0.0)))
+    (load-tile-at A A-tile (0 0))
+    (load-tile-at B B-tile (0 0))
+    (sync-workgroup)
+    (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

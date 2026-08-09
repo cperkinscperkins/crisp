@@ -12,7 +12,8 @@
 ;; Real matmul CORRECTNESS is proved on metal by 02 (neutral, both backends) and the
 ;; MMA twins 03 (CUDA) / 04 (BMG).
 ;;
-;; SKIP-WITH[--differentiate]: "tile-macro AD is a later chapter; endeavor 135 is forward-only"
+;;   (145 / BUG 037: differentiates. Staged-tile primals are read back from their
+;;    original global source, since a backward replays bindings but not statements.)
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 

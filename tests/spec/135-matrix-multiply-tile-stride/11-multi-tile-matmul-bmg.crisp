@@ -1,0 +1,60 @@
+;; BUG 036 regression — matrix-multiply-tile-stride across MORE THAN ONE OUTPUT TILE.
+;;
+;; This is 04-tiled-matmul-bmg with one change: C is 8x32 instead of 8x16, so it spans TWO
+;; 8x16 output tiles and the tile-stride loop body actually executes more than once.
+;;
+;; Until 2026-07-30 the macro never reset the register C-tile accumulator between output
+;; tiles.  The tile is initialised once, by its `make-register-tile` binding OUTSIDE the
+;; loop, so a workgroup striding onto a second tile kept the first tile's partial sums and
+;; added the new tile's contribution on top:
+;;
+;;     C[0][16]=60 ref 30      <- second tile, doubled
+;;     C[0][17]=60 ref 30
+;;     MMA_WRONG
+;;
+;; while columns 0..15 were correct.  EVERY shipped spec used exactly one output tile, so the
+;; loop body ran once per workgroup and the missing reset was invisible — even though striding
+;; over many output tiles is the macro's entire purpose.  Hence this spec: the smallest kernel
+;; that executes the tile-stride body twice.
+;;
+;; The requirement was already known — 02-matmul-grid-stride (a SCRATCH C-tile) does it by
+;; hand with `(when (= grid-k 0) (fill-tile C-tile 0.0))`.  The fix moves that bookkeeping
+;; into the macro, where the rest of the tile-stride/K-loop bookkeeping already lives.  A
+;; register tile resets to its DECLARED INIT (so multi-tile matches single-tile semantics
+;; exactly, rather than silently forcing 0.0); a scratch tile resets to 0.0 and gets a
+;; sync-workgroup, since its fill is workgroup-collective.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;;   (145: differentiates. The VJP picks its lowering — MMA where the tile dims
+;;    decompose into whole fragments, plain scalar loops otherwise.)
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 8 32 16
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tiled_matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one sub-group
+  (let ((A-tile (make-scratch-matrix float (8 8)))     ; SLM: M×8 (one K-step of A)
+        (B-tile (make-scratch-matrix float (8 16)))    ; SLM: 8×N (one K-step of B)
+        (C-tile (make-register-tile float (8 16) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

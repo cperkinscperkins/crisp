@@ -1,0 +1,69 @@
+;; P2 (MMA autodiff) — `load-fragment-acc`: SEEDING an accumulator from memory.
+;;
+;; The backward pass must get dC (the `C_grad` global matrix) INTO a register
+;; accumulator before either backward GEMM can run, and nothing did that today:
+;;   - `store-fragment` goes accumulator -> memory.  One direction only.
+;;   - `load-fragment-a` / `-b` read the A / B OPERAND layouts, not the accumulator's.
+;;   - `load-tile` into a register tile exists but is Intel/SPV-only
+;;     (Subgroup2DBlockLoadINTEL, src/mma.lisp:1231) — no PTX mapping at all.
+;;
+;; So P2 adds the exact inverse of `store-fragment`: same accumulator layout, same
+;; (TY TX) tile addressing, reads instead of writes.  On SPV that is
+;; CooperativeMatrixLoadKHR with Use=2; on PTX the per-lane read at the m16n8 fp32
+;; accumulator layout.
+;;
+;; THE KERNEL IS THE BACKWARD'S OWN SHAPE, DELIBERATELY:
+;;     acc <- load-fragment-acc C     ; seed the accumulator FROM GLOBAL MEMORY
+;;     acc <- mma(acc, A, B)
+;;     store-fragment acc -> C
+;; That "seed an accumulator from a global matrix, then MMA into it" is precisely what
+;; the P3/P4 backward does with C_grad.  The harness zeroes C before the run, so the
+;; seed is 0 and the result is exactly A·B — which the --mma-test host reference checks
+;; against a deterministic non-uniform fill (A[i]=i%5, B[i]=i%3).
+;;
+;; WHAT THIS PROVES, AND WHAT IT DOES NOT:
+;;   PROVES  — the primitive compiles, lowers, and reads the correct REGION of memory
+;;             with the correct element count.  If it read garbage, out-of-region data,
+;;             or the wrong number of elements, the seed would be non-zero and the run
+;;             would report MMA_WRONG.
+;;   DOES NOT — pin down the element->lane MAPPING.  The seed is all zeros, and zeros
+;;             are invariant under permutation.
+;;
+;; That gap is not fixable in isolation, and the attempt is instructive enough to record:
+;; the first cut of this spec "laundered" a real MMA result through memory
+;; (store -> sync -> load-fragment-acc -> store) hoping a wrong mapping would permute C.
+;; It cannot work.  A store followed by a load of the SAME address in the SAME thread is
+;; always store-to-load forwardable, and a CORRECT layout makes the round-trip provably
+;; the identity — so -O3 deleted the reload and the second store outright (verified in the
+;; emitted PTX: the kernel ended at `bar.sync; ret`).  Any self-consistent load/store pair
+;; is observationally equivalent to any other; the mapping only becomes observable when
+;; the loaded value is a NON-ZERO seed whose contribution the host can predict.  That is
+;; exactly the P3 backward test, where dC is a real gradient seed.
+;;
+;; BMG XMX shape is (8 16 8) from the profile, and B must be :row-major (Intel has no
+;; column-major-B coop builtin).
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "P2 adds the forward primitive only; mma-accumulate's backward rule is P3"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 8 16 8
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel acc_seeded_mma (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one Intel SG16 sub-group
+  (let ((C-acc  (load-fragment-acc C (0 0)))  ; <<< seed from global (harness zeroes C)
+        (A-frag (load-fragment-a A (0 0)))
+        (B-frag (load-fragment-b B (0 0))))
+    (store-fragment (mma-accumulate C-acc A-frag B-frag) C (0 0))))

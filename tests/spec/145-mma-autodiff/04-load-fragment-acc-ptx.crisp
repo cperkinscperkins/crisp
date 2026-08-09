@@ -1,0 +1,50 @@
+;; P2 (MMA autodiff) — `load-fragment-acc` on the NVIDIA / PTX path.
+;;
+;; The PTX twin of 03.  Same kernel shape (seed the accumulator from global memory, then
+;; MMA into it — the shape the P3/P4 backward uses for dC), but the two backends reach it
+;; by completely different routes, which is why both specs exist:
+;;
+;;   SPV  -> CooperativeMatrixLoadKHR with Use=2 (accumulator).  The layout is opaque and
+;;           driver-chosen; it only has to agree with the matching Store, which it does by
+;;           construction since both carry the same Use and shape.
+;;   PTX  -> an explicit PER-LANE read.  With g = lane/4 and t = lane%4, this lane's four
+;;           registers live at
+;;             (g, 2t) (g, 2t+1) (g+8, 2t) (g+8, 2t+1)
+;;           offset by the tile origin (TY*16, TX*8) — the exact addresses
+;;           `store-fragment` writes (src/mma.lisp:259-286).
+;;
+;; So on PTX the correctness claim is checkable WITHOUT hardware, and that hand-check is
+;; this spec's verification: the emitted index math must be the same expression as
+;; store-fragment's, only feeding %construct-struct instead of set!.  store-fragment's
+;; layout is already metal-proven (endeavor 132 P2 verified a real mma.sync result on an
+;; RTX part), so matching it exactly is sufficient proof of the inverse.
+;;
+;; Concretely, the emitted PTX must show, per lane and BEFORE the mma.sync, four
+;; `ld.global.b32` whose addresses are built the same way as store-fragment's four
+;; `st.global.b32`: a `shl.b32 %r, %lane_mod4, 1` for the 2t column, an `or.b32 .., 1`
+;; for the +1 column, and the row term recomputed at +8 for the third and fourth.
+;;
+;; There is no NVIDIA part on the dev machine, so the on-metal PTX run is batched into P7
+;; with the rest of the NVIDIA work.  NOTE: this endeavor does NOT need sm_90 — tf32
+;; mma.sync.m16n8k8 is sm_80+, and wgmma (the only sm_90a construct) is out of scope here,
+;; so an A10 / L4 / RTX 3090 / 4090 pod suffices.
+;;
+;; NVIDIA shape is the default (16 8 8); B is :col-major to match the canonical row.col MMA.
+;;
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "P2 adds the forward primitive only; mma-accumulate's backward rule is P3"
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel acc_seeded_mma (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; exactly one warp
+  (let ((C-acc  (load-fragment-acc C (0 0)))  ; <<< seed from global
+        (A-frag (load-fragment-a A (0 0)))
+        (B-frag (load-fragment-b B (0 0))))
+    (store-fragment (mma-accumulate C-acc A-frag B-frag) C (0 0))))

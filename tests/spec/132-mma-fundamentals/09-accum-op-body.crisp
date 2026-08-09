@@ -9,7 +9,9 @@
 ;; Here the body fires `(accum-op)` TWICE on a single 16x8 fragment → two mma.sync,
 ;; proving the body splices per-fragment and controls the MMA firing count.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; COMPILE-WITH[--ir-target=ptx --differentiate]: PASS
+;;   (145: differentiates. The VJP picks its lowering — MMA where the tile dims
+;;    decompose into whole fragments, plain scalar loops otherwise.)
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

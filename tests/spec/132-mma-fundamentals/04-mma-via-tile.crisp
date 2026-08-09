@@ -9,7 +9,9 @@
 ;;   walk unrolls load-fragment-a/b + mma-accumulate per fragment position and set!s
 ;;   the accumulated tile back.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; COMPILE-WITH[--ir-target=ptx --differentiate]: PASS
+;;   (145: differentiates. The VJP picks its lowering — MMA where the tile dims
+;;    decompose into whole fragments, plain scalar loops otherwise.)
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

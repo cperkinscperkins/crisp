@@ -10,7 +10,8 @@
 ;; to match the canonical row.col MMA.  mma-accumulate is the genuine
 ;; @llvm.nvvm.mma.m16n8k8.row.col.tf32 intrinsic.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;; COMPILE-WITH[--ir-target=ptx --differentiate]: PASS
+;;   (145: differentiates via the VJP registry.)
 ;; TEST-WITH[--ir-target=ptx]
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

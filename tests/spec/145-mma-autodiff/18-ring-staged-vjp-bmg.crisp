@@ -1,0 +1,47 @@
+;; RING-STAGED tile gradients — numeric proof (endeavor 138 rings under --differentiate).
+;;
+;; WHY THIS SPEC EXISTS.  All six 138 specs were skipped with "ring/pipelining is forward-only;
+;; tile AD is a later chapter", which was true when written.  That chapter is now.  But 138's
+;; own specs cannot settle whether ring gradients are CORRECT: 03/04/05 are sm_90a PTX kernels,
+;; and VERIFY-AUTODIFF has only :l0 and :opencl runtimes, so no NVIDIA backward can be driven
+;; numerically at all.  Un-skipping them on "it compiles" would repeat the 135/01 mistake — that
+;; one compiled, had the right atomics, and returned exactly 0.0.
+;;
+;; So the ring MECHANISM is proven here, on hardware we can actually run, and 138/01-03 are then
+;; un-skipped on the strength of THIS rather than on their own compilation.
+;;
+;; WHAT WAS WRONG.  `ring-get` is a pure view selector, and endeavor 138 taught the FORWARD path
+;; to treat a compound tensor target as a first-class tile.  The AD path was never told, and
+;; assumed a tile argument was a SYMBOL:
+;;
+;;     The value (CRISP.COMPILER:RING-GET TILES 0) is not of type SYMBOL
+;;
+;; — a raw Lisp type error rather than a Crisp diagnostic.  The rule that fixes it is the
+;; general one: THE ADJOINT OF A VIEW IS THE SAME VIEW OF THE ADJOINT.  `(ring-get R i)` has
+;; adjoint `(ring-get R_ADJ i)`, so the existing %load-tile-at-bwd / %store-tile-at-bwd edges
+;; apply unchanged.  A ring is rank+1 scratch; its adjoint is a ring of the same shape.
+;;
+;; SCOPE, deliberately narrow.  This exercises a ring slot as a STAGING TARGET — the case the
+;; fix covers — and nothing else.  Indexing a slot directly, `(~ (ring-get R i) row col)`, is
+;; still not differentiable: the tilde backward wants a symbol target, and RING-GET is not
+;; gradient-inert (a view selector is not a no-op for the chain rule, it RE-TARGETS it).  That is
+;; a separate rule and is not claimed here.
+;;
+;; THE CHECK.  The kernel stages A through a ring slot and writes it out, so C = A and
+;; d(sum C)/dA[1,0] = 1.0 exactly.  Chosen because it isolates the two ring edges — the load's
+;; scatter and the store's gather — with no arithmetic in between to mask a wrong one.
+;;
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;; VERIFY-AUTODIFF: A=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=1.0 output-mat=4x4
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel ring_staged_copy (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((tiles (make-scratch-matrix-ring float (4 4) :ring-count 2)))
+    ;; Slot 1, not slot 0: a wrong slot index in the backward would still pass if the adjoint
+    ;; collapsed to the ring's base, so the non-zero slot is what makes the view rule testable.
+    (load-tile-at  A (ring-get tiles 1) (0 0))
+    (store-tile-at (ring-get tiles 1) C (0 0))))

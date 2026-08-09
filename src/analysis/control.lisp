@@ -3751,14 +3751,18 @@
                (t (some #'walk f)))))
     (some #'walk forms)))
 
-(defun %mmts-lower (c-form c-tile tile-spec k-form k-step grid-y grid-x grid-k body location)
+(defun %mmts-lower (c-form c-tile tile-spec k-form k-step grid-y grid-x grid-k body location
+                    &optional (reset-value 0.0))
   "The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO
    auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit
-   store + any fusion.  Warns if the C-tile is never stored."
+   store + any fusion.  Warns if the C-tile is never stored.
+
+   BUG 036: emits a per-OUTPUT-TILE reset of the accumulator to RESET-VALUE before the K-loop.
+   Without it a workgroup that strides onto a second tile carries the first tile's partial sums.
+   A scratch C-tile's fill is workgroup-collective, so it is followed by a sync-workgroup; a
+   register tile's is per-lane and needs none."
   (declare (ignore location))
   (multiple-value-bind (reduction-body epilogue-body) (%mmts-split-epilogue body)
-    ;; Endeavor 137: matmul must store its result explicitly (auto-store removed).  A kernel
-    ;; that computes a C-tile and never stores it is almost certainly a bug — warn loudly.
     (unless (%form-tree-mentions-store-tile-p epilogue-body)
       (format *error-output*
         "WARNING: matrix-multiply-tile-stride: the C-tile is computed but never stored — add an :epilogue with (store-tile ~a ~a (~a ~a)).~%"
@@ -3767,14 +3771,30 @@
            (tile-stride-sym (intern "TILE-STRIDE" cl-pkg))
            (dotimes-sym     (intern "DOTIMES" cl-pkg))
            (div-sym         (intern "/" cl-pkg))
-           (to-ulong-sym    (intern "TO-ULONG" cl-pkg)))
-      (list* tile-stride-sym c-form tile-spec (list grid-y grid-x)
-             (list* dotimes-sym
-                    (list grid-k
-                          (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
-                    reduction-body)
-             ;; per-tile epilogue (the user's store + fusion), post-reduction.
-             epilogue-body))))
+           (to-ulong-sym    (intern "TO-ULONG" cl-pkg))
+           (fill-sym        (intern "FILL-TILE" cl-pkg))
+           (sync-sym        (intern "SYNC-WORKGROUP" cl-pkg))
+           ;; A register tile's spec is the compile-time (M N) size list; a scratch tile's is
+           ;; the tile tensor itself.
+           (register-p      (and (listp tile-spec) tile-spec (every #'integerp tile-spec)))
+           ;; REGISTER TILES ONLY.  A scratch C-tile is deliberately left alone: endeavor 135
+           ;; documented that contract in 135/01-macro-envelope — "The macro does NOT auto-reset
+           ;; a scratch C-tile — the user owns init" — and 135/02 duly resets by hand.  The
+           ;; measured bug was a REGISTER tile, whose init lives in a make-register-tile binding
+           ;; OUTSIDE the loop where the user cannot reach it per-tile; that asymmetry is exactly
+           ;; why the register path needs the macro to own the reset and the scratch path does
+           ;; not.  (sync-sym is retained for the scratch path should that contract ever change;
+           ;; a collective fill would need it.)
+           (reset-forms     (when register-p
+                              (list (list fill-sym c-tile reset-value)))))
+      (declare (ignorable sync-sym))
+      (append (list tile-stride-sym c-form tile-spec (list grid-y grid-x))
+              reset-forms
+              (list (list* dotimes-sym
+                           (list grid-k
+                                 (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
+                           reduction-body))
+              epilogue-body))))
 
 (defun analyze-matrix-multiply-tile-stride-expression (expr env context location)
   "Scratch-tensor path for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) BODY...).

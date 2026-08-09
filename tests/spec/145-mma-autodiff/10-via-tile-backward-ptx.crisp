@@ -1,0 +1,48 @@
+;; P7 (MMA autodiff) — NVIDIA / PTX parity for the tile-level backward.
+;;
+;; The PTX twin of 06.  The rule itself is backend-neutral by construction — the backward is
+;; emitted as ordinary Crisp forms (staged transposes + two mma-accumulate-via-tile calls)
+;; which then go through the normal forward path — so what this spec really checks is that
+;; the SHAPE ALGEBRA works out on the other vendor's instruction.
+;;
+;; NVIDIA is (M_n N_n K_n) = (16 8 8), the TRANSPOSE of Intel's (8 16 8).  Re-running the
+;; contract for it:
+;;   Kt % lcm(M_n, N_n) = Kt % 16          -> Kt = 16
+;;   forward   (Mt, Nt, Kt) = (16,  8, 16)
+;;   dA        (Mt, Kt, Nt) = (16, 16,  8)   16%16, 16%8, 8%8   -> fits
+;;   dB        (Kt, Nt, Mt) = (16,  8, 16)   16%16,  8%8, 16%8  -> fits
+;; so the smallest legal tile here is Mt=16, Nt=8, Kt=16 — mirroring BMG's Mt=8, Nt=16.
+;;
+;; Fragment decomposition differs accordingly (acc = 16x8, A = 16x8, B = 8x8):
+;;   C-tile  16x8  -> 1 accumulator fragment
+;;   dA-reg  16x16 -> 2 fragments (n-frags 2); its A operand dC is 16x8 -> 1 K-step
+;;   dB-reg  16x8  -> 1 fragment;  its A operand A^T is 16x16 -> 2 K-steps
+;; The 2-K-step operand lands on the OTHER backward GEMM than it does on BMG, which is a
+;; genuinely different path through %emit-per-frag-accumulate — worth its own spec rather
+;; than assuming the Intel result carries over.
+;;
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; COMPILE-WITH[--ir-target=ptx --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; MMA-DIMS: 16 8 16
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_matmul_ptx (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; exactly one warp
+  (let ((A-tile (make-scratch-matrix float (16 16)))   ; Mt x Kt — Kt=16 satisfies the contract
+        (B-tile (make-scratch-matrix float (16 8)))    ; Kt x Nt
+        (C-tile (make-register-tile float (16 8) 0.0)))
+    (load-tile-at A A-tile (0 0))
+    (load-tile-at B B-tile (0 0))
+    (sync-workgroup)
+    (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

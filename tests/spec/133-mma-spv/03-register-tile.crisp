@@ -8,7 +8,10 @@
 ;; store-tile walks the fragment grid and calls store-fragment per fragment at the
 ;; right (row-tile, col-tile) offset — a rewrite over P2's store-fragment.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals"
+;;   NOTE: differentiates cleanly.  The kernel has no differentiable INPUTS (its only
+;;   parameter is &out), so the engine emits its documented trivial backward — a gradient
+;;   kernel with no chain-rule body.  Vacuous but correct, and it keeps the fragment forms
+;;   under --differentiate coverage.
 ;; TEST-WITH[--ir-target=spv]
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 

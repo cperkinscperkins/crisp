@@ -508,3 +508,455 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         STATUS: 132/06's TEST-HOIST[CUDA] wiring is CORRECT (it went red on a real bug).
         Locally 06 SKIPs (no NVIDIA GPU), so the local suite stays green; only GPU-CI/RunPod
         sees the red.  Left wired (visible reminder) pending the morning's investigation.
+
+[ ] 035 - :contiguous-term :col-major is silently ignored by the SPV cooperative-matrix loads.
+
+        FOUND 2026-07-28 during endeavor 145 (MMA autodiff) P3b design, while checking
+        whether the backward's transposed operands could ride a ColumnMajor operand read
+        instead of an explicit transposing SLM staging.  NOT chased — 145 P3b routes around
+        it by staging transposes explicitly — but it is a forward-path correctness concern
+        that deserves its own look.
+
+        SYMPTOM: declare a matrix (matrix float ... :contiguous-term :col-major), load a B
+        fragment from it on BMG, and the emitted CooperativeMatrixLoadKHR carries
+        MemoryLayout = 0 (RowMajorKHR) — the SAME constant as the row-major A operand:
+
+            4 Constant 15 125 0
+            7 CooperativeMatrixLoadKHR 292 293 256 125 260 0   ; A, row-major
+            7 CooperativeMatrixLoadKHR 294 295 265 125 260 0   ; B, declared COL-major
+
+        Expected MemoryLayout = 1 (ColumnMajorKHR) on the second load.
+
+        WHY IT LOOKS LIKE A REAL BUG (the chain should work):
+          - :col-major DOES canonicalize to :first — src/types/validation.lisp:143.
+          - %get-tensor-ct reads index 5 of the canonical 6-tuple — src/analysis/structs.lisp:1307.
+          - %coop-layout-of maps :first -> 1, else 0 — src/mma.lisp:249.
+        So the declared intent is being lost somewhere between the def-type and the analyzed
+        tensor node that %coop-layout-of inspects.  Prime suspect: the node handed to
+        %coop-layout-of does not carry the declared c-t (get-single-value-type /
+        canonicalize-type-specifier returning a shorter or defaulted tuple, which
+        %get-tensor-ct silently reports as :last).
+
+        WHY IT WAS NOT CAUGHT: an on-metal probe of exactly this kernel still printed
+        MMA_CORRECT.  The hoist's host reference is STRIDE-AGNOSTIC (it indexes
+        b_ptr[kk*b_str0 + j*b_str1] using the same declared strides), so a wrong layout and
+        wrong strides can CANCEL in the comparison.  That makes the bug invisible to the
+        --mma-test harness and means "MMA_CORRECT on a col-major operand" is not evidence
+        that the col-major path works.  This is the same class of masking as bug 034's
+        A=B=1 fill.
+
+        SCOPE: SPV/cooperative-matrix only.  PTX is unaffected — the layout there is baked
+        into the mma.sync intrinsic variant (row.col), not read from the tensor type, which
+        is why 132/02's col-major B has always been correct.  All shipped SPV MMA specs
+        (133/*, 142/*, 144/*) declare B :row-major, so nothing in the suite exercises the
+        broken path — which is also why no test went red.
+
+        SUGGESTED FIRST STEP: in %coop-layout-of, log (or assert on) the canonical type it
+        receives for a known col-major operand; that immediately distinguishes "the node
+        lost the c-t" from "%get-tensor-ct read the wrong index".
+
+[x] 036 - matrix-multiply-tile-stride never resets the C-tile accumulator between output tiles,
+          so any matmul LARGER THAN ONE OUTPUT TILE is silently wrong.
+
+        FOUND 2026-07-30 during endeavor 145 (MMA autodiff) P8, which needs a multi-tile /
+        multi-workgroup matmul.  PRE-EXISTING and unrelated to the AD work — reproduced with the
+        SHIPPED spec `tests/spec/135-matrix-multiply-tile-stride/04-tiled-matmul-bmg.crisp`
+        completely unmodified except for widening the harness dims.
+
+        SYMPTOM (BMG, host-reference --mma-test): widen C from one 8x16 output tile to 8x32
+        (two tiles) and the SECOND tile comes back doubled:
+
+            C[0][16]=60 ref 30
+            C[0][17]=60 ref 30
+            C[0][18]=60 ref 30
+            C[0][19]=60 ref 30
+            MMA_WRONG
+
+        Columns 0..15 (the first tile) are correct.
+
+        MECHANISM (confirmed structurally, then by construction):
+        %mmts-lower (src/analysis/control.lisp:3754) emits
+
+            (tile-stride C <spec> (grid-y grid-x)
+              (dotimes (grid-k (/ K k-step))
+                <reduction-body>)
+              <epilogue-body>)
+
+        The register C-tile is initialised ONCE, by its `make-register-tile T (M N) INIT`
+        binding OUTSIDE the tile-stride loop.  Nothing re-initialises it per output tile, so a
+        workgroup that visits a second tile keeps the first tile's partial sums and adds the new
+        tile's contribution on top.
+
+        CONFIRMED BY CONSTRUCTION: the identical kernel hand-rolled as an explicit `tile-stride`
+        with `(fill-tile C-tile 0.0)` as the first form of the tile body is MMA_CORRECT at 8x32.
+
+        WHY IT WAS NEVER CAUGHT: every shipped matrix-multiply-tile-stride spec uses exactly ONE
+        output tile (MMA-DIMS 8 16 16 on BMG / 16 8 16 on NVIDIA), so the tile-stride loop body
+        executes once per workgroup and the missing reset is invisible.  The macro's whole
+        purpose is striding over many output tiles, so this is the headline path.
+
+        SUGGESTED FIX: have %mmts-lower emit a per-tile reset as the first form inside the
+        tile-stride body, before the K-loop.  Two decisions worth making deliberately rather
+        than in passing:
+          1. WHAT VALUE.  0.0 is the correct additive identity for a matmul accumulator, but the
+             user wrote `(make-register-tile T (M N) INIT)` — should the reset use INIT?  The
+             macro does not currently see the binding.  (Endeavor 132's F3 accum-op API means a
+             non-zero INIT is a plausible user intent, e.g. a bias.)
+          2. THE SCRATCH C-TILE PATH.  fill-tile on a scratch/SLM tile is a workgroup-collective
+             write and needs a sync-workgroup before the K-loop reads it; the register path does
+             not.  The lowering handles both tile kinds through the same code.
+
+        FIXED 2026-07-30 (endeavor 145).  %mmts-lower now emits a per-output-tile reset as the
+        first form inside the tile-stride body, before the K-loop.  Both decisions above were
+        resolved by evidence rather than preference:
+
+          1. RESET VALUE = the tile's DECLARED INIT, not a hardcoded 0.0.  That makes multi-tile
+             behave exactly like single-tile, which is what a bug fix should do; forcing 0.0
+             would silently change semantics for a non-zero init (endeavor 132's F3 accum-op API
+             makes a bias-valued init a real use).  %mmts-register-dims-map now carries the INIT
+             alongside the dims so the lowering can see it.
+
+          2. REGISTER TILES ONLY — the scratch C-tile path is deliberately untouched.
+             135/01-macro-envelope documents the contract in its own body: "The macro does NOT
+             auto-reset a scratch C-tile -- the user owns init", and 135/02-matmul-grid-stride
+             duly resets by hand with `(when (= grid-k 0) (fill-tile C-tile 0.0))`.  The measured
+             bug was a REGISTER tile, whose init lives in a make-register-tile binding OUTSIDE
+             the loop where the user cannot reach it per-tile.  That asymmetry is the whole
+             reason the register path needs the macro to own the reset and the scratch path does
+             not.  (An earlier cut auto-reset both; it contradicted the documented design AND
+             broke 135/01 / 02 / 10 under --differentiate.)
+
+        REGRESSION SPEC: tests/spec/135-matrix-multiply-tile-stride/11-multi-tile-matmul-bmg.crisp
+        — 04-tiled-matmul-bmg with C widened to 8x32 so the tile-stride body runs twice.  It is
+        the smallest kernel that executes the loop more than once, which is precisely what no
+        shipped spec did.
+
+[/] 037 - A backward kernel does not re-stage SLM tiles, so any gradient needing a staged
+          tile's PRIMAL VALUES is silently ZERO.
+
+        FOUND 2026-07-31 (endeavor 145 closing review, prompted by Chris asking why 135/01 was
+        marked non-differentiable).  PRE-EXISTING and unrelated to MMA.
+
+        SYMPTOM: a scalar tiled matmul differentiates and RUNS, but every input gradient comes
+        back 0.0 while the finite difference is correct:
+
+            FAIL: A: analytical=0.0  numerical=0.059999973
+            FAIL: B: analytical=0.0  numerical=0.23999998
+
+        MINIMAL REPRO (no MMA, no tile-stride macro, 4x4):
+
+            (let ((A-tile (make-scratch-matrix float (4 4)))
+                  (B-tile (make-scratch-matrix float (4 4)))
+                  (C-tile (make-scratch-matrix float (4 4))))
+              (load-tile-at A A-tile (0 0))
+              (load-tile-at B B-tile (0 0))
+              (dotimes (i 4) (dotimes (j 4) (dotimes (kk 4)
+                (set! (~ C-tile i j)
+                      (+ (~ C-tile i j) (* (~ A-tile i kk) (~ B-tile kk j)))))))
+              (store-tile-at C-tile C (0 0)))
+
+        BISECTED — these all PASS, which is what isolates it:
+          - tile -> tile scalar OVERWRITE       (set! (~ C i j) (* (~ A i j) 2.0))     -> 2.0 exact
+          - tile -> tile scalar ACCUMULATE      (set! (~ C i j) (+ (~ C i j) (* .. 2.0))) -> 2.0 exact
+          - THREE nested loops, ONE tile operand (* (~ A-tile i kk) 2.0)                -> 8.0 exact
+          - TWO tile operands (the repro above)                                          -> 0.0  WRONG
+
+        ROOT CAUSE: %generate-backward-kernel-ast replays the forward's BINDINGS
+        (`forward-bindings`) but NOT its STATEMENTS.  `make-scratch-matrix` is a binding, so the
+        tiles exist in the backward — but `load-tile-at`, which FILLS them, is a statement and is
+        never replayed.  The staged tiles are therefore EMPTY (zero) in the backward.  The
+        emitted chain rule is textually correct:
+
+            (SET! %T31_ADJ (+ %T31_ADJ (* %T32 %T33_ADJ)))     ; dA += B * dOut
+            (SET! %T32_ADJ (+ %T32_ADJ (* %T31 %T33_ADJ)))     ; dB += A * dOut
+
+        but %T31 / %T32 are replayed as `(~ A-TILE I KK)` / `(~ B-TILE KK J)` — reads of empty
+        tiles — so both products are zero.  It only shows up when a gradient needs the OTHER
+        operand's primal value: with a constant multiplier (the passing cases above) no primal
+        is required, which is exactly why every existing AD-over-tiles spec passes.
+
+        Endeavor 145's MMA path does not hit this because its VJP was written to read the
+        ORIGINAL GLOBAL operands at their load-tile-at origins rather than the staged tiles —
+        a workaround adopted there for this very reason.  The scalar path has no equivalent.
+
+        SUGGESTED FIX: replay the forward's tile-STAGING statements at the head of the backward
+        (the standard "recompute primals" step of reverse-mode AD), or generalize the 145 trick
+        and have the `~`-backward resolve a staged tile read back to its global source.  The
+        first is more general; the second is cheaper and already proven in the MMA VJP.
+
+        FIXED (staged-tile case) 2026-08-01, via the SECOND option above.  A replayed primal
+        `(~ A-TILE i k)` is now rewritten to read the ORIGINAL GLOBAL source at the staging
+        origin, `(~ A (+ oy i) (+ ox k))`, generalising what endeavor 145's MMA VJP already did.
+        Chosen over replaying the staging statements because it has the SAME coverage while
+        costing no extra SLM traffic, needing no barriers in the backward, and leaving the walk's
+        loop structure untouched.  Implemented in %gfw-process-let (loop-nested primals) and in
+        the top-level forward-bindings replay.
+
+        VERIFIED NUMERICALLY, not just by compiling — that distinction is the whole point of this
+        bug.  tests/spec/145-mma-autodiff/14-scratch-tile-matmul-vjp.crisp:
+            PASS (A: analytical=0.06  numerical=0.059999973  diff=2.6e-8)
+        135/01, 135/02 and 135/10 are now un-skipped.
+
+        STILL OPEN — a tile filled by COMPUTATION has no global source, so its primal remains
+        unrecoverable:
+            (set! (~ T-tile i j) (* (~ A-tile i j) 3.0))       ; T-tile is computed
+            (set! (~ C-tile i j) (* (~ T-tile i j) (~ A-tile i j)))  ; dA needs T's primal
+        That case now ERRORS with an actionable message naming the tile, instead of silently
+        returning zero — which was the actual damage this bug did.  A pure accumulator whose old
+        value is never consumed as a VALUE (an ordinary C-tile) correctly does NOT error; the
+        check tests whether the backward really uses the primal.  Closing this properly needs
+        genuine primal recomputation / checkpointing, which is its own design.
+
+[ ] 038 - A VOID sub-function call is silently DROPPED by the AD walk, so no gradient flows
+          through it.
+
+        FOUND 2026-08-01 reviewing 137-mm-async-block for --differentiate clearance.
+
+        SYMPTOM: tests/spec/137-mm-async-block/04-tma-sub-function.crisp COMPILES under
+        --differentiate (with its own flags) but the generated backward kernel performs ZERO
+        global writes — it produces no gradient at all.  Its siblings are fine: 03 (kernel does
+        the TMA itself) emits 1 gradient write and 05 emits 2; only the SUB-FUNCTION variant is
+        empty.
+
+        MECHANISM (from the flat-anf the walk receives):
+
+            (TILE  (MAKE-SCRATCH-MATRIX FLOAT (4 4)))
+            (STAGE A TILE)                              <- void sub-function call, a STATEMENT
+            (STORE-TILE-AT TILE C (...))
+
+        `(STAGE A TILE)` has length 3 with an all-symbol BUTLAST, so generate-backward-walk's
+        MULTI-VALUE BINDING clause claims it: it reads STAGE and A as bound variables and TILE as
+        the producing expression.  TILE is a symbol rather than a cons, so that clause's body
+        never executes and the form is silently dropped.  Exactly the structural ambiguity that
+        caused the endeavor-145 P1 replay bug — a statement and a multi-value binding are
+        indistinguishable by shape after ANF.
+
+        Note there IS already a clause for a void FOREIGN call (endeavor 123), added for the same
+        reason; ordinary differentiable sub-functions never got one.
+
+        WHAT A FIX NEEDS — two parts, and the second is the substantial one:
+          1. A walk clause that recognises `(f arg ...)` as a VOID call when f is in
+             *differentiable-functions*, mirroring the existing foreign-void clause, and emits
+             the call to f's _GRAD companion.  Must be ordered BEFORE the multi-value-binding
+             clause, which currently swallows it.
+          2. `stage`'s gradient contribution is a MUTATED TILE PARAM: it fills `tile` from `src`.
+             The sub-function AD convention passes handle contributions as extra `&out`
+             grad-handles, so `stage_GRAD` has to accept `tile`'s adjoint and scatter it into
+             `src`'s gradient — the same operation %load-tile-at-bwd performs, but crossing the
+             call boundary.  Whether the existing _GRAD generation already emits that for a
+             staging body is unverified.
+
+        PROGRESS 2026-08-01 — the bug has THREE layers, not one.  Reproduced locally with a
+        plain void sub-function (no TMA, no sm_90a), so it is general rather than a 137 quirk:
+
+            (def-function scale_into (src &out dst) ... (set! (~ dst i j) (* (~ src i j) 2.0)) ...)
+            (def-kernel k (A &out C) (scale_into A C))
+            -> analytical=0.0, finite difference=2.0
+
+          LAYER 1 — the missing walk clause.  FIXED.  A void differentiable sub-function call is
+          now recognised before the multi-value-binding clause that used to swallow it, mirroring
+          endeavor 123's void-FOREIGN clause.  Verified firing.  Suites stay green (944/944 both
+          ways, 253 unit, 211 negative), so the clause is safe to keep even though the layers
+          below still block the end-to-end gradient.
+
+          LAYER 2 — TYPE ALIASES make a sub-function INVISIBLE to AD.  This is broader than 038
+          and probably deserves its own number.  %crisp-tensor-param-type-p recognises the list
+          form `(matrix float ...)` and mangled `TENSOR_*` symbols, but NOT a user alias from
+          `def-type` — despite its docstring claiming "plain symbol naming a registered tensor
+          type".  So with
+
+              (def-type mat-t (matrix float ...))
+              (def-function f (src &out dst) (declare #'(mat-t &out mat-t => ulong)) ...)
+
+          %has-tensor-diff-param-p returns NIL, %generate-backward-function-ast bails at its
+          `(zerop n-float-params)` guard, and NO _GRAD companion is generated at all — silently.
+          Substituting the inline `(matrix float ...)` type makes the companion appear
+          (`AUTODIFF: Generating _GRAD companion SCALE_INTO_GRAD ... n-tensor=2`).  Note
+          %is-tensor-alias already exists in the same file and resolves exactly this.
+          BOTH 137/04's `stage` and its `mat-t` / `tile-t` params are declared via aliases.
+
+          LAYER 3 — emission still produces nothing.  With the inline types the companion exists
+          AND the layer-1 clause fires, yet the assembled backward is `(LET ((A_ADJ 0.0)))` —
+          empty.  %emit-sub-fn-backward's tensor-only branch should emit
+          `(SCALE_INTO_GRAD A C A_GRAD C_GRAD)`.  Suspect the registration is overwritten between
+          passes (Crisp is multi-pass; *differentiable-functions* is written both by
+          %register-hof-differentiable-function and by the companion generator), so the `info`
+          the walk reads may lack :tensor-param-indices.  NOT yet confirmed.
+
+        RESOLVED 2026-08-01 (the AD half) — by INLINING instead of repairing the companion.
+
+        Endeavor 111 Phase 1c had already put the AD splice in the right place: load-tile-at ->
+        %load-tile-at-bwd, store-tile-at -> %store-tile-at-bwd.  The kernel's `store-tile` was
+        already producing its backward edge.  The ONLY missing edge was the `load-tile` INSIDE
+        the sub-function, which the walk never saw.  So the backward now inlines the callee's
+        body at the call site (substitute actuals for formals, ANF, flatten) and walks it with
+        the ORDINARY STATEMENT walker.  Every per-construct rule then applies inside a
+        sub-function exactly as in a kernel, for free and for all of them.
+
+        This dissolves layers 2 and 3 rather than fixing them: both are properties of the _GRAD
+        companion path, which inlining does not use.  The companion is KEPT as the fallback —
+        still the right lowering for scalar math sub-functions, and MANDATORY for FFI, where
+        there is no body to inline.
+
+        A FOURTH layer surfaced during the fix and is worth recording, because it is the same
+        mistake in yet another costume.  %generate-backward-companion-ast-body rejects a callee
+        that writes through a tensor parameter:
+
+            Cannot differentiate function SCALE_INTO: it mutates parameter DST via cell write.
+            This function is not valid in a differentiable kernel.  Unregistering.
+
+        — and the UNREGISTERING then hid the call from the walk again.  The message overstates
+        its case: writing through a tensor param is what a staging or fill sub-function is FOR,
+        and it is not a problem for the derivative, only for a lowering that threads gradients
+        through return values and &out grad-handles.  Inlining handles it natively: after
+        substitution it is `(set! (~ C i j) ...)` on the caller's symbol.  So inlinability is now
+        keyed on the RETAINED BODY, not on *differentiable-functions* — a failed companion must
+        not veto the more expressive lowering.
+
+        Layer 2 (%crisp-tensor-param-type-p not resolving `def-type` aliases) was fixed anyway:
+        it is real on its own, since scalar sub-functions do still use companions.
+
+        MEASURED: the analytical gradient is now CORRECT — 2.0, against a hand-derived 2.0 — on
+        a locally-runnable analogue of 137/04 (spec 145/17).  Suites stay green: 944/944 both
+        ways, 253 unit, 211 negative.
+
+        STILL BLOCKED, on BUG 039 rather than on AD.  145/17's FINITE DIFFERENCE reads 0.0
+        because the FORWARD kernel is wrong: 2-D indexing inside a sub-function silently drops
+        the second index (see 039).  The analytical side is unaffected because the inlined body
+        is differentiated in the CALLER's frame, where the tensors carry mangled types and take
+        the correct 2-D path.  So 038's own machinery is done and verified as far as it can be.
+
+        CLOSED 2026-08-01 once 039 was fixed.  145/17 now passes end to end on BMG:
+        analytical 2.0, numerical 2.0, diff 0.0.  137/04's SKIP-WITH[--differentiate] is removed
+        and replaced by a validator, validate-ptx-tma-grad, which asserts the backward contains
+        the gradient scatter (ld.shared feeding atom.global.add.f32) and that the forward TMA
+        copy survived.  That evidence is STRUCTURAL and is labelled as such in the spec: 137/04
+        cannot be gradient-checked numerically anywhere (VERIFY-AUTODIFF has only :l0/:opencl so
+        it cannot drive a PTX backward, and the kernel has no SPV lowering at all).  The
+        MECHANISM is proven numerically by 145/17; the validator only guards against the
+        backward silently going empty again, which is how this hid for a whole endeavor.
+        Verified to have teeth: stubbing the inline path out makes 137/04 fail.
+
+[x] 039 - 2-D (and N-D) tensor indexing INSIDE a def-function silently drops all but the FIRST
+        index when the parameter type is declared through a `def-type` ALIAS.  Not an AD bug:
+        the wrong element is read and written in ORDINARY forward code, on hardware, with no
+        error.  Found while fixing 038, 2026-08-01.
+
+        REPRO — a sub-function that fills a 4x4 matrix writes only FOUR cells:
+
+            (def-type mat-t (matrix float :address-space :global :align :compact
+                                          :contiguous-term :row-major))
+            (def-function fill_seven (src dst)
+              (declare #'(mat-t mat-t => ulong))
+              (dotimes (i 4) (dotimes (j 4) (set! (~ dst i j) 7.0)))
+              (to-ulong 0))
+
+        Read back on BMG: sum = 28.0, i.e. 4 cells, not 112.0 / 16 cells.  The identical body
+        written directly in a KERNEL gives the correct 16.  Both loops are fine; the ADDRESS is
+        wrong.  Emitted IR for the sub-function:
+
+            %i7        = load i32, ptr %i            ; i only — j is never read
+            %t_flat    = sext i32 %i7 to i64
+            %t_byte    = mul i64 %t_flat, sizeof(float)
+            %t_ptr     = getelementptr ... i64 %t_byte
+            store float 7.0, ptr addrspace(1) %t_ptr
+
+        so `(~ dst i j)` means `dst[i]`.  The same expression in a kernel emits the proper
+        Horner form (mul by the row extent, then add j).
+
+        ROOT CAUSE.  analyze-aref-expression (src/analysis/structs.lisp:405) dispatches on
+        (%get-tensor-arity array-type).  %get-tensor-arity (:250) recognises the list form
+        `(tensor elem N ...)` and mangled `TENSOR_*` symbols, but NOT a `def-type` alias, so it
+        returns NIL and the analyzer falls through to the "Cell / array path: single index",
+        which uses only the first index and DISCARDS the rest.  Confirmed by the debug log: a
+        kernel logs `AREF compact path (no offset): A (N=2)`, the sub-function logs nothing.
+        %get-tensor-align (:290) has the identical hole.
+
+        Why sub-functions specifically: kernel parameters are exploded and reassembled, so their
+        semantic type is the mangled `TENSOR_*` symbol; a sub-function parameter keeps whatever
+        the declare said, i.e. the alias.
+
+        Note the failure is silent ONLY because arity is UNKNOWN — line 414 already errors on a
+        known-but-mismatched arity.  A tightened version of that check would have caught this at
+        compile time.
+
+        FIX DIRECTION (not yet applied — wider blast radius than the AD overlay, wants review).
+        `canonicalize-type-specifier` (src/types/validation.lisp:318) already resolves aliases
+        and handles CELL/VECTOR/MATRIX/TENSOR, so the surgical change is to canonicalize the
+        symbol case in %get-tensor-arity and %get-tensor-align before giving up.  The
+        alternative — canonicalising parameter types once at declaration, so sub-function params
+        carry the same mangled type kernels do — is more invasive but would close the whole
+        FAMILY of these holes at once.  This is the THIRD alias hole found in two days
+        (%crisp-tensor-param-type-p was the AD one), which argues for the second option.
+
+        SCOPE: any def-function taking an aliased multi-dimensional tensor and indexing it with
+        `~`.  Aliases are the documented style and are used throughout tests/spec, so this is
+        likely reachable from well beyond 137/04.
+
+        FIXED 2026-08-01.  Two changes, because the fix and the failure MODE are separate
+        problems:
+
+          1. %get-tensor-arity and %get-tensor-align now resolve aliases, via
+             canonicalize-type-specifier — which already resolves def-type aliases and
+             re-mangles, and whose output %get-tensor-arity already understood.  Guarded with
+             ignore-errors and non-recursive: a type we cannot canonicalize simply has unknown
+             arity, the same answer as before but now reached deliberately.
+
+             NOT by canonicalising parameter types once at declaration, which was the other
+             candidate and the one first proposed.  The emitted symbol for the repro is
+             `fill_seven_mat_t_mat_t`: the ALIAS NAME is load-bearing for name mangling and
+             overload resolution, so normalising param types at the declaration would change
+             mangled names.  The alias must survive; only the QUERIES about it need to see
+             through it.
+
+          2. analyze-aref-expression's cell / single-index fall-through now ERRORS when handed
+             more than one index, naming the type.  Silence here is not incidental — it is the
+             whole reason 039 reached hardware, and this is the THIRD time this exact path has
+             bitten (endeavor 138 fixed it for compound tensor targets; see the comment above
+             `target-form`).  A cell or 1-D array never takes two subscripts, so this is always a
+             real error.  Any future member of the family now fails at COMPILE time instead of
+             computing a plausible wrong answer.
+
+        VERIFIED: the sub-function's IR now emits the same Horner form as a kernel
+        (`mul` by the row extent, then `add j`); 145/17 passes numerically end to end; suites
+        944/944 both ways, 253 unit, 211 negative.
+
+[ ] 040 - MMA reading from a RING SLOT computes the WRONG RESULT on Intel/BMG.  Forward only —
+        no autodiff involved.  Found 2026-08-02 while trying to build a numeric proof for ring
+        gradients; reproduced at HEAD with no AD change in play, so it is pre-existing.
+
+        REPRO — spec 09's kernel with its two staged tiles replaced by ring slots, nothing else
+        changed:
+
+            (let ((A-ring (make-scratch-matrix-ring float (8 16)  :ring-count 2))
+                  (B-ring (make-scratch-matrix-ring float (16 16) :ring-count 2))
+                  (C-tile (make-register-tile float (8 16) 0.0)))
+              (load-tile-at A (ring-get A-ring (to-ulong 0)) (0 0))
+              (load-tile-at B (ring-get B-ring (to-ulong 0)) (0 0))
+              (sync-workgroup)
+              (mma-accumulate-via-tile (8 16 8) C-tile
+                                       (ring-get A-ring (to-ulong 0))
+                                       (ring-get B-ring (to-ulong 0)))
+              (store-tile C-tile C (0 0)))
+
+        On BMG via TEST-HOIST[L0] / validate-l0-mma-run:
+
+            C[0][0]=11 ref 30   C[0][1]=18 ref 30   C[0][2]=10 ref 30   C[0][3]=11 ref 30
+            MMA_WRONG
+
+        The identical kernel with plain `make-scratch-matrix` tiles is MMA_CORRECT (spec 09), and
+        ring STAGING without MMA is correct (145/18 gradient-checks exactly, which requires a
+        correct forward).  So the defect is specific to an MMA operand that is a ring VIEW.  The
+        wrong values are not garbage — they are small and plausible — which suggests the operand
+        is being read at a wrong offset or with a wrong row stride rather than from unwritten
+        memory.  A ring slot is a view with a non-zero base offset into rank+1 scratch, and the
+        fragment loads may be ignoring that offset (or the slot stride) when building their
+        addresses.  UNVERIFIED — that is the first thing to check.
+
+        WHY NOTHING CAUGHT IT: no spec combined a ring with MMA on SPIR-V.  138/05 does exactly
+        that but is PTX-only, and 138/06 records that :linear rings are not implemented on SPIR-V
+        at all, so the Intel path was never exercised.  The NVIDIA side is metal-verified
+        (138/04 MMA_CORRECT on H100), so this may well be Intel-specific.
+
+        BLOCKS: 145/19, and therefore the numeric proof for ring-pipelined gradients, and
+        therefore un-skipping 138/04 and 138/05 under --differentiate.
