@@ -15,10 +15,11 @@
 
 int main(int argc, char** argv) {
     auto wall_start = std::chrono::high_resolution_clock::now();
-    int Size   = argc > 1 ? atoi(argv[1]) : 256;
-    int warmup = argc > 2 ? atoi(argv[2]) : 20;
-    int iters  = argc > 3 ? atoi(argv[3]) : 100;
-    int M = Size, N = Size, K = Size;
+    int M      = argc > 1 ? atoi(argv[1]) : 256;
+    int N      = argc > 2 ? atoi(argv[2]) : 256;
+    int K      = argc > 3 ? atoi(argv[3]) : 256;
+    int warmup = argc > 4 ? atoi(argv[4]) : 20;
+    int iters  = argc > 5 ? atoi(argv[5]) : 100;
 
     sycl::queue q{sycl::gpu_selector_v, sycl::property::queue::enable_profiling{}};
 
