@@ -356,9 +356,49 @@ Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
    are the numeric proofs that the underlying tile VJP is correct; 140/03 adds only that
    wgmma reaches it.
 
-   **Still open: 142/10, 142/12** — `MAKE-REGISTER-TILE-RING`, still unregistered.  These are
-   register-tile RINGS feeding MMA, so they likely need Gap 4's treatment extended to ring
-   slots as well as the constructor wired in.
+   **Rings: 142/10 DONE 2026-08-09.  142/12 blocked on an unrelated gap.**
+
+   A ring of register operand tiles canonicalizes to a SCRATCH MATRIX RING — a ring is
+   rank+1 scratch (138), so it is Gap 4's answer ("an MMA operand's adjoint is memory")
+   one dimension up, in a form the engine has understood since 138.  Three further
+   defects, all found by measurement:
+
+   - **Ring-view extents.**  Gap 4's devirtualizer matches `(~ (extents~ SYM) i)`; a ring
+     operand appears as `(~ (extents~ (ring-get SYM i)) j)` and never matched.  Scoped to
+     rings that were REGISTER rings in the ORIGINAL anf — a genuine scratch ring's binding
+     DOES survive into the backward, which is why 138 and 145/18 work, and rewriting theirs
+     would change specs that pass for the right reason.
+   - **Top-level rings get no adjoint.**  TWO places pair an adjoint with a forward
+     allocation: `%augment-scratch-adj-bindings`, which knows the ring constructors but only
+     runs on LET forms met during the walk; and the collection inside
+     `generate-backward-walk`, which handles the kernel's top-level bindings and lists no
+     rings at all.  A top-level ring therefore gets none.  Pre-existing, not introduced by
+     142 — 138's and 145/18's ring specs simply never name one.  Ensured on the way out,
+     the same shape as `%ensure-leaf-adj-bindings` in macros.lisp.
+   - **Ring constructors must NOT go through `%promote-scratch-init-for-ad`.**  It opens
+     with `%scratch-tensor-canonical-spec` and knows only the four scratch tile forms;
+     handed a ring it yields the stub `(TENSOR FLOAT)`.
+
+   > **METHOD NOTE — the expensive lesson of this endeavor so far.**  That last defect cost
+   > FIVE speculative attempts, every one of them re-reading `Invalid incomplete type
+   > specifier: (TENSOR FLOAT)` as a problem with the emitted CODE.  It was never the code:
+   > the adjoint allocator was signalling while BUILDING it.  The reason it stayed hidden is
+   > that `generate-backward-walk` logs its assembled AST from INSIDE itself, so everything
+   > this overlay's wrapper does afterwards was invisible.  Adding one `log:debug` to the
+   > wrapper found it immediately — the absence of `146:` lines on a failing compile, against
+   > eight on a succeeding one, located the error inside the wrapper's own `let*`.
+   > **Log the thing you are changing before changing it again.**
+
+   **142/12 is NOT a ring problem.**  It now fails with
+   `Type mismatch for operator '/'. Cannot operate on ULONG and INT.` on its runtime loop
+   bound `(/ (inner-dimension A B) (to-ulong 8))` — a type-inference gap on a differentiated
+   runtime loop bound.  Related to Gap 2 (`rem`) and 132/08 (`to-float`): integer/conversion
+   arithmetic, not MMA.  Track it there, not here.
+
+   **No numeric proof for ring-fed MMA gradients yet.**  142/10 is compile-only by design.
+   142/12 was to be the metal twin and does not differentiate.  142/01 proves
+   register-resident MMA numerically and 145/18 proves ring STAGING; their combination
+   remains unproven on hardware, and this doc should not imply otherwise.
 2. **Gap 2 — `rem`** (140/01, 140/02).  Small rule.  Pairs naturally with 132/08's missing
    `to-float`; both are index/conversion arithmetic, not MMA.
 3. **Gap 3 — sub-function walk into warp roles** (139/02, 05, 06).  `CONSUMER` is a

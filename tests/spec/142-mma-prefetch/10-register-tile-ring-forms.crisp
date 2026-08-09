@@ -11,8 +11,19 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "forward-only ring / MMA"
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;;
+;; Endeavor 146 Gap 1: the old skip read "forward-only ring / MMA".  A ring of register
+;; operand tiles differentiates -- the backward canonicalizes it to a scratch matrix ring
+;; (a ring is rank+1 scratch), which is a form the AD engine has understood since 138.
+;;
+;; This spec asserts STRUCTURE only: that the ring forms survive the AD walk and produce a
+;; well-formed backward.  It is compile-only by design (see the header above -- it exists to
+;; prove per-slot fragment-var resolution).  The NUMERIC proof for a ring-fed MMA gradient is
+;; NOT yet available: 142/12 is the metal k-loop twin and does not differentiate yet (it trips
+;; on a ULONG/INT mismatch in its runtime loop bound, unrelated to rings).  142/01 is the
+;; numeric proof for register-resident MMA, and 145/18 for ring STAGING; the combination of
+;; the two is still unproven on hardware.
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
 
