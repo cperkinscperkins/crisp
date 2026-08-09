@@ -6,8 +6,8 @@
 ;; staging the operands explicitly in the GRF first — the split that later lets us pipeline the loads.
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "forward-only MMA"
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; On-metal correctness (host-reference C = A.B via the hoist's --mma-test):
@@ -15,6 +15,15 @@
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; TEST-HOIST[L0]: validate-l0-mma-run
 ;; HOIST-EXPECT: MMA_CORRECT
+;;
+;; Endeavor 146 Gap 4 — the NUMERIC gradient proof, and the thesis stated as a measurement.
+;; This kernel is the REGISTER-RESIDENT twin of 145/12: same f(A,B) = sum(A.B), same shapes,
+;; same Kt=8 (so the same scalar lowering), differing ONLY in where the operands are staged —
+;; GRF here, SLM there.  Staging is a schedule, not mathematics, so the gradient must be the
+;; SAME NUMBER.  dA[m,k] = sum_n B[k,n]; with B[i][j] = 0.01*(i*16+j),
+;;     dA[1,0] = 0.01 * sum_{n=0..15} n = 1.2
+;; which is exactly 145/12's expectation.
+;; VERIFY-AUTODIFF: A=16x8@0:0.01 B=8x16@0:0.01 at.A=1,0 group=16 h=0.5 atol=2e-2 expect.A=1.2 output-mat=16x16
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
 

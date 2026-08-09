@@ -267,21 +267,74 @@ A side effect worth noting: `sed -i` in Git Bash rewrites CRLF files to LF.  Fou
 specs are CRLF and came out as 40-line whitespace diffs.  Use the byte-preserving editor for
 these, not stream edits.
 
-### Phase 2 — the four gaps, cheapest blast-radius first.
-
-Phase 0 chose the order.  Each is a generic AD gap, so each unblocks specs beyond the one
-being worked:
-
-1. **Gap 1 — inert constructors** (140/03, 142/10, 142/12).  145 P1 did exactly this for
-   shape queries; the pattern exists.  Cheapest.
-2. **Gap 2 — `rem`** (140/01, 140/02).  Small rule.  Pairs naturally with 132/08's missing
-   `to-float`; both are index/conversion arithmetic, not MMA.
-3. **Gap 3 — sub-function walk into warp roles** (139/02, 05, 06).  Medium.
-4. **Gap 4 — view adjoints at the AD boundary** (142/00, 01, 11).  Hardest, and it also
-   closes 135/09 in Bucket E.
+### Phase 2 — the four gaps.
 
 One spec at a time within each gap (Rule 3), numeric proof or an honest skip (Rule 1), and
 if a fix starts to require teaching the ANF pass about a scheduling construct, stop (Rule 2).
+
+#### Gap 4 — register-tile adjoints.  DONE 2026-08-09.  142/00, 142/01, 142/11 un-skipped.
+
+**Phase 0 mislabelled this one.**  It is not "view adjoints at the AD boundary"; it is a
+register tile leaking a WHOLE-TILE reference into a backward that has no binding for it.
+Proven by a forward-only probe with no differentiation anywhere:
+
+    (let ((T-tile (make-register-tile float (16 8) 0.0)))
+      (workgroup-stride T-tile (m k) (set! (~ T-tile m k) 1.0)))
+    => Unknown variable T-TILE.
+
+The AD walk is source-to-source over flat ANF and runs BEFORE semantic analysis;
+`%explode-register-tiles` runs later, from the LET analyzer.  The backward replays the
+forward's BINDINGS but not its STATEMENTS, and a register tile's binding does not survive
+into that scope.  A scratch tile's does — which is exactly why 145 never saw this: its specs
+staged operands through `make-scratch-matrix` + `load-tile-at`.  142 Phase A introduced
+register-resident operands via the `load-tile` overload.
+
+Two defects, and the second one taught the real lesson:
+
+1. **Adjoint allocation.**  `%mma-ad-adj-init` mirrored the forward constructor, so an
+   OPERAND tile got a register-tile adjoint.  But every consumer indexes it as memory — the
+   scalar lowering's `workgroup-stride` + `~`, the MMA fast path's `(store-tile da-reg a-adj)`
+   destination, and the downstream `%load-tile-at-bwd` scatter.  Now: operand adjoints are
+   scratch matrices, accumulator (C) adjoints stay register tiles.
+
+2. **Extent reads — and DO NOT PATCH THESE PER SITE.**  A grid-coordinate load records its
+   origin scaled by `(~ (extents~ TILE) i)`.  Three independent emitters put that into the
+   backward (scalar lowering origins, `%mma-ad-transposed-stage`, `%load-tile-at-bwd`
+   scatter), and a fourth would do it again.  The first attempt patched them one at a time
+   and was the wrong shape.  **Replaced by ONE normalization pass** over the flat ANF going
+   into `generate-backward-walk`: a register tile's extents are compile-time literals, so
+   substitute them once and every emitter downstream is correct by construction.  Scoped to
+   register tiles, so kernels without them see byte-identical input.
+
+Gotcha worth keeping: the substituted literal must be `(to-ulong N)`.  `extents~` yields
+ULONG and a Lisp integer reads as Crisp INT, so a bare literal gives
+`Cannot operate on ULONG and INT`.
+
+**THE NUMBER (Rule 1).**  142/01 is the register-resident twin of 145/12 — same
+`f(A,B) = sum(A.B)`, same shapes, same Kt=8 and therefore the same scalar lowering, differing
+ONLY in whether operands stage through GRF or SLM.  On BMG:
+
+    PASS (A: analytical=1.2 numerical=1.1988525 diff=0.0011475086)
+
+145/12 expects 1.2.  Same schedule-independent number, measured on metal.  That is the
+endeavor's thesis as a measurement rather than an argument.
+
+Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
+
+#### Remaining, cheapest blast-radius first
+
+1. **Gap 1 — inert constructors** (140/03, 142/10, 142/12).  `MAKE-WGMMA-ACCUMULATOR` and
+   `MAKE-REGISTER-TILE-RING` appear ZERO times in src/autodiff.lisp; they are missing from
+   both `%backward-skip-fn-p` and `%augment-scratch-adj-bindings`.  145 P1 did exactly this
+   for shape queries.  Note 142/10 and 142/12 are register-tile RINGS feeding MMA, so they
+   may need Gap 4's treatment extended to ring slots.
+2. **Gap 2 — `rem`** (140/01, 140/02).  Small rule.  Pairs naturally with 132/08's missing
+   `to-float`; both are index/conversion arithmetic, not MMA.
+3. **Gap 3 — sub-function walk into warp roles** (139/02, 05, 06).  `CONSUMER` is a
+   user-defined sub-function, not a warp-specialization construct.
+4. **Bucket E — 135/09's `Unknown variable C_ADJ`.**  Phase 0 guessed this was the same
+   defect as Gap 4.  With Gap 4 now understood, that guess is UNVERIFIED — 135/09 is a
+   reinterpreted view, not a register tile.  Re-measure before assuming.
 
 ### Candidate side quest — BUG 040.
 

@@ -8,7 +8,6 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "forward-only block load / MMA"
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; TODO(green): strengthen to an IR-grep validator (validate-spv-block-load) asserting the
