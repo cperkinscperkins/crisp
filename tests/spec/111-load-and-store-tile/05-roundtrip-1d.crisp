@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at / store-tile-at land in sub-step 1c"
 
 ;; Canonical roundtrip: load global → tile, mutate tile cooperatively,
 ;; store tile → global.  Each thread reads tile[lx], adds 100, writes

@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD pre-rewrite normalises load-tile to load-tile-at; covered in phase 4"
 
 ;; Phase 2 sugar: bare load-tile inside tile-stride.  The bare form
 ;; (load-tile V tile (grid-x) :barrier barrier) gets rewritten to

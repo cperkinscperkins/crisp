@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
 ;; load-tile-at with :transpose t on a 2D matrix.  With transpose,
 ;; tile[ly][lx] receives global[origin-y + lx][origin-x + ly] — the two

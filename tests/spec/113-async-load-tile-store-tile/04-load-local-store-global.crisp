@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: "AD pre-rewrite for load-local / store-global async lands in phase 1"
 ;; Tests the new load-local and store-global async primitives.
 
 (def-type vec-t  (vector ulong :address-space :global :align :compact))
