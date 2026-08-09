@@ -376,3 +376,242 @@
                                     (list mul (list aref a-src (ix aoy m) (ix aox k))
                                           (list aref dc m n))))))
             (list sync)))))
+
+
+;;; ===================================================================
+;;; Endeavor 146 Gap 1 — wgmma, canonicalized rather than re-registered.
+;;;
+;;; 140/03 failed with
+;;;     Function MAKE-WGMMA-ACCUMULATOR is not differentiable.
+;;; and there is no VJP for WGMMA-ACCUMULATE-VIA-TILE either -- "wgmma"
+;;; appears exactly ONCE in all of src/autodiff.lisp, in a comment.
+;;;
+;;; The obvious fix is to add MAKE-WGMMA-ACCUMULATOR to every register-tile
+;;; registry (%backward-skip-fn-p, %augment-scratch-adj-bindings,
+;;; %mma-ad-adj-init, %mma-ad-tile-dims-map, the scratch-adj collection in
+;;; generate-backward-walk, %ad-register-tile-dims-map) and then write a VJP
+;;; for wgmma-accumulate-via-tile.  Six lists and a new VJP -- and the next
+;;; MMA instruction would need seven more.
+;;;
+;;; But that is precisely the mistake this endeavor exists to stop.  wgmma is
+;;; Hopper's WARPGROUP-ASYNC way of computing D += A.B.  The asynchrony and the
+;;; warpgroup scope are SCHEDULE.  The math is the same matrix multiply that
+;;; mma-accumulate-via-tile already has a VJP for.
+;;;
+;;; So: canonicalize wgmma to the sync MMA on the ANF entering the backward
+;;; walk, exactly where Gap 4's extent normalization already runs.  Every
+;;; existing register-tile registry then applies unchanged, and the derivative
+;;; comes from the ONE VJP that already exists.
+;;;
+;;; This rewrites only the BACKWARD's view.  The forward is compiled from the
+;;; caller's own flat-anf and still emits real wgmma -- 140/00-02 keep proving
+;;; that.  A backward is under no obligation to use the same instruction as its
+;;; forward; that is the whole content of "the schedule is not the math".
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %ad-canonicalize-wgmma (form)
+  "Rewrite Hopper wgmma forms to their synchronous MMA equivalents for the backward walk.
+
+     (V (make-wgmma-accumulator T (M N) INIT))  ->  (V (make-register-tile T (M N) INIT))
+     (wgmma-accumulate-via-tile SHAPE D A B ...) -> (mma-accumulate-via-tile SHAPE D A B ...)
+
+   Trailing keys (:swizzle and friends) are preserved positionally; the via-tile VJP
+   destructures (SHAPE C A B &rest ignored) and ignores them.
+
+   Structural no-op for any kernel without wgmma."
+  (let* ((cl (find-package :crisp-language))
+         (mrt (intern "MAKE-REGISTER-TILE" cl))
+         (mvt (intern "MMA-ACCUMULATE-VIA-TILE" cl)))
+    (labels ((head-is (f name)
+               (and (consp f) (symbolp (first f))
+                    (string-equal (symbol-name (first f)) name)))
+             (walk (f)
+               (cond
+                 ((not (consp f)) f)
+                 ((head-is f "MAKE-WGMMA-ACCUMULATOR")
+                  (cons mrt (mapcar #'walk (rest f))))
+                 ((head-is f "WGMMA-ACCUMULATE-VIA-TILE")
+                  (cons mvt (mapcar #'walk (rest f))))
+                 (t (mapcar #'walk f)))))
+      (walk form))))
+
+;; src/autodiff.lisp -- replaces the Gap 4 wrapper; same seam, one more normalization.
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
+                                        &key kernel-pkg)
+  "Endeavor 146: normalize the flat ANF before the walk sees it, then run the walk
+   unchanged.  Two normalizations, both of the same kind -- they remove a SCHEDULING
+   distinction that the derivative does not care about:
+
+     Gap 1: wgmma  -> sync MMA           (%ad-canonicalize-wgmma)
+     Gap 4: register-tile extents~ -> compile-time literals
+                                         (%ad-normalize-register-extents)
+
+   Order matters: canonicalizing wgmma first turns make-wgmma-accumulator into a
+   make-register-tile, so the extent normalization's register-tile map sees it too.
+
+   This is the single seam for anything of this shape.  Every backward emitter reads
+   its operands and origins from this ANF, so a normalization here fixes all of them,
+   and an emitter added later is correct without knowing this exists."
+  (let* ((canonical (%ad-canonicalize-wgmma flat-anf))
+         (normalized (%ad-normalize-register-extents
+                      canonical
+                      (%ad-register-tile-dims-map canonical))))
+    (funcall *ad-orig-generate-backward-walk*
+             normalized inputs outputs input-types output-types
+             :kernel-pkg kernel-pkg)))
+
+
+;;; ===================================================================
+;;; Endeavor 146 Gap 1, part 2 — inline literal SHAPE temps.
+;;;
+;;; With wgmma canonicalized, 140/03 got as far as the via-tile VJP and then
+;;; said "the accumulator tile D has no compile-time (M N)".  The ANF explains
+;;; it:
+;;;     (%ANF-T-1 (64 64))
+;;;     (%ANF-T-2 (64 64 32))
+;;;     (D (MAKE-WGMMA-ACCUMULATOR FLOAT %ANF-T-1 0.0))
+;;;     (WGMMA-ACCUMULATE-VIA-TILE %ANF-T-2 D A-TILE B-TILE ...)
+;;; The shapes were hoisted into ANF temps.  make-register-tile is on the ANF
+;;; converter's opaque-argument list so it keeps its literal dims; the wgmma
+;;; forms are not, so theirs were flattened.
+;;;
+;;; Every shape registry in the AD engine (%mma-ad-tile-dims-map and the maps
+;;; downstream of it) tests `(every #'integerp dims)` and therefore rejects a
+;;; symbol.  A backward emitted with a temp in a shape position would also
+;;; reference a variable its own scope never binds.
+;;;
+;;; Rather than adding wgmma to the ANF converter's opaque list -- a fourth
+;;; registry, and the next instruction would want a fifth -- inline the temps.
+;;; A binding whose value is a literal list of integers IS a shape or an
+;;; origin; substituting it is always safe and always what the consumer wanted.
+;;; This is deliberately general: it fixes any construct whose shape gets
+;;; hoisted, including ones not written yet.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %ad-inline-literal-shape-temps (flat-anf)
+  "Substitute every ANF temp bound to a literal list of integers with that literal.
+
+   `(%ANF-T-1 (64 64))` makes %ANF-T-1 a SHAPE, not a value -- the AD engine's shape
+   maps require literals and a backward cannot reference a forward-only temp.  A
+   binding is only inlined when its value is a non-empty list of integers, which no
+   call form can be (a call's head is a symbol).
+
+   The temp's OWN binding is left intact -- rewriting its left-hand side would produce
+   the malformed `((64 64) (64 64))`.  Leaving the now-dead binding is harmless: the
+   backward contains only what the walk emits."
+  (let ((map nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form)) (first form)
+                  (listp (second form)) (second form)
+                  (every #'integerp (second form))
+                  (not (assoc (first form) map)))
+         (push (cons (first form) (second form)) map))))
+    (if (null map)
+        flat-anf
+        (labels ((walk (f)
+                   (cond
+                     ((and f (symbolp f))
+                      (let ((e (assoc f map))) (if e (cdr e) f)))
+                     ((not (consp f)) f)
+                     ;; a temp's own binding: leave entirely alone
+                     ((and (= (length f) 2) (symbolp (first f)) (first f)
+                           (assoc (first f) map))
+                      f)
+                     (t (mapcar #'walk f)))))
+          (mapcar #'walk flat-anf)))))
+
+;; src/autodiff.lisp -- the normalization chain, now three steps.
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
+                                        &key kernel-pkg)
+  "Endeavor 146: normalize the flat ANF before the walk sees it, then run the walk
+   unchanged.  Every step removes a distinction the DERIVATIVE does not care about:
+
+     1. literal shape temps -> inlined     (%ad-inline-literal-shape-temps)
+     2. wgmma -> sync MMA                  (%ad-canonicalize-wgmma)
+     3. register-tile extents~ -> literals (%ad-normalize-register-extents)
+
+   Order is load-bearing.  (1) must precede (2) and (3) so their shape tests see
+   literals; (2) must precede (3) so a wgmma accumulator, by then a make-register-tile,
+   is in the register-tile map.
+
+   This is the single seam for anything of this shape.  Every backward emitter reads
+   its operands, shapes and origins from this ANF, so a normalization here fixes all
+   of them at once, and an emitter added later is correct without knowing it exists."
+  (let* ((inlined (%ad-inline-literal-shape-temps flat-anf))
+         (canonical (%ad-canonicalize-wgmma inlined))
+         (normalized (%ad-normalize-register-extents
+                      canonical
+                      (%ad-register-tile-dims-map canonical))))
+    (funcall *ad-orig-generate-backward-walk*
+             normalized inputs outputs input-types output-types
+             :kernel-pkg kernel-pkg)))
+
+
+;;; ===================================================================
+;;; Endeavor 146 Gap 1, part 3 — a canonicalized wgmma must also adopt the
+;;; native INSTRUCTION shape.
+;;;
+;;; With the op renamed and the shape temps inlined, 140/03 reached the
+;;; backward's own forward-analysis and said
+;;;     only tf32 (16 8 8) is supported without a hardware profile, got (64 64 32)
+;;;
+;;; The reason is a distinction that only matters once wgmma exists.  For a
+;;; SYNC mma-accumulate-via-tile the user writes the HARDWARE INSTRUCTION shape
+;;; -- (8 16 8) on BMG, (16 8 8) on NVIDIA -- and %mma-via-tile-backward passes
+;;; that shape straight through to the MMA forms it emits.  For wgmma the first
+;;; argument is the WARPGROUP TILE shape (64 64 32), which no sync instruction
+;;; accepts.  Renaming the op therefore left a shape behind that means something
+;;; different.
+;;;
+;;; %spv-mma-shape is the accessor for the active profile's native instruction
+;;; shape (profile :mma-shapes, else the NVIDIA (16 8 8) default) and is already
+;;; what %mma-vjp-mma-admissible-p consults, so adopting it keeps admissibility
+;;; and emission consistent.
+;;;
+;;; Safe because the VJP never derives dimensions from this argument: Mt and Nt
+;;; come from the accumulator's dims-map entry and Kt from the A operand's, so
+;;; the tile geometry -- and therefore the derivative -- is untouched.  This
+;;; selects which INSTRUCTION the backward is built from, nothing more.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %ad-canonicalize-wgmma (form)
+  "Rewrite Hopper wgmma forms to their synchronous MMA equivalents for the backward walk.
+
+     (V (make-wgmma-accumulator T (M N) INIT))
+       -> (V (make-register-tile T (M N) INIT))
+
+     (wgmma-accumulate-via-tile (WM WN WK) D A B ...)
+       -> (mma-accumulate-via-tile (NM NN NK) D A B ...)
+
+   where (NM NN NK) is %spv-mma-shape -- the active profile's NATIVE instruction shape.
+   The wgmma argument is a WARPGROUP TILE shape and is not a legal sync-MMA instruction
+   shape; substituting the native one is what makes the emitted backward compilable.
+   The VJP takes Mt/Nt/Kt from the tiles' dims-map entries, never from this argument,
+   so tile geometry and the derivative are unaffected.
+
+   Trailing keys (:swizzle and friends) are preserved; the via-tile VJP destructures
+   (SHAPE C A B &rest ignored).
+
+   Structural no-op for any kernel without wgmma."
+  (let* ((cl (find-package :crisp-language))
+         (mrt (intern "MAKE-REGISTER-TILE" cl))
+         (mvt (intern "MMA-ACCUMULATE-VIA-TILE" cl)))
+    (labels ((head-is (f name)
+               (and (consp f) (symbolp (first f))
+                    (string-equal (symbol-name (first f)) name)))
+             (native-shape ()
+               (multiple-value-bind (m n k) (%spv-mma-shape) (list m n k)))
+             (walk (f)
+               (cond
+                 ((not (consp f)) f)
+                 ((head-is f "MAKE-WGMMA-ACCUMULATOR")
+                  (cons mrt (mapcar #'walk (rest f))))
+                 ((head-is f "WGMMA-ACCUMULATE-VIA-TILE")
+                  (list* mvt (native-shape) (mapcar #'walk (cddr f))))
+                 (t (mapcar #'walk f)))))
+      (walk form))))

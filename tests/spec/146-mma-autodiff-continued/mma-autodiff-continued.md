@@ -323,11 +323,42 @@ Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
 
 #### Remaining, cheapest blast-radius first
 
-1. **Gap 1 — inert constructors** (140/03, 142/10, 142/12).  `MAKE-WGMMA-ACCUMULATOR` and
-   `MAKE-REGISTER-TILE-RING` appear ZERO times in src/autodiff.lisp; they are missing from
-   both `%backward-skip-fn-p` and `%augment-scratch-adj-bindings`.  145 P1 did exactly this
-   for shape queries.  Note 142/10 and 142/12 are register-tile RINGS feeding MMA, so they
-   may need Gap 4's treatment extended to ring slots.
+1. **Gap 1 — wgmma DONE 2026-08-09 (140/03 un-skipped); rings remain (142/10, 142/12).**
+
+   *Not* "an inert constructor to register."  `MAKE-WGMMA-ACCUMULATOR` had no registration
+   AND `WGMMA-ACCUMULATE-VIA-TILE` had no VJP — "wgmma" appeared ONCE in all of
+   src/autodiff.lisp, in a comment.  The obvious fix was six registry lists plus a new VJP,
+   and the next MMA instruction would want seven more.  **That is the mistake this endeavor
+   exists to stop.**
+
+   Done instead by canonicalizing wgmma to the sync MMA on the ANF entering the backward
+   walk — the same seam Gap 4 established — so the ONE existing VJP supplies the derivative
+   and every register-tile registry applies unchanged.  A backward is under no obligation to
+   use the same instruction as its forward; that is the whole content of "the schedule is
+   not the math".
+
+   Three layers, each measured rather than guessed:
+
+   | symptom | cause | fix |
+   | --- | --- | --- |
+   | `MAKE-WGMMA-ACCUMULATOR is not differentiable` | no registration anywhere | canonicalize to `make-register-tile` |
+   | `accumulator tile D has no compile-time (M N)` | shapes hoisted to ANF temps (`(%ANF-T-1 (64 64))`); `make-register-tile` is on the ANF converter's opaque-arg list, wgmma is not | inline temps bound to literal integer lists — general, not wgmma-specific |
+   | `only tf32 (16 8 8) is supported … got (64 64 32)` | wgmma's first arg is the WARPGROUP TILE shape, not an instruction shape; `%mma-via-tile-backward` passes the forward's shape through | substitute `%spv-mma-shape`, the accessor admissibility already uses |
+
+   The normalization chain is now three ordered steps, all removing distinctions the
+   derivative does not care about: inline shape temps → canonicalize wgmma → devirtualize
+   register extents.
+
+   **No numeric proof, deliberately.**  wgmma is sm_90a-only, `VERIFY-AUTODIFF` runs on
+   SPV/L0, and there is no Intel analogue because wgmma does not exist on Intel.  140/03
+   asserts that it differentiates and emits a backward (259 KB `_grad.ptx`), nothing about
+   gradient values — those want a Hopper pod, exactly as 137/03 insists.  145/12 and 142/01
+   are the numeric proofs that the underlying tile VJP is correct; 140/03 adds only that
+   wgmma reaches it.
+
+   **Still open: 142/10, 142/12** — `MAKE-REGISTER-TILE-RING`, still unregistered.  These are
+   register-tile RINGS feeding MMA, so they likely need Gap 4's treatment extended to ring
+   slots as well as the constructor wired in.
 2. **Gap 2 — `rem`** (140/01, 140/02).  Small rule.  Pairs naturally with 132/08's missing
    `to-float`; both are index/conversion arithmetic, not MMA.
 3. **Gap 3 — sub-function walk into warp roles** (139/02, 05, 06).  `CONSUMER` is a
