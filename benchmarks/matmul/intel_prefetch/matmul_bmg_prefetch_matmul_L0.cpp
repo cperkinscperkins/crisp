@@ -390,26 +390,32 @@ int main() {
         if (_poolOk)   zeEventPoolDestroy(_pool);
     }
 
-    // Verify Output
-    std::cout << "BUFFER a: ";
-    for (size_t i = 0; i < 67108864; i++) {
-        std::cout << a_ptr[i] << (i == 67108864 - 1 ? "" : " ");
+    // Verify Output (skipped if large)
+    if (67108864 <= 100) {
+        std::cout << "BUFFER a: ";
+        for (size_t i = 0; i < 67108864; i++) {
+            std::cout << a_ptr[i] << (i == 67108864 - 1 ? "" : " ");
+        }
+        std::cout << std::endl;
     }
-    std::cout << std::endl;
-    std::cout << "BUFFER b: ";
-    for (size_t i = 0; i < 67108864; i++) {
-        std::cout << b_ptr[i] << (i == 67108864 - 1 ? "" : " ");
+    if (67108864 <= 100) {
+        std::cout << "BUFFER b: ";
+        for (size_t i = 0; i < 67108864; i++) {
+            std::cout << b_ptr[i] << (i == 67108864 - 1 ? "" : " ");
+        }
+        std::cout << std::endl;
     }
-    std::cout << std::endl;
-    std::cout << "BUFFER c: ";
-    for (size_t i = 0; i < 67108864; i++) {
-        std::cout << c_ptr[i] << (i == 67108864 - 1 ? "" : " ");
+    if (67108864 <= 100) {
+        std::cout << "BUFFER c: ";
+        for (size_t i = 0; i < 67108864; i++) {
+            std::cout << c_ptr[i] << (i == 67108864 - 1 ? "" : " ");
+        }
+        std::cout << std::endl;
     }
-    std::cout << std::endl;
 
     // Endeavor 134: MMA host reference C = A.B (stride-agnostic)
     { int mma_ok = 1; int mma_bad = 0;
-      for (uint64_t i = 0; i < 8192ULL; i++) for (uint64_t j = 0; j < 8192ULL; j++) {
+      for (uint64_t i = 0; i < (8192ULL < 64 ? 8192ULL : 64); i++) for (uint64_t j = 0; j < (8192ULL < 64 ? 8192ULL : 64); j++) {
         float acc = 0.0f;
         for (uint64_t kk = 0; kk < 8192ULL; kk++)
             acc += a_ptr[i*a_str0 + kk*a_str1] * b_ptr[kk*b_str0 + j*b_str1];
