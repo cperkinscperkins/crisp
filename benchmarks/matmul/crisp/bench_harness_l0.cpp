@@ -78,12 +78,13 @@ static void set_tensor_args(ze_kernel_handle_t k, int& ai, bool slm, void** ptr,
 }
 
 int main(int argc, char** argv) {
-    int Size   = argc > 1 ? atoi(argv[1]) : 256;
-    int warmup = argc > 2 ? atoi(argv[2]) : 20;
-    int iters  = argc > 3 ? atoi(argv[3]) : 100;
-    const int M = Size, N = Size, K = Size;
+    int M      = argc > 1 ? atoi(argv[1]) : 256;
+    int N      = argc > 2 ? atoi(argv[2]) : 256;
+    int K      = argc > 3 ? atoi(argv[3]) : 256;
+    int warmup = argc > 4 ? atoi(argv[4]) : 20;
+    int iters  = argc > 5 ? atoi(argv[5]) : 100;
     if (M % TM || N % TN || K % KS) {
-        fprintf(stderr, "size %d must be a multiple of %d (and K a multiple of %d)\n", Size, TM, KS);
+        fprintf(stderr, "size M=%d, N=%d, K=%d must be multiples of %d, %d, %d\n", M, N, K, TM, TN, KS);
         return 1;
     }
 
