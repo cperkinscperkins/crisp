@@ -176,6 +176,50 @@
         no-trail)))
 
 
+(defun %ad-rem-or-mod-form-p (expr)
+  "T when EXPR is a two-argument (rem a b) or (mod a b) call.
+   Matched by symbol-NAME so it holds whichever package the kernel's reader interned
+   the operator into."
+  (and (consp expr) (symbolp (car expr))
+       (member (symbol-name (car expr)) '("REM" "MOD") :test #'string=)
+       (= (length expr) 3)))
+
+(defun %ad-handle-rem-backward (v expr emit-fn local-adj-fn)
+  "Backward rule for (rem a b) / (mod a b) — endeavor 146 Gap 2.
+
+       rem(a,b) = a - b*q,  q = trunc(a/b)
+       d/da = 1                    ->  a_adj += v_adj
+       d/db = -q = -((a - v)/b)    ->  b_adj += -((a-v)/b) * v_adj
+
+   q is reconstructed from the already-bound result V rather than recomputed, which keeps
+   this EXACT for integers: a - v is exactly b*q, so the division cannot truncate away
+   anything.  Crisp does mathematically accurate derivatives for integer types too; the
+   result being trivially zero downstream is the activeness analysis's conclusion to draw,
+   not this rule's assumption to make.
+
+   MOD shares the formula — it differs from REM only in taking floor rather than trunc for
+   negative operands, and q = (a - v)/b holds for either.
+
+   d/da = 1 holds almost everywhere: rem is piecewise linear with slope 1, discontinuous at
+   multiples of b.  That is the same a.e. footing abs() already stands on.
+
+   Mirrors the shape of the '/' rule below, including the `symbolp` guards — a literal
+   operand has no adjoint to update, which is why the overwhelmingly common `(rem li 8)`
+   emits only the d/da term.
+
+   Before this, rem/mod sat in %backward-skip-fn-p and contributed zero gradient ALWAYS.
+   See that function's docstring for why an entry there was the wrong shape of fix."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+      (when (symbolp a)
+        (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+      (when (symbolp b)
+        (emit `(set! ,(local-adj b)
+                     (+ ,(local-adj b)
+                        (* (* -1.0 (/ (- ,a ,v) ,b)) ,v-adj)))))
+      t)))
+
 (defun %handle-math-and-trig-backward (v expr emit-fn local-adj-fn adjoint-map)
   "Handles mathematical operations (+, -, *, /) and trigonometric functions (sin, cos)."
   (flet ((local-adj (x) (funcall local-adj-fn x))
@@ -407,6 +451,12 @@
                                         scratch-tile-syms)
   "Generates backward-pass adjoint updates for a single ANF binding (v := expr)."
   (cond
+   ;; Endeavor 146 Gap 2: rem / mod.  Kept as its own clause rather than added to the
+   ;; member list below because that list tests with #'eq against symbols read in THIS
+   ;; package, and a kernel's reader may intern `rem` elsewhere.  Matching by symbol-name
+   ;; sidesteps the question entirely.
+   ((%ad-rem-or-mod-form-p expr)
+     (%ad-handle-rem-backward v expr emit-fn local-adj-fn))
    ((and (consp expr) (member (car expr)
                               ;; Endeavor 128: transcendentals join the math/trig backward.
                               '(+ - * / sin cos exp log log2 tan asin acos atan pow atan2)
@@ -933,6 +983,333 @@
             `(if ,cond-form ,(or then-body 'nil)))))))
 
 
+;;; ===================================================================
+;;; ANF NORMALIZATION FOR THE BACKWARD WALK  (endeavor 146)
+;;;
+;;; generate-backward-walk normalizes the flat ANF before walking it.  Every step
+;;; below removes a distinction the DERIVATIVE does not care about, so that ONE
+;;; VJP serves every scheduling variant of the same mathematics.
+;;;
+;;; WHY THIS IS A SINGLE SEAM RATHER THAN PER-RULE FIXES.  Endeavor 146 first
+;;; patched each emitter that mishandled a register tile — the scalar lowering's
+;;; origins, %mma-ad-transposed-stage, the %load-tile-at-bwd scatter — and a
+;;; fourth site turned up immediately.  Every backward emitter reads its operands,
+;;; shapes and origins from this ANF, so normalizing here fixes all of them at
+;;; once, and an emitter added later is correct without knowing this exists.
+;;;
+;;; THE UNDERLYING FACT, which is easy to re-derive wrongly: the AD walk is a
+;;; source-to-source transform that runs BEFORE semantic analysis, while
+;;; %explode-register-tiles runs later from the LET analyzer.  A backward replays
+;;; the forward's BINDINGS but not its STATEMENTS.  So in the backward a register
+;;; tile has no binding (its symbol was replaced by per-lane fragment vars) and a
+;;; staged tile is empty.  Scratch tiles keep their bindings, which is why 145's
+;;; specs never hit any of this and 142's register-resident operands hit all of it.
+;;;
+;;; ORDER IS LOAD-BEARING — see %ad-normalize-anf-for-backward.
+;;; ===================================================================
+
+(defun %ad-inline-literal-shape-temps (flat-anf)
+  "Substitute every ANF temp bound to a literal list of integers with that literal.
+
+   `(%ANF-T-1 (64 64))` makes %ANF-T-1 a SHAPE, not a value -- the AD engine's shape
+   maps require literals and a backward cannot reference a forward-only temp.  A
+   binding is only inlined when its value is a non-empty list of integers, which no
+   call form can be (a call's head is a symbol).
+
+   The temp's OWN binding is left intact -- rewriting its left-hand side would produce
+   the malformed `((64 64) (64 64))`.  Leaving the now-dead binding is harmless: the
+   backward contains only what the walk emits."
+  (let ((map nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form)) (first form)
+                  (listp (second form)) (second form)
+                  (every #'integerp (second form))
+                  (not (assoc (first form) map)))
+         (push (cons (first form) (second form)) map))))
+    (if (null map)
+        flat-anf
+        (labels ((walk (f)
+                   (cond
+                     ((and f (symbolp f))
+                      (let ((e (assoc f map))) (if e (cdr e) f)))
+                     ((not (consp f)) f)
+                     ;; a temp's own binding: leave entirely alone
+                     ((and (= (length f) 2) (symbolp (first f)) (first f)
+                           (assoc (first f) map))
+                      f)
+                     (t (mapcar #'walk f)))))
+          (mapcar #'walk flat-anf)))))
+
+(defun %ad-canonicalize-wgmma (form)
+  "Rewrite Hopper wgmma forms to their synchronous MMA equivalents for the backward walk.
+
+     (V (make-wgmma-accumulator T (M N) INIT))
+       -> (V (make-register-tile T (M N) INIT))
+
+     (wgmma-accumulate-via-tile (WM WN WK) D A B ...)
+       -> (mma-accumulate-via-tile (NM NN NK) D A B ...)
+
+   where (NM NN NK) is %spv-mma-shape -- the active profile's NATIVE instruction shape.
+   The wgmma argument is a WARPGROUP TILE shape and is not a legal sync-MMA instruction
+   shape; substituting the native one is what makes the emitted backward compilable.
+   The VJP takes Mt/Nt/Kt from the tiles' dims-map entries, never from this argument,
+   so tile geometry and the derivative are unaffected.
+
+   Trailing keys (:swizzle and friends) are preserved; the via-tile VJP destructures
+   (SHAPE C A B &rest ignored).
+
+   Structural no-op for any kernel without wgmma."
+  (let* ((cl (find-package :crisp-language))
+         (mrt (intern "MAKE-REGISTER-TILE" cl))
+         (mvt (intern "MMA-ACCUMULATE-VIA-TILE" cl)))
+    (labels ((head-is (f name)
+               (and (consp f) (symbolp (first f))
+                    (string-equal (symbol-name (first f)) name)))
+             (native-shape ()
+               (multiple-value-bind (m n k) (%spv-mma-shape) (list m n k)))
+             (walk (f)
+               (cond
+                 ((not (consp f)) f)
+                 ((head-is f "MAKE-WGMMA-ACCUMULATOR")
+                  (cons mrt (mapcar #'walk (rest f))))
+                 ((head-is f "WGMMA-ACCUMULATE-VIA-TILE")
+                  (list* mvt (native-shape) (mapcar #'walk (cddr f))))
+                 (t (mapcar #'walk f)))))
+      (walk form))))
+
+(defun %ad-register-ring-dims-map (flat-anf)
+  "Alist SYM -> (d0 d1) for every `(make-register-tile-ring T (D0 D1) ...)` binding.
+
+   Must be computed from the ORIGINAL anf, BEFORE %ad-canonicalize-register-rings turns
+   these into scratch rings -- afterwards they are indistinguishable from rings the user
+   really wrote as scratch, whose extents must be left alone."
+  (let ((acc nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form))
+                  (consp (second form)) (symbolp (first (second form)))
+                  (string-equal (symbol-name (first (second form)))
+                                "MAKE-REGISTER-TILE-RING")
+                  (let ((d (third (second form))))
+                    (and (listp d) d (every #'integerp d)))
+                  (not (assoc (first form) acc)))
+         (push (cons (first form) (third (second form))) acc))))
+    (nreverse acc)))
+
+(defun %ad-normalize-ring-view-extents (form ring-dims)
+  "Replace `(~ (extents~ (ring-get RING I)) J)` with RING's compile-time per-slot extent J,
+   emitted as `(to-ulong N)`, for every RING in RING-DIMS.
+
+   Every slot of a ring has the ring's element shape (138), so the slot index is irrelevant
+   to the answer and is not examined.  The ULONG wrap is required for the same reason as in
+   %ad-normalize-register-extents: these reads sit inside `(* (to-ulong G) <extent>)`.
+
+   No-op when RING-DIMS is empty."
+  (if (null ring-dims)
+      form
+      (let ((tu (intern "TO-ULONG" (find-package :crisp-language))))
+        (labels ((ring-base (f)
+                   ;; (ring-get SYM i) -> SYM, else NIL
+                   (and (consp f) (symbolp (first f))
+                        (string-equal (symbol-name (first f)) "RING-GET")
+                        (symbolp (second f))
+                        (second f)))
+                 (static-extent (f)
+                   (and (consp f) (= (length f) 3)
+                        (symbolp (first f))
+                        (string-equal (symbol-name (first f)) "~")
+                        (consp (second f))
+                        (symbolp (first (second f)))
+                        (string-equal (symbol-name (first (second f))) "EXTENTS~")
+                        (integerp (third f))
+                        (let ((base (ring-base (second (second f)))))
+                          (and base
+                               (nth (third f) (cdr (assoc base ring-dims)))))))
+                 (walk (f)
+                   (cond ((not (consp f)) f)
+                         ((static-extent f) (list tu (static-extent f)))
+                         (t (mapcar #'walk f)))))
+          (walk form)))))
+
+(defun %ad-canonicalize-register-rings (form)
+  "Rewrite `(make-register-tile-ring T (M N) :ring-count N :operand :a)` to
+   `(make-scratch-matrix-ring T (M N) :ring-count N)` for the backward walk.
+
+   A ring of MMA operand tiles has the same adjoint requirement a single operand tile
+   has (Gap 4): every consumer indexes the adjoint as memory.  A ring being rank+1
+   scratch, the scratch matrix ring is that answer one dimension up, and it is a form
+   the AD engine has understood since 138.
+
+   :operand is dropped -- it picks a GRF fragment layout, which scratch has no use for.
+   :ring-count is kept; it is the ring's real depth.
+
+   The replacement symbol is resolved in :crisp.compiler, where the defmacro lives, so
+   the analyzer actually macroexpands what we emit.
+
+   Structural no-op for any kernel without register-tile rings."
+  (let* ((cc (find-package :crisp.compiler))
+         (msmr (or (find-symbol "MAKE-SCRATCH-MATRIX-RING" cc)
+                   (intern "MAKE-SCRATCH-MATRIX-RING" cc))))
+    (labels ((drop-operand (keys)
+               ;; keys is a flat &key plist tail; drop the :operand pair only.
+               (cond ((null keys) nil)
+                     ((and (symbolp (first keys))
+                           (string-equal (symbol-name (first keys)) "OPERAND"))
+                      (drop-operand (cddr keys)))
+                     (t (cons (first keys) (drop-operand (rest keys))))))
+             (walk (f)
+               (cond
+                 ((not (consp f)) f)
+                 ((and (symbolp (first f))
+                       (string-equal (symbol-name (first f)) "MAKE-REGISTER-TILE-RING"))
+                  (list* msmr (second f) (third f) (drop-operand (cdddr f))))
+                 (t (mapcar #'walk f)))))
+      (walk form))))
+
+(defun %ad-register-tile-dims-map (flat-anf)
+  "Alist SYM -> (d0 d1 ...) for every `(V (make-register-tile T (D0 D1) INIT ...))`
+   binding anywhere in FLAT-ANF, including nested bodies.
+
+   Deliberately NARROWER than %mma-ad-tile-dims-map: only register tiles, because only
+   they lose their binding before the backward is analysed.  Scratch tiles keep their
+   runtime extents~ and must be left exactly as they are."
+  (let ((acc nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form))
+                  (consp (second form)) (symbolp (first (second form)))
+                  (string-equal (symbol-name (first (second form))) "MAKE-REGISTER-TILE")
+                  (let ((d (third (second form))))
+                    (and (listp d) d (every #'integerp d)))
+                  (not (assoc (first form) acc)))
+         (push (cons (first form) (third (second form))) acc))))
+    (nreverse acc)))
+
+(defun %ad-normalize-register-extents (form reg-dims)
+  "Replace every `(~ (extents~ TILE) I)` where TILE is a register tile in REG-DIMS
+   with its compile-time extent, emitted as `(to-ulong N)`.
+
+   The ULONG wrap is required: extents~ yields ULONG and these reads sit inside
+   `(* (to-ulong G) <extent>)`, while a Lisp integer literal reads as Crisp INT --
+   a bare literal gives `Cannot operate on ULONG and INT`.
+
+   Any form that does not match is returned structurally unchanged, so this is a
+   no-op for every kernel with no register tiles."
+  (if (null reg-dims)
+      form
+      (let ((tu (intern "TO-ULONG" (find-package :crisp-language))))
+        (labels ((static-extent (f)
+                   (and (consp f) (= (length f) 3)
+                        (symbolp (first f))
+                        (string-equal (symbol-name (first f)) "~")
+                        (consp (second f))
+                        (symbolp (first (second f)))
+                        (string-equal (symbol-name (first (second f))) "EXTENTS~")
+                        (symbolp (second (second f)))
+                        (integerp (third f))
+                        (nth (third f) (cdr (assoc (second (second f)) reg-dims)))))
+                 (walk (f)
+                   (cond ((not (consp f)) f)
+                         ((static-extent f) (list tu (static-extent f)))
+                         (t (mapcar #'walk f)))))
+          (walk form)))))
+
+(defun %ad-normalize-anf-for-backward (flat-anf)
+  "Apply every backward-walk ANF normalization, in the one order that works.
+
+     1. literal shape temps -> inlined       (%ad-inline-literal-shape-temps)
+     2. wgmma -> sync MMA                    (%ad-canonicalize-wgmma)
+     3. register ring VIEW extents~ -> literals
+                                             (%ad-normalize-ring-view-extents)
+     4. register-tile ring -> scratch ring   (%ad-canonicalize-register-rings)
+     5. register-tile extents~ -> literals   (%ad-normalize-register-extents)
+
+   ORDER, and why each constraint is real:
+
+   (1) FIRST, so every shape test below sees literals rather than ANF temps.  Only
+       make-register-tile is on the ANF converter's opaque-argument list, so a wgmma
+       accumulator's dims arrive as `(%ANF-T-1 (64 64))` and every shape map — which
+       tests `(every #'integerp dims)` — would reject them.
+
+   (3) MUST precede (4).  Once a register-tile ring has become a scratch ring it is
+       indistinguishable from one the user actually wrote, and a genuine scratch ring's
+       binding DOES survive into the backward, so its runtime extents~ must be preserved.
+       Devirtualizing those would change specs that pass for the right reason (138, 145/18).
+
+   (2) precedes (5) for the mirror-image reason: a wgmma accumulator is a make-register-tile
+       by then, so it must be in the register-tile map that (5) builds.
+
+   Returns FLAT-ANF structurally unchanged for any kernel using none of these forms."
+  (let* ((inlined   (%ad-inline-literal-shape-temps flat-anf))
+         (canonical (%ad-canonicalize-wgmma inlined))
+         (ringfixed (%ad-normalize-ring-view-extents
+                     canonical
+                     (%ad-register-ring-dims-map canonical)))
+         (deringed  (%ad-canonicalize-register-rings ringfixed)))
+    (%ad-normalize-register-extents deringed
+                                    (%ad-register-tile-dims-map deringed))))
+
+(defun %ad-ring-ctor-bindings (flat-anf)
+  "Alist SYM -> CONSTRUCTOR for every ring binding in FLAT-ANF.
+
+   Run on the CANONICALIZED anf, so register-tile rings have already become scratch
+   matrix rings and only the scratch ring constructors need matching here."
+  (let ((acc nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form))
+                  (consp (second form)) (symbolp (first (second form)))
+                  (member (symbol-name (first (second form)))
+                          '("MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
+                            "MAKE-SCRATCH-TENSOR-RING")
+                          :test #'string=)
+                  (not (assoc (first form) acc)))
+         (push (cons (first form) (second form)) acc))))
+    (nreverse acc)))
+
+(defun %ad-form-mentions-p (form sym)
+  "T if SYM occurs anywhere in FORM."
+  (cond ((eq form sym) t)
+        ((not (consp form)) nil)
+        (t (some (lambda (f) (%ad-form-mentions-p f sym)) form))))
+
+(defun %ad-ensure-ring-adj-bindings (backward flat-anf kernel-pkg)
+  "Add a paired `<RING>_ADJ` binding to BACKWARD's outer LET for every ring the backward
+   NAMES but does not BIND.
+
+   Only rings actually mentioned get a binding, so a kernel whose backward never touches
+   a ring is returned untouched.
+
+   The adjoint is the forward ring's own constructor, used verbatim: a ring adjoint is a
+   ring of identical shape, which is what makes `(ring-get R_ADJ i)` the adjoint of
+   `(ring-get R i)` (see %tlc-bwd-adj-name).  Deliberately NOT routed through
+   %mma-ad-adj-init -- its %promote-scratch-init-for-ad branch does not understand ring
+   constructors and reduces them to the stub type `(TENSOR FLOAT)`.  No promotion is
+   needed regardless: these rings are float already."
+  (if (not (and (consp backward) (symbolp (first backward))
+                (string-equal (symbol-name (first backward)) "LET")))
+      backward
+      (let* ((bindings (second backward))
+             (bound (mapcar (lambda (b) (if (consp b) (first b) b)) bindings))
+             (missing
+              (loop for (sym . ctor) in (%ad-ring-ctor-bindings flat-anf)
+                    for adj = (intern (format nil "~A_ADJ" (symbol-name sym))
+                                      (or kernel-pkg (symbol-package sym)))
+                    when (and (not (member adj bound))
+                              (%ad-form-mentions-p (cddr backward) adj))
+                      collect (list adj ctor))))
+        (if (null missing)
+            backward
+            (list* (first backward)
+                   (append missing bindings)
+                   (cddr backward))))))
+
+
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                         &key kernel-pkg)
   "Walks an ANF body backwards to accumulate adjoints.
@@ -943,7 +1320,14 @@
 
    Bug 032 fix: SET! on a local-scratch tile (target neither input nor
    output) now emits a proper consume + reset pair so the RHS chain rule
-   propagates through tile mutations."
+   propagates through tile mutations.
+
+   Endeavor 146: FLAT-ANF is normalized before anything reads it, and the assembled
+   backward gets one fixup on the way out.  See %ad-normalize-anf-for-backward for what
+   the normalizations are and why their order matters, and %ad-ensure-ring-adj-bindings
+   for the gap the fixup covers (the top-level adjoint collection below does not know the
+   ring constructors, so a ring bound at kernel top level otherwise gets no adjoint)."
+  (setf flat-anf (%ad-normalize-anf-for-backward flat-anf))
   (let* ((record-temp-entries
           (loop for form in flat-anf
                   when (and (consp form) (= (length form) 2)
@@ -1446,7 +1830,12 @@
                      (result `(let ,(append scratch-adj-bindings local-bindings)
                                 ,@(nreverse backward-forms))))
                 (log:debug "145: assembled backward AST:~%~s" result)
-                result))))))))
+                ;; Endeavor 146: bind any ring adjoint the walk NAMED but did not BIND.
+                ;; FLAT-ANF here is the normalized anf (see the setf at the top), so ring
+                ;; constructors are already in their canonical scratch-ring form.
+                (let ((final (%ad-ensure-ring-adj-bindings result flat-anf kernel-pkg)))
+                  (log:debug "146: backward after ring-adjoint fixup:~%~s" final)
+                  final)))))))))
 
 ;;; ----------------------------------------------------------
 ;;; %crisp-float-type-p
@@ -1791,18 +2180,21 @@ to compute-base-type for derived types."
    no gradient.  MAKE-ASYNC-BARRIER is listed alongside it: the plain barrier only avoided this
    by never reaching the walk as a call, which is luck rather than design.
 
-   MOD joins them as INDEX arithmetic — `(mod grid-k 2)` selecting a ring slot.  Caveat worth
-   recording rather than hiding: this is the same treatment the TO-<int> conversions already
-   get, and it is only right because these are INTEGER index computations.  A float `mod` does
-   have a derivative (d/dx = 1 almost everywhere), so if one ever appeared in a value position
-   its gradient would be silently zero.  The walk cannot currently tell the two apart — it sees
-   ANF forms, not types.  A real rule for float mod belongs with the other math VJPs."
+   Endeavor 146 Gap 2: MOD is GONE from this list, and REM never joined it.  138 put MOD here
+   as \"INDEX arithmetic\" with a caveat admitting the treatment was wrong for floats — a float
+   mod has derivative 1 almost everywhere, so a mod in a value position got a silent ZERO.
+   Both now have real rules in %handle-math-and-trig-backward instead.
+
+   The general point, since this list attracts shortcuts: an entry here is a claim about an
+   OPERATOR, namely that it produces no value a gradient could flow through.  That is true of
+   allocators, barriers and shape queries — genuine non-values.  It was never true of rem/mod.
+   What actually made `(mod grid-k 2)` contribute nothing is that its OPERAND is inactive, and
+   %active-scalar-vars already determines that on its own without anyone declaring anything."
   (or (let ((name (symbol-name fn-sym)))
         (member name '("MAKE-REGISTER-TILE"
                        "MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
                        "MAKE-SCRATCH-TENSOR-RING"
-                       "MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING"
-                       "MOD")
+                       "MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING")
                 :test #'string=))
       (%backward-skip-fn-p-145p1 fn-sym)))
 
@@ -2526,7 +2918,13 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
        (cond
         ((null name) nil)
         ;; differentiable arithmetic — every operand propagates.
-        ((member name '("+" "-" "*" "/") :test #'string-equal) (%asv-union (cdr expr) env))
+        ;; Endeavor 146 Gap 2: REM and MOD belong here, not in a skip list.  d(rem)/da = 1
+        ;; and d(rem)/db = -trunc(a/b), so BOTH positions genuinely carry activeness.  An
+        ;; integer index expression like (rem li 8) still contributes nothing, because `li`
+        ;; is inactive — which is exactly the "structural ints fall out as inactive for
+        ;; free" property this table is built on.
+        ((member name '("+" "-" "*" "/" "REM" "MOD") :test #'string-equal)
+          (%asv-union (cdr expr) env))
         ;; Endeavor 128: unary transcendentals propagate through their single arg.
         ((member name '("SIN" "COS" "SQRT" "EXP" "LOG" "LOG2" "TAN"
                         "ASIN" "ACOS" "ATAN" "TANH" "ABS") :test #'string-equal)
@@ -3081,7 +3479,16 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                                         "GET-LOCAL-LINEAR-ID" "GET-LOCAL-LINEAR-SIZE"
                                         "GET-GLOBAL-LINEAR-ID" "GET-GLOBAL-LINEAR-SIZE"
                                         "GET-TOTAL-THREADS" "GET-TOTAL-GROUPS"
-                                        "SYNC-WORKGROUP" "SYNC-WARP" "MEM-FENCE")
+                                        "SYNC-WORKGROUP" "SYNC-WARP" "MEM-FENCE"
+                                        ;; Endeavor 146: the WARP builtins are thread
+                                        ;; coordinates exactly as GET-LOCAL-ID is — structural,
+                                        ;; not functions of the kernel's inputs, so their
+                                        ;; derivative is EXACTLY zero.  They arrived with the
+                                        ;; 111/115 warp work and were simply never added here,
+                                        ;; which is the whole reason a warp-specialised kernel
+                                        ;; could not even stage its operands under AD
+                                        ;; ("Function WARP-LANE is not differentiable").
+                                        "WARP-ID" "WARP-LANE" "WARP-COUNT")
                when (prefix-or-mangled-p prefix) return t)))))
 
 (defun %mma-ad-prelower-mmts (form)
@@ -3289,19 +3696,62 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
     (log:debug "145 P3b emitted backward AST:~%~s" r)
     r))
 
+(defun %mma-ad-register-operand-tile-p (init-form)
+  "T when INIT-FORM is a make-register-tile carrying an :operand key — i.e. an MMA
+   A/B operand tile (endeavor 142's register-resident load-tile overload) rather than
+   an accumulator.
+
+   Scans by symbol-name rather than comparing to a keyword object: the form is read in
+   the kernel's package, and this stays correct if :operand ever arrives as a non-keyword
+   symbol.  The scan starts past the dims/init positions so a literal init value can
+   never be mistaken for the key."
+  (and (consp init-form)
+       (loop for x in (cdddr init-form)
+             thereis (and (symbolp x)
+                          (string-equal (symbol-name x) "OPERAND")))))
+
 (defun %mma-ad-adj-init (init-form)
   "Endeavor 145 P3b: the adjoint allocator paired with a forward tile binding.
 
    Scratch tiles keep the existing behaviour (%promote-scratch-init-for-ad, which also
-   promotes e.g. ulong -> double).  A REGISTER tile gets a same-shaped register tile zeroed
-   to 0.0 — fragments are fp32, and an adjoint always starts at zero."
+   promotes e.g. ulong -> double).
+
+   Endeavor 146 Gap 4: a register tile's adjoint depends on WHICH ROLE the tile plays.
+
+     ACCUMULATOR  (no :operand)  -> a same-shaped register tile zeroed to 0.0.
+        The C adjoint is filled by %load-register-tile-acc from C_GRAD and then staged
+        to SLM by the VJP itself, so registers are right for it.
+
+     OPERAND      (:operand :a/:b) -> a same-shaped SCRATCH MATRIX.
+        EVERY consumer of an operand adjoint indexes it as memory: the scalar lowering
+        writes it with workgroup-stride + ~, the MMA fast path uses it as a store-tile
+        DESTINATION, and %load-tile-at-bwd reads it element-wise to scatter into the
+        global gradient.  A register tile cannot be written element-wise at all —
+        %explode-register-tiles has replaced the whole-tile symbol with per-lane
+        fragment vars by then, so `(~ TILE m k)` has no TILE to resolve.  This is not
+        an AD-specific fact: the same write fails in a forward-only kernel.
+
+   145 never hit this because its specs staged operands through make-scratch-matrix +
+   load-tile-at, so operand adjoints were ALREADY scratch.  142 Phase A introduced
+   register-resident operands via the load-tile overload, and this allocator had never
+   learned about them.
+
+   NOT a new derivative: dA = dC.B^T and dB = A^T.dC are unchanged and both lowerings
+   already computed them correctly.  This decides only WHERE the result is allocated.
+
+   Element type is FLOAT in both register cases: fragments are fp32 and an adjoint
+   always starts at zero."
   (if (and (consp init-form) (symbolp (car init-form))
            (string-equal (symbol-name (car init-form)) "MAKE-REGISTER-TILE"))
       (let ((cl-pkg (find-package :crisp-language)))
-        (list (intern "MAKE-REGISTER-TILE" cl-pkg)
-              (intern "FLOAT" cl-pkg)
-              (third init-form)
-              0.0))
+        (if (%mma-ad-register-operand-tile-p init-form)
+            (list (intern "MAKE-SCRATCH-MATRIX" cl-pkg)
+                  (intern "FLOAT" cl-pkg)
+                  (third init-form))
+            (list (intern "MAKE-REGISTER-TILE" cl-pkg)
+                  (intern "FLOAT" cl-pkg)
+                  (third init-form)
+                  0.0)))
       (%promote-scratch-init-for-ad init-form)))
 
 (defun %mma-ad-register-tile-p (sym flat-anf)

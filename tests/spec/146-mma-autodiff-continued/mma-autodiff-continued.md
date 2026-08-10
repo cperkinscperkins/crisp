@@ -293,6 +293,43 @@ default.**
 > demands attention.  Re-read Phase 0's table before starting each phase, not just when a
 > phase fails.
 
+### Phase 1c — overlay folded back into src.  DONE 2026-08-09.
+
+`overlays/crisp-compiler-overlay.lisp` had reached ~1360 lines / 33 definitions — the same
+trajectory that caused 145 to be closed early.  Folded into `src/autodiff.lisp` and the
+overlay is empty again.  Net: **+468 / -18** in src.
+
+What moved, and how:
+
+| kind | count | handling |
+| --- | --- | --- |
+| dead / duplicate | 2 | `%mma-ad-devirtualize-extent` (zero callers, left over from the abandoned per-site approach) and `%mma-vjp-scalar-lowering` (byte-identical to src after the consolidation restored it) — **dropped, not moved** |
+| new helpers | 13 | copied into src, gathered under one ANF-NORMALIZATION section header |
+| replaced an existing src defn | 2 | `%mma-ad-adj-init`, `%backward-skip-fn-p` |
+| **wrappers** | 4 | **merged into the real function bodies** |
+
+The wrappers were the awkward part and are worth recording.  In an overlay,
+
+    (defvar *orig-foo* (symbol-function 'foo))
+
+then redefining `FOO` is a clean way to extend a 500-line function without restating it.  It
+does **not** survive copy-paste into src — there is no "original" left to capture.  Each had
+to be merged by hand:
+
+- `generate-backward-walk` -> one `setf` of `flat-anf` at entry through a new combined
+  `%ad-normalize-anf-for-backward`, plus the ring fixup at the return site.  Two lines into a
+  500-line function instead of restating it.
+- `%active-scalar-vars` -> `REM`/`MOD` added to the arithmetic edge-table entry.
+- `%handle-single-value-backward` -> a `%ad-rem-or-mod-form-p` clause at the head of the cond
+  (kept separate from the `#'eq` member list, which tests symbols read in *this* package).
+- `%backward-skip-fn-p-145p1` -> the three warp builtins added to the thread-coordinate list.
+
+A note about this now lives in the overlay header so the next person reaches for the pattern
+knowing the cost of unwinding it.
+
+Verified after folding: **963/963 differentiate · 962/963 default · 211/211 negative ·
+253/253 unit**, and every `VERIFY-AUTODIFF` numeric check still passes.
+
 ### Phase 2 — the four gaps.
 
 One spec at a time within each gap (Rule 3), numeric proof or an honest skip (Rule 1), and
