@@ -14,8 +14,12 @@
 ;; Runs on the dev BMG box via the L0 hoist (no pod).  CUDA hoist would confirm it on NVIDIA too.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "warp specialization is forward-only control flow"
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;;
+;; Endeavor 146: "warp specialization is forward-only control flow" was false — see 139/01 for
+;; the reasoning.  Warp roles are a schedule, not mathematics.  (The hoist run is skipped under
+;; --differentiate by the runner, so what this adds there is that the kernel still compiles
+;; with a backward in play.)
 ;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER c: 40001 40002
 

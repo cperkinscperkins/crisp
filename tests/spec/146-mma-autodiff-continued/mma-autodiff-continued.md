@@ -267,6 +267,32 @@ A side effect worth noting: `sed -i` in Git Bash rewrites CRLF files to LF.  Fou
 specs are CRLF and came out as 40-line whitespace diffs.  Use the byte-preserving editor for
 these, not stream edits.
 
+### Phase 1b — the specs that already worked.  DONE 2026-08-09.  TEN un-skipped.
+
+Phase 0 measured 10 of Bucket B's 22 as ALREADY COMPILING under `--differentiate`.  That sat
+in the results table for the whole endeavor while attention went to the ones that FAILED.
+Re-verified against HEAD — all ten still compile — and un-skipped:
+
+  139/01, 01b, 03, 04 · 140/00 · 144/01, 02, 03, 04 · 126/20
+
+Every one carried a reason asserting that warp specialization or wgmma is forward-only.  None
+of that was ever true, and the endeavor had already disproved it elsewhere (140/03 for wgmma,
+142/01 with a number on metal for MMA).  **This was the cheapest work in the endeavor and it
+was available from day one.**
+
+On the standard of proof: these are IR-grep, `EXPECT-STDERR` and negative specs.  Un-skipping
+asserts that the spec's own check still holds with a backward in play — NOT a gradient value.
+The reasons say so individually.
+
+Verified they actually RUN rather than silently still skipping (a skipped spec also counts as
+passed in the summary — the count alone proves nothing).  **963/963 differentiate, 962/963
+default.**
+
+> **METHOD NOTE.**  Triage produces two lists: what is broken and what already works.  The
+> second list is the cheaper one and it is the easier one to forget, because nothing about it
+> demands attention.  Re-read Phase 0's table before starting each phase, not just when a
+> phase fails.
+
 ### Phase 2 — the four gaps.
 
 One spec at a time within each gap (Rule 3), numeric proof or an honest skip (Rule 1), and

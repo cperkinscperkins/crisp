@@ -16,8 +16,18 @@
 ;; RED until with-warp-specialization is implemented (currently "Unsupported form").
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "warp specialization is forward-only control flow"
 ;; TEST-WITH[--ir-target=ptx] : validate-warp-roles
+;;
+;; Endeavor 146: the old reason here read "warp specialization is forward-only control flow".
+;; That was false.  Warp roles are a SCHEDULE — which warp does which work — and a schedule
+;; does not change what the kernel computes, so it cannot make a kernel undifferentiable.
+;; This spec compiles under --differentiate and its IR validator still passes with a backward
+;; in play, which is what is being asserted here (a FORM/IR check, not a gradient value).
+;;
+;; 139/02, /05 and /06 do still fail, but for something unrelated to warp specialization:
+;;     Function CONSUMER is not differentiable.
+;; CONSUMER is a user-defined SUB-FUNCTION, so that is the generic sub-function-walk gap
+;; (endeavor 146 Gap 3), wearing a warp-specialization costume.  See the endeavor doc.
 ;; TEST-WITH[--ir-target=spv]
 
 (def-type vec-t (vector int :address-space :global :align :compact))
