@@ -1314,3 +1314,51 @@
                      (+ ,(local-adj b)
                         (* (* -1.0 (/ (- ,a ,v) ,b)) ,v-adj)))))
       t)))
+
+
+;;; ===================================================================
+;;; Endeavor 146 — the WARP builtins were never registered as thread
+;;; coordinates.
+;;;
+;;; src/autodiff.lisp:3077-3084 already lists every other thread-structural
+;;; intrinsic -- GET-GLOBAL-ID, GET-LOCAL-ID, GET-WORKGROUP-ID,
+;;; GET-LOCAL-LINEAR-ID, GET-NUM-GROUPS, SYNC-WORKGROUP, SYNC-WARP, MEM-FENCE.
+;;; WARP-ID / WARP-LANE / WARP-COUNT arrived with the 111/115 warp work and were
+;;; simply never added.  That omission alone is what made
+;;;     Function WARP-LANE is not differentiable.
+;;; and it is why 140/01 and 140/02 could not even stage their operands.
+;;;
+;;; WHY THIS IS NOT THE MISTAKE JUST MADE WITH REM.  A thread coordinate is not a
+;;; function of the kernel's inputs -- it is structural, like a shape query -- so
+;;; its derivative with respect to any input is EXACTLY zero.  That is the
+;;; mathematically accurate answer, not a convenient one.  rem's derivative is 1,
+;;; so declaring rem inert asserted something FALSE.  This list is the legitimate
+;;; home for genuine non-values; the skip list was the wrong home for arithmetic.
+;;;
+;;; Wrapping %backward-skip-fn-p-145p1 rather than restating its ~40-entry table,
+;;; and reproducing its prefix-or-mangled matching so a warp builtin called from a
+;;; SUB-FUNCTION (name-mangled as PREFIX_...) is recognised too.
+;;; ===================================================================
+
+;; src/autodiff.lisp -- captured before redefinition so delegation cannot recurse.
+(defvar *ad-orig-backward-skip-fn-p-145p1*
+  (symbol-function '%backward-skip-fn-p-145p1))
+
+;; src/autodiff.lisp
+(defun %backward-skip-fn-p-145p1 (fn-sym)
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
+
+   Endeavor 146: WARP-ID / WARP-LANE / WARP-COUNT join the thread-coordinate
+   intrinsics already in this table (GET-LOCAL-ID and friends).  A warp coordinate is
+   structural, not a value derived from the kernel's inputs, so its gradient is exactly
+   zero — the same footing GET-LOCAL-ID has stood on since the beginning.
+
+   Everything else delegates to the original table."
+  (let ((name (symbol-name fn-sym)))
+    (or (loop for prefix in '("WARP-ID" "WARP-LANE" "WARP-COUNT")
+                thereis (let ((plen (length prefix)))
+                          (or (string= name prefix)
+                              (and (> (length name) plen)
+                                   (string= (subseq name 0 plen) prefix)
+                                   (cl:char= (cl:char name plen) #\_)))))
+        (funcall *ad-orig-backward-skip-fn-p-145p1* fn-sym))))

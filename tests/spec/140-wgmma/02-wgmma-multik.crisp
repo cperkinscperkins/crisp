@@ -4,7 +4,7 @@
 ;; Each K-step scatter-loads its A/B slice into flat SMEM tiles in core-matrix order.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "wgmma is forward-only MMA"
+;; SKIP-WITH[--differentiate]: "HAND-STAGED operand, not a wgmma limit -- same blocker as 140/01, see its header for the measured breakdown.  A-tile/B-tile are a flat (make-scratch-vector float 512) scatter-filled in wgmma core order, so mma-accumulate-via-tile's VJP has neither a compile-time (Mt Kt) nor a load-tile-at source.  Needs PRIMAL REPLAY.  140/03 differentiates, so wgmma itself is not the obstacle."
 ;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma
 ;;

@@ -469,11 +469,44 @@ Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
    a taxonomy of symptoms, not of root causes, and a gap can have layers behind it (Gap 1
    had four).  Treat the remaining gap counts as lower bounds.
 
-3. **Hand-staged tile operands** (140/01, 140/02) — NEW, surfaced by Gap 2.  Needs a
-   design decision, not a patch: either replay the forward's staging statements into the
-   backward, or let the generic `set!` chain carry the tile adjoint instead of requiring
-   a recoverable `load-tile-at` source.  Given this endeavor's history, resist calling it
-   a fundamental limit before measuring — but it is genuinely unsolved, not overlooked.
+3. **Hand-staged tile operands** (140/01, 140/02) — measured 2026-08-09, blocker now
+   isolated to ONE thing.  Skip reasons corrected; a design decision remains.
+
+   **The warp builtins were never registered** (fixed).  `WARP-ID` / `WARP-LANE` /
+   `WARP-COUNT` were missing from the thread-coordinate table at autodiff.lisp:3077-3084,
+   which has held `GET-LOCAL-ID`, `GET-WORKGROUP-ID`, `SYNC-WORKGROUP` and ~30 others since
+   the beginning.  They arrived with the 111/115 warp work and were simply never added, and
+   that omission alone produced `Function WARP-LANE is not differentiable`.
+
+   > This is the LEGITIMATE use of inertness, and worth contrasting with the `rem` mistake
+   > made an hour earlier.  A thread coordinate is not a function of the kernel's inputs —
+   > it is structural, like a shape query — so its derivative is EXACTLY zero.  That is the
+   > mathematically accurate answer.  `rem`'s derivative is 1, so calling it inert asserted
+   > something FALSE.  The table is the right home for genuine non-values; the skip list was
+   > the wrong home for arithmetic.
+
+   **The scatter-fill already differentiates.**  Measured directly by compiling 140/01's
+   staging on its own: Crisp's generic `set!` / `~` backward reverses
+
+       (set! (~ A-tile core) (~ A r k))   ->   A_ADJ[r][k] += A-TILE_ADJ[core]
+
+   straight through the user's swizzled index expression — no `load-tile-at`, no layout
+   knowledge required.  This was the part that looked hardest and it was never a problem.
+
+   **What is left is exactly one thing.**  `mma-accumulate-via-tile`'s VJP reads operand
+   PRIMALS from their global source, and a backward replays the forward's BINDINGS but not
+   its STATEMENTS, so the staged tile is empty there.  A hand-swizzled flat buffer has no
+   source mapping to invert.
+
+   **The fix is RECOMPUTE** — replay the operand's staging statements into the backward,
+   and address the flat buffer through the instruction's ABI layout (which is not user
+   invention: the compiler already implements it for the forward).  Note the adjoint
+   DESTINATION needs nothing new; the generic chain above already carries it home.
+
+   Deliberately NOT built inside 146.  "Recompute staging in the backward" is a general AD
+   capability that serves any hand-staged kernel, not an MMA feature, and this endeavor has
+   already been burned once by improvising a mechanism (the ring work, five iterations).
+   Candidate for its own endeavor.
 
 4. **142/12** — `Type mismatch for operator '/'. Cannot operate on ULONG and INT.` on
    `(/ (inner-dimension A B) (to-ulong 8))`.  Unaffected by the `rem` rule; still open.
