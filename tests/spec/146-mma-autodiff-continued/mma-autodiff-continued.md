@@ -399,11 +399,89 @@ Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
    142/12 was to be the metal twin and does not differentiate.  142/01 proves
    register-resident MMA numerically and 145/18 proves ring STAGING; their combination
    remains unproven on hardware, and this doc should not imply otherwise.
-2. **Gap 2 — `rem`** (140/01, 140/02).  Small rule.  Pairs naturally with 132/08's missing
-   `to-float`; both are index/conversion arithmetic, not MMA.
-3. **Gap 3 — sub-function walk into warp roles** (139/02, 05, 06).  `CONSUMER` is a
-   user-defined sub-function, not a warp-specialization construct.
-4. **Bucket E — 135/09's `Unknown variable C_ADJ`.**  Phase 0 guessed this was the same
+2. **Gap 2 — `rem`/`mod` get a REAL derivative.  DONE 2026-08-09.  Specs still NOT
+   un-skipped (see item 3).**
+
+   > **RETRACTED, same day: the first attempt added `REM` to `%backward-skip-fn-p`.**
+   > That was this endeavor's own anti-pattern committed in miniature.  A skip-list entry
+   > is a claim about an OPERATOR; the real claim was about one USE of it (integer index
+   > arithmetic).  It made `rem` contribute zero gradient ALWAYS.  Worse, it was copied
+   > from `MOD`, whose 138 entry carries what amounts to a written confession — *"a float
+   > mod does have a derivative … its gradient would be silently zero … a real rule
+   > belongs with the other math VJPs."*  That comment was read, quoted in the commit,
+   > and the shortcut copied anyway.
+
+   The engine already had the general path, in two parts:
+
+   - `%active-scalar-vars` (:2518) is an EDGE TABLE deciding which operand positions
+     propagate activeness.  Its header: *"Structural ints fall out as 'inactive' for free
+     — no special-casing."*
+   - `%handle-single-value-backward` (:412) routes `+ - * /` and the transcendentals to
+     `%handle-math-and-trig-backward`.  **`REM`/`MOD` were simply absent from that list,
+     and that was the only reason they errored.**
+
+   `(rem li 8)` never needed an inertness declaration: `li` descends from thread ids, not
+   kernel inputs, so it is already inactive.  Nothing flows because the OPERAND is
+   inactive, not because the OPERATOR is dead.
+
+   **The rule.**  `rem(a,b) = a - b*q` with `q = trunc(a/b)`:
+
+       d/da = 1                   ->  a_adj += v_adj
+       d/db = -q = -((a - v)/b)   ->  b_adj += -((a-v)/b) * v_adj
+
+   `q` is recovered from the already-bound result `v`, so no `trunc` primitive is needed —
+   and it is EXACT for integers, because `a - v` is exactly `b*q`.  Crisp does
+   mathematically accurate derivatives for integer types too; the answer being trivially
+   zero downstream is the activeness analysis's conclusion to draw, not this rule's
+   assumption to make.  `MOD` shares the formula (floor vs trunc differs only on negatives;
+   `q = (a-v)/b` holds either way).
+
+   **`MOD` is removed from the skip list as well** — it has been silently wrong since 138.
+   The caveat there is now deleted rather than repeated, because it has stopped being true.
+   145/18 (ring, uses `(mod grid-k 2)`) still gradient-checks exactly: `analytical=1.0
+   numerical=1.0 diff=0.0`.
+
+   What legitimately belongs in `%backward-skip-fn-p` is NON-VALUES — allocators, barriers,
+   shape queries.  An arithmetic operator with a real derivative never did.
+
+   **But fixing `rem` did not un-skip either spec, and that is the finding.**  Both now
+   fail one layer deeper:
+
+       mma-accumulate-via-tile: cannot differentiate this tile multiply —
+       the A operand A-TILE has no compile-time shape.
+
+   In these kernels the operand is `(make-scratch-vector float 512)` filled ELEMENT BY
+   ELEMENT with wgmma's swizzled core ordering:
+
+       (set! (~ A-tile core) (~ A r gk))
+
+   There is no `load-tile-at`, so the VJP has no staging source to recover, and the flat
+   512 carries no (Mt Kt).  This matters more than it looks: the tile VJP reads operands
+   from their GLOBAL SOURCE rather than from the staged tile, because a backward replays
+   the forward's BINDINGS but not its STATEMENTS — so in the backward the staged tile is
+   empty.  A hand-swizzled tile has no source mapping the VJP can invert.
+
+   Do NOT paper this over by inferring (64 8) from 512.  The layout is swizzled, not
+   row-major, so indexing it as a matrix would produce a confidently WRONG gradient —
+   the exact silent-wrong-answer class 145 was burned by.
+
+   **METHOD NOTE.**  Phase 0's four-gap taxonomy was built from FIRST errors only.  It is
+   a taxonomy of symptoms, not of root causes, and a gap can have layers behind it (Gap 1
+   had four).  Treat the remaining gap counts as lower bounds.
+
+3. **Hand-staged tile operands** (140/01, 140/02) — NEW, surfaced by Gap 2.  Needs a
+   design decision, not a patch: either replay the forward's staging statements into the
+   backward, or let the generic `set!` chain carry the tile adjoint instead of requiring
+   a recoverable `load-tile-at` source.  Given this endeavor's history, resist calling it
+   a fundamental limit before measuring — but it is genuinely unsolved, not overlooked.
+
+4. **142/12** — `Type mismatch for operator '/'. Cannot operate on ULONG and INT.` on
+   `(/ (inner-dimension A B) (to-ulong 8))`.  Unaffected by the `rem` rule; still open.
+   Type inference on a differentiated runtime loop bound.
+5. **Gap 3 — sub-function walk into warp roles** (139/02, 05, 06).  `CONSUMER` is a
+   user-defined sub-function, not a warp-specialization construct.  Untouched so far, and
+   the only remaining gap whose specs might un-skip without a design decision first.
+6. **Bucket E — 135/09's `Unknown variable C_ADJ`.**  Phase 0 guessed this was the same
    defect as Gap 4.  With Gap 4 now understood, that guess is UNVERIFIED — 135/09 is a
    reinterpreted view, not a register tile.  Re-measure before assuming.
 

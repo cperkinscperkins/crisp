@@ -1107,3 +1107,210 @@
             (list* (first backward)
                    (append missing bindings)
                    (cddr backward))))))
+
+
+;;; ===================================================================
+;;; Endeavor 146 Gap 2 — REM joins MOD as gradient-inert INDEX arithmetic.
+;;;
+;;; 140/01 and 140/02 failed with
+;;;     Function REM is not differentiable.
+;;; Both use it exactly as 138 used MOD -- decomposing a thread index for the
+;;; wgmma swizzled layout:
+;;;     (let ((r (/ li 8)) (k (rem li 8)))
+;;;       (let ((core (+ ... (* (rem r 8) 4) (rem k 4))))
+;;;         (set! (~ A-tile core) (~ A r gk))))
+;;; li is an integer lane id.  These are ADDRESSES, not values on the path from
+;;; input to output, so their gradient is identically zero.
+;;;
+;;; MOD was added to this list by 138 for the same reason and carries a caveat
+;;; that applies verbatim to REM, so it is repeated rather than quietly inherited:
+;;; a FLOAT rem does have a derivative (d/dx = 1 almost everywhere), and if one
+;;; ever appeared in a value position its gradient would be silently zero.  The
+;;; walk cannot tell the two apart -- it sees ANF forms, not types.  A real rule
+;;; for float rem/mod belongs with the other math VJPs.
+;;;
+;;; A VJP emitting 1 would be WRONG here, not merely imprecise: it would inject
+;;; spurious gradient flow into index computations.  Inert is right for the case
+;;; that exists; the float case is deferred with its eyes open.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
+
+   Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS are gradient-inert shape queries.
+   Endeavor 145 P3b: MAKE-REGISTER-TILE is an ALLOCATOR, gradient-inert like the
+   make-scratch-* constructors above it — its paired adjoint tile is created by
+   %mma-ad-adj-init, not by the walk.
+
+   Endeavor 138 rings: the SCRATCH-RING constructors are allocators exactly as their non-ring
+   forms are (a ring is rank+1 scratch), and their paired adjoint rings likewise come from
+   %augment-scratch-adj-bindings.  The BARRIER ring is inert for a different reason: a barrier
+   carries no value, only ordering.  MAKE-ASYNC-BARRIER is listed alongside it: the plain
+   barrier only avoided this by never reaching the walk as a call, which is luck rather than
+   design.
+
+   MOD joins them as INDEX arithmetic — `(mod grid-k 2)` selecting a ring slot.
+
+   Endeavor 146 Gap 2: REM joins MOD, and the caveat is repeated rather than inherited
+   silently.  140/01 and 140/02 use `(rem li 8)` to decompose a lane id for the wgmma
+   swizzled layout; those results are ADDRESSES, never values on the path from input to
+   output, so their gradient is identically zero.  But a FLOAT rem/mod DOES have a
+   derivative (d/dx = 1 almost everywhere), and one appearing in a value position would get
+   a silent zero here.  The walk sees ANF forms, not types, so it cannot distinguish them.
+   A real rule for the float case belongs with the other math VJPs — and note that a VJP
+   emitting 1 would be actively WRONG for the integer case, injecting gradient flow into
+   index arithmetic.  This is a deferral, not a solution."
+  (or (let ((name (symbol-name fn-sym)))
+        (member name '("MAKE-REGISTER-TILE"
+                       "MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
+                       "MAKE-SCRATCH-TENSOR-RING"
+                       "MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING"
+                       "MOD" "REM")
+                :test #'string=))
+      (%backward-skip-fn-p-145p1 fn-sym)))
+
+
+;;; ===================================================================
+;;; Endeavor 146 Gap 2, CORRECTED — rem/mod get a REAL derivative.
+;;;
+;;; RETRACTING the earlier part of this overlay that added REM to
+;;; %backward-skip-fn-p.  That was the endeavor's own anti-pattern committed in
+;;; miniature: a skip-list entry is a claim about an OPERATOR, and this one was
+;;; really a claim about one USE of it (integer index arithmetic).  It made
+;;; `rem` contribute zero gradient ALWAYS.
+;;;
+;;; It also copied MOD, whose 138 entry carries what is effectively a written
+;;; confession -- "a float mod does have a derivative ... its gradient would be
+;;; silently zero ... a real rule belongs with the other math VJPs".  So MOD has
+;;; been quietly wrong since 138, and this fixes it too.
+;;;
+;;; WHY THE SKIP WAS NEVER NEEDED.  The engine already has the general path:
+;;;   - %active-scalar-vars (src/autodiff.lisp:2518) is an EDGE TABLE deciding
+;;;     which operand positions propagate activeness.  Its header: "Structural
+;;;     ints fall out as 'inactive' for free -- no special-casing."
+;;;   - %handle-single-value-backward (:412) routes + - * / and the
+;;;     transcendentals to %handle-math-and-trig-backward.  REM and MOD were
+;;;     simply absent from that list, which is the ONLY reason they errored.
+;;; `(rem li 8)` needs no inertness declaration: li descends from thread ids, not
+;;; kernel inputs, so it is already inactive.  Nothing flows because the OPERAND
+;;; is inactive, not because the OPERATOR is dead.
+;;;
+;;; THE MATH.  rem(a,b) = a - b*q  with q = trunc(a/b):
+;;;     d/da = 1                      -> a_adj += v_adj
+;;;     d/db = -q = -((a - v) / b)    -> b_adj += -((a-v)/b) * v_adj
+;;; q is recovered from the already-bound result v, so no trunc primitive is
+;;; needed.  Exact for INTEGERS as well as floats: a - v equals b*q exactly, so
+;;; the division is exact and truncation cannot lose anything.  Crisp does
+;;; mathematically accurate derivatives for integer types too -- the answer is
+;;; often trivially zero downstream, but that is the activeness analysis's
+;;; conclusion to draw, not this rule's assumption to make.
+;;;
+;;; MOD shares the formula.  It differs from REM only in taking floor rather than
+;;; trunc for negative operands, and q = (a - v)/b holds for either.
+;;;
+;;; (d/da = 1 holds almost everywhere -- rem is piecewise linear with slope 1,
+;;; discontinuous at multiples of b.  That is the standard a.e. derivative, the
+;;; same footing abs() already stands on.)
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %ad-rem-or-mod-form-p (expr)
+  "T when EXPR is a two-argument (rem a b) or (mod a b) call.
+   Matched by symbol-NAME so it holds whichever package the kernel's reader interned
+   the operator into."
+  (and (consp expr) (symbolp (car expr))
+       (member (symbol-name (car expr)) '("REM" "MOD") :test #'string=)
+       (= (length expr) 3)))
+
+;; src/autodiff.lisp -- restores the list to its pre-146 contents: REM removed,
+;; and MOD removed too now that both have a genuine rule.
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
+
+   Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS are gradient-inert shape queries.
+   Endeavor 145 P3b: MAKE-REGISTER-TILE is an ALLOCATOR, gradient-inert like the
+   make-scratch-* constructors above it — its paired adjoint tile is created by
+   %mma-ad-adj-init, not by the walk.
+
+   Endeavor 138 rings: the SCRATCH-RING constructors are allocators exactly as their
+   non-ring forms are (a ring is rank+1 scratch), and their paired adjoint rings come from
+   %augment-scratch-adj-bindings.  The BARRIER ring is inert for a different reason: a
+   barrier carries no value, only ordering.  MAKE-ASYNC-BARRIER is listed alongside it.
+
+   Endeavor 146 Gap 2: MOD is GONE from this list, and REM never should have joined it.
+   Everything that legitimately belongs here is a NON-VALUE — an allocator, a barrier, a
+   shape query.  rem and mod are arithmetic operators with real derivatives; they now have
+   real rules in %handle-math-and-trig-backward.  Marking an operator inert is a claim
+   about the operator, but the thing that made `(rem li 8)` contribute nothing was its
+   INACTIVE OPERAND, which %active-scalar-vars already determines on its own."
+  (or (let ((name (symbol-name fn-sym)))
+        (member name '("MAKE-REGISTER-TILE"
+                       "MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
+                       "MAKE-SCRATCH-TENSOR-RING"
+                       "MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING")
+                :test #'string=))
+      (%backward-skip-fn-p-145p1 fn-sym)))
+
+;; src/autodiff.lisp -- wrapper; captures the original so the delegation cannot recurse.
+(defvar *ad-orig-active-scalar-vars* (symbol-function '%active-scalar-vars))
+
+;; src/autodiff.lisp
+(defun %active-scalar-vars (expr env)
+  "Set (list) of scalar symbols that DIFFERENTIABLY affect EXPR's value.
+
+   Endeavor 146 Gap 2: rem and mod join the differentiable-arithmetic edge, propagating
+   through BOTH operands exactly as + - * / do.  d(rem)/da = 1 and d(rem)/db = -trunc(a/b),
+   so both positions genuinely carry activeness.  Everything else delegates to the original
+   edge table."
+  (if (%ad-rem-or-mod-form-p expr)
+      (%asv-union (cdr expr) env)
+      (funcall *ad-orig-active-scalar-vars* expr env)))
+
+;; src/autodiff.lisp -- wrapper.
+(defvar *ad-orig-handle-single-value-backward*
+  (symbol-function '%handle-single-value-backward))
+
+;; src/autodiff.lisp
+(defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
+                                        &key hof-handler-fn (error-on-unknown t)
+                                        tensor-inputs-ht
+                                        scratch-tile-syms)
+  "Generates backward-pass adjoint updates for a single ANF binding (v := expr).
+
+   Endeavor 146 Gap 2: rem/mod are dispatched to the math backward, which the original
+   cond cannot do because its clause tests membership with #'eq against a fixed symbol
+   list — and the kernel reader may intern `rem` into a different package.  Matching by
+   symbol-name here sidesteps that entirely.  Everything else delegates unchanged."
+  (if (%ad-rem-or-mod-form-p expr)
+      (%ad-handle-rem-backward v expr emit-fn local-adj-fn)
+      (funcall *ad-orig-handle-single-value-backward*
+               v expr adjoint-map emit-fn local-adj-fn
+               :hof-handler-fn hof-handler-fn
+               :error-on-unknown error-on-unknown
+               :tensor-inputs-ht tensor-inputs-ht
+               :scratch-tile-syms scratch-tile-syms)))
+
+;; src/autodiff.lisp
+(defun %ad-handle-rem-backward (v expr emit-fn local-adj-fn)
+  "Backward rule for (rem a b) / (mod a b).
+
+       rem(a,b) = a - b*q,  q = trunc(a/b)
+       d/da = 1                    ->  a_adj += v_adj
+       d/db = -q = -((a - v)/b)    ->  b_adj += -((a-v)/b) * v_adj
+
+   q is reconstructed from the already-bound result V rather than recomputed, which keeps
+   this exact for integers: a - v is exactly b*q, so the division cannot truncate away
+   anything.  Mirrors the shape of the '/' rule above it, including the `symbolp` guards —
+   a literal operand has no adjoint to update, which is why the overwhelmingly common
+   `(rem li 8)` emits only the d/da term."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+      (when (symbolp a)
+        (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+      (when (symbolp b)
+        (emit `(set! ,(local-adj b)
+                     (+ ,(local-adj b)
+                        (* (* -1.0 (/ (- ,a ,v) ,b)) ,v-adj)))))
+      t)))
