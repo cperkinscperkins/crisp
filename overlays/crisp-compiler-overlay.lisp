@@ -99,102 +99,6 @@
       (%promote-scratch-init-for-ad init-form)))
 
 
-;;; ===================================================================
-;;; Endeavor 146 Gap 4, part 2 — the staging ORIGIN must not read a
-;;; register tile's runtime extents.
-;;;
-;;; With the adjoint allocation fixed above, 142/00,01,11 moved on to
-;;;     Unknown variable B-TILE.
-;;; Same root cause, second site.  load-tile records its origin in GRID
-;;; coordinates and the rewrite scales them by the tile's extent:
-;;;     (* (to-ulong G) (~ (extents~ B-TILE) 0))
-;;; For a SCRATCH tile that read is fine.  For a REGISTER tile there is
-;;; nothing to read -- %explode-register-tiles has already replaced the
-;;; whole-tile symbol with per-lane fragment vars, so `extents~ B-TILE`
-;;; cannot resolve.  (%mma-ad-unscale-tile-origin's docstring says exactly
-;;; this; that helper simply is not on this path.)
-;;;
-;;; The extent is a COMPILE-TIME fact the scalar lowering is already handed:
-;;; the A operand is (Mt x Kt) and the B operand is (Kt x Nt).  So substitute
-;;; the literal for the runtime read.  For a scratch operand this is the same
-;;; value constant-folded, which is why the substitution is keyed on the
-;;; operand symbol and not on the tile's storage kind.
-;;;
-;;; Still not calculus: dA = dC.B^T and dB = A^T.dC are untouched.  This
-;;; decides how an ADDRESS is computed.
-;;; ===================================================================
-
-;; src/autodiff.lisp
-(defun %mma-ad-devirtualize-extent (form tile-sym dims)
-  "Replace every `(~ (extents~ TILE-SYM) I)` inside FORM with the compile-time
-   extent (nth I DIMS).  Any other form is returned structurally unchanged.
-
-   TILE-SYM is matched by identity, so an origin mentioning a DIFFERENT tile is
-   left alone -- important because a ring or multi-operand origin can name more
-   than one tile."
-  (cond
-    ((not (consp form)) form)
-    ((and (= (length form) 3)
-          (symbolp (first form))
-          (string-equal (symbol-name (first form)) "~")
-          (consp (second form))
-          (symbolp (first (second form)))
-          (string-equal (symbol-name (first (second form))) "EXTENTS~")
-          (eq (second (second form)) tile-sym)
-          (integerp (third form))
-          (nth (third form) dims))
-     (nth (third form) dims))
-    (t (mapcar (lambda (f) (%mma-ad-devirtualize-extent f tile-sym dims)) form))))
-
-;; src/autodiff.lisp
-(defun %mma-vjp-scalar-lowering (mt nt kt c-adj a-op b-op a-adj b-adj
-                                 a-src aoy aox b-src boy box pkg)
-  "The shape-agnostic scalar backward for a tile multiply.  Emitted as ordinary Crisp source,
-   so it lowers through the normal path on either backend and at ANY tile shape.
-
-   dC is materialised from the register accumulator into SLM once, then two collective loops
-   accumulate into the operand adjoints.  Index arithmetic is coerced with to-int because a
-   staging origin can be a ULONG extent expression while the collective's loop vars are INT.
-
-   Endeavor 146 Gap 4: A-OP and B-OP are no longer ignored.  A staging origin recorded from a
-   grid-coordinate load carries `(~ (extents~ OP) i)`, which cannot resolve when OP is a
-   register tile.  Their extents are compile-time here -- A is (Mt x Kt), B is (Kt x Nt) --
-   so the runtime read is replaced by the literal before the origin is used."
-  (let* ((cl (find-package :crisp-language))
-         (let* (intern "LET" cl))      (msm  (intern "MAKE-SCRATCH-MATRIX" cl))
-         (flt  (intern "FLOAT" cl))    (st   (intern "STORE-TILE" cl))
-         (sync (intern "SYNC-WORKGROUP" cl))
-         (ws   (intern "WORKGROUP-STRIDE" cl))  (dt (intern "DOTIMES" cl))
-         (aref (intern "~" cl))        (set! (intern "SET!" cl))
-         (plus (intern "+" cl))        (mul  (intern "*" cl))
-         (ti   (intern "TO-INT" cl))
-         (dc   (intern (format nil "~A_VJPDC" (symbol-name c-adj)) pkg))
-         (m (intern "%VJP_M" cl)) (n (intern "%VJP_N" cl)) (k (intern "%VJP_K" cl))
-         ;; Gap 4: devirtualize each origin against ITS OWN operand's static shape.
-         (aoy (%mma-ad-devirtualize-extent aoy a-op (list mt kt)))
-         (aox (%mma-ad-devirtualize-extent aox a-op (list mt kt)))
-         (boy (%mma-ad-devirtualize-extent boy b-op (list kt nt)))
-         (box (%mma-ad-devirtualize-extent box b-op (list kt nt))))
-    (flet ((ix (base off) (list plus (list ti base) (list ti off))))
-      (list let* (list (list dc (list msm flt (list mt nt))))
-            (list st c-adj dc (list 0 0))
-            (list sync)
-            ;; dA[m,k] += sum_n dC[m,n] * B[k,n]
-            (list ws a-adj (list m k)
-                  (list dt (list n nt)
-                        (list set! (list aref a-adj m k)
-                              (list plus (list aref a-adj m k)
-                                    (list mul (list aref dc m n)
-                                          (list aref b-src (ix boy k) (ix box n)))))))
-            ;; dB[k,n] += sum_m A[m,k] * dC[m,n]
-            (list ws b-adj (list k n)
-                  (list dt (list m mt)
-                        (list set! (list aref b-adj k n)
-                              (list plus (list aref b-adj k n)
-                                    (list mul (list aref a-src (ix aoy m) (ix aox k))
-                                          (list aref dc m n))))))
-            (list sync)))))
-
 
 ;;; Endeavor 146 Gap 4, part 2a — the substituted extent must be ULONG.
 ;;;
@@ -319,17 +223,6 @@
 ;; so a reload keeps the genuine original rather than capturing the wrapper.
 (defvar *ad-orig-generate-backward-walk* (symbol-function (quote generate-backward-walk)))
 
-;; src/autodiff.lisp
-(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
-                                        &key kernel-pkg)
-  "Endeavor 146 Gap 4: normalize register-tile extent reads in FLAT-ANF, then run the
-   walk unchanged.  See the overlay header above for why this is the single correct
-   seam -- every backward emitter reads its origins from this ANF, so fixing it here
-   fixes all of them, and any emitter added later is correct without knowing about it."
-  (funcall *ad-orig-generate-backward-walk*
-           (%ad-normalize-register-extents flat-anf (%ad-register-tile-dims-map flat-anf))
-           inputs outputs input-types output-types
-           :kernel-pkg kernel-pkg))
 
 ;;; Endeavor 146 Gap 4: RESTORED to its src/autodiff.lisp form.  The per-site
 ;;; devirtualization added earlier in this overlay is now redundant -- the ANF
@@ -378,88 +271,7 @@
             (list sync)))))
 
 
-;;; ===================================================================
-;;; Endeavor 146 Gap 1 — wgmma, canonicalized rather than re-registered.
-;;;
-;;; 140/03 failed with
-;;;     Function MAKE-WGMMA-ACCUMULATOR is not differentiable.
-;;; and there is no VJP for WGMMA-ACCUMULATE-VIA-TILE either -- "wgmma"
-;;; appears exactly ONCE in all of src/autodiff.lisp, in a comment.
-;;;
-;;; The obvious fix is to add MAKE-WGMMA-ACCUMULATOR to every register-tile
-;;; registry (%backward-skip-fn-p, %augment-scratch-adj-bindings,
-;;; %mma-ad-adj-init, %mma-ad-tile-dims-map, the scratch-adj collection in
-;;; generate-backward-walk, %ad-register-tile-dims-map) and then write a VJP
-;;; for wgmma-accumulate-via-tile.  Six lists and a new VJP -- and the next
-;;; MMA instruction would need seven more.
-;;;
-;;; But that is precisely the mistake this endeavor exists to stop.  wgmma is
-;;; Hopper's WARPGROUP-ASYNC way of computing D += A.B.  The asynchrony and the
-;;; warpgroup scope are SCHEDULE.  The math is the same matrix multiply that
-;;; mma-accumulate-via-tile already has a VJP for.
-;;;
-;;; So: canonicalize wgmma to the sync MMA on the ANF entering the backward
-;;; walk, exactly where Gap 4's extent normalization already runs.  Every
-;;; existing register-tile registry then applies unchanged, and the derivative
-;;; comes from the ONE VJP that already exists.
-;;;
-;;; This rewrites only the BACKWARD's view.  The forward is compiled from the
-;;; caller's own flat-anf and still emits real wgmma -- 140/00-02 keep proving
-;;; that.  A backward is under no obligation to use the same instruction as its
-;;; forward; that is the whole content of "the schedule is not the math".
-;;; ===================================================================
 
-;; src/autodiff.lisp
-(defun %ad-canonicalize-wgmma (form)
-  "Rewrite Hopper wgmma forms to their synchronous MMA equivalents for the backward walk.
-
-     (V (make-wgmma-accumulator T (M N) INIT))  ->  (V (make-register-tile T (M N) INIT))
-     (wgmma-accumulate-via-tile SHAPE D A B ...) -> (mma-accumulate-via-tile SHAPE D A B ...)
-
-   Trailing keys (:swizzle and friends) are preserved positionally; the via-tile VJP
-   destructures (SHAPE C A B &rest ignored) and ignores them.
-
-   Structural no-op for any kernel without wgmma."
-  (let* ((cl (find-package :crisp-language))
-         (mrt (intern "MAKE-REGISTER-TILE" cl))
-         (mvt (intern "MMA-ACCUMULATE-VIA-TILE" cl)))
-    (labels ((head-is (f name)
-               (and (consp f) (symbolp (first f))
-                    (string-equal (symbol-name (first f)) name)))
-             (walk (f)
-               (cond
-                 ((not (consp f)) f)
-                 ((head-is f "MAKE-WGMMA-ACCUMULATOR")
-                  (cons mrt (mapcar #'walk (rest f))))
-                 ((head-is f "WGMMA-ACCUMULATE-VIA-TILE")
-                  (cons mvt (mapcar #'walk (rest f))))
-                 (t (mapcar #'walk f)))))
-      (walk form))))
-
-;; src/autodiff.lisp -- replaces the Gap 4 wrapper; same seam, one more normalization.
-(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
-                                        &key kernel-pkg)
-  "Endeavor 146: normalize the flat ANF before the walk sees it, then run the walk
-   unchanged.  Two normalizations, both of the same kind -- they remove a SCHEDULING
-   distinction that the derivative does not care about:
-
-     Gap 1: wgmma  -> sync MMA           (%ad-canonicalize-wgmma)
-     Gap 4: register-tile extents~ -> compile-time literals
-                                         (%ad-normalize-register-extents)
-
-   Order matters: canonicalizing wgmma first turns make-wgmma-accumulator into a
-   make-register-tile, so the extent normalization's register-tile map sees it too.
-
-   This is the single seam for anything of this shape.  Every backward emitter reads
-   its operands and origins from this ANF, so a normalization here fixes all of them,
-   and an emitter added later is correct without knowing this exists."
-  (let* ((canonical (%ad-canonicalize-wgmma flat-anf))
-         (normalized (%ad-normalize-register-extents
-                      canonical
-                      (%ad-register-tile-dims-map canonical))))
-    (funcall *ad-orig-generate-backward-walk*
-             normalized inputs outputs input-types output-types
-             :kernel-pkg kernel-pkg)))
 
 
 ;;; ===================================================================
@@ -524,31 +336,6 @@
                      (t (mapcar #'walk f)))))
           (mapcar #'walk flat-anf)))))
 
-;; src/autodiff.lisp -- the normalization chain, now three steps.
-(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
-                                        &key kernel-pkg)
-  "Endeavor 146: normalize the flat ANF before the walk sees it, then run the walk
-   unchanged.  Every step removes a distinction the DERIVATIVE does not care about:
-
-     1. literal shape temps -> inlined     (%ad-inline-literal-shape-temps)
-     2. wgmma -> sync MMA                  (%ad-canonicalize-wgmma)
-     3. register-tile extents~ -> literals (%ad-normalize-register-extents)
-
-   Order is load-bearing.  (1) must precede (2) and (3) so their shape tests see
-   literals; (2) must precede (3) so a wgmma accumulator, by then a make-register-tile,
-   is in the register-tile map.
-
-   This is the single seam for anything of this shape.  Every backward emitter reads
-   its operands, shapes and origins from this ANF, so a normalization here fixes all
-   of them at once, and an emitter added later is correct without knowing it exists."
-  (let* ((inlined (%ad-inline-literal-shape-temps flat-anf))
-         (canonical (%ad-canonicalize-wgmma inlined))
-         (normalized (%ad-normalize-register-extents
-                      canonical
-                      (%ad-register-tile-dims-map canonical))))
-    (funcall *ad-orig-generate-backward-walk*
-             normalized inputs outputs input-types output-types
-             :kernel-pkg kernel-pkg)))
 
 
 ;;; ===================================================================
@@ -617,97 +404,7 @@
       (walk form))))
 
 
-;;; ===================================================================
-;;; Endeavor 146 Gap 1, part 4 — register-tile RINGS.
-;;;
-;;; 142/10 and 142/12 failed with
-;;;     Function MAKE-REGISTER-TILE-RING is not differentiable.
-;;; The SCRATCH rings (vector/matrix/tensor) have been registered since 138;
-;;; the REGISTER-tile ring that endeavour 142 added never was.
-;;;
-;;; Registering it as one more allocator would compile, but it would then hit
-;;; Gap 4 all over again: a ring of REGISTER operand tiles has the same problem
-;;; a single register operand tile had -- its adjoint is written and read as
-;;; memory, and a register tile cannot be.  Gap 4 settled that question: an
-;;; MMA OPERAND's adjoint is scratch; only the ACCUMULATOR stays in registers.
-;;;
-;;; A ring is rank+1 scratch (138), so the same answer one dimension up: a
-;;; register-tile ring canonicalizes to a SCRATCH MATRIX RING.  Then
-;;; %backward-skip-fn-p, %augment-scratch-adj-bindings and %mma-ad-tile-dims-map
-;;; all already know it, `(ring-get R_ADJ i)` is already the adjoint of
-;;; `(ring-get R i)` via %tlc-bwd-adj-name, and no new registry entry exists to
-;;; forget next time.
-;;;
-;;; :operand is dropped: it selects a GRF fragment layout for the forward's
-;;; block loads, and a scratch ring has no fragments to lay out.  :ring-count is
-;;; preserved -- it is the ring's actual depth and %ad-reconcile-ring-origin
-;;; needs it.
-;;;
-;;; Backward-only, like every other step in this chain.  The forward still
-;;; allocates real GRF rings; 142/10 and 142/12 keep proving that on their
-;;; non-differentiate passes.
-;;; ===================================================================
 
-;; src/autodiff.lisp
-(defun %ad-canonicalize-register-rings (form)
-  "Rewrite `(make-register-tile-ring T (M N) :ring-count N :operand :a)` to
-   `(make-scratch-matrix-ring T (M N) :ring-count N)` for the backward walk.
-
-   A ring of MMA operand tiles has the same adjoint requirement a single operand tile
-   has (Gap 4): every consumer indexes the adjoint as memory.  A ring being rank+1
-   scratch, the scratch matrix ring is that answer one dimension up, and it is a form
-   the AD engine has understood since 138.
-
-   :operand is dropped -- it picks a GRF fragment layout, which scratch has no use for.
-   :ring-count is kept; it is the ring's real depth.
-
-   Structural no-op for any kernel without register-tile rings."
-  (let* ((cl (find-package :crisp-language))
-         (msmr (intern "MAKE-SCRATCH-MATRIX-RING" cl)))
-    (labels ((drop-operand (keys)
-               ;; keys is a flat &key plist tail; drop the :operand pair only.
-               (cond ((null keys) nil)
-                     ((and (symbolp (first keys))
-                           (string-equal (symbol-name (first keys)) "OPERAND"))
-                      (drop-operand (cddr keys)))
-                     (t (cons (first keys) (drop-operand (rest keys))))))
-             (walk (f)
-               (cond
-                 ((not (consp f)) f)
-                 ((and (symbolp (first f))
-                       (string-equal (symbol-name (first f)) "MAKE-REGISTER-TILE-RING"))
-                  (list* msmr (second f) (third f) (drop-operand (cdddr f))))
-                 (t (mapcar #'walk f)))))
-      (walk form))))
-
-;; src/autodiff.lisp -- the normalization chain, now four steps.
-(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
-                                        &key kernel-pkg)
-  "Endeavor 146: normalize the flat ANF before the walk sees it, then run the walk
-   unchanged.  Every step removes a distinction the DERIVATIVE does not care about:
-
-     1. literal shape temps -> inlined      (%ad-inline-literal-shape-temps)
-     2. wgmma -> sync MMA                   (%ad-canonicalize-wgmma)
-     3. register-tile ring -> scratch ring  (%ad-canonicalize-register-rings)
-     4. register-tile extents~ -> literals  (%ad-normalize-register-extents)
-
-   Order is load-bearing.  (1) must precede the rest so their shape tests see literals.
-   (2) must precede (4) so a wgmma accumulator, by then a make-register-tile, is in the
-   register-tile map.  (3) must precede (4) for the same reason in reverse: once a ring
-   is scratch it keeps its runtime extents~ and must NOT be devirtualized.
-
-   This is the single seam for anything of this shape.  Every backward emitter reads its
-   operands, shapes and origins from this ANF, so a normalization here fixes all of them
-   at once, and an emitter added later is correct without knowing it exists."
-  (let* ((inlined (%ad-inline-literal-shape-temps flat-anf))
-         (canonical (%ad-canonicalize-wgmma inlined))
-         (deringed (%ad-canonicalize-register-rings canonical))
-         (normalized (%ad-normalize-register-extents
-                      deringed
-                      (%ad-register-tile-dims-map deringed))))
-    (funcall *ad-orig-generate-backward-walk*
-             normalized inputs outputs input-types output-types
-             :kernel-pkg kernel-pkg)))
 
 
 ;;; ===================================================================
@@ -766,65 +463,7 @@
         ((not (consp form)) nil)
         (t (some (lambda (f) (%ad-form-mentions-p f sym)) form))))
 
-;; src/autodiff.lisp
-(defun %ad-ensure-ring-adj-bindings (backward flat-anf kernel-pkg)
-  "Add a paired `<RING>_ADJ` binding to BACKWARD's outer LET for every ring the backward
-   NAMES but does not BIND.
 
-   Only rings actually mentioned get a binding, so a kernel whose backward never touches a
-   ring is returned untouched.  The adjoint allocator is %mma-ad-adj-init, the same one the
-   nested-LET path uses, so a ring adjoint is a ring of identical shape -- which is what
-   makes `(ring-get R_ADJ i)` the adjoint of `(ring-get R i)` (see %tlc-bwd-adj-name)."
-  (if (not (and (consp backward) (symbolp (first backward))
-                (string-equal (symbol-name (first backward)) "LET")))
-      backward
-      (let* ((bindings (second backward))
-             (bound (mapcar (lambda (b) (if (consp b) (first b) b)) bindings))
-             (missing
-              (loop for (sym . ctor) in (%ad-ring-ctor-bindings flat-anf)
-                    for adj = (intern (format nil "~A_ADJ" (symbol-name sym))
-                                      (or kernel-pkg (symbol-package sym)))
-                    when (and (not (member adj bound))
-                              (%ad-form-mentions-p (cddr backward) adj))
-                      collect (list adj (%mma-ad-adj-init ctor)))))
-        (if (null missing)
-            backward
-            (list* (first backward)
-                   (append missing bindings)
-                   (cddr backward))))))
-
-;; src/autodiff.lisp -- the chain, plus the on-the-way-out fixup.
-(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
-                                        &key kernel-pkg)
-  "Endeavor 146: normalize the flat ANF before the walk sees it, run the walk unchanged,
-   then ensure any ring adjoint the walk NAMED actually got BOUND.
-
-   Normalizations, each removing a distinction the DERIVATIVE does not care about:
-
-     1. literal shape temps -> inlined      (%ad-inline-literal-shape-temps)
-     2. wgmma -> sync MMA                   (%ad-canonicalize-wgmma)
-     3. register-tile ring -> scratch ring  (%ad-canonicalize-register-rings)
-     4. register-tile extents~ -> literals  (%ad-normalize-register-extents)
-
-   Order is load-bearing.  (1) must precede the rest so their shape tests see literals.
-   (2) must precede (4) so a wgmma accumulator, by then a make-register-tile, is in the
-   register-tile map.  (3) must precede (4) for the mirror-image reason: once a ring is
-   scratch it keeps its runtime extents~ and must NOT be devirtualized.
-
-   The fixup afterwards covers a gap the walk has independently of any of this: the
-   top-level adjoint collection inside it does not know the ring constructors."
-  (let* ((inlined (%ad-inline-literal-shape-temps flat-anf))
-         (canonical (%ad-canonicalize-wgmma inlined))
-         (deringed (%ad-canonicalize-register-rings canonical))
-         (normalized (%ad-normalize-register-extents
-                      deringed
-                      (%ad-register-tile-dims-map deringed))))
-    (%ad-ensure-ring-adj-bindings
-     (funcall *ad-orig-generate-backward-walk*
-              normalized inputs outputs input-types output-types
-              :kernel-pkg kernel-pkg)
-     normalized
-     kernel-pkg)))
 
 
 ;;; Endeavor 146 Gap 1, part 4a — intern the ring constructor where its MACRO lives.
@@ -967,42 +606,6 @@
                          (t (mapcar #'walk f)))))
           (walk form)))))
 
-;; src/autodiff.lisp -- the chain, now with ring-view extents.
-(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
-                                        &key kernel-pkg)
-  "Endeavor 146: normalize the flat ANF before the walk sees it, run the walk unchanged,
-   then ensure any ring adjoint the walk NAMED actually got BOUND.
-
-   Normalizations, each removing a distinction the DERIVATIVE does not care about:
-
-     1. literal shape temps -> inlined       (%ad-inline-literal-shape-temps)
-     2. wgmma -> sync MMA                    (%ad-canonicalize-wgmma)
-     3. register ring VIEW extents~ -> literals
-                                             (%ad-normalize-ring-view-extents)
-     4. register-tile ring -> scratch ring   (%ad-canonicalize-register-rings)
-     5. register-tile extents~ -> literals   (%ad-normalize-register-extents)
-
-   Order is load-bearing.  (1) first so every shape test below sees literals.  (3) MUST
-   precede (4): once a register ring has become a scratch ring it is indistinguishable
-   from one the user wrote, whose runtime extents~ must be preserved.  (2) precedes (5)
-   so a wgmma accumulator, by then a make-register-tile, is in the register-tile map.
-
-   The fixup afterwards covers a gap the walk has independently of all this: its
-   top-level adjoint collection does not know the ring constructors."
-  (let* ((inlined (%ad-inline-literal-shape-temps flat-anf))
-         (canonical (%ad-canonicalize-wgmma inlined))
-         (ring-dims (%ad-register-ring-dims-map canonical))
-         (ringfixed (%ad-normalize-ring-view-extents canonical ring-dims))
-         (deringed (%ad-canonicalize-register-rings ringfixed))
-         (normalized (%ad-normalize-register-extents
-                      deringed
-                      (%ad-register-tile-dims-map deringed))))
-    (%ad-ensure-ring-adj-bindings
-     (funcall *ad-orig-generate-backward-walk*
-              normalized inputs outputs input-types output-types
-              :kernel-pkg kernel-pkg)
-     normalized
-     kernel-pkg)))
 
 
 ;;; Endeavor 146 Gap 1, part 7 — log the POST-fixup backward.
@@ -1109,66 +712,6 @@
                    (cddr backward))))))
 
 
-;;; ===================================================================
-;;; Endeavor 146 Gap 2 — REM joins MOD as gradient-inert INDEX arithmetic.
-;;;
-;;; 140/01 and 140/02 failed with
-;;;     Function REM is not differentiable.
-;;; Both use it exactly as 138 used MOD -- decomposing a thread index for the
-;;; wgmma swizzled layout:
-;;;     (let ((r (/ li 8)) (k (rem li 8)))
-;;;       (let ((core (+ ... (* (rem r 8) 4) (rem k 4))))
-;;;         (set! (~ A-tile core) (~ A r gk))))
-;;; li is an integer lane id.  These are ADDRESSES, not values on the path from
-;;; input to output, so their gradient is identically zero.
-;;;
-;;; MOD was added to this list by 138 for the same reason and carries a caveat
-;;; that applies verbatim to REM, so it is repeated rather than quietly inherited:
-;;; a FLOAT rem does have a derivative (d/dx = 1 almost everywhere), and if one
-;;; ever appeared in a value position its gradient would be silently zero.  The
-;;; walk cannot tell the two apart -- it sees ANF forms, not types.  A real rule
-;;; for float rem/mod belongs with the other math VJPs.
-;;;
-;;; A VJP emitting 1 would be WRONG here, not merely imprecise: it would inject
-;;; spurious gradient flow into index computations.  Inert is right for the case
-;;; that exists; the float case is deferred with its eyes open.
-;;; ===================================================================
-
-;; src/autodiff.lisp
-(defun %backward-skip-fn-p (fn-sym)
-  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
-
-   Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS are gradient-inert shape queries.
-   Endeavor 145 P3b: MAKE-REGISTER-TILE is an ALLOCATOR, gradient-inert like the
-   make-scratch-* constructors above it — its paired adjoint tile is created by
-   %mma-ad-adj-init, not by the walk.
-
-   Endeavor 138 rings: the SCRATCH-RING constructors are allocators exactly as their non-ring
-   forms are (a ring is rank+1 scratch), and their paired adjoint rings likewise come from
-   %augment-scratch-adj-bindings.  The BARRIER ring is inert for a different reason: a barrier
-   carries no value, only ordering.  MAKE-ASYNC-BARRIER is listed alongside it: the plain
-   barrier only avoided this by never reaching the walk as a call, which is luck rather than
-   design.
-
-   MOD joins them as INDEX arithmetic — `(mod grid-k 2)` selecting a ring slot.
-
-   Endeavor 146 Gap 2: REM joins MOD, and the caveat is repeated rather than inherited
-   silently.  140/01 and 140/02 use `(rem li 8)` to decompose a lane id for the wgmma
-   swizzled layout; those results are ADDRESSES, never values on the path from input to
-   output, so their gradient is identically zero.  But a FLOAT rem/mod DOES have a
-   derivative (d/dx = 1 almost everywhere), and one appearing in a value position would get
-   a silent zero here.  The walk sees ANF forms, not types, so it cannot distinguish them.
-   A real rule for the float case belongs with the other math VJPs — and note that a VJP
-   emitting 1 would be actively WRONG for the integer case, injecting gradient flow into
-   index arithmetic.  This is a deferral, not a solution."
-  (or (let ((name (symbol-name fn-sym)))
-        (member name '("MAKE-REGISTER-TILE"
-                       "MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
-                       "MAKE-SCRATCH-TENSOR-RING"
-                       "MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING"
-                       "MOD" "REM")
-                :test #'string=))
-      (%backward-skip-fn-p-145p1 fn-sym)))
 
 
 ;;; ===================================================================
