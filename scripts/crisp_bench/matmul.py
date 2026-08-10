@@ -358,7 +358,7 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     
     p = sh([str(exe)], capture_output=True, text=True)
     out = (p.stdout or "") + (p.stderr or "")
-    m = re.search(r'BENCH\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s*GFLOPS\s*\((\d+)\s*iters,\s*([\d.]+)\s*s\)', out)
+    m = re.search(r'BENCH\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s*GFLOPS\s*\((\d+)\s*iters,\s*([\d.eE+-]+)\s*s\)', out)
     if not m:
         print("autobench-l0 parse failed:\n" + out[-800:], file=sys.stderr); return None
     gflops = float(m.group(4))
