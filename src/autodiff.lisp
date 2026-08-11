@@ -176,6 +176,46 @@
         no-trail)))
 
 
+(defvar *ad-barrier-ring-syms* nil
+  "Symbols bound by make-async-barrier / make-async-barrier-ring in the kernel being
+   differentiated.  Bound by generate-backward-walk.")
+
+(defun %ad-collect-barrier-ring-syms (flat-anf)
+  "The symbols in FLAT-ANF bound to a BARRIER (ring) constructor.
+
+   Needed because `ring-get` means two different things depending on what it indexes, and the
+   walk cannot tell them apart from the call alone."
+  (let ((acc nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form))
+                  (consp (second form)) (symbolp (first (second form)))
+                  (member (symbol-name (first (second form)))
+                          '("MAKE-ASYNC-BARRIER" "MAKE-ASYNC-BARRIER-RING")
+                          :test #'string=))
+         (pushnew (first form) acc))))
+    acc))
+
+(defun %ad-inert-ring-get-p (expr)
+  "T when EXPR is `(ring-get R i)` and R is a BARRIER ring.
+
+   RING-GET MUST NOT BE DECLARED INERT AS AN OPERATOR.  It means two different things:
+
+     (ring-get BARRIER-RING i) -> a barrier.  Carries ordering, not value; gradient is
+                                  exactly zero, same footing as make-async-barrier itself.
+     (ring-get TILE-RING i)    -> a VIEW of slot i.  Its adjoint is slot i of the adjoint
+                                  ring, and the engine already relies on that in
+                                  %ad-tile-base / %tlc-bwd-adj-name.
+
+   Declaring the operator inert would silently zero the gradient of every ring-staged tile —
+   the exact failure mode endeavour 146 Gap 2 removed for rem/mod.  So the distinction is made
+   from the RING's constructor, which *ad-barrier-ring-syms* records."
+  (and (consp expr) (symbolp (car expr))
+       (string-equal (symbol-name (car expr)) "RING-GET")
+       (symbolp (second expr))
+       (member (second expr) *ad-barrier-ring-syms*)))
+
 (defun %ad-rem-or-mod-form-p (expr)
   "T when EXPR is a two-argument (rem a b) or (mod a b) call.
    Matched by symbol-NAME so it holds whichever package the kernel's reader interned
@@ -457,6 +497,9 @@
    ;; sidesteps the question entirely.
    ((%ad-rem-or-mod-form-p expr)
      (%ad-handle-rem-backward v expr emit-fn local-adj-fn))
+   ;; Endeavor 146: (ring-get BARRIER-RING i) is a scheduling object, not a value.  Scoped by
+   ;; the ring's constructor rather than by the operator name — see %ad-inert-ring-get-p.
+   ((%ad-inert-ring-get-p expr) nil)
    ((and (consp expr) (member (car expr)
                               ;; Endeavor 128: transcendentals join the math/trig backward.
                               '(+ - * / sin cos exp log log2 tan asin acos atan pow atan2)
@@ -1364,6 +1407,7 @@
    for the gap the fixup covers (the top-level adjoint collection below does not know the
    ring constructors, so a ring bound at kernel top level otherwise gets no adjoint)."
   (setf flat-anf (%ad-normalize-anf-for-backward flat-anf))
+  (let ((*ad-barrier-ring-syms* (%ad-collect-barrier-ring-syms flat-anf)))
   (let* ((record-temp-entries
           (loop for form in flat-anf
                   when (and (consp form) (= (length form) 2)
@@ -1871,7 +1915,7 @@
                 ;; constructors are already in their canonical scratch-ring form.
                 (let ((final (%ad-ensure-ring-adj-bindings result flat-anf kernel-pkg)))
                   (log:debug "146: backward after ring-adjoint fixup:~%~s" final)
-                  final)))))))))
+                  final))))))))))
 
 ;;; ----------------------------------------------------------
 ;;; %crisp-float-type-p

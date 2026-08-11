@@ -624,9 +624,38 @@ Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
    geometry must not assume a sub-group width (the first cut used `warp-lane` with `group=32`
    and read dB=0 under SIMD32, which looked exactly like an AD failure and was not).
 
-   **Still open for 139/02, /05, /06:** the `CONSUMER` error is gone from all three; they now
-   report `Function RING-GET is not differentiable` — ring-get on a BARRIER ring inside
-   `await`/`signal`.  Scheduling, gradient-inert, and a separate rung.
+   **`ring-get` on a BARRIER ring — fixed 2026-08-11, context-directed.**  `RING-GET` must
+   NOT go in `%backward-skip-fn-p`: it means two different things.  On a barrier ring it
+   yields a barrier (ordering, not value — inert).  On a TILE ring it yields a VIEW whose
+   adjoint is slot i of the adjoint ring, which `%ad-tile-base` / `%tlc-bwd-adj-name` already
+   depend on.  An operator-level claim would silently zero the gradient of every ring-staged
+   tile — the same failure Gap 2 removed for rem/mod.  So `*ad-barrier-ring-syms*` records
+   which rings came from a barrier constructor and `%ad-inert-ring-get-p` consults it.
+
+   **Where the three 139 specs now stand — two DIFFERENT blockers, neither about warp roles:**
+
+   - **139/05, /06** get past `ring-get` and hit
+     `SYNC-WORKGROUP cannot appear inside a thread-divergent conditional`.
+     This is a CONSEQUENCE OF LOWERING EARLY and worth stating plainly: the analyzer binds
+     `*in-warp-spec-block*` around the role bodies so the divergence checker knows a role gate
+     is warp-uniform, not thread-divergent.  Lowering to a bare `if` before ANF discards that
+     marker, so the backward's own forward-analysis applies the ordinary divergence rule.  The
+     lowering is right; the CONTEXT it carried needs to travel with it.
+   - **139/02** still reports `RING-GET`, but on `TILES` — which is
+     `(make-scratch-vector-ring float 8 :ring-count 2)`, i.e. a rank+1 scratch TENSOR.  That
+     ring-get is a real tile view, correctly not inert; it needs a rule for the case where ANF
+     hoists it into a standalone binding rather than leaving it as an argument to
+     `load-tile-at` (which is why 145/18's ring staging works and this does not).
+
+   **NONE OF THE THREE CAN BE GRADIENT-CHECKED LOCALLY, and that is now a hard fact rather
+   than an inconvenience.**  `:block` barriers are NVIDIA-only
+   (`137/02: COMPILE-WITH[--ir-target=spv]: FAIL "not supported on Intel"`) and
+   `sync-workgroup` is forbidden inside a role block — so cross-role DATA FLOW cannot be
+   expressed on Intel at all.  Every 139 spec targets PTX; 146/01 is the only SPV one and
+   works precisely because its roles share no data.  Rungs 2 and 3 of the planned ladder are
+   therefore CUDA-only by construction, not by choice of test.  They want a Hopper pod
+   (`scripts/run-on-pod.sh`), which would also serve the Bucket C backlog waiting on the same
+   hardware: 137/03, 137/05, 138/04, 138/05, 140/03.
 6. **Bucket E — 135/09's `Unknown variable C_ADJ`.**  Phase 0 guessed this was the same
    defect as Gap 4.  With Gap 4 now understood, that guess is UNVERIFIED — 135/09 is a
    reinterpreted view, not a register tile.  Re-measure before assuming.
