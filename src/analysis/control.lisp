@@ -3568,8 +3568,23 @@
                 :source-location location))))
         (values role-counts role-blocks)))))
 
-(defun analyze-with-warp-specialization-expression (expr env context location)
-  "Endeavor 139: (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).  Splits the
+(defun %lower-warp-specialization (expr location)
+  "Endeavor 139 / 146: the PURE SYNTACTIC lowering of with-warp-specialization.  Returns the
+   replacement form; it analyses nothing and has no side effects.
+
+   EXTRACTED FROM THE ANALYZER in endeavour 146 so the AD walk can reuse it.  The walk runs
+   BEFORE semantic analysis, so without this it sees the raw construct and reads a role block
+   `(:consumer ...)` as a call to a function named CONSUMER.
+
+   TWO CONSUMERS, ONE LOWERING.  The alternative was a second, hand-written warp-gated rewrite
+   inside the AD normalizer — which would be free to drift from this one, and a gradient that
+   is correct for a kernel nobody runs is worse than no gradient at all.  Note this differs
+   from how wgmma is handled in the same normalizer: there the backward deliberately uses a
+   DIFFERENT instruction from the forward (sync MMA rather than warpgroup-async), which is a
+   real semantic choice.  Here the backward wants the SAME expansion the forward gets, only
+   earlier — reuse, not substitution.
+
+   (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).  Splits the
    workgroup by WARP — warp k runs the role whose cumulative count range contains k.  Lowers to a
    warp-id-gated nested if: (let ((wsid (to-int (warp-id)))) (if (< wsid t1) BODY1 (if (< wsid t2)
    BODY2 ...))) where t_i is the running sum of role counts.  Role blocks are warp-UNIFORM (all
@@ -3611,15 +3626,19 @@
       ;; (warp-id) is the STABLE block-local warp index — on PTX it now synthesizes
       ;; local-linear-id/32 (Endeavor 139 fixed it from the volatile %warpid); on SPV it is
       ;; SubgroupId.  Either way it is safe for the producer/consumer split.
-      ;;
-      ;; Decision B: bind *in-warp-spec-block* around the role-block analysis so a :block load-tile
-      ;; inside a role block is permitted (leader-issued, no workgroup sync) despite the
-      ;; warp-divergent branch the expansion introduces.
-      (let ((*in-warp-spec-block* t))
-        (analyze-expression
-         (list let-sym (list (list wsid (list to-int-sym (list warp-id-sym))))
-               nest)
-         env context location)))))
+      (list let-sym (list (list wsid (list to-int-sym (list warp-id-sym))))
+            nest))))
+
+(defun analyze-with-warp-specialization-expression (expr env context location)
+  "Endeavor 139: analyzes (with-warp-specialization ...) by lowering it with
+   %lower-warp-specialization and analysing the result.
+
+   Decision B: bind *in-warp-spec-block* around the role-block analysis so a :block load-tile
+   inside a role block is permitted (leader-issued, no workgroup sync) despite the
+   warp-divergent branch the expansion introduces."
+  (let ((*in-warp-spec-block* t))
+    (analyze-expression (%lower-warp-specialization expr location)
+                        env context location)))
 
 (defun analyze-make-c-handle (expr env context location)
   "Analyzer for (make-c-handle <held-ptr-type>)."

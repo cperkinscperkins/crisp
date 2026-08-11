@@ -574,9 +574,59 @@ Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
 4. **142/12** — `Type mismatch for operator '/'. Cannot operate on ULONG and INT.` on
    `(/ (inner-dimension A B) (to-ulong 8))`.  Unaffected by the `rem` rule; still open.
    Type inference on a differentiated runtime loop bound.
-5. **Gap 3 — sub-function walk into warp roles** (139/02, 05, 06).  `CONSUMER` is a
-   user-defined sub-function, not a warp-specialization construct.  Untouched so far, and
-   the only remaining gap whose specs might un-skip without a design decision first.
+5. **Gap 3 — warp specialization.  CORE SOLVED 2026-08-09/10, with a number.**
+
+   > **Phase 0 mislabelled this too.**  `CONSUMER` is not a user-defined sub-function — it is
+   > a ROLE NAME in `with-warp-specialization`.  The construct is not a macro; it is handled
+   > by `analyze-with-warp-specialization-expression`, and the AD walk runs BEFORE semantic
+   > analysis, so the walk read the role block `(:consumer ...)` as a call.
+
+   **The reported error was hiding worse, silent damage.**  `anf-transform` knows a fixed set
+   of control forms (`IF`, `DOTIMES`, `WITH-PRECISION`, …) whose bodies it must not hoist.
+   `with-warp-specialization` was not among them, so ANF lifted the role bodies out into the
+   flat statement sequence and **the warp gating vanished entirely**:
+
+       (%ANF-T-6  (SET! (~ C W L) %ANF-T-5))   ; producer body, now unconditional
+       (%ANF-T-7  (:PRODUCER %ANF-T-6))
+       (WITH-WARP-SPECIALIZATION %ANF-T-3 %ANF-T-7 %ANF-T-11)
+
+   A backward built from that would have run BOTH role bodies in every warp.  Fixing only the
+   walk would have produced a plausible, compiling, WRONG gradient.
+
+   **The fix — lowering reuse, and the technique worth keeping.**  Chris asked whether
+   `--differentiate` should just use a different macro.  Right instinct, wrong mechanism: a
+   flag-conditional expansion would change the FORWARD too, so the kernel being gradient-
+   checked would stop being the kernel being shipped.  What the question surfaced is better:
+
+   > **Extract the analyzer's lowering into a pure syntactic function and call it from both
+   > paths.  Do not write a second copy for AD.**
+
+   `%lower-warp-specialization` (src/analysis/control.lisp) now returns the warp-gated
+   `let`/`if`; the analyzer calls it, and the AD path calls it too — from
+   `src/macros.lisp`, **before `anf-transform`**, so ANF sees ordinary control flow it
+   already handles and nothing downstream needs to know the construct exists.
+
+   Contrast with `%ad-canonicalize-wgmma`, which lives in the same pipeline and is the
+   OPPOSITE case: there the backward deliberately uses a *different* instruction from the
+   forward (sync MMA rather than warpgroup-async), because a backward is under no obligation
+   to schedule itself the way its forward did.  Warp specialization wants the *same*
+   expansion, just earlier.  **Substitution vs reuse — deciding which one a construct needs
+   is the design question; getting it wrong yields two lowerings that drift.**
+
+   **THE NUMBER.**  `146/01-warp-role-grad-bmg` on BMG:
+
+       PASS (A: analytical=2.0 numerical=2.0000038; B: analytical=3.0 numerical=3.0)
+
+   Each role reads its own input tensor, so a dropped role shows as a zero attributable to
+   THAT role.  Two lessons the spec's header records, both of which cost an iteration:
+   every thread must write a DISTINCT element (a shared cell is idempotent forward but the
+   backward accumulates once per thread, so the test would measure launch geometry), and the
+   geometry must not assume a sub-group width (the first cut used `warp-lane` with `group=32`
+   and read dB=0 under SIMD32, which looked exactly like an AD failure and was not).
+
+   **Still open for 139/02, /05, /06:** the `CONSUMER` error is gone from all three; they now
+   report `Function RING-GET is not differentiable` — ring-get on a BARRIER ring inside
+   `await`/`signal`.  Scheduling, gradient-inert, and a separate rung.
 6. **Bucket E — 135/09's `Unknown variable C_ADJ`.**  Phase 0 guessed this was the same
    defect as Gap 4.  With Gap 4 now understood, that guess is UNVERIFIED — 135/09 is a
    reinterpreted view, not a register tile.  Re-measure before assuming.

@@ -965,7 +965,24 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                       (def-kernel-exact ,bwd-name ,exploded-params
                                         (declare #'(,@exploded-types))
                                         (return)))
-                    (let* ((anf-body (mapcar #'anf-transform expanded-body))
+                    ;; Endeavor 146 Gap 3: lower with-warp-specialization BEFORE anf-transform.
+                    ;; anf-transform knows a fixed set of control forms (IF, DOTIMES,
+                    ;; WITH-PRECISION ...) whose bodies it must NOT hoist.  with-warp-
+                    ;; specialization is not among them, so its role bodies were lifted out
+                    ;; into the flat statement sequence and the warp gating VANISHED:
+                    ;;     (%ANF-T-6  (SET! (~ C W L) %ANF-T-5))   ; producer body, unconditional
+                    ;;     (%ANF-T-7  (:PRODUCER %ANF-T-6))
+                    ;;     (WITH-WARP-SPECIALIZATION %ANF-T-3 %ANF-T-7 %ANF-T-11)
+                    ;; A backward built from that would run BOTH role bodies in every warp.
+                    ;; The reported symptom was only "Function CONSUMER is not differentiable";
+                    ;; the damage underneath it was worse and silent.
+                    ;;
+                    ;; Lowering here — with the ANALYZER's own %lower-warp-specialization —
+                    ;; hands anf-transform an ordinary let/if it already treats as control flow,
+                    ;; so nothing downstream needs to know the construct exists.  This is the AD
+                    ;; path only; the forward still analyses the original form.
+                    (let* ((anf-body (mapcar #'anf-transform
+                                             (%ad-canonicalize-warp-specialization expanded-body)))
                            (flat-anf (flatten-anf-body anf-body))
                            ;; 145 P1: was an inline 2-element-only LOOP here.
                            ;; BUG 037: staged-tile primal reads resolve to their global source.

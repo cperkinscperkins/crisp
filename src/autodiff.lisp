@@ -1218,6 +1218,37 @@
                          (t (mapcar #'walk f)))))
           (walk form)))))
 
+(defun %ad-canonicalize-warp-specialization (form)
+  "Rewrite every `(with-warp-specialization ...)` in FORM to the warp-id-gated let/if that
+   the ANALYZER produces — by calling the analyzer's own %lower-warp-specialization rather
+   than re-implementing it.
+
+   WHY THE WALK NEEDS THIS.  with-warp-specialization is not a macro; it is handled by
+   analyze-with-warp-specialization-expression, and the AD walk runs BEFORE semantic
+   analysis.  So the walk sees the raw construct and reads a role block `(:consumer ...)`
+   as a call to a function named CONSUMER — which is exactly the error 139/02, /05 and /06
+   reported, and why they were mislabelled 'warp specialization is forward-only'.
+
+   REUSE, NOT SUBSTITUTION — the distinction matters and the two live side by side in this
+   chain.  %ad-canonicalize-wgmma SUBSTITUTES: the backward deliberately uses a different
+   instruction from the forward (sync MMA rather than warpgroup-async), because a backward
+   is under no obligation to schedule itself the way its forward did.  Warp specialization
+   is the opposite case: the backward wants the SAME expansion the forward gets, just
+   earlier.  Calling the analyzer's lowering is what keeps the two paths from drifting; a
+   second hand-written copy here would eventually produce a gradient that is correct for a
+   kernel nobody runs.
+
+   Recurses into the result so a nested construct is lowered too; terminates because the
+   lowered form no longer has WITH-WARP-SPECIALIZATION at its head."
+  (labels ((walk (f)
+             (cond
+               ((not (consp f)) f)
+               ((and (symbolp (first f))
+                     (string-equal (symbol-name (first f)) "WITH-WARP-SPECIALIZATION"))
+                (walk (%lower-warp-specialization f nil)))
+               (t (mapcar #'walk f)))))
+    (walk form)))
+
 (defun %ad-normalize-anf-for-backward (flat-anf)
   "Apply every backward-walk ANF normalization, in the one order that works.
 
@@ -1227,6 +1258,11 @@
                                              (%ad-normalize-ring-view-extents)
      4. register-tile ring -> scratch ring   (%ad-canonicalize-register-rings)
      5. register-tile extents~ -> literals   (%ad-normalize-register-extents)
+
+   NOTE: with-warp-specialization is NOT normalized here.  It has to be lowered before
+   anf-transform runs (see the call to %ad-canonicalize-warp-specialization in
+   src/macros.lisp), because ANF would otherwise hoist its role bodies out and lose the
+   warp gating entirely — by the time this function sees flat-anf the damage is done.
 
    ORDER, and why each constraint is real:
 
