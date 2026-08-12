@@ -12,7 +12,26 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "forward-only ring / MMA"
+;; SKIP-WITH[--differentiate]: "COMPILES now, but the gradient is WRONG — measured, not assumed.  With the VERIFY-AUTODIFF check below active: analytical=39.6 vs finite-difference=1.195 (expected 1.2), i.e. the analytical is 33x too large.  The finite difference agrees with hand-computation, so the FORWARD is right and the BACKWARD over-accumulates.  Almost certainly the ring-operand coordinate problem 138 describes: the VJP must read each ring operand as its global source at the CONSUMING iteration, and a k-loop over a 2-deep ring gives every slot several consuming coordinates.  Un-skip when the analytical matches; the expectation below is already correct."
+;;
+;; Endeavor 146: the old reason read "forward-only ring / MMA".  False on both halves — MMA
+;; differentiates (142/01, 145/12) and ring staging differentiates (145/18).  What actually
+;; blocked this spec was NOT an AD gap at all: `(mod grid-k 2)` failed with
+;;     Type mismatch for operator '/'. Cannot operate on ULONG and INT.
+;; because analyze-mod-expression expanded to (- x (* (/ x y) y)) WITHOUT coercing, and a Lisp
+;; integer literal reads as INT while grid-k is ULONG.  A pure FORWARD bug — it reproduces in a
+;; four-line kernel with no --differentiate.  The forward here escaped it only because the ring
+;; index is unrolled at compile time, so the mod never reached the analyzer; adding the backward
+;; is what first made it reach.  Fixed in analyze-mod-expression by coercing a LITERAL divisor
+;; to the dividend's type (variables still error, which is where strictness earns its keep).
+;;
+;; THE CHECK IS LEFT IN PLACE THOUGH THE SPEC IS SKIPPED, because it is the thing that found
+;; the defect and it will be the thing that confirms the fix.  142/01 proves register-resident
+;; MMA and 145/18 proves ring STAGING; their COMBINATION — a k-loop over a register-tile ring
+;; feeding MMA — is what is still unproven, and now known WRONG rather than merely unproven.
+;; f(A,B) = sum(A.B) with K=32, so
+;; dA[m,k] = sum_n B[k,n]; with B[i][j] = 0.01*(i*16+j), dA[0,0] = 0.01 * sum_{n=0..15} n = 1.2.
+;; VERIFY-AUTODIFF: A=16x32@0:0.01 B=32x16@0:0.01 at.A=0,0 expect.A=1.2 group=16 h=0.5 atol=2e-2 output-mat=16x16
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; On-metal correctness (host-reference C = A.B, K=32 = four 8-wide K-blocks -> n-k-steps=4, so the
