@@ -15,7 +15,7 @@
 ;; RED until :initial-state + signal + the warp-spec load scope are implemented.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "warp specialization is forward-only control flow"
+;; SKIP-WITH[--differentiate]: "NOT a warp-specialization limit — 05 and 06 differentiate now, and 146/01 gradient-checks a two-role kernel on metal.  This one trips on `Function RING-GET is not differentiable`, where the ring is TILES, a scratch tile ring, so the ring-get is a genuine VIEW and correctly not inert.  138 taught %tlc-bwd-adj-name to accept (ring-get R i) in TILE-ARGUMENT positions; here ANF hoists it into its own binding, a position that was never taught.  Wants that same treatment (teach the path), not a skip-list entry and not ANF inlining — inlining was tried 2026-08-11 and pushed ring-get forms into other untaught positions, failing worse with 'The value (RING-GET TILES 0) is not of type SYMBOL'."
 ;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90]
 

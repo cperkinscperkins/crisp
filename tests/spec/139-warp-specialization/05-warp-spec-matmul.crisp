@@ -24,7 +24,14 @@
 ;; smallest shape that exercises a phase flip (lap 0 parity, lap 1 flipped parity).  Same M=16 N=8
 ;; single output tile as 137/05 and 138/04, so it reuses their metal harness dims.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals; warp specialization is forward-only control flow"
+;; Endeavor 146 Gap 3: the old reason read "forward-only MMA fundamentals; warp specialization
+;; is forward-only control flow".  Both halves were false.  MMA differentiates (142/01 and
+;; 145/12 carry numeric proof on BMG), and warp roles are a SCHEDULE — 146/01 gradient-checks a
+;; two-role kernel at 2.0/3.0 on metal.
+;;
+;; What this spec asserts under --differentiate is that it COMPILES and emits a backward.  NOT
+;; gradient values: it is sm_90a, and VERIFY-AUTODIFF runs on SPV/L0, so the numbers want a
+;; Hopper pod (scripts/run-on-pod.sh).  Same treatment as 140/03 — see the endeavor doc.
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

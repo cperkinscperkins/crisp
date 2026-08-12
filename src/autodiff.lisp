@@ -1288,7 +1288,10 @@
                ((not (consp f)) f)
                ((and (symbolp (first f))
                      (string-equal (symbol-name (first f)) "WITH-WARP-SPECIALIZATION"))
-                (walk (%lower-warp-specialization f nil)))
+                ;; :gated nil — the backward does not honour the role split.  See
+                ;; %lower-warp-specialization for why, and the 146 endeavor doc for the
+                ;; limitation this carries.
+                (walk (%lower-warp-specialization f nil :gated nil)))
                (t (mapcar #'walk f)))))
     (walk form)))
 

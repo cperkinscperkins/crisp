@@ -647,6 +647,37 @@ Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
      hoists it into a standalone binding rather than leaving it as an argument to
      `load-tile-at` (which is why 145/18's ring staging works and this does not).
 
+   **139/05 and /06 UN-SKIPPED 2026-08-11 — the backward does not honour the role split.**
+
+   `%lower-warp-specialization` now takes `:gated`.  The ANALYZER lowers gated (the warp-id
+   `if`); the AD path lowers **ungated** — a `progn` of the role bodies.
+
+   Why that is right rather than a dodge: roles partition WORK, not mathematics, and every
+   backward the engine emits for a tile-level operation is WORKGROUP-COLLECTIVE by
+   construction — `workgroup-stride` over a shared scratch adjoint, with `sync-workgroup`.
+   Measured directly in 139/05's backward, the whole VJP body sat inside the gate:
+
+       (IF %ANF-T-24 …
+             (STORE-TILE C-TILE_ADJ C-TILE_ADJ_VJPDC (0 0))
+             (SYNC-WORKGROUP)
+             (WORKGROUP-STRIDE (RING-GET A-RING_ADJ SLOT) …)
+
+   which is exactly what the divergence checker rejects, and rightly: only some warps would
+   reach a barrier the whole workgroup must reach.  Note `workgroup-stride` is itself a
+   collective, so "hoist only the syncs" and "hoist the whole body" are the same edit — the
+   two options considered here collapsed into one once measured.
+
+   Safe because `workgroup-stride` DISTRIBUTES work rather than replicating it: running it
+   with the whole workgroup is what it is written to assume, and running it with one warp is
+   the broken case.  146/01 is the canary and still reads 2.0 / 3.0 on metal.
+
+   **THE LIMITATION, stated rather than discovered later.**  This is safe for role bodies
+   whose backward is COLLECTIVE.  A role body whose backward is PER-THREAD would be run by
+   every warp and could double-count its adjoint — the same trap 146/01's header describes
+   for shared output cells.  Nothing in the suite exercises that today.  If it turns up, the
+   fix is to hoist only collective-containing emitted forms rather than dropping the gate
+   wholesale; the narrower mechanism was designed but not needed yet.
+
    **NONE OF THE THREE CAN BE GRADIENT-CHECKED LOCALLY, and that is now a hard fact rather
    than an inconvenience.**  `:block` barriers are NVIDIA-only
    (`137/02: COMPILE-WITH[--ir-target=spv]: FAIL "not supported on Intel"`) and

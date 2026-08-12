@@ -3568,7 +3568,7 @@
                 :source-location location))))
         (values role-counts role-blocks)))))
 
-(defun %lower-warp-specialization (expr location)
+(defun %lower-warp-specialization (expr location &key (gated t))
   "Endeavor 139 / 146: the PURE SYNTACTIC lowering of with-warp-specialization.  Returns the
    replacement form; it analyses nothing and has no side effects.
 
@@ -3626,8 +3626,20 @@
       ;; (warp-id) is the STABLE block-local warp index — on PTX it now synthesizes
       ;; local-linear-id/32 (Endeavor 139 fixed it from the volatile %warpid); on SPV it is
       ;; SubgroupId.  Either way it is safe for the producer/consumer split.
-      (list let-sym (list (list wsid (list to-int-sym (list warp-id-sym))))
-            nest))))
+      ;;
+      ;; GATED NIL — endeavour 146, the BACKWARD lowering.  Roles partition WORK, not
+      ;; mathematics, and every backward the engine emits for a tile-level operation is
+      ;; WORKGROUP-COLLECTIVE by construction (workgroup-stride + sync-workgroup writing a
+      ;; shared scratch adjoint).  Emitting that inside a warp-divergent gate is what the
+      ;; divergence checker correctly rejects — only some warps would reach a barrier the
+      ;; whole workgroup must reach.  So the backward runs the union of the role bodies
+      ;; workgroup-wide.  Safe for collective bodies because workgroup-stride DISTRIBUTES
+      ;; work rather than replicating it.  See the limitation noted in the 146 endeavor doc
+      ;; for the case this does not cover.
+      (if gated
+          (list let-sym (list (list wsid (list to-int-sym (list warp-id-sym))))
+                nest)
+          (cons progn-sym bodies)))))
 
 (defun analyze-with-warp-specialization-expression (expr env context location)
   "Endeavor 139: analyzes (with-warp-specialization ...) by lowering it with
