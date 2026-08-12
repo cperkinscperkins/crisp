@@ -238,6 +238,44 @@
        (member (symbol-name (car expr)) '("REM" "MOD") :test #'string=)
        (= (length expr) 3)))
 
+(defun %ad-widening-conversion-form-p (expr)
+  "T when EXPR is a conversion to a FLOAT type — `(to-float x)`, `(to-double x)`,
+   `(to-half x)`, `(to-bfloat16 x)`.
+
+   The asymmetry with the INTEGER conversions is mathematical, not arbitrary, and worth
+   stating because the two look alike:
+
+     int -> float   is the IDENTITY on value.  d/dx = 1, so the adjoint passes straight
+                    through.  That is this predicate.
+     float -> int   TRUNCATES.  It is a step function, so d/dx = 0 almost everywhere, and
+                    treating it as gradient-inert is CORRECT rather than a convenience —
+                    which is why %backward-skip-fn-p-145p1's TO-<int-type> suffix rule is
+                    sound where an operator-level claim about, say, rem would not have been."
+  (and (consp expr) (symbolp (car expr))
+       (member (symbol-name (car expr))
+               '("TO-FLOAT" "TO-DOUBLE" "TO-HALF" "TO-BFLOAT16")
+               :test #'string=)
+       (= (length expr) 2)))
+
+(defun %ad-handle-widening-conversion-backward (v expr emit-fn local-adj-fn)
+  "Backward rule for a float-widening conversion: d/dx = 1, so `x_adj += v_adj`.
+
+   Endeavor 146: before this, `to-float` had no rule at all and reported
+   `Function TO-FLOAT is not differentiable` — which 132/08 carried as a skip reason
+   describing it, correctly, as a gap the engine simply lacked rather than an MMA limit.
+
+   The `symbolp` guard matches the other math rules: a literal operand has no adjoint to
+   update.  Note that when the argument is itself gradient-inert — a shape query, as in
+   132/08's `(to-float M)` where M comes from outer-dimensions — the adjoint flows into
+   something the walk already skips, and the result is a correct zero reached by the
+   analysis rather than asserted by a special case."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (let ((a (cadr expr)))
+      (when (symbolp a)
+        (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
+      t)))
+
 (defun %ad-handle-rem-backward (v expr emit-fn local-adj-fn)
   "Backward rule for (rem a b) / (mod a b) — endeavor 146 Gap 2.
 
@@ -556,6 +594,10 @@
    ;; sidesteps the question entirely.
    ((%ad-rem-or-mod-form-p expr)
      (%ad-handle-rem-backward v expr emit-fn local-adj-fn))
+   ;; Endeavor 146: int -> float is the identity on value, so the adjoint passes through.
+   ;; (float -> int truncates and stays inert — see %ad-widening-conversion-form-p.)
+   ((%ad-widening-conversion-form-p expr)
+     (%ad-handle-widening-conversion-backward v expr emit-fn local-adj-fn))
    ;; Endeavor 146: (ring-get BARRIER-RING i) is a scheduling object, not a value.  Scoped by
    ;; the ring's constructor rather than by the operator name — see %ad-inert-ring-get-p.
    ((%ad-inert-ring-get-p expr) nil)

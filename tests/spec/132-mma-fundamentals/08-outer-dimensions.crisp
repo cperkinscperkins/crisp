@@ -1,5 +1,18 @@
-;; SKIP-WITH[--differentiate]: "to-float has no AD rule -- an int->float conversion the engine lacks a derivative for; NOT an MMA limit (noted in 145 P1)"
 ;; TEST-WITH[--ir-target=ptx]
+;;
+;; Endeavor 146: the old reason read "to-float has no AD rule -- an int->float conversion the
+;; engine lacks a derivative for".  Accurate as a description, and now fixed rather than
+;; described.  int -> float is the IDENTITY on value, so d/dx = 1 and the adjoint passes
+;; straight through.
+;;
+;; The asymmetry with the integer conversions is mathematical, not a convenience: float -> int
+;; TRUNCATES, which is a step function with d/dx = 0 almost everywhere, so
+;; %backward-skip-fn-p-145p1 treating TO-<int-type> as gradient-inert is CORRECT — unlike the
+;; rem/mod entries 146 Gap 2 had to remove, where the derivative is 1 and inertness was a lie.
+;;
+;; Here the argument is `(to-float M)` with M from outer-dimensions — a shape query that is
+;; itself inert — so the adjoint flows into something the walk already skips and the answer is
+;; a correct zero REACHED BY THE ANALYSIS rather than asserted by a special case.
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; F2 — outer-dimensions.  Companion to inner-dimension (=> K, the contraction extent).
