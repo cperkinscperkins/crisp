@@ -6,55 +6,139 @@
 
 | Chapter | Technique | Size | Crisp (TFLOPS) | oneMKL (TFLOPS) | Crisp % of oneMKL |
 |---|---|---:|---:|---:|---:|
-| chap0_sync | Synchronous coop-matrix tiling (XMX tf32) | 2048 | 1.5 | 13.8 | 10.9% |
-| chap1_async_linear | OpGroupAsyncCopy staging (XMX tf32) | 2048 | 0.9 | 13.8 | 6.2% |
-| intel_prefetch | Register-ring + Subgroup2DBlockPrefetch (XMX tf32) | 2048 | 24.1 | 13.8 | 174.6% |
+| chap0_sync | Synchronous coop-matrix tiling (XMX tf32) | 8192 | 1.2 | 14.2 | 8.6% |
+| chap1_async_linear | OpGroupAsyncCopy staging (XMX tf32) | 8192 | 0.7 | 14.2 | 5.1% |
+| intel_prefetch | Register-ring + Subgroup2DBlockPrefetch (XMX tf32) | 8192 | 11.5 | 14.2 | 80.9% |
 
 > Largest measured size per chapter, `fast` precision (Crisp and oneMKL both tf32). The ladder runs low-to-high on the optimization axis for this hardware.
 
 ### chap0_sync — Synchronous coop-matrix tiling (XMX tf32)
 
-#### Precision: fast (ftz=preserve)
+#### Precision: fast (ftz=ftz)
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 5.29 | 0.01 | 1.32 | 0.03 | 0.11 | 0.30 | 2.1% | 8.5% |
-| 512x512x512 | 9.78 | 0.03 | 1.47 | 0.18 | 0.41 | 0.65 | 4.2% | 28.2% |
-| 1024x1024x1024 | 11.98 | 0.18 | 1.53 | 1.40 | 1.46 | 1.47 | 12.2% | 95.5% |
-| 2048x2048x2048 | 13.82 | 1.24 | 1.42 | 12.10 | 1.51 | 11.39 | 10.9% | 106.2% |
+| 256x256x256 | 5.29 | 0.01 | 1.32 | 0.03 | 0.11 | 0.31 | 2.1% | 8.3% |
+| 512x512x512 | 9.81 | 0.03 | 1.47 | 0.18 | 0.39 | 0.69 | 3.9% | 26.3% |
+| 1024x1024x1024 | 11.96 | 0.18 | 1.53 | 1.40 | 1.35 | 1.59 | 11.3% | 88.3% |
+| 2048x2048x2048 | 13.81 | 1.24 | 1.39 | 12.32 | 1.43 | 12.04 | 10.3% | 102.3% |
+| 4096x4096x4096 | 14.31 | 9.60 | 1.32 | 104.16 | 1.49 | 92.14 | 10.4% | 113.0% |
+| 8192x8192x8192 | 14.17 | 77.57 | 1.31 | 842.22 | 1.22 | 904.85 | 8.6% | 93.1% |
+
+#### Precision: ieee (ftz=ftz)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 5.29 | 0.01 | 1.31 | 0.03 | 0.11 | 0.31 | 2.1% | 8.3% |
+| 512x512x512 | 9.78 | 0.03 | 1.47 | 0.18 | 0.39 | 0.70 | 3.9% | 26.3% |
+| 1024x1024x1024 | 11.96 | 0.18 | 1.53 | 1.41 | 1.36 | 1.58 | 11.3% | 89.0% |
+| 2048x2048x2048 | 13.82 | 1.24 | 1.39 | 12.32 | 1.43 | 12.01 | 10.4% | 102.5% |
+| 4096x4096x4096 | 14.31 | 9.60 | 1.30 | 105.58 | 1.49 | 92.09 | 10.4% | 114.6% |
+| 8192x8192x8192 | 14.17 | 77.57 | 1.30 | 843.56 | 1.22 | 902.59 | 8.6% | 93.5% |
+> ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE oneMKL drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
+
+
+#### Precision: ieee (ftz=preserve)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 5.29 | 0.01 | 1.32 | 0.03 | 0.11 | 0.31 | 2.1% | 8.3% |
+| 512x512x512 | 9.81 | 0.03 | 1.47 | 0.18 | 0.39 | 0.70 | 3.9% | 26.3% |
+| 1024x1024x1024 | 11.97 | 0.18 | 1.53 | 1.41 | 1.36 | 1.58 | 11.4% | 89.1% |
+| 2048x2048x2048 | 13.83 | 1.24 | 1.39 | 12.33 | 1.43 | 12.04 | 10.3% | 102.5% |
+| 4096x4096x4096 | 14.31 | 9.60 | 1.31 | 104.52 | 1.49 | 92.47 | 10.4% | 113.0% |
+| 8192x8192x8192 | 14.17 | 77.57 | 1.30 | 844.24 | 1.21 | 906.14 | 8.6% | 93.2% |
+> ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE oneMKL drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
+
 
 ### chap1_async_linear — OpGroupAsyncCopy staging (XMX tf32)
 
-#### Precision: fast (ftz=preserve)
+#### Precision: fast (ftz=ftz)
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 5.29 | 0.01 | 1.32 | 0.03 | 0.08 | 0.41 | 1.5% | 6.2% |
-| 512x512x512 | 9.78 | 0.03 | 1.47 | 0.18 | 0.26 | 1.01 | 2.7% | 18.0% |
-| 1024x1024x1024 | 11.98 | 0.18 | 1.53 | 1.40 | 0.81 | 2.66 | 6.7% | 52.7% |
-| 2048x2048x2048 | 13.82 | 1.24 | 1.42 | 12.10 | 0.85 | 20.16 | 6.2% | 60.0% |
+| 256x256x256 | 5.29 | 0.01 | 1.31 | 0.03 | 0.08 | 0.41 | 1.5% | 6.2% |
+| 512x512x512 | 9.81 | 0.03 | 1.47 | 0.18 | 0.25 | 1.09 | 2.5% | 16.8% |
+| 1024x1024x1024 | 11.96 | 0.18 | 1.53 | 1.40 | 0.78 | 2.76 | 6.5% | 50.9% |
+| 2048x2048x2048 | 13.81 | 1.24 | 1.40 | 12.30 | 0.80 | 21.61 | 5.8% | 56.9% |
+| 4096x4096x4096 | 14.31 | 9.60 | 1.31 | 105.30 | 0.85 | 161.19 | 6.0% | 65.3% |
+| 8192x8192x8192 | 14.17 | 77.57 | 1.31 | 840.02 | 0.72 | 1531.97 | 5.1% | 54.8% |
+
+#### Precision: ieee (ftz=ftz)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 5.29 | 0.01 | 1.31 | 0.03 | 0.08 | 0.41 | 1.5% | 6.2% |
+| 512x512x512 | 9.78 | 0.03 | 1.47 | 0.18 | 0.25 | 1.09 | 2.5% | 16.8% |
+| 1024x1024x1024 | 11.96 | 0.18 | 1.52 | 1.41 | 0.77 | 2.78 | 6.5% | 50.7% |
+| 2048x2048x2048 | 13.82 | 1.24 | 1.39 | 12.36 | 0.79 | 21.87 | 5.7% | 56.5% |
+| 4096x4096x4096 | 14.31 | 9.60 | 1.32 | 103.90 | 0.86 | 159.85 | 6.0% | 65.0% |
+| 8192x8192x8192 | 14.17 | 77.57 | 1.30 | 842.56 | 0.72 | 1528.23 | 5.1% | 55.1% |
+> ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE oneMKL drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
+
+
+#### Precision: ieee (ftz=preserve)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 5.29 | 0.01 | 1.31 | 0.03 | 0.08 | 0.41 | 1.5% | 6.2% |
+| 512x512x512 | 9.81 | 0.03 | 1.47 | 0.18 | 0.25 | 1.09 | 2.5% | 16.8% |
+| 1024x1024x1024 | 11.97 | 0.18 | 1.53 | 1.41 | 0.77 | 2.77 | 6.5% | 50.7% |
+| 2048x2048x2048 | 13.83 | 1.24 | 1.39 | 12.36 | 0.78 | 21.93 | 5.7% | 56.4% |
+| 4096x4096x4096 | 14.31 | 9.60 | 1.30 | 105.50 | 0.86 | 160.57 | 6.0% | 65.7% |
+| 8192x8192x8192 | 14.17 | 77.57 | 1.30 | 845.99 | 0.72 | 1528.29 | 5.1% | 55.4% |
+> ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE oneMKL drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
+
 
 ### intel_prefetch — Register-ring + Subgroup2DBlockPrefetch (XMX tf32)
 
-#### Precision: fast (ftz=preserve)
+#### Precision: fast (ftz=ftz)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 5.29 | 0.01 | 1.53 | 0.02 | 3.07 | 0.01 | 58.1% | 201.0% |
+| 512x512x512 | 9.81 | 0.03 | 5.15 | 0.05 | 9.56 | 0.03 | 97.4% | 185.6% |
+| 1024x1024x1024 | 11.96 | 0.18 | 10.18 | 0.21 | 21.33 | 0.10 | 178.3% | 209.6% |
+| 2048x2048x2048 | 13.81 | 1.24 | 11.19 | 1.54 | 24.73 | 0.69 | 179.1% | 221.0% |
+| 4096x4096x4096 | 14.31 | 9.60 | 9.61 | 14.31 | 15.98 | 8.60 | 111.6% | 166.3% |
+| 8192x8192x8192 | 14.17 | 77.57 | 7.54 | 145.82 | 11.47 | 95.90 | 80.9% | 152.1% |
+
+#### Precision: ieee (ftz=ftz)
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | 256x256x256 | 5.29 | 0.01 | 1.54 | 0.02 | 3.04 | 0.01 | 57.5% | 198.1% |
-| 512x512x512 | 9.78 | 0.03 | 5.14 | 0.05 | 9.60 | 0.03 | 98.1% | 186.6% |
-| 1024x1024x1024 | 11.98 | 0.18 | 10.15 | 0.21 | 21.85 | 0.10 | 182.3% | 215.3% |
-| 2048x2048x2048 | 13.82 | 1.24 | 11.19 | 1.53 | 24.14 | 0.71 | 174.6% | 215.6% |
+| 512x512x512 | 9.78 | 0.03 | 5.15 | 0.05 | 9.60 | 0.03 | 98.1% | 186.2% |
+| 1024x1024x1024 | 11.96 | 0.18 | 10.15 | 0.21 | 21.44 | 0.10 | 179.2% | 211.2% |
+| 2048x2048x2048 | 13.82 | 1.24 | 11.21 | 1.53 | 24.75 | 0.69 | 179.1% | 220.9% |
+| 4096x4096x4096 | 14.31 | 9.60 | 9.53 | 14.42 | 16.27 | 8.45 | 113.7% | 170.7% |
+| 8192x8192x8192 | 14.17 | 77.57 | 7.54 | 145.80 | 12.08 | 91.05 | 85.2% | 160.1% |
+> ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE oneMKL drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
+
+
+#### Precision: ieee (ftz=preserve)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 5.29 | 0.01 | 1.53 | 0.02 | 3.04 | 0.01 | 57.5% | 199.1% |
+| 512x512x512 | 9.81 | 0.03 | 5.13 | 0.05 | 9.56 | 0.03 | 97.4% | 186.3% |
+| 1024x1024x1024 | 11.97 | 0.18 | 10.15 | 0.21 | 21.67 | 0.10 | 181.0% | 213.4% |
+| 2048x2048x2048 | 13.83 | 1.24 | 11.16 | 1.54 | 24.46 | 0.70 | 176.9% | 219.2% |
+| 4096x4096x4096 | 14.31 | 9.60 | 9.65 | 14.25 | 16.25 | 8.46 | 113.5% | 168.5% |
+| 8192x8192x8192 | 14.17 | 77.57 | 7.42 | 148.13 | 11.69 | 94.06 | 82.5% | 157.5% |
+> ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE oneMKL drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
+
 
 ### Compile Times (avg across precision)
 
 | Chapter | Competitor | Avg Compile (ms) | × vs Crisp |
 |---|---|---:|---:|
-| chap0_sync | Crisp | 1142 | 1.0× (baseline) |
-| chap0_sync | SYCL_Apples | 1785 | 1.6× slower |
-| chap1_async_linear | Crisp | 708 | 1.0× (baseline) |
-| chap1_async_linear | SYCL_Apples | 1852 | 2.6× slower |
-| intel_prefetch | Crisp | 757 | 1.0× (baseline) |
-| intel_prefetch | SYCL_Apples | 1798 | 2.4× slower |
+| chap0_sync | Crisp | 790 | 1.0× (baseline) |
+| chap0_sync | SYCL_Apples | 1794 | 2.3× slower |
+| chap1_async_linear | Crisp | 684 | 1.0× (baseline) |
+| chap1_async_linear | SYCL_Apples | 1784 | 2.6× slower |
+| intel_prefetch | Crisp | 683 | 1.0× (baseline) |
+| intel_prefetch | SYCL_Apples | 1778 | 2.6× slower |
 
 > **Device-only compilation on both sides.**  Crisp `--ir-target=spv`; the competitor `icpx -fsycl -fsycl-device-only -fsycl-targets=spir64`.  Neither figure includes host-code compilation, linking, or the runtime JIT of the resulting IR.  Library ceilings (oneMKL) are omitted — their kernels ship precompiled inside the library, so there is no device compile to measure.  Lower is better.
 

@@ -358,7 +358,7 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     
     p = sh([str(exe)], capture_output=True, text=True)
     out = (p.stdout or "") + (p.stderr or "")
-    m = re.search(r'BENCH\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s*GFLOPS\s*\((\d+)\s*iters,\s*([\d.]+)\s*s\)', out)
+    m = re.search(r'BENCH\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s*GFLOPS\s*\((\d+)\s*iters,\s*([\d.eE+-]+)\s*s\)', out)
     if not m:
         print("autobench-l0 parse failed:\n" + out[-800:], file=sys.stderr); return None
     gflops = float(m.group(4))
@@ -436,12 +436,12 @@ def _resolve_cxx_and_l0_link():
     cxx = shutil.which("icpx") or shutil.which("clang++") or "g++"
     return cxx, [], ["-lze_loader"]
 
-def run_l0_bin(path, size, warmup, iters, env_extra=None):
-    """Run the fixed L0 harness — its args are [Size, warmup, iters] (square), NOT [M,N,K,...].
+def run_l0_bin(path, M, N, K, warmup, iters, env_extra=None):
+    """Run the fixed L0 harness — its args are [M, N, K, warmup, iters].
     JSON on stdout ({gflops, kernel_median_us, ...}); the device name goes to stderr."""
     env = dict(os.environ)
     if env_extra: env.update(env_extra)
-    p = sh([path, str(size), str(warmup), str(iters)], capture_output=True, text=True, env=env)
+    p = sh([path, str(M), str(N), str(K), str(warmup), str(iters)], capture_output=True, text=True, env=env)
     try:
         return json.loads(p.stdout)
     except Exception:
@@ -486,7 +486,7 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
     for s in sizes:
         S = int(s)
         w, it = scaled_counts(warmup, iters, S)   # bound GPU pin time (BMG is the display GPU)
-        out = run_l0_bin(harness_bin, S, w, it, env_ext)
+        out = run_l0_bin(harness_bin, S, S, S, w, it, env_extra=env_ext)
         if not out:
             continue
         results.append(SweepPoint(
