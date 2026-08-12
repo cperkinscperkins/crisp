@@ -161,8 +161,43 @@ same defect as 135/09 — so this bucket is no longer purely out of scope, it *i
 Bucket B.
 
 
-Open question — a retracted claim may still be in the compiler's mouth
-----------------------------------------------------------------------
+RESOLVED 2026-08-11 — and it split in two
+------------------------------------------
+
+**145/07 was the last artifact of the retracted claim, and it had been failing BECAUSE THE
+WORK SUCCEEDED.**  It was a NEGATIVE test asserting that a fragment-level MMA form cannot be
+differentiated; 145's own retraction made it differentiate, so the assertion inverted and the
+spec went red.  Diagnosed as "directives mis-written" at the start of this endeavour — it was
+not.  It is now a POSITIVE regression test, and its header keeps the original wrong argument
+verbatim as the clearest specimen of the mistake 145 and 146 were both about.
+
+Verified NOT hollow before flipping it: the emitted backward scatters
+`ATOMIC-ADD! (~ A_GRAD m k) <- (~ C_GRAD m n) * (~ B k n)` with the mirrored B loop, i.e. real
+`dA = dC.B^T` / `dB = A^T.dC` flow.  The NUMBER for this form lives in 145/13 (expect.A=1.2 on
+BMG); 145/07 covers a different fragment shape and asserts compilation only.
+
+**Suite is now 964/964 BOTH WAYS** — the first fully green state of this endeavour.
+
+**The remaining half of the question is real, and it is NOT the same defect.**  145/03 and /04
+still fail:
+
+    LOAD-FRAGMENT-ACC is a FRAGMENT-level MMA form and has no backward: on a single
+    fragment one of the two backward GEMMs always violates the hardware shape contract.
+
+Two separate things, and conflating them is what left this open for so long:
+
+- **The LIMITATION is real.**  The VJP registry covers `store-fragment` applied DIRECTLY to an
+  `mma-accumulate` (145/13's own scope note says so).  An accumulator loaded by
+  `load-fragment-acc` and held across a loop is genuinely not covered.
+- **The MESSAGE is wrong.**  It argues from the RETRACTED shape-contract claim — the same
+  sentences 145/07's header now preserves as an example of the error.  A user reading it is
+  told the mathematics forbids this; the truth is that no VJP is registered for that form.
+
+Fixing the message is a few lines and does not require building the VJP.  Worth doing: an
+inaccurate diagnostic is how the "forward-only" folklore propagated in the first place.
+
+Superseded — original question kept for the record
+---------------------------------------------------
 
 145/03 and 145/04 fail with:
 

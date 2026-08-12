@@ -629,20 +629,32 @@
                        "TO-WARP-UNIFORM" "TO-WORKGROUP-UNIFORM")
                      :test #'string=)))
      nil)
-   ;; Endeavor 145 P3c: the FRAGMENT-level MMA forms are forward-only by construction, and
-   ;; the generic "not differentiable" message sends users toward `forward-only`, which is
-   ;; the wrong advice — the operation IS differentiable, just at a different altitude.
-   ;; Explain that instead.  (See mma-autodiff.md: on a single fragment M/N/K are the native
-   ;; shape, so dA=(M,K,N) and dB=(K,N,M), and on either vendor exactly one of the two fails
-   ;; the shape check — NVIDIA (16 8 8) fails dB, Intel (8 16 8) fails dA.  A non-MMA
-   ;; fragment backward is no better: it contracts over an index that spans lanes.)
+   ;; FRAGMENT-level MMA forms that no VJP claims.
+   ;;
+   ;; Endeavor 146: this message used to argue that a fragment backward is IMPOSSIBLE — "on a
+   ;; single fragment one of the two backward GEMMs always violates the hardware shape
+   ;; contract".  That claim was RETRACTED by 145 itself and is now demonstrably false:
+   ;; 145/13 gradient-checks a fragment MMA on BMG (expect.A=1.2) and 145/07, which was written
+   ;; as a NEGATIVE test asserting the impossibility, is now a positive one.  The retraction
+   ;; routed the fragment backward through MEMORY, exactly as the tile VJP already routed dC,
+   ;; and the lane-spanning reduction the old argument rested on does not arise.
+   ;;
+   ;; What is actually true is narrower and is about COVERAGE, not mathematics: the registry
+   ;; has a VJP for `store-fragment` applied DIRECTLY to an `mma-accumulate` (the canonical
+   ;; hello-mma chain), and not for other fragment shapes — an accumulator loaded by
+   ;; `load-fragment-acc` and carried across a loop, for instance.
+   ;;
+   ;; The distinction matters because an over-broad diagnostic is how "MMA is forward-only"
+   ;; became folklore in the first place: users read a claim about the hardware, believed it,
+   ;; and wrote `forward-only` into kernels that did not need it.  Say what is missing, not
+   ;; what is impossible.
    ((and (consp expr) (symbolp (car expr))
          (member (symbol-name (car expr))
                  '("MMA-ACCUMULATE" "LOAD-FRAGMENT-A" "LOAD-FRAGMENT-B"
                    "LOAD-FRAGMENT-ACC" "STORE-FRAGMENT" "MAKE-REGISTER-FRAGMENT")
                  :test #'string=))
      (when error-on-unknown
-       (error "~A is a FRAGMENT-level MMA form and has no backward: on a single fragment one of the two backward GEMMs (dA = dC.B^T, dB = A^T.dC) always violates the hardware shape contract.  Autodiff of MMA is supported at the TILE level -- express the multiply with mma-accumulate-via-tile over a register tile whose K spans at least lcm(M_n,N_n) (16 on both current profiles).  If this kernel really is forward-only, use the spec directive SKIP-WITH[--differentiate] or a (declare forward-only)."
+       (error "~A: no VJP is registered for this FRAGMENT-level MMA form.  This is a gap in COVERAGE, not a limit of the mathematics -- dA = dC.B^T and dB = A^T.dC hold at every shape, and a fragment-level backward IS supported for the canonical chain, `(store-fragment (mma-accumulate ACC A-frag B-frag) DST coords)`, which is gradient-checked on metal by 145/13.  Options: (1) express the multiply at TILE level with mma-accumulate-via-tile over a register tile -- the best-covered surface, with numeric proof in 142/01 and 145/12; (2) reshape into the covered fragment chain above; (3) if this kernel really is forward-only, use SKIP-WITH[--differentiate] or (declare forward-only).  If you need this form differentiated, the fix is to register a VJP for it, not to work around a limit that does not exist."
               (car expr))))
    ((and (consp expr) (symbolp (car expr)))
      (when error-on-unknown
