@@ -678,8 +678,39 @@ Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
    fix is to hoist only collective-containing emitted forms rather than dropping the gate
    wholesale; the narrower mechanism was designed but not needed yet.
 
-   **NONE OF THE THREE CAN BE GRADIENT-CHECKED LOCALLY, and that is now a hard fact rather
-   than an inconvenience.**  `:block` barriers are NVIDIA-only
+   **139/02 UN-SKIPPED 2026-08-11 — the accessor position was never taught views.**
+
+   The last of the three, and a SEPARATE defect from the role split.  ANF hoists the tile-ring
+   view into its own binding, `(%ANF-T-3 (RING-GET TILES 0))`, and `%handle-tilde-backward`
+   opened with `(when (symbolp src) ...)` — so a VIEW source fell through and **dropped the
+   gradient silently**.  138 had taught `%tlc-bwd-adj-name` the very same rule for
+   TILE-ARGUMENT positions; the accessor position simply never got it.  Now it does, via
+   `*ad-view-alias-map*` (see-through for the ANF hoist) and `%ad-view-adjoint` (138's rule:
+   the adjoint of a view is the same view of the adjoint).  139/02's backward now reverses
+
+       C_GRAD -> (ring-get TILES_ADJ 0) -> A_GRAD
+
+   mirroring the forward's `A -> tile -> C`.  145/18's ring gradient check is still exact
+   (1.0 / 1.0), which is the regression that mattered — it exercises the path just changed.
+
+   > **A FAILED ATTEMPT, recorded so it is not retried.**  The first approach inlined the
+   > hoisted temp back into its use sites.  It failed twice and the second failure was
+   > instructive: with the dead bindings dropped it produced
+   > `The value (RING-GET TILES 0) is not of type SYMBOL` and REGRESSED 05/06.  The premise
+   > was wrong — the codebase's shape is not "ring-get works inline", it is "ring-get works
+   > inline WHERE 138 TAUGHT IT", and hoisting into a symbol is how the other positions have
+   > always been fed.  Teach the position; do not normalize around it.
+
+   **A HOPPER POD WOULD NOT HELP ANY OF THESE, and that corrects an assumption inherited from
+   145.**  `VERIFY-AUTODIFF` has exactly two runtimes — `:l0` and `:opencl` — and no CUDA
+   path; under `--differentiate` the runner also skips hoist runs, so `TEST-HOIST[CUDA]`
+   cannot stand in.  Several skip reasons (137/03 among them) say "un-skip after a Hopper pod
+   run", which as things stand is unsatisfiable.  **The real unlock for the whole NVIDIA-only
+   numeric backlog — 139/02, /05, /06, 140/03, 137/03, 137/05, 138/04, 138/05 — is a CUDA
+   runtime for VERIFY-AUTODIFF**, with endeavour 112's OpenCL→L0 port as the precedent.  That
+   is a bounded piece of work and a candidate for its own endeavour.
+
+   **Cross-role DATA FLOW is still NVIDIA-only** — `:block` barriers are NVIDIA-only
    (`137/02: COMPILE-WITH[--ir-target=spv]: FAIL "not supported on Intel"`) and
    `sync-workgroup` is forbidden inside a role block — so cross-role DATA FLOW cannot be
    expressed on Intel at all.  Every 139 spec targets PTX; 146/01 is the only SPV one and

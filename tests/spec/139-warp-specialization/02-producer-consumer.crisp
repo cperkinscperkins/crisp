@@ -15,7 +15,21 @@
 ;; RED until :initial-state + signal + the warp-spec load scope are implemented.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "NOT a warp-specialization limit — 05 and 06 differentiate now, and 146/01 gradient-checks a two-role kernel on metal.  This one trips on `Function RING-GET is not differentiable`, where the ring is TILES, a scratch tile ring, so the ring-get is a genuine VIEW and correctly not inert.  138 taught %tlc-bwd-adj-name to accept (ring-get R i) in TILE-ARGUMENT positions; here ANF hoists it into its own binding, a position that was never taught.  Wants that same treatment (teach the path), not a skip-list entry and not ANF inlining — inlining was tried 2026-08-11 and pushed ring-get forms into other untaught positions, failing worse with 'The value (RING-GET TILES 0) is not of type SYMBOL'."
+;; Endeavor 146 Gap 3: the old reason read "warp specialization is forward-only control flow".
+;; False — 146/01 gradient-checks a two-role kernel at 2.0/3.0 on metal.
+;;
+;; This spec was the last of the three to fall, on a SEPARATE defect: ANF hoists the tile-ring
+;; view into its own binding, `(%ANF-T-3 (RING-GET TILES 0))`, and the ACCESSOR backward
+;; (%handle-tilde-backward) only ever handled a SYMBOL source — a view source fell through the
+;; `when` and dropped the gradient SILENTLY.  138 had taught %tlc-bwd-adj-name the same rule for
+;; TILE-ARGUMENT positions; the accessor position was simply never taught.  It now applies
+;; 138's rule — the adjoint of a view is the same view of the adjoint — so this reverses to
+;;     C_GRAD -> (ring-get TILES_ADJ 0) -> A_GRAD
+;; mirroring the forward's A -> tile -> C.
+;;
+;; Asserts COMPILES + emits a backward.  NOT gradient values: sm_90a, and VERIFY-AUTODIFF has
+;; only :l0 / :opencl runtimes — there is no CUDA path, so a Hopper pod would not help either.
+;; The numeric proof for ring staging is 145/18 (exact, 1.0) and for role gating 146/01.
 ;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90]
 

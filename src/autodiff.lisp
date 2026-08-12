@@ -180,6 +180,20 @@
   "Symbols bound by make-async-barrier / make-async-barrier-ring in the kernel being
    differentiated.  Bound by generate-backward-walk.")
 
+(defun %ad-collect-view-aliases (flat-anf)
+  "Alist TEMP -> `(ring-get R i)` for every ANF temp bound to a view selector.
+   Feeds *ad-view-alias-map* so accessors can see through the hoist ANF introduces."
+  (let ((acc nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form)) (first form)
+                  (consp (second form)) (symbolp (first (second form)))
+                  (string-equal (symbol-name (first (second form))) "RING-GET")
+                  (not (assoc (first form) acc)))
+         (push (cons (first form) (second form)) acc))))
+    acc))
+
 (defun %ad-collect-barrier-ring-syms (flat-anf)
   "The symbols in FLAT-ANF bound to a BARRIER (ring) constructor.
 
@@ -358,13 +372,58 @@
          t))
      (t nil))))
 
+(defvar *ad-view-alias-map* nil
+  "Alist TEMP -> VIEW-FORM for ANF temps bound to a pure view selector, currently
+   `(ring-get R i)`.  Bound by generate-backward-walk.
+
+   ANF hoists a view out of its enclosing expression:
+
+       (LET ((%ANF-T-3 (RING-GET TILES 0)) (%ANF-T-4 (~ %ANF-T-3 0)))
+         (SET! (~ C 0) %ANF-T-4))
+
+   so the accessor's source is a TEMP rather than the view the engine was taught about in
+   endeavour 138.  This map lets the accessor see through it.")
+
+(defun %ad-resolve-view-alias (sym)
+  "SYM's view form if it is an ANF temp bound to one, else NIL."
+  (and (symbolp sym) (cdr (assoc sym *ad-view-alias-map*))))
+
+(defun %ad-view-adjoint (view)
+  "The adjoint of a pure view is THE SAME VIEW OF THE ADJOINT — endeavour 138's rule.
+   `(ring-get TILES 0)` -> `(ring-get TILES_ADJ 0)`.
+
+   Holds because ring-get is address arithmetic with no side effects, so slot i of the
+   adjoint ring IS the adjoint of slot i.  Recurses so a view of a view still works."
+  (if (and (consp view) (symbolp (car view))
+           (string-equal (symbol-name (car view)) "RING-GET"))
+      (let ((base (second view)))
+        (list (car view)
+              (if (symbolp base)
+                  (intern (format nil "~A_ADJ" (symbol-name base)) (symbol-package base))
+                  (%ad-view-adjoint base))
+              (third view)))
+      view))
+
 (defun %handle-tilde-backward (v expr emit-fn local-adj-fn tensor-inputs-ht scratch-tile-syms)
-  "Handles the tilde (~) indexing operation."
+  "Handles the tilde (~) indexing operation.
+
+   Endeavor 146: the source may be an ANF temp aliasing a VIEW (see *ad-view-alias-map*).
+   Before this, such a source was not a symbol the branches below recognised and the whole
+   `when` simply fell through — dropping the gradient SILENTLY rather than erroring, which is
+   the worst of the two.  A view source now scatters into the same view of the adjoint."
   (flet ((local-adj (x) (funcall local-adj-fn x))
          (emit (x) (funcall emit-fn x)))
     (let* ((src (cadr expr))
            (indices (cddr expr))
-           (v-adj (local-adj v)))
+           (v-adj (local-adj v))
+           (view (or (%ad-resolve-view-alias src)
+                     (and (consp src) (symbolp (car src))
+                          (string-equal (symbol-name (car src)) "RING-GET")
+                          src))))
+      (when view
+        (let ((dst (%ad-view-adjoint view)))
+          (emit `(set! (~ ,dst ,@indices) (+ (~ ,dst ,@indices) ,v-adj))))
+        (return-from %handle-tilde-backward t))
       (when (symbolp src)
             (cond
              ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
@@ -500,6 +559,13 @@
    ;; Endeavor 146: (ring-get BARRIER-RING i) is a scheduling object, not a value.  Scoped by
    ;; the ring's constructor rather than by the operator name — see %ad-inert-ring-get-p.
    ((%ad-inert-ring-get-p expr) nil)
+   ;; Endeavor 146: (V (ring-get TILE-RING i)) is an ALIAS, not a computation — ANF hoisted a
+   ;; pure view selector into its own binding.  Nothing to emit here; the use sites see through
+   ;; it via *ad-view-alias-map* (see %handle-tilde-backward).  Distinct from the barrier case
+   ;; above, which is inert because a barrier carries no value at all.
+   ((and (consp expr) (symbolp (car expr))
+         (string-equal (symbol-name (car expr)) "RING-GET"))
+     nil)
    ((and (consp expr) (member (car expr)
                               ;; Endeavor 128: transcendentals join the math/trig backward.
                               '(+ - * / sin cos exp log log2 tan asin acos atan pow atan2)
@@ -1410,7 +1476,8 @@
    for the gap the fixup covers (the top-level adjoint collection below does not know the
    ring constructors, so a ring bound at kernel top level otherwise gets no adjoint)."
   (setf flat-anf (%ad-normalize-anf-for-backward flat-anf))
-  (let ((*ad-barrier-ring-syms* (%ad-collect-barrier-ring-syms flat-anf)))
+  (let ((*ad-barrier-ring-syms* (%ad-collect-barrier-ring-syms flat-anf))
+        (*ad-view-alias-map*    (%ad-collect-view-aliases flat-anf)))
   (let* ((record-temp-entries
           (loop for form in flat-anf
                   when (and (consp form) (= (length form) 2)
