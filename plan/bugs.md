@@ -980,3 +980,36 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         BLOCKS: 145/19, and therefore the numeric proof for ring-pipelined gradients, and
         therefore un-skipping 138/04 and 138/05 under --differentiate.
+
+[x] 041 - An AD-minted `<tile>_ADJ` SCRATCH tile was never zero-initialised, so the backward
+        accumulated gradients on top of whatever was already in local/shared memory.
+
+        FOUND BY: endeavor 147's CUDA VERIFY-AUTODIFF, spec 147/05-cuda-scratch-tile, on an
+        H100.  Forward is C[i] = F*A[i] staged through an SLM tile, so df/dA[k] = F.  For
+        F = 2 / 3 / 5 the backward returned 10.0 / 21.0 / 55.0 while the finite difference
+        correctly returned 2 / 3 / 5.  Those are exactly (F*A[1] + 1) * F — the adjoint tile
+        began life holding the FORWARD launch's leftover `F*A`.  Confirmed in the emitted PTX:
+        the only `st.shared …, 0` in the module sits in the FORWARD entry (load-tile-at's
+        out-of-bounds identity fill); the backward entry had no zero-store to shared at all.
+
+        WHY IT WAS A REAL BUG AND NOT A RUNNER ARTEFACT: no API — OpenCL, Level Zero or CUDA —
+        guarantees local/shared memory arrives zeroed, so generated code must not assume it.
+        The intent was already explicit for the REGISTER case: %mma-ad-adj-init gives a
+        register-tile adjoint an explicit 0.0 init, with the docstring "an adjoint always
+        starts at zero".  Scratch adjoints never got the same treatment because make-scratch-*
+        takes no init argument, so the zeroing has to be a body form.
+
+        WHY NOTHING CAUGHT IT: on Intel each L0 kernel argument gets its own fresh SLM
+        allocation, which happens to read as zero — every staged-tile AD spec since 111 has
+        been passing on masked-undefined behaviour.  Under CUDA there is ONE dynamic shared
+        window per block, reused across launches, and the forward's tile lands at exactly the
+        offset the backward's `_ADJ` tile is handed, so the residue falls precisely on the
+        adjoint.  This is the first defect found purely by having a second vendor's runtime.
+
+        FIXED: %ad-scratch-adj-zero-forms emits `(fill-tile <adj> 0.0)` for every minted
+        adjoint scratch tensor (and a `set!` for a scratch cell), followed by one
+        sync-workgroup, injected at BOTH adjoint-allocation sites — %gfw-process-let for a
+        nested let, and generate-backward-walk's outer let for the ANF-lifted case (which is
+        the one 147/05 exercises).  fill-tile is reused rather than reinvented: it is already
+        the sanctioned workgroup-collective tile clear, and inserts no barrier of its own.
+        Verified 971/971 on Intel/BMG and on H100.

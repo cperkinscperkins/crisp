@@ -1,0 +1,45 @@
+;; TEST-EXPECT: PASS
+;; HOIST-ARCH: sm_90
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+;; VERIFY-AUTODIFF[CUDA]: A=4x4@1:1 at.A=1,2 h=0.5 atol=1e-3 expect.A=1.0 output-mat=4x4 group=4
+;;
+;; Endeavor 147, rung 7 — THE CUtensorMap DESCRIPTOR.
+;;
+;; C = A, copied through an SLM tile loaded by the Tensor Memory Accelerator.
+;; The runner takes f(A) = sum_ij C[i][j] = sum_ij A[i][j], so every element's
+;; gradient is exactly 1.0.  A deliberately dull derivative: the arithmetic is
+;; not what is under test, the ARGUMENT PATH is.
+;;
+;; A `:block` barrier on sm_90+ lowers (load-tile ... :barrier bar) to
+;; cp.async.bulk.tensor + mbarrier, and that instruction reads a CUtensorMap
+;; descriptor built ON THE HOST.  Crisp mints it as an implicit arg — the user
+;; never writes it — and the .metacrisp carries its whole shape:
+;;
+;;   (:name "a_tensormap_from_tma_load" :kind :tensor-map :describes "a"
+;;    :element-type float :rank 2 :box-dims (4 4) :layout :row-major
+;;    :swizzle :none :range (0 0))
+;;
+;; so the runner encodes it with cuTensorMapEncodeTiled over the buffer it
+;; already allocated for A, exactly as crisp-hoist-cuda does in
+;; %cuda-emit-tensor-map-encode.  Structural twin of
+;; 137-mm-async-block/03-tma-codegen-ptx, which asserts the same lowering at
+;; the PTX-shape level; this one puts numbers through it on real Hopper
+;; silicon.
+;;
+;; MEASURED, and worth recording: only the FORWARD kernel carries a
+;; tensor-map.  The differentiated backward's implicit params are scratch
+;; tiles alone — it replays the primal without the bulk copy — so the
+;; descriptor work lands entirely on the forward launches (the two
+;; finite-difference evaluations), not on the gradient launch.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cuda_tma_load (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((A-tile (make-scratch-matrix float (4 4)))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar)   ;; TMA: cp.async.bulk.tensor + mbarrier
+    (await bar)
+    (store-tile A-tile C (0 0))))

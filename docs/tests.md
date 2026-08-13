@@ -439,10 +439,57 @@ with the `.bc` linked.
 ## On-Metal AD Verification (`VERIFY-AUTODIFF`)
 
 The `;; VERIFY-AUTODIFF: …` directive (endeavor 103) runs a tagged spec's
-backward kernel on a real OpenCL device and checks that the analytical
+backward kernel on a real GPU and checks that the analytical
 gradient matches a central-difference numerical gradient computed by
 running the forward kernel at `x ± h`. This catches arithmetic bugs that
 IR-level and metadata-level checks miss.
+
+### Choosing a runtime (endeavor 147)
+
+Three on-metal runtimes are supported: **`:l0`** (Level Zero, SPIR-V —
+the default on Intel), **`:cuda`** (CUDA Driver API, PTX), and
+**`:opencl`** (legacy; regressed on BMG, see bug 031).
+
+| Directive form | Meaning |
+|---|---|
+| `;; VERIFY-AUTODIFF: …`        | Auto-select among the **SPIR-V** runtimes: `:l0`, then `:opencl`. |
+| `;; VERIFY-AUTODIFF[CUDA]: …`  | **Pin** to CUDA. SKIPs (as a pass) where no NVIDIA device is present. |
+| `;; VERIFY-AUTODIFF[L0]: …`    | Pin to Level Zero. |
+| `;; VERIFY-AUTODIFF[OPENCL]: …`| Pin to OpenCL. |
+
+**A spec runs on CUDA only when it says so.** `:cuda` is deliberately
+excluded from auto-selection (`*ad-auto-runtimes*`), so the bare directive
+keeps exactly its historical meaning and no spec silently changes vendor.
+
+That restriction was measured, not assumed. An earlier cut of endeavor 147
+let auto-selection reach for whatever the machine had; on the H100 pod
+`145/18-ring-staged-vjp-bmg` — an Intel spec, named `-bmg`, carrying a BMG
+hardware profile and its MMA fragment shape — was picked up by the CUDA
+runtime and died on a kernel-parameter mismatch. It was right to fail, and
+it would have been far worse to pass.
+
+So giving the existing corpus NVIDIA coverage is a deliberate per-spec
+sweep rather than a free side effect: a vendor-specific kernel needs a
+vendor-appropriate profile and shape, not merely a second runtime. Plain
+arithmetic specs — where the same gradient must hold on any vendor — are
+the ones worth twinning. An unrecognised backend name in the brackets is a
+parse error, not a silent skip.
+
+The PASS line names the runtime that actually ran, so a suite log always
+says where a gradient was checked:
+
+```
+Running Spec: 01-square (Verify-Autodiff)... PASS [cuda] (x: analytical=6.0 numerical=5.9995646 diff=4.35e-4)
+```
+
+Under `:cuda` the spec is compiled with `--ir-target=ptx` and the module is
+JIT-compiled by the driver (`cuModuleLoadDataEx`); under `:l0` / `:opencl`
+it is `--ir-target=spv`. The spec's `HOIST-ARCH:` directive is forwarded as
+`--ir-target-arch=`, which an `sm_90a` (TMA / wgmma) kernel requires.
+Kernels whose implicit args include a `:kind :tensor-map` CUtensorMap
+descriptor are supported: the runner encodes it with
+`cuTensorMapEncodeTiled` over the described input's buffer, mirroring
+`%cuda-emit-tensor-map-encode` in `src/hoist-cuda/main.lisp`.
 
 ### When it runs
 
@@ -522,11 +569,24 @@ Running Spec: 02-product (Verify-Autodiff)... PASS (x: analytical=4.0 numerical=
 
 ### Requirements
 
-- An OpenCL ICD on `PATH` (`OpenCL.dll` on Windows, `libOpenCL.so` on
-  Linux). If loading fails, the check reports `SKIP (OpenCL runner
-  unavailable)` and counts as a pass — non-GPU CI does not fail.
+- The runtime's shared library on the loader path: `ze_loader` for `:l0`,
+  `libcuda` / `nvcuda.dll` for `:cuda`, an OpenCL ICD for `:opencl`. Each
+  is loaded *tolerantly* — a missing one disables just that runtime rather
+  than taking the whole runner down (endeavor 147; before that, one missing
+  library turned every VERIFY-AUTODIFF check on the machine into a SKIP,
+  which is how 58 checks were quietly skipping on the CUDA pod).
+- If no runtime is usable the check reports a SKIP and counts as a pass, so
+  non-GPU CI does not fail.
 - The kernel must compile under `--differentiate` (otherwise the verify
   step fails at the compile sub-step before reaching the device).
+
+### A note on scratch tiles and zeroed memory
+
+No backend guarantees that local/shared memory arrives zeroed. Generated
+backward kernels must therefore zero their own AD-minted `<tile>_ADJ`
+scratch before accumulating into it — see BUG 041, which this directive
+found on CUDA and which had been masked on Intel for as long as staged-tile
+AD has existed.
 
 ### Output file cleanup
 
@@ -545,9 +605,13 @@ failure). `--keep-work` preserves them for inspection.
 ### Implementation pointers
 
 - Directive parser: `tests/verify-autodiff-parse.lisp` (pure CL, no
-  foreign deps; safe to load on hosts without OpenCL).
-- OpenCL runner: `tests/verify-autodiff-runner.lisp` (loaded lazily on
-  first use; load failure cached and reported once).
+  foreign deps; safe to load on hosts without a GPU runtime).
+- On-metal runner: `tests/verify-autodiff-runner.lisp` (loaded lazily on
+  first use; load failure cached and reported once). The finite-difference
+  and comparison logic is runtime-agnostic; per-runtime helpers sit behind
+  a layer of one-line dispatch shims keyed on `*ad-runtime*`.
+- Runtime bindings: `tests/l0-bindings.lisp`, `tests/cuda-bindings.lisp`.
+- Runtime selection: `ad-select-runtime` / `ad-runtime-available-p`.
 - Spec-runner integration: see `run-verify-autodiff-pass` in
   `tests/run-specs.lisp`.
 - Ad-hoc one-off run: `scripts/verify_autodiff.lisp`.

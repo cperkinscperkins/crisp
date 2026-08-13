@@ -38,7 +38,11 @@
 ;;; identical to the OpenCL ones (which pass context + queue).
 
 (defvar *ad-runtime* :l0
-  "Which on-metal runtime VERIFY-AUTODIFF uses: :l0 or :opencl.")
+  "Which on-metal runtime VERIFY-AUTODIFF uses: :l0, :opencl or :cuda.
+
+   Endeavor 147 added :cuda (CUDA Driver API, PTX modules).  The runtime is
+   normally chosen per spec by the spec runner — see AD-SELECT-RUNTIME —
+   rather than set by hand.")
 
 (defvar *ad-device* nil
   "L0 device handle (ze_device_handle_t) bound by runtime-init.  NIL when
@@ -50,13 +54,23 @@
    transient command-queue/list creation read it from here.  NIL under
    :opencl.")
 
-;;; === Level Zero bindings ==============================================
+;;; === Per-runtime bindings =============================================
 ;;;
-;;; Loaded eagerly so the L0 dispatch path is callable from any test
-;;; that loads this runner.  If ze_loader.dll is missing, this signals
-;;; at load time -- mirror the existing OpenCL-load failure mode.
+;;; Both bindings files are LOADED unconditionally -- the l0-* and cuda-*
+;;; helpers below need their defcstructs / defcfuns present at compile
+;;; time.  Neither file SIGNALS when its shared library is missing; each
+;;; sets an availability flag instead (*l0-library-loaded* /
+;;; *cuda-library-loaded*).  That is what lets this runner load on a
+;;; CUDA-only pod or an Intel-only desktop and still serve whichever
+;;; runtime the machine actually has.
 
 (load (merge-pathnames "l0-bindings.lisp"
+                       (make-pathname :defaults #.(or *compile-file-pathname*
+                                                      *load-pathname*
+                                                      *default-pathname-defaults*)
+                                      :name nil :type nil)))
+
+(load (merge-pathnames "cuda-bindings.lisp"
                        (make-pathname :defaults #.(or *compile-file-pathname*
                                                       *load-pathname*
                                                       *default-pathname-defaults*)
@@ -80,7 +94,17 @@
                              (:unix "libOpenCL.so")
                              (t (:default "libOpenCL")))
 
-(cffi:use-foreign-library opencl)
+(defvar *opencl-library-loaded* nil
+  "T when an OpenCL ICD linked at load time.  Endeavor 147: tolerated
+   rather than fatal, for the same reason as *L0-LIBRARY-LOADED* — this
+   runner must load on machines that have only one of the three runtimes.")
+
+(handler-case
+    (progn (cffi:use-foreign-library opencl)
+           (setf *opencl-library-loaded* t))
+  (error (e)
+    (setf *opencl-library-loaded* nil)
+    (format t "~&; OpenCL ICD not available (~a) — :opencl runtime disabled.~%" e)))
 
 (cffi:defcfun ("clGetPlatformIDs" cl-get-platform-ids) :int
               (num-entries :uint) (platforms :pointer) (num-platforms :pointer))
@@ -584,6 +608,57 @@
           (incf cur (getf d :grad-arg-width))))
       (values descs output-fwd-base output-bwd-base grad-output-bwd-base))))
 
+(defun %vad-desc-extents-strides (desc)
+  "The described tensor's extents and compact row-major strides, in ELEMENT
+   units and outermost-first — the same numbers BIND-MATRIX-ARG /
+   BIND-VECTOR-ARG write into its tensor record.  Used to encode a
+   CUtensorMap over an input the runner has already allocated."
+  (case (getf desc :kind)
+    (:matrix-float
+     (let ((rows (getf desc :rows)) (cols (getf desc :cols)))
+       (values (list rows cols) (list cols 1))))
+    (:vector-float
+     (let ((n (getf desc :length)))
+       (values (list n) (list 1))))
+    (t (error "VERIFY-AUTODIFF: a CUtensorMap can only describe a vector or matrix input; ~A is ~A"
+              (getf desc :name) (getf desc :kind)))))
+
+(defun %vad-bind-implicit-param (kernel p descs)
+  "Bind one implicit kernel parameter P (a plist from
+   %VAD-READ-IMPLICIT-PARAMS) on KERNEL.
+
+   Endeavor 147: a :kind :tensor-map param is the CUtensorMap descriptor a
+   Hopper `:block` kernel takes; it is encoded over the DESCRIBED input's
+   buffer rather than allocated as scratch.  Everything else is a local
+   scratch tile, dispatched on its physical width."
+  (cond
+    ((eq (getf p :kind) :tensor-map)
+     (unless (eq *ad-runtime* :cuda)
+       (error "VERIFY-AUTODIFF: kernel takes a CUtensorMap (TMA) implicit arg, which only the :cuda runtime can build; current runtime is ~A.  Pin the spec with VERIFY-AUTODIFF[CUDA]:." *ad-runtime*))
+     (let* ((dname (getf p :describes))
+            (d (find dname descs
+                     :key (lambda (x) (getf x :name))
+                     :test (lambda (a b) (and a b (string-equal a b))))))
+       (unless d
+         (error "VERIFY-AUTODIFF: CUtensorMap ~A describes input ~S, which is not among the directive's inputs (~{~A~^, ~})."
+                (getf p :name) dname (mapcar (lambda (x) (getf x :name)) descs)))
+       (multiple-value-bind (extents strides) (%vad-desc-extents-strides d)
+         (cuda-bind-tensor-map-arg kernel (getf p :base) p
+                                   (getf d :buffer) extents strides))))
+    (t
+     (case (getf p :arg-width)
+       ;; 145 (P6): a 2-D local scratch tile is 9 args.  An MMA backward has
+       ;; several (the forward's staged tiles, their _ADJ pairs, and the
+       ;; backward's own transposed-operand staging).
+       (9 (bind-local-scratch-matrix-arg
+           kernel (getf p :base)
+           (getf p :rows) (getf p :cols) (getf p :elem-bytes)))
+       (6 (bind-local-scratch-vector-arg
+           kernel (getf p :base)
+           (getf p :n-elements) (getf p :elem-bytes)))
+       (t (bind-local-scratch-cell-arg
+           kernel (getf p :base) (getf p :elem-bytes)))))))
+
 (defun %vad-output-length-for-input (desc)
   "Returns the buffer element count needed for a forward input buffer,
    or NIL when no buffer is needed (plain scalars / struct-by-value bound directly)."
@@ -842,18 +917,7 @@
              ;; Must precede static input binds so the declared input slots
              ;; line up.
              (dolist (p fwd-implicit-params)
-               (case (getf p :arg-width)
-                 ;; 145 (P6): a 2-D local scratch tile is 9 args.  An MMA backward has
-                 ;; several (the forward's staged tiles, their _ADJ pairs, and the
-                 ;; backward's own transposed-operand staging).
-                 (9 (bind-local-scratch-matrix-arg
-                     fwd-kernel (getf p :base)
-                     (getf p :rows) (getf p :cols) (getf p :elem-bytes)))
-                 (6 (bind-local-scratch-vector-arg
-                     fwd-kernel (getf p :base)
-                     (getf p :n-elements) (getf p :elem-bytes)))
-                 (t (bind-local-scratch-cell-arg
-                     fwd-kernel (getf p :base) (getf p :elem-bytes)))))
+               (%vad-bind-implicit-param fwd-kernel p descs))
              ;; Static binds: buffer-backed inputs bound once.
              (bind-static-input-args fwd-kernel)
              (cond
@@ -866,18 +930,7 @@
              ;; Backward-kernel implicit-params: the original scratch tiles
              ;; PLUS any AD-minted tile_ADJ shadows.
              (dolist (p bwd-implicit-params)
-               (case (getf p :arg-width)
-                 ;; 145 (P6): a 2-D local scratch tile is 9 args.  An MMA backward has
-                 ;; several (the forward's staged tiles, their _ADJ pairs, and the
-                 ;; backward's own transposed-operand staging).
-                 (9 (bind-local-scratch-matrix-arg
-                     bwd-kernel (getf p :base)
-                     (getf p :rows) (getf p :cols) (getf p :elem-bytes)))
-                 (6 (bind-local-scratch-vector-arg
-                     bwd-kernel (getf p :base)
-                     (getf p :n-elements) (getf p :elem-bytes)))
-                 (t (bind-local-scratch-cell-arg
-                     bwd-kernel (getf p :base) (getf p :elem-bytes)))))
+               (%vad-bind-implicit-param bwd-kernel p descs))
              (bind-static-input-args bwd-kernel)
              (if output-vec-length
                  (progn
@@ -1333,12 +1386,337 @@
 
 
 ;;; ======================================================================
+;;; === CUDA helpers (parallel to the opencl-* / l0-* layers above) ======
+;;; ======================================================================
+;;;
+;;; Endeavor 147.  Each cuda-* helper has the same arity and logical role
+;;; as its l0-* twin, so the dispatch shims below extend by one ECASE
+;;; branch and the VERIFY-AUTODIFF body is untouched.
+;;;
+;;; ONE structural difference drives everything here.  OpenCL and L0 SET
+;;; each argument against the kernel object as you go; CUDA assembles a
+;;; `void** kernelParams` array and hands the whole thing to
+;;; cuLaunchKernel.  So a CUDA "kernel" is a record carrying the
+;;; CUfunction plus a slot table, every cuda-bind-* writes a persistent
+;;; box into a slot, and the launch materialises the array.  The boxes
+;;; MUST outlive the binding call (the driver reads them at launch), which
+;;; is why they are foreign-alloc'd and owned by the record rather than
+;;; stack-allocated the way the L0 binders do it.
+;;;
+;;; The second difference is local scratch.  There is no per-argument
+;;; local allocation in CUDA: a kernel gets ONE dynamic shared block sized
+;;; at launch, and each scratch tile is addressed by a byte offset passed
+;;; in its ptr slot.  That is exactly what crisp-hoist-cuda emits (bug
+;;; 034, `*cuda-shared-scratch-offset*` in src/hoist-cuda/main.lisp), so
+;;; %CUDA-SCRATCH-OFFSET reproduces the same running accumulator.
+
+(defvar *cuda-ad-device* nil
+  "CUdevice (an INT ordinal, not a handle) bound by RUNTIME-INIT under
+   :cuda.  Kept separate from *AD-DEVICE*, which is an L0 pointer handle.")
+
+(defstruct (cuda-kernel (:conc-name cuk-))
+  "A CUDA kernel plus the launch state the driver needs at cuLaunchKernel
+   time: the assembled parameter slots, the dynamic-shared byte total, and
+   the per-scratch-tile offsets handed out so far."
+  function
+  (slots (make-array 8 :adjustable t :fill-pointer 0 :initial-element nil))
+  (shared-bytes 0)
+  (scratch-offsets (make-hash-table :test #'eql))
+  ;; Managed buffers holding CUtensorMap descriptors bound to this kernel;
+  ;; freed with the kernel.
+  (tensor-maps nil))
+
+(defun %cuk-set-slot (kernel index nbytes writer)
+  "Store the INDEX'th kernel parameter as an NBYTES box filled by WRITER.
+   Rebinding a slot frees the previous box — APPLY-PRIMALS rebinds every
+   input on every finite-difference step, so not freeing would leak once
+   per perturbation."
+  (let ((slots (cuk-slots kernel)))
+    (loop while (< (fill-pointer slots) (1+ index))
+          do (vector-push-extend nil slots))
+    (let ((old (aref slots index)))
+      (when old (cffi:foreign-free old)))
+    (let ((box (cffi:foreign-alloc :uint8 :count nbytes)))
+      (loop for i from 0 below nbytes do (setf (cffi:mem-aref box :uint8 i) 0))
+      (funcall writer box)
+      (setf (aref slots index) box))))
+
+(defun %cuk-set-uint64 (kernel index value)
+  (%cuk-set-slot kernel index 8 (lambda (b) (setf (cffi:mem-ref b :uint64) value))))
+
+(defun %cuk-set-pointer (kernel index ptr)
+  (%cuk-set-slot kernel index (cffi:foreign-type-size :pointer)
+                 (lambda (b) (setf (cffi:mem-ref b :pointer) ptr))))
+
+(defun %cuda-scratch-offset (kernel base-index nbytes)
+  "Hand out (idempotently, per BASE-INDEX) this scratch tile's byte offset
+   into the kernel's dynamic shared block, growing the block by NBYTES.
+
+   Offsets are 16-byte aligned.  The hoist packs them tightly, but the
+   offset is a pure RUNTIME value the kernel adds to its shared base — the
+   device code does not assume any particular packing — so aligning is free
+   and keeps 128-bit tile loads legal."
+  (or (gethash base-index (cuk-scratch-offsets kernel))
+      (let ((off (* 16 (ceiling (cuk-shared-bytes kernel) 16))))
+        (setf (gethash base-index (cuk-scratch-offsets kernel)) off
+              (cuk-shared-bytes kernel) (+ off nbytes))
+        off)))
+
+(defun cuda-create-program-and-kernel (context ptx-data kernel-name)
+  "CUDA counterpart of OPENCL-CREATE-PROGRAM-AND-KERNEL.  PTX-DATA is the
+   raw bytes of a .ptx file (READ-SPV-FILE is byte-oriented and shared by
+   all three runtimes); PTX is ASCII text, so it is converted to a string
+   and JIT-compiled by the driver.  Returns (values MODULE KERNEL) where
+   KERNEL is a CUDA-KERNEL record."
+  (declare (ignore context))
+  (let* ((ptx (map 'string #'code-char ptx-data))
+         (module (cu-module-load-ptx ptx)))
+    (cffi:with-foreign-object (fn-out :pointer)
+      (let ((err (cu-module-get-function fn-out module kernel-name)))
+        (unless (= err +CUDA-SUCCESS+)
+          (cu-module-unload module)
+          (error "CUDA cuModuleGetFunction(~a) failed: ~D (~a)"
+                 kernel-name err (cu-error-string err))))
+      (values module
+              (make-cuda-kernel :function (cffi:mem-ref fn-out :pointer))))))
+
+(defun cuda-create-float-cell-buffer (context)
+  (declare (ignore context))
+  (cu-alloc-managed 4))
+
+(defun cuda-write-float-cell (queue buffer value)
+  (declare (ignore queue))
+  (setf (cffi:mem-ref buffer :float) (cl:float value 1.0)))
+
+(defun cuda-read-float-cell (queue buffer)
+  (declare (ignore queue))
+  (cffi:mem-ref buffer :float))
+
+(defun cuda-create-float-buffer (context n-elements)
+  (declare (ignore context))
+  (cu-alloc-managed (* 4 n-elements)))
+
+(defun cuda-write-float-vector (queue buffer values)
+  (declare (ignore queue))
+  (loop for v in values
+        for i from 0
+        do (setf (cffi:mem-aref buffer :float i) (cl:float v 1.0))))
+
+(defun cuda-read-float-vector (queue buffer n)
+  (declare (ignore queue))
+  (loop for i from 0 below n collect (cffi:mem-aref buffer :float i)))
+
+(defun cuda-read-float-vector-elem (queue buffer i)
+  (declare (ignore queue))
+  (cffi:mem-aref buffer :float i))
+
+(defun cuda-bind-cell-arg (kernel base-index buffer &key (byte-size 4) (offset 0))
+  "CUDA cell binding: 3 slots (ptr, parent-byte-size, offset)."
+  (%cuk-set-pointer kernel (+ base-index 0) buffer)
+  (%cuk-set-uint64  kernel (+ base-index 1) byte-size)
+  (%cuk-set-uint64  kernel (+ base-index 2) offset))
+
+(defun cuda-bind-vector-arg (kernel base-index buffer length)
+  "CUDA 1-D vector binding: 6 slots.  Same tensor record as L0."
+  (%cuk-set-pointer kernel (+ base-index 0) buffer)
+  (%cuk-set-uint64  kernel (+ base-index 1) (* 4 length))
+  (%cuk-set-uint64  kernel (+ base-index 2) 0)
+  (%cuk-set-uint64  kernel (+ base-index 3) 1)
+  (%cuk-set-uint64  kernel (+ base-index 4) length)
+  (%cuk-set-uint64  kernel (+ base-index 5) length))
+
+(defun cuda-bind-matrix-arg (kernel base-index buffer rows cols)
+  "CUDA 2-D matrix binding: 9 slots.  Same tensor record as L0."
+  (%cuk-set-pointer kernel (+ base-index 0) buffer)
+  (loop for k from 1 below 9
+        for v in (list (* 4 rows cols) 0 0 cols 1 rows cols (* rows cols))
+        do (%cuk-set-uint64 kernel (+ base-index k) v)))
+
+(defun cuda-bind-uint64-scalar-arg (kernel arg-index value)
+  (%cuk-set-uint64 kernel arg-index value))
+
+(defun cuda-bind-float-scalar-arg (kernel arg-index value)
+  (%cuk-set-slot kernel arg-index 4
+                 (lambda (b) (setf (cffi:mem-ref b :float) (cl:float value 1.0)))))
+
+(defun cuda-bind-int32-scalar-arg (kernel arg-index value)
+  (%cuk-set-slot kernel arg-index 4
+                 (lambda (b) (setf (cffi:mem-ref b :int32) value))))
+
+(defun cuda-bind-struct-by-value-arg (kernel arg-index fields total-bytes)
+  (%cuk-set-slot
+   kernel arg-index total-bytes
+   (lambda (b)
+     (dolist (f fields)
+       (let ((offset (getf f :offset))
+             (ftype  (getf f :ftype))
+             (value  (getf f :value)))
+         (case ftype
+           (:float (setf (cffi:mem-ref (cffi:inc-pointer b offset) :float)
+                         (cl:float value 1.0)))
+           (:int32 (setf (cffi:mem-ref (cffi:inc-pointer b offset) :int32) value))
+           (t (error "cuda-bind-struct-by-value-arg: unsupported ftype ~A" ftype))))))))
+
+(defun cuda-bind-local-scratch-cell-arg (kernel base-index byte-size)
+  "CUDA local scratch cell: the ptr slot carries a dynamic-shared OFFSET."
+  (let ((off (%cuda-scratch-offset kernel base-index byte-size)))
+    (%cuk-set-uint64 kernel (+ base-index 0) off)
+    (%cuk-set-uint64 kernel (+ base-index 1) byte-size)
+    (%cuk-set-uint64 kernel (+ base-index 2) 0)))
+
+(defun cuda-bind-local-scratch-vector-arg (kernel base-index n-elements elem-bytes)
+  "CUDA local scratch vector: 6 slots, ptr = dynamic-shared offset."
+  (let* ((byte-size (* n-elements elem-bytes))
+         (off (%cuda-scratch-offset kernel base-index byte-size)))
+    (%cuk-set-uint64 kernel (+ base-index 0) off)
+    (loop for k from 1 below 6
+          for v in (list byte-size 0 1 n-elements n-elements)
+          do (%cuk-set-uint64 kernel (+ base-index k) v))))
+
+(defun cuda-bind-local-scratch-matrix-arg (kernel base-index rows cols elem-bytes)
+  "CUDA local scratch matrix: 9 slots, ptr = dynamic-shared offset."
+  (let* ((byte-size (* rows cols elem-bytes))
+         (off (%cuda-scratch-offset kernel base-index byte-size)))
+    (%cuk-set-uint64 kernel (+ base-index 0) off)
+    (loop for k from 1 below 9
+          for v in (list byte-size 0 0 cols 1 rows cols (* rows cols))
+          do (%cuk-set-uint64 kernel (+ base-index k) v))))
+
+;;; --- TMA: the CUtensorMap descriptor implicit arg ---------------------
+;;;
+;;; A `:block` (Hopper TMA) kernel takes a CUtensorMap descriptor that the
+;;; HOST builds — Crisp mints it as an implicit param, and the .metacrisp
+;;; carries its full shape (:describes / :element-type / :rank / :box-dims /
+;;; :layout / :swizzle).  crisp-hoist-cuda already emits exactly this encode
+;;; in %cuda-emit-tensor-map-encode (src/hoist-cuda/main.lisp:908); the code
+;;; below is that emitter transliterated into driver calls, including its
+;;; gdim/gstride ordering rules, so the two cannot drift on the interesting
+;;; part.
+;;;
+;;; Measured note: only the FORWARD kernel of a differentiated TMA spec
+;;; carries a tensor-map.  The backward's implicit params are scratch tiles
+;;; only — it replays the primal without the bulk copy.
+
+(defun %cuda-tensor-map-dtype (elem-type)
+  "CUtensorMapDataType for a Crisp element type."
+  (let ((n (string-downcase (string elem-type))))
+    (cond ((string= n "float")  +CU-TENSOR-MAP-DATA-TYPE-FLOAT32+)
+          ((string= n "double") +CU-TENSOR-MAP-DATA-TYPE-FLOAT64+)
+          (t (error "cuTensorMapEncodeTiled: unsupported element type ~a (need float/double)"
+                    elem-type)))))
+
+(defun cuda-bind-tensor-map-arg (kernel arg-index tm-param described-buffer
+                                 described-extents described-strides)
+  "Encode a CUtensorMap for TM-PARAM (a :kind :tensor-map implicit-param
+   plist) over the already-allocated DESCRIBED-BUFFER, and bind the
+   descriptor's device pointer into slot ARG-INDEX.
+
+   DESCRIBED-EXTENTS / DESCRIBED-STRIDES are the described tensor's own
+   extents and strides in ELEMENT units, outermost-first — the same values
+   the matrix/vector binders write into its tensor record.
+
+   The descriptor lives in managed memory: cuTensorMapEncodeTiled requires
+   64-byte alignment and cuMemAllocManaged gives at least 256, and the same
+   pointer is readable by the device, so the hoist's separate
+   cuMemAlloc + cuMemcpyHtoD collapses into one allocation."
+  (unless (cu-tensor-map-available-p)
+    (error "VERIFY-AUTODIFF: this kernel needs a CUtensorMap (TMA), but the loaded CUDA driver does not export cuTensorMapEncodeTiled."))
+  (let* ((rank    (getf tm-param :rank))
+         (box     (getf tm-param :box-dims))
+         (elem    (getf tm-param :element-type))
+         (dtype   (%cuda-tensor-map-dtype elem))
+         (ebytes  (if (string-equal (string elem) "double") 8 4))
+         (swz-p   (eq (getf tm-param :swizzle) :128b))
+         (col-p   (and swz-p (eq (getf tm-param :layout) :col-major)))
+         (swz     (if swz-p +CU-TENSOR-MAP-SWIZZLE-128B+ +CU-TENSOR-MAP-SWIZZLE-NONE+))
+         (desc    (cu-alloc-managed +CU-TENSOR-MAP-BYTES+))
+         ;; gdim: a 128B-swizzle col-major describe has K contiguous, so its
+         ;; extents go in order; otherwise the row-major reversal.
+         (gdim    (if col-p
+                      described-extents
+                      (reverse described-extents)))
+         ;; gstride: rank-1 entries, in BYTES, over the non-innermost dims.
+         (gstr    (when (> rank 1)
+                    (if col-p
+                        (loop for k from (1- rank) downto 1
+                              collect (* (nth k described-strides) ebytes))
+                        (loop for k from (- rank 2) downto 0
+                              collect (* (nth k described-strides) ebytes)))))
+         ;; boxDim: tile dims innermost-first — correct for both layouts.
+         (bdim    (reverse box)))
+    (push desc (cuk-tensor-maps kernel))
+    (cffi:with-foreign-objects ((p-gdim :uint64 rank)
+                                (p-gstr :uint64 (max 1 (1- rank)))
+                                (p-box  :uint32 rank)
+                                (p-els  :uint32 rank))
+      (loop for v in gdim for i from 0
+            do (setf (cffi:mem-aref p-gdim :uint64 i) v))
+      (loop for v in gstr for i from 0
+            do (setf (cffi:mem-aref p-gstr :uint64 i) v))
+      (loop for v in bdim for i from 0
+            do (setf (cffi:mem-aref p-box :uint32 i) v))
+      (loop for i from 0 below rank
+            do (setf (cffi:mem-aref p-els :uint32 i) 1))
+      (check-cu (cu-tensor-map-encode-tiled
+                 desc dtype rank
+                 described-buffer p-gdim
+                 (if (> rank 1) p-gstr (cffi:null-pointer))
+                 p-box p-els
+                 +CU-TENSOR-MAP-INTERLEAVE-NONE+ swz
+                 +CU-TENSOR-MAP-L2-PROMOTION-NONE+
+                 +CU-TENSOR-MAP-FLOAT-OOB-FILL-NONE+)))
+    (%cuk-set-pointer kernel arg-index desc)))
+
+(defconstant +cuda-default-shared-cap+ 49152
+  "Default per-block dynamic shared limit.  Above this a kernel must opt in
+   via cuFuncSetAttribute or the launch fails with INVALID_VALUE.")
+
+(defun cuda-launch-kernel-1d (queue kernel &key (global-size 1) (group-size 1))
+  "CUDA launch: GLOBAL-SIZE blocks of GROUP-SIZE threads, carrying the
+   accumulated dynamic-shared block.  Matches the L0 shim's semantics,
+   where GLOBAL-SIZE is the group COUNT (grid dim), not a global work size."
+  (declare (ignore queue))
+  (let* ((slots (cuk-slots kernel))
+         (n (fill-pointer slots))
+         (shared (cuk-shared-bytes kernel)))
+    (loop for i from 0 below n
+          when (null (aref slots i))
+            do (error "CUDA launch: kernel param slot ~D of ~D was never bound -- the runner's ABI view disagrees with the kernel's physical signature." i n))
+    (when (> shared +cuda-default-shared-cap+)
+      (check-cu (cu-func-set-attribute
+                 (cuk-function kernel)
+                 +CU-FUNC-ATTRIBUTE-MAX-DYNAMIC-SHARED-SIZE-BYTES+
+                 shared)))
+    (cffi:with-foreign-object (params :pointer (max n 1))
+      (loop for i from 0 below n
+            do (setf (cffi:mem-aref params :pointer i) (aref slots i)))
+      (check-cu (cu-launch-kernel (cuk-function kernel)
+                                  global-size 1 1
+                                  group-size 1 1
+                                  shared
+                                  (cffi:null-pointer)
+                                  params
+                                  (cffi:null-pointer))))
+    (check-cu (cu-ctx-synchronize))))
+
+(defun cuda-release-kernel (kernel)
+  "Free every parameter box and CUtensorMap descriptor owned by KERNEL."
+  (let ((slots (cuk-slots kernel)))
+    (loop for i from 0 below (fill-pointer slots)
+          for box = (aref slots i)
+          when box do (cffi:foreign-free box) (setf (aref slots i) nil))
+    (setf (fill-pointer slots) 0))
+  (dolist (tm (cuk-tensor-maps kernel)) (cu-free tm))
+  (setf (cuk-tensor-maps kernel) nil))
+
+
+;;; ======================================================================
 ;;; === Dispatch shims ===================================================
 ;;; ======================================================================
 ;;;
-;;; Bare-name helpers that pick between :opencl and :l0 on (*ad-runtime*).
-;;; VERIFY-AUTODIFF's body calls these unprefixed names, so flipping the
-;;; runtime is a single defvar setf.
+;;; Bare-name helpers that pick between :opencl, :l0 and :cuda on
+;;; (*ad-runtime*).  VERIFY-AUTODIFF's body calls these unprefixed names,
+;;; so flipping the runtime is a single defvar setf.
 ;;;
 ;;; Implementation note: the shims dispatch via (funcall (ecase ...) args)
 ;;; instead of (ecase ... (:opencl (opencl-foo args))).  The funcall form
@@ -1346,109 +1724,126 @@
 ;;; NOT appear as "(opencl-foo " patterns -- which keeps text-level
 ;;; rename passes from accidentally turning the shims into infinite
 ;;; self-recursion.  Yes, this is ugly; it is also the smallest change
-;;; that keeps the verify-autodiff body identical-looking under either
+;;; that keeps the verify-autodiff body identical-looking under any
 ;;; runtime.
 
 (defun create-program-and-kernel (context spv-data kernel-name)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-create-program-and-kernel)
-             (:l0     'l0-create-program-and-kernel))
+             (:l0     'l0-create-program-and-kernel)
+             (:cuda   'cuda-create-program-and-kernel))
            context spv-data kernel-name))
 
 (defun create-float-cell-buffer (context)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-create-float-cell-buffer)
-             (:l0     'l0-create-float-cell-buffer))
+             (:l0     'l0-create-float-cell-buffer)
+             (:cuda   'cuda-create-float-cell-buffer))
            context))
 
 (defun write-float-cell (queue buffer value)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-write-float-cell)
-             (:l0     'l0-write-float-cell))
+             (:l0     'l0-write-float-cell)
+             (:cuda   'cuda-write-float-cell))
            queue buffer value))
 
 (defun read-float-cell (queue buffer)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-read-float-cell)
-             (:l0     'l0-read-float-cell))
+             (:l0     'l0-read-float-cell)
+             (:cuda   'cuda-read-float-cell))
            queue buffer))
 
 (defun bind-cell-arg (kernel base-index buffer &key (byte-size 4) (offset 0))
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-cell-arg)
-             (:l0     'l0-bind-cell-arg))
+             (:l0     'l0-bind-cell-arg)
+             (:cuda   'cuda-bind-cell-arg))
            kernel base-index buffer :byte-size byte-size :offset offset))
 
 (defun launch-kernel-1d (queue kernel &key (global-size 1) (group-size 1))
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-launch-kernel-1d)
-             (:l0     'l0-opencl-launch-kernel-1d))
+             (:l0     'l0-opencl-launch-kernel-1d)
+             (:cuda   'cuda-launch-kernel-1d))
            queue kernel :global-size global-size :group-size group-size))
 
 (defun create-float-buffer (context n-elements)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-create-float-buffer)
-             (:l0     'l0-create-float-buffer))
+             (:l0     'l0-create-float-buffer)
+             (:cuda   'cuda-create-float-buffer))
            context n-elements))
 
 (defun write-float-vector (queue buffer values)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-write-float-vector)
-             (:l0     'l0-write-float-vector))
+             (:l0     'l0-write-float-vector)
+             (:cuda   'cuda-write-float-vector))
            queue buffer values))
 
 (defun read-float-vector (queue buffer n)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-read-float-vector)
-             (:l0     'l0-opencl-read-float-vector))
+             (:l0     'l0-opencl-read-float-vector)
+             (:cuda   'cuda-read-float-vector))
            queue buffer n))
 
 (defun read-float-vector-elem (queue buffer i)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-read-float-vector-elem)
-             (:l0     'l0-opencl-read-float-vector-elem))
+             (:l0     'l0-opencl-read-float-vector-elem)
+             (:cuda   'cuda-read-float-vector-elem))
            queue buffer i))
 
 (defun bind-vector-arg (kernel base-index buffer length)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-vector-arg)
-             (:l0     'l0-bind-vector-arg))
+             (:l0     'l0-bind-vector-arg)
+             (:cuda   'cuda-bind-vector-arg))
            kernel base-index buffer length))
 
 (defun bind-matrix-arg (kernel base-index buffer rows cols)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-matrix-arg)
-             (:l0     'l0-bind-matrix-arg))
+             (:l0     'l0-bind-matrix-arg)
+             (:cuda   'cuda-bind-matrix-arg))
            kernel base-index buffer rows cols))
 
 (defun bind-local-scratch-matrix-arg (kernel base-index rows cols elem-bytes)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-local-scratch-matrix-arg)
-             (:l0     'l0-bind-local-scratch-matrix-arg))
+             (:l0     'l0-bind-local-scratch-matrix-arg)
+             (:cuda   'cuda-bind-local-scratch-matrix-arg))
            kernel base-index rows cols elem-bytes))
 
 (defun bind-uint64-scalar-arg (kernel arg-index value)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-uint64-scalar-arg)
-             (:l0     'l0-bind-uint64-scalar-arg))
+             (:l0     'l0-bind-uint64-scalar-arg)
+             (:cuda   'cuda-bind-uint64-scalar-arg))
            kernel arg-index value))
 
 (defun bind-float-scalar-arg (kernel arg-index value)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-float-scalar-arg)
-             (:l0     'l0-bind-float-scalar-arg))
+             (:l0     'l0-bind-float-scalar-arg)
+             (:cuda   'cuda-bind-float-scalar-arg))
            kernel arg-index value))
 
 (defun bind-int32-scalar-arg (kernel arg-index value)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-int32-scalar-arg)
-             (:l0     'l0-bind-int32-scalar-arg))
+             (:l0     'l0-bind-int32-scalar-arg)
+             (:cuda   'cuda-bind-int32-scalar-arg))
            kernel arg-index value))
 
 (defun bind-struct-by-value-arg (kernel arg-index fields total-bytes)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-struct-by-value-arg)
-             (:l0     'l0-bind-struct-by-value-arg))
+             (:l0     'l0-bind-struct-by-value-arg)
+             (:cuda   'cuda-bind-struct-by-value-arg))
            kernel arg-index fields total-bytes))
 
 ;;; --- Byte-level buffer I/O dispatchers --------------------------------
@@ -1460,8 +1855,9 @@
 ;;; dispatchers wrap those copies.
 ;;;
 ;;; Under :opencl the host pointer is staged in/out via cl-enqueue-*.
-;;; Under :l0 the USM-shared pointer IS the host pointer, so the copy
-;;; collapses to a memcpy.
+;;; Under :l0 the USM-shared pointer IS the host pointer, and under :cuda
+;;; the managed (unified) pointer likewise, so both copies collapse to a
+;;; memcpy.
 
 (defun write-bytes-to-buffer (queue buffer host-ptr nbytes)
   "Copies NBYTES from host-pointer HOST-PTR into runtime BUFFER."
@@ -1469,7 +1865,7 @@
     (:opencl
      (check-cl (cl-enqueue-write-buffer queue buffer 1 0 nbytes host-ptr
                                         0 (cffi:null-pointer) (cffi:null-pointer))))
-    (:l0
+    ((:l0 :cuda)
      (loop for i from 0 below nbytes
            do (setf (cffi:mem-aref buffer :uint8 i)
                     (cffi:mem-aref host-ptr :uint8 i))))))
@@ -1480,7 +1876,7 @@
     (:opencl
      (check-cl (cl-enqueue-read-buffer queue buffer 1 0 nbytes host-ptr
                                        0 (cffi:null-pointer) (cffi:null-pointer))))
-    (:l0
+    ((:l0 :cuda)
      (loop for i from 0 below nbytes
            do (setf (cffi:mem-aref host-ptr :uint8 i)
                     (cffi:mem-aref buffer :uint8 i))))))
@@ -1524,7 +1920,8 @@
 (defun bind-local-scratch-cell-arg (kernel base-index byte-size)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-local-scratch-cell-arg)
-             (:l0     'l0-bind-local-scratch-cell-arg))
+             (:l0     'l0-bind-local-scratch-cell-arg)
+             (:cuda   'cuda-bind-local-scratch-cell-arg))
            kernel base-index byte-size))
 
 (defun opencl-bind-local-scratch-vector-arg (kernel base-index n-elements elem-bytes)
@@ -1611,7 +2008,8 @@
 (defun bind-local-scratch-vector-arg (kernel base-index n-elements elem-bytes)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-bind-local-scratch-vector-arg)
-             (:l0     'l0-bind-local-scratch-vector-arg))
+             (:l0     'l0-bind-local-scratch-vector-arg)
+             (:cuda   'cuda-bind-local-scratch-vector-arg))
            kernel base-index n-elements elem-bytes))
 
 
@@ -1629,7 +2027,9 @@
    (values context queue).  For :opencl, both are OpenCL handles.  For
    :l0, CONTEXT is a ze_context_handle_t and QUEUE is NIL (L0 launches
    create transient command queues); *AD-DEVICE* and *AD-CONTEXT* are
-   also bound for L0 helpers to read."
+   also bound for L0 helpers to read.  For :cuda, CONTEXT is a CUcontext
+   and QUEUE is NIL (launches go to the null stream); *CUDA-AD-DEVICE*
+   holds the CUdevice ordinal."
   (ecase *ad-runtime*
     (:opencl
      (cffi:with-foreign-objects ((platforms :pointer 1)
@@ -1675,7 +2075,15 @@
                   (setf *ad-device* device
                         *ad-context* ctx)
                   (values ctx nil)))
-             (cffi:foreign-free ctx-desc))))))))
+             (cffi:foreign-free ctx-desc))))))
+    (:cuda
+     (check-cu (cu-init 0))
+     (cffi:with-foreign-objects ((dev :int) (ctx-out :pointer))
+       (check-cu (cu-device-get dev 0))
+       (let ((device (cffi:mem-ref dev :int)))
+         (check-cu (cu-ctx-create ctx-out 0 device))
+         (setf *cuda-ad-device* device)
+         (values (cffi:mem-ref ctx-out :pointer) nil))))))
 
 (defun runtime-shutdown (context queue)
   "Tear down the runtime handles returned by RUNTIME-INIT."
@@ -1686,11 +2094,14 @@
     (:l0
      (when context (ze-context-destroy context))
      (setf *ad-device* nil
-           *ad-context* nil))))
+           *ad-context* nil))
+    (:cuda
+     (when context (cu-ctx-destroy context))
+     (setf *cuda-ad-device* nil))))
 
 (defun runtime-create-grad-buffer (context bytes)
   "Allocate a grad-output buffer of BYTES bytes (cl_mem under :opencl,
-   USM-shared ptr under :l0)."
+   USM-shared ptr under :l0, managed ptr under :cuda)."
   (ecase *ad-runtime*
     (:opencl
      (cffi:with-foreign-object (err :int)
@@ -1699,21 +2110,74 @@
          (check-cl (cffi:mem-ref err :int))
          buf)))
     (:l0
-     (l0-alloc-shared context bytes 8))))
+     (l0-alloc-shared context bytes 8))
+    (:cuda
+     (cu-alloc-managed bytes 8))))
 
 (defun runtime-release-buffer (context buffer)
   (ecase *ad-runtime*
     (:opencl (cl-release-mem-object buffer))
-    (:l0     (ze-mem-free context buffer))))
+    (:l0     (ze-mem-free context buffer))
+    (:cuda   (cu-free buffer))))
 
 (defun runtime-release-kernel (kernel)
   (ecase *ad-runtime*
     (:opencl (cl-release-kernel kernel))
-    (:l0     (ze-kernel-destroy kernel))))
+    (:l0     (ze-kernel-destroy kernel))
+    (:cuda   (cuda-release-kernel kernel))))
 
 (defun runtime-release-program (program)
-  "Release a program (OpenCL) / module (L0)."
+  "Release a program (OpenCL) / module (L0 / CUDA)."
   (ecase *ad-runtime*
     (:opencl (cl-release-program program))
-    (:l0     (ze-module-destroy program))))
+    (:l0     (ze-module-destroy program))
+    (:cuda   (cu-module-unload program))))
+
+;;; ======================================================================
+;;; === Runtime availability + selection =================================
+;;; ======================================================================
+
+(defun ad-runtime-available-p (runtime)
+  "T when RUNTIME can actually run a kernel on this machine.  Each check
+   is guarded so a missing driver reports NIL rather than signalling."
+  (ecase runtime
+    (:l0     (l0-available-p))
+    (:cuda   (cuda-available-p))
+    (:opencl (and *opencl-library-loaded*
+                  (ignore-errors
+                   (cffi:with-foreign-object (n :uint)
+                     (and (= +CL-SUCCESS+
+                             (cl-get-platform-ids 0 (cffi:null-pointer) n))
+                          (> (cffi:mem-ref n :uint) 0))))))))
+
+(defvar *ad-auto-runtimes* '(:l0 :opencl)
+  "Runtimes a BARE `VERIFY-AUTODIFF:` directive may auto-select, in order.
+
+   :cuda is deliberately NOT here.  Endeavor 147 first let auto-selection
+   reach for whatever the machine had, and measured why that is wrong: on
+   the H100 pod, `145/18-ring-staged-vjp-bmg` -- an Intel spec, named -bmg,
+   carrying a BMG hardware profile and its MMA fragment shape -- was picked
+   up by the CUDA runtime and died on a kernel-parameter mismatch.  It was
+   right to fail, and it would have been worse to pass.
+
+   So a spec runs on CUDA only when it SAYS so, via VERIFY-AUTODIFF[CUDA]:.
+   That keeps the bare directive's historical meaning exactly (SPIR-V
+   runtimes) while the pinned form opens the NVIDIA path.  Giving the
+   existing corpus NVIDIA twins is then a deliberate per-spec sweep -- which
+   is the honest shape of that work anyway, since a vendor-specific kernel
+   needs a vendor-appropriate profile and shape, not just a second runtime.")
+
+(defun ad-select-runtime (&optional preferred)
+  "Choose the on-metal runtime for a VERIFY-AUTODIFF run.
+
+   PREFERRED (:l0 / :cuda / :opencl) PINS a runtime: it is returned when
+   available and NIL otherwise, so a spec that names a backend SKIPs
+   rather than silently verifying somewhere else.  With no preference,
+   picks the first available of *AD-AUTO-RUNTIMES* -- see that variable for
+   why :cuda requires an explicit pin.
+
+   Returns the runtime keyword, or NIL if nothing usable is present."
+  (if preferred
+      (and (ad-runtime-available-p preferred) preferred)
+      (find-if #'ad-runtime-available-p *ad-auto-runtimes*)))
 

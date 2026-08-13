@@ -1,0 +1,31 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=4x4@1:1 at.A=1,2 atol=5e-2 h=0.5 expect.A=14.0
+;;
+;; Endeavor 147, rung 4 — the 9-SLOT MATRIX RECORD.
+;;
+;; A rank-2 tensor widens the ABI from six slots to nine (ptr, byte-size,
+;; TWO offsets, TWO strides, TWO extents, length).  This rung isolates that
+;; widening from everything else: the output is still a plain scalar cell,
+;; so only the INPUT binding changes shape relative to rung 3.
+;;
+;; A is the row-major ramp A[i][j] = 1 + (i*4 + j), so A[1][2] = 7.
+;;   f(A)     = A[1][2]^2 = 49
+;;   df/dA[1][2] = 2 * A[1][2] = 14.0
+;;   df/dA[i][j] = 0 elsewhere
+;;
+;; A gradient of 14 at (1,2) also pins the ROW-MAJOR reading of the record:
+;; if the two strides were swapped, the kernel would read A[2][1] = 10 and
+;; the analytical gradient would come back 20 rather than 14 — and, being a
+;; real element of the matrix, it would look entirely plausible.
+;;
+;; h=0.5 because the finite difference of x^2 is exact for any step (the
+;; third derivative vanishes), so a large step buys FD precision against
+;; float32 cancellation for free.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel cuda_mat_elem_sq (A &out C)
+  (declare #'(mat-t &out out-c)
+           (global-size :set-to 1))
+  (set! (~ C) (* (~ A 1 2) (~ A 1 2))))

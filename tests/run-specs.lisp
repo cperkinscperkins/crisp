@@ -1063,41 +1063,76 @@
               (let ((implicit (getf kern :implicit-params)))
                 (return-from %vad-read-implicit-params
                   (loop for p in implicit
-                        for range = (getf p :range)
-                        for size = (getf p :size-expr)
-                        for type-spec = (getf p :type)
-                        for elem-type = (second type-spec)
-                        for elem-bytes = (case elem-type
-                                           ((float)  4)
-                                           ((double) 8)
-                                           ((int ulong long) 8)
-                                           (t (error "%vad-read-implicit-params: unsupported elem-type ~A in ~A"
-                                                     elem-type type-spec)))
-                        ;; Endeavor 145 (P6): a 2-D scratch tile's :size-expr is a LIST
-                        ;; (ROWS COLS), not an integer.  Carry :rows / :cols through for
-                        ;; the 9-arg matrix binding and make :n-elements their product so
-                        ;; every consumer still sees an element count.
-                        for dims = (and (listp size) size)
-                        collect (list :base (first range)
-                                      :n-elements (if dims (reduce #'* dims) size)
-                                      :rows (and dims (first dims))
-                                      :cols (and dims (second dims))
-                                      :elem-bytes elem-bytes
-                                      :arg-width (1+ (- (second range) (first range))))))))))))))
+                        ;; Endeavor 147: a :kind :tensor-map implicit param (the
+                        ;; CUtensorMap descriptor Crisp mints for a :block TMA
+                        ;; kernel) carries NO :type key.  The old code read
+                        ;; (second (getf p :type)) -> NIL and fell into the
+                        ;; unsupported-elem-type ERROR below, so a TMA spec
+                        ;; CRASHED here rather than reaching the device.  Pass it
+                        ;; through with its own shape instead; its physical width
+                        ;; is 1 (a single descriptor pointer), which keeps every
+                        ;; downstream arg-base offset correct.
+                        when (eq (getf p :kind) :tensor-map)
+                          collect (let ((range (getf p :range)))
+                                    (list :kind :tensor-map
+                                          :name (getf p :name)
+                                          :describes (getf p :describes)
+                                          :element-type (getf p :element-type)
+                                          :rank (getf p :rank)
+                                          :box-dims (getf p :box-dims)
+                                          :layout (or (getf p :layout) :row-major)
+                                          :swizzle (or (getf p :swizzle) :none)
+                                          :base (first range)
+                                          :arg-width (1+ (- (second range) (first range)))))
+                        else
+                        collect
+                        (let* ((range (getf p :range))
+                               (size (getf p :size-expr))
+                               (type-spec (getf p :type))
+                               (elem-type (second type-spec))
+                               (elem-bytes
+                                 (case elem-type
+                                   ((float)  4)
+                                   ((double) 8)
+                                   ((int ulong long) 8)
+                                   (t (error "%vad-read-implicit-params: unsupported elem-type ~A in ~A"
+                                             elem-type type-spec))))
+                               ;; Endeavor 145 (P6): a 2-D scratch tile's :size-expr is a
+                               ;; LIST (ROWS COLS), not an integer.  Carry :rows / :cols
+                               ;; through for the 9-arg matrix binding and make
+                               ;; :n-elements their product so every consumer still sees
+                               ;; an element count.
+                               (dims (and (listp size) size)))
+                          (list :base (first range)
+                                :n-elements (if dims (reduce #'* dims) size)
+                                :rows (and dims (first dims))
+                                :cols (and dims (second dims))
+                                :elem-bytes elem-bytes
+                                :arg-width (1+ (- (second range) (first range)))))))))))))))
 
-(defun %vad-compile-spv (file &key differentiate precision denormal)
-  "Compiles FILE to SPV via the crisp-compile binary.
+(defun %vad-compile-spv (file &key differentiate precision denormal
+                                   (target "spv") arch)
+  "Compiles FILE to a device module via the crisp-compile binary.
+
+   TARGET is the --ir-target value and also the output extension: \"spv\"
+   for the SPIR-V runtimes (:l0 / :opencl) and \"ptx\" for :cuda
+   (endeavor 147).  ARCH, when given, is forwarded as --ir-target-arch —
+   an sm_90a kernel (TMA / wgmma) will not compile without it, and the
+   spec's own HOIST-ARCH directive is the source of truth.
+
    When DIFFERENTIATE is T, passes --differentiate and expects
-   <basename>_grad.spv.  PRECISION (:fast/:ieee) and DENORMAL (:ftz/:preserve),
-   when given, are forwarded as --math-precision / --denormal-handling so the
-   fwd + bwd kernels are compiled under the same FP mode (Endeavor 128 Phase 5).
+   <basename>_grad.<target>.  PRECISION (:fast/:ieee) and DENORMAL
+   (:ftz/:preserve), when given, are forwarded as --math-precision /
+   --denormal-handling so the fwd + bwd kernels are compiled under the
+   same FP mode (Endeavor 128 Phase 5).
    Returns the output pathname on success, NIL on error."
   (let* ((bin (get-binary-path))
          (base-name (if differentiate
                         (format nil "~a_grad" (pathname-name file))
                         (pathname-name file)))
-         (out-path (make-pathname :name base-name :type "spv" :defaults file))
-         (args (list (uiop:native-namestring file) "--ir-target=spv"
+         (out-path (make-pathname :name base-name :type target :defaults file))
+         (args (list (uiop:native-namestring file)
+                     (format nil "--ir-target=~a" target)
                      ;; --metadata emits a sibling .metacrisp s-expression
                      ;; file with the kernel's :physical-signature,
                      ;; :declared-signature, and :implicit-params.  The
@@ -1111,6 +1146,12 @@
     ;; shape.  Driven by the spec's HOIST-HARDWARE-PROFILE directive.
     (when *compile-hardware-profile*
       (push (format nil "--hardware-profile=~a" *compile-hardware-profile*) args))
+    ;; Endeavor 147: forward HOIST-ARCH.  The hoist path has always done this
+    ;; (see run-spec-with-hoist); the verify path never did, because it only
+    ;; ever targeted SPV.  A :block / wgmma kernel needs sm_90a here or the
+    ;; compile fails the arch gate long before any gradient is computed.
+    (when arch
+      (push (format nil "--ir-target-arch=~a" arch) args))
     (when differentiate (push "--differentiate" args))
     (when precision
       (push (format nil "--math-precision=~a" (string-downcase (symbol-name precision))) args))
@@ -1127,8 +1168,8 @@
                 (if differentiate "backward" "forward") exit-code error-output)
         nil)
        ((not (probe-file out-path))
-        (format *error-output* "~&VERIFY-AUTODIFF: ~a SPV not produced at ~a~%"
-                (if differentiate "backward" "forward") out-path)
+        (format *error-output* "~&VERIFY-AUTODIFF: ~a ~:@(~a~) not produced at ~a~%"
+                (if differentiate "backward" "forward") target out-path)
         nil)
        (t out-path)))))
 
@@ -1183,10 +1224,12 @@
               *compile-hardware-profile*)))
    (case (%vad-ensure-runner-loaded)
     (:unavailable
-     (format t "SKIP (OpenCL runner unavailable)~%")
+     (format t "SKIP (on-metal AD runner unavailable)~%")
      t)
     (:ready
-     (let* ((inputs (getf spec :inputs))
+     (let* ((pinned-runtime (getf spec :runtime))
+            (selected-runtime (cl-user::ad-select-runtime pinned-runtime))
+            (inputs (getf spec :inputs))
             (atol (getf spec :atol))
             (h (getf spec :h))
             (seed-grad (getf spec :seed-grad))
@@ -1230,10 +1273,31 @@
         ((null inputs)
          (format *error-output* "FAIL (No inputs in directive)~%")
          nil)
+        ;; Endeavor 147: no usable on-metal runtime.  A SPEC-PINNED backend
+        ;; that is absent skips loudly (naming what it wanted) so a CUDA-only
+        ;; box does not look like it verified an Intel kernel, and vice versa.
+        ((null selected-runtime)
+         (if pinned-runtime
+             (format t "SKIP (VERIFY-AUTODIFF pinned to ~A; not available here)~%"
+                     pinned-runtime)
+             (format t "SKIP (no on-metal AD runtime available)~%"))
+         t)
         (t
-         (let* ((fwd-spv (%vad-compile-spv file :differentiate nil :precision precision :denormal denormal))
-                (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t :precision precision :denormal denormal)))
+         (let* ((cl-user::*ad-runtime* selected-runtime)
+                ;; :cuda consumes PTX; :l0 / :opencl consume SPIR-V.
+                (target (if (eq selected-runtime :cuda) "ptx" "spv"))
+                (arch (parse-hoist-arch (extract-test-directives file)))
+                (fwd-spv (%vad-compile-spv file :differentiate nil :precision precision
+                                                :denormal denormal :target target :arch arch))
+                (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t :precision precision
+                                                             :denormal denormal :target target :arch arch)))
                 (result nil))
+           ;; *ad-runtime* lives in the LAZILY-loaded runner, so at compile time
+           ;; of this file the symbol is not yet proclaimed special and a plain
+           ;; LET would bind it LEXICALLY — leaving the runner reading its own
+           ;; global :l0 and silently verifying on the wrong runtime.  This
+           ;; declaration makes the binding dynamic, which is the whole point.
+           (declare (special cl-user::*ad-runtime*))
            (unwind-protect
                 (setf result
                       (cond
@@ -1274,13 +1338,13 @@
                                 (let ((failures (%vad-check-expected expected-grads results atol)))
                                   (cond
                                    ((null failures)
-                                    (format t "PASS (~A)~%" (%vad-format-results results))
+                                    (format t "PASS [~(~A~)] (~A)~%" selected-runtime (%vad-format-results results))
                                     t)
                                    (t
                                     (format *error-output* "FAIL (~{~A~^; ~})~%" failures)
                                     nil))))
                                (t
-                                (format t "PASS (~A)~%" (%vad-format-results results))
+                                (format t "PASS [~(~A~)] (~A)~%" selected-runtime (%vad-format-results results))
                                 t)))
                           (error (e)
                              (uiop:print-backtrace :condition e)

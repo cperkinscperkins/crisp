@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: x=3.0 y=4.0 atol=1e-3 expect.x=4.0 expect.y=3.0
+;;
+;; Endeavor 147, rung 2 — SLOT ORDERING.
+;;
+;; f(x,y) = x*y  =>  df/dx = y = 4.0,  df/dy = x = 3.0
+;;
+;; Rung 1 could pass with a one-argument ABI even if the runner's notion of
+;; where each parameter sits were wrong.  This one cannot: the two gradients
+;; are DIFFERENT numbers, so swapping the two inputs' slots (or their two
+;; grad-output slots) produces 3.0 and 4.0 the wrong way round and fails.
+;;
+;; That matters more under CUDA than under Level Zero.  L0 sets each argument
+;; against the kernel by index as it goes; CUDA assembles one kernelParams
+;; array at launch, so an off-by-one in slot bookkeeping is silent until the
+;; numbers come back transposed.
+
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
+
+(def-kernel cuda_cell_product (x y &out z)
+  (declare #'(in-ish in-ish &out out-ish))
+  (set! (~ z) (* (~ x) (~ y))))

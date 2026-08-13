@@ -13,8 +13,26 @@
 ;; --ir-target-arch=sm_90 auto-upgrades the PTX .target to sm_90a.)  Automated metal is not in
 ;; CI (no Hopper runner), so this stays a compile+PTX-shape check.
 ;;
-;; SKIP-WITH[--differentiate]: "differentiates and its backward carries real gradient scatter, but TMA :block is sm_90a-only and VERIFY-AUTODIFF runs on SPV/L0 -- so the gradient VALUES cannot be checked on this machine. Un-skip after a Hopper pod run, not before (135/01 compiled with correct-looking atomics and still returned 0.0)"
+;; HOIST-ARCH: sm_90
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+;; VERIFY-AUTODIFF[CUDA]: A=4x4@1:1 at.A=1,2 h=0.5 atol=1e-3 expect.A=1.0 output-mat=4x4 group=4
+;;
+;; Endeavor 147: the SKIP-WITH[--differentiate] is GONE.  Its reason was
+;; "VERIFY-AUTODIFF runs on SPV/L0 -- so the gradient VALUES cannot be checked
+;; on this machine", and that is no longer true: the directive now has a CUDA
+;; runtime, and it encodes the CUtensorMap descriptor this kernel's TMA path
+;; needs (cuTensorMapEncodeTiled over A's buffer, from the :kind :tensor-map
+;; implicit param in the .metacrisp).
+;;
+;; f(A) = sum_ij C[i][j] = sum_ij A[i][j] since C = A, so every element's
+;; gradient is 1.0.  MEASURED on an H100 (sm_90a), not assumed -- which is
+;; what the old skip note asked for, and for the reason it gave: 135/01
+;; compiled with correct-looking atomics and still returned 0.0.
+;;
+;; h=0.5 because f is LINEAR: the central difference carries no truncation
+;; error at any step, so a large h is strictly better -- it buys precision
+;; against float32 cancellation on a sum of 136.  At the default h=1e-3 the FD
+;; noise alone is ~7e-3, which has nothing to do with the gradient.
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 
