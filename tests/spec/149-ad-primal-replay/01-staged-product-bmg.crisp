@@ -1,0 +1,50 @@
+;; Endeavor 149 rung 1 — the SMALLEST kernel whose backward needs a staged tile's PRIMAL.
+;;
+;; TDD: this spec is expected to FAIL until primal replay exists.  Today it fails with the
+;; engine's (correct) refusal:
+;;
+;;     cannot differentiate: the backward needs the PRIMAL value of A-TILE, a scratch tile
+;;     that is not filled by load-tile-at, so its contents cannot be recovered (a backward
+;;     kernel replays the forward's bindings but not its statements).
+;;
+;; That refusal is the STARTING LINE, not a bug.  Until replay exists it is strictly better
+;; than the alternative: a backward that reads the empty tile and silently returns zero.
+;;
+;; WHY A PRODUCT AND NOT A COPY.  A copy would not exercise this at all — d(copy)/dx = 1 needs
+;; no primal value, and the generic set!/~ chain already carries it (139/02 proves that).  The
+;; backward only needs a tile's CONTENTS when the tile is an operand of a MULTIPLY:
+;;
+;;     C[i] = A-tile[i] * B-tile[i]
+;;     dA-tile[i] = B-tile[i] * dC[i]     <- needs B-tile's numbers
+;;
+;; and B-tile is empty in the backward.  That is the whole endeavour in four lines.
+;;
+;; DELIBERATELY NO MMA, NO SWIZZLE, NO RINGS.  146 learned the cost of debugging an AD gap
+;; through a kernel with three other features in it (the 142 ring work cost five iterations).
+;; Rung 2 adds the non-invertible index map; rung 3 adds the safety constraint.
+;;
+;; THE CHECK.  f(A,B) = sum(A*B) elementwise, so dA[i] = B[i].  With B[1] = 1.5, dA[1] = 1.5.
+;; Chosen so a wrong answer is unambiguous: an empty-tile read gives exactly 0.0, and a
+;; confusion between A and B gives 2.0 (A[1]).  Neither can be mistaken for the right answer.
+;;
+;; COMPILE-WITH[--ir-target=spv]: PASS
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] B=[0.5 1.5 2.5 3.5] at.A=1 expect.A=1.5 at.B=1 expect.B=2.0 h=0.5 atol=1e-3 output-vec=4
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel staged_product (A B &out C)
+  (declare #'(vec-t vec-t &out vec-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((A-tile (make-scratch-vector float 4))
+        (B-tile (make-scratch-vector float 4)))
+    ;; HAND-STAGED: a plain set!, not load-tile-at, so nothing records where these came from.
+    (workgroup-stride A-tile (i)
+      (set! (~ A-tile i) (~ A i))
+      (set! (~ B-tile i) (~ B i)))
+    (sync-workgroup)
+    ;; The multiply is what makes the backward need the tiles' CONTENTS.
+    (workgroup-stride C (i)
+      (set! (~ C i) (* (~ A-tile i) (~ B-tile i))))))

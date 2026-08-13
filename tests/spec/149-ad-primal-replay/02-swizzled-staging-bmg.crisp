@@ -1,0 +1,56 @@
+;; Endeavor 149 rung 2 — staging through an index map the compiler CANNOT INVERT.
+;;
+;; TDD: expected to FAIL until primal replay exists, with the same refusal as rung 1.
+;;
+;; WHY THIS RUNG EXISTS.  Rung 1 could, in principle, be solved the cheap way — by teaching
+;; the engine to recognise `(set! (~ TILE i) (~ A i))` as a disguised load-tile-at and record
+;; a source mapping for it.  That would fix rung 1 and NOT fix the case the endeavour is
+;; actually for.
+;;
+;; Here the staging permutes:
+;;
+;;     core = (i/2)*2 + ((i+1) mod 2)      ; swaps within each pair: 0<->1, 2<->3
+;;     A-tile[core] = A[i]
+;;
+;; so tile slot `core` holds a DIFFERENT element than slot `core` would under a straight copy.
+;; Source recovery would have to invert the user's arithmetic to know which global element a
+;; given slot came from.  That is not a matter of effort — the compiler did not author the
+;; expression and in general cannot invert it (140/01's real swizzle is
+;; `(r/8)*64 + (k/4)*32 + (r%8)*4 + (k%4)`, and the kernel is free to compute anything).
+;;
+;; REPLAY does not need to invert anything: it re-runs the fill and reads the tile.  So this
+;; rung is what distinguishes a real fix from a shortcut — if rung 2 passes, the mechanism is
+;; genuinely replay and not pattern-matching.
+;;
+;; This is 140/01's situation reduced to something BMG can actually run.  140/01 itself is
+;; sm_90a and needs endeavour 147's CUDA runtime before its numbers can be checked at all.
+;;
+;; THE CHECK.  The permutation is its own inverse, and f(A,B) = sum(A-tile * B-tile) where
+;; BOTH tiles are permuted the same way — so each product pairs A[i] with B[i] exactly as in
+;; rung 1, and dA[1] = B[1] = 1.5 again.  Deliberately the same expected value as rung 1: the
+;; SWIZZLE MUST NOT CHANGE THE GRADIENT, and reusing the number makes that explicit.  A
+;; mechanism that got the permutation wrong would land on 0.5 (B[0]) — adjacent, and visibly
+;; wrong.
+;;
+;; COMPILE-WITH[--ir-target=spv]: PASS
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] B=[0.5 1.5 2.5 3.5] at.A=1 expect.A=1.5 at.B=1 expect.B=2.0 h=0.5 atol=1e-3 output-vec=4
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel swizzled_staging (A B &out C)
+  (declare #'(vec-t vec-t &out vec-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((A-tile (make-scratch-vector float 4))
+        (B-tile (make-scratch-vector float 4)))
+    ;; Pair-swapping permutation: slot order is NOT source order.
+    (workgroup-stride A-tile (i)
+      (let ((core (+ (* (/ i 2) 2) (rem (+ i 1) 2))))
+        (set! (~ A-tile core) (~ A i))
+        (set! (~ B-tile core) (~ B i))))
+    (sync-workgroup)
+    ;; Both tiles carry the same permutation, so the products pair correctly.
+    (workgroup-stride C (i)
+      (set! (~ C i) (* (~ A-tile i) (~ B-tile i))))))
