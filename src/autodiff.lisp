@@ -3720,6 +3720,19 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                                         "GET-GLOBAL-LINEAR-ID" "GET-GLOBAL-LINEAR-SIZE"
                                         "GET-TOTAL-THREADS" "GET-TOTAL-GROUPS"
                                         "SYNC-WORKGROUP" "SYNC-WARP" "MEM-FENCE"
+                                        ;; Endeavor 146: PREFETCH-TILE is a pure SCHEDULING
+                                        ;; HINT — it warms a cache line and produces no value
+                                        ;; whatsoever, so it belongs with the barriers and
+                                        ;; fences above rather than being walked.  Walking it
+                                        ;; was actively harmful, not merely wasteful: its
+                                        ;; coordinate argument is a TUPLE, and
+                                        ;; `(prefetch-tile B (prefetch-k (* grid-x 2)) ...)`
+                                        ;; reads as a CALL to a function named PREFETCH-K
+                                        ;; when PREFETCH-K is really a let-bound row index.
+                                        ;; That is what 142/14 reported, and it is a parsing
+                                        ;; artefact of descending somewhere there was never
+                                        ;; anything to differentiate.
+                                        "PREFETCH-TILE"
                                         ;; Endeavor 146: the WARP builtins are thread
                                         ;; coordinates exactly as GET-LOCAL-ID is — structural,
                                         ;; not functions of the kernel's inputs, so their
@@ -3981,18 +3994,36 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 
    Element type is FLOAT in both register cases: fragments are fp32 and an adjoint
    always starts at zero."
-  (if (and (consp init-form) (symbolp (car init-form))
-           (string-equal (symbol-name (car init-form)) "MAKE-REGISTER-TILE"))
-      (let ((cl-pkg (find-package :crisp-language)))
-        (if (%mma-ad-register-operand-tile-p init-form)
-            (list (intern "MAKE-SCRATCH-MATRIX" cl-pkg)
-                  (intern "FLOAT" cl-pkg)
-                  (third init-form))
-            (list (intern "MAKE-REGISTER-TILE" cl-pkg)
-                  (intern "FLOAT" cl-pkg)
-                  (third init-form)
-                  0.0)))
-      (%promote-scratch-init-for-ad init-form)))
+  (cond
+    ((and (consp init-form) (symbolp (car init-form))
+          (string-equal (symbol-name (car init-form)) "MAKE-REGISTER-TILE"))
+     (let ((cl-pkg (find-package :crisp-language)))
+       (if (%mma-ad-register-operand-tile-p init-form)
+           (list (intern "MAKE-SCRATCH-MATRIX" cl-pkg)
+                 (intern "FLOAT" cl-pkg)
+                 (third init-form))
+           (list (intern "MAKE-REGISTER-TILE" cl-pkg)
+                 (intern "FLOAT" cl-pkg)
+                 (third init-form)
+                 0.0))))
+    ;; Endeavor 146: RING constructors pass through UNCHANGED.
+    ;;
+    ;; %promote-scratch-init-for-ad opens with %scratch-tensor-canonical-spec, which knows
+    ;; only the four scratch TILE forms; handed a ring it yields the stub type `(TENSOR FLOAT)`
+    ;; and the caller dies with `Invalid incomplete type specifier`.  A ring adjoint needs no
+    ;; promotion in any case: it is a ring of the SAME shape, and these are float already.
+    ;;
+    ;; This was first patched locally inside %ad-ensure-ring-adj-bindings, which fixed the
+    ;; top-level-ring path and left this one — %augment-scratch-adj-bindings reaches the same
+    ;; allocator for a ring bound in a NESTED let, which is 142/14's shape.  Fixed at the
+    ;; allocator instead, so both paths are covered by one rule.
+    ((and (consp init-form) (symbolp (car init-form))
+          (member (symbol-name (car init-form))
+                  '("MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
+                    "MAKE-SCRATCH-TENSOR-RING" "MAKE-REGISTER-TILE-RING")
+                  :test #'string=))
+     init-form)
+    (t (%promote-scratch-init-for-ad init-form))))
 
 (defun %mma-ad-register-tile-p (sym flat-anf)
   "Endeavor 145 P3b: T when SYM is bound in FLAT-ANF by a make-register-tile constructor.

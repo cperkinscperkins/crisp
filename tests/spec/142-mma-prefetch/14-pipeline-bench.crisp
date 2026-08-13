@@ -4,7 +4,7 @@
 ;;
 ;; SKIP-DEFAULT-PASS: register-tile load needs a hardware profile; no GENERIC lowering
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
-;; SKIP-WITH[--differentiate]: "forward-only prefetch pipeline / MMA"
+;; SKIP-WITH[--differentiate]: "NOT forward-only — the old reason said so and was the last such claim left in the suite.  Endeavour 146 cleared two real blockers behind it (the ring allocator's `Invalid incomplete type specifier: (TENSOR FLOAT)`, and prefetch-tile not being registered as the pure scheduling hint it is), and what remains is a third, in ANF rather than AD: prefetch-tile's COORDINATE TUPLE is flattened into its own binding, so `(prefetch-tile B (prefetch-k (* grid-x 2)) ...)` arrives as `(%ANF-T-58 (PREFETCH-K %ANF-T-57))` and reads as a call to a function named PREFETCH-K — which is really a let-bound row index.  Same class as the with-warp-specialization ANF defect Gap 3 fixed: anf-transform must treat that argument as opaque.  Bounded work; nothing here is about prefetch being undifferentiable."
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;; MMA-DIMS: 1024 1024 1024
 ;; HOIST-HARDWARE-PROFILE: bmg
