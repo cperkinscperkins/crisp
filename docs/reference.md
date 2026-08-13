@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-08-13T06:54:35.780294Z
+Generated on 2026-08-13T23:43:29.747456Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2348,10 +2348,23 @@ Generated on 2026-08-13T06:54:35.780294Z
               INTERMEDIATE-ZERO KERNEL-PKG)`
 
 ---
+### DEFPARAMETER `*AD-SLM-SCRATCH-CTORS*`
+
+  > Constructors whose bindings allocate a fill-tile-able SLM TENSOR.  >   >    A WHITELIST on purpose.  The bindings in a backward LET also include  >    things that must NOT be filled: make-async-barrier / -ring bindings are  >    mbarrier objects with their own initialisation, not tensors, and  >    make-register-tile lives in the GRF — it already receives an explicit 0.0  >    init from %mma-ad-adj-init, and after %explode-register-tiles there is no  >    whole-tile symbol left for fill-tile to name.  A blacklist would silently  >    swallow each new allocator as it is added; this fails closed instead.
+
+
+---
+### DEFUN `%AD-BACKWARD-SLM-ZERO-FORMS`
+- **Args**: `(BINDINGS)`
+
+  > Prologue forms zeroing every compiler-allocated SLM scratch object in  >    BINDINGS, followed by a single sync-workgroup.  NIL when there are none.  >   >    EVERY such object, not only the AD-minted `<var>_ADJ` ones.  See the  >    header note: the narrow rule obliges every future allocation to be  >    classified correctly forever, and BUG 041 is that obligation going unmet.  >   >    BINDINGS must be the bindings actually being EMITTED (post  >    %ad-rewrite-primal-bindings), not the pre-rewrite list: a rewritten primal  >    binding may no longer be an SLM allocation at all.  >   >    Safe with respect to primal replay.  These forms run at the head of the  >    LET body, before any replay stages data into a tile, and per BUG 037 a  >    replayed primal reads from its ORIGINAL GLOBAL source rather than from  >    inherited SLM — so nothing downstream depends on the prior contents.
+
+
+---
 ### DEFUN `%GFW-PROCESS-LET`
 - **Args**: `(FORM EMIT-FN PROCESS-FORM-FN BINDINGS AUGMENTED-BINDINGS BODY)`
 
-  > BUG 037: the replayed primal bindings now read staged tiles from their ORIGINAL GLOBAL source  >    instead of from the (empty) tile, and an unrecoverable primal that the backward actually uses  >    is a hard error rather than a silent zero.
+  > BUG 037: the replayed primal bindings now read staged tiles from their ORIGINAL GLOBAL source  >    instead of from the (empty) tile, and an unrecoverable primal that the backward actually uses  >    is a hard error rather than a silent zero.  >   >    BUG 041 (endeavor 147): every SLM scratch object this LET allocates is  >    zeroed before the backward body runs.  See the header note above  >    %ad-backward-slm-zero-forms — shared memory is not guaranteed zero on any  >    backend, and under CUDA it demonstrably is not.
 
 
 ---
@@ -2444,10 +2457,17 @@ Generated on 2026-08-13T06:54:35.780294Z
 
 
 ---
+### DEFUN `%AD-ZERO-BACKWARD-SLM`
+- **Args**: `(BACKWARD)`
+
+  > Prepend SLM zeroing to BACKWARD's outer LET.  Returns BACKWARD unchanged  >    when it is not a LET or allocates no SLM scratch.  See the BUG 041 header  >    above.
+
+
+---
 ### DEFUN `%AD-ENSURE-RING-ADJ-BINDINGS`
 - **Args**: `(BACKWARD FLAT-ANF KERNEL-PKG)`
 
-  > Add a paired `<RING>_ADJ` binding to BACKWARD's outer LET for every ring the backward  >    NAMES but does not BIND.  >   >    Only rings actually mentioned get a binding, so a kernel whose backward never touches  >    a ring is returned untouched.  >   >    The adjoint is the forward ring's own constructor, used verbatim: a ring adjoint is a  >    ring of identical shape, which is what makes `(ring-get R_ADJ i)` the adjoint of  >    `(ring-get R i)` (see %tlc-bwd-adj-name).  Deliberately NOT routed through  >    %mma-ad-adj-init -- its %promote-scratch-init-for-ad branch does not understand ring  >    constructors and reduces them to the stub type `(TENSOR FLOAT)`.  No promotion is  >    needed regardless: these rings are float already.
+  > Add a paired `<RING>_ADJ` binding to BACKWARD's outer LET for every ring the backward  >    NAMES but does not BIND.  >   >    Only rings actually mentioned get a binding, so a kernel whose backward never touches  >    a ring is returned untouched.  >   >    The adjoint is the forward ring's own constructor, used verbatim: a ring adjoint is a  >    ring of identical shape, which is what makes `(ring-get R_ADJ i)` the adjoint of  >    `(ring-get R i)` (see %tlc-bwd-adj-name).  Deliberately NOT routed through  >    %mma-ad-adj-init -- its %promote-scratch-init-for-ad branch does not understand ring  >    constructors and reduces them to the stub type `(TENSOR FLOAT)`.  No promotion is  >    needed regardless: these rings are float already.  >   >    BUG 041 (endeavor 147): also runs %ad-zero-backward-slm on the way out.
 
 
 ---

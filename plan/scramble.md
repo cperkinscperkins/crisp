@@ -652,7 +652,7 @@ NEXT
 - [x] make-arrival-sync
 - [x] update ideal_001.md - sync-warp
 - [x] revisit request-load-local in ideal_001.md.  Do we need a new variant? Or delete?
-- [ ] matrix-mult-stride ?  if we do this do we need mma-accumulate-via-tile / load-fragment etc.
+- [x] matrix-mult-stride ?  if we do this do we need mma-accumulate-via-tile / load-fragment etc.
 - [x] we need position-tile-grid and position-tile-ad to adjust a tile view "into" a space.
 
 code coverage
@@ -661,11 +661,7 @@ code coverage
 - [x] for unit tests, and e2e spec
 - [x] github ci report
 
-CleanUP
-=======
-[x]format T, format *terminal-io*    WTF.  should use log4cl
-[x]temp files everywhere EXCEPT in put_temp_files_here directory.
-[ ] never reads ANTIGRAVITY.md or tests.md 
+
 
 --runtime-checks
 ================
@@ -724,8 +720,9 @@ Binary Download / Release
 We have a github release for the libraries, with a python script to fetch.
 Should we do something for the compiler itself?
 - [x] update INSTALL.md instructions.
-- [ ] README.md should link to INSTALL.md
+- [x] README.md should link to INSTALL.md
 - [x] handling of opt.exe / 
+- [ ] INSTALL.md has outdated info ( L0 only no CUDA, etc)
 
 Integer Only Operations
 =======================
@@ -752,9 +749,12 @@ MMA
 [x] opportunities for using def-hardware-profile ??
 [ ] empty room fallacy?  GPU display? GPU monitoring?
 [ ] auto-differentiation
-- [ ] verify autodiff on cuda
+- [x] verify autodiff on cuda
 - [ ] need primal replay
 [ ] new macro for rings (prefetch/pipeline) that handles rings
+[ ] push FURTHER - mix prefetch, SLM and warp specialization
+[ ] NVidia? 
+[ ] why small sizes faring poorly against CuBLAS and MKL?
 [/] out of core orchestration 
 
 [x] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
@@ -768,7 +768,7 @@ MMA
 [ ] bug 035 (:col-major silently ignored on SPV); 
 [x]  unreachable STORE-TILE entry in anf-normalize's opaque list; 
 [x] to-float having no AD rule;
-[ ] a CUDA *ad-runtime* if you ever want the PTX backward proven numerically rather than structurally.
+[x] a CUDA *ad-runtime* if you ever want the PTX backward proven numerically rather than structurally.
 
 
 
@@ -839,6 +839,14 @@ Async Ops \ Named Barriers \ Rings
 FFI / C API / "tree shaking" / recompile
 ========================================
 
+
+DOCS
+====
+- [ ] developer docs
+- - [ ] what various scripts do
+- - [ ] how package release 
+- - [ ] how tag repo (to match release)
+- - [ ] how contribute. PR cycle.
 
 
 

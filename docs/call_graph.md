@@ -1179,6 +1179,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
 - - - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp [See above]
 - - - (%GFW-PROCESS-LET FORM EMIT-FN PROCESS-FORM-FN BINDINGS AUGMENTED-BINDINGS BODY)  autodiff.lisp
+- - - - (%AD-REWRITE-PRIMAL-BINDINGS BINDINGS)  autodiff.lisp [See above]
+- - - - (%AD-BACKWARD-SLM-ZERO-FORMS BINDINGS)  autodiff.lisp
+- - - - - (%AD-ZERO DOUBLE-P)  autodiff.lisp [See above]
 - - - - (%AD-CHECK-UNRESOLVED-PRIMALS BINDINGS BODY)  autodiff.lisp
 - - - - - (%AD-TILE-READ-P EXPR)  autodiff.lisp [See above]
 - - - - - (%VJP-FORM-MENTIONS-ANY-P FORM SYMS)  macros.lisp [See above]
@@ -1199,6 +1202,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%MMA-AD-ADJ-INIT INIT-FORM)  autodiff.lisp [See above]
 - - - (%AD-ENSURE-RING-ADJ-BINDINGS BACKWARD FLAT-ANF KERNEL-PKG)  autodiff.lisp
+- - - - (%AD-ZERO-BACKWARD-SLM BACKWARD)  autodiff.lisp
+- - - - - (%AD-BACKWARD-SLM-ZERO-FORMS BINDINGS)  autodiff.lisp [See above]
 - - - - (%AD-RING-CTOR-BINDINGS FLAT-ANF)  autodiff.lisp
 - - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
 - - - - (%AD-FORM-MENTIONS-P FORM SYM)  autodiff.lisp
