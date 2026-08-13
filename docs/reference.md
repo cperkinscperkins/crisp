@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-07-29T03:36:47.822372Z
+Generated on 2026-08-13T06:54:35.780294Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -731,10 +731,17 @@ Generated on 2026-07-29T03:36:47.822372Z
 
 
 ---
+### DEFUN `%LOWER-WARP-SPECIALIZATION`
+- **Args**: `(EXPR LOCATION &KEY (GATED T))`
+
+  > Endeavor 139 / 146: the PURE SYNTACTIC lowering of with-warp-specialization.  Returns the  >    replacement form; it analyses nothing and has no side effects.  >   >    EXTRACTED FROM THE ANALYZER in endeavour 146 so the AD walk can reuse it.  The walk runs  >    BEFORE semantic analysis, so without this it sees the raw construct and reads a role block  >    `(:consumer ...)` as a call to a function named CONSUMER.  >   >    TWO CONSUMERS, ONE LOWERING.  The alternative was a second, hand-written warp-gated rewrite  >    inside the AD normalizer — which would be free to drift from this one, and a gradient that  >    is correct for a kernel nobody runs is worse than no gradient at all.  Note this differs  >    from how wgmma is handled in the same normalizer: there the backward deliberately uses a  >    DIFFERENT instruction from the forward (sync MMA rather than warpgroup-async), which is a  >    real semantic choice.  Here the backward wants the SAME expansion the forward gets, only  >    earlier — reuse, not substitution.  >   >    (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).  Splits the  >    workgroup by WARP — warp k runs the role whose cumulative count range contains k.  Lowers to a  >    warp-id-gated nested if: (let ((wsid (to-int (warp-id)))) (if (< wsid t1) BODY1 (if (< wsid t2)  >    BODY2 ...))) where t_i is the running sum of role counts.  Role blocks are warp-UNIFORM (all  >    lanes of a warp take the same branch) but workgroup-DIVERGENT — so an internal workgroup  >    collective (sync-workgroup, a cooperative load-tile) inside a block would DEADLOCK.  Forbidding  >    those is decision B, enforced when the load path is added (Chapter 3 step 2); the skeleton here  >    just lowers the branch.
+
+
+---
 ### DEFUN `ANALYZE-WITH-WARP-SPECIALIZATION-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavor 139: (with-warp-specialization (ROLE COUNT ...) (ROLE BODY...) ...).  Splits the  >    workgroup by WARP — warp k runs the role whose cumulative count range contains k.  Lowers to a  >    warp-id-gated nested if: (let ((wsid (to-int (warp-id)))) (if (< wsid t1) BODY1 (if (< wsid t2)  >    BODY2 ...))) where t_i is the running sum of role counts.  Role blocks are warp-UNIFORM (all  >    lanes of a warp take the same branch) but workgroup-DIVERGENT — so an internal workgroup  >    collective (sync-workgroup, a cooperative load-tile) inside a block would DEADLOCK.  Forbidding  >    those is decision B, enforced when the load path is added (Chapter 3 step 2); the skeleton here  >    just lowers the branch.
+  > Endeavor 139: analyzes (with-warp-specialization ...) by lowering it with  >    %lower-warp-specialization and analysing the result.  >   >    Decision B: bind *in-warp-spec-block* around the role-block analysis so a :block load-tile  >    inside a role block is permitted (leader-issued, no workgroup sync) despite the  >    warp-divergent branch the expansion introduces.
 
 
 ---
@@ -782,9 +789,9 @@ Generated on 2026-07-29T03:36:47.822372Z
 ---
 ### DEFUN `%MMTS-LOWER`
 - **Args**: `(C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY
-              LOCATION)`
+              LOCATION &OPTIONAL (RESET-VALUE 0.0))`
 
-  > The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO  >    auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit  >    store + any fusion.  Warns if the C-tile is never stored.
+  > The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO  >    auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit  >    store + any fusion.  Warns if the C-tile is never stored.  >   >    BUG 036: emits a per-OUTPUT-TILE reset of the accumulator to RESET-VALUE before the K-loop.  >    Without it a workgroup that strides onto a second tile carries the first tile's partial sums.  >    A scratch C-tile's fill is workgroup-collective, so it is followed by a sync-workgroup; a  >    register tile's is per-lane and needs none.
 
 
 ---
@@ -1668,7 +1675,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%GET-TENSOR-ARITY`
 - **Args**: `(TYPE)`
 
-  > Returns the compile-time arity N of TYPE as an integer, or NIL.  >    Handles list form (tensor elem N ...) and mangled-symbol form.
+  > Returns the compile-time arity N of TYPE as an integer, or NIL.  >    Handles list form (tensor elem N ...), mangled-symbol form, and — BUG 039 — a `def-type`  >    ALIAS, resolved through canonicalize-type-specifier.
 
 
 ---
@@ -1682,7 +1689,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%GET-TENSOR-ALIGN`
 - **Args**: `(TYPE)`
 
-  > Extracts the :align keyword from a tensor type specifier.  >    New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth type).  >    Handles both list form and mangled symbol.
+  > Extracts the :align keyword from a tensor type specifier.  >    New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth type).  >    Handles list form, mangled symbol, and — BUG 039 — a `def-type` ALIAS.  >   >    This matters as much as the arity: with the arity fixed but the align still unresolved the  >    analyzer would take the :strided fallback for a :compact tensor, which reads strides~ that a  >    compact type is not obliged to carry.
 
 
 ---
@@ -1703,7 +1710,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Tensor path dispatches on resolved :align:  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)
+  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Tensor path dispatches on resolved :align:  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)  >   >    BUG 039: the cell / single-index fall-through now REJECTS multiple indices instead of  >    silently discarding all but the first.
 
 
 ---
@@ -2119,6 +2126,68 @@ Generated on 2026-07-29T03:36:47.822372Z
 
 
 ---
+### DEFVAR `*AD-BARRIER-RING-SYMS*`
+
+  > Symbols bound by make-async-barrier / make-async-barrier-ring in the kernel being  >    differentiated.  Bound by generate-backward-walk.
+
+
+---
+### DEFUN `%AD-VIEW-CONSTRUCTOR-P`
+- **Args**: `(FORM)`
+
+  > T when FORM is a pure VIEW constructor over a base storage handle.  >   >    All of these take the BASE first and carry only address arithmetic afterwards — strides,  >    offsets, a ring slot index — which is what makes 138's rule apply uniformly to them:  >    THE ADJOINT OF A VIEW IS THE SAME VIEW OF THE ADJOINT.  A view owns no storage, so it has  >    no adjoint of its own to allocate; its gradient is its base's gradient, seen through the  >    same arithmetic.
+
+
+---
+### DEFUN `%AD-COLLECT-VIEW-ALIASES`
+- **Args**: `(FLAT-ANF)`
+
+  > Alist SYM -> VIEW-FORM for every symbol bound to a pure view constructor.  >   >    Two distinct populations, both needed:  >      - ANF TEMPS that ANF hoisted a view into, e.g. `(%ANF-T-3 (RING-GET TILES 0))`, so  >        accessors can see through the hoist (139/02).  >      - USER BINDINGS that reinterpret a parameter, e.g.  >        `(C (make-matrix C0 float 16 8 :strides '(16 1)))` (135/09), so the adjoint namer  >        resolves C to a view of C0's gradient rather than inventing an unbacked C_ADJ.
+
+
+---
+### DEFUN `%AD-COLLECT-BARRIER-RING-SYMS`
+- **Args**: `(FLAT-ANF)`
+
+  > The symbols in FLAT-ANF bound to a BARRIER (ring) constructor.  >   >    Needed because `ring-get` means two different things depending on what it indexes, and the  >    walk cannot tell them apart from the call alone.
+
+
+---
+### DEFUN `%AD-INERT-RING-GET-P`
+- **Args**: `(EXPR)`
+
+  > T when EXPR is `(ring-get R i)` and R is a BARRIER ring.  >   >    RING-GET MUST NOT BE DECLARED INERT AS AN OPERATOR.  It means two different things:  >   >      (ring-get BARRIER-RING i) -> a barrier.  Carries ordering, not value; gradient is  >                                   exactly zero, same footing as make-async-barrier itself.  >      (ring-get TILE-RING i)    -> a VIEW of slot i.  Its adjoint is slot i of the adjoint  >                                   ring, and the engine already relies on that in  >                                   %ad-tile-base / %tlc-bwd-adj-name.  >   >    Declaring the operator inert would silently zero the gradient of every ring-staged tile —  >    the exact failure mode endeavour 146 Gap 2 removed for rem/mod.  So the distinction is made  >    from the RING's constructor, which *ad-barrier-ring-syms* records.
+
+
+---
+### DEFUN `%AD-REM-OR-MOD-FORM-P`
+- **Args**: `(EXPR)`
+
+  > T when EXPR is a two-argument (rem a b) or (mod a b) call.  >    Matched by symbol-NAME so it holds whichever package the kernel's reader interned  >    the operator into.
+
+
+---
+### DEFUN `%AD-WIDENING-CONVERSION-FORM-P`
+- **Args**: `(EXPR)`
+
+  > T when EXPR is a conversion to a FLOAT type — `(to-float x)`, `(to-double x)`,  >    `(to-half x)`, `(to-bfloat16 x)`.  >   >    The asymmetry with the INTEGER conversions is mathematical, not arbitrary, and worth  >    stating because the two look alike:  >   >      int -> float   is the IDENTITY on value.  d/dx = 1, so the adjoint passes straight  >                     through.  That is this predicate.  >      float -> int   TRUNCATES.  It is a step function, so d/dx = 0 almost everywhere, and  >                     treating it as gradient-inert is CORRECT rather than a convenience —  >                     which is why %backward-skip-fn-p-145p1's TO-<int-type> suffix rule is  >                     sound where an operator-level claim about, say, rem would not have been.
+
+
+---
+### DEFUN `%AD-HANDLE-WIDENING-CONVERSION-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN)`
+
+  > Backward rule for a float-widening conversion: d/dx = 1, so `x_adj += v_adj`.  >   >    Endeavor 146: before this, `to-float` had no rule at all and reported  >    `Function TO-FLOAT is not differentiable` — which 132/08 carried as a skip reason  >    describing it, correctly, as a gap the engine simply lacked rather than an MMA limit.  >   >    The `symbolp` guard matches the other math rules: a literal operand has no adjoint to  >    update.  Note that when the argument is itself gradient-inert — a shape query, as in  >    132/08's `(to-float M)` where M comes from outer-dimensions — the adjoint flows into  >    something the walk already skips, and the result is a correct zero reached by the  >    analysis rather than asserted by a special case.
+
+
+---
+### DEFUN `%AD-HANDLE-REM-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN)`
+
+  > Backward rule for (rem a b) / (mod a b) — endeavor 146 Gap 2.  >   >        rem(a,b) = a - b*q,  q = trunc(a/b)  >        d/da = 1                    ->  a_adj += v_adj  >        d/db = -q = -((a - v)/b)    ->  b_adj += -((a-v)/b) * v_adj  >   >    q is reconstructed from the already-bound result V rather than recomputed, which keeps  >    this EXACT for integers: a - v is exactly b*q, so the division cannot truncate away  >    anything.  Crisp does mathematically accurate derivatives for integer types too; the  >    result being trivially zero downstream is the activeness analysis's conclusion to draw,  >    not this rule's assumption to make.  >   >    MOD shares the formula — it differs from REM only in taking floor rather than trunc for  >    negative operands, and q = (a - v)/b holds for either.  >   >    d/da = 1 holds almost everywhere: rem is piecewise linear with slope 1, discontinuous at  >    multiples of b.  That is the same a.e. footing abs() already stands on.  >   >    Mirrors the shape of the '/' rule below, including the `symbolp` guards — a literal  >    operand has no adjoint to update, which is why the overwhelmingly common `(rem li 8)`  >    emits only the d/da term.  >   >    Before this, rem/mod sat in %backward-skip-fn-p and contributed zero gradient ALWAYS.  >    See that function's docstring for why an entry there was the wrong shape of fix.
+
+
+---
 ### DEFUN `%HANDLE-MATH-AND-TRIG-BACKWARD`
 - **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)`
 
@@ -2126,10 +2195,30 @@ Generated on 2026-07-29T03:36:47.822372Z
 
 
 ---
+### DEFVAR `*AD-VIEW-ALIAS-MAP*`
+
+  > Alist TEMP -> VIEW-FORM for ANF temps bound to a pure view selector, currently  >    `(ring-get R i)`.  Bound by generate-backward-walk.  >   >    ANF hoists a view out of its enclosing expression:  >   >        (LET ((%ANF-T-3 (RING-GET TILES 0)) (%ANF-T-4 (~ %ANF-T-3 0)))  >          (SET! (~ C 0) %ANF-T-4))  >   >    so the accessor's source is a TEMP rather than the view the engine was taught about in  >    endeavour 138.  This map lets the accessor see through it.
+
+
+---
+### DEFUN `%AD-RESOLVE-VIEW-ALIAS`
+- **Args**: `(SYM)`
+
+  > SYM's view form if it is an ANF temp bound to one, else NIL.
+
+
+---
+### DEFUN `%AD-VIEW-ADJOINT`
+- **Args**: `(VIEW)`
+
+  > The adjoint of a pure view is THE SAME VIEW OF THE ADJOINT — endeavour 138's rule.  >    `(ring-get TILES 0)` -> `(ring-get TILES_ADJ 0)`.  >   >    Holds because ring-get is address arithmetic with no side effects, so slot i of the  >    adjoint ring IS the adjoint of slot i.  Recurses so a view of a view still works.
+
+
+---
 ### DEFUN `%HANDLE-TILDE-BACKWARD`
 - **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)`
 
-  > Handles the tilde (~) indexing operation.
+  > Handles the tilde (~) indexing operation.  >   >    Endeavor 146: the source may be an ANF temp aliasing a VIEW (see *ad-view-alias-map*).  >    Before this, such a source was not a symbol the branches below recognised and the whole  >    `when` simply fell through — dropping the gradient SILENTLY rather than erroring, which is  >    the worst of the two.  A view source now scatters into the same view of the adjoint.
 
 
 ---
@@ -2236,14 +2325,14 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%AUGMENT-SCRATCH-ADJ-BINDINGS`
 - **Args**: `(BINDINGS KERNEL-PKG)`
 
-  > For each binding (var (make-scratch-X ...)), inject a paired  >    (var_ADJ (make-scratch-X ...)) binding right after.  For other bindings,  >    pass through unchanged.  Promotes element type (e.g., ulong -> double)  >    so gradients use correct FP precision.
+  > For each binding (var (make-scratch-X ...)), inject a paired (var_ADJ (make-scratch-X ...))  >    binding right after.  For other bindings, pass through unchanged.  Promotes element type  >    (e.g., ulong -> double) so gradients use correct FP precision.  >   >    Endeavor 145 P3b: MAKE-REGISTER-TILE joins the list, so a register accumulator declared in  >    a NESTED let gets its paired adjoint tile the same way a scratch tile does.  (A top-level  >    register tile is handled by the scratch-adj-bindings collection in generate-backward-walk.)  >   >    Endeavor 138 rings: the RING constructors join too.  A ring is rank+1 scratch, so its adjoint  >    is simply a ring of the same shape, and (ring-get R_ADJ i) is then the adjoint of  >    (ring-get R i) — see %tlc-bwd-adj-name.  Note the BARRIER ring (make-async-barrier-ring) is  >    deliberately NOT here: barriers are gradient-inert scheduling objects, and a barrier argument  >    reaches the backward only as a :barrier key-arg, which the load/store-tile-at clauses ignore.
 
 
 ---
 ### DEFUN `%TLC-BWD-ADJ-NAME`
 - **Args**: `(SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)`
 
-  > Returns the backward-pass adjoint symbol for a forward arg SYM:  >      - if SYM is in INPUTS or OUTPUTS  → <SYM>_GRAD  (kernel param)  >      - otherwise (let-bound local)     → <SYM>_ADJ  (direct intern; NOT  >        via local-adj-fn, because local-adj-fn would add the sym to the  >        adjoint-map, which causes the wrapping let to scalar-initialize it  >        — wrong for tensor adjoints.  The auto-allocated LET binding for  >        <var>_ADJ as a make-scratch-* is the only initializer needed.)
+  > Returns the backward-pass adjoint for a forward tile argument SYM:  >      - SYM in INPUTS or OUTPUTS   → <SYM>_GRAD  (kernel param)  >      - other symbol (let-bound)   → <SYM>_ADJ   (direct intern; NOT via local-adj-fn, which  >        would add the sym to the adjoint-map and make the wrapping let scalar-initialize it —  >        wrong for a tensor adjoint.  The auto-allocated <var>_ADJ make-scratch-* binding is the  >        only initializer needed.)  >      - a VIEW form (ring-get R i) → the same view of R's adjoint, (ring-get <R-adj> i).  >   >    The view case is endeavor 138's rings.  ring-get is a pure view selector — address  >    arithmetic, no side effects — so slot i of the adjoint ring IS the adjoint of slot i, and  >    recursing on the ring lets the ordinary %load-tile-at-bwd / %store-tile-at-bwd edges apply  >    with no new machinery.  Recursion (rather than a single level) costs nothing and keeps the  >    rule true for a view of a view.  >   >    Anything else is a compound target we have no adjoint rule for.  That now raises a message  >    naming the form instead of letting symbol-name signal `The value (RING-GET ...) is not of  >    type SYMBOL`, which told the user nothing about what to do.
 
 
 ---
@@ -2262,20 +2351,110 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%GFW-PROCESS-LET`
 - **Args**: `(FORM EMIT-FN PROCESS-FORM-FN BINDINGS AUGMENTED-BINDINGS BODY)`
 
+  > BUG 037: the replayed primal bindings now read staged tiles from their ORIGINAL GLOBAL source  >    instead of from the (empty) tile, and an unrecoverable primal that the backward actually uses  >    is a hard error rather than a silent zero.
+
+
 ---
 ### DEFUN `%GFW-PROCESS-DOTIMES`
 - **Args**: `(FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP
               INTERMEDIATE-ZERO)`
+
+  > Unchanged except that it publishes the loop variable in *ad-loop-vars* while walking the  >    body, so a VJP dispatched inside can ask what coordinate it is being evaluated at.  A  >    pipelined ring operand needs this: its primal lives at the CONSUMING iteration, and the  >    forward's load sites record other stages' origins.
+
 
 ---
 ### DEFUN `%GFW-PROCESS-IF`
 - **Args**: `(FORM EMIT-FN PROCESS-FORM-FN COND-FORM THEN-FORM ELSE-FORM)`
 
 ---
+### DEFUN `%AD-INLINE-LITERAL-SHAPE-TEMPS`
+- **Args**: `(FLAT-ANF)`
+
+  > Substitute every ANF temp bound to a literal list of integers with that literal.  >   >    `(%ANF-T-1 (64 64))` makes %ANF-T-1 a SHAPE, not a value -- the AD engine's shape  >    maps require literals and a backward cannot reference a forward-only temp.  A  >    binding is only inlined when its value is a non-empty list of integers, which no  >    call form can be (a call's head is a symbol).  >   >    The temp's OWN binding is left intact -- rewriting its left-hand side would produce  >    the malformed `((64 64) (64 64))`.  Leaving the now-dead binding is harmless: the  >    backward contains only what the walk emits.
+
+
+---
+### DEFUN `%AD-CANONICALIZE-WGMMA`
+- **Args**: `(FORM)`
+
+  > Rewrite Hopper wgmma forms to their synchronous MMA equivalents for the backward walk.  >   >      (V (make-wgmma-accumulator T (M N) INIT))  >        -> (V (make-register-tile T (M N) INIT))  >   >      (wgmma-accumulate-via-tile (WM WN WK) D A B ...)  >        -> (mma-accumulate-via-tile (NM NN NK) D A B ...)  >   >    where (NM NN NK) is %spv-mma-shape -- the active profile's NATIVE instruction shape.  >    The wgmma argument is a WARPGROUP TILE shape and is not a legal sync-MMA instruction  >    shape; substituting the native one is what makes the emitted backward compilable.  >    The VJP takes Mt/Nt/Kt from the tiles' dims-map entries, never from this argument,  >    so tile geometry and the derivative are unaffected.  >   >    Trailing keys (:swizzle and friends) are preserved; the via-tile VJP destructures  >    (SHAPE C A B &rest ignored).  >   >    Structural no-op for any kernel without wgmma.
+
+
+---
+### DEFUN `%AD-REGISTER-RING-DIMS-MAP`
+- **Args**: `(FLAT-ANF)`
+
+  > Alist SYM -> (d0 d1) for every `(make-register-tile-ring T (D0 D1) ...)` binding.  >   >    Must be computed from the ORIGINAL anf, BEFORE %ad-canonicalize-register-rings turns  >    these into scratch rings -- afterwards they are indistinguishable from rings the user  >    really wrote as scratch, whose extents must be left alone.
+
+
+---
+### DEFUN `%AD-NORMALIZE-RING-VIEW-EXTENTS`
+- **Args**: `(FORM RING-DIMS)`
+
+  > Replace `(~ (extents~ (ring-get RING I)) J)` with RING's compile-time per-slot extent J,  >    emitted as `(to-ulong N)`, for every RING in RING-DIMS.  >   >    Every slot of a ring has the ring's element shape (138), so the slot index is irrelevant  >    to the answer and is not examined.  The ULONG wrap is required for the same reason as in  >    %ad-normalize-register-extents: these reads sit inside `(* (to-ulong G) <extent>)`.  >   >    No-op when RING-DIMS is empty.
+
+
+---
+### DEFUN `%AD-CANONICALIZE-REGISTER-RINGS`
+- **Args**: `(FORM)`
+
+  > Rewrite `(make-register-tile-ring T (M N) :ring-count N :operand :a)` to  >    `(make-scratch-matrix-ring T (M N) :ring-count N)` for the backward walk.  >   >    A ring of MMA operand tiles has the same adjoint requirement a single operand tile  >    has (Gap 4): every consumer indexes the adjoint as memory.  A ring being rank+1  >    scratch, the scratch matrix ring is that answer one dimension up, and it is a form  >    the AD engine has understood since 138.  >   >    :operand is dropped -- it picks a GRF fragment layout, which scratch has no use for.  >    :ring-count is kept; it is the ring's real depth.  >   >    The replacement symbol is resolved in :crisp.compiler, where the defmacro lives, so  >    the analyzer actually macroexpands what we emit.  >   >    Structural no-op for any kernel without register-tile rings.
+
+
+---
+### DEFUN `%AD-REGISTER-TILE-DIMS-MAP`
+- **Args**: `(FLAT-ANF)`
+
+  > Alist SYM -> (d0 d1 ...) for every `(V (make-register-tile T (D0 D1) INIT ...))`  >    binding anywhere in FLAT-ANF, including nested bodies.  >   >    Deliberately NARROWER than %mma-ad-tile-dims-map: only register tiles, because only  >    they lose their binding before the backward is analysed.  Scratch tiles keep their  >    runtime extents~ and must be left exactly as they are.
+
+
+---
+### DEFUN `%AD-NORMALIZE-REGISTER-EXTENTS`
+- **Args**: `(FORM REG-DIMS)`
+
+  > Replace every `(~ (extents~ TILE) I)` where TILE is a register tile in REG-DIMS  >    with its compile-time extent, emitted as `(to-ulong N)`.  >   >    The ULONG wrap is required: extents~ yields ULONG and these reads sit inside  >    `(* (to-ulong G) <extent>)`, while a Lisp integer literal reads as Crisp INT --  >    a bare literal gives `Cannot operate on ULONG and INT`.  >   >    Any form that does not match is returned structurally unchanged, so this is a  >    no-op for every kernel with no register tiles.
+
+
+---
+### DEFUN `%AD-CANONICALIZE-WARP-SPECIALIZATION`
+- **Args**: `(FORM)`
+
+  > Rewrite every `(with-warp-specialization ...)` in FORM to the warp-id-gated let/if that  >    the ANALYZER produces — by calling the analyzer's own %lower-warp-specialization rather  >    than re-implementing it.  >   >    WHY THE WALK NEEDS THIS.  with-warp-specialization is not a macro; it is handled by  >    analyze-with-warp-specialization-expression, and the AD walk runs BEFORE semantic  >    analysis.  So the walk sees the raw construct and reads a role block `(:consumer ...)`  >    as a call to a function named CONSUMER — which is exactly the error 139/02, /05 and /06  >    reported, and why they were mislabelled 'warp specialization is forward-only'.  >   >    REUSE, NOT SUBSTITUTION — the distinction matters and the two live side by side in this  >    chain.  %ad-canonicalize-wgmma SUBSTITUTES: the backward deliberately uses a different  >    instruction from the forward (sync MMA rather than warpgroup-async), because a backward  >    is under no obligation to schedule itself the way its forward did.  Warp specialization  >    is the opposite case: the backward wants the SAME expansion the forward gets, just  >    earlier.  Calling the analyzer's lowering is what keeps the two paths from drifting; a  >    second hand-written copy here would eventually produce a gradient that is correct for a  >    kernel nobody runs.  >   >    Recurses into the result so a nested construct is lowered too; terminates because the  >    lowered form no longer has WITH-WARP-SPECIALIZATION at its head.
+
+
+---
+### DEFUN `%AD-NORMALIZE-ANF-FOR-BACKWARD`
+- **Args**: `(FLAT-ANF)`
+
+  > Apply every backward-walk ANF normalization, in the one order that works.  >   >      1. literal shape temps -> inlined       (%ad-inline-literal-shape-temps)  >      2. wgmma -> sync MMA                    (%ad-canonicalize-wgmma)  >      3. register ring VIEW extents~ -> literals  >                                              (%ad-normalize-ring-view-extents)  >      4. register-tile ring -> scratch ring   (%ad-canonicalize-register-rings)  >      5. register-tile extents~ -> literals   (%ad-normalize-register-extents)  >   >    NOTE: with-warp-specialization is NOT normalized here.  It has to be lowered before  >    anf-transform runs (see the call to %ad-canonicalize-warp-specialization in  >    src/macros.lisp), because ANF would otherwise hoist its role bodies out and lose the  >    warp gating entirely — by the time this function sees flat-anf the damage is done.  >   >    ORDER, and why each constraint is real:  >   >    (1) FIRST, so every shape test below sees literals rather than ANF temps.  Only  >        make-register-tile is on the ANF converter's opaque-argument list, so a wgmma  >        accumulator's dims arrive as `(%ANF-T-1 (64 64))` and every shape map — which  >        tests `(every #'integerp dims)` — would reject them.  >   >    (3) MUST precede (4).  Once a register-tile ring has become a scratch ring it is  >        indistinguishable from one the user actually wrote, and a genuine scratch ring's  >        binding DOES survive into the backward, so its runtime extents~ must be preserved.  >        Devirtualizing those would change specs that pass for the right reason (138, 145/18).  >   >    (2) precedes (5) for the mirror-image reason: a wgmma accumulator is a make-register-tile  >        by then, so it must be in the register-tile map that (5) builds.  >   >    Returns FLAT-ANF structurally unchanged for any kernel using none of these forms.
+
+
+---
+### DEFUN `%AD-RING-CTOR-BINDINGS`
+- **Args**: `(FLAT-ANF)`
+
+  > Alist SYM -> CONSTRUCTOR for every ring binding in FLAT-ANF.  >   >    Run on the CANONICALIZED anf, so register-tile rings have already become scratch  >    matrix rings and only the scratch ring constructors need matching here.
+
+
+---
+### DEFUN `%AD-FORM-MENTIONS-P`
+- **Args**: `(FORM SYM)`
+
+  > T if SYM occurs anywhere in FORM.
+
+
+---
+### DEFUN `%AD-ENSURE-RING-ADJ-BINDINGS`
+- **Args**: `(BACKWARD FLAT-ANF KERNEL-PKG)`
+
+  > Add a paired `<RING>_ADJ` binding to BACKWARD's outer LET for every ring the backward  >    NAMES but does not BIND.  >   >    Only rings actually mentioned get a binding, so a kernel whose backward never touches  >    a ring is returned untouched.  >   >    The adjoint is the forward ring's own constructor, used verbatim: a ring adjoint is a  >    ring of identical shape, which is what makes `(ring-get R_ADJ i)` the adjoint of  >    `(ring-get R i)` (see %tlc-bwd-adj-name).  Deliberately NOT routed through  >    %mma-ad-adj-init -- its %promote-scratch-init-for-ad branch does not understand ring  >    constructors and reduces them to the stub type `(TENSOR FLOAT)`.  No promotion is  >    needed regardless: these rings are float already.
+
+
+---
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form  >    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.
+  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form  >    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.  >   >    Endeavor 146: FLAT-ANF is normalized before anything reads it, and the assembled  >    backward gets one fixup on the way out.  See %ad-normalize-anf-for-backward for what  >    the normalizations are and why their order matters, and %ad-ensure-ring-adj-bindings  >    for the gap the fixup covers (the top-level adjoint collection below does not know the  >    ring constructors, so a ring bound at kernel top level otherwise gets no adjoint).
 
 
 ---
@@ -2338,7 +2517,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%BACKWARD-SKIP-FN-P`
 - **Args**: `(FN-SYM)`
 
-  > Returns T if FN-SYM should be silently skipped in the AD backward walk.
+  > Returns T if FN-SYM should be silently skipped in the AD backward walk.  >   >    Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS are gradient-inert shape queries.  >    Endeavor 145 P3b: MAKE-REGISTER-TILE is an ALLOCATOR, gradient-inert like the  >    make-scratch-* constructors above it — its paired adjoint tile is created by  >    %mma-ad-adj-init, not by the walk.  >   >    Endeavor 138 rings: the SCRATCH-RING constructors are allocators exactly as their non-ring  >    forms are (a ring is rank+1 scratch), and their paired adjoint rings likewise come from  >    %augment-scratch-adj-bindings.  The BARRIER ring is inert for a different reason: a barrier  >    carries no value, only ordering.  Without these, 138/03 and 138/06 failed with  >   >        Function MAKE-ASYNC-BARRIER-RING is not differentiable.  Wrap the kernel in  >        'forward-only' if differentiation is not needed...  >   >    which points away from the fix — the kernel IS differentiable; a scheduling object simply has  >    no gradient.  MAKE-ASYNC-BARRIER is listed alongside it: the plain barrier only avoided this  >    by never reaching the walk as a call, which is luck rather than design.  >   >    Endeavor 146 Gap 2: MOD is GONE from this list, and REM never joined it.  138 put MOD here  >    as "INDEX arithmetic" with a caveat admitting the treatment was wrong for floats — a float  >    mod has derivative 1 almost everywhere, so a mod in a value position got a silent ZERO.  >    Both now have real rules in %handle-math-and-trig-backward instead.  >   >    The general point, since this list attracts shortcuts: an entry here is a claim about an  >    OPERATOR, namely that it produces no value a gradient could flow through.  That is true of  >    allocators, barriers and shape queries — genuine non-values.  It was never true of rem/mod.  >    What actually made `(mod grid-k 2)` contribute nothing is that its OPERAND is inactive, and  >    %active-scalar-vars already determines that on its own without anyone declaring anything.
 
 
 ---
@@ -2389,7 +2568,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%GENERATE-BACKWARD-FUNCTION-AST`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY-FORMS)`
 
-  > Generates the backward companion (def-function NAME_GRAD ...) for a  > differentiable user function.
+  > Generates the backward companion (def-function NAME_GRAD ...) for a differentiable user  >    function.  >   >    BUG 038: additionally RETAINS the callee's parameter symbols and body in  >    *differentiable-hof-store*, so the backward walk can inline it at a call site instead of  >    calling a companion.  Stored for every differentiable def-function, not just HOFs, and stored  >    BEFORE the gradient-inert early return — a function can be inline-differentiable even when it  >    has no companion, which is exactly the 137/04 case.  Reusing the HOF store rather than adding  >    a global keeps it on the existing initialize-compiler clrhash, so a body cannot leak between  >    two specs compiled in the same image (run-specs runs in-process).  The HOF reader is not  >    disturbed: it is only reached when *differentiable-functions* says :hof t.
 
 
 ---
@@ -2596,7 +2775,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%CRISP-TENSOR-PARAM-TYPE-P`
 - **Args**: `(PD-TYPE)`
 
-  > Returns T if PD-TYPE is a tensor (float-element or integer-element)  >    at the sub-function level.  Used to decide whether a sub-fn param  >    contributes a tensor grad-out (vs a scalar delta).  >   >    Handles three forms:  >    - List form: (tensor float 1 ...) — caught by the existing helpers.  >    - Mangled-template-name symbol: TENSOR_FLOAT_1_GLOBAL_COMPACT_LAST —  >      produced by Crisp's template instantiation.  Detected by name prefix.  >    - Plain symbol naming a registered tensor type.
+  > Returns T if PD-TYPE is a tensor (float-element or integer-element) at the sub-function  >    level.  Used to decide whether a sub-fn param contributes a tensor grad-out (vs a scalar  >    delta).  >   >    Handles four forms:  >    - List form: (tensor float 1 ...) — caught by the existing helpers.  >    - Mangled-template-name symbol: TENSOR_FLOAT_1_GLOBAL_COMPACT_LAST — produced by Crisp's  >      template instantiation.  Detected by name prefix.  >    - Plain symbol naming a registered tensor type.  >    - BUG 038: a user `def-type` ALIAS of a tensor/vector/matrix type.  The docstring always  >      claimed the third case was handled, but nothing resolved aliases, so  >   >          (def-type mat-t (matrix float ...))  >          (def-function stage (src tile) (declare #'(mat-t tile-t => ulong)) ...)  >   >      looked like a function with NO differentiable parameters at all.  %generate-backward-  >      function-ast then took its `(zerop n-float-params)` early return, which does not merely skip  >      the companion — it marks the function gradient-INERT, so calls to it are skipped in the  >      backward walk deliberately and silently, as a documented zero.  Aliasing a parameter type is  >      not a semantic change, so it must not be an AD-visible one.  %is-tensor-alias already  >      existed for precisely this question.
 
 
 ---
@@ -2723,6 +2902,309 @@ Generated on 2026-07-29T03:36:47.822372Z
 - **Args**: `(FORM STRUCT-SHADOW-INFO)`
 
   > Postprocesses the kernel backward walk's output.  For each struct  >    kernel input S in STRUCT-SHADOW-INFO, replaces the default scalar  >    input-grad-write `(set! S_GRAD S_ADJ)` with the correct shadow-  >    struct write `(set! (~ S_GRAD) (MAKE-<S>_ADJ ...))` — building  >    the shadow constructor recursively for nested struct fields.  >   >    STRUCT-SHADOW-INFO is the alist returned as the 9th value of  >    %expand-record-kernel-inputs:  >      ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)  >   >    Other (set! ...) forms are passed through unchanged.
+
+
+---
+### DEFUN `%BACKWARD-SKIP-FN-P-145P1`
+- **Args**: `(FN-SYM)`
+
+  > Returns T if FN-SYM should be silently skipped in the AD backward walk.  >   >    Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS join the gradient-inert shape  >    queries.  Both are pure reads of a tensor's extents — `(inner-dimension A B)` is K,  >    `(outer-dimensions A B)` is (values M N) — so they carry no value dependence and  >    contribute exactly zero gradient, like EXTENTS~ / STRIDES~ / NUM-ROWS above them.  >    Their forward values remain available to the backward via the primal replay in  >    %generate-backward-kernel-ast.
+
+
+---
+### DEFUN `%MMA-AD-PRELOWER-MMTS`
+- **Args**: `(FORM)`
+
+  > Endeavor 145 P8: pre-lower matrix-multiply-tile-stride ahead of the AD pre-pass.  >    When FORM is a LET, its bindings supply the register-tile dims map first.
+
+
+---
+### DEFUN `%MMA-AD-WALK-FORMS`
+- **Args**: `(TREE FN)`
+
+  > Endeavor 145 P3b: apply FN to every cons subform of TREE, outermost first.  >   >    The tile maps below MUST see the whole tree, not just the top level of flat-anf.  >    `flatten-anf-body` flattens LET and PROGN but leaves a DOTIMES / IF / WHEN body NESTED —  >    so in a K-looped matmul (the realistic shape) the load-tile-at forms live inside the loop  >    and a top-level-only scan finds nothing.
+
+
+---
+### DEFUN `%MMA-AD-TILE-SOURCE-MAP`
+- **Args**: `(FLAT-ANF)`
+
+  > Endeavor 145 P3b: alist TILE-SYM -> (GLOBAL-SRC ORIGIN-FORMS) for every  >    `(load-tile-at SRC TILE (ORIGIN...))` anywhere in FLAT-ANF.  >   >    This is what lets the backward stage a TRANSPOSED operand without reconstructing the  >    forward's staging: it reads the original global matrix at the same origin.  The origin  >    forms are carried through verbatim, so a loop-dependent origin like (* kt 16) still  >    resolves against the backward's own loop variable.
+
+
+---
+### DEFUN `%MMA-AD-TRANSPOSED-STAGE`
+- **Args**: `(DST SRC ORIGIN ROWS COLS)`
+
+  > Endeavor 145 P3b: a workgroup-collective TRANSPOSING copy of the ROWS x COLS block of SRC  >    at ORIGIN into DST (which is COLS x ROWS).  >   >    Plain element moves via workgroup-stride — the same collective the scratch `fill-tile`  >    uses — so it costs no MMA and needs no ColumnMajor support.  Emitted as source, so it  >    lowers through the ordinary analyzer path on both backends.
+
+
+---
+### DEFUN `%MMA-VIA-TILE-BACKWARD`
+- **Args**: `(FORM DIMS-MAP SRC-MAP INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)`
+
+  > Endeavor 145 P3b: the backward for  >    `(mma-accumulate-via-tile (M N K) C-TILE A-TILE B-TILE ...)`.  >   >    Emits ONE nested LET holding the backward's temporaries and the two backward GEMMs:  >   >        dC-slm (Mt x Nt) <- store-tile C-tile_ADJ      ; register accumulator -> SLM  >        AT-slm (Kt x Mt) <- transposed stage of A's global source  >        BT-slm (Nt x Kt) <- transposed stage of B's global source  >          dA-reg (Mt x Kt) : mma-accumulate-via-tile  dA-reg  dC-slm  BT-slm  >          dB-reg (Kt x Nt) : mma-accumulate-via-tile  dB-reg  AT-slm  dC-slm  >        store-tile dA-reg -> A-tile_ADJ ;  store-tile dB-reg -> B-tile_ADJ  >   >    From there the existing endeavor-111 machinery finishes the job: A-tile_ADJ / B-tile_ADJ  >    are already auto-allocated, and %load-tile-at-bwd already scatters them into A_GRAD /  >    B_GRAD.  Because the walk runs in reverse, this rule's emission lands BEFORE those  >    scatters in the generated backward — which is the order the chain rule needs.  >   >    ERRORS when a shape or a staging source is not compile-time recoverable.  It used to  >    return NIL and let the caller fall through — but the walk's fallthrough DROPS the form,  >    which hands back a silent ZERO gradient.  That is the same silent-wrong-answer class as  >    the K-step bug P3a fixed, and it actually bit: a K-LOOPED matmul emitted a backward with  >    no MMA in it at all, because the maps only scanned the top level of flat-anf and the  >    loop body is nested.  Better to refuse to compile than to quietly return zeros.
+
+
+---
+### DEFUN `%MMA-VIA-TILE-BACKWARD-LOGGED`
+- **Args**: `(FORM DIMS-MAP SRC-MAP INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)`
+
+  > Endeavor 145 P3b: %mma-via-tile-backward plus a log of the emitted backward AST.  >    The tile-level backward is the most intricate emission in the AD engine, and it is  >    assembled from source forms that then go through the ordinary analyzer + SROA explosion —  >    so seeing the pre-analysis AST is the single most useful debugging artifact when a  >    backward fails to compile.  Run the compiler with --log-level=debug to see it.
+
+
+---
+### DEFUN `%MMA-AD-REGISTER-OPERAND-TILE-P`
+- **Args**: `(INIT-FORM)`
+
+  > T when INIT-FORM is a make-register-tile carrying an :operand key — i.e. an MMA  >    A/B operand tile (endeavor 142's register-resident load-tile overload) rather than  >    an accumulator.  >   >    Scans by symbol-name rather than comparing to a keyword object: the form is read in  >    the kernel's package, and this stays correct if :operand ever arrives as a non-keyword  >    symbol.  The scan starts past the dims/init positions so a literal init value can  >    never be mistaken for the key.
+
+
+---
+### DEFUN `%MMA-AD-ADJ-INIT`
+- **Args**: `(INIT-FORM)`
+
+  > Endeavor 145 P3b: the adjoint allocator paired with a forward tile binding.  >   >    Scratch tiles keep the existing behaviour (%promote-scratch-init-for-ad, which also  >    promotes e.g. ulong -> double).  >   >    Endeavor 146 Gap 4: a register tile's adjoint depends on WHICH ROLE the tile plays.  >   >      ACCUMULATOR  (no :operand)  -> a same-shaped register tile zeroed to 0.0.  >         The C adjoint is filled by %load-register-tile-acc from C_GRAD and then staged  >         to SLM by the VJP itself, so registers are right for it.  >   >      OPERAND      (:operand :a/:b) -> a same-shaped SCRATCH MATRIX.  >         EVERY consumer of an operand adjoint indexes it as memory: the scalar lowering  >         writes it with workgroup-stride + ~, the MMA fast path uses it as a store-tile  >         DESTINATION, and %load-tile-at-bwd reads it element-wise to scatter into the  >         global gradient.  A register tile cannot be written element-wise at all —  >         %explode-register-tiles has replaced the whole-tile symbol with per-lane  >         fragment vars by then, so `(~ TILE m k)` has no TILE to resolve.  This is not  >         an AD-specific fact: the same write fails in a forward-only kernel.  >   >    145 never hit this because its specs staged operands through make-scratch-matrix +  >    load-tile-at, so operand adjoints were ALREADY scratch.  142 Phase A introduced  >    register-resident operands via the load-tile overload, and this allocator had never  >    learned about them.  >   >    NOT a new derivative: dA = dC.B^T and dB = A^T.dC are unchanged and both lowerings  >    already computed them correctly.  This decides only WHERE the result is allocated.  >   >    Element type is FLOAT in both register cases: fragments are fp32 and an adjoint  >    always starts at zero.
+
+
+---
+### DEFUN `%MMA-AD-REGISTER-TILE-P`
+- **Args**: `(SYM FLAT-ANF)`
+
+  > Endeavor 145 P3b: T when SYM is bound in FLAT-ANF by a make-register-tile constructor.  >    Distinguishes a register accumulator tile from an SLM scratch tile, which the AD walk  >    must treat completely differently at a store.
+
+
+---
+### DEFUN `%MMA-AD-REGISTER-ACCUMULATOR-TILE-P`
+- **Args**: `(SYM FLAT-ANF)`
+
+  > T when SYM is a register tile in the ACCUMULATOR role — a make-register-tile with no  >    :operand key.  >   >    Endeavor 146: the store backward needs this narrower question, not %mma-ad-register-tile-p.  >    Gap 4 split the two roles apart at the ADJOINT: an accumulator's adjoint is still a  >    register tile (it is seeded from the destination's gradient by %load-register-tile-acc and  >    staged to SLM by the VJP), while an OPERAND's adjoint is a scratch matrix, because every  >    consumer indexes it as memory and a register tile cannot be written element-wise.  >   >    Asking the broad question after that split emitted %load-register-tile-acc — a REGISTER  >    operation — against a scratch-matrix adjoint, which the analyzer then rejected with  >    `Unsupported form '%LOAD-REGISTER-TILE-ACC' found in function body`.  Operand tiles now  >    fall through to the ordinary store-tile-at backward, which is the memory-shaped edge their  >    memory-shaped adjoint wants.
+
+
+---
+### DEFUN `%MMA-AD-UNSCALE-TILE-ORIGIN`
+- **Args**: `(ORIGIN)`
+
+  > Endeavor 145 P3b: recover the original tile-ID G from the coordinate the `store-tile`  >    macro produced, `(* (to-ulong G) (~ (extents~ TILE) i))`.  >   >    A register tile has no extents~, so that scaled coordinate is meaningless for it — but  >    the tile-ID inside is exactly what the register store/load path wants.  Anything that  >    does not match the shape is returned unchanged, so an already-absolute coordinate still  >    works.
+
+
+---
+### DEFUN `%MMA-AD-EXPAND-MMTS-IN-FORM`
+- **Args**: `(FORM REG-MAP)`
+
+  > Recursively lower every matrix-multiply-tile-stride in FORM (endeavor 145 P8: the AD path  >    must do this before ANF).  BUG 036: forwards the register tile's declared INIT as the  >    per-output-tile reset value; a scratch C-tile resets to the 0.0 default.
+
+
+---
+### DEFVAR `*VJP-REGISTRY*`
+
+  > Primitive NAME (upcased string) -> VJP function of (FORM CTX).  >   >    CTX is a plist: :flat-anf :inputs :outputs :local-adj :kernel-pkg.  >   >    The function returns one of:  >      a FORM   -- the backward Crisp source to emit (wrap several in a progn);  >      :inert   -- handled, contributes no gradient (emit nothing);  >      NIL      -- DECLINE: not applicable to this particular form, so the walk's existing  >                  clauses run unchanged.  Declining is what lets a VJP dispatch on a property  >                  of its ARGUMENTS (e.g. store-tile on a register tile vs a scratch tile)  >                  rather than on the head symbol alone.
+
+
+---
+### DEFUN `REGISTER-VJP`
+- **Args**: `(NAME FN)`
+
+  > Register FN as the VJP for primitive NAME (a string, matched case-insensitively).
+
+
+---
+### DEFUN `FIND-VJP`
+- **Args**: `(HEAD)`
+
+  > The registered VJP for form-head HEAD, or NIL.
+
+
+---
+### DEFUN `%TRY-VJP`
+- **Args**: `(FORM CTX)`
+
+  > Dispatch FORM to its registered VJP.  Returns the backward form, :inert, or NIL (decline).  >    NIL is also returned when nothing is registered for the head, so the caller can fall  >    through to the walk's own clauses.
+
+
+---
+### DEFUN `%MMA-VJP-SCALAR-LOWERING`
+- **Args**: `(MT NT KT C-ADJ A-OP B-OP A-ADJ B-ADJ A-SRC AOY AOX B-SRC BOY BOX
+              PKG)`
+
+  > The shape-agnostic scalar backward for a tile multiply.  Emitted as ordinary Crisp source,  >    so it lowers through the normal path on either backend and at ANY tile shape.  >   >    dC is materialised from the register accumulator into SLM once, then two collective loops  >    accumulate into the operand adjoints.  Index arithmetic is coerced with to-int because a  >    staging origin can be a ULONG extent expression while the collective's loop vars are INT.
+
+
+---
+### DEFUN `%MMA-VJP-MMA-ADMISSIBLE-P`
+- **Args**: `(MT NT KT)`
+
+  > T when the MMA fast path can realise the backward: both backward accumulators (Mt x Kt and  >    Kt x Nt) must decompose into whole hardware accumulator fragments.  This is a PERFORMANCE  >    predicate — declining it selects the scalar lowering, never an error.
+
+
+---
+### DEFUN `%VJP-RESOLVE-ANF-VALUE`
+- **Args**: `(SYM FLAT-ANF)`
+
+  > Resolve an ANF temp back to the literal it was bound to.  >   >    Coordinate lists reach the walk as temps — `(%ANF-T-1 (0 0))` — because anf-normalize treats  >    a bare list like `(0 0)` as a call and binds it.  (The same pathology turned  >    `(GRID-Y GRID-X GRID-K)` into a call in P8.)  Returns SYM unchanged if it is not such a temp.
+
+
+---
+### DEFUN `%VJP-FRAGMENT-SOURCE`
+- **Args**: `(FRAG-SYM FLAT-ANF WHICH)`
+
+  > For a fragment variable bound by (load-fragment-a/b SRC COORDS), return the list  >    (SRC COORD-Y COORD-X), or NIL when FRAG-SYM was not bound that way.  >    WHICH is :a or :b and only selects the expected head.
+
+
+---
+### DEFUN `%VJP-STORE-FRAGMENT`
+- **Args**: `(FORM CTX)`
+
+  > VJP for (store-fragment (mma-accumulate C A-FRAG B-FRAG) DEST (TY TX)).  >   >    D = A.B + C stored to DEST, so with dD read from DEST_GRAD at the store's tile:  >        dA[m,k] += sum_n dD[m,n] * B[k,n]  >        dB[k,n] += sum_m A[m,k] * dD[m,n]  >    over one instruction-shaped block (M_n x N_n accumulator, M_n x K_n A, K_n x N_n B), reading  >    the ORIGINAL global operands at their load-fragment origins and scattering with atomic-add!  >    — the same collective + atomic discipline %load-tile-at-bwd uses.  >   >    DECLINES unless the stored value is literally an mma-accumulate over two load-fragment  >    results; anything else falls through to the walk's existing (accurate) error.
+
+
+---
+### DEFUN `%VJP-FRAGMENT-CONSUMED-BY-FUSED-STORE-P`
+- **Args**: `(FRAG-SYM FLAT-ANF)`
+
+  > T when FRAG-SYM is an operand of an `(mma-accumulate ...)` that is stored directly by a  >    `store-fragment` — i.e. the chain %vjp-store-fragment already differentiates as a unit.  >   >    Endeavor 146: matches `(cdr v)`, not `(cddr v)` — so the ACCUMULATOR counts too, not just  >    the A and B operands.  For `D = C_acc + A.B` the accumulator's partial is the IDENTITY  >    (dC_acc = dD), and the fused chain stores D straight back into the same handle C_acc was  >    loaded from, so the gradient that flows into that read is already the one sitting in  >    C_GRAD.  Contributing it again would double-count — precisely the reason A and B are  >    :inert here — so the accumulator belongs in exactly the same bucket.  >   >    SCOPE, and it is the same scope %vjp-store-fragment has: this covers the FUSED form only.  >    An mma-accumulate whose result is carried in a register across a loop before being stored  >    still declines, because that needs genuine fragment-valued adjoints (store-fragment being  >    opaque to ANF is what lets the fused form work without them).
+
+
+---
+### DEFUN `%VJP-LOAD-FRAGMENT`
+- **Args**: `(FORM CTX)`
+
+  > VJP for load-fragment-a / load-fragment-b.  >   >    Returns :inert when this fragment feeds a fused store-fragment(mma-accumulate ...) chain —  >    %vjp-store-fragment has already scattered the gradient into this operand's global gradient,  >    so contributing again would double-count.  >   >    DECLINES otherwise, so an un-fused fragment use still raises the (accurate) 'no VJP  >    registered' error rather than silently yielding a zero gradient.  Silently dropping a  >    gradient is the failure mode this endeavor hit three times; it is not repeated here.
+
+
+---
+### DEFVAR `*AD-TILE-SRC-MAP*`
+
+  > Alist TILE-SYM -> (GLOBAL-SRC ORIGIN-FORMS) for tiles filled by load-tile-at in the kernel  >    being differentiated.  Bound by generate-backward-walk.
+
+
+---
+### DEFVAR `*AD-SCRATCH-SYMS*`
+
+  > Hash of scratch-tile symbols in the kernel being differentiated.  Bound by  >    generate-backward-walk.
+
+
+---
+### DEFUN `%AD-TILE-READ-P`
+- **Args**: `(EXPR)`
+
+  > T when EXPR is an indexed tile read `(~ SYM idx ...)`.
+
+
+---
+### DEFUN `%AD-REWRITE-PRIMAL-TILE-READ`
+- **Args**: `(EXPR)`
+
+  > Rewrite a staged-tile read to the equivalent read of its ORIGINAL GLOBAL source, or return  >    EXPR unchanged when the tile has no recoverable source.  Indices are coerced with to-int: a  >    staging origin can be a ULONG extent expression while the loop variables are INT.
+
+
+---
+### DEFUN `%AD-REWRITE-PRIMAL-BINDINGS`
+- **Args**: `(BINDINGS)`
+
+  > Apply %ad-rewrite-primal-tile-read to each primal binding's VALUE.
+
+
+---
+### DEFUN `%AD-CHECK-UNRESOLVED-PRIMALS`
+- **Args**: `(BINDINGS BODY)`
+
+  > ERROR when a primal bound to an UNRESOLVABLE scratch-tile read is actually USED as a value by  >    the backward BODY.  >   >    Silence here is what bug 037 was: an unavailable primal read as zero.  A tile whose primal is  >    never consumed (a pure accumulator like C-tile, whose old value matters only for its adjoint)  >    is fine and must NOT error — hence the usage test rather than a blanket check.
+
+
+---
+### DEFVAR `*AD-INLINING-FNS*`
+
+  > Names of sub-functions currently being inlined by the backward walk, innermost last.  >    Guards against unbounded expansion on a recursive or mutually-recursive call.
+
+
+---
+### DEFUN `%AD-INLINE-SUB-FN-BACKWARD`
+- **Args**: `(FN ARGS EMIT-FN PROCESS-FORM-FN)`
+
+  > BUG 038: emits the backward for a call to differentiable sub-function FN by INLINING its body  >    at the call site and walking it with PROCESS-FORM-FN, the caller's ordinary STATEMENT walker.  >   >    Why the statement walker and not %handle-single-value-backward.  The existing inline path,  >    hof-inline-backward, walks only two-element value bindings, because a HOF's inlined body is  >    consumed for its VALUE.  A staging sub-function has no value worth differentiating — its  >    whole gradient content is in its STATEMENTS, `load-tile` above all.  Routing through  >    process-form-fn means every construct the walker already knows (load/store-tile-at, set!,  >    let, dotimes, if/when, nested calls) applies inside a sub-function body for free, and stays  >    applying as the walker grows.  >   >    The body is substituted (formals -> actual call arguments), ANF-transformed and flattened  >    exactly as hof-inline-backward does, so the forms handed to the walker are the same shape it  >    sees for a kernel body.  Adjoints are NOT renamed: substitution has already rewritten the  >    callee's parameter references to the caller's symbols, so `(~ dst i j)` becomes `(~ C i j)`  >    and the walker mints C_ADJ in the caller's frame, which is where the gradient must land.  >   >    Statements are walked in reverse, matching the PROGN clause's convention that the CALLER  >    reverses.  Returns T when it emitted, NIL when FN cannot be inlined (the caller then falls  >    back to the _GRAD companion path).
+
+
+---
+### DEFUN `%AD-SUB-FN-INLINABLE-P`
+- **Args**: `(FN)`
+
+  > Returns T if FN's body was retained and can be inlined into a backward walk.  >   >    Keyed on the RETAINED BODY rather than on *differentiable-functions*, deliberately.  When  >    %generate-backward-companion-ast-body cannot build a companion it UNREGISTERS the function:  >   >        Cannot differentiate function SCALE_INTO: it mutates parameter DST via cell write.  >        This function is not valid in a differentiable kernel.  Unregistering.  >   >    That message overstates its case.  Writing through a tensor parameter is what a staging or  >    fill sub-function is FOR, and it is not a problem for the derivative — only for the companion  >    lowering, whose chain rule threads gradients through returned values and &out grad-handles  >    and so has nowhere to put an in-place write.  Inlining has no such difficulty: after  >    substitution the write is `(set! (~ C i j) ...)` on the CALLER's symbol, which is the same  >    form %gfw-process-set! already differentiates inside a kernel.  So a failed companion must  >    not veto the inline path — otherwise the more expressive lowering is disabled by the less  >    expressive one's limits.  >   >    Excluded: foreign functions (no body exists), HOFs (their own inline path is keyed on the  >    function-valued parameter), functions deliberately marked gradient-inert, and anything  >    already on the inline stack.
+
+
+---
+### DEFVAR `*AD-LOOP-VARS*`
+
+  > Loop variables enclosing the form currently being walked backward, INNERMOST FIRST.  >    Bound by %gfw-process-dotimes.  Used to recover the coordinate at which a ring-staged  >    operand is CONSUMED, which is not recoverable from the forward's load sites (a pipelined  >    ring is filled by a prologue and a prefetch, both for other stages).
+
+
+---
+### DEFUN `%AD-TILE-BASE`
+- **Args**: `(OP)`
+
+  > The underlying tile SYMBOL of a tile operand: itself if a symbol, the ring if a  >    `(ring-get RING i)` view.  Shape and staging questions are asked of the base — every slot of  >    a ring has the ring's element shape — while ADJOINT questions keep the view (see  >    %tlc-bwd-adj-name), because slot i's adjoint is slot i of the adjoint ring, not the whole  >    ring.
+
+
+---
+### DEFUN `%AD-RING-LOAD-SITES`
+- **Args**: `(FLAT-ANF)`
+
+  > Alist RING-SYM -> list of (GLOBAL-SRC ORIGIN-FORMS), one entry per `load-tile-at` whose TILE  >    argument is a `(ring-get RING i)` view.  ALL sites are kept, unlike %mma-ad-tile-source-map  >    which keeps the first per tile: a pipelined ring has several, and it is their AGREEMENT that  >    carries the information (see %ad-reconcile-ring-origin).
+
+
+---
+### DEFUN `%MMA-AD-TILE-DIMS-MAP`
+- **Args**: `(FLAT-ANF)`
+
+  > Alist SYM -> (ROWS COLS) for every compile-time-shaped tile bound anywhere in FLAT-ANF:  >    `(V (make-register-tile T (M N) INIT))`, `(V (make-scratch-matrix T (R C)))`, and — endeavor  >    138 — the RING constructors, whose per-slot dimensions sit in the same position.  A ring is  >    keyed by its own symbol; every slot has the ring's element shape, so a `(ring-get R i)`  >    operand resolves through %ad-tile-base.
+
+
+---
+### DEFUN `%VJP-MMA-ACCUMULATE-VIA-TILE`
+- **Args**: `(FORM CTX)`
+
+  > VJP for (mma-accumulate-via-tile (M N K) C-TILE A B ...).  >   >    Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk  >    never learns the MMA path's shape requirements, so they cannot leak back out as a  >    language-level contract the way the 'K-tile contract' did.  >   >      MMA fast path  -- when both backward accumulators decompose into whole fragments.  >      Scalar path    -- otherwise.  Correct at any shape, slower.  >   >    Endeavor 138: operands may be RING VIEWS.  Shape and source questions resolve through  >    %ad-tile-base to the ring (every slot has the ring's element shape); the ADJOINT keeps the  >    view, because slot i's adjoint is slot i of the adjoint ring.  A ring operand also forces the  >    SCALAR lowering: the MMA path stages a transposed operand out of the tile it was given, and  >    for a pipelined ring that tile holds a DIFFERENT stage than the one being differentiated.  >    The scalar lowering indexes the original global operands directly, so it is immune — and  >    correct-but-slow was always the default anyway.  >   >    DECLINES (NIL) when the tile shapes are not compile-time known, or when a ring's load sites  >    do not agree on one global source, which the walk then reports through its existing error.
+
+
+---
+### DEFVAR `*AD-RING-SLOT-MARKER*`
+
+  > Placeholder standing in for a ring-get index while load-site origins are compared.
+
+
+---
+### DEFUN `%AD-CANON-RING-SLOTS`
+- **Args**: `(FORM MARKER)`
+
+  > Rewrite every `(ring-get R <idx>)` in FORM to `(ring-get R MARKER)`.  >    Two load sites of the same ring differ in their slot index by construction — that is what a  >    ring IS — so the index must be normalised away before their origins can be compared.
+
+
+---
+### DEFUN `%AD-SUBST-RING-SLOT`
+- **Args**: `(FORM MARKER IDX)`
+
+  > Inverse of %ad-canon-ring-slots: put the consuming operand's own slot index back.
+
+
+---
+### DEFUN `%AD-FORM-MERGE`
+- **Args**: `(A B REPL)`
+
+  > A copy of A with the ONE subtree where A and B differ replaced by REPL, or :AMBIGUOUS when  >    they differ in more than one place.  >   >    Used to turn two load sites' stage coordinates into the CONSUMING one: the sites are  >    identical apart from the stage expression, so replacing exactly that with the enclosing loop  >    variable yields the coordinate at which the slot is actually read.
+
+
+---
+### DEFUN `%AD-RECONCILE-RING-ORIGIN`
+- **Args**: `(SITES K-VAR &OPTIONAL SLOT-IDX)`
+
+  > Given a ring's load SITES (each (SRC ORIGIN-FORMS)), the innermost enclosing loop variable  >    K-VAR at the consuming site, and the consuming operand's own SLOT-IDX, return  >    (values SRC ORIGIN) or (values NIL NIL) to decline.  >   >    All sites must name the same GLOBAL SOURCE — that is the operand's identity, and a ring fed  >    from two different matrices is genuinely ambiguous.  Origins are compared MODULO the ring  >    slot index (see %ad-canon-ring-slots); components that then agree are kept verbatim, and the  >    single component that still differs is the pipeline stage, replaced by K-VAR.  Zero differing  >    components means an unpipelined ring whose common origin is already right.
+
+
+---
+### DEFUN `%MMA-VJP-OPERAND-REF`
+- **Args**: `(OP SRC-MAP DIMS-MAP INPUTS &OPTIONAL RING-SITES)`
+
+  > Resolve an mma-accumulate-via-tile operand to (values SRC OY OX KIND).  >   >      - STAGED  : a scratch tile filled by load-tile-at.  SRC is the ORIGINAL global matrix and  >                  (OY OX) the staging origin.  >      - DIRECT  : the operand IS a global matrix (a kernel parameter read straight by the  >                  fragment loads, as in 132/04-mma-via-tile).  Origin (0 0).  >      - :RING   : a `(ring-get R i)` view.  SRC is the single global matrix every load site names;  >                  the origin is those sites' agreed components with the stage component replaced  >                  by the CONSUMING loop variable (see %ad-reconcile-ring-origin).  A pipelined  >                  ring's own load sites record OTHER stages' origins, which is exactly what made  >                  this look undifferentiable.  >   >    RING-SITES is the %ad-ring-load-sites alist, threaded from the caller because it needs  >    flat-anf.  Absent, ring operands decline, which is the previous behaviour.
 
 
 ---
@@ -5506,7 +5988,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
 - **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
 
-  > Generates the def-kernel-exact AST for the backward (gradient) pass.  >    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-  >    boundary accessor calls route adj into the SROA'd field's adj sym.  >    Endeavor 107: pre-expands stride macros (tensor-stride / grid-stride /  >    loop-vector-stride) in the kernel body so AD walks the expansion.
+  > Generates the def-kernel-exact AST for the backward (gradient) pass.  >    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-  >    boundary accessor calls route adj into the SROA'd field's adj sym.  >    Endeavor 107: pre-expands stride macros (tensor-stride / grid-stride /  >    loop-vector-stride) in the kernel body so AD walks the expansion.  >    Endeavor 145 P1: the forward primal replay now collects MULTI-VALUE bindings  >    too (via %collect-forward-primal-bindings), so `(M N (outer-dimensions A B))`  >    is bound in the backward body instead of dangling as "Unknown variable M".
 
 
 ---
@@ -5796,6 +6278,27 @@ Generated on 2026-07-29T03:36:47.822372Z
 
 
 ---
+### DEFUN `%COLLECT-MULTI-VALUE-ANF-BINDINGS`
+- **Args**: `(ANF-BODY)`
+
+  > The genuine MULTI-VALUE LET bindings in ANF-BODY, as the very cons cells that  >    flatten-anf-body will go on to push into flat-anf.  >   >    Endeavor 145 P1.  A multi-value binding CANNOT be recognized by shape once the body  >    is flattened: flatten-anf-body (src/anf-transform.lisp:369) pushes real LET bindings  >    and bare statement forms into the same flat list, and they are structurally  >    identical.  `(M N (outer-dimensions A B))` is a binding; `(load-tile-at A tile (0))`  >    and `(set! acc (+ acc x))` are statements — yet all three are "symbols then a cons".  >    Matching on shape misreads the statements as bindings and splices them into a LET,  >    which is how the first cut of this broke 111/14 and 111/15.  >   >    So identify bindings where the distinction still EXISTS — walking the pre-flatten  >    ANF, where a binding is by construction an element of a LET's binding list — and let  >    the caller match by EQ.  This mirrors flatten-anf-body's own walk exactly.
+
+
+---
+### DEFUN `%VJP-FORM-MENTIONS-ANY-P`
+- **Args**: `(FORM SYMS)`
+
+  > T when FORM references any symbol in SYMS.
+
+
+---
+### DEFUN `%COLLECT-FORWARD-PRIMAL-BINDINGS`
+- **Args**: `(FLAT-ANF ANF-BODY)`
+
+  > The forward primal bindings replayed at the head of a backward kernel.  >   >    Endeavor 145 P1.  This was an inline LOOP inside %generate-backward-kernel-ast that  >    collected only TWO-element ANF forms `(sym expr)`.  A Crisp MULTI-VALUE binding  >    flattens to a THREE-or-more element form — `(M N (outer-dimensions A B))` — so it  >    was silently dropped and every var it bound was unbound in the backward body  >    ("Unknown variable M").  Both shapes are valid Crisp LET bindings (Crisp's LET  >    supports multiple-value binding directly), so both belong in the replay LET.  >   >    The two-element rule is preserved VERBATIM from the original so existing kernels  >    replay byte-identically; multi-value bindings are added by EQ against  >    %collect-multi-value-anf-bindings (never by shape — see its docstring).  >   >    Filtering FLAT-ANF rather than appending the multi-value bindings keeps them in  >    SOURCE ORDER, so a later binding may still reference an earlier one.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\main.lisp`
 
 ### DEFUN `PRINT-COMPILER-ERROR`
@@ -5822,7 +6325,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `GET-HOISTER-BINARY-PATH`
 - **Args**: `(HOIST-ID)`
 
-  > Returns path to crisp-hoist-{id}.exe (or .bin on Unix)
+  > Returns path to crisp-hoist-{id}.exe on Windows or crisp-hoist-{id} on Unix
 
 
 ---
@@ -6972,7 +7475,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%EMIT-PER-FRAG-ACCUMULATE`
 - **Args**: `(A B ENTRY TILES &OPTIONAL ACCUM-BINDING BODY)`
 
-  > Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a  >    static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B  >    are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its  >    pre-loaded fragment var (A fragment (mi,k=0), B fragment (k=0,nj)) instead of load-fragment-a/b.
+  > Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a  >    static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B  >    are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its  >    pre-loaded fragment var instead of load-fragment-a/b.  >   >    Endeavor 145 P3a: the staged operands may span SEVERAL native K-steps (Kt / K_n, compile-time)  >    and every one of them now fires.  Previously only K-index 0 was emitted and any surplus staged  >    data was silently dropped.  For the F3 body/accum-op API this means (accum-op) fires the  >    fragment's WHOLE contraction — all of its K-steps — which keeps the promise that the body  >    controls WHEN a fragment accumulates, not how its contraction is chopped up.
 
 
 ---
@@ -7087,14 +7590,14 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%EXPLODE-REWRITE-BODY-FORM`
 - **Args**: `(FORM TILES)`
 
-  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references  >    to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
+  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references  >    to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
 
 
 ---
 ### DEFUN `%EXPLODE-REGISTER-TILES`
 - **Args**: `(LET-EXPR &OPTIONAL LOCATION CONTEXT)`
 
-  > Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in  >    LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the  >    body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register  >    FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.  >    Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp  >    allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions  >    to reconstruct each warp's logical fragment range).
+  > Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in  >    LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the  >    body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register  >    FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.  >    Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp  >    allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions  >    to reconstruct each warp's logical fragment range).  >    Endeavor 145 P3a: also publishes the LET's SLM scratch-tile shapes in *mma-scratch-tile-dims* so  >    the accumulate expansion can walk K within a staged tile.
 
 
 ---
@@ -7122,14 +7625,14 @@ Generated on 2026-07-29T03:36:47.822372Z
 ### DEFUN `%MMTS-REGISTER-DIMS-MAP`
 - **Args**: `(BINDINGS)`
 
-  > Alist var -> (M N) for each register-tile binding in a let's BINDINGS.
+  > Alist var -> ((M N) INIT) for each register-tile binding in a let's BINDINGS.  >    BUG 036: now carries the declared INIT as well as the dims, so the lowering can reset each  >    output tile to the value the user actually asked for.
 
 
 ---
 ### DEFUN `%EXPAND-MMTS-REGISTER-IN-FORM`
 - **Args**: `(FORM REG-MAP LOCATION)`
 
-  > Rewrite matrix-multiply-tile-stride forms whose C-tile is a register tile (in REG-MAP)  >    to their tile-stride + auto-store lowering with a compile-time (M N) size-list tile-spec,  >    so the generated store-tile/mma are visible to the register-tile SROA explosion.
+  > Rewrite matrix-multiply-tile-stride forms whose C-tile is a register tile (in REG-MAP)  >    to their tile-stride + K-loop lowering with a compile-time (M N) size-list tile-spec,  >    so the generated store-tile/mma are visible to the register-tile SROA explosion.  >    BUG 036: forwards the tile's declared INIT as the per-output-tile reset value.
 
 
 ---
@@ -7149,7 +7652,7 @@ Generated on 2026-07-29T03:36:47.822372Z
 ---
 ### DEFUN `REGISTER-MMA-ANALYZERS`
 
-  > Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms.
+  > Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms.  >    Endeavor 145 P2: adds LOAD-FRAGMENT-ACC (the store-fragment inverse).
 
 
 ---
@@ -7272,6 +7775,47 @@ Generated on 2026-07-29T03:36:47.822372Z
 - **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF)`
 
   > One m64nNk8 wgmma: fence + mma_async (N/2 accumulators in/out + 2 descs) + commit + wait; return  >    the new D record.  The k-slice offset (kk*32 bytes) advances the swizzle descriptor start address.
+
+
+---
+### DEFUN `ANALYZE-LOAD-FRAGMENT-ACC`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > P2 (145): (load-fragment-acc SRC (TY TX)) reads a fp32 ACCUMULATOR fragment from the  >    SRC matrix at logical tile (TY TX).  The exact inverse of store-fragment.  >   >    :spirv -> CooperativeMatrixLoadKHR with Use=2 (accumulator), rows/cols from the active  >    profile's shape and layout from the source tensor's :contiguous-term — mirroring  >    analyze-store-fragment so a Load/Store pair always agrees.  >   >    else   -> the NVIDIA per-lane read at the m16n8 fp32 accumulator layout.  With  >    g = lane/4 and t = lane%4 this lane's four registers live at  >      (g, 2t) (g, 2t+1) (g+8, 2t) (g+8, 2t+1)  >    offset by the tile origin (TY*16, TX*8) — byte-for-byte the addresses store-fragment  >    writes, only feeding %construct-struct instead of set!.  >   >    The fragment is tallied against the kernel's register budget exactly as  >    make-register-fragment tallies one: a LOADED accumulator occupies the same registers  >    as a constructed one, and endeavor 144's fit-check must see both.
+
+
+---
+### DEFVAR `*MMA-SCRATCH-TILE-DIMS*`
+
+  > Endeavor 145 P3a: alist (SYM ROWS COLS) of the SLM scratch tiles bound by the LET currently  >    being exploded.  %emit-per-frag-accumulate reads it to learn a staged operand's K extent so it  >    can walk K WITHIN the tile.  Bound by %explode-register-tiles; NIL elsewhere, in which case a  >    staged operand is assumed to span exactly one native K-step (the pre-145 behaviour).  >   >    A special variable rather than a threaded parameter so %explode-rewrite-body-form — which  >    carries the endeavor-142 register block-load branches — does not have to change.
+
+
+---
+### DEFUN `%MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS`
+- **Args**: `(BINDINGS)`
+
+  > Endeavor 145 P3a: the (SYM ROWS COLS) dims of every compile-time-shaped  >    (V (make-scratch-matrix <elem> (ROWS COLS))) binding in BINDINGS.  >   >    Only literal integer 2-lists are recorded; a scratch tile whose shape is derived from another  >    tensor contributes nothing and falls back to the one-K-step assumption.
+
+
+---
+### DEFUN `%MMA-OPERAND-EXTENT`
+- **Args**: `(REF TILES WHICH)`
+
+  > Endeavor 145 P3a: the compile-time extent (WHICH = :rows | :cols) of an  >    mma-accumulate-via-tile operand REF, or NIL if not compile-time known.  >   >    Handles both operand flavours: a register tile / ring slot (normalized to  >    (V m n syms ...) by %resolve-tile-ref) and an SLM scratch tile (via  >    *mma-scratch-tile-dims*).
+
+
+---
+### DEFUN `%MMA-K-STEPS`
+- **Args**: `(A B TILES SK LOCATION)`
+
+  > Endeavor 145 P3a: how many native K-steps the staged operands span — A's COLUMN extent (Kt)  >    divided by the instruction's K.  Defaults to 1 when the shape is not compile-time known,  >    reproducing the pre-145 behaviour exactly.  >   >    Also cross-checks the operands: A is Mt x Kt and B is Kt x Nt, so A's column extent must equal  >    B's row extent.  Such a mismatch used to be silently truncated to one K-step; it is a hard error  >    now, since it can only mean the staged tiles disagree about the contraction length.
+
+
+---
+### DEFUN `%EMIT-PER-FRAG-ACC-LOAD`
+- **Args**: `(SRC TILE-ID ENTRY)`
+
+  > Endeavor 145 P3b: per-fragment expansion of  >    (%load-register-tile-acc TILE SRC (TY TX)) — the exact mirror of %emit-per-frag-store,  >    reading each accumulator fragment back out of SRC with P2's load-fragment-acc instead of  >    writing it.  This is where the fragment element->lane MAPPING finally becomes  >    load-bearing: the seeded gradient is non-zero, so a wrong mapping changes the answer  >    (unlike the zero-seed of P2's own spec).
 
 
 ---
