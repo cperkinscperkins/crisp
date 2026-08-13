@@ -4,9 +4,26 @@
 ;; wgmma.mma_async computes D = A*B, stored to C.  Ported from the metal-verified wgmma_ref.cu.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "wgmma is forward-only MMA"
+;; SKIP-WITH[--differentiate]: "HAND-STAGED operand, not a wgmma limit.  A-tile/B-tile are a flat (make-scratch-vector float 512) scatter-filled in wgmma core order, so mma-accumulate-via-tile's VJP has neither a compile-time (Mt Kt) nor a load-tile-at source to recover.  Needs PRIMAL REPLAY: recompute the operand's staging into the backward and address it through the instruction's ABI layout.  Everything else in this kernel already differentiates -- see 140/03 for wgmma itself, and the note below."
 ;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma
+;;
+;; Endeavor 146: the old reason here read "wgmma is forward-only MMA".  That was never true
+;; and is now demonstrably false -- 140/03 differentiates and emits a backward.  Measured
+;; state of THIS kernel, so the next person does not re-derive it:
+;;   - the SCATTER-FILL already differentiates.  Crisp's generic set!/~ backward reverses
+;;     (set! (~ A-tile core) (~ A r k)) into A_ADJ[r][k] += A-TILE_ADJ[core] straight through
+;;     the user's swizzled index expression -- no load-tile-at, no layout knowledge needed.
+;;     Verified by compiling this kernel's staging on its own under --differentiate.
+;;   - the index math (/ and rem) is clean as of 146 Gap 2, which gave rem/mod real
+;;     derivatives instead of declaring them inert.
+;;   - warp-id / warp-lane / warp-count are now registered thread coordinates (146), which
+;;     is what previously stopped the staging from differentiating at all.
+;; What remains is ONLY the tile multiply's VJP: it reads operand PRIMALS from their global
+;; source, and a backward replays the forward's BINDINGS but not its STATEMENTS, so the
+;; staged tile is empty there.  A hand-swizzled flat buffer has no source mapping to invert.
+;; The fix is recompute -- replay the staging into the backward -- which is a general AD
+;; capability, not a wgmma feature.  Un-skip when that exists.
 ;;
 ;; MMA-DIMS: 64 64 8
 ;; HOIST-ARCH: sm_90

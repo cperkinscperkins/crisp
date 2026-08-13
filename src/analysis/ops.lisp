@@ -444,13 +444,39 @@ set!  analyzer's behavior in analysis/structs.lisp."
          (mul-sym (intern "*" cl-pkg))
          (div-sym (intern "/" cl-pkg))
          (x-tmp (gensym "MOD-X"))
-         (y-tmp (gensym "MOD-Y"))
-         (expansion (list let-sym
-                          (list (list x-tmp x-form)
-                                (list y-tmp y-form))
-                          (list sub-sym x-tmp
-                                (list mul-sym (list div-sym x-tmp y-tmp) y-tmp)))))
-    (analyze-expression expansion env context location)))
+         (y-tmp (gensym "MOD-Y")))
+    ;; Endeavor 146: make the docstring's promise true for a LITERAL divisor.
+    ;;
+    ;; The expansion below runs through the ordinary +/-/*/ analyzers, and those refuse an
+    ;; unpromotable pair — get-promoted-type returns NIL for ULONG vs INT, deliberately, since
+    ;; mixing signedness silently is worse than refusing.  A Lisp integer literal reads as INT,
+    ;; so `(mod <ulong> 2)` died with
+    ;;     Type mismatch for operator '/'. Cannot operate on ULONG and INT.
+    ;; even though every operand the user wrote was consistent.  This is a FORWARD bug, not an
+    ;; AD one: it reproduces in a plain kernel with no --differentiate (endeavour 146 found it
+    ;; via 142/12, whose forward escapes it only because the ring index is unrolled at compile
+    ;; time so the mod never reaches this analyzer).
+    ;;
+    ;; Coercing only a LITERAL keeps the language's strictness where it earns its keep: two
+    ;; mismatched VARIABLES still error, because that is where a silent signedness change would
+    ;; actually surprise someone.  A literal has no independent type worth defending — it is
+    ;; INT only because that is how the reader spells it.
+    (let* ((x-node (when (integerp y-form)
+                     (analyze-expression x-form env context (append location '(1)))))
+           (x-type (when x-node (get-single-value-type x-node)))
+           ;; NB: `to-ulong` and friends are ANALYZER-handled forms, not Lisp functions, so
+           ;; find-symbol is the right existence check here — an fboundp guard silently never
+           ;; fires and the coercion does nothing.
+           (coerce-fn (when (and x-type (symbolp x-type)
+                                 (not (string= (symbol-name x-type) "INT")))
+                        (find-symbol (format nil "TO-~A" (symbol-name x-type)) cl-pkg)))
+           (y-form (if coerce-fn (list coerce-fn y-form) y-form))
+           (expansion (list let-sym
+                            (list (list x-tmp x-form)
+                                  (list y-tmp y-form))
+                            (list sub-sym x-tmp
+                                  (list mul-sym (list div-sym x-tmp y-tmp) y-tmp)))))
+      (analyze-expression expansion env context location))))
 
 ;; src/analysis/ops.lisp
 (defun analyze-rem-expression (expr env context location)

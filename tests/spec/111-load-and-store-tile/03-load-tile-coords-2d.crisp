@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
 ;; Basic load-tile-at on a 2D matrix.  Cooperatively load a 4x4 chunk
 ;; from origin (0,0) into a :local tile, then copy out via workgroup-stride.

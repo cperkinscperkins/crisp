@@ -1,0 +1,73 @@
+;; Endeavor 146 Gap 3, rung 1 — does a WARP-SPECIALIZED kernel differentiate at all?
+;;
+;; The 139 specs cannot answer this.  139/05 and /06 are sm_90a-gated, so VERIFY-AUTODIFF
+;; (SPV/L0) cannot check their gradient VALUES on any box we have; 139/02 is BMG-reachable but
+;; is the hardest case in the set — a scratch ring, two barrier rings and a producer/consumer
+;; handshake all at once.  Debugging an AD gap through that is how the 142 ring work cost five
+;; iterations.  So: the smallest kernel that still has two warp roles.
+;;
+;; WHAT FAILS TODAY (before any fix):
+;;     Function CONSUMER is not differentiable.
+;; and the cause is NOT that warp specialization is undifferentiable.  `warp-specialization`
+;; appears ZERO times in src/autodiff.lisp, and there is no macro for it — it is handled by
+;; analyze-with-warp-specialization-expression, an ANALYZER pass.  The AD walk runs BEFORE
+;; semantic analysis, so it sees the raw form and reads the role block `(:consumer ...)` as a
+;; call to a function named CONSUMER.  Structurally identical to wgmma in 140/03: a construct
+;; the walk has simply never been told about.
+;;
+;; The analyzer already knows the right lowering — a warp-id-gated nested `if` — and the walk
+;; already handles `if` (it is in the %active-scalar-vars edge table and has a backward rule).
+;;
+;; THE CHECK, and why it is built this way.  Each role gets its OWN input tensor, so a dropped
+;; role shows up as a zero gradient attributable to THAT role rather than a single number that
+;; could be wrong for several reasons:
+;;
+;;   f(A,B) = sum(C),  C[0][l] = 2*A[0][l]   (producer warp)
+;;                     C[1][l] = 3*B[1][l]   (consumer warp)
+;;   => dA[0][0] = 2.0   and   dB[1][0] = 3.0
+;;
+;; Failure modes this distinguishes:
+;;   - producer body dropped        -> expect.A reads 0.0
+;;   - consumer body dropped        -> expect.B reads 0.0
+;;   - role gating lost (both bodies run in every warp) -> both read wrong, since every thread
+;;     would then write both rows and the adjoints would cross
+;;
+;; EVERY THREAD WRITES A DISTINCT ELEMENT, deliberately.  139/01b and 139/02 have all threads
+;; of a role write the SAME cell — idempotent in the forward, but a backward accumulates into
+;; the adjoint once per thread, so a shared cell would multiply the gradient by the warp width
+;; and this spec would be measuring the launch geometry instead of the derivative.
+;;
+;; GEOMETRY IS DELIBERATELY SUB-GROUP-WIDTH INDEPENDENT, and the first cut was not.
+;; It used group=32 with 2x16 inputs and indexed by (warp-id, warp-lane), assuming BMG's
+;; 16-wide sub-group would give two warps.  Intel also supports SIMD32, where 32 threads is
+;; exactly ONE warp — so warp-id was always 0, the consumer branch never ran, and the check
+;; read dB = 0.0.  That looked like an AD failure and was a test-geometry bug: the compiler's
+;; backward was already correct and symmetric.
+;;
+;; So: 64 threads over 4x16 inputs, indexed by the LOCAL LINEAR ID rather than by lane, and
+;; the check points chosen to fall on the same side of the split under either width:
+;;   width 16 -> warps 0..3: row 0 producer, rows 1..3 consumer
+;;   width 32 -> warps 0..1: rows 0..1 producer, rows 2..3 consumer
+;; row 0 is therefore ALWAYS producer and row 3 ALWAYS consumer.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 B=4x16@0:0.01 at.A=0,0 expect.A=2.0 at.B=3,0 expect.B=3.0 group=64 h=0.5 atol=1e-2 output-mat=4x16
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel warp_role_grad (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))          ; >= 2 warps at width 16 OR 32
+  ;; NB: locals are `row`/`col`, not `r`/`c`.  The Lisp reader is case-insensitive, so a local
+  ;; named `c` IS the symbol C and shadows the &out parameter — `(~ C row c)` then types as
+  ;; (INT INT INT) and the overload lookup fails with a message that does not mention shadowing.
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))                    ; one element per thread, no sharing
+          (col (rem tid 16)))
+      (with-warp-specialization (:producer 1 :consumer 1)
+        (:producer (set! (~ C row col) (* 2.0 (~ A row col))))
+        (:consumer (set! (~ C row col) (* 3.0 (~ B row col))))))))

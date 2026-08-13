@@ -12,7 +12,26 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "forward-only ring / MMA"
+;; SKIP-WITH[--differentiate]: "COMPILES, but the gradient is WRONG — measured, not assumed, and characterised.  The over-count factor is (K+1): analytical=10.8 vs FD=1.199 at K=8, and analytical=39.6 vs FD=1.195 at K=32.  The finite difference matches hand-computation both times, so the FORWARD is right and the BACKWARD adds a spurious term proportional to K.  RULED OUT: ring slot REUSE — a single-k-step variant (K=8, one iteration, no slot shared) is already 9x wrong.  ALSO VERIFIED CORRECT by reading the emitted backward: the dA loop reads B at (grid-k*8 + k, n), and %load-tile-at-bwd scatters the slot to A_GRAD at (0, grid-k*8) — per-iteration math and coordinates both check out.  So the defect is elsewhere and the (K+1) shape is the clue.  SEPARATE REAL DEFECT found while looking, worth fixing regardless: the ring adjoint slot is never RESET between iterations that share it (slot 0 serves grid-k 0 and 2), which is BUG 036's shape one level up; it corrupts other columns even though it does not explain dA[0,0]."
+;;
+;; Endeavor 146: the old reason read "forward-only ring / MMA".  False on both halves — MMA
+;; differentiates (142/01, 145/12) and ring staging differentiates (145/18).  What actually
+;; blocked this spec was NOT an AD gap at all: `(mod grid-k 2)` failed with
+;;     Type mismatch for operator '/'. Cannot operate on ULONG and INT.
+;; because analyze-mod-expression expanded to (- x (* (/ x y) y)) WITHOUT coercing, and a Lisp
+;; integer literal reads as INT while grid-k is ULONG.  A pure FORWARD bug — it reproduces in a
+;; four-line kernel with no --differentiate.  The forward here escaped it only because the ring
+;; index is unrolled at compile time, so the mod never reached the analyzer; adding the backward
+;; is what first made it reach.  Fixed in analyze-mod-expression by coercing a LITERAL divisor
+;; to the dividend's type (variables still error, which is where strictness earns its keep).
+;;
+;; THE CHECK IS LEFT IN PLACE THOUGH THE SPEC IS SKIPPED, because it is the thing that found
+;; the defect and it will be the thing that confirms the fix.  142/01 proves register-resident
+;; MMA and 145/18 proves ring STAGING; their COMBINATION — a k-loop over a register-tile ring
+;; feeding MMA — is what is still unproven, and now known WRONG rather than merely unproven.
+;; f(A,B) = sum(A.B) with K=32, so
+;; dA[m,k] = sum_n B[k,n]; with B[i][j] = 0.01*(i*16+j), dA[0,0] = 0.01 * sum_{n=0..15} n = 1.2.
+;; VERIFY-AUTODIFF: A=16x32@0:0.01 B=32x16@0:0.01 at.A=0,0 expect.A=1.2 group=16 h=0.5 atol=2e-2 output-mat=16x16
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; On-metal correctness (host-reference C = A.B, K=32 = four 8-wide K-blocks -> n-k-steps=4, so the

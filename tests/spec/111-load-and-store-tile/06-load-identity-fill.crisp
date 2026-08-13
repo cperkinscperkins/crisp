@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
 ;; Ragged-edge load: tile is 4 elements but loading from origin 2 of a
 ;; 4-element vector leaves only 2 valid source elements (V[2], V[3]).

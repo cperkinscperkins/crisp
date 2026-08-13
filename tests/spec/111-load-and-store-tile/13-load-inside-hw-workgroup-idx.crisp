@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
 ;; load-tile inside hardware-stride :workgroup-idx.  The binding (grid-x) is a
 ;; GRID term (chunk-ID); load-tile scales it by the tile extent.  When the body

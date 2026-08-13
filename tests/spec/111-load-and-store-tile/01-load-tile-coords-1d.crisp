@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for load-tile-at land in sub-step 1c"
 
 ;; Basic load-tile-at on a 1D vector.  Cooperatively loads 4 elements
 ;; from a global vector starting at origin 0 into a :local tile, then

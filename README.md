@@ -26,6 +26,10 @@ Crisp has moved far beyond the initial design phase. The core architecture—inc
 
 [Benchmarking Report](./benchmarks/REPORT.md)
 
+### Getting Started
+
+Crisp can be downloaded as a release, or built from source. For either see [INSTALL](./INSTALL.md)
+
 ### The Specification
 
 The complete, in-progress design document can be found in the docs directory. Each feature is tagged with an emoji indicating its implementation status (✅ Completed, ⚠️ Partially Implemented, 📝 Planned).

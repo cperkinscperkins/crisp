@@ -1,0 +1,64 @@
+;; Endeavor 146 — a REGISTER OPERAND tile stored straight out, differentiated.  No MMA at all.
+;;
+;; WHY THIS SPEC EXISTS.  Chris found the defect by hand, running 142/13 in a configuration
+;; that spec does not declare (it is a PTX negative test; he tried --ir-target=spv):
+;;
+;;     Unsupported form '%LOAD-REGISTER-TILE-ACC' found in function body.
+;;
+;; Nothing in the suite covered it, because 142/13 is skipped under --differentiate (correctly
+;; — it is a negative test) and every other register-tile spec routes through an MMA.  So the
+;; simplest possible register-operand kernel had no differentiate coverage anywhere.  It does
+;; now.
+;;
+;; THE DEFECT was a half-applied change of my own.  Gap 4 split the two register-tile ROLES
+;; apart at the adjoint:
+;;   - ACCUMULATOR  -> adjoint is a register tile (seeded by %load-register-tile-acc)
+;;   - OPERAND      -> adjoint is a SCRATCH MATRIX, because every consumer indexes it as
+;;                     memory and a register tile cannot be written element-wise
+;; but the store-tile backward still asked the BROAD question, %mma-ad-register-tile-p, and so
+;; emitted %load-register-tile-acc — a REGISTER operation — against a scratch-matrix adjoint.
+;; The guard now asks %mma-ad-register-accumulator-tile-p, and an operand tile falls through to
+;; the ordinary store-tile-at backward, which is the memory-shaped edge its adjoint wants:
+;;
+;;     (%STORE-TILE-AT-BWD A-TILE_ADJ C_GRAD ...)   ; gather C_GRAD -> tile adjoint
+;;     (%LOAD-TILE-AT-BWD  A_GRAD A-TILE_ADJ ...)   ; scatter tile adjoint -> A_GRAD
+;;
+;; a clean reverse of the forward's A -> tile -> C.
+;;
+;; NO NUMERIC CHECK, AND THE REASON IS WORTH RECORDING — it is a finding, not an omission.
+;;
+;; The obvious check would be f(A) = sum(C) with C = A elementwise, giving dA[i,j] = 1.0.  That
+;; was written and RUN, and it read:
+;;
+;;     analytical=1.0   numerical=0.0
+;;
+;; The ANALYTICAL side is correct.  The finite difference is what disagrees: perturbing A[0,0]
+;; does not change sum(C) on metal, so the FORWARD does not compute "C = A elementwise".  An
+;; `:operand :a` tile holds its data in the MMA's GRF FRAGMENT layout, not row-major, so
+;; "load it and store it back" is not an identity — that was the test's premise, not the
+;; language's.  (A pure permutation would still give FD = 1.0 for sum(C), so a zero suggests
+;; the store writes nothing reachable at all.  Whether storing an :operand tile is meant to be
+;; expressible is an open FORWARD question, unrelated to AD, and no spec covers it — 142/13,
+;; the only kernel of this shape, is a compile-only PTX negative test.)
+;;
+;; So this spec asserts what it can honestly prove: the kernel COMPILES under --differentiate
+;; and the backward is the memory-shaped pair above.  The gradient VALUES for register operand
+;; tiles are proven where the forward is metal-verified instead: 142/01 (MMA_CORRECT on BMG)
+;; reads analytical=1.2, and 145/12 the same.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder fault (plan/bugs.md #033), as for every register-tile spec"
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel register_operand_store (A &out C)
+  (declare #'(mat &out mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((A-tile (make-register-tile float (16 8) 0.0 :operand :a)))
+    (load-tile A A-tile (0 0))          ; global -> GRF, the Phase A register overload
+    (store-tile A-tile C (0 0))))       ; GRF -> global, no MMA in between

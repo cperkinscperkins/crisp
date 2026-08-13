@@ -1,35 +1,41 @@
-;; P3c (MMA autodiff) — a FRAGMENT-level MMA form under --differentiate must say something
-;; USEFUL.
+;; THE FILENAME IS HISTORICAL.  This spec once asserted that a FRAGMENT-level MMA form could
+;; NOT be differentiated.  It can.  The name is kept only because 145's own record
+;; (145-mma-autodiff/mma-autodiff.md:396) points at it by filename; renaming would break that
+;; link to the history this spec exists to preserve.
 ;;
-;; Before this, the kernel below failed with the engine's generic message:
-;;   "Function MMA-ACCUMULATE is not differentiable.  Wrap the kernel in 'forward-only' ..."
-;; which gives exactly the wrong advice.  The multiplication IS differentiable — Crisp
-;; differentiates matmul fine (spec 06) — just not at this altitude, and pointing the user at
-;; `forward-only` sends them away from the thing that would actually work.
+;; WHAT IT USED TO CLAIM, and why the claim was wrong — worth keeping in full, because this is
+;; the clearest specimen of the mistake endeavours 145 and 146 were both about:
 ;;
-;; The reason is a hardware shape contract, not a missing feature.  On a SINGLE fragment
-;; M/N/K are the native instruction shape, so the two backward GEMMs come out as
-;; dA = (M,K,N) and dB = (K,N,M) — and on either vendor exactly one of them fails:
-;;   NVIDIA (16 8 8): dA fits, dB is (8,8,16) with M'=8 < M_n=16.
-;;   Intel  (8 16 8): dB fits, dA is (8,8,16) with N'=8 < N_n=16.
-;; Mirror images, because the two vendors' shapes are transposes of one another.  A non-MMA
-;; fragment backward is no better: dA[m,k] = sum_n dD[m,n]*B[k,n] contracts over n, but a lane
-;; holds only two of the accumulator's columns, so the reduction spans lanes.
+;;     "The reason is a hardware shape contract, not a missing feature.  On a SINGLE fragment
+;;      M/N/K are the native instruction shape, so the two backward GEMMs come out as
+;;      dA = (M,K,N) and dB = (K,N,M) — and on either vendor exactly one of them fails:
+;;        NVIDIA (16 8 8): dA fits, dB is (8,8,16) with M'=8 < M_n=16.
+;;        Intel  (8 16 8): dB fits, dA is (8,8,16) with N'=8 < N_n=16.
+;;      ... So the fragment forms stay a forward-only escape hatch."
 ;;
-;; So the fragment forms stay a forward-only escape hatch and the error now names the tile
-;; form as the differentiable surface.  Nothing user-facing is lost: epilogue fusion (ReLU,
-;; bias) rides the `(acc)` body API on mma-accumulate-via-tile, not on raw mma-accumulate.
+;; Every sentence of that is true ABOUT ONE CHOSEN LOWERING — keeping the backward in
+;; registers and realising it with the same MMA instruction as the forward.  None of it is
+;; true about the MATHEMATICS.  dA = dC.B^T and dB = A^T.dC hold at every shape.  145's
+;; retraction routed the fragment backward THROUGH MEMORY instead, exactly as the tile-level
+;; VJP already routed dC, and the lane-spanning reduction simply does not arise.
 ;;
-;; NOTE ON THE DIRECTIVE: this is a negative test, but it CANNOT live in an errors/ directory.
-;; run-error-specs.lisp invokes the compiler with a fixed arg list (file + --log-level=off)
-;; and cannot inject --differentiate, so the kernel would compile forward-only and the
-;; negative test would fail for the wrong reason.  COMPILE-WITH[...]: FAIL "substring" is the
-;; mechanism that can carry the flag.
+;; So the negative test began failing BECAUSE THE WORK SUCCEEDED — the last artifact of a
+;; retracted claim, still asserting a limitation that no longer existed.  It is now a POSITIVE
+;; regression test: the same kernel, asserting it differentiates.
+;;
+;; VERIFIED NOT HOLLOW.  A compile that merely stops erroring proves nothing (135/01 compiled
+;; with correct-looking atomics and returned 0.0).  The emitted backward here scatters
+;;     ATOMIC-ADD! (~ A_GRAD m k)  <-  (~ C_GRAD m n) * (~ B k n)
+;; with the mirrored loop for B_GRAD — i.e. dA = dC.B^T and dB = A^T.dC, real flow.
+;;
+;; THE NUMBER lives in 145/13-fragment-vjp-bmg, which gradient-checks this same
+;; `store-fragment (mma-accumulate ...)` form on BMG at expect.A=1.2.  This spec covers a
+;; DIFFERENT fragment shape (16x8 accumulator) and asserts compilation only; it is deliberately
+;; not a second numeric check.
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
-;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: FAIL "FRAGMENT-level MMA form"
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "the --differentiate behaviour IS the test; see the COMPILE-WITH FAIL above"
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))

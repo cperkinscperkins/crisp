@@ -33,7 +33,13 @@
 ;;
 ;; COMPILE-WITH[--ir-target=ptx]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "P2 adds the forward primitive only; mma-accumulate's backward rule is P3"
+;; Endeavor 146: registered — see 145/03 for the reasoning (the accumulator's partial is the
+;; identity, so inside a fused store-fragment(mma-accumulate ...) chain it is :inert for the
+;; same double-count reason as the A and B operands).
+;;
+;; Asserts COMPILES + emits a backward.  The NUMBER is 145/03's, which gradient-checks the
+;; identical chain on BMG at analytical=1.2 — this PTX twin cannot be gradient-checked at all,
+;; since VERIFY-AUTODIFF has only :l0 and :opencl runtimes and no CUDA path.
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))

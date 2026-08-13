@@ -13,7 +13,10 @@
 ;; Shape: K=32 / k-step=8 -> FOUR K-steps over a TWO-deep ring (multi-lap, as 05).  3 warps total:
 ;; 1 producer + 2 consumers -> local-size 96.
 ;;
-;; SKIP-WITH[--differentiate]: "forward-only MMA fundamentals; warp specialization is forward-only control flow"
+;; Endeavor 146 Gap 3: old reason ("forward-only MMA fundamentals; warp specialization is
+;; forward-only control flow") was false on both counts — see 139/05 for the reasoning and
+;; 146/01 for the on-metal gradient check.  Asserts COMPILES + emits a backward; gradient
+;; VALUES are sm_90a-gated and want a Hopper pod.
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-distributed-mma
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"

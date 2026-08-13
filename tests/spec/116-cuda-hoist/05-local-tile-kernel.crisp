@@ -1,5 +1,4 @@
 ;; TEST-HOIST[CUDA]: validate-cuda-shared-mem
-;; SKIP-WITH[--differentiate]: "AD pre-rewrite for load-local / store-global async lands in phase 1"
 
 ;; Uses a local tile via load-tile-at — the CUDA hoist must
 ;; emit shared memory at launch and pass 0 as the tile's parent-ptr offset.

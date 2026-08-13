@@ -4,9 +4,24 @@
 ;; metal-verified wgmma_tma_swizzle_ref.cu recipe.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "wgmma is forward-only MMA"
 ;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma
+;;
+;; Endeavor 146 Gap 1: the old skip here read "wgmma is forward-only MMA", which was never a
+;; property of wgmma -- it was the absence of any wiring.  "wgmma" appeared exactly ONCE in all
+;; of src/autodiff.lisp, in a comment.  wgmma is Hopper's warpgroup-async way of computing
+;; D += A.B; the asynchrony and the warpgroup scope are SCHEDULE, and the math is the same
+;; multiply mma-accumulate-via-tile already has a VJP for.  The backward is now obtained by
+;; canonicalizing wgmma to the sync MMA on the ANF entering the backward walk, so the ONE
+;; existing VJP supplies the derivative.  A backward is under no obligation to use the same
+;; instruction as its forward.
+;;
+;; NO NUMERIC PROOF HERE, DELIBERATELY.  wgmma is sm_90a-only and VERIFY-AUTODIFF runs on
+;; SPV/L0, so gradient VALUES cannot be checked on this machine and there is no BMG analogue
+;; to fall back on -- wgmma does not exist on Intel.  What is asserted is that it differentiates
+;; and emits a backward.  Treat like 137/03: the values want a Hopper pod run before anyone
+;; claims them.  (145/12 and 142/01 are the numeric proofs that the underlying tile VJP is
+;; right; this spec adds only that wgmma reaches it.)
 ;;
 ;; MMA-DIMS: 64 64 32
 ;; HOIST-ARCH: sm_90

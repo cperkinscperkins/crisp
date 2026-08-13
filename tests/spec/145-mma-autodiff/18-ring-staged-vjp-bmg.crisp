@@ -31,6 +31,7 @@
 ;; d(sum C)/dA[1,0] = 1.0 exactly.  Chosen because it isolates the two ring edges — the load's
 ;; scatter and the store's gather — with no arithmetic in between to mask a wrong one.
 ;;
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder fault (plan/bugs.md #033) — a hard SBCL memory fault at address 5, not a Crisp diagnostic.  13 of the 19 specs in this directory already carry this skip; 18 was simply missed.  VERIFIED PRE-EXISTING rather than assumed: reproduced identically with src/ and overlays/ checked out at the 145 merge (5a6eebd) and rebuilt, so it predates endeavour 146 entirely.  Of the four 145 specs lacking the skip (14, 15, 17, 18) only this one faults, so the trigger is the scratch RING under --debug specifically."
 ;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
 ;; VERIFY-AUTODIFF: A=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=1.0 output-mat=4x4
 

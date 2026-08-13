@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD rules for store-tile-at land in sub-step 1c"
 
 ;; Sub-step 1b: bare store-tile inside tile-stride.  The bare form
 ;; (store-tile tile OUT (grid-x)) gets rewritten to

@@ -535,6 +535,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - (%CRISP-TENSOR-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%IS-TENSOR-ALIAS SYM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - - - (%CRISP-CELL-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
@@ -601,13 +603,23 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL TENSOR-INPUTS-HT ANY-DOUBLE RETURN-ADJ-TYPES)  autodiff.lisp
 - - - - - - - - - - - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
                                                                                                                               T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%AD-REM-OR-MOD-FORM-P EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%AD-HANDLE-REM-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%AD-WIDENING-CONVERSION-FORM-P EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%AD-HANDLE-WIDENING-CONVERSION-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%AD-INERT-RING-GET-P EXPR)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%HANDLE-MATH-AND-TRIG-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%HANDLE-TILDE-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%AD-RESOLVE-VIEW-ALIAS SYM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%AD-VIEW-ADJOINT VIEW)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%AD-VIEW-ADJOINT VIEW)  autodiff.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - (%HANDLE-SUB-FN-CALL-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN HOF-HANDLER-FN)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - - (%EMIT-FOREIGN-BACKWARD FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                                                   BW))  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%IS-ACCESSOR-P EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%BACKWARD-SKIP-FN-P FN-SYM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%BACKWARD-SKIP-FN-P-145P1 FN-SYM)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%HANDLE-ACCESSOR-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - - (%STRIP-ACCESSOR-TILDES ACCESSOR)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - - (%NESTED-FIELD-INFO-P FIELD-INFO)  autodiff.lisp
@@ -631,7 +643,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - (%VALUE-LET-P EXPR)  autodiff.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%HANDLE-VALUE-LET-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
                                                                                                                              T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%BACKWARD-SKIP-FN-P FN-SYM)  autodiff.lisp
 - - - - - - - - - - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                                               BW))  autodiff.lisp [See above]
 - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp
@@ -1093,14 +1104,44 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
+- - (%AD-CANONICALIZE-WARP-SPECIALIZATION FORM)  autodiff.lisp
+- - - (%LOWER-WARP-SPECIALIZATION EXPR LOCATION &KEY (GATED T))  analysis/control.lisp
+- - - - (%PARSE-WARP-SPECIALIZATION EXPR LOCATION)  analysis/control.lisp
 - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
+- - (%MMA-AD-TILE-SOURCE-MAP FLAT-ANF)  autodiff.lisp
+- - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp
+- - (%AD-REWRITE-PRIMAL-BINDINGS BINDINGS)  autodiff.lisp
+- - - (%AD-REWRITE-PRIMAL-TILE-READ EXPR)  autodiff.lisp
+- - - - (%AD-TILE-READ-P EXPR)  autodiff.lisp
+- - (%COLLECT-FORWARD-PRIMAL-BINDINGS FLAT-ANF ANF-BODY)  macros.lisp
+- - - (%COLLECT-MULTI-VALUE-ANF-BINDINGS ANF-BODY)  macros.lisp
+- - - (%VJP-FORM-MENTIONS-ANY-P FORM SYMS)  macros.lisp
+- - - - (%VJP-FORM-MENTIONS-ANY-P FORM SYMS)  macros.lisp [RECURSION]
 - - (%REGISTER-SHADOW-ANF-INTERMEDIATES FLAT-ANF SHADOW-HT)  autodiff.lisp
 - - - (%NESTED-FIELD-INFO-P FIELD-INFO)  autodiff.lisp [See above]
 - - (GENERATE-BACKWARD-WALK FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)  autodiff.lisp
+- - - (%AD-NORMALIZE-ANF-FOR-BACKWARD FLAT-ANF)  autodiff.lisp
+- - - - (%AD-INLINE-LITERAL-SHAPE-TEMPS FLAT-ANF)  autodiff.lisp
+- - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
+- - - - (%AD-CANONICALIZE-WGMMA FORM)  autodiff.lisp
+- - - - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
+- - - - (%AD-NORMALIZE-RING-VIEW-EXTENTS FORM RING-DIMS)  autodiff.lisp
+- - - - (%AD-REGISTER-RING-DIMS-MAP FLAT-ANF)  autodiff.lisp
+- - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
+- - - - (%AD-CANONICALIZE-REGISTER-RINGS FORM)  autodiff.lisp
+- - - - (%AD-NORMALIZE-REGISTER-EXTENTS FORM REG-DIMS)  autodiff.lisp
+- - - - (%AD-REGISTER-TILE-DIMS-MAP FLAT-ANF)  autodiff.lisp
+- - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
+- - - (%AD-COLLECT-BARRIER-RING-SYMS FLAT-ANF)  autodiff.lisp
+- - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
+- - - (%AD-COLLECT-VIEW-ALIASES FLAT-ANF)  autodiff.lisp
+- - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
+- - - - (%AD-VIEW-CONSTRUCTOR-P FORM)  autodiff.lisp
 - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%MMA-AD-TILE-SOURCE-MAP FLAT-ANF)  autodiff.lisp [See above]
 - - - (%AD-PROMOTES-TO-DOUBLE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%AD-ZERO DOUBLE-P)  autodiff.lisp
 - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp
@@ -1111,28 +1152,57 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%EXTRACT-RETURN-VARS FLAT-ANF)  autodiff.lisp [See above]
 - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
                                                                                                   T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [See above]
+- - - (%TRY-VJP FORM CTX)  autodiff.lisp
+- - - - (FIND-VJP HEAD)  autodiff.lisp
+- - - (%MMA-VIA-TILE-BACKWARD-LOGGED FORM DIMS-MAP SRC-MAP INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp
+- - - - (%MMA-VIA-TILE-BACKWARD FORM DIMS-MAP SRC-MAP INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp
+- - - - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
+- - - - - (%MMA-VJP-MMA-ADMISSIBLE-P MT NT KT)  autodiff.lisp
+- - - - - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
+- - - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp
+- - - - - - (%AD-VIEW-CONSTRUCTOR-P FORM)  autodiff.lisp [See above]
+- - - - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [RECURSION]
+- - - (%MMA-AD-TILE-DIMS-MAP FLAT-ANF)  autodiff.lisp
+- - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
 - - - (%TLC-EXTRACT-TRANSPOSE-KEY KEY-ARGS)  autodiff.lisp
-- - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp
+- - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
+- - - (%MMA-AD-REGISTER-ACCUMULATOR-TILE-P SYM FLAT-ANF)  autodiff.lisp
+- - - - (%MMA-AD-REGISTER-OPERAND-TILE-P INIT-FORM)  autodiff.lisp
 - - - (%GFW-PROCESS-SET! FORM EMIT-FN LOCAL-ADJ-FN INPUTS OUTPUTS SCRATCH-TILE-SYMS INTERMEDIATE-ZERO KERNEL-PKG)  autodiff.lisp
 - - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
 - - - (%AUGMENT-SCRATCH-ADJ-BINDINGS BINDINGS KERNEL-PKG)  autodiff.lisp
-- - - - (%PROMOTE-SCRATCH-INIT-FOR-AD INIT)  autodiff.lisp
-- - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp [See above]
-- - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp [See above]
+- - - - (%MMA-AD-ADJ-INIT INIT-FORM)  autodiff.lisp
+- - - - - (%MMA-AD-REGISTER-OPERAND-TILE-P INIT-FORM)  autodiff.lisp [See above]
+- - - - - (%PROMOTE-SCRATCH-INIT-FOR-AD INIT)  autodiff.lisp
+- - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp [See above]
+- - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp [See above]
 - - - (%GFW-PROCESS-LET FORM EMIT-FN PROCESS-FORM-FN BINDINGS AUGMENTED-BINDINGS BODY)  autodiff.lisp
+- - - - (%AD-CHECK-UNRESOLVED-PRIMALS BINDINGS BODY)  autodiff.lisp
+- - - - - (%AD-TILE-READ-P EXPR)  autodiff.lisp [See above]
+- - - - - (%VJP-FORM-MENTIONS-ANY-P FORM SYMS)  macros.lisp [See above]
 - - - (%COLLECT-LOCALLY-BOUND-VARS BODY-FORMS)  autodiff.lisp
 - - - (%GFW-PROCESS-DOTIMES FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP INTERMEDIATE-ZERO)  autodiff.lisp
 - - - (%GFW-PROCESS-IF FORM EMIT-FN PROCESS-FORM-FN COND-FORM THEN-FORM ELSE-FORM)  autodiff.lisp
 - - - (%EMIT-FOREIGN-BACKWARD FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp [See above]
+- - - (%AD-SUB-FN-INLINABLE-P FN)  autodiff.lisp
+- - - (%AD-INLINE-SUB-FN-BACKWARD FN ARGS EMIT-FN PROCESS-FORM-FN)  autodiff.lisp
+- - - - (%AD-SUB-FN-INLINABLE-P FN)  autodiff.lisp [See above]
+- - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp [See above]
+- - - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
 - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                   BW))  autodiff.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - (%PROMOTE-SCRATCH-INIT-FOR-AD INIT)  autodiff.lisp [See above]
+- - - (%MMA-AD-ADJ-INIT INIT-FORM)  autodiff.lisp [See above]
+- - - (%AD-ENSURE-RING-ADJ-BINDINGS BACKWARD FLAT-ANF KERNEL-PKG)  autodiff.lisp
+- - - - (%AD-RING-CTOR-BINDINGS FLAT-ANF)  autodiff.lisp
+- - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
+- - - - (%AD-FORM-MENTIONS-P FORM SYM)  autodiff.lisp
+- - - - - (%AD-FORM-MENTIONS-P FORM SYM)  autodiff.lisp [RECURSION]
 - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp
 - - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp [RECURSION]
 - - (%COLLECT-ALL-LEAF-ADJ-SYMS FIELD-ADJ-ALIST)  autodiff.lisp
@@ -1149,8 +1219,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (%HAS-EXPLICIT-N ARGS)  autodiff.lisp
-- - (%IS-TENSOR-ALIAS SYM)  autodiff.lisp
-- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - (%IS-TENSOR-ALIAS SYM)  autodiff.lisp [See above]
 
 - (%HP-REGISTERS-PER-THREAD-MAX &OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp
 - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
@@ -1158,6 +1227,25 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp
 - - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp
+
+- (%MMA-AD-PRELOWER-MMTS FORM)  autodiff.lisp
+- - (%MMTS-REGISTER-DIMS-MAP BINDINGS)  mma.lisp
+- - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp
+- - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp
+- - (%MMA-AD-EXPAND-MMTS-IN-FORM FORM REG-MAP)  autodiff.lisp
+- - - (%MMTS-HEAD-P FORM)  mma.lisp
+- - - (%MMTS-PARSE EXPR LOCATION)  analysis/control.lisp
+- - - (%MMTS-LOWER C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY LOCATION &OPTIONAL (RESET-VALUE
+                                                                                                       0.0))  analysis/control.lisp
+- - - - (%MMTS-SPLIT-EPILOGUE BODY)  analysis/control.lisp
+- - - - (%FORM-TREE-MENTIONS-STORE-TILE-P FORMS)  analysis/control.lisp
+- - - (%MMA-AD-EXPAND-MMTS-IN-FORM FORM REG-MAP)  autodiff.lisp [RECURSION]
+
+- (%MMA-AD-REGISTER-TILE-P SYM FLAT-ANF)  autodiff.lisp
+
+- (%MMA-AD-TRANSPOSED-STAGE DST SRC ORIGIN ROWS COLS)  autodiff.lisp
+
+- (%MMA-AD-UNSCALE-TILE-ORIGIN ORIGIN)  autodiff.lisp
 
 - (%MV-SOURCE-ACCESS CANON)  analysis/structs.lisp
 - - (%MV-SOURCE-HEAD CANON)  analysis/structs.lisp [See above]
@@ -1180,6 +1268,38 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%REWRITE-BARE-TILE-IN-FORM FORM ORIGIN-BINDING-SYMS CL-PKG)  analysis/control.lisp [RECURSION]
 
 - (%ROLE-NAME-EQ A B)  analysis/control.lisp
+
+- (%VJP-LOAD-FRAGMENT FORM CTX)  autodiff.lisp
+- - (%VJP-FRAGMENT-CONSUMED-BY-FUSED-STORE-P FRAG-SYM FLAT-ANF)  autodiff.lisp
+
+- (%VJP-MMA-ACCUMULATE-VIA-TILE FORM CTX)  autodiff.lisp
+- - (%MMA-AD-TILE-DIMS-MAP FLAT-ANF)  autodiff.lisp [See above]
+- - (%MMA-AD-TILE-SOURCE-MAP FLAT-ANF)  autodiff.lisp [See above]
+- - (%AD-RING-LOAD-SITES FLAT-ANF)  autodiff.lisp
+- - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
+- - - (%AD-TILE-BASE OP)  autodiff.lisp
+- - - - (%AD-TILE-BASE OP)  autodiff.lisp [RECURSION]
+- - (%AD-TILE-BASE OP)  autodiff.lisp [See above]
+- - (%MMA-VJP-OPERAND-REF OP SRC-MAP DIMS-MAP INPUTS &OPTIONAL RING-SITES)  autodiff.lisp
+- - - (%AD-TILE-BASE OP)  autodiff.lisp [See above]
+- - - (%AD-RECONCILE-RING-ORIGIN SITES K-VAR &OPTIONAL SLOT-IDX)  autodiff.lisp
+- - - - (%AD-CANON-RING-SLOTS FORM MARKER)  autodiff.lisp
+- - - - - (%AD-CANON-RING-SLOTS FORM MARKER)  autodiff.lisp [RECURSION]
+- - - - (%AD-SUBST-RING-SLOT FORM MARKER IDX)  autodiff.lisp
+- - - - - (%AD-SUBST-RING-SLOT FORM MARKER IDX)  autodiff.lisp [RECURSION]
+- - - - (%AD-FORM-MERGE A B REPL)  autodiff.lisp
+- - - - - (%AD-FORM-MERGE A B REPL)  autodiff.lisp [RECURSION]
+- - (%SPV-MMA-SHAPE)  mma.lisp [See above]
+- - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
+- - (%MMA-VJP-MMA-ADMISSIBLE-P MT NT KT)  autodiff.lisp [See above]
+- - (%MMA-VIA-TILE-BACKWARD FORM DIMS-MAP SRC-MAP INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
+- - (%MMA-VJP-SCALAR-LOWERING MT NT KT C-ADJ A-OP B-OP A-ADJ B-ADJ A-SRC AOY AOX B-SRC BOY BOX PKG)  autodiff.lisp
+
+- (%VJP-STORE-FRAGMENT FORM CTX)  autodiff.lisp
+- - (%VJP-FRAGMENT-SOURCE FRAG-SYM FLAT-ANF WHICH)  autodiff.lisp
+- - - (%VJP-RESOLVE-ANF-VALUE SYM FLAT-ANF)  autodiff.lisp
+- - (%SPV-MMA-SHAPE)  mma.lisp [See above]
+- - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
 
 - (ADDRESS-SPACE-VALUE K)  enums.lisp
 - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp [See above]
@@ -1255,8 +1375,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp
 - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [RECURSION]
 - - (%GET-TENSOR-ALIGN TYPE)  analysis/structs.lisp
 - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%GET-TENSOR-ALIGN TYPE)  analysis/structs.lisp [RECURSION]
 - - (%BUILD-TENSOR-COMPACT-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
 - - (%BUILD-TENSOR-COMPACT-OFFSET-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
 - - (%BUILD-TENSOR-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
@@ -1431,8 +1555,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%EXPLODE-REGISTER-TILES LET-EXPR &OPTIONAL LOCATION CONTEXT)  mma.lisp
-- - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp
-- - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp
+- - - (%MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS BINDINGS)  mma.lisp
+- - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
+- - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
 - - - (%FRAG-MN-FOR-OPERAND OPERAND)  mma.lisp
 - - - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
 - - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp
@@ -1451,8 +1576,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%REGISTER-TILE-RING-INIT-FORM-P FORM)  mma.lisp
 - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
 - - (%EXPAND-MATMUL-TILE-STRIDE-REGISTER-FORMS LET-EXPR LOCATION)  mma.lisp
-- - - (%MMTS-REGISTER-DIMS-MAP BINDINGS)  mma.lisp
-- - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
+- - - (%MMTS-REGISTER-DIMS-MAP BINDINGS)  mma.lisp [See above]
 
 - (ANALYZE-LOAD-FRAGMENT-A EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
@@ -1461,6 +1585,14 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-LOAD-FRAGMENT-ACC EXPR ENV CONTEXT LOCATION)  mma.lisp
+- - (%SPV-MMA-SHAPE)  mma.lisp [See above]
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%SPV-NOTE-REGISTER-FRAGMENT ROWS COLS CONTEXT LOCATION)  mma.lisp
+- - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
+- - (%PTX-NOTE-REGISTER-DEMAND REGS CONTEXT LOCATION)  mma.lisp
+- - - (%PTX-NOTE-REGISTER-DEMAND-KEYED REGS CONTEXT KEY)  mma.lisp
 
 - (ANALYZE-LOAD-FRAGMENT-B EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
@@ -1517,10 +1649,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-MAKE-REGISTER-FRAGMENT EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
-- - (%SPV-NOTE-REGISTER-FRAGMENT ROWS COLS CONTEXT LOCATION)  mma.lisp
+- - (%SPV-NOTE-REGISTER-FRAGMENT ROWS COLS CONTEXT LOCATION)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%PTX-NOTE-REGISTER-DEMAND REGS CONTEXT LOCATION)  mma.lisp
-- - - (%PTX-NOTE-REGISTER-DEMAND-KEYED REGS CONTEXT KEY)  mma.lisp
+- - (%PTX-NOTE-REGISTER-DEMAND REGS CONTEXT LOCATION)  mma.lisp [See above]
 
 - (ANALYZE-MAKE-REGISTER-TILE EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%ENSURE-REGISTER-TILE-TYPE M N)  mma.lisp
@@ -1569,11 +1700,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-MATRIX-MULTIPLY-TILE-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - (%MMTS-PARSE EXPR LOCATION)  analysis/control.lisp
+- - (%MMTS-PARSE EXPR LOCATION)  analysis/control.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%MMTS-LOWER C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY LOCATION)  analysis/control.lisp
-- - - (%MMTS-SPLIT-EPILOGUE BODY)  analysis/control.lisp
-- - - (%FORM-TREE-MENTIONS-STORE-TILE-P FORMS)  analysis/control.lisp
+- - (%MMTS-LOWER C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY LOCATION &OPTIONAL (RESET-VALUE
+                                                                                                     0.0))  analysis/control.lisp [See above]
 
 - (ANALYZE-MMA-ACCUMULATE EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
@@ -1617,6 +1747,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-REM-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-MOD-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (ANALYZE-RETURN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1819,8 +1950,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (ANALYZE-WITH-WARP-SPECIALIZATION-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - (%PARSE-WARP-SPECIALIZATION EXPR LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%LOWER-WARP-SPECIALIZATION EXPR LOCATION &KEY (GATED T))  analysis/control.lisp [See above]
 
 - (ANALYZE-WORKGROUP-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%WORKGROUP-STRIDE-PARSE EXPR)  analysis/control.lisp [See above]
@@ -2073,6 +2204,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (R-T-ASSERT TEST &REST ARGS)  macros.lisp
 
 - (REGISTER-OVERLOAD ALIAS REAL-NAME)  environment.lisp
+
+- (REGISTER-VJP NAME FN)  autodiff.lisp
 
 - (REORDER-TEMPLATE-ARGS-FROM-KEYWORDS ARGS PARAM-NAMES)  templates.lisp
 

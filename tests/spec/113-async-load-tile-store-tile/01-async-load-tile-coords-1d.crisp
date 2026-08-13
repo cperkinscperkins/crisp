@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "AD pre-rewrite for load-tile-at lands in phase 1"
 
 ;; Async counterpart of 111/01-load-tile-at-1d.crisp.  Cooperatively
 ;; loads 4 elements from a global vector starting at origin 0 into a

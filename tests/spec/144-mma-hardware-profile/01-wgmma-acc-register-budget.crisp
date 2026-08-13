@@ -1,7 +1,10 @@
 ;; COMPILE-WITH[--hardware-profile=small-regs]: FAIL "register budget"
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "wgmma is forward-only (no autodiff)"
 ;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
+;;
+;; Endeavor 146: "wgmma is forward-only (no autodiff)" was false — wgmma differentiates (140/03).
+;; This is a NEGATIVE test anyway: the COMPILE-WITH FAIL on the register budget is the assertion,
+;; and it holds regardless of the AD pass.
 ;;
 ;; (SKIP-DEFAULT-PASS as in every 140-wgmma spec: the default pass validates GENERIC LLVM IR,
 ;; which cannot digest the NVVM wgmma intrinsics.  The profile paths below carry the real

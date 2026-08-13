@@ -751,7 +751,9 @@ MMA
 [x] precision?  
 [x] opportunities for using def-hardware-profile ??
 [ ] empty room fallacy?  GPU display? GPU monitoring?
-[ ] auto-differentiation?
+[ ] auto-differentiation
+- [ ] verify autodiff on cuda
+- [ ] need primal replay
 [ ] new macro for rings (prefetch/pipeline) that handles rings
 [/] out of core orchestration 
 
@@ -764,8 +766,8 @@ MMA
 
 [ ] (benchmarking) the CUDA arch skip-gate (your Vera Rubin point — a capability check rather than an arch allowlist); 
 [ ] bug 035 (:col-major silently ignored on SPV); 
-[ ]  unreachable STORE-TILE entry in anf-normalize's opaque list; 
-[ ] to-float having no AD rule;
+[x]  unreachable STORE-TILE entry in anf-normalize's opaque list; 
+[x] to-float having no AD rule;
 [ ] a CUDA *ad-runtime* if you ever want the PTX backward proven numerically rather than structurally.
 
 
