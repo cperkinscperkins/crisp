@@ -363,5 +363,82 @@ suite grew by the 7 new 147 rungs, and 137/03 moved from skipped to checked.
   MORE params than the runner bound would read past the `void**` array.
   CUDA 12.4 has `cuFuncGetParamInfo`; asserting the count against the
   kernel's own declaration would make the shim self-checking.
+- **147/08-cuda-ring-adjoint has never run on metal.** The pod was released
+  before it existed. It is the numeric proof for BUG 041's ring half, and
+  Intel cannot supply it — the defect is invisible there. First thing to run
+  on the next Hopper session.
+
+---
+
+## BUG 041, second pass — the uniform rule
+
+The first fix zeroed AD-minted `_ADJ` scratch *tiles* and skipped rings.
+Chris's question — since we write the backward kernels ourselves and they
+carry less performance pressure, why not just always zero their SLM? — is
+the better rule, and it is now what ships.
+
+**Why the host can't do it instead.** Shared memory has no host-visible
+address. The launch APIs expose a byte *size* only (`sharedMemBytes`;
+`clSetKernelArg` / `zeKernelSetArgumentValue` with a null pointer), and the
+allocation is per-*block*. Even a hypothetical zero-at-launch would be
+insufficient: once a grid has more blocks than fit resident, block N+1
+inherits block N's shared memory *inside the same launch*. Only the kernel
+runs per block, so only the kernel can fix it. (Vulkan's
+`shaderZeroInitializeWorkgroupMemory` is the one knob the ecosystem offers,
+and it reaches neither the OpenCL/L0 compute path nor CUDA.)
+
+**The rule:** the compiler zeroes what the compiler allocates, in the kernel
+the compiler wrote. Every SLM scratch object bound in a backward kernel's
+`let` is cleared in that `let`'s prologue. Forward kernels are untouched —
+a forward tile is user-visible, the user owns accumulator resets there via
+`fill-tile` (135's C-tile contract, BUG 036), and a blanket pass would land
+on the matmul hot path.
+
+The narrow rule was also correct, but it obliged every future allocation to
+be classified correctly forever — and BUG 041 *is* that obligation going
+unmet since endeavor 111. Uniform is checkable in one place, and costs a
+strided write pass plus one barrier against a backward doing MMA, primal
+replay and atomic scatter. Narrowing a correct baseline later is a safe
+optimisation; widening a wrong one is this bug.
+
+**There was no ring gap — I was wrong about that.** By the time the adjoint
+allocator runs, a ring has already been canonicalised to a rank-(1+N)
+`make-scratch-tensor`, so the original `_ADJ` filter matched it and one
+`fill-tile` already cleared every slot. Measured, from the backward AST:
+
+```lisp
+(LET ((TILES_ADJ (MAKE-SCRATCH-TENSOR FLOAT 3 (2 4 4))) (A_ADJ 0.0))
+  (FILL-TILE TILES_ADJ 0.0)
+  (SYNC-WORKGROUP)
+  (%STORE-TILE-AT-BWD (RING-GET TILES_ADJ 1) C_GRAD (0 0))
+  (%LOAD-TILE-AT-BWD A_GRAD (RING-GET TILES_ADJ 1) (0 0)))
+```
+
+The ring constructor names are in the whitelist regardless, as belt-and-braces
+against a future path that reaches the allocator without canonicalising. The
+list is a **whitelist** so async barriers (mbarrier objects, not tensors) and
+register tiles (GRF, already 0.0-initialised, no whole-tile symbol after
+explosion) are never filled, and a newly added allocator fails closed.
+
+**So the uniform rule's actual behavioural delta is small**: dropping the
+`_ADJ` name requirement means a *replayed primal* tile bound in a nested
+backward `let` is now zeroed too. Harmless (the replay overwrites it) and it
+is the rule as stated. The value is in the invariant, not in the diff.
+
+**A process note, recorded because it nearly shipped a false claim.** My
+first attempt to write this uniform version used a shell heredoc that failed
+to parse, so *nothing executed* — and I read a later PTX inspection as
+confirming a fix that was not on disk. The zero-stores I pointed at were
+`load-tile-at`'s identity fill in the replayed primal. Caught by checking
+`grep -c` on the actual file rather than trusting the command's apparent
+success. The lesson is the ordinary one: verify the artefact, not the
+command.
+
+**Note for fold-back:** I edited the existing endeavor-147 block in
+`overlays/crisp-compiler-overlay.lisp` rather than appending a second,
+shadowing definition of `%gfw-process-let`. The house rule says append, not
+patch; I judged one coherent block easier to fold back than two conflicting
+ones, given the block was written the same day and never shipped. Say if
+you'd rather I had appended.
 - The 68 existing specs' NVIDIA twins. The runtime is in place, so this is
   now a sweep rather than a port.

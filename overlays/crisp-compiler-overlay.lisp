@@ -23,8 +23,8 @@
 (in-package :crisp.compiler)
 
 ;;; ======================================================================
-;;; Endeavor 147 — BUG 041: an AD-minted `<tile>_ADJ` scratch tile is never
-;;; zero-initialised.
+;;; Endeavor 147 — BUG 041: a BACKWARD kernel's compiler-allocated SLM was
+;;; never zero-initialised.
 ;;;
 ;;; MEASURED, on an H100, by 147/05-cuda-scratch-tile.  Forward is
 ;;; C[i] = F*A[i] staged through an SLM tile, so df/dA[k] = F.  The backward
@@ -39,65 +39,104 @@
 ;;; entry contains no zero-store to shared at all.
 ;;;
 ;;; This is a latent COMPILER bug, not a runner bug.  No API — OpenCL, Level
-;;; Zero or CUDA — guarantees that local/shared memory arrives zeroed, so the
-;;; generated backward must not depend on it.  It has simply been masked on
-;;; Intel, where each L0 kernel argument gets its own fresh SLM allocation
-;;; that happens to read as zero.  Under CUDA there is ONE dynamic shared
-;;; window per block, reused across launches, and the forward's tile sits at
-;;; exactly the offset the backward's `_ADJ` tile is handed — so the residue
-;;; lands precisely on the adjoint.
+;;; Zero or CUDA — guarantees that local/shared memory arrives zeroed, and
+;;; NO HOST-SIDE FIX IS POSSIBLE: shared memory has no host-visible address,
+;;; the launch APIs expose only a byte SIZE (cuLaunchKernel's sharedMemBytes,
+;;; clSetKernelArg / zeKernelSetArgumentValue with a null pointer), and the
+;;; allocation is per-BLOCK.  Even a hypothetical zero-at-launch would be
+;;; insufficient: once a grid has more blocks than fit resident, block N+1
+;;; inherits block N's shared memory inside the SAME launch.  Only the kernel
+;;; runs per block, so only the kernel can fix it.
+;;;
+;;; It was masked on Intel, where each L0 kernel argument gets its own fresh
+;;; SLM allocation that happens to read as zero.  Under CUDA there is ONE
+;;; dynamic shared window per block, reused across launches, and the forward's
+;;; tile sits at exactly the offset the backward's `_ADJ` tile is handed — so
+;;; the residue lands precisely on the adjoint.
+;;;
+;;; THE RULE: **the compiler zeroes what the compiler allocates, in the kernel
+;;; the compiler wrote.**  Every SLM scratch object bound in a BACKWARD
+;;; kernel's LET is zeroed in that LET's prologue.
+;;;
+;;; Deliberately NOT the narrower rule "zero the things that are read before
+;;; they are fully written".  That one is correct but obliges every future
+;;; allocation to be classified correctly forever, and BUG 041 *is* that
+;;; obligation silently going unmet since endeavor 111.  The uniform rule is
+;;; checkable in one place.  It is also cheap — a workgroup-strided write pass
+;;; and one barrier, against a backward that does MMA, primal replay and
+;;; atomic scatter to global.  Narrowing a correct baseline later is a safe
+;;; optimisation; widening a wrong one is this bug.
+;;;
+;;; FORWARD kernels are untouched, and that is the seam: a forward tile is
+;;; user-visible, the user owns accumulator resets there via fill-tile (135's
+;;; C-tile contract, BUG 036), and a blanket zero pass would land on the
+;;; matmul hot path.
 ;;;
 ;;; The intent was already explicit elsewhere: %mma-ad-adj-init gives a
 ;;; REGISTER tile adjoint an explicit 0.0 init, with the docstring "an
-;;; adjoint always starts at zero".  Scratch adjoints never got the same
-;;; treatment because make-scratch-* takes no init argument.  So the zeroing
-;;; has to be a body form, and `fill-tile` (endeavor 135) is exactly the
-;;; right one: workgroup-collective, lowered through workgroup-stride, and
-;;; already the sanctioned way to clear a scratch tile.  fill-tile inserts no
-;;; barrier of its own ("the caller syncs before reading") — we are that
-;;; caller, so one sync-workgroup follows the whole batch.
+;;; adjoint always starts at zero".  Scratch never got the same treatment
+;;; because make-scratch-* takes no init argument.  So the zeroing has to be a
+;;; body form, and `fill-tile` (endeavor 135) is exactly the right one:
+;;; workgroup-collective, lowered through workgroup-stride, and already the
+;;; sanctioned way to clear a scratch tile.  fill-tile inserts no barrier of
+;;; its own ("the caller syncs before reading") — we are that caller, so one
+;;; sync-workgroup follows the whole batch.
 ;;; ======================================================================
 
 ;; src/autodiff.lisp
-(defun %ad-scratch-adj-zero-forms (augmented-bindings)
-  "Zero-initialisation forms for every AD-minted `<var>_ADJ` scratch binding
-   in AUGMENTED-BINDINGS, followed by a single sync-workgroup.
+(defparameter *ad-slm-scratch-ctors*
+  '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX" "MAKE-SCRATCH-TENSOR"
+    ;; A ring is ONE rank-(1+N) scratch tensor whose dim 0 IS the slot (see
+    ;; analyze-ring-get-expression), so it is a tensor like any other and
+    ;; fill-tile describes it directly — one pass clears every slot.  An
+    ;; earlier cut of this fix excluded rings on the mistaken belief that
+    ;; fill-tile could not name a rank+1 object.
+    "MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING" "MAKE-SCRATCH-TENSOR-RING")
+  "Constructors whose bindings allocate a fill-tile-able SLM TENSOR.
 
-   Only bindings that %AUGMENT-SCRATCH-ADJ-BINDINGS actually added are
-   touched: the name must end in _ADJ and the initialiser must be a
-   make-scratch-* constructor.  The forward's own tiles are left alone —
-   they are fully written by the load that precedes their use, and clearing
-   them would be both wasteful and, for a replayed primal, wrong.
+   A WHITELIST on purpose.  The bindings in a backward LET also include
+   things that must NOT be filled: make-async-barrier / -ring bindings are
+   mbarrier objects with their own initialisation, not tensors, and
+   make-register-tile lives in the GRF — it already receives an explicit 0.0
+   init from %mma-ad-adj-init, and after %explode-register-tiles there is no
+   whole-tile symbol left for fill-tile to name.  A blacklist would silently
+   swallow each new allocator as it is added; this fails closed instead.")
 
-   Register tiles are excluded: %mma-ad-adj-init already gives those an
-   explicit 0.0 init, and after %explode-register-tiles a register tile has
-   no whole-tile symbol left for fill-tile to name.  Rings are excluded for
-   the same reason they are excluded from promotion — a ring adjoint is
-   allocated elsewhere, and fill-tile does not describe a rank+1 object."
+(defun %ad-backward-slm-zero-forms (bindings)
+  "Prologue forms zeroing every compiler-allocated SLM scratch object in
+   BINDINGS, followed by a single sync-workgroup.  NIL when there are none.
+
+   EVERY such object, not only the AD-minted `<var>_ADJ` ones.  See the
+   header note: the narrow rule obliges every future allocation to be
+   classified correctly forever, and BUG 041 is that obligation going unmet.
+
+   BINDINGS must be the bindings actually being EMITTED (post
+   %ad-rewrite-primal-bindings), not the pre-rewrite list: a rewritten primal
+   binding may no longer be an SLM allocation at all.
+
+   Safe with respect to primal replay.  These forms run at the head of the
+   LET body, before any replay stages data into a tile, and per BUG 037 a
+   replayed primal reads from its ORIGINAL GLOBAL source rather than from
+   inherited SLM — so nothing downstream depends on the prior contents."
   (let* ((cl-pkg (find-package :crisp-language))
          (fill-sym (intern "FILL-TILE" cl-pkg))
          (sync-sym (intern "SYNC-WORKGROUP" cl-pkg))
          (set-sym  (intern "SET!" cl-pkg))
          (aref-sym (intern "~" cl-pkg))
          (forms nil))
-    (dolist (b augmented-bindings)
+    (dolist (b bindings)
       (when (and (consp b) (= (length b) 2) (symbolp (car b))
-                 (consp (cadr b)) (symbolp (caadr b))
-                 ;; Only the minted adjoints.
-                 (let ((n (symbol-name (car b))))
-                   (and (> (length n) 4)
-                        (string= "_ADJ" (subseq n (- (length n) 4))))))
+                 (consp (cadr b)) (symbolp (caadr b)))
         (let* ((ctor (symbol-name (caadr b)))
                (elem (second (cadr b)))
                (zero (if (and (symbolp elem) (string-equal (symbol-name elem) "DOUBLE"))
                          (%ad-zero t)
                          (%ad-zero nil))))
           (cond
-            ((member ctor '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX" "MAKE-SCRATCH-TENSOR")
-                     :test #'string=)
+            ((member ctor *ad-slm-scratch-ctors* :test #'string=)
              (push (list fill-sym (car b) zero) forms))
-            ;; A scratch CELL adjoint has the same defect and no fill-tile
-            ;; (which requires a tensor); one uniform store covers it.
+            ;; A scratch CELL has the same defect and no fill-tile (which
+            ;; requires a tensor); one uniform store covers it.
             ((string= ctor "MAKE-SCRATCH-CELL")
              (push (list set-sym (list aref-sym (car b)) zero) forms))))))
     (when forms
@@ -109,10 +148,10 @@
    instead of from the (empty) tile, and an unrecoverable primal that the backward actually uses
    is a hard error rather than a silent zero.
 
-   BUG 041 (endeavor 147): the AD-minted `<var>_ADJ` scratch tiles this LET
-   allocates are now explicitly zeroed before the backward body runs.  See
-   the header note above %ad-scratch-adj-zero-forms — shared memory is not
-   guaranteed zero on any backend, and under CUDA it demonstrably is not."
+   BUG 041 (endeavor 147): every SLM scratch object this LET allocates is
+   zeroed before the backward body runs.  See the header note above
+   %ad-backward-slm-zero-forms — shared memory is not guaranteed zero on any
+   backend, and under CUDA it demonstrably is not."
   (declare (ignore form))
   (let ((local-forms nil))
     (flet ((local-emit (f) (push f local-forms)))
@@ -121,10 +160,11 @@
       (dolist (b (reverse bindings))
         (when (and (consp b) (= (length b) 2) (symbolp (car b)))
               (funcall process-form-fn b #'local-emit))))
-    (let ((backward-body (nreverse local-forms))
-          (zero-forms (%ad-scratch-adj-zero-forms augmented-bindings)))
+    (let* ((backward-body (nreverse local-forms))
+           (emitted-bindings (%ad-rewrite-primal-bindings augmented-bindings))
+           (zero-forms (%ad-backward-slm-zero-forms emitted-bindings)))
       (%ad-check-unresolved-primals augmented-bindings backward-body)
-      (funcall emit-fn `(let ,(%ad-rewrite-primal-bindings augmented-bindings)
+      (funcall emit-fn `(let ,emitted-bindings
                           ,@zero-forms
                           ,@backward-body)))))
 
@@ -142,20 +182,20 @@
 ;;; only because that is the last function generate-backward-walk calls on
 ;;; its assembled result and is reachable from an overlay.  It does not
 ;;; belong to rings.  When this is folded into src/, delete the wrapper and
-;;; call %ad-zero-scratch-adjoints directly at generate-backward-walk's exit
+;;; call %ad-zero-backward-slm directly at generate-backward-walk's exit
 ;;; (right beside the existing %ad-ensure-ring-adj-bindings call), leaving
 ;;; the ring function exactly as it was in src/autodiff.lisp:1515.
 ;;; ----------------------------------------------------------------------
 
 ;; src/autodiff.lisp
-(defun %ad-zero-scratch-adjoints (backward)
-  "Prepend zero-initialisation for every AD-minted `<var>_ADJ` scratch tile
-   bound in BACKWARD's outer LET.  Returns BACKWARD unchanged when it is not
-   a LET or binds no such adjoint.  See the BUG 041 header above."
+(defun %ad-zero-backward-slm (backward)
+  "Prepend SLM zeroing to BACKWARD's outer LET.  Returns BACKWARD unchanged
+   when it is not a LET or allocates no SLM scratch.  See the BUG 041 header
+   above."
   (if (not (and (consp backward) (symbolp (first backward))
                 (string-equal (symbol-name (first backward)) "LET")))
       backward
-      (let ((zero-forms (%ad-scratch-adj-zero-forms (second backward))))
+      (let ((zero-forms (%ad-backward-slm-zero-forms (second backward))))
         (if (null zero-forms)
             backward
             (list* (first backward)
@@ -177,8 +217,8 @@
    constructors and reduces them to the stub type `(TENSOR FLOAT)`.  No promotion is
    needed regardless: these rings are float already.
 
-   BUG 041 (endeavor 147): also runs %ad-zero-scratch-adjoints on the way out."
-  (%ad-zero-scratch-adjoints
+   BUG 041 (endeavor 147): also runs %ad-zero-backward-slm on the way out."
+  (%ad-zero-backward-slm
    (if (not (and (consp backward) (symbolp (first backward))
                  (string-equal (symbol-name (first backward)) "LET")))
        backward

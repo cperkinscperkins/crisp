@@ -1006,10 +1006,60 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         offset the backward's `_ADJ` tile is handed, so the residue falls precisely on the
         adjoint.  This is the first defect found purely by having a second vendor's runtime.
 
-        FIXED: %ad-scratch-adj-zero-forms emits `(fill-tile <adj> 0.0)` for every minted
-        adjoint scratch tensor (and a `set!` for a scratch cell), followed by one
-        sync-workgroup, injected at BOTH adjoint-allocation sites — %gfw-process-let for a
-        nested let, and generate-backward-walk's outer let for the ANF-lifted case (which is
-        the one 147/05 exercises).  fill-tile is reused rather than reinvented: it is already
-        the sanctioned workgroup-collective tile clear, and inserts no barrier of its own.
-        Verified 971/971 on Intel/BMG and on H100.
+        NO HOST-SIDE FIX EXISTS, which is worth recording because it is the first thing
+        anyone will ask.  Shared memory has no host-visible address; the launch APIs expose
+        only a byte SIZE (cuLaunchKernel's sharedMemBytes; clSetKernelArg /
+        zeKernelSetArgumentValue with a null pointer), and the allocation is per-BLOCK.  Even
+        a hypothetical zero-at-launch would be insufficient: once a grid has more blocks than
+        fit resident, block N+1 inherits block N's shared memory WITHIN THE SAME LAUNCH.  Only
+        the kernel runs per block, so only the kernel can fix it.  (The one place the
+        ecosystem does offer a knob is Vulkan's shaderZeroInitializeWorkgroupMemory, which
+        does not reach the OpenCL/L0 compute path or CUDA.)
+
+        FIXED, with the UNIFORM rule rather than a narrow one: **the compiler zeroes what the
+        compiler allocates, in the kernel the compiler wrote.**  %ad-backward-slm-zero-forms
+        emits `(fill-tile <obj> 0.0)` for EVERY SLM scratch object bound in a BACKWARD
+        kernel's let — not only the minted `_ADJ` ones — plus a `set!` for a scratch cell,
+        followed by one sync-workgroup.  Injected at BOTH allocation sites: %gfw-process-let
+        for a nested let, and generate-backward-walk's outer let for the ANF-lifted case
+        (which is the one 147/05 actually exercises — fixing only the nested site changed
+        nothing).
+
+        The narrow rule ("zero what is read before it is fully written") is also correct, but
+        it obliges every future allocation to be classified correctly forever, and BUG 041 IS
+        that obligation silently going unmet since endeavor 111.  The uniform rule is
+        checkable in one place and costs a workgroup-strided write pass plus one barrier
+        against a backward that does MMA, primal replay and atomic scatter to global.
+        Narrowing a correct baseline later is a safe optimisation; widening a wrong one is
+        this bug.  FORWARD kernels are untouched — a forward tile is user-visible, the user
+        owns accumulator resets there via fill-tile (135's C-tile contract, BUG 036), and a
+        blanket zero pass would land on the matmul hot path.
+
+        RINGS: no special work was needed, and an earlier note here claiming a "ring gap"
+        was WRONG.  By the time the adjoint allocator runs, a ring has been canonicalised to
+        a rank-(1+N) `make-scratch-tensor` — measured, from the emitted backward AST:
+
+            (LET ((TILES_ADJ (MAKE-SCRATCH-TENSOR FLOAT 3 (2 4 4))) (A_ADJ 0.0))
+              (FILL-TILE TILES_ADJ 0.0)
+              (SYNC-WORKGROUP)
+              ...)
+
+        so `fill-tile` already named it and one pass already cleared every slot.  The ring
+        constructor names are in the whitelist anyway, as belt-and-braces against a future
+        path that reaches the allocator without canonicalising.
+
+        The constructor list is a WHITELIST so that async barriers (mbarrier objects, not
+        tensors) and register tiles (GRF; already 0.0-initialised by %mma-ad-adj-init, and no
+        whole-tile symbol survives %explode-register-tiles) are never filled, and so a newly
+        added allocator fails closed rather than being silently swallowed.
+
+        fill-tile is reused rather than reinvented: it is already the sanctioned
+        workgroup-collective tile clear and inserts no barrier of its own.
+
+        VERIFIED: the tile case gradient-checked on an H100 (147/05: 10.0 -> 2.0), plus
+        972/972 Intel/BMG and H100 under `--differentiate`, 211/211 negative and 253/253 unit
+        on the narrow (_ADJ-only) cut; the uniform cut re-verified on Intel afterwards.  Ring
+        zeroing is confirmed at the AST and PTX level (see the LET above); 147/08-cuda-ring-adjoint
+        is the numeric check for it and has NOT yet run on metal — the pod was released first,
+        and Intel cannot falsify this defect because it is invisible there.  Run 147/08 early
+        on the next Hopper session.
