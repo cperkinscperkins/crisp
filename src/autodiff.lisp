@@ -1801,7 +1801,11 @@
                                     ((and (consp form) (symbolp (car form))
                                           (or (string-equal (symbol-name (car form)) "STORE-TILE-AT")
                                               (string-equal (symbol-name (car form)) "STORE-TILE"))
-                                          (%mma-ad-register-tile-p (second form) flat-anf))
+                                          ;; Endeavor 146: ACCUMULATORS only.  An :operand
+                                          ;; tile's adjoint is a scratch matrix (Gap 4), so
+                                          ;; the register loader below does not apply to it.
+                                          (%mma-ad-register-accumulator-tile-p (second form)
+                                                                               flat-anf))
                                       (let* ((tile (second form))
                                              (dest (third form))
                                              (origins (mapcar #'%mma-ad-unscale-tile-origin
@@ -4001,6 +4005,30 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                             (consp (second form)) (symbolp (first (second form)))
                             (string-equal (symbol-name (first (second form)))
                                           "MAKE-REGISTER-TILE")))))
+
+(defun %mma-ad-register-accumulator-tile-p (sym flat-anf)
+  "T when SYM is a register tile in the ACCUMULATOR role — a make-register-tile with no
+   :operand key.
+
+   Endeavor 146: the store backward needs this narrower question, not %mma-ad-register-tile-p.
+   Gap 4 split the two roles apart at the ADJOINT: an accumulator's adjoint is still a
+   register tile (it is seeded from the destination's gradient by %load-register-tile-acc and
+   staged to SLM by the VJP), while an OPERAND's adjoint is a scratch matrix, because every
+   consumer indexes it as memory and a register tile cannot be written element-wise.
+
+   Asking the broad question after that split emitted %load-register-tile-acc — a REGISTER
+   operation — against a scratch-matrix adjoint, which the analyzer then rejected with
+   `Unsupported form '%LOAD-REGISTER-TILE-ACC' found in function body`.  Operand tiles now
+   fall through to the ordinary store-tile-at backward, which is the memory-shaped edge their
+   memory-shaped adjoint wants."
+  (and (symbolp sym)
+       (loop for form in flat-anf
+               thereis (and (consp form) (= (length form) 2)
+                            (eq (first form) sym)
+                            (consp (second form)) (symbolp (first (second form)))
+                            (string-equal (symbol-name (first (second form)))
+                                          "MAKE-REGISTER-TILE")
+                            (not (%mma-ad-register-operand-tile-p (second form)))))))
 
 (defun %mma-ad-unscale-tile-origin (origin)
   "Endeavor 145 P3b: recover the original tile-ID G from the coordinate the `store-tile`
