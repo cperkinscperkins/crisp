@@ -364,9 +364,83 @@ suite grew by the 7 new 147 rungs, and 137/03 moved from skipped to checked.
   CUDA 12.4 has `cuFuncGetParamInfo`; asserting the count against the
   kernel's own declaration would make the shim self-checking.
 - **147/08-cuda-ring-adjoint has never run on metal.** The pod was released
-  before it existed. It is the numeric proof for BUG 041's ring half, and
-  Intel cannot supply it — the defect is invisible there. First thing to run
-  on the next Hopper session.
+  before it existed. Intel cannot supply the check — the defect is invisible
+  there. First thing to run on the next Hopper session.
+
+---
+
+## Closing sweep — definition-of-done
+
+Went through `plan/definition-of-done.md` rather than declaring victory from
+memory. Two things fell out that would otherwise have shipped broken.
+
+**`--debug` was failing and I had never run it.** 08 hit BUG 033 — a hard
+SBCL memory fault at address 5, not a Crisp diagnostic. Pre-existing: its
+Intel twin 145/18 carries the identical skip with a note establishing the
+trigger as *a scratch ring under `--debug`* and verifying it predates
+endeavour 146. 08 now carries the same skip, quoting that provenance.
+
+The `--debug` phase still ends 973/974 locally, on
+`056-struct-at-kernel-boundary/07-struct-with-ct-hoist`. That is the
+documented expected state: BUG 033's own note records it as Windows-only,
+passing on CI Linux, and *deliberately* not skipped — "the full
+`--use-binary --debug` phase cannot go green on a Windows dev box until 033
+is fixed. Do not 'fix' that by adding a skip." Left alone.
+
+**`--single-pass` crashes outright, and that is new information — logged as
+BUG 042.** Under `--single-pass` the compiler emits one `.metacrisp` per
+*function* (19 for `028-metadata/01-aliases`), the runner hands the whole
+glob to the spec's validator, and `validate-01-aliases` calls `probe-file`
+on a list. It kills the phase, so everything after 028-metadata in that pass
+never runs. Verified not mine rather than assumed: `git diff 39d8d17 HEAD --
+tests/run-specs.lisp` touches nothing in the metadata-validator path, and it
+reproduces on a freshly cleaned directory. Nothing else in the suite pairs
+`TEST-WITH[--metadata]` with `--single-pass`, which is why it had never
+surfaced — this sweep was the first end-to-end run of that phase.
+
+**Unit tests** (`directive-parsing.unit.lisp`, registered in
+`tests/run-ci.lisp`). 27 assertions over `%vad-match-directive`,
+`parse-verify-autodiff` and the selection policy — bare vs pinned, three
+backends, case-insensitivity, non-directive lines, and the three malformed-pin
+error paths. Plus two invariants worth pinning down explicitly:
+
+- *the runner loads without a GPU* — the Phase 0 property, and the one whose
+  absence silently skipped 58 checks;
+- *`:cuda` is not in `*ad-auto-runtimes*`* — a tripwire, so anyone widening
+  auto-selection later trips a test with the H100 evidence in its docstring
+  rather than rediscovering it on a pod.
+
+This matters because it is the **only GPU-free coverage** of that logic. On a
+CI runner every spec-level VERIFY-AUTODIFF check skips, so the directive
+grammar had no test at all. Unit suite: 253 → **280**.
+
+Final local gates: **974/974** plain, **974/974** `--differentiate`,
+**280/280** unit, **211/211** negative; `--debug` 973/974 (BUG 033, expected
+on Windows) and `--single-pass` blocked by BUG 042 (pre-existing).
+
+Note the `errors/` directory stayed empty deliberately: a malformed
+`VERIFY-AUTODIFF[NOPE]:` errors in the spec *runner*, not the compiler, so it
+does not fit the `CHECK-FAIL` harness. The unit test is its right home.
+
+**Rung 6 got its SPIR-V twin** (`06b-multi-workgroup-spirv`). `groups=`
+appeared in exactly one other spec suite-wide, an MMA matmul — so
+cross-workgroup atomic gradient accumulation was only ever exercised on Intel
+through a kernel that also does tensor cores, tile staging and a hardware
+profile. 06b isolates the atomic. It returns
+
+    analytical=37.0 numerical=37.000656 diff=6.5612793e-4
+
+which is **digit-for-digit what the H100 returned** for 06. That is the first
+place in the project where the same gradient has been measured on both
+vendors and shown to agree exactly — which is, in one line, the argument for
+this endeavor.
+
+**Considered and deliberately not done:** benchmarks (BUG 041 touches backward
+kernels only; the benchmarks are forward matmuls — no impact), and
+`ideal_001.md` status emojis (it never mentions VERIFY-AUTODIFF; this is a
+harness feature and lives in `docs/tests.md`). Doc regeneration
+(`reference.md`, `call_graph.md`, globals) reads `src/`, so it belongs
+*after* the overlay is folded back, not before.
 
 ---
 

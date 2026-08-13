@@ -1063,3 +1063,40 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         is the numeric check for it and has NOT yet run on metal — the pod was released first,
         and Intel cannot falsify this defect because it is invisible there.  Run 147/08 early
         on the next Hopper session.
+
+[ ] 042 - The full `--single-pass` spec phase CRASHES on a `TEST-WITH[--metadata]` spec.
+
+        REPRO (deterministic, on a clean directory):
+            sbcl --script tests/run-specs.lisp --use-binary --single-pass --filter=aliases
+
+            0: (PROBE-FILE (#P".../01-aliases_address-space~.metacrisp"
+                            #P".../01-aliases_die.metacrisp"
+                            #P".../01-aliases_make-cell%dispatch.metacrisp" ...))
+            unhandled condition in --disable-debugger mode, quitting
+
+        CAUSE: under --single-pass the compiler emits ONE .metacrisp per function rather
+        than one per module — 19 files for tests/spec/028-metadata/01-aliases.crisp.  The
+        runner passes the whole wildcard `directory` result to the spec's validator, and
+        `validate-01-aliases` (src/metadata.lisp:36) takes a single METADATA-PATH and calls
+        PROBE-FILE on it, so it is handed a LIST and dies on the type check.  Not a memory
+        fault and nothing to do with BUG 033 — a plain arity/shape mismatch between what the
+        runner supplies and what the metadata validators expect.
+
+        SCOPE: kills the whole `--single-pass` phase, so everything after 028-metadata in
+        that phase is never run.  `run-all-tests.bat` runs this phase (line 49), so the local
+        five-phase sweep cannot complete today.  The other four phases are unaffected:
+        plain, --use-binary, --differentiate and (modulo 033 on Windows) --debug all
+        complete.
+
+        WHY IT STAYED HIDDEN: the metadata validators are only reached via
+        TEST-WITH[--metadata], and nothing else in the suite combines that with
+        --single-pass.  Found 2026-08-13 during endeavour 147's definition-of-done sweep,
+        which was the first time the full --single-pass phase had been run end to end.
+
+        NOT CAUSED BY 147, verified rather than assumed: `git diff 39d8d17 HEAD --
+        tests/run-specs.lisp` touches nothing in the metadata-validator path, and the crash
+        reproduces with a freshly cleaned spec directory.
+
+        LIKELY FIX: have the validator caller pass one path (or have the metadata validators
+        accept a list and validate each), and decide which is right — the per-function
+        metacrisp fan-out under --single-pass may itself be the surprising half.

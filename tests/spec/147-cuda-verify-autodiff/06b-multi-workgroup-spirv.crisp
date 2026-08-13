@@ -1,0 +1,38 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0] at.A=0 atol=5e-2 expect.A=37.0 output-vec=8 group=4 groups=2
+;;
+;; The SPIR-V half of rung 6 — same kernel, same expected gradient, other
+;; vendor.  Bare directive, so it auto-selects Level Zero here and skips on a
+;; CUDA-only machine; 06-cuda-multi-workgroup is the pinned CUDA half.
+;;
+;; C[i] = A[0] * A[i] over an 8-element vector launched as 2 blocks of 4.
+;; f(A) = sum_i C[i] = A[0] * sum_i A[i], so
+;;   df/dA[0] = 2*A[0] + (A[1] + ... + A[7]) = 2 + 35 = 37.0
+;;
+;; WHY THIS EXISTS SEPARATELY, rather than being covered by what was already
+;; here: `groups=` appears in exactly one other spec in the whole suite, and
+;; that one is an MMA matmul (A=8x16 B=16x32 group=16 groups=2).  So until
+;; now, cross-workgroup atomic gradient accumulation was only ever exercised
+;; on Intel through a kernel that ALSO exercises tensor cores, tile staging
+;; and a hardware profile.  If that spec regressed you could not tell which
+;; mechanism broke.  This isolates the atomic: plain arithmetic, no MMA, no
+;; profile, two blocks contending on one element.
+;;
+;; Every thread in BOTH blocks reads A[0], so every thread contributes to
+;; A_GRAD[0] in the backward.  A plain store instead of an atomic add would
+;; race and come back short — and short by a VARYING amount, which is why the
+;; expectation is pinned explicitly rather than left to the finite difference
+;; alone.
+;;
+;; A disagreement between this and 06 is a vendor difference in the atomic
+;; scatter, which is exactly the kind of thing that was invisible while
+;; VERIFY-AUTODIFF ran on one vendor only.
+
+(def-type vec-t (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
+
+(def-kernel spirv_scale_by_head (A &out C)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 4))
+  (tensor-stride A (i)
+    (set! (~ C i) (* (~ A 0) (~ A i)))))

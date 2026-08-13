@@ -976,9 +976,14 @@
 ;;; === Endeavor 103: Verify-Autodiff on-metal pass ======================
 
 (defun %vad-ensure-runner-loaded ()
-  "Lazy-loads the OpenCL runner.  Returns :READY if available,
-   :UNAVAILABLE if the load fails (e.g. no OpenCL ICD on host).
-   Caches the result in *VAD-RUNNER-STATUS*."
+  "Lazy-loads the on-metal AD runner.  Returns :READY if the file loaded,
+   :UNAVAILABLE if the load itself failed.  Caches the result in
+   *VAD-RUNNER-STATUS*.
+
+   Endeavor 147: :READY no longer implies a usable GPU.  Each runtime's
+   bindings load tolerantly and set an availability flag, so the file loads
+   on a machine with none of them; which runtime (if any) a given spec can
+   actually use is decided per spec by CL-USER::AD-SELECT-RUNTIME."
   (unless *vad-runner-status*
     (setf *vad-runner-status*
           (handler-case
