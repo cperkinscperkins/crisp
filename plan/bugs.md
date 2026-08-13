@@ -446,6 +446,26 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     actually exercises the debug path.  Wiring debug-p into the in-process runner would let
     the cheap path catch these (separate follow-up).
 
+    2026-08-12 (endeavour 146): two more data points, and a PLATFORM SPLIT worth recording.
+
+    - 145/18-ring-staged-vjp-bmg faults on BOTH Linux (CI, ubuntu-latest) and Windows —
+      "Memory fault at address 5".  It was one of only four specs in 145 without the skip;
+      the other three (14, 15, 17) are clean, so the trigger is the scratch RING under
+      --debug specifically.  Now carries SKIP-WITH[--debug] like its 13 siblings.
+      VERIFIED PRE-EXISTING, not assumed: reproduced identically with src/ and overlays/
+      checked out at the 145 merge (5a6eebd) and rebuilt.
+
+    - 056-struct-at-kernel-boundary/07-struct-with-ct-hoist faults on WINDOWS ONLY —
+      "Memory fault at address 6" — and PASSES on the CI Linux runner (which reported
+      963/964 with 145/18 as the sole failure).  Deliberately NOT skipped: a skip would
+      also suppress it on Linux, where it works, and cost real coverage to silence a
+      local-only symptom.  Consequence to know about: the full `--use-binary --debug`
+      phase cannot go green on a Windows dev box until 033 is fixed, even when CI is green.
+      Do not "fix" that by adding a skip.
+
+    The address varying with the spec (5 here, 6 there) is consistent with the
+    garbage/null DIBuilder-arg theory above rather than one specific null pointer.
+
 [x] 034 - CUDA multi-K-step SLM-staged tiled matmul miscomputes with non-uniform inputs.
         Discovered by the Endeavor 134 on-metal MMA test harness (host-reference C=A·B via
         the hoist's --mma-test) on RunPod (RTX), 2026-07-08.  FIXED 2026-07-08.
