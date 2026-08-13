@@ -40,6 +40,10 @@
 (load "tests/test-storage-handles.lisp")
 (load "tests/spec/049-auto-diff-record-at-kernel-boundary/record-ad-transforms.unit.lisp")
 (load "tests/spec/052-differentiate-sub-functions/sub-func-ad.unit.lisp")
+;; Endeavor 147: the VERIFY-AUTODIFF backend pin and runtime-selection policy.
+;; These are the only GPU-FREE coverage of that logic — every spec-level
+;; VERIFY-AUTODIFF check skips on a CI runner.
+(load "tests/spec/147-cuda-verify-autodiff/directive-parsing.unit.lisp")
 (let ((report (parachute:test :crisp.tests)))
   (unless (eq (parachute:status report) :passed)
     (format *error-output* "~&~%*** Crisp CI Tests FAILED! ***~%")

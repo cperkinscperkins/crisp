@@ -63,7 +63,23 @@
                              (:unix "libze_loader.so")
                              (t (:default "libze_loader")))
 
-(cffi:use-foreign-library ze-loader)
+(defvar *l0-library-loaded* nil
+  "T when ze_loader linked successfully at load time.  NIL on a machine
+   with no Level Zero runtime (e.g. an NVIDIA-only pod).
+
+   Endeavor 147: the link is attempted but NOT allowed to signal.  This
+   file is loaded unconditionally by verify-autodiff-runner.lisp (its
+   l0-* helpers need the defcstructs at compile time), so a hard failure
+   here used to take the WHOLE runner down on a CUDA-only box — which
+   silently turned every VERIFY-AUTODIFF check into a SKIP, including the
+   CUDA ones.  Callers check this flag before dispatching to :l0.")
+
+(handler-case
+    (progn (cffi:use-foreign-library ze-loader)
+           (setf *l0-library-loaded* t))
+  (error (e)
+    (setf *l0-library-loaded* nil)
+    (format t "~&; Level Zero loader not available (~a) — :l0 runtime disabled.~%" e)))
 
 ;;; === Structs ===========================================================
 ;;;
@@ -205,4 +221,11 @@
                   (cffi:foreign-string-to-lisp buf :count (1- size))))
           (ze-module-build-log-destroy log-handle))))))
 
-(format t "~&; L0 CFFI bindings loaded (ze_loader linked successfully).~%")
+(defun l0-available-p ()
+  "T when ze_loader linked AND zeInit reports a usable GPU driver.  This is
+   the gate the runner gets asked before dispatching to :l0."
+  (and *l0-library-loaded*
+       (ignore-errors (= +ZE-RESULT-SUCCESS+ (ze-init +ZE-INIT-FLAG-GPU-ONLY+)))))
+
+(when *l0-library-loaded*
+  (format t "~&; L0 CFFI bindings loaded (ze_loader linked successfully).~%"))

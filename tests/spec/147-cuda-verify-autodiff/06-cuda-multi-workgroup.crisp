@@ -1,0 +1,33 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=[1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0] at.A=0 atol=5e-2 expect.A=37.0 output-vec=8 group=4 groups=2
+;;
+;; Endeavor 147, rung 6 — TWO BLOCKS, one accumulator.
+;;
+;; C[i] = A[0] * A[i], over an 8-element vector launched as 2 blocks of 4.
+;; The runner takes f(A) = sum_i C[i] = A[0] * sum_i A[i], so
+;;   df/dA[0] = 2*A[0] + (A[1] + ... + A[7]) = 2 + 35 = 37.0
+;;
+;; Every thread in BOTH blocks reads A[0], so every thread contributes to
+;; A_GRAD[0] in the backward.  That makes this the cross-workgroup atomic
+;; accumulation test: if the backward's scatter into A_GRAD were a plain
+;; store rather than an atomic add, the two blocks would race and the answer
+;; would come back short — and short by a *varying* amount, which is why the
+;; expectation is pinned explicitly rather than left to FD alone.
+;;
+;; `groups=2` is what makes the launch two blocks; before endeavor 145 the
+;; runner launched exactly one thread, which is how a sub-group-collective
+;; kernel could silently report a zero gradient.  This rung keeps that honest
+;; on the CUDA side.
+;;
+;; atol is loose (5e-2): f ~ 36 in float32, so the central difference at
+;; h=1e-3 carries roughly 2e-3 of cancellation error before anything is
+;; wrong.
+
+(def-type vec-t (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
+
+(def-kernel cuda_scale_by_head (A &out C)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 4))
+  (tensor-stride A (i)
+    (set! (~ C i) (* (~ A 0) (~ A i)))))

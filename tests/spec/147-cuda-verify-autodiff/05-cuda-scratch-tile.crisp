@@ -1,0 +1,48 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=2.0 output-vec=4 group=4
+;;
+;; Endeavor 147, rung 5 — DYNAMIC SHARED MEMORY.  The rung this whole port
+;; turns on.
+;;
+;; C[i] = 2*A[i], staged through a local scratch tile:
+;;   tile     <- A[0..3]         (load-tile-at)
+;;   tile[lx] <- 2 * tile[lx]    (workgroup-stride)
+;;   C[0..3]  <- tile            (store-tile-at)
+;; so df/dA[k] = 2.0, exactly as in rung 3 — the arithmetic is deliberately
+;; unchanged so any difference is attributable to the staging alone.
+;;
+;; Scratch tiles are implicit args (Crisp adds them; they are SROA'd like any
+;; other tensor and reported in the .metacrisp :implicit-params).  Binding
+;; them is where CUDA genuinely departs from Level Zero:
+;;
+;;   L0/OpenCL: bind a NULL pointer with a byte size, and the driver
+;;              allocates __local per argument.
+;;   CUDA:      no per-argument local allocation exists.  The kernel gets ONE
+;;              dynamic shared block sized at launch, and each tile is
+;;              addressed by a byte OFFSET passed in its ptr slot.
+;;
+;; That is what crisp-hoist-cuda already emits (bug 034,
+;; *cuda-shared-scratch-offset*), and the runner now reproduces it.
+;;
+;; The BACKWARD is the real test.  AD mints a `tile_ADJ` shadow alongside
+;; `tile`, so the backward kernel carries TWO scratch tiles and they must
+;; receive DISTINCT offsets.  If the offset accumulator were broken — or if
+;; it simply handed out 0 for both, which is what a naive port of the hoist's
+;; single-tile example would do — the two tiles would alias, the adjoint
+;; would be scribbled over by the primal, and the gradient would come back
+;; wrong.  Aliasing is exactly the kind of fault that IR inspection does not
+;; catch and a numeric on-metal check does.
+;;
+;; Twin of 111-load-and-store-tile/15-ad-tile-scale-1d (Intel).
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel cuda_ad_tile_scale_1d (A &out C)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector float 4)))
+    (load-tile-at A tile (0))
+    (workgroup-stride tile (lx)
+      (set! (~ tile lx) (* 2.0f (~ tile lx))))
+    (store-tile-at tile C (0))))

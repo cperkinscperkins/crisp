@@ -1,0 +1,40 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=1.0 output-mat=4x4
+;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder fault (plan/bugs.md #033) — a hard SBCL memory fault at address 5, not a Crisp diagnostic.  Inherited verbatim from this spec's Intel twin 145/18-ring-staged-vjp-bmg, whose note establishes the trigger as the scratch RING under --debug specifically, and which verified the fault pre-existing by rebuilding at the 145 merge (5a6eebd).  Same kernel shape here, same fault, same cause."
+;;
+;; Endeavor 147, rung 8 — A RING ADJOINT IN SHARED MEMORY.
+;;
+;; C = A, staged through slot 1 of a two-deep ring, so df/dA[i][j] = 1.0.
+;; CUDA-pinned twin of 145-mma-autodiff/18-ring-staged-vjp-bmg, which checks
+;; the same gradient on Intel.
+;;
+;; This rung exists because of BUG 041's SECOND half.  The first fix zeroed
+;; AD-minted `_ADJ` scratch TILES and deliberately skipped rings, on the
+;; mistaken belief that fill-tile could not name a rank+1 object.  It can: a
+;; ring is ONE rank-(1+N) scratch tensor whose dim 0 IS the slot (see
+;; analyze-ring-get-expression), so it is a tensor like any other and one
+;; fill-tile clears every slot.  The rule is now uniform — every SLM object
+;; the compiler allocates in a kernel the compiler wrote starts at zero — and
+;; this spec is what keeps the ring half of it honest.
+;;
+;; Slot 1, not slot 0, for the reason 145/18 gives: a wrong slot index in the
+;; backward would still pass if the adjoint collapsed to the ring's base, so
+;; a non-zero slot is what makes the view rule testable.  It also means the
+;; ring's zeroing has to reach past the base slot, which is exactly the part
+;; a per-tile fix would have missed.
+;;
+;; NOTE ON WHAT THIS CAN AND CANNOT CATCH: the underlying defect is invisible
+;; on Intel, where every L0 kernel argument gets its own fresh SLM allocation
+;; that reads as zero.  Only the CUDA runtime, which reuses one dynamic shared
+;; window per block, exposes it — hence the [CUDA] pin.  On an Intel-only
+;; machine this SKIPs, and that skip is not evidence of anything.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cuda_ring_staged_copy (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((tiles (make-scratch-matrix-ring float (4 4) :ring-count 2)))
+    (load-tile-at  A (ring-get tiles 1) (0 0))
+    (store-tile-at (ring-get tiles 1) C (0 0))))

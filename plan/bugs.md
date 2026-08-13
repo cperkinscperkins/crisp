@@ -980,3 +980,123 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         BLOCKS: 145/19, and therefore the numeric proof for ring-pipelined gradients, and
         therefore un-skipping 138/04 and 138/05 under --differentiate.
+
+[x] 041 - An AD-minted `<tile>_ADJ` SCRATCH tile was never zero-initialised, so the backward
+        accumulated gradients on top of whatever was already in local/shared memory.
+
+        FOUND BY: endeavor 147's CUDA VERIFY-AUTODIFF, spec 147/05-cuda-scratch-tile, on an
+        H100.  Forward is C[i] = F*A[i] staged through an SLM tile, so df/dA[k] = F.  For
+        F = 2 / 3 / 5 the backward returned 10.0 / 21.0 / 55.0 while the finite difference
+        correctly returned 2 / 3 / 5.  Those are exactly (F*A[1] + 1) * F — the adjoint tile
+        began life holding the FORWARD launch's leftover `F*A`.  Confirmed in the emitted PTX:
+        the only `st.shared …, 0` in the module sits in the FORWARD entry (load-tile-at's
+        out-of-bounds identity fill); the backward entry had no zero-store to shared at all.
+
+        WHY IT WAS A REAL BUG AND NOT A RUNNER ARTEFACT: no API — OpenCL, Level Zero or CUDA —
+        guarantees local/shared memory arrives zeroed, so generated code must not assume it.
+        The intent was already explicit for the REGISTER case: %mma-ad-adj-init gives a
+        register-tile adjoint an explicit 0.0 init, with the docstring "an adjoint always
+        starts at zero".  Scratch adjoints never got the same treatment because make-scratch-*
+        takes no init argument, so the zeroing has to be a body form.
+
+        WHY NOTHING CAUGHT IT: on Intel each L0 kernel argument gets its own fresh SLM
+        allocation, which happens to read as zero — every staged-tile AD spec since 111 has
+        been passing on masked-undefined behaviour.  Under CUDA there is ONE dynamic shared
+        window per block, reused across launches, and the forward's tile lands at exactly the
+        offset the backward's `_ADJ` tile is handed, so the residue falls precisely on the
+        adjoint.  This is the first defect found purely by having a second vendor's runtime.
+
+        NO HOST-SIDE FIX EXISTS, which is worth recording because it is the first thing
+        anyone will ask.  Shared memory has no host-visible address; the launch APIs expose
+        only a byte SIZE (cuLaunchKernel's sharedMemBytes; clSetKernelArg /
+        zeKernelSetArgumentValue with a null pointer), and the allocation is per-BLOCK.  Even
+        a hypothetical zero-at-launch would be insufficient: once a grid has more blocks than
+        fit resident, block N+1 inherits block N's shared memory WITHIN THE SAME LAUNCH.  Only
+        the kernel runs per block, so only the kernel can fix it.  (The one place the
+        ecosystem does offer a knob is Vulkan's shaderZeroInitializeWorkgroupMemory, which
+        does not reach the OpenCL/L0 compute path or CUDA.)
+
+        FIXED, with the UNIFORM rule rather than a narrow one: **the compiler zeroes what the
+        compiler allocates, in the kernel the compiler wrote.**  %ad-backward-slm-zero-forms
+        emits `(fill-tile <obj> 0.0)` for EVERY SLM scratch object bound in a BACKWARD
+        kernel's let — not only the minted `_ADJ` ones — plus a `set!` for a scratch cell,
+        followed by one sync-workgroup.  Injected at BOTH allocation sites: %gfw-process-let
+        for a nested let, and generate-backward-walk's outer let for the ANF-lifted case
+        (which is the one 147/05 actually exercises — fixing only the nested site changed
+        nothing).
+
+        The narrow rule ("zero what is read before it is fully written") is also correct, but
+        it obliges every future allocation to be classified correctly forever, and BUG 041 IS
+        that obligation silently going unmet since endeavor 111.  The uniform rule is
+        checkable in one place and costs a workgroup-strided write pass plus one barrier
+        against a backward that does MMA, primal replay and atomic scatter to global.
+        Narrowing a correct baseline later is a safe optimisation; widening a wrong one is
+        this bug.  FORWARD kernels are untouched — a forward tile is user-visible, the user
+        owns accumulator resets there via fill-tile (135's C-tile contract, BUG 036), and a
+        blanket zero pass would land on the matmul hot path.
+
+        RINGS: no special work was needed, and an earlier note here claiming a "ring gap"
+        was WRONG.  By the time the adjoint allocator runs, a ring has been canonicalised to
+        a rank-(1+N) `make-scratch-tensor` — measured, from the emitted backward AST:
+
+            (LET ((TILES_ADJ (MAKE-SCRATCH-TENSOR FLOAT 3 (2 4 4))) (A_ADJ 0.0))
+              (FILL-TILE TILES_ADJ 0.0)
+              (SYNC-WORKGROUP)
+              ...)
+
+        so `fill-tile` already named it and one pass already cleared every slot.  The ring
+        constructor names are in the whitelist anyway, as belt-and-braces against a future
+        path that reaches the allocator without canonicalising.
+
+        The constructor list is a WHITELIST so that async barriers (mbarrier objects, not
+        tensors) and register tiles (GRF; already 0.0-initialised by %mma-ad-adj-init, and no
+        whole-tile symbol survives %explode-register-tiles) are never filled, and so a newly
+        added allocator fails closed rather than being silently swallowed.
+
+        fill-tile is reused rather than reinvented: it is already the sanctioned
+        workgroup-collective tile clear and inserts no barrier of its own.
+
+        VERIFIED: the tile case gradient-checked on an H100 (147/05: 10.0 -> 2.0), plus
+        972/972 Intel/BMG and H100 under `--differentiate`, 211/211 negative and 253/253 unit
+        on the narrow (_ADJ-only) cut; the uniform cut re-verified on Intel afterwards.  Ring
+        zeroing is confirmed at the AST and PTX level (see the LET above); 147/08-cuda-ring-adjoint
+        is the numeric check for it and has NOT yet run on metal — the pod was released first,
+        and Intel cannot falsify this defect because it is invisible there.  Run 147/08 early
+        on the next Hopper session.
+
+[ ] 042 - The full `--single-pass` spec phase CRASHES on a `TEST-WITH[--metadata]` spec.
+
+        REPRO (deterministic, on a clean directory):
+            sbcl --script tests/run-specs.lisp --use-binary --single-pass --filter=aliases
+
+            0: (PROBE-FILE (#P".../01-aliases_address-space~.metacrisp"
+                            #P".../01-aliases_die.metacrisp"
+                            #P".../01-aliases_make-cell%dispatch.metacrisp" ...))
+            unhandled condition in --disable-debugger mode, quitting
+
+        CAUSE: under --single-pass the compiler emits ONE .metacrisp per function rather
+        than one per module — 19 files for tests/spec/028-metadata/01-aliases.crisp.  The
+        runner passes the whole wildcard `directory` result to the spec's validator, and
+        `validate-01-aliases` (src/metadata.lisp:36) takes a single METADATA-PATH and calls
+        PROBE-FILE on it, so it is handed a LIST and dies on the type check.  Not a memory
+        fault and nothing to do with BUG 033 — a plain arity/shape mismatch between what the
+        runner supplies and what the metadata validators expect.
+
+        SCOPE: kills the whole `--single-pass` phase, so everything after 028-metadata in
+        that phase is never run.  `run-all-tests.bat` runs this phase (line 49), so the local
+        five-phase sweep cannot complete today.  The other four phases are unaffected:
+        plain, --use-binary, --differentiate and (modulo 033 on Windows) --debug all
+        complete.
+
+        WHY IT STAYED HIDDEN: the metadata validators are only reached via
+        TEST-WITH[--metadata], and nothing else in the suite combines that with
+        --single-pass.  Found 2026-08-13 during endeavour 147's definition-of-done sweep,
+        which was the first time the full --single-pass phase had been run end to end.
+
+        NOT CAUSED BY 147, verified rather than assumed: `git diff 39d8d17 HEAD --
+        tests/run-specs.lisp` touches nothing in the metadata-validator path, and the crash
+        reproduces with a freshly cleaned spec directory.
+
+        LIKELY FIX: have the validator caller pass one path (or have the metadata validators
+        accept a list and validate each), and decide which is right — the per-function
+        metacrisp fan-out under --single-pass may itself be the surprising half.

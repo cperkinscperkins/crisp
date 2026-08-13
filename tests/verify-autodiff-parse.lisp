@@ -185,9 +185,57 @@
 
 (defparameter *vad-prefix* "VERIFY-AUTODIFF:")
 
+(defparameter *vad-bare-prefix* "VERIFY-AUTODIFF"
+  "Directive name without the terminating colon, so the optional
+   `[BACKEND]` pin can be parsed between the two.")
+
+(defparameter *vad-known-runtimes* '(("L0" . :l0) ("CUDA" . :cuda) ("OPENCL" . :opencl))
+  "Backend names accepted inside VERIFY-AUTODIFF[...]:, mapped to the
+   runner's *AD-RUNTIME* keywords.  Endeavor 147.")
+
 (defun %vad-starts-with (s prefix)
   (and (>= (length s) (length prefix))
        (string= prefix (subseq s 0 (length prefix)))))
+
+(defun %vad-match-directive (line)
+  "Recognises `VERIFY-AUTODIFF: <body>` and the endeavor-147 pinned form
+   `VERIFY-AUTODIFF[CUDA]: <body>`.
+
+   Returns (values BODY RUNTIME) when LINE is a VERIFY-AUTODIFF directive,
+   where RUNTIME is NIL for the bare form (meaning: run on whatever this
+   machine has) or a keyword for the pinned form.  Returns NIL when LINE
+   is not a VERIFY-AUTODIFF directive at all.
+
+   A pinned backend name that is not recognised is an ERROR rather than a
+   silent skip — a typo'd `VERIFY-AUTODIFF[CUDA ]:` that quietly stopped
+   verifying anything would be the worst possible failure mode for a test
+   directive whose entire job is to catch silent wrongness."
+  (unless (%vad-starts-with line *vad-bare-prefix*)
+    (return-from %vad-match-directive nil))
+  (let ((rest (subseq line (length *vad-bare-prefix*))))
+    (cond
+      ;; Bare form: "VERIFY-AUTODIFF: ..."
+      ((and (> (length rest) 0) (char= (aref rest 0) #\:))
+       (values (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq rest 1))
+               nil))
+      ;; Pinned form: "VERIFY-AUTODIFF[BACKEND]: ..."
+      ((and (> (length rest) 0) (char= (aref rest 0) #\[))
+       (let ((close (position #\] rest)))
+         (unless close
+           (error "VERIFY-AUTODIFF: unterminated `[` in directive: ~A" line))
+         (let* ((name (string-trim '(#\Space #\Tab)
+                                   (subseq rest 1 close)))
+                (entry (assoc name *vad-known-runtimes* :test #'string-equal))
+                (after (subseq rest (1+ close))))
+           (unless entry
+             (error "VERIFY-AUTODIFF[~A]: unknown backend; expected one of ~{~A~^, ~}"
+                    name (mapcar #'car *vad-known-runtimes*)))
+           (unless (and (> (length after) 0) (char= (aref after 0) #\:))
+             (error "VERIFY-AUTODIFF[~A]: expected `:` after the backend name in: ~A"
+                    name line))
+           (values (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq after 1))
+                   (cdr entry)))))
+      (t nil))))
 
 ;;; === Public entry point ===============================================
 
@@ -231,16 +279,16 @@
   (let ((matching nil))
     (dolist (line directive-lines)
       (let ((trimmed (string-left-trim '(#\Space #\Tab #\; #\Return #\Newline) line)))
-        (when (%vad-starts-with trimmed *vad-prefix*)
-          (push trimmed matching))))
+        (multiple-value-bind (body runtime) (%vad-match-directive trimmed)
+          (when body
+            (push (cons body runtime) matching)))))
     (cond
       ((null matching) nil)
       ((> (length matching) 1)
        (error "Multiple VERIFY-AUTODIFF directives in one spec; at most one allowed."))
       (t
-       (let* ((line (first matching))
-              (body (string-trim '(#\Space #\Tab #\Return #\Newline)
-                                 (subseq line (length *vad-prefix*))))
+       (let* ((body (car (first matching)))
+              (pinned-runtime (cdr (first matching)))
               (tokens (%vad-tokenize body))
               (inputs nil)
               (at-points nil)
@@ -372,4 +420,8 @@
                :group-size group-size
                :group-count group-count
                :precision precision
-               :denormal denormal))))))
+               :denormal denormal
+               ;; Endeavor 147: NIL for the bare directive (run on whatever
+               ;; runtime this machine offers); a keyword when the spec
+               ;; pinned one with VERIFY-AUTODIFF[CUDA]: / [L0]:.
+               :runtime pinned-runtime))))))

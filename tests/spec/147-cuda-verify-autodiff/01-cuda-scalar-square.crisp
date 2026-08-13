@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: x=3.0 atol=1e-3 expect.x=6.0
+;;
+;; Endeavor 147, rung 1 of the CUDA VERIFY-AUTODIFF ladder.
+;;
+;; The narrowest possible on-metal AD check on the CUDA runtime: one scalar
+;; cell in, one scalar cell out.  f(x) = x^2, so df/dx = 2x = 6.0 at x=3.
+;;
+;; This is a deliberate TWIN of 044-autodiff-execution/01-square, which has
+;; verified the same arithmetic on Intel since endeavor 103.  Same kernel,
+;; same expected gradient, different silicon — so a disagreement here is a
+;; CUDA-path defect and nothing else.
+;;
+;; What this rung proves, and nothing more:
+;;   - the PTX pair (fwd + _grad) is JIT-compiled by cuModuleLoadDataEx
+;;   - cuModuleGetFunction resolves the entry point under its Crisp name
+;;   - the 3-slot cell ABI lands in the right kernelParams positions
+;;   - managed memory round-trips a float from host to device and back
+;;
+;; The `[CUDA]` pin means this SKIPs (as a pass) on a machine with no NVIDIA
+;; device rather than silently verifying on whatever else is present.
+
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
+
+(def-kernel cuda_cell_square (x &out y)
+  (declare #'(in-ish &out out-ish))
+  (set! (~ y) (* (~ x) (~ x))))

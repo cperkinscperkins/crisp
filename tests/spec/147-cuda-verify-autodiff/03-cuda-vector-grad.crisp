@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=2.0 output-vec=4
+;;
+;; Endeavor 147, rung 3 — the 6-SLOT TENSOR RECORD, both directions.
+;;
+;; C[i] = 2*A[i].  The runner treats f(A) = sum_i C[i], so df/dA[k] = 2.0.
+;;
+;; A rank-1 tensor is not one pointer: it SROAs into six ABI slots (ptr,
+;; parent-byte-size, offset, stride, extent, length).  Here that record is
+;; bound twice over — once for the input A and once for the vector OUTPUT C
+;; — plus a third and fourth time in the backward for A_GRAD and C_GRAD.
+;; Getting stride or extent wrong reads the right buffer at the wrong
+;; addresses, which usually yields a plausible-looking but wrong gradient
+;; rather than a crash, so the FD cross-check is doing real work here.
+;;
+;; The vector OUTPUT also exercises the backward's atomic scatter into
+;; A_GRAD: every one of the four threads accumulates into A_GRAD[k].
+;;
+;; Twin of 107-differentiate-loop-and-stride/01-elemwise-scale (Intel).
+
+(def-type vec-t (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
+
+(def-kernel cuda_vec_scale_2x (A &out C)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4))
+  (tensor-stride A (i)
+    (set! (~ C i) (* 2.0f (~ A i)))))
