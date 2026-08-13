@@ -4265,7 +4265,19 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 
 (defun %vjp-fragment-consumed-by-fused-store-p (frag-sym flat-anf)
   "T when FRAG-SYM is an operand of an `(mma-accumulate ...)` that is stored directly by a
-   `store-fragment` — i.e. the chain %vjp-store-fragment already differentiates as a unit."
+   `store-fragment` — i.e. the chain %vjp-store-fragment already differentiates as a unit.
+
+   Endeavor 146: matches `(cdr v)`, not `(cddr v)` — so the ACCUMULATOR counts too, not just
+   the A and B operands.  For `D = C_acc + A.B` the accumulator's partial is the IDENTITY
+   (dC_acc = dD), and the fused chain stores D straight back into the same handle C_acc was
+   loaded from, so the gradient that flows into that read is already the one sitting in
+   C_GRAD.  Contributing it again would double-count — precisely the reason A and B are
+   :inert here — so the accumulator belongs in exactly the same bucket.
+
+   SCOPE, and it is the same scope %vjp-store-fragment has: this covers the FUSED form only.
+   An mma-accumulate whose result is carried in a register across a loop before being stored
+   still declines, because that needs genuine fragment-valued adjoints (store-fragment being
+   opaque to ANF is what lets the fused form work without them)."
   (dolist (f flat-anf nil)
     (let ((form (if (and (consp f) (= (length f) 2) (consp (second f))) (second f) f)))
       (when (and (consp form) (symbolp (car form))
@@ -4274,7 +4286,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                  (let ((v (second form)))
                    (and (consp v) (symbolp (car v))
                         (string-equal (symbol-name (car v)) "MMA-ACCUMULATE")
-                        (member frag-sym (cddr v)))))
+                        (member frag-sym (cdr v)))))
         (cl:return t)))))
 
 (defun %vjp-load-fragment (form ctx)
@@ -4296,6 +4308,13 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 (register-vjp "LOAD-FRAGMENT-A" #'%vjp-load-fragment)
 
 (register-vjp "LOAD-FRAGMENT-B" #'%vjp-load-fragment)
+
+;; Endeavor 146: the ACCUMULATOR seed takes the same handler.  Its partial is the identity,
+;; and inside a fused store-fragment(mma-accumulate ...) chain that gradient is already in
+;; the destination's grad buffer — so :inert, for the same double-count reason as A and B.
+;; Outside that chain %vjp-load-fragment declines, which keeps the honest "no VJP registered"
+;; error rather than a silent zero.
+(register-vjp "LOAD-FRAGMENT-ACC" #'%vjp-load-fragment)
 
 ;;; ===================================================================
 ;;; BUG 037 — the backward must read staged tiles' primals from their GLOBAL SOURCE.

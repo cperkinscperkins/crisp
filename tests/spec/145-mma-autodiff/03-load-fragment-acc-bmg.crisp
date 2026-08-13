@@ -45,7 +45,23 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "no VJP is registered for load-fragment-acc — a COVERAGE gap, not a limit of the mathematics.  The registry covers `(store-fragment (mma-accumulate ...) ...)`, gradient-checked on BMG by 145/13; an accumulator loaded here and carried across a loop is a different shape nobody has written a rule for.  Endeavor 146 corrected the compiler's message, which used to assert this was impossible on hardware-shape grounds — a claim 145 itself retracted.  Un-skip by registering the VJP, not by working around a limit that does not exist."
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;;
+;; Endeavor 146: registered.  The chain here is the FUSED form
+;;     (store-fragment (mma-accumulate C-acc A-frag B-frag) C (0 0))
+;; which %vjp-store-fragment already differentiates as a unit, scattering into A_GRAD and
+;; B_GRAD itself.  load-fragment-a/b are therefore :inert inside that chain — contributing
+;; again would double-count — and the ACCUMULATOR belongs in exactly the same bucket: for
+;; D = C_acc + A.B its partial is the IDENTITY (dC_acc = dD), and the chain stores D straight
+;; back into the handle C_acc was loaded from, so that gradient is already in C_GRAD.  The fix
+;; was one character of intent: the fused-chain predicate matched (cddr v) — A and B only —
+;; and now matches (cdr v), which includes the accumulator.
+;;
+;; :INERT IS THE CLAIM MOST LIKELY TO SILENTLY ZERO A GRADIENT, so it is checked rather than
+;; reasoned into place.  f(A,B) = sum(A.B) — the harness zeroes C, so the seed contributes
+;; nothing — giving dA[1,0] = sum_n B[0,n] = 0.01 * sum_{n=0..15} n = 1.2, the same
+;; expectation 145/13 carries for the unseeded form.
+;; VERIFY-AUTODIFF: A=8x8@0:0.01 B=8x16@0:0.01 at.A=1,0 group=16 h=0.5 atol=2e-2 expect.A=1.2 output-mat=8x16
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; MMA-DIMS: 8 16 8

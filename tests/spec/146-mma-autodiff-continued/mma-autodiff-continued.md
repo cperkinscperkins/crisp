@@ -161,6 +161,32 @@ same defect as 135/09 — so this bucket is no longer purely out of scope, it *i
 Bucket B.
 
 
+CLOSED 2026-08-12 — 145/03 and /04 un-skipped
+-----------------------------------------------
+
+The coverage half of the question below is now done, and it WAS close to "one row in the
+table" — though not for the reason the old skip reason gave.
+
+`%vjp-store-fragment` differentiates the fused chain
+`(store-fragment (mma-accumulate C-acc A-frag B-frag) DST coords)` as a unit, scattering into
+A_GRAD and B_GRAD itself; `load-fragment-a/b` are therefore `:inert` INSIDE that chain, since
+contributing again would double-count.  The accumulator belongs in the same bucket — for
+`D = C_acc + A.B` its partial is the IDENTITY, and the chain stores D back into the handle
+C_acc was loaded from, so that gradient is already in C_GRAD.
+
+The fix was one character of intent: `%vjp-fragment-consumed-by-fused-store-p` matched
+`(cddr v)` — the A and B operands only — and now matches `(cdr v)`, which includes the
+accumulator.  Plus a `register-vjp` for `LOAD-FRAGMENT-ACC`.
+
+**`:inert` is the claim most likely to silently zero a gradient**, so it was CHECKED, not
+reasoned into place: 145/03 on BMG reads `analytical=1.2 numerical=1.198822`.  145/04 is the
+PTX twin and stays compile-only — no CUDA runtime for VERIFY-AUTODIFF.
+
+SCOPE UNCHANGED, and still the honest boundary: this covers the FUSED form.  An
+`mma-accumulate` carried in a register across a loop before being stored still declines,
+because that needs genuine fragment-valued adjoints — `store-fragment` being opaque to ANF is
+exactly what lets the fused form work without them.
+
 RESOLVED 2026-08-11 — and it split in two
 ------------------------------------------
 
