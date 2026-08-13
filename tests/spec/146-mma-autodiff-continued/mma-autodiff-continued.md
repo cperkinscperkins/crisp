@@ -753,9 +753,40 @@ Suite after: **963/963 under `--differentiate`**, 962/963 default (only 145/07).
    therefore CUDA-only by construction, not by choice of test.  They want a Hopper pod
    (`scripts/run-on-pod.sh`), which would also serve the Bucket C backlog waiting on the same
    hardware: 137/03, 137/05, 138/04, 138/05, 140/03.
-6. **Bucket E — 135/09's `Unknown variable C_ADJ`.**  Phase 0 guessed this was the same
-   defect as Gap 4.  With Gap 4 now understood, that guess is UNVERIFIED — 135/09 is a
-   reinterpreted view, not a register tile.  Re-measure before assuming.
+6. **Bucket E — DONE 2026-08-12, both items, and one rule covered both.**
+
+   **132/08 — `to-float`.**  int -> float is the IDENTITY on value, so d/dx = 1 and the
+   adjoint passes through.  Worth recording the asymmetry it forced, because two entries that
+   look alike get opposite verdicts and the difference is mathematics, not taste:
+
+   | conversion | derivative | treatment |
+   | --- | --- | --- |
+   | `int -> float` (to-float, to-double, …) | 1 — exact identity on value | propagate |
+   | `float -> int` (to-ulong, to-int, …) | 0 a.e. — TRUNCATION is a step function | inert, and CORRECTLY so |
+
+   So `%backward-skip-fn-p-145p1`'s `TO-<int-type>` suffix rule is sound, where the rem/mod
+   entries Gap 2 removed were not.  Do not "tidy" these into consistency.
+
+   **135/09 — the view adjoint.**  Phase 0 guessed this was Gap 4's defect; it was not, and
+   the old skip reason had the diagnosis right and the conclusion backwards:
+
+   > "C is a REINTERPRETED VIEW (make-matrix over the param), so its adjoint has nowhere to
+   >  land -- Unknown variable C_ADJ."
+
+   A view HAS nowhere of its own to land *because a view owns no storage* — which is exactly
+   why its adjoint is not its own.  It is THE SAME VIEW OF THE BASE'S ADJOINT.  138 stated
+   that rule for `ring-get`; **it was never about rings.**  Generalised to every pure view
+   constructor (`ring-get`, `make-matrix`, `make-vector`, `make-tensor`, `make-cell` — all
+   take the base first and carry only address arithmetic after it), so `C` now resolves to
+
+       (MAKE-MATRIX C0_GRAD FLOAT 16 8 :STRIDES '(16 1))
+
+   strides preserved, which is the whole point of a reinterpreted view.  The same
+   generalisation is what closed 139/02's accessor case, from the opposite direction.
+
+   **THE NUMBER:** `PASS (A: analytical=1.2 numerical=1.1994629)` on BMG.
+
+   Suites after: **964/964 both ways · 211/211 negative · 253/253 unit.**
 
 ### Candidate side quest — BUG 040.
 

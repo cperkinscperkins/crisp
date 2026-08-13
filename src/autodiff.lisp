@@ -180,16 +180,34 @@
   "Symbols bound by make-async-barrier / make-async-barrier-ring in the kernel being
    differentiated.  Bound by generate-backward-walk.")
 
+(defun %ad-view-constructor-p (form)
+  "T when FORM is a pure VIEW constructor over a base storage handle.
+
+   All of these take the BASE first and carry only address arithmetic afterwards — strides,
+   offsets, a ring slot index — which is what makes 138's rule apply uniformly to them:
+   THE ADJOINT OF A VIEW IS THE SAME VIEW OF THE ADJOINT.  A view owns no storage, so it has
+   no adjoint of its own to allocate; its gradient is its base's gradient, seen through the
+   same arithmetic."
+  (and (consp form) (symbolp (car form))
+       (member (symbol-name (car form))
+               '("RING-GET" "MAKE-MATRIX" "MAKE-VECTOR" "MAKE-TENSOR" "MAKE-CELL")
+               :test #'string=)))
+
 (defun %ad-collect-view-aliases (flat-anf)
-  "Alist TEMP -> `(ring-get R i)` for every ANF temp bound to a view selector.
-   Feeds *ad-view-alias-map* so accessors can see through the hoist ANF introduces."
+  "Alist SYM -> VIEW-FORM for every symbol bound to a pure view constructor.
+
+   Two distinct populations, both needed:
+     - ANF TEMPS that ANF hoisted a view into, e.g. `(%ANF-T-3 (RING-GET TILES 0))`, so
+       accessors can see through the hoist (139/02).
+     - USER BINDINGS that reinterpret a parameter, e.g.
+       `(C (make-matrix C0 float 16 8 :strides '(16 1)))` (135/09), so the adjoint namer
+       resolves C to a view of C0's gradient rather than inventing an unbacked C_ADJ."
   (let ((acc nil))
     (%mma-ad-walk-forms
      flat-anf
      (lambda (form)
        (when (and (= (length form) 2) (symbolp (first form)) (first form)
-                  (consp (second form)) (symbolp (first (second form)))
-                  (string-equal (symbol-name (first (second form))) "RING-GET")
+                  (%ad-view-constructor-p (second form))
                   (not (assoc (first form) acc)))
          (push (cons (first form) (second form)) acc))))
     acc))
@@ -1040,11 +1058,25 @@
    type SYMBOL`, which told the user nothing about what to do."
   (declare (ignore local-adj-fn))
   (cond
-   ((and (consp sym) (symbolp (car sym))
-         (string-equal (symbol-name (car sym)) "RING-GET"))
-     (list (car sym)
-           (%tlc-bwd-adj-name (second sym) inputs outputs nil kernel-pkg)
-           (third sym)))
+   ;; A VIEW FORM.  Endeavor 146 generalises 138's ring case: the rule was never about rings,
+   ;; it is about pure view constructors, all of which take the base storage handle first and
+   ;; carry only address arithmetic after it.  So rebuild the same view over the base's
+   ;; adjoint, whatever the constructor.  `(cddr sym)` rather than `(third sym)` so :strides
+   ;; and friends survive — a reinterpreted view's whole point is those trailing keys.
+   ((%ad-view-constructor-p sym)
+     (list* (car sym)
+            (%tlc-bwd-adj-name (second sym) inputs outputs nil kernel-pkg)
+            (cddr sym)))
+   ;; A SYMBOL BOUND TO A VIEW.  135/09 reinterprets its params up front —
+   ;;     (C (make-matrix C0 float 16 8 :strides '(16 1)))
+   ;; — so the tile argument is the let-bound C, not the view form.  Without this the symbol
+   ;; fell to the <SYM>_ADJ branch below and produced `Unknown variable C_ADJ`: nothing
+   ;; allocates an adjoint for a view, because a view owns no storage.  Recursing gives
+   ;; `(make-matrix C0_GRAD float 16 8 :strides '(16 1))` — the same view of C0's gradient,
+   ;; which is exactly where the caller's writes belong.
+   ((and (symbolp sym) (%ad-view-constructor-p (cdr (assoc sym *ad-view-alias-map*))))
+     (%tlc-bwd-adj-name (cdr (assoc sym *ad-view-alias-map*))
+                        inputs outputs nil kernel-pkg))
    ((not (symbolp sym))
      (error "No adjoint rule for the tile expression ~s.  A tile argument must be a tensor ~
              symbol or a view of one (e.g. (ring-get RING slot))." sym))
