@@ -977,6 +977,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp
 
+- (%AD-REPLAY-READ-SYMS FORM)  autodiff.lisp
+
+- (%AD-REPLAY-SCALAR-WRITE-TARGETS FORM)  autodiff.lisp
+- - (%AD-REPLAY-OP-NAME-P FORM NAME)  autodiff.lisp
+
 - (%AUTODIFF-GRAD-CELL-TYPE)  autodiff.lisp
 
 - (%CRISP-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
@@ -1185,8 +1190,16 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%AD-CHECK-UNRESOLVED-PRIMALS BINDINGS BODY)  autodiff.lisp
 - - - - - (%AD-TILE-READ-P EXPR)  autodiff.lisp [See above]
 - - - - - (%VJP-FORM-MENTIONS-ANY-P FORM SYMS)  macros.lisp [See above]
+- - - - (%AD-REPLAY-FORMS-FOR-SCOPE FORMS &OPTIONAL INHERITED)  autodiff.lisp
+- - - - - (%AD-REPLAY-SLICE FORMS TILES)  autodiff.lisp
+- - - - - - (%AD-REPLAY-FILL-TARGETS FORM)  autodiff.lisp
+- - - - - - - (%AD-REPLAY-PLACE-SYM PLACE)  autodiff.lisp
+- - - - - - (%AD-REPLAY-BARRIER-P FORM)  autodiff.lisp
+- - - - - - - (%AD-REPLAY-OP-NAME-P FORM NAME)  autodiff.lisp [See above]
+- - - - - (%AD-REPLAY-CHECK-SAFE SLICE TILES)  autodiff.lisp
 - - - (%COLLECT-LOCALLY-BOUND-VARS BODY-FORMS)  autodiff.lisp
 - - - (%GFW-PROCESS-DOTIMES FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP INTERMEDIATE-ZERO)  autodiff.lisp
+- - - - (%AD-REPLAY-FORMS-FOR-SCOPE FORMS &OPTIONAL INHERITED)  autodiff.lisp [See above]
 - - - (%GFW-PROCESS-IF FORM EMIT-FN PROCESS-FORM-FN COND-FORM THEN-FORM ELSE-FORM)  autodiff.lisp
 - - - (%EMIT-FOREIGN-BACKWARD FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp [See above]
 - - - (%AD-SUB-FN-INLINABLE-P FN)  autodiff.lisp
@@ -1208,6 +1221,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
 - - - - (%AD-FORM-MENTIONS-P FORM SYM)  autodiff.lisp
 - - - - - (%AD-FORM-MENTIONS-P FORM SYM)  autodiff.lisp [RECURSION]
+- - - (%AD-REPLAY-FINISH RESULT FLAT-ANF)  autodiff.lisp
+- - - - (%AD-REPLAY-FORMS-FOR-SCOPE FORMS &OPTIONAL INHERITED)  autodiff.lisp [See above]
 - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp
 - - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp [RECURSION]
 - - (%COLLECT-ALL-LEAF-ADJ-SYMS FIELD-ADJ-ALIST)  autodiff.lisp
