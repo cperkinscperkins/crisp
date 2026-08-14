@@ -34,7 +34,9 @@ Crisp can be downloaded as a release, or built from source. For either see [INST
 
 The complete, in-progress design document can be found in the docs directory. Each feature is tagged with an emoji indicating its implementation status (✅ Completed, ⚠️ Partially Implemented, 📝 Planned).
 
-[View the Current Specification](./docs/ideal_001.md)
+[View the Current Specification (MD)](./docs/ideal_001.md)
+
+[View the Current Specification (HTML)](https://cperkinscperkins.github.io/crisp/ideal_001/)
 
 ### Just Show Me Some Code!
 

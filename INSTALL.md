@@ -139,13 +139,19 @@ The compiler supports a number of flags now:
 - `--ir-target=spv`
 - `--ir-target=ptx`
 - `--ir-target=llvmir`
+- `--ir-target-arch` ;; sm_80, xe2 and many others
 - `--hoist=L0`
+- `--hoist=CUDA`
 - `--metadata`
 - `--single-pass`
 - `-g`
 - `--debug`
 - `--log-level=off`  ;; also `error`, `warn`, `info`, `debug`, `trace`
 - `--differentiate` 
+- `--runtime-checks`
+- `--math-precision=fast`
+- `--math-precision=ieee`
+- `--denormal-handling=preserve` ;; also `ftz`
 
 Run Tests
 ---------
@@ -159,13 +165,13 @@ that the E2E tests will be run up to (inclusive), but no futher.
 
 ```
 # run the unit tests
-$ sbcl --load .\tests\run-ci.lisp     
+$ sbcl --non-interactive --load .\tests\run-ci.lisp     
 
-# run the E2E tests
-$ sbcl --script .\tests\run-specs.lisp  --log-level=off
+# run the E2E tests (see tests.md for additional flags)
+$ sbcl  --non-interactive --load .\tests\run-specs.lisp
 
 # run the negative tests (errors)
-$ sbcl --script .\tests\run-error-specs.lisp
+$ sbcl --non-interactive --load .\tests\run-error-specs.lisp
 ```
 
 ### Windows: 
@@ -209,8 +215,10 @@ Test interactively from SBCL
 Generate C++ Code
 =================
 
-The Crisp compiler can generate C++ "hoisting" code. Presently, LevelZero is the only backend, but
-others will follow.
+The Crisp compiler can generate C++ "hoisting" code. Crisp supports both LevelZero and CUDA.
+
+Level Zero
+----------
 
 ```
 # this will compile the kernel to .spv and also output a .c file which can "hoist" it .
@@ -222,12 +230,16 @@ others will follow.
 clang++ -o my_kernel_launcher -I<path-to-level-zero-include> <path-to-generated-c-file> <path-to-ze_loader-lib>
 ```
 
-Example
--------
+### Example
+
 
 ```
 ..\llvm-mingw-20251216-ucrt-x86_64\bin\clang++.exe .\tests\spec\029-hoist-l0\13-struct-on-kernel-boundary_struct_on_kernel_boundary_struct_on_kernel_boundary_hoist_L0.cpp C:\Windows\System32\ze_loader.dll -I..\level-zero\include -o fancy_three.exe
 ```
+
+CUDA
+----
+
 
 
 Working with the Docker C Validator

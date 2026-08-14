@@ -7,28 +7,23 @@
 
 ### Overview
 
-Crisp is a Lisp dialect for developing GPU Kernels.
+GPUs with their lockstep parallelism are absolutely amazing at delivering blistering performance for certain types of algorithms. But they are also brittle and finicky. Data coherence, occupancy, branch divergence, register spilling, workgroup and warp coordination, and much more all conspire to make reaching optimal performance tricky. Heck, just basic _correctness_ is tricky. My thought was that the language and tooling should guide users away from mistakes, away from sub-optimal decisions and towards correctness and optimal performance, without nannying. I didn't want to make a new language. I really didn't. I  was just collecting some ideas that I couldn't figure out how to realize and Crisp is the shape they took.
 
-Its guiding idea is *unification*. The concerns that GPU computing normally scatters across a stack of incompatible tools — the kernel logic, automatic differentiation, numerical precision, memory layout and movement, and execution uniformity — all live inside one language, sharing one type system and one static analysis. Because Crisp is a Lisp, there is no wall between "language" and "library": tiles, precision regions, and derivatives are all s-expressions in one substrate, added *as* the language rather than bolted beside it. And because they are facets of a single semantic model rather than separate frameworks, they *compose* — you can differentiate a fast-precision, tiled reduction that calls a foreign function, and the compiler reasons about all of it at once. Where the conventional path glues a kernel language to an autodiff framework to manual half-float casts to hand-rolled shared memory to a separate host program, Crisp treats these as properties the compiler upholds, declared once. That is the sense in which the whole is meant to be greater than the sum of its parts — and this document is the specification of those parts and how they fit together.
+Crisp is a Lisp for writing GPU kernels.  It is quite different than existing solutions and quite difficult to easily sum up in a paragraph or two. Kernels written in Crisp can be compiled to both PTX and SPIR-V, to support NVidia and Intel hardware. There is no Crisp runtime, instead the Crisp compiler can optionally generate "hoisting" example code. This is .cu / .cpp code that uses CUDA / LevelZero to load, enqueue, and read back results for the specified kernel. Python hoisting is planned.
 
-Mechanically: the Crisp compiler takes .crisp files and can output SPIR-V, PTX, or a binary for a specific GPU.
-The compiler can ALSO output C++ or Python code snippets that can "hoist" that same kernel.
-The snippets can be targeted to: OpenCL, LevelZero, or CUDA, as well as whether to use
-Unified Memory/USM/SVM.
-
-Someday soon.
+Crisp code is often portable, but portability for its own sake is not a primary goal. The primary goals for Crisp are performance, correctness and expressiveness. Crisp aims to bring GPU programming memes and concerns closer to the programmer, and in so doing guide the user towards performance and correctness and away from suboptimal patterns.   
 
 
 ### Focus
 
-The focus is on performance, compiliation speed, safety and correctness.
+The focus is on performance, compiliation speed, correctness, and expressivity.
 GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-arrays, quantized integers, and more are directly exposed by the Crisp language.
 
 ### Major Features of the Crisp language and tools
 
 - **Built-in Reverse-Mode Auto-Differentiation.**  The `--differentiate` flag turns any forward kernel into its gradient kernel — and it's a compiler pass, not a bolted-on framework. Because the differentiator reads the kernel's own types, control flow, and memory, it works across records, structs, tensors, foreign functions, and transcendentals, on both SPIR-V and NVIDIA PTX. Write the math once; the calculus — and the whole backward pass — is the compiler's job. No manual backprop, no "calculus bugs," no heavy external framework wrapped around your kernels. (✅ implemented)
 
-- **Guaranteed Termination — and the Analysis It Unlocks.**  Crisp is intentionally not Turing-complete: no unbounded recursion, no unbounded loops. That single decision guarantees kernels always finish (no GPU hangs), but more importantly it's what makes everything else possible — whole-program static analysis that can actually *prove* things about your code: termination, uniformity, activity. Auto-differentiation, divergence-checking, and topology-aware lowering aren't so much separate features as they are consequences of this one. (✅ implemented)
+- **Guaranteed Termination**  Crisp is intentionally not Turing-complete: no unbounded recursion, no unbounded loops. That single decision guarantees kernels always finish (no GPU hangs), but more importantly it's what makes everything else possible — whole-program static analysis that can actually *prove* things about your code: termination, uniformity, activity. Auto-differentiation, divergence-checking, and topology-aware lowering aren't so much separate features as they are consequences of this one. (✅ implemented)
 
 - **Topological-Aware Compilation.**  Write a kernel once and retarget it from a single GPU to a torus mesh or a fat-tree supercomputer without touching the kernel code. `def-topology` and `def-orchestration` describe the machine; the compiler then lowers the *same* `load-tile` into a local address-space copy, a PCIe transfer, or an NVSHMEM/RDMA network pull, depending on which memory boundary it actually crosses. You reason about the algorithm; Crisp reasons about the fabric. (📝 planned)
 
