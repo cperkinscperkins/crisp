@@ -14,6 +14,12 @@ sbcl --script tests/run-specs.lisp --log-level=off
 sbcl --script tests/run-specs.lisp  --filter=<spec-name>
 ```
 
+#### Running Adversarial Tests
+```bash
+# Runs the adversarial test suite instead of the TDD spine
+sbcl --script tests/run-specs.lisp --adversarial
+```
+
 #### Flags for run-specs.lisp
 
 - `--filter=<spec-name>`
@@ -92,6 +98,10 @@ Crisp uses a **hybrid test system** with two types of tests:
    - Feature-specific E2E and unit tests co-located with spec tests
    - Organized by feature dependency order (001-def-function, 002-type-conversion, etc.)
    - Managed by `tests/run-specs.lisp`
+
+3. **Adversarial Tests** (`tests/adversarial/**/*.crisp`)
+   - Complex tests that explore the full surface area and intersections of features
+   - Managed by `tests/run-specs.lisp --adversarial`
 
 ### Test Discovery
 
