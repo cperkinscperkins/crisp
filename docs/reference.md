@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-08-13T23:43:29.747456Z
+Generated on 2026-08-14T17:55:43.606383Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2364,7 +2364,7 @@ Generated on 2026-08-13T23:43:29.747456Z
 ### DEFUN `%GFW-PROCESS-LET`
 - **Args**: `(FORM EMIT-FN PROCESS-FORM-FN BINDINGS AUGMENTED-BINDINGS BODY)`
 
-  > BUG 037: the replayed primal bindings now read staged tiles from their ORIGINAL GLOBAL source  >    instead of from the (empty) tile, and an unrecoverable primal that the backward actually uses  >    is a hard error rather than a silent zero.  >   >    BUG 041 (endeavor 147): every SLM scratch object this LET allocates is  >    zeroed before the backward body runs.  See the header note above  >    %ad-backward-slm-zero-forms — shared memory is not guaranteed zero on any  >    backend, and under CUDA it demonstrably is not.
+  > BUG 037: the replayed primal bindings now read staged tiles from their ORIGINAL GLOBAL source  >    instead of from the (empty) tile, and an unrecoverable primal that the backward actually uses  >    is a hard error rather than a silent zero.  >   >    BUG 041 (endeavor 147): every SLM scratch object this LET allocates is  >    zeroed before the backward body runs.  See the header note above  >    %ad-backward-slm-zero-forms -- shared memory is not guaranteed zero on any  >    backend, and under CUDA it demonstrably is not.  >   >    ENDEAVOUR 149: if a primal this LET could not resolve is filled by statements in  >    THIS scope's forward body, re-run them here, ahead of the backward body.  The  >    replay is spliced in directly and never handed to PROCESS-FORM-FN -- it is primal  >    recomputation, not something to differentiate a second time.
 
 
 ---
@@ -2372,7 +2372,7 @@ Generated on 2026-08-13T23:43:29.747456Z
 - **Args**: `(FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP
               INTERMEDIATE-ZERO)`
 
-  > Unchanged except that it publishes the loop variable in *ad-loop-vars* while walking the  >    body, so a VJP dispatched inside can ask what coordinate it is being evaluated at.  A  >    pipelined ring operand needs this: its primal lives at the CONSUMING iteration, and the  >    forward's load sites record other stages' origins.
+  > Unchanged except that it publishes the loop variable in *ad-loop-vars* while walking the  >    body, so a VJP dispatched inside can ask what coordinate it is being evaluated at.  A  >    pipelined ring operand needs this: its primal lives at the CONSUMING iteration, and the  >    forward's load sites record other stages' origins.  >   >    ENDEAVOUR 149: a tile re-staged each iteration has no single primal value, so its replay  >    belongs HERE -- inside the loop body, ahead of the consumers, evaluated afresh for each  >    value of the loop variable.  That falls out of emitting at this scope: the replayed  >    statements close over BINDING exactly as the forward's did.
 
 
 ---
@@ -3126,10 +3126,92 @@ Generated on 2026-08-13T23:43:29.747456Z
 
 
 ---
+### DEFVAR `*AD-REPLAY-PENDING*`
+
+  > Endeavour 149.  Scratch-tile symbols whose PRIMAL value the backward needs but  >    could not resolve -- neither from the tile (empty in the backward) nor from a  >    load-tile-at source map.  Pushed by %AD-CHECK-UNRESOLVED-PRIMALS as the walk  >    discovers them; drained by %AD-REPLAY-FORMS-FOR-SCOPE as enclosing scopes prove  >    able to refill them.  Non-empty when the kernel's top-level sequence closes means  >    nothing could fill the tile, which is the pre-149 refusal.
+
+
+---
+### DEFVAR `*AD-OUTPUT-SYMS*`
+
+  > Endeavour 149.  The &out parameter symbols of the kernel being differentiated.  >    These are the only globals the forward may have mutated (inputs are read-only  >    under --differentiate), so a replayed statement that READS one of these is  >    recomputing from memory whose contents the backward cannot vouch for.
+
+
+---
+### DEFUN `%AD-REPLAY-OP-NAME-P`
+- **Args**: `(FORM NAME)`
+
+  > T when FORM is a call to an operator whose symbol-name is NAME.  Compared by name  >    because the AD walk sees symbols from :crisp-language while this code is read in  >    :crisp.compiler.
+
+
+---
+### DEFUN `%AD-REPLAY-BARRIER-P`
+- **Args**: `(FORM)`
+
+  > T when FORM is a synchronisation statement.  Barriers are carried into a replayed  >    slice verbatim: staging that needed a barrier in the forward needs the same barrier  >    when it is re-run, and replay must never INVENT one (a barrier synthesised inside a  >    thread-dependent loop would deadlock).
+
+
+---
+### DEFUN `%AD-REPLAY-PLACE-SYM`
+- **Args**: `(PLACE)`
+
+  > The symbol a write PLACE targets: SYM for `(~ SYM i ...)`, or NIL when the place is  >    not an indexed access on a symbol.
+
+
+---
+### DEFUN `%AD-REPLAY-FILL-TARGETS`
+- **Args**: `(FORM)`
+
+  > Symbols FORM writes through an INDEXED or whole-tile store, at any depth.  >   >    These are the writes that can FILL a tile, so this drives slice selection; it is  >    also what decides observability, since an indexed write to something that is not  >    scratch is a write to memory somebody else can see.  >   >    Bare `(set! SYM v)` is deliberately NOT collected here -- an ANF scalar temp is  >    assigned constantly and none of it is observable.  Scalar writes are checked  >    separately, and only against the &out list.
+
+
+---
+### DEFUN `%AD-REPLAY-SCALAR-WRITE-TARGETS`
+- **Args**: `(FORM)`
+
+  > Symbols FORM assigns as a bare `(set! SYM v)`, at any depth.  Used only to catch an  >    assignment to an &out parameter; ANF temps land here too and are ignored.
+
+
+---
+### DEFUN `%AD-REPLAY-READ-SYMS`
+- **Args**: `(FORM)`
+
+  > Symbols FORM READS, at any depth: the operand of `(~ SYM ...)` other than in a write  >    place, and the SOURCE operand of load-tile / load-tile-at.  >   >    The write place is skipped deliberately -- `(set! (~ D i) v)` reads nothing from D,  >    and counting it would make every fill look like a read of its own destination.
+
+
+---
+### DEFUN `%AD-REPLAY-SLICE`
+- **Args**: `(FORMS TILES)`
+
+  > The statements of FORMS that must be re-run to refill TILES, in forward order, or  >    NIL when this sequence does not fill any of them.  >   >    Taken as the SPAN from the first filling statement to the last, keeping the fillers  >    and any barriers between them, plus any barriers immediately following the last  >    filler.  Two reasons for a span rather than a bare filter: a barrier that sat  >    between two fills was there for a reason, and the barrier that follows the staging  >    is the one that makes the tile visible to the threads that read it.  Statements  >    inside the span that fill nothing are dropped -- they cannot affect the tiles  >    (anything that wrote them would be a filler) and dropping them keeps unrelated work  >    out of the backward.
+
+
+---
+### DEFUN `%AD-REPLAY-CHECK-SAFE`
+- **Args**: `(SLICE TILES)`
+
+  > Signals if SLICE cannot be safely re-run in the backward.  TILES is what it fills,  >    used only to make the diagnostic name the value the gradient was after.  >   >    Both refusals name the offending symbol, because a diagnostic the user cannot act  >    on is barely better than a wrong answer.
+
+
+---
+### DEFUN `%AD-REPLAY-FORMS-FOR-SCOPE`
+- **Args**: `(FORMS &OPTIONAL INHERITED)`
+
+  > Replay statements this scope can contribute, or NIL.  >   >    FORMS is the scope's FORWARD statement sequence.  Any pending tile this sequence  >    fills is refilled here and struck from *AD-REPLAY-PENDING*; the rest stay pending  >    for an enclosing scope.  Returns forms to splice at the HEAD of the scope's  >    backward body -- ahead of every consumer, because the walk reverses each sequence.  >   >    INHERITED is *AD-REPLAY-PENDING* as it stood when this scope STARTED walking its  >    body, and it is what makes the placement correct rather than merely plausible.  A  >    request already pending on entry was raised by a consumer OUTSIDE this scope, so  >    satisfying it here would put the refill somewhere that does not reach that  >    consumer.  The staging statement's own scope is exactly this case: it contains the  >    fill, but the consumer that needs it is a sibling further along the sequence, and  >    because sequences are emitted in reverse, a refill emitted inside the staging  >    statement's backward runs AFTER the consumer that wanted it -- one iteration late  >    in a loop, never at all outside one.  So only requests raised DURING this scope's  >    own body walk are eligible; everything else travels outward to a scope that  >    encloses both the fill and the consumer.
+
+
+---
+### DEFUN `%AD-REPLAY-FINISH`
+- **Args**: `(RESULT FLAT-ANF)`
+
+  > Closes the kernel's top-level sequence: splices any remaining replay into the head  >    of the assembled backward RESULT, and refuses if a primal is still unaccounted for.  >   >    Called from the tail of GENERATE-BACKWARD-WALK, which owns the kernel's top-level  >    statement sequence -- the one scope that has no enclosing scope to pass a request  >    outward to.  Every inner scope has already had its chance as it closed.  >   >    This is where the pre-149 refusal now lives.  Reaching it means no scope, top-level  >    included, contained statements that fill the tile -- a tile built by something the  >    backward genuinely cannot reconstruct.  Refusing is still strictly better than the  >    alternative it replaced: a backward that reads an empty tile and returns zero.
+
+
+---
 ### DEFUN `%AD-CHECK-UNRESOLVED-PRIMALS`
 - **Args**: `(BINDINGS BODY)`
 
-  > ERROR when a primal bound to an UNRESOLVABLE scratch-tile read is actually USED as a value by  >    the backward BODY.  >   >    Silence here is what bug 037 was: an unavailable primal read as zero.  A tile whose primal is  >    never consumed (a pure accumulator like C-tile, whose old value matters only for its adjoint)  >    is fine and must NOT error — hence the usage test rather than a blanket check.
+  > Records a REPLAY REQUEST for each primal bound to an unresolvable scratch-tile read  >    that the backward BODY actually uses as a value.  >   >    Endeavour 149 changed this from an immediate ERROR to a request.  The error was  >    correct as far as it went -- silence here is what bug 037 was, an unavailable primal  >    read as zero -- but this scope cannot know whether an ENCLOSING one is able to refill  >    the tile.  So it registers the need and lets the walk answer it; the refusal now  >    happens at the top-level sequence, where the answer is finally known.  >   >    A tile whose primal is never consumed (a pure accumulator like C-tile, whose old  >    value matters only for its adjoint) is fine and must NOT be requested -- hence the  >    usage test rather than a blanket check.
 
 
 ---

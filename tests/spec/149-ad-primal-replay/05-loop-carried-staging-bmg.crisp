@@ -1,0 +1,65 @@
+;; Endeavor 149 rung 5 — the tile is RE-STAGED each iteration.  This is the rung that decides
+;; whether replay is placed correctly, and it is the shape the endeavour actually exists for.
+;;
+;; TDD: expected to FAIL until primal replay exists, with the same refusal as rungs 1, 2 and 4.
+;;
+;; WHY THIS RUNG EXISTS.  The obvious reading of "replay the staging statements" is: run them
+;; once, at the top of the backward.  That is enough for rungs 1, 2 and 4, and it is enough for
+;; 140/01, whose staging happens once.  It is WRONG for 140/02 — the kernel this endeavour is
+;; ultimately for — which re-fills A-tile inside its k loop:
+;;
+;;     (dotimes (kk (/ K 8))
+;;       ... (set! (~ A-tile core) (~ A r gk)) ...    ; different contents every iteration
+;;       (sync-workgroup)
+;;       (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile))
+;;
+;; There is no such thing as "the" primal value of A-tile there.  The chain rule for iteration
+;; kk needs the contents A-tile held DURING iteration kk, so the replay has to sit inside the
+;; backward's own loop, at the nesting depth the fill occupied — not hoisted to the kernel head,
+;; where it could only ever reproduce one iteration's worth.
+;;
+;; THE DISCRIMINATOR.  This kernel processes an 8-element problem through a 4-wide tile in two
+;; passes, so element 5 is staged on the SECOND iteration (kk=1, slot j=1).  Perturbing A[5]
+;; therefore probes a value that a head-of-kernel replay would have overwritten:
+;;
+;;     correct                     dA[5] = B[5] = 5.5
+;;     replay pinned to kk=0       dA[5] = B[1] = 1.5     <- same slot, wrong iteration
+;;     empty tile                  dA[5] = 0.0
+;;
+;; Those three numbers are far apart on purpose.  Rungs 1/2/4 cannot tell a correctly-placed
+;; replay from a hoisted one; this one can, and it is the only rung here that can.
+;;
+;; DELIBERATELY NOT MMA.  Same discipline as rung 1: this is 140/02's SCHEDULING shape with the
+;; tensor cores taken out, so that when it fails the failure is about placement and nothing else.
+;;
+;; THE CHECK.  f(A,B) = sum over 8 of A[i]*B[i], computed four elements at a time.
+;; dA[i] = B[i] and dB[i] = A[i]; at index 5, B[5]=5.5 and A[5]=6.0.
+;;
+;; COMPILE-WITH[--ir-target=spv]: PASS
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0] B=[0.5 1.5 2.5 3.5 4.5 5.5 6.5 7.5] at.A=5 expect.A=5.5 at.B=5 expect.B=6.0 h=0.5 atol=1e-3 output-vec=8 group=4
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel loop_staged_product (A B &out C)
+  (declare #'(vec-t vec-t &out vec-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((A-tile (make-scratch-vector float 4))
+        (B-tile (make-scratch-vector float 4)))
+    (dotimes (kk 2)
+      ;; Stage this iteration's 4-element window.  The tile's contents differ per kk, which is
+      ;; the whole point: its primal is a function of the loop variable.
+      (workgroup-stride A-tile (j)
+        (let ((g (+ (* (to-ulong kk) (to-ulong 4)) j)))
+          (set! (~ A-tile j) (~ A g))
+          (set! (~ B-tile j) (~ B g))))
+      (sync-workgroup)
+      ;; Consume it.  A plain overwrite into this iteration's window of C — no accumulation
+      ;; into an &out, so the forward stays re-runnable under finite differencing.
+      (workgroup-stride A-tile (j)
+        (let ((g (+ (* (to-ulong kk) (to-ulong 4)) j)))
+          (set! (~ C g) (* (~ A-tile j) (~ B-tile j)))))
+      ;; Before the next iteration overwrites the tiles every thread must be done reading them.
+      (sync-workgroup))))

@@ -1,0 +1,51 @@
+;; Endeavor 149 rung 4 — the staged value is COMPUTED, not copied.
+;;
+;; TDD: expected to FAIL until primal replay exists, with the same refusal as rungs 1 and 2.
+;;
+;; WHY THIS RUNG EXISTS — TWO HAZARDS, ONE KERNEL.
+;;
+;; (a) REPLAY MUST RE-RUN ARITHMETIC, NOT JUST MOVES.  Rungs 1 and 2 stage by copying: every
+;;     value that lands in a tile already exists somewhere in global memory, so a mechanism
+;;     that only knew how to re-issue loads would satisfy them both.  Here the tile holds
+;;     A[i]*A[i], a value that exists NOWHERE until the forward computes it.  Replay must
+;;     reproduce the computation — including the ANF temporaries the expression is flattened
+;;     into — or it cannot fill the tile at all.
+;;
+;; (b) THE REPLAYED COPY MUST NOT BE DIFFERENTIATED.  This is the sharper one.  The backward
+;;     already contains these staging statements, walked in REVERSE, to carry the tile adjoint
+;;     out to A_GRAD.  Replay adds a SECOND, FORWARD-direction copy of the same statements.  If
+;;     that copy is injected where the walk can see it, the staging gets differentiated twice
+;;     and every gradient through it DOUBLES.  Nothing errors; the number is simply 2x.
+;;
+;;     A copy-staged tile hides this: d(copy)/dx = 1, so a doubled copy still contributes the
+;;     same adjoint by a different route in some orderings, and the error can partially cancel.
+;;     A SQUARE cannot hide it.  dA = 2*A*B = 6.0 here; a double-walked staging gives 12.0.
+;;
+;; THE CHECK.  f(A,B) = sum(A^2 * B), so dA[i] = 2*A[i]*B[i] and dB[i] = A[i]^2.
+;; At index 1: A[1]=2.0, B[1]=1.5  ->  dA[1] = 2*2.0*1.5 = 6.0,  dB[1] = 4.0.
+;; The three failure modes are all distinct and all visible:
+;;     0.0   empty tile (today's behaviour, if the refusal were simply removed)
+;;    12.0   staging differentiated twice (hazard (b))
+;;     3.0   replayed as a copy rather than a square (hazard (a), A[1]*B[1])
+;; A central difference is EXACT for a quadratic, so h=0.5 costs no accuracy here.
+;;
+;; COMPILE-WITH[--ir-target=spv]: PASS
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] B=[0.5 1.5 2.5 3.5] at.A=1 expect.A=6.0 at.B=1 expect.B=4.0 h=0.5 atol=1e-3 output-vec=4 group=4
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel computed_staging (A B &out C)
+  (declare #'(vec-t vec-t &out vec-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((A-tile (make-scratch-vector float 4))
+        (B-tile (make-scratch-vector float 4)))
+    ;; A-tile holds a value that exists nowhere in global memory.
+    (workgroup-stride A-tile (i)
+      (set! (~ A-tile i) (* (~ A i) (~ A i)))
+      (set! (~ B-tile i) (~ B i)))
+    (sync-workgroup)
+    (workgroup-stride C (i)
+      (set! (~ C i) (* (~ A-tile i) (~ B-tile i))))))

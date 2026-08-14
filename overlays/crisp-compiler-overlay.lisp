@@ -5,7 +5,7 @@
 ;;;; EMPTY BY DESIGN.  Definitions live here only while a feature or bug fix is in
 ;;;; flight; once it settles they are folded back into their home file in src/ so
 ;;;; that the source of truth is one place.  Folded 2026-08-02 (endeavour 145),
-;;;; and again 2026-08-09 (endeavour 146).
+;;;; again 2026-08-09 (endeavour 146), and again 2026-08-14 (endeavour 149).
 ;;;;
 ;;;; To add one: APPEND a complete definition with a `;; src/<file>.lisp` comment
 ;;;; above it saying where it belongs.  Do not patch definitions already here.
@@ -20,5 +20,5 @@
 ;;;; If you reach for that pattern, note in the header which src function the
 ;;;; wrapper's body ultimately belongs inside.
 
-(in-package :crisp.compiler)
 
+(in-package :crisp.compiler)

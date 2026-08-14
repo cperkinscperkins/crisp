@@ -1,0 +1,52 @@
+;; Endeavor 149 rung 3 — staging with an OBSERVABLE SIDE EFFECT must NOT be replayed.
+;;
+;; NEGATIVE BY DESIGN, and it should stay negative forever.  Rungs 1 and 2 want replay to
+;; start working; this one draws the line replay must not cross.
+;;
+;; THE HAZARD.  Replay re-runs the forward's staging statements at the top of the backward.
+;; That is harmless when a statement only fills a LOCAL tile.  It is CORRUPTING when the same
+;; statement also writes something observable — here `D`, a second &out parameter:
+;;
+;;     (set! (~ A-tile i) (~ A i))          ; pure fill        — safe to replay
+;;     (set! (~ D i) (+ (~ D i) 1.0))       ; observable write — NOT safe to replay
+;;
+;; Replaying the block would increment D TWICE for one logical execution.  Nothing would
+;; error; the kernel would simply produce a wrong D, in a build where the only thing that
+;; changed is that AD was switched on.  That is the silent-wrong-answer class this project has
+;; been bitten by repeatedly (135/01's plausible atomics returning 0.0; the fragment adjoint
+;; that fell through a `when` and dropped the gradient without a word).
+;;
+;; THE CONTRACT.  When the statements the backward needs replayed are not provably free of
+;; observable effects, the compiler REFUSES with a diagnostic naming the offending write.  It
+;; does not replay-and-hope, and it does not silently skip the effectful statement either —
+;; skipping would leave the tile half-filled and produce a wrong GRADIENT instead of a wrong D.
+;;
+;; A refusal is a fine outcome here.  The user can restructure (hoist the effect out of the
+;; staging block) and get replay; what they must never get is a quiet double-write.
+;;
+;; NOTE ON THE EXPECTED MESSAGE.  The substring below is the CONTRACT this endeavour should
+;; implement, chosen before the implementation exists — normal TDD.  If the eventual wording
+;; differs, change the substring, but do not weaken what it asserts: the diagnostic must say
+;; WHICH write made replay unsafe, or the user cannot act on it.
+;;
+;; COMPILE-WITH[--ir-target=spv]: PASS
+;; COMPILE-WITH[--ir-target=spv --differentiate]: FAIL "side effect"
+;; SKIP-DEFAULT-PASS
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel staging_with_side_effect (A B &out C D)
+  (declare #'(vec-t vec-t &out vec-t vec-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((A-tile (make-scratch-vector float 4))
+        (B-tile (make-scratch-vector float 4)))
+    (workgroup-stride A-tile (i)
+      (set! (~ A-tile i) (~ A i))
+      (set! (~ B-tile i) (~ B i))
+      ;; The observable write that makes this block unsafe to replay.
+      (set! (~ D i) (+ (~ D i) 1.0)))
+    (sync-workgroup)
+    ;; The multiply is what would demand the primal, and therefore the replay.
+    (workgroup-stride C (i)
+      (set! (~ C i) (* (~ A-tile i) (~ B-tile i))))))

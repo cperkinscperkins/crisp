@@ -493,7 +493,9 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [x] AutoDiff fix: Redesign so gradient storage handles are always  floating point regardless of primal type, and generate zero backward kernels for integer inputs. This is the "mathematically correct" approach but requires more work.
 - - [x] Would allow re-enable of tests in 083 and other places that skip --differentiate pass for this reason
 
-- [ ] crisp-compile.exe as a release?
+- [x] crisp-compile.exe as a release?
+- [ ] &out should appear only ONCE in a param list or type declaration. ENFORCE
+- [ ] enforce no reading from &out.  
 
 Miscelleny
 ==========
@@ -847,6 +849,17 @@ DOCS
 - - [ ] how package release 
 - - [ ] how tag repo (to match release)
 - - [ ] how contribute. PR cycle.
+
+AG TASKS
+========
+[ ] expand MMA testing up to , and a little past max (64000 x 64000 ?)
+[ ] script for bundling release
+[ ] better benchmark API
+[ ] benchmark reductions etc
+[ ] benchmark A|D ??
+[ ] add full hardware profile to samples on readme
+[ ] some sort of CTS?
+
 
 
 
