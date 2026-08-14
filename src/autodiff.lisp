@@ -5,6 +5,43 @@
 
 (in-package :crisp.compiler)
 
+;;; ===================================================================
+;;; SPECIALS DECLARED EARLY -- these three are LET-BOUND above their DEFVAR.
+;;;
+;;; Each of the variables below is bound with LET/LET* earlier in this file than
+;;; the DEFVAR that declares it:
+;;;
+;;;     *ad-loop-vars*            bound line ~1274, defvar line ~4745
+;;;     *record-param-field-adjs* bound line ~1770, defvar line ~3159
+;;;     *ad-any-output-double*    bound line ~1819, defvar line ~3142
+;;;
+;;; DEFVAR proclaims a variable special when the COMPILER REACHES IT.  A binding
+;;; that appears earlier in the same file is therefore compiled as a LEXICAL
+;;; binding -- it creates a fresh local variable that shadows nothing, so the
+;;; dynamic value never propagates and every reader elsewhere sees the global NIL.
+;;;
+;;; The bug this caused was invisible in day-to-day work and brutal in CI, because
+;;; it depends on HOW THE FILE WAS COMPILED.  Compile it into an image that has
+;;; already loaded a previous version (any incremental rebuild) and the DEFVARs
+;;; have already run, the bindings compile as SPECIAL, and everything works.
+;;; Compile it from a cleared FASL cache -- which is exactly what CI and
+;;; scripts/run-on-pod.sh do -- and the bindings go lexical.  The same source then
+;;; produces two different compilers, and the clean one is the broken one.
+;;;
+;;; Symptom when it bit (endeavour 149, on an H100 pod): 14 specs failed under
+;;; --differentiate, 9 of them in 111-load-and-store-tile, with
+;;;     Type mismatch! Expected FLOAT but inferred DOUBLE
+;;; because *ad-any-output-double* read NIL inside %handle-value-let-backward, so
+;;; a value-let's fresh adjoints were typed FLOAT while the surrounding chain --
+;;; correctly promoted for a ULONG kernel -- was DOUBLE.
+;;;
+;;; Declaring them here fixes the class rather than the instance.  Anything else
+;;; LET-bound above its DEFVAR in this file belongs in this list too.
+;;; ===================================================================
+(declaim (special *ad-loop-vars*
+                  *record-param-field-adjs*
+                  *ad-any-output-double*))
+
 
 (defun %emit-sub-fn-backward (fn args bkwd-fn t-adj-forms n-fp pkg emit-fn local-adj-fn &optional (sym-prefix "BW"))
   "Emits the call to BKWD-FN and routes returned deltas / passed-through
