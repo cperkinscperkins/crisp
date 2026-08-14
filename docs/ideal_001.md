@@ -1791,6 +1791,15 @@ referencing.
  (tensor-stride someMatrix (row-y col-x) ...)
 ```
 
+ **One restriction, and it is per-vendor.** A matrix used as an operand of an Intel MMA
+ (tensor-core) instruction must be `:row-major`; `:col-major` is refused at compile time
+ because Intel's graphics compiler ships no column-major variant of the operand-load
+ builtin. NVIDIA is unaffected — there `:col-major` **B** is in fact the canonical form.
+ Nothing else in the language cares: `:col-major` is fully supported everywhere outside an
+ MMA operand, including views, `tensor-stride`, and `get-layout`. If you need a column-major
+ operand for an Intel MMA, stage the transpose explicitly into scratch. See "Operand layout"
+ under *Optimizing Intel MMA* for the measurements and the workaround.
+
 
 ### Storage Properties ✅
 

@@ -752,7 +752,7 @@ MMA
 [ ] empty room fallacy?  GPU display? GPU monitoring?
 [ ] auto-differentiation
 - [x] verify autodiff on cuda
-- [ ] need primal replay
+- [x] need primal replay
 [ ] new macro for rings (prefetch/pipeline) that handles rings
 [ ] push FURTHER - mix prefetch, SLM and warp specialization
 [ ] NVidia? 
@@ -778,7 +778,8 @@ MMA
 
 [x] extract_status.py -> add a % summary.
 
-[ ] benchmarking
+benchmarking
+=============
 [x] How to collect and recollect data? runpod.io gives us LOTS of different GPUs to test against,
     which is cool. Should we track all that? Where/how?  .csv?
 [x] report compile times!!  (used to be tracked, seemingly no longer?)

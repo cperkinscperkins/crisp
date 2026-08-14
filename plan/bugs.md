@@ -250,8 +250,66 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     When IGC ships the fix:
       - Remove the %volatile-read pseudo-op and LLVMSetVolatile binding from the overlays.
       - Re-tag 056/03-struct-with-ct-meta with its full VERIFY-AUTODIFF directive.
+      (Location note: the workaround was folded out of overlays/ into src/ at some point
+      after this was written -- it now lives in src/analysis/core.lisp (*volatile-var-reads*,
+      analyze-%volatile-read-expression), src/codegen.lisp (the two LLVMSetVolatile sites)
+      and src/autodiff.lisp (%build-shadow-ctor-form).  Remove it from THERE.)
 
-[/] 031 - Intel BMG OpenCL ICD breaks VERIFY-AUTODIFF forward FD step.  Level Zero
+    RETESTED 2026-08-14 (bug sweep).  STILL BROKEN, and the driver hypothesis is now dead:
+    the GPU driver has advanced TWICE since this was filed, 32.0.101.8737 -> 32.0.101.8864
+    (dated 2026-07-16), and both the minimal reproducer and the real spec fail identically.
+
+      - Minimal repro rebuilt and rerun on 8864: still {4.0, 4.0}, expected {4.0, 3.0}.
+      - 056/03 with its VERIFY-AUTODIFF directive temporarily restored, on BMG:
+            p1.x: analytical=1.0            numerical=4.9972534   (expected 5.0)
+            p2.x: analytical=1.05510146e-29 numerical=2.9983518   (expected 3.0)
+        Note the NUMERICAL column is correct -- the forward kernel is fine, only the
+        backward is miscompiled.  p1.y=6.0 came back CORRECT, so it is not a blanket
+        failure; one sibling aliases and its neighbour does not.
+
+    THE TRANSLATOR IS EXONERATED -- this was left open above ("either the LLVM-SPIRV
+    translator's optimizer or IGC's JIT") and is now settled as IGC.  Three checks:
+      1. bug.ll re-translated with the current bundled llvm-spirv -> output is
+         BYTE-IDENTICAL to the bug.spv committed in May.  The translator has not
+         changed and is not sensitive to anything we have done since.
+      2. bug.spv disassembled (llvm-spirv -to-text, see igc-bug-report/bug.spt): the
+         SPIR-V is CORRECT.  Four distinct `Variable`s (32 33 34 35); two distinct
+         `Load`s (%55 from 34, %56 from 35) feeding CompositeInsert at indices 0 and 1.
+         The distinction the device loses is still present in the SPIR-V we hand it.
+      3. 056/03's backward LLVM IR at HEAD, traced by hand: anf-t-1_adj=5.0,
+         anf-t-2_adj=3.0, p1_y_adj=6.0, p2_y_adj=4.0 -- all four correct.  Worth stating
+         because the AD engine was rewritten underneath this bug twice since May
+         (endeavour 145's VJP registry, 149's primal replay) and the old "IR is correct"
+         claim could no longer be assumed.
+
+    WHERE THE ALIASING ACTUALLY BITES (refines the note above): p1.x reads back as 1.0,
+    which is the value held by anf-t-3_adj / -6_adj / -7_adj -- i.e. the INTERMEDIATE
+    chain-rule adjs collide, not the leaves.  That is exactly why the leaf-only volatile
+    workaround is sufficient for 056/01 and not for 056/03, and it means any broadened
+    workaround has to cover intermediates.
+
+    OPTION ON THE TABLE (not taken yet, wants a decision): broaden %volatile-read from
+    the leaf adjs to EVERY adj read.  Deferred in May "pending the Intel fix"; that fix
+    has now not arrived across two driver releases, so the deferral is worth revisiting.
+    Cost is real -- volatile defeats mem2reg/SROA promotion of the adj allocas, so every
+    Intel backward kernel gets slower, not just the broken ones.  056/03 is a direct
+    pass/fail oracle for whether it even works.  Measure before adopting.
+
+[x] 031 - Intel BMG OpenCL ICD breaks VERIFY-AUTODIFF forward FD step.  Level Zero
+    CLOSED 2026-08-14 (bug sweep).  Closed as ROUTED AROUND, not as repaired: the
+    OpenCL ICD defect is Intel's and was never fixed by us, but nothing in Crisp
+    drives OpenCL any more (endeavor 112 ported the runner to Level Zero), so it
+    cannot affect us.  Re-verified today on driver 32.0.101.8864 -- all four
+    affected specs pass under --differentiate:
+      092-dotimes/07-diff-float-accum            PASS
+      093-loop-vector-stride/04-diff-scale       PASS
+      105-tensor-and-grid-stride/12-diff-tensor-sum  PASS
+      107-differentiate-loop-and-stride/01-elemwise-scale  PASS
+    The bug-report folder at put_temp_files_here/intel-bmg-opencl-regression/
+    remains filed-and-ready if we ever want to send it; it is optional.
+    REOPEN ONLY IF an OpenCL runtime is reintroduced (VERIFY-AUTODIFF still has an
+    :opencl runtime selectable by directive -- see verify-autodiff-runtime-selection).
+
     is unaffected — diagnosed 2026-05-23 via standalone L0 probe.  See
     put_temp_files_here/bmg-bug-031/.
     The driver update around 2026-05-19 (immediately before endeavor 111 Phase 0)
@@ -466,6 +524,15 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     The address varying with the spec (5 here, 6 there) is consistent with the
     garbage/null DIBuilder-arg theory above rather than one specific null pointer.
 
+    RETESTED 2026-08-14 (bug sweep).  STILL BROKEN, unchanged.  The documented local repro
+    still faults identically at HEAD:
+        ./bin/crisp-compile.exe --debug tests/spec/056-struct-at-kernel-boundary/07-struct-with-ct-hoist.crisp
+        -> Unhandled memory fault at #x6  (exit 1)
+    Same address as recorded, so the faulting site has not moved with the current build heap.
+    This remains the bug gating a green --use-binary --debug phase on a Windows dev box, and
+    the standing instruction above still applies: do NOT silence 056/07 with a skip, because
+    it passes on the CI Linux runner and a skip would cost that coverage too.
+
 [x] 034 - CUDA multi-K-step SLM-staged tiled matmul miscomputes with non-uniform inputs.
         Discovered by the Endeavor 134 on-metal MMA test harness (host-reference C=A·B via
         the hoist's --mma-test) on RunPod (RTX), 2026-07-08.  FIXED 2026-07-08.
@@ -529,7 +596,10 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         Locally 06 SKIPs (no NVIDIA GPU), so the local suite stays green; only GPU-CI/RunPod
         sees the red.  Left wired (visible reminder) pending the morning's investigation.
 
-[ ] 035 - :contiguous-term :col-major is silently ignored by the SPV cooperative-matrix loads.
+[x] 035 - :contiguous-term :col-major is silently ignored by the SPV cooperative-matrix loads.
+
+        FIXED 2026-08-14 — but the fix is a COMPILE-TIME REFUSAL, not the feature.  Read the
+        "what the hardware said" section below before assuming this is a capability.
 
         FOUND 2026-07-28 during endeavor 145 (MMA autodiff) P3b design, while checking
         whether the backward's transposed operands could ride a ColumnMajor operand read
@@ -574,6 +644,83 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         SUGGESTED FIRST STEP: in %coop-layout-of, log (or assert on) the canonical type it
         receives for a known col-major operand; that immediately distinguishes "the node
         lost the c-t" from "%get-tensor-ct read the wrong index".
+
+        ROOT CAUSE (2026-08-14) — and the standing theory above was WRONG in an instructive way.
+        The declared c-t was NOT being lost.  Measured leg by leg:
+
+            :col-major -> canonicalize            (TENSOR FLOAT 2 :GLOBAL :COMPACT :FIRST)  OK
+            through a def-type alias              :FIRST -> layout 1                        OK
+            into the kernel param's MANGLED type  TENSOR_FLOAT_2_GLOBAL_COMPACT_FIRST       OK
+            canonicalize-type-specifier of THAT   (TENSOR_FLOAT_2_GLOBAL_COMPACT_FIRST)     <-- 1-ELEMENT LIST
+            %get-tensor-ct index 5 of that        :LAST (its documented default)            <-- layout 0
+
+        The operand type arrives at the load site INTACT.  %coop-layout-of then resolved it with
+        CANONICALIZE-TYPE-SPECIFIER, which cannot expand a MANGLED tensor symbol and simply wraps
+        it in a list; %get-tensor-ct read index 5 of a 1-element list, found nothing, and returned
+        its default.  Note the STRIDE operand had already followed the col-major declaration
+        correctly -- only the layout constant was wrong, which is precisely the incoherent pairing
+        that made the operand read TRANSPOSED.
+
+        THE FIX (overlays/, belongs in src/mma.lisp): resolve with %TS-CANONICALIZE-TENSOR-TYPE
+        (src/analysis/control.lisp) instead -- it already handles all three shapes, alias, list
+        form, and mangled symbol via UNMANGLE-TEMPLATE-STRUCT-NAME.  Reuse, not a second
+        implementation.  %GET-TENSOR-CT is deliberately UNTOUCHED: its docstring promises only to
+        read "a canonical tensor type 6-tuple", which is exactly what it does; the caller was
+        violating that contract.
+
+        ONE TRAP, worth 10 minutes to whoever folds this back: UNMANGLE-TEMPLATE-STRUCT-NAME
+        returns PLAIN SYMBOLS (FIRST, GLOBAL, COMPACT), not keywords.  Without the keyword
+        normalisation the (eq ct :first) test still fails and the bug survives a "correct" fix.
+        src/macros.lisp:699 already carries the same cond for the same reason.
+
+        WHAT THE HARDWARE SAID — the fix works, and then Intel declines.  All measured on BMG,
+        driver 32.0.101.8864, build log read via zeModuleBuildLogGetString (the dumper is at
+        put_temp_files_here/b035/buildlog.cpp and is worth keeping):
+
+            col-major A operand   zeModuleCreate 0x70000004 (MODULE_BUILD_FAILURE)
+                                  undefined reference to `__builtin_spriv_OpJointMatrixLoadINTEL_
+                                    PackedA_ColumnMajor_SG16_8x8_i32_4_global_v8i8_pi32_i32'
+            col-major B operand   same, PackedB_ColumnMajor_SG16_8x16_i32_8_...
+            col-major accumulator BUILDS FINE (that builtin exists) but computes the WRONG
+                                  RESULT on metal: C[0][1]=12 against a reference of 18.
+
+        So the docstring's long-standing claim -- "Intel has no ColumnMajor-B coop builtin" -- is
+        TRUE, now with the exact missing symbol rather than folklore, and it is not B-specific:
+        the A load is missing too.  The accumulator is a THIRD behaviour and its root cause is
+        UNDETERMINED (ours or IGC's -- the strides reach the instruction as runtime
+        FunctionParameters, so the SPIR-V does not settle it).  That question is open.
+
+        RESOLUTION: refuse a col-major coop-matrix operand at COMPILE time on :spirv, with a
+        message naming the reason and the workaround (stage an explicit transpose into scratch).
+        Refusing beats failing at zeModuleCreate with a mangled builtin name, and beats silently
+        transposing behind the user's back.  The accumulator is refused CONSERVATIVELY; if anyone
+        chases that root cause and fixes it, flip spec 14 back to the positive on-metal version.
+
+        SPECS: 133-mma-spv/13-col-major-operand-refused-bmg and 14-col-major-accum-refused-bmg,
+        both COMPILE-WITH[...]: FAIL "cannot be :col-major".  PTX is untouched (%coop-layout-of is
+        only called on the :spirv branches; 132 stays 12/12).
+
+        DOCS: docs/topology.md "Operand layout: Intel MMA operands must be :row-major" (staged
+        with the other MMA docs), plus a short cross-reference in docs/ideal_001.md's Contiguity
+        section, where someone choosing :col-major will actually be reading.
+
+        A NOTE ON THE ORIGINAL PROBE, because it nearly misled the fix: the tiled MMA kernels load
+        fragments from SLM TILES, not from the global matrix, and a make-scratch-matrix tile is
+        row-major by construction.  MemoryLayout=0 is CORRECT there.  Reproducing this honestly
+        needs a fragment loaded DIRECTLY from a declared col-major global (133/10's shape).
+
+        RETESTED 2026-08-14 (bug sweep).  STILL BROKEN, unchanged.  Probe: spec
+        145/09-verify-autodiff-matmul-bmg with b-mat's :contiguous-term flipped to
+        :col-major and nothing else touched, compiled --ir-target=spv --hardware-profile=bmg
+        and disassembled with llvm-spirv -to-text.  All FOUR CooperativeMatrixLoadKHR
+        instructions take MemoryLayout operand id 130, and
+
+            4 Constant 20 130 0
+
+        so id 130 is the constant ZERO = RowMajorKHR.  The col-major B operand is loaded
+        row-major exactly as described.  Still nothing in the suite exercises this path, so
+        it remains silent.  Reproducer left at put_temp_files_here/b035/ (probe.crisp,
+        probe.spv, probe.spt) for whoever picks it up.
 
 [x] 036 - matrix-multiply-tile-stride never resets the C-tile accumulator between output tiles,
           so any matmul LARGER THAN ONE OUTPUT TILE is silently wrong.
@@ -747,8 +894,15 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         parameter would recompute from a buffer the backward cannot vouch for (149/07).  The
         original "no statement fills this tile" refusal survives for tiles nothing can rebuild.
 
-[ ] 038 - A VOID sub-function call is silently DROPPED by the AD walk, so no gradient flows
+[x] 038 - A VOID sub-function call is silently DROPPED by the AD walk, so no gradient flows
           through it.
+
+        HEADER CORRECTED 2026-08-14 (bug sweep).  The body below has said "CLOSED 2026-08-01"
+        since the fix landed; only the checkbox was left stale.  Re-verified today rather than
+        taken on trust:
+          145/17-void-subfn-vjp-bmg  PASS on BMG -- analytical=2.0 numerical=2.0 diff=0.0
+          137/04-tma-sub-function    PASS -- SKIP-WITH[--differentiate] is gone, replaced by
+                                     validate-ptx-tma-grad as the body describes.
 
         FOUND 2026-08-01 reviewing 137-mm-async-block for --differentiate clearance.
 
@@ -1001,6 +1155,23 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         BLOCKS: 145/19, and therefore the numeric proof for ring-pipelined gradients, and
         therefore un-skipping 138/04 and 138/05 under --differentiate.
 
+        RETESTED 2026-08-14 (bug sweep).  STILL BROKEN, and the numbers are BYTE-IDENTICAL
+        to the ones recorded above -- C[0][0]=11, C[0][1]=18, C[0][2]=10, C[0][3]=11 against
+        a reference of 30, MMA_WRONG.  Measured with a throwaway forward-only spec (the repro
+        kernel above + MMA-DIMS: 8 16 16 + TEST-HOIST[L0]: validate-l0-mma-run), deleted after
+        measuring; recreate it in ten seconds from the repro block above.
+
+        ONE NEW DATA POINT, worth having before anyone starts: the defect is NOT uniform
+        across kernels.  With 145/19's SKIP-WITH[--differentiate] temporarily lifted, its
+        FINITE DIFFERENCE now reads 1.1992 -- i.e. essentially the expected 1.2, so THAT
+        kernel's forward responds correctly to the perturbation -- while its analytical side
+        reads 84.32.  That is the opposite of what this entry predicts ("the finite difference
+        reads 0.0").  Meanwhile the plain forward probe above is still MMA_WRONG.  So ring-slot
+        MMA is wrong in some shapes/access patterns and right in others, which fits the
+        "wrong offset or wrong row stride" theory better than "reads unwritten memory".
+        Do NOT read the 84.32 as a second bug yet -- an analytical number sitting on top of a
+        forward we know to be unreliable proves nothing on its own.
+
 [x] 041 - An AD-minted `<tile>_ADJ` SCRATCH tile was never zero-initialised, so the backward
         accumulated gradients on top of whatever was already in local/shared memory.
 
@@ -1084,7 +1255,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         and Intel cannot falsify this defect because it is invisible there.  Run 147/08 early
         on the next Hopper session.
 
-[ ] 042 - The full `--single-pass` spec phase CRASHES on a `TEST-WITH[--metadata]` spec.
+[x] 042 - The full `--single-pass` spec phase CRASHES on a `TEST-WITH[--metadata]` spec.
 
         REPRO (deterministic, on a clean directory):
             sbcl --script tests/run-specs.lisp --use-binary --single-pass --filter=aliases
@@ -1120,3 +1291,98 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY FIX: have the validator caller pass one path (or have the metadata validators
         accept a list and validate each), and decide which is right — the per-function
         metacrisp fan-out under --single-pass may itself be the surprising half.
+
+        FIXED 2026-08-14.  It was the fan-out, and the "LIKELY FIX" above was deliberately
+        NOT taken: the validators and the runner were both already correct.
+
+        ROOT CAUSE.  generate-metadata-for-file (src/metadata.lisp) chooses its kernel list as
+
+            (if forms (extract-defined-kernels forms) (hash-table-keys *function-table*))
+
+        and the no-FORMS arm treats EVERY FUNCTION as a kernel.  --single-pass is the only
+        caller that reaches it, because main.lisp sets CAPTURED-FORMS only in its multi-pass
+        branch (src/main.lisp, `(setf captured-forms forms)`), leaving it NIL otherwise.
+        Measured on 028-metadata/01-aliases.crisp, which has exactly one kernel:
+
+            multi-pass    1 metacrisp   (01-aliases_simple_kernel)
+            single-pass  19 metacrisp   (+ 18 internals: _die, _make-cell%dispatch, _~parent~ ...)
+
+        The crash was purely downstream of that: the runner passes a PATHNAME when one
+        metacrisp exists and a LIST when several do (run-specs.lisp ~L1829), so the bogus
+        fan-out handed a LIST to VALIDATE-01-ALIASES, which PROBE-FILEs its argument.
+
+        WHY THE VALIDATORS WERE LEFT ALONE.  That runner convention is right and is already
+        exercised: 028/12 and 028/14 are genuinely two-kernel specs, and their validators do
+        take a list and find each file by name (metadata-val.lisp:65).  Only the fan-out was
+        lying about how many kernels existed.  Teaching every single-kernel validator to
+        accept a list would have hidden the real defect.
+
+        THE FIX (overlays/crisp-compiler-overlay.lisp, belongs in src/metadata.lisp): the
+        fallback now enumerates *COMPILED-KERNELS* -- the list the DEF-KERNEL macro itself
+        maintains (src/macros.lisp) -- instead of *FUNCTION-TABLE*, filtered through a new
+        %ONLY-FORWARD-KERNELS.  The filter is needed because *COMPILED-KERNELS* also holds
+        the AD-minted K_GRAD twins under --differentiate, which the forms path never yields;
+        unfiltered they each got an extra sidecar with an EMPTY :kernels section (the lookup
+        is K_GRAD_GRAD, which does not exist).  It drops a name only when its own forward is
+        in the same list, so a hypothetical user kernel FOO_GRAD with no FOO survives.
+
+        VERIFIED: 19 -> 1 sidecar under --single-pass, multi-pass unchanged at 1, and the
+        repro command above now reports 4/4 with VALIDATE-01-ALIASES PASS.
+
+        STILL WANTED, and this is the better fix — capture the forms in main.lisp's
+        --single-pass branch too, so BOTH modes read the kernel list off the actual source
+        forms and neither depends on a session-global.  Not done here only because
+        COMPILE-FILES lives in CRISP.MAIN, which has no overlay, and redefining a ~130-line
+        function wholesale to change four lines is a poor trade; it wants a direct src patch.
+
+        A TRAP FOR THE NEXT PERSON: when this crashed it died BEFORE the runner's cleanup, so
+        it left its 19 stale .metacrisp files in tests/spec/028-metadata/.  The runner globs
+        the directory, so those stale files reproduce the ORIGINAL crash against a FIXED
+        compiler.  That is why the repro line above says "on a clean directory".  If a
+        metadata fix looks like it did not take, `rm tests/spec/028-metadata/*.metacrisp`
+        first -- they are untracked build artifacts, zero tracked files under tests/spec.
+
+[ ] 043 - Under --single-pass --differentiate, a backward kernel's :physical-signature in the
+        .metacrisp is the FORWARD kernel's, not the backward's.
+
+        FOUND 2026-08-14, immediately behind the BUG 042 fix: with 042 repaired the
+        --single-pass phase ran to completion for the first time (980/981), and this is the
+        one failure it exposed.  PRE-EXISTING, not caused by the 042 fix -- verified rather
+        than assumed, see below.
+
+        REPRO:
+            sbcl --script tests/run-specs.lisp --use-binary --single-pass --filter=03-record-at-boundary
+            -> validate-record-grad-metadata: expected 14 physical-sig entries, got 5
+
+        The same spec PASSES in multi-pass (`--use-binary` without `--single-pass`), so this
+        is specific to the single-pass path.
+
+        THE TELL — the two signatures in the SAME file disagree.  From the single-pass
+        metacrisp for 050-differentiate-and-metadata/03-record-at-boundary:
+
+            :physical-signature ((0 FLOAT) (1 FLOAT)
+                                 (2 (C-POINTER ADDRESS-SPACE GLOBAL)) (3 ULONG) (4 ULONG))
+            :declared-signature (... "c_grad" :range (5 7)
+                                     "vp_x_grad" :range (8 10)
+                                     "vp_y_grad" :range (11 13))
+
+        The DECLARED signature is fully correct: six params, ranges running to 13, i.e. it
+        knows about all 14 physical slots.  The PHYSICAL signature stops at 5 -- exactly the
+        FORWARD kernel's parameter count (vp_x, vp_y, c_ptr, c_bytesize, c_offset).  So the
+        backward's physical signature is never rebuilt; the forward's is served in its place.
+        AD itself is fine here -- the _grad .spv is produced and the declared side is right.
+
+        PRIME SUSPECT: --single-pass drives CRISP.COMPILER:COMPILE-TOPLEVEL-FORM per form and
+        never calls COMPILE-MODULE (src/main.lisp), so whichever module-level pass registers
+        the backward kernel's PHYSICAL signature does not run, while the declared-signature
+        path (which AD writes directly) does.  UNVERIFIED -- that is the first thing to check.
+
+        NOT CAUSED BY THE 042 FIX, verified: the 042 fix only selects WHICH kernels get a
+        sidecar, never the CONTENT of one.  Confirmed empirically -- after adding
+        %ONLY-FORWARD-KERNELS (which removed the spurious twin sidecar this spec was also
+        emitting), the physical signature was re-measured and is STILL 5 entries.
+
+        SCOPE: metadata only, and only under --single-pass --differentiate.  A hoist consuming
+        such a metacrisp would build a launcher with 5 args for a 14-arg kernel, so it is not
+        cosmetic -- but nothing does that today, since the hoist path does not use
+        --single-pass.  One spec red in one phase.
