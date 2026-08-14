@@ -35,8 +35,8 @@
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 
-(def-kernel staging_with_side_effect (A B &out C &out D)
-  (declare #'(vec-t vec-t &out vec-t &out vec-t)
+(def-kernel staging_with_side_effect (A B &out C D)
+  (declare #'(vec-t vec-t &out vec-t vec-t)
            (global-size :set-to 4)
            (local-size  :set-to 4))
   (let ((A-tile (make-scratch-vector float 4))

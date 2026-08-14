@@ -422,6 +422,48 @@
          (t (run-spec-ffi-runs crisp-file directives
                                (lambda (target) (%ffi-build-bc c-path target)) t))))))
 
+(defun %cleanup-spec-device-modules (file)
+  "Deletes the device modules and metadata that FILE's COMPILE-WITH / TEST-WITH
+   passes emitted next to the source: <base>.spv, <base>_grad.spv and their .ptx
+   and .metacrisp twins.  Prefix-matched on the spec's base name, so the _grad
+   companions go too.
+
+   WHY THIS EXISTS.  run-single-spec-pass -- the executor for COMPILE-WITH and
+   TEST-WITH -- never deleted anything.  The FFI path, the hoist path and
+   VERIFY-AUTODIFF each clean up after themselves, so the compile passes had been
+   relying, silently and by accident, on VERIFY-AUTODIFF's: it deletes its fwd/bwd
+   .spv, and those are THE SAME PATHS the compile passes write.  So a spec with a
+   VERIFY-AUTODIFF directive looked tidy, and a spec without one -- every
+   compile-only and every negative spec -- left its .spv behind forever.
+
+   That accident also made the symptom read backwards.  Running 149 WITH
+   --differentiate left 2 files and WITHOUT it left 12, because --differentiate is
+   what lets VERIFY-AUTODIFF run and sweep up on the compile passes' behalf.
+
+   The residue was invisible because tests/spec/.gitignore ignores every emitted
+   type, so `git status` never showed it accumulating.  Left alone it can also mask
+   a later run: a stale .spv beside a spec that no longer compiles still satisfies
+   anything that merely probes for the file.
+
+   Callers skip this when the spec FAILED, matching the hoist block's convention
+   that a failure leaves its evidence on disk, and skip it under --keep-work.
+
+   DO NOT WIDEN THE TYPE LIST WITHOUT CHECKING `git ls-files`.  It is limited to
+   spv / ptx / metacrisp because those have ZERO tracked files under tests/spec --
+   they are always throwaway.  `.ll` is NOT safe: nine of them are checked in as
+   fixtures under 099-incomplete-types-revisited.  tests/spec/.gitignore lists
+   *.ll, which makes them look disposable, but .gitignore does not apply to files
+   already tracked -- so adding \"ll\" here would delete repo content on every
+   green run, and `git status` would report it as a deletion rather than a stray."
+  (let ((base (pathname-name file))
+        (dir (pathname-directory file)))
+    (dolist (type '("spv" "ptx" "metacrisp"))
+      (dolist (f (directory (make-pathname :directory dir :name :wild
+                                           :type type :defaults file)))
+        (when (and (stringp (pathname-name f))
+                   (uiop:string-prefix-p base (pathname-name f)))
+          (ignore-errors (delete-file f)))))))
+
 (defun run-spec-file (file)
   (let ((directives (extract-test-directives file))
         (all-passed t))
@@ -535,6 +577,16 @@
           (finish-output)
           (unless (run-verify-autodiff-pass file vad-spec)
             (setf all-passed nil)))))
+
+    ;; 5. Cleanup: the device modules this spec's compile passes emitted.  Every
+    ;; other path already tidies up after itself; the COMPILE-WITH / TEST-WITH
+    ;; passes never did.  See %cleanup-spec-device-modules for why that went
+    ;; unnoticed for so long.  Deliberately LAST, after every pass for this file
+    ;; has finished: a validator may read <base>.spv during a later pass of the
+    ;; same spec (%spv-contains-opcode-p), and the hoist path shares its artifact
+    ;; across steps, so deleting per-pass would pull the rug out from under both.
+    (when (and all-passed (not *keep-work*))
+      (%cleanup-spec-device-modules file))
 
     all-passed))
 
