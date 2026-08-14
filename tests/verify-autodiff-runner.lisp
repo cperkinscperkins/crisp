@@ -656,8 +656,20 @@
        (6 (bind-local-scratch-vector-arg
            kernel (getf p :base)
            (getf p :n-elements) (getf p :elem-bytes)))
-       (t (bind-local-scratch-cell-arg
-           kernel (getf p :base) (getf p :elem-bytes)))))))
+       (3 (bind-local-scratch-cell-arg
+           kernel (getf p :base) (getf p :elem-bytes)))
+       ;; Any other width is a rank-N tile (a RING is rank 3, width 12).  It
+       ;; needs :dims; without them we cannot build the descriptor, and
+       ;; guessing would under-bind exactly as the old catch-all did.
+       (t (let ((dims (getf p :dims)))
+            (unless dims
+              (error "VERIFY-AUTODIFF: implicit param at slot ~D has arg-width ~D ~
+                      and no :dims, so its tensor record cannot be built.  Widths ~
+                      3/6/9 are cell/vector/matrix; anything else needs :dims from ~
+                      the metacrisp :size-expr."
+                     (getf p :base) (getf p :arg-width)))
+            (bind-local-scratch-tensor-arg
+             kernel (getf p :base) dims (getf p :elem-bytes))))))))
 
 (defun %vad-output-length-for-input (desc)
   "Returns the buffer element count needed for a forward input buffer,
@@ -1581,6 +1593,78 @@
     (loop for k from 1 below 9
           for v in (list byte-size 0 0 cols 1 rows cols (* rows cols))
           do (%cuk-set-uint64 kernel (+ base-index k) v))))
+
+;;; --- rank-N local scratch (a RING is the rank-3 case) -----------------
+;;;
+;;; A ring is ONE rank-(1+N) scratch tensor whose dim 0 IS the slot, so a
+;;; two-deep ring of 4x4 tiles is `(tensor float 3 :local :compact :last)`
+;;; with dims (2 4 4) and a 12-slot descriptor.  Before this existed the
+;;; arg-width dispatch had cases for 9 (matrix) and 6 (vector) and sent
+;;; EVERYTHING ELSE to the 3-slot cell binder -- so a ring bound 3 of its 12
+;;; slots and the launch died on the first unbound one:
+;;;
+;;;     CUDA launch: kernel param slot 3 of 30 was never bound
+;;;
+;;; The descriptor layout is the same tensor record every other binder uses,
+;;; generalised to rank N:  ptr, byte_size, offset[0..N-1], stride[0..N-1],
+;;; extent[0..N-1], length.  Strides are compact/:last -- innermost dim has
+;;; stride 1, each outer dim the product of the dims inside it.
+(defun %scratch-tensor-record (dims elem-bytes)
+  "The (BYTE-SIZE . TAIL) tensor record for a compact :last rank-N scratch
+   tile of DIMS.  TAIL is offsets, strides, extents, length -- everything
+   after the pointer slot."
+  (let* ((rank (length dims))
+         (n-elements (reduce #'* dims))
+         (byte-size (* n-elements elem-bytes))
+         (offsets (make-list rank :initial-element 0))
+         (strides (let ((acc 1))
+                    (reverse (loop for d in (reverse dims)
+                                   collect acc
+                                   do (setf acc (* acc d)))))))
+    (cons byte-size
+          (append offsets strides (copy-list dims) (list n-elements)))))
+
+(defun cuda-bind-local-scratch-tensor-arg (kernel base-index dims elem-bytes)
+  "CUDA rank-N local scratch: 2+3N slots, ptr slot = dynamic-shared offset."
+  (let* ((record (%scratch-tensor-record dims elem-bytes))
+         (byte-size (car record))
+         (off (%cuda-scratch-offset kernel base-index byte-size)))
+    (%cuk-set-uint64 kernel (+ base-index 0) off)
+    (loop for v in (cons byte-size (cdr record))
+          for k from 1
+          do (%cuk-set-uint64 kernel (+ base-index k) v))))
+
+(defun opencl-bind-local-scratch-tensor-arg (kernel base-index dims elem-bytes)
+  "OpenCL rank-N local scratch: slot 0 is the local-mem allocation."
+  (let* ((record (%scratch-tensor-record dims elem-bytes))
+         (byte-size (car record)))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 0) byte-size (cffi:null-pointer)))
+    (loop for v in (cons byte-size (cdr record))
+          for k from 1
+          do (cffi:with-foreign-object (p :uint64)
+               (setf (cffi:mem-ref p :uint64) v)
+               (check-cl (cl-set-kernel-arg kernel (+ base-index k)
+                                            (cffi:foreign-type-size :uint64) p))))))
+
+(defun l0-bind-local-scratch-tensor-arg (kernel base-index dims elem-bytes)
+  "L0 rank-N local scratch: NULL pArgValue + byte-size for the local alloc."
+  (let* ((record (%scratch-tensor-record dims elem-bytes))
+         (byte-size (car record)))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 0)
+                                            byte-size (cffi:null-pointer)))
+    (loop for v in (cons byte-size (cdr record))
+          for k from 1
+          do (cffi:with-foreign-object (p :uint64)
+               (setf (cffi:mem-ref p :uint64) v)
+               (check-ze (ze-kernel-set-argument-value kernel (+ base-index k)
+                                                       (cffi:foreign-type-size :uint64) p))))))
+
+(defun bind-local-scratch-tensor-arg (kernel base-index dims elem-bytes)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-local-scratch-tensor-arg)
+             (:l0     'l0-bind-local-scratch-tensor-arg)
+             (:cuda   'cuda-bind-local-scratch-tensor-arg))
+           kernel base-index dims elem-bytes))
 
 ;;; --- TMA: the CUtensorMap descriptor implicit arg ---------------------
 ;;;

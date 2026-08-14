@@ -1112,6 +1112,12 @@
                                 :n-elements (if dims (reduce #'* dims) size)
                                 :rows (and dims (first dims))
                                 :cols (and dims (second dims))
+                                ;; 147/08: a RING is a rank-3 scratch tensor whose
+                                ;; :size-expr is (SLOTS ROWS COLS), so :rows/:cols
+                                ;; describe it wrongly and its descriptor is 12 slots
+                                ;; wide.  Carry the whole dims list so the binder can
+                                ;; build a rank-N tensor record instead of guessing.
+                                :dims dims
                                 :elem-bytes elem-bytes
                                 :arg-width (1+ (- (second range) (first range)))))))))))))))
 
