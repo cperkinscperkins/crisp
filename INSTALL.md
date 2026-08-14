@@ -240,7 +240,22 @@ clang++ -o my_kernel_launcher -I<path-to-level-zero-include> <path-to-generated-
 CUDA
 ----
 
+```
+# this will compile the kernel to .ptx and also output a .cpp file which can "hoist" it.
+.\bin\crisp-compile.exe --ir-target=ptx --hoist=CUDA ./tests/spec/116-cuda-hoist/02-minimal-kernel.crisp
 
+# use nvcc or a standard C++ compiler (like g++ or clang++).
+# If using a standard C++ compiler, you just need to link against the CUDA driver library.
+
+nvcc -o my_kernel_launcher <path-to-generated-cpp-file> -lcuda
+```
+
+### Example
+
+
+```
+nvcc .\tests\spec\116-cuda-hoist\04-tensor-kernel_copy_vec_hoist_CUDA.cpp -lcuda -o copy_vec.exe
+```
 
 Working with the Docker C Validator
 ===================================
