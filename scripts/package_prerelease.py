@@ -1,8 +1,20 @@
+#!/usr/bin/env python3
+"""
+Crisp Prerelease Packaging Script
+
+Workflow for creating a new release:
+1. Update `OUTPUT_ZIP` and the tag names at the bottom of this script to reflect the new version (e.g. 002).
+2. Build the Linux binaries (typically via Docker or a Linux VM) and place them in `tools/` or `bin/`.
+3. Build the Windows binaries (`sbcl --non-interactive --load .\\build\\build.lisp`) and ensure they are also in `tools/` or `bin/`.
+   Ensure the build processes do not clobber each other's output.
+4. Run this script from the project root: `python .\\scripts\\package_prerelease.py`
+5. Upload the resulting zip file to the GitHub Release.
+"""
+
 import os
 import sys
 import zipfile
 import shutil
-
 OUTPUT_ZIP = "crisp-prerelease-001.zip"
 
 REQUIRED_TOOLS = [
