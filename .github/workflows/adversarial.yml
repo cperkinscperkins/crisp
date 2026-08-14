@@ -1,0 +1,88 @@
+name: Adversarial Tests
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # Run at 2 AM UTC daily
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  adversarial-test:
+    name: Run Adversarial Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Remove LFS pointers
+        run: |
+          rm -f bin/llvm-spirv
+          rm -f tools/llvm-spirv-linux
+          rm -f tools/llvm-as-linux
+          rm -f tools/llc-linux
+          rm -f tools/LLVM-C-linux.so
+
+      - name: Install System Dependencies (SBCL & LLVM)
+        run: |
+          rm -rf ~/.cache/common-lisp
+          sudo apt-get update
+          sudo apt-get install -y sbcl wget gpg-agent software-properties-common lsb-release curl
+          
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          
+          sudo apt-get update
+          sudo apt-get install -y sbcl llvm-21-dev llvm-21
+
+          git clone --depth 1 -b llvm_release_210 https://github.com/KhronosGroup/SPIRV-LLVM-Translator.git
+          cd SPIRV-LLVM-Translator
+          mkdir build && cd build
+          cmake .. -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm -DCMAKE_BUILD_TYPE=Release
+          make llvm-spirv -j$(nproc)
+          sudo cp tools/llvm-spirv/llvm-spirv /usr/bin/llvm-spirv
+          cd ../..
+
+          sudo ln -s /usr/bin/llc-21 /usr/bin/llc
+          sudo ln -s /usr/bin/llvm-as-21 /usr/bin/llvm-as
+
+      - name: Install Quicklisp
+        run: |
+          curl -O https://beta.quicklisp.org/quicklisp.lisp
+          echo "" | sbcl --non-interactive \
+                         --load quicklisp.lisp \
+                         --eval '(quicklisp-quickstart:install)' \
+                         --eval '(ql:add-to-init-file)' \
+                         --eval '(quit)'
+
+      - name: Build Executable
+        run: |
+          sbcl --non-interactive --load build/build.lisp
+
+      - name: Run Adversarial Tests (Default)
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+          SKIP_SPIRV_TESTS: false
+        run: |
+          set -o pipefail
+          echo "--- Running Adversarial Tests (Default) ---"
+          sbcl --script tests/run-specs.lisp --adversarial
+
+      - name: Run Adversarial Tests (External Binary)
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+          SKIP_SPIRV_TESTS: false
+        run: |
+          set -o pipefail
+          echo "--- Running Adversarial Tests: External Binary ---"
+          sbcl --script tests/run-specs.lisp --use-binary --adversarial
+
+      - name: Run Adversarial Tests (External Binary, Differentiate)
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+          SKIP_SPIRV_TESTS: false
+        run: |
+          set -o pipefail
+          echo "--- Running Adversarial Tests: External Binary (Differentiate) ---"
+          sbcl --script tests/run-specs.lisp --use-binary --differentiate --adversarial

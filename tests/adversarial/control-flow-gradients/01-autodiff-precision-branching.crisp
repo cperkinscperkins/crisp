@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate] : validate-differentiate
+;; VERIFY-AUTODIFF: x=2.5 atol=1e-2 precision=fast denormal=preserve
+
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
+
+(def-function complex_math (x)
+  (declare #'(float => float))
+  (* x x))
+
+(def-kernel adversarial_kernel (in-x &out out-res)
+  (declare #'(in-ish &out out-ish))
+  (set! (~ out-res) (complex_math (~ in-x))))

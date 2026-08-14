@@ -3048,13 +3048,16 @@
 
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))
-         ;; Assume tests/run-specs.lisp -> tests/spec/
-         (spec-dir (merge-pathnames "tests/spec/" (uiop:getcwd)))
+         (run-adversarial (member "--adversarial" (uiop:command-line-arguments) :test #'string=))
+         ;; Assume tests/run-specs.lisp -> tests/spec/ (or tests/adversarial/)
+         (spec-dir (if run-adversarial
+                       (merge-pathnames "tests/adversarial/" (uiop:getcwd))
+                       (merge-pathnames "tests/spec/" (uiop:getcwd))))
          (spec-files (directory (merge-pathnames "**/*.crisp" spec-dir)))
          (total 0)
          (passed 0)
          (failed-files '())
-         (stop-target (get-ci-stop-target))
+         (stop-target (if run-adversarial nil (get-ci-stop-target)))
          (stop-triggered nil))
 
     ;; Parse Arguments
