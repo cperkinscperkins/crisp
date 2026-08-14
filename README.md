@@ -34,7 +34,9 @@ Crisp can be downloaded as a release, or built from source. For either see [INST
 
 The complete, in-progress design document can be found in the docs directory. Each feature is tagged with an emoji indicating its implementation status (✅ Completed, ⚠️ Partially Implemented, 📝 Planned).
 
-[View the Current Specification](./docs/ideal_001.md)
+[View the Current Specification (MD)](./docs/ideal_001.md)
+
+[View the Current Specification (HTML)](https://cperkinscperkins.github.io/crisp/ideal_001/)
 
 ### Just Show Me Some Code!
 
@@ -45,8 +47,19 @@ Maybe reading the spec is a big ask. Understood. Here are two examples of Crisp 
 The first is a MMA kernel that is optimized for Intel hardware. For matrices around 1024x1024 or 2048x2048, the code below will compile and execute FASTER than Intel's MKL on a BattleMage GPU.  As the matrix size increases the Crisp advantage will decrease. 
 
 ```
-;; `bmg` is a Crisp BUILTIN hardware profile 
-;;
+;; Note: `bmg` is a Crisp BUILTIN hardware profile so this definition is optional, 
+;; but shown here explicitly to illustrate how profiles are defined.
+(def-hardware-profile bmg
+  :simd-width 16
+  :compute-units 20
+  :max-registers-per-thread 128
+  :max-total-threads-per-block 1024
+  :max-work-group-dims '(1024 1024 1024)
+  :max-shared-memory-per-block 128KB
+  :l2-cache-size 18MB
+  :native-cache-line-size 64
+  :mma-shapes '((8 16 8)))
+
 ;; To compile this kernel for a BattleMage GPU:
 ;; crisp-compile --ir-target=spv --hardware-profile=bmg --math-precision=fast --denormal-handling=ftz matmul_bmg_prefetch.crisp
 ;; 
@@ -109,6 +122,20 @@ The first is a MMA kernel that is optimized for Intel hardware. For matrices aro
 This second kernel is optimal on NVidia sm_90 hardware. Unlike the Intel one above which uses a prefetch pipeline, this uses warp specialization. This kernel performs well on NVidia hardware but not as well as cuBLAS. Hopefully we'll be matching it soon. 
 
 ```
+;; Note: `h100` is also a Crisp BUILTIN hardware profile, so this definition is optional,
+;; but shown here explicitly to illustrate how profiles are defined.
+(def-hardware-profile h100
+  :simd-width 32
+  :compute-units 114
+  :max-registers-per-cu 65536
+  :max-registers-per-thread 255
+  :max-total-threads-per-block 1024
+  :max-work-group-dims '(1024 1024 64)
+  :max-shared-memory-per-block 227KB
+  :l2-cache-size 50MB
+  :native-cache-line-size 128
+  :mma-shapes '((16 8 8) (16 8 4) (16 8 16)))
+
 ;; To compile this kernel for a Hopper GPU:
 ;; crisp-compile --ir-target=ptx --ir-target-arch=sm_90 --hardware-profile=h100 --math-precision=fast --denormal-handling=ftz matmul_wgmma.crisp
 ;; 
