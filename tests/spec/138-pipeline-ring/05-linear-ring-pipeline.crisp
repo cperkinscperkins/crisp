@@ -10,7 +10,6 @@
 ;;
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--differentiate]: "No NUMERIC proof is available for a ring-pipelined MMA gradient, and compiling is not differentiating. The AD side now RESOLVES (the VJP reads each ring operand as its global source at the CONSUMING coordinate), but this kernel is sm_90a and VERIFY-AUTODIFF has no CUDA runtime, while the BMG analogue is blocked by BUG 040 -- MMA reading from a ring slot is WRONG IN THE FORWARD on Intel. Un-skip when 040 is fixed and 145/19 passes."
-;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view + MMA surface it (plan/bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx] : validate-ptx-linear-ring
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))

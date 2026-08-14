@@ -845,9 +845,9 @@ FFI / C API / "tree shaking" / recompile
 
 DOCS
 ====
-- [ ] developer docs
-- - [ ] what various scripts do
-- - [ ] how package release 
+- [x] developer docs
+- - [x] what various scripts do
+- - [x] how package release 
 - - [ ] how tag repo (to match release)
 - - [ ] how contribute. PR cycle.
 
@@ -858,7 +858,7 @@ AG TASKS
 [ ] better benchmark API
 [ ] benchmark reductions etc
 [ ] benchmark A|D ??
-[ ] add full hardware profile to samples on readme
+[x] add full hardware profile to samples on readme
 [ ] some sort of CTS?
 
 

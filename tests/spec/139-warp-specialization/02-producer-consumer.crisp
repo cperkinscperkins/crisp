@@ -30,7 +30,6 @@
 ;; Asserts COMPILES + emits a backward.  NOT gradient values: sm_90a, and VERIFY-AUTODIFF has
 ;; only :l0 / :opencl runtimes — there is no CUDA path, so a Hopper pod would not help either.
 ;; The numeric proof for ring staging is 145/18 (exact, 1.0) and for role gating 146/01.
-;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90]
 
 (def-type vec-t (vector float :address-space :global :align :compact))

@@ -49,7 +49,6 @@
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder fault (plan/bugs.md #033), as for every register-tile spec"
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
 

@@ -440,7 +440,10 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     Confirmed by tests/spec/111-load-and-store-tile/15-ad-tile-scale-1d.crisp
     which is now a full VERIFY-AUTODIFF spec.  Suite 716/716 on both default
     and --differentiate.
-[ ] 033 --debug/GENERIC c-t accessor emits an env-dependent garbage-typed return.
+[x] 033 --debug/GENERIC c-t accessor emits an env-dependent garbage-typed return.
+        FIXED 2026-08-14 — see "FIXED" below.  The title and the whole first half of this
+        entry describe SYMPTOMS, not the bug: it is neither about c-t accessors nor
+        env-dependent.  Kept verbatim as a record of what the symptoms looked like.
         Under `--debug` (no -O0 stripping), a 2D-float matrix's c-t accessor functions
         (align__ / contiguous_term__tensor_float_2_global_compact_last) survive to
         clang verification. Their body builds a DEAD tensor (param marshalling) then
@@ -523,6 +526,50 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
     The address varying with the spec (5 here, 6 there) is consistent with the
     garbage/null DIBuilder-arg theory above rather than one specific null pointer.
+
+    FIXED 2026-08-14.  It is NOT a DIBuilder null/garbage-argument bug.  Every theory in the
+    notes above was tested and cleared; the whole "bad pointer into a DIBuilder call" framing
+    was wrong, and the last paragraph's inference from the varying fault address was wrong too.
+
+    ROOT CAUSE: LLVM's IRBuilder CONSTANT-FOLDS.  An arithmetic build call whose operands are
+    both compile-time constants does not produce an instruction -- it returns a Constant.  In
+    056/07 the `:c-t` struct fields make (* 2.0 3.0) fold to the Constant `float 6.000000e+00`,
+    and %ATTACH-DEBUG-LOC then handed that to LLVMInstructionSetDebugLoc, whose implementation
+    is an UNCHECKED unwrap<Instruction>(Inst)->setDebugLoc(...).  Undefined behaviour; on
+    Windows it dereferences a garbage vtable and dies at #x6.
+
+    MEASURED at the attach site with LLVMIsAInstruction / LLVMIsAConstant:
+
+        [attach] node=SEMANTIC-MUL   INSTRUCTION?=NO   CONSTANT?=YES
+                 value = float 6.000000e+00                      <-- the fold
+        [attach] node=SEMANTIC-CALL  INSTRUCTION?=yes  CONSTANT?=no
+                 value = %call_tmp = call float @x__point(%POINT %p15)
+
+    Skipping the attach for the non-instruction let the SAME compile run to completion through
+    llvm-di-builder-finalize.  Fix = bind LLVMIsAInstruction (llvm-bindings overlay) and guard
+    %ATTACH-DEBUG-LOC with it (compiler overlay).  The DILocation is still created and returned,
+    so callers that thread it are unaffected; a folded constant simply has no instruction to
+    carry a location.
+
+    "BUILD-HEAP-DEPENDENT" IS WRONG and cost real time -- it is deterministic, and keyed on
+    whether a spec contains FOLDABLE CONSTANT ARITHMETIC.  That also unifies the symptom family
+    the notes above treated as separate: the 138 make-view / ring-get faults fold constant
+    offsets the same way, and CI's "garbage-typed ret" is the same UB landing differently on
+    another platform.  There was never a second null source.
+
+    HOW IT WAS FOUND, since the notes above chased the wrong call for months: wrap the DIBuilder
+    bindings so each logs ITS ARGUMENTS AND FLUSHES BEFORE CALLING, then read the last line.
+    The first pass "proved" the fault was inside LLVMDIBuilderCreateFunction -- but only because
+    LLVM-SET-SUBPROGRAM and the debug-LOCATION calls had not been wrapped.  With those added,
+    generate-debug-info returns normally and the fault moves to %ATTACH-DEBUG-LOC.  If you are
+    ever tempted to conclude "the fault is in call X" from a trace, first confirm there is no
+    UNWRAPPED call between X and the crash.
+
+    A SEPARATE LATENT BUG, found on the way and NOT the cause (verified -- correcting it alone
+    still faulted): every size_t length in the DIBuilder bindings is declared :unsigned-int,
+    i.e. 32-bit where LLVM reads 64 -- llvm-di-builder-create-file (x2),
+    -create-compile-unit (x5), -create-function (x2), -create-basic-type (x1).  Worth fixing on
+    its own.  (num-parameter-types IS `unsigned` in the C API and is correct as-is.)
 
     RETESTED 2026-08-14 (bug sweep).  STILL BROKEN, unchanged.  The documented local repro
     still faults identically at HEAD:

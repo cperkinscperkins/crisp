@@ -1,7 +1,6 @@
 ;; TEST-EXPECT: PASS
 ;; COMPILE-WITH[--hardware-profile=small-regs]: FAIL "register budget"
 ;; SKIP-WITH[--differentiate]: "negative test: the register fit-check is a compile-time budget error, nothing to differentiate"
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; F1 fit-check, profile branch.  A 64×64 tile = (64/16)×(64/8) = 4×8 = 32 accumulator
 ;; fragments × 4 fp32 regs = 128 registers/thread.  That FITS the NVIDIA default budget

@@ -8,7 +8,6 @@
 ;; Here there is NO precision declaration, so it defaults to ieee and the warning MUST fire.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
 ;;
 ;; Endeavor 146: "wgmma is forward-only MMA" was false — wgmma differentiates (140/03).  This
 ;; spec was the reason to sweep the suite by REASON STRING rather than by directory: it sits in

@@ -1,7 +1,6 @@
 ;; COMPILE-WITH[--hardware-profile=bmgmodes --ir-target=spv]: PASS
 ;; EXPECT-STDERR[--hardware-profile=bmgmodes --ir-target=spv]: "selecting the 256-register mode"
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; Endeavor 146: "forward-only MMA" was false — MMA differentiates, with numeric proof on BMG
 ;; in 142/01 and 145/12.  GRF mode selection is a register-budget decision and is AD-independent;

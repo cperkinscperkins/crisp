@@ -44,7 +44,6 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;;   (the verify pass honours this too, so its fwd/bwd compiles select the BMG shape)
 ;; VERIFY-AUTODIFF: A=8x16@0:0.01 B=16x16@0:0.01 at.A=1,0 group=16 h=0.5 atol=2e-2 expect.A=1.2 output-mat=8x16

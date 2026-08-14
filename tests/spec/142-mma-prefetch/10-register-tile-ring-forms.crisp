@@ -11,7 +11,6 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; Endeavor 146 Gap 1: the old skip read "forward-only ring / MMA".  A ring of register
 ;; operand tiles differentiates -- the backward canonicalizes it to a scratch matrix ring

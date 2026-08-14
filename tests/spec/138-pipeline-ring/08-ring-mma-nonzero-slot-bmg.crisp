@@ -15,7 +15,6 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;; MMA-DIMS: 8 16 16
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; TEST-HOIST[L0]: validate-l0-mma-run
