@@ -603,3 +603,73 @@
                                                               '((function (float => float)) (type a int)))
                (is equalp (list (crisp.compiler::make-parameter-def :name 'a :type 'float :kind :in)) env)
                (is equal '(float) return-types)))
+
+;;; ===================================================================
+;;; Endeavour 149 -- AD primal replay: the slice analysis
+;;;
+;;; These pin the FORM WALKERS rather than the codegen.  The E2E rungs in
+;;; tests/spec/149-ad-primal-replay already end in gradient-checked numbers on
+;;; hardware, which is the real proof; what they cannot do is fail in a way that
+;;; points at the walk.  During development a walker that recursed with (cdr f)
+;;; skipped the CAR of every list, which made the single-binding LET that ANF
+;;; produces constantly -- `(let ((%anf-t-9 (~ D i))) ...)` -- invisible.  The
+;;; safety check that should have refused a kernel silently passed it.  A wrong
+;;; gradient was one build away, and no spec in the suite would have named the
+;;; cause.  Hence a test at this altitude.
+;;; ===================================================================
+
+(define-test (crisp-compiler ad-replay-fill-targets-sees-nested-writes)
+             "%ad-replay-fill-targets finds indexed writes at any depth, including
+              inside a single-binding LET's value position."
+             ;; a plain fill
+             (is equal '(a-tile)
+                 (crisp.compiler::%ad-replay-fill-targets
+                  '(set! (~ a-tile i) x)))
+             ;; buried under dotimes / let / progn, the shape ANF actually emits
+             (let ((targets (crisp.compiler::%ad-replay-fill-targets
+                             '(dotimes (k n)
+                               (let ((tmp (* k 2)))
+                                 (progn
+                                  (let ((v (~ a i))) (set! (~ a-tile i) v))
+                                  (let ((w (~ b i))) (set! (~ b-tile i) w))))))))
+               (is eq t (and (member 'a-tile targets) t))
+               (is eq t (and (member 'b-tile targets) t)))
+             ;; a bare scalar set! is NOT a fill -- ANF assigns temps constantly
+             (is equal nil (crisp.compiler::%ad-replay-fill-targets '(set! tmp 3.0))))
+
+(define-test (crisp-compiler ad-replay-read-syms-sees-single-binding-let)
+             "%ad-replay-read-syms sees a read in the sole binding of a LET.  This is
+              the regression the walker bug produced: the read that makes a slice
+              unreplayable hid in exactly this position."
+             (let ((reads (crisp.compiler::%ad-replay-read-syms
+                           '(let ((v (~ d i))) (set! (~ a-tile i) v)))))
+               (is eq t (and (member 'd reads) t)))
+             ;; the WRITE place is not a read -- otherwise every fill would look like
+             ;; it read its own destination and nothing would ever be replayable
+             (let ((reads (crisp.compiler::%ad-replay-read-syms
+                           '(set! (~ a-tile i) 1.0))))
+               (is equal nil (member 'a-tile reads)))
+             ;; ... but an index expression inside the place IS read
+             (let ((reads (crisp.compiler::%ad-replay-read-syms
+                           '(set! (~ a-tile (~ idx i)) 1.0))))
+               (is eq t (and (member 'idx reads) t))))
+
+(define-test (crisp-compiler ad-replay-slice-spans-and-keeps-barriers)
+             "%ad-replay-slice returns the span from first filler to last, keeps
+              barriers inside it, and carries the trailing barrier that makes the
+              staged tile visible to the threads that read it."
+             (let* ((forms '((set! (~ a-tile i) 1.0)
+                             (sync-workgroup)
+                             (set! (~ a-tile j) 2.0)
+                             (sync-workgroup)
+                             (set! (~ c i) 9.0)))
+                    (slice (crisp.compiler::%ad-replay-slice forms '(a-tile))))
+               ;; both fills, the barrier between them, and the trailing barrier
+               (is = 4 (length slice))
+               (is equal '(sync-workgroup) (car (last slice)))
+               ;; the unrelated write to C is NOT dragged in
+               (is equal nil (member '(set! (~ c i) 9.0) slice :test #'equal)))
+             ;; a sequence that fills nothing yields no slice, so the request travels
+             ;; outward to a scope that can serve it
+             (is equal nil (crisp.compiler::%ad-replay-slice
+                            '((set! (~ c i) 1.0)) '(a-tile))))

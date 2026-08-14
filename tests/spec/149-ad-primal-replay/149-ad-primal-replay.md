@@ -1,9 +1,26 @@
 Endeavor 149 — AD Primal Replay
 ================================
 
-STATUS: specs written, mechanism not started.  `tests/ci-stop.txt` now names this directory,
-so all seven rungs RUN and all seven are RED — six of them with the refusal quoted below, which
-is the intended starting line.
+STATUS: DONE, 2026-08-13.  All seven rungs pass, five of them on a NUMBER from BMG rather than a
+clean compile:
+
+    01 hand-staged        A: 1.5 vs 1.5   B: 2.0 vs 2.0    diff=0.0
+    02 non-invertible     A: 1.5 vs 1.5   B: 2.0 vs 2.0    diff=0.0
+    04 computed fill      A: 6.0 vs 6.0   B: 4.0 vs 4.0    diff=0.0
+    05 loop-carried       A: 5.5 vs 5.5   B: 6.0 vs 6.0    diff=0.0
+    06 cross-subgroup     A: 1.5 vs 1.5   B: 2.0 vs 2.0    diff=0.0
+    03, 07                refuse, each naming what made replay unsafe
+
+Suite: 981/981 plain, 981/981 under --differentiate, 211/211 negative, 291/291 unit.  Bug 037 is
+CLOSED.  The mechanism lives in overlays/crisp-compiler-overlay.lisp pending a fold into
+src/autodiff.lisp; the overlay carries a note saying exactly where its one wrapper belongs.
+
+WHAT THIS DID NOT FIX: 140/01 and 140/02, the kernels that motivated the endeavour, still do not
+differentiate — but no longer for this reason.  Their own skip notes named TWO blockers, "needs
+PRIMAL REPLAY ... AND address it through the instruction's ABI layout".  Replay is done; the
+second half is not.  They now fail with the wgmma VJP's own complaint, that a flat
+`(make-scratch-vector float 512)` has no compile-time (Mt Kt) for the backward to interpret the
+core-matrix layout with.  That is a separate piece of work and wants its own endeavour.
 
 The prose below was written at the close of 146 so the reasoning would not be lost.  It has been
 amended in two places by what the opening spike measured; see "What the spike established".

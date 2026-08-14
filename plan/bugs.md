@@ -651,7 +651,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         the smallest kernel that executes the loop more than once, which is precisely what no
         shipped spec did.
 
-[/] 037 - A backward kernel does not re-stage SLM tiles, so any gradient needing a staged
+[x] 037 - A backward kernel does not re-stage SLM tiles, so any gradient needing a staged
           tile's PRIMAL VALUES is silently ZERO.
 
         FOUND 2026-07-31 (endeavor 145 closing review, prompted by Chris asking why 135/01 was
@@ -726,6 +726,26 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         value is never consumed as a VALUE (an ordinary C-tile) correctly does NOT error; the
         check tests whether the backward really uses the primal.  Closing this properly needs
         genuine primal recomputation / checkpointing, which is its own design.
+
+        CLOSED 2026-08-13 (endeavour 149) — that "own design" got built: PRIMAL REPLAY, the
+        recomputation half of the suggested fix above.  The statements that fill a hand-staged
+        tile are now re-run in the backward, at the scope that contains both the fill and the
+        consumer, so the tile holds its primal and nothing needs inverting.  Source recovery
+        (the 2026-08-01 fix) still wins when a load-tile-at source exists — it costs no SLM
+        traffic — and replay is the fallback when there is none.
+
+        The "STILL OPEN" case above is now covered: a tile filled by COMPUTATION is replayed by
+        re-running the computation.  tests/spec/149-ad-primal-replay/04 is exactly that shape,
+        A-tile = A*A, and gradient-checks on BMG at 6.0 against a finite difference of 6.0.
+
+        VERIFIED NUMERICALLY five ways on BMG, all diff=0.0: hand-staged (01), through a
+        non-invertible permutation (02), computed rather than copied (04), re-staged per loop
+        iteration (05), and across subgroups with a replayed barrier (06).
+
+        TWO REFUSALS REPLACE THE OLD ONE, both naming what to fix: staging that also WRITES
+        observable memory would double the write (149/03), and staging that READS an &out
+        parameter would recompute from a buffer the backward cannot vouch for (149/07).  The
+        original "no statement fills this tile" refusal survives for tiles nothing can rebuild.
 
 [ ] 038 - A VOID sub-function call is silently DROPPED by the AD walk, so no gradient flows
           through it.
