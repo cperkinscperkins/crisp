@@ -37,10 +37,20 @@
 ;;;
 ;;; Declaring them here fixes the class rather than the instance.  Anything else
 ;;; LET-bound above its DEFVAR in this file belongs in this list too.
+;;;
+;;; The last two are a milder case of the same file-order hazard: endeavour 149's
+;;; replay state is SETF and READ by generate-backward-walk (~line 1866), well above
+;;; the DEFVARs that declare it (~line 4700).  A free reference like that still
+;;; compiles as a special access, so it works -- but it warns on every from-scratch
+;;; compile, and warnings are precisely the noise the FLOAT/DOUBLE bug hid inside.
+;;; Declaring them keeps a clean build quiet, and makes the file safe if anyone ever
+;;; LET-binds them, which is the form that silently breaks.
 ;;; ===================================================================
 (declaim (special *ad-loop-vars*
                   *record-param-field-adjs*
-                  *ad-any-output-double*))
+                  *ad-any-output-double*
+                  *ad-replay-pending*
+                  *ad-output-syms*))
 
 
 (defun %emit-sub-fn-backward (fn args bkwd-fn t-adj-forms n-fp pkg emit-fn local-adj-fn &optional (sym-prefix "BW"))
@@ -1862,6 +1872,13 @@
         ;; primal replay can read a staged tile's values from where they actually came from.
         (setf *ad-tile-src-map* (%mma-ad-tile-source-map flat-anf)
               *ad-scratch-syms* scratch-tile-syms)
+        ;; Endeavour 149 (AD primal replay): start this kernel with no outstanding replay
+        ;; requests, and publish the &out parameters.  Those are the only globals the
+        ;; forward may have mutated -- inputs are read-only under --differentiate -- so a
+        ;; replayed statement that READS one is rebuilding a tile from memory the backward
+        ;; cannot vouch for.  %ad-replay-check-safe refuses on exactly that.
+        (setf *ad-replay-pending* nil
+              *ad-output-syms* outputs)
         ;; Endeavor 124 C/A2: the adjoint-typing decision now lives in one place
         ;; (%ad-promotes-to-double-p / %ad-zero) shared with the sub-fn, FFI and
         ;; value-if/let paths.
@@ -2295,7 +2312,14 @@
                 ;; constructors are already in their canonical scratch-ring form.
                 (let ((final (%ad-ensure-ring-adj-bindings result flat-anf kernel-pkg)))
                   (log:debug "146: backward after ring-adjoint fixup:~%~s" final)
-                  final))))))))))
+                  ;; Endeavour 149: close the kernel's TOP-LEVEL statement sequence.  Every
+                  ;; inner scope had its chance to refill a tile as it closed (see
+                  ;; %gfw-process-let / %gfw-process-dotimes); this is the outermost one, so
+                  ;; whatever is still pending here is a primal nothing in the kernel can
+                  ;; rebuild, and %ad-replay-finish refuses.  Applied to FINAL rather than to
+                  ;; RESULT so the ring-adjoint fixup has already run: replay is spliced into
+                  ;; the body of the same outer LET that fixup adds bindings to.
+                  (%ad-replay-finish final flat-anf)))))))))))
 
 ;;; ----------------------------------------------------------
 ;;; %crisp-float-type-p
@@ -4898,6 +4922,33 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
           (log:debug "149: replaying ~a statement(s) to restore primal(s) ~a; ~a still pending"
                      (length slice) filled *ad-replay-pending*)
           slice))))))
+
+(defun %ad-replay-finish (result flat-anf)
+  "Closes the kernel's top-level sequence: splices any remaining replay into the head
+   of the assembled backward RESULT, and refuses if a primal is still unaccounted for.
+
+   Called from the tail of GENERATE-BACKWARD-WALK, which owns the kernel's top-level
+   statement sequence -- the one scope that has no enclosing scope to pass a request
+   outward to.  Every inner scope has already had its chance as it closed.
+
+   This is where the pre-149 refusal now lives.  Reaching it means no scope, top-level
+   included, contained statements that fill the tile -- a tile built by something the
+   backward genuinely cannot reconstruct.  Refusing is still strictly better than the
+   alternative it replaced: a backward that reads an empty tile and returns zero."
+  (let ((replay (%ad-replay-forms-for-scope flat-anf)))
+    (when *ad-replay-pending*
+      (error 'crisp-compiler-error
+             :message (format nil "cannot differentiate: the backward needs the PRIMAL value of ~a, a scratch tile that is not filled by load-tile-at, so its contents cannot be recovered (a backward kernel replays the forward's bindings but not its statements).  Tiles staged with load-tile-at are read back from their global source automatically, and hand-staged tiles are refilled by replaying the statements that stage them -- but no statement in this kernel fills ~:*~a.  Restructure so the value the gradient needs comes from a staged or global operand, or mark the kernel forward-only.  See plan/bugs.md #037."
+                               (first *ad-replay-pending*))
+             :source-location nil))
+    (cond
+      ((null replay) result)
+      ((and (consp result) (symbolp (car result))
+            (string= (symbol-name (car result)) "LET"))
+       (log:debug "149: splicing ~a top-level replay statement(s) into the backward"
+                  (length replay))
+       (list* (first result) (second result) (append replay (cddr result))))
+      (t `(progn ,@replay ,result)))))
 
 
 
