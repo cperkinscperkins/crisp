@@ -1,0 +1,43 @@
+;; Endeavor 138 / BUG 040 — the same ring-slot MMA, but staged into and read from SLOT 1.
+;;
+;; Spec 07's twin, differing ONLY in the slot index.  It exists to test a claim 07 cannot:
+;; slot 0 sits at ring base offset ZERO, so 07 passing proves the K-walk is right but says
+;; NOTHING about whether a ring slot's base offset is honoured.  BUG 040's original (and, as it
+;; turned out, incorrect) theory was precisely that "the fragment loads may be ignoring that
+;; offset (or the slot stride)".  That theory was wrong about 07's failure — but it was never
+;; actually tested, and slot 0 could not have tested it.  This spec does.
+;;
+;; A ring slot is a view with a non-zero base offset into rank+1 scratch, so a dropped offset
+;; makes this read slot 0's memory.  The staging write goes to slot 1 too, so a CONSISTENTLY
+;; dropped offset would cancel and still pass; what this catches is the offset being honoured on
+;; one side and not the other — which is the asymmetry that would actually bite a pipelined
+;; kernel, where the producer fills slot k+1 while the consumer reads slot k.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;; MMA-DIMS: 8 16 16
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel ring_mma_slot1 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((A-ring (make-scratch-matrix-ring float (8 16)  :ring-count 2))
+        (B-ring (make-scratch-matrix-ring float (16 16) :ring-count 2))
+        (C-tile (make-register-tile float (8 16) 0.0)))
+    (load-tile-at A (ring-get A-ring (to-ulong 1)) (0 0))
+    (load-tile-at B (ring-get B-ring (to-ulong 1)) (0 0))
+    (sync-workgroup)
+    (mma-accumulate-via-tile (8 16 8) C-tile
+                             (ring-get A-ring (to-ulong 1))
+                             (ring-get B-ring (to-ulong 1)))
+    (store-tile C-tile C (0 0))))

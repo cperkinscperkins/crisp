@@ -1138,7 +1138,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (`mul` by the row extent, then `add j`); 145/17 passes numerically end to end; suites
         944/944 both ways, 253 unit, 211 negative.
 
-[ ] 040 - MMA reading from a RING SLOT computes the WRONG RESULT on Intel/BMG.  Forward only —
+[x] 040 - MMA reading from a RING SLOT computes the WRONG RESULT on Intel/BMG.  Forward only —
         no autodiff involved.  Found 2026-08-02 while trying to build a numeric proof for ring
         gradients; reproduced at HEAD with no AD change in play, so it is pre-existing.
 
@@ -1183,6 +1183,50 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         a reference of 30, MMA_WRONG.  Measured with a throwaway forward-only spec (the repro
         kernel above + MMA-DIMS: 8 16 16 + TEST-HOIST[L0]: validate-l0-mma-run), deleted after
         measuring; recreate it in ten seconds from the repro block above.
+
+        FIXED 2026-08-14.  It was NOT an addressing bug, and the base offset was never the
+        problem -- the theory below is wrong and is left in place only because the reasoning is
+        instructive.
+
+        ROOT CAUSE: the operand's K EXTENT was not compile-time resolvable through a `ring-get`,
+        so %MMA-K-STEPS took its documented fallback of ONE native K-step and the MMA contracted
+        over K=0..7 of 0..15.  It computed HALF the dot product.  The entry's own observation --
+        "the wrong values are not garbage, they are small and plausible" -- was the clue, and
+        pointed away from the addressing theory the entry then adopted.
+
+        MEASURED, by wrapping %MMA-OPERAND-EXTENT / %MMA-K-STEPS and compiling both kernels:
+
+            plain scratch tiles   A cols=16  B rows=16  -> 2 K-steps  (4 coop loads emitted)
+            ring slots            A cols=NIL B rows=NIL -> 1 K-step   (2 coop loads emitted)
+
+        This is the SAME silent-data-drop endeavour 145 P3a exists to prevent; P3a covered
+        MAKE-SCRATCH-MATRIX and rings were never covered.  TWO gaps, both required:
+          1. %MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS matched only "MAKE-SCRATCH-MATRIX", so a
+             make-scratch-matrix-ring binding recorded nothing.
+          2. %MMA-OPERAND-EXTENT's scratch arm required (symbolp ref), but a ring operand is
+             the FORM (ring-get RING SLOT).
+        Fix (overlays/, belongs in src/mma.lisp) records the ring's PER-SLOT shape and unwraps
+        `ring-get` before the lookup.  The SLOT INDEX is deliberately not inspected: every slot
+        has the same shape, and SLM -- unlike the GRF -- is runtime-indexable, so demanding a
+        constant slot would reject legitimate pipelined kernels.
+
+        NOT INTEL-SPECIFIC, contrary to the guess below.  This is analyzer code shared by SPV and
+        PTX.  NVIDIA escaped it only because 138/04 stages Kt = K_n = 8 -- exactly one native
+        K-step -- so the fallback was accidentally correct there.
+
+        SPECS: 138-pipeline-ring/07-ring-mma-operand-bmg (slot 0) and
+        08-ring-mma-nonzero-slot-bmg (slot 1), both MMA_CORRECT on metal.  Spec 08 exists
+        because slot 0 sits at base offset ZERO and therefore could not test the offset claim
+        at all; slot 1 does, and it passes -- so the offset IS honoured.  Teeth are real, not
+        hypothetical: spec 07's kernel is byte-for-byte the repro that reported C[0][0]=11
+        against ref 30 before the fix.
+
+        THE "BLOCKS" LINE BELOW IS WRONG, and this is the part to carry forward: fixing 040 does
+        NOT unblock 145/19.  With its skip lifted it still reports analytical=84.32 against an
+        expected 1.2 -- the SAME numbers as before the fix, which moved neither.  Its finite
+        difference perturbs A[1,0], which lies entirely inside K-step 0, so that measurement was
+        always blind to 040's truncation.  145/19 is blocked by a separate BACKWARD defect, now
+        filed as BUG 044, and its skip has been re-pointed there.
 
         ONE NEW DATA POINT, worth having before anyone starts: the defect is NOT uniform
         across kernels.  With 145/19's SKIP-WITH[--differentiate] temporarily lifted, its
@@ -1409,3 +1453,43 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         such a metacrisp would build a launcher with 5 args for a 14-arg kernel, so it is not
         cosmetic -- but nothing does that today, since the hoist path does not use
         --single-pass.  One spec red in one phase.
+
+[ ] 044 - The RING-PIPELINED MMA BACKWARD computes the wrong gradient on BMG.
+
+        FOUND 2026-08-14, immediately behind the BUG 040 fix.  Split out of 040 because it is
+        demonstrably NOT the same defect: fixing 040 moved neither of 044's numbers.
+
+        REPRO: lift the SKIP-WITH[--differentiate] on
+        tests/spec/145-mma-autodiff/19-ring-pipelined-vjp-bmg.crisp and run
+
+            sbcl --script tests/run-specs.lisp --differentiate --filter=19-ring-pipelined
+
+            FAIL (FD vs analytical | atol=0.02):
+              A: analytical=84.32  numerical=1.1992188  diff=83.12078
+
+        The NUMERICAL column is right (expected 1.2), so the FORWARD is fine -- and that is now
+        independently established rather than inferred: 138/07 and 138/08 run the same ring-slot
+        MMA on metal at slot 0 and slot 1 and both report MMA_CORRECT.  The ANALYTICAL column is
+        the wrong one, by a factor of roughly 70.
+
+        WHY IT IS NOT 040, verified rather than assumed: both numbers are IDENTICAL before and
+        after the 040 fix.  145/19's finite difference perturbs A[1,0], which lies entirely
+        inside K-step 0, so it was always blind to 040's one-K-step truncation -- which is also
+        why this spec could never have detected 040 in the first place, and why 040's claim to
+        "BLOCK" it was wrong.
+
+        NOT YET INVESTIGATED.  Some starting points, in the order I would try them:
+          - 84.32 / 1.2 is about 70x, close to but not exactly the 64 or 128 you would expect
+            from a whole tile or workgroup being double-counted; worth pinning down what the
+            factor actually is before theorising, since an exact power of two would point at
+            accumulation and a ragged one at addressing.
+          - The prologue fills BOTH slots and the loop then refills the slot it just consumed,
+            so a given slot is written more than once per kernel.  A backward that replays or
+            accumulates per WRITE rather than per CONSUMED STAGE would over-count.  Endeavour
+            149's primal replay is the obvious interaction to check.
+          - Compare against 145/18 (ring STAGING gradients, no MMA), which gradient-checks
+            exactly.  The difference between them isolates the MMA-plus-ring combination.
+
+        BLOCKS: 145/19, and therefore the numeric proof for ring-pipelined gradients, and
+        therefore un-skipping 138/04 and 138/05 under --differentiate.  (That inheritance is
+        real; 040's version of it was not.)

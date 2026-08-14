@@ -1,0 +1,45 @@
+;; Intel MMA must REFUSE a :col-major operand at COMPILE time — BUG 035.
+;;
+;; The one-variable twin of 11-matmul-bmg: identical but for B's :contiguous-term.
+;;
+;; WHY A REFUSAL AND NOT A FEATURE.  Crisp used to DISCARD the declared layout here.
+;; %coop-layout-of resolved the operand with canonicalize-type-specifier, which cannot
+;; expand the MANGLED tensor symbol a kernel parameter actually carries, so
+;; %get-tensor-ct fell through to its :last default and every CooperativeMatrixLoadKHR
+;; got MemoryLayout=0.  The stride went with it — %coop-tensor-ptr+stride selects its
+;; stride FROM the layout — so :col-major was a COMPLETE NO-OP: you asked for a
+;; column-major operand and silently compiled a row-major one, byte for byte.
+;;
+;; Four shipped specs were relying on that no-op (133/02, /04, /05, /09, all ports of
+;; their NVIDIA twins).  This refusal is what surfaced them.
+;;
+;; Emitting the declared layout honestly was the fix, and then the hardware said no.
+;; Measured on BMG (driver 32.0.101.8864) via zeModuleBuildLogGetString:
+;;
+;;     undefined reference to `__builtin_spriv_OpJointMatrixLoadINTEL_
+;;       PackedB_ColumnMajor_SG16_8x16_i32_8_global_v8i8_pi32_i32'
+;;
+;; and the same for PackedA_ColumnMajor on a col-major A.  IGC simply ships no
+;; ColumnMajor variant of the operand-load builtins.  So the honest emission traded a
+;; silent wrong answer for a zeModuleCreate failure quoting a mangled builtin name.
+;; Refusing at compile time with a sentence is better than either.  NVIDIA/PTX is
+;; unaffected — there the layout is baked into the mma.sync variant, and col-major B
+;; is the canonical form (132/02).
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: FAIL "cannot be :col-major"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
+;; SKIP-WITH[--differentiate]: "refusal spec: the kernel is rejected before AD is reached"
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul_col_b (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16) (local-size :set-to 16))
+  (let ((C-tile (make-register-tile float (16 16) 0.0)))
+    (mma-accumulate-via-tile (8 16 8) C-tile A B)
+    (store-tile C-tile C (0 0))))

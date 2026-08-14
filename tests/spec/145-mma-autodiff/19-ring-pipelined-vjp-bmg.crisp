@@ -53,7 +53,7 @@
 ;; SKIP-DEFAULT-PASS
 ;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;; HOIST-HARDWARE-PROFILE: bmg
-;; SKIP-WITH[--differentiate]: "BUG 040: MMA reading from a RING SLOT is wrong IN THE FORWARD on BMG (metal MMA_WRONG, pre-existing -- reproduced at HEAD without any AD change), so the finite difference reads 0.0 and this cannot yet prove anything. The expectation below is already the right one; un-skip when 040 is fixed."
+;; SKIP-WITH[--differentiate]: "BUG 044: the ring-pipelined BACKWARD is wrong on BMG -- analytical reads 84.32 against an expected 1.2, while the finite difference reads 1.1992 (correct). BUG 040 is FIXED (2026-08-14) and was NOT what blocked this: fixing it moved neither number, because this spec's FD perturbs A[1,0], which lies entirely inside K-step 0 and so was always blind to 040's truncation. The forward is now independently proven by 138/07 and 138/08 (MMA_CORRECT on metal, slot 0 and slot 1). The expectation below is already the right one; un-skip when 044 is fixed."
 ;; VERIFY-AUTODIFF: A=8x48@0:0.01 B=48x16@0:0.01 at.A=1,0 group=16 h=0.5 atol=2e-2 expect.A=1.2 output-mat=8x16
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))

@@ -233,3 +233,89 @@
       ((not (eq ct :first)) 0)
       ((eq *target-backend* :spirv) (%coop-refuse-col-major tensor-node))
       (t 1))))
+
+
+;; src/mma.lisp
+;;
+;; BUG 040.  An MMA whose operands are RING SLOTS computed the WRONG RESULT on BMG.
+;;
+;; NOT an addressing bug.  The entry's standing theory was that "the fragment loads may be
+;; ignoring that offset (or the slot stride)" -- it says UNVERIFIED, and it is wrong.  The
+;; operand's K EXTENT simply was not compile-time resolvable, so %MMA-K-STEPS took its
+;; documented fallback of ONE native K-step and the MMA contracted over K=0..7 of 0..15.
+;; It computed HALF the dot product, which is why the entry's own observation -- "the wrong
+;; values are not garbage, they are small and plausible" -- was the real clue.
+;;
+;; Measured, by wrapping %MMA-OPERAND-EXTENT / %MMA-K-STEPS and compiling both kernels:
+;;
+;;     plain scratch tiles   A cols=16  B rows=16  -> 2 K-steps   (4 coop loads emitted)
+;;     ring slots            A cols=NIL B rows=NIL -> 1 K-step    (2 coop loads emitted)
+;;
+;; This is the SAME silent-data-drop endeavour 145 P3a was written to kill -- its header says
+;; "Stage anything WIDER and the surplus was silently ignored - no error, no warning, a wrong
+;; answer."  P3a covered MAKE-SCRATCH-MATRIX; rings were never covered.  TWO gaps, both
+;; required, which is why neither alone would have shown up in testing:
+;;
+;;   1. %MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS matched only "MAKE-SCRATCH-MATRIX", so a
+;;      (V (make-scratch-matrix-ring float (R C) :ring-count N)) binding recorded NOTHING.
+;;   2. %MMA-OPERAND-EXTENT's scratch arm required (symbolp ref), but a ring operand is the
+;;      FORM (ring-get RING SLOT).
+;;
+;; BACKEND-AGNOSTIC, despite the entry's "may well be Intel-specific": this is analyzer code,
+;; shared by SPV and PTX.  NVIDIA escaped it only because 138/04 stages Kt = K_n = 8, exactly
+;; one native K-step, so the fallback happened to be correct there.
+;;
+;; THE SLOT INDEX IS DELIBERATELY IGNORED.  Every slot of a ring has the same per-slot shape,
+;; so the K extent does not depend on WHICH slot -- and unlike the GRF, SLM *is* runtime
+;; indexable, so requiring a compile-time slot here would refuse legitimate pipelined kernels.
+;; (%RESOLVE-TILE-REF does demand a constant slot, but only for REGISTER rings; for an SLM ring
+;; its ring-entry lookup misses and it returns NIL without erroring, which is what lets the
+;; scratch arm below run at all.)
+(defun %mma-scratch-tile-dims-from-bindings (bindings)
+  "Endeavor 145 P3a: the (SYM ROWS COLS) dims of every compile-time-shaped
+   (V (make-scratch-matrix <elem> (ROWS COLS))) binding in BINDINGS.
+
+   BUG 040: also records (V (make-scratch-matrix-ring <elem> (ROWS COLS) :ring-count N)),
+   whose PER-SLOT shape sits at the same argument position.  Without it an MMA reading from
+   a ring slot could not learn its operand's K extent and silently contracted over one
+   native K-step.  Only the MATRIX ring is recognised -- vector and tensor rings are not
+   valid 2-D MMA operands -- and the 2-integer-list guard filters anything else.
+
+   Only literal integer 2-lists are recorded; a scratch tile whose shape is derived from another
+   tensor contributes nothing and falls back to the one-K-step assumption."
+  (loop for b in bindings
+          when (and (consp b) (= (length b) 2) (symbolp (first b))
+                    (consp (second b))
+                    (or (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX")
+                        (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX-RING"))
+                    (let ((d (third (second b))))
+                      (and (listp d) (= (length d) 2) (every #'integerp d))))
+        collect (list (first b)
+                      (first (third (second b)))
+                      (second (third (second b))))))
+
+(defun %mma-operand-extent (ref tiles which)
+  "Endeavor 145 P3a: the compile-time extent (WHICH = :rows | :cols) of an
+   mma-accumulate-via-tile operand REF, or NIL if not compile-time known.
+
+   Handles both operand flavours: a register tile / ring slot (normalized to
+   (V m n syms ...) by %resolve-tile-ref) and an SLM scratch tile (via
+   *mma-scratch-tile-dims*).
+
+   BUG 040: an SLM ring slot arrives as the FORM (ring-get RING SLOT) rather than a bare
+   symbol, so it is unwrapped to RING before the *mma-scratch-tile-dims* lookup.  SLOT is
+   intentionally not inspected: every slot has the same shape, so the extent does not depend
+   on it, and demanding a compile-time slot would reject runtime-indexed SLM pipelines."
+  (let ((rt (%resolve-tile-ref ref tiles)))
+    (if rt
+        (ecase which (:rows (second rt)) (:cols (third rt)))
+        (let* ((sym (cond ((symbolp ref) ref)
+                          ((and (consp ref)
+                                (%head-name-eq (first ref) "RING-GET")
+                                (>= (length ref) 2)
+                                (symbolp (second ref)))
+                           (second ref))
+                          (t nil)))
+               (sd (and sym (assoc sym *mma-scratch-tile-dims*))))
+          (when sd
+            (ecase which (:rows (second sd)) (:cols (third sd))))))))
