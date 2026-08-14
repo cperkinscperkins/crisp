@@ -1,0 +1,61 @@
+;; Endeavor 149 rung 7 — staging that READS an &out parameter must NOT be replayed.
+;;
+;; NEGATIVE BY DESIGN, and the twin of rung 3.  Rung 3 draws the line on what a replayed
+;; statement may WRITE; this one draws it on what a replayed statement may READ.
+;;
+;; THE HAZARD.  The backward is a SEPARATE KERNEL LAUNCH.  Every local value the forward built
+;; is gone, which is what replay is for — but global memory is not gone, and it is not
+;; necessarily in the state the forward found it in either.  A staging statement that reads an
+;; `&out` parameter therefore recomputes from the WRONG numbers:
+;;
+;;     forward:   D is written, then A-tile is staged from D    -> tile holds post-write D
+;;     backward:  A-tile is re-staged from D                    -> tile holds whatever D
+;;                                                                 happens to contain now
+;;
+;; and "whatever D happens to contain now" depends on how the gradient kernel was driven — the
+;; forward's leftovers, a freshly zeroed buffer, or an entirely different allocation.  The
+;; failure is silent, it is plausible-looking, and it moves depending on the harness.  Rung 3's
+;; double-write at least corrupts something the user can see; this one corrupts only the
+;; GRADIENT, which is the number nobody can eyeball.
+;;
+;; WHY THIS IS A CHEAP RULE.  Under --differentiate, input parameters are read-only, so the set
+;; of globals the forward might have mutated is exactly the set of `&out` parameters — known
+;; from the signature.  The check is a lookup, not a dataflow analysis: a replayed statement may
+;; read inputs, scratch and constants; a read of an `&out` makes the slice unreplayable.
+;;
+;; NOTE THE SHAPE.  D is written in ITS OWN loop, deliberately.  That keeps the staging block
+;; free of observable writes, so rung 3's rule does NOT apply here and this rung tests exactly
+;; one thing.  (One could imagine extending the replayed slice backwards to include the loop
+;; that fills D — it is itself a pure function of A.  That refinement is not obviously wrong,
+;; but it must never be reached by silently re-executing a statement that writes an &out.  If
+;; it is ever built, this spec should keep its refusal and a new one should cover the extension.)
+;;
+;; NOTE ON THE EXPECTED MESSAGE.  As in rung 3, the substring is the CONTRACT chosen before the
+;; implementation.  If the wording changes, change the substring — but the diagnostic must name
+;; the offending parameter and say why its value is unavailable, or the user cannot act on it.
+;;
+;; COMPILE-WITH[--ir-target=spv]: PASS
+;; COMPILE-WITH[--ir-target=spv --differentiate]: FAIL "&out"
+;; SKIP-DEFAULT-PASS
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel staging_reads_output (A B &out C &out D)
+  (declare #'(vec-t vec-t &out vec-t &out vec-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((A-tile (make-scratch-vector float 4))
+        (B-tile (make-scratch-vector float 4)))
+    ;; Phase 1: fill D.  An ordinary output write, in its own loop.
+    (workgroup-stride D (i)
+      (set! (~ D i) (* (~ A i) 2.0)))
+    (sync-workgroup)
+    ;; Phase 2: stage from D.  No writes here at all — the block is pure by rung 3's rule.
+    ;; What makes it unreplayable is the READ of an &out parameter.
+    (workgroup-stride A-tile (i)
+      (set! (~ A-tile i) (~ D i))
+      (set! (~ B-tile i) (~ B i)))
+    (sync-workgroup)
+    ;; The multiply is what would demand the primal, and therefore the replay.
+    (workgroup-stride C (i)
+      (set! (~ C i) (* (~ A-tile i) (~ B-tile i))))))

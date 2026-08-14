@@ -189,3 +189,9 @@ of these functions, specialized on the `:c-t` props used. Remember Storage Handl
 `def-record` and have quite a few properties.
 See ./tests/spec/099-incomplete-types-revisited/incomplete-type-revisit.md if there are questions.
 
+#   Auto Differentiation
+When the `--differentiate` flag is passed the Crisp compiler compiles the kernels as their backward derivatives. This is working well and fully under test. There is a VERIFY-AUTODIFF test directive.
+
+The Crisp derivatives are mathematically correct. integers are supported, not just floating types. Some derivatives are trivial, but so be it. Note that optimized matrix multiplcation can be very compilicated as it entails a lot of data movement and coordination. But all these optimized MMA algorithms really just have the SAME derivative - the math doesn't change just because of prefetch and warp specialization. For this reason, Crisp keeps tables of VJP shorcuts so our A|D work doesn't get caught in the weeds.
+
+Be very cognizant of this - it is very easy when working through the details of an ANF transform to get ones focus hijacked by some individual tree in the path, when really it's the whole forest that we should be taking in. This has happened repeatedly. Countless times.  

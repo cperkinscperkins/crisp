@@ -1,8 +1,12 @@
 Endeavor 149 — AD Primal Replay
 ================================
 
-STATUS: not started.  Written at the close of 146 so the reasoning is not lost.  These specs
-are BEYOND `tests/ci-stop.txt`, so nothing here runs yet and nothing here is red in CI.
+STATUS: specs written, mechanism not started.  `tests/ci-stop.txt` now names this directory,
+so all seven rungs RUN and all seven are RED — six of them with the refusal quoted below, which
+is the intended starting line.
+
+The prose below was written at the close of 146 so the reasoning would not be lost.  It has been
+amended in two places by what the opening spike measured; see "What the spike established".
 
 
 The sentence the whole endeavour turns on
@@ -107,12 +111,69 @@ a forward intermediate", which is what lets AD handle any kernel that builds a v
 consumes.  140/01-02 are simply the first users to ask for it.
 
 
+What the spike established
+---------------------------
+
+Before writing any mechanism, `%ad-check-unresolved-primals` was neutered and rung 01 compiled
+with the refusal lifted, so the rest of the backward could be read.  Three things came out of
+it, and they change the plan above more than a little.
+
+**1.  THIS IS A PRIMAL-ONLY ENDEAVOUR.  The adjoint side is already complete.**  The emitted
+backward already allocates and zeroes `A-TILE_ADJ`, already runs the product VJP, already
+scatters into the tile adjoint, and already carries that adjoint out to `A_GRAD` by walking the
+staging statements in reverse:
+
+    (set! %anf-t-19_adj (+ %anf-t-19_adj (* %anf-t-20 %anf-t-21_adj)))  ; dA-tile = B-tile.dC
+    (set! (~ a-tile_adj i) (+ (~ a-tile_adj i) %anf-t-19_adj))
+    ...
+    (set! %anf-t-9_adj (+ %anf-t-9_adj (~ a-tile_adj i)))               ; staging loop, reversed
+    (set! (~ a-tile_adj i) 0.0)
+    (atomic-add! (~ a_grad i) %anf-t-9_adj)
+
+The ONLY defect is that `%anf-t-19` and `%anf-t-20` are bound to `(~ A-TILE i)` — reads of a
+tile nobody filled.  Nothing else needs building.
+
+**2.  THE BACKWARD ALREADY CONTAINS THE STAGING STATEMENTS**, walked in reverse for the adjoint.
+Replay is therefore not synthesis of new structure; it is a SECOND, FORWARD-DIRECTION copy of
+statements the backward already carries.  Which immediately raises the hazard rung 04 exists
+for: that copy must be injected where the walk CANNOT see it, or the staging gets differentiated
+twice and every gradient through it doubles, silently.
+
+**3.  THE INSERTION POINT IS A SEAM THAT ALREADY EXISTS.**  The primal binding is emitted by
+`%gfw-process-let` — the same place `%ad-rewrite-primal-bindings` performs 037's source-recovery
+rewrite today.  So replay is the FALLBACK at that seam when the source map has no entry, and
+"scope-aware placement" costs nothing extra: `%gfw-process-dotimes` rebuilds each loop with its
+own binding, so a per-iteration re-stage lands at the right depth by construction.  Design fork
+#1 above ("WHICH statements?") is answered by where the walk already is, not by a new analysis.
+
+Design fork #3 (RECOMPUTE vs SAVE) is CLOSED: recompute.  Saving would grow the forward kernel's
+signature, which propagates into hoist codegen, launch argument lists and both VERIFY-AUTODIFF
+runtimes — a cross-cutting change for an unmeasured tradeoff.  Recompute stays inside the
+backward kernel.
+
+
+One hazard the original notes missed
+-------------------------------------
+
+Rung 03 guards what a replayed statement WRITES.  There is a symmetric hazard in what it READS,
+and it is worse, because nothing about it looks wrong.
+
+The backward is a separate launch.  Global memory is not restored to the state the forward found
+it in, so a staging statement that reads a mutated global recomputes from the wrong numbers —
+silently, plausibly, and differently depending on how the gradient kernel was driven.
+
+Under `--differentiate` input parameters are read-only, which makes the rule cheap: the globals
+the forward may have mutated are exactly the `&out` parameters, known from the signature.  A
+replayed statement may read inputs, scratch and constants; a read of an `&out` makes the slice
+unreplayable.  That is rung 07.
+
+
 The TDD ladder
 --------------
 
-Each rung is BMG-shaped so it can end in a NUMBER rather than a compile.  All three currently
-FAIL, and the first two fail with the correct refusal quoted above — that refusal is the
-starting line, not a bug.
+Each rung is BMG-shaped so it can end in a NUMBER rather than a compile, and each tests ONE
+thing — 146's lesson about debugging an AD gap through a kernel with three other features in it.
+All seven currently FAIL; the five positives fail with the correct refusal quoted above.
 
   01  minimal — two hand-staged tiles multiplied elementwise.  The smallest kernel whose
       backward needs a staged tile's primal.  No MMA, no swizzle, no rings.
@@ -121,9 +182,48 @@ starting line, not a bug.
       cannot invert.  Proves replay works where SOURCE RECOVERY provably cannot, which is
       140/01's actual situation reduced to something BMG can run.
 
-  03  safety — staging that also writes global memory.  Replaying it would double the write.
-      Asserts the compiler REFUSES rather than silently corrupting.  This one is a NEGATIVE
-      test by design and should stay negative forever.
+  03  safety, WRITES — staging that also writes global memory.  Replaying it would double the
+      write.  Asserts the compiler REFUSES rather than silently corrupting.  NEGATIVE by design
+      and should stay negative forever.
 
-Rule 1 from endeavour 146 applies throughout: a clean compile is not the deliverable.  01 and
-02 must end in a gradient-checked number on BMG; 03 must end in a diagnostic.
+  04  computed fill — the staged value is A*A, which exists nowhere in global memory, so replay
+      must re-run ARITHMETIC and not merely re-issue loads.  Also the double-differentiation
+      tripwire: a square makes a doubled gradient (12.0 vs 6.0) impossible to miss, where a
+      copy-staged tile can hide it.
+
+  05  loop-carried — the tile is RE-STAGED each iteration, so there is no such thing as "the"
+      primal value of it.  This is 140/02's scheduling shape with the tensor cores removed, and
+      it is the ONLY rung that can tell a correctly-placed replay from one hoisted to the top of
+      the kernel: probing A[5] (staged on the second iteration) gives 5.5 when placed right and
+      1.5 — same slot, wrong iteration — when hoisted.
+
+  06  cross-subgroup — a 64-wide REVERSAL, so slot 5 is written by thread 58 and read by thread
+      5.  The replayed staging must carry its `sync-workgroup`.  Rung 02's pair-swap cannot test
+      this: adjacent lanes are always in the same subgroup and a dropped barrier would pass
+      there, repeatedly, which is worse than failing.
+
+  07  safety, READS — staging that reads an `&out` parameter (see the hazard above).  NEGATIVE
+      by design.  Twin of 03.
+
+Rule 1 from endeavour 146 applies throughout: a clean compile is not the deliverable.  01, 02,
+04, 05 and 06 must each end in a gradient-checked number on BMG; 03 and 07 must each end in a
+diagnostic that names what made replay unsafe.
+
+
+Two things about running these
+-------------------------------
+
+VERIFY-AUTODIFF fires only when the RUNNER is given `--differentiate` — a spec's own
+`COMPILE-WITH[... --differentiate]` line does not trigger it.  So:
+
+    sbcl --script tests/run-specs.lisp --filter=149 --differentiate
+
+Without that flag these rungs report on compilation alone and never produce a number.
+
+`group=` defaults to 1 — ONE thread.  Every staging rung here sets it explicitly, because at
+group=1 a single thread fills every slot and then reads every slot: no tile value crosses a
+thread boundary, the `sync-workgroup` is decorative, and a replay mechanism that got the
+cross-thread case wrong would pass anyway.  A control kernel with rung 01's exact directive and
+no staging at all was run on BMG to confirm the harness itself is sound
+(`A: analytical=1.5 numerical=1.5 diff=0.0; B: analytical=2.0 numerical=2.0 diff=0.0`), so when
+these rungs eventually produce a wrong number, the directive is not the suspect.

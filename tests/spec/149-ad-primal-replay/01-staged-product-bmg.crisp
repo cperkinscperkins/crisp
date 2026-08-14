@@ -27,10 +27,16 @@
 ;; Chosen so a wrong answer is unambiguous: an empty-tile read gives exactly 0.0, and a
 ;; confusion between A and B gives 2.0 (A[1]).  Neither can be mistaken for the right answer.
 ;;
+;; NOTE ON group=4.  VERIFY-AUTODIFF defaults to group=1 — ONE thread.  Without this key the
+;; kernel still gives the right answer (the single thread strides over all four elements) but
+;; it proves nothing about staging: one thread fills every slot and then reads every slot, so
+;; no tile value ever crosses a thread boundary and the sync-workgroup is decorative.  A
+;; replay mechanism that got the cross-thread case wrong would pass anyway.
+;;
 ;; COMPILE-WITH[--ir-target=spv]: PASS
 ;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
 ;; SKIP-DEFAULT-PASS
-;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] B=[0.5 1.5 2.5 3.5] at.A=1 expect.A=1.5 at.B=1 expect.B=2.0 h=0.5 atol=1e-3 output-vec=4
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] B=[0.5 1.5 2.5 3.5] at.A=1 expect.A=1.5 at.B=1 expect.B=2.0 h=0.5 atol=1e-3 output-vec=4 group=4
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 

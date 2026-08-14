@@ -1,0 +1,53 @@
+;; Endeavor 149 rung 6 — the replayed staging must carry its BARRIER.
+;;
+;; TDD: expected to FAIL until primal replay exists, with the same refusal as the other rungs.
+;;
+;; WHY THIS RUNG EXISTS.  Replay re-runs a fill and then reads the tile.  Between those two
+;; things the forward had a `sync-workgroup`, and it had it for a reason: the thread that WRITES
+;; a slot is not the thread that READS it.  If the replayed copy drops that barrier, the read
+;; races the write.  A race is not a wrong answer — it is an INTERMITTENTLY wrong answer, the
+;; worst thing to discover after the fact.
+;;
+;; WHY THE OTHER RUNGS CANNOT CATCH IT.  Rung 2 permutes by swapping within pairs (0<->1,
+;; 2<->3), so the writer and reader of any slot are ADJACENT lanes — always inside the same
+;; subgroup, always in lockstep on real hardware.  A missing barrier there would very likely
+;; pass anyway, and pass repeatedly, which is worse than failing.  This rung REVERSES a 64-wide
+;; tile: slot 5 is written by thread 58 and read by thread 5.  Whatever subgroup width the
+;; driver picks for this kernel (BMG's compiler chooses among SIMD16/SIMD32), lanes 5 and 58
+;; land in different subgroups, and no lockstep can save a dropped barrier.
+;;
+;; The reversal is also, like rung 2's swap, arbitrary user arithmetic the compiler cannot
+;; invert — so this rung tests replay, not source recovery, for the same reason rung 2 does.
+;;
+;; THE CHECK.  The permutation is its own inverse and BOTH tiles carry it, so the products pair
+;; correctly and f(A,B) = sum(A*B) exactly as in rung 1.  Most of B is zero so that f stays
+;; small (~10.0) — with 64 terms and a float32 accumulation, a large f would lose the finite
+;; difference to cancellation long before atol=1e-3 could judge it.
+;;
+;; dA[5] = B[5] = 1.5.  The interesting wrong answers:
+;;     0.0    empty tile
+;;     0.25   B[58] — the MIRROR of index 5, i.e. the permutation applied once too often or
+;;            in the wrong direction.  Placed there deliberately as a tripwire.
+;;
+;; COMPILE-WITH[--ir-target=spv]: PASS
+;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; VERIFY-AUTODIFF: A=[1.00 1.00 1.00 1.00 1.00 2.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 1.00 4.00 1.00 1.00 1.00 1.00 3.00] B=[0.00 0.00 0.00 0.00 0.00 1.50 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.25 0.00 0.00 0.00 0.00 2.00] at.A=5 expect.A=1.5 at.B=5 expect.B=2.0 h=0.5 atol=1e-3 output-vec=64 group=64
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel reversed_staging (A B &out C)
+  (declare #'(vec-t vec-t &out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((A-tile (make-scratch-vector float 64))
+        (B-tile (make-scratch-vector float 64)))
+    ;; Thread i writes slot 63-i.  Nothing about this is invertible by the compiler, and
+    ;; nothing about it keeps writer and reader in the same subgroup.
+    (workgroup-stride A-tile (i)
+      (let ((core (- (to-ulong 63) i)))
+        (set! (~ A-tile core) (~ A i))
+        (set! (~ B-tile core) (~ B i))))
+    (sync-workgroup)
+    (workgroup-stride C (i)
+      (set! (~ C i) (* (~ A-tile i) (~ B-tile i))))))
