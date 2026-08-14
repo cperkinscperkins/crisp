@@ -1170,8 +1170,9 @@ the MMA autodiff backward does for its transposed operands.
 > operand layout per backend, exactly as it wants a different `:mma-shapes` triple.
 
 Specs: `133-mma-spv/13-col-major-operand-refused-bmg`, `14-col-major-accum-refused-bmg`.
-History: `plan/bugs.md` #035 — for months Crisp *dropped* the declared layout here and read
-such operands transposed, silently.
+History: `plan/bugs.md` #035 — for months Crisp *dropped* the declared layout here, so
+`:col-major` was a silent no-op and you compiled a row-major kernel without being told.
+Four shipped specs were unknowingly relying on that.
 
 ### Reusing the "Ring" Meme
 

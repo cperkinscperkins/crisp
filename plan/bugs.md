@@ -657,9 +657,17 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         The operand type arrives at the load site INTACT.  %coop-layout-of then resolved it with
         CANONICALIZE-TYPE-SPECIFIER, which cannot expand a MANGLED tensor symbol and simply wraps
         it in a list; %get-tensor-ct read index 5 of a 1-element list, found nothing, and returned
-        its default.  Note the STRIDE operand had already followed the col-major declaration
-        correctly -- only the layout constant was wrong, which is precisely the incoherent pairing
-        that made the operand read TRANSPOSED.
+        its default.
+
+        WHAT THE OLD BEHAVIOUR ACTUALLY WAS -- and the title's word "ignored" is exactly right,
+        which I initially got wrong.  :col-major was a COMPLETE NO-OP on this path, not a
+        half-applied setting: %coop-tensor-ptr+stride picks its stride FROM the layout it is
+        handed (src/codegen.lisp, `(stride (if (= layout 0) s0 s1))`), so a dropped layout took
+        the stride down with it and the operand was read COHERENTLY row-major.  I first read the
+        A and B loads carrying different stride operand ids as evidence the stride had followed
+        the declaration; they were merely different FunctionParameters for different tensors, and
+        proved nothing.  The practical consequence matters: a spec that declared :col-major was
+        silently compiled as :row-major, byte for byte.
 
         THE FIX (overlays/, belongs in src/mma.lisp): resolve with %TS-CANONICALIZE-TENSOR-TYPE
         (src/analysis/control.lisp) instead -- it already handles all three shapes, alias, list
@@ -708,6 +716,21 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         fragments from SLM TILES, not from the global matrix, and a make-scratch-matrix tile is
         row-major by construction.  MemoryLayout=0 is CORRECT there.  Reproducing this honestly
         needs a fragment loaded DIRECTLY from a declared col-major global (133/10's shape).
+
+        THE ENTRY ABOVE WAS WRONG ABOUT COVERAGE, and it matters.  It said "All shipped SPV MMA
+        specs (133/*, 142/*, 144/*) declare B :row-major, so nothing in the suite exercises the
+        broken path -- which is also why no test went red."  In fact FOUR did declare a col-major
+        B: 133-mma-spv 02-hello-mma, 04-mma-via-tile, 05-mma-via-tile-multi and 09-accum-op-body.
+        They passed because the declaration was a no-op (see above), so the suite was green while
+        four specs asked for something the backend cannot do.  The refusal is what surfaced them --
+        the guard has teeth, demonstrated the hard way rather than by a contrived test.
+
+        Those four are ports of their 132 NVIDIA twins and inherited the col-major B along with
+        its rationale, "to match the canonical row.col MMA" -- true on NVIDIA, meaningless on
+        SPIR-V, and 133's own BMG specs (10/11/12) already declared B :row-major with a comment
+        saying why.  All four are now :row-major, which is what they were ALREADY COMPILING TO.
+        The edit is codegen-identical; that is established by reading the stride selection above,
+        NOT by diffing artifacts, since the guard now prevents building the col-major version.
 
         RETESTED 2026-08-14 (bug sweep).  STILL BROKEN, unchanged.  Probe: spec
         145/09-verify-autodiff-matmul-bmg with b-mat's :contiguous-term flipped to
