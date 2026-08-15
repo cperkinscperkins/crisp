@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-record v-point
+  (x float))
+
+(def-function x~ (vp)
+  (declare #'(v-point => float))
+  (* 2.0 (~x~ vp)))
+
+(def-kernel overloaded_accessor_ad (in_val &out out_res)
+  (declare #'(float &out cell-float => nil))
+  (let ((p (make-v-point :x in_val)))
+    (set! (~ out_res) (x~ p))))

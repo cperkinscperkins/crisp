@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+
+(def-type cell-float (cell float :address-space :global))
+
+(<T>
+ (def-function my-overloaded (x)
+  (declare #'(T => T))
+  x))
+
+(def-function my-overloaded (x)
+  (declare #'(float => float))
+  (+ x 100.0))
+
+(def-kernel overload_collision_kernel (in_val &out out_res)
+  (declare #'(float &out cell-float => nil))
+  (set! (~ out_res) (my-overloaded in_val)))
