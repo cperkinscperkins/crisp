@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-record my-rec
+  (val float))
+
+(def-kernel test_record_accessors (in_val &out out_res)
+  (declare #'(float &out cell-float => nil))
+  (let ((r (make-my-rec :val in_val)))
+    (with-struct-accessors my-rec (val)
+      (set! (~ out_res) (val r)))))
