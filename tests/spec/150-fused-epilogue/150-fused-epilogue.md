@@ -4,6 +4,27 @@ Endeavor 150 — Fused Epilogue
 STATUS: PLANNED, 2026-08-14.  No mechanism written yet.  This document records the audit that
 motivated the endeavour, the design decision it turns on, and the TDD ladder.
 
+Rungs 01-05 are DRAFTED and verified RED for the right reason — all five fail with exactly
+`Unsupported form 'MAP-ELEMENTS!' found in function body.` and nothing else, which establishes
+that the rest of each kernel is already sound: types, shapes, hardware profile, the
+matrix-multiply-tile-stride structure and its :epilogue split, and (04/05) the fused activations'
+own `def-function` bodies, which compile clean in value position.  The only missing thing is the
+primitive.  Rungs 06-11 are specified below but not written.
+
+The ONE harness change this needed is DONE and verified: the L0 buffer-print cap, raised
+100 -> 512 in overlays/hoist-l0/crisp-hoist-l0-overlay.lisp (see open question #3).  Verified
+end-to-end by running the validator's own invocation,
+`crisp-hoist-l0.exe --mma-test=16,16,8 <spec>.metacrisp`, against 133/11:
+
+    if (128 <= 512) {  ... BUFFER a:
+    if (128 <= 512) {  ... BUFFER b:
+    if (256 <= 512) {  ... BUFFER c:          <- 256 elements; at the old cap this never printed
+    std::cout << (mma_ok ? "MMA_CORRECT" : "MMA_WRONG")
+
+which also confirms on real generated output that the buffer prints and the MMA verdict coexist
+in one run.  The overlay diffs against the src original in exactly two places: the docstring and
+the literal.  The CUDA hoist needed NO change — it has never had such a gate.
+
 
 Why this endeavour exists
 --------------------------
@@ -95,6 +116,21 @@ The consequences are what make this worth doing:
 Scalar `max` / `min` are still worth adding (real `fmax` lowering, cheap, AD-able) but they are a
 convenience, not a prerequisite.
 
+**Why the language already suits this** (per Chris, 2026-08-14): Crisp realises first-order
+functions through TEMPLATE MONOMORPHIZATION.  That matters more than it first appears:
+
+  - There is no function-pointer indirection at the call site — which is a hard requirement, since
+    an indirect call inside a per-fragment MMA epilogue would be ruinous on either vendor.
+  - Each fused call site sees a CONCRETE callee.  So the P2 VJP differentiates a known function
+    body rather than an opaque function value — the difference between "write a VJP" and "solve
+    higher-order AD".  The backward walk already carries a `hof-handler-fn` and an `:hof` property
+    on sub-function info (src/autodiff.lisp:550-559), so HOFs are not new ground for the engine.
+  - The per-fragment body is spliced N times for an N-fragment tile, so N call sites monomorphize
+    to the same specialization.
+
+The design was drawn to match `:transformF`, which already relies on this; the alignment is
+therefore not a coincidence, but it was confirmed rather than assumed.
+
 
 The scope boundary: elementwise is safe, layout-aware is not
 -------------------------------------------------------------
@@ -172,25 +208,53 @@ clean compile.  Rule 1 from 146 applies throughout: a clean compile is not the d
 
 P0/P1 — the primitive, forward
 
-  01  fragment map, scale ×2, PTX.  The minimal thing: a via-tile body that applies `(* x 2.0)`
-      to `acc`.  Deliberately reuses the EXISTING validator — C = 2·(A·B) is exactly what
-      `MMA-SCALE: 2` + `HOIST-EXPECT: MMA_CORRECT` already checks for 132/09, so rung 01 needs no
-      harness work and its pass/fail is unambiguous on hardware.
+  01  fragment map, scale ×2, PTX.  [01-fragment-map-scale-ptx.crisp — WRITTEN, red]
+      The minimal thing: a via-tile body that applies `(* x 2.0)` to `acc`.  Deliberately reuses
+      the EXISTING validator — C = 2·(A·B) is exactly what `MMA-SCALE: 2` + `MMA_CORRECT` already
+      checks for 132/09, so rung 01 needs no harness work and its pass/fail is unambiguous on
+      hardware.  Note the A/B against 132/09, which reaches the SAME number by firing
+      `(accum-op)` twice: that spec proves the body controls the MMA firing COUNT, this one that
+      the body can transform the accumulator's VALUE.  Both halves of the body API, one number.
 
-  02  the same on SPV / BMG.  Proves the coop-matrix component path, which is the half of the
-      backend story that is NOT confirmed yet.
+  02  the same on SPV / BMG.  [02-fragment-map-scale-bmg.crisp — WRITTEN, red]
+      Proves the coop-matrix component path, which is the half of the backend story that is NOT
+      confirmed yet — and settles it at rung 2 rather than rung 9.
+      SECOND JOB: its C-tile is 16×16 against an (8 16 8) XMX shape, so it decomposes into TWO
+      fragments and the per-fragment body must run on both.  An implementation that mapped only
+      the first fragment leaves the second unscaled and the host reference says MMA_WRONG.
+      Rung 01's 16×8 tile is exactly one fragment and cannot see this.
 
-  03  tile map in `:epilogue`, scale ×2.  Same validator, second site.  Proves the primitive is
-      genuinely one mechanism at two altitudes and not two implementations.
+  03  tile map in `:epilogue`, scale ×2.  [03-tile-map-epilogue-bmg.crisp — WRITTEN, red]
+      Same validator, second altitude.  Proves the primitive is genuinely one mechanism and not
+      two implementations that happen to share a name.
+      THIS IS ALSO THE PLACEMENT RUNG, which is why it is built on the STAGED pattern: K=16 at
+      k-step 8 gives TWO K-steps, so with p1/p2 the two contributions,
 
-  04  ReLU on `acc`, with operands chosen to produce negatives.  This is the first rung the
-      current on-metal harness CANNOT check — `MMA-SCALE` expresses a scalar multiplier, not an
-      activation.  See "Open questions" #3; the harness work lands here.
+          correct   (once, post-reduction):   2·p1 + 2·p2      = MMA-SCALE 2
+          misplaced (per K-step):             4·p1 + 2·p2      = MMA_WRONG
+
+      A one-K-step kernel would pass with the placement wrong — 149's rung-05 trap.  ×2 is
+      linear on purpose: it keeps rung 03 about PLACEMENT and leaves the "activation on a partial
+      sum" refusal to rung 07, one thing each.
+
+  04  ReLU on `acc`, checked with `HOIST-EXPECT: BUFFER c:` (open question #3).  Unblocked once
+      the buffer cap is raised; needs no new directive.
+
+      MUST USE A SHIFTED ACTIVATION — this is a trap worth stating plainly.  The MMA harness
+      fills its inputs `A[i] = i % 5` and `B[i] = i % 3` (src/hoist-l0/main.lisp:1512-1517),
+      both NON-NEGATIVE, so A·B is non-negative everywhere and a plain `relu` is the IDENTITY on
+      this data.  A naive ReLU rung would therefore pass whether or not the epilogue fired, which
+      is the worst possible outcome for a TDD rung.  Fuse a THRESHOLDED form instead —
+      `(if (> (- x 20.0) 0.0) (- x 20.0) 0.0)` or similar — so the activation supplies its own
+      kink and both branches are exercised against the existing fill.  (Changing the harness fill
+      to produce negatives is the alternative, but it churns the reference numbers of ~35 MMA
+      specs for no gain.)
 
   05  a user-defined activation that is NOT relu — leaky-relu or a clamp, written as a plain
       Crisp `def-function` in the spec itself.  This rung IS the endeavour's thesis: arbitrary
       user code fused in registers, no compiler change.  If only 04 passes we have reimplemented
-      cuBLASLt's enum.
+      cuBLASLt's enum.  Note this rung is the reason #3 resolved toward hand-computed BUFFER
+      values: no fixed table of host-side activations could ever validate it.
 
   06  NEGATIVE — a fused function with the wrong arity (not unary).  Should refuse cleanly.
 
@@ -229,15 +293,52 @@ Open questions to settle before writing code
 1. **Surface syntax.**  What is the form actually called?  `map-tile!` / `transform-tile!` /
    something echoing `:transformF`.  It must read the same on a fragment and on a register tile.
 
+   PROVISIONALLY `(map-elements! <fragment-or-tile> #'<unary-fn>)`, which is what rungs 01-03 are
+   written against.  Chosen only so the specs could be drafted; it is one form, so a rename is
+   cheap.  The `!` follows `set!` / `atomic-add!`, and the argument order follows
+   `:transformF #'fn`.  What must NOT change is that the identical form works at BOTH altitudes —
+   rung 01 fuses it on a fragment, rung 03 on a register tile, and if those ever need different
+   spellings the "one primitive" claim has quietly failed.
+
 2. **In-place or returning?**  `fill-tile` mutates in place; `mma-accumulate` returns a new value
    via `set!`.  The fragment path is SSA-shaped today, the tile path is not.  Pick one and make
    both sites match.
 
-3. **Harness: how does the host reference apply the activation?**  `MMA-SCALE` is a scalar
-   multiplier — enough for rungs 01-03, useless for 04-05.  Options: an `MMA-EPILOGUE: relu`
-   directive with a small fixed set of host-side references, or shift on-metal activation checking
-   onto VERIFY-AUTODIFF, which already runs real numbers.  Rung 04 cannot be written until this
-   is decided.
+   The provisional `!` commits to IN-PLACE, matching `fill-tile` at the tile site.  At the
+   fragment site the compiler can lower it to `set! acc (…)` over a local, so SSA is not an
+   obstacle — but this should be confirmed rather than assumed.
+
+3. **Harness: how does the host reference apply the activation?**  RESOLVED — no new directive.
+   Use the `BUFFER` expectation that already exists, and raise one cap.
+
+   `MMA-SCALE` is a scalar multiplier, enough for rungs 01-03 and useless for 04-05.  But the
+   generated harness ALREADY prints every buffer AND the MMA verdict in the same run:
+   `generate-cpp-main` (src/hoist-l0/main.lisp:422-431) emits `BUFFER <name>: …` for each
+   allocation, and only THEN appends the `MMA_CORRECT` / `MMA_WRONG` reference check.  And
+   `HOIST-EXPECT` is matched with `(search exp run-out)` — a SUBSTRING test, with multiple
+   HOIST-EXPECT lines ANDed (tests/run-specs.lisp:2738-2744).
+
+   So `HOIST-EXPECT: BUFFER c: 12 12 12` pins the first few elements of a 128-element tile and
+   needs no new machinery.  Roughly 30 specs already use `BUFFER` expectations.
+
+   THE ONE BLOCKER was a cap: the buffer print is gated on `size <= 100` elements, and the
+   smallest single MMA output tile is 128 on BOTH vendors (16×8 NVIDIA, 8×16 Intel), so C was
+   never printed.  DONE — raised to 512 in overlays/hoist-l0/crisp-hoist-l0-overlay.lisp, a
+   general improvement rather than a ReLU-specific hack, and verified on generated output (see
+   STATUS).  It turned out to be ONE line in ONE file, not two: the CUDA hoist prints every
+   buffer unconditionally and has never had this gate, so the change only brings L0 into line
+   with what CUDA already did.
+
+   WHY THIS BEATS AN `MMA-EPILOGUE:` DIRECTIVE.  A directive with a fixed table of host-side
+   activations is literally the cuBLASLt enum this endeavour exists to beat — and it could never
+   validate rung 05, whose whole point is a user activation the compiler has never heard of.
+   Hand-computed expected values are activation-agnostic by construction.
+
+   WHY NOT VERIFY-AUTODIFF.  It cannot validate a FORWARD value: the finite difference is
+   computed from the same forward kernel, so a wrong forward yields a self-consistently wrong
+   gradient that still passes.  (It IS a valid detector for a missing ReLU specifically, since
+   a skipped activation changes the gradient at a negative pre-activation — but that is rung 08's
+   job, not rung 04's.)
 
 4. **Double application.**  A user could fuse the same activation on `acc` AND in `:transformF` on
    the store.  Probably user error rather than something to prevent, but decide whether it warns.

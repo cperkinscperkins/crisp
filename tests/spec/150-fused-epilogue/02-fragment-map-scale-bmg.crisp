@@ -1,0 +1,65 @@
+;; Endeavor 150 rung 2 — rung 1's twin on Intel BMG / SPV / XMX.
+;;
+;; TDD: expected to FAIL until the P0/P1 primitive exists.  See rung 01 for the failure text
+;; and for the provisional-syntax note on `map-elements!`.
+;;
+;; WHY THIS IS NOT JUST "RUNG 1 AGAIN".  The two backends represent a fragment completely
+;; differently, and only one of them is confirmed:
+;;
+;;   PTX   a register-fragment is OUR OWN record type (4 float fields), so per-element access
+;;         is fieldwise and obviously available.
+;;   SPV   a fragment is an OPAQUE KHR cooperative matrix.  Per-component access is what makes
+;;         elementwise work, and the component -> logical-element mapping is deliberately
+;;         implementation-defined.  That our llvm-spirv path emits that access cleanly is
+;;         UNCONFIRMED (see the endeavour doc, "TO CONFIRM").
+;;
+;; This rung is where that gets settled.  If elementwise fusion cannot be expressed on SPV,
+;; the whole endeavour is NVIDIA-only and we need to know at rung 2, not at rung 9.
+;;
+;; NOTE THE MULTI-FRAGMENT TILE, which is deliberate and is the second thing this rung tests.
+;; C-tile is 16x16 and the XMX shape is (8 16 8), so it decomposes into (16/8)x(16/16) = TWO
+;; fragments.  The body is spliced PER FRAGMENT, so `map-elements!` must run on both.  An
+;; implementation that mapped only the first fragment leaves the second unscaled, and the host
+;; reference catches it as MMA_WRONG.  Rung 01's 16x8 tile is exactly one fragment and cannot
+;; distinguish this.
+;;
+;; K IS ONE NATIVE STEP HERE (MMA-DIMS 16 16 8 -> K=8, XMX K=8), so this single via-tile call
+;; performs the COMPLETE contraction and `acc` is a finished value.  Fusing on it is therefore
+;; mathematically correct.  That is not true in the staged pattern — a non-linear function on a
+;; PARTIAL sum is silently wrong — which is what rung 07 pins down as a compile-time refusal.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;;   (RED until P2 — see rung 01's note on declaring the intended end state.)
+;; SKIP-DEFAULT-PASS
+;;
+;; On-metal correctness via the hoist's --mma-test host reference:
+;; C[16x16] = 2*(A[16x8].B[8x16]); Intel XMX shape (8 16 8), B row-major (SPV has no
+;; PackedB_ColumnMajor).
+;; MMA-DIMS: 16 16 8
+;; MMA-SCALE: 2
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; An ordinary Crisp function — identical to rung 01's, on purpose: the SAME user code must
+;; fuse on both vendors' fragment representations.
+(def-function double-val (x)
+  (declare #'(float => float))
+  (* x 2.0))
+
+(def-kernel frag_map_scale (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one sub-group
+  (let ((C-tile (make-register-tile float (16 16) 0.0)))   ; 2 XMX fragments
+    (mma-accumulate-via-tile (8 16 8) C-tile A B (acc)
+      (accum-op)
+      (map-elements! acc #'double-val))       ; must fire on BOTH fragments
+    (store-tile C-tile C (0 0))))

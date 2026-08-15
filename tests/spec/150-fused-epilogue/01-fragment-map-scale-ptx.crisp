@@ -1,0 +1,73 @@
+;; Endeavor 150 rung 1 — the SMALLEST kernel that fuses user code onto the accumulator
+;; while it is still in registers.  NVIDIA / PTX.
+;;
+;; TDD: this spec is expected to FAIL until the P0/P1 primitive exists.  Today it fails at
+;; the analyzer with:
+;;
+;;     Unsupported form 'MAP-ELEMENTS!' found in function body.
+;;
+;; and before the form existed at all, the equivalent hand-written attempt failed with
+;;
+;;     Type mismatch for operator '*'.
+;;     Cannot operate on REGISTER-FRAGMENT-ACC-F32-16X8 and FLOAT.
+;;
+;; which is the audit result this endeavour was opened on (see 150-fused-epilogue.md).  The
+;; accum-binding `acc` has always been BOUND correctly — %subst-accum substitutes it with the
+;; per-fragment variable — but no operation could consume a fragment value.
+;;
+;; PROVISIONAL SYNTAX.  `map-elements!` is open question #1 in the endeavour doc: a unary
+;; function applied per element, in place, generalising store-tile's :transformF to the
+;; fragment and register-tile altitudes.  The NAME may change; it is one form, so a rename is
+;; cheap.  What must NOT change is that the same form works on a fragment (here) and on a
+;; register tile (rung 03).
+;;
+;; WHY SCALE x2 AND NOT relu.  Deliberately reuses the EXISTING on-metal validator: C = 2*(A.B)
+;; is exactly what `MMA-SCALE: 2` already checks, so this rung needs no harness work and its
+;; pass/fail is unambiguous on hardware.  ReLU cannot be checked this way — MMA-SCALE expresses
+;; a scalar multiplier, not an activation — which is why it waits for rung 04 and the harness
+;; decision (open question #3).
+;;
+;; NOTE THE A/B WITH 132/09.  That spec reaches the SAME expectation, C = 2*(A.B), by firing
+;; (accum-op) TWICE.  This one fires it ONCE and scales the accumulator afterward.  Same
+;; number, different route: 132/09 proves the body controls the MMA firing COUNT, this proves
+;; the body can transform the accumulator's VALUE.  If this rung passes while 132/09 still
+;; passes, both halves of the body API are real.
+;;
+;; The fused function is an ordinary Crisp def-function, not a compiler builtin.  That is the
+;; whole point of the endeavour and it is why rung 05 (a user-defined activation that is not
+;; relu) is the thesis rung.
+;;
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; COMPILE-WITH[--ir-target=ptx --differentiate]: PASS
+;;   (RED until P2 — the VJP for a fused epilogue is rungs 08/09.  Declared PASS here on
+;;    purpose, per 149's precedent: write the intended END STATE and let the doc record that
+;;    it is red, rather than minting a SKIP-WITH that later goes stale.  150 sits after
+;;    ci-stop.txt (149-ad-primal-replay), so CI does not run it meanwhile.)
+;; TEST-WITH[--ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;;
+;; On-metal correctness via the hoist's --mma-test host reference:
+;; C[16x8] = 2*(A[16x8].B[8x8]); NVIDIA tf32 shape (16 8 8).
+;; MMA-DIMS: 16 8 8
+;; MMA-SCALE: 2
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; An ordinary Crisp function — no compiler support, no builtin.
+(def-function double-val (x)
+  (declare #'(float => float))
+  (* x 2.0))
+
+(def-kernel frag_map_scale (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile float (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B (acc)
+      (accum-op)                               ; fires ONCE — contrast 132/09
+      (map-elements! acc #'double-val))        ; fuse on the accumulator, in registers
+    (store-tile C-tile C (0 0))))
