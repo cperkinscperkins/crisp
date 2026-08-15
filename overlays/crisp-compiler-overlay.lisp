@@ -632,3 +632,309 @@
                 :message (format nil "map-elements!: unsupported target type ~a. Implemented for MMA fragments (PTX records and SPV cooperative matrices) and, via the tile explosion, whole register tiles."
                                  ty)
                 :source-location location))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 150 P2 — `%map-elements-vjp!`, the pairwise backward primitive.
+;;;
+;;;     (%map-elements-vjp! ADJ PRIMAL #'F_GRAD)   =>   adj[i] <- F_GRAD(primal[i], adj[i])
+;;;
+;;; Compiler-internal (leading %): it is emitted by the VJP, never written by a user.
+;;;
+;;; The engine already mints exactly the callee this needs.  A user function compiled under
+;;; --differentiate produces BOTH halves with no prompting:
+;;;     @shifted_relu_7_float(float)                    ; forward
+;;;     @shifted_relu_7_grad_float_float(float, float)  ; (primal, seed) -> d_primal
+;;; and the twin recomputes the function's own internals from the primal, so per element we
+;;; need only hand it (primal, incoming-adjoint).  Crisp-level name is <NAME>_GRAD.
+;;;
+;;; Lowering mirrors map-elements! exactly, walking TWO fragments in lockstep instead of one:
+;;; PTX unrolls fieldwise, SPV loops to OpCooperativeMatrixLengthKHR with two OpAccessChains.
+;;; ---------------------------------------------------------------------------
+
+;; src/mma.lisp
+(defun %map-elements-grad-name (fn-form pkg)
+  "The <NAME>_GRAD symbol for the fused function in FN-FORM (a #'NAME), interned in PKG.
+   Matches the convention the AD walk itself uses (src/autodiff.lisp:2553)."
+  (let ((name (%map-elements-fn-name fn-form)))
+    (when name
+      (intern (format nil "~a_GRAD" (symbol-name name))
+              (or pkg (symbol-package name))))))
+
+;; src/mma.lisp
+(defun analyze-map-elements-vjp (expr env context location)
+  "(%map-elements-vjp! ADJ PRIMAL #'F_GRAD) -> adj[i] <- F_GRAD(primal[i], adj[i]), in place.
+
+   The backward twin of map-elements!.  ADJ and PRIMAL must be fragments of the same shape;
+   the walk pairs a tile with its adjoint tile, and the tile explosion (see
+   %explode-rewrite-body-form) zips their fragment lists before this ever runs."
+  (unless (= (length (cdr expr)) 3)
+    (error 'crisp-compiler-error
+           :message (format nil "%map-elements-vjp!: expects 3 arguments (adj primal #'fn-grad), got ~a."
+                            (length (cdr expr)))
+           :source-location location))
+  (destructuring-bind (adj primal fn-form) (cdr expr)
+    (let* ((adj-node (analyze-expression adj env context location))
+           (ty       (get-single-value-type adj-node))
+           (nf       (%map-elements-fragment-fields ty))
+           (coop     (%map-elements-coop-dims ty))
+           (gname    (or (%map-elements-fn-name fn-form)
+                         (error 'crisp-compiler-error
+                                :message "%map-elements-vjp!: the gradient callee must be a #'NAME form."
+                                :source-location location))))
+      (cond
+        ;; ---- NVIDIA / PTX: unrolled fieldwise ----
+        (nf
+         (analyze-expression
+          `(set! ,adj
+                 (%construct-struct ,ty
+                                    ,@(loop for i below nf
+                                            collect `(,gname (%extract-struct-member ,primal ,i)
+                                                             (%extract-struct-member ,adj ,i)))))
+          env context location))
+        ;; ---- Intel / SPV: paired component loop ----
+        (coop
+         (unless (and (symbolp adj) (symbolp primal))
+           (error 'crisp-compiler-error
+                  :message "%map-elements-vjp!: on SPIR-V both operands must be cooperative-matrix VARIABLES."
+                  :source-location location))
+         (destructuring-bind (rows cols use) coop
+           (let* ((tp (gensym "CMPRM"))
+                  (ta (gensym "CMADJ"))
+                  (env2 (list* (make-parameter-def :name tp :type 'float :kind :local)
+                               (make-parameter-def :name ta :type 'float :kind :local)
+                               env))
+                  (body-node (analyze-expression (list gname tp ta) env2 context location)))
+             (make-semantic-coop-op
+              :type 'void :kind :map2
+              :ty adj :tx primal :layout (list tp ta) :tensor-node body-node
+              :rows rows :cols cols :use use
+              :source-location location))))
+        (t
+         (error 'crisp-compiler-error
+                :message (format nil "%map-elements-vjp!: unsupported operand type ~a." ty)
+                :source-location location))))))
+
+;; src/mma.lisp
+(defun %emit-per-frag-map-vjp (adj-entry primal-entry fn-form)
+  "Per-fragment expansion of (%map-elements-vjp! ADJ PRIMAL #'F_GRAD) for register tiles:
+   zip the two tiles' fragment lists and pair them positionally.  Positional pairing is right
+   because both tiles carry the SAME shape and the same warp distribution, so fragment k of one
+   corresponds to fragment k of the other."
+  (let ((asyms (fourth adj-entry))
+        (psyms (fourth primal-entry)))
+    (unless (= (length asyms) (length psyms))
+      (error 'crisp-compiler-error
+             :message (format nil "%map-elements-vjp!: adjoint tile has ~a fragments but the primal tile has ~a — they must match."
+                              (length asyms) (length psyms))
+             :source-location nil))
+    `(progn
+       ,@(loop for a in asyms
+               for p in psyms
+               collect `(%map-elements-vjp! ,a ,p ,fn-form)))))
+
+
+;; src/mma.lisp
+;; SUPERSEDES the earlier register-mma-analyzers in this file.  CHANGE: adds %MAP-ELEMENTS-VJP!.
+(defun register-mma-analyzers ()
+  "Registers the MMA + wgmma expression analyzers.
+   Endeavor 150: adds MAP-ELEMENTS! and its backward twin %MAP-ELEMENTS-VJP!."
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
+                         (cons "STORE-FRAGMENT"          #'analyze-store-fragment)
+                         (cons "LOAD-FRAGMENT-A"         #'analyze-load-fragment-a)
+                         (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)
+                         (cons "LOAD-FRAGMENT-ACC"       #'analyze-load-fragment-acc)
+                         (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
+                         (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
+                         (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
+                         (cons "MAP-ELEMENTS!"           #'analyze-map-elements)
+                         (cons "%MAP-ELEMENTS-VJP!"      #'analyze-map-elements-vjp)
+                         (cons "PREFETCH-TILE"           #'analyze-prefetch-tile)
+                         (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
+                         (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
+                         (cons "MAKE-WGMMA-ACCUMULATOR"    #'analyze-make-wgmma-accumulator)
+                         (cons "WGMMA-ACCUMULATE"          #'analyze-wgmma-accumulate)
+                         (cons "WGMMA-ACCUMULATE-VIA-TILE" #'analyze-wgmma-accumulate-via-tile)
+                         (cons "STORE-TILE"              #'analyze-store-tile-mma)
+                         (cons "LET"                     #'analyze-let-with-tile-explosion)
+                         (cons "LET*"                    #'analyze-let-with-tile-explosion)))
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) (cdr entry)))))))
+
+;; src/codegen.lisp
+;; SUPERSEDES the earlier generate-node-ir for semantic-coop-op in this file.
+;; CHANGE: adds the :MAP2 arm (the paired backward walk) beside :MAP, and factors the shared
+;; loop skeleton into MAP-LOOP so the forward and backward walks cannot drift apart.
+(defmethod generate-node-ir ((node semantic-coop-op) builder module var-env di-builder di-scope location-map)
+  "Cooperative-matrix op: fill / load / store / prefetch / map / map2."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let ((kind (semantic-coop-op-kind node))
+          (rows (semantic-coop-op-rows node))
+          (cols (semantic-coop-op-cols node))
+          (use  (semantic-coop-op-use node))
+          (layout (semantic-coop-op-layout node))
+          (i64 (llvm-int64-type))
+          (f32 (llvm-float-type)))
+      (labels ((origin (dim-node dim)
+                 (llvm-build-mul builder
+                                 (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
+                                 (llvm-const-int i64 dim nil) "coop_orig"))
+               (ptr-of (name)
+                 (or (gethash name var-env)
+                     (error 'crisp-compiler-error
+                            :message (format nil "cooperative-matrix map: no storage found for variable ~a." name)
+                            :source-location (semantic-coop-op-source-location node))))
+               (map-loop (primary-ptr per-elem)
+                 (let* ((i32 (llvm-int32-type))
+                        (coop-ty (%coop-type f32 rows cols use))
+                        (mat (llvm-build-load2 builder coop-ty primary-ptr "cm_map_mat"))
+                        (len (%coop-length builder module mat f32 rows cols use))
+                        (current-fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                        (i-alloca (llvm-build-alloca builder i32 "cm_i"))
+                        (check-block (llvm-append-basic-block current-fn "cm_check"))
+                        (body-block  (llvm-append-basic-block current-fn "cm_body"))
+                        (exit-block  (llvm-append-basic-block current-fn "cm_exit")))
+                   (llvm-build-store builder (llvm-const-int i32 0 0) i-alloca)
+                   (llvm-build-br builder check-block)
+                   (llvm-position-builder-at-end builder check-block)
+                   (let* ((i-val  (llvm-build-load2 builder i32 i-alloca "cm_i_v"))
+                          (cond-v (llvm-build-icmp builder +llvm-int-slt+ i-val len "cm_cond")))
+                     (llvm-build-cond-br builder cond-v body-block exit-block))
+                   (llvm-position-builder-at-end builder body-block)
+                   (let* ((i-val (llvm-build-load2 builder i32 i-alloca "cm_i_b"))
+                          (i-x   (llvm-build-sext builder i-val i64 "cm_i64")))
+                     (funcall per-elem i-x)
+                     (let* ((i-cur  (llvm-build-load2 builder i32 i-alloca "cm_i_c"))
+                            (i-next (llvm-build-add builder i-cur (llvm-const-int i32 1 0) "cm_i_n")))
+                       (llvm-build-store builder i-next i-alloca)))
+                   (unless (terminator-p (llvm-get-insert-block builder))
+                     (llvm-build-br builder check-block))
+                   (llvm-position-builder-at-end builder exit-block)
+                   (values nil nil))))
+        (ecase kind
+          (:fill
+           (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
+                               f32 rows cols use)
+                   nil))
+          (:load
+           (multiple-value-bind (ptr stride)
+               (%coop-tensor-ptr+stride builder (gen (semantic-coop-op-tensor-node node))
+                                        (origin (semantic-coop-op-ty node) rows)
+                                        (origin (semantic-coop-op-tx node) cols) layout)
+             (values (%coop-load builder module ptr stride f32 rows cols use layout) nil)))
+          (:store
+           (let* ((mat (gen (semantic-coop-op-value-node node)))
+                  (tv  (gen (semantic-coop-op-tensor-node node)))
+                  (orow (origin (semantic-coop-op-ty node) rows))
+                  (ocol (origin (semantic-coop-op-tx node) cols)))
+             (multiple-value-bind (ptr stride)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
+               (%coop-store builder module ptr mat stride f32 rows cols use layout)
+               (values nil nil))))
+          (:prefetch
+           (let* ((tv   (gen (semantic-coop-op-tensor-node node)))
+                  (orow (origin (semantic-coop-op-ty node) rows))
+                  (ocol (origin (semantic-coop-op-tx node) cols)))
+             (multiple-value-bind (ptr stride)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
+               (%block-prefetch builder module ptr stride rows cols)
+               (values nil nil))))
+          (:map
+           (let* ((tgt (ptr-of (semantic-coop-op-ty node)))
+                  (temp-name (semantic-coop-op-tx node))
+                  (body-node (semantic-coop-op-tensor-node node))
+                  (t-alloca (llvm-build-alloca builder f32 "cm_elem")))
+             (map-loop tgt
+                       (lambda (i-x)
+                         (let* ((ep   (%coop-access-chain builder module tgt i-x))
+                                (elem (llvm-build-load2 builder f32 ep "cm_elem_v"))
+                                (benv (alexandria:copy-hash-table var-env)))
+                           (llvm-build-store builder elem t-alloca)
+                           (setf (gethash temp-name benv) t-alloca)
+                           (let ((res (generate-node-ir body-node builder module benv
+                                                        di-builder di-scope location-map)))
+                             (llvm-build-store builder res ep)))))))
+          (:map2
+           (let* ((adj-ptr (ptr-of (semantic-coop-op-ty node)))
+                  (prm-ptr (ptr-of (semantic-coop-op-tx node)))
+                  (temps   (semantic-coop-op-layout node))
+                  (tp-name (first temps))
+                  (ta-name (second temps))
+                  (body-node (semantic-coop-op-tensor-node node))
+                  (tp-alloca (llvm-build-alloca builder f32 "cm_prm"))
+                  (ta-alloca (llvm-build-alloca builder f32 "cm_adj")))
+             (map-loop adj-ptr
+                       (lambda (i-x)
+                         (let* ((ep-a (%coop-access-chain builder module adj-ptr i-x))
+                                (ep-p (%coop-access-chain builder module prm-ptr i-x))
+                                (v-a  (llvm-build-load2 builder f32 ep-a "cm_adj_v"))
+                                (v-p  (llvm-build-load2 builder f32 ep-p "cm_prm_v"))
+                                (benv (alexandria:copy-hash-table var-env)))
+                           (llvm-build-store builder v-p tp-alloca)
+                           (llvm-build-store builder v-a ta-alloca)
+                           (setf (gethash tp-name benv) tp-alloca)
+                           (setf (gethash ta-name benv) ta-alloca)
+                           (let ((res (generate-node-ir body-node builder module benv
+                                                        di-builder di-scope location-map)))
+                             (llvm-build-store builder res ep-a))))))))))))
+
+;; src/mma.lisp
+;; SUPERSEDES the earlier %explode-rewrite-body-form in this file.
+;; CHANGE: adds the %MAP-ELEMENTS-VJP! clause beside MAP-ELEMENTS!.
+(defun %explode-rewrite-body-form (form tiles)
+  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile /
+   map-elements! / %map-elements-vjp! references to any exploded tile in TILES with
+   per-fragment progns; otherwise recurse structurally."
+  (cond
+    ((not (consp form)) form)
+    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
+          (assoc (third form) tiles))
+     (let ((shape (nth 1 form)) (v (nth 2 form)) (a (nth 3 form)) (b (nth 4 form)))
+       (%check-mma-shape shape nil)
+       (if (>= (length form) 6)
+           (let* ((binding-form (nth 5 form))
+                  (binding-sym (if (and (consp binding-form) (= (length binding-form) 1)
+                                        (symbolp (first binding-form)))
+                                   (first binding-form)
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
+                                          :source-location nil)))
+                  (body (nthcdr 6 form)))
+             (%emit-per-frag-accumulate a b (assoc v tiles) tiles binding-sym body))
+           (%emit-per-frag-accumulate a b (assoc v tiles) tiles))))
+    ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v dest tile-id) (cdr form)
+       (%emit-per-frag-store dest tile-id (assoc v tiles))))
+    ((and (%head-name-eq (first form) "%LOAD-REGISTER-TILE-ACC") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v src tile-id) (cdr form)
+       (%emit-per-frag-acc-load src tile-id (assoc v tiles))))
+    ((and (%head-name-eq (first form) "FILL-TILE") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
+    ((and (%head-name-eq (first form) "MAP-ELEMENTS!") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-map (assoc (second form) tiles) (third form)))
+    ((and (%head-name-eq (first form) "%MAP-ELEMENTS-VJP!") (= (length form) 4)
+          (assoc (second form) tiles) (assoc (third form) tiles))
+     (%emit-per-frag-map-vjp (assoc (second form) tiles) (assoc (third form) tiles) (fourth form)))
+    ((and (%head-name-eq (first form) "LOAD-TILE") (= (length form) 4)
+          (%resolve-tile-ref (third form) tiles))
+     (unless (active-hardware-profile)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile requires a hardware profile (pass --hardware-profile): its GRF / L1 limits drive the register-pipeline safety analysis."
+         :source-location nil))
+     (unless (eq *target-backend* :spirv)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile lowers to Subgroup2DBlockLoadINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping in this register-pipeline model."
+         :source-location nil))
+     (%emit-per-frag-block-load (second form) (%resolve-tile-ref (third form) tiles) (fourth form)))
+    (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
+
+
