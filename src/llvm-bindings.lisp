@@ -993,3 +993,12 @@
   (ctx :pointer) (name :string)
   (type-params :pointer) (type-param-count :unsigned-int)
   (int-params :pointer) (int-param-count :unsigned-int))
+
+
+
+;;; LLVMIsAInstruction is the standard C-API cast-check: it returns the value when it
+;;; IS an Instruction and NULL otherwise.  Used by %ATTACH-DEBUG-LOC to skip the attach.
+(defcfun ("LLVMIsAInstruction" llvm-is-a-instruction) :pointer
+  "Returns VAL if it is an Instruction, or a NULL pointer if it is not.
+   The LLVM C API's checked-cast idiom; see BUG 033."
+  (val :pointer))

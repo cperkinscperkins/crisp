@@ -1,0 +1,41 @@
+;; Intel MMA must REFUSE a :col-major ACCUMULATOR at COMPILE time — BUG 035.
+;;
+;; The sibling of 13-col-major-operand-refused, moving the col-major declaration from
+;; an OPERAND to the RESULT.  It exists separately because it is a different code path
+;; (a coop STORE, not a load) and — more importantly — because the hardware behaves
+;; differently, which the refusal deliberately hides.
+;;
+;; MEASURED ON BMG, and this is why the spec is worth its keep: unlike the operand
+;; case, a ColumnMajor accumulator store BUILDS.  IGC does ship that builtin; there is
+;; no undefined reference.  It then computes the WRONG RESULT — the host reference
+;; (which follows the DECLARED strides, so it reads C col-major) disagrees:
+;;
+;;     C[0][1]=12 ref 18    C[0][2]=13 ref 10    C[0][3]=14 ref 11    MMA_WRONG
+;;
+;; Whether the fault is OUR stride pairing or IGC's ColumnMajor store is UNDETERMINED:
+;; the strides reach the instruction as runtime FunctionParameters, so the SPIR-V does
+;; not settle it.  That question is open and worth chasing.  Until someone does, this
+;; path is refused CONSERVATIVELY — shipping a kernel that builds cleanly and returns
+;; wrong numbers is the worst of the available options, and it is exactly how 035 hid
+;; for months.
+;;
+;; If that root cause is ever found and fixed, this spec should FLIP: delete it and
+;; restore the positive on-metal version (col-major C, HOIST-EXPECT MMA_CORRECT), which
+;; is a real capability the layout fix would then unlock.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: FAIL "cannot be :col-major"
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "refusal spec: the kernel is rejected before AD is reached"
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+
+(def-kernel matmul_col_c (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16) (local-size :set-to 16))
+  (let ((C-tile (make-register-tile float (16 16) 0.0)))
+    (mma-accumulate-via-tile (8 16 8) C-tile A B)
+    (store-tile C-tile C (0 0))))

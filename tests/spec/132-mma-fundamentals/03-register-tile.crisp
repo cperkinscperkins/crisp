@@ -13,7 +13,6 @@
 ;;   kernel with no chain-rule body.  Vacuous but correct, and it keeps the fragment forms
 ;;   under --differentiate coverage.
 ;; TEST-WITH[--ir-target=ptx]
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 
 (def-type out-m (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 

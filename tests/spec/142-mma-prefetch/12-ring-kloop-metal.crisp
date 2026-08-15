@@ -32,7 +32,6 @@
 ;; f(A,B) = sum(A.B) with K=32, so
 ;; dA[m,k] = sum_n B[k,n]; with B[i][j] = 0.01*(i*16+j), dA[0,0] = 0.01 * sum_{n=0..15} n = 1.2.
 ;; VERIFY-AUTODIFF: A=16x32@0:0.01 B=32x16@0:0.01 at.A=0,0 expect.A=1.2 group=16 h=0.5 atol=2e-2 output-mat=16x16
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; On-metal correctness (host-reference C = A.B, K=32 = four 8-wide K-blocks -> n-k-steps=4, so the
 ;; unrolled-by-2 loop runs 2 outer iterations: proves multi-iteration accumulation, not a 1-trip fold):

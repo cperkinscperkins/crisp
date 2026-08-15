@@ -6,21 +6,30 @@
 ;; Isolated to the new work: load per-warp A/B fragments straight from GLOBAL memory
 ;; (load-fragment is a per-lane read, not ldmatrix, so no SLM staging needed here —
 ;; that arrives with the tiled version, P4), one mma-accumulate into a zero fp32
-;; accumulator, store the result.  tf32 keeps everything fp32-stored; B is :col-major
-;; to match the canonical row.col MMA.  mma-accumulate is the genuine
-;; @llvm.nvvm.mma.m16n8k8.row.col.tf32 intrinsic.
+;; accumulator, store the result.  tf32 keeps everything fp32-stored.  mma-accumulate is
+;; the genuine @llvm.nvvm.mma.m16n8k8.row.col.tf32 intrinsic.
+;;
+;; B IS :row-major HERE, unlike its NVIDIA twin 132-mma-fundamentals/02.  This spec is the
+;; SPIR-V port and used to declare B :col-major, inherited from that twin along with the
+;; rationale "to match the canonical row.col MMA" — which is an NVIDIA fact, not a SPIR-V
+;; one.  It compiled and passed only because :col-major was, on this path, a complete
+;; NO-OP: %coop-layout-of dropped the declared layout (BUG 035) and %coop-tensor-ptr+stride
+;; picks its stride FROM that layout (codegen.lisp, `(if (= layout 0) s0 s1)`), so both the
+;; layout constant and the stride came out row-major regardless.  Now that the layout is
+;; honoured, the declaration has to say what the kernel actually wants; Intel has no
+;; column-major operand-load builtin at all, so :row-major is the only valid choice here.
+;; The emitted SPIR-V is unchanged by this edit.  See plan/bugs.md #035.
 ;;
 ;; COMPILE-WITH[--ir-target=spv --differentiate]: PASS
 ;;   (145: differentiates via the VJP registry.)
 ;; TEST-WITH[--ir-target=spv]
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;   tf32 MMA emits an NVVM/PTX-only intrinsic (@llvm.nvvm.mma.m16n8k8.row.col.tf32) that
 ;;   GENERIC/SPV can't lower — validate ONLY via the PTX pass (SKIP-DEFAULT-PASS).  Also
 ;;   skipped under --debug where the pre-existing c-t-accessor bug bites.
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
-(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 
 (def-kernel hello_mma (A B &out C)

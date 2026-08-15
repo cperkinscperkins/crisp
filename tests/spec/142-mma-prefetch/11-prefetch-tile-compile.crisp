@@ -11,7 +11,6 @@
 ;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; NOTE: COMPILE-WITH PASS runs the full binary -> opt -> llvm-as -> llvm-spirv pipeline, so it fails if
 ;; the Subgroup2DBlockPrefetchINTEL intrinsic doesn't translate.  TODO(green): add validate-spv-prefetch

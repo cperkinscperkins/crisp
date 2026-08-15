@@ -13,7 +13,6 @@
 ;; Here the argument is `(to-float M)` with M from outer-dimensions — a shape query that is
 ;; itself inert — so the adjoint flows into something the walk already skips and the answer is
 ;; a correct zero REACHED BY THE ANALYSIS rather than asserted by a special case.
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; F2 — outer-dimensions.  Companion to inner-dimension (=> K, the contraction extent).
 ;; (outer-dimensions A B) => M N, the two NON-contracted extents: M = A's outer/row extent

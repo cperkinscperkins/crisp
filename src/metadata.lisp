@@ -312,14 +312,39 @@
 ;;; Main Entry Point
 ;;; ----------------
 
+
+
+(defun %only-forward-kernels (names)
+  "Removes AD-minted backward twins from NAMES.
+
+   A name is dropped only when it is <OTHER>_GRAD *and* <OTHER> is itself in
+   NAMES -- i.e. it is the backward companion of a kernel we are already
+   emitting.  This keeps the forms path and the *COMPILED-KERNELS* fallback
+   producing the same set of sidecars.  See BUG 042."
+  (remove-if (lambda (k)
+               (let ((n (symbol-name k)))
+                 (and (> (length n) 5)
+                      (string= "_GRAD" (subseq n (- (length n) 5)))
+                      (find (subseq n 0 (- (length n) 5)) names
+                            :key #'symbol-name :test #'string=))))
+             names))
+
 (defun generate-metadata-for-file (input-path output-path &key (output-targets nil) (source-file nil) (forms nil))
   "Generates .metacrisp sidecar files for each kernel in INPUT-PATH.
    In differentiate mode (*differentiate-p*), generates metadata for the backward
    (_GRAD) kernel rather than the forward kernel, while preserving the file-name
-   convention established by main.lisp (output-path already carries the _grad prefix)."
+   convention established by main.lisp (output-path already carries the _grad prefix).
+
+   When FORMS is supplied the kernel list is read from the source forms.  When it
+   is not (the --single-pass path), it falls back to *COMPILED-KERNELS* -- the
+   kernels registered by the DEF-KERNEL macro -- NOT to *FUNCTION-TABLE*, which
+   holds every function including compiler internals and produced one bogus
+   .metacrisp per accessor.  That fallback is filtered through
+   %ONLY-FORWARD-KERNELS so AD-minted K_GRAD twins do not each get a sidecar of
+   their own.  See BUG 042."
   (let ((kernel-names (if forms
                           (extract-defined-kernels forms)
-                          (alexandria:hash-table-keys *function-table*)))
+                          (%only-forward-kernels (reverse *compiled-kernels*))))
         (generated-files nil))
 
     (let ((src-path (or source-file
@@ -369,7 +394,6 @@
           (push final-path generated-files)))
 
       (nreverse generated-files))))
-
 
 
 (defun get-physical-width (type)

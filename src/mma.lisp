@@ -246,15 +246,47 @@
 
 
 
+(defun %coop-refuse-col-major (tensor-node)
+  "Signals the BUG 035 refusal for a :col-major cooperative-matrix operand on SPIR-V.
+
+   Split out from %COOP-LAYOUT-OF so the message lives in one place and the
+   negative spec has a stable substring to match."
+  (error 'crisp-compiler-error
+         :message
+         (concatenate 'string
+           "Intel cooperative-matrix (MMA) operands cannot be :col-major "
+           "(:contiguous-term :first). IGC ships no PackedA_ColumnMajor / "
+           "PackedB_ColumnMajor load builtin, so such a kernel fails to build on the "
+           "device, and a ColumnMajor accumulator computes incorrectly. "
+           "Declare the operand :row-major, or stage an explicit transpose into "
+           "scratch and feed the MMA from there. (NVIDIA/PTX is unaffected.)")
+         :source-location (ignore-errors (semantic-node-source-location tensor-node))))
+
 (defun %coop-layout-of (tensor-node)
   "The coop load/store MemoryLayout for an operand, derived from its tensor type's
    :contiguous-term (NOT hardcoded): :last (row-major) -> 0 (RowMajor); :first (col-major)
    -> 1 (ColMajor).  So the layout matches how the matrix is actually stored — the stride
-   in %coop-tensor-ptr+stride follows (s0 for RowMajor, s1 for ColMajor).  NOTE: Intel has
-   no ColumnMajor-B coop builtin, so an Intel B operand must be declared :row-major."
-  (if (eq (%get-tensor-ct (canonicalize-type-specifier (get-single-value-type tensor-node)))
-          :first)
-      1 0))
+   in %coop-tensor-ptr+stride follows (s0 for RowMajor, s1 for ColMajor).
+
+   Resolves the operand type with %TS-CANONICALIZE-TENSOR-TYPE rather than
+   CANONICALIZE-TYPE-SPECIFIER: at a load site the operand is usually a kernel
+   parameter carrying a MANGLED type symbol, which only the former can expand.
+   The result is normalised to a keyword because the unmangler yields plain
+   symbols.  Unresolvable types keep the historical :last / RowMajor default.
+
+   On :spirv a resolved :first (col-major) is REFUSED at compile time rather than
+   emitted — see %COOP-REFUSE-COL-MAJOR for the measurements behind that.
+   See BUG 035."
+  (let* ((canon (%ts-canonicalize-tensor-type (get-single-value-type tensor-node)))
+         (raw   (and canon (%get-tensor-ct canon)))
+         (ct    (cond ((keywordp raw) raw)
+                      ((symbolp raw)  (intern (symbol-name raw) :keyword))
+                      (t :last))))
+    (cond
+      ((not (eq ct :first)) 0)
+      ((eq *target-backend* :spirv) (%coop-refuse-col-major tensor-node))
+      (t 1))))
+
 
 (defun analyze-store-fragment (expr env context location)
   "P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR
@@ -1830,16 +1862,26 @@
    A special variable rather than a threaded parameter so %explode-rewrite-body-form — which
    carries the endeavor-142 register block-load branches — does not have to change.")
 
+
+
+
 (defun %mma-scratch-tile-dims-from-bindings (bindings)
   "Endeavor 145 P3a: the (SYM ROWS COLS) dims of every compile-time-shaped
    (V (make-scratch-matrix <elem> (ROWS COLS))) binding in BINDINGS.
+
+   BUG 040: also records (V (make-scratch-matrix-ring <elem> (ROWS COLS) :ring-count N)),
+   whose PER-SLOT shape sits at the same argument position.  Without it an MMA reading from
+   a ring slot could not learn its operand's K extent and silently contracted over one
+   native K-step.  Only the MATRIX ring is recognised -- vector and tensor rings are not
+   valid 2-D MMA operands -- and the 2-integer-list guard filters anything else.
 
    Only literal integer 2-lists are recorded; a scratch tile whose shape is derived from another
    tensor contributes nothing and falls back to the one-K-step assumption."
   (loop for b in bindings
           when (and (consp b) (= (length b) 2) (symbolp (first b))
                     (consp (second b))
-                    (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX")
+                    (or (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX")
+                        (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX-RING"))
                     (let ((d (third (second b))))
                       (and (listp d) (= (length d) 2) (every #'integerp d))))
         collect (list (first b)
@@ -1852,11 +1894,23 @@
 
    Handles both operand flavours: a register tile / ring slot (normalized to
    (V m n syms ...) by %resolve-tile-ref) and an SLM scratch tile (via
-   *mma-scratch-tile-dims*)."
+   *mma-scratch-tile-dims*).
+
+   BUG 040: an SLM ring slot arrives as the FORM (ring-get RING SLOT) rather than a bare
+   symbol, so it is unwrapped to RING before the *mma-scratch-tile-dims* lookup.  SLOT is
+   intentionally not inspected: every slot has the same shape, so the extent does not depend
+   on it, and demanding a compile-time slot would reject runtime-indexed SLM pipelines."
   (let ((rt (%resolve-tile-ref ref tiles)))
     (if rt
         (ecase which (:rows (second rt)) (:cols (third rt)))
-        (let ((sd (and (symbolp ref) (assoc ref *mma-scratch-tile-dims*))))
+        (let* ((sym (cond ((symbolp ref) ref)
+                          ((and (consp ref)
+                                (%head-name-eq (first ref) "RING-GET")
+                                (>= (length ref) 2)
+                                (symbolp (second ref)))
+                           (second ref))
+                          (t nil)))
+               (sd (and sym (assoc sym *mma-scratch-tile-dims*))))
           (when sd
             (ecase which (:rows (second sd)) (:cols (third sd))))))))
 

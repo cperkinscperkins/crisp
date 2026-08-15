@@ -930,6 +930,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                      NIL) (FORMS
                                                                            NIL))  metadata.lisp
 - - - - (EXTRACT-DEFINED-KERNELS FORMS)  metadata.lisp
+- - - - (%ONLY-FORWARD-KERNELS NAMES)  metadata.lisp
 - - - - (COLLECT-KERNEL-DEPENDENCIES KERNEL-NAMES)  metadata.lisp
 - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -1602,9 +1603,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp
-- - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp [See above]
-- - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp [See above]
 - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp [See above]
+- - - (%COOP-REFUSE-COL-MAJOR TENSOR-NODE)  mma.lisp
+- - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
 
 - (ANALYZE-LOAD-FRAGMENT-ACC EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE)  mma.lisp [See above]

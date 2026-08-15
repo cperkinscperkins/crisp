@@ -1,6 +1,5 @@
 ;; EXPECT-STDERR[--hardware-profile=derated]: "reserves 128 of 200 registers/thread"
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
 ;;
 ;; Endeavor 146: "wgmma is forward-only (no autodiff)" was false — wgmma differentiates (140/03).
 ;; The EXPECT-STDERR occupancy warning is the assertion here, and it is AD-independent.

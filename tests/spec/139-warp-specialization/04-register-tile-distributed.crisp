@@ -8,7 +8,6 @@
 ;; local-size 96 = 3 warps; (:producer 1 :consumer 2) + :warps '(false true true).
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "register-tile/MMA path hits the pre-existing --debug DIBuilder fault (plan/bugs.md #033)"
 ;;
 ;; Endeavor 146: "warp specialization is forward-only" was false — see 139/01.  Distributing a
 ;; register tile across warps is a schedule; it does not change what is computed.

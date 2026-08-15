@@ -609,7 +609,7 @@ changed to :descendant to make the tests pass at some point. Or not. Check thoug
       Also, see if it's sequested to --ir-target=spv only. NVidia doesn't have the same bug
       so when --ir-target is .ptx we don't need the "volatile" workaround. Check to make sure.
 
-- [ ] 031 address
+- [x] 031 address
 - [ ] literal "true" (and "nil" / "false"?) and bool type. avoid "t" or "T".
 
 Grid vs Thread Context
@@ -724,7 +724,7 @@ Should we do something for the compiler itself?
 - [x] update INSTALL.md instructions.
 - [x] README.md should link to INSTALL.md
 - [x] handling of opt.exe / 
-- [ ] INSTALL.md has outdated info ( L0 only no CUDA, etc)
+- [x] INSTALL.md has outdated info ( L0 only no CUDA, etc)
 
 Integer Only Operations
 =======================
@@ -752,7 +752,8 @@ MMA
 [ ] empty room fallacy?  GPU display? GPU monitoring?
 [ ] auto-differentiation
 - [x] verify autodiff on cuda
-- [ ] need primal replay
+- [x] need primal replay
+- [ ] still some loose ends
 [ ] new macro for rings (prefetch/pipeline) that handles rings
 [ ] push FURTHER - mix prefetch, SLM and warp specialization
 [ ] NVidia? 
@@ -761,13 +762,13 @@ MMA
 
 [x] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
-[ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
+[x] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] move MMA out of topology.md into main docs
 
-[ ] don't forget bug 033 ( --debug )
+[x] don't forget bug 033 ( --debug )
 
 [ ] (benchmarking) the CUDA arch skip-gate (your Vera Rubin point — a capability check rather than an arch allowlist); 
-[ ] bug 035 (:col-major silently ignored on SPV); 
+[x] bug 035 (:col-major silently ignored on SPV); 
 [x]  unreachable STORE-TILE entry in anf-normalize's opaque list; 
 [x] to-float having no AD rule;
 [x] a CUDA *ad-runtime* if you ever want the PTX backward proven numerically rather than structurally.
@@ -778,7 +779,8 @@ MMA
 
 [x] extract_status.py -> add a % summary.
 
-[ ] benchmarking
+benchmarking
+=============
 [x] How to collect and recollect data? runpod.io gives us LOTS of different GPUs to test against,
     which is cool. Should we track all that? Where/how?  .csv?
 [x] report compile times!!  (used to be tracked, seemingly no longer?)
@@ -844,9 +846,9 @@ FFI / C API / "tree shaking" / recompile
 
 DOCS
 ====
-- [ ] developer docs
-- - [ ] what various scripts do
-- - [ ] how package release 
+- [x] developer docs
+- - [x] what various scripts do
+- - [x] how package release 
 - - [ ] how tag repo (to match release)
 - - [ ] how contribute. PR cycle.
 
@@ -857,8 +859,8 @@ AG TASKS
 [ ] better benchmark API
 [ ] benchmark reductions etc
 [ ] benchmark A|D ??
-[ ] add full hardware profile to samples on readme
-[ ] some sort of CTS?
+[x] add full hardware profile to samples on readme
+[x] some sort of CTS?
 
 
 

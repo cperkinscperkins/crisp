@@ -18,7 +18,6 @@
 ;; Proven NUMERICALLY by 145/18-ring-staged-vjp-bmg (analytical 1.0 vs finite-difference 1.0
 ;; on BMG) -- not by this spec compiling, which would prove nothing (135/01 compiled, had the
 ;; right atomics, and returned 0.0).
-;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder memory-fault; ring-get/make-view surfaces it (plan/bugs.md #033)"
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 

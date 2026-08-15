@@ -4,7 +4,6 @@
 ;; metal-verified wgmma_tma_swizzle_ref.cu recipe.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma
 ;;
 ;; Endeavor 146 Gap 1: the old skip here read "wgmma is forward-only MMA", which was never a

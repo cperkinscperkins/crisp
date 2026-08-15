@@ -8,7 +8,6 @@
 ;; SKIP-DEFAULT-PASS
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
 ;;   (145: differentiates via the VJP registry.)
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
 

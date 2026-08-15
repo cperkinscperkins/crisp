@@ -1,6 +1,5 @@
 ;; TEST-EXPECT: PASS
 ;; VERIFY-AUTODIFF[CUDA]: A=4x4@0:0.01 at.A=1,0 h=0.5 atol=1e-3 expect.A=1.0 output-mat=4x4
-;; SKIP-WITH[--debug]: "pre-existing --debug DIBuilder fault (plan/bugs.md #033) — a hard SBCL memory fault at address 5, not a Crisp diagnostic.  Inherited verbatim from this spec's Intel twin 145/18-ring-staged-vjp-bmg, whose note establishes the trigger as the scratch RING under --debug specifically, and which verified the fault pre-existing by rebuilding at the 145 merge (5a6eebd).  Same kernel shape here, same fault, same cause."
 ;;
 ;; Endeavor 147, rung 8 — A RING ADJOINT IN SHARED MEMORY.
 ;;

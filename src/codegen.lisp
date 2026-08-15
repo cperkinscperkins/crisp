@@ -602,10 +602,60 @@
       (llvm-di-builder-create-debug-location (llvm-get-module-context module)
                                              line 0 di-scope (cffi:null-pointer)))))
 
+#|
 (defun %attach-debug-loc (inst node module di-builder di-scope location-map)
   "Helper: Creates and attaches a debug location to the instruction if metadata is available."
   (let ((di-loc (%get-di-location node module di-builder di-scope location-map)))
     (when di-loc
+      (llvm-instruction-set-debug-loc inst di-loc))
+    di-loc))
+    |#
+
+;; src/codegen.lisp
+;;
+;; BUG 033 -- the --debug memory fault.  NOT a DIBuilder null/garbage-argument bug, which
+;; is what the entry had assumed for months; every one of those theories was tested and
+;; cleared (a valid basic-type encoding, a minimal 1-element subroutine type, and the
+;; size_t marshalling all still faulted, and the kernel's generate-debug-info in fact
+;; RETURNS NORMALLY).
+;;
+;; LLVM's IRBuilder CONSTANT-FOLDS.  An arithmetic build call whose operands are both
+;; compile-time constants does not produce an instruction at all -- it returns a Constant.
+;; In 056/07 the `:c-t` struct fields make (* 2.0 3.0) fold to the Constant
+;; `float 6.000000e+00`, and Crisp then handed THAT to LLVMInstructionSetDebugLoc, whose
+;; implementation is an UNCHECKED unwrap<Instruction>(Inst)->setDebugLoc(...).  Undefined
+;; behaviour; on Windows it dereferences a garbage vtable and dies at #x6.
+;;
+;; Measured, with LLVMIsAInstruction / LLVMIsAConstant at the attach site:
+;;     [attach] node=SEMANTIC-MUL  INSTRUCTION?=NO  CONSTANT?=YES
+;;              value = float 6.000000e+00        <-- the fold
+;;     [attach] node=SEMANTIC-CALL INSTRUCTION?=yes ... %call_tmp = call float @x__point(...)
+;; Skipping the attach for the non-instruction let the same compile run to completion
+;; through llvm-di-builder-finalize.
+;;
+;; This is why only SOME specs fault: it is not "build-heap dependent" as recorded, it is
+;; deterministic and keyed on whether a spec contains FOLDABLE CONSTANT ARITHMETIC.  It is
+;; also why the family of symptoms looked unrelated -- the 138 make-view / ring-get faults
+;; fold constant offsets the same way, and CI's "garbage-typed ret" is the same UB landing
+;; differently on another platform.
+;;
+;; The DILocation is still CREATED and returned, so callers that thread it (they bind it as
+;; DI-LOCATION and pass it on) are unaffected; only the attach is skipped.  A folded
+;; constant has no instruction to carry a location, so there is nothing to lose.
+(defun %attach-debug-loc (inst node module di-builder di-scope location-map)
+  "Helper: Creates and attaches a debug location to the instruction if metadata is available.
+
+   BUG 033: LLVMInstructionSetDebugLoc is an unchecked unwrap<Instruction>, so INST is
+   verified with LLVMIsAInstruction first.  IRBuilder constant-folds, so a build call over
+   compile-time-constant operands yields a Constant, not an Instruction, and attaching to
+   it is undefined behaviour (a hard memory fault on Windows under --debug).  The
+   DILocation is still created and returned either way."
+  (let ((di-loc (%get-di-location node module di-builder di-scope location-map)))
+    (when (and di-loc
+               inst
+               (not (cffi:null-pointer-p inst))
+               (not (cffi:null-pointer-p
+                     (crisp.llvm-bindings::llvm-is-a-instruction inst))))
       (llvm-instruction-set-debug-loc inst di-loc))
     di-loc))
 

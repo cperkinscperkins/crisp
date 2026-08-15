@@ -1,7 +1,6 @@
 ;; COMPILE-WITH[--hardware-profile=bmgmodes --ir-target=spv]: PASS
 ;; EXPECT-STDERR[--hardware-profile=bmgmodes --ir-target=spv]: "SPILL in any mode"
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; Endeavor 146: "forward-only MMA" was false — see 144/03.  The over-budget diagnostic is the
 ;; assertion and it is AD-independent.

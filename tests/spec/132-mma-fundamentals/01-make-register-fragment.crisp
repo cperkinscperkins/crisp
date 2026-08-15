@@ -14,7 +14,6 @@
 ;;   kernel with no chain-rule body.  Vacuous but correct, and it keeps the fragment forms
 ;;   under --differentiate coverage.
 ;; TEST-WITH[--ir-target=ptx]
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;   Under --debug, a 2D-float matrix's dead c-t accessor functions emit an
 ;;   env-dependent garbage-typed return that CI's clang/llc reject (but which is clean
 ;;   on our hosts and in non-debug).  Skip this spec under --debug until 033 is fixed;

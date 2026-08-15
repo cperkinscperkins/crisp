@@ -8,7 +8,6 @@
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
 ;;   (145: differentiates. The VJP picks its lowering — MMA where the tile dims
 ;;    decompose into whole fragments, plain scalar loops otherwise.)
-;; SKIP-WITH[--debug]: "pre-existing --debug c-t-accessor codegen bug (plan/bugs.md #033)"
 ;;
 ;; Endeavor 134 — on-metal correctness (host-reference C=A·B) via the hoist's --mma-test:
 ;; MMA-DIMS: 16 16 8

@@ -1,6 +1,5 @@
 ;; COMPILE-WITH[--hardware-profile=small-regs]: FAIL "register budget"
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--debug]: "MMA/register path hits the pre-existing --debug DIBuilder fault (bugs.md #033)"
 ;;
 ;; Endeavor 146: "wgmma is forward-only (no autodiff)" was false — wgmma differentiates (140/03).
 ;; This is a NEGATIVE test anyway: the COMPILE-WITH FAIL on the register budget is the assertion,
