@@ -938,3 +938,548 @@
     (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
 
 
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 150 P2 — differentiate a fused epilogue that lives in the via-tile BODY.
+;;;
+;;; WHERE THE GRADIENT WAS BEING LOST.  %vjp-mma-accumulate-via-tile destructures its form as
+;;;     (shape c-tile a-op b-op &rest ignored)
+;;; and IGNORES the rest — which is exactly where the accum binding and the body live.  So for
+;;;     (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile (acc)
+;;;        (accum-op)
+;;;        (map-elements! acc #'shifted-relu-7))
+;;; the activation was dropped silently, and rung 09 got the UN-activated gradient (1.1994476
+;;; where the finite difference correctly said 0.0).  Confirmed by counting instructions: the
+;;; backward kernel contained ZERO CooperativeMatrixLengthKHR while the forward contained one.
+;;;
+;;; THE CHAIN RULE.  With P = A.B and C = f(P):
+;;;     dP = dC * f'(P)
+;;; so before the existing MMA backward runs (which turns dC into dA and dB), the C adjoint has
+;;; to be scaled elementwise by f'(P).  Everything after that is unchanged — which is why this
+;;; is a PREFIX on the existing backward rather than a rewrite of it.
+;;;
+;;; RECOVERING P (option (a), recompute — chosen deliberately over saving it in the forward,
+;;; which would grow the forward signature and propagate into hoist codegen, launch argument
+;;; lists and both VERIFY-AUTODIFF runtimes).  P is recomputed by re-running the SAME multiply
+;;; into a fresh register tile.  Note this is a second MMA in the BACKWARD only; the forward
+;;; kernel is untouched, which is the property we cared about.
+;;; ---------------------------------------------------------------------------
+
+;; src/autodiff.lisp
+(defun %vjp-via-tile-body-map (form)
+  "The (map-elements! ACC #'FN) call in a via-tile BODY, or NIL.
+
+   Returns (values ACC-SYM FN-FORM).  The body is everything after the accum binding, so this
+   looks only where a fused epilogue can legally be — it does not search the whole form."
+  (when (>= (length form) 7)
+    (let ((binding (nth 5 form))
+          (body    (nthcdr 6 form)))
+      (when (and (consp binding) (= (length binding) 1) (symbolp (first binding)))
+        (dolist (f body)
+          (when (and (consp f) (%head-name-eq (first f) "MAP-ELEMENTS!") (= (length f) 3)
+                     (eq (second f) (first binding)))
+            (return (values (second f) (third f)))))))))
+
+;; src/autodiff.lisp
+;; SUPERSEDES the src/ %vjp-mma-accumulate-via-tile.  CHANGE: when the via-tile body fuses an
+;; activation onto the accum binding, prepend the activation's own backward step.
+(defun %vjp-mma-accumulate-via-tile (form ctx)
+  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B [(acc) BODY...]).
+
+   Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk
+   never learns the MMA path shape requirements, so they cannot leak back out as a
+   language-level contract.
+
+   Endeavor 150: if BODY fuses an activation onto the accum binding with map-elements!, the
+   chain rule needs dP = dC * f'(P), so a prefix recomputes P into a fresh register tile and
+   scales the C adjoint through the function's _GRAD twin before the existing backward runs."
+  (destructuring-bind (shape c-tile a-op b-op &rest ignored) (cdr form)
+    (declare (ignore ignored))
+    (let* ((flat-anf  (getf ctx :flat-anf))
+           (inputs    (getf ctx :inputs))
+           (outputs   (getf ctx :outputs))
+           (local-adj (getf ctx :local-adj))
+           (kernel-pkg (getf ctx :kernel-pkg))
+           (dims-map (%mma-ad-tile-dims-map flat-anf))
+           (src-map  (%mma-ad-tile-source-map flat-anf))
+           (ring-sites (%ad-ring-load-sites flat-anf))
+           (c-dims   (assoc (%ad-tile-base c-tile) dims-map))
+           (a-dims   (assoc (%ad-tile-base a-op) dims-map)))
+      (when c-dims
+        (multiple-value-bind (a-src aoy aox a-kind)
+            (%mma-vjp-operand-ref a-op src-map dims-map inputs ring-sites)
+          (multiple-value-bind (b-src boy box b-kind)
+              (%mma-vjp-operand-ref b-op src-map dims-map inputs ring-sites)
+            (when (and a-src b-src)
+              (let* ((mt (second c-dims))
+                     (nt (third c-dims))
+                     (kt (if a-dims
+                             (third a-dims)
+                             (nth-value 2 (%spv-mma-shape))))
+                     (pkg (or kernel-pkg (symbol-package (or (%ad-tile-base c-tile) c-tile))))
+                     (ringp (or (eq a-kind :ring) (eq b-kind :ring)))
+                     (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj kernel-pkg))
+                     (a-adj (%tlc-bwd-adj-name a-op  inputs outputs local-adj kernel-pkg))
+                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg))
+                     (core (if (and (not ringp) (%mma-vjp-mma-admissible-p mt nt kt))
+                               (%mma-via-tile-backward form dims-map src-map inputs outputs
+                                                       local-adj kernel-pkg)
+                               (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
+                                                         a-src aoy aox b-src boy box pkg))))
+                (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) ring=~a mma-path=~a"
+                           mt nt kt a-op a-kind b-op b-kind ringp
+                           (%mma-vjp-mma-admissible-p mt nt kt))
+                (multiple-value-bind (acc-sym fn-form) (%vjp-via-tile-body-map form)
+                  (if (not acc-sym)
+                      core
+                      ;; A fused activation: dP = dC * f'(P).  Recompute P, then scale.
+                      (let* ((cl    (find-package :crisp-language))
+                             (grad  (%map-elements-grad-name fn-form pkg))
+                             (p-sym (intern (format nil "~a_PRIMAL" (symbol-name (%ad-tile-base c-tile))) pkg))
+                             (progn-s (intern "PROGN" cl))
+                             (let-s   (intern "LET" cl))
+                             (mrt-s   (intern "MAKE-REGISTER-TILE" cl))
+                             (flt-s   (intern "FLOAT" cl))
+                             (via-s   (intern "MMA-ACCUMULATE-VIA-TILE" cl))
+                             (vjp-s   (intern "%MAP-ELEMENTS-VJP!" cl))
+                             (fn-s    (intern "FUNCTION" cl)))
+                        (unless grad
+                          (error 'crisp-compiler-error
+                                 :message "map-elements! in a via-tile body: the fused function must be a #'NAME form for its gradient twin to be nameable."
+                                 :source-location nil))
+                        (log:debug "VJP via-tile: fused activation ~a -> prefixing dP = dC * ~a(P, dC)"
+                                   fn-form grad)
+                        (log:info "VJP-150 EMITTING: ~s"
+                                  `(,progn-s
+                                    (,let-s ((,p-sym (,mrt-s ,flt-s (,mt ,nt) 0.0)))
+                                            (,via-s ,shape ,p-sym ,a-op ,b-op)
+                                            (,vjp-s ,c-adj ,p-sym (,fn-s ,grad)))
+                                    :CORE-ELIDED))
+                        `(,progn-s
+                          (,let-s ((,p-sym (,mrt-s ,flt-s (,mt ,nt) 0.0)))
+                                  (,via-s ,shape ,p-sym ,a-op ,b-op)
+                                  (,vjp-s ,c-adj ,p-sym (,fn-s ,grad)))
+                          ,core))))))))))))
+
+(register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
+
+
+;; src/autodiff.lisp
+;; SUPERSEDES the %vjp-via-tile-body-map above (house rule: append, never patch).
+;;
+;; THE BUG IT FIXES, worth recording because the failure mode is unrecognisable from the
+;; symptom.  The first version used (return ...) to escape a dolist.  In :crisp.compiler
+;; `return` is not cl:return — it is Crisp's own RETURN macro (src/macros.lisp:80-84), which
+;; expands to (explicit-return VALUE).  So the escape compiled into a call to a function that
+;; does not exist, and every spec with a fused epilogue died at compile time with
+;;
+;;     The function CRISP.COMPILER::EXPLICIT-RETURN is undefined.
+;;
+;; — a message that names neither this function nor `return`, and that arrives before any of
+;; the VJP's own logging can fire.  This is the same shadowing hazard already recorded for
+;; `char` in :crisp.compiler; `return` belongs on that list.
+;;
+;; Rewritten with FIND-IF so no escape construct is needed at all.
+(defun %vjp-via-tile-body-map (form)
+  "The (map-elements! ACC #'FN) call in a via-tile BODY, or NIL.
+
+   Returns (values ACC-SYM FN-FORM).  Looks only after the accum binding, which is the only
+   place a fused epilogue can legally be — it does not search the whole form."
+  (when (>= (length form) 7)
+    (let ((binding (nth 5 form))
+          (body    (nthcdr 6 form)))
+      (when (and (consp binding) (= (length binding) 1) (symbolp (first binding)))
+        (let ((hit (find-if (lambda (f)
+                              (and (consp f)
+                                   (%head-name-eq (first f) "MAP-ELEMENTS!")
+                                   (= (length f) 3)
+                                   (eq (second f) (first binding))))
+                            body)))
+          (when hit
+            (values (second hit) (third hit))))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 150 P2 — two-pass resolution for %map-elements-vjp!.
+;;;
+;;; THE PROBLEM.  The VJP emits
+;;;     (%map-elements-vjp! C-TILE_ADJ C-TILE_PRIMAL #'F_GRAD)
+;;; where C-TILE_PRIMAL is bound by the VJP's own inner LET and C-TILE_ADJ by the walk in an
+;;; OUTER scope.  %explode-register-tiles builds its `tiles` alist per-LET, so one explosion
+;;; sees only the primal and the other only the adjoint.  Requiring both names in one alist
+;;; therefore never succeeded, the whole-tile name survived to codegen, and the compile died
+;;; with `Unknown variable C-TILE_ADJ`.
+;;;
+;;; THE FIX.  Carry an optional FRAGMENT INDEX so the form can be resolved a side at a time.
+;;; Whichever explosion runs first fans the form out per fragment and records which fragment
+;;; each copy is for; the other explosion, at its own level, uses that index for its side:
+;;;
+;;;     (%map-elements-vjp! ADJ PRIMAL #'g)                    ; emitted
+;;;     (%map-elements-vjp! ADJ$F0 PRIMAL #'g 0) ... $F1 ... 1 ; first explosion
+;;;     (%map-elements-vjp! ADJ$F0 PRIMAL$F0 #'g 0) ...        ; second explosion
+;;;
+;;; Order-independent by construction: neither explosion needs to know whether it is the one
+;;; that runs first.  The index is inert once both sides are fragments — the analyzer ignores
+;;; a trailing index — so nothing has to strip it.
+;;; ---------------------------------------------------------------------------
+
+;; src/mma.lisp
+;; SUPERSEDES the earlier analyze-map-elements-vjp.  CHANGE: tolerates the trailing fragment
+;; index left behind by two-pass resolution.
+(defun analyze-map-elements-vjp (expr env context location)
+  "(%map-elements-vjp! ADJ PRIMAL #'F_GRAD [IDX]) -> adj[i] <- F_GRAD(primal[i], adj[i]).
+
+   IDX is bookkeeping for the tile explosion (see %emit-map-vjp-explode) and is inert here: by
+   the time this analyzer runs, both operands are already single fragments."
+  (unless (member (length (cdr expr)) '(3 4))
+    (error 'crisp-compiler-error
+           :message (format nil "%map-elements-vjp!: expects 3 or 4 arguments (adj primal #'fn-grad [idx]), got ~a."
+                            (length (cdr expr)))
+           :source-location location))
+  (destructuring-bind (adj primal fn-form &optional idx) (cdr expr)
+    (declare (ignore idx))
+    (let* ((adj-node (analyze-expression adj env context location))
+           (ty       (get-single-value-type adj-node))
+           (nf       (%map-elements-fragment-fields ty))
+           (coop     (%map-elements-coop-dims ty))
+           (gname    (or (%map-elements-fn-name fn-form)
+                         (error 'crisp-compiler-error
+                                :message "%map-elements-vjp!: the gradient callee must be a #'NAME form."
+                                :source-location location))))
+      (cond
+        (nf
+         (analyze-expression
+          `(set! ,adj
+                 (%construct-struct ,ty
+                                    ,@(loop for i below nf
+                                            collect `(,gname (%extract-struct-member ,primal ,i)
+                                                             (%extract-struct-member ,adj ,i)))))
+          env context location))
+        (coop
+         (unless (and (symbolp adj) (symbolp primal))
+           (error 'crisp-compiler-error
+                  :message "%map-elements-vjp!: on SPIR-V both operands must be cooperative-matrix VARIABLES."
+                  :source-location location))
+         (destructuring-bind (rows cols use) coop
+           (let* ((tp (gensym "CMPRM"))
+                  (ta (gensym "CMADJ"))
+                  (env2 (list* (make-parameter-def :name tp :type 'float :kind :local)
+                               (make-parameter-def :name ta :type 'float :kind :local)
+                               env))
+                  (body-node (analyze-expression (list gname tp ta) env2 context location)))
+             (make-semantic-coop-op
+              :type 'void :kind :map2
+              :ty adj :tx primal :layout (list tp ta) :tensor-node body-node
+              :rows rows :cols cols :use use
+              :source-location location))))
+        (t
+         (error 'crisp-compiler-error
+                :message (format nil "%map-elements-vjp!: unsupported operand type ~a." ty)
+                :source-location location))))))
+
+;; src/mma.lisp
+(defun %emit-map-vjp-explode (form tiles)
+  "Rewrite (%map-elements-vjp! ADJ PRIMAL FN [IDX]) when EITHER operand names an exploded tile.
+
+   Resolves ONE side per call, so the adjoint tile and the primal tile may be bound at
+   different LET levels — which they always are, since the VJP binds the primal itself while
+   the walk binds the adjoint outside.  See the header above for the three-step shape."
+  (destructuring-bind (adj primal fn &optional idx) (cdr form)
+    (let ((vjp-s (first form))
+          (adj-e (assoc adj tiles))
+          (prm-e (assoc primal tiles)))
+      (cond
+        ;; Both sides known here — pair positionally and we are done.  Positional pairing is
+        ;; right because the two tiles carry the same shape and the same warp distribution.
+        ((and adj-e prm-e)
+         (let ((asyms (fourth adj-e)) (psyms (fourth prm-e)))
+           (unless (= (length asyms) (length psyms))
+             (error 'crisp-compiler-error
+                    :message (format nil "%map-elements-vjp!: adjoint tile has ~a fragments but the primal tile has ~a — they must match."
+                                     (length asyms) (length psyms))
+                    :source-location nil))
+           `(progn ,@(loop for a in asyms for p in psyms
+                           collect `(,vjp-s ,a ,p ,fn)))))
+        ;; Only the adjoint is known at this level.
+        (adj-e
+         (let ((asyms (fourth adj-e)))
+           (if idx
+               `(,vjp-s ,(nth idx asyms) ,primal ,fn ,idx)
+               `(progn ,@(loop for a in asyms for i from 0
+                               collect `(,vjp-s ,a ,primal ,fn ,i))))))
+        ;; Only the primal is known at this level.
+        (prm-e
+         (let ((psyms (fourth prm-e)))
+           (if idx
+               `(,vjp-s ,adj ,(nth idx psyms) ,fn ,idx)
+               `(progn ,@(loop for p in psyms for i from 0
+                               collect `(,vjp-s ,adj ,p ,fn ,i))))))
+        (t form)))))
+
+;; src/mma.lisp
+;; SUPERSEDES the earlier %explode-rewrite-body-form.  CHANGE: the %MAP-ELEMENTS-VJP! clause
+;; now fires when EITHER operand is an exploded tile, and delegates to %emit-map-vjp-explode.
+(defun %explode-rewrite-body-form (form tiles)
+  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile /
+   map-elements! / %map-elements-vjp! references to any exploded tile in TILES with
+   per-fragment progns; otherwise recurse structurally."
+  (cond
+    ((not (consp form)) form)
+    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
+          (assoc (third form) tiles))
+     (let ((shape (nth 1 form)) (v (nth 2 form)) (a (nth 3 form)) (b (nth 4 form)))
+       (%check-mma-shape shape nil)
+       (if (>= (length form) 6)
+           (let* ((binding-form (nth 5 form))
+                  (binding-sym (if (and (consp binding-form) (= (length binding-form) 1)
+                                        (symbolp (first binding-form)))
+                                   (first binding-form)
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
+                                          :source-location nil)))
+                  (body (nthcdr 6 form)))
+             (%emit-per-frag-accumulate a b (assoc v tiles) tiles binding-sym body))
+           (%emit-per-frag-accumulate a b (assoc v tiles) tiles))))
+    ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v dest tile-id) (cdr form)
+       (%emit-per-frag-store dest tile-id (assoc v tiles))))
+    ((and (%head-name-eq (first form) "%LOAD-REGISTER-TILE-ACC") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v src tile-id) (cdr form)
+       (%emit-per-frag-acc-load src tile-id (assoc v tiles))))
+    ((and (%head-name-eq (first form) "FILL-TILE") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
+    ((and (%head-name-eq (first form) "MAP-ELEMENTS!") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-map (assoc (second form) tiles) (third form)))
+    ((and (%head-name-eq (first form) "%MAP-ELEMENTS-VJP!") (>= (length form) 4)
+          (or (assoc (second form) tiles) (assoc (third form) tiles)))
+     (%emit-map-vjp-explode form tiles))
+    ((and (%head-name-eq (first form) "LOAD-TILE") (= (length form) 4)
+          (%resolve-tile-ref (third form) tiles))
+     (unless (active-hardware-profile)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile requires a hardware profile (pass --hardware-profile): its GRF / L1 limits drive the register-pipeline safety analysis."
+         :source-location nil))
+     (unless (eq *target-backend* :spirv)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile lowers to Subgroup2DBlockLoadINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping in this register-pipeline model."
+         :source-location nil))
+     (%emit-per-frag-block-load (second form) (%resolve-tile-ref (third form) tiles) (fourth form)))
+    (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 150 P2 — recompute P from the GLOBAL sources, not the staged tiles.
+;;;
+;;; WHAT THE FIRST WORKING VERSION GOT WRONG, caught by the 08/09 pair exactly as designed:
+;;;
+;;;     08 (probe above the kink)  analytical=0.0  numerical=1.1992188  FAIL
+;;;     09 (probe below the kink)  analytical=0.0  numerical=0.0        PASS  <- spurious
+;;;
+;;; The prefix re-ran the multiply over A-TILE / B-TILE, the tiles the forward staged.  In the
+;;; BACKWARD those are empty — a backward kernel replays the forward's BINDINGS but not its
+;;; STATEMENTS, which is the whole reason %mma-vjp-scalar-lowering indexes the original global
+;;; operands instead.  So P came back all zeros, f'(0 - 7 < 0) = 0, and every gradient through
+;;; the activation was killed.
+;;;
+;;; Note how it presented: the rung that expects ZERO went green.  A backward that has stopped
+;;; propagating anything looks identical to a correctly-blocked gradient, and rung 09 alone
+;;; could never tell them apart.  Only rung 08, which expects a NON-zero 1.2 through the same
+;;; kernel, exposed it.  That is precisely the necessary-but-not-sufficient argument written
+;;; into both spec headers before either was run.
+;;;
+;;; THE FIX: re-stage the operands from their GLOBAL sources first, mirroring what the forward
+;;; itself does, then run the multiply.  %mma-vjp-operand-ref already resolves each operand to
+;;; (global-source, origin-y, origin-x), which is all load-tile-at needs.  Cost stays entirely
+;;; inside the backward kernel.
+;;; ---------------------------------------------------------------------------
+
+;; src/autodiff.lisp
+;; SUPERSEDES the %vjp-mma-accumulate-via-tile above.  CHANGE: the recompute prefix re-stages
+;; A and B from their global sources instead of reading the (empty) forward-staged tiles.
+(defun %vjp-mma-accumulate-via-tile (form ctx)
+  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B [(acc) BODY...]).
+
+   Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk
+   never learns the MMA path shape requirements, so they cannot leak back out as a
+   language-level contract.
+
+   Endeavor 150: if BODY fuses an activation onto the accum binding with map-elements!, the
+   chain rule needs dP = dC * f'(P).  A prefix re-stages the operands from their GLOBAL sources,
+   recomputes P into a fresh register tile, and scales the C adjoint through the function's
+   _GRAD twin before the existing backward runs.  The forward kernel is untouched."
+  (destructuring-bind (shape c-tile a-op b-op &rest ignored) (cdr form)
+    (declare (ignore ignored))
+    (let* ((flat-anf  (getf ctx :flat-anf))
+           (inputs    (getf ctx :inputs))
+           (outputs   (getf ctx :outputs))
+           (local-adj (getf ctx :local-adj))
+           (kernel-pkg (getf ctx :kernel-pkg))
+           (dims-map (%mma-ad-tile-dims-map flat-anf))
+           (src-map  (%mma-ad-tile-source-map flat-anf))
+           (ring-sites (%ad-ring-load-sites flat-anf))
+           (c-dims   (assoc (%ad-tile-base c-tile) dims-map))
+           (a-dims   (assoc (%ad-tile-base a-op) dims-map)))
+      (when c-dims
+        (multiple-value-bind (a-src aoy aox a-kind)
+            (%mma-vjp-operand-ref a-op src-map dims-map inputs ring-sites)
+          (multiple-value-bind (b-src boy box b-kind)
+              (%mma-vjp-operand-ref b-op src-map dims-map inputs ring-sites)
+            (when (and a-src b-src)
+              (let* ((mt (second c-dims))
+                     (nt (third c-dims))
+                     (kt (if a-dims
+                             (third a-dims)
+                             (nth-value 2 (%spv-mma-shape))))
+                     (pkg (or kernel-pkg (symbol-package (or (%ad-tile-base c-tile) c-tile))))
+                     (ringp (or (eq a-kind :ring) (eq b-kind :ring)))
+                     (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj kernel-pkg))
+                     (a-adj (%tlc-bwd-adj-name a-op  inputs outputs local-adj kernel-pkg))
+                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg))
+                     (core (if (and (not ringp) (%mma-vjp-mma-admissible-p mt nt kt))
+                               (%mma-via-tile-backward form dims-map src-map inputs outputs
+                                                       local-adj kernel-pkg)
+                               (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
+                                                         a-src aoy aox b-src boy box pkg))))
+                (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) ring=~a mma-path=~a"
+                           mt nt kt a-op a-kind b-op b-kind ringp
+                           (%mma-vjp-mma-admissible-p mt nt kt))
+                (multiple-value-bind (acc-sym fn-form) (%vjp-via-tile-body-map form)
+                  (if (not acc-sym)
+                      core
+                      (let* ((cl    (find-package :crisp-language))
+                             (grad  (%map-elements-grad-name fn-form pkg))
+                             (base  (symbol-name (or (%ad-tile-base c-tile) c-tile)))
+                             (p-sym  (intern (format nil "~a_PRIMAL" base) pkg))
+                             (ap-sym (intern (format nil "~a_PRIMAL_A" base) pkg))
+                             (bp-sym (intern (format nil "~a_PRIMAL_B" base) pkg))
+                             (progn-s (intern "PROGN" cl))
+                             (let-s   (intern "LET" cl))
+                             (mrt-s   (intern "MAKE-REGISTER-TILE" cl))
+                             (msm-s   (intern "MAKE-SCRATCH-MATRIX" cl))
+                             (lta-s   (intern "LOAD-TILE-AT" cl))
+                             (sync-s  (intern "SYNC-WORKGROUP" cl))
+                             (flt-s   (intern "FLOAT" cl))
+                             (via-s   (intern "MMA-ACCUMULATE-VIA-TILE" cl))
+                             (vjp-s   (intern "%MAP-ELEMENTS-VJP!" cl))
+                             (fn-s    (intern "FUNCTION" cl)))
+                        (unless grad
+                          (error 'crisp-compiler-error
+                                 :message "map-elements! in a via-tile body: the fused function must be a #'NAME form for its gradient twin to be nameable."
+                                 :source-location nil))
+                        (log:debug "VJP via-tile: fused activation ~a -> dP = dC * ~a(P, dC); re-staging P from ~a / ~a"
+                                   fn-form grad a-src b-src)
+                        `(,progn-s
+                          (,let-s ((,ap-sym (,msm-s ,flt-s (,mt ,kt)))
+                                   (,bp-sym (,msm-s ,flt-s (,kt ,nt)))
+                                   (,p-sym  (,mrt-s ,flt-s (,mt ,nt) 0.0)))
+                                  (,lta-s ,a-src ,ap-sym (,aoy ,aox))
+                                  (,lta-s ,b-src ,bp-sym (,boy ,box))
+                                  (,sync-s)
+                                  (,via-s ,shape ,p-sym ,ap-sym ,bp-sym)
+                                  (,vjp-s ,c-adj ,p-sym (,fn-s ,grad)))
+                          ,core))))))))))))
+
+(register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 150 — refuse a map on the ACCUMULATOR inside a staged reduction (spec errors/07).
+;;;
+;;; WHY THIS BECAME URGENT THE MOMENT map-elements! STARTED WORKING.  Before the form existed,
+;;; errors/07 failed with "Unsupported form MAP-ELEMENTS!" — wrong message, right outcome.  Now
+;;; the same kernel COMPILES, and produces a silently wrong matmul.  That is the failure class
+;;; this project keeps getting bitten by, so the check goes in immediately rather than after
+;;; the benchmark.
+;;;
+;;; THE RULE IS STRUCTURAL, NOT ABOUT LINEARITY.  matrix-multiply-tile-stride calls the body
+;;; once per K-step and the accumulator carries the running sum ACROSS those calls, so a map
+;;; applied there re-transforms the accumulator every step.  With p1 and p2 the two K-steps:
+;;;
+;;;     correct   (map once, in the :epilogue):   2*p1 + 2*p2
+;;;     this bug  (map per K-step):               4*p1 + 2*p2
+;;;
+;;; The only function that survives per-step application is the identity — so this is refused
+;;; for EVERY function, including a plain scale.  errors/07 deliberately uses a linear one.
+;;;
+;;; SCOPE, kept deliberately narrow: only a map on THE ACCUMULATOR is refused — the mmts C-tile
+;;; itself, or the accum binding of a via-tile inside the reduction body.  A map on some other
+;;; register tile in the loop (a register-resident A operand, say) is a legitimate per-step
+;;; transform and is left alone.
+;;; ---------------------------------------------------------------------------
+
+;; src/analysis/control.lisp
+(defun %mmts-accumulator-map-target (reduction-body c-tile)
+  "The target symbol of a map-elements! applied to the ACCUMULATOR anywhere in REDUCTION-BODY,
+   or NIL.  The accumulator is either C-TILE itself or the accum binding of a via-tile in the
+   body.  Walks structurally; deliberately does not use an escape construct, because `return`
+   in :crisp.compiler is Crisp's RETURN macro, not cl:return."
+  (let ((acc-names (list c-tile)))
+    ;; Collect via-tile accum bindings that appear in this reduction body.
+    (labels ((collect (f)
+               (when (consp f)
+                 (when (and (%head-name-eq (first f) "MMA-ACCUMULATE-VIA-TILE")
+                            (>= (length f) 6)
+                            (consp (nth 5 f))
+                            (= (length (nth 5 f)) 1)
+                            (symbolp (first (nth 5 f))))
+                   (push (first (nth 5 f)) acc-names))
+                 (mapc #'collect f))))
+      (mapc #'collect reduction-body))
+    (labels ((find-map (f)
+               (cond
+                 ((not (consp f)) nil)
+                 ((and (%head-name-eq (first f) "MAP-ELEMENTS!")
+                       (>= (length f) 3)
+                       (symbolp (second f))
+                       (member (second f) acc-names))
+                  (second f))
+                 (t (some #'find-map f)))))
+      (some #'find-map reduction-body))))
+
+;; src/analysis/control.lisp
+;; SUPERSEDES the src/ %mmts-lower.  CHANGE: refuses a map on the accumulator in the reduction
+;; body before lowering anything.
+(defun %mmts-lower (c-form c-tile tile-spec k-form k-step grid-y grid-x grid-k body location
+                    &optional (reset-value 0.0))
+  "The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO
+   auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit
+   store + any fusion.  Warns if the C-tile is never stored.
+
+   BUG 036: emits a per-OUTPUT-TILE reset of the accumulator to RESET-VALUE before the K-loop.
+
+   Endeavor 150: REFUSES a map-elements! on the accumulator inside the reduction body, where
+   the accumulator is a partial sum."
+  (multiple-value-bind (reduction-body epilogue-body) (%mmts-split-epilogue body)
+    (let ((bad (%mmts-accumulator-map-target reduction-body c-tile)))
+      (when bad
+        (error 'crisp-compiler-error
+               :message (format nil "map-elements! on ~a inside a matrix-multiply-tile-stride reduction body: the macro runs this body once per K-step, so ~:*~a holds a partial sum here and mapping it re-transforms the running total on every step (even a linear function is wrong — only the identity survives). Move the map into the :epilogue, where the C-tile is complete."
+                                bad)
+               :source-location location)))
+    (unless (%form-tree-mentions-store-tile-p epilogue-body)
+      (format *error-output*
+        "WARNING: matrix-multiply-tile-stride: the C-tile is computed but never stored — add an :epilogue with (store-tile ~a ~a (~a ~a)).~%"
+        (if (symbolp c-tile) c-tile 'C-tile) (if (symbolp c-form) c-form 'C) grid-y grid-x))
+    (let* ((cl-pkg          (find-package :crisp-language))
+           (tile-stride-sym (intern "TILE-STRIDE" cl-pkg))
+           (dotimes-sym     (intern "DOTIMES" cl-pkg))
+           (div-sym         (intern "/" cl-pkg))
+           (to-ulong-sym    (intern "TO-ULONG" cl-pkg))
+           (fill-sym        (intern "FILL-TILE" cl-pkg))
+           (sync-sym        (intern "SYNC-WORKGROUP" cl-pkg))
+           (register-p      (and (listp tile-spec) tile-spec (every #'integerp tile-spec)))
+           (reset-forms     (when register-p
+                              (list (list fill-sym c-tile reset-value)))))
+      (declare (ignorable sync-sym))
+      (append (list tile-stride-sym c-form tile-spec (list grid-y grid-x))
+              reset-forms
+              (list (list* dotimes-sym
+                           (list grid-k
+                                 (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
+                           reduction-body))
+              epilogue-body))))

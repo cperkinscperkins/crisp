@@ -8,8 +8,30 @@ ci-stop.txt is still `149-ad-primal-replay` and MUST STAY THERE until the ladder
 sits after the gate on purpose, so ten deliberately-red specs do not redden CI.  Advancing it is
 the last step of the endeavour, not the first.
 
-IMPLEMENTATION IN PROGRESS — 10/10 forward, 9/10 under --differentiate.  The one failure is
-rung 09, and it is failing for exactly the reason it was written.
+IMPLEMENTATION — 10/10 FORWARD AND 10/10 UNDER --differentiate (2026-08-15).  The fused epilogue
+now differentiates, with the activation's derivative pinned on BOTH sides of the kink:
+
+    08 (probe above the kink)   analytical=1.1994476  numerical=1.1992188   PASS
+    09 (probe below the kink)   analytical=0.0        numerical=0.0         PASS
+    10 (staged, above kink)     analytical=1.2        numerical=1.1992188   PASS
+
+THE 08/09 PAIR EARNED ITS KEEP TWICE, which is worth recording because the design was argued for
+in the spec headers before either rung had ever run.
+
+  - It caught the ORIGINAL defect: the walk dropped the activation entirely, so 09 read the
+    un-activated 1.1994476 against a correct FD of 0.0.
+  - It caught the FIRST FIX being wrong in the opposite direction.  That version recomputed P
+    from the forward-staged tiles, which are EMPTY in a backward kernel, so P was all zeros,
+    f'(0 - 7 < 0) = 0, and every gradient through the activation died.  Rung 09 went GREEN on
+    that bug — a backward that propagates nothing is indistinguishable from a correctly-blocked
+    gradient — and only rung 08, expecting a non-zero 1.2 through the same kernel, exposed it.
+
+    That failure mode was predicted in writing before the fix was attempted, including which
+    rung would go spuriously green.  A single-sided gradient check would have shipped it.
+
+The fix was to re-stage the operands from their GLOBAL sources inside the prefix (the same
+reason %mma-vjp-scalar-lowering reads globals), then recompute P and scale.  Cost stays entirely
+inside the backward; the forward kernel is untouched and its on-metal numbers are byte-identical.
 
 THE FORWARD IS COMPLETE.  All ten specs pass, four of them on NUMBERS from BMG rather than a
 clean compile.  Rung 03's `60 60 60` is the placement discriminator paying off: p1 = 11 and
@@ -34,8 +56,28 @@ AND NOTE WHAT 08 AND 10 DO NOT PROVE.  Both probe where g' = 1, so an activation
 backward passes them too.  Their green is necessary, not sufficient — which is the whole reason
 09 exists.  When the VJP lands, rung 10 likely wants a below-kink twin for the same reason.
 
-REMAINING: the VJP for map-elements! (P2), so the backward multiplies by g'(primal); errors/07's
-partial-sum refusal; then the P3 benchmark.
+SUITE STATUS 2026-08-15, with everything above in place:
+
+    E2E forward          995/995
+    E2E --differentiate  995/995
+    Negative             213/213
+
+errors/07's refusal is IN.  Note it became urgent the moment map-elements! started working: the
+rung used to fail with "Unsupported form MAP-ELEMENTS!" (wrong message, right outcome), and once
+the form existed the same kernel COMPILED and produced a silently wrong matmul.  The check is
+narrow on purpose — only a map on THE ACCUMULATOR is refused (the mmts C-tile itself, or a
+via-tile accum binding inside the reduction body), so a legitimate per-step map on some other
+register tile is untouched, and rungs 03 and 10 (whose maps are in the :epilogue) are unaffected.
+
+REMAINING: rung 11, the fused-vs-cuBLAS benchmark, which is the endeavour's real definition of
+done; rung 01's MMA_CORRECT on any Ampere-or-later card (nvcc is not available on the dev box);
+and the fold of everything out of overlays/crisp-compiler-overlay.lisp into src/.
+
+A NOTE FOR THE FOLD.  `return` is SHADOWED in :crisp.compiler — it is Crisp's RETURN macro, not
+cl:return, and an escape written with it compiles into a call to the nonexistent function
+CRISP.COMPILER::EXPLICIT-RETURN.  That cost one debugging cycle here and was nearly repeated a
+second time in %mmts-accumulator-map-target, which is why both walkers use SOME/MAPC rather than
+an escape.  It belongs on the documented gotcha list beside `char`.
 
 
 A GENERAL AD GAP FOUND ON THE WAY: `funcall` is not differentiable
