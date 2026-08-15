@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate] : validate-differentiate
+;; VERIFY-AUTODIFF: input=4.0 atol=1e-3 expect.input=4.0
+;; KNOWN-ISSUE[verify-autodiff]: ADV-001
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-function sub-calc (val i)
+  (declare #'(float int => float))
+  (* val i))
+
+(def-kernel shadowing_kernel (input &out out-res)
+  (declare #'(cell-float &out cell-float))
+  
+  (let ((x (~ input))) ;; outer x is float
+    (let ((y (sub-calc x 2))) 
+      (let ((x (+ x 1.5))) ;; inner x is float, shadowing outer x
+        (let ((z (sub-calc x 2)))
+          (set! (~ out-res) (+ y z)))))))

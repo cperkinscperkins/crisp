@@ -1,0 +1,33 @@
+;; TEST-EXPECT: PASS
+
+(def-type cell-float (cell float :address-space :global))
+
+;; Macro to generate a math operation overload
+(defmacro def-math-op (type-name)
+  `(def-function op_generated (a b)
+     (declare #'(,type-name ,type-name => ,type-name))
+     (+ a (* b 2))))
+
+;; Generate overloads
+(def-math-op int)
+(def-math-op float)
+
+;; Function that returns multiple values
+(def-function source-values ()
+  (declare #'(=> int float int))
+  (return 5 2.5 10))
+
+;; Kernel
+(def-kernel mvb_macro_kernel (&out out-res)
+  (declare #'(&out cell-float))
+  (let ((x y z (source-values)))
+    ;; x is int(5), y is float(2.5), z is int(10)
+    
+    ;; This should call the int overload: (5) + (10 * 2) = 25
+    (let ((res-int (op_generated x z)))
+      
+      ;; This calls the float overload.
+      ;; Result: 2.5 + (25.0 * 2) = 52.5
+      (let ((res-float (op_generated y (to-float res-int))))
+        
+        (set! (~ out-res) res-float)))))

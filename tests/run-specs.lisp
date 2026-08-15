@@ -466,7 +466,9 @@
 
 (defun run-spec-file (file)
   (let ((directives (extract-test-directives file))
-        (all-passed t))
+        (all-passed t)
+        (vad-skipped nil)
+        (hoist-skipped nil))
 
     ;; Check if we should skip this file entirely based on current flags
     (when (parse-skip-with directives)
@@ -539,9 +541,10 @@
                      (*compile-hardware-profile* (or (parse-hoist-hardware-profile directives)
                                                      *compile-hardware-profile*))
                      (hoist-result (run-spec-with-hoist file backend)))
-                (unless (eq hoist-result :skipped)
-                  (let ((cpp-files hoist-result))
-                    ;; Use find-symbol to look up the existing function symbol
+                (if (eq hoist-result :skipped)
+                    (setf hoist-skipped t)
+                    (let ((cpp-files hoist-result))
+                      ;; Use find-symbol to look up the existing function symbol
                     (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
                       (if (fboundp validator-sym)
                           (unless (funcall validator-sym file cpp-files)
@@ -575,8 +578,10 @@
         (when vad-spec
           (format t "~&Running Spec: ~a (Verify-Autodiff)... " (pathname-name file))
           (finish-output)
-          (unless (run-verify-autodiff-pass file vad-spec)
-            (setf all-passed nil)))))
+          (let ((vad-result (run-verify-autodiff-pass file vad-spec)))
+            (cond
+             ((eq vad-result :skipped) (setf vad-skipped t))
+             ((not vad-result) (setf all-passed nil)))))))
 
     ;; 5. Cleanup: the device modules this spec's compile passes emitted.  Every
     ;; other path already tidies up after itself; the COMPILE-WITH / TEST-WITH
@@ -588,7 +593,27 @@
     (when (and all-passed (not *keep-work*))
       (%cleanup-spec-device-modules file))
 
-    all-passed))
+    (multiple-value-bind (known-issue-id known-issue-scope) (parse-known-issue directives)
+      (if known-issue-id
+          (if all-passed
+              (let ((scope-skipped-p
+                     (cond
+                      ((string-equal known-issue-scope "verify-autodiff")
+                       (or vad-skipped (not *compile-differentiate*)))
+                      ((string-equal known-issue-scope "hoist")
+                       (or hoist-skipped (and (parse-test-hoist directives) *compile-differentiate*)))
+                      (t nil))))
+                (if scope-skipped-p
+                    (progn
+                      (format t "KNOWN-ISSUE ~a hidden (scope ~a was skipped)~%" known-issue-id known-issue-scope)
+                      t)
+                    (progn
+                      (format t "UNEXPECTED-PASS (Known Issue ~a passed unexpectedly!)~%" known-issue-id)
+                      nil)))
+              (progn
+                (format t "KNOWN-FAIL (~a)~%" known-issue-id)
+                t))
+          all-passed))))
 
 
 (defun run-spec-runtime-checks-pass (file validator)
@@ -2218,6 +2243,19 @@
                (t (warn "Unknown TEST-EXPECT value: ~a" value)
                   (return-from parse-test-expect nil)))))))
   nil)
+
+(defun parse-known-issue (directive-lines)
+  "Parses KNOWN-ISSUE[scope]: <ID> or KNOWN-ISSUE: <ID> from header comments.
+   Returns (values id scope), where scope is a string (e.g. \"verify-autodiff\") or NIL."
+  (dolist (line directive-lines)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "KNOWN-ISSUE")
+        (let* ((end-bracket (position #\] trimmed))
+               (colon (position #\: trimmed :start (or end-bracket 0)))
+               (scope (when end-bracket (subseq trimmed 12 end-bracket)))
+               (id (when colon (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed (1+ colon))))))
+          (return-from parse-known-issue (values id scope))))))
+  (values nil nil))
 
 (defun parse-fail-with (directive-lines)
   "Parses FAIL-WITH[--flag]: 'message' directives.
