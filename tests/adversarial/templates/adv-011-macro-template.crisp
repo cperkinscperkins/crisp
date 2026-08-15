@@ -1,4 +1,5 @@
 ;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate] : validate-differentiate
 ;; KNOWN-ISSUE[differentiate]: ADV-011
 (def-type cell-float (cell float :address-space :global))
 
