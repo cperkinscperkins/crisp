@@ -40,3 +40,18 @@ When an issue is added here, the corresponding adversarial test should be tagged
 * **Location:** `tests/adversarial/enum-branching-autodiff/01-enum-branching.crisp`
 * **Description:** The auto-diff engine crashes when a branch depends on an enum. It first fails because `EQ` is not considered differentiable. Then it fails because `IF` cannot unify the keyword branches to the enum type.
 * **Scope:** none (fails on all passes)
+
+### ADV-008: Kernel-Boundary Struct Mutation Loophole
+* **Location:** `tests/adversarial/struct-mutation-loophole/01-struct-mutation.crisp`
+* **Description:** The compiler fails to correctly track struct mutability when a `def-struct` passed directly at the kernel boundary is passed to a sub-function that mutates it.
+* **Scope:** none (fails on all passes)
+
+### ADV-009: Poor Error Reporting for Illegal Recursive/Forward Types
+* **Location:** `tests/adversarial/struct-self-reference/01-struct-self-ref.crisp`
+* **Description:** Crisp intentionally does not support recursive types, containers, or forward declarations. However, the compiler fails to elegantly catch and report this violation. Instead of emitting a clear user-facing error about illegal recursive types, it crashes or throws a generic unknown type error.
+* **Scope:** none (fails on all passes)
+
+### ADV-010: Struct Accessors as Higher-Order Functions
+* **Location:** `tests/adversarial/struct-accessor-hof/01-struct-hof.crisp`
+* **Description:** The compiler crashes when attempting to pass a struct accessor (e.g. `#'x~`) as a higher-order function. Struct accessors are not properly registered as functions for template monomorphization.
+* **Scope:** none (fails on all passes)
