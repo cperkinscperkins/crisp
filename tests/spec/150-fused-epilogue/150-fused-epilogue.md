@@ -151,7 +151,8 @@ logical (row, col) a register holds.  On PTX that is fieldwise over the 4-float 
 cooperative matrices support per-component access for exactly this reason, while the
 component→element mapping is deliberately implementation-defined.
 
-  TO CONFIRM: that our llvm-spirv path emits coop-matrix component access cleanly.  Not verified.
+  CONFIRMED 2026-08-14 by spike, against our own bin/llvm-spirv.exe (LLVM 22.0.0git).  The
+  idiom, and the disassembled proof, are recorded below under "The SPV element-access idiom".
 
 **The moment you leave elementwise, that breaks.**  Bias-add needs each register's COLUMN index.
 Row-wise max / softmax needs cross-lane reduction.  Both require committing to a documented
@@ -161,6 +162,52 @@ that map cannot be validated by round-tripping.
 
 Bias-add is the most-requested companion to ReLU in real epilogues, so it will be asked for in
 week one.  It is P4, and it does not gate P0-P3.
+
+
+The SPV element-access idiom — CONFIRMED
+-----------------------------------------
+
+This was the one genuinely unknown piece of the design: whether our llvm-spirv path can express
+per-component access on an opaque cooperative matrix at all.  It can.  Spiked directly against
+bin/llvm-spirv.exe (LLVM 22.0.0git) with a hand-written module; artifacts in
+put_temp_files_here/150-spv/.
+
+THE IDIOM.  A coop matrix is an LLVM TARGET EXTENSION TYPE,
+`target("spirv.CooperativeMatrixKHR", float, 3, rows, cols, use)`, and ops are calls to
+specially-named `__spirv_*` externals that the translator lowers.  Two more of those give
+element access:
+
+    %len = call i32 @__spirv_CooperativeMatrixLengthKHR(<coop matrix value>)
+    %ep  = call ptr @__spirv_AccessChain(ptr %matrix_alloca, i64 %idx)
+    ; then an ordinary load / arithmetic / store on %ep
+
+THE HAPPY ACCIDENT that makes this cheap: our codegen ALREADY places each tile fragment in an
+`alloca` of the coop type, with load/store around it —
+
+    %"c-tile$f0" = alloca target("spirv.CooperativeMatrixKHR", float, 3, 8, 16, 2), align 8
+
+which is exactly the pointer `OpAccessChain` needs.  No restructuring required.
+
+THE PROOF, from `llvm-spirv --to-text` on the spike:
+
+    CooperativeMatrixLengthKHR 10 20 19
+    AccessChain 21 24 17 23
+    Load 9 25 24 2 4
+    FMul 9 27 25 26
+    Store 24 27 2 4
+    CooperativeMatrixStoreKHR 7 28 29 30 0
+
+Both builtins became NATIVE INSTRUCTIONS.  That distinction is the whole point of checking: a
+`__spirv_*` call that survives translation as a call gets Import linkage and fails at device
+link with L0 UNLINKED — the trap this project already hit once with the SPIR-V builtins.
+
+ONE CONSEQUENCE FOR THE LOWERING, and it makes SPV differ from PTX.
+`OpCooperativeMatrixLengthKHR` yields a RUNTIME value: how many components an invocation holds
+is implementation-defined and deliberately not a compile-time constant.  So the SPV map must be
+a LOOP over [0, len), where the PTX map is an unrolled fieldwise rewrite.  That is not a
+limitation to work around — it is the same fact that makes elementwise fusion portable in the
+first place (we never learn which logical element we hold, so we cannot accidentally depend on
+it), and it is why layout-aware epilogues stay out of scope.
 
 
 The partial-sum rule — and a compiler check that should come out of it
