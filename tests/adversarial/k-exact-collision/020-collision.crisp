@@ -1,0 +1,9 @@
+;; TEST-EXPECT: FAIL
+;; KNOWN-ISSUE: ADV-019
+(with-template-type (T)
+    (def-kernel-exact my_call_function (byte-size ptr offset)
+        (declare #'(ulong voidp ulong))
+        (return)))
+
+(gen-my_call_function long "my_colliding_kernel")
+(gen-my_call_function float "my_colliding_kernel")

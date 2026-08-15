@@ -90,3 +90,13 @@ When an issue is added here, the corresponding adversarial test should be tagged
 * **Location:** `tests/adversarial/autodiff-scratch-cell/017-autodiff-scratch.crisp` and `tests/adversarial/scratch-cell-template/017-scratch-template.crisp`
 * **Description:** The differentiation engine throws a "Function is not differentiable" error when encountering functions that allocate scratch cells via `make-scratch-cell`. This indicates that implicit `scratch-cell` allocation (and SROA) is completely unsupported during backward passes. Like ADV-016, this also appears to trigger an SBCL memory corruption fault at shutdown.
 * **Scope:** differentiate
+
+### ADV-018: Def-Type Struct Alias Accessor Failure
+* **Location:** `tests/adversarial/def-type-struct-props/018-def-type-props.crisp`
+* **Description:** When using `def-type` to alias a `def-struct` (e.g., locking in a compile-time property like `(def-type fast-cfg (my-cfg :exec :fast))`), the struct accessor macros (like `val~`) fail with `Unknown struct type FAST-CFG in extraction.` This means struct accessors do not resolve `def-type` aliases before type-checking, breaking struct field access on aliased types.
+* **Scope:** none (fails on all passes)
+
+### ADV-019: Exact Kernel Name Collision Loophole
+* **Location:** `tests/adversarial/k-exact-collision/020-collision.crisp`
+* **Description:** The `gen-XXXX` form for `def-kernel-exact` requires an explicit C-style string for the emitted kernel name. However, the compiler frontend completely fails to validate the uniqueness of these names. If two different templates generate kernels with the same exact string name (e.g., `"my_colliding_kernel"`), the compiler silently emits both into the same IR module, which will cause linker or backend compiler failures later in the pipeline.
+* **Scope:** none (fails on all passes)

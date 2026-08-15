@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; KNOWN-ISSUE: ADV-018
+(def-enumeration mode :fast :slow)
+(def-struct my-cfg (val float) (exec mode :c-t))
+
+(def-type fast-cfg (my-cfg :exec :fast))
+(def-type slow-cfg (my-cfg :exec :slow))
+
+(def-function use-cfg (c)
+  (declare #'(fast-cfg => float))
+  (val~ c))
+
+(def-kernel def_type_props (in_val)
+  (declare #'(float => nil))
+  (let ((cfg (make-my-cfg :val in_val :exec :fast)))
+    (use-cfg cfg)))
