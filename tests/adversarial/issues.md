@@ -55,3 +55,38 @@ When an issue is added here, the corresponding adversarial test should be tagged
 * **Location:** `tests/adversarial/struct-accessor-hof/01-struct-hof.crisp`
 * **Description:** The compiler crashes when attempting to pass a struct accessor (e.g. `#'x~`) as a higher-order function. Struct accessors are not properly registered as functions for template monomorphization.
 * **Scope:** none (fails on all passes)
+
+### ADV-011: Macro-Generated Template Autodiff Loophole
+* **Location:** `tests/adversarial/macro-local-template/011-macro-template.crisp`
+* **Description:** The autodiff engine fails to differentiate templates that are generated via top-level macro expansion. Because AD runs before or independently of full macro expansion, it considers the macro-generated template function invisible/non-differentiable.
+* **Scope:** `[differentiate]`
+
+### ADV-012: Compile-Time Property Overload Resolution Failure
+* **Location:** `tests/adversarial/overload-c-t-property/012-c-t-overload.crisp`
+* **Description:** The compiler strips `:c-t` compile-time properties during the overload resolution phase. Therefore, it is impossible to overload a function based on different `:c-t` property constraints (e.g., `(:mode :fast)` vs `(:mode :safe)`), resulting in an ambiguous or non-matching overload error.
+* **Scope:** none (fails on all passes)
+
+### ADV-013: Phi-Node Compile-Time Property Stripping
+* **Location:** `tests/adversarial/phi-node-c-t-unification/013-phi-unification.crisp`
+* **Description:** A major loophole allows converting complete types into incomplete types at runtime via `IF` branching (phi-nodes). When a true branch produces `(config-rec :mode :fast)` and a false branch produces `(config-rec :mode :slow)`, the phi-node unifies them by simply stripping the `:c-t` property, returning an incomplete type. If this incomplete type is then passed to a helper that enforces a specific `:c-t` property, it crashes the compiler. This circumvents the static safety of complete types.
+* **Scope:** none (fails on all passes)
+
+### ADV-014: Cell of Incomplete Type Loophole
+* **Location:** `tests/adversarial/cell-incomplete-type/014-cell-incomplete.crisp`
+* **Description:** The compiler successfully compiles a kernel that takes a `cell` whose element type is incomplete (e.g., missing required `:c-t` properties). The type checker should enforce that `cell` element types are complete at the kernel boundary (since pointer arithmetic requires size/layout), but it erroneously permits them, leading to undefined runtime behavior.
+* **Scope:** none (fails on all passes)
+
+### ADV-015: Nested Cell Type Parsing Failure
+* **Location:** `tests/adversarial/cell-nested/015-cell-nested.crisp`
+* **Description:** The type-specifier parser for `def-type` crashes when attempting to parse a nested `cell` declaration like `(cell (cell float :address-space :global) :address-space :global)`. The macro expander mangles the nested keyword arguments (stripping the keyword colon or the value itself), leading to a `Missing value for :ADDRESS-SPACE` compilation error.
+* **Scope:** none (fails on all passes)
+
+### ADV-016: Autodiff Over Advanced Signatures
+* **Location:** `tests/adversarial/autodiff-advanced-signatures/016-autodiff-optional.crisp`
+* **Description:** The differentiation engine crashes with an "Unsupported form" error when attempting to differentiate functions that use advanced signatures like `&optional` (and likely `&key`). The engine fails to handle the `is-set?` special form or the optional parameters themselves, blocking differentiation. Additionally, this seems to cause a memory corruption segfault in SBCL during teardown.
+* **Scope:** differentiate
+
+### ADV-017: Autodiff Over Scratch Cells
+* **Location:** `tests/adversarial/autodiff-scratch-cell/017-autodiff-scratch.crisp` and `tests/adversarial/scratch-cell-template/017-scratch-template.crisp`
+* **Description:** The differentiation engine throws a "Function is not differentiable" error when encountering functions that allocate scratch cells via `make-scratch-cell`. This indicates that implicit `scratch-cell` allocation (and SROA) is completely unsupported during backward passes. Like ADV-016, this also appears to trigger an SBCL memory corruption fault at shutdown.
+* **Scope:** differentiate

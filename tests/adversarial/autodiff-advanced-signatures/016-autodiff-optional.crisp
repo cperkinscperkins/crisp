@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; KNOWN-ISSUE[differentiate]: ADV-016
+(def-type cell-float (cell float :address-space :global))
+
+(def-function my-opt-func (a &optional b)
+  (declare #'(float &optional float => float))
+  (let ((res a))
+    (when (is-set? b)
+      (set! res (* res b)))
+    res))
+
+(def-kernel autodiff_optional (in_val &out out_res opt_val)
+  (declare #'(float &out cell-float float => nil))
+  (set! (~ out_res) (my-opt-func in_val opt_val)))

@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+(with-template-type (T)
+  (def-function my-template-key (a &key b)
+    (declare #'(T &key :b T => T))
+    (let ((res a))
+      (when (is-set? b)
+        (set! res b))
+      res)))
+
+(gen-my-template-key int)
+
+(def-kernel template_key (in_val &out out_res)
+  (declare #'(int &out (cell int :address-space :global) => nil))
+  (set! (~ out_res) (my-template-key in_val :b in_val)))

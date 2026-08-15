@@ -1,0 +1,7 @@
+;; TEST-EXPECT: PASS
+;; KNOWN-ISSUE: ADV-015
+(def-type my-nested-cell (cell (cell float :address-space :global) :address-space :global))
+
+(def-kernel cell_of_cell (in_val &out out_res)
+  (declare #'(float &out my-nested-cell => nil))
+  (set! (~ (~ out_res)) in_val))

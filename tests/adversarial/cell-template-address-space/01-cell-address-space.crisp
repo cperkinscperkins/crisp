@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+(def-type global-cell (cell float :address-space :global))
+(def-type local-cell (cell float :address-space :local))
+
+(with-template-type (C)
+  (def-function generic-read (c)
+    (declare #'(C => float))
+    (~ c)))
+
+(gen-generic-read global-cell)
+(gen-generic-read local-cell)
+
+(def-kernel template_address_space (in_val &out out_res in_local)
+  (declare #'(float &out global-cell local-cell => nil))
+  (set! (~ out_res) (+ in_val (generic-read in_local))))

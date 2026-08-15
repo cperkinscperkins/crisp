@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+(def-type cell-float (cell float :address-space :global))
+
+(def-function mutate-cell (c v)
+  (declare #'(cell-float float => nil))
+  (set! (~ c) v))
+
+(def-kernel autodiff_cell_mutation (in_val &out out_res)
+  (declare #'(float &out cell-float => nil))
+  (mutate-cell out_res in_val))
