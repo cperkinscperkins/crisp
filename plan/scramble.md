@@ -609,7 +609,7 @@ changed to :descendant to make the tests pass at some point. Or not. Check thoug
       Also, see if it's sequested to --ir-target=spv only. NVidia doesn't have the same bug
       so when --ir-target is .ptx we don't need the "volatile" workaround. Check to make sure.
 
-- [ ] 031 address
+- [x] 031 address
 - [ ] literal "true" (and "nil" / "false"?) and bool type. avoid "t" or "T".
 
 Grid vs Thread Context
@@ -724,7 +724,7 @@ Should we do something for the compiler itself?
 - [x] update INSTALL.md instructions.
 - [x] README.md should link to INSTALL.md
 - [x] handling of opt.exe / 
-- [ ] INSTALL.md has outdated info ( L0 only no CUDA, etc)
+- [x] INSTALL.md has outdated info ( L0 only no CUDA, etc)
 
 Integer Only Operations
 =======================
@@ -753,6 +753,7 @@ MMA
 [ ] auto-differentiation
 - [x] verify autodiff on cuda
 - [x] need primal replay
+- [ ] still some loose ends
 [ ] new macro for rings (prefetch/pipeline) that handles rings
 [ ] push FURTHER - mix prefetch, SLM and warp specialization
 [ ] NVidia? 
@@ -761,13 +762,13 @@ MMA
 
 [x] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
-[ ] Intel can't do col-major (optimally)?  Need to document this. May need to think.
+[x] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] move MMA out of topology.md into main docs
 
-[ ] don't forget bug 033 ( --debug )
+[x] don't forget bug 033 ( --debug )
 
 [ ] (benchmarking) the CUDA arch skip-gate (your Vera Rubin point — a capability check rather than an arch allowlist); 
-[ ] bug 035 (:col-major silently ignored on SPV); 
+[x] bug 035 (:col-major silently ignored on SPV); 
 [x]  unreachable STORE-TILE entry in anf-normalize's opaque list; 
 [x] to-float having no AD rule;
 [x] a CUDA *ad-runtime* if you ever want the PTX backward proven numerically rather than structurally.
@@ -859,7 +860,7 @@ AG TASKS
 [ ] benchmark reductions etc
 [ ] benchmark A|D ??
 [x] add full hardware profile to samples on readme
-[ ] some sort of CTS?
+[x] some sort of CTS?
 
 
 

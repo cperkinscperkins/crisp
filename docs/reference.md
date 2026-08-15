@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-08-14T17:55:43.606383Z
+Generated on 2026-08-15T00:01:11.110196Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -3478,7 +3478,7 @@ Generated on 2026-08-14T17:55:43.606383Z
 ### DEFUN `%ATTACH-DEBUG-LOC`
 - **Args**: `(INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)`
 
-  > Helper: Creates and attaches a debug location to the instruction if metadata is available.
+  > Helper: Creates and attaches a debug location to the instruction if metadata is available.  >   >    BUG 033: LLVMInstructionSetDebugLoc is an unchecked unwrap<Instruction>, so INST is  >    verified with LLVMIsAInstruction first.  IRBuilder constant-folds, so a build call over  >    compile-time-constant operands yields a Constant, not an Instruction, and attaching to  >    it is undefined behaviour (a hard memory fault on Windows under --debug).  The  >    DILocation is still created and returned either way.
 
 
 ---
@@ -7248,11 +7248,18 @@ Generated on 2026-08-14T17:55:43.606383Z
 - **Args**: `(FORMS)`
 
 ---
+### DEFUN `%ONLY-FORWARD-KERNELS`
+- **Args**: `(NAMES)`
+
+  > Removes AD-minted backward twins from NAMES.  >   >    A name is dropped only when it is <OTHER>_GRAD *and* <OTHER> is itself in  >    NAMES -- i.e. it is the backward companion of a kernel we are already  >    emitting.  This keeps the forms path and the *COMPILED-KERNELS* fallback  >    producing the same set of sidecars.  See BUG 042.
+
+
+---
 ### DEFUN `GENERATE-METADATA-FOR-FILE`
 - **Args**: `(INPUT-PATH OUTPUT-PATH &KEY (OUTPUT-TARGETS NIL)
               (SOURCE-FILE NIL) (FORMS NIL))`
 
-  > Generates .metacrisp sidecar files for each kernel in INPUT-PATH.  >    In differentiate mode (*differentiate-p*), generates metadata for the backward  >    (_GRAD) kernel rather than the forward kernel, while preserving the file-name  >    convention established by main.lisp (output-path already carries the _grad prefix).
+  > Generates .metacrisp sidecar files for each kernel in INPUT-PATH.  >    In differentiate mode (*differentiate-p*), generates metadata for the backward  >    (_GRAD) kernel rather than the forward kernel, while preserving the file-name  >    convention established by main.lisp (output-path already carries the _grad prefix).  >   >    When FORMS is supplied the kernel list is read from the source forms.  When it  >    is not (the --single-pass path), it falls back to *COMPILED-KERNELS* -- the  >    kernels registered by the DEF-KERNEL macro -- NOT to *FUNCTION-TABLE*, which  >    holds every function including compiler internals and produced one bogus  >    .metacrisp per accessor.  That fallback is filtered through  >    %ONLY-FORWARD-KERNELS so AD-minted K_GRAD twins do not each get a sidecar of  >    their own.  See BUG 042.
 
 
 ---
@@ -7356,10 +7363,17 @@ Generated on 2026-08-14T17:55:43.606383Z
 
 
 ---
+### DEFUN `%COOP-REFUSE-COL-MAJOR`
+- **Args**: `(TENSOR-NODE)`
+
+  > Signals the BUG 035 refusal for a :col-major cooperative-matrix operand on SPIR-V.  >   >    Split out from %COOP-LAYOUT-OF so the message lives in one place and the  >    negative spec has a stable substring to match.
+
+
+---
 ### DEFUN `%COOP-LAYOUT-OF`
 - **Args**: `(TENSOR-NODE)`
 
-  > The coop load/store MemoryLayout for an operand, derived from its tensor type's  >    :contiguous-term (NOT hardcoded): :last (row-major) -> 0 (RowMajor); :first (col-major)  >    -> 1 (ColMajor).  So the layout matches how the matrix is actually stored — the stride  >    in %coop-tensor-ptr+stride follows (s0 for RowMajor, s1 for ColMajor).  NOTE: Intel has  >    no ColumnMajor-B coop builtin, so an Intel B operand must be declared :row-major.
+  > The coop load/store MemoryLayout for an operand, derived from its tensor type's  >    :contiguous-term (NOT hardcoded): :last (row-major) -> 0 (RowMajor); :first (col-major)  >    -> 1 (ColMajor).  So the layout matches how the matrix is actually stored — the stride  >    in %coop-tensor-ptr+stride follows (s0 for RowMajor, s1 for ColMajor).  >   >    Resolves the operand type with %TS-CANONICALIZE-TENSOR-TYPE rather than  >    CANONICALIZE-TYPE-SPECIFIER: at a load site the operand is usually a kernel  >    parameter carrying a MANGLED type symbol, which only the former can expand.  >    The result is normalised to a keyword because the unmangler yields plain  >    symbols.  Unresolvable types keep the historical :last / RowMajor default.  >   >    On :spirv a resolved :first (col-major) is REFUSED at compile time rather than  >    emitted — see %COOP-REFUSE-COL-MAJOR for the measurements behind that.  >    See BUG 035.
 
 
 ---
@@ -7577,7 +7591,7 @@ Generated on 2026-08-14T17:55:43.606383Z
 ### DEFUN `%EMIT-PER-FRAG-ACCUMULATE`
 - **Args**: `(A B ENTRY TILES &OPTIONAL ACCUM-BINDING BODY)`
 
-  > Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a  >    static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B  >    are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its  >    pre-loaded fragment var instead of load-fragment-a/b.  >   >    Endeavor 145 P3a: the staged operands may span SEVERAL native K-steps (Kt / K_n, compile-time)  >    and every one of them now fires.  Previously only K-index 0 was emitted and any surplus staged  >    data was silently dropped.  For the F3 body/accum-op API this means (accum-op) fires the  >    fragment's WHOLE contraction — all of its K-steps — which keeps the promise that the body  >    controls WHEN a fragment accumulates, not how its contraction is chopped up.
+  > Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a  >    static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B  >    are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its  >    pre-loaded fragment var instead of load-fragment-a/b.  >   >    Endeavor 145 P3a: the staged operands may span SEVERAL native K-steps (Kt / K_n, compile-time)  >    and every one of them now fires.  Previously only K-index 0 was emitted and any surplus staged  >    data was silently dropped.  For the F3 body/accum-op API this means (accum-op) fires the  >    fragment's WHOLE contraction — all of its K-steps — which keeps the promise that the body  >    controls WHEN a fragment accumulates, not how its contraction is chopped up.
 
 
 ---
@@ -7692,14 +7706,14 @@ Generated on 2026-08-14T17:55:43.606383Z
 ### DEFUN `%EXPLODE-REWRITE-BODY-FORM`
 - **Args**: `(FORM TILES)`
 
-  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references  >    to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
+  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references  >    to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
 
 
 ---
 ### DEFUN `%EXPLODE-REGISTER-TILES`
 - **Args**: `(LET-EXPR &OPTIONAL LOCATION CONTEXT)`
 
-  > Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in  >    LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the  >    body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register  >    FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.  >    Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp  >    allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions  >    to reconstruct each warp's logical fragment range).  >    Endeavor 145 P3a: also publishes the LET's SLM scratch-tile shapes in *mma-scratch-tile-dims* so  >    the accumulate expansion can walk K within a staged tile.
+  > Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in  >    LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the  >    body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register  >    FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.  >    Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp  >    allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions  >    to reconstruct each warp's logical fragment range).  >    Endeavor 145 P3a: also publishes the LET's SLM scratch-tile shapes in *mma-scratch-tile-dims* so  >    the accumulate expansion can walk K within a staged tile.
 
 
 ---
@@ -7727,14 +7741,14 @@ Generated on 2026-08-14T17:55:43.606383Z
 ### DEFUN `%MMTS-REGISTER-DIMS-MAP`
 - **Args**: `(BINDINGS)`
 
-  > Alist var -> ((M N) INIT) for each register-tile binding in a let's BINDINGS.  >    BUG 036: now carries the declared INIT as well as the dims, so the lowering can reset each  >    output tile to the value the user actually asked for.
+  > Alist var -> ((M N) INIT) for each register-tile binding in a let's BINDINGS.  >    BUG 036: now carries the declared INIT as well as the dims, so the lowering can reset each  >    output tile to the value the user actually asked for.
 
 
 ---
 ### DEFUN `%EXPAND-MMTS-REGISTER-IN-FORM`
 - **Args**: `(FORM REG-MAP LOCATION)`
 
-  > Rewrite matrix-multiply-tile-stride forms whose C-tile is a register tile (in REG-MAP)  >    to their tile-stride + K-loop lowering with a compile-time (M N) size-list tile-spec,  >    so the generated store-tile/mma are visible to the register-tile SROA explosion.  >    BUG 036: forwards the tile's declared INIT as the per-output-tile reset value.
+  > Rewrite matrix-multiply-tile-stride forms whose C-tile is a register tile (in REG-MAP)  >    to their tile-stride + K-loop lowering with a compile-time (M N) size-list tile-spec,  >    so the generated store-tile/mma are visible to the register-tile SROA explosion.  >    BUG 036: forwards the tile's declared INIT as the per-output-tile reset value.
 
 
 ---
@@ -7754,7 +7768,7 @@ Generated on 2026-08-14T17:55:43.606383Z
 ---
 ### DEFUN `REGISTER-MMA-ANALYZERS`
 
-  > Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms.  >    Endeavor 145 P2: adds LOAD-FRAGMENT-ACC (the store-fragment inverse).
+  > Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms.  >    Endeavor 145 P2: adds LOAD-FRAGMENT-ACC (the store-fragment inverse).
 
 
 ---
@@ -7883,41 +7897,41 @@ Generated on 2026-08-14T17:55:43.606383Z
 ### DEFUN `ANALYZE-LOAD-FRAGMENT-ACC`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2 (145): (load-fragment-acc SRC (TY TX)) reads a fp32 ACCUMULATOR fragment from the  >    SRC matrix at logical tile (TY TX).  The exact inverse of store-fragment.  >   >    :spirv -> CooperativeMatrixLoadKHR with Use=2 (accumulator), rows/cols from the active  >    profile's shape and layout from the source tensor's :contiguous-term — mirroring  >    analyze-store-fragment so a Load/Store pair always agrees.  >   >    else   -> the NVIDIA per-lane read at the m16n8 fp32 accumulator layout.  With  >    g = lane/4 and t = lane%4 this lane's four registers live at  >      (g, 2t) (g, 2t+1) (g+8, 2t) (g+8, 2t+1)  >    offset by the tile origin (TY*16, TX*8) — byte-for-byte the addresses store-fragment  >    writes, only feeding %construct-struct instead of set!.  >   >    The fragment is tallied against the kernel's register budget exactly as  >    make-register-fragment tallies one: a LOADED accumulator occupies the same registers  >    as a constructed one, and endeavor 144's fit-check must see both.
+  > P2 (145): (load-fragment-acc SRC (TY TX)) reads a fp32 ACCUMULATOR fragment from the  >    SRC matrix at logical tile (TY TX).  The exact inverse of store-fragment.  >   >    :spirv -> CooperativeMatrixLoadKHR with Use=2 (accumulator), rows/cols from the active  >    profile's shape and layout from the source tensor's :contiguous-term — mirroring  >    analyze-store-fragment so a Load/Store pair always agrees.  >   >    else   -> the NVIDIA per-lane read at the m16n8 fp32 accumulator layout.  With  >    g = lane/4 and t = lane%4 this lane's four registers live at  >      (g, 2t) (g, 2t+1) (g+8, 2t) (g+8, 2t+1)  >    offset by the tile origin (TY*16, TX*8) — byte-for-byte the addresses store-fragment  >    writes, only feeding %construct-struct instead of set!.  >   >    The fragment is tallied against the kernel's register budget exactly as  >    make-register-fragment tallies one: a LOADED accumulator occupies the same registers  >    as a constructed one, and endeavor 144's fit-check must see both.
 
 
 ---
 ### DEFVAR `*MMA-SCRATCH-TILE-DIMS*`
 
-  > Endeavor 145 P3a: alist (SYM ROWS COLS) of the SLM scratch tiles bound by the LET currently  >    being exploded.  %emit-per-frag-accumulate reads it to learn a staged operand's K extent so it  >    can walk K WITHIN the tile.  Bound by %explode-register-tiles; NIL elsewhere, in which case a  >    staged operand is assumed to span exactly one native K-step (the pre-145 behaviour).  >   >    A special variable rather than a threaded parameter so %explode-rewrite-body-form — which  >    carries the endeavor-142 register block-load branches — does not have to change.
+  > Endeavor 145 P3a: alist (SYM ROWS COLS) of the SLM scratch tiles bound by the LET currently  >    being exploded.  %emit-per-frag-accumulate reads it to learn a staged operand's K extent so it  >    can walk K WITHIN the tile.  Bound by %explode-register-tiles; NIL elsewhere, in which case a  >    staged operand is assumed to span exactly one native K-step (the pre-145 behaviour).  >   >    A special variable rather than a threaded parameter so %explode-rewrite-body-form — which  >    carries the endeavor-142 register block-load branches — does not have to change.
 
 
 ---
 ### DEFUN `%MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS`
 - **Args**: `(BINDINGS)`
 
-  > Endeavor 145 P3a: the (SYM ROWS COLS) dims of every compile-time-shaped  >    (V (make-scratch-matrix <elem> (ROWS COLS))) binding in BINDINGS.  >   >    Only literal integer 2-lists are recorded; a scratch tile whose shape is derived from another  >    tensor contributes nothing and falls back to the one-K-step assumption.
+  > Endeavor 145 P3a: the (SYM ROWS COLS) dims of every compile-time-shaped  >    (V (make-scratch-matrix <elem> (ROWS COLS))) binding in BINDINGS.  >   >    BUG 040: also records (V (make-scratch-matrix-ring <elem> (ROWS COLS) :ring-count N)),  >    whose PER-SLOT shape sits at the same argument position.  Without it an MMA reading from  >    a ring slot could not learn its operand's K extent and silently contracted over one  >    native K-step.  Only the MATRIX ring is recognised -- vector and tensor rings are not  >    valid 2-D MMA operands -- and the 2-integer-list guard filters anything else.  >   >    Only literal integer 2-lists are recorded; a scratch tile whose shape is derived from another  >    tensor contributes nothing and falls back to the one-K-step assumption.
 
 
 ---
 ### DEFUN `%MMA-OPERAND-EXTENT`
 - **Args**: `(REF TILES WHICH)`
 
-  > Endeavor 145 P3a: the compile-time extent (WHICH = :rows | :cols) of an  >    mma-accumulate-via-tile operand REF, or NIL if not compile-time known.  >   >    Handles both operand flavours: a register tile / ring slot (normalized to  >    (V m n syms ...) by %resolve-tile-ref) and an SLM scratch tile (via  >    *mma-scratch-tile-dims*).
+  > Endeavor 145 P3a: the compile-time extent (WHICH = :rows | :cols) of an  >    mma-accumulate-via-tile operand REF, or NIL if not compile-time known.  >   >    Handles both operand flavours: a register tile / ring slot (normalized to  >    (V m n syms ...) by %resolve-tile-ref) and an SLM scratch tile (via  >    *mma-scratch-tile-dims*).  >   >    BUG 040: an SLM ring slot arrives as the FORM (ring-get RING SLOT) rather than a bare  >    symbol, so it is unwrapped to RING before the *mma-scratch-tile-dims* lookup.  SLOT is  >    intentionally not inspected: every slot has the same shape, so the extent does not depend  >    on it, and demanding a compile-time slot would reject runtime-indexed SLM pipelines.
 
 
 ---
 ### DEFUN `%MMA-K-STEPS`
 - **Args**: `(A B TILES SK LOCATION)`
 
-  > Endeavor 145 P3a: how many native K-steps the staged operands span — A's COLUMN extent (Kt)  >    divided by the instruction's K.  Defaults to 1 when the shape is not compile-time known,  >    reproducing the pre-145 behaviour exactly.  >   >    Also cross-checks the operands: A is Mt x Kt and B is Kt x Nt, so A's column extent must equal  >    B's row extent.  Such a mismatch used to be silently truncated to one K-step; it is a hard error  >    now, since it can only mean the staged tiles disagree about the contraction length.
+  > Endeavor 145 P3a: how many native K-steps the staged operands span — A's COLUMN extent (Kt)  >    divided by the instruction's K.  Defaults to 1 when the shape is not compile-time known,  >    reproducing the pre-145 behaviour exactly.  >   >    Also cross-checks the operands: A is Mt x Kt and B is Kt x Nt, so A's column extent must equal  >    B's row extent.  Such a mismatch used to be silently truncated to one K-step; it is a hard error  >    now, since it can only mean the staged tiles disagree about the contraction length.
 
 
 ---
 ### DEFUN `%EMIT-PER-FRAG-ACC-LOAD`
 - **Args**: `(SRC TILE-ID ENTRY)`
 
-  > Endeavor 145 P3b: per-fragment expansion of  >    (%load-register-tile-acc TILE SRC (TY TX)) — the exact mirror of %emit-per-frag-store,  >    reading each accumulator fragment back out of SRC with P2's load-fragment-acc instead of  >    writing it.  This is where the fragment element->lane MAPPING finally becomes  >    load-bearing: the seeded gradient is non-zero, so a wrong mapping changes the answer  >    (unlike the zero-seed of P2's own spec).
+  > Endeavor 145 P3b: per-fragment expansion of  >    (%load-register-tile-acc TILE SRC (TY TX)) — the exact mirror of %emit-per-frag-store,  >    reading each accumulator fragment back out of SRC with P2's load-fragment-acc instead of  >    writing it.  This is where the fragment element->lane MAPPING finally becomes  >    load-bearing: the seeded gradient is non-zero, so a wrong mapping changes the answer  >    (unlike the zero-seed of P2's own spec).
 
 
 ---
