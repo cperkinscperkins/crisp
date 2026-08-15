@@ -1,0 +1,55 @@
+;; Endeavor 150 rung 22 — NVIDIA twin of rung 05, THE THESIS RUNG: an activation the compiler
+;; has never heard of, written entirely in the spec, fused onto the accumulator in registers.
+;;
+;; If rung 21 passes and this one does not, we have reimplemented cuBLASLt's fixed enum of
+;; epilogues on NVIDIA and the endeavour has not earned its keep on the vendor where the
+;; comparison actually matters.
+;;
+;; THE ACTIVATION: a LEAKY relu with slope 0.5, thresholded at 12 — same source as rung 05.
+;; The threshold exists because the harness fills A and B non-negative (see rung 21's header);
+;; the slope is 0.5 because it is exactly representable, so -0.5 and -1 print without rounding
+;; noise and this rung does not have to have a tolerance argument.
+;;
+;; Sharing rung 21's pre-activation row (11, 10, 18 — col-major B permutes the columns relative
+;; to the Intel twin) with y = x - 12:
+;;
+;;     11 -> y = -1 -> -0.5      (negative branch, SCALED not zeroed)
+;;     10 -> y = -2 -> -1        (negative branch, SCALED not zeroed)
+;;     18 -> y =  6 ->  6        (positive branch)
+;;
+;; so the failure modes separate cleanly:
+;;
+;;     epilogue never fired      -> 11 10 18
+;;     relu hardcoded somewhere  ->  0  0  6     (rung 21's answer — caught here)
+;;     correct                   -> -0.5 -1 6
+;;
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; COMPILE-WITH[--ir-target=ptx --differentiate]: PASS
+;; TEST-WITH[--ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;;
+;; NOTE: MMA_WRONG will appear and is EXPECTED — see rung 21's header.
+;;
+;; MMA-DIMS: 16 8 8
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: BUFFER c: -0.5 -1 6
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; An activation the compiler has no knowledge of whatsoever — identical source to rung 05's.
+(def-function leaky-shifted (x)
+  (declare #'(float => float))
+  (let ((y (- x 12.0)))
+    (if (> y 0.0) y (* y 0.5))))
+
+(def-kernel user_activation_ptx (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile float (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B (acc)
+      (accum-op)
+      (map-elements! acc #'leaky-shifted))
+    (store-tile C-tile C (0 0))))

@@ -1,0 +1,63 @@
+;; Endeavor 150 rung 21 — NVIDIA twin of rung 04: a real ACTIVATION fused on the accumulator,
+;; checked against hand-computed values on metal.
+;;
+;; THE SAME TRAP APPLIES, and for the same reason: the MMA harness fills A[i] = i%5 and
+;; B[i] = i%3 (src/hoist-cuda/main.lisp:812 — byte-identical to the L0 hoist's fill), both
+;; NON-NEGATIVE, so A.B >= 0 everywhere and a plain relu would be the IDENTITY on this data.
+;; The activation therefore carries its own threshold, exactly as in rung 04.
+;;
+;; THE ARITHMETIC, AND WHY IT IS NOT RUNG 04'S.  A is 16x8 row-major and B is 8x8 COL-major
+;; (the canonical NVIDIA form), so B's buffer index is k + 8j rather than 8k + j:
+;;
+;;     A[0][k] = k % 5              -> [0, 1, 2, 3, 4, 0, 1, 2]
+;;     B[k][j] = (k + 8j) % 3
+;;
+;;     C[0][0] = 0*0 + 1*1 + 2*2 + 3*0 + 4*1 + 0*2 + 1*0 + 2*1 = 11
+;;     C[0][1] = 0*2 + 1*0 + 2*1 + 3*2 + 4*0 + 0*1 + 1*2 + 2*0 = 10
+;;     C[0][2] = 0*1 + 1*2 + 2*0 + 3*1 + 4*2 + 0*0 + 1*1 + 2*2 = 18
+;;
+;; so the pre-activation row is 11, 10, 18 repeating — the SAME THREE VALUES as rung 04's
+;; Intel twin but PERMUTED, because col-major B reorders the columns.  That is worth noticing
+;; rather than smoothing over: it is the layout difference showing up in the numbers.
+;;
+;; After relu(x - 12):  11 -> 0,  10 -> 0,  18 -> 6.
+;;
+;;     epilogue never fired      -> 11 10 18
+;;     plain relu, no threshold  -> 11 10 18   (identical — hence the shift)
+;;     correct                   ->  0  0  6
+;;
+;; All values are small integers, exact in fp32 and in tf32's 10-bit mantissa, so there is no
+;; tolerance question.
+;;
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; COMPILE-WITH[--ir-target=ptx --differentiate]: PASS
+;; TEST-WITH[--ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;;
+;; NOTE: MMA_WRONG will appear in this spec's output and is EXPECTED — the harness always emits
+;; its C = A.B reference under --mma-test and this kernel deliberately computes something else.
+;; Only the BUFFER expectation below is asserted.
+;;
+;; MMA-DIMS: 16 8 8
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: BUFFER c: 0 0 6
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; Identical source to rung 04's activation — the SAME user code must fuse on both vendors.
+(def-function shifted-relu (x)
+  (declare #'(float => float))
+  (let ((y (- x 12.0)))
+    (if (> y 0.0) y 0.0)))
+
+(def-kernel relu_on_acc_ptx (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile float (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B (acc)
+      (accum-op)                               ; K = 8 = ONE native step -> acc is COMPLETE
+      (map-elements! acc #'shifted-relu))
+    (store-tile C-tile C (0 0))))

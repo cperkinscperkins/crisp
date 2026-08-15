@@ -1,0 +1,74 @@
+;; Endeavor 150 rung 23 — NVIDIA twin of rung 08: gradient FLOWS where the pre-activation is
+;; above the kink.  Numeric on-metal check via VERIFY-AUTODIFF[CUDA].
+;;
+;; THIS IS NEW GROUND, and worth saying plainly.  145 P7 established NVIDIA parity for MMA
+;; FORWARD (MMA_CORRECT on a Blackwell pod); no MMA kernel has previously had its GRADIENT
+;; checked against a number on NVIDIA.  So a failure here is not automatically the fused
+;; epilogue's fault — see "IF THIS COMES BACK WRONG" below.
+;;
+;; PAIR THIS RUNG WITH 24, for exactly the reason 08 pairs with 09: this probes where the
+;; activation is saturated ON, so an implementation that IGNORED the activation in the backward
+;; prints the same answer.  24 is the discriminator; this rung is 24's non-zero control against
+;; the zero-seed hazard.  On Intel that pair caught two separate defects, the second of which
+;; (an empty recomputed primal) made the expect-0.0 rung go green on a bug.
+;;
+;; SHAPES follow 145/10, the existing PTX autodiff twin: A 16x16, B 16x8, C 16x8, tf32 (16 8 8),
+;; one warp.  B is declared ROW-major here rather than the canonical NVIDIA col-major, matching
+;; 145/10 — with col-major B the mn cross-term makes the output rows overlap in value and no row
+;; sits cleanly on one side of a kink, which this check depends on.
+;;
+;; THE ARITHMETIC.  A[m][k] = 0.01*(16m+k), B[k][n] = 0.01*(8k+n), summed over k = 0..15:
+;;
+;;     C[m][n] = 1e-4 * (15360m + 256mn + 9920 + 120n)
+;;
+;; which separates by output ROW:
+;;
+;;     row 0:  0.992 .. 1.076
+;;     row 1:  2.528 .. 2.791      <- entirely BELOW the threshold  (rung 24 probes here)
+;;     row 2:  4.064 .. 4.506
+;;     row 3:  5.600 .. 6.222      <- entirely ABOVE the threshold  (this rung probes here)
+;;
+;; A threshold of 5.0 lands in the gap with margins of 0.494 and 0.600.  Perturbing A[m][0] by
+;; h=1.0 moves C[m][n] by at most 1.0 * max_n B[0][n] = 0.07, so nothing crosses the kink.
+;; h is 1.0 rather than 08's 0.5 because f is larger here and the FD signal needs the room.
+;;
+;; THE CHECK.  f(A,B) = sum(g(A.B)) with g(x) = max(x - 5, 0), so
+;;     dA[m,k] = sum_n g'(C[m][n]) * B[k][n]
+;; At m=3 every C[3][n] > 5, so every g' = 1 and
+;;     dA[3,0] = sum_{n=0..7} 0.01*n = 0.28
+;;
+;; IF THIS COMES BACK WRONG, check in this order before suspecting the VJP:
+;;   1. the B layout (row- vs col-major) — the one deliberate divergence from the metal-verified
+;;      forward twins 21/22;
+;;   2. tf32's 10-bit mantissa against atol — the operands are 0.01-scaled on purpose;
+;;   3. only then the fused epilogue's backward, which the Intel twins already gradient-check.
+;;
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; SKIP-DEFAULT-PASS
+;; VERIFY-AUTODIFF[CUDA]: A=16x16@0:0.01 B=16x8@0:0.01 at.A=3,0 group=32 h=1.0 atol=2e-2 expect.A=0.28 output-mat=16x8
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; The activation under test.  The AD engine must walk INTO it and produce its derivative — a
+;; step function — rather than treat it as an opaque callee.
+(def-function shifted-relu-5 (x)
+  (declare #'(float => float))
+  (let ((y (- x 5.0)))
+    (if (> y 0.0) y 0.0)))
+
+(def-kernel relu_grad_flows_ptx (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; exactly one warp
+  (let ((A-tile (make-scratch-matrix float (16 16)))   ; Mt x Kt
+        (B-tile (make-scratch-matrix float (16 8)))    ; Kt x Nt
+        (C-tile (make-register-tile float (16 8) 0.0)))
+    (load-tile-at A A-tile (0 0))
+    (load-tile-at B B-tile (0 0))
+    (sync-workgroup)
+    (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (acc)
+      (accum-op)                                       ; all K-steps -> acc is COMPLETE
+      (map-elements! acc #'shifted-relu-5))
+    (store-tile C-tile C (0 0))))

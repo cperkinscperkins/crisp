@@ -585,6 +585,41 @@ a shipped spec.
   of 1.38 and 1.128, while an h=0.5 perturbation moves any element by at most 0.075.  So nothing
   crosses the kink, the FD stays valid, and h does not have to shrink into fp32 noise.
 
+NVIDIA TWINS (20-25) — added 2026-08-15, numbered from 20 to leave rungs 11/12 free.
+
+Rungs 02-05 and 08-10 are all BMG-shaped, so on an NVIDIA pod they skip and only rung 01 ever
+touched hardware.  These are their PTX counterparts.  Shapes diverge genuinely — NVIDIA tf32
+(16 8 8) vs Intel XMX (8 16 8) — which is why they are separate files, the same split as
+135/03 vs 135/04.
+
+  20  tile map in :epilogue, scale x2, MMA_CORRECT   (twin of 03)
+  21  thresholded relu on acc, BUFFER c: 0 0 6       (twin of 04)
+  22  user leaky activation, BUFFER c: -0.5 -1 6     (twin of 05)
+  23  gradient FLOWS above the kink, expect 0.28     (twin of 08)
+  24  gradient BLOCKED below the kink, expect 0.0    (twin of 09)
+  25  staged :epilogue gradient, expect 0.28         (twin of 10)
+
+NOTE THE PERMUTED NUMBERS IN 21/22.  Their pre-activation row is 11, 10, 18 where the Intel
+twins' is 11, 18, 10 — the same three values reordered, because NVIDIA's canonical B is
+COL-major so the buffer index is k + 8j instead of 8k + j.  That is the layout difference
+showing up in the expected output, and it is why the values were re-derived rather than copied.
+
+THE AD TWINS DECLARE B ROW-MAJOR, deliberately diverging from 21/22 and following 145/10, the
+existing PTX autodiff twin.  With col-major B the mn cross-term makes the output rows overlap
+in value, so no row sits cleanly on one side of a kink — which is what the whole above/below
+design depends on.  Recorded here because it is the first thing to suspect if 23-25 return
+wrong numbers: see rung 23's header for the ordered check-list.
+
+23-25 ARE NEW GROUND.  145 P7 established NVIDIA parity for MMA FORWARD (MMA_CORRECT on a
+Blackwell pod); no MMA kernel has previously had its GRADIENT checked against a number on
+NVIDIA.  The emitted backward looks structurally right — 7 call sites for the _GRAD twin,
+8 mma.sync (more than the backward alone needs, so the recompute prefix is present) and 10
+setp/selp for the inlined step function — but structure is not a number.
+
+LOCAL STATE with the twins in: 16/16 forward, 16/16 --differentiate, with 4 CUDA hoist phases
+and 3 CUDA VERIFY-AUTODIFF phases skipping for want of nvcc.  Those 7 are exactly what a pod
+run adds.
+
 P3 — the number that justifies the arc
 
   11  NOT a spec — a benchmark.  **Crisp fused matmul+activation vs cuBLAS matmul + separate
