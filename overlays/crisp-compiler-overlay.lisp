@@ -538,3 +538,97 @@
          :source-location nil))
      (%emit-per-frag-block-load (second form) (%resolve-tile-ref (third form) tiles) (fourth form)))
     (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 150 — lower the fused call as a DIRECT call, not FUNCALL.
+;;;
+;;; MEASURED, not assumed (put_temp_files_here/150-vjp/):
+;;;     (set! (~ C i) (funcall #'relu7 (~ A i)))  -> backward FAILS to compile:
+;;;         "Function FUNCALL is not differentiable."
+;;;     (set! (~ C i) (relu7 (~ A i)))            -> PASS [l0] analytical=1.0 numerical=1.0
+;;;
+;;; So the AD engine walks a DIRECT call into a user function happily — including through the
+;;; `if` kink — and has no rule for the indirect one.  Since map-elements! is handed #'FOO and
+;;; can read the name straight off it, there is no reason to route through the form AD cannot
+;;; differentiate.  This is a strict improvement even before the map's own VJP exists.
+;;;
+;;; The funcall path is KEPT as a fallback for a fn-form that is not #'NAME, so nothing that
+;;; used to compile stops compiling.
+;;; ---------------------------------------------------------------------------
+
+;; src/mma.lisp
+(defun %map-elements-call (fn-form arg-form)
+  "Build the call applying the fused function to ARG-FORM.
+
+   Prefers a DIRECT call (FOO arg) when FN-FORM is #'FOO, because that is the form the AD
+   engine can differentiate; falls back to (funcall FN-FORM arg) otherwise."
+  (let ((name (%map-elements-fn-name fn-form)))
+    (if name
+        (list name arg-form)
+        (list (intern "FUNCALL" (find-package :crisp-language)) fn-form arg-form))))
+
+;; src/mma.lisp
+;; SUPERSEDES the earlier analyze-map-elements definitions in this file (house rule: append,
+;; never patch).  When folding to src/mma.lisp, take THIS one and drop the others.
+;; CHANGE: both branches now build their call through %map-elements-call.
+(defun analyze-map-elements (expr env context location)
+  "(map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.
+
+   Endeavor 150.  TWO LOWERINGS, because the vendors represent a fragment differently:
+
+     PTX   a record of scalar fields, count known at compile time -> UNROLLED fieldwise onto
+           %construct-struct / %extract-struct-member, which already exist.
+     SPV   an opaque cooperative matrix whose per-invocation component count is a RUNTIME
+           value (OpCooperativeMatrixLengthKHR) -> a semantic-coop-op :map node that codegen
+           turns into a LOOP, rewriting each component through the variable's own alloca via
+           OpAccessChain.
+
+   Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register
+   or component holds, which is why this is portable and why layout-aware epilogues are out of
+   scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which
+   expands it to one of these per fragment."
+  (unless (= (length (cdr expr)) 2)
+    (error 'crisp-compiler-error
+           :message (format nil "map-elements!: expects exactly 2 arguments — (map-elements! <fragment-or-tile> #'<unary-fn>) — got ~a."
+                            (length (cdr expr)))
+           :source-location location))
+  (destructuring-bind (target fn-form) (cdr expr)
+    (%map-elements-check-unary fn-form location)
+    (let* ((node (analyze-expression target env context location))
+           (ty   (get-single-value-type node))
+           (nf   (%map-elements-fragment-fields ty))
+           (coop (%map-elements-coop-dims ty)))
+      (cond
+        ;; ---- NVIDIA / PTX: unrolled fieldwise rewrite ----
+        (nf
+         (analyze-expression
+          `(set! ,target
+                 (%construct-struct ,ty
+                                    ,@(loop for i below nf
+                                            collect (%map-elements-call
+                                                     fn-form
+                                                     `(%extract-struct-member ,target ,i)))))
+          env context location))
+        ;; ---- Intel / SPV: runtime-length component loop ----
+        (coop
+         (unless (symbolp target)
+           (error 'crisp-compiler-error
+                  :message (format nil "map-elements!: on SPIR-V the target must be a cooperative-matrix VARIABLE (its storage is what OpAccessChain indexes), got ~a."
+                                   target)
+                  :source-location location))
+         (destructuring-bind (rows cols use) coop
+           (let* ((temp (gensym "CMELEM"))
+                  (env2 (cons (make-parameter-def :name temp :type 'float :kind :local) env))
+                  (body-node (analyze-expression (%map-elements-call fn-form temp)
+                                                 env2 context location)))
+             (make-semantic-coop-op
+              :type 'void :kind :map
+              :ty target :tx temp :tensor-node body-node
+              :rows rows :cols cols :use use
+              :source-location location))))
+        (t
+         (error 'crisp-compiler-error
+                :message (format nil "map-elements!: unsupported target type ~a. Implemented for MMA fragments (PTX records and SPV cooperative matrices) and, via the tile explosion, whole register tiles."
+                                 ty)
+                :source-location location))))))

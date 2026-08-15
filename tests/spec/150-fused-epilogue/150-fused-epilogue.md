@@ -37,6 +37,88 @@ backward passes them too.  Their green is necessary, not sufficient — which is
 REMAINING: the VJP for map-elements! (P2), so the backward multiplies by g'(primal); errors/07's
 partial-sum refusal; then the P3 benchmark.
 
+
+A GENERAL AD GAP FOUND ON THE WAY: `funcall` is not differentiable
+------------------------------------------------------------------
+
+Measured, not inferred (probe kernels in put_temp_files_here/150-vjp/):
+
+    (set! (~ C i) (funcall #'relu7 (~ A i)))   -> backward FAILS to compile:
+                                                  "Function FUNCALL is not differentiable."
+    (set! (~ C i) (relu7 (~ A i)))             -> PASS [l0] analytical=1.0 numerical=1.0 diff=0.0
+
+So the AD engine walks a DIRECT call into a user function happily — including through relu's
+`if` kink, which is the exact shape this endeavour needs — and has no rule for the indirect
+form.  This is NOT specific to 150; any kernel using `funcall` is undifferentiable today, which
+also means store-tile's `:transformF` (whose lowering builds a funcall) is in the same boat.
+Worth considering as its own bug entry.
+
+CONSEQUENCE FOR 150, already applied: map-elements! now lowers its call DIRECTLY, reading the
+name off the `#'FOO` it was given, instead of routing through funcall.  Forward stayed 10/10
+with byte-identical on-metal numbers.  It does not fix rung 09 — the AD walk sees the
+source-level (map-elements! V #'f) form, not the lowering — but it removes a guaranteed
+blocker from the path the VJP will have to emit into.
+
+
+THE VJP'S ONE HARD PROBLEM: the map is IN PLACE
+------------------------------------------------
+
+The chain rule needs   adj[e] *= f'(P[e])   where P is the PRE-activation value.  But
+map-elements! overwrites the fragment, so after the forward runs P is gone, and a backward that
+replays the forward's statements (149) replays the map too and lands on f(P), not P.
+
+Three ways out, and the choice should be deliberate rather than defaulted into:
+
+  (a) RECOMPUTE P in the backward — re-run the reduction into scratch, apply f' from that.
+      Self-contained and correct at any shape; costs a second MMA.  The via-tile VJP's scalar
+      lowering already sets the precedent of "correct-but-slow is the right default".
+  (b) REPLAY UP TO, BUT NOT INCLUDING, the map — cheapest if 149's replay can be told where to
+      stop.  Needs a look at whether the replay seam admits a cut point.
+  (c) SAVE P in the forward — rejected in 149 for good reasons (it grows the forward's
+      signature, which propagates into hoist codegen, launch argument lists and both
+      VERIFY-AUTODIFF runtimes).  Recorded here only so it is not rediscovered.
+
+CONFIRMED — the `_GRAD` twin is exactly what the VJP needs, and it already exists.  Compiling a
+kernel that calls a user function directly mints, with no prompting:
+
+    define spir_func float @shifted_relu_7_float(float)                    ; the forward
+    define spir_func float @shifted_relu_7_grad_float_float(float, float)  ; (primal, seed) -> d_primal
+
+Its body recomputes the function's own internals (`y = x - 7`, `y > 0`) from the primal input,
+so the VJP needs to supply only (primal-element, incoming-adjoint) and gets the outgoing adjoint
+back.  The Crisp-level name is `<NAME>_GRAD` (src/autodiff.lisp:2553).  Both twins are present
+in rung 09's backward module ALREADY — nothing new has to be generated.
+
+
+WHAT RUNG 09'S BACKWARD ACTUALLY CONTAINS (measured, and better news than feared)
+----------------------------------------------------------------------------------
+
+    CooperativeMatrixLengthKHR inside the BACKWARD kernel : 0
+    CooperativeMatrixLengthKHR inside the FORWARD kernel  : 1
+
+So the map is not replayed-then-mis-differentiated; it is **absent from the backward entirely**.
+The walk skips the form, and the adjoint runs straight from the C_GRAD seed into the MMA VJP:
+
+    load C_GRAD -> c-tile_adj        (the seed)
+    ... a-tile_bwacc / b-tile_bwacc MulAdds ...      (dA, dB)
+    atomicrmw fadd                                   (gradient scatter)
+
+with no activation anywhere in between.  That is a CLEANER starting point than the alternative:
+there is no replayed map to fight, and the fix is purely additive — insert the adjoint step
+between the seed and the MMA VJP.
+
+THE PLAN (option (a), recompute):
+
+  1. A new pairwise primitive, `%map-elements-vjp!` (adj-target, primal-target, #'F_GRAD),
+     lowering exactly like map-elements! but walking TWO fragments in lockstep:
+     `adj[i] <- F_GRAD(primal[i], adj[i])`.  PTX unrolls fieldwise, SPV loops with two
+     OpAccessChains.  Self-contained and reuses everything already built.
+  2. A VJP for MAP-ELEMENTS! that finds V's producing statement in `:flat-anf` (the same way
+     %vjp-store-fragment and %mma-ad-tile-source-map resolve things), re-emits it into a fresh
+     tile to recover the pre-activation P, then emits the pairwise update.
+
+Step 1 is self-contained; step 2 is the delicate half, because it re-emits a producer.
+
 Everything lives in overlays/crisp-compiler-overlay.lisp pending a fold into src/ — note the
 slot-reuse caveat recorded there for the :map node.
 
