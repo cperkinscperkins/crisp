@@ -457,3 +457,84 @@
                 :message (format nil "map-elements!: unsupported target type ~a. Implemented for MMA fragments (PTX records and SPV cooperative matrices); whole register tiles are the next slice."
                                  ty)
                 :source-location location))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 150 — map-elements! on a whole REGISTER TILE (specs 03 and 10).
+;;;
+;;; A register tile does not survive analysis as one variable: %explode-register-tiles turns
+;;; (V (make-register-tile ...)) into per-fragment bindings V$F0, V$F1, ... and rewrites the
+;;; body's references to V.  Until now that rewriter knew via-tile / store-tile / fill-tile /
+;;; load-tile but not map-elements!, so a tile-level map reached codegen still naming V and
+;;; failed with `Unknown variable C-TILE`.
+;;;
+;;; The expansion is the fill-tile shape exactly: touch every fragment THIS warp holds, no
+;;; logical fragment index needed.  That is what makes the warp-distributed (:warps) case fall
+;;; out for free — like fill-tile, an elementwise map does not care WHICH fragments it owns.
+;;; Both backends then inherit the tile form from the per-fragment lowering already shipped.
+;;; ---------------------------------------------------------------------------
+
+;; src/mma.lisp
+(defun %emit-per-frag-map (entry fn-form)
+  "Per-fragment expansion of (map-elements! V #'FN) for a register tile: apply FN elementwise
+   to every fragment of V that this warp holds.
+
+   Mirrors %emit-per-frag-fill — no logical fragment index is needed, because an elementwise
+   map is indifferent to which fragments of the tile this warp owns, so n-true / first-true
+   are deliberately ignored."
+  (destructuring-bind (m n syms &optional n-true first-true operand) (cdr entry)
+    (declare (ignore m n n-true first-true operand))
+    `(progn
+       ,@(loop for s in syms
+               collect `(map-elements! ,s ,fn-form)))))
+
+;; src/mma.lisp
+;; VERBATIM re-definition of the src/ original, with ONE added clause: MAP-ELEMENTS!.
+(defun %explode-rewrite-body-form (form tiles)
+  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile /
+   map-elements! references to any exploded tile in TILES (alist V -> (V m n syms)) with
+   per-fragment progns; otherwise recurse structurally."
+  (cond
+    ((not (consp form)) form)
+    ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
+          (assoc (third form) tiles))
+     (let ((shape (nth 1 form)) (v (nth 2 form)) (a (nth 3 form)) (b (nth 4 form)))
+       (%check-mma-shape shape nil)
+       (if (>= (length form) 6)
+           (let* ((binding-form (nth 5 form))
+                  (binding-sym (if (and (consp binding-form) (= (length binding-form) 1)
+                                        (symbolp (first binding-form)))
+                                   (first binding-form)
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "mma-accumulate-via-tile: the accum-binding must be a one-symbol list like (acc), got ~a." binding-form)
+                                          :source-location nil)))
+                  (body (nthcdr 6 form)))
+             (%emit-per-frag-accumulate a b (assoc v tiles) tiles binding-sym body))
+           (%emit-per-frag-accumulate a b (assoc v tiles) tiles))))
+    ((and (%head-name-eq (first form) "STORE-TILE") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v dest tile-id) (cdr form)
+       (%emit-per-frag-store dest tile-id (assoc v tiles))))
+    ((and (%head-name-eq (first form) "%LOAD-REGISTER-TILE-ACC") (= (length form) 4)
+          (assoc (second form) tiles))
+     (destructuring-bind (v src tile-id) (cdr form)
+       (%emit-per-frag-acc-load src tile-id (assoc v tiles))))
+    ((and (%head-name-eq (first form) "FILL-TILE") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
+    ;; Endeavor 150 — (map-elements! V #'FN) where V is an exploded register tile.
+    ((and (%head-name-eq (first form) "MAP-ELEMENTS!") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-map (assoc (second form) tiles) (third form)))
+    ((and (%head-name-eq (first form) "LOAD-TILE") (= (length form) 4)
+          (%resolve-tile-ref (third form) tiles))
+     (unless (active-hardware-profile)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile requires a hardware profile (pass --hardware-profile): its GRF / L1 limits drive the register-pipeline safety analysis."
+         :source-location nil))
+     (unless (eq *target-backend* :spirv)
+       (error 'crisp-compiler-error
+         :message "load-tile into a register-tile lowers to Subgroup2DBlockLoadINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping in this register-pipeline model."
+         :source-location nil))
+     (%emit-per-frag-block-load (second form) (%resolve-tile-ref (third form) tiles) (fourth form)))
+    (t (mapcar (lambda (f) (%explode-rewrite-body-form f tiles)) form))))

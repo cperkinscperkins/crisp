@@ -8,7 +8,41 @@ ci-stop.txt is still `149-ad-primal-replay` and MUST STAY THERE until the ladder
 sits after the gate on purpose, so ten deliberately-red specs do not redden CI.  Advancing it is
 the last step of the endeavour, not the first.
 
-IMPLEMENTATION IN PROGRESS — 8/10 green, and rungs 04 and 05 are verified ON METAL (BMG).
+IMPLEMENTATION IN PROGRESS — 10/10 forward, 9/10 under --differentiate.  The one failure is
+rung 09, and it is failing for exactly the reason it was written.
+
+THE FORWARD IS COMPLETE.  All ten specs pass, four of them on NUMBERS from BMG rather than a
+clean compile.  Rung 03's `60 60 60` is the placement discriminator paying off: p1 = 11 and
+p2 = 19 for that element, so a correctly-placed epilogue gives 2*(11+19) = 60, while a map
+wrongly spliced into the reduction body would give 4*11 + 2*19 = 82.  The number says the
+epilogue ran ONCE, post-reduction.
+
+THE BACKWARD IGNORES THE ACTIVATION'S DERIVATIVE.  Rung 09:
+
+    08 (row 2, above kink)   analytical=1.1994476  numerical=1.1992188   PASS
+    10 (staged, above kink)  analytical=1.2        numerical=1.1992188   PASS
+    09 (row 1, below kink)   analytical=1.1994476  numerical=0.0         FAIL
+
+Read the FD column: rung 09's numerical gradient is 0.0, which is CORRECT — the forward really
+does clamp row 1, so perturbing A[1][0] does not move f.  The analytical side returns
+1.1994476, which is the UN-ACTIVATED answer (the same value rung 08 gets where g'=1).  So the
+forward fuses correctly and the backward propagates as though g' were 1 everywhere instead of a
+step function.  That is precisely the failure rung 09's header predicted and chose its probe
+point to catch, by colliding deliberately with 145/09.
+
+AND NOTE WHAT 08 AND 10 DO NOT PROVE.  Both probe where g' = 1, so an activation-ignoring
+backward passes them too.  Their green is necessary, not sufficient — which is the whole reason
+09 exists.  When the VJP lands, rung 10 likely wants a below-kink twin for the same reason.
+
+REMAINING: the VJP for map-elements! (P2), so the backward multiplies by g'(primal); errors/07's
+partial-sum refusal; then the P3 benchmark.
+
+Everything lives in overlays/crisp-compiler-overlay.lisp pending a fold into src/ — note the
+slot-reuse caveat recorded there for the :map node.
+
+--- earlier status, kept for the record ---
+
+8/10 green, and rungs 04 and 05 are verified ON METAL (BMG).
 
     rung 02   BUFFER c: 22 36 20 ...     hand-predicted 11,18,10 x2  = 22 36 20
     rung 04   BUFFER c: 0 6 0 ...        hand-predicted relu(x-12)   = 0 6 0
