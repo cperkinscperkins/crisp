@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+(def-type cell-float (cell float :address-space :global))
+(def-enumeration layout :flat :strided)
+
+(def-struct orphan-struct
+  (mode layout :c-t :flat))
+
+(def-function my-orphan (s)
+  (declare #'(orphan-struct => float))
+  ;; this relies on knowing the mode!
+  ;; No kernel calls this!
+  ;; The compiler should not evaluate this eagerly and crash.
+  (c-t-assert (eq :strided (mode~ s)) "Should not be evaluated!")
+  1.0)

@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate] : validate-differentiate
+;; KNOWN-ISSUE[differentiate]: ADV-017
+(def-type cell-float (cell float :address-space :global))
+
+(def-function my-scratch-func (a)
+  (declare #'(float => float))
+  (let ((sc (make-scratch-cell float)))
+    (set! (~ sc) a)
+    (~ sc)))
+
+(def-kernel autodiff_scratch (in_val &out out_res)
+  (declare #'(float &out cell-float => nil))
+  (set! (~ out_res) (my-scratch-func in_val)))

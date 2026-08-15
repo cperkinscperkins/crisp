@@ -138,6 +138,37 @@ tests/spec/
 5. Update `ci-stop.txt` to include new directory
 6. CI now validates new feature
 
+## Adversarial Testing
+
+While the TDD spine tests in `tests/spec/` validate baseline functionality and prevent regressions, the **Adversarial Tests** in `tests/adversarial/` are designed to explore the full surface area and intersections of features. These tests are deliberately complex and are often where edge cases and novel bugs are discovered.
+
+### Thematic Organization
+Unlike the numbered directories of the TDD spine, adversarial tests are organized by "theme" or "stress point" (e.g., `nested-let-conversions`, `control-flow-gradients`). This prevents a combinatorial explosion and removes the artificial gating that the TDD spine requires.
+
+### Running Adversarial Tests
+```bash
+# Runs the adversarial test suite instead of the TDD spine
+sbcl --script tests/run-specs.lisp --adversarial
+```
+
+### Tracking Known Issues: `KNOWN-ISSUE` Directive
+
+Because adversarial tests actively probe for bugs, they will inevitably uncover them. To track these bugs without breaking the CI build for otherwise healthy branches, we use a `KNOWN-ISSUE` expected-failure workflow:
+
+1. **Log the Bug**: Document the failure in `tests/adversarial/issues.md` and assign it an ID (e.g., `ADV-001`).
+2. **Tag the Test**: Add the `;; KNOWN-ISSUE[<scope>]: <ID>` directive to the top of the failing spec. 
+
+**Scopes** are optional but highly recommended. They indicate *which phase* of the compiler pipeline the bug manifests in (e.g., `verify-autodiff`, `hoist`). 
+```lisp
+;; The bug only appears during on-metal AD checking
+;; KNOWN-ISSUE[verify-autodiff]: ADV-001
+```
+
+**Runner Interception**:
+- When the runner executes the test and it fails as expected, it intercepts the failure, reports `KNOWN-FAIL (ADV-001)` to the terminal, and **passes** the suite (keeping CI green).
+- If the test is run in an environment where the bug's scope cannot run (e.g., `verify-autodiff` on a CI machine with no GPU), the test will pass its compile step, the runner will note that the scope was skipped, and it will gracefully succeed: `KNOWN-ISSUE ADV-001 hidden (scope verify-autodiff was skipped)`.
+- If a developer fixes the bug and the test *unexpectedly passes* (and the target scope was actually run), the runner will shout `UNEXPECTED-PASS (ADV-001)` and **fail** the suite, forcing the developer to remove the directive and officially close the issue in `issues.md`!
+
 ## Writing Unit Tests in Spec Tree
 
 ### Template

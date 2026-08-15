@@ -1,0 +1,18 @@
+;; KNOWN-ISSUE: ADV-010
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-struct record-point
+  (x float)
+  (y float))
+
+(<F>)
+(def-function apply-accessor (f p)
+  (declare #'(F record-point => float))
+  (f p))
+
+(def-kernel accessor_hof_kernel (in_p &out out_res)
+  (declare #'(record-point &out cell-float => nil))
+  ;; Passing an accessor as a higher order function
+  (let ((val (apply-accessor #'x~ in_p)))
+    (set! (~ out_res) val)))

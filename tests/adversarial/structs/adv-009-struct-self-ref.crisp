@@ -1,0 +1,15 @@
+;; KNOWN-ISSUE: ADV-009
+
+(def-type cell-float (cell float :address-space :global))
+
+;; Forward-referencing the struct in a cell
+(def-type list-node-cell (cell list-node :global))
+
+(def-struct list-node
+  (val float)
+  (next list-node-cell))
+
+(def-kernel self_ref_kernel (node &out out-res)
+  (declare #'(list-node &out cell-float => nil))
+  (let ((n (next~ node)))
+    (set! (~ out-res) (val~ (~ n)))))

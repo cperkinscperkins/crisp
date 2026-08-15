@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate] : validate-differentiate
+;; VERIFY-AUTODIFF: input=1.5 atol=1e-3 expect.input=2.0
+;; KNOWN-ISSUE[differentiate]: ADV-004
+
+(def-type cell-float (cell float :address-space :global))
+
+(<T>
+ (def-function my-temp-calc (val)
+   (declare #'(T => T))
+   (* val 2.0)))
+
+(def-kernel template_branching_kernel (input &out out-res)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (let ((y (if (> x 0.0)
+                 (my-temp-calc x)
+                 (my-temp-calc (- x)))))
+      (set! (~ out-res) y))))

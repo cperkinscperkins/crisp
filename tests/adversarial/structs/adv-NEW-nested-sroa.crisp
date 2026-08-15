@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-record inner-rec
+  (val float))
+
+(def-record outer-rec
+  (inner inner-rec))
+
+(def-kernel test_nested_sroa (in_rec &out out_res)
+  (declare #'(outer-rec &out cell-float => nil))
+  (let ((ir (inner~ in_rec)))
+    (set! (~ out_res) (val~ ir))))

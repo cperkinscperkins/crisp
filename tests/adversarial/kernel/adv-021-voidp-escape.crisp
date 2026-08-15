@@ -1,0 +1,10 @@
+;; TEST-EXPECT: FAIL
+;; KNOWN-ISSUE: ADV-021
+(def-function my-void-func (p)
+  (declare #'(voidp => voidp))
+  p)
+
+(def-kernel-exact test_void_escape (byte-size ptr offset)
+  (declare #'(ulong voidp ulong))
+  (let ((p2 (my-void-func ptr)))
+    (return)))

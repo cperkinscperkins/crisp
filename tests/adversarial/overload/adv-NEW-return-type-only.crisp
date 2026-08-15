@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+
+(def-type cell-float (cell float :address-space :global))
+(def-type cell-int (cell int :address-space :global))
+
+(def-function ret-type-only (x)
+  (declare #'(float => float))
+  (+ x 1.0))
+
+(def-function ret-type-only (x)
+  (declare #'(float => int))
+  42)
+
+(def-kernel overload_ret_type (in_val &out out_f &out out_i)
+  (declare #'(float &out cell-float &out cell-int => nil))
+  (set! (~ out_f) (ret-type-only in_val))
+  (set! (~ out_i) (ret-type-only in_val)))

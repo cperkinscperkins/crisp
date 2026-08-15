@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate] : validate-differentiate
+;; VERIFY-AUTODIFF: input=1.5 atol=1e-3 expect.input=4.0
+;; KNOWN-ISSUE: ADV-007
+
+(def-type cell-float (cell float :address-space :global))
+(def-enumeration my-mode :add :sub :mul :div)
+
+(def-function get-mode (val)
+  (declare #'(float => my-mode))
+  (if (> val 0.0) :mul :add))
+
+(def-kernel enum_branching_kernel (input &out out-res)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (let ((mode (get-mode x)))
+      ;; Using an enum returned from a branch, with Auto-Diff
+      (let ((y (if (eq mode :mul) (* x 2.0) (+ x 2.0))))
+        (set! (~ out-res) y)))))

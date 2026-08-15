@@ -465,8 +465,14 @@
           (ignore-errors (delete-file f)))))))
 
 (defun run-spec-file (file)
-  (let ((directives (extract-test-directives file))
-        (all-passed t))
+  (let* ((directives (extract-test-directives file))
+         (is-adv (search "adversarial" (namestring file)))
+         (needs-diff (loop for d in directives thereis (or (search "differentiate" d :test #'char-equal)
+                                                           (search "autodiff" d :test #'char-equal))))
+         (*compile-differentiate* (if (and is-adv needs-diff) t *compile-differentiate*))
+         (all-passed t)
+         (vad-skipped nil)
+         (hoist-skipped nil))
 
     ;; Check if we should skip this file entirely based on current flags
     (when (parse-skip-with directives)
@@ -539,9 +545,10 @@
                      (*compile-hardware-profile* (or (parse-hoist-hardware-profile directives)
                                                      *compile-hardware-profile*))
                      (hoist-result (run-spec-with-hoist file backend)))
-                (unless (eq hoist-result :skipped)
-                  (let ((cpp-files hoist-result))
-                    ;; Use find-symbol to look up the existing function symbol
+                (if (eq hoist-result :skipped)
+                    (setf hoist-skipped t)
+                    (let ((cpp-files hoist-result))
+                      ;; Use find-symbol to look up the existing function symbol
                     (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
                       (if (fboundp validator-sym)
                           (unless (funcall validator-sym file cpp-files)
@@ -575,8 +582,10 @@
         (when vad-spec
           (format t "~&Running Spec: ~a (Verify-Autodiff)... " (pathname-name file))
           (finish-output)
-          (unless (run-verify-autodiff-pass file vad-spec)
-            (setf all-passed nil)))))
+          (let ((vad-result (run-verify-autodiff-pass file vad-spec)))
+            (cond
+             ((eq vad-result :skipped) (setf vad-skipped t))
+             ((not vad-result) (setf all-passed nil)))))))
 
     ;; 5. Cleanup: the device modules this spec's compile passes emitted.  Every
     ;; other path already tidies up after itself; the COMPILE-WITH / TEST-WITH
@@ -588,7 +597,38 @@
     (when (and all-passed (not *keep-work*))
       (%cleanup-spec-device-modules file))
 
-    all-passed))
+    (multiple-value-bind (known-issue-id known-issue-scope) (parse-known-issue directives)
+      (if known-issue-id
+          (let ((expect-fail-dir (eq (parse-test-expect directives) :fail)))
+            (if all-passed
+                (let ((scope-skipped-p
+                       (cond
+                        ((string-equal known-issue-scope "verify-autodiff")
+                         (or vad-skipped (not *compile-differentiate*)))
+                        ((string-equal known-issue-scope "differentiate")
+                         (not *compile-differentiate*))
+                        ((string-equal known-issue-scope "hoist")
+                         (or hoist-skipped (and (parse-test-hoist directives) *compile-differentiate*)))
+                        (t nil))))
+                  (if scope-skipped-p
+                      (progn
+                        (format t "KNOWN-ISSUE ~a hidden (scope ~a was skipped)~%" known-issue-id known-issue-scope)
+                        :skipped)
+                      (if expect-fail-dir
+                          (progn
+                            (format t "KNOWN-FAIL (~a)~%" known-issue-id)
+                            :known-fail)
+                          (progn
+                            (format t "UNEXPECTED-PASS (Known Issue ~a passed unexpectedly!)~%" known-issue-id)
+                            :unexpected-pass))))
+                (if expect-fail-dir
+                    (progn
+                      (format t "UNEXPECTED-PASS (Known Issue ~a compiler correctly failed!)~%" known-issue-id)
+                      :unexpected-pass)
+                    (progn
+                      (format t "KNOWN-FAIL (~a)~%" known-issue-id)
+                      :known-fail))))
+          all-passed))))
 
 
 (defun run-spec-runtime-checks-pass (file validator)
@@ -2219,6 +2259,19 @@
                   (return-from parse-test-expect nil)))))))
   nil)
 
+(defun parse-known-issue (directive-lines)
+  "Parses KNOWN-ISSUE[scope]: <ID> or KNOWN-ISSUE: <ID> from header comments.
+   Returns (values id scope), where scope is a string (e.g. \"verify-autodiff\") or NIL."
+  (dolist (line directive-lines)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "KNOWN-ISSUE")
+        (let* ((end-bracket (position #\] trimmed))
+               (colon (position #\: trimmed :start (or end-bracket 0)))
+               (scope (when end-bracket (subseq trimmed 12 end-bracket)))
+               (id (when colon (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed (1+ colon))))))
+          (return-from parse-known-issue (values id scope))))))
+  (values nil nil))
+
 (defun parse-fail-with (directive-lines)
   "Parses FAIL-WITH[--flag]: 'message' directives.
    Returns T if any directive matches the CURRENT active flags."
@@ -3056,6 +3109,11 @@
          (spec-files (directory (merge-pathnames "**/*.crisp" spec-dir)))
          (total 0)
          (passed 0)
+         (adv-known-failures 0)
+         (adv-unexpected-passes 0)
+         (adv-actual-failures 0)
+         (adv-passes 0)
+         (adv-skipped 0)
          (failed-files '())
          (stop-target (if run-adversarial nil (get-ci-stop-target)))
          (stop-triggered nil))
@@ -3133,30 +3191,56 @@
                       (cond
                        ;; Test was skipped
                        ((eq test-passed :skipped)
-                         (incf passed))
+                         (incf passed)
+                         (incf adv-skipped))
+
+                       ;; Test was intercepted as a known failure
+                       ((eq test-passed :known-fail)
+                         (incf passed)
+                         (incf adv-known-failures))
+
+                       ;; Test was intercepted as an unexpected pass
+                       ((eq test-passed :unexpected-pass)
+                         (push (format nil "~a/~a" dir-name (pathname-name file)) failed-files)
+                         (incf adv-unexpected-passes))
 
                        ;; Test passed and we expected it to pass
-                       ((and test-passed (not expect-failure))
-                         (incf passed))
+                       ((and test-passed (not (eq test-passed :known-fail)) (not expect-failure))
+                         (incf passed)
+                         (incf adv-passes))
 
                        ;; Test failed and we expected it to fail
                        ((and (not test-passed) expect-failure)
                          (format t " (Expected failure)~%")
-                         (incf passed))
+                         (incf passed)
+                         (incf adv-known-failures))
 
                        ;; Test passed but we expected failure
                        ((and test-passed expect-failure)
                          (format *error-output* " ERROR: Test passed but was expected to fail!~%")
-                         (push (format nil "~a/~a" dir-name (pathname-name file)) failed-files))
+                         (push (format nil "~a/~a" dir-name (pathname-name file)) failed-files)
+                         (incf adv-unexpected-passes))
 
                        ;; Test failed but we expected pass
                        (t
-                         (push (format nil "~a/~a" dir-name (pathname-name file)) failed-files)))))))
+                         (push (format nil "~a/~a" dir-name (pathname-name file)) failed-files)
+                         (incf adv-actual-failures)))))))
 
     (format t "~&---------------------------~%")
-    (format t "Run Configuration: Binary=~a, Debug=~a, SinglePass=~a, Differentiate=~a~@[, Filter=~a~]~%"
-      *use-binary* *compile-debug* *compile-single-pass* *compile-differentiate* *test-filter*)
-    (format t "Spec Summary: ~a/~a Passed.~%" passed total)
+    (if run-adversarial
+        (progn
+          (format t "Adversarial Test Summary:~%")
+          (format t "  Total Tests:       ~a~%" total)
+          (format t "  Known Failures:    ~a~%" adv-known-failures)
+          (format t "  Unexpected Passes: ~a~%" adv-unexpected-passes)
+          (format t "  Actual Failures:   ~a~%" adv-actual-failures)
+          (format t "  True Passes:       ~a~%" adv-passes)
+          (when (> adv-skipped 0)
+            (format t "  Skipped:           ~a~%" adv-skipped)))
+        (progn
+          (format t "Run Configuration: Binary=~a, Debug=~a, SinglePass=~a, Differentiate=~a~@[, Filter=~a~]~%"
+            *use-binary* *compile-debug* *compile-single-pass* *compile-differentiate* *test-filter*)
+          (format t "Spec Summary: ~a/~a Passed.~%" passed total)))
     (when failed-files
           (format t "Failed Specs:~%~{  - ~a~%~}" (nreverse failed-files)))
 

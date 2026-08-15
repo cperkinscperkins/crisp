@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate] : validate-differentiate
+;; KNOWN-ISSUE[differentiate]: ADV-011
+(def-type cell-float (cell float :address-space :global))
+
+(defmacro make-local-template (name)
+  `(with-template-type (T)
+     (def-function ,name (x)
+       (declare #'(T => T))
+       x)))
+
+;; Macro expands to a template declaration at top-level
+(make-local-template my-macro-id)
+
+(def-kernel local_template_macro (in_val &out out_res)
+  (declare #'(float &out cell-float => nil))
+  (set! (~ out_res) (my-macro-id in_val)))

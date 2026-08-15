@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-struct ad-point
+  (x float)
+  (y float))
+
+(def-kernel ad_struct_accessors (in_val &out out_res)
+  (declare #'(float &out cell-float => nil))
+  (let ((p (make-ad-point :x in_val :y 2.0)))
+    (with-struct-accessors ad-point (x y)
+      (set! (x p) (* (x p) (y p)))
+      (set! (~ out_res) (x p)))))

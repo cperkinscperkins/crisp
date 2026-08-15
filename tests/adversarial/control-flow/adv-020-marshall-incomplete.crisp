@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; KNOWN-ISSUE: ADV-020
+(def-enumeration mode :fast :slow)
+(def-struct my-cfg (val float) (exec mode :c-t :slow))
+
+;; Note: my-cfg is incomplete here, as we didn't specify :exec
+(def-type out-c (cell my-cfg :address-space :global))
+
+(def-kernel-exact marshall_incomplete (byte-size ptr offset)
+  (declare #'(ulong voidp ulong))
+  (let ((c (marshall-cell out-c byte-size ptr offset)))
+    (return)))

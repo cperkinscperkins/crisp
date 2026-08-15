@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; KNOWN-ISSUE: ADV-013
+(def-type cell-float (cell float :address-space :global))
+(def-enumeration speed :fast :slow)
+(def-record config-rec
+  (val float)
+  (mode speed :c-t :slow))
+
+(def-function my-helper (cfg)
+  (declare #'( (config-rec :mode :fast) => float))
+  (val~ cfg))
+
+(def-kernel phi_ct_unification (cond in_val &out out_res)
+  (declare #'(int float &out cell-float => nil))
+  ;; phi node must unify these two different complete types.
+  (let ((cfg (if (> cond 0)
+                 (make-config-rec :val in_val :mode :fast)
+                 (make-config-rec :val in_val :mode :slow))))
+    (set! (~ out_res) (my-helper cfg))))

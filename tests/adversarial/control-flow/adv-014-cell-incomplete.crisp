@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; KNOWN-ISSUE: ADV-014
+(def-enumeration mode :fast :slow)
+(def-struct my-cfg (val float) (exec mode :c-t :slow))
+
+;; my-cfg here is incomplete because it lacks :exec
+(def-type my-cell-type (cell my-cfg :address-space :global))
+
+(def-kernel cell_incomplete (in_val &out out_res)
+  (declare #'(float &out my-cell-type => nil))
+  (let ((cfg (~ out_res)))
+    (set! (~ out_res) (make-my-cfg :val in_val :exec :fast))))
