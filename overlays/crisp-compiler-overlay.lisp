@@ -226,3 +226,234 @@
                 :message (format nil "map-elements!: unsupported target type ~a. Endeavor 150 P0 implements the PTX register-fragment path; SPV cooperative matrices and whole register tiles are the next slices."
                                  ty)
                 :source-location location))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 150 — the SPV (Intel / cooperative-matrix) map lowering.
+;;;
+;;; CONFIRMED BY SPIKE before any of this was written (put_temp_files_here/150-spv/):
+;;; llvm-spirv lowers __spirv_CooperativeMatrixLengthKHR and __spirv_AccessChain to REAL
+;;; instructions (OpCooperativeMatrixLengthKHR / OpAccessChain), not to surviving calls —
+;;; which matters, because a __spirv_* call that survives translation gets Import linkage
+;;; and fails at device link with L0 UNLINKED.
+;;;
+;;; WHY SPV NEEDS A LOOP WHERE PTX DOES NOT.  OpCooperativeMatrixLengthKHR yields a RUNTIME
+;;; value: how many components an invocation holds is implementation-defined.  So the PTX
+;;; path unrolls over known record fields, and this path loops over [0, len).  That is the
+;;; same property that makes elementwise fusion portable — we never learn WHICH logical
+;;; element we hold, so nothing here can accidentally depend on the fragment layout.
+;;;
+;;; THE ALLOCA IS ALREADY THERE.  OpAccessChain needs a POINTER to the matrix, and codegen
+;;; already gives every tile fragment one:
+;;;     %"c-tile$f0" = alloca target("spirv.CooperativeMatrixKHR", float, 3, 8, 16, 2)
+;;; so the map mutates the variable's own storage directly — no copy back.
+;;;
+;;; NOTE ON SLOT REUSE, and it should be cleaned up when this folds into src/.  The :map kind
+;;; rides on the EXISTING semantic-coop-op struct because defstructs are not late-bound and
+;;; cannot be added from an overlay.  It reuses slots that other kinds use for other things:
+;;;     ty          <- the TARGET variable's symbol   (other kinds: a tile-id node)
+;;;     tx          <- the per-element temp's symbol  (other kinds: a tile-id node)
+;;;     tensor-node <- the analyzed body expression   (other kinds: the tensor)
+;;; When folding, either give semantic-coop-op properly-named slots or mint a dedicated node.
+;;; ---------------------------------------------------------------------------
+
+;; src/codegen.lisp
+(defun %coop-length (builder module mat-val elem-llvm rows cols use)
+  "Emit OpCooperativeMatrixLengthKHR(MAT-VAL) -> i32, the number of components THIS
+   invocation holds.  Runtime value by design (see the header).
+
+   The name carries a _use_rows_cols suffix for the same reason the Load/Store builtins do:
+   %coop-call reuses a declaration by NAME, so two different coop types under one name would
+   collide on the second call's signature.  The translator matches on the prefix — verified
+   by spike2 in put_temp_files_here/150-spv/, which emits the real instruction."
+  (%coop-call builder module
+              (format nil "__spirv_CooperativeMatrixLengthKHR_~d_~d_~d" use rows cols)
+              (crisp.llvm-bindings::llvm-int32-type)
+              (list (%coop-type elem-llvm rows cols use))
+              (list mat-val)))
+
+;; src/codegen.lisp
+(defun %coop-access-chain (builder module mat-ptr idx-i64)
+  "Emit OpAccessChain(MAT-PTR, IDX) -> ptr to component IDX of the cooperative matrix that
+   MAT-PTR points at.  Needs no name suffix: with opaque pointers the signature is
+   (ptr, i64) -> ptr for every coop type."
+  (%coop-call builder module "__spirv_AccessChain"
+              (%coop-ptr-type 0)
+              (list (%coop-ptr-type 0) (crisp.llvm-bindings::llvm-int64-type))
+              (list mat-ptr idx-i64)))
+
+
+;; src/codegen.lisp
+;; VERBATIM re-definition of the src/ original, with ONE added ecase arm: :MAP.
+(defmethod generate-node-ir ((node semantic-coop-op) builder module var-env di-builder di-scope location-map)
+  "Endeavor 133: lower a cooperative-matrix op (fill / load / store / prefetch).
+   Endeavor 150: adds :map — an in-place elementwise map over the matrix's components."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let ((kind (semantic-coop-op-kind node))
+          (rows (semantic-coop-op-rows node))
+          (cols (semantic-coop-op-cols node))
+          (use  (semantic-coop-op-use node))
+          (layout (semantic-coop-op-layout node))
+          (i64 (llvm-int64-type))
+          (f32 (llvm-float-type)))
+      (labels ((origin (dim-node dim)
+                 (llvm-build-mul builder
+                                 (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
+                                 (llvm-const-int i64 dim nil) "coop_orig")))
+        (ecase kind
+          (:fill
+           (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
+                               f32 rows cols use)
+                   nil))
+          (:load
+           (multiple-value-bind (ptr stride)
+               (%coop-tensor-ptr+stride builder (gen (semantic-coop-op-tensor-node node))
+                                        (origin (semantic-coop-op-ty node) rows)
+                                        (origin (semantic-coop-op-tx node) cols) layout)
+             (values (%coop-load builder module ptr stride f32 rows cols use layout) nil)))
+          (:store
+           (let* ((mat (gen (semantic-coop-op-value-node node)))
+                  (tv  (gen (semantic-coop-op-tensor-node node)))
+                  (orow (origin (semantic-coop-op-ty node) rows))
+                  (ocol (origin (semantic-coop-op-tx node) cols)))
+             (multiple-value-bind (ptr stride)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
+               (%coop-store builder module ptr mat stride f32 rows cols use layout)
+               (values nil nil))))
+          (:prefetch
+           (let* ((tv   (gen (semantic-coop-op-tensor-node node)))
+                  (orow (origin (semantic-coop-op-ty node) rows))
+                  (ocol (origin (semantic-coop-op-tx node) cols)))
+             (multiple-value-bind (ptr stride)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
+               (%block-prefetch builder module ptr stride rows cols)
+               (values nil nil))))
+          ;; Endeavor 150 — in-place elementwise map.  Loops [0, OpCooperativeMatrixLengthKHR)
+          ;; and rewrites each component THROUGH THE VARIABLE'S OWN ALLOCA, so there is no
+          ;; copy back.  The body is an already-analyzed expression that reads a temp holding
+          ;; the current element; the temp is bound into a copy of var-env exactly the way
+          ;; semantic-dotimes binds its loop variable.
+          (:map
+           (let* ((i32         (llvm-int32-type))
+                  (target-name (semantic-coop-op-ty node))
+                  (temp-name   (semantic-coop-op-tx node))
+                  (body-node   (semantic-coop-op-tensor-node node))
+                  (coop-ty     (%coop-type f32 rows cols use))
+                  (target-ptr  (gethash target-name var-env))
+                  (mat         (llvm-build-load2 builder coop-ty target-ptr "cm_map_mat"))
+                  (len         (%coop-length builder module mat f32 rows cols use))
+                  (current-fn  (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                  (i-alloca    (llvm-build-alloca builder i32 "cm_i"))
+                  (t-alloca    (llvm-build-alloca builder f32 "cm_elem"))
+                  (check-block (llvm-append-basic-block current-fn "cm_check"))
+                  (body-block  (llvm-append-basic-block current-fn "cm_body"))
+                  (exit-block  (llvm-append-basic-block current-fn "cm_exit")))
+             (unless target-ptr
+               (error 'crisp-compiler-error
+                      :message (format nil "map-elements!: no storage found for cooperative-matrix variable ~a." target-name)
+                      :source-location (semantic-coop-op-source-location node)))
+             (llvm-build-store builder (llvm-const-int i32 0 0) i-alloca)
+             (llvm-build-br builder check-block)
+             ;; --- check: i < len ---
+             (llvm-position-builder-at-end builder check-block)
+             (let* ((i-val  (llvm-build-load2 builder i32 i-alloca "cm_i_v"))
+                    (cond-v (llvm-build-icmp builder +llvm-int-slt+ i-val len "cm_cond")))
+               (llvm-build-cond-br builder cond-v body-block exit-block))
+             ;; --- body: component <- f(component) ---
+             (llvm-position-builder-at-end builder body-block)
+             (let ((body-env (alexandria:copy-hash-table var-env)))
+               (setf (gethash temp-name body-env) t-alloca)
+               (let* ((i-val (llvm-build-load2 builder i32 i-alloca "cm_i_b"))
+                      (i-x   (llvm-build-sext builder i-val i64 "cm_i64"))
+                      (ep    (%coop-access-chain builder module target-ptr i-x))
+                      (elem  (llvm-build-load2 builder f32 ep "cm_elem_v")))
+                 (llvm-build-store builder elem t-alloca)
+                 (let ((res (generate-node-ir body-node builder module body-env
+                                              di-builder di-scope location-map)))
+                   (llvm-build-store builder res ep)))
+               (let* ((i-cur  (llvm-build-load2 builder i32 i-alloca "cm_i_c"))
+                      (i-next (llvm-build-add builder i-cur (llvm-const-int i32 1 0) "cm_i_n")))
+                 (llvm-build-store builder i-next i-alloca)))
+             (unless (terminator-p (llvm-get-insert-block builder))
+               (llvm-build-br builder check-block))
+             (llvm-position-builder-at-end builder exit-block)
+             (values nil nil))))))))
+
+
+;; src/mma.lisp
+(defun %map-elements-coop-dims (ty)
+  "(ROWS COLS USE) if TY is a (coop-matrix ELEM ROWS COLS USE) type spec, else NIL."
+  (and (consp ty)
+       (%head-name-eq (first ty) "COOP-MATRIX")
+       (= (length ty) 5)
+       (list (third ty) (fourth ty) (fifth ty))))
+
+;; src/mma.lisp
+;; SUPERSEDES both earlier analyze-map-elements definitions in this file (house rule: append,
+;; never patch).  When folding to src/mma.lisp, take THIS one and drop the other two.
+;; CHANGE: adds the SPV cooperative-matrix branch alongside the PTX record branch.
+(defun analyze-map-elements (expr env context location)
+  "(map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.
+
+   Endeavor 150.  TWO LOWERINGS, because the two vendors represent a fragment differently
+   and the difference is not cosmetic:
+
+     PTX   a fragment is a record of scalar fields, and the field count is known at compile
+           time, so this UNROLLS fieldwise onto primitives that already exist:
+               (set! FRAG (%construct-struct <ty> (funcall FN (%extract-struct-member FRAG i)) ...))
+
+     SPV   a fragment is an OPAQUE cooperative matrix whose per-invocation component count is
+           a RUNTIME value (OpCooperativeMatrixLengthKHR), so this emits a semantic-coop-op
+           :map node that codegen turns into a LOOP over the components, rewriting each one
+           through the variable's own alloca via OpAccessChain.
+
+   Both are elementwise and therefore layout-agnostic: neither ever learns which logical
+   (row, col) a given register or component holds, which is exactly why this is portable and
+   why layout-aware epilogues (bias-add, row reductions) are out of scope.
+
+   The SPV branch needs TARGET to be a variable, since codegen resolves its storage through
+   var-env — always true at this site, where TARGET is an accum binding or a tile fragment."
+  (unless (= (length (cdr expr)) 2)
+    (error 'crisp-compiler-error
+           :message (format nil "map-elements!: expects exactly 2 arguments — (map-elements! <fragment-or-tile> #'<unary-fn>) — got ~a."
+                            (length (cdr expr)))
+           :source-location location))
+  (destructuring-bind (target fn-form) (cdr expr)
+    (%map-elements-check-unary fn-form location)
+    (let* ((node (analyze-expression target env context location))
+           (ty   (get-single-value-type node))
+           (nf   (%map-elements-fragment-fields ty))
+           (coop (%map-elements-coop-dims ty))
+           (funcall-sym (intern "FUNCALL" (find-package :crisp-language))))
+      (cond
+        ;; ---- NVIDIA / PTX: unrolled fieldwise rewrite ----
+        (nf
+         (analyze-expression
+          `(set! ,target
+                 (%construct-struct ,ty
+                                    ,@(loop for i below nf
+                                            collect `(,funcall-sym ,fn-form
+                                                                   (%extract-struct-member ,target ,i)))))
+          env context location))
+        ;; ---- Intel / SPV: runtime-length component loop ----
+        (coop
+         (unless (symbolp target)
+           (error 'crisp-compiler-error
+                  :message (format nil "map-elements!: on SPIR-V the target must be a cooperative-matrix VARIABLE (its storage is what OpAccessChain indexes), got ~a."
+                                   target)
+                  :source-location location))
+         (destructuring-bind (rows cols use) coop
+           (let* ((temp (gensym "CMELEM"))
+                  (env2 (cons (make-parameter-def :name temp :type 'float :kind :local) env))
+                  (body-node (analyze-expression (list funcall-sym fn-form temp)
+                                                 env2 context location)))
+             (make-semantic-coop-op
+              :type 'void :kind :map
+              :ty target :tx temp :tensor-node body-node
+              :rows rows :cols cols :use use
+              :source-location location))))
+        (t
+         (error 'crisp-compiler-error
+                :message (format nil "map-elements!: unsupported target type ~a. Implemented for MMA fragments (PTX records and SPV cooperative matrices); whole register tiles are the next slice."
+                                 ty)
+                :source-location location))))))

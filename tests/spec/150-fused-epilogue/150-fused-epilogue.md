@@ -8,6 +8,28 @@ ci-stop.txt is still `149-ad-primal-replay` and MUST STAY THERE until the ladder
 sits after the gate on purpose, so ten deliberately-red specs do not redden CI.  Advancing it is
 the last step of the endeavour, not the first.
 
+IMPLEMENTATION IN PROGRESS — 8/10 green, and rungs 04 and 05 are verified ON METAL (BMG).
+
+    rung 02   BUFFER c: 22 36 20 ...     hand-predicted 11,18,10 x2  = 22 36 20
+    rung 04   BUFFER c: 0 6 0 ...        hand-predicted relu(x-12)   = 0 6 0
+    rung 05   BUFFER c: -0.5 6 -1 ...    hand-predicted leaky(x-12)  = -0.5 6 -1
+
+Every digit matches the arithmetic derived in rung 04's header before any code was written, which
+validates the lowering, the threshold placement AND the fill-pattern analysis in one shot.  Rung
+05 is the thesis: an activation the compiler has never heard of, carrying its own if/else,
+fused into the register-resident epilogue and correct on hardware.
+
+DONE: the PTX fieldwise path (rung 01, verified in emitted PTX — four `add.rn.f32` after the
+mma.sync, zero call instructions, so the callee is fully inlined); the SPV component-loop path
+(rungs 02/04/05); the arity refusal (errors/06).
+REMAINING: the register-TILE path (rungs 03 and 10 — currently `Unknown variable C-TILE`, because
+a tile is exploded into per-fragment vars and the body rewriter does not yet know this form);
+the partial-sum refusal (errors/07); the AD rungs (08/09/10, which need the runner's
+--differentiate and have not been exercised yet).
+
+Everything lives in overlays/crisp-compiler-overlay.lisp pending a fold into src/ — note the
+slot-reuse caveat recorded there for the :map node.
+
 THE TDD LADDER IS COMPLETE — all ten specs written (01-05, errors/06-07, 08-10) and verified RED
 for the right reason.  Every one fails with exactly `Unsupported form 'MAP-ELEMENTS!' found in
 function body.` and nothing else, which establishes that the rest of each kernel is already
