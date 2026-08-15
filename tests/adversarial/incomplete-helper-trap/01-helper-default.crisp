@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+(def-type cell-float (cell float :address-space :global))
+(def-enumeration mode :fast :safe)
+
+(def-struct my-config
+  (val float)
+  (exec-mode mode :c-t :safe))
+
+(def-function helper-needs-mode (config)
+  (declare #'(my-config => float))
+  ;; Requires knowing the mode!
+  ;; If compiler correctly propagated :fast from the kernel, this assertion passes.
+  ;; If compiler incorrectly falls back to default :safe, this assertion fails and compilation fails.
+  (c-t-assert (eq :fast (exec-mode~ config)) "Helper must receive :fast mode from kernel")
+  (val~ config))
+
+(def-kernel kernel_incomplete_helper (in_val &out out_res)
+  (declare #'(float &out cell-float => nil))
+  ;; Instantiate with :fast mode.
+  (let ((cfg (make-my-config :val in_val :exec-mode :fast)))
+    (set! (~ out_res) (helper-needs-mode cfg))))
