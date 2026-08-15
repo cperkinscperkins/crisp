@@ -1,15 +1,22 @@
 Endeavor 150 — Fused Epilogue
 ==============================
 
-STATUS: PLANNED, 2026-08-14.  No mechanism written yet.  This document records the audit that
-motivated the endeavour, the design decision it turns on, and the TDD ladder.
+STATUS: 2026-08-14 — TDD LADDER COMPLETE, IMPLEMENTATION NOT STARTED.  This document records the
+audit that motivated the endeavour, the design decision it turns on, and the ladder.
 
-Rungs 01-05 are DRAFTED and verified RED for the right reason — all five fail with exactly
-`Unsupported form 'MAP-ELEMENTS!' found in function body.` and nothing else, which establishes
-that the rest of each kernel is already sound: types, shapes, hardware profile, the
-matrix-multiply-tile-stride structure and its :epilogue split, and (04/05) the fused activations'
-own `def-function` bodies, which compile clean in value position.  The only missing thing is the
-primitive.  Rungs 06-11 are specified below but not written.
+ci-stop.txt is still `149-ad-primal-replay` and MUST STAY THERE until the ladder is green — 150
+sits after the gate on purpose, so ten deliberately-red specs do not redden CI.  Advancing it is
+the last step of the endeavour, not the first.
+
+THE TDD LADDER IS COMPLETE — all ten specs written (01-05, errors/06-07, 08-10) and verified RED
+for the right reason.  Every one fails with exactly `Unsupported form 'MAP-ELEMENTS!' found in
+function body.` and nothing else, which establishes that the rest of each kernel is already
+sound: types, shapes, hardware profile, the matrix-multiply-tile-stride structure and its
+:epilogue split, and the fused activations' own `def-function` bodies, which compile clean in
+value position (`let` + `if`).  The only missing thing is the primitive.
+
+Rung 11 is a benchmark rather than a spec.  Rung 12 (layout-aware) is deliberately NOT written —
+see its entry.
 
 The ONE harness change this needed is DONE and verified: the L0 buffer-print cap, raised
 100 -> 512 in overlays/hoist-l0/crisp-hoist-l0-overlay.lisp (see open question #3).  Verified
@@ -174,8 +181,16 @@ destroys the value the next K-step needs to add to.
 docs/topology.md:752-758 already states the rule in prose.  This endeavour can make it a
 **compile-time check**: the compiler knows structurally whether a via-tile call sits in the
 reduction body or the epilogue body, because `%mmts-split-epilogue` already performs that exact
-split.  Fusing a non-linear function on `acc` inside a K-loop is therefore detectable, and should
-warn or refuse rather than produce a silently wrong matmul.  Rung 07 encodes this.
+split.  Rung 07 encodes this as a refusal.
+
+CORRECTION, and it makes the rule SIMPLER rather than more complicated.  The intuitive statement
+— "non-linear activations are wrong on a partial sum" — is too weak.  The corruption comes from
+the accumulator being re-transformed on EVERY step, not from the shape of the function, so even
+a linear map is wrong (this is exactly the 2·p1+2·p2 vs 4·p1+2·p2 arithmetic that rung 03 uses
+to detect misplacement).  The only function that survives per-K-step application is the
+identity.  So the check is STRUCTURAL — any map on `acc` inside a staged reduction body is
+refused — and needs no notion of linearity at all.  Rung 07 uses a linear function deliberately,
+to pin that.
 
 (145 P3a widened the correct case: via-tile now walks ALL native K-steps inside a staged operand,
 src/mma.lisp:930-934.  So "one call = complete contraction" covers more shapes than it once did.)
@@ -256,26 +271,53 @@ P0/P1 — the primitive, forward
       cuBLASLt's enum.  Note this rung is the reason #3 resolved toward hand-computed BUFFER
       values: no fixed table of host-side activations could ever validate it.
 
-  06  NEGATIVE — a fused function with the wrong arity (not unary).  Should refuse cleanly.
+  06  NEGATIVE — a fused function with the wrong arity (not unary).  Must refuse cleanly rather
+      than crash inside the monomorphized specialization.
+      [errors/06-non-unary-fused-fn.crisp — WRITTEN, red]
 
-  07  NEGATIVE — a non-linear function fused on `acc` inside a `matrix-multiply-tile-stride`
-      K-loop (the partial-sum rule above).  Must warn or refuse, naming the partial sum.  This
-      rung should stay negative forever.
+  07  NEGATIVE — a map on `acc` inside a `matrix-multiply-tile-stride` K-loop (the partial-sum
+      rule above).  Must refuse, naming the partial sum and pointing at :epilogue.  Should stay
+      negative forever.  Uses a LINEAR function on purpose — see the rule above for why "no
+      non-linear activations" is the wrong, too-weak statement of this.
+      [errors/07-map-on-partial-sum.crisp — WRITTEN, red]
 
-P2 — autodiff
+  Both negatives currently fail with `Unsupported form 'MAP-ELEMENTS!'` rather than their
+  CHECK-FAIL substrings — the correct pre-implementation state, since the negative runner
+  requires BOTH a non-zero exit and the expected substring.
 
-  08  fused ReLU differentiates, numeric check on metal.  Probe points on BOTH sides of the kink,
-      both far from it relative to `h`: a positive pre-activation where the gradient must flow,
-      and a negative one where it must be exactly 0.0.  Sited OFF the ring-pipelined path — see
-      "Practical cautions".
+P2 — autodiff.  All three share one activation, one dataset and one threshold, so they differ
+only in what they are asking.  Data is 145/09's, deliberately, so the numbers are comparable to
+a shipped spec.
 
-  09  fused epilogue on a K-looped / staged matmul differentiates.  This is the rung that leans
-      on 149's primal replay, since the backward needs the pre-activation value of a staged
-      reduction.
+  08  gradient FLOWS above the kink — probe row 2, expect 1.2.
+      [08-relu-gradient-flows-bmg.crisp — WRITTEN, red]
+      NECESSARY BUT NOT SUFFICIENT ALONE: a saturated-on ReLU is transparent, so an
+      implementation that ignored the activation in the backward also prints 1.2.  Its real job
+      is to be 09's non-zero control against the zero-seed hazard.
+
+  09  gradient is BLOCKED below the kink — probe row 1, expect 0.0.  THE DISCRIMINATOR.
+      [09-relu-gradient-blocked-bmg.crisp — WRITTEN, red]
+      Probes the SAME point on the SAME data as the shipped 145/09, which expects 1.2 there.
+      The entire difference is the activation's derivative, so the most likely failure mode
+      (activation ignored in the backward) shows up as 145/09's answer.
+
+  10  the same check through a STAGED K-loop, activation in `:epilogue` — expect 1.2.
+      [10-staged-epilogue-gradient-bmg.crisp — WRITTEN, red]
+      Identical data/threshold/probe to 08, so if 08 passes and 10 fails the gap is specifically
+      in recovering a pre-activation primal from a loop-carried ACCUMULATION.  This asks 149's
+      replay for something new: all seven of its rungs replay STAGING, none an accumulation.  A
+      refusal that names what it cannot recover is an acceptable outcome here and a good input
+      to the next endeavour; a silent zero is not.  Sited off the ring path (BUG 044).
+
+  WHY THE THRESHOLD IS 7.0.  With A[m][k] = 0.01*(16m+k) and B[k][n] = 0.01*(16k+n),
+  C[m][n] = 1e-4*(30720m + 256mn + 19840 + 120n), which separates by output row: row 1 spans
+  5.056..5.620 and row 2 spans 8.128..9.076.  A threshold of 7.0 sits in that gap with margins
+  of 1.38 and 1.128, while an h=0.5 perturbation moves any element by at most 0.075.  So nothing
+  crosses the kink, the FD stays valid, and h does not have to shrink into fp32 noise.
 
 P3 — the number that justifies the arc
 
-  10  NOT a spec — a benchmark.  **Crisp fused matmul+activation vs cuBLAS matmul + separate
+  11  NOT a spec — a benchmark.  **Crisp fused matmul+activation vs cuBLAS matmul + separate
       activation kernel.**  The unfused baseline pays a 3×N² HBM round trip that the fused kernel
       does not generate.  Whether that beats a 67%-efficiency matmul is shape-dependent and is a
       MEASUREMENT, not an argument ([[145-method-measure-dont-classify]]).  Use 141's harness.
@@ -283,8 +325,10 @@ P3 — the number that justifies the arc
 
 P4 — deferred, may want its own endeavour
 
-  11  layout-aware epilogues: bias-add along N, row-wise reductions.  Requires a documented
+  12  layout-aware epilogues: bias-add along N, row-wise reductions.  Requires a documented
       per-vendor fragment→coordinate map.  Decide SPV portability before committing.
+      NOT WRITTEN — deliberately.  Writing rungs against a fragment→coordinate map we have not
+      decided is how a spec ends up encoding an accidental contract.
 
 
 Open questions to settle before writing code

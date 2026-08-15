@@ -1,0 +1,78 @@
+;; Endeavor 150 rung 10 — the fused epilogue differentiates through a STAGED K-LOOP.
+;; Numeric on-metal check, Intel BMG.  This is the hardest rung and deliberately last.
+;;
+;; TDD: expected to FAIL until P0/P1 (the primitive) and P2 (its VJP) exist — and it may well
+;; outlive them, for a reason worth stating up front (see LEANS ON 149 below).
+;;
+;; WHAT CHANGES FROM RUNG 08.  The data, the threshold, the activation, the probe point and the
+;; expected answer are IDENTICAL — deliberately, so this is a controlled comparison.  The one
+;; difference is HOW the reduction is built:
+;;
+;;     rung 08:  one mma-accumulate-via-tile call over a Kt=16 staged tile; the call walks both
+;;               native K-steps internally, and the activation fuses on `acc`.
+;;     rung 10:  matrix-multiply-tile-stride's grid-k loop, k-step 8, so the macro calls
+;;               via-tile TWICE and the C-tile carries the running sum between calls.  The
+;;               activation therefore CANNOT go on `acc` (that is errors/07, a refusal) and
+;;               goes in the :epilogue, on the completed tile.
+;;
+;; So if 08 passes and 10 fails, the gap is not in the activation or its derivative — it is in
+;; getting the pre-activation primal out of a STAGED REDUCTION.
+;;
+;; LEANS ON 149 (ad-primal-replay), AND ASKS IT FOR SOMETHING NEW.  The backward needs the
+;; PRE-ACTIVATION value of C to evaluate g'(C) — the step function.  C here is not staged by
+;; load-tile-at; it is ACCUMULATED across the macro's K-loop, so recovering it means replaying
+;; a reduction rather than a fill.  149 shipped statement replay and closed BUG 037, but every
+;; one of its seven rungs replays STAGING.  This is the first thing to ask it to replay a
+;; loop-carried accumulation, and it is entirely possible the answer is a new refusal rather
+;; than a number.  A refusal that names what it cannot recover would be an acceptable outcome
+;; for this rung and a good input to the next endeavour; a silent zero would not.
+;;
+;; SITED OFF THE RING PATH ON PURPOSE.  BUG 044 (ring-pipelined MMA backward wrong on BMG,
+;; analytical 84.32 vs expected 1.2) is open.  This rung uses plain load-tile staging inside the
+;; macro, no ring-get, so a wrong number here cannot be blamed on 044 — and 044's signature is
+;; worth recognising if it ever does appear: a PLAUSIBLE finite difference next to a wild
+;; analytical value (145/19 reads FD 1.1992 against analytical 84.32).
+;;
+;; THE CHECK.  Identical arithmetic to rung 08 — f(A,B) = sum(g(A.B)), g(x) = max(x - 7, 0),
+;; output row 2 lies entirely above the threshold, so
+;;     dA[2,0] = sum_{n=0..15} 0.01*n = 1.2
+;; The full derivation of the row bounds, and why h=0.5 cannot straddle the kink, is in rung
+;; 08's header.  A NON-ZERO expectation is deliberate here: this rung has no companion control
+;; the way 09 has 08, so it must not be a rung that a zeros-returning harness could satisfy.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=8x16@0:0.01 B=16x16@0:0.01 at.A=2,0 group=16 h=0.5 atol=2e-2 expect.A=1.2 output-mat=8x16
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; The same activation rungs 08 and 09 fuse on a fragment, here fused on a completed tile.
+(def-function shifted-relu-7 (x)
+  (declare #'(float => float))
+  (let ((y (- x 7.0)))
+    (if (> y 0.0) y 0.0)))
+
+(def-kernel staged_epilogue_grad (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((A-tile (make-scratch-matrix float (8 8)))     ; SLM: Mt x 8 (one K-step of A)
+        (B-tile (make-scratch-matrix float (8 16)))    ; SLM: 8 x Nt (one K-step of B)
+        (C-tile (make-register-tile float (8 16) 0.0))
+        (K      (inner-dimension A B)))                ; K = 16 -> two K-steps
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      ;; C-tile is COMPLETE here.  Fusing on `acc` in the reduction body above would be a
+      ;; refusal (errors/07) because the accumulator is a partial sum between K-steps.
+      (map-elements! C-tile #'shifted-relu-7)
+      (store-tile C-tile C (grid-y grid-x)))))
