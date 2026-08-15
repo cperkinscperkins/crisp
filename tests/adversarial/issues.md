@@ -100,3 +100,13 @@ When an issue is added here, the corresponding adversarial test should be tagged
 * **Location:** `tests/adversarial/k-exact-collision/020-collision.crisp`
 * **Description:** The `gen-XXXX` form for `def-kernel-exact` requires an explicit C-style string for the emitted kernel name. However, the compiler frontend completely fails to validate the uniqueness of these names. If two different templates generate kernels with the same exact string name (e.g., `"my_colliding_kernel"`), the compiler silently emits both into the same IR module, which will cause linker or backend compiler failures later in the pipeline.
 * **Scope:** none (fails on all passes)
+
+### ADV-020: Marshall Cell Accepts Incomplete Types
+* **Location:** `tests/adversarial/k-exact-marshall-incomplete/020-marshall-incomplete.crisp`
+* **Description:** The `marshall-cell` routine is documented to require a fully complete cell type expression. However, the type-checker fails to validate this when a cell type alias (`def-type out-c (cell my-cfg :address-space :global)`) wraps an incomplete struct (`my-cfg` missing its compile-time properties). The kernel compiles without error, bypassing layout safety checks and injecting an incomplete type into the exact kernel boundary.
+* **Scope:** none (fails on all passes)
+
+### ADV-021: Voidp Type Escapes Kernel Constraints
+* **Location:** `tests/adversarial/k-exact-voidp-escape/020-voidp-escape.crisp`
+* **Description:** The `voidp` type is explicitly documented to be valid *only* in the context of `def-kernel-exact`. However, the type-checker entirely fails to enforce this constraint. It is possible to successfully declare and compile standard `def-function` signatures that accept and return `voidp`. The `voidp` type leaks out of the exact kernel layer and pollutes the general language type system.
+* **Scope:** none (fails on all passes)
