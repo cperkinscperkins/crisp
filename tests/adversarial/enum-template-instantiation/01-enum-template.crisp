@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; KNOWN-ISSUE: ADV-005
+
+(def-enumeration dummy-mode :forward :backward)
+
+(<T>
+ (def-function test-enum-temp (val)
+   (declare #'(T => T))
+   val))
+
+(def-function use-enum-temp ()
+  (declare #'(=> dummy-mode))
+  (test-enum-temp :forward))

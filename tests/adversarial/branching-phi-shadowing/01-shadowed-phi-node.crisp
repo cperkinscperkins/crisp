@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate] : validate-differentiate
+;; VERIFY-AUTODIFF: input=1.5 atol=1e-3 expect.input=4.0
+;; KNOWN-ISSUE[verify-autodiff]: ADV-002
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel phi_shadowing_kernel (input &out out-res)
+  (declare #'(cell-float &out cell-float))
+  
+  (let ((x (~ input)))
+    (let ((y (if (> x 0.0)
+                 (let ((x (* x 2.0)))
+                   (+ x 1.0))
+                 x)))
+      (set! (~ out-res) (* y 2.0)))))

@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate] : validate-differentiate
+;; KNOWN-ISSUE[differentiate]: ADV-003
+
+(def-type cell-float (cell float :address-space :global))
+
+(<T>
+ (def-function my-inner-temp (val)
+   (declare #'(T => T T))
+   (return (* val 2.0) (+ val 1.0))))
+
+(<T>
+ (def-function my-outer-temp (val)
+   (declare #'(T => T))
+   (let ((a b (my-inner-temp val)))
+     (* a b))))
+
+(def-kernel template_mvb_kernel (input &out out-res)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (set! (~ out-res) (my-outer-temp x))))

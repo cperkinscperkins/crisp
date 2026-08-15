@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; KNOWN-ISSUE: ADV-006
+
+(<T>
+ (def-function poly-cto-func (val)
+   (declare #'(T => T))
+   (c-t-output "Instantiating poly-cto-func with template parameter!" val)
+   val))
+
+(def-function use-poly-cto-func ()
+  (declare #'(=> float))
+  (poly-cto-func 3.14))

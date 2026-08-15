@@ -600,6 +600,8 @@
                      (cond
                       ((string-equal known-issue-scope "verify-autodiff")
                        (or vad-skipped (not *compile-differentiate*)))
+                      ((string-equal known-issue-scope "differentiate")
+                       (not *compile-differentiate*))
                       ((string-equal known-issue-scope "hoist")
                        (or hoist-skipped (and (parse-test-hoist directives) *compile-differentiate*)))
                       (t nil))))
