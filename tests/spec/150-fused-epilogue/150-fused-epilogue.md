@@ -616,9 +616,39 @@ NVIDIA.  The emitted backward looks structurally right — 7 call sites for the 
 8 mma.sync (more than the backward alone needs, so the recompute prefix is present) and 10
 setp/selp for the inlined step function — but structure is not a number.
 
+POD RESULT, H100 80GB HBM3, 2026-08-15 — THE GRADIENTS PASS ON NVIDIA:
+
+    23-relu-gradient-flows-ptx     PASS [cuda]  analytical=0.27989197  numerical=0.27978516
+    24-relu-gradient-blocked-ptx   PASS [cuda]  analytical=0.0         numerical=0.0
+    25-staged-epilogue-gradient    PASS [cuda]  analytical=0.28        numerical=0.27978516
+
+That is the first time an MMA kernel's GRADIENT has been checked against a number on NVIDIA —
+145 P7 established forward parity (MMA_CORRECT) and stopped there.  Both sides of the kink, and
+through a staged K-loop, on hardware, with no compiler change needed for the vendor switch.
+
+Rung 20 (MMA_CORRECT) passed.  Rungs 21 and 22 FAILED, and the cause was MY ARITHMETIC, not the
+compiler: I predicted a col-major index for B (k + 8j) when the indexing actually in use is
+ROW-MAJOR (8k + j).  Back-derived from the measured output and confirmed exactly —
+
+    pre-activation row 0 = 16, 8, 15   (not the predicted 11, 10, 18)
+    21  relu(x-12):        16->4   8->0    15->3     actual: 4 0 3
+    22  leaky(x-12, 0.5):  16->4   8->-2   15->3     actual: 4 -2 3
+
+both expectations corrected.
+
+THE LAYOUT LESSON, worth carrying: declaring b-mat :col-major selects the MMA VARIANT; it does
+not change the stride the test harness lays B out with, which is row-major.  Nothing is
+inconsistent — kernel and host reference use the SAME strides, which is exactly why rungs 01
+and 20 report MMA_CORRECT — but a HAND-COMPUTED expectation has to follow the strides actually
+in use, not the declared contiguous-term.  The AD twins (23-25) were unaffected because they
+declare B row-major already, for an unrelated reason (see above).
+
+Note this is the failure mode a BUFFER expectation is FOR: it is the only check in the ladder
+that can disagree with the host reference, and here it caught a wrong prediction while
+MMA_CORRECT next door was perfectly happy.
+
 LOCAL STATE with the twins in: 16/16 forward, 16/16 --differentiate, with 4 CUDA hoist phases
-and 3 CUDA VERIFY-AUTODIFF phases skipping for want of nvcc.  Those 7 are exactly what a pod
-run adds.
+and 3 CUDA VERIFY-AUTODIFF phases skipping for want of nvcc.  Those 7 are what a pod run adds.
 
 P3 — the number that justifies the arc
 
