@@ -1,12 +1,21 @@
 Endeavor 150 — Fused Epilogue
 ==============================
 
-STATUS: 2026-08-14 — TDD LADDER COMPLETE, IMPLEMENTATION NOT STARTED.  This document records the
-audit that motivated the endeavour, the design decision it turns on, and the ladder.
+STATUS: 2026-08-15 — FEATURE COMPLETE AND GREEN ON BOTH VENDORS.  What remains is the P3
+benchmark (rung 11) and the fold out of the overlay into src/.
 
-ci-stop.txt is still `149-ad-primal-replay` and MUST STAY THERE until the ladder is green — 150
-sits after the gate on purpose, so ten deliberately-red specs do not redden CI.  Advancing it is
-the last step of the endeavour, not the first.
+    Intel BMG      16/16 forward, 16/16 --differentiate   (local)
+    NVIDIA H100    all phases green                       (pod)
+    Full suite     995/995 forward, 995/995 --differentiate, 213/213 negative, 0 unit failures
+
+Four on-metal forward numbers and six on-metal gradient checks — three per vendor, each pinning
+the activation's derivative on BOTH sides of the kink.
+
+This document records the audit that motivated the endeavour, the design decision it turns on,
+the ladder, and the two bugs the ladder caught in the implementation of its own feature.
+
+ci-stop.txt is now `150-fused-epilogue`, advanced once the ladder went green — which is the
+right order: 150 sat after the gate on purpose while its specs were deliberately red.
 
 IMPLEMENTATION — 10/10 FORWARD AND 10/10 UNDER --differentiate (2026-08-15).  The fused epilogue
 now differentiates, with the activation's derivative pinned on BOTH sides of the kink:
@@ -616,7 +625,17 @@ NVIDIA.  The emitted backward looks structurally right — 7 call sites for the 
 8 mma.sync (more than the backward alone needs, so the recompute prefix is present) and 10
 setp/selp for the inlined step function — but structure is not a number.
 
-POD RESULT, H100 80GB HBM3, 2026-08-15 — THE GRADIENTS PASS ON NVIDIA:
+FINAL POD RESULT, H100 80GB HBM3, 2026-08-15 — ALL PHASES GREEN:
+
+    specs (binary)                     ok
+    specs (binary, --differentiate)    ok
+    negative specs                     ok
+
+So the ladder is complete on BOTH vendors, forward and backward, on real hardware.  The
+corrected 21/22 expectations (4 0 3 and 4 -2 3) were confirmed by that run, which also
+validates the back-derivation from the first run's measured output.
+
+The detail from the first pod run, kept because it is where the interesting evidence is:
 
     23-relu-gradient-flows-ptx     PASS [cuda]  analytical=0.27989197  numerical=0.27978516
     24-relu-gradient-blocked-ptx   PASS [cuda]  analytical=0.0         numerical=0.0
