@@ -1540,3 +1540,60 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         BLOCKS: 145/19, and therefore the numeric proof for ring-pipelined gradients, and
         therefore un-skipping 138/04 and 138/05 under --differentiate.  (That inheritance is
         real; 040's version of it was not.)
+
+[ ] 045 - `funcall` is not differentiable.  A DIRECT call to the same function is.
+
+        FOUND 2026-08-14, during endeavour 150 (fused epilogue), while checking whether the
+        machinery to differentiate a user-supplied activation existed at all.  It does — but
+        only through the direct call form.
+
+        REPRO.  Two kernels differing in ONE respect, both gradient-checked on BMG:
+
+            (set! (~ C i) (funcall #'relu7 (~ A i)))   -> backward FAILS TO COMPILE:
+                "Function FUNCALL is not differentiable.  Wrap the kernel in 'forward-only'
+                 if differentiation is not needed, or ensure all called functions are
+                 differentiable."
+
+            (set! (~ C i) (relu7 (~ A i)))             -> PASS [l0]
+                A: analytical=1.0 numerical=1.0 diff=0.0
+
+        Probe kernels are in put_temp_files_here/150-vjp/ (scalar-relu.crisp is the failing
+        form; the direct-call variant is the sed one-liner in the same directory).
+
+        NOTE WHAT THE PASSING CASE PROVES, because it is more than it looks: the engine walks
+        INTO the user function, differentiates through its `let` and its `if` kink, and mints
+        the `_GRAD` twin itself —
+
+            @relu7_float(float)                    ; forward
+            @relu7_grad_float_float(float, float)  ; (primal, seed) -> d_primal
+
+        So nothing about user-function AD is missing.  The gap is specifically that the walk
+        has no rule for the INDIRECT call form.
+
+        SCOPE — MEASURED, and NARROWER than first assumed.  The obvious worry is store-tile's
+        `:transformF`, whose lowering builds a funcall (src/analysis/control.lisp:397-398).
+        That worry is WRONG, and it was checked rather than reasoned about:
+
+            tests/spec/111-load-and-store-tile/08-store-transformF.crisp   --differentiate: OK
+            a float twin of it (put_temp_files_here/150-vjp/tf-float.crisp) --differentiate: OK
+
+        Both compile clean, so the transformF path does not reach this wall.  WHY it does not
+        is unestablished — do not record a cause here until someone looks.  (111/08 alone would
+        have been weak evidence since its kernel is ulong and has no gradient path at all;
+        the float twin is why the claim is stated as measured.)
+
+        So the confirmed blast radius is: hand-written `funcall` in a differentiable data path.
+        Whether any shipped spec does that is not known.
+
+        DOES NOT BLOCK ENDEAVOUR 150.  map-elements! originally lowered its fused call through
+        funcall and was changed to emit a DIRECT call, reading the name off the `#'FOO` it is
+        handed (%map-elements-call).  Forward stayed 10/10 with byte-identical on-metal
+        numbers.  That is a workaround for one form, not a fix for this bug.
+
+        LIKELY FIX, offered as a STARTING POINT and not a diagnosis (see the 030-sweep lesson:
+        three CAUSE lines in one sweep turned out wrong).  analyze-funcall-expression
+        (src/analysis/control.lisp:1228) already resolves a `#'NAME` literal to a direct
+        semantic-call — sub-case 2b, which even re-dispatches primitives by rewriting the form.
+        If the AD walk sees the SOURCE form rather than that lowered node, the cheapest correct
+        fix may be to normalise `(funcall #'NAME args...)` -> `(NAME args...)` before the walk,
+        rather than to teach the walk about funcall.  Unverified.

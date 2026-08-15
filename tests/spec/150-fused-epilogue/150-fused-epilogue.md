@@ -49,9 +49,13 @@ Measured, not inferred (probe kernels in put_temp_files_here/150-vjp/):
 
 So the AD engine walks a DIRECT call into a user function happily — including through relu's
 `if` kink, which is the exact shape this endeavour needs — and has no rule for the indirect
-form.  This is NOT specific to 150; any kernel using `funcall` is undifferentiable today, which
-also means store-tile's `:transformF` (whose lowering builds a funcall) is in the same boat.
-Worth considering as its own bug entry.
+form.  This is NOT specific to 150.  Filed as BUG 045.
+
+CORRECTION, recorded because it was written here wrongly first: the obvious follow-on worry —
+that store-tile's `:transformF` is in the same boat, since its lowering builds a funcall — is
+FALSE.  Both 111/08 and a float twin of it compile clean under --differentiate.  The claim was
+checked instead of reasoned about, which is the 030-sweep lesson; the confirmed blast radius is
+only a hand-written `funcall` in a differentiable data path.
 
 CONSEQUENCE FOR 150, already applied: map-elements! now lowers its call DIRECTLY, reading the
 name off the `#'FOO` it was given, instead of routing through funcall.  Forward stayed 10/10
@@ -118,6 +122,45 @@ THE PLAN (option (a), recompute):
      tile to recover the pre-activation P, then emits the pairwise update.
 
 Step 1 is self-contained; step 2 is the delicate half, because it re-emits a producer.
+
+STEP 1 IS DONE AND IN THE OVERLAY.  STEP 2 IS DIAGNOSED BUT NOT LANDED — the attempt is saved
+at put_temp_files_here/150-vjp/append3.lisp + append4.lisp and reverted from the overlay so the
+tree stays at 10/10 forward, 9/10 differentiate.  Two findings from it, both worth keeping.
+
+FINDING 1 — `return` is SHADOWED in :crisp.compiler, and the symptom names nothing useful.
+The first attempt used (return ...) to escape a dolist.  In that package `return` is Crisp's own
+RETURN macro (src/macros.lisp:80-84), expanding to (explicit-return VALUE), so the escape became
+a call to a function that does not exist:
+
+    The function CRISP.COMPILER::EXPLICIT-RETURN is undefined.
+
+That message names neither the function it happened in nor `return`, and it fires BEFORE any
+logging in the VJP can run — which is what made it look like a problem with the emitted source
+rather than with the code emitting it.  Diagnosed by adding a log:info and observing it never
+fired at all.  This belongs with the already-recorded `char` shadowing gotcha; `return` is the
+second member of that list.  Fixed by using FIND-IF instead of an escape (append4.lisp).
+
+FINDING 2 — the real blocker is SCOPE, and it has a clean fix.  With the shadowing fixed, the
+VJP emits exactly the intended form:
+
+    (PROGN
+      (LET ((C-TILE_PRIMAL (MAKE-REGISTER-TILE FLOAT (16 8) 0.0)))
+        (MMA-ACCUMULATE-VIA-TILE (16 8 8) C-TILE_PRIMAL A B)
+        (%MAP-ELEMENTS-VJP! C-TILE_ADJ C-TILE_PRIMAL (FUNCTION DOUBLE-VAL_GRAD)))
+      <core backward>)
+
+and then fails with `Unknown variable C-TILE_ADJ`.  The reason: C-TILE_PRIMAL is bound by the
+VJP's own inner LET, while C-TILE_ADJ is bound by the walk in an OUTER scope.  %explode-register-
+tiles builds its `tiles` alist per-LET, so the inner explosion knows only the primal and the
+outer knows only the adjoint.  The %MAP-ELEMENTS-VJP! clause requires BOTH in one alist, so it
+never fires, and the whole-tile name survives to codegen where only $F0/$F1 exist.
+
+THE FIX, for whoever picks this up: give %map-elements-vjp! an optional FRAGMENT INDEX argument.
+An explosion that can resolve only one of the two operands rewrites that side to its fragment
+and records the index; the other explosion, running at its own level, uses the same index for
+its side.  That lets the form be rewritten in two passes instead of demanding both names at
+once.  Nothing else about step 2 is in doubt — the chain rule, the recompute-P choice, the
+_GRAD twin and the emitted shape are all confirmed correct.
 
 Everything lives in overlays/crisp-compiler-overlay.lisp pending a fold into src/ — note the
 slot-reuse caveat recorded there for the :map node.
