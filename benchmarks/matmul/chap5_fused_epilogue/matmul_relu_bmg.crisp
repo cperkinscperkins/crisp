@@ -1,0 +1,50 @@
+;; Chapter 5 (Endeavor 150) — FUSED EPILOGUE, INTEL BMG / L0 / SPV, tf32.
+;;
+;; The Intel twin of matmul_relu.crisp, and likewise chap1_async_linear/matmul_bmg_async.crisp
+;; with ONE LINE ADDED:
+;;
+;;     (map-elements! C-tile #'relu)
+;;
+;; Everything else — the 32x32 register tile, the (8 16 8) XMX shape, B row-major (SPV/DPAS
+;; has no ColumnMajor-B coop builtin), the :linear async barrier — is byte-for-byte the
+;; Chapter 1 kernel, so the benchmark difference is attributable to the fusion alone.
+;;
+;; THE SOURCE OF `relu` IS IDENTICAL TO THE NVIDIA TWIN'S.  The kernels around it must differ
+;; because the tensor-core shapes genuinely differ; the fused user code does not.  That is the
+;; portability claim in its smallest form.
+;;
+;; ON THE LOWERING, which is NOT the same as the NVIDIA one even though the source is.  An
+;; Intel fragment is an opaque KHR cooperative matrix whose per-invocation component count is
+;; a RUNTIME value (OpCooperativeMatrixLengthKHR), so the map is a LOOP over components reached
+;; by OpAccessChain — where PTX unrolls fieldwise over a known register count.  Same source,
+;; two lowerings, neither of which learns which logical (row, col) it holds.
+;;
+;; Compile: crisp-compile.exe --hardware-profile=bmg --ir-target=spv matmul_relu_bmg.crisp
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; Byte-identical to the NVIDIA twin's — see that file's note on why plain relu (not the
+;; thresholded variant the spec kernels use) is the right function for a benchmark.
+(def-function relu (x)
+  (declare #'(float => float))
+  (if (> x 0.0) x 0.0))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 16))          ; one sub-group
+  (let ((A-tile (make-scratch-matrix float (32 8)))
+        (B-tile (make-scratch-matrix float (8 32)))
+        (C-tile (make-register-tile float (32 32) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :mode :linear)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)                                         ; OpGroupWaitEvents
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (map-elements! C-tile #'relu)                       ; <-- the entire chapter
+      (store-tile C-tile C (grid-y grid-x)))))

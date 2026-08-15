@@ -1,0 +1,47 @@
+;; Chapter 5 (Endeavor 150) — UNFUSED baseline, INTEL BMG / L0 / SPV, tf32.
+;;
+;; The Intel twin of matmul_unfused.crisp, and the control for the same reason: running Crisp
+;; against ITSELF separates the fusion win from Crisp's matmul quality, so a result against
+;; oneMKL can actually be attributed.
+;;
+;;     fusion speedup  =  matmul_unfused_bmg  /  matmul_relu_bmg
+;;     end-to-end      =  (oneMKL + relu)     /  matmul_relu_bmg
+;;
+;; The matmul kernel is byte-for-byte matmul_relu_bmg.crisp's minus the map-elements! line;
+;; the activation is a SECOND KERNEL over C — a second launch and a full HBM round trip of the
+;; C matrix, which is precisely what fusion removes.
+;;
+;; Compile: crisp-compile.exe --hardware-profile=bmg --ir-target=spv matmul_unfused_bmg.crisp
+;; The harness launches `matmul` then `relu_pass` and times the PAIR.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function relu (x)
+  (declare #'(float => float))
+  (if (> x 0.0) x 0.0))
+
+;; --- Kernel 1: the matmul, with NO epilogue. ---
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 16))          ; one sub-group
+  (let ((A-tile (make-scratch-matrix float (32 8)))
+        (B-tile (make-scratch-matrix float (8 32)))
+        (C-tile (make-register-tile float (32 32) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :mode :linear)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))
+
+;; --- Kernel 2: the activation as its own pass over C.  This is the HBM round trip. ---
+(def-kernel relu_pass (&out C)
+  (declare #'(&out c-mat))
+  (tensor-stride C (y x)
+    (set! (~ C y x) (relu (~ C y x)))))

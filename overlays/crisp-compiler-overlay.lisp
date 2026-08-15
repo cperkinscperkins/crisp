@@ -1483,3 +1483,174 @@
                                  (list div-sym (list to-ulong-sym k-form) (list to-ulong-sym k-step)))
                            reduction-body))
               epilogue-body))))
+
+;; src/mma.lisp
+;; SUPERSEDES the earlier %map-elements-fragment-fields.
+;; CHANGE: recognises Hopper wgmma accumulators.
+;;
+;; WHY THIS IS A THREE-LINE CHANGE AND NOT A THIRD LOWERING.  A wgmma D accumulator is minted by
+;; %ensure-wgmma-acc-type as a RECORD of N/2 flat f32 fields and constructed with the very same
+;; %construct-struct primitive the mma.sync fragments use (src/mma.lisp:1611-1625).  So the PTX
+;; fieldwise unroll already fits it exactly; all that was missing was the field count.  Dims come
+;; from *wgmma-acc-dims*, the same source analyze-store-tile-mma consults for its own overload.
+;;
+;; Found by pointing map-elements! at benchmarks/matmul/crisp/matmul_wgmma_ws_n256.crisp — the
+;; NVIDIA champion kernel — which refused with
+;;     map-elements!: unsupported target type WGMMA-ACC-F32-64X256.
+(defun %map-elements-fragment-fields (frag-type)
+  "The number of scalar register fields in a PTX accumulator record type, or NIL if FRAG-TYPE is
+   not one.  Covers the tf32 m16n8k8 fragments (acc/A 16x8 -> 4 regs, B 8x8 -> 2) and Hopper
+   wgmma accumulators (N/2 f32 registers per thread across the 128-thread warpgroup)."
+  (or (case frag-type
+        (register-fragment-acc-f32-16x8 4)
+        (register-fragment-a-tf32-16x8  4)
+        (register-fragment-b-tf32-8x8   2)
+        (t nil))
+      (when (%wgmma-acc-type-p frag-type)
+        (floor (second (gethash frag-type *wgmma-acc-dims*)) 2))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavor 150 — widen %map-elements-fragment-fields' derived return type.
+;;;
+;;; OVERLAY HAZARD, worth recording because the error names nothing useful.  The original
+;;; definition returned only 2, 4 or NIL, so SBCL DERIVED the ftype
+;;;     (OR (INTEGER 2 2) (INTEGER 4 4) NULL)
+;;; and compiled the CALLERS against it.  Teaching the function about wgmma accumulators makes
+;;; it return N/2 (128 for the n256 kernel), which the already-compiled callers reject:
+;;;     The value 128 is not of type (OR (INTEGER 2 2) (INTEGER 4 4) NULL)
+;;;     from the function type declaration.
+;;; A late redefinition alone is not enough — the callers must be recompiled too.  Hence the
+;;; explicit DECLAIM (so nothing narrow is re-derived) followed by re-definitions of both
+;;; callers, verbatim.
+;;; ---------------------------------------------------------------------------
+
+(declaim (ftype (function (t) (or null (integer 1 8192))) %map-elements-fragment-fields))
+
+(defun %map-elements-fragment-fields (frag-type)
+  "The number of scalar register fields in a PTX accumulator record type, or NIL if FRAG-TYPE is
+   not one.  Covers the tf32 m16n8k8 fragments (acc/A 16x8 -> 4 regs, B 8x8 -> 2) and Hopper
+   wgmma accumulators (N/2 f32 registers per thread across the 128-thread warpgroup), which are
+   minted as flat f32 records by %ensure-wgmma-acc-type and so fit the fieldwise lowering as-is."
+  (or (case frag-type
+        (register-fragment-acc-f32-16x8 4)
+        (register-fragment-a-tf32-16x8  4)
+        (register-fragment-b-tf32-8x8   2)
+        (t nil))
+      (when (%wgmma-acc-type-p frag-type)
+        (floor (second (gethash frag-type *wgmma-acc-dims*)) 2))))
+
+;; Re-definitions of the two callers so they recompile against the widened type.  Bodies are
+;; verbatim copies of their latest versions above.
+
+(defun analyze-map-elements (expr env context location)
+  "(map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.
+
+   Endeavor 150.  TWO LOWERINGS, because the vendors represent a fragment differently:
+
+     PTX   a record of scalar fields, count known at compile time -> UNROLLED fieldwise onto
+           %construct-struct / %extract-struct-member, which already exist.
+     SPV   an opaque cooperative matrix whose per-invocation component count is a RUNTIME
+           value (OpCooperativeMatrixLengthKHR) -> a semantic-coop-op :map node that codegen
+           turns into a LOOP, rewriting each component through the variable's own alloca via
+           OpAccessChain.
+
+   Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register
+   or component holds, which is why this is portable and why layout-aware epilogues are out of
+   scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which
+   expands it to one of these per fragment."
+  (unless (= (length (cdr expr)) 2)
+    (error 'crisp-compiler-error
+           :message (format nil "map-elements!: expects exactly 2 arguments — (map-elements! <fragment-or-tile> #'<unary-fn>) — got ~a."
+                            (length (cdr expr)))
+           :source-location location))
+  (destructuring-bind (target fn-form) (cdr expr)
+    (%map-elements-check-unary fn-form location)
+    (let* ((node (analyze-expression target env context location))
+           (ty   (get-single-value-type node))
+           (nf   (%map-elements-fragment-fields ty))
+           (coop (%map-elements-coop-dims ty)))
+      (cond
+        ;; ---- NVIDIA / PTX: unrolled fieldwise rewrite ----
+        (nf
+         (analyze-expression
+          `(set! ,target
+                 (%construct-struct ,ty
+                                    ,@(loop for i below nf
+                                            collect (%map-elements-call
+                                                     fn-form
+                                                     `(%extract-struct-member ,target ,i)))))
+          env context location))
+        ;; ---- Intel / SPV: runtime-length component loop ----
+        (coop
+         (unless (symbolp target)
+           (error 'crisp-compiler-error
+                  :message (format nil "map-elements!: on SPIR-V the target must be a cooperative-matrix VARIABLE (its storage is what OpAccessChain indexes), got ~a."
+                                   target)
+                  :source-location location))
+         (destructuring-bind (rows cols use) coop
+           (let* ((temp (gensym "CMELEM"))
+                  (env2 (cons (make-parameter-def :name temp :type 'float :kind :local) env))
+                  (body-node (analyze-expression (%map-elements-call fn-form temp)
+                                                 env2 context location)))
+             (make-semantic-coop-op
+              :type 'void :kind :map
+              :ty target :tx temp :tensor-node body-node
+              :rows rows :cols cols :use use
+              :source-location location))))
+        (t
+         (error 'crisp-compiler-error
+                :message (format nil "map-elements!: unsupported target type ~a. Implemented for MMA fragments (PTX records and SPV cooperative matrices) and, via the tile explosion, whole register tiles."
+                                 ty)
+                :source-location location))))))
+
+(defun analyze-map-elements-vjp (expr env context location)
+  "(%map-elements-vjp! ADJ PRIMAL #'F_GRAD [IDX]) -> adj[i] <- F_GRAD(primal[i], adj[i]).
+
+   IDX is bookkeeping for the tile explosion (see %emit-map-vjp-explode) and is inert here: by
+   the time this analyzer runs, both operands are already single fragments."
+  (unless (member (length (cdr expr)) '(3 4))
+    (error 'crisp-compiler-error
+           :message (format nil "%map-elements-vjp!: expects 3 or 4 arguments (adj primal #'fn-grad [idx]), got ~a."
+                            (length (cdr expr)))
+           :source-location location))
+  (destructuring-bind (adj primal fn-form &optional idx) (cdr expr)
+    (declare (ignore idx))
+    (let* ((adj-node (analyze-expression adj env context location))
+           (ty       (get-single-value-type adj-node))
+           (nf       (%map-elements-fragment-fields ty))
+           (coop     (%map-elements-coop-dims ty))
+           (gname    (or (%map-elements-fn-name fn-form)
+                         (error 'crisp-compiler-error
+                                :message "%map-elements-vjp!: the gradient callee must be a #'NAME form."
+                                :source-location location))))
+      (cond
+        (nf
+         (analyze-expression
+          `(set! ,adj
+                 (%construct-struct ,ty
+                                    ,@(loop for i below nf
+                                            collect `(,gname (%extract-struct-member ,primal ,i)
+                                                             (%extract-struct-member ,adj ,i)))))
+          env context location))
+        (coop
+         (unless (and (symbolp adj) (symbolp primal))
+           (error 'crisp-compiler-error
+                  :message "%map-elements-vjp!: on SPIR-V both operands must be cooperative-matrix VARIABLES."
+                  :source-location location))
+         (destructuring-bind (rows cols use) coop
+           (let* ((tp (gensym "CMPRM"))
+                  (ta (gensym "CMADJ"))
+                  (env2 (list* (make-parameter-def :name tp :type 'float :kind :local)
+                               (make-parameter-def :name ta :type 'float :kind :local)
+                               env))
+                  (body-node (analyze-expression (list gname tp ta) env2 context location)))
+             (make-semantic-coop-op
+              :type 'void :kind :map2
+              :ty adj :tx primal :layout (list tp ta) :tensor-node body-node
+              :rows rows :cols cols :use use
+              :source-location location))))
+        (t
+         (error 'crisp-compiler-error
+                :message (format nil "%map-elements-vjp!: unsupported operand type ~a." ty)
+                :source-location location))))))

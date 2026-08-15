@@ -710,6 +710,29 @@ def main():
             # tf32.  cuBLAS tf32 is the vendor ceiling.  This is the tensor-core headline.
             run_target("chap3_wgmma", "matmul_wgmma.crisp", "matmul_wgmma.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
             run_target("chap3_wgmma", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
+
+            # chap5_fused_epilogue (endeavor 150) — the fused epilogue on the COMPETITIVE kernel:
+            # wgmma + TMA + warp specialization (m64n256), plus one (map-elements! D #'relu).
+            #
+            # TWO baselines on purpose, because they answer different questions:
+            #   CUBLASLt_Fused  cuBLASLt CUBLASLT_EPILOGUE_RELU — the vendor fusing relu ITSELF.
+            #                   The strong baseline; beating "cuBLAS + a separate kernel" at plain
+            #                   relu would be a strawman, since NVIDIA can fuse relu.
+            #   CUBLAS_Plus_Relu  cuBLAS + separate kernel — what any OFF-MENU activation costs,
+            #                   which is the case this endeavour is actually about.
+            #   CUDA_Apples_Fused  a human hand-fusing the same activation in the same algorithm;
+            #                   the control on whether Crisp's abstraction costs anything.
+            #
+            # NOTE ON SIZES: the existing chap3 cuBLAS numbers stop at N=2048, where an H100 is
+            # not saturated (34.1 TF).  Sweep to 4096+ or this comparison flatters us.
+            run_target("chap5_fused_epilogue", "matmul_wgmma_ws_relu.crisp", "matmul_wgmma_ws_relu.ptx",
+                       "Crisp_Fused_WS", [], is_crisp=True, crisp_grid_tile="64,256")
+            run_target("chap5_fused_epilogue", "cublaslt_fused.cu", "cublaslt_fused",
+                       "CUBLASLt_Fused", cublas_flags + ["-lcublasLt"], is_cublas=True)
+            run_target("chap5_fused_epilogue", "cublas_optimal.cu", "cublas_optimal",
+                       "CUBLAS_Plus_Relu", cublas_flags, is_cublas=True)
+            run_target("chap5_fused_epilogue", "cuda_apples.cu", "cuda_apples",
+                       "CUDA_Apples_Fused", nvcc_flags)
         else:
             # --- Intel/BMG ladder (endeavor 143) ---
             # chap0_sync — synchronous coop-matrix tiling.  Crisp (SPV/L0) vs SYCL_Apples vs OneMKL ceiling.
@@ -720,6 +743,43 @@ def main():
             # chap1_async_linear — OpGroupAsyncCopy staging.
             run_l0_crisp("chap1_async_linear", "matmul_bmg_async.crisp")
             run_target("chap1_async_linear", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+
+            # chap5_fused_epilogue (endeavor 150) — the SAME chap1 kernel plus ONE line,
+            # (map-elements! C-tile #'relu), so any delta is attributable to the fusion.
+            #
+            # HOW TO READ THIS CHAPTER.  Two costs are being compared, and neither is a raw
+            # GFLOPS ranking:
+            #   cost of the activation WHEN FUSED     = chap5 Crisp_Fused  vs  chap1 Crisp
+            #                                           (same kernel +/- the epilogue line)
+            #   cost of the activation WHEN NOT FUSED = onemkl_optimal's kernel_median_us
+            #                                           vs its gemm_median_us (same run, so
+            #                                           the HBM round trip is priced directly)
+            # SYCL_Apples_Fused is the control on the abstraction: a human fusing the same
+            # activation into the same algorithm by hand.  If Crisp tracks it, fusion is free.
+            #
+            # NOT WIRED YET: matmul_unfused_bmg.crisp, which pairs the matmul with a separate
+            # relu_pass kernel.  It compiles, but bench_harness_l0.cpp launches exactly ONE
+            # kernel, so timing the pair needs its own harness.  Until then the two costs above
+            # carry the argument; adding it would make the Crisp-side round trip direct rather
+            # than inferred.
+            # THE HEADLINE PAIR.  Fused onto the register-ring + Subgroup2DBlockPrefetch kernel,
+            # which is the Crisp kernel that is actually competitive on Intel — 24.09 TF against
+            # oneMKL's 13.81 at N=2048, i.e. already AHEAD.  Compare it with the UNFUSED
+            # intel_prefetch run above (same kernel minus one line) and with OneMKL_Plus_Relu,
+            # which cannot fuse and must pay a second kernel plus an HBM round trip of C.
+            #
+            # The first cut of this chapter fused onto chap1 instead and was uninformative:
+            # chap1 Crisp is ~15x off oneMKL, so a few-percent fusion win vanished into the gap.
+            run_l0_crisp("chap5_fused_epilogue", "matmul_bmg_prefetch_relu.crisp",
+                         comp_name="Crisp_Fused_Prefetch", use_autobench=True)
+
+            # Kept as the cheap control on a SIMPLE kernel: chap1 +/- the one fused line.
+            # Useful for "does fusion cost anything", not for the headline.
+            run_l0_crisp("chap5_fused_epilogue", "matmul_relu_bmg.crisp", comp_name="Crisp_Fused")
+            run_target("chap5_fused_epilogue", "sycl_apples.cpp", "sycl_apples",
+                       "SYCL_Apples_Fused", sycl_flags, is_sycl=True)
+            run_target("chap5_fused_epilogue", "onemkl_optimal.cpp", "onemkl_optimal",
+                       "OneMKL_Plus_Relu", sycl_flags, is_sycl=True, is_cublas=True)
 
             # chap_intel_prefetch — the endeavor-142 register-ring + Subgroup2DBlockPrefetch pipeline.
             # STEP 4 (this is where Q1 gets answered): the register-ring kernel has a DIFFERENT param

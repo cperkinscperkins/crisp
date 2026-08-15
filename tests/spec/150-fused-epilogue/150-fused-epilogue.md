@@ -671,8 +671,43 @@ and 3 CUDA VERIFY-AUTODIFF phases skipping for want of nvcc.  Those 7 are what a
 
 P3 — the number that justifies the arc
 
-  11  NOT a spec — a benchmark.  **Crisp fused matmul+activation vs cuBLAS matmul + separate
-      activation kernel.**  The unfused baseline pays a 3×N² HBM round trip that the fused kernel
+  11  INTEL RESULT, BMG, 2026-08-15.  benchmarks/matmul/chap5_fused_epilogue/.
+
+          N    | oneMKL gemm | oneMKL+relu | relu cost | Crisp unfused | Crisp fused | fusion cost
+         1024  |    11.98 TF |    11.31 TF |    +5.9%  |     21.44 TF  |   21.38 TF  |    +0.3%
+         2048  |    13.81 TF |    13.19 TF |    +4.7%  |     24.30 TF  |   24.32 TF  |    -0.1%
+         4096  |    14.31 TF |    13.88 TF |    +3.1%  |     15.44 TF  |   16.62 TF  |    -7.1%
+
+      THE RESULT IN ONE LINE: fusing the activation costs Crisp NOTHING (0.3% / -0.1%, i.e.
+      inside noise); NOT fusing costs oneMKL 3-6%.  End to end, Crisp-fused is 1.89x / 1.84x /
+      1.20x oneMKL+relu.
+
+      AND THE 3-6% IS PHYSICALLY CHECKABLE, which is what makes it believable rather than just
+      favourable.  A separate activation pass must read and write all of C; at BMG's ~450 GB/s:
+
+          N=1024   predicted 10.4%   measured 5.9%
+          N=2048   predicted  6.0%   measured 4.7%
+          N=4096   predicted  3.1%   measured 3.1%
+
+      The N=4096 agreement is exact and the trend matches (the cost SHRINKS as N grows, because
+      the round trip is O(N^2) against an O(N^3) matmul).  The 1024 gap is expected — at 179us
+      total the fixed launch overhead is no longer negligible.
+
+      WHY THIS BASE.  The first cut fused onto chap1_async_linear and measured nothing useful:
+      chap1 Crisp runs ~0.87 TF against oneMKL's ~13, so a few-percent fusion effect vanished
+      into a 15x matmul deficit, and the A/B even came out NEGATIVE (-7 to -9%) — an unphysical
+      result that put the noise floor of that setup at >=7%.  Rebasing onto the register-ring +
+      Subgroup2DBlockPrefetch kernel, where Crisp is already AHEAD of oneMKL, dropped the noise
+      to 0.3% and made the effect measurable.  Benchmark a feature on the kernel someone would
+      actually use.
+
+      UNEXPLAINED, and recorded rather than smoothed: at N=4096 the FUSED kernel measures 7.1%
+      FASTER than the unfused one, and both fall sharply from N=2048 (24.3 -> 15.4/16.6).
+      Something degrades for this kernel at 4096 and the fused variant degrades less.  Do not
+      quote the -7.1% as a fusion win until that is understood.
+
+      STILL TO DO: the NVIDIA half — **Crisp fused vs cuBLASLt EPILOGUE_RELU (the strong
+      baseline) and vs cuBLAS + separate kernel (the off-menu case)**.  The unfused baseline pays a 3×N² HBM round trip that the fused kernel
       does not generate.  Whether that beats a 67%-efficiency matmul is shape-dependent and is a
       MEASUREMENT, not an argument ([[145-method-measure-dont-classify]]).  Use 141's harness.
       This is the endeavour's real definition of done.
