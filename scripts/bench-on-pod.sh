@@ -35,6 +35,11 @@ set -euo pipefail
 ## leaving the positional args intact.  ONE script, many benchmarks.
 BENCH="reduction"
 KEEP_POD_RESULTS="0"
+CHAPTERS=""
+for _a in "$@"; do
+    case "$_a" in --chapters=*) CHAPTERS="${_a#--chapters=}" ;; esac
+done
+set -- $(printf "%s\n" "$@" | grep -v -- "--chapters=" | tr "\n" " ")
 for _a in "$@"; do
     if [ "$_a" = "--keep-pod-results" ]; then KEEP_POD_RESULTS="1"; fi
 done
@@ -203,6 +208,12 @@ fi
 echo ""
 
 # --- 5. Run benchmarks ---
+if [ -n "${CHAPTERS}" ]; then
+    CHAPTERS_ARG="--chapters=${CHAPTERS}"
+    echo "    (restricted to chapters: ${CHAPTERS})"
+else
+    CHAPTERS_ARG=""
+fi
 echo "--- Step 5: Run benchmarks (${BENCH}) ---"
 pod_run "bash -s" <<RUNBENCH
 set -e
@@ -227,7 +238,10 @@ case "${BENCH}" in
     ## defaults, so matmul.py passes a COMPLETE, explicit set of precision + denormal flags to
     ## every compiler on every precision pass (see nvcc_math_flags / icpx_math_flags and the
     ## MATH-FLAG POLICY block in scripts/crisp_bench/matmul.py).  A bare `nvcc -O3` is never emitted.
-    python3 scripts/crisp_bench/matmul.py --sizes=${SIZES} --iters=${ITERS} --sweep-all
+    ## --chapters= (optional) restricts the ladder.  A fused-epilogue session does not need
+    ## chap0/chap1/chap1.5/chap2 re-measured at 8192 — those are slow, known, and dominate
+    ## the wall time.  Empty means the whole ladder, as before.
+    python3 scripts/crisp_bench/matmul.py --sizes=${SIZES} --iters=${ITERS} --sweep-all ${CHAPTERS_ARG}
     ;;
 esac
 RUNBENCH

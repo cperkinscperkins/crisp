@@ -560,6 +560,10 @@ def main():
     ap.add_argument("--precision", choices=["ieee", "fast"], default="fast")
     ap.add_argument("--ftz", action="store_true", help="Enable Flush-To-Zero")
     ap.add_argument("--sweep-all", action="store_true", help="Run full precision matrix (Fast, IEEE+FTZ, IEEE)")
+    ap.add_argument("--chapters", default="",
+                    help="Comma-separated chapter dirs to run (default: all).  A pod session "
+                         "that only wants the fused-epilogue chapters should not pay for the "
+                         "whole ladder at 8192.")
     ap.add_argument("--platform", choices=["nvidia", "intel"], default="nvidia",
                     help="nvidia (default): nvcc/cuBLAS + Crisp PTX, runs natively on a RunPod. "
                          "intel: icpx SYCL/oneMKL + Crisp SPIR-V/L0, runs inside the bench Docker container (BMG).")
@@ -621,7 +625,15 @@ def main():
         if prec == "fast":
             sycl_flags.append("-DFAST_MATH")
 
+        # Endeavor 150: --chapters= filter.  Applied at the two dispatch points rather than
+        # around each call site, so it cannot drift out of sync with the ladder below.
+        _want = set(x.strip() for x in a.chapters.split(",") if x.strip())
+        def _skip(chapter):
+            return bool(_want) and chapter not in _want
+
         def run_target(chapter, source_name, bin_name, comp_name, flags, is_sycl=False, is_cublas=False, is_crisp=False, crisp_grid_tile=None):
+            if _skip(chapter):
+                return
             src_path = HERE / chapter / source_name
             if not src_path.exists():
                 return
@@ -676,6 +688,8 @@ def main():
 
         # Endeavor 143: the Intel Crisp path is SPIR-V/L0 (not PTX/CUDA) — the fixed L0 harness.
         def run_l0_crisp(chapter, source_name, comp_name="Crisp", use_autobench=False):
+            if _skip(chapter):
+                return
             src = HERE / chapter / source_name
             if not src.exists():
                 return
