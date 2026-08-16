@@ -766,6 +766,7 @@ MMA
 [x] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] move MMA out of topology.md into main docs
 [ ] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
+[ ] tests\spec\111-load-and-store-tile\09-load-transpose-2d.crisp  <-- has "t" insteaad of "true".  FIX
 
 [x] don't forget bug 033 ( --debug )
 

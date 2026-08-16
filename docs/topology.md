@@ -359,9 +359,11 @@ Two capabilities become available to a kernel once its workgroups are clustered:
    traffic for the shared operand by the cluster's extent along the axis that operand
    does not depend on.
 
-The second is the reason `cluster-size` exists at all today. See
-[load-tile](#load-tile) for how the multicast is deduced — the kernel body does not
-change, and there is no mask for you to write.
+The second is the reason `cluster-size` exists at all today. `cluster-size` makes multicast
+*possible*; an individual load asks for it with [`:multicast`](#multicast) on `load-tile`.
+You never write a destination mask or elect an issuing workgroup — the compiler derives
+both — but you do say which loads you expect to multicast, so that a load which cannot is
+a compile error rather than a silent doubling of bandwidth.
 
 #### Axes follow `:tile-shape`
 
@@ -386,8 +388,9 @@ declared rank are 1. A scalar is shorthand for a rank-1 value, following
 `(local-size :set-to 256)`.
 
 `cluster-size` is permitted on a kernel with no `:tile-shape`, but there is then no tile
-grid for the compiler to reason about and no multicast will be deduced. The declaration
-still enables DSMEM and a cluster-wide `sync-cluster`, which may be all you want.
+grid for the compiler to reason about, so `:multicast` cannot be honoured and is refused.
+The declaration still enables DSMEM and a cluster-wide `sync-cluster`, which may be all
+you want.
 
 #### This declaration DOES affect the compiled kernel
 
@@ -395,7 +398,8 @@ Every other declaration in this family is advisory: it shapes the hoisting code 
 generates and leaves the kernel itself untouched. **`cluster-size` is not advisory.** It
 determines:
 
-- whether a `load-tile` lowers to a multicast at all
+- whether a `load-tile` **may** multicast at all (an individual load still asks with
+  [`:multicast`](#multicast); without a cluster, that request is a compile error)
 - the multicast destination mask
 - which workgroup in each multicast group issues the load
 - whether the compiler emits the cluster entry and exit fences (see
@@ -459,10 +463,21 @@ without cluster support emits a diagnostic, and the effective cluster extent is 
 in the kernel's metadata so a test or a benchmark harness can assert on it rather than
 inferring it from a timing number.
 
+> **A clustered *matmul* is nevertheless NVIDIA-only, and for a different reason.**  The
+> degrade above is not the whole story: a multicast pipeline also carries a
+> [`:mode :cluster`](#mode) barrier ring, and `:cluster` — like `:block` before it — is a hard
+> **compile error** on SPIR-V, not a degrade.  So such a kernel does not run slower on Intel;
+> it does not build there.
+>
+> The two behaviours are deliberate and follow existing precedent.  `cluster-size` is launch
+> geometry and harmless on its own, so it degrades — exactly as `local-size` does not error
+> merely because a device cannot honour the value you asked for.  A `:cluster` barrier is an
+> object that cannot exist on the target, so it errors — exactly as `:block` already does.
+
 #### Interaction with other declarations
 
 - **`:tile-shape`** — supplies the axis vocabulary and the grid whose divisibility is
-  constrained. Required for multicast to be deduced.
+  constrained. Required before any `:multicast` load can be honoured.
 - **`:occupancy`** — does not apply. `:occupancy` scales the occupancy-sized `:strided`
   grid, which is only used when no `:tile-shape` is present; a cluster without a tile
   shape performs no multicast.
@@ -541,18 +556,58 @@ transfer to this barrier; `await` blocks until the bytes have landed.
 
 #### `:mode`
 
-`:mode` selects which async global→local mechanism the barrier governs.  Omit it for the
-arch-automatic default; pass it explicitly to force a specific mechanism (for degenerate cases —
-this makes your code arch-brittle, so take care).
+`:mode` answers one question: **what kind of object is this barrier, and how far does it reach?**
+Omit it for the arch-automatic default; pass it explicitly to pin a specific kind (for degenerate
+cases, or when reach is part of your algorithm rather than a property of the hardware).
+
+The values form a ladder, each rung strictly more capable than the one below it:
+
+| `:mode` | what the barrier IS | how far it reaches |
+|---|---|---|
+| `:linear` | the backend's group-async-copy handle | the workgroup |
+| `:block` | a real mbarrier object | the workgroup |
+| `:cluster` | a real mbarrier object | the whole workgroup cluster |
 
 - `:linear` — `cp.async` on PTX, `OpGroupAsyncCopy` on SPIR-V.  A per-element / per-row
   cooperative copy global→SLM.  **Shipped** and metal-verified on both backends.  Valid on
-  every supported arch.
-- `:block` — `CuTensorMap` (TMA) on PTX.  A bulk descriptor-driven 2D copy global→SLM.
-  **NVIDIA sm_90+ only.**  On an older NVIDIA arch it is a compile error (needs sm_90+); **on
-  Intel it is a compile error** — Intel's fast 2D path (LSC 2D block loads) loads global→
-  *registers*, not SLM, and is **not** a barrier-governed transfer at all (see "Optimizing
-  Intel MMA").  (`:block` codegen lands with the CuTensorMap chapter.)
+  every supported arch.  Note the handle is not the same thing on both backends: on PTX
+  `commit_group`/`wait_group` need no object at all, so the barrier is a *phantom* and the
+  compiler emits a constant; on SPIR-V it owns a `target("spirv.Event")` slot that the async
+  copies chain through.
+- `:block` — `CuTensorMap` (TMA) on PTX.  A bulk descriptor-driven 2D copy global→SLM,
+  completing on a **workgroup-local** mbarrier (`mbarrier.arrive.expect_tx.shared::cta` /
+  `mbarrier.try_wait.parity.shared::cta`).  **NVIDIA sm_90+ only.**  On an older NVIDIA arch it
+  is a compile error (needs sm_90+); **on Intel it is a compile error** — Intel's fast 2D path
+  (LSC 2D block loads) loads global→*registers*, not SLM, and is **not** a barrier-governed
+  transfer at all (see "Optimizing Intel MMA").
+- `:cluster` 📝 — a real mbarrier that **peer workgroups in the same cluster may arrive on**
+  (`mbarrier.arrive.shared::cluster` against a mapped peer address).  **NVIDIA sm_90+ only**,
+  and only meaningful when the kernel declares a [cluster-size](#workgroup-clusters).
+
+##### Which barriers need which rung
+
+A pipelined kernel usually has two barrier rings, and they do **not** want the same rung:
+
+- The **data-arrival** ring (conventionally `full`) is `:block` even in a clustered kernel.
+  This surprises people, so it is worth being explicit: a multicast tile load writes into
+  several workgroups' SLM at once, but the transaction completes on **each destination
+  workgroup's own** mbarrier.  Every workgroup still waits on a barrier it owns, so the barrier
+  is workgroup-local and `:block` describes it exactly.
+- The **buffer-free** ring (conventionally `empty`) is the one that becomes `:cluster`.  It
+  carries no transfer at all — no `load-tile` ever names it — and exists so consumers can tell
+  the producer a slot is safe to overwrite.  Once a producer is filling slots in *peer*
+  workgroups, those peers must be able to arrive on its barrier, and that is cluster reach.
+
+So in a clustered matmul it is the barrier governing **no** data movement that gains `:cluster`,
+while the barrier the multicast actually targets stays `:block`.  Both readings are literal once
+you take `:mode` to mean "kind and reach" rather than "which DMA engine".
+
+
+> **On Intel, only the bottom rung exists.**  `:block` and `:cluster` are both compile errors on
+> SPIR-V, and `:mode :linear` **rings** (`:ring-count` > 1) are not implemented there either.  In
+> practice that means a barrier *ring* of any kind is NVIDIA-only today, and Intel's fast matmul
+> path reaches its throughput without barrier-governed staging at all — via direct register
+> block-load prefetch.  This is not new with `:cluster`; it is the shape the key already had.
 
 #### The arch-automatic default
 
@@ -563,18 +618,22 @@ With no `:mode`, the barrier picks the best global→local async copy for the el
 - **NVIDIA < sm_90** (incl. the default `sm_80`) → `:linear` (`cp.async`).
 - **Intel** (any arch) → **always `:linear`** (`OpGroupAsyncCopy`).
 
+> **Arch-automatic never selects `:cluster`, even on sm_90+ with a cluster declared.**  The
+> automatic default picks the best mechanism *the hardware can realize* — a capability question.
+> Reach is not a capability question: it is a claim about your algorithm, namely that peer
+> workgroups will arrive on this barrier.  Guessing it wrong does not cost throughput, it hangs
+> the kernel, which is the same reason [`:arrivals`](#make-async-barrier-ring) is never inferred.
+> `:cluster` is always written explicitly.
+
 > **Guidance for Intel.**  `:linear` on Intel is a genuine async copy and useful for large /
 > contiguous tiles, but it is a per-*row* `OpGroupAsyncCopy` — for the small, strided fetches a
 > matmul does, it costs more than it saves.  On Intel, prefer a plain synchronous `load-tile`
 > (no `:barrier`) for those, or the direct register block-load prefetch path (Intel MMA optimization).
 
-> **Implementation status.**  The `:block` default on capable NVIDIA lands incrementally: until
-> the CuTensorMap chapter ships, a bare `(make-async-barrier)` stays `:linear` everywhere so
-> there is always a real lowering behind it.
 
 ### `load-tile` ✅
 
-`(load-tile src dest (... grid-y grid-x) &key transpose identity barrier) => nil`
+`(load-tile src dest (... grid-y grid-x) &key transpose identity barrier multicast) => nil`
 
 Initiates a bulk memory transfer from the `src` tensor to the `dest` tensor (typically moving from Global Memory to SLM or registers).
 
@@ -582,12 +641,88 @@ Initiates a bulk memory transfer from the `src` tensor to the `dest` tensor (typ
 * **`:transpose`:** A boolean indicating if the hardware should transpose the data during the load (leveraging tensor core layout features).
 * **`:identity`:** A fallback value used for out-of-bounds padding if the tile intersects the edge of the source tensor.
 * **`:barrier`:** Links this memory transfer to a previously created `async-barrier`. The hardware DMA engine will automatically signal this barrier when the bytes physically arrive in the destination memory space.
+* **`:multicast`:** A boolean asserting that this tile is identical across one axis of the workgroup cluster and should be fetched once for all of them. Omitting it gives an ordinary per-workgroup load. See below.
+
+#### `:multicast` 📝
+
+`(load-tile src dest (... grid-y grid-x) &key transpose identity barrier multicast)`
+
+In a kernel that declares a [`cluster-size`](#cluster-size), a tile that **every workgroup along
+one cluster axis needs identically** can be fetched from global memory *once* and delivered into
+all of their local memories simultaneously.  `:multicast` asks for that.
+
+```lisp
+;; cluster is (2 1) — two workgroups stacked along rows (axis 0)
+(load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot))
+(load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :multicast true)
+```
+
+`A`'s coordinates depend on `grid-y`, so the two workgroups need *different* rows of `A` — it is
+not multicast, and asking for it would be wrong rather than merely wasteful.  `B`'s coordinates
+ignore `grid-y`, so both workgroups want the same columns of `B` and one fetch serves the pair.
+
+##### It is an assertion, not a directive
+
+`:multicast` is a plain boolean.  You are **not** specifying an axis, a destination mask, or an
+issuing workgroup — the compiler derives all three from the tile coordinates and the declared
+cluster shape.  What you are saying is **"I expect this load to multicast,"** and the compiler
+either does it or refuses to compile, naming the coordinate that conflicts.
+
+> **A note on `true`.**  Crisp does not have a boolean literal yet; `true` and `false` are still
+> pending (see the language-changes list).  Existing boolean keys such as `:transpose` are written
+> with Common Lisp's `t` today, which is a stopgap rather than a decision — `t` and `T` are the
+> *same symbol* to the reader, so it collides with the `T` that templates bind constantly.
+> `:multicast` is documented with `true` because it is not implemented yet and there is no reason
+> to add a second occurrence that will need migrating.
+
+That division matters in both directions:
+
+- **The mask and the leader are not writable by hand in any sane way.**  Exactly one workgroup per
+  multicast group issues the fetch.  For a 2-workgroup cluster that is trivially the first; for a
+  2x2 cluster the leader differs *per operand*, because `A`'s multicast groups and `B`'s partition
+  the cluster differently.  Deriving that is the compiler's job.
+- **Whether a load *should* multicast is not the compiler's call to make silently.**  A `load-tile`
+  that quietly declines to multicast still computes the correct answer — at exactly the bandwidth
+  you were trying to avoid paying, with nothing in the output to reveal it.  Making the intent
+  explicit turns that silent 2x into a compile error.
+
+This follows the same rule as [`:arrivals`](#make-async-barrier-ring): you state a fact you know,
+the compiler checks shape rather than guessing intent.
+
+##### Why this is a key on `load-tile` and not a barrier `:mode`
+
+Everywhere else, a `load-tile`'s lowering is chosen by its `:barrier` — no barrier means a
+synchronous copy, and a barrier's [`:mode`](#mode) picks which asynchronous mechanism.  Multicast
+is the exception, and the example above shows why: **both loads name the same barrier, and only one
+of them multicasts.**
+
+The barrier cannot express the difference because it is not per-operand.  It is per-*stage* — that
+is the entire meaning of `:arrivals 2`, "this slot tracks two transfers."  Multicast is a finer
+choice *within* the TMA mechanism that varies from operand to operand, so it has no barrier to
+hang on and belongs at the call site.
+
+##### The barrier stays workgroup-local
+
+A multicast writes into peer workgroups' local memory, but each destination workgroup's transaction
+completes on **its own** mbarrier.  Every workgroup still waits on a barrier it owns, which is why
+the data-arrival ring stays [`:mode :block`](#mode) in a clustered kernel rather than becoming
+`:cluster`.  See [Which barriers need which rung](#which-barriers-need-which-rung).
+
+##### Errors
+
+`:multicast` is refused, with the conflicting coordinate named, when:
+
+- the kernel declares no `cluster-size`, or the cluster extent is 1
+- the tile's coordinates depend on **every** cluster axis, so no two workgroups want the same tile
+- the target is not NVIDIA `sm_90+`
 
 ### `load-tile-at` ✅
 
 `(load-tile-at src dest (... y x) &key transpose identity barrier) => nil`
 
 Functions identically to `load-tile`, but instead of using logical Tile IDs, the location is specified using exact **Element Coordinates** (the specific scalar index offsets, such as the top-left pixel). This is necessary for unaligned loads, halo exchanges, or ragged boundary processing.
+
+Note that, unlike `load-tile`, this does NOT accept the `:multicast` key. This is because proper resolution for multicast requires tile grid coordinates. 
 
 ### `store-tile` ✅
 
@@ -794,16 +929,21 @@ exactly what makes a ring a ring.
 
 - **`:ring-count`** — required. A positive compile-time integer: the pipeline depth (how many
   stages are in flight at once).
-- **`:mode`** — exactly as `make-async-barrier` (`:linear` / `:block`; omit for arch-automatic).
-  Every slot in the ring shares the mode.  On **SPIR-V, `:linear` rings are not yet implemented**
-  (they would need per-slot `spirv.Event` chaining) — a genuine ring (`ring-count > 1`) with
-  `:mode :linear` is a compile error there; a single `(make-async-barrier :mode :linear)` is fine.
+- **`:mode`** — exactly as `make-async-barrier` (`:linear` / `:block` / `:cluster`; omit for
+  arch-automatic).  Every slot in the ring shares the mode.  On **SPIR-V, `:linear` rings are not
+  yet implemented** (they would need per-slot `spirv.Event` chaining) — a genuine ring
+  (`ring-count > 1`) with `:mode :linear` is a compile error there; a single
+  `(make-async-barrier :mode :linear)` is fine.  Since `:block` and `:cluster` are also SPIR-V
+  compile errors, **a barrier ring of any mode is NVIDIA-only today**.
 - **`:arrivals`** — **required for every barrier ring** (both modes).  How many transfers **each
   slot** tracks *per pipeline stage* — i.e. how many `load-tile`s name that one slot in a single
-  stage.  The classic A+B staging is `2`.  It means the same thing to both lowerings:
+  stage.  The classic A+B staging is `2`.  It means the same thing to every lowering:
   - `:block` — the mbarrier's init **arrival count**.
+  - `:cluster` — likewise the mbarrier's init arrival count, **scaled by the compiler** — see
+    "`:arrivals` is per-workgroup" below.
   - `:linear` — the loads-per-stage factor in the `cp.async.wait_group((ring-count − 1) × arrivals)`
     depth (each `:linear` `load-tile` commits one group), i.e. how many groups a stage closes.
+    Cluster reach has no meaning on this rung.
 
 > **Why `:arrivals` is explicit and not inferred.**  A `:block` (TMA) barrier is a hardware
 > mbarrier: it completes when *both* its arrival count and its expected transaction bytes are
@@ -819,10 +959,27 @@ exactly what makes a ring a ring.
 > also keeps an arch-automatic ring kernel portable: the same `:arrivals` works whether the arch
 > resolves to `:block` on sm_90+ or `:linear` on sm_80.
 
+> **`:arrivals` is per-workgroup, and stays that way under `:cluster`.**  On a `:cluster` ring the
+> barrier really does collect more arrivals than the number you wrote, because peers arrive on it
+> too.  **You do not write the bigger number.**  `:arrivals` remains what it has always been — how
+> many transfers *one workgroup* puts through *one slot* in *one stage* — and the compiler scales
+> it by the declared cluster extent.
+>
+> This is the same division of labour the rule above describes, not an exception to it: you state
+> a fact you know (what your own workgroup does per stage), the compiler computes a consequence
+> from a fact it knows (how many workgroups are in the cluster).  Making you do the multiplication
+> would mean that adding a single `cluster-size` line to a working kernel silently requires editing
+> an unrelated barrier declaration, and forgetting it hangs the GPU.
+
 ```
 ;; three stages in flight; each stage stages an A-tile and a B-tile under its own barrier slot.
 (make-async-barrier-ring :ring-count 3 :mode :block  :arrivals 2)   ; NVIDIA sm_90+ (TMA mbarriers)
 (make-async-barrier-ring :ring-count 3 :mode :linear :arrivals 2)   ; sm_80+ (cp.async wait_group 4)
+
+;; a clustered pipeline: the data-arrival ring stays workgroup-local, the buffer-free ring
+;; gains cluster reach so peer workgroups can release the producer's slots.
+(make-async-barrier-ring :ring-count 3 :mode :block   :arrivals 2 :initial-state :waiting)
+(make-async-barrier-ring :ring-count 3 :mode :cluster :arrivals 4 :initial-state :signaled)
 ```
 
 

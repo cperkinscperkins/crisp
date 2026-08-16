@@ -4457,7 +4457,7 @@ showed clamping a tiled launch below its tile count to be a pessimization at eve
 (see [:tile-shape](#tile-shape)). Tiled kernels that genuinely want fewer groups should say so
 with an explicit `:set-to`.
 
-Remember, these declarations influence any hoisting code that Crisp outputs (`--hoist=L0` or `--hoist=CUDA`), the kernel itself is NOT effected in any way. 
+Remember, these declarations influence any hoisting code that Crisp outputs (`--hoist=L0` or `--hoist=CUDA`), the kernel itself is NOT effected in any way. **`cluster-size` is the one exception** — it is consumed at code generation time and changes what the kernel compiles to. See its own section below for why. 
 
 ```
 ;; -- sum_reduce_tree --
@@ -4489,6 +4489,24 @@ generated will also abide by that restriction (and note it in the comments).
 
 Alternately, some other expression can be provided. And, as with `local-size` and `global-size` and optional `:msg` 
 can be used to inject a comment into the hoisting code.
+
+
+#### cluster-size 📝
+```
+(cluster-size &key set-to msg)
+```
+
+On NVIDIA Hopper (`sm_90`) and later, workgroups can be grouped into **clusters** — sets of
+workgroups guaranteed to be co-resident, able to address one another's local memory and share a
+barrier. `(cluster-size :set-to (2 1))` declares two workgroups per cluster, stacked along axis 0.
+
+Note the unit: `cluster-size` counts **workgroups**, where `global-size` and `local-size` count
+threads.
+
+Unlike every other declaration in this section, **`cluster-size` changes the compiled kernel**, not
+just the hoisting code — it governs whether tile loads are multicast across the cluster and what
+synchronization the compiler must emit. It is documented with the rest of the cluster material in
+`topology.md`.
 
 
 #### cluster-size 📝
