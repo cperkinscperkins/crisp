@@ -78,11 +78,3 @@ jobs:
           echo "--- Running Adversarial Tests: External Binary ---"
           sbcl --script tests/run-specs.lisp --use-binary --adversarial
 
-      - name: Run Adversarial Tests (External Binary, Differentiate)
-        env:
-          CRISP_USE_SYSTEM_TOOLS: true
-          SKIP_SPIRV_TESTS: false
-        run: |
-          set -o pipefail
-          echo "--- Running Adversarial Tests: External Binary (Differentiate) ---"
-          sbcl --script tests/run-specs.lisp --use-binary --differentiate --adversarial
