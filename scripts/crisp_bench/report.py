@@ -61,10 +61,14 @@ INTEL_CHAPTER_LABEL = {
 # Chapters whose Crisp kernel uses tf32 tensor cores — so an IEEE (fp32) vendor ceiling is an
 # apples-to-oranges comparison for those precision tables.  On Intel EVERY chapter is XMX tf32
 # (see _is_mma_chapter); this NVIDIA set only lists NVIDIA's tensor-core chapters.
-MMA_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block", "chap3_wgmma"}
+MMA_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block", "chap3_wgmma",
+                "chap5_fused_epilogue", "chap6_fused_custom"}
 # Chapters where CUDA_Apples is a *naive* kernel, not a tensor-core mirror.
 NAIVE_APPLES_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block"}
 
+
+def _is_crisp(name):
+    return name == "Crisp" or name.startswith("Crisp_")
 
 def _platform_of(gpu):
     """Derive the platform from the hardware section's gpu_model (report.py groups by GPU)."""
@@ -209,7 +213,11 @@ def _summary_section(gpu, hardware_groups, vendor_ceilings):
             continue
         # largest size present for this chapter under fast
         big = max(sizes, key=lambda s: int(s.split("x")[0]))
-        crisp = hardware_groups[gpu][chapter][fk][big].get("Crisp")
+        # Endeavor 150: match any Crisp* kernel, not the literal name — the fused chapters
+        # are Crisp_Fused_Relu / Crisp_Fused_Custom and were dropping out of the summary.
+        _row = hardware_groups[gpu][chapter][fk][big]
+        _cn = next((c for c in sorted(_row) if _is_crisp(c)), None)
+        crisp = _row.get(_cn) if _cn else None
         if not crisp:
             continue
         crisp_t = crisp[0]
@@ -234,9 +242,6 @@ def _summary_section(gpu, hardware_groups, vendor_ceilings):
 # fused-custom), and hand-written competitors likewise (SYCL_Apples_Relu / _Custom).  The old
 # code matched the literal name "Crisp", so every variant fell through to the generic branch:
 # no "vs Optimal" / "vs Apples" columns and no compile-time ratio.  Match by PREFIX instead.
-def _is_crisp(name):
-    return name == "Crisp" or name.startswith("Crisp_")
-
 def _is_apples(name):
     return name.startswith("CUDA_Apples") or name.startswith("SYCL_Apples")
 
@@ -352,14 +357,22 @@ def _annotations(platform, chapter, prec_key):
                      "So the \">100% of Optimal\" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` "
                      "table is the only honest tensor-core comparison.")
     if chapter == "chap6_fused_custom":
-        notes.append("> ⚠️ **No vendor library fuses this activation.** oneMKL BLAS has no epilogue "
-                     "parameter at all, so it pays a separate kernel and a full HBM round trip of C "
-                     "for *any* activation — relu included (see chap5). The activation here is also "
-                     "off the menu of libraries that *do* fuse: **oneDNN** offers post-ops but a "
-                     "fixed set of eltwise primitives, and a quadratic sub-threshold tail is not one "
-                     "of them. On NVIDIA the same split is sharper — cuBLASLt CAN fuse relu "
-                     "(chap5) and cannot fuse this. A oneDNN column is the obvious next contender "
-                     "and would make this claim measured rather than argued.")
+        if platform == "intel":
+            notes.append("> ⚠️ **No vendor library fuses this activation.** oneMKL BLAS has no epilogue "
+                         "parameter at all, so it pays a separate kernel and a full HBM round trip of C "
+                         "for *any* activation — relu included (see chap5). **oneDNN** does offer post-ops, "
+                         "but from a fixed set of eltwise primitives, and a quadratic sub-threshold tail is "
+                         "not one of them: it drops from 14.04 TF fused (chap5) to 13.54 here, while Crisp "
+                         "moves 24.11 → 24.03. The claim is measured, not argued.")
+        else:
+            notes.append("> ⚠️ **cuBLASLt cannot fuse this activation.** Its epilogues are a fixed enum; "
+                         "CUBLASLT_EPILOGUE_RELU covers chap5 but a quadratic sub-threshold tail is not in "
+                         "the set, so cuBLASLt falls back to a second kernel and a full HBM round trip of C. "
+                         "That costs it ~13-18% (418.45 → 361.83 TF at 4096; 307.31 → 251.34 at 2048), which "
+                         "matches the H100's HBM3 bandwidth for a 2·N² round trip. Crisp pays ~0% because its "
+                         "epilogue is a function the user wrote. **The gap to the best library therefore "
+                         "narrows from 67.4% (chap5) to 78.1% (chap6) at 4096** — that shift, not the "
+                         "absolute number, is what this chapter measures.")
     if chapter in NAIVE_APPLES_CHAPTERS:
         notes.append("> ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a "
                      "tensor-core mirror of the Crisp algorithm — the \"Crisp vs Apples\" figures are not "
