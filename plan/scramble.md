@@ -377,7 +377,7 @@ Assault On Pytorch
 - - [x] run-specs.lisp - custom build is broken.  Using --use-binary now?
         can this be fixed? Or should we abandon the custom build?
 
-- - [ ] 031-def-derived-test/errors/05-equal-does-not-mena-yes is PASSING, but it should be failing.
+- - [x] 031-def-derived-test/errors/05-equal-does-not-mena-yes is PASSING, but it should be failing.
         See comment in test. May not be easy to implement.
 - - [x] most error tests in 031-def-derived-test/errors do not have "<meaningful error messages>" yet.
         possibly because we aren't generating such.
@@ -754,16 +754,18 @@ MMA
 - [x] verify autodiff on cuda
 - [x] need primal replay
 - [ ] still some loose ends
-[ ] new macro for rings (prefetch/pipeline) that handles rings
+[x] new macro for rings (prefetch/pipeline) that handles rings
 [ ] push FURTHER - mix prefetch, SLM and warp specialization
-[ ] NVidia? 
+[ ] NVidia: DEMEM and Clusters! 
 [ ] why small sizes faring poorly against CuBLAS and MKL?
 [/] out of core orchestration 
 
-[x] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
+
+[ ] benchmarking up to "max" for BMG and H100. 
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.
 [x] Intel can't do col-major (optimally)?  Need to document this. May need to think.
 [ ] move MMA out of topology.md into main docs
+[ ] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
 
 [x] don't forget bug 033 ( --debug )
 
@@ -772,7 +774,7 @@ MMA
 [x]  unreachable STORE-TILE entry in anf-normalize's opaque list; 
 [x] to-float having no AD rule;
 [x] a CUDA *ad-runtime* if you ever want the PTX backward proven numerically rather than structurally.
-
+[x] 4096 tile freezing both BMG and H100 - do a 2x iter probe and investigate. 
 
 
 [x] run-on-pod.sh has lost its summary?
