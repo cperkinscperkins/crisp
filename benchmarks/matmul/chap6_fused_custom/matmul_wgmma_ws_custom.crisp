@@ -1,0 +1,77 @@
+;; Chapter 6 (Endeavor 150) — FUSED CUSTOM ACTIVATION on Crisp's MOST COMPETITIVE NVIDIA kernel.
+;;
+;; This is crisp/matmul_wgmma_ws_n256.crisp — Hopper WGMMA + TMA + WARP SPECIALIZATION
+;; (endeavour 140 Step 6, m64n256 consumer) — with ONE LINE ADDED in the consumer role:
+;;
+;;     (map-elements! D #'custom-act)
+;;
+;; THE ACTIVATION IS DELIBERATELY OFF EVERY MENU: x > 0.5 ? x : x*x * 0.01.  A quadratic tail is
+;; not one of cuBLASLt's fixed epilogue enums, so cuBLASLt — which CAN fuse relu (chapter 5) —
+;; must fall back to a second kernel and a full HBM round trip of C here.  Crisp pays nothing,
+;; because its epilogue is just a function the user wrote.  Intel measured exactly this: oneDNN
+;; fused relu at 14.04 TF but dropped to 13.54 on the custom tail, while Crisp moved 24.11 ->
+;; 24.03.
+;;
+;; ORACLE-PRESERVING BY CONSTRUCTION: the positive branch is the IDENTITY, so A=B=1 => C==K
+;; still holds and the harness correctness gate stays exact.  An earlier version scaled the
+;; positive branch and silently invalidated a whole sweep.
+;;
+;; WHY THIS BASE.  Same reasoning as the Intel twin: fuse onto the kernel someone would
+;; actually use.  The first cut of this chapter fused onto chap1_async_linear and measured
+;; nothing — the fusion effect vanished into a 15x matmul deficit and the A/B even came out
+;; negative.  Rebased onto the competitive kernel, the Intel measurement dropped from a >=7%
+;; noise floor to 0.3%.
+;;
+;; WHAT THE ACCUMULATOR IS HERE, and why it needed compiler work.  D is a WGMMA ACCUMULATOR
+;; (WGMMA-ACC-F32-64X256), a THIRD accumulator representation alongside the PTX mma.sync
+;; register-fragment record and the SPV cooperative matrix.  map-elements! refused it until
+;; %map-elements-fragment-fields learned about it.  The fix was small because a wgmma D is
+;; itself a flat f32 record of N/2 fields built with the same %construct-struct primitive, so
+;; the existing fieldwise unroll applied unchanged: the emitted PTX carries 128 relu ops per
+;; thread (= N/2 = 256/2) alongside 4 surviving wgmma.mma_async.
+;;
+;; THE COMPARISON THIS ENABLES, and note it is TWO questions, not one:
+;;   cublaslt_fused.cu   cuBLASLt with CUBLASLT_EPILOGUE_RELU — the vendor fusing relu itself.
+;;                       The STRONG baseline, on their turf.  Crisp starts behind cuBLAS on
+;;                       NVIDIA (unlike Intel, where it leads oneMKL), so this is the honest
+;;                       hard case.
+;;   cublas_optimal.cu   cuBLAS + a separate relu kernel — what ANY off-menu activation costs,
+;;                       which is the case this endeavour actually exists for.
+;;
+;; Compile: crisp-compile.exe --ir-target=ptx --ir-target-arch=sm_90a matmul_wgmma_ws_relu.crisp
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function custom-act (x)
+  (declare #'(float => float))
+  (if (> x 0.5) x (* (* x x) 0.01)))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 160))          ; 4 consumer warps (warpgroup 0) + 1 producer warp
+  (let ((A-ring (make-scratch-matrix-ring float (64 32)  :ring-count 2))   ; 2 x 64(M) x 32(K)
+        (B-ring (make-scratch-matrix-ring float (256 32) :ring-count 2))   ; 2 x 128(N) x 32(K) B^T
+        (D      (make-wgmma-accumulator float (64 256) 0.0))
+        (K      (inner-dimension A B))
+        (empty  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 4 :initial-state :signaled))
+        (full   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 256) (grid-y grid-x)
+      (with-warp-specialization (:consumer 4 :producer 1)
+        (:consumer
+          (set! D (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 32) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (map-elements! D #'custom-act)
+          (store-tile D C (grid-y grid-x)))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b))))))))

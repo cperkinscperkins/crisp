@@ -188,6 +188,16 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
         out = run_bin(exe_path, S, S, S, w, it, env_extra)
         if not out: continue
 
+        # Endeavor 150: REFUSE a point whose own harness says the answer is wrong.  Every
+        # contender prints "correct": <bool> from its A=B=1 => C==K gate; recording a failing
+        # point publishes a fast wrong number, and the report schema does not carry the flag so
+        # nobody downstream can tell.  Absent flag => treat as correct (older harnesses).
+        if not out.get("correct", True):
+            print(f"  DROPPED {competitor_name} @ {S}: harness reported correct=false "
+                  f"(max_abs_err={out.get('max_abs_err')}) — not recording a wrong number.",
+                  file=sys.stderr)
+            continue
+
         # If the harness returns driver_jit_ms, we add it to the measured all_compile_ms
         driver_jit = out.get("driver_jit_ms", 0.0)
         final_all_compile_ms = compile_all_ms + driver_jit
@@ -725,14 +735,38 @@ def main():
             #
             # NOTE ON SIZES: the existing chap3 cuBLAS numbers stop at N=2048, where an H100 is
             # not saturated (34.1 TF).  Sweep to 4096+ or this comparison flatters us.
+            # chap5_fused_epilogue — +ReLU on the competitive kernel (wgmma + TMA + warp-spec,
+            # m64n256) plus one (map-elements! D #'relu).
+            #
+            # cuBLASLt CAN fuse relu (CUBLASLT_EPILOGUE_RELU), so IT is the honest ceiling here —
+            # not cuBLAS+separate-kernel, which would be a strawman.  Expect to LOSE this one:
+            # Crisp is ~63% of cuBLAS on NVIDIA (unlike Intel, where it leads oneMKL).  That is
+            # the point of running it; chapter 6 is where the argument actually lives.
             run_target("chap5_fused_epilogue", "matmul_wgmma_ws_relu.crisp", "matmul_wgmma_ws_relu.ptx",
-                       "Crisp_Fused_WS", [], is_crisp=True, crisp_grid_tile="64,256")
-            run_target("chap5_fused_epilogue", "cublaslt_fused.cu", "cublaslt_fused",
-                       "CUBLASLt_Fused", cublas_flags + ["-lcublasLt"], is_cublas=True)
+                       "Crisp_Fused_Relu", [], is_crisp=True, crisp_grid_tile="64,256")
+            run_target("chap5_fused_epilogue", "cublaslt_relu.cu", "cublaslt_relu",
+                       "CUBLASLt_Fused_Relu", cublas_flags + ["-lcublasLt"], is_cublas=True)
             run_target("chap5_fused_epilogue", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Plus_Relu", cublas_flags, is_cublas=True)
-            run_target("chap5_fused_epilogue", "cuda_apples.cu", "cuda_apples",
-                       "CUDA_Apples_Fused", nvcc_flags)
+
+            # chap6_fused_custom — the SAME kernel with an activation no vendor ships.
+            # cuBLASLt's epilogues are a FIXED ENUM and a quadratic tail is not in it, so the
+            # library that fused relu one chapter ago must now pay a second kernel and an HBM
+            # round trip of C.  Intel measured the analogous drop: oneDNN 14.04 -> 13.54 while
+            # Crisp moved 24.11 -> 24.03.
+            run_target("chap6_fused_custom", "matmul_wgmma_ws_custom.crisp", "matmul_wgmma_ws_custom.ptx",
+                       "Crisp_Fused_Custom", [], is_crisp=True, crisp_grid_tile="64,256")
+            run_target("chap6_fused_custom", "cublaslt_optimal.cu", "cublaslt_optimal",
+                       "CUBLASLt_Plus_Custom", cublas_flags + ["-lcublasLt"], is_cublas=True)
+            run_target("chap6_fused_custom", "cublas_optimal.cu", "cublas_optimal",
+                       "CUBLAS_Plus_Custom", cublas_flags, is_cublas=True)
+
+            # NOTE: no CUDA_Apples in either chapter, deliberately.  The only hand-written CUDA
+            # reference available is the chap1-era cuda::pipeline tiled kernel, and pitting that
+            # against a wgmma+TMA+warp-spec Crisp kernel is not apples-to-apples — it is the exact
+            # mistake the Intel side made (its apples column read 1.4 TF against Crisp's 24 before
+            # being rebased onto joint_matrix_apply).  chap3_wgmma ships without one for the same
+            # reason.  A hand-written wgmma CUDA mirror is its own piece of work.
         else:
             # --- Intel/BMG ladder (endeavor 143) ---
             # chap0_sync — synchronous coop-matrix tiling.  Crisp (SPV/L0) vs SYCL_Apples vs OneMKL ceiling.
