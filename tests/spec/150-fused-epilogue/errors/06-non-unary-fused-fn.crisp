@@ -1,0 +1,40 @@
+;; CHECK-FAIL: "unary"
+;;
+;; Endeavor 150 rung 6 — the fused function must be UNARY.  NEGATIVE by design.
+;;
+;; `map-elements!` applies its function to ONE element at a time, so a function of two
+;; parameters has no meaning here — there is no second argument to give it.  This must be a
+;; compile-time refusal, not a silently-dropped argument or an arity crash deep in codegen.
+;;
+;; WHY THIS RUNG EXISTS AT ALL.  It is the cheapest possible check that the new form validates
+;; its arguments rather than trusting them.  Crisp realises first-order functions through
+;; template monomorphization, so a bad callee would otherwise surface as a confusing failure
+;; inside the specialization rather than at the call site the user actually wrote.
+;;
+;; NOTE ON THE EXPECTED MESSAGE.  The substring is the CONTRACT, chosen before the
+;; implementation exists — normal TDD (this is 149 rung 03's convention).  If the eventual
+;; wording differs, change the substring, but do not weaken what it asserts: the diagnostic
+;; must make clear that arity is the problem, or the user is left guessing.
+;;
+;; No hardware profile and no target flag — the negative runner passes neither (it invokes the
+;; compiler with just the file and --log-level=off), so this mirrors 132/errors/01's shape:
+;; NVIDIA-form tf32 (16 8 8), which is accepted unchecked when no profile is active.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; TWO parameters — there is no second value for map-elements! to supply.
+(def-function scale-by (x factor)
+  (declare #'(float float => float))
+  (* x factor))
+
+(def-kernel non_unary_fused_fn (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-tile (make-register-tile float (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B (acc)
+      (accum-op)
+      (map-elements! acc #'scale-by))          ; <- ILLEGAL: scale-by is binary
+    (store-tile C-tile C (0 0))))

@@ -1,0 +1,74 @@
+;; CHECK-FAIL: "partial"
+;;
+;; Endeavor 150 rung 7 — fusing on `acc` inside a STAGED K-loop must be REFUSED.
+;; NEGATIVE by design, and it should stay negative forever.
+;;
+;; THE HAZARD.  In the staged pattern, matrix-multiply-tile-stride's grid-k loop calls
+;; mma-accumulate-via-tile ONCE PER K-STEP, and the register C-tile carries the running sum
+;; ACROSS those calls.  So inside the reduction body `acc` is a PARTIAL sum, and a map applied
+;; there mutates the accumulator that subsequent K-steps keep adding to.
+;;
+;; NOTE WHAT THIS RUNG DELIBERATELY USES: a LINEAR function.  It is tempting to state the rule
+;; as "non-linear activations are wrong on a partial sum" — that is the intuitive version, and
+;; it is TOO WEAK.  Even doubling is wrong, because the corruption comes from the accumulator
+;; being re-transformed on every step, not from the shape of the function.  With p1 and p2 the
+;; two K-steps' contributions:
+;;
+;;     correct   (map once, post-reduction, in the :epilogue):
+;;         C = p1 + p2, then x2                     ->  2*p1 + 2*p2
+;;
+;;     this kernel (map per K-step, on the running accumulator):
+;;         k=0:  C = p1,          then x2  ->  2*p1
+;;         k=1:  C = 2*p1 + p2,   then x2  ->  4*p1 + 2*p2
+;;
+;; The ONLY function that survives per-K-step application is the identity.  So the refusal is
+;; not a linearity test — it is structural, and it covers every function including this one.
+;;
+;; WHY REFUSE RATHER THAN WARN.  The failure is silent: a plausible-looking matmul that is
+;; simply wrong, in a build where the only thing the user changed was adding an epilogue.  This
+;; project has been bitten by that class repeatedly (135/01's atomics returning 0.0; the
+;; fragment adjoint that fell through a `when`).  The user also has a correct alternative
+;; sitting right there — move the map into the :epilogue, where the C-tile is complete — so a
+;; refusal costs them nothing but a one-line move.
+;;
+;; The compiler can DECIDE this structurally: %mmts-split-epilogue (src/analysis/control.lisp)
+;; already splits the body into reduction-body and epilogue-body, so "is this via-tile call in
+;; the reduction half" is known at analysis time.
+;;
+;; (If a deliberate per-K-step transform is ever genuinely wanted — some stability clamp, say —
+;; it should be an explicit opt-in, not the default reading of this code.)
+;;
+;; NOTE ON THE EXPECTED MESSAGE.  The substring is the CONTRACT, chosen before the
+;; implementation exists (149 rung 03's convention).  The diagnostic must say that the
+;; accumulator is a PARTIAL sum here and point at the :epilogue as the correct site, or the
+;; user cannot act on it.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; LINEAR on purpose — see the header.  Even this must be refused.
+(def-function double-val (x)
+  (declare #'(float => float))
+  (* x 2.0))
+
+(def-kernel map_on_partial_sum (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((A-tile (make-scratch-matrix float (16 8)))
+        (B-tile (make-scratch-matrix float (8 8)))
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (acc)
+        (accum-op)
+        ;; ILLEGAL: this is the REDUCTION body, so acc is a partial sum.  The correct site is
+        ;; the :epilogue below, where the C-tile is complete (that is rung 03).
+        (map-elements! acc #'double-val))
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

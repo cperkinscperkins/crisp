@@ -1,0 +1,74 @@
+;; Endeavor 150 rung 5 — THE THESIS RUNG.  An activation the compiler has never heard of,
+;; written entirely in the spec, fused onto the accumulator in registers.  Intel BMG / SPV.
+;;
+;; TDD: expected to FAIL until the P0/P1 primitive exists (see rung 01 for the failure text).
+;;
+;; WHY THIS RUNG IS THE POINT OF THE ENDEAVOUR.  cuBLASLt offers a FIXED ENUM of epilogues —
+;; bias, relu, gelu, a few combinations.  If your activation is not on the list you pay a full
+;; HBM round trip.  The entire justification for having built a compiler instead of calling
+;; cuBLAS is that a user can fuse ARBITRARY code here without touching the compiler.
+;;
+;; So: if rung 04 passes and this one does not, we have reimplemented the enum and the endeavour
+;; has not earned its keep.  This rung is also the reason the harness question (open question #3
+;; in the endeavour doc) resolved toward hand-computed BUFFER values rather than an
+;; `MMA-EPILOGUE: relu` directive — no fixed table of host-side activations could ever validate
+;; a function the harness has never seen.
+;;
+;; THE ACTIVATION: a LEAKY relu with slope 0.5, thresholded at 12 (same shift as rung 04, and
+;; for the same reason — see that spec's TRAP section: the harness fills A and B non-negative,
+;; so an unthresholded activation would be the identity on this data and the rung would pass
+;; while proving nothing).
+;;
+;; WHAT MAKES IT DIFFERENT FROM RUNG 04, AND WHY THAT MATTERS.  Its negative branch is NON-ZERO.
+;; Sharing rung 04's pre-activation values (11, 18, 10 — the arithmetic is worked out in that
+;; spec's header) with y = x - 12:
+;;
+;;     11 -> y = -1 -> -0.5      (negative branch, SCALED not zeroed)
+;;     18 -> y =  6 ->  6        (positive branch)
+;;     10 -> y = -2 -> -1        (negative branch, SCALED not zeroed)
+;;
+;; so the failure modes separate cleanly:
+;;
+;;     epilogue never fired         -> 11 18 10
+;;     relu hardcoded somewhere     ->  0  6  0     (rung 04's answer — caught here)
+;;     correct                      -> -0.5 6 -1
+;;
+;; A slope of 0.5 is deliberate: it is exactly representable in binary floating point, so
+;; -1 * 0.5 = -0.5 and -2 * 0.5 = -1 are exact and print without rounding noise.  A slope of
+;; 0.1 would print fine too but invites a tolerance argument this rung does not need to have.
+;;
+;; NOTE: `MMA_WRONG` will appear in the output and is expected — see rung 04's header.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;;   (RED until P2 — see rung 01's note on declaring the intended end state.)
+;; SKIP-DEFAULT-PASS
+;;
+;; MMA-DIMS: 16 16 8
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: BUFFER c: -0.5 6 -1
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; An activation the compiler has no knowledge of whatsoever: an ordinary Crisp function, living
+;; in the spec file, fused into the register-resident epilogue.  Nothing about `map-elements!`
+;; knows or cares what this computes.
+(def-function leaky-shifted (x)
+  (declare #'(float => float))
+  (let ((y (- x 12.0)))
+    (if (> y 0.0) y (* y 0.5))))
+
+(def-kernel user_activation (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one sub-group
+  (let ((C-tile (make-register-tile float (16 16) 0.0)))   ; 2 XMX fragments
+    (mma-accumulate-via-tile (8 16 8) C-tile A B (acc)
+      (accum-op)                               ; K = 8 = ONE native step -> acc is COMPLETE
+      (map-elements! acc #'leaky-shifted))
+    (store-tile C-tile C (0 0))))

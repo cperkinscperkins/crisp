@@ -1,0 +1,17 @@
+{
+  "algorithm": "reduction",
+  "implementation": "crisp",
+  "N": 1024,
+  "warmup": 50,
+  "iterations": 100,
+  "correct": true,
+  "result": 1024.0,
+  "expected": 1024.0,
+  "kernel_median_us": 15.14,
+  "kernel_min_us": 14.69,
+  "kernel_mean_us": 15.29,
+  "kernel_stddev_us": 0.52,
+  "throughput_gb_s": 0.27,
+  "wall_median_us": 32.41,
+  "wall_min_us": 31.63
+}

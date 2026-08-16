@@ -1,0 +1,17 @@
+{
+  "algorithm": "reduction",
+  "implementation": "cub",
+  "N": 512,
+  "warmup": 50,
+  "iterations": 100,
+  "correct": true,
+  "result": 512.0,
+  "expected": 512.0,
+  "kernel_median_us": 5.66,
+  "kernel_min_us": 5.12,
+  "kernel_mean_us": 6.09,
+  "kernel_stddev_us": 1.75,
+  "throughput_gb_s": 0.36,
+  "wall_median_us": 21.82,
+  "wall_min_us": 20.95
+}

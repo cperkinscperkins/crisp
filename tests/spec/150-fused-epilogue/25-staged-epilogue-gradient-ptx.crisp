@@ -1,0 +1,58 @@
+;; Endeavor 150 rung 25 — NVIDIA twin of rung 10: the fused epilogue differentiates through a
+;; STAGED K-LOOP.  The hardest of the NVIDIA rungs, and deliberately last.
+;;
+;; WHAT CHANGES FROM RUNG 23.  Data, threshold, activation, probe point and expected answer are
+;; IDENTICAL — on purpose, so this is a controlled comparison.  The one difference is HOW the
+;; reduction is built:
+;;
+;;     rung 23:  one mma-accumulate-via-tile over a Kt=16 staged tile; the call walks both
+;;               native K-steps internally, and the activation fuses on `acc`.
+;;     rung 25:  matrix-multiply-tile-stride's grid-k loop at k-step 8, so the macro calls
+;;               via-tile TWICE and the C-tile carries the running sum between calls.  The
+;;               activation therefore CANNOT go on `acc` — that is now a compile-time refusal,
+;;               errors/07 — and goes in the :epilogue, on the completed tile.
+;;
+;; So if 23 passes and 25 fails, the gap is not the activation or its derivative; it is getting
+;; the pre-activation primal out of a loop-carried ACCUMULATION.  On Intel the equivalent rung
+;; (10) passes, which is what established that 149's primal replay handles an accumulation and
+;; not merely staging — something none of 149's own seven rungs asked of it.
+;;
+;; THE CHECK.  Identical arithmetic to rung 23 — g(x) = max(x - 5, 0), output row 3 lies
+;; entirely above the threshold, so dA[3,0] = sum_{n=0..7} 0.01*n = 0.28.  The row bounds, the
+;; h=1.0 justification and the what-to-suspect-first list are all in rung 23's header.
+;;
+;; A NON-ZERO expectation is deliberate: this rung has no companion control the way 24 has 23,
+;; so it must not be one a zeros-returning harness could satisfy.
+;;
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; SKIP-DEFAULT-PASS
+;; VERIFY-AUTODIFF[CUDA]: A=16x16@0:0.01 B=16x8@0:0.01 at.A=3,0 group=32 h=1.0 atol=2e-2 expect.A=0.28 output-mat=16x8
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; The same activation rungs 23 and 24 fuse on a fragment, here fused on a completed tile.
+(def-function shifted-relu-5 (x)
+  (declare #'(float => float))
+  (let ((y (- x 5.0)))
+    (if (> y 0.0) y 0.0)))
+
+(def-kernel staged_epilogue_grad_ptx (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((A-tile (make-scratch-matrix float (16 8)))    ; SLM: Mt x 8 (one K-step of A)
+        (B-tile (make-scratch-matrix float (8 8)))     ; SLM: 8 x Nt (one K-step of B)
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B)))                ; K = 16 -> two K-steps
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      ;; C-tile is COMPLETE here.  Fusing on `acc` in the reduction body above is refused.
+      (map-elements! C-tile #'shifted-relu-5)
+      (store-tile C-tile C (grid-y grid-x)))))

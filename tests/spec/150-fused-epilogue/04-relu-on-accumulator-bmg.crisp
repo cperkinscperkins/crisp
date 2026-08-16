@@ -1,0 +1,89 @@
+;; Endeavor 150 rung 4 — a real ACTIVATION fused on the accumulator, checked against
+;; hand-computed values on metal.  Intel BMG / SPV / XMX.
+;;
+;; TDD: expected to FAIL until the P0/P1 primitive exists (see rung 01 for the failure text).
+;;
+;; WHY THIS RUNG NEEDS A DIFFERENT CHECK THAN 01-03.  Those fuse a SCALE, so the existing
+;; `MMA-SCALE: 2` host reference (C = S·(A·B)) validates them.  An activation is not a scalar
+;; multiple of A·B and no scale can express it, so this rung asserts hand-computed output values
+;; instead — `HOIST-EXPECT: BUFFER c:`, which is a mechanism that already exists and is
+;; substring-matched, so only the first few elements need pinning.
+;;
+;; NOTE: `MMA_WRONG` WILL APPEAR IN THIS SPEC'S OUTPUT AND IS EXPECTED.  The harness always
+;; emits its C = A·B reference under --mma-test, and this kernel deliberately computes something
+;; else.  That line is not asserted; only the BUFFER expectation below is checked.  The MMA
+;; validator is still the right harness because it is what allocates and fills real A/B/C
+;; matrices from MMA-DIMS.
+;;
+;; ============================ THE TRAP THIS RUNG AVOIDS ============================
+;; The MMA harness fills its inputs A[i] = i%5 and B[i] = i%3 (src/hoist-l0/main.lisp:1512),
+;; both NON-NEGATIVE.  So A·B >= 0 everywhere, and a PLAIN relu is the IDENTITY on this data —
+;; a naive ReLU rung would pass whether or not the epilogue ever fired.  That is the worst
+;; possible outcome for a TDD rung: green, and proving nothing.
+;;
+;; So the fused activation carries its OWN threshold.  relu(x - 12) genuinely exercises both
+;; branches against the existing fill, and needs no change to the harness's inputs (which would
+;; churn the reference numbers of ~35 other MMA specs).
+;; ==================================================================================
+;;
+;; THE ARITHMETIC, worked out so a wrong answer is unambiguous.  A is 16x8 and B is 8x16, both
+;; row-major, so for output row 0:
+;;
+;;     A[0][k] = k % 5                 -> [0, 1, 2, 3, 4, 0, 1, 2]
+;;     B[k][c] = (16k + c) % 3
+;;             = (k + c) % 3           -> period 3 in c
+;;
+;;     C[0][0] = 0*0 + 1*1 + 2*2 + 3*0 + 4*1 + 0*2 + 1*0 + 2*1 = 11
+;;     C[0][1] = 0*1 + 1*2 + 2*0 + 3*1 + 4*2 + 0*0 + 1*1 + 2*2 = 18
+;;     C[0][2] = 0*2 + 1*0 + 2*1 + 3*2 + 4*0 + 0*1 + 1*2 + 2*0 = 10
+;;
+;; so the pre-activation row is 11, 18, 10 repeating.  After relu(x - 12):
+;;
+;;     11 -> -1 -> 0        (negative branch)
+;;     18 ->  6 -> 6        (positive branch)
+;;     10 -> -2 -> 0        (negative branch)
+;;
+;; BOTH BRANCHES FIRE IN THE FIRST THREE ELEMENTS.  And the three failure modes are all
+;; distinguishable at a glance:
+;;
+;;     epilogue never fired      -> 11 18 10   (the raw product)
+;;     plain relu, no threshold  -> 11 18 10   (identical — hence the shift)
+;;     correct                   ->  0  6  0
+;;
+;; All values are small integers, exactly representable in fp32, so there is no tolerance
+;; question.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;;   (RED until P2 — see rung 01's note on declaring the intended end state.  Rung 08 is where
+;;    THIS activation's gradient gets checked, on both sides of the kink.)
+;; SKIP-DEFAULT-PASS
+;;
+;; MMA-DIMS: 16 16 8
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: BUFFER c: 0 6 0
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; A thresholded ReLU, written as an ordinary Crisp function — no compiler support, no builtin.
+;; The threshold is what makes the activation observable against a non-negative input fill.
+(def-function shifted-relu (x)
+  (declare #'(float => float))
+  (let ((y (- x 12.0)))
+    (if (> y 0.0) y 0.0)))
+
+(def-kernel relu_on_acc (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one sub-group
+  (let ((C-tile (make-register-tile float (16 16) 0.0)))   ; 2 XMX fragments
+    (mma-accumulate-via-tile (8 16 8) C-tile A B (acc)
+      (accum-op)                               ; K = 8 = ONE native step -> acc is COMPLETE,
+                                               ; so fusing a non-linear fn here is correct
+      (map-elements! acc #'shifted-relu))
+    (store-tile C-tile C (0 0))))

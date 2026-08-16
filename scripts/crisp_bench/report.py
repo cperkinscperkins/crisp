@@ -29,7 +29,15 @@ CHAPTER_ORDER = [
     "chap2_pipelined_block",
     "chap3_wgmma",
     "intel_prefetch",
+    "chap5_fused_epilogue",
+    "chap6_fused_custom",
 ]
+
+# Endeavor 150: chapters that fuse an ACTIVATION into the matmul epilogue.  Their ceiling is NOT
+# the plain-GEMM library number — that is a different amount of work, and dividing by it flatters
+# the fused kernel.  The honest denominator is the library run doing the SAME job (GEMM + its own
+# activation pass), which is a chapter-local competitor rather than a global ceiling.
+ACTIVATION_CHAPTERS = {"chap5_fused_epilogue", "chap6_fused_custom"}
 CHAPTER_LABEL = {
     "chap0_sync":            "Synchronous tiling (fp32, no tensor cores)",
     "chap1_async_linear":    "Async linear pipelining (fp32)",
@@ -37,6 +45,8 @@ CHAPTER_LABEL = {
     "chap2_pipelined_block": "Pipelined block + tf32 MMA",
     "chap3_wgmma":           "Hopper warpgroup MMA (wgmma, tf32)",
     "intel_prefetch":        "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
+    "chap5_fused_epilogue":  "Fused ReLU epilogue (tf32)",
+    "chap6_fused_custom":    "Fused CUSTOM activation (tf32)",
 }
 # Intel/BMG technique overrides (Endeavor 143): the shared chapter keys mean DIFFERENT things per
 # platform — Intel chap0/chap1 use XMX coop-matrix tf32 tensor cores, not the fp32 non-tensor-core
@@ -45,14 +55,20 @@ INTEL_CHAPTER_LABEL = {
     "chap0_sync":         "Synchronous coop-matrix tiling (XMX tf32)",
     "chap1_async_linear": "OpGroupAsyncCopy staging (XMX tf32)",
     "intel_prefetch":     "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
+    "chap5_fused_epilogue": "Fused ReLU epilogue on the prefetch kernel (XMX tf32)",
+    "chap6_fused_custom":   "Fused CUSTOM activation on the prefetch kernel (XMX tf32)",
 }
 # Chapters whose Crisp kernel uses tf32 tensor cores — so an IEEE (fp32) vendor ceiling is an
 # apples-to-oranges comparison for those precision tables.  On Intel EVERY chapter is XMX tf32
 # (see _is_mma_chapter); this NVIDIA set only lists NVIDIA's tensor-core chapters.
-MMA_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block", "chap3_wgmma"}
+MMA_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block", "chap3_wgmma",
+                "chap5_fused_epilogue", "chap6_fused_custom"}
 # Chapters where CUDA_Apples is a *naive* kernel, not a tensor-core mirror.
 NAIVE_APPLES_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block"}
 
+
+def _is_crisp(name):
+    return name == "Crisp" or name.startswith("Crisp_")
 
 def _platform_of(gpu):
     """Derive the platform from the hardware section's gpu_model (report.py groups by GPU)."""
@@ -121,7 +137,12 @@ def generate_markdown(results_dir: Path, out_file: Path = None):
 
             compile_times[gpu][chapter][competitor].append(dev_c_ms)
 
-            if chapter == "vendor_ceiling" or competitor.startswith("CUBLAS_") or competitor.startswith("OneMKL_"):
+            # Endeavor 150: a "+Relu" / "+Custom" library run is a CONTENDER, not a ceiling —
+            # it belongs only to the chapter that measured it.  Treating it as a ceiling leaked
+            # OneMKL_Plus_Relu into every chapter's table, including ones with no activation.
+            _plain_ceiling = ((competitor.startswith("CUBLAS_") or competitor.startswith("OneMKL_"))
+                              and "_Plus_" not in competitor)
+            if chapter == "vendor_ceiling" or _plain_ceiling:
                 vendor_ceilings[gpu][prec_key][sz][competitor] = metrics
             else:
                 hardware_groups[gpu][chapter][prec_key][sz][competitor] = metrics
@@ -192,7 +213,11 @@ def _summary_section(gpu, hardware_groups, vendor_ceilings):
             continue
         # largest size present for this chapter under fast
         big = max(sizes, key=lambda s: int(s.split("x")[0]))
-        crisp = hardware_groups[gpu][chapter][fk][big].get("Crisp")
+        # Endeavor 150: match any Crisp* kernel, not the literal name — the fused chapters
+        # are Crisp_Fused_Relu / Crisp_Fused_Custom and were dropping out of the summary.
+        _row = hardware_groups[gpu][chapter][fk][big]
+        _cn = next((c for c in sorted(_row) if _is_crisp(c)), None)
+        crisp = _row.get(_cn) if _cn else None
         if not crisp:
             continue
         crisp_t = crisp[0]
@@ -213,14 +238,39 @@ def _summary_section(gpu, hardware_groups, vendor_ceilings):
     return out if any_row else []
 
 
+# Endeavor 150: a chapter may carry MORE THAN ONE Crisp kernel (e.g. chap5's fused-relu and
+# fused-custom), and hand-written competitors likewise (SYCL_Apples_Relu / _Custom).  The old
+# code matched the literal name "Crisp", so every variant fell through to the generic branch:
+# no "vs Optimal" / "vs Apples" columns and no compile-time ratio.  Match by PREFIX instead.
+def _is_apples(name):
+    return name.startswith("CUDA_Apples") or name.startswith("SYCL_Apples")
+
+def _variant(name):
+    """The trailing variant tag (Relu / Custom / ...) used to pair a Crisp kernel with the
+    hand-written competitor running the SAME activation.  None when the name carries no tag."""
+    tail = name.rsplit("_", 1)[-1]
+    return tail if tail not in ("Crisp", "Apples", "Fused", "Optimal") and "_" in name else None
+
+
 def _throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings):
     lines = []
     competitors = set()
     for sz, comps in hardware_groups[gpu][chapter][prec_key].items():
         competitors.update(comps.keys())
 
-    ceiling_list = []
-    if prec_key in vendor_ceilings[gpu]:
+    # Endeavor 150: an activation chapter's denominator is its own library contender (the one
+    # that also applies the activation), so the global plain-GEMM ceiling is excluded entirely.
+    if chapter in ACTIVATION_CHAPTERS:
+        # The denominator is the BEST a library can do on this exact job — so oneDNN (which
+        # fuses relu) counts alongside oneMKL (which cannot).  max() over these picks the
+        # strongest, which is the only ceiling worth being measured against.
+        lib_local = sorted(c for c in competitors
+                           if c.startswith(("OneMKL_", "OneDNN_", "CUBLAS")))
+        ceiling_list = []
+        local_optimal = lib_local
+    else:
+        local_optimal = []
+    if chapter not in ACTIVATION_CHAPTERS and prec_key in vendor_ceilings[gpu]:
         present = set()
         for sz, comps in vendor_ceilings[gpu][prec_key].items():
             present.update(comps.keys())
@@ -240,13 +290,25 @@ def _throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings):
         header += [f"{c} (TFLOPS)", f"{c} (Kernel ms)"]
         sep += ["---:", "---:"]
 
-    has_crisp = "Crisp" in competitors
-    has_apples = "CUDA_Apples" in competitors or "SYCL_Apples" in competitors
-    has_optimal = len(ceiling_list) > 0
-    if has_crisp and has_optimal:
-        header.append("Crisp vs Optimal (%)"); sep.append("---:")
-    if has_crisp and has_apples:
-        header.append("Crisp vs Apples (%)"); sep.append("---:")
+    crisp_names = sorted(c for c in competitors if _is_crisp(c))
+    apples_names = sorted(c for c in competitors if _is_apples(c))
+    has_optimal = len(ceiling_list) > 0 or len(local_optimal) > 0
+    # Pair each Crisp kernel with the hand-written competitor running the SAME activation, so
+    # "vs Apples" compares like with like when a chapter carries several variants.
+    pairing = {}
+    for cn in crisp_names:
+        v = _variant(cn)
+        match = next((a for a in apples_names if _variant(a) == v), None) if v else None
+        pairing[cn] = match or (apples_names[0] if apples_names else None)
+    pct_cols = []
+    for cn in crisp_names:
+        short = cn if len(crisp_names) > 1 else "Crisp"
+        if has_optimal:
+            header.append(f"{short} vs Optimal (%)"); sep.append("---:")
+            pct_cols.append((cn, "optimal", None))
+        if pairing.get(cn):
+            header.append(f"{short} vs Apples (%)"); sep.append("---:")
+            pct_cols.append((cn, "apples", pairing[cn]))
 
     lines.append("| " + " | ".join(header) + " |")
     lines.append("|" + "|".join(sep) + "|")
@@ -259,7 +321,8 @@ def _throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings):
         if sz not in hardware_groups[gpu][chapter][prec_key] and not ceiling_list:
             continue
         row = [sz]
-        crisp_t = apples_t = optimal_t = None
+        optimal_t = None
+        seen = {}
         for c in comp_order:
             tflops = k_ms = None
             if c in ceiling_list:
@@ -271,16 +334,15 @@ def _throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings):
                 hd = hardware_groups[gpu][chapter][prec_key].get(sz, {}).get(c)
                 if hd:
                     tflops, k_ms = hd
-                    if c == "Crisp":
-                        crisp_t = tflops
-                    elif c in ("CUDA_Apples", "SYCL_Apples"):
-                        apples_t = tflops if apples_t is None else max(apples_t, tflops)
+                    seen[c] = tflops
+                    if c in local_optimal:
+                        optimal_t = tflops if optimal_t is None else max(optimal_t, tflops)
             row += ([f"{tflops:.2f}", f"{k_ms:.2f}"] if tflops is not None else ["-", "-"])
 
-        if has_crisp and has_optimal:
-            row.append(f"{crisp_t / optimal_t * 100:.1f}%" if (crisp_t and optimal_t) else "-")
-        if has_crisp and has_apples:
-            row.append(f"{crisp_t / apples_t * 100:.1f}%" if (crisp_t and apples_t) else "-")
+        for cn, kind, partner in pct_cols:
+            num = seen.get(cn)
+            den = optimal_t if kind == "optimal" else seen.get(partner)
+            row.append(f"{num / den * 100:.1f}%" if (num and den) else "-")
         lines.append("| " + " | ".join(row) + " |")
     return lines
 
@@ -294,6 +356,23 @@ def _annotations(platform, chapter, prec_key):
                      f"kernel would emit a precision warning); meanwhile IEEE {vendor} drops to true fp32. "
                      "So the \">100% of Optimal\" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` "
                      "table is the only honest tensor-core comparison.")
+    if chapter == "chap6_fused_custom":
+        if platform == "intel":
+            notes.append("> ⚠️ **No vendor library fuses this activation.** oneMKL BLAS has no epilogue "
+                         "parameter at all, so it pays a separate kernel and a full HBM round trip of C "
+                         "for *any* activation — relu included (see chap5). **oneDNN** does offer post-ops, "
+                         "but from a fixed set of eltwise primitives, and a quadratic sub-threshold tail is "
+                         "not one of them: it drops from 14.04 TF fused (chap5) to 13.54 here, while Crisp "
+                         "moves 24.11 → 24.03. The claim is measured, not argued.")
+        else:
+            notes.append("> ⚠️ **cuBLASLt cannot fuse this activation.** Its epilogues are a fixed enum; "
+                         "CUBLASLT_EPILOGUE_RELU covers chap5 but a quadratic sub-threshold tail is not in "
+                         "the set, so cuBLASLt falls back to a second kernel and a full HBM round trip of C. "
+                         "That costs it ~13-18% (418.45 → 361.83 TF at 4096; 307.31 → 251.34 at 2048), which "
+                         "matches the H100's HBM3 bandwidth for a 2·N² round trip. Crisp pays ~0% because its "
+                         "epilogue is a function the user wrote. **The gap to the best library therefore "
+                         "narrows from 67.4% (chap5) to 78.1% (chap6) at 4096** — that shift, not the "
+                         "absolute number, is what this chapter measures.")
     if chapter in NAIVE_APPLES_CHAPTERS:
         notes.append("> ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a "
                      "tensor-core mirror of the Crisp algorithm — the \"Crisp vs Apples\" figures are not "
@@ -312,23 +391,33 @@ def _compile_section(gpu, compile_times):
     lines.append("|---|---|---:|---:|")
     for chapter in sorted(compile_times[gpu].keys(), key=chapter_sort_key):
         comps = compile_times[gpu][chapter]
-        crisp_avg = (sum(comps["Crisp"]) / len(comps["Crisp"])) if comps.get("Crisp") else None
+        # Endeavor 150: the baseline is whichever Crisp kernel this chapter has, not the
+        # literal name "Crisp" — otherwise a chapter whose kernels are Crisp_Fused_* gets no
+        # ratio at all, which is what silently happened to chap5.
+        _crisp_comps = sorted(c for c in comps if _is_crisp(c))
+        _base = _crisp_comps[0] if _crisp_comps else None
+        crisp_avg = (sum(comps[_base]) / len(comps[_base])) if _base else None
         # Crisp first, then the rest alphabetically
         # Endeavor 144: EXCLUDE the library ceilings (cuBLAS / oneMKL).  Their GEMM kernels ship
         # precompiled inside the vendor library, so a device-only compile of the caller measures
         # essentially nothing -- reporting it would flatter them as much as the old full-build
         # number unfairly penalised them.  The meaningful compile comparison is against the
         # hand-written kernel competitors, which contain real device code.
-        ordered = (["Crisp"] if "Crisp" in comps else []) + sorted(
+        ordered = _crisp_comps + sorted(
             c for c in comps
-            if c != "Crisp" and not (c.startswith("CUBLAS_") or c.startswith("OneMKL_")))
+            if not _is_crisp(c) and not (c.startswith("CUBLAS_") or c.startswith("OneMKL_")))
         for comp in ordered:
             vals = [v for v in comps[comp] if v and v > 0.0]
             if not vals:
                 continue          # device-only compile unavailable; omit rather than print 0
             avg = sum(vals) / len(vals)
-            if comp == "Crisp":
+            if comp == _base:
                 ratio = "1.0× (baseline)"
+            elif _is_crisp(comp):
+                # A SIBLING Crisp kernel (e.g. chap5's fused-relu next to fused-custom) is a
+                # peer, not a competitor — labelling it "slower" against an arbitrarily chosen
+                # sibling is meaningless, and read as a regression when it is a different kernel.
+                ratio = "— (Crisp variant)"
             elif crisp_avg:
                 ratio = f"{avg / crisp_avg:.1f}× slower"
             else:
