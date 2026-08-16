@@ -34,6 +34,11 @@ set -euo pipefail
 ## Pull the optional --bench=NAME flag out of the argument list (it may appear anywhere),
 ## leaving the positional args intact.  ONE script, many benchmarks.
 BENCH="reduction"
+KEEP_POD_RESULTS="0"
+for _a in "$@"; do
+    if [ "$_a" = "--keep-pod-results" ]; then KEEP_POD_RESULTS="1"; fi
+done
+set -- $(printf "%s\n" "$@" | grep -v -- "--keep-pod-results" | tr "\n" " ")
 POSITIONAL=()
 for _arg in "$@"; do
     case "$_arg" in
@@ -178,6 +183,23 @@ cd /root/crisp
 rm -f bin/llvm-spirv tools/llvm-spirv-linux tools/llvm-as-linux tools/llc-linux tools/LLVM-C-linux.so
 sbcl --non-interactive --load build/build.lisp 2>&1 | tail -5
 BUILD
+echo ""
+
+# --- 4b. Clear the pod's results dir so the pull is precise ---
+#
+# The pod cloned the repo, so benchmarks/results/ already contains every committed result from
+# every machine.  pull-runpod-results.sh copies *.json back wholesale, which would drag that
+# whole history home and make the report look like it ignored this run.  Wiping the POD copy
+# (never the local one — local accretion across hardware is the point) means whatever lands
+# there afterwards is exactly what this run produced.
+if [ "${KEEP_POD_RESULTS}" = "1" ]; then
+    echo "--- Step 4b: keeping existing pod results (--keep-pod-results) ---"
+else
+    echo "--- Step 4b: clearing pod results dir (use --keep-pod-results to accumulate) ---"
+    pod_run "rm -f /root/crisp/benchmarks/results/*.json 2>/dev/null; \
+             mkdir -p /root/crisp/benchmarks/results; \
+             echo \"  pod results dir now holds \$(ls -1 /root/crisp/benchmarks/results 2>/dev/null | wc -l) files\""
+fi
 echo ""
 
 # --- 5. Run benchmarks ---
