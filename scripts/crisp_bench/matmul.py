@@ -787,14 +787,27 @@ def main():
             # column measures Crisp's abstraction cost and nothing else.
             run_l0_crisp("chap5_fused_epilogue", "matmul_bmg_prefetch_relu.crisp",
                          comp_name="Crisp_Fused_Relu", use_autobench=True)
-            run_l0_crisp("chap5_fused_epilogue", "matmul_bmg_prefetch_custom.crisp",
-                         comp_name="Crisp_Fused_Custom", use_autobench=True)
             run_target("chap5_fused_epilogue", "sycl_apples.cpp", "sycl_apples",
                        "SYCL_Apples_Relu", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
-            run_target("chap5_fused_epilogue", "sycl_apples_custom.cpp", "sycl_apples_custom",
-                       "SYCL_Apples_Custom", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("chap5_fused_epilogue", "onemkl_optimal.cpp", "onemkl_optimal",
                        "OneMKL_Plus_Relu", sycl_flags, is_sycl=True, is_cublas=True)
+            # oneDNN CAN fuse relu (post-op), so this — not oneMKL — is the honest ceiling here.
+            run_target("chap5_fused_epilogue", "onednn_fused.cpp", "onednn_fused",
+                       "OneDNN_Fused_Relu", sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
+
+            # chap6_fused_custom — the SAME kernel with an activation NO library ships.  Split
+            # from chapter 5 so each table carries one activation and stays readable.
+            run_l0_crisp("chap6_fused_custom", "matmul_bmg_prefetch_custom.crisp",
+                         comp_name="Crisp_Fused_Custom", use_autobench=True)
+            run_target("chap6_fused_custom", "sycl_apples.cpp", "sycl_apples",
+                       "SYCL_Apples_Custom", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            run_target("chap6_fused_custom", "onemkl_optimal.cpp", "onemkl_optimal",
+                       "OneMKL_Plus_Custom", sycl_flags, is_sycl=True, is_cublas=True)
+            # ...and here oneDNN CANNOT: a quadratic tail is not one of its eltwise primitives,
+            # so even the fusing library falls back to a second kernel.  That contrast is the
+            # entire point of splitting chapter 6 out.
+            run_target("chap6_fused_custom", "onednn_optimal.cpp", "onednn_optimal",
+                       "OneDNN_Plus_Custom", sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
 
             # chap_intel_prefetch — the endeavor-142 register-ring + Subgroup2DBlockPrefetch pipeline.
             # STEP 4 (this is where Q1 gets answered): the register-ring kernel has a DIFFERENT param
