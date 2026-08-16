@@ -25,6 +25,14 @@
 | 4096x4096x4096 | 14.31 | 9.60 | 1.32 | 104.16 | 1.49 | 92.14 | 10.4% | 113.0% |
 | 8192x8192x8192 | 14.17 | 77.57 | 1.31 | 842.22 | 1.22 | 904.85 | 8.6% | 93.1% |
 
+#### Precision: fast (ftz=preserve)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | OneMKL_Plus_Relu (TFLOPS) | OneMKL_Plus_Relu (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1024x1024x1024 | 11.98 | 0.18 | 11.31 | 0.19 | 1.54 | 1.40 | 1.35 | 1.59 | 11.3% | 88.0% |
+| 2048x2048x2048 | 13.81 | 1.24 | 13.19 | 1.30 | 1.38 | 12.42 | 1.43 | 11.97 | 10.4% | 103.8% |
+| 4096x4096x4096 | 14.31 | 9.60 | 13.88 | 9.90 | 1.31 | 105.19 | 1.52 | 90.58 | 10.6% | 116.1% |
+
 #### Precision: ieee (ftz=ftz)
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
@@ -63,6 +71,14 @@
 | 2048x2048x2048 | 13.81 | 1.24 | 1.40 | 12.30 | 0.80 | 21.61 | 5.8% | 56.9% |
 | 4096x4096x4096 | 14.31 | 9.60 | 1.31 | 105.30 | 0.85 | 161.19 | 6.0% | 65.3% |
 | 8192x8192x8192 | 14.17 | 77.57 | 1.31 | 840.02 | 0.72 | 1531.97 | 5.1% | 54.8% |
+
+#### Precision: fast (ftz=preserve)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | OneMKL_Plus_Relu (TFLOPS) | OneMKL_Plus_Relu (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1024x1024x1024 | 11.98 | 0.18 | 11.31 | 0.19 | 1.53 | 1.40 | 0.78 | 2.76 | 6.5% | 50.7% |
+| 2048x2048x2048 | 13.81 | 1.24 | 13.19 | 1.30 | 1.38 | 12.42 | 0.79 | 21.68 | 5.7% | 57.3% |
+| 4096x4096x4096 | 14.31 | 9.60 | 13.88 | 9.90 | 1.32 | 104.31 | 0.79 | 173.20 | 5.5% | 60.2% |
 
 #### Precision: ieee (ftz=ftz)
 
@@ -103,6 +119,14 @@
 | 4096x4096x4096 | 14.31 | 9.60 | 9.61 | 14.31 | 15.98 | 8.60 | 111.6% | 166.3% |
 | 8192x8192x8192 | 14.17 | 77.57 | 7.54 | 145.82 | 11.47 | 95.90 | 80.9% | 152.1% |
 
+#### Precision: fast (ftz=preserve)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | OneMKL_Plus_Relu (TFLOPS) | OneMKL_Plus_Relu (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1024x1024x1024 | 11.98 | 0.18 | 11.31 | 0.19 | 10.10 | 0.21 | 21.44 | 0.10 | 179.0% | 212.4% |
+| 2048x2048x2048 | 13.81 | 1.24 | 13.19 | 1.30 | 11.21 | 1.53 | 24.30 | 0.71 | 175.9% | 216.8% |
+| 4096x4096x4096 | 14.31 | 9.60 | 13.88 | 9.90 | 9.59 | 14.34 | 15.44 | 8.90 | 107.9% | 161.0% |
+
 #### Precision: ieee (ftz=ftz)
 
 | Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | SYCL_Apples (TFLOPS) | SYCL_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
@@ -129,16 +153,29 @@
 > ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 tensor cores by construction, so it does *not* honor the IEEE request (a Crisp kernel would emit a precision warning); meanwhile IEEE oneMKL drops to true fp32. So the ">100% of Optimal" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` table is the only honest tensor-core comparison.
 
 
+### chap5_fused_epilogue
+
+#### Precision: fast (ftz=preserve)
+
+| Size | OneMKL_Optimal (TFLOPS) | OneMKL_Optimal (Kernel ms) | OneMKL_Plus_Relu (TFLOPS) | OneMKL_Plus_Relu (Kernel ms) | Crisp_Fused (TFLOPS) | Crisp_Fused (Kernel ms) | Crisp_Fused_Prefetch (TFLOPS) | Crisp_Fused_Prefetch (Kernel ms) | SYCL_Apples_Fused (TFLOPS) | SYCL_Apples_Fused (Kernel ms) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1024x1024x1024 | 11.98 | 0.18 | 11.31 | 0.19 | 0.83 | 2.59 | 21.38 | 0.10 | 1.53 | 1.40 |
+| 2048x2048x2048 | 13.81 | 1.24 | 13.19 | 1.30 | 0.89 | 19.32 | 24.32 | 0.71 | 1.39 | 12.37 |
+| 4096x4096x4096 | 14.31 | 9.60 | 13.88 | 9.90 | 1.02 | 135.10 | 16.62 | 8.27 | 1.31 | 105.21 |
+
 ### Compile Times (avg across precision)
 
 | Chapter | Competitor | Avg Compile (ms) | × vs Crisp |
 |---|---|---:|---:|
-| chap0_sync | Crisp | 790 | 1.0× (baseline) |
-| chap0_sync | SYCL_Apples | 1794 | 2.3× slower |
-| chap1_async_linear | Crisp | 684 | 1.0× (baseline) |
-| chap1_async_linear | SYCL_Apples | 1784 | 2.6× slower |
-| intel_prefetch | Crisp | 683 | 1.0× (baseline) |
-| intel_prefetch | SYCL_Apples | 1778 | 2.6× slower |
+| chap0_sync | Crisp | 832 | 1.0× (baseline) |
+| chap0_sync | SYCL_Apples | 1795 | 2.2× slower |
+| chap1_async_linear | Crisp | 682 | 1.0× (baseline) |
+| chap1_async_linear | SYCL_Apples | 1781 | 2.6× slower |
+| intel_prefetch | Crisp | 681 | 1.0× (baseline) |
+| intel_prefetch | SYCL_Apples | 1781 | 2.6× slower |
+| chap5_fused_epilogue | Crisp_Fused | 689 | — |
+| chap5_fused_epilogue | Crisp_Fused_Prefetch | 748 | — |
+| chap5_fused_epilogue | SYCL_Apples_Fused | 1798 | — |
 
 > **Device-only compilation on both sides.**  Crisp `--ir-target=spv`; the competitor `icpx -fsycl -fsycl-device-only -fsycl-targets=spir64`.  Neither figure includes host-code compilation, linking, or the runtime JIT of the resulting IR.  Library ceilings (oneMKL) are omitted — their kernels ship precompiled inside the library, so there is no device compile to measure.  Lower is better.
 

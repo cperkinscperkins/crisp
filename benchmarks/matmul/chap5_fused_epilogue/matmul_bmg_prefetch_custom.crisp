@@ -1,0 +1,70 @@
+;; Chapter 5 (Endeavor 150) — FUSED EPILOGUE, CUSTOM ACTIVATION — Intel.
+;;
+;; This is intel_prefetch/matmul_bmg_prefetch.crisp with ONE LINE ADDED before the store:
+;;
+;;     (map-elements! C-tile #'custom-act)
+;;
+;; WHY THIS BASE AND NOT CHAPTER 1.  The first cut of this chapter fused onto the chap1 async
+;; kernel and the result was uninformative: chap1 Crisp runs ~0.87 TF against oneMKL's ~13 TF,
+;; so a few-percent fusion win is invisible next to a 15x matmul deficit.  The register-ring +
+;; Subgroup2DBlockPrefetch kernel is the one that is actually competitive — 24.09 TF vs
+;; oneMKL's 13.81 at N=2048, i.e. Crisp is ALREADY AHEAD on Intel — and that is where removing
+;; an HBM round trip changes the answer instead of disappearing into noise.
+;;
+;; THE COMPARISON THIS ENABLES.  oneMKL cannot fuse an activation, so it pays a second kernel
+;; and a full read+write of C.  Crisp pays nothing.  The expectation is therefore that Crisp's
+;; existing lead WIDENS with an activation attached, which is a far stronger claim than any
+;; raw GEMM number.
+;;
+;; Everything else is byte-for-byte the intel_prefetch kernel, so any delta is the fusion.
+;;
+;; Compile: crisp-compile.exe --hardware-profile=bmg --ir-target=spv matmul_bmg_prefetch_relu.crisp
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function custom-act (x)
+  (declare #'(float => float))
+  (if (> x 0.5) (* (- x 0.5) 1.25) (* x 0.01)))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K      (inner-dimension A B))
+        (n-k-steps (/ (inner-dimension A B) (to-ulong 8))))
+
+    (tile-stride C (32 32) (grid-y grid-x)
+      (let ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
+            (B-ring (make-register-tile-ring float (8 32) :ring-count 2 :operand :b))
+            (C-tile (make-register-tile float (32 32) 0.0)))
+      
+      (prefetch-tile A (grid-y 0) :size (32 8))
+      (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (8 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16))
+      (prefetch-tile A (grid-y 1) :size (32 8))
+      (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (8 16))
+      (prefetch-tile B (1 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16))
+      (load-tile A (ring-get A-ring 0) (grid-y 0))
+      (load-tile B (ring-get B-ring 0) (0 grid-x))
+
+      (dotimes (grid-k n-k-steps)
+        (let ((next-k (+ grid-k (to-ulong 1)))
+              (prefetch-k (+ grid-k (to-ulong 2))))
+          
+          (when (< prefetch-k n-k-steps)
+            (prefetch-tile A (grid-y prefetch-k) :size (32 8))
+            (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (8 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16)))
+
+          (when (< next-k n-k-steps)
+            (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
+            (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
+
+          (mma-accumulate-via-tile (8 16 8) C-tile
+                                   (ring-get A-ring (mod grid-k (to-ulong 2)))
+                                   (ring-get B-ring (mod grid-k (to-ulong 2))))))
+      :epilogue
+      (map-elements! C-tile #'custom-act)                       ; <-- the entire chapter
+      (store-tile C-tile C (grid-y grid-x))))))

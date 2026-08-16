@@ -770,14 +770,29 @@ def main():
             #
             # The first cut of this chapter fused onto chap1 instead and was uninformative:
             # chap1 Crisp is ~15x off oneMKL, so a few-percent fusion win vanished into the gap.
+            # TWO ACTIVATION CATEGORIES, which is the point of the chapter:
+            #
+            #   +ReLU    everyone can express it.  On NVIDIA cuBLASLt can even FUSE it, so that
+            #            is the hard comparison.  On Intel oneMKL BLAS has NO epilogue parameter,
+            #            so it pays a separate kernel + an HBM round trip of C regardless.
+            #   +CUSTOM  an arbitrary activation.  NO vendor library has it on a menu, so oneMKL
+            #            pays exactly the same separate kernel as for relu — which is why its
+            #            column is repeated rather than absent.  (oneDNN, not oneMKL, is the
+            #            Intel library with post-op fusion; adding it would be the true analog
+            #            of cuBLASLt and is the obvious next contender.)
+            #
+            # All contenders below are the SAME algorithm — register-ring + Subgroup2DBlockPrefetch
+            # — so the columns differ only in who can fuse and who cannot.  SYCL_Apples uses
+            # joint_matrix_apply, SYCL's own analog of (map-elements! C-tile #'f), so the apples
+            # column measures Crisp's abstraction cost and nothing else.
             run_l0_crisp("chap5_fused_epilogue", "matmul_bmg_prefetch_relu.crisp",
-                         comp_name="Crisp_Fused_Prefetch", use_autobench=True)
-
-            # Kept as the cheap control on a SIMPLE kernel: chap1 +/- the one fused line.
-            # Useful for "does fusion cost anything", not for the headline.
-            run_l0_crisp("chap5_fused_epilogue", "matmul_relu_bmg.crisp", comp_name="Crisp_Fused")
+                         comp_name="Crisp_Fused_Relu", use_autobench=True)
+            run_l0_crisp("chap5_fused_epilogue", "matmul_bmg_prefetch_custom.crisp",
+                         comp_name="Crisp_Fused_Custom", use_autobench=True)
             run_target("chap5_fused_epilogue", "sycl_apples.cpp", "sycl_apples",
-                       "SYCL_Apples_Fused", sycl_flags, is_sycl=True)
+                       "SYCL_Apples_Relu", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            run_target("chap5_fused_epilogue", "sycl_apples_custom.cpp", "sycl_apples_custom",
+                       "SYCL_Apples_Custom", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("chap5_fused_epilogue", "onemkl_optimal.cpp", "onemkl_optimal",
                        "OneMKL_Plus_Relu", sycl_flags, is_sycl=True, is_cublas=True)
 
