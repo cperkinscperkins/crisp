@@ -39,9 +39,21 @@
            (global-size :derive-from C :strategy :strided :tile-shape (2 4))
            (local-size  :set-to 32)
            (cluster-size :set-to (2 1)))
-  (tile-stride C (2 4) (grid-y grid-x)
-    (let ((tile (make-scratch-matrix float (2 4)))
-          (bar  (make-async-barrier :mode :block)))
+  ;; Barrier bound OUTSIDE tile-stride — see rung 10's note.  Inside the loop it would put the
+  ;; cluster entry fence on a per-tile trip count, which hangs when two workgroups of a cluster
+  ;; claim different numbers of tiles.
+  ;;
+  ;; TILE SHAPE IS (2 4), and both numbers were forced by measurement on an H100:
+  ;;   * 4 columns because TMA requires the innermost box dimension to be a multiple of 16
+  ;;     bytes; a 2-float row is 8 and cuTensorMapEncodeTiled returns `invalid argument`
+  ;;   * 2 rows so the 4-row C yields TWO row-tiles, giving each of the cluster's two
+  ;;     workgroups real work.  With a taller tile there is ONE tile, the grid gets padded to
+  ;;     satisfy cluster divisibility, and the surplus workgroup exits without ever
+  ;;     initialising its mbarrier -- so the multicast targets a dead peer and the launch
+  ;;     fails.  See 00-verification-findings.md.
+  (let ((tile (make-scratch-matrix float (2 4)))
+        (bar  (make-async-barrier :mode :block)))
+    (tile-stride C (2 4) (grid-y grid-x)
       (load-tile A tile (0 grid-x) :barrier bar :multicast true)
       (await bar)
       ;; keyed by grid-y: each workgroup of the cluster writes its OWN region, so a

@@ -348,3 +348,54 @@ Candidates not yet eliminated, roughly in order of suspicion:
 NOTE ON METHOD: rung 10 and rung 11 are doing exactly the job they were designed for.  Rung 10
 proves the instruction is emitted; rung 11 proves — or in this case refuses to prove — that it
 works.  A suite that only had rung 10 would currently be reporting success.
+
+---
+
+## ANSWER to the fence-placement question (2026-08-17)
+
+**The fence is in the right place.  The SPEC was wrong, and behind it sits a real structural
+limit on one-shot multicast.**
+
+### What was actually wrong
+
+Rungs 10/11 bound `make-async-barrier` INSIDE `tile-stride`.  The emitted PTX put
+`mbarrier.init`, the cluster entry fence and the multicast all inside a depth-2 loop.  Two
+independent hazards, either fatal:
+
+* a cluster-wide rendezvous executed a DIFFERENT number of times by workgroups that claim
+  different numbers of tiles — mismatched trip counts hang
+* `mbarrier.init` re-initialising the same module-global barrier every iteration while a peer
+  may still be waiting on it
+
+The shipped chapter-3 kernel binds its barriers OUTSIDE `tile-stride`, which is why it has never
+hit this.  Rungs 10/11 now match it: init and fence are emitted once, before the loop; only the
+multicast is per-tile.  Verified in the emitted PTX.
+
+### The deeper limit, which fence placement cannot fix
+
+`await` RE-INITIALISES the mbarrier inside the loop (src/codegen.lisp, `tma_reinit`), guarded by
+`tid==0` and a workgroup `bar.sync`.  For a cluster that is the same race one iteration later:
+the leader can re-init and issue the NEXT multicast before a peer has re-inited its own barrier.
+
+Adding a cluster fence there would put a cluster-wide rendezvous back inside a
+variable-trip-count loop — strictly worse.  So:
+
+> **A single re-used barrier is not sound for multicast in a cluster across loop iterations.
+> The correct construct is a barrier RING whose reverse (`empty`) barrier is cluster-scoped —
+> i.e. Phase 2 steps 5 and 6, which are not built yet.  That is also exactly what the real
+> chapter-3 kernel uses, and why it will be the first sound multicast pipeline.**
+
+Rungs 10/11 remain valid ONLY because their trip count is uniformly 1 (2 tiles over 2
+workgroups, one each), so the re-init is never followed by another multicast.  That is a narrow
+soundness condition and it is recorded here rather than left implicit.
+
+### Consequence for the plan
+
+Step 2 ("one-shot multicast, no ring") was designed as the de-risking spike precisely because it
+needs no ring.  That was right for proving the INSTRUCTION — rung 10 passes and did its job.  It
+was over-optimistic for proving the DATA PATH, which turns out to need the ring after all.
+Rung 11 should be expected to go green only once steps 5/6 land, unless its one-iteration
+geometry holds.
+
+STILL UNVERIFIED ON METAL: the pod was released before the restructured kernels could be run.
+Everything above about the PTX structure is verified; nothing about rung 11 executing is.

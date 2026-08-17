@@ -38,9 +38,19 @@
            (global-size :derive-from C :strategy :strided :tile-shape (8 8))
            (local-size  :set-to 32)
            (cluster-size :set-to (2 1)))
-  (tile-stride C (8 8) (grid-y grid-x)
-    (let ((tile (make-scratch-matrix float (8 8)))
-          (bar  (make-async-barrier :mode :block)))
+  ;; THE BARRIER IS BOUND OUTSIDE tile-stride, and for a clustered kernel that is not a
+  ;; style preference -- it is the difference between working and hanging.  The first cut of
+  ;; this spec bound it INSIDE the loop, which put mbarrier.init, the compiler's cluster entry
+  ;; fence, and the multicast all inside a depth-2 loop.  Two consequences, both fatal:
+  ;;   * the cluster barrier would be executed a DIFFERENT NUMBER OF TIMES by workgroups that
+  ;;     happen to claim different numbers of tiles -- a cluster-wide rendezvous with mismatched
+  ;;     trip counts hangs
+  ;;   * mbarrier.init would re-initialise the SAME module-global barrier every iteration, while
+  ;;     a peer workgroup may still be waiting on it
+  ;; The shipped chapter-3 kernel binds its barriers outside tile-stride for the same reason.
+  (let ((tile (make-scratch-matrix float (8 8)))
+        (bar  (make-async-barrier :mode :block)))
+    (tile-stride C (8 8) (grid-y grid-x)
       ;; row coordinate is CONSTANT -> identical tile for both workgroups of the cluster
       (load-tile A tile (0 grid-x) :barrier bar :multicast true)
       (await bar)
