@@ -421,6 +421,12 @@ Two things follow from this that are worth stating plainly:
 supported on some parts (16 on Hopper) but require an explicit opt-in and are not portable
 across devices; Crisp treats anything above 8 as requiring that opt-in.
 
+> Measured on an H100 PCIe: a cluster of 8 launches; a cluster of 16 fails with
+> `cudaErrorInvalidClusterSize`; a cluster of 16 succeeds once
+> `cudaFuncSetAttribute(k, cudaFuncAttributeNonPortableClusterSizeAllowed, 1)` has been set.
+> Larger clusters also reduce the number of blocks that can be resident, which is the
+> scheduling cost behind the guidance below.
+
 For a tiled matrix multiply, small is the point. A 2-workgroup cluster already collects the
 entire traffic reduction on the shared operand, and larger clusters constrain the scheduler
 — every workgroup in a cluster must be placed together, so a wide cluster quantizes badly
@@ -443,9 +449,18 @@ Crisp handles the two strategies differently, mirroring the split already descri
   dimensions is therefore a hard **error**, naming both the tile shape and the cluster
   shape that conflict.
 
-> **Open decision.** The padding policy above is proposed, not settled. It follows the
-> precedent set by the device-dispatch-limit rules, but it has not been measured, and
-> "pad the grid" is not the only defensible answer for `:strided`.
+**This is enforced by the driver, per axis, as a hard launch error** — measured on an H100 PCIe
+(sm_90, CUDA 12.4) via `cudaLaunchKernelEx`:
+
+| grid | cluster | launch result |
+|---|---|---|
+| `(4,1,1)` | `(2,1,1)` | `cudaSuccess` |
+| `(3,1,1)` | `(2,1,1)` | **`cudaErrorInvalidClusterSize`** |
+| `(4,3,1)` | `(2,2,1)` | **`cudaErrorInvalidClusterSize`** (the y axis) |
+
+Not a warning, not a silent clamp — a non-divisible grid simply does not launch.  So the policy
+above is not a preference between two workable options: *something* has to happen, and padding
+is the only one of the two that leaves `:strided` correct.
 
 #### Degradation
 
@@ -818,7 +833,19 @@ The default usage `(sync-cluster)` is simple and direct. It both announces that 
 
 The compiler refuses the violations it can detect statically - unpaired or nested `:arrive`, divergent placement, peer access in the window, and returning before the `:wait`. It cannot detect every case of the last restriction; absence of an error is not proof of correctness.
 
-Cluster synchronization is a NVidia feature that requires the Hopper architecture (`sm_90` or later).  If `sync-cluster` is used with earlier architectures or on Intel it simply degrades to `sync-workgroup`.  Note also if a kernel is not explicitly enqueued with a cluster specified then the cluster count is 1, meaning it is functionally exactly the same as `sync-workgroup`. 
+Cluster synchronization is a NVidia feature that requires the Hopper architecture (`sm_90` or later).  If `sync-cluster` is used with earlier architectures or on Intel it simply degrades to `sync-workgroup`.  Note also if a kernel is not explicitly enqueued with a cluster specified then the cluster count is 1, meaning it is functionally exactly the same as `sync-workgroup`.
+
+> **Verified, not assumed.**  The equivalence above holds only if the cluster barrier also
+> rendezvouses the threads *within* a workgroup.  It does: NVIDIA's own
+> `cooperative_groups::cluster_group::sync()` is implemented as `barrier_arrive(); barrier_wait();`
+> with no `__syncthreads()` anywhere, and compiling it emits exactly `barrier.cluster.arrive;`
+> + `barrier.cluster.wait;` — no `bar.sync`.  Since Cooperative Groups documents `sync()` as
+> rendezvousing *all threads in the group*, and a cluster group's threads are all threads of all
+> its workgroups, the cluster barrier must cover intra-workgroup convergence.  Crisp therefore
+> emits no implicit `sync-workgroup` alongside it.  (CUDA 12.4 headers; PTX checked on sm_90a.)
+>
+> The same check settled the `:relaxed` question: NVIDIA's default `cluster.sync()` emits the
+> **non-relaxed** form, which is the same default Crisp uses.
 
 Like many sync operations, using `sync-cluster` in a divergent context (`if`, `cond`, or warp specialization block) can lead to deadlocks. Crisp will emit a compilation error if it encounters this situation. 
 

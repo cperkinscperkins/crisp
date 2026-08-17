@@ -1654,3 +1654,232 @@
          (error 'crisp-compiler-error
                 :message (format nil "%map-elements-vjp!: unsupported operand type ~a." ty)
                 :source-location location))))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 Phase 1 — (declare (cluster-size ...))
+;;;
+;;; Front half: parse, validate, store, and stamp the cluster dimensions onto the
+;;; PTX entry point.  The hoist half (cudaLaunchKernelEx + the divisibility
+;;; pad/error policy) and the metadata half land separately.
+;;;
+;;; MEASURED FACTS this is built on
+;;; (tests/spec/152-DSMEM-Cluster/00-verification-findings.md):
+;;;   * gridDim % clusterDim == 0 is enforced PER AXIS by the driver as a hard
+;;;     launch error (cudaErrorInvalidClusterSize) -- not a warning, not a clamp.
+;;;   * portable max extent is 8; 16 needs cudaFuncAttributeNonPortableClusterSizeAllowed.
+;;;   * LLVM 21.1.5 honours BOTH !nvvm.annotations cluster_dim_{x,y,z} AND the
+;;;     "nvvm.cluster_dim"="x,y,z" function attribute; each ALONE yields
+;;;     `.explicitcluster` + `.reqnctapercluster x, y, z`.  We use the ATTRIBUTE
+;;;     form: nvvm.annotations is on LLVM's deprecation path, and one string
+;;;     attribute beats three metadata nodes.
+;;; =====================================================================
+
+;; src/analysis/control.lisp  (new)
+(defun %parse-cluster-size-decl (decl kernel-name declarations)
+  "Validate a (cluster-size ...) declaration and return its dims as a 3-list (x y z),
+   padding absent axes with 1.  Returns NIL when DECL is NIL.
+
+   Refuses, with a message that says WHY rather than merely that a key is unknown:
+     * :derive-from  -- cluster-size is consumed at CODEGEN, so its shape cannot come
+                        from a host-side runtime value.  Every sibling declaration in
+                        the enqueue family is advisory; this one is not.
+     * a missing or non-integer :set-to
+     * rank > 3, or rank exceeding an explicit :tile-shape
+     * extent > 8 (the portable maximum; 16 needs a non-portable opt-in the hoist
+                   does not yet emit)"
+  (when decl
+    (let* ((opts   (cdr decl))
+           (set-to (getf opts :set-to))
+           (derive (getf opts :derive-from)))
+      (when derive
+        (error 'crisp-compiler-error
+               :message (format nil "cluster-size does not support :derive-from (kernel ~a).  Unlike global-size / local-size, which only advise the hoisting code, cluster-size is consumed at code generation -- it decides the multicast mask, the leader predicate, and the cluster dimensions baked into the PTX -- so its shape cannot be computed from a host-side runtime value.  Use :set-to with a compile-time literal."
+                                kernel-name)))
+      (unless set-to
+        (error 'crisp-compiler-error
+               :message (format nil "cluster-size requires :set-to (kernel ~a), e.g. (cluster-size :set-to 2) or (cluster-size :set-to (2 1))."
+                                kernel-name)))
+      ;; Accept the scalar shorthand, following (local-size :set-to 256).  Tolerate a
+      ;; quoted list too -- the docs show both (2 1) and '(2 2) in the wild.
+      (let* ((raw  (if (and (consp set-to) (eq (car set-to) 'quote)) (second set-to) set-to))
+             (dims (if (listp raw) raw (list raw))))
+        (unless (and dims (every (lambda (d) (and (integerp d) (plusp d))) dims))
+          (error 'crisp-compiler-error
+                 :message (format nil "cluster-size :set-to must be a positive compile-time integer or a list of them (kernel ~a), got ~S."
+                                  kernel-name set-to)))
+        (when (> (length dims) 3)
+          (error 'crisp-compiler-error
+                 :message (format nil "cluster-size has rank ~a (kernel ~a); the maximum is 3."
+                                  (length dims) kernel-name)))
+        ;; Rank must agree with an EXPLICIT :tile-shape, mirroring the existing rule that
+        ;; global-size and local-size must agree in arity.  Axes beyond the declared rank
+        ;; default to 1, so an UNDER-specified cluster rank is legal -- only an
+        ;; over-specified one is an error.
+        ;;
+        ;; TODO(152): an INFERRED :tile-shape (Endeavor 143, %ts-maybe-infer-tile-shape)
+        ;; is not visible here -- inference runs during body analysis, after this point.
+        ;; A kernel that relies on inference therefore escapes this check.  Move the rank
+        ;; comparison to a post-inference pass when the multicast axis analysis lands,
+        ;; since that pass needs the same information.
+        (let* ((gs (find "GLOBAL-SIZE" declarations
+                         :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                         :test #'string-equal))
+               (ts (and gs (getf (cdr gs) :tile-shape))))
+          (when (and ts (listp ts) (> (length dims) (length ts)))
+            (error 'crisp-compiler-error
+                   :message (format nil "cluster-size rank ~a exceeds the :tile-shape rank ~a (kernel ~a).  Cluster axes are interpreted in the tile grid's axis order, so a cluster axis with no corresponding tile axis has nothing to cluster along.  Axes beyond the tile-shape rank default to 1, so a SHORTER cluster-size is fine; a longer one is not."
+                                    (length dims) (length ts) kernel-name))))
+        (let ((total (reduce (function *) dims)))
+          (when (> total 8)
+            (error 'crisp-compiler-error
+                   :message (format nil "cluster-size ~a gives ~a workgroups per cluster (kernel ~a); the portable maximum is 8.  Larger clusters (16 on Hopper) require cudaFuncAttributeNonPortableClusterSizeAllowed to be set at launch, which Crisp does not yet emit."
+                                    dims total kernel-name))))
+        ;; Normalise to 3 axes so codegen and the hoist never re-derive the padding.
+        (let ((d (copy-list dims)))
+          (loop while (< (length d) 3) do (setf d (append d (list 1))))
+          (log:info "Kernel ~a: cluster-size ~a -> normalised dims ~a" kernel-name dims d)
+          d)))))
+
+;; src/analysis/core.lisp
+(defun internal-def-function (name params declarations body location)
+  "Wrapper around internal-compile-function. Detects kernel entry-points and
+   binds *boundary-struct-params*, *boundary-array-params*, and
+   *in-dispatch-context* to enforce kernel-boundary rules.
+   Extended to capture global-size/local-size/num-groups dispatch declarations.
+   Extended (091) to handle (grid-function) declaration: sets dispatch context,
+   validates void return type.
+   Endeavor 152: also captures and validates (cluster-size ...), storing the
+   NORMALISED 3-axis dims under :cluster-size so codegen and the hoist share one
+   representation.
+   Note: ANF pre-processing removed from forward pass — backward pass applies
+   its own anf-transform in %generate-backward-function-ast."
+  (log:info "Analyzing function ~s" name)
+
+  (multiple-value-bind (explicit-env return-type)
+      (parse-function-declarations params declarations)
+    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (is-entry-p (loop for d in declarations
+                             thereis (and (listp d)
+                                          (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (is-grid-fn-p (loop for d in declarations
+                               thereis (and (listp d)
+                                            (symbolp (first d))
+                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
+           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
+           (*boundary-struct-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%boundary-struct-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-struct-params*))
+           (*boundary-array-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%array-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-array-params*)))
+      (when (and is-entry-p *boundary-struct-params*)
+            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
+      (when (and is-entry-p *boundary-array-params*)
+            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
+
+      ;; Void return type enforcement for grid functions
+      (when is-grid-fn-p
+        (log:info "Compiling grid function ~a (dispatch context)" name)
+        (%validate-grid-function-return-type return-type))
+
+      ;; Extract and store dispatch declarations for entry-point kernels
+      (when is-entry-p
+        (let* ((global-size-decl (find "GLOBAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (local-size-decl  (find "LOCAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (num-groups-decl  (find "NUM-GROUPS" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (cluster-size-decl (find "CLUSTER-SIZE" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal))
+               ;; Validated HERE, at declaration time, so a malformed cluster-size is
+               ;; reported before any code generation has run.
+               (cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations)))
+          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl)
+            (let ((dispatch-plist
+                    (append (when global-size-decl (list :global-size global-size-decl))
+                            (when local-size-decl  (list :local-size  local-size-decl))
+                            (when num-groups-decl  (list :num-groups  num-groups-decl))
+                            (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
+                            (when cluster-dims      (list :cluster-size cluster-dims)))))
+              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
+              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
+          ;; Endeavor 130 Phase 1: validate the workgroup (local-size) bounds against
+          ;; the active hardware profile, when one is selected and local-size is
+          ;; compile-time-known.  active-hardware-profile also errors here if the
+          ;; --hardware-profile flag names a profile that isn't registered.
+          (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
+
+      (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
+
+;; src/codegen.lisp  (new)
+(defun %apply-cluster-dims-attribute (func semantic-function module)
+  "Endeavor 152: stamp the cluster dimensions on a PTX entry point.
+
+   Emits the nvvm.cluster_dim function attribute, which LLVM 21 lowers to
+   .explicitcluster + .reqnctapercluster x, y, z on the .entry.  Baking the shape into
+   the PTX is what makes the host/kernel agreement DRIVER-ENFORCED rather than a
+   convention the hoisting code is trusted to honour.
+
+   PTX only.  On SPIR-V the declaration degrades to extent 1; the diagnostic for that
+   is emitted separately (it is a performance trap, not an error -- see rung 05)."
+  (when (eq *target-backend* :ptx)
+    (let* ((kname (semantic-function-name semantic-function))
+           (decls (and kname (gethash kname *kernel-dispatch-declarations*)))
+           (dims  (and decls (getf decls :cluster-size))))
+      (when (and dims (> (reduce (function *) dims) 1))
+        (let* ((ctx  (llvm-get-module-context module))
+               (key  "nvvm.cluster_dim")
+               (val  (format nil "~{~a~^,~}" dims))
+               (attr (llvm-create-string-attribute ctx key (length key) val (length val))))
+          (log:info "Kernel ~a: stamping cluster dims ~a (.reqnctapercluster)" kname val)
+          (llvm-add-attribute-at-index func +llvm-attribute-function-index+ attr))))))
+
+;; src/codegen.lisp
+(defun ensure-opencl-kernel-metadata (func semantic-function module)
+  "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
+   Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
+   Endeavor 126: also stamps the denormal-fp-math attribute (all functions).
+   Endeavor 152: stamps cluster dimensions on PTX entry points.
+
+   NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
+   as text during IR printing for SPIR-V."
+  (%apply-denormal-attribute func module)
+  (when (semantic-function-is-entry-point semantic-function)
+        (log:info "Marking function ~a as Kernel for backend ~a"
+                  (semantic-function-name semantic-function) *target-backend*)
+
+        (case *target-backend*
+          (:spirv
+           ;; calling convention spir_kernel (76)
+           (llvm-set-function-call-conv func 76)
+           ;; Endeavor 126: denormal handling reaches SPIR-V only via an execution mode.
+           (%emit-spirv-denorm-execution-mode func module))
+          (:ptx
+           ;; Use ptx_kernel calling convention (71) so llc emits .entry
+           ;; If this crashes on Windows, we will need to revisit nvvm attributes.
+           (log:info "Setting CC 71 (ptx_kernel) for function ~a" (semantic-function-name semantic-function))
+           (llvm-set-function-call-conv func 71)
+           (%apply-cluster-dims-attribute func semantic-function module))
+          (t
+           ;; Default to C calling convention (0) for generic/unknown
+           (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
+           (llvm-set-function-call-conv func 0))))
+
+  (unless (semantic-function-is-entry-point semantic-function)
+    (case *target-backend*
+      (:spirv
+       ;; Use SPIR_FUNC (75) for non-kernel functions
+       (llvm-set-function-call-conv func 75)))))
