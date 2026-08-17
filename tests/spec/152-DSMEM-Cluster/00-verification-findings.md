@@ -227,3 +227,36 @@ measurement.
 
 Probe source is on the pod at `/root/probe/q3.cu`; worth copying into the repo as a permanent
 artifact if we want the table reproducible.
+
+
+---
+
+## Rung 04's launch assumption — SETTLED ON METAL (2026-08-16)
+
+The hoist deliberately does not use `cuLaunchKernelEx`; it relies on the shape being baked
+into the PTX as `.reqnctapercluster` and launches with a plain `cuLaunchKernel`.  That was
+written down as an assumption, with the note that being wrong would fail loudly.
+
+**It is correct.**  On an H100 PCIe (CUDA 12.4), `04-cluster-size-on-metal` produced:
+
+    Device: NVIDIA H100 PCIe
+    PTX module loaded successfully
+    Kernel executed successfully
+    BUFFER a: 0 1 2 3
+    BUFFER c: 0 2 4 6
+    Success!
+
+A clustered kernel loads, launches and computes correctly without any launch-time cluster
+attribute.  `CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION` is for setting the shape DYNAMICALLY,
+which Crisp does not support by design.
+
+The spec still failed, and only because of its own expectation: it predicted `BUFFER c:
+2 2 2 2` on the guess that the harness fills tensors with a constant.  It fills them
+0,1,2,3, and allocates a fixed 4 elements per param regardless of the declared global-size.
+Expectation corrected to `0 2 4 6`.
+
+**Also cleared by the same run:** the CUDA hoist path had NEVER executed before this.  Every
+`TEST-HOIST[CUDA]` spec reports `SKIP (nvcc not available)` on the dev box, so
+`generate-cuda-launcher` and the grid reconciliation were unexercised code behind four green
+suites.  Pod result: `--differentiate` 1012/1012, negative 217/217, and the only default-phase
+failures were this expectation plus the two multicast rungs whose lowering is not written yet.
