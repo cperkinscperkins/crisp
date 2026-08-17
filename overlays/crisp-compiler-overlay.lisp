@@ -2514,3 +2514,276 @@
       (let ((*current-kernel-cluster-dims* cluster-dims))
         (internal-compile-function name explicit-env return-type params body declarations
                                    location *compiler-context*)))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 Phase 2 step 3 — the multicast lowering
+;;;
+;;; THE STRUCTURAL CHANGE, and it is exactly what Phase 0's CUTLASS reading predicted.
+;;; Today `expect_tx` and the bulk copy sit INSIDE the same leader guard, which is right
+;;; for an ordinary TMA load: one thread per workgroup announces the bytes and issues the
+;;; copy, and every workgroup does its own.  Under multicast that is wrong:
+;;;
+;;;   * the COPY is issued by ONE workgroup for the whole multicast group
+;;;   * `expect_tx` must still run in EVERY destination workgroup, on ITS OWN barrier
+;;;
+;;; (CUTLASS `PipelineTmaAsync::producer_acquire` -- `params_.is_leader` is a lane-0 check
+;;; WITHIN a CTA, not a leader CTA; see 00-verification-findings.md Q1b.)  So the guard
+;;; splits in two: thread-election outside, workgroup-election only around the copy.
+;;;
+;;; THE MASK IS A COMPILE-TIME CONSTANT, because v1 accepts only 1-D clusters.  For a
+;;; cluster of extent N along a single axis every workgroup is in the SAME multicast group,
+;;; so the mask is (1<<N)-1 for all of them and the leader is ctarank 0.  A 2-D cluster
+;;; would make the group a row or a column, the mask rank-dependent, and the leader differ
+;;; PER OPERAND -- that is real work and it is refused with a message rather than guessed.
+;;;
+;;; NO NEW STRUCT SLOT.  `semantic-nvvm-tma-tile-copy` cannot gain one in an overlay, and
+;;; Endeavor 140 already hit this and solved it with a side table keyed by node identity
+;;; (`*tma-copy-ws-leader*`).  Same pattern here.  Safe without clearing: nodes are fresh
+;;; objects per compile, so a stale entry can never be reached by EQ from a new node --
+;;; the table only grows, by one entry per multicast load compiled in the process.
+;;; Should become a real slot when this folds into src.
+;;; =====================================================================
+
+;; src/codegen.lisp  (new)
+(defvar *tma-copy-multicast* (make-hash-table :test 'eq)
+  "semantic-nvvm-tma-tile-copy node -> the cluster dims it should multicast across.
+   Mirrors *tma-copy-ws-leader* (Endeavor 140), which exists for the same reason:
+   the node struct cannot gain a slot from an overlay.")
+
+;; src/analysis/control.lisp  (new)
+(defvar *multicast-cluster-dims* nil
+  "Bound by analyze-load-tile-expression around its delegation when the load carried a
+   validated :multicast, so the TMA analyzer can tag the node it builds.")
+
+;; src/analysis/control.lisp  (new)
+(defun %multicast-1d-extent (dims)
+  "The extent of a 1-D cluster, or NIL if DIMS clusters more than one axis.
+   v1 supports only 1-D: the mask is then cluster-wide constant."
+  (let ((nontrivial (remove-if (lambda (d) (= d 1)) dims)))
+    (cond ((null nontrivial) nil)
+          ((= (length nontrivial) 1) (first nontrivial))
+          (t nil))))
+
+;; src/analysis/control.lisp
+(defun %validate-multicast-request (grid-list location)
+  "Refuse a `:multicast` that cannot be honoured, naming the reason.
+
+   `:multicast` is an ASSERTION, not a directive: the user says 'I expect this load to
+   multicast' and the compiler either does it or refuses.  A load that quietly declined
+   would be a silent 2x bandwidth regression that no correctness test can see -- which is
+   the whole reason the key is explicit rather than inferred."
+  (let ((dims *current-kernel-cluster-dims*))
+    (unless dims
+      (error 'crisp-compiler-error
+             :message ":multicast requires the kernel to declare a cluster.  Add (cluster-size :set-to N) to the kernel's declare block -- without a cluster there is no group of workgroups to deliver the tile to, so the request cannot be honoured.  This is a hard error rather than a silent fallback because a load-tile that quietly declines to multicast still computes the correct answer, at exactly the bandwidth the declaration was meant to avoid."
+             :source-location location))
+    (unless (> (reduce (function *) dims) 1)
+      (error 'crisp-compiler-error
+             :message (format nil ":multicast requires a cluster extent greater than 1, but this kernel's cluster-size is ~a (one workgroup).  There is no peer to share the fetch with."
+                              dims)
+             :source-location location))
+    ;; v1 restriction, stated rather than silently mis-lowered.
+    (unless (%multicast-1d-extent dims)
+      (error 'crisp-compiler-error
+             :message (format nil ":multicast currently supports only a ONE-DIMENSIONAL cluster, but cluster-size is ~a.  With more than one clustered axis the multicast group is a row or a column rather than the whole cluster, so the destination mask becomes dependent on each workgroup's rank AND the issuing workgroup differs per operand (A's groups and B's groups partition the cluster differently).  That is real work, not a constant, and guessing it would deliver one workgroup's tile to another.  Use a 1-D cluster such as (2 1) for now."
+                              dims)
+             :source-location location))
+    (loop for d in dims
+          for i from 0
+          when (> d 1)
+          do (let ((axis-var (nth i *ts-grid-bindings*)))
+               (cond
+                 ((null axis-var)
+                  (error 'crisp-compiler-error
+                         :message (format nil ":multicast could not be verified: the cluster is ~a (extent ~a on axis ~a) but no enclosing tile-stride binds a loop variable for that axis, so there is nothing to prove the tile is identical across the cluster against.  Use :multicast only on a load inside a tile-stride whose rank covers the cluster."
+                                          dims d i)
+                         :source-location location))
+                 ((%form-mentions-symbol-p grid-list axis-var)
+                  (error 'crisp-compiler-error
+                         :message (format nil ":multicast is not possible here -- the tile coordinates ~a depend on ~a, which is the loop variable of cluster axis ~a (extent ~a).  The workgroups of a cluster differ along exactly that axis, so they want DIFFERENT tiles and one fetch cannot serve them; multicasting would deliver one workgroup's tile to another.  Drop :multicast, or move the cluster to an axis this load does not vary along."
+                                          grid-list axis-var i d)
+                         :source-location location)))))
+    t))
+
+;; src/analysis/control.lisp
+(defun analyze-load-tile-expression (expr env context location)
+  "Endeavor 152: validates a `:multicast` assertion against the kernel's cluster shape and
+   the enclosing tile-stride's axis bindings, then delegates to load-tile-at, publishing the
+   cluster dims so the TMA analyzer can tag the copy node it builds."
+  (let* ((src (second expr))
+         (tile (third expr))
+         (grid-list (fourth expr))
+         (key-args (nthcdr 4 expr))
+         (cl-pkg (find-package :crisp-language))
+         (mul-sym (intern "*" cl-pkg))
+         (extents-sym (intern "EXTENTS~" cl-pkg))
+         (aref-sym (intern "~" cl-pkg))
+         (mcast-p (%multicast-requested-p key-args)))
+    (unless (and (listp grid-list) (>= (length grid-list) 1))
+      (error 'crisp-compiler-error :message "load-tile: origin must be a non-empty list of grid coords" :source-location location))
+    (when mcast-p (%validate-multicast-request grid-list location))
+    (let ((pixel-coords
+           (loop for g in grid-list
+                 for i from 0
+                 collect (list mul-sym (list (intern "TO-ULONG" cl-pkg) g)
+                               (list aref-sym (list extents-sym tile) i)))))
+      (let ((delegated-keys (loop for (k v) on key-args by (function cddr)
+                                  unless (eq k :multicast) append (list k v)))
+            (*multicast-cluster-dims* (when mcast-p *current-kernel-cluster-dims*)))
+        (analyze-load-tile-at-expression
+         (append (list (intern "LOAD-TILE-AT" cl-pkg) src tile pixel-coords) delegated-keys)
+         env context location)))))
+
+;; Capture the ORIGINAL TMA analyzer once so reloading cannot wrap the wrapper.
+(defvar *crisp-152-orig-tma-analyze* nil)
+(unless *crisp-152-orig-tma-analyze*
+  (setf *crisp-152-orig-tma-analyze* (fdefinition '%analyze-nvvm-tma-load-tile-at)))
+
+;; src/analysis/control.lisp
+(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+  "Endeavor 152 wrapper: builds the copy node as before, then tags it as a multicast when the
+   enclosing load-tile validated one.  Wrapped rather than copied -- this adds two lines to a
+   45-line analyzer."
+  (let ((node (funcall *crisp-152-orig-tma-analyze* expr env context location)))
+    (when (and node *multicast-cluster-dims*)
+      (log:info "load-tile: tagging TMA copy node as multicast across ~a" *multicast-cluster-dims*)
+      (setf (gethash node *tma-copy-multicast*) *multicast-cluster-dims*))
+    node))
+
+;; src/codegen.lisp
+(defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1
+                                         &optional (mcast-mask 0) (mcast-p nil))
+  "Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,
+   cachehint, flag_mcast, flag_cachehint).
+
+   Endeavor 152: the intrinsic ALREADY carried the multicast operands -- an i16 destination
+   mask and an i1 enable flag -- which Endeavor 137 passed as immarg 0.  Multicast is therefore
+   plumbing those two, not a new instruction: with the flag set the emitted PTX gains
+   `.multicast::cluster` and the ctaMask operand."
+  (let* ((fn-name  "llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d")
+         (void     (llvm-void-type))
+         (i8       (llvm-int8-type))
+         (i16      (llvm-int16-type))
+         (i32      (llvm-int32-type))
+         (i64      (llvm-int64-type))
+         (i1       (llvm-int1-type))
+         (ptr-as3  (llvm-pointer-type i8 3))
+         (ptr-gen  (llvm-pointer-type i8 0))
+         (n        9)
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count n)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) ptr-as3)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 2) ptr-gen)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 3) i32)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 4) i32)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 5) i16)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 6) i64)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 7) i1)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 8) i1)
+                        arr))
+         (fn-type  (llvm-function-type void param-types n nil))
+         (fn       (%spirv-get-or-create-fn module fn-name void param-types n))
+         (args     (cffi:foreign-alloc 'llvm-value-ref :count n)))
+    (setf (cffi:mem-aref args 'llvm-value-ref 0) dst-smem-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 1) mbar-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 2) tensormap-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 3) coord0)
+    (setf (cffi:mem-aref args 'llvm-value-ref 4) coord1)
+    (setf (cffi:mem-aref args 'llvm-value-ref 5) (llvm-const-int i16 mcast-mask nil))
+    (setf (cffi:mem-aref args 'llvm-value-ref 6) (llvm-const-int i64 0 nil))
+    (setf (cffi:mem-aref args 'llvm-value-ref 7) (llvm-const-int i1 (if mcast-p 1 0) nil))
+    (setf (cffi:mem-aref args 'llvm-value-ref 8) (llvm-const-int i1 0 nil))
+    (let ((call (llvm-build-call2 builder fn-type fn args n "")))
+      (cffi:foreign-free args)
+      (cffi:foreign-free param-types)
+      call)))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 137 + 140 + 152 — one bulk TMA copy issued by a single elected leader.
+   Leader = laneid==0 (the producer warp's lane 0) inside a warp-spec role block, else global
+   tid==0.
+
+   Endeavor 152 splits the guard when the copy is a MULTICAST.  `expect_tx` announces the bytes
+   a workgroup EXPECTS TO RECEIVE, so every destination workgroup must run it on its own
+   mbarrier; only the leader WORKGROUP (ctarank 0) issues the copy that serves them all.
+   Keeping both inside one guard -- correct for an ordinary per-workgroup load -- would leave
+   every non-issuing workgroup waiting on a barrier that was never told to expect anything."
+  (multiple-value-bind (dv di dst-ptr)
+      (generate-node-ir (semantic-nvvm-tma-tile-copy-dst-aref-node node) builder module var-env
+                        di-builder di-scope location-map)
+    (declare (ignore dv di))
+    (multiple-value-bind (sv si src-ptr)
+        (generate-node-ir (semantic-nvvm-tma-tile-copy-src-aref-node node) builder module var-env
+                          di-builder di-scope location-map)
+      (declare (ignore sv si))
+      (unless (and dst-ptr src-ptr)
+        (error "nvvm-tma-tile-copy: aref did not yield an element pointer (dst ~A src ~A)" dst-ptr src-ptr))
+      (let* ((i32-type   (llvm-int32-type))
+             (ptr-as3    (llvm-pointer-type (llvm-int8-type) 3))
+             (ptr-gen    (llvm-pointer-type (llvm-int8-type) 0))
+             (ptr-glob   (llvm-pointer-type (llvm-int8-type) 1))
+             (desc-ptr   (%tma-lookup-descriptor-ptr builder var-env
+                          (semantic-nvvm-tma-tile-copy-src-name node) ptr-glob))
+             (tmap-ptr   (llvm-build-addrspace-cast builder (or desc-ptr src-ptr) ptr-gen "tma_map"))
+             (barrier-i  (generate-node-ir (semantic-nvvm-tma-tile-copy-barrier-node node) builder module var-env
+                                           di-builder di-scope location-map))
+             (mbar-ptr   (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
+             (coord-vals (loop for cn in (semantic-nvvm-tma-tile-copy-coord-nodes node)
+                               collect (%coerce-to-i32 builder
+                                          (generate-node-ir cn builder module var-env
+                                                             di-builder di-scope location-map))))
+             (coord0     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))
+             (coord1     (or (first coord-vals)  (llvm-const-int i32-type 0 nil)))
+             (mc-dims    (gethash node *tma-copy-multicast*))
+             (mc-extent  (and mc-dims (%multicast-1d-extent mc-dims)))
+             (mc-mask    (if mc-extent (1- (ash 1 mc-extent)) 0))
+             (ws-leader  (gethash node *tma-copy-ws-leader*))
+             (is-leader  (if ws-leader
+                             (llvm-build-icmp builder +llvm-int-eq+
+                                (%ptx-read-warp-sreg builder module "laneid")
+                                (llvm-const-int i32-type 0 nil) "is_lane0")
+                             (let* ((tid-x (%gen-nvvm-read-tid-x builder module))
+                                    (tid-y (%gen-nvvm-read-tid-y builder module))
+                                    (tid-z (%gen-nvvm-read-tid-z builder module))
+                                    (tid-sum (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz")))
+                               (llvm-build-icmp builder +llvm-int-eq+ tid-sum
+                                  (llvm-const-int i32-type 0 nil) "is_tid_0"))))
+             (issue-bb   (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_issue"))
+             (cont-bb    (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_cont")))
+        (llvm-build-cond-br builder is-leader issue-bb cont-bb)
+        (llvm-position-builder-at-end builder issue-bb)
+        ;; expect_tx: EVERY workgroup, on its own mbarrier -- including the ones that will not
+        ;; issue the multicast, because they are still receiving the bytes.
+        (let* ((len-val   (generate-node-ir (semantic-nvvm-tma-tile-copy-tile-length-node node) builder module var-env
+                                            di-builder di-scope location-map))
+               (elem-b    (semantic-nvvm-tma-tile-copy-elem-bytes node))
+               (len-i32   (%coerce-to-i32 builder len-val))
+               (tx-bytes  (llvm-build-mul builder len-i32 (llvm-const-int i32-type elem-b nil) "tma_tx_bytes"))
+               (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr")))
+          (%gen-nvvm-mbarrier-arrive-expect-tx builder mbar-addr tx-bytes))
+        (cond
+          (mc-extent
+           ;; Multicast: exactly ONE workgroup per group issues.  With a 1-D cluster every
+           ;; workgroup is in the same group, so the leader is ctarank 0 and the mask is the
+           ;; whole cluster -- both compile-time constants.
+           (let* ((parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                  (rank      (%ptx-read-warp-sreg builder module "cluster.ctarank"))
+                  (is-rank0  (llvm-build-icmp builder +llvm-int-eq+ rank
+                                (llvm-const-int i32-type 0 nil) "is_ctarank0"))
+                  (mc-bb     (llvm-append-basic-block parent "tma_mcast_issue"))
+                  (mc-cont   (llvm-append-basic-block parent "tma_mcast_cont")))
+             (log:info "TMA copy: multicast across ~a, mask #x~x, leader ctarank 0" mc-dims mc-mask)
+             (llvm-build-cond-br builder is-rank0 mc-bb mc-cont)
+             (llvm-position-builder-at-end builder mc-bb)
+             (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1
+                                               mc-mask t)
+             (llvm-build-br builder mc-cont)
+             (llvm-position-builder-at-end builder mc-cont)))
+          (t
+           (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1)))
+        (llvm-build-br builder cont-bb)
+        (llvm-position-builder-at-end builder cont-bb)
+        (values nil nil)))))

@@ -393,3 +393,48 @@
   "Rung 03, PTX-path arity (FILE plus emitted text, which is ignored)."
   (declare (ignore ignored))
   (crisp.compiler::%152-extent-check (%152-find-metacrisp file)))
+
+(in-package :crisp.spec-runner)
+
+;; tests/run-specs.lisp
+(defun %152-index-of (needle hay)
+  "Character index of NEEDLE in HAY, or NIL."
+  (search needle hay))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-multicast (file ptx-string)
+  "Endeavor 152 rung 10 — assert the multicast MECHANISM engaged, not merely that the kernel
+   compiled.
+
+   This is the assertion that cannot be replaced by a correctness test.  A load-tile which
+   quietly declined to multicast produces BYTE-IDENTICAL results -- each workgroup simply does
+   its own fetch of the same tile -- so only the emitted instruction can distinguish a working
+   multicast from a fallback.
+
+   Four things are checked, and the last is the one that took the research:
+     1. the bulk-tensor copy carries `.multicast::cluster`
+     2. the leader is elected from `%cluster_ctarank` (one WORKGROUP issues, not one thread)
+     3. `mbarrier.arrive.expect_tx` is present
+     4. expect_tx PRECEDES the multicast copy in the emitted text -- i.e. it sits OUTSIDE the
+        ctarank guard.  Every destination workgroup must announce the bytes it expects to
+        RECEIVE on its own mbarrier; only the issuing one runs the copy.  Emitting expect_tx
+        inside the guard would leave every non-issuing workgroup waiting forever on a barrier
+        that was never told to expect anything -- a hang, not a wrong number."
+  (declare (ignore file))
+  (let ((mc  (%152-index-of "multicast::cluster" ptx-string))
+        (rank (%152-index-of "%cluster_ctarank" ptx-string))
+        (etx (%152-index-of "mbarrier.arrive.expect_tx" ptx-string)))
+    (cond
+      ((null mc)
+       (format *error-output* "FAIL: no `.multicast::cluster` in the emitted PTX -- the load did NOT multicast.  It would still compute the correct answer, at the bandwidth :multicast was written to avoid.~%")
+       nil)
+      ((null rank)
+       (format *error-output* "FAIL: `.multicast::cluster` is emitted but %cluster_ctarank is never read, so no WORKGROUP leader is elected.  Every workgroup would issue the same multicast.~%")
+       nil)
+      ((null etx)
+       (format *error-output* "FAIL: no mbarrier.arrive.expect_tx -- destination workgroups would never be told how many bytes to await.~%")
+       nil)
+      ((> etx mc)
+       (format *error-output* "FAIL: mbarrier.arrive.expect_tx appears AFTER the multicast copy, which means it is inside the leader guard.  Non-issuing workgroups would wait on a barrier that was never told to expect anything -- a hang.~%")
+       nil)
+      (t t))))
