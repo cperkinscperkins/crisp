@@ -262,3 +262,64 @@
                 (format s "      gridX = _px; gridY = _py; gridZ = _pz;~%")))
           (format s "    }~%")
           (get-output-stream-string s)))))
+
+;;; =====================================================================
+;;; Endeavor 152 rung 04/11 (fix) — inject AFTER the grid is final, not after gridX
+;;;
+;;; FOUND ON METAL.  The first cut anchored on `unsigned int gridX = `, which is wrong
+;;; twice over and each way was invisible locally:
+;;;
+;;;  1. The TILE-SHAPE dispatch path declares the axes on SEPARATE lines --
+;;;         unsigned int gridX = ...;   <- anchor matched here
+;;;         unsigned int gridY = ...;   <- declared AFTER the injected block
+;;;         unsigned int gridZ = 1;
+;;;     so the emitted C++ referenced gridY/gridZ before they existed:
+;;;         error: identifier "gridY" is undefined
+;;;     The :set-to path declares all three on ONE line, which is why rung 04 passed on
+;;;     the H100 and rung 11 did not.
+;;;
+;;;  2. Even where all three existed, the injection preceded the DEVICE GRID LIMIT
+;;;     clamping, which lowers gridX toward maxGridDimX -- and a clamp applied after a
+;;;     divisibility pad can BREAK the divisibility again.  That one would not have been a
+;;;     compile error; it would have been an intermittent CUDA_ERROR_INVALID_CLUSTER_SIZE
+;;;     on large problems only.
+;;;
+;;; Both fixed by moving the anchor to `auto _crisp_launch`, the lambda every strategy
+;;; emits once, immediately after ALL grid computation and immediately before the launch
+;;; that consumes it.  Injecting BEFORE that line means the reconciliation always sees the
+;;; final values of all three axes.
+;;;
+;;; WHY LOCAL TESTING MISSED IT: there is no nvcc on the dev box, so every TEST-HOIST[CUDA]
+;;; spec SKIPs.  The broken .cu WAS generated locally and I read it -- but I checked only
+;;; that the block appeared, not that the identifiers it referenced were in scope yet.
+;;; Generating C++ and reading it is not the same as compiling it.
+;;; =====================================================================
+
+;; src/hoist-cuda/main.lisp
+(defun emit-launch (stream dispatch-info shared-bytes &optional compute-units kernel-name out-tile)
+  "Endeavor 152 wrapper around the original emit-launch: renders it to a string and injects the
+   cluster grid reconciliation immediately BEFORE the launch lambda -- i.e. after every strategy
+   has finished computing gridX/gridY/gridZ and after the device-limit clamping, so the
+   reconciliation is the last word on the grid."
+  (let* ((body (with-output-to-string (s)
+                 (funcall *crisp-152-orig-emit-launch*
+                          s dispatch-info shared-bytes compute-units kernel-name out-tile)))
+         (fixup (%cuda-cluster-grid-fixup-string dispatch-info)))
+    (if (string= fixup "")
+        (write-string body stream)
+        ;; Anchor: the launch lambda, emitted exactly once by every path.  If it ever moves we
+        ;; must NOT silently drop the fix-up -- a clustered kernel would then launch with an
+        ;; unreconciled grid and be rejected by the driver with no explanation.
+        (let ((pos (search "auto _crisp_launch" body)))
+          (cond
+            ((null pos)
+             (warn "Endeavor 152: could not find the _crisp_launch anchor in emit-launch output for kernel ~a; cluster grid reconciliation NOT emitted."
+                   kernel-name)
+             (write-string body stream))
+            (t
+             ;; Back up to the start of that line so the injected block is not spliced into it.
+             (let ((line-start (let ((nl (position #\Newline body :end pos :from-end t)))
+                                 (if nl (1+ nl) 0))))
+               (write-string body stream :end line-start)
+               (write-string fixup stream)
+               (write-string body stream :start line-start))))))))

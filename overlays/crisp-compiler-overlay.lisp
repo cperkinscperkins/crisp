@@ -2787,3 +2787,143 @@
         (llvm-build-br builder cont-bb)
         (llvm-position-builder-at-end builder cont-bb)
         (values nil nil)))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 — the COMPILER-EMITTED CLUSTER ENTRY FENCE
+;;;
+;;; FOUND ON METAL: rung 11 compiled, launched, and died with `unspecified launch
+;;; failure`.  A control run of the identical kernel with `:multicast` removed ran
+;;; correctly, so the fault was multicast-specific rather than the spec's geometry.
+;;;
+;;; THE CAUSE IS THE ONE THE DESIGN NAMED AND I THEN SKIPPED.  From the sync-cluster
+;;; discussion, the first of two obligatory compiler-emitted fences:
+;;;
+;;;     "After mbarrier init, before the mainloop.  CTA 0 can reach the loop and
+;;;      remote-arrive on CTA 1's barrier before CTA 1 has initialized it."
+;;;
+;;; The emitted PTX was exactly that race:
+;;;
+;;;     mbarrier.init.shared.b64  [__crisp_mbar_1], %r22;
+;;;     fence.proxy.async.shared::cta;
+;;;     bar.sync 0;                                  <- WORKGROUP sync only
+;;;     cp.async.bulk.tensor...multicast::cluster    <- writes into PEER shared memory
+;;;
+;;; with ZERO `barrier.cluster` in the module.  `bar.sync` orders the threads of one
+;;; workgroup; it says nothing about a PEER workgroup.  So the leader could multicast into
+;;; a peer's SMEM and complete a transaction on an mbarrier that peer had not yet
+;;; initialised.
+;;;
+;;; This is why the fence is an OBLIGATION rather than a user-facing choice: the failure is
+;;; a launch fault at best, and silent corruption at worst, and nothing about the source
+;;; suggests it.  Q2 of Phase 0 verified the fence is sufficient on its own -- the cluster
+;;; barrier subsumes intra-workgroup convergence -- so no extra sync-workgroup is needed.
+;;;
+;;; GATED so non-clustered kernels are byte-identical: emitted only when some kernel in
+;;; this module declares a cluster extent > 1.  *kernel-dispatch-declarations* is cleared
+;;; per module, so the scan is correctly module-scoped.
+;;; =====================================================================
+
+;; src/codegen.lisp  (new)
+(defun %gen-nvvm-cluster-barrier (builder)
+  "Inline PTX: barrier.cluster.arrive; barrier.cluster.wait;
+
+   The non-`.relaxed` form, deliberately: it carries release/acquire ordering, which is what
+   publishes this workgroup's mbarrier initialisation to its peers.  The relaxed form would
+   rendezvous without ordering and reintroduce the race it exists to close.
+
+   Matches what NVIDIA's own cooperative_groups cluster_group::sync() emits (verified by
+   compiling it with nvcc -arch=sm_90a -ptx; see 00-verification-findings.md Q2)."
+  (%build-inline-asm-call builder (llvm-void-type) nil nil
+                          "barrier.cluster.arrive; barrier.cluster.wait;" ""))
+
+;; src/codegen.lisp  (new)
+(defun %module-has-cluster-p ()
+  "T if any kernel in the module being compiled declares a cluster of extent > 1.
+   Gates the entry fence so a kernel without clusters emits byte-identical PTX."
+  (let ((found nil))
+    (maphash (lambda (k plist)
+               (declare (ignore k))
+               (let ((dims (getf plist :cluster-size)))
+                 (when (and dims (> (reduce (function *) dims) 1))
+                   (setf found t))))
+             *kernel-dispatch-declarations*)
+    found))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-make-async-barrier) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 136: a :linear async barrier is a PHANTOM on PTX — commit_group/wait_group
+   need no object, so it emits nothing and returns const 0.  On SPIR-V it owns a
+   target(\"spirv.Event\") slot (OpGroupAsyncCopy chains its event through it); the slot
+   address rides the ulong barrier binding as an i64 (ptrtoint).  The legacy mbarrier.init
+   path below runs only if a future :block/mbarrier mode sets cell-node.
+
+   Endeavor 152: after the workgroup sync that publishes mbarrier.init, a CLUSTERED kernel
+   additionally emits a cluster barrier.  bar.sync orders one workgroup's threads and says
+   nothing about a peer workgroup, so without it a multicast can land in a peer whose
+   mbarrier is not yet initialised."
+  (when (semantic-make-async-barrier-spirv-event-p node)
+    (let* ((ev-type (%spirv-event-type module))
+           (slot    (llvm-build-alloca builder ev-type "async_evt_slot")))
+      (llvm-build-store builder (crisp.llvm-bindings:llvm-const-null ev-type) slot)
+      (return-from generate-node-ir
+        (values (llvm-build-ptr-to-int builder slot (llvm-int64-type) "evt_slot_i") nil))))
+  (when (and (eq (semantic-make-async-barrier-barrier-mode node) :block)
+             (eq *target-backend* :ptx))
+    (let* ((i64-type (llvm-int64-type))
+           (i32-type (llvm-int32-type))
+           (ring-n   (max 1 (semantic-make-async-barrier-ring-count node)))
+           (mbar-gv  (%gen-nvvm-tma-mbar-global module ring-n))
+           (tid-x    (%gen-nvvm-read-tid-x builder module))
+           (tid-y    (%gen-nvvm-read-tid-y builder module))
+           (tid-z    (%gen-nvvm-read-tid-z builder module))
+           (tid-sum  (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz"))
+           (is-zero  (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "is_tid_0"))
+           (init-bb  (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_init"))
+           (merge-bb (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_cont")))
+      (llvm-build-cond-br builder is-zero init-bb merge-bb)
+      (llvm-position-builder-at-end builder init-bb)
+      (let ((cnt (llvm-const-int i32-type
+                                 (max 1 (semantic-make-async-barrier-load-count node)) nil)))
+        (dotimes (i ring-n)
+          (%gen-nvvm-mbarrier-init-shared builder module
+                                          (%gen-nvvm-mbar-slot-ptr builder mbar-gv i)
+                                          cnt)))
+      (%gen-nvvm-fence-proxy-async-shared builder)
+      (llvm-build-br builder merge-bb)
+      (llvm-position-builder-at-end builder merge-bb)
+      (%ptx-barrier builder module)
+      ;; Endeavor 152: publish this workgroup's mbarrier init to its cluster PEERS.  Without
+      ;; this a multicast can land in a peer that has not run mbarrier.init yet -- measured as
+      ;; `unspecified launch failure` on an H100.
+      (when (%module-has-cluster-p)
+        (log:info "cluster kernel: emitting cluster entry fence after mbarrier init")
+        (%gen-nvvm-cluster-barrier builder))
+      (return-from generate-node-ir
+        (values (llvm-build-ptr-to-int builder mbar-gv i64-type "mbar_i") nil))))
+  (unless (semantic-make-async-barrier-cell-node node)
+    (return-from generate-node-ir (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+  (let* ((cell-val (generate-node-ir (semantic-make-async-barrier-cell-node node) builder module var-env
+                                     di-builder di-scope location-map))
+         (i32-type (llvm-int32-type))
+         (tid-x    (%gen-nvvm-read-tid-x builder module))
+         (tid-y    (%gen-nvvm-read-tid-y builder module))
+         (tid-z    (%gen-nvvm-read-tid-z builder module))
+         (tid-sum  (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz"))
+         (is-zero  (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "is_tid_0"))
+         (init-bb  (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "mbar_init"))
+         (merge-bb (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "mbar_cont")))
+    (llvm-build-cond-br builder is-zero init-bb merge-bb)
+    (llvm-position-builder-at-end builder init-bb)
+    (let* ((ntid-x (%gen-nvvm-read-ntid-x builder module))
+           (ntid-y (%gen-nvvm-read-ntid-y builder module))
+           (ntid-z (%gen-nvvm-read-ntid-z builder module))
+           (wg-size (llvm-build-mul builder (llvm-build-mul builder ntid-x ntid-y "nxy") ntid-z "nxyz"))
+           (cell-storage (llvm-build-extract-value builder cell-val 0 "cell_storage"))
+           (cell-ptr     (llvm-build-extract-value builder cell-storage 0 "cell_ptr")))
+      (%gen-nvvm-mbarrier-init-shared builder module cell-ptr wg-size)
+      (llvm-build-br builder merge-bb))
+    (llvm-position-builder-at-end builder merge-bb)
+    (%ptx-barrier builder module)
+    (values cell-val nil)))

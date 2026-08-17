@@ -260,3 +260,91 @@ Expectation corrected to `0 2 4 6`.
 `generate-cuda-launcher` and the grid reconciliation were unexercised code behind four green
 suites.  Pod result: `--differentiate` 1012/1012, negative 217/217, and the only default-phase
 failures were this expectation plus the two multicast rungs whose lowering is not written yet.
+
+---
+
+## FINDING (2026-08-16, on metal) — grid PADDING and MULTICAST are in conflict
+
+Rung 11 failed on an H100 with `unspecified launch failure`.  `compute-sanitizer memcheck`
+reported no invalid access, so it is not a bounds bug.  The launcher's own note gives it away:
+
+    note: grid padded (1,1,1) -> (2,1,1) for cluster (2,1,1)
+
+The tensor is small enough to be ONE tile.  The cluster needs two workgroups, so the
+divisibility policy pads the grid to 2 — and the surplus workgroup, by design, "finds no tiles
+left to claim and exits".  That is exactly right for an ordinary strided kernel and **fatal for
+a multicast**: the issuing workgroup multicasts into a peer that has already exited, never
+initialised its mbarrier, and never ran `expect_tx`.
+
+A control run of the identical kernel with `:multicast` removed completes correctly, which is
+what isolates this to multicast rather than to the spec's geometry in general.
+
+### Why this matters beyond one spec
+
+The padding policy was settled from a MEASUREMENT — the driver rejects a non-divisible grid per
+axis — and the reasoning was "`:strided` has a stride loop, so surplus workgroups are harmless."
+That reasoning holds for loads, and does NOT hold for multicast, because a multicast has a
+*destination* that must still be alive and participating.
+
+So `pad for :strided` is not sufficient on its own once `:multicast` is in play.  The options,
+none of them free:
+
+1. **Require the problem to cover the cluster.**  A multicast kernel whose grid needed padding
+   is refused, the way `:exact` already is.  Honest, and it makes the constraint visible, but it
+   rejects ragged problem sizes that would otherwise be fine.
+2. **Make padded workgroups participate.**  They would have to run the barrier protocol —
+   mbarrier init, the cluster fence, `expect_tx`, the awaits — while claiming no tile.  That is
+   the CUTLASS-shaped answer but it means the "surplus workgroups just exit" story is no longer
+   true for clustered kernels.
+3. **Pad the PROBLEM rather than the grid**, so every workgroup has a real (possibly
+   identity-filled) tile.  `scramble.md` already lists an "oversubscribe and fill with an
+   identity value" idea for `:strategy :tiled`; this is the same idea arriving from a different
+   direction.
+
+NOT YET DECIDED.  Recorded here because it is a genuine constraint discovered by measurement,
+and because the note in `topology.md` that padding is "a small amount of wasted dispatch, not
+correctness" is **false for multicast kernels** and must be qualified when this is settled.
+
+### Immediate consequence for rung 11
+
+The rung's own geometry is degenerate: one tile, so the second cluster member exists only
+because of padding.  A real matmul has many tiles and both members have work.  The spec needs a
+tile shape that yields at least two tiles along the clustered axis, so it exercises multicast
+between two workgroups that are BOTH doing work — which is the case that matters.
+
+### Rung 11 status as of 2026-08-16 — NOT WORKING.  Three distinct faults peeled back so far.
+
+The multicast is EMITTED correctly (rung 10 asserts that and passes: `.multicast::cluster`,
+ctaMask 3, `%cluster_ctarank` leader, `expect_tx` outside the guard, cluster entry fence).  It
+does not yet RUN.  Each fix exposed the next fault, and all three were real:
+
+| # | geometry | fault | cause |
+|---|---|---|---|
+| 1 | tile (8 8), 1 tile | `unspecified launch failure` | padded peer exits; multicast targets a dead workgroup (see above) |
+| 2 | tile (2 2), 2x2 tiles | `invalid argument` at `cuTensorMapEncodeTiled` | TMA needs the innermost box dim to be a multiple of 16 bytes; 2 floats = 8 |
+| 3 | tile (2 4), 2 row-tiles, no padding | **`an illegal instruction was encountered`** | UNKNOWN — current blocker |
+
+Fault 3 is the live one.  What is known:
+  * the grid no longer pads, so both cluster members have real work
+  * a control run with `:multicast` removed at the SAME geometry is the next thing to get
+    (the run that would have produced it timed out under compute-sanitizer)
+  * `compute-sanitizer memcheck` on fault 1 reported NO invalid access, so these are not
+    out-of-bounds
+
+Candidates not yet eliminated, roughly in order of suspicion:
+  1. The cluster entry fence is emitted INSIDE the `tile-stride` loop, because
+     `make-async-barrier` is bound inside the loop in this spec.  A cluster barrier executed a
+     different number of times by different workgroups is a hang or a fault.  Check whether both
+     workgroups run the same trip count, and consider whether the fence belongs at kernel entry
+     rather than at barrier-construction.
+  2. The multicast destination SMEM address must be identical in every destination workgroup.
+     Believed automatic (same kernel, same allocation) but NOT verified.
+  3. Whether the mbarrier used by a multicast must itself be `shared::cluster` rather than
+     `shared::cta`.  Phase 0 Q1 says the transaction completes on each destination's OWN
+     barrier, which implies `.cta` is right — but that was settled from secondary sources, and
+     the caveat recorded there says to re-read the ISA if something downstream behaves oddly.
+     This is downstream behaving oddly.
+
+NOTE ON METHOD: rung 10 and rung 11 are doing exactly the job they were designed for.  Rung 10
+proves the instruction is emitted; rung 11 proves — or in this case refuses to prove — that it
+works.  A suite that only had rung 10 would currently be reporting success.
