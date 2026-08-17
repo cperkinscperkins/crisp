@@ -2265,3 +2265,252 @@
       (:spirv
        ;; Use SPIR_FUNC (75) for non-kernel functions
        (llvm-set-function-call-conv func 75)))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 Phase 2 (front end) — `:multicast` validation
+;;;
+;;; THE RULE, and it is NOT "the coordinate must be a compile-time constant".
+;;; That was the first instinct and it would have refused exactly the load this
+;;; endeavour exists to accelerate.  In the shipped matmul:
+;;;
+;;;     (load-tile B (ring-get B-ring slot) (grid-x grid-k) ...)   ; WANT multicast
+;;;
+;;; coordinate 0 is `grid-x`, not a constant.  With a (2 1) cluster the two
+;;; workgroups differ in `grid-y`, and B's coordinates never mention `grid-y` --
+;;; so both want the SAME tile and one fetch serves both.
+;;;
+;;; The correct test is therefore: **does any coordinate mention the tile-stride
+;;; variable bound to a CLUSTERED axis?**
+;;;
+;;;     (0 grid-x)        cluster (2 1)  -> no grid-y  -> multicast          (rung 10)
+;;;     (grid-y grid-x)   cluster (2 1)  -> mentions   -> REFUSE          (errors/11)
+;;;     (grid-x grid-k)   cluster (2 1)  -> no grid-y  -> multicast     (real B load)
+;;;
+;;; WHY THE CHECK LIVES IN load-tile AND NOT load-tile-at.  `load-tile` delegates to
+;;; `load-tile-at` after multiplying each grid coord by the tile extent, so by then the
+;;; coordinate is `(* (to-ulong grid-y) (~ (extents~ tile) 0))` and the dependency is
+;;; buried in arithmetic.  The raw grid coords exist only here.  (That is also a second,
+;;; independent reason `load-tile-at` refuses `:multicast` outright -- the first being
+;;; that absolute element coords cannot be proven cluster-invariant at all.)
+;;;
+;;; DELIBERATELY NO ARCH CHECK HERE.  Refusing on a non-sm_90 target would make the two
+;;; error specs -- which carry no target directives and so run on the default target --
+;;; fail for the wrong reason.  Arch gating belongs with the lowering.
+;;; =====================================================================
+
+;; src/analysis/control.lisp  (new)
+(defvar *ts-grid-bindings* nil
+  "The enclosing tile-stride's loop variables, IN AXIS ORDER, during analysis of its body.
+   Endeavor 152: the multicast eligibility test needs to know which symbol is bound to a
+   clustered axis.  Nothing else tracked this.")
+
+;; src/analysis/control.lisp  (new)
+(defvar *current-kernel-cluster-dims* nil
+  "The normalised (x y z) cluster dims of the kernel currently being analysed, or NIL.
+   Bound by internal-def-function so a load-tile deep in the body can consult it without
+   having to rediscover which kernel it is inside.")
+
+;; src/analysis/control.lisp  (new)
+(defun %form-mentions-symbol-p (form sym)
+  "T if SYM appears anywhere in FORM.  Symbol identity, not name equality -- a coordinate
+   built from a DIFFERENT variable that happens to share a name is a different variable."
+  (cond
+    ((null form) nil)
+    ((symbolp form) (eq form sym))
+    ((consp form) (or (%form-mentions-symbol-p (car form) sym)
+                      (%form-mentions-symbol-p (cdr form) sym)))
+    (t nil)))
+
+;; src/analysis/control.lisp  (new)
+(defun %multicast-requested-p (key-args)
+  "T if KEY-ARGS asks for a multicast.
+
+   Crisp has no boolean literal yet -- `true` and `false` are still pending -- so the value
+   arrives as a bare symbol and a naive non-NIL test would read `:multicast false` as a
+   REQUEST.  Treat NIL and anything named FALSE as 'no'.  When the real literals land this
+   predicate keeps working unchanged."
+  (let ((v (%extract-key-arg key-args :multicast nil)))
+    (and v
+         (not (and (symbolp v) (string-equal (symbol-name v) "FALSE"))))))
+
+;; src/analysis/control.lisp  (new)
+(defun %validate-multicast-request (grid-list location)
+  "Refuse a `:multicast` that cannot be honoured, naming the reason.
+
+   `:multicast` is an ASSERTION, not a directive: the user says 'I expect this load to
+   multicast' and the compiler either does it or refuses.  A load that quietly declined
+   would be a silent 2x bandwidth regression that no correctness test can see -- which is
+   the whole reason the key is explicit rather than inferred."
+  (let ((dims *current-kernel-cluster-dims*))
+    (unless dims
+      (error 'crisp-compiler-error
+             :message ":multicast requires the kernel to declare a cluster.  Add (cluster-size :set-to N) to the kernel's declare block -- without a cluster there is no group of workgroups to deliver the tile to, so the request cannot be honoured.  This is a hard error rather than a silent fallback because a load-tile that quietly declines to multicast still computes the correct answer, at exactly the bandwidth the declaration was meant to avoid."
+             :source-location location))
+    (unless (> (reduce (function *) dims) 1)
+      (error 'crisp-compiler-error
+             :message (format nil ":multicast requires a cluster extent greater than 1, but this kernel's cluster-size is ~a (one workgroup).  There is no peer to share the fetch with."
+                              dims)
+             :source-location location))
+    ;; For every CLUSTERED axis, the coordinates must not depend on that axis's loop
+    ;; variable -- otherwise the workgroups of a cluster want DIFFERENT tiles and
+    ;; multicasting would deliver one workgroup's tile to another.  That is silent data
+    ;; corruption, not a lost optimisation, which is why this is checked rather than trusted.
+    (loop for d in dims
+          for i from 0
+          when (> d 1)
+          do (let ((axis-var (nth i *ts-grid-bindings*)))
+               (cond
+                 ((null axis-var)
+                  (error 'crisp-compiler-error
+                         :message (format nil ":multicast could not be verified: the cluster is ~a (extent ~a on axis ~a) but no enclosing tile-stride binds a loop variable for that axis, so there is nothing to prove the tile is identical across the cluster against.  Use :multicast only on a load inside a tile-stride whose rank covers the cluster."
+                                          dims d i)
+                         :source-location location))
+                 ((%form-mentions-symbol-p grid-list axis-var)
+                  (error 'crisp-compiler-error
+                         :message (format nil ":multicast is not possible here -- the tile coordinates ~a depend on ~a, which is the loop variable of cluster axis ~a (extent ~a).  The workgroups of a cluster differ along exactly that axis, so they want DIFFERENT tiles and one fetch cannot serve them; multicasting would deliver one workgroup's tile to another.  Drop :multicast, or move the cluster to an axis this load does not vary along."
+                                          grid-list axis-var i d)
+                         :source-location location)))))
+    t))
+
+;; src/analysis/control.lisp
+(defun analyze-tile-stride-expression (expr env context location)
+  "Analyzes (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
+   Validates tensor-arity-vs-bindings and tile-arity-vs-bindings, then
+   delegates codegen via %expand-tile-stride-form.
+   Endeavor 152: publishes BINDINGS as *ts-grid-bindings* so a load-tile in the body can
+   test whether its coordinates vary along a clustered axis."
+  (multiple-value-bind (strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)
+      (%tile-stride-parse expr)
+    (declare (ignore layout-tag body-forms))
+    (let* ((env-resolver
+            (lambda (sym)
+              (when (symbolp sym)
+                    (handler-case
+                        (let ((node (analyze-expression sym env context (append location '(1)))))
+                          (semantic-node-type node))
+                      (error () nil)))))
+           (cl-pkg (find-package :crisp-language))
+           (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
+           (synth-for-ct (if strict-p
+                             (list ts-sym tensor-form (third expr) bindings)
+                             (list ts-sym tensor-form bindings)))
+           (ct (%tensor-stride-resolve-ct synth-for-ct env-resolver location))
+           (n (length bindings))
+           (canon (and (symbolp tensor-form)
+                       (let ((ty (funcall env-resolver tensor-form)))
+                         (and ty (%ts-canonicalize-tensor-type ty)))))
+           (declared-n (when (and (listp canon) (>= (length canon) 3))
+                             (third canon))))
+      (when (and (integerp declared-n) (/= declared-n n))
+            (error 'crisp-compiler-error
+              :message (format nil
+                           "tile-stride: tensor has ~A dimension(s) but ~A binding(s) provided"
+                         declared-n n)
+              :source-location location))
+      (when (and (eq tile-spec-kind :size-list)
+                 (/= (length tile-spec) n))
+            (error 'crisp-compiler-error
+              :message (format nil
+                           "tile-stride: tile size-list has ~A dimension(s) but tensor has ~A dimension(s)"
+                         (length tile-spec) n)
+              :source-location location))
+      (let ((*ts-grid-bindings* bindings))
+        (analyze-expression (%expand-tile-stride-form expr ct location)
+                            env context location)))))
+
+;; src/analysis/control.lisp
+(defun analyze-load-tile-expression (expr env context location)
+  "Endeavor 152: validates a `:multicast` assertion against the kernel's cluster shape and
+   the enclosing tile-stride's axis bindings, then delegates to load-tile-at as before.
+   The validation must happen HERE -- after delegation the grid coords have been multiplied
+   by the tile extents and the axis dependency is no longer visible."
+  (let* ((src (second expr))
+         (tile (third expr))
+         (grid-list (fourth expr))
+         (key-args (nthcdr 4 expr))
+         (cl-pkg (find-package :crisp-language))
+         (mul-sym (intern "*" cl-pkg))
+         (extents-sym (intern "EXTENTS~" cl-pkg))
+         (aref-sym (intern "~" cl-pkg)))
+    (unless (and (listp grid-list) (>= (length grid-list) 1))
+      (error 'crisp-compiler-error :message "load-tile: origin must be a non-empty list of grid coords" :source-location location))
+    (when (%multicast-requested-p key-args)
+      (%validate-multicast-request grid-list location))
+    (let ((pixel-coords
+           (loop for g in grid-list
+                 for i from 0
+                 collect (list mul-sym (list (intern "TO-ULONG" cl-pkg) g)
+                               (list aref-sym (list extents-sym tile) i)))))
+      ;; Strip :multicast before delegating.  load-tile-at refuses the key outright (see its
+      ;; overlay), and it has already served its purpose here; the lowering will pick the
+      ;; multicast path up from a separate channel when Phase 2 step 3 lands.
+      (let ((delegated-keys (loop for (k v) on key-args by (function cddr)
+                                  unless (eq k :multicast) append (list k v))))
+        (analyze-load-tile-at-expression
+         (append (list (intern "LOAD-TILE-AT" cl-pkg) src tile pixel-coords) delegated-keys)
+         env context location)))))
+
+;; src/analysis/core.lisp
+(defun internal-def-function (name params declarations body location)
+  "Endeavor 152 Phase 2: additionally BINDS *current-kernel-cluster-dims* around the body
+   analysis, so a load-tile can validate a :multicast assertion without rediscovering which
+   kernel encloses it.  Otherwise identical to the Phase 1 definition."
+  (log:info "Analyzing function ~s" name)
+  (multiple-value-bind (explicit-env return-type)
+      (parse-function-declarations params declarations)
+    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (is-entry-p (loop for d in declarations
+                             thereis (and (listp d) (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (is-grid-fn-p (loop for d in declarations
+                               thereis (and (listp d) (symbolp (first d))
+                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
+           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
+           (*boundary-struct-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%boundary-struct-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-struct-params*))
+           (*boundary-array-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%array-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-array-params*))
+           (cluster-dims nil))
+      (when (and is-entry-p *boundary-struct-params*)
+            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
+      (when (and is-entry-p *boundary-array-params*)
+            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
+      (when is-grid-fn-p
+        (log:info "Compiling grid function ~a (dispatch context)" name)
+        (%validate-grid-function-return-type return-type))
+      (when is-entry-p
+        (let* ((global-size-decl (find "GLOBAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (local-size-decl  (find "LOCAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (num-groups-decl  (find "NUM-GROUPS" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (cluster-size-decl (find "CLUSTER-SIZE" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal)))
+          (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
+          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl)
+            (let ((dispatch-plist
+                    (append (when global-size-decl (list :global-size global-size-decl))
+                            (when local-size-decl  (list :local-size  local-size-decl))
+                            (when num-groups-decl  (list :num-groups  num-groups-decl))
+                            (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
+                            (when cluster-dims      (list :cluster-size cluster-dims)))))
+              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
+              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
+          (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
+      (let ((*current-kernel-cluster-dims* cluster-dims))
+        (internal-compile-function name explicit-env return-type params body declarations
+                                   location *compiler-context*)))))
