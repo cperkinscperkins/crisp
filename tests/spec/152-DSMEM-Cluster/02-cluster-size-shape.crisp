@@ -23,7 +23,6 @@
 ;;
 ;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cluster-dims
-;; SKIP-WITH[--differentiate]: "shape-declaration rung; AD shape is carried by rung 04"
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 

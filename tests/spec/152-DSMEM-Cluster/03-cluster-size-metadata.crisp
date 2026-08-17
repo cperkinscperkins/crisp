@@ -19,7 +19,14 @@
 ;;
 ;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
 ;; TEST-WITH[--metadata --ir-target=ptx --ir-target-arch=sm_90] : validate-metacrisp-cluster-extent
-;; SKIP-WITH[--differentiate]: "metadata-shape rung"
+;;
+;; UNDER --differentiate THIS ASSERTS THE OPPOSITE, and that is deliberate.  `--metadata
+;; --differentiate` emits only the BACKWARD kernel's metacrisp (the forward's comes from an
+;; ordinary compile), and a backward kernel SHOULD NOT carry cluster-size at all.  Endeavour
+;; 146's thesis: scheduling is not mathematics.  cluster-size says where the bytes arrive, not
+;; what is computed, so a derivative has no use for it -- and its presence there would mean a
+;; schedule had leaked into the math.  The validator therefore flips: on a forward metacrisp it
+;; asserts the cluster formed, on a backward one it asserts nothing leaked.
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 

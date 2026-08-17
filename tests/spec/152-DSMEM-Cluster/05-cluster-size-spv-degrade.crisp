@@ -25,7 +25,14 @@
 ;; COMPILE-WITH[--ir-target=spv]: PASS
 ;; TEST-WITH[--metadata --ir-target=spv] : validate-cluster-degrade-warning
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "The BACKWARD kernel carries no cluster records at all -- the AD transform does not propagate (cluster-size ...) to the generated _grad kernel, so its metacrisp has neither :cluster-size nor :effective-cluster-size and this validator has nothing to assert on.  That is a real finding, not a test defect: whether a backward kernel should inherit the forward's cluster shape is a DECISION owed by steps 4/7/9 of this endeavor, and right now it is an accident.  Un-skip once that is settled."
+;;
+;; UNDER --differentiate THIS ASSERTS THE OPPOSITE, and that is deliberate.  `--metadata
+;; --differentiate` emits only the BACKWARD kernel's metacrisp (the forward's comes from an
+;; ordinary compile), and a backward kernel SHOULD NOT carry cluster-size at all.  Endeavour
+;; 146's thesis: scheduling is not mathematics.  cluster-size says where the bytes arrive; it
+;; has no place in a derivative, and its presence there would mean a schedule had leaked into
+;; the math.  So the validator flips: on a forward metacrisp it asserts the degrade was
+;; recorded, on a backward one it asserts nothing leaked.
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 

@@ -285,3 +285,111 @@
    Delegates to the same check as the :crisp.compiler definition."
   (declare (ignore ignored))
   (crisp.compiler::%152-degrade-check (%152-find-metacrisp file)))
+
+;;; =====================================================================
+;;; Endeavor 152 — metadata validators under --differentiate
+;;;
+;;; THE SYMPTOM.  Rungs 03 and 05 failed the --differentiate pass while their kernels
+;;; differentiated perfectly.  Rungs 01 and 02, asserting the same feature, passed.
+;;;
+;;; THE CAUSE, and it is not autodiff.  A .ptx holds the WHOLE MODULE, so under
+;;; --differentiate `_grad.ptx` carries TWO entries -- forward and backward -- and the
+;;; forward's .reqnctapercluster is still there for 01/02's PTX validator to find.  A
+;;; .metacrisp is written PER KERNEL, and under --differentiate only the BACKWARD
+;;; kernel's file is emitted.  So a validator asserting on the FORWARD kernel's
+;;; dispatch record simply has no file to read.
+;;;
+;;; WHY THE FIRST SKIP REASON WAS WRONG.  It said the backward "does not propagate
+;;; cluster-size" and called that a decision owed by a later phase.  Endeavour 146
+;;; already settled it: scheduling is not mathematics.  cluster-size says WHERE THE
+;;; BYTES ARRIVE; it has no place in a derivative, and a backward kernel inheriting it
+;;; would be the leak, not the fix.  Nothing is owed.
+;;;
+;;; SO ASSERT THAT.  Handed a backward metacrisp, these validators now check that the
+;;; scheduling declaration did NOT leak into it.  That turns a skip into a real test,
+;;; and it is a test worth having: it fails the day something starts copying dispatch
+;;; declarations onto generated backward kernels.
+;;; =====================================================================
+
+(in-package :crisp.compiler)
+
+;; tests/run-specs.lisp
+(defun %152-backward-metacrisp-p (txt)
+  "T if TXT is a BACKWARD kernel's metacrisp.  The AD pass names its kernel <name>_grad
+   and writes it to its own file, so the kernel name is the reliable tell."
+  (and txt (search "_grad\"" txt)))
+
+;; tests/run-specs.lisp
+(defun %152-assert-no-schedule-leak (txt what)
+  "Endeavour 146's thesis as an assertion: a backward kernel must NOT carry the
+   forward's scheduling declarations.  cluster-size is data movement -- it changes when
+   and where bytes arrive, not what is computed -- so a derivative has no use for it and
+   its presence would mean a schedule had leaked into the math."
+  (cond
+    ((search ":cluster-size" txt)
+     (format *error-output* "FAIL (~a): the BACKWARD kernel's metacrisp carries :cluster-size.  Scheduling declarations must not propagate into a derivative -- cluster-size says where bytes arrive, not what is computed.~%" what)
+     nil)
+    ((search ":effective-cluster-size" txt)
+     (format *error-output* "FAIL (~a): the BACKWARD kernel's metacrisp carries :effective-cluster-size.~%" what)
+     nil)
+    (t t)))
+
+;; tests/run-specs.lisp
+(defun %152-degrade-check (metacrisp-path)
+  "Rung 05.  On a FORWARD metacrisp: assert the degrade was recorded (declaration kept,
+   effective extent collapsed to 1).  On a BACKWARD one: assert the schedule did not leak."
+  (let* ((p (if (listp metacrisp-path) (first metacrisp-path) metacrisp-path))
+         (txt (and p (probe-file p) (uiop:read-file-string p))))
+    (cond
+      ((null txt)
+       (format *error-output* "FAIL: metacrisp not found (~a).~%" metacrisp-path) nil)
+      ((%152-backward-metacrisp-p txt)
+       (%152-assert-no-schedule-leak txt "rung 05 backward"))
+      ((not (search ":cluster-size" txt))
+       (format *error-output* "FAIL: metacrisp has no :cluster-size record -- the DECLARATION should survive even when the cluster degrades.~%") nil)
+      ((not (search ":effective-cluster-size (1 1 1)" txt))
+       (format *error-output* "FAIL: expected :effective-cluster-size (1 1 1) on a target without cluster support; the degrade was not recorded.~%") nil)
+      (t t))))
+
+;; tests/run-specs.lisp
+(defun %152-extent-check (metacrisp-path)
+  "Rung 03.  On a FORWARD metacrisp: assert both records exist and the cluster actually
+   formed.  On a BACKWARD one: assert the schedule did not leak."
+  (let* ((p (if (listp metacrisp-path) (first metacrisp-path) metacrisp-path))
+         (txt (and p (probe-file p) (uiop:read-file-string p))))
+    (cond
+      ((null txt)
+       (format *error-output* "FAIL: metacrisp not found (~a).~%" metacrisp-path) nil)
+      ((%152-backward-metacrisp-p txt)
+       (%152-assert-no-schedule-leak txt "rung 03 backward"))
+      ((not (search ":cluster-size" txt))
+       (format *error-output* "FAIL: metacrisp has no :cluster-size record.~%") nil)
+      ((not (search ":effective-cluster-size" txt))
+       (format *error-output* "FAIL: metacrisp has no :effective-cluster-size record -- without it a degraded cluster is indistinguishable from a working one.~%") nil)
+      ((search ":effective-cluster-size (1 1 1)" txt)
+       (format *error-output* "FAIL: :effective-cluster-size is (1 1 1) on a cluster-capable target -- the cluster did NOT form, though the kernel still computes correctly.~%") nil)
+      (t t))))
+
+;; tests/run-specs.lisp
+(defun validate-cluster-degrade-warning (metacrisp-path)
+  "Rung 05, metadata-path arity (one argument: the .metacrisp path)."
+  (%152-degrade-check metacrisp-path))
+
+;; tests/run-specs.lisp
+(defun validate-metacrisp-cluster-extent (metacrisp-path)
+  "Rung 03, metadata-path arity (one argument: the .metacrisp path)."
+  (%152-extent-check metacrisp-path))
+
+(in-package :crisp.spec-runner)
+
+;; tests/run-specs.lisp
+(defun validate-cluster-degrade-warning (file &optional ignored)
+  "Rung 05, PTX-path arity (FILE plus emitted text, which is ignored)."
+  (declare (ignore ignored))
+  (crisp.compiler::%152-degrade-check (%152-find-metacrisp file)))
+
+;; tests/run-specs.lisp
+(defun validate-metacrisp-cluster-extent (file &optional ignored)
+  "Rung 03, PTX-path arity (FILE plus emitted text, which is ignored)."
+  (declare (ignore ignored))
+  (crisp.compiler::%152-extent-check (%152-find-metacrisp file)))

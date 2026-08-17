@@ -231,15 +231,37 @@ does not support (there is no `:derive-from`).  If this is wrong the launch fail
 CUDA_ERROR_INVALID_CLUSTER_SIZE, so it is a safe thing to be wrong about -- but it is an
 assumption, not a measurement.
 
-NEW FINDING — backward kernels lose the cluster declaration
-A `_grad` kernel generated from a clustered forward kernel carries NO cluster records: its
-metacrisp has neither `:cluster-size` nor `:effective-cluster-size`.  The AD transform simply
-does not propagate the declaration.
+CORRECTED — backward kernels do NOT carry the cluster declaration, and SHOULD NOT
+I first recorded this as a finding: "the AD transform does not propagate cluster-size to the
+_grad kernel; whether it should is a DECISION owed by steps 4/7/9."  **That was wrong, and it
+was this project's own documented anti-pattern committed again.**
 
-Whether a backward kernel SHOULD inherit the forward's cluster shape is a genuine design
-question -- it has different memory traffic and may want a different shape, or none -- but
-right now the answer is an accident rather than a decision.  It is owed by steps 4/7/9.
-Rung 05 is `SKIP-WITH[--differentiate]` until then, with that reason recorded in the spec.
+Endeavour 146's thesis already settles it: *"Warp specialization, pipelining, prefetch, rings,
+TMA and wgmma do not change what the kernel computes.  They change when and where the bytes
+arrive."*  `cluster-size` is data movement.  It has no place in a derivative, and a backward
+kernel inheriting it would be a schedule LEAKING into the math -- the very thing 146 exists to
+prevent.  Nothing was owed; nothing needed deciding.
+
+THE ACTUAL CAUSE of the --differentiate failures, which is not about autodiff at all:
+
+  * a .ptx holds the WHOLE MODULE, so `_grad.ptx` carries TWO entries -- forward and backward --
+    and the forward's `.reqnctapercluster` is still there.  That is why rungs 01 and 02 passed.
+  * a .metacrisp is written PER KERNEL, and `--metadata --differentiate` emits ONLY the
+    BACKWARD kernel's file (the forward's comes from an ordinary compile).  So rungs 03 and 05,
+    which assert on the FORWARD kernel's dispatch record, had no file to read.
+
+Verified against 050-differentiate-and-metadata/01-multiply, the spec that owns this
+combination: `--metadata` alone emits `01-multiply_cell_mult.metacrisp`; `--metadata
+--differentiate` emits only `01-multiply_grad_cell_mult.metacrisp`.  Consistent, and it reads
+as intended rather than as BUG 043 (which is `--single-pass` and a wrong physical signature).
+It is simply not written down anywhere that a metadata validator under `--differentiate` sees
+only the backward record.
+
+RESOLUTION -- both skips REMOVED, and the assertion inverted rather than dropped.  Handed a
+backward metacrisp the validators now assert the schedule did NOT leak: no `:cluster-size`,
+no `:effective-cluster-size`.  That turns a skip into a test worth having -- it goes red the
+day something starts copying dispatch declarations onto generated backward kernels.  146's
+thesis, as a check rather than an argument.
 
 MORE BUGS FOUND IN MY OWN WORK (all invisible to a passing test suite)
 4. `%%` in the hoist's C++ generation.  CL's FORMAT only treats `~` specially, so `%%` reached

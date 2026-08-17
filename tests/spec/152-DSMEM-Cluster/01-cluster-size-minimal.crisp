@@ -19,7 +19,6 @@
 ;;
 ;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cluster-dims
-;; SKIP-WITH[--differentiate]: "no &out data dependence to differentiate — rung 04 carries the AD-relevant shape"
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 
