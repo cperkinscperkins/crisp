@@ -203,3 +203,59 @@ RESOLVED IN FAVOUR OF THE EXISTING DESIGN and need no doc change:
 Known nit, not yet fixed: the degrade warning echoes the NORMALISED dims, so a kernel
 declaring `(2 1)` is reported as `(cluster-size :set-to (2 1 1))`.  Harmless but it quotes
 source the user did not write; fold when this moves into src/.
+
+
+PHASE 1 — COMPLETE (2026-08-16)
+================================
+
+All five cluster-size rungs and both cluster-size error specs are green.  `ci-stop` now sits
+at 152-DSMEM-Cluster, so these run in the suite; the only remaining failures are the three
+Phase 2 multicast specs, which are correctly red (not implemented).
+
+Rung 04's hoist code is written and inspected but NOT yet run on hardware — see the
+assumption below.
+
+WHAT LANDED BEYOND THE FRONT HALF
+- CUDA hoist emits cluster grid reconciliation: pad for `:strided`, hard error for `:exact`.
+  Verified in generated C++ for BOTH branches.
+- `:effective-cluster-size` threaded from metacrisp into the hoist's dispatch-info.
+- Three validators: `validate-ptx-cluster-dims`, `validate-metacrisp-cluster-extent`,
+  `validate-cluster-degrade-warning`.
+
+ASSUMPTION TO VERIFY ON THE POD (rung 04)
+The hoist deliberately does NOT switch to `cuLaunchKernelEx`.  Crisp bakes the shape into the
+PTX (`.reqnctapercluster`), making it compile-time fixed -- the case a plain launch handles,
+and the reason CUDA C++ pairs `__cluster_dims__` with ordinary `<<<>>>` syntax.
+`CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION` is for setting the shape DYNAMICALLY, which Crisp
+does not support (there is no `:derive-from`).  If this is wrong the launch fails LOUDLY with
+CUDA_ERROR_INVALID_CLUSTER_SIZE, so it is a safe thing to be wrong about -- but it is an
+assumption, not a measurement.
+
+NEW FINDING — backward kernels lose the cluster declaration
+A `_grad` kernel generated from a clustered forward kernel carries NO cluster records: its
+metacrisp has neither `:cluster-size` nor `:effective-cluster-size`.  The AD transform simply
+does not propagate the declaration.
+
+Whether a backward kernel SHOULD inherit the forward's cluster shape is a genuine design
+question -- it has different memory traffic and may want a different shape, or none -- but
+right now the answer is an accident rather than a decision.  It is owed by steps 4/7/9.
+Rung 05 is `SKIP-WITH[--differentiate]` until then, with that reason recorded in the spec.
+
+MORE BUGS FOUND IN MY OWN WORK (all invisible to a passing test suite)
+4. `%%` in the hoist's C++ generation.  CL's FORMAT only treats `~` specially, so `%%` reached
+   the output verbatim -- producing `(gridX %% _ccx)`, which does not compile.  It hid because
+   no spec pairs `:strategy :exact` with a cluster, and the `:strided` branch has no modulus.
+   A throwaway probe (`put_temp_files_here/152-exact-cluster-probe.crisp`) now exercises it;
+   promote to a real spec.
+
+HARNESS DEFECTS FIXED ALONG THE WAY (pre-existing, not introduced here)
+- `run-spec-ptx-binary` forwarded exactly ONE flag from a spec's TEST-WITH list
+  (`--ir-target-arch=`) and silently dropped the rest.  A spec asking for
+  `[--metadata --ir-target=ptx --ir-target-arch=sm_90]` therefore never got a `.metacrisp`
+  written, and its validator failed looking for a file that was never generated.  Nothing
+  reported the dropped flag.  `--metadata` is now forwarded too.
+- The two runner paths resolve validator names in DIFFERENT packages -- the PTX path in
+  `:crisp.spec-runner`, the metadata path in `:crisp.compiler` -- so the same validator name
+  resolves in one and not the other depending on which flags a spec carries.  Worked around
+  by defining `validate-cluster-degrade-warning` in both, delegating to one shared body.
+  Worth unifying properly at some point; it will bite again.
