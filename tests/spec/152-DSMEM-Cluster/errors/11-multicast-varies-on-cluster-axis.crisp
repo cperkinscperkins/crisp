@@ -1,0 +1,33 @@
+;; CHECK-FAIL: "multicast"
+;; Endeavor 152 — negative: a tile whose coordinates VARY along the cluster axis cannot multicast.
+;;
+;; THIS IS THE MOST IMPORTANT NEGATIVE IN THE SET, because getting it wrong is not a lost
+;; optimization — it is SILENT WRONG DATA.  If the compiler multicast this load, both workgroups
+;; of the cluster would receive whichever row the leader fetched, and the non-leader would
+;; compute confidently on a tile that was never meant for it.  Correct-looking, plausible, wrong.
+;;
+;; The cluster is `(2 1)`, so its axis is ROWS — the two workgroups differ in `grid-y`.  The tile
+;; coordinates here are `(grid-y grid-x)`, which DEPENDS on `grid-y`, so the two workgroups want
+;; DIFFERENT tiles and there is nothing to share.
+;;
+;; Contrast rung 10, which is character-for-character the same kernel except the row coordinate
+;; is the constant `0`.  That one coordinate is the whole difference between a legal multicast
+;; and a data-corruption bug, which is why the compiler must decide it rather than trusting the
+;; assertion — `:multicast` states intent, and the coordinate analysis CHECKS it.
+;;
+;; The error message must name the offending coordinate and the cluster axis it varies along.
+;; "cannot multicast" alone is not enough: the user needs to know it was the row coordinate.
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mc_varies (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (8 8))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))
+  (tile-stride C (8 8) (grid-y grid-x)
+    (let ((tile (make-scratch-matrix float (8 8)))
+          (bar  (make-async-barrier :mode :block)))
+      ;; grid-y IS the cluster axis -> the two workgroups want different tiles
+      (load-tile A tile (grid-y grid-x) :barrier bar :multicast true)
+      (await bar)
+      (store-tile tile C (grid-y grid-x)))))

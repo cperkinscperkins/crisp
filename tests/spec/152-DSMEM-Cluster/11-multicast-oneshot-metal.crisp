@@ -1,0 +1,49 @@
+;; Endeavor 152 rung 11 — the multicast lands the RIGHT BYTES in BOTH workgroups, on metal.
+;;
+;; Rung 10 proves the instruction was emitted.  This one proves it does what we think: that the
+;; tile written into a PEER workgroup's shared memory by a fetch that workgroup did not issue is
+;; the correct tile, correctly placed.
+;;
+;; READ THIS BEFORE TRUSTING A PASS.  This spec CANNOT distinguish a working multicast from two
+;; independent loads of the same tile — the outputs are byte-identical.  It is a necessary
+;; condition, not a sufficient one.  Rung 10's PTX inspection is what shows the mechanism
+;; engaged; this rung shows the mechanism is CORRECT once engaged.  Neither replaces the other,
+;; and a pass here with rung 10 failing means we are measuring a fallback.
+;;
+;; WHAT IT CAN CATCH, which is the reason it exists:
+;;   - the destination SLM offset differs between workgroups -> peer gets the tile at the wrong
+;;     address, garbage rows appear in one output half only
+;;   - the transaction-byte accounting is wrong in the non-issuing workgroup -> it proceeds
+;;     before the bytes land and reads a partially-arrived tile (intermittent, so the harness
+;;     should run this more than once)
+;;   - the leader guard elects the wrong workgroup, or none -> hang, or nothing arrives
+;;
+;; EACH WORKGROUP WRITES A DISTINCT OUTPUT REGION, deliberately.  Both workgroups of a cluster
+;; read the SAME source tile but store to rows keyed by `grid-y`, so a per-workgroup failure is
+;; attributable to that workgroup rather than showing up as one aggregate that could be wrong for
+;; several reasons.  This is the same construction 146/01 used to keep warp roles separable.
+;;
+;; THE SOURCE DATA IS DELIBERATELY NON-UNIFORM.  A source of all-ones would make a wrongly
+;; addressed tile indistinguishable from a right one.
+;;
+;; HOIST-ARCH: sm_90
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 0 1 2 3
+;; SKIP-WITH[--differentiate]: "AD of :multicast is rung 9 of the plan"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mc_lands (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (8 8))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))
+  (tile-stride C (8 8) (grid-y grid-x)
+    (let ((tile (make-scratch-matrix float (8 8)))
+          (bar  (make-async-barrier :mode :block)))
+      (load-tile A tile (0 grid-x) :barrier bar :multicast true)
+      (await bar)
+      ;; keyed by grid-y: each workgroup of the cluster writes its OWN region, so a
+      ;; per-workgroup failure is attributable rather than aggregated
+      (store-tile tile C (grid-y grid-x)))))

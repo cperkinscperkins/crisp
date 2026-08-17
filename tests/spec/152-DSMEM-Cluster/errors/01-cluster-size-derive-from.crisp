@@ -1,0 +1,20 @@
+;; CHECK-FAIL: "cluster-size"
+;; Endeavor 152 — negative: `cluster-size` has no `:derive-from`.
+;;
+;; Every sibling in the enqueue-declaration family supports `:derive-from`, because every sibling
+;; is ADVISORY — it shapes the hoisting code and leaves the kernel untouched.  `cluster-size` is
+;; the one exception: it is consumed at code generation to decide the multicast mask, the leader
+;; predicate, and the emitted cluster dimensions.  A shape baked into codegen cannot be computed
+;; from a host-side runtime value, so the key is refused rather than quietly ignored.
+;;
+;; The error message should say WHY, not merely that the key is unknown — a user reaching for
+;; `:derive-from` here is reasoning correctly by analogy and deserves the exception explained.
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_derive_from (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (8 8))
+           (local-size  :set-to 32)
+           (cluster-size :derive-from C))
+  (tile-stride C (8 8) (grid-y grid-x)
+    (set! (~ C grid-y grid-x) (~ A grid-y grid-x))))
