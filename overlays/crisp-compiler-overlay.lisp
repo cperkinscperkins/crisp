@@ -1883,3 +1883,385 @@
       (:spirv
        ;; Use SPIR_FUNC (75) for non-kernel functions
        (llvm-set-function-call-conv func 75)))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 Phase 1 (cont.) — arch gating, degrade diagnostic, metadata
+;;;
+;;; FIXES A BUG IN THE FIRST CUT: %apply-cluster-dims-attribute gated on
+;;; (eq *target-backend* :ptx) alone, so a default-arch compile (sm_80) would
+;;; stamp .reqnctapercluster on a target that cannot form clusters.  Nothing
+;;; caught it because the spec suite only checks that the kernel COMPILES --
+;;; the invalid directive would not have surfaced until ptxas or the JIT.
+;;; Clusters need sm_90+, so the gate is now capability-based.
+;;; =====================================================================
+
+;; src/types/registry.lisp  (new)
+(defun %arch-supports-clusters-p (arch)
+  "T if ARCH can form workgroup clusters.  NVIDIA Hopper (sm_90) or later only;
+   no Intel architecture has an equivalent."
+  (and (eq (%arch-vendor arch) :nvidia)
+       (let ((n (%arch-sm-number arch)))
+         (and n (>= n 90)))))
+
+;; src/analysis/control.lisp  (new)
+(defun %effective-cluster-dims (declared)
+  "The cluster dims the compiler ACTUALLY built, as opposed to what the source asked for.
+
+   These are two different facts and the metadata reports BOTH: on a target without
+   cluster support the declared shape is still (2 1) while the effective shape is
+   (1 1 1).  Reporting only the declaration would make a silently-degraded kernel
+   indistinguishable from a working one -- which is the 143 failure class, where a
+   benchmark read 69.65 TFLOPS for a kernel running at 1.40."
+  (if (and declared
+           (eq *target-backend* :ptx)
+           (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+      declared
+      (list 1 1 1)))
+
+;; src/codegen.lisp  (new)
+(defvar *cluster-degrade-warned* (make-hash-table :test #'eq)
+  "Kernels we have already emitted the cluster-degrade diagnostic for, so a
+   multi-pass compile does not repeat it once per pass.")
+
+;; src/codegen.lisp  (new)
+(defun %warn-cluster-degraded (kernel-name declared)
+  "Endeavor 152 rung 05: a kernel declaring cluster-size on a target without cluster
+   support still computes the correct answer -- every multicast becomes an ordinary
+   per-workgroup load and the traffic reduction the declaration was written for is
+   simply gone, with nothing in the output to reveal it.
+
+   Unlike sync-cluster, whose degrade to sync-workgroup is semantically exact and free,
+   THIS degrade costs bandwidth.  So it is never silent."
+  (unless (gethash kernel-name *cluster-degrade-warned*)
+    (setf (gethash kernel-name *cluster-degrade-warned*) t)
+    (log:warn "Kernel ~a declares (cluster-size :set-to ~a) but the selected target (~a~@[/~a~]) has no cluster support -- the effective cluster extent is 1.  The kernel is still CORRECT, but any multicast becomes an ordinary per-workgroup load and the bandwidth reduction is lost.  Clusters require NVIDIA sm_90 or later.  The effective extent is recorded in the kernel metadata; assert on that rather than on a timing number."
+              kernel-name declared *target-backend*
+              (and (eq *target-backend* :ptx) *ir-target-arch*))))
+
+;; src/codegen.lisp
+(defun %apply-cluster-dims-attribute (func semantic-function module)
+  "Endeavor 152: stamp the cluster dimensions on a PTX entry point.
+
+   Emits the nvvm.cluster_dim function attribute, which LLVM 21 lowers to
+   .explicitcluster + .reqnctapercluster x, y, z on the .entry.  Baking the shape into
+   the PTX is what makes the host/kernel agreement DRIVER-ENFORCED rather than a
+   convention the hoisting code is trusted to honour.
+
+   Gated on CAPABILITY, not merely on the backend: clusters need sm_90+, so a default
+   (sm_80) PTX compile degrades to extent 1 and warns rather than emitting a directive
+   the target cannot honour."
+  (let* ((kname (semantic-function-name semantic-function))
+         (decls (and kname (gethash kname *kernel-dispatch-declarations*)))
+         (dims  (and decls (getf decls :cluster-size))))
+    (when (and dims (> (reduce (function *) dims) 1))
+      (cond
+        ((and (eq *target-backend* :ptx)
+              (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+         (let* ((ctx  (llvm-get-module-context module))
+                (key  "nvvm.cluster_dim")
+                (val  (format nil "~{~a~^,~}" dims))
+                (attr (llvm-create-string-attribute ctx key (length key) val (length val))))
+           (log:info "Kernel ~a: stamping cluster dims ~a (.reqnctapercluster)" kname val)
+           (llvm-add-attribute-at-index func +llvm-attribute-function-index+ attr)))
+        (t
+         (%warn-cluster-degraded kname dims))))))
+
+;; src/metadata.lisp
+(defun serialize-kernels (output-stream kernel-names &key source output-targets)
+  "Emits the (:kernels ...) section of the metacrisp file.
+   Extended to include :global-size, :local-size, :num-groups dispatch declarations.
+   Endeavor 152: also emits :cluster-size (what the SOURCE asked for) and
+   :effective-cluster-size (what the compiler BUILT).  Both, deliberately -- a
+   degraded cluster is otherwise indistinguishable from a working one."
+  (when kernel-names
+        (format output-stream "(:kernels~%")
+        (dolist (k-name (sort (copy-list kernel-names) (function string<) :key (function symbol-name)))
+          (let ((sigs (gethash k-name *function-table*))
+                (blocks-to-emit nil))
+            ;; Use only the FIRST signature (Pass 1 registered, Pass 2 updated)
+            (dolist (actual-sig (list (first sigs)))
+              (when actual-sig
+                    (let* ((phys-sig-str (generate-physical-signature actual-sig))
+                           (declared-types (gethash k-name *kernel-declared-signatures*))
+                           (decl-sig-list (generate-declared-signature actual-sig declared-types))
+                           (implicit-sig-list (generate-implicit-signature actual-sig declared-types))
+                           (dispatch-info (gethash k-name *kernel-dispatch-declarations*))
+                           (source-loc (if source source
+                                           (namestring (uiop/filesystem:native-namestring (first (function-signature-source-location actual-sig)))))))
+
+                      (push (list :name (string-downcase (symbol-name k-name))
+                                  :source source-loc
+                                  :output output-targets
+                                  :phys phys-sig-str
+                                  :decl decl-sig-list
+                                  :impl implicit-sig-list
+                                  :dispatch dispatch-info)
+                            blocks-to-emit))))
+
+            (setf blocks-to-emit (remove-duplicates (nreverse blocks-to-emit) :test (function equalp)))
+
+            (dolist (blk blocks-to-emit)
+              (let ((dispatch (getf blk :dispatch)))
+                (format output-stream "  (:name ~s~%" (getf blk :name))
+                (format output-stream "    :source ~s~%" (pathname (getf blk :source)))
+                (when (getf blk :output) (format output-stream "    :output-targets ~s~%" (getf blk :output)))
+                ;; Emit dispatch declarations before physical/declared signatures
+                (let ((global-size-decl (getf dispatch :global-size))
+                      (local-size-decl  (getf dispatch :local-size))
+                      (num-groups-decl  (getf dispatch :num-groups))
+                      (cluster-decl     (getf dispatch :cluster-size-decl))
+                      (cluster-dims     (getf dispatch :cluster-size)))
+                  (when global-size-decl
+                    (format output-stream "    :global-size ")
+                    (print-without-packages global-size-decl output-stream)
+                    (format output-stream "~%"))
+                  (when local-size-decl
+                    (format output-stream "    :local-size ")
+                    (print-without-packages local-size-decl output-stream)
+                    (format output-stream "~%"))
+                  (when num-groups-decl
+                    (format output-stream "    :num-groups ")
+                    (print-without-packages num-groups-decl output-stream)
+                    (format output-stream "~%"))
+                  ;; Endeavor 152.  BOTH are emitted on purpose:
+                  ;;   :cluster-size            -- the declaration, as written
+                  ;;   :effective-cluster-size  -- what this target actually built
+                  ;; They differ exactly when the kernel degraded, which is the one
+                  ;; case a correctness test cannot see.
+                  (when cluster-decl
+                    (format output-stream "    :cluster-size ")
+                    (print-without-packages cluster-decl output-stream)
+                    (format output-stream "~%"))
+                  (when cluster-dims
+                    (format output-stream "    :effective-cluster-size ")
+                    (print-without-packages (%effective-cluster-dims cluster-dims) output-stream)
+                    (format output-stream "~%")))
+                (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
+                (format output-stream "    :declared-signature ")
+                (print-without-packages (getf blk :decl) output-stream)
+                (format output-stream "~%")
+                (when (getf blk :impl)
+                      (format output-stream "    :implicit-params ")
+                      (print-without-packages (getf blk :impl) output-stream)
+                      (format output-stream "~%"))
+                (format output-stream "  )~%"))))
+        (format output-stream "  )~%"))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 Phase 1 (fix) — record the EFFECTIVE cluster extent at codegen
+;;;
+;;; The previous cut re-derived the effective extent inside serialize-kernels from
+;;; *target-backend* / *ir-target-arch*.  That reads the WRONG dynamic state: the
+;;; metacrisp is written outside the codegen pass, where *target-backend* is back to
+;;; its :generic default -- so a correct sm_90 kernel whose PTX carried
+;;; `.reqnctapercluster 4, 1, 1` was reported in metadata as effective (1 1 1).
+;;; Precisely the "silently degraded" reading the field exists to make impossible,
+;;; produced by the field itself.
+;;;
+;;; So: record what codegen ACTUALLY DID, at the moment it does it, rather than
+;;; re-deriving it afterwards from state that has since changed.
+;;;
+;;; Stored in the kernel's *kernel-dispatch-declarations* plist rather than a side
+;;; table, which gets the lifecycle for free -- that table is cleared per module
+;;; (src/compiler.lisp), and the spec runner compiles many files IN-PROCESS with
+;;; kernel names like `matmul` recurring, so a side table keyed by symbol would leak
+;;; one spec's answer into the next.
+;;; =====================================================================
+
+;; src/codegen.lisp  (new)
+(defun %record-effective-cluster-dims (kernel-name dims)
+  "Write the effective cluster extent into KERNEL-NAME's dispatch plist.
+   Returns T if this is the first time (so the caller may warn once)."
+  (let* ((plist (gethash kernel-name *kernel-dispatch-declarations*))
+         (first-time (null (getf plist :effective-cluster-size))))
+    (when plist
+      (setf (getf plist :effective-cluster-size) dims)
+      (setf (gethash kernel-name *kernel-dispatch-declarations*) plist))
+    first-time))
+
+;; src/codegen.lisp
+(defun %apply-cluster-dims-attribute (func semantic-function module)
+  "Endeavor 152: stamp the cluster dimensions on a PTX entry point, and record what
+   was actually built.
+
+   Emits the nvvm.cluster_dim function attribute, which LLVM 21 lowers to
+   .explicitcluster + .reqnctapercluster x, y, z on the .entry.  Baking the shape into
+   the PTX is what makes the host/kernel agreement DRIVER-ENFORCED rather than a
+   convention the hoisting code is trusted to honour.
+
+   Gated on CAPABILITY, not merely on the backend: clusters need sm_90+, so a default
+   (sm_80) PTX compile degrades to extent 1 and warns rather than emitting a directive
+   the target cannot honour."
+  (let* ((kname (semantic-function-name semantic-function))
+         (decls (and kname (gethash kname *kernel-dispatch-declarations*)))
+         (dims  (and decls (getf decls :cluster-size))))
+    (when (and dims (> (reduce (function *) dims) 1))
+      (cond
+        ((and (eq *target-backend* :ptx)
+              (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+         (let* ((ctx  (llvm-get-module-context module))
+                (key  "nvvm.cluster_dim")
+                (val  (format nil "~{~a~^,~}" dims))
+                (attr (llvm-create-string-attribute ctx key (length key) val (length val))))
+           (log:info "Kernel ~a: stamping cluster dims ~a (.reqnctapercluster)" kname val)
+           (llvm-add-attribute-at-index func +llvm-attribute-function-index+ attr)
+           (%record-effective-cluster-dims kname dims)))
+        (t
+         (when (%record-effective-cluster-dims kname (list 1 1 1))
+           (%warn-cluster-degraded kname dims)))))))
+
+;; src/analysis/control.lisp
+(defun %effective-cluster-dims (dispatch declared)
+  "The cluster dims codegen ACTUALLY built for this kernel, as recorded by
+   %apply-cluster-dims-attribute.
+
+   Falls back to (1 1 1) when no codegen pass ever stamped one -- which is the honest
+   answer, since a kernel whose PTX carries no cluster directive forms clusters of one.
+   DECLARED is accepted for symmetry with the caller but deliberately NOT used as a
+   fallback: reporting the declaration as though it were the outcome is the exact
+   confusion this field exists to prevent."
+  (declare (ignore declared))
+  (or (getf dispatch :effective-cluster-size) (list 1 1 1)))
+
+;; src/metadata.lisp
+(defun serialize-kernels (output-stream kernel-names &key source output-targets)
+  "Emits the (:kernels ...) section of the metacrisp file.
+   Extended to include :global-size, :local-size, :num-groups dispatch declarations.
+   Endeavor 152: also emits :cluster-size (what the SOURCE asked for) and
+   :effective-cluster-size (what codegen BUILT).  Both, deliberately -- a degraded
+   cluster is otherwise indistinguishable from a working one."
+  (when kernel-names
+        (format output-stream "(:kernels~%")
+        (dolist (k-name (sort (copy-list kernel-names) (function string<) :key (function symbol-name)))
+          (let ((sigs (gethash k-name *function-table*))
+                (blocks-to-emit nil))
+            ;; Use only the FIRST signature (Pass 1 registered, Pass 2 updated)
+            (dolist (actual-sig (list (first sigs)))
+              (when actual-sig
+                    (let* ((phys-sig-str (generate-physical-signature actual-sig))
+                           (declared-types (gethash k-name *kernel-declared-signatures*))
+                           (decl-sig-list (generate-declared-signature actual-sig declared-types))
+                           (implicit-sig-list (generate-implicit-signature actual-sig declared-types))
+                           (dispatch-info (gethash k-name *kernel-dispatch-declarations*))
+                           (source-loc (if source source
+                                           (namestring (uiop/filesystem:native-namestring (first (function-signature-source-location actual-sig)))))))
+
+                      (push (list :name (string-downcase (symbol-name k-name))
+                                  :source source-loc
+                                  :output output-targets
+                                  :phys phys-sig-str
+                                  :decl decl-sig-list
+                                  :impl implicit-sig-list
+                                  :dispatch dispatch-info)
+                            blocks-to-emit))))
+
+            (setf blocks-to-emit (remove-duplicates (nreverse blocks-to-emit) :test (function equalp)))
+
+            (dolist (blk blocks-to-emit)
+              (let ((dispatch (getf blk :dispatch)))
+                (format output-stream "  (:name ~s~%" (getf blk :name))
+                (format output-stream "    :source ~s~%" (pathname (getf blk :source)))
+                (when (getf blk :output) (format output-stream "    :output-targets ~s~%" (getf blk :output)))
+                ;; Emit dispatch declarations before physical/declared signatures
+                (let ((global-size-decl (getf dispatch :global-size))
+                      (local-size-decl  (getf dispatch :local-size))
+                      (num-groups-decl  (getf dispatch :num-groups))
+                      (cluster-decl     (getf dispatch :cluster-size-decl))
+                      (cluster-dims     (getf dispatch :cluster-size)))
+                  (when global-size-decl
+                    (format output-stream "    :global-size ")
+                    (print-without-packages global-size-decl output-stream)
+                    (format output-stream "~%"))
+                  (when local-size-decl
+                    (format output-stream "    :local-size ")
+                    (print-without-packages local-size-decl output-stream)
+                    (format output-stream "~%"))
+                  (when num-groups-decl
+                    (format output-stream "    :num-groups ")
+                    (print-without-packages num-groups-decl output-stream)
+                    (format output-stream "~%"))
+                  ;; Endeavor 152.  BOTH are emitted on purpose:
+                  ;;   :cluster-size            -- the declaration, as written
+                  ;;   :effective-cluster-size  -- what codegen actually built
+                  ;; They differ exactly when the kernel degraded, which is the one
+                  ;; case a correctness test cannot see.
+                  (when cluster-decl
+                    (format output-stream "    :cluster-size ")
+                    (print-without-packages cluster-decl output-stream)
+                    (format output-stream "~%"))
+                  (when cluster-dims
+                    (format output-stream "    :effective-cluster-size ")
+                    (print-without-packages (%effective-cluster-dims dispatch cluster-dims) output-stream)
+                    (format output-stream "~%")))
+                (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
+                (format output-stream "    :declared-signature ")
+                (print-without-packages (getf blk :decl) output-stream)
+                (format output-stream "~%")
+                (when (getf blk :impl)
+                      (format output-stream "    :implicit-params ")
+                      (print-without-packages (getf blk :impl) output-stream)
+                      (format output-stream "~%"))
+                (format output-stream "  )~%"))))
+        (format output-stream "  )~%"))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 Phase 1 (fix 2) — the degrade diagnostic must fire on SPIR-V too
+;;;
+;;; %apply-cluster-dims-attribute was called only from the :ptx branch of
+;;; ensure-opencl-kernel-metadata, so an Intel/SPV compile of a clustered kernel
+;;; degraded SILENTLY: the metacrisp still read (1 1 1), but only because
+;;; %effective-cluster-dims falls back to that when nothing was recorded -- the
+;;; right answer arrived by accident rather than by decision, and no warning was
+;;; emitted at all.  SPIR-V is the single most likely place for a user to hit this,
+;;; since it is the target with no cluster hardware whatsoever.
+;;;
+;;; The function already gates on capability internally, so it is safe to call for
+;;; every entry point regardless of backend.  Hoisting the call out of the `case`
+;;; is both the smaller change and the one that cannot drift again.
+;;; =====================================================================
+
+;; src/codegen.lisp
+(defun ensure-opencl-kernel-metadata (func semantic-function module)
+  "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
+   Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
+   Endeavor 126: also stamps the denormal-fp-math attribute (all functions).
+   Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records
+   the EFFECTIVE extent (warning on degrade) for every entry point on every backend.
+
+   NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
+   as text during IR printing for SPIR-V."
+  (%apply-denormal-attribute func module)
+  (when (semantic-function-is-entry-point semantic-function)
+        (log:info "Marking function ~a as Kernel for backend ~a"
+                  (semantic-function-name semantic-function) *target-backend*)
+
+        (case *target-backend*
+          (:spirv
+           ;; calling convention spir_kernel (76)
+           (llvm-set-function-call-conv func 76)
+           ;; Endeavor 126: denormal handling reaches SPIR-V only via an execution mode.
+           (%emit-spirv-denorm-execution-mode func module))
+          (:ptx
+           ;; Use ptx_kernel calling convention (71) so llc emits .entry
+           ;; If this crashes on Windows, we will need to revisit nvvm attributes.
+           (log:info "Setting CC 71 (ptx_kernel) for function ~a" (semantic-function-name semantic-function))
+           (llvm-set-function-call-conv func 71))
+          (t
+           ;; Default to C calling convention (0) for generic/unknown
+           (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
+           (llvm-set-function-call-conv func 0)))
+
+        ;; Endeavor 152: OUTSIDE the case on purpose.  This must run for every entry
+        ;; point on every backend -- it is what records the effective cluster extent
+        ;; and warns when a declared cluster could not be formed.  Gating it per
+        ;; backend is what let the SPIR-V degrade go silent.
+        (%apply-cluster-dims-attribute func semantic-function module))
+
+  (unless (semantic-function-is-entry-point semantic-function)
+    (case *target-backend*
+      (:spirv
+       ;; Use SPIR_FUNC (75) for non-kernel functions
+       (llvm-set-function-call-conv func 75)))))

@@ -138,3 +138,68 @@ Chapters 7 and 8 are not further rungs; they are **a different measurement on wh
 mainloop rung is**.  That is why they read LOWER than chapter 5 today (65.2% / 65.4% vs 66.6%).
 So landing chapter 6 obsoletes their numbers — the 4-line cluster diff has to be ported into
 both epilogue kernels or the fusion claim stops being comparable to anything.
+
+
+IMPLEMENTATION LOG
+==================
+
+Phase 0 — COMPLETE (2026-08-16).  See 00-verification-findings.md.  All four questions
+settled; no design change needed; one secondary source (Colfax) was wrong about which CTA
+issues expect_tx and is corrected there.
+
+Phase 1 — front half COMPLETE, hoist half OPEN.
+
+DONE:
+- `(declare (cluster-size ...))` parses, validates, and stores NORMALISED 3-axis dims.
+- PTX entry points carry `.explicitcluster` + `.reqnctapercluster x, y, z`.
+- Refusals: `:derive-from`, non-integer / missing `:set-to`, rank > 3, rank exceeding an
+  explicit `:tile-shape`, total extent > 8.
+- Degrade path: capability-gated (sm_90+), warns once per kernel, records the effective
+  extent.
+- Metadata emits BOTH `:cluster-size` (as written) and `:effective-cluster-size` (as built).
+
+Verified: rung 01/02 stamp `2, 1, 1`; rung 03 stamps `4, 1, 1` and reports effective
+`(4 1 1)`; the same kernel on default sm_80 stamps nothing, warns, and reports `(1 1 1)`;
+SPV likewise.  errors/01 and errors/02 refuse with messages that name the reason.
+Regression: 1001/1001 specs, 1001/1001 under --differentiate, 213/213 negative, 291 unit.
+
+STILL OPEN in Phase 1 (rung 04 — the hoist half):
+- `cudaLaunchKernelEx` + `cudaLaunchAttributeClusterDimension` in the CUDA hoist.
+- The divisibility policy: pad for `:strided`, hard error for `:exact`.  Now well-founded
+  rather than a guess — the driver rejects a non-divisible grid per axis with
+  `cudaErrorInvalidClusterSize` (measured; see 00-verification-findings.md).
+- Needs an H100 to verify end to end.  Batch with rung 11 and step 3.
+
+TWO BUGS FOUND AND FIXED IN MY OWN FIRST CUTS (recorded because both were invisible to the
+test suite, which only checks that kernels COMPILE):
+1. The cluster attribute was gated on `(eq *target-backend* :ptx)` alone, not on the ARCH.
+   A default-arch (sm_80) compile would have stamped `.reqnctapercluster` on a target that
+   cannot form clusters -- surfacing only at ptxas or JIT time.
+2. `:effective-cluster-size` was re-derived inside `serialize-kernels` from
+   `*target-backend*`, which is back to its `:generic` default by the time the metacrisp is
+   written.  A correct sm_90 kernel therefore reported effective `(1 1 1)` -- the exact
+   "silently degraded" misreading the field exists to prevent, produced by the field itself.
+   Fixed by recording what codegen ACTUALLY DID, in the dispatch plist (which is cleared per
+   module, so the in-process spec runner cannot leak one spec's answer into the next).
+A third: the degrade warning was only reachable on the PTX path, so SPIR-V -- the target with
+no cluster hardware at all -- degraded silently.  The call now sits outside the backend `case`.
+
+
+API SHIFTS (running log, per request)
+=====================================
+
+None yet that change the documented surface.  Two candidates from Phase 0 research were
+RESOLVED IN FAVOUR OF THE EXISTING DESIGN and need no doc change:
+
+- `:arrivals` scaling under `:mode :cluster` -- the Colfax tutorial implied only a leader CTA
+  sets transaction bytes, which would have made the compiler's per-workgroup scaling wrong.
+  CUTLASS source shows `is_leader` is a lane-0 check WITHIN each CTA, so every workgroup does
+  its own local `arrive_and_expect_tx`.  Design stands.
+- The `empty`-ring arrival pattern is ALL-TO-ALL within the multicast group (not leader-only),
+  and the scaling factor is the MULTICAST GROUP extent -- the row or column length -- not the
+  total cluster size.  Same at `(2 1)`, different at `(2 2)`.  Not yet reflected in
+  topology.md's `:arrivals` note; worth adding when step 6 lands.
+
+Known nit, not yet fixed: the degrade warning echoes the NORMALISED dims, so a kernel
+declaring `(2 1)` is reported as `(cluster-size :set-to (2 1 1))`.  Harmless but it quotes
+source the user did not write; fold when this moves into src/.
