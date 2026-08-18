@@ -1,0 +1,89 @@
+;; *** DO NOT BENCHMARK THIS YET -- IT IS NOT CORRECT. ***
+;;
+;; The multicast half works: the PTX carries `.reqnctapercluster 2, 2, 1`, TWO
+;; `.multicast::cluster` copies with two DIFFERENT computed ctaMasks, both cluster axes read,
+;; and the four wgmma instructions are untouched.
+;;
+;; The `empty` half does NOT.  Although it is declared `:mode :cluster` below, the emitted PTX
+;; contains NO `mapa` and NO `mbarrier.arrive.shared::cluster` -- only a workgroup-local
+;; `mbarrier.arrive.shared`.  The signal is silently lowering as :block.  On hardware that is
+;; not a slowdown, it is a CORRECTNESS bug: the group leader would be free to overwrite a ring
+;; slot while a peer workgroup was still reading it.
+;;
+;; It is specific to THIS kernel, not to the feature.  A cluster-scoped `signal` on a ring, from
+;; inside `with-warp-specialization`, inside a `dotimes`, emits the remote arrive correctly --
+;; verified in isolation (put_temp_files_here/lds/wsclu2.crisp -> 8 mapa) and by shipped spec
+;; 22-cluster-barrier-ring-arrivals (2 mapa).
+;;
+;; ELIMINATED as the cause, each by building the variant and reading its PTX:
+;;   warp specialization . dotimes . sm_90 vs sm_90a . :initial-state :signaled
+;;   wgmma-accumulate-via-tile . the binding's position in the let . a missing global-size/:tile-shape
+;;
+;; So the difference is still one of: make-wgmma-accumulator, inner-dimension, or `store-tile D`.
+;; Resume by bisecting those three; the answer is a false NEGATIVE from %cluster-barrier-p, which
+;; resolves `(ring-get empty slot)` through *cluster-barrier-bindings* keyed by let-binding name.
+;; Chapter 4 — CLUSTERS + TMA MULTICAST (DSMEM).  Accreted directly onto chapter 3's warp-
+;; specialized wgmma kernel; the ONLY changes are the three marked below.  Everything that made
+;; chapter 3 fast is untouched, so the benchmark difference is attributable to multicast alone.
+;;
+;; WHY THIS IS THE NEXT RUNG.  Chapter 3 sits at ~66% of cuBLAS and, importantly, FLAT across
+;; sizes -- a steady-state loss, not an overhead.  Every workgroup fetches its own A tile and its
+;; own B tile from L2, even though neighbours in the same row want byte-identical A and
+;; neighbours in the same column want byte-identical B.  A cluster lets ONE workgroup fetch and
+;; the hardware deliver to the whole group, which is bandwidth cuBLAS has been spending and we
+;; have not.
+;;
+;; THE THREE CHANGES:
+;;   1. (cluster-size :set-to (2 2))    -- 4 workgroups, 2 rows x 2 columns
+;;   2. :multicast true on BOTH loads   -- an assertion; the compiler refuses if it cannot honour it
+;;   3. `empty` becomes :mode :cluster  -- see below, and it is the subtle one
+;;
+;; WHY `empty` MUST REACH ACROSS WORKGROUPS.  With multicast only the group leader issues the
+;; copy, but it writes into every group member's shared memory.  It may not reuse a ring slot
+;; until EVERY member has finished reading it -- not merely its own consumers.  A workgroup-local
+;; `empty` would let the leader overwrite a slot a peer was still consuming.  `full` stays
+;; :mode :block because a multicast completes its transaction on each destination's OWN mbarrier.
+;;
+;; ARRIVALS ARE STILL WRITTEN PER-WORKGROUP.  `:arrivals 4` remains "4 consumer warps per
+;; workgroup per stage"; the compiler multiplies by the cluster size.  Cluster-wide arrivals
+;; slightly over-synchronise -- a row neighbour waits on a column neighbour that never touched
+;; its slot -- which is the deliberate simpler choice.  The precise alternative is one `empty`
+;; ring per operand, since A's group is a ROW and B's a COLUMN and a single ring cannot be scoped
+;; to both; that is the contained follow-up to measure against this if it shows up.
+;;
+;; *** NOT YET RUN ON HARDWARE. ***  Compile-verified and PTX-inspected only.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 160)              ; 4 consumer warps + 1 producer warp
+           (cluster-size :set-to (2 2)))         ; CHANGE 1: 4 workgroups, 2 rows x 2 cols          ; 4 consumer warps (warpgroup 0) + 1 producer warp
+  (let ((A-ring (make-scratch-matrix-ring float (64 32)  :ring-count 2))   ; 2 x 64(M) x 32(K)
+        (B-ring (make-scratch-matrix-ring float (256 32) :ring-count 2))   ; 2 x 128(N) x 32(K) B^T
+        (D      (make-wgmma-accumulator float (64 256) 0.0))
+        (K      (inner-dimension A B))
+        ; CHANGE 3: peers must release the slot, not just our own consumers
+        (empty  (make-async-barrier-ring :ring-count 2 :mode :cluster :arrivals 4 :initial-state :signaled))
+        (full   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 256) (grid-y grid-x)
+      (with-warp-specialization (:consumer 4 :producer 1)
+        (:consumer
+          (set! D (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 32) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile D C (grid-y grid-x)))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              ; CHANGE 2: A is invariant along the COLUMN axis -> its group is a cluster ROW
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b :multicast true)
+              ; B is invariant along the ROW axis -> its group is a cluster COLUMN
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b :multicast true))))))))
