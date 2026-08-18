@@ -1597,3 +1597,67 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         If the AD walk sees the SOURCE form rather than that lowered node, the cheapest correct
         fix may be to normalise `(funcall #'NAME args...)` -> `(NAME args...)` before the walk,
         rather than to teach the walk about funcall.  Unverified.
+[x] 046 - A LOCAL scratch CELL and a LOCAL scratch TENSOR were given the SAME shared-memory
+        offset by the CUDA hoister, so they silently overwrote each other on the GPU.
+
+        FOUND BY: endeavor 152's investigation into why a clustered kernel faulted.  Found
+        incidentally -- it has nothing to do with clusters and has been live on `main` for as
+        long as both features have coexisted.
+
+        BUG 034 gave scratch TENSORS a running offset allocator (*cuda-shared-scratch-offset*)
+        so they would not alias one another.  Cells were never added to it:
+        %cuda-emit-cell-arg emitted `<name>_local_ptr = 0` unconditionally.  Every cell
+        therefore sat at offset 0, directly on top of the first scratch tile.
+
+        DEMONSTRATED ON AN H100.  Kernel loads a tile, writes a cell, stores the tile:
+
+            BUFFER a: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+            BUFFER c: 99 1 2 3 4 5 6 7 99 1 2 3 4 5 6 7   <- element 0 of every tile clobbered
+
+        WHY IT SURVIVED SO LONG: it is ORDERING-SENSITIVE and therefore invisible in the
+        obvious test.  Put the cell write BEFORE the tile-stride loop and the tile load simply
+        overwrites the cell -- output is perfectly correct.  Put it AFTER the store and the
+        tile has already been banked out -- also correct.  Only a cell write INTERLEAVED with
+        tile use exposes it, and no spec did that.  (The first version of the regression test
+        written for this bug passed against the broken compiler for exactly this reason.)
+
+        THE DEEPER CAUSE, and what the fix actually addresses: the hoister computed its
+        shared-memory layout TWICE, independently -- compute-total-shared-bytes summed bytes
+        for the launch parameter while the emitters assigned offsets.  Two computations of one
+        number is what allowed them to disagree, and merely teaching the cell emitter to bump
+        the counter would have left that structure in place to fail again.  Both now consult a
+        single %cuda-shared-layout.
+
+        Cells are laid out ABOVE the tensors rather than interleaved, so every existing
+        kernel's tensor offsets are BYTE-IDENTICAL to before the fix -- verified.
+
+        INTEL WAS NEVER AFFECTED: the L0 hoister gives each local tensor its own
+        runtime-allocated SLM argument (zeKernelSetArgumentValue(..., bytes, nullptr)) instead
+        of slicing one blob, so it has nothing to alias.
+
+        FIX: overlays/hoist-cuda/crisp-hoist-cuda-overlay.lisp -- %cuda-local-param-bytes,
+        %cuda-shared-layout, compute-total-shared-bytes, %cuda-emit-cell-arg, and an
+        emit-kernel-args wrapper that seeds the cell offset.
+        REGRESSION: tests/spec/074-scratch-tensor/05-cell-tensor-no-alias.crisp (metal, both
+        vendors).  Verified failing before the fix and passing after, on an H100.
+
+[ ] 047 - A scratch CELL bound in a def-kernel `let` crashes the compiler under --differentiate.
+
+        FOUND BY: writing BUG 046's regression spec, which is the first spec to bind a
+        make-scratch-cell inside a def-kernel let and then differentiate it.
+
+        %promote-scratch-init-for-ad assumes a scratch initialiser is a TENSOR.  Handed
+        (make-scratch-cell float) it constructs the incomplete type specifier (tensor float)
+        and %expand-tensor-type-specifier signals CRISP-INCOMPLETE-TYPE-ERROR:
+
+            2: (ERROR CRISP-INCOMPLETE-TYPE-ERROR :TYPE-SPEC (TENSOR FLOAT))
+            3: (%EXPAND-TENSOR-TYPE-SPECIFIER TENSOR FLOAT NIL (TENSOR FLOAT))
+            4: (%PROMOTE-SCRATCH-INIT-FOR-AD (MAKE-SCRATCH-CELL FLOAT))
+            5: (GENERATE-BACKWARD-WALK ...)
+
+        Unrelated to BUG 046 -- it fires in the AD walk, not the hoister.  The kernel is
+        differentiable in principle (in the regression spec the cell is written and never read,
+        so its adjoint is zero); the promoter simply has no cell case.
+
+        CURRENTLY SKIPPED: tests/spec/074-scratch-tensor/05-cell-tensor-no-alias.crisp carries a
+        SKIP-WITH[--differentiate] pointing here.  Remove it when this is fixed.

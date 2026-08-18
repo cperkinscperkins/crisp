@@ -323,3 +323,202 @@
                (write-string body stream :end line-start)
                (write-string fixup stream)
                (write-string body stream :start line-start))))))))
+
+;;; =====================================================================
+;;; BUG 046 — a LOCAL scratch CELL aliases the first LOCAL scratch TENSOR
+;;;
+;;; THE SYMPTOM, and it is silent data corruption on real hardware.  A kernel holding
+;;; both a scratch tensor and a scratch cell writes them to the SAME shared memory:
+;;;
+;;;     (load-tile A tile (0 grid-x))
+;;;     (set! (~ acc) 99.0)
+;;;     (store-tile tile C (grid-y grid-x))
+;;;
+;;;     BUFFER a: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+;;;     BUFFER c: 99 1 2 3 4 5 6 7 99 1 2 3 4 5 6 7   <- element 0 of every tile clobbered
+;;;
+;;; Verified on an H100.  ORDERING is what has hidden it: move the `set!` above
+;;; tile-stride and the output is perfectly correct, because the tile load simply
+;;; overwrites the cell.  It is only visible when a cell write interleaves with tile use,
+;;; which is why no spec has ever caught it.
+;;;
+;;; THE CAUSE.  BUG 034 gave scratch TENSORS a running offset allocator
+;;; (*cuda-shared-scratch-offset*) so they would not alias each other.  Cells were never
+;;; added to it -- %cuda-emit-cell-arg emits `<name>_local_ptr = 0` unconditionally -- so
+;;; every cell sits at offset 0, on top of the first tile.
+;;;
+;;; THE DEEPER CAUSE, which is what this fix actually addresses.  The hoister computed the
+;;; shared-memory layout TWICE, independently: compute-total-shared-bytes summed the bytes
+;;; for the launch parameter, while the emitters assigned offsets.  Two computations of one
+;;; number is what let them disagree, and simply teaching the cell emitter to bump the
+;;; counter would leave that structure in place to fail again.  So both now consult a
+;;; SINGLE layout function.
+;;;
+;;; WHY CELLS GO AFTER TENSORS rather than being interleaved into the existing counter.
+;;; Interleaving would shift every tensor offset in every existing kernel -- a 4-byte cell
+;;; ahead of a tile would leave that tile at offset 4, wrecking the natural alignment the
+;;; async/TMA paths depend on.  Placing cells after the tensors leaves every current tensor
+;;; offset BYTE-IDENTICAL to today, so this fix cannot regress a working kernel.
+;;;
+;;; INTEL IS UNAFFECTED and deliberately untouched: the L0 hoister allocates each local
+;;; tensor its own runtime SLM argument (zeKernelSetArgumentValue(..., bytes, nullptr))
+;;; rather than carving offsets out of one blob, so it has nothing to alias.
+;;; =====================================================================
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-local-param-bytes (param param-type)
+  "Bytes of dynamic shared memory one LOCAL param occupies, or NIL if it occupies none.
+   Returns a second value, :tensor or :cell, naming which region it belongs to.
+
+   The element-size rule mirrors the one the emitters use, deliberately: this function
+   exists so the sizer and the emitters cannot disagree, which is only true if it computes
+   what they compute."
+  (let* ((is-tensor (tensor-type-p param-type))
+         (elem-type (if is-tensor (second param-type) (cell-base-type param-type)))
+         (elem-str  (crisp-type-to-cpp-type elem-type))
+         (elem-bytes (if (or (string-equal elem-str "double")
+                             (string-equal elem-str "int64_t")
+                             (string-equal elem-str "uint64_t"))
+                         8 4)))
+    (if is-tensor
+        (let* ((rank (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
+               (size-expr (getf param :size-expr))
+               (count (cond ((integerp size-expr) (expt size-expr rank))
+                            ((and (listp size-expr) (every (function integerp) size-expr))
+                             (reduce (function *) size-expr))
+                            ;; %cuda-scratch-dims hard-errors on anything else, so such a
+                            ;; tensor never reaches an emitter and contributes nothing.
+                            (t nil))))
+          (when count (values (* count elem-bytes) :tensor)))
+        (let ((count (if (%array-type-p (cell-base-type param-type))
+                         (%array-size (cell-base-type param-type))
+                         1)))
+          (values (* count elem-bytes) :cell)))))
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-shared-layout (declared-sig aliases)
+  "THE single source of truth for the CUDA hoister's dynamic-shared layout.
+
+   Returns (values TENSOR-BYTES CELL-BASE TOTAL-BYTES).  Scratch tensors are packed from
+   offset 0 exactly as BUG 034 laid them out; cells follow, starting at CELL-BASE.
+
+   CELL-BASE is rounded up to 8 so a double or int64 cell lands naturally aligned even
+   when the tensors ahead of it total an odd multiple of 4.  TOTAL-BYTES includes that
+   padding -- the launch must request every byte the kernel can address, and it is exactly
+   this kind of quiet divergence between size and offsets that BUG 046 was."
+  (let ((tensor-bytes 0)
+        (cell-bytes 0))
+    (dolist (param declared-sig)
+      (let* ((param-type (resolve-type-alias (getf param :type) aliases))
+             (param-as   (getf param :address-space))
+             (is-local   (member param-as (list :local "LOCAL" (quote local))
+                                 :test (function string-equal))))
+        (when (and is-local (or (tensor-type-p param-type) (cell-type-p param-type)))
+          (multiple-value-bind (bytes region) (%cuda-local-param-bytes param param-type)
+            (when bytes
+              (if (eq region :tensor)
+                  (incf tensor-bytes bytes)
+                  (incf cell-bytes bytes)))))))
+    (let ((cell-base (* 8 (ceiling tensor-bytes 8))))
+      (values tensor-bytes
+              cell-base
+              (if (zerop cell-bytes) tensor-bytes (+ cell-base cell-bytes))))))
+
+;; src/hoist-cuda/main.lisp
+(defun compute-total-shared-bytes (declared-sig aliases)
+  "Sum up all local-memory tensor byte-sizes for the sharedMemBytes launch param.
+
+   BUG 046: now delegates to %cuda-shared-layout so the number requested at launch and the
+   offsets handed to the kernel are computed ONCE, by the same code."
+  (nth-value 2 (%cuda-shared-layout declared-sig aliases)))
+
+;; src/hoist-cuda/main.lisp
+(defvar *cuda-shared-cell-offset* 0
+  "Running byte offset for LOCAL scratch CELLS, which live above the scratch tensors.
+   Set per kernel by the emit-kernel-args wrapper from %cuda-shared-layout; bumped by
+   %cuda-emit-cell-arg.  BUG 046 -- before this existed every cell sat at offset 0 and
+   silently overwrote the first tile.")
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-emit-cell-arg (stream param param-name param-type param-dir is-local aliases arg-index)
+  "BUG 046: a LOCAL cell now draws a DISTINCT shared-memory offset from
+   *cuda-shared-cell-offset* instead of hard-coding 0 on top of the first scratch tile.
+   The GLOBAL branch is untouched."
+  (declare (ignore param aliases))
+  (let* ((base-type      (cell-base-type param-type))
+         (is-array-cell  (%array-type-p base-type))
+         (base-type-str  (if is-array-cell
+                             (crisp-type-to-cpp-type (%array-element-type base-type))
+                             (crisp-type-to-cpp-type base-type)))
+         (elem-count     (if is-array-cell (%array-size base-type) 1))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (size-var       (format nil "~a_size" param-name-cpp))
+         (ptr-var        (format nil "~a_ptr"  param-name-cpp))
+         (arg-names      '())
+         (alloc          nil))
+    (if is-local
+        ;; LOCAL MEMORY — a distinct slice of the shared blob, above the scratch tensors
+        (let* ((elem-bytes (if (or (string-equal base-type-str "double")
+                                   (string-equal base-type-str "int64_t")
+                                   (string-equal base-type-str "uint64_t"))
+                               8 4))
+               (bytesize (* elem-count elem-bytes))
+               (offset   *cuda-shared-cell-offset*))
+          (setf *cuda-shared-cell-offset* (+ *cuda-shared-cell-offset* bytesize))
+          (format stream "~%    // LOCAL cell: ~a (~d bytes, shared offset ~d)~%"
+                  param-name bytesize offset)
+          (format stream "    uint64_t ~a_local_ptr = ~dULL;  // shared offset~%"
+                  param-name-cpp offset)
+          (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var elem-count base-type-str)
+          (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+          (push (format nil "~a_local_ptr" param-name-cpp) arg-names)
+          (push (format nil "~a_bytes" size-var) arg-names)
+          (push (format nil "~a_offset" param-name-cpp) arg-names))
+
+        ;; GLOBAL MEMORY — cuMemAlloc + cuMemcpyHtoD
+        (progn
+          (format stream "~%    // Cell: ~a (~a)~%" param-name base-type-str)
+          (format stream "    size_t ~a = ~a;~%" size-var elem-count)
+          (format stream "    CUdeviceptr ~a;~%" ptr-var)
+          (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~a * sizeof(~a)));~%"
+                  ptr-var size-var base-type-str)
+          (format stream "    {~%")
+          (format stream "        ~a* h = new ~a[~a];~%" base-type-str base-type-str size-var)
+          (if is-array-cell
+              (format stream "        for (size_t _i = 0; _i < ~a; _i++) h[_i] = (~a)_i;~%"
+                      size-var base-type-str)
+              (format stream "        memset(h, 0, ~a * sizeof(~a));~%" size-var base-type-str))
+          (format stream "        CUDA_CHECK(cuMemcpyHtoD(~a, h, ~a * sizeof(~a)));~%"
+                  ptr-var size-var base-type-str)
+          (format stream "        delete[] h;~%")
+          (format stream "    }~%")
+          (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
+          (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+          (push (format nil "~a" ptr-var) arg-names)
+          (push (format nil "~a_bytes" size-var) arg-names)
+          (push (format nil "~a_offset" param-name-cpp) arg-names)
+          (setf alloc (list :name      param-name
+                            :ptr       ptr-var
+                            :size-var  (format nil "~a" size-var)
+                            :elem-type base-type-str
+                            :direction param-dir))))
+    (values (+ arg-index 3) (nreverse arg-names) alloc)))
+
+;; src/hoist-cuda/main.lisp
+;;
+;; WRAPPED, not transcribed: emit-kernel-args is ~120 lines with one job to add -- seed the
+;; cell offset for this kernel.  Copying it into the overlay would put a second stale copy
+;; of a busy function in the tree.  Same approach, and same reasoning, as the emit-launch
+;; wrapper above.  The captured original still resets *cuda-shared-scratch-offset* itself.
+(defvar *crisp-045-orig-emit-kernel-args* nil)
+(unless *crisp-045-orig-emit-kernel-args*
+  (setf *crisp-045-orig-emit-kernel-args* (fdefinition 'emit-kernel-args)))
+
+(defun emit-kernel-args (stream declared-sig aliases records dispatch-info)
+  "BUG 046 wrapper: seeds *cuda-shared-cell-offset* from %cuda-shared-layout so LOCAL
+   cells are laid out ABOVE the scratch tensors rather than on top of the first one."
+  ;; NOTE: no log4cl here on purpose -- the hoister is built as its own application and
+  ;; does not depend on log4cl (src/hoist-cuda/main.lisp contains zero log: calls).  The
+  ;; layout it chose is visible in the emitted .cu as a `shared offset` comment per param.
+  (setf *cuda-shared-cell-offset* (nth-value 1 (%cuda-shared-layout declared-sig aliases)))
+  (funcall *crisp-045-orig-emit-kernel-args* stream declared-sig aliases records dispatch-info))

@@ -1,0 +1,64 @@
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 7 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+;; SKIP-WITH[--differentiate]: "BUG 047 -- %promote-scratch-init-for-ad assumes a scratch
+;; initialiser is a TENSOR, so (make-scratch-cell float) makes it construct the incomplete type
+;; (tensor float) and the compiler dies with CRISP-INCOMPLETE-TYPE-ERROR.  Pre-existing and
+;; unrelated to BUG 046: it fires in the AD walk, not the hoister.  This spec is simply the first
+;; to bind a scratch CELL in a def-kernel let under --differentiate, which is why it was never
+;; hit before.  Remove this skip when 047 is fixed."
+;;
+;; BUG 046 REGRESSION — a scratch CELL and a scratch TENSOR must not share storage.
+;;
+;; Both live in workgroup-local memory.  The CUDA hoister carves that memory out of ONE
+;; dynamic-shared blob by handing each parameter a byte offset, and until this bug was fixed
+;; it advanced that offset only for TENSORS.  Every cell therefore received offset 0 --
+;; directly on top of the first scratch tensor -- and the two silently overwrote each other
+;; on real hardware.
+;;
+;; THE ORDER OF THE THREE STATEMENTS IS THE ENTIRE TEST.  Do not "tidy" it.  The cell write
+;; sits BETWEEN the tensor write and the tensor read deliberately, because that is the only
+;; arrangement in which the aliasing is observable:
+;;
+;;   cell write BEFORE the tensor write -> the tensor write overwrites it; output is CORRECT
+;;   cell write AFTER  the tensor read  -> the value has already been read; output is CORRECT
+;;   cell write BETWEEN the two         -> the cell lands on the live element; CORRUPTION
+;;
+;; This is why the bug survived so long: it is invisible unless a cell write is interleaved
+;; with tensor use, and no spec did that.  A test that merely declares a cell and a tensor
+;; together passes with the bug fully present and proves nothing.  (The first draft of this
+;; regression test did exactly that, and passed against the broken compiler.)
+;;
+;; VERIFIED TO HAVE TEETH, which for a regression test is the only property that matters.
+;; On an H100, with the cell's offset forced back to 0 to simulate the old hoister:
+;;
+;;     cell at 32 (fixed):  BUFFER c: 7 1 2 3 ...      <- element [0,0] survives
+;;     cell at  0 (broken): BUFFER c: 99 1 2 3 ...     <- element [0,0] destroyed
+;;
+;; WHY THE CELL IS NEVER READ BACK.  The assertion is that writing the cell does not disturb
+;; the tensor.  Reading the cell would test something else entirely -- with the bug present
+;; the cell read back perfectly; it was the TENSOR that was destroyed.
+;;
+;; WHY IT USES NO TILE MACHINERY.  An earlier draft staged through load-tile/store-tile under
+;; a tile-stride loop, which dragged in :tile-shape and :strategy :strided and pushed the spec
+;; far down the spine for no benefit.  The bug is in how the HOISTER assigns shared offsets,
+;; which has nothing to do with how the kernel reaches that memory.  Writing element [0,0]
+;; directly is both simpler and sharper: [0,0] is exactly the byte the cell used to land on.
+;;
+;; INTEL RUNS THIS TOO and passes with or without the fix: the L0 hoister gives each local
+;; tensor its own runtime-allocated SLM argument (zeKernelSetArgumentValue(..., bytes,
+;; nullptr)) rather than slicing one blob, so it has nothing to alias.  It is here to pin
+;; that difference, not because Intel was ever broken.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cell_tensor_no_alias (&out C)
+  (declare #'(&out mat-t)
+           (global-size :set-to 1)
+           (local-size :set-to 1))
+  (let ((tile (make-scratch-matrix float (2 4)))
+        (acc  (make-scratch-cell float)))
+    (set! (~ tile 0 0) 7.0)
+    ;; MUST stay between the write and the read — see the header.
+    (set! (~ acc) 99.0)
+    (set! (~ C 0 0) (~ tile 0 0))))

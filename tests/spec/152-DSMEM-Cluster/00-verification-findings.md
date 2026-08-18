@@ -627,3 +627,107 @@ Q2b faults, the diagnosis is proven and the fix is scoped: a `:local` scratch ba
 from the executing CTA's shared window rather than passed in as a literal offset.  If Q1b is 0 and
 Q2b passes, the cause is somewhere else entirely and this note is wrong -- which is why the
 control rows are there.
+### ANSWERED ON AN H100 (2026-08-17).  Hypothesis confirmed, with the exact encoding.
+
+    Q1a symbol base, NO cluster     blocks 0,1,2,3 -> smem_base = 0x400        no error
+    Q1b symbol base, CLUSTER 2      blocks 0,2     -> smem_base = 0x400
+                                    blocks 1,3     -> smem_base = 0x1000400    no error
+    Q2a raw base 0, NO cluster                                                 no error
+    Q2b raw base 0, CLUSTER 2                          ILLEGAL INSTRUCTION
+
+**A CTA's shared window base is rank-dependent under a cluster.**  The CTA rank sits at bit 24
+(`1 << 24 == 0x1000000`), so rank 1's shared memory begins at `0x1000400`, not `0x400`.  A raw
+address of 0 therefore names *rank 0's* window; for every non-rank-0 CTA it is a peer's memory,
+and the hardware refuses it.  That is the sanitizer message word for word.
+
+**And a second, larger finding fell out of Q1a: the base is 0x400 even WITHOUT a cluster.**
+Dynamic shared memory begins 1024 bytes into the window.  Crisp addresses `:local` scratch from
+an absolute 0, i.e. *below the dynamic region it actually requested* -- for every PTX kernel it
+has ever compiled, cluster or not.  Q2a shows the hardware tolerates this when there is no
+cluster, so it has never been visible.  It is nonetheless wrong, and clusters are simply the
+first configuration in which the hardware says so.
+
+### The fix, validated in Crisp's own idiom (Q3)
+
+`put_temp_files_here/lds/lds_fix.cu` re-runs the failing case with one change -- the base comes
+from the shared SYMBOL rather than a literal -- while keeping Crisp's exact addressing style
+(`st.shared.b32` / `ld.shared.b32` on a u64 register, plus a per-tensor offset operand):
+
+    Q3 raw asm, base from shared SYMBOL, CLUSTER 2
+      block=0 base=0x400   block=1 base=0x1000400   block=2 base=0x400   block=3 base=0x1000400
+      -> no error
+      out = 3 3 3 3   (expect 3 3 3 3)
+
+So the shape of the fix is settled and it is small: **keep the host-side per-tensor offset scheme
+exactly as it is, and add the executing CTA's shared base to it inside the kernel.**  In NVVM that
+is an external `addrspace(3)` global, which NVPTX lowers to `.extern .shared .align N .b8 sym[]`;
+`ptrtoint` of it yields the per-CTA base the hardware resolves correctly.  This is precisely what
+NVCC emits for `extern __shared__`, which is why Q1b/Q3 work.
+
+The host cannot compute this -- the base is not knowable before the CTA is placed -- so the
+correction must be kernel-side.
+
+### Consequences to settle BEFORE patching
+
+1. **Scope.**  This is scratch addressing, not the cluster API.  It touches every `:local` tensor
+   on PTX, so it is not a 152-local change and wants its own verification pass.
+2. **Does the requested dynamic size cover all scratch?**  Today the kernel writes below the
+   dynamic region, so an under-request would never have faulted.  Once the base is correct, an
+   under-request becomes a real overflow.  The G hoist requested exactly 32 bytes for a 32-byte
+   tile, which is the right answer for one tensor; the multi-tensor and ring cases must be
+   confirmed before flipping the base.
+3. **Intel / SPIR-V is out of scope and must stay that way** unless measurement says otherwise --
+   Intel has no cluster hardware and its local memory is reached differently.
+
+### Consequence 2 answered: the dynamic-size request is SOUND, but the offset allocator has a hole
+
+Measured by compiling representative kernels and comparing the allocator's `shared offset` lines
+against the `cuLaunchKernel` sharedMemBytes argument:
+
+| kernel | offsets assigned | launch requests | agree? |
+| --- | --- | --- | --- |
+| two scratch tensors | 0, 32 | 64 | YES |
+| `make-scratch-matrix-ring :ring-count 4` | 0 (one rank-3 param, 128 B) | 128 | YES -- the ring folds into ONE param |
+| scratch tensor + scratch CELL | **0 and 0** | 36 (=32+4) | **NO -- they alias** |
+
+So `compute-total-shared-bytes` (src/hoist-cuda/main.lisp:541) counts cells correctly, but
+`%cuda-emit-cell-arg` emits `<name>_local_ptr = 0` without ever consulting
+`*cuda-shared-scratch-offset*` -- the running allocator that `%cuda-emit-local-scratch-tensor-arg`
+uses.  Cells therefore always sit at offset 0, on top of the first scratch tensor.
+
+**This is not theoretical -- it silently corrupts data on an H100 today, with no cluster
+involved.**  A kernel whose cell write lands between the tile load and the tile store:
+
+      (load-tile A tile (0 grid-x))
+      (set! (~ acc) 99.0)
+      (store-tile tile C (grid-y grid-x))
+
+      BUFFER a: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+      BUFFER c: 99 1 2 3 4 5 6 7 99 1 2 3 4 5 6 7      <-- element 0 of every tile clobbered
+
+Ordering decides whether it shows: the same kernel with the `set!` moved ABOVE `tile-stride`
+produces perfectly correct output, because the tile load simply overwrites the cell.  That is why
+it has survived -- it is invisible unless a cell write is interleaved with tile use.
+
+It is the same class as BUG 034, which was fixed for tensor-vs-tensor and never extended to
+cell-vs-tensor.  Proposed as **BUG 046**.
+
+**Intel / SPIR-V is structurally immune to both problems.**  The L0 hoister does not build a
+shared blob with offsets at all -- each local tensor gets its own runtime-allocated SLM argument
+(`zeKernelSetArgumentValue(kernel, idx, bytesize, nullptr)`), so there is nothing to collide in
+and no base to get wrong.  Both findings are NVIDIA/CUDA-hoist only, which is what the earlier
+"keep Intel out of scope" note hoped for and this confirms.
+
+### Where that leaves the fix
+
+The cluster base fix is SAFE from the under-request angle: for tensors and rings the requested
+size already covers every byte addressed.  The cell hole is an OVERLAP, not an overflow, so it
+does not block the base change -- but both touch the same allocator and are cheapest to reason
+about together.
+
+Two independent changes, both small, both CUDA-only:
+
+* **A (BUG 046, cell offsets):** make `%cuda-emit-cell-arg` draw from `*cuda-shared-scratch-offset*`
+  exactly as the tensor path does.  Fixes a live silent corruption; independent of clusters.
+* **B (152, CTA-relative base):** add the executing CTA's shared base to the host-supplied offset
+  inside the kernel, via an external `addrspace(3)` global.  Mechanism already validated (Q3).
