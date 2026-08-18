@@ -1661,3 +1661,41 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         CURRENTLY SKIPPED: tests/spec/074-scratch-tensor/05-cell-tensor-no-alias.crisp carries a
         SKIP-WITH[--differentiate] pointing here.  Remove it when this is fixed.
+
+[ ] 048 - UNVERIFIED: a ring slot used as a TMA destination may violate the 128-byte
+        alignment `cp.async.bulk.tensor` requires of its shared destination.
+
+        FILED 2026-08-17 AND IMMEDIATELY CORRECTED.  The first version of this entry claimed the
+        defect had been demonstrated by spec 152/11.  IT HAD NOT, and the reasoning was wrong in
+        a way worth recording, because it is the same trap this endeavour has fallen into before.
+
+        WHAT ACTUALLY HAPPENED.  152/11 reported `misaligned address` after endeavor 152's fix B.
+        The real cause was in fix B itself: the `.extern .shared` window symbol was declared
+        `.align 16`, so the CTA's window base -- and therefore ring slot 0 at base+0 -- was not
+        128-byte aligned.  Declaring the symbol `.align 128` fixed it, and 152/11 now PASSES on
+        an H100 with the expected buffer.  Nothing about ring slot stride was involved.
+
+        HOW THE MISDIAGNOSIS HAPPENED: two variables were changed in a single step -- the symbol
+        alignment AND the spec's tile shape (2 4)->(2 16) -- and the resulting pass was credited
+        to the tile shape.  It was the alignment.  Change one thing at a time.
+
+        AND 152/11 COULD NOT HAVE SHOWN IT ANYWAY.  Its C is 4x4 with a (2 4) tile, so the column
+        axis has exactly ONE tile: `grid-x` is always 0 and `slot = (mod grid-x 2)` is always 0.
+        The spec never reaches slot 1.
+
+        WHAT REMAINS, AS A HYPOTHESIS AND NOT A FINDING.  The PTX ISA does require a
+        `cp.async.bulk.tensor` shared destination to be 128-byte aligned, and Crisp packs ring
+        slots at a stride of one tile's byte size with nothing checking that figure.  A 32-byte
+        tile would put slot 1 at base+32, which is not 128-aligned.  So the concern is grounded
+        in the ISA -- but it is UNDEMONSTRATED.
+
+        ATTEMPTED AND FAILED TO REPRODUCE: reaching slot 1 needs more than one column tile, which
+        with the harness's fixed 4-element dim extents needs a tile narrower than 4 floats; but
+        TMA also requires the innermost box to be a multiple of 16 bytes, so a (2 2) float tile is
+        rejected by the descriptor with `invalid argument` before any alignment check runs.  The
+        two constraints exclude each other at this buffer size.
+
+        TO CLOSE THIS: build a case with larger buffers (a hoist harness with dim extents > 4)
+        where a TMA-legal tile still leaves a sub-128-byte slot stride.  If it faults, decide
+        between padding slots to 128 and refusing at compile time.  If it does not, delete this
+        entry.  Do NOT act on it before it is reproduced.

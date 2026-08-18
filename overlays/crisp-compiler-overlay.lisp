@@ -3639,3 +3639,122 @@
                             "cvta.to.shared.u64 %maddr, %maddr; "
                             "cvt.u32.u64 $0, %maddr; }")
                           "=r,r,r"))
+
+
+;;; =====================================================================
+;;; Endeavor 152 fix B — a :local scratch base must be CTA-RELATIVE, not absolute
+;;;
+;;; WHAT WAS WRONG.  Crisp passes a :local scratch tensor's base to the kernel as a u64
+;;; parameter holding a byte OFFSET (0, 32, ...; see %cuda-emit-local-scratch-tensor-arg),
+;;; and %ptx-entry-restore-shared-ptrs-for-implode inttoptr'd that offset straight into an
+;;; addrspace(3) pointer.  The offset was therefore used as an ABSOLUTE shared address.
+;;;
+;;; MEASURED ON AN H100 (tests/spec/152-DSMEM-Cluster/00-verification-findings.md):
+;;;
+;;;     symbol base, NO cluster    every block  -> 0x400
+;;;     symbol base, CLUSTER 2     rank 0       -> 0x400
+;;;                                rank 1       -> 0x1000400
+;;;     raw address 0, NO cluster                  no error
+;;;     raw address 0, CLUSTER 2                   ILLEGAL INSTRUCTION
+;;;
+;;; So the CTA rank is encoded at bit 24 of a shared address.  A raw 0 names RANK 0's
+;;; window; for every other CTA in a cluster it is a PEER's memory, and the hardware
+;;; refuses it -- "Address 0x0 is not located in executing CTA", exactly what compute-
+;;; sanitizer reported.
+;;;
+;;; AND IT WAS ALREADY WRONG WITHOUT A CLUSTER.  Dynamic shared memory begins at 0x400,
+;;; not 0, so scratch addressed from an absolute 0 sat BELOW the region the launch actually
+;;; requested -- underneath the statically-allocated shared, which is where the mbarrier
+;;; globals (%make-mbarrier) live.  The hardware tolerates it when no cluster is present,
+;;; which is why it has never been visible; clusters are simply the first configuration in
+;;; which it says no.  This fix moves scratch into the region the host asked for.
+;;;
+;;; THE FIX, and it is the mechanism NVCC uses for `extern __shared__`: declare an external
+;;; addrspace(3) symbol, which NVPTX lowers to `.extern .shared .align N .b8 sym[]`, and add
+;;; its address to the host-supplied offset.  The hardware resolves that symbol per-CTA, so
+;;; the rank bits come out right by construction rather than by arithmetic we would have to
+;;; get right ourselves.  Validated in Crisp's exact addressing idiom before being written
+;;; (put_temp_files_here/lds/lds_fix.cu, Q3): raw st.shared/ld.shared on a u64 register with
+;;; a per-tensor offset, under a 2-CTA cluster, correct on every rank.
+;;;
+;;; WHY HERE.  %ptx-entry-restore-shared-ptrs-for-implode is the single choke point where a
+;;; demoted i64 becomes a shared pointer, and it is already gated on :ptx AND entry-point.
+;;; Every :local tensor and cell flows through it.  Doing it at the tensor's materialisation
+;;; site instead would mean finding, and keeping in step, every construct that reaches
+;;; scratch.
+;;;
+;;; SCOPE, deliberately narrow:
+;;;   * addrspace 3 (shared) ONLY.  The predicate this function uses also matches addrspace 5
+;;;     (thread-local), which is per-thread state with no cluster dimension and no window
+;;;     base to add -- adding one there would corrupt it.
+;;;   * mbarriers are NOT affected and must not be: they are module-level addrspace(3)
+;;;     GLOBALS (%make-mbarrier), not entry params, so they never pass through here and
+;;;     already resolve per-CTA correctly.  That is precisely why the barrier half of the
+;;;     cluster work behaved while the scratch half did not.
+;;;   * Intel/SPIR-V is untouched -- this function is a no-op off :ptx, and the L0 hoister
+;;;     allocates each local tensor its own SLM argument rather than offsets into a blob.
+;;; =====================================================================
+
+;; src/codegen.lisp
+(defparameter *crisp-dynamic-smem-symbol* "__crisp_dynamic_smem"
+  "Name of the external addrspace(3) symbol standing for the start of the kernel's DYNAMIC
+   shared memory -- the LLVM spelling of CUDA's `extern __shared__`.  One per module.")
+
+;; src/codegen.lisp
+(defun %ptx-dynamic-smem-base (builder module)
+  "i64 address of the EXECUTING CTA's dynamic shared-memory window.
+
+   Declares (once per module) an external addrspace(3) symbol and ptrtoints it.  Because the
+   symbol carries no initializer it stays a DECLARATION, which NVPTX emits as
+   `.extern .shared .align 128 .b8 __crisp_dynamic_smem[]` -- resolved by the hardware to the
+   executing CTA's own window, including the cluster rank bits.  Aligned to 128, which is what cp.async.bulk.tensor
+   requires of a shared destination; the tensors themselves are packed from it by
+   the hoister's layout."
+  (let* ((i8   (llvm-int8-type))
+         (ty   (crisp.llvm-bindings::llvm-array-type i8 0))
+         (existing (crisp.llvm-bindings:llvm-get-named-global module *crisp-dynamic-smem-symbol*))
+         (gv   (if (and existing (not (cffi:null-pointer-p existing)))
+                   existing
+                   (let ((g (crisp.llvm-bindings:llvm-add-global-in-addrspace
+                             module ty *crisp-dynamic-smem-symbol* 3)))
+                     ;; NO initializer: that is what keeps it a declaration (.extern .shared).
+                     ;; 128, not 16: cp.async.bulk.tensor requires a 128-BYTE aligned shared
+                     ;; destination.  Q1a measured the window landing at 0x400 anyway, but that
+                     ;; is an observation about one driver, not a guarantee -- declare it.
+                     (crisp.llvm-bindings::llvm-set-alignment g 128)
+                     (log:info "declared ~a (.extern .shared) for CTA-relative scratch"
+                               *crisp-dynamic-smem-symbol*)
+                     g))))
+    (crisp.llvm-bindings:llvm-build-ptr-to-int builder gv (llvm-int64-type) "smem_window_base")))
+
+;; src/codegen.lisp
+(defun %ptx-entry-restore-shared-ptrs-for-implode
+    (builder components type-spec module is-entry-point)
+  "Counterpart to the demoter: at the receive site, the kernel's LLVM param at a demoted slot
+   is now an i64.  IMPLODE-VALUE expects a pointer in the original addrspace there, so
+   inttoptr each demoted component back before packing.
+
+   Endeavor 152 fix B: for addrspace 3 (SHARED) the incoming i64 is a byte OFFSET chosen by
+   the hoister, not an address.  The executing CTA's dynamic shared-memory window base is
+   added to it first, so the result is CTA-relative.  addrspace 5 (thread-local) is left
+   exactly as it was -- it has no window base to speak of."
+  (if (and (eq *target-backend* :ptx) is-entry-point)
+      (let ((expected-types (get-expanded-types type-spec module))
+            (smem-base nil))
+        (loop for comp in components
+              for exp-ty in expected-types
+              collect (if (and (llvm-type-kind-is-pointer? exp-ty)
+                               (%ptx-entry-illegal-addrspace-p
+                                (llvm-get-pointer-address-space exp-ty)))
+                          (let ((as (llvm-get-pointer-address-space exp-ty)))
+                            (log:info "PTX kernel-entry receive: inttoptr i64 -> addrspace(~A) ptr" as)
+                            (if (= as 3)
+                                (let* ((base (or smem-base
+                                                 (setf smem-base
+                                                       (%ptx-dynamic-smem-base builder module))))
+                                       (abs  (llvm-build-add builder base comp "smem_abs")))
+                                  (log:debug "shared param is a hoister OFFSET; rebased on the CTA's window")
+                                  (llvm-build-int-to-ptr builder abs exp-ty "demoted_param_to_ptr"))
+                                (llvm-build-int-to-ptr builder comp exp-ty "demoted_param_to_ptr")))
+                          comp)))
+      components))

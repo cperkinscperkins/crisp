@@ -731,3 +731,67 @@ Two independent changes, both small, both CUDA-only:
   exactly as the tensor path does.  Fixes a live silent corruption; independent of clusters.
 * **B (152, CTA-relative base):** add the executing CTA's shared base to the host-supplied offset
   inside the kernel, via an external `addrspace(3)` global.  Mechanism already validated (Q3).
+
+## FIX B IMPLEMENTED AND VERIFIED ON AN H100 (2026-08-17)
+
+The `:local` scratch base is now CTA-relative.  `%ptx-entry-restore-shared-ptrs-for-implode`
+is the single choke point where a demoted i64 entry param becomes an addrspace(3) pointer, and
+for addrspace 3 ONLY it now adds the executing CTA's dynamic shared window base first.  The
+base comes from an external addrspace(3) symbol, which NVPTX emits as
+
+    .extern .shared .align 128 .b8 __crisp_dynamic_smem[];
+    mov.b64  %rd80, __crisp_dynamic_smem;
+
+i.e. the exact mechanism NVCC uses for `extern __shared__`, so the hardware resolves the rank
+bits per-CTA rather than us computing them.  addrspace 5 (thread-local) is untouched; mbarriers
+never pass through here (they are module globals) which is why the barrier half always worked.
+
+RESULT ON THE MINIMAL REPRODUCER (G -- cluster + scratch, no barriers, no TMA, no multicast):
+
+    before:  CUDA error -- an illegal instruction was encountered
+    after :  BUFFER c: 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7   -- identical to H, the no-cluster control
+
+## A MISDIAGNOSIS, CORRECTED -- AND RUNG 11 NOW PASSES ON AN H100
+
+The first draft of this section claimed fix B had uncovered a ring-slot alignment defect.  It had
+not.  Recording the error because it is the same trap this endeavour has hit before.
+
+WHAT HAPPENED.  With fix B in, rung 11 reported `misaligned address`.  The cause was IN FIX B:
+the `.extern .shared` window symbol was declared `.align 16`, so the CTA's window base -- and
+with it ring slot 0 at base+0 -- was not 128-byte aligned, which `cp.async.bulk.tensor` requires
+of its destination.  Declaring the symbol `.align 128` fixed it.
+
+    .extern .shared .align 128 .b8 __crisp_dynamic_smem[];
+
+HOW THE MISDIAGNOSIS HAPPENED: the symbol alignment AND the spec's tile shape ((2 4) -> (2 16))
+were changed in ONE step, and the resulting pass was credited to the tile shape.  It was the
+alignment.  Change one thing at a time -- the endeavour has now paid for this twice.
+
+AND RUNG 11 COULD NOT HAVE SHOWN A SLOT-STRIDE PROBLEM ANYWAY.  Its C is 4x4 under a (2 4) tile,
+so the column axis holds exactly ONE tile: `grid-x` is always 0, `slot = (mod grid-x 2)` is always
+0, and slot 1 is never reached.
+
+## WHERE 152 ACTUALLY STANDS AFTER FIX B (measured on an H100, 2026-08-17)
+
+    152-DSMEM-Cluster                     16/16 PASS   -- including 11-multicast-ring-metal:
+                                                          BUFFER c: 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
+    136-mm-async                           6/6  PASS   2x MMA_CORRECT
+    137-mm-async-block (TMA / :block)      5/5  PASS   1x MMA_CORRECT
+    138-pipeline-ring                     11/11 PASS   1x MMA_CORRECT
+    local default suite                 1018/1018 PASS
+
+Rung 11 was the endeavour's blocker and it is now green ON METAL: cluster + multicast + ring +
+TMA + mbarriers, all engaged, correct data.  The 136/137/138 results matter as much -- those are
+the most scratch- and TMA-heavy kernels in the tree, and they are the evidence that rebasing every
+PTX kernel's scratch did not regress the paths that were already working.
+
+Five existing scratch-using metal specs were also re-run under fix B and match their HOIST-EXPECT
+exactly: 076/01 (c: 43), 076/02 (c: 99), 074/05 (c: 7 1 2 3 ...), 109/15 (out: 0 1 2 3),
+029/19 (out-c: 8).
+
+## STILL OPEN, as a hypothesis rather than a finding
+
+The PTX ISA does require a 128-byte aligned TMA destination, and Crisp packs ring slots at a
+stride of one tile's byte size with nothing checking it.  A 32-byte tile would leave slot 1 at
+base+32.  That concern is grounded in the ISA but UNDEMONSTRATED -- filed as BUG 048 with the
+failed reproduction attempt recorded, and explicitly not to be acted on until reproduced.

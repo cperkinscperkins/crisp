@@ -8,3 +8,12 @@
 (in-package :crisp.llvm-bindings)
 
 
+
+;;; FROM: src/llvm-bindings.lisp
+;;;
+;;; Endeavor 152 fix B needs to give the `.extern .shared` window symbol an explicit
+;;; alignment.  Without this the symbol takes the ABI alignment of its type -- 1 for the
+;;; [0 x i8] we declare it as -- and every scratch access inherits it.
+(defcfun ("LLVMSetAlignment" llvm-set-alignment) :void
+  (global :pointer)
+  (bytes :unsigned-int))
