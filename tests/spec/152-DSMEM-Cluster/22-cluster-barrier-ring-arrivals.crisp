@@ -1,0 +1,54 @@
+;; Endeavor 152 rung 22 — a `:mode :cluster` RING, and the `:arrivals` scaling that goes with it.
+;;
+;; THE NUMBER THE USER WRITES IS PER-WORKGROUP, AND STAYS THAT WAY.  `:arrivals` has always meant
+;; "how many transfers ONE workgroup puts through ONE slot in ONE stage".  Under `:mode :cluster`
+;; the barrier genuinely collects more arrivals than that, because peers arrive on it too — but
+;; the user does NOT write the bigger number.  The compiler multiplies.
+;;
+;; That division is deliberate and it is the same one the existing `:arrivals` rule already
+;; describes: the user states a fact they know (what their own workgroup does per stage), the
+;; compiler computes a consequence from a fact IT knows (how many workgroups are in the group).
+;; Making the user do the multiplication would mean that adding a single `cluster-size` line to a
+;; working kernel silently requires editing an unrelated barrier declaration — and forgetting it
+;; hangs the GPU.
+;;
+;; THE MULTIPLIER IS THE MULTICAST GROUP EXTENT, NOT THE CLUSTER SIZE.  For a 1-D cluster those
+;; coincide.  For a 2-D cluster they do not: the group is a row or a column, so a (2 2) cluster
+;; scales by 2, not by 4.  CUTLASS's `is_same_row_or_col` is what makes that concrete (see
+;; 00-verification-findings.md Q1c).  This rung pins the 1-D case; the 2-D case is refused at the
+;; front end today and gets its own rung when it is supported.
+;;
+;; SO THE ASSERTION IS ARITHMETIC, and it is checkable in the emitted PTX: the user writes
+;; `:arrivals 2` with a 2-workgroup cluster, and the mbarrier must be initialised with a count of
+;; 4.  A lowering that used the user's number verbatim would produce a barrier that completes one
+;; arrival early — every workgroup would proceed while a peer was still reading the slot.
+;;
+;; NEW VALIDATOR REQUIRED: validate-ptx-cluster-ring-arrivals
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cluster-ring-arrivals
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "barrier-shape rung; AD for :mode :cluster is step 7 of the plan"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_ring_arrivals (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (2 4))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))
+  (let ((tile-ring (make-scratch-matrix-ring float (2 4) :ring-count 2))
+        ;; data-arrival ring stays WORKGROUP-LOCAL even in a clustered kernel: a multicast
+        ;; completes its transaction on each destination's OWN mbarrier, so `:block` describes
+        ;; it exactly.  :arrivals 1 -> init count 1, UNSCALED.
+        (full  (make-async-barrier-ring :ring-count 2 :mode :block   :arrivals 1))
+        ;; reverse ring: peers arrive on it, so :arrivals 2 must become an init count of 4
+        ;; (2 per workgroup x 2 workgroups in the group).
+        (empty (make-async-barrier-ring :ring-count 2 :mode :cluster :arrivals 2)))
+    (tile-stride C (2 4) (grid-y grid-x)
+      (let ((slot (mod (to-ulong grid-x) (to-ulong 2))))
+        (load-tile A (ring-get tile-ring slot) (0 grid-x)
+                   :barrier (ring-get full slot) :multicast true)
+        (await (ring-get full slot))
+        (store-tile (ring-get tile-ring slot) C (grid-y grid-x))
+        (signal (ring-get empty slot))))))

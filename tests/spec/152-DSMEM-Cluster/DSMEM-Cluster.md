@@ -91,6 +91,11 @@ AND it would demonstrate the elegance of the matrix-multiply-tile-stride macro.
 ** POSSIBLE CHANGE TO EVERY RUN (also not in table above) **
 Rather than MMA for a half dozen rows and then suddenly introduce a ReLU activation function, how about EVERY operation doing BOTH MMA and a custom activation?  Where we use a second kernel for the activation?  Then at the end, Crisp subsumes that with `map-element! #'custom-activation`.  I like the story building of this, but I dislike having two kernels - maybe that's too confusing.  Anyway, an idea.
 
+** BETTER CHANGE (also not in table above) **
+Benchmark MMA tests and their development.  
+THEN benchmark  MMA+Activation, where MMA is the always the "fastest" MMA. 
+So the fused vs kernel, custom vs predetermined thing is its own benchmarking independent of MMA algorithm.
+
 
 **Ch 4, Intel.**  Not a dash.  `with-warp-specialization` genuinely works on SPV — 146/01
 compiles under `--hardware-profile=bmg --ir-target=spv`, differentiates, and has its gradients

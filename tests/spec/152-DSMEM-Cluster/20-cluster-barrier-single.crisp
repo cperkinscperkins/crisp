@@ -1,0 +1,42 @@
+;; Endeavor 152 rung 20 — `(make-async-barrier :mode :cluster)` allocates a REAL mbarrier.
+;;
+;; `:mode` answers "what kind of object is this barrier, and how far does it reach", and the
+;; three values form a ladder: `:linear` is the backend's group-async-copy handle, `:block` is a
+;; workgroup-local mbarrier, `:cluster` is an mbarrier that PEER WORKGROUPS MAY ARRIVE ON.
+;;
+;; This rung asserts only the bottom half of that: `:cluster` is a real mbarrier object, i.e. it
+;; reaches `mbarrier.init` exactly as `:block` does.  The half that DISTINGUISHES it — a remote,
+;; cluster-scoped arrive — is rung 21, because that is the part which lives in `signal`.
+;;
+;; WHY THAT SPLIT MATTERS.  A `:cluster` barrier that silently lowered as a plain `:block` one
+;; would pass every correctness test in a single-workgroup kernel and deadlock only when a peer
+;; actually tried to release it.  So the two halves are asserted separately rather than inferred
+;; from "it compiled".
+;;
+;; NEW VALIDATOR REQUIRED: validate-ptx-cluster-barrier
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cluster-barrier
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "barrier-shape rung; the AD question for :mode :cluster is step 7 of the plan"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_bar_single (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (2 4))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))
+  ;; Bound OUTSIDE tile-stride.  A barrier constructed per-tile puts its init — and any cluster
+  ;; rendezvous that publishes it — inside a loop whose trip count varies per workgroup, which
+  ;; hangs.  See rung 10's note and 00-verification-findings.md.
+  (let ((tile (make-scratch-matrix float (2 4)))
+        (bar  (make-async-barrier :mode :block))
+        (done (make-async-barrier :mode :cluster)))
+    (tile-stride C (2 4) (grid-y grid-x)
+      (load-tile A tile (0 grid-x) :barrier bar :multicast true)
+      (await bar)
+      (store-tile tile C (grid-y grid-x))
+      ;; the cluster-scoped barrier: released by peers, awaited locally
+      (signal done)
+      (await done))))
