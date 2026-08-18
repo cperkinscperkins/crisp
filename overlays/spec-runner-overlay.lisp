@@ -527,3 +527,180 @@
       ((null has4)
        (format *error-output* "FAIL: no init count of 4 — the :cluster ring's :arrivals 2 was not scaled by the group extent 2.  The barrier would complete one full round of arrivals early.~%") nil)
       (t t))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 (harness fix) — --metadata never worked on the PTX path
+;;;
+;;; SYMPTOM, reported as "152/03 is flaky": it fails under
+;;;     sbcl --non-interactive --load tests/run-specs.lisp --filter=152
+;;; but never under --use-binary, and occasionally passes in-process.
+;;;
+;;; IT IS NOT FLAKY.  It is deterministic per path, and the apparent randomness is STALE
+;;; ARTIFACTS: a .metacrisp left behind by an earlier --use-binary run is still on disk, so the
+;;; in-process run's validator finds one and passes.  Delete it and the in-process run fails
+;;; every time with `metacrisp not found (NIL)`.
+;;;
+;;; THE REAL CAUSE is a pre-existing harness gap, not anything endeavour 152 introduced.
+;;; run-single-spec-pass computes EMIT-METADATA from the flags and then passes it only to the
+;;; SPIR-V runners:
+;;;     ((eq ir-target :spirv)  (run-spec-spirv-in-process file :emit-metadata emit-metadata ...))
+;;;     ((eq ir-target :ptx)    (run-spec-ptx-in-process    file :validator validator))
+;;; so `--metadata --ir-target=ptx` has NEVER produced a sidecar in-process.  (The binary path
+;;; had the same hole; endeavour 152 patched that one earlier by sniffing the flag list, which
+;;; fixed the symptom on one path only.)
+;;;
+;;; Fixed here the way the SPIR-V path already does it: compile-crisp-file-to-ptx takes
+;;; :emit-metadata, binds *emit-metadata*, calls generate-metadata-for-file with a :ptx output
+;;; target, and returns the sidecar paths as a second value.
+;;;
+;;; ALSO: both PTX paths now DELETE the sidecars they generate, as the SPIR-V path does.  Leaving
+;;; them on disk is what made a deterministic failure look intermittent, and it is the same
+;;; staleness that made a forward validator read a `_grad` sidecar earlier in this endeavour.
+;;; =====================================================================
+
+;; tests/run-specs.lisp
+(defun compile-crisp-file-to-ptx (filepath &key (emit-metadata nil))
+  "Compiles a .crisp file to .ptx and returns (values out-path meta-paths).
+   Endeavor 152: honours :emit-metadata, mirroring compile-crisp-file-to-spirv."
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
+         (out-path (make-pathname :name base-name :type "ptx" :defaults filepath))
+         (meta-base-path (make-pathname :name base-name :type nil :defaults filepath))
+         (meta-paths nil)
+         (*standard-output* (make-broadcast-stream)))
+    (when (probe-file out-path) (delete-file out-path))
+
+    (let (;; Use a FRESH environment for each spec to ensure isolation
+          (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
+          (forms (progn
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
+                                                      :differentiate *compile-differentiate*)
+                  (let ((*package* (find-package :crisp-language)))
+                    (with-open-file (stream filepath)
+                      (loop for form = (read stream nil :eof)
+                            until (eq form :eof)
+                            collect form))))))
+      (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filepath)))
+             (builder (crisp.llvm-bindings:llvm-create-builder)))
+        (unwind-protect
+            (progn
+             (let ((crisp.compiler:*target-backend* :ptx)
+                   (crisp.compiler::*emit-metadata* emit-metadata))
+               (crisp.compiler:compile-module forms module builder nil nil nil)
+               (crisp.compiler:compile-to-ptx
+                module out-path
+                :compute-capability (crisp.compiler::ptx-compute-capability-string))
+               (when emit-metadata
+                 (setf meta-paths
+                       (crisp.compiler::generate-metadata-for-file
+                        filepath meta-base-path
+                        :output-targets (list (list :ptx out-path))
+                        :forms forms)))))
+          (crisp.llvm-bindings:llvm-dispose-builder builder)
+          (crisp.llvm-bindings:llvm-dispose-module module))))
+
+    (if (probe-file out-path)
+        (values out-path meta-paths)
+        (values nil nil))))
+
+;; tests/run-specs.lisp
+(defun run-spec-ptx-in-process (file &key (emit-metadata nil) (validator nil))
+  "Endeavor 152: accepts :emit-metadata so a spec combining --metadata with --ir-target=ptx
+   actually gets a sidecar.  The validator keeps the PTX-path arity (FILE PTX-TEXT); validators
+   that assert on metadata locate the sidecar themselves."
+  (handler-case
+      (multiple-value-bind (out-path meta-paths)
+          (compile-crisp-file-to-ptx file :emit-metadata emit-metadata)
+        (if out-path
+            (let ((res (if validator
+                           (let* ((ptx-content (uiop:read-file-string out-path))
+                                  (sym (if (symbolp validator) validator
+                                           (find-symbol (string-upcase (string validator)) :crisp.spec-runner))))
+                             (if (and sym (fboundp sym))
+                                 (funcall sym file ptx-content)
+                                 (progn
+                                   (format *error-output* "FAIL: Validator ~a not found~%" validator)
+                                   nil)))
+                           t)))
+              (when res
+                (format t "PASS (Generated ~a)~%" (file-namestring out-path)))
+              ;; Clean BOTH artifacts.  Leaving sidecars behind is what made this failure look
+              ;; intermittent in the first place.
+              (unless *keep-work*
+                (when (probe-file out-path) (delete-file out-path))
+                (dolist (mp (if (listp meta-paths) meta-paths (list meta-paths)))
+                  (when (and mp (probe-file mp)) (delete-file mp))))
+              res)
+            (progn (format *error-output* "FAIL (No PTX generated)~%") nil)))
+    (error (e)
+      (uiop:print-backtrace :condition e)
+      (format *error-output* "FAIL (Condition: ~a)~%" e)
+      nil)))
+
+;; tests/run-specs.lisp  (patched call site: pass :emit-metadata to the PTX in-process runner)
+
+
+;; tests/run-specs.lisp  (verbatim except ONE call site: the PTX in-process runner now
+;; receives :emit-metadata, which the dispatcher had always computed and then passed only
+;; to the SPIR-V runners.)
+(defun run-single-spec-pass (file flags &optional validator)
+  "Execute a single pass of a spec file with specific flags active.
+   Extended: --runtime-checks routes to run-spec-runtime-checks-pass;
+   --*-math-precision=KEY routes to run-spec-precision-pass."
+  ;; NEW: --runtime-checks is handled as a dedicated path — compile with
+  ;; runtime assertions enabled and call the validator with the IR string.
+  (when (member "--runtime-checks" flags :test #'string=)
+    (format t "(RT-Checks)... ")
+    (return-from run-single-spec-pass
+      (run-spec-runtime-checks-pass file validator)))
+
+  ;; Endeavor 126: precision runs — compile and hand the IR to a precision validator.
+  (when (some (lambda (f) (or (search "--force-math-precision=" f)
+                              (search "--math-precision=" f)
+                              (search "--denormal-handling=" f)))
+              flags)
+    (format t "(Precision)... ")
+    (return-from run-single-spec-pass
+      (run-spec-precision-pass file flags validator)))
+
+  ;; Original dispatch (unchanged from base run-specs.lisp):
+  (let ((*use-binary*         (or *use-binary*         (member "--use-binary"    flags :test #'string=)))
+        (*compile-single-pass* (or *compile-single-pass* (member "--single-pass"  flags :test #'string=)))
+        (*compile-debug*       (or *compile-debug*       (member "--debug"        flags :test #'string=)))
+        (*compile-differentiate* (or *compile-differentiate* (member "--differentiate" flags :test #'string=)))
+        ;; Endeavor 137: honor --ir-target-arch=<ID> in TEST-WITH flags so the in-process
+        ;; PTX/SPV compile gates + compute-capability match the CLI (else :block gates on sm_80).
+        (crisp.compiler::*ir-target-arch*
+          (let ((af (find-if (lambda (f) (and (stringp f) (search "--ir-target-arch=" f))) flags)))
+            (if af
+                (intern (string-upcase (subseq af (length "--ir-target-arch="))) :keyword)
+                crisp.compiler::*ir-target-arch*)))
+        (emit-metadata (member "--metadata" flags :test #'string=))
+        (ir-target (cond
+                     ((member "--ir-target=spv"    flags :test #'string=) :spirv)
+                     ((member "--ir-target=ptx"    flags :test #'string=) :ptx)
+                     ((member "--ir-target=llvmir" flags :test #'string=) :llvmir)
+                     ((member "--metadata"         flags :test #'string=) :spirv)
+                     (t nil))))
+
+    ;; Endeavor 144: skip a SPIR-V pass when this machine cannot do one — either because
+    ;; SKIP_SPIRV_TESTS says so, or because the translator is not actually invocable (a
+    ;; CUDA-only box: bin/ is gitignored, so llvm-spirv is simply absent).  Detection keeps
+    ;; the three SPIR-V entry points (here, COMPILE-WITH, EXPECT-STDERR) consistent.
+    (when (and (eq ir-target :spirv)
+               (or (and (uiop:getenv "SKIP_SPIRV_TESTS") t)
+                   (not (spirv-toolchain-available-p))))
+      (format t "SKIP (no SPIR-V toolchain on this machine)~%")
+      (return-from run-single-spec-pass t))
+
+    (if *use-binary*
+        (cond
+          ((eq ir-target :spirv)  (run-spec-spirv-binary file :emit-metadata emit-metadata :validator validator))
+          ((eq ir-target :ptx)    (run-spec-ptx-binary file :validator validator :flags flags))
+          ((eq ir-target :llvmir) (run-spec-llvmir-binary file :validator validator))
+          (t (run-spec-binary file)))
+        (cond
+          ((eq ir-target :spirv)  (run-spec-spirv-in-process file :emit-metadata emit-metadata :validator validator))
+          ((eq ir-target :ptx)    (run-spec-ptx-in-process file :emit-metadata emit-metadata :validator validator))
+          ((eq ir-target :llvmir) (run-spec-llvmir-in-process file :validator validator))
+          (t (run-spec-lisp-loader file))))))
