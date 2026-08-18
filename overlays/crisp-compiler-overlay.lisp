@@ -3210,12 +3210,27 @@
         :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy), :block (a workgroup-local mbarrier) or :cluster (an mbarrier peers may arrive on)" bmode)
         :source-location location))
     (when (eq bmode :cluster)
+      ;; A BACKWARD kernel downgrades rather than refusing.  The AD walk replays the forward's
+      ;; bindings, so the barrier appears in the _GRAD twin -- but cluster-size is a DISPATCH
+      ;; declaration and deliberately does NOT propagate (endeavour 146: a schedule is not
+      ;; mathematics).  So a backward legitimately has a cluster barrier and legitimately has no
+      ;; cluster, and a workgroup-local mbarrier is exactly right for it: it runs no multicast
+      ;; pipeline and has no peers to co-ordinate with.  Same principle as %ad-canonicalize-wgmma
+      ;; substituting sync MMA for wgmma.
+      ;;
+      ;; THIS BRANCH WAS LOST AND RESTORED.  Step 10c rebuilt this function from an older copy
+      ;; that predated it, which made every :mode :cluster spec fail under --differentiate on the
+      ;; endeavour's own refusal.  Kept ahead of the refusal below so the ordering cannot drift.
+      (when *current-kernel-is-backward*
+        (log:info "backward kernel: downgrading :mode :cluster to :block (a schedule does not propagate into a derivative)")
+        (setf bmode :block))
       ;; :cluster asserts that PEERS EXIST.  With no cluster a remote arrive resolves to the
       ;; signaller's own barrier — releasing something nobody waits on while the intended peer
       ;; waits forever.  At extent 1 the two addresses coincide, so such a kernel passes small
       ;; tests and hangs at scale; hence a hard error rather than a degrade.
-      (unless (and *current-kernel-cluster-dims*
-                   (> (reduce (function *) *current-kernel-cluster-dims*) 1))
+      (unless (or (eq bmode :block)
+                  (and *current-kernel-cluster-dims*
+                       (> (reduce (function *) *current-kernel-cluster-dims*) 1)))
         (error 'crisp-compiler-error
           :message ":mode :cluster requires the kernel to declare a cluster of more than one workgroup.  Add (cluster-size :set-to N) to the declare block.  A cluster barrier's whole meaning is that PEER workgroups may arrive on it; with no peers the remote arrive would resolve to this workgroup's own barrier, releasing a barrier nobody is waiting on."
           :source-location location))
@@ -3224,8 +3239,9 @@
           :message (format nil ":mode :cluster currently supports only a ONE-DIMENSIONAL cluster, but cluster-size is ~a.  With more than one clustered axis the arrival group is a row or a column rather than the whole cluster, so both the peer set and the :arrivals multiplier become rank-dependent."
                            *current-kernel-cluster-dims*)
           :source-location location))
-      (setf clusterp t
-            bmode :block))
+      (when (eq bmode :cluster)
+        (setf clusterp t
+              bmode :block)))
     ;; :block (which :cluster has now become) is NVIDIA-only.
     (when (eq bmode :block)
       (case crisp.compiler:*target-backend*
@@ -3758,3 +3774,610 @@
                                 (llvm-build-int-to-ptr builder comp exp-ty "demoted_param_to_ptr")))
                           comp)))
       components))
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 10a — `:multicast` generalised from 1-D to N-D clusters
+;;;
+;;; WHY THIS MATTERS FOR THE BENCHMARK.  chap3_wgmma's inner loop is ALREADY the classic
+;;; 2-D multicast shape, and nobody arranged that -- it falls out of matmul:
+;;;
+;;;     (load-tile A (ring-get A-ring slot) (grid-y grid-k) ...)   ; mentions grid-y, not grid-x
+;;;     (load-tile B (ring-get B-ring slot) (grid-x grid-k) ...)   ; mentions grid-x, not grid-y
+;;;
+;;; A is identical for every workgroup in a cluster COLUMN, B for every workgroup in a cluster
+;;; ROW.  With a 1-D cluster only one of the two can be served; with a 2-D cluster both are,
+;;; which is the whole reason CUTLASS clusters in two dimensions.
+;;;
+;;; THE ANALYSIS WAS ALREADY THERE.  %validate-multicast-request already asked, per clustered
+;;; axis, "do these tile coordinates mention that axis's tile-stride variable?"  It threw the
+;;; answer away and refused.  KEEPING the answer is the generalisation:
+;;;
+;;;   coords do NOT mention axis a   -> tile is INVARIANT along a -> a joins the multicast group
+;;;   coords DO mention axis a       -> tiles genuinely differ    -> a stays out of the group
+;;;   no invariant axes              -> refuse, exactly as before
+;;;   every clustered axis invariant -> group is the whole cluster == the old 1-D behaviour
+;;;
+;;; So 1-D is not special-cased, it is a corner of the general case -- which is the reason to
+;;; believe this generalisation rather than a second code path beside the old one.
+;;;
+;;; WHAT STOPS BEING A CONSTANT.  With a 1-D cluster the ctaMask was the whole cluster and the
+;;; issuing leader was ctarank 0, both compile-time.  In N-D the group is a SLICE, so both
+;;; depend on the workgroup's position along the axes it is NOT grouped on.  They stay cheap:
+;;; a compile-time PATTERN shifted by a runtime offset, plus one equality test per group axis.
+;;;
+;;;     rank    = c0 + c1*d0 + c2*d0*d1              (Crisp axis order == PTX x,y,z order)
+;;;     PATTERN = OR over every coordinate combination on the GROUP axes of (1 << its rank)
+;;;     shift   = SUM over the NON-group axes of ctaid[a] * stride[a]
+;;;     mask    = PATTERN << shift
+;;;     leader  = AND over the group axes of (ctaid[a] == 0)
+;;;
+;;; For a (Cy Cx) cluster that reduces to exactly the CUTLASS arrangement -- A masked to its
+;;; row with leader ctaid.x==0, B to its column with leader ctaid.y==0 -- but it is DERIVED,
+;;; so a (4 2) or a 3-D cluster needs no further cases.
+;;; =====================================================================
+
+;; src/analysis/control.lisp
+(defun %cluster-axis-strides (dims)
+  "Rank strides for a cluster shape.  PTX linearises %cluster_ctarank with x fastest, and
+   Crisp's cluster-size list is in that same order, so stride[0]=1, stride[1]=d0, ..."
+  (let ((s 1))
+    (loop for d in dims collect (prog1 s (setf s (* s d))))))
+
+;; src/analysis/control.lisp
+(defun %cluster-axis-sreg (axis)
+  "NVVM special-register name for a cluster axis index."
+  (nth axis (list "cluster.ctaid.x" "cluster.ctaid.y" "cluster.ctaid.z")))
+
+;; src/analysis/control.lisp
+(defun %multicast-mask-pattern (dims group-axes)
+  "The ctaMask for a multicast group anchored at the cluster origin, as a compile-time integer.
+
+   Every combination of coordinates on the GROUP axes contributes one bit, at that
+   combination's linearised rank.  Shifting this pattern by a workgroup's position on the
+   NON-group axes slides it onto that workgroup's own slice of the cluster."
+  (let ((strides (%cluster-axis-strides dims))
+        (pattern 0))
+    (labels ((walk (axes acc)
+               (if (null axes)
+                   (setf pattern (logior pattern (ash 1 acc)))
+                   (let ((a (first axes)))
+                     (dotimes (c (nth a dims))
+                       (walk (rest axes) (+ acc (* c (nth a strides)))))))))
+      (walk group-axes 0))
+    pattern))
+
+;; src/analysis/control.lisp
+(defun %multicast-group-extent (dims group-axes)
+  "How many workgroups one multicast serves: the product of the group axes' extents."
+  (reduce (function *) (mapcar (lambda (a) (nth a dims)) group-axes) :initial-value 1))
+
+;; src/analysis/control.lisp
+(defun %multicast-axis-plan (dims grid-list location &key (errorp t))
+  "Classify each clustered axis as INVARIANT (the tile is identical across it, so the axis
+   joins the multicast group) or VARYING (the workgroups want different tiles).
+
+   Returns a plist (:dims :group-axes :extent :pattern), or NIL when ERRORP is false and the
+   request cannot be honoured.  This is the SINGLE place the group is decided; the validator,
+   the analyzer and codegen all read its answer rather than each re-deriving it."
+  (let ((group-axes '())
+        (varying '()))
+    (loop for d in dims
+          for i from 0
+          when (> d 1)
+          do (let ((axis-var (nth i *ts-grid-bindings*)))
+               (cond
+                 ((null axis-var)
+                  (when errorp
+                    (error 'crisp-compiler-error
+                           :message (format nil ":multicast could not be verified: the cluster is ~a (extent ~a on axis ~a) but no enclosing tile-stride binds a loop variable for that axis, so there is nothing to prove the tile is identical across the cluster against.  Use :multicast only on a load inside a tile-stride whose rank covers the cluster."
+                                            dims d i)
+                           :source-location location))
+                  (return-from %multicast-axis-plan nil))
+                 ((%form-mentions-symbol-p grid-list axis-var) (push i varying))
+                 (t (push i group-axes)))))
+    (setf group-axes (nreverse group-axes)
+          varying    (nreverse varying))
+    (when (null group-axes)
+      (when errorp
+        (error 'crisp-compiler-error
+               :message (format nil ":multicast is not possible here -- the tile coordinates ~a vary along EVERY clustered axis ~a, so each workgroup of the cluster wants a different tile and one fetch cannot serve them; multicasting would deliver one workgroup's tile to another.  Drop :multicast, or cluster on an axis this load does not vary along (in a matmul, A does not vary along N and B does not vary along M)."
+                              grid-list varying)
+               :source-location location))
+      (return-from %multicast-axis-plan nil))
+    (let ((plan (list :dims dims
+                      :group-axes group-axes
+                      :extent  (%multicast-group-extent dims group-axes)
+                      :pattern (%multicast-mask-pattern dims group-axes))))
+      (log:info "multicast plan: cluster ~a, invariant axes ~a (group of ~a), mask pattern ~x"
+                dims group-axes (getf plan :extent) (getf plan :pattern))
+      plan)))
+
+;; src/analysis/control.lisp
+(defun %validate-multicast-request (grid-list location)
+  "Refuse a `:multicast` that cannot be honoured, naming the reason.
+
+   `:multicast` is an ASSERTION, not a directive: the user says 'I expect this load to
+   multicast' and the compiler either does it or refuses.  A load that quietly declined would
+   be a silent bandwidth regression no correctness test can see -- which is why the key is
+   explicit rather than inferred.
+
+   Endeavor 152 step 10a: the axis classification now lives in %multicast-axis-plan, which
+   accepts an N-D cluster provided the tile is invariant along at least one clustered axis."
+  (let ((dims *current-kernel-cluster-dims*))
+    (unless dims
+      (error 'crisp-compiler-error
+             :message ":multicast requires the kernel to declare a cluster.  Add (cluster-size :set-to N) to the kernel's declare block -- without a cluster there is no group of workgroups to deliver the tile to, so the request cannot be honoured.  This is a hard error rather than a silent fallback because a load-tile that quietly declines to multicast still computes the correct answer, at exactly the bandwidth the declaration was meant to avoid."
+             :source-location location))
+    (unless (> (reduce (function *) dims) 1)
+      (error 'crisp-compiler-error
+             :message (format nil ":multicast requires a cluster of more than one workgroup, but cluster-size is ~a.  A cluster of one has nobody to deliver to." dims)
+             :source-location location))
+    (%multicast-axis-plan dims grid-list location :errorp t)))
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 10b — the N-D multicast MASK and LEADER, in codegen
+;;;
+;;; With a 1-D cluster both were compile-time constants: the mask was every CTA in the
+;;; cluster, and the leader was ctarank 0.  In N-D the group is a SLICE of the cluster, so
+;;; each depends on where the workgroup sits on the axes it is NOT grouped along.
+;;;
+;;; The cost is two instructions and a special-register read per non-group axis, which is
+;;; nothing against a bulk tensor copy -- and crucially the PATTERN itself stays compile-time,
+;;; so no loop or table lookup appears in the kernel.
+;;; =====================================================================
+
+;; src/codegen.lisp
+(defun %gen-multicast-mask-value (builder module plan)
+  "The i16 ctaMask for THIS workgroup's multicast group: PATTERN << (position on the
+   non-group axes).  When every clustered axis is in the group -- the 1-D case -- there are no
+   non-group axes, the shift vanishes and this folds back to the old compile-time constant."
+  (let* ((i32     (llvm-int32-type))
+         (i16     (llvm-int16-type))
+         (dims    (getf plan :dims))
+         (group   (getf plan :group-axes))
+         (pattern (getf plan :pattern))
+         (strides (%cluster-axis-strides dims))
+         (shift   nil))
+    (loop for d in dims
+          for a from 0
+          when (and (> d 1) (not (member a group)))
+          do (let* ((c    (%ptx-read-warp-sreg builder module (%cluster-axis-sreg a)))
+                    (term (llvm-build-mul builder c (llvm-const-int i32 (nth a strides) nil)
+                                          "mc_shift_term")))
+               (setf shift (if shift (llvm-build-add builder shift term "mc_shift") term))))
+    (if (null shift)
+        (llvm-const-int i16 pattern nil)
+        (let* ((pat32 (llvm-const-int i32 pattern nil))
+               (sh    (crisp.llvm-bindings::llvm-build-shl builder pat32 shift "mc_mask32")))
+          (llvm-build-trunc builder sh i16 "mc_mask")))))
+
+;; src/codegen.lisp
+(defun %gen-multicast-leader-pred (builder module plan)
+  "True in exactly ONE workgroup per multicast group: the one at coordinate 0 on every group
+   axis.  For a 1-D cluster that is ctarank 0, which is what this replaced."
+  (let* ((i32   (llvm-int32-type))
+         (dims  (getf plan :dims))
+         (group (getf plan :group-axes))
+         (pred  nil))
+    (loop for a in group
+          when (> (nth a dims) 1)
+          do (let* ((c   (%ptx-read-warp-sreg builder module (%cluster-axis-sreg a)))
+                    (is0 (llvm-build-icmp builder +llvm-int-eq+ c (llvm-const-int i32 0 nil)
+                                          (format nil "mc_axis~a_is0" a))))
+               (setf pred (if pred (crisp.llvm-bindings::llvm-build-and builder pred is0 "mc_leader") is0))))
+    (or pred (llvm-const-int (llvm-int1-type) 1 nil))))
+
+;; src/codegen.lisp
+(defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1
+                                         &optional (mcast-mask 0) (mcast-p nil))
+  "Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,
+   cachehint, flag_mcast, flag_cachehint).
+
+   Endeavor 152: the intrinsic ALREADY carried the multicast operands -- an i16 destination
+   mask and an i1 enable flag -- which Endeavor 137 passed as immarg 0.  Multicast is therefore
+   plumbing those two, not a new instruction: with the flag set the emitted PTX gains
+   `.multicast::cluster` and the ctaMask operand."
+  (let* ((fn-name  "llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d")
+         (void     (llvm-void-type))
+         (i8       (llvm-int8-type))
+         (i16      (llvm-int16-type))
+         (i32      (llvm-int32-type))
+         (i64      (llvm-int64-type))
+         (i1       (llvm-int1-type))
+         (ptr-as3  (llvm-pointer-type i8 3))
+         (ptr-gen  (llvm-pointer-type i8 0))
+         (n        9)
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count n)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) ptr-as3)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 2) ptr-gen)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 3) i32)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 4) i32)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 5) i16)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 6) i64)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 7) i1)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 8) i1)
+                        arr))
+         (fn-type  (llvm-function-type void param-types n nil))
+         (fn       (%spirv-get-or-create-fn module fn-name void param-types n))
+         (args     (cffi:foreign-alloc 'llvm-value-ref :count n)))
+    (setf (cffi:mem-aref args 'llvm-value-ref 0) dst-smem-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 1) mbar-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 2) tensormap-ptr)
+    (setf (cffi:mem-aref args 'llvm-value-ref 3) coord0)
+    (setf (cffi:mem-aref args 'llvm-value-ref 4) coord1)
+    ;; Endeavor 152 step 10b: MCAST-MASK is an integer for a compile-time mask (the 1-D
+    ;; case) or an already-built i16 LLVM value for an N-D group, whose mask depends on the
+    ;; workgroup's position in the cluster.  Accepting both keeps every existing caller.
+    (setf (cffi:mem-aref args 'llvm-value-ref 5)
+          (if (integerp mcast-mask) (llvm-const-int i16 mcast-mask nil) mcast-mask))
+    (setf (cffi:mem-aref args 'llvm-value-ref 6) (llvm-const-int i64 0 nil))
+    (setf (cffi:mem-aref args 'llvm-value-ref 7) (llvm-const-int i1 (if mcast-p 1 0) nil))
+    (setf (cffi:mem-aref args 'llvm-value-ref 8) (llvm-const-int i1 0 nil))
+    (let ((call (llvm-build-call2 builder fn-type fn args n "")))
+      (cffi:foreign-free args)
+      (cffi:foreign-free param-types)
+      call)))
+
+;; src/codegen.lisp
+
+;; src/codegen.lisp
+;; Endeavor 152 step 10b: mask/leader now come from the multicast axis plan.
+(defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 137 + 140 + 152 — one bulk TMA copy issued by a single elected leader.
+   Leader = laneid==0 (the producer warp's lane 0) inside a warp-spec role block, else global
+   tid==0.
+
+   Endeavor 152 splits the guard when the copy is a MULTICAST.  `expect_tx` announces the bytes
+   a workgroup EXPECTS TO RECEIVE, so every destination workgroup must run it on its own
+   mbarrier; only the leader WORKGROUP (ctarank 0) issues the copy that serves them all.
+   Keeping both inside one guard -- correct for an ordinary per-workgroup load -- would leave
+   every non-issuing workgroup waiting on a barrier that was never told to expect anything."
+  (multiple-value-bind (dv di dst-ptr)
+      (generate-node-ir (semantic-nvvm-tma-tile-copy-dst-aref-node node) builder module var-env
+                        di-builder di-scope location-map)
+    (declare (ignore dv di))
+    (multiple-value-bind (sv si src-ptr)
+        (generate-node-ir (semantic-nvvm-tma-tile-copy-src-aref-node node) builder module var-env
+                          di-builder di-scope location-map)
+      (declare (ignore sv si))
+      (unless (and dst-ptr src-ptr)
+        (error "nvvm-tma-tile-copy: aref did not yield an element pointer (dst ~A src ~A)" dst-ptr src-ptr))
+      (let* ((i32-type   (llvm-int32-type))
+             (ptr-as3    (llvm-pointer-type (llvm-int8-type) 3))
+             (ptr-gen    (llvm-pointer-type (llvm-int8-type) 0))
+             (ptr-glob   (llvm-pointer-type (llvm-int8-type) 1))
+             (desc-ptr   (%tma-lookup-descriptor-ptr builder var-env
+                          (semantic-nvvm-tma-tile-copy-src-name node) ptr-glob))
+             (tmap-ptr   (llvm-build-addrspace-cast builder (or desc-ptr src-ptr) ptr-gen "tma_map"))
+             (barrier-i  (generate-node-ir (semantic-nvvm-tma-tile-copy-barrier-node node) builder module var-env
+                                           di-builder di-scope location-map))
+             (mbar-ptr   (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
+             (coord-vals (loop for cn in (semantic-nvvm-tma-tile-copy-coord-nodes node)
+                               collect (%coerce-to-i32 builder
+                                          (generate-node-ir cn builder module var-env
+                                                             di-builder di-scope location-map))))
+             (coord0     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))
+             (coord1     (or (first coord-vals)  (llvm-const-int i32-type 0 nil)))
+             (mc-plan    (gethash node *tma-copy-multicast*))
+             (mc-extent  (and mc-plan (getf mc-plan :extent)))
+             (ws-leader  (gethash node *tma-copy-ws-leader*))
+             (is-leader  (if ws-leader
+                             (llvm-build-icmp builder +llvm-int-eq+
+                                (%ptx-read-warp-sreg builder module "laneid")
+                                (llvm-const-int i32-type 0 nil) "is_lane0")
+                             (let* ((tid-x (%gen-nvvm-read-tid-x builder module))
+                                    (tid-y (%gen-nvvm-read-tid-y builder module))
+                                    (tid-z (%gen-nvvm-read-tid-z builder module))
+                                    (tid-sum (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz")))
+                               (llvm-build-icmp builder +llvm-int-eq+ tid-sum
+                                  (llvm-const-int i32-type 0 nil) "is_tid_0"))))
+             (issue-bb   (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_issue"))
+             (cont-bb    (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_cont")))
+        (llvm-build-cond-br builder is-leader issue-bb cont-bb)
+        (llvm-position-builder-at-end builder issue-bb)
+        ;; expect_tx: EVERY workgroup, on its own mbarrier -- including the ones that will not
+        ;; issue the multicast, because they are still receiving the bytes.
+        (let* ((len-val   (generate-node-ir (semantic-nvvm-tma-tile-copy-tile-length-node node) builder module var-env
+                                            di-builder di-scope location-map))
+               (elem-b    (semantic-nvvm-tma-tile-copy-elem-bytes node))
+               (len-i32   (%coerce-to-i32 builder len-val))
+               (tx-bytes  (llvm-build-mul builder len-i32 (llvm-const-int i32-type elem-b nil) "tma_tx_bytes"))
+               (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr")))
+          (%gen-nvvm-mbarrier-arrive-expect-tx builder mbar-addr tx-bytes))
+        (cond
+          (mc-extent
+           ;; Multicast: exactly ONE workgroup per group issues.  Which workgroup, and which
+           ;; peers receive, both depend on the group's shape -- see %multicast-axis-plan.
+           (let* ((parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                  ;; Leader predicate is built in the CURRENT block, before the branch.
+                  (is-mc-leader (%gen-multicast-leader-pred builder module mc-plan))
+                  (mc-bb     (llvm-append-basic-block parent "tma_mcast_issue"))
+                  (mc-cont   (llvm-append-basic-block parent "tma_mcast_cont")))
+             (log:info "TMA copy: multicast group axes ~a of cluster ~a (serves ~a workgroups, pattern ~x)"
+                       (getf mc-plan :group-axes) (getf mc-plan :dims)
+                       (getf mc-plan :extent) (getf mc-plan :pattern))
+             (llvm-build-cond-br builder is-mc-leader mc-bb mc-cont)
+             (llvm-position-builder-at-end builder mc-bb)
+             ;; Mask is built INSIDE mc-bb -- the builder is positioned there, so the sreg
+             ;; reads and the shift land on the issuing path only.
+             (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1
+                                               (%gen-multicast-mask-value builder module mc-plan) t)
+             (llvm-build-br builder mc-cont)
+             (llvm-position-builder-at-end builder mc-cont)))
+          (t
+           (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1)))
+        (llvm-build-br builder cont-bb)
+        (llvm-position-builder-at-end builder cont-bb)
+        (values nil nil)))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 — the COMPILER-EMITTED CLUSTER ENTRY FENCE
+;;;
+;;; FOUND ON METAL: rung 11 compiled, launched, and died with `unspecified launch
+;;; failure`.  A control run of the identical kernel with `:multicast` removed ran
+;;; correctly, so the fault was multicast-specific rather than the spec's geometry.
+;;;
+;;; THE CAUSE IS THE ONE THE DESIGN NAMED AND I THEN SKIPPED.  From the sync-cluster
+;;; discussion, the first of two obligatory compiler-emitted fences:
+;;;
+;;;     "After mbarrier init, before the mainloop.  CTA 0 can reach the loop and
+;;;      remote-arrive on CTA 1's barrier before CTA 1 has initialized it."
+;;;
+;;; The emitted PTX was exactly that race:
+;;;
+;;;     mbarrier.init.shared.b64  [__crisp_mbar_1], %r22;
+;;;     fence.proxy.async.shared::cta;
+;;;     bar.sync 0;                                  <- WORKGROUP sync only
+;;;     cp.async.bulk.tensor...multicast::cluster    <- writes into PEER shared memory
+;;;
+;;; with ZERO `barrier.cluster` in the module.  `bar.sync` orders the threads of one
+;;; workgroup; it says nothing about a PEER workgroup.  So the leader could multicast into
+;;; a peer's SMEM and complete a transaction on an mbarrier that peer had not yet
+;;; initialised.
+;;;
+;;; This is why the fence is an OBLIGATION rather than a user-facing choice: the failure is
+;;; a launch fault at best, and silent corruption at worst, and nothing about the source
+;;; suggests it.  Q2 of Phase 0 verified the fence is sufficient on its own -- the cluster
+;;; barrier subsumes intra-workgroup convergence -- so no extra sync-workgroup is needed.
+;;;
+;;; GATED so non-clustered kernels are byte-identical: emitted only when some kernel in
+;;; this module declares a cluster extent > 1.  *kernel-dispatch-declarations* is cleared
+;;; per module, so the scan is correctly module-scoped.
+;;; =====================================================================
+
+;; src/codegen.lisp  (new)
+
+;; src/analysis/control.lisp
+(defun analyze-load-tile-expression (expr env context location)
+  "Endeavor 152: validates a `:multicast` assertion against the kernel's cluster shape and the
+   enclosing tile-stride's axis bindings, then delegates to load-tile-at.
+
+   Step 10a: what gets published to the TMA analyzer is now the multicast AXIS PLAN, not the
+   raw cluster dims -- codegen needs to know WHICH axes form the group, since in an N-D cluster
+   the group is a slice rather than the whole cluster."
+  (let* ((src (second expr))
+         (tile (third expr))
+         (grid-list (fourth expr))
+         (key-args (nthcdr 4 expr))
+         (cl-pkg (find-package :crisp-language))
+         (mul-sym (intern "*" cl-pkg))
+         (extents-sym (intern "EXTENTS~" cl-pkg))
+         (aref-sym (intern "~" cl-pkg))
+         (mcast-p (%multicast-requested-p key-args))
+         (mc-plan nil))
+    (unless (and (listp grid-list) (>= (length grid-list) 1))
+      (error 'crisp-compiler-error :message "load-tile: origin must be a non-empty list of grid coords" :source-location location))
+    (when mcast-p (setf mc-plan (%validate-multicast-request grid-list location)))
+    (let ((pixel-coords
+           (loop for g in grid-list
+                 for i from 0
+                 collect (list mul-sym (list (intern "TO-ULONG" cl-pkg) g)
+                               (list aref-sym (list extents-sym tile) i)))))
+      (let ((delegated-keys (loop for (k v) on key-args by (function cddr)
+                                  unless (eq k :multicast) append (list k v)))
+            (*multicast-cluster-dims* mc-plan))
+        (analyze-load-tile-at-expression
+         (append (list (intern "LOAD-TILE-AT" cl-pkg) src tile pixel-coords) delegated-keys)
+         env context location)))))
+
+;; src/analysis/control.lisp
+(defun %parse-async-barrier-keys (expr location)
+  "Parse (make-async-barrier &key mode) -> barrier-mode.
+
+   Step 10c: :mode :cluster accepts an N-D cluster; arrivals are cluster-wide (see below).
+
+   Endeavor 152: `:cluster` is accepted, gated, and then RETURNED AS :block — a cluster barrier
+   is a workgroup-local mbarrier that peers may additionally arrive on, so every existing
+   consumer of the mode should treat it as :block.  The reach is recorded separately, against
+   this barrier's let-binding name, in *cluster-barrier-bindings*."
+  (let ((keys (rest expr))
+        (bmode :linear)
+        (clusterp nil))
+    (unless (evenp (length keys))
+      (error 'crisp-compiler-error
+        :message "make-async-barrier: keys must be :mode value pairs"
+        :source-location location))
+    (loop for (k v) on keys by (function cddr) do
+      (cond
+        ((eq k :mode) (setf bmode v))
+        ((eq k :type)
+         (error 'crisp-compiler-error
+           :message "make-async-barrier: the :type key was removed (def-topology is set aside); use only :mode"
+           :source-location location))
+        (t (error 'crisp-compiler-error
+             :message (format nil "make-async-barrier: unknown key ~S (expected :mode)" k)
+             :source-location location))))
+    (unless (member bmode (list :linear :block :cluster))
+      (error 'crisp-compiler-error
+        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy), :block (a workgroup-local mbarrier) or :cluster (an mbarrier peers may arrive on)" bmode)
+        :source-location location))
+    (when (eq bmode :cluster)
+      ;; :cluster asserts that PEERS EXIST.  With no cluster a remote arrive resolves to the
+      ;; signaller's own barrier — releasing something nobody waits on while the intended peer
+      ;; waits forever.  At extent 1 the two addresses coincide, so such a kernel passes small
+      ;; tests and hangs at scale; hence a hard error rather than a degrade.
+      (unless (and *current-kernel-cluster-dims*
+                   (> (reduce (function *) *current-kernel-cluster-dims*) 1))
+        (error 'crisp-compiler-error
+          :message ":mode :cluster requires the kernel to declare a cluster of more than one workgroup.  Add (cluster-size :set-to N) to the declare block.  A cluster barrier's whole meaning is that PEER workgroups may arrive on it; with no peers the remote arrive would resolve to this workgroup's own barrier, releasing a barrier nobody is waiting on."
+          :source-location location))
+      ;; Endeavor 152 step 10c: the 1-D restriction is LIFTED.  A :mode :cluster barrier now
+      ;; collects arrivals from the WHOLE cluster regardless of its rank, which is deliberately
+      ;; the simpler of the two available answers.  The precise alternative -- scoping each
+      ;; barrier to the multicast group that feeds it -- is not merely more code: in a 2-D
+      ;; matmul cluster A's group is a ROW and B's is a COLUMN, so a single shared `empty` ring
+      ;; cannot be scoped to both and the kernel would need one ring per operand.  Full-cluster
+      ;; arrivals over-synchronise slightly (a row neighbour waits on a column neighbour that
+      ;; never touched its slot) and cost nothing in correctness.  If that shows up in the
+      ;; benchmark, per-operand rings are the contained follow-up to measure against it.
+      (setf clusterp t
+            bmode :block))
+    ;; :block (which :cluster has now become) is NVIDIA-only.
+    (when (eq bmode :block)
+      (case crisp.compiler:*target-backend*
+        (:spirv
+         (error 'crisp-compiler-error
+           :message ":mode :block is not supported on Intel / SPIR-V — Intel's fast 2D path (LSC block loads) loads global into registers directly and is not a barrier mode, and Intel has no workgroup-cluster hardware at all, so :mode :cluster is unavailable for the same reason. Use :mode :linear, or the direct block-load path."
+           :source-location location))
+        (:ptx
+         (unless (%arch-supports-block-p (resolved-target-arch))
+           (error 'crisp-compiler-error
+             :message (format nil ":mode :block / :cluster needs a Hopper-or-newer NVIDIA arch (sm_90+); got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
+                              (resolved-target-arch))
+             :source-location location)))))
+    ;; Record the reach against this barrier's binding name.  The let analyzer set
+    ;; current-binding-name before analyzing us, which is the same hook *async-barrier-modes*
+    ;; uses for the mode itself.
+    (when clusterp
+      (let ((bname (and *compiler-context*
+                        (compiler-context-current-binding-name *compiler-context*))))
+        (when bname
+          (log:info "barrier ~a declared :mode :cluster (peers may arrive)" bname)
+          (setf (gethash bname *cluster-barrier-bindings*) t))))
+    bmode))
+
+;; --- tag the constructed node so codegen can scale the init count ----------------------
+
+
+;; src/codegen.lisp
+(defun %module-cluster-extent ()
+  "How many workgroups a :mode :cluster barrier must expect arrivals from.
+
+   Endeavor 152 step 10c: this is now the FULL cluster size (the product of every axis), not
+   a 1-D extent.  That follows directly from the decision above -- if peers arrive cluster-wide
+   then the count must be cluster-wide too.  Getting these two out of step is precisely the
+   failure that hangs a GPU: a barrier initialised for fewer arrivals than it receives releases
+   early, one initialised for more never releases at all.
+
+   *kernel-dispatch-declarations* is cleared per module, so this is module-scoped."
+  (let ((found nil))
+    (maphash (lambda (k plist)
+               (declare (ignore k))
+               (let* ((dims (getf plist :cluster-size))
+                      (e    (and dims (reduce (function *) dims))))
+                 (when (and e (> e 1)) (setf found e))))
+             *kernel-dispatch-declarations*)
+    found))
+
+
+;; src/analysis/control.lisp
+;; Endeavor 152 step 10c (corrected): restores the backward-kernel downgrade.
+(defun %parse-async-barrier-keys (expr location)
+  "Parse (make-async-barrier &key mode) -> barrier-mode.
+
+   Step 10c: :mode :cluster accepts an N-D cluster; arrivals are cluster-wide (see below).
+
+   Endeavor 152: `:cluster` is accepted, gated, and then RETURNED AS :block — a cluster barrier
+   is a workgroup-local mbarrier that peers may additionally arrive on, so every existing
+   consumer of the mode should treat it as :block.  The reach is recorded separately, against
+   this barrier's let-binding name, in *cluster-barrier-bindings*."
+  (let ((keys (rest expr))
+        (bmode :linear)
+        (clusterp nil))
+    (unless (evenp (length keys))
+      (error 'crisp-compiler-error
+        :message "make-async-barrier: keys must be :mode value pairs"
+        :source-location location))
+    (loop for (k v) on keys by (function cddr) do
+      (cond
+        ((eq k :mode) (setf bmode v))
+        ((eq k :type)
+         (error 'crisp-compiler-error
+           :message "make-async-barrier: the :type key was removed (def-topology is set aside); use only :mode"
+           :source-location location))
+        (t (error 'crisp-compiler-error
+             :message (format nil "make-async-barrier: unknown key ~S (expected :mode)" k)
+             :source-location location))))
+    (unless (member bmode (list :linear :block :cluster))
+      (error 'crisp-compiler-error
+        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy), :block (a workgroup-local mbarrier) or :cluster (an mbarrier peers may arrive on)" bmode)
+        :source-location location))
+    (when (eq bmode :cluster)
+      ;; A BACKWARD kernel DOWNGRADES rather than refusing.  The AD walk replays the forward's
+      ;; bindings, so the barrier appears in the _GRAD twin -- but cluster-size is a DISPATCH
+      ;; declaration and deliberately does NOT propagate (endeavour 146: a schedule is not
+      ;; mathematics).  A backward therefore legitimately has a cluster barrier and legitimately
+      ;; has no cluster, and a workgroup-local mbarrier is exactly right: it runs no multicast
+      ;; pipeline and has no peers.  Same principle as %ad-canonicalize-wgmma substituting sync
+      ;; MMA for wgmma.
+      ;;
+      ;; THIS BRANCH WAS LOST AND RESTORED.  Step 10c rebuilt this function from a copy that
+      ;; predated it, which made every :mode :cluster RING spec fail under --differentiate on
+      ;; the endeavour's own refusal.  It must stay ahead of that refusal.
+      (when *current-kernel-is-backward*
+        (log:info "backward kernel: downgrading :mode :cluster to :block (a schedule does not propagate into a derivative)")
+        (setf bmode :block)))
+    (when (eq bmode :cluster)
+      ;; :cluster asserts that PEERS EXIST.  With no cluster a remote arrive resolves to the
+      ;; signaller's own barrier — releasing something nobody waits on while the intended peer
+      ;; waits forever.  At extent 1 the two addresses coincide, so such a kernel passes small
+      ;; tests and hangs at scale; hence a hard error rather than a degrade.
+      (unless (and *current-kernel-cluster-dims*
+                   (> (reduce (function *) *current-kernel-cluster-dims*) 1))
+        (error 'crisp-compiler-error
+          :message ":mode :cluster requires the kernel to declare a cluster of more than one workgroup.  Add (cluster-size :set-to N) to the declare block.  A cluster barrier's whole meaning is that PEER workgroups may arrive on it; with no peers the remote arrive would resolve to this workgroup's own barrier, releasing a barrier nobody is waiting on."
+          :source-location location))
+      ;; Endeavor 152 step 10c: the 1-D restriction is LIFTED.  A :mode :cluster barrier now
+      ;; collects arrivals from the WHOLE cluster regardless of its rank, which is deliberately
+      ;; the simpler of the two available answers.  The precise alternative -- scoping each
+      ;; barrier to the multicast group that feeds it -- is not merely more code: in a 2-D
+      ;; matmul cluster A's group is a ROW and B's is a COLUMN, so a single shared `empty` ring
+      ;; cannot be scoped to both and the kernel would need one ring per operand.  Full-cluster
+      ;; arrivals over-synchronise slightly (a row neighbour waits on a column neighbour that
+      ;; never touched its slot) and cost nothing in correctness.  If that shows up in the
+      ;; benchmark, per-operand rings are the contained follow-up to measure against it.
+      (setf clusterp t
+            bmode :block))
+    ;; :block (which :cluster has now become) is NVIDIA-only.
+    (when (eq bmode :block)
+      (case crisp.compiler:*target-backend*
+        (:spirv
+         (error 'crisp-compiler-error
+           :message ":mode :block is not supported on Intel / SPIR-V — Intel's fast 2D path (LSC block loads) loads global into registers directly and is not a barrier mode, and Intel has no workgroup-cluster hardware at all, so :mode :cluster is unavailable for the same reason. Use :mode :linear, or the direct block-load path."
+           :source-location location))
+        (:ptx
+         (unless (%arch-supports-block-p (resolved-target-arch))
+           (error 'crisp-compiler-error
+             :message (format nil ":mode :block / :cluster needs a Hopper-or-newer NVIDIA arch (sm_90+); got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
+                              (resolved-target-arch))
+             :source-location location)))))
+    ;; Record the reach against this barrier's binding name.  The let analyzer set
+    ;; current-binding-name before analyzing us, which is the same hook *async-barrier-modes*
+    ;; uses for the mode itself.
+    (when clusterp
+      (let ((bname (and *compiler-context*
+                        (compiler-context-current-binding-name *compiler-context*))))
+        (when bname
+          (log:info "barrier ~a declared :mode :cluster (peers may arrive)" bname)
+          (setf (gethash bname *cluster-barrier-bindings*) t))))
+    bmode))
+
+;; --- tag the constructed node so codegen can scale the init count ----------------------
+
+
+;; src/codegen.lisp

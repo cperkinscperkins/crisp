@@ -382,6 +382,44 @@ So for a matrix multiply that wants its two workgroups to share the `B` operand:
 Both workgroups sit at the same column position and differ only by row, so both need the
 same columns of `B` and different rows of `A`. `B` is therefore multicast and `A` is not.
 
+#### A 2-D cluster multicasts BOTH operands
+
+A 1-D cluster can only ever help one operand, and the shape above shows why: it halves `B`'s
+traffic and does nothing for `A`. A matmul is symmetric in this respect --
+
+    C[m,n] = sum_k A[m,k] * B[k,n]
+
+`A` does not depend on `n`; `B` does not depend on `m`. So a cluster laid out over BOTH axes
+lets each operand be fetched once per group instead of once per workgroup:
+
+```lisp
+(declare (global-size :derive-from C :strategy :strided :tile-shape (64 256))
+         (cluster-size :set-to (2 2)))    ; 4 workgroups: 2 rows x 2 columns
+```
+
+Every workgroup in a cluster ROW wants the same `A` tile; every workgroup in a cluster COLUMN
+wants the same `B` tile. Those are different sets of workgroups, which is exactly why the
+group is a property of the LOAD rather than of the cluster.
+
+**You do not declare which operand groups which way.** The compiler reads each load's tile
+coordinates against the enclosing `tile-stride` variables: a coordinate list that does not
+mention an axis's variable is invariant along that axis, and the invariant axes ARE the
+multicast group. In
+
+```lisp
+(load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier ... :multicast true)
+(load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier ... :multicast true)
+```
+
+`A`'s coordinates never mention `grid-x` and `B`'s never mention `grid-y`, so the two loads
+receive orthogonal groups from one rule. A load whose coordinates vary along *every* clustered
+axis has no group and is refused -- multicasting it would deliver one workgroup's tile to
+another.
+
+Cluster extents need not be equal: `(4 2)` is eight workgroups in a 4-row by 2-column
+arrangement. Eight is the largest cluster CUDA guarantees portably; larger is opt-in per
+architecture.
+
 The rank of `cluster-size` must agree with the rank of `:tile-shape`, exactly as
 `global-size` and `local-size` must agree in arity with each other. Axes beyond the
 declared rank are 1. A scalar is shorthand for a rank-1 value, following

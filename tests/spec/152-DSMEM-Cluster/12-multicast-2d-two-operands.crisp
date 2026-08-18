@@ -1,0 +1,54 @@
+;; Endeavor 152 rung 12 — a 2-D cluster gives its two operands DIFFERENT multicast groups.
+;;
+;; THIS IS THE RUNG THE WHOLE ENDEAVOR IS FOR.  A matmul reads A and B with different
+;; invariances, and that is not an accident of how one writes it -- it is what a matmul IS:
+;;
+;;     C[m,n] = sum_k A[m,k] * B[k,n]
+;;
+;; A does not depend on n, B does not depend on m.  So in a cluster laid out over (m, n),
+;; every workgroup in a cluster ROW wants the same A tile, and every workgroup in a cluster
+;; COLUMN wants the same B tile.  One fetch can serve each -- but they are DIFFERENT sets of
+;; workgroups, which is exactly why a 1-D cluster can only ever halve the traffic of one
+;; operand and why CUTLASS clusters in two dimensions.
+;;
+;; WHAT THE COMPILER HAS TO WORK OUT.  Nothing is declared about which operand groups which
+;; way.  The compiler reads the tile coordinates against the enclosing tile-stride's loop
+;; variables: a coordinate list that does NOT mention an axis's variable is invariant along
+;; that axis, and invariant axes are exactly the multicast group.  Here `(grid-y 0)` does not
+;; mention grid-x and `(0 grid-x)` does not mention grid-y, so the two loads get orthogonal
+;; groups from the same rule.
+;;
+;; WHY THE ASSERTION IS THAT THE TWO MASKS DIFFER.  A lowering that multicast the whole
+;; cluster for both operands would emit two `.multicast::cluster` copies, elect a leader, and
+;; run -- and be WRONG, delivering one column's B tile to a workgroup that wanted another.
+;; No correctness test on this kernel's output can see it, because this kernel only stores A.
+;; The distinguishing evidence is in the emitted ctaMasks: 3 (a row) and 5 (a column) for a
+;; (2 2) cluster, versus a single 15 if the groups had collapsed.
+;;
+;; NEW VALIDATOR REQUIRED: validate-ptx-multicast-2d
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-multicast-2d
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "cluster-size is a DISPATCH declaration and does not propagate
+;; into a backward kernel, so the _GRAD twin has the multicast loads but no cluster to serve
+;; them.  Endeavor 146's rule: a schedule is not mathematics.  The forward's PTX is what this
+;; rung asserts."
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mc2d_two_operands (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (16 16))
+           (local-size  :set-to 128)
+           (cluster-size :set-to (2 2)))
+  (let ((At  (make-scratch-matrix float (16 16)))
+        (Bt  (make-scratch-matrix float (16 16)))
+        (bar (make-async-barrier :mode :block)))
+    (tile-stride C (16 16) (grid-y grid-x)
+      ;; A: varies with grid-y, invariant along grid-x -> group is a cluster ROW
+      (load-tile A At (grid-y 0) :barrier bar :multicast true)
+      ;; B: varies with grid-x, invariant along grid-y -> group is a cluster COLUMN
+      (load-tile B Bt (0 grid-x) :barrier bar :multicast true)
+      (await bar)
+      (store-tile At C (grid-y grid-x)))))

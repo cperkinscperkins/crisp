@@ -421,15 +421,22 @@
         inside the guard would leave every non-issuing workgroup waiting forever on a barrier
         that was never told to expect anything -- a hang, not a wrong number."
   (declare (ignore file))
-  (let ((mc  (%152-index-of "multicast::cluster" ptx-string))
-        (rank (%152-index-of "%cluster_ctarank" ptx-string))
-        (etx (%152-index-of "mbarrier.arrive.expect_tx" ptx-string)))
+  (let* ((mc  (%152-index-of "multicast::cluster" ptx-string))
+         ;; Step 10a: the leader is elected from the workgroup's CLUSTER POSITION.  For a 1-D
+         ;; cluster that used to be %cluster_ctarank; for an N-D group it is a per-axis
+         ;; %cluster_ctaid.<a> test, since the leader is the workgroup at 0 on every GROUP
+         ;; axis rather than at rank 0 of the whole cluster.  Accept either -- the property
+         ;; being asserted is "a WORKGROUP leader is elected, not a thread leader", and both
+         ;; spellings establish it.
+         (rank (or (%152-index-of "%cluster_ctarank" ptx-string)
+                   (%152-index-of "%cluster_ctaid" ptx-string)))
+         (etx (%152-index-of "mbarrier.arrive.expect_tx" ptx-string)))
     (cond
       ((null mc)
        (format *error-output* "FAIL: no `.multicast::cluster` in the emitted PTX -- the load did NOT multicast.  It would still compute the correct answer, at the bandwidth :multicast was written to avoid.~%")
        nil)
       ((null rank)
-       (format *error-output* "FAIL: `.multicast::cluster` is emitted but %cluster_ctarank is never read, so no WORKGROUP leader is elected.  Every workgroup would issue the same multicast.~%")
+       (format *error-output* "FAIL: `.multicast::cluster` is emitted but neither %cluster_ctarank nor %cluster_ctaid is ever read, so no WORKGROUP leader is elected.  Every workgroup would issue the same multicast.~%")
        nil)
       ((null etx)
        (format *error-output* "FAIL: no mbarrier.arrive.expect_tx -- destination workgroups would never be told how many bytes to await.~%")
@@ -744,3 +751,126 @@
       ((> mapa arr)
        (format *error-output* "FAIL: the cluster arrive precedes the mapa that computes its peer address.~%") nil)
       (t t))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 10 — validators for N-D multicast
+;;; =====================================================================
+
+(defun %152-all-indices (needle hay)
+  "Every start position of NEEDLE in HAY."
+  (let ((hits '())
+        (start 0))
+    (loop for pos = (search needle hay :start2 start)
+          while pos
+          do (push pos hits)
+             (setf start (1+ pos)))
+    (nreverse hits)))
+
+
+(defun %152-mask-constants (ptx-string)
+  "The distinct 16-bit constants moved into a register in this PTX, as integers.
+
+   The ctaMask is a .b16 operand, so `mov.b16 %rsN, K` is where a multicast group's PATTERN
+   becomes visible.  Reading them back is how a test can tell TWO DIFFERENT groups from two
+   copies of the same one."
+  (let ((out '()))
+    (dolist (p (%152-all-indices "mov.b16" ptx-string) (sort (remove-duplicates out) #'<))
+      (let* ((comma (position #\, ptx-string :start p))
+             (eol   (position #\Newline ptx-string :start p)))
+        (when (and comma eol (< comma eol))
+          (let* ((tail (string-trim " ;	" (subseq ptx-string (1+ comma) eol)))
+                 (v    (ignore-errors (parse-integer tail :junk-allowed t))))
+            (when v (push v out))))))))
+
+(defun %152-multicast-mask-operands (ptx-string)
+  "The final operand of every `.multicast::cluster` copy -- i.e. each copy's ctaMask."
+  (let ((out '()))
+    (dolist (p (%152-all-indices "multicast::cluster" ptx-string) (nreverse out))
+      (let* ((eol  (position #\Newline ptx-string :start p))
+             (line (subseq ptx-string p eol))
+             (tok  (string-trim " ;" (subseq line (1+ (or (position #\Space line :from-end t) 0))))))
+        (push tok out)))))
+
+(defun validate-ptx-multicast-2d (file ptx-string)
+  "A 2-D cluster must give its two operands DIFFERENT multicast groups.
+
+   THIS IS THE ASSERTION THAT MATTERS.  A lowering that multicast the WHOLE cluster for both
+   operands would still emit two `.multicast::cluster` copies, still elect a leader, still run
+   -- and would be WRONG, delivering one cluster column's B tile to a workgroup that wanted a
+   different one.  This kernel only stores A, so no output check can see it.  The distinguishing
+   evidence is that the two ctaMasks are DIFFERENT and are computed per workgroup.
+
+   IT DELIBERATELY DOES NOT PIN AN INSTRUCTION SPELLING.  The first version of this validator
+   required `shl.b16` / `mov.b16`, and failed against perfectly correct PTX: the in-process
+   compile shifts in 32 bits then truncates (`shl.b32` + `cvt.u16.u32`) where the CLI compile
+   narrows the shift to 16 (`mov.b16` + `shl.b16`).  Same IR, different optimisation level.
+   Pinning the spelling tested LLVM's instruction selection rather than Crisp's grouping, so
+   these checks are structural instead."
+  (declare (ignore file))
+  (let* ((copies (length (%152-all-indices "multicast::cluster" ptx-string)))
+         (masks  (%152-multicast-mask-operands ptx-string))
+         (ax     (search "%cluster_ctaid.x" ptx-string))
+         (ay     (search "%cluster_ctaid.y" ptx-string)))
+    (cond
+      ((< copies 2)
+       (format *error-output* "FAIL: expected TWO `.multicast::cluster` copies (one per operand), found ~a.~%" copies)
+       nil)
+      ((notevery (lambda (m) (and (plusp (length m)) (char= (aref m 0) #\%))) masks)
+       (format *error-output* "FAIL: a ctaMask is an IMMEDIATE ~a, so that group is fixed at compile time.  In a 2-D cluster the group is a slice whose position depends on the workgroup, so the mask must be computed.~%" masks)
+       nil)
+      ((< (length (remove-duplicates masks :test (function string=))) 2)
+       (format *error-output* "FAIL: both multicast copies use the SAME ctaMask register ~a.  A 2-D cluster needs one group per operand -- a shared mask means one workgroup's tile is delivered to another.~%" masks)
+       nil)
+      ((not (and ax ay))
+       (format *error-output* "FAIL: both cluster axes must be consulted (x seen: ~a, y seen: ~a).  Each operand's group is positioned by the axis it is NOT grouped along.~%"
+               (and ax t) (and ay t))
+       nil)
+      (t
+       (format t "  [multicast-2d] ~a copies, distinct computed masks ~a, both cluster axes read.~%"
+               copies masks)
+       t))))
+
+
+(defun %152-check-cluster-product (ptx-string expected)
+  "Parse `.reqnctapercluster X, Y, Z` and check X*Y*Z."
+  (let ((p (search ".reqnctapercluster" ptx-string)))
+    (if (null p)
+        (progn (format *error-output* "FAIL: no .reqnctapercluster directive in the emitted PTX.~%") nil)
+        (let* ((eol  (position #\Newline ptx-string :start p))
+               (raw  (subseq ptx-string p eol))
+               ;; Drop the trailing "// @kernel_name" -- a kernel called cluster_of_4 puts
+               ;; a digit in that comment, which would be scraped as a fourth dimension.
+               (line (let ((c (search "//" raw))) (if c (subseq raw 0 c) raw)))
+               (nums (let ((acc '()) (i 0))
+                       (loop while (< i (length line))
+                             ;; aref, not char: in :crisp.compiler `char` is the CRISP TYPE,
+                             ;; not cl:char -- a documented trap in this codebase.
+                             do (let ((c (aref line i)))
+                                  (if (digit-char-p c)
+                                      (multiple-value-bind (v j) (parse-integer line :start i :junk-allowed t)
+                                        (push v acc) (setf i (or j (length line))))
+                                      (incf i))))
+                       (nreverse acc)))
+               ;; the leading digits of "reqnctapercluster" are not present, so nums are the dims
+               (prod (reduce #'* nums :initial-value 1)))
+          (if (= prod expected)
+              (progn (format t "  [cluster-extent] ~a -> product ~a.~%" nums prod) t)
+              (progn (format *error-output* "FAIL: expected a cluster of ~a workgroups, but .reqnctapercluster says ~a (product ~a).~%"
+                             expected nums prod)
+                     nil))))))
+
+(defun validate-ptx-cluster-extent-4 (file ptx-string)
+  "A cluster of 4 reaches the PTX as `.reqnctapercluster` with a product of 4."
+  (declare (ignore file))
+  (%152-check-cluster-product ptx-string 4))
+
+(defun validate-ptx-cluster-extent-8 (file ptx-string)
+  "A cluster of 8 reaches the PTX as `.reqnctapercluster` with a product of 8.
+
+   8 is worth its own rung because it is the largest PORTABLE cluster: the CUDA programming
+   guide guarantees support up to 8, and anything beyond is opt-in per architecture.  It is
+   also where a 16-bit ctaMask still has room -- a 16-CTA cluster fills it exactly."
+  (declare (ignore file))
+  (%152-check-cluster-product ptx-string 8))
+

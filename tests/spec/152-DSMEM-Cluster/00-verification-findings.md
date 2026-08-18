@@ -795,3 +795,146 @@ The PTX ISA does require a 128-byte aligned TMA destination, and Crisp packs rin
 stride of one tile's byte size with nothing checking it.  A 32-byte tile would leave slot 1 at
 base+32.  That concern is grounded in the ISA but UNDEMONSTRATED -- filed as BUG 048 with the
 failed reproduction attempt recorded, and explicitly not to be acted on until reproduced.
+
+## STEP 10a/10c — N-D CLUSTERS (2026-08-18).  COMPILE-VERIFIED ONLY; NO METAL RUN.
+
+The H100 was released before this work, so everything below is verified by COMPILING and
+READING THE EMITTED PTX.  None of it has run on a GPU.  That distinction is the point of this
+heading -- do not read these as metal results.
+
+### What changed
+
+`:multicast` and `:mode :cluster` both refused any cluster with more than one non-trivial axis.
+Both restrictions are lifted.
+
+THE ANALYSIS WAS ALREADY PRESENT AND WAS BEING THROWN AWAY.  %validate-multicast-request
+already asked, per clustered axis, "do these tile coordinates mention that axis's tile-stride
+variable?"  Keeping the answer IS the generalisation:
+
+    coords do NOT mention axis a   -> tile INVARIANT along a -> a joins the multicast group
+    coords DO mention axis a       -> tiles genuinely differ -> a stays out
+    no invariant axes              -> refuse, exactly as before
+    every clustered axis invariant -> group is the whole cluster == the old 1-D behaviour
+
+1-D is therefore not a special case but a corner of the general one, which is the reason to
+trust it rather than a second code path.
+
+The mask and leader stop being compile-time constants and become a compile-time PATTERN shifted
+by a runtime offset:
+
+    PATTERN = OR over coordinate combinations on the GROUP axes of (1 << linearised rank)
+    shift   = SUM over the NON-group axes of ctaid[a] * stride[a]
+    mask    = PATTERN << shift ;  leader = AND over group axes of (ctaid[a] == 0)
+
+`:mode :cluster` now takes cluster-wide arrivals (the agreed option 1), so %module-cluster-extent
+returns the FULL cluster product rather than a 1-D extent.  Those two must move together: a
+barrier expecting fewer arrivals than it receives releases early, one expecting more never
+releases.
+
+### Read out of the emitted PTX (a (2 2) cluster, A and B loaded with orthogonal invariance)
+
+    .reqnctapercluster 2, 2, 1
+
+    mov.u32 %r6, %cluster_ctaid.x;      mov.b16 %rs3, 5;   shl.b16 %rs1, %rs3, %r6;
+    mov.u32 %r5, %cluster_ctaid.y;      shl.b32 %r25, %r5, 1;
+                                        mov.b16 %rs4, 3;   shl.b16 %rs2, %rs4, %r25;
+
+    setp.eq.b32 %p9,  %r5, 0;    <- A's leader: ctaid.y == 0
+    setp.ne.b32 %p11, %r6, 0;    <- B's leader: ctaid.x == 0 (inverted branch)
+
+PATTERN 5 = 0b101 = ranks 0 and 2 = a cluster COLUMN, shifted by ctaid.x -- that is B.
+PATTERN 3 = 0b011 = ranks 0 and 1 = a cluster ROW,    shifted by ctaid.y*2 -- that is A.
+Exactly the CUTLASS arrangement, derived from the coordinates rather than hard-coded.
+
+The 1-D case still folds to a constant: rung 10 emits ZERO runtime shifts and a bare
+`mov.b16 %rs1, 3`, so the generalisation costs the old path nothing.
+
+### New rungs
+
+    12-multicast-2d-two-operands   two operands, two DIFFERENT computed masks
+    14-cluster-of-4                (2 2) -- the square shape a matmul wants
+    18-cluster-of-8                (4 2) -- non-square, and the largest portable cluster
+
+152 is 19/19 locally.
+
+### A validator lesson worth keeping
+
+The first version of validate-ptx-multicast-2d required `shl.b16` and `mov.b16`, and FAILED
+against correct PTX.  The in-process compile shifts in 32 bits and truncates
+(`shl.b32` + `cvt.u16.u32`); the CLI compile narrows the shift to 16 (`mov.b16` + `shl.b16`).
+Same IR, different optimisation level.  The validator was testing LLVM's instruction selection,
+not Crisp's multicast grouping.  It now asserts STRUCTURE -- two copies, two DISTINCT and
+non-immediate mask registers, both cluster axes consulted -- which is what actually
+distinguishes a correct 2-D multicast from one that collapses both operands onto one group.
+
+### Still to do, and it needs hardware
+
+Nothing here has run.  The next step is chap3_wgmma with `cluster-size (2 2)` and `:multicast
+true` on both loads -- the accretion A/B against the 66%-of-cuBLAS baseline -- and that is a
+metal measurement, not a compile check.
+
+## CHAPTER 4 EXISTS AND IS HALF-RIGHT — benchmarks/matmul/chap4_cluster_multicast/
+
+Accreted onto chap3_wgmma with exactly three changes, as agreed: `cluster-size (2 2)`,
+`:multicast true` on both loads, and `empty` promoted to `:mode :cluster`.  It compiles.
+
+WHAT IS RIGHT, read out of its PTX:
+
+    .reqnctapercluster 2, 2, 1
+    2 x cp.async.bulk.tensor ... .multicast::cluster, with TWO DIFFERENT computed ctaMasks
+    both %cluster_ctaid.x and %cluster_ctaid.y consulted
+    4 x wgmma.mma_async still present -- chapter 3's engine untouched
+    .extern .shared .align 128 .b8 __crisp_dynamic_smem[]
+
+WHAT IS WRONG, and it is a correctness bug rather than a slowdown: the `empty` ring is declared
+`:mode :cluster` but lowers as a WORKGROUP-LOCAL arrive.  The module contains no `mapa` and no
+`mbarrier.arrive.shared::cluster` -- only `mbarrier.arrive.shared`.  On hardware the group leader
+could then overwrite a ring slot while a peer workgroup was still reading it.
+
+IT IS SPECIFIC TO THIS KERNEL, NOT TO THE FEATURE.  A cluster-scoped `signal` on a ring, from
+inside `with-warp-specialization`, inside a `dotimes`, emits the remote arrive correctly --
+verified standalone (put_temp_files_here/lds/wsclu2.crisp -> 8 mapa) and by shipped spec 22
+(2 mapa).
+
+ELIMINATED AS THE CAUSE, each by building the variant and reading its PTX rather than reasoning:
+
+    warp specialization              dotimes around the signal
+    sm_90 vs sm_90a                  :initial-state :signaled
+    wgmma-accumulate-via-tile        the binding's position within the let
+    a missing global-size/:tile-shape declaration
+
+REMAINING SUSPECTS, in order: `make-wgmma-accumulator`, `inner-dimension`, `store-tile D`.  The
+failure is a false NEGATIVE from %cluster-barrier-p, which resolves `(ring-get empty slot)`
+through *cluster-barrier-bindings*, a table keyed by the barrier's LET-BINDING NAME and
+populated at %parse-async-barrier-keys time.  The next move is to log both the registration and
+the lookup -- per [[log-before-iterating]], that should have happened two bisects ago.
+
+The kernel file carries this warning at the top so nobody benchmarks it by accident.
+
+## A REGRESSION I INTRODUCED AND FIXED, worth recording because of HOW it happened
+
+Step 10c rebuilt `%parse-async-barrier-keys` by extracting the copy the overlay's late binding
+was using and transforming it.  The copy I extracted PREDATED step 7's backward-kernel
+downgrade, so the rebuilt version silently dropped it, and every `:mode :cluster` RING spec
+began failing under --differentiate on this endeavour's OWN refusal:
+
+    :mode :cluster requires the kernel to declare a cluster of more than one workgroup.
+
+THE OVERLAY FILE NOW CARRIES FOUR COPIES of that function (2971, 3184, 3535, 4189 at the time),
+and only the LAST is live.  Two things went wrong in sequence, both mine:
+
+  1. I extracted from the wrong copy -- `grep | tail -1` found 3184, not the later 3535 that
+     actually had the step-7 branch.
+  2. Repairing it with a plain string replace hit a DIFFERENT copy than the live one (the
+     comment text differed by four words between copies), corrupting an earlier definition's
+     parens while leaving the live one untouched.  `check-parens` still reported balance 0,
+     because the file was balanced overall -- a whole-file paren count cannot see a misplaced
+     paren inside one of several definitions.
+
+FIXED by appending ONE fresh, complete definition derived from the LIVE copy, so late binding
+settles it rather than surgery across four.  19/19 under --differentiate.
+
+THE LESSON, and it generalises past this endeavour: when an overlay accumulates several copies
+of a function, never transform "the" copy -- locate the LAST one, and prefer appending a whole
+new definition over editing in place.  A string replace across a file with near-duplicate
+definitions is not a targeted edit.
