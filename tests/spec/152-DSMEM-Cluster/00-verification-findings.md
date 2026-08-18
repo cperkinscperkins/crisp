@@ -399,3 +399,66 @@ geometry holds.
 
 STILL UNVERIFIED ON METAL: the pod was released before the restructured kernels could be run.
 Everything above about the PTX structure is verified; nothing about rung 11 executing is.
+
+
+---
+
+## FINDING (2026-08-17, on metal) — `mapa` needs a GENERIC address. The obvious form does not map.
+
+Crisp emitted, for a cluster-scoped `signal`:
+
+    mapa.shared::cluster.u32 %rD, %rSharedOffset, %rRank;
+    mbarrier.arrive.shared::cluster.b64 _, [%rD];
+
+which reads correctly and is WRONG.  On an H100 it produced
+
+    Invalid __shared__ read of size 4 bytes
+      by thread (0,0,0) in block (1,0,0)
+      Address 0x0 is not located in executing CTA
+
+where 0x0 and 0x10 are precisely the shared-window offsets of the two mbarrier globals -- i.e.
+the address reaching the arrive was the UNMAPPED local offset.
+
+GROUND TRUTH, obtained the same way Q2 was settled: compile NVIDIA's own
+`cooperative_groups::cluster_group::map_shared_rank()` with `nvcc -arch=sm_90a -ptx` and read it.
+
+    cvt.u64.u32        %tmp,  %rSharedOffset
+    cvta.shared.u64    %gen,  %tmp            <- shared window -> GENERIC
+    mapa.u64           %peer, %gen, %rRank    <- mapa operates on GENERIC addresses
+    cvta.to.shared.u64 %tmp,  %peer           <- back to the shared window
+    cvt.u32.u64        %r,    %tmp
+    mbarrier.arrive.shared::cluster.b64 _, [%r];
+
+FIXED.  `%gen-nvvm-mapa-shared-cluster` now emits that round-trip as one inline-asm block.
+
+WHY IT MATTERS BEYOND THE BUG: an unmapped arrive lands on the CALLER'S OWN barrier.  That is
+exactly the silent-local-arrive failure rung 21 was written to catch -- and at cluster extent 1
+the two addresses coincide, so it would pass every small test.  Here it surfaced as a hardware
+fault only because the sanitizer noticed the address was not CTA-local.  `validate-ptx-cluster-
+remote-arrive` now asserts the CONVERSION, and explicitly fails the old form.
+
+## FINDING — rung 04's launch conclusion was right, but under-evidenced
+
+Rung 04 proved a `.reqnctapercluster` kernel LAUNCHES under a plain `cuLaunchKernel`.  It used no
+cluster INSTRUCTIONS, so it did not prove a usable cluster was formed.  Closed properly: NVIDIA's
+own `__cluster_dims__(2,1,1)` kernel doing `mapa` + `mbarrier.arrive.shared::cluster` +
+`cluster.sync()` under `k<<<2,32>>>` returns `cudaSuccess`.  The assumption holds, now for the
+right reason.  `cuLaunchKernelEx` remains unnecessary.
+
+## RUNG 11 — still failing, but the fault has MOVED OUT of the cluster machinery
+
+After the slot fix and the mapa fix, rung 11 still faults.  `compute-sanitizer` + `nvdisasm` put
+it at:
+
+        /*1250*/  @!P0 VIADD  R19, R16, UR12 ;
+        /*1270*/  @!P0 IADD3.X R7, R18, UR13, RZ, P6, !PT ;   <- reported PC
+        /*1280*/  @!P0 LDS    R19, [R19] ;                    <- the access
+
+A PLAIN shared load with a computed index, reading outside the executing CTA's shared window in
+block (1,0,0).  That is tile addressing or shared allocation -- NOT multicast, NOT the barrier,
+NOT mapa.  Both remaining cluster instructions now match NVIDIA's own codegen.
+
+NEXT SESSION STARTS HERE, and needs no pod until there is a candidate fix.  Suspects, cheapest
+first: the scratch-matrix-ring's slot addressing under a cluster; whether the tile ring's dynamic
+SMEM size accounts for ring-count; and whether `store-tile` reads a slot the multicast wrote at a
+different offset.
