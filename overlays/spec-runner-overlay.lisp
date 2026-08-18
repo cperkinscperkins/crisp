@@ -438,3 +438,92 @@
        (format *error-output* "FAIL: mbarrier.arrive.expect_tx appears AFTER the multicast copy, which means it is inside the leader guard.  Non-issuing workgroups would wait on a barrier that was never told to expect anything -- a hang.~%")
        nil)
       (t t))))
+
+;;; =====================================================================
+;;; Endeavor 152 (fix) — pick the metacrisp that matches the PASS, not the first on disk
+;;;
+;;; run-spec-ptx-binary deletes the .ptx it generated but NOT the .metacrisp, so those
+;;; accumulate in the spec directory.  A full-suite run therefore leaves BOTH
+;;;     <stem>_<kernel>.metacrisp          (forward, written by the default phase)
+;;;     <stem>_grad_<kernel>.metacrisp     (backward, written by the --differentiate phase)
+;;; and %152-find-metacrisp took `(first hits)` — whichever the filesystem happened to return.
+;;;
+;;; That is why 03 passes in isolation and on a 152-only filter, but can fail in a full run:
+;;; the forward validator reads the BACKWARD file, sees no :cluster-size, and reports the
+;;; cluster as degraded.  A stale-artifact bug wearing a feature bug's costume.
+;;;
+;;; Select by the pass we are actually in: *compile-differentiate* says which kernel this run
+;;; produced, so ask for that file rather than guessing.
+;;; =====================================================================
+
+;; tests/run-specs.lisp
+(defun %152-find-metacrisp (file)
+  "The .metacrisp for the kernel THIS pass compiled, next to FILE.
+
+   Under --differentiate the compiler emits only the backward kernel's sidecar
+   (<stem>_grad_<kernel>.metacrisp); otherwise the forward's.  Both can be present on disk at
+   once because the runner does not clean them up, so choose deliberately instead of taking
+   whatever `directory` lists first."
+  (let* ((dir  (make-pathname :name nil :type nil :defaults file))
+         (stem (pathname-name file))
+         (hits (directory (merge-pathnames (format nil "~a*.metacrisp" stem) dir)))
+         (gradp (lambda (p) (search "_grad" (pathname-name p))))
+         (want  (if *compile-differentiate*
+                    (remove-if-not gradp hits)
+                    (remove-if gradp hits))))
+    (or (first want) (first hits))))
+
+(in-package :crisp.spec-runner)
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cluster-barrier (file ptx-string)
+  "Endeavor 152 rung 20 — a :mode :cluster barrier must be a REAL mbarrier object.
+   Asserts only that; the remote arrive that distinguishes it is rung 21's job."
+  (declare (ignore file))
+  (if (search "mbarrier.init" ptx-string)
+      t
+      (progn (format *error-output* "FAIL: no mbarrier.init — a :cluster barrier must allocate a real mbarrier, as :block does.~%")
+             nil)))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cluster-remote-arrive (file ptx-string)
+  "Endeavor 152 rung 21 — `signal` on a :cluster barrier must arrive on PEERS.
+
+   The distinguishing instruction pair is `mapa.shared::cluster` (map this address into a peer's
+   view) followed by `mbarrier.arrive.shared::cluster`.  A lowering that emitted the ordinary
+   local arrive would release the SIGNALLER'S OWN barrier — which nobody waits on — while the
+   peer waits forever.  At cluster extent 1 both resolve to the same address, so that bug passes
+   every small test and only hangs at scale.  Hence: read the instruction."
+  (declare (ignore file))
+  (let ((mapa (search "mapa.shared::cluster" ptx-string))
+        (arr  (search "mbarrier.arrive.shared::cluster" ptx-string)))
+    (cond
+      ((null mapa)
+       (format *error-output* "FAIL: no `mapa.shared::cluster` — nothing maps the barrier into a peer's view, so any arrive is local.~%") nil)
+      ((null arr)
+       (format *error-output* "FAIL: no `mbarrier.arrive.shared::cluster` — the arrive is not cluster-scoped, so it releases this workgroup's own barrier.~%") nil)
+      ((> mapa arr)
+       (format *error-output* "FAIL: the cluster arrive precedes the mapa that computes its peer address.~%") nil)
+      (t t))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cluster-ring-arrivals (file ptx-string)
+  "Endeavor 152 rung 22 — :arrivals is per-workgroup and the COMPILER multiplies.
+
+   The kernel declares a 2-workgroup cluster, a :block `full` ring with :arrivals 1, and a
+   :cluster `empty` ring with :arrivals 2.  So the emitted mbarrier init counts must be:
+       full  -> 1   (NOT scaled: a multicast completes on each destination's OWN barrier)
+       empty -> 4   (2 per workgroup x 2 workgroups arriving all-to-all)
+   Both halves are asserted.  Scaling the wrong one is as fatal as scaling neither: a `full`
+   barrier initialised to 2 would never complete, and an `empty` initialised to 2 would complete
+   early and let a workgroup overwrite a slot a peer was still reading."
+  (declare (ignore file))
+  (let ((has1 (search "mov.b32 	%r11, 1;" ptx-string))
+        (has4 (search ", 4;" ptx-string)))
+    (declare (ignorable has1))
+    (cond
+      ((null (search "mbarrier.init" ptx-string))
+       (format *error-output* "FAIL: no mbarrier.init at all.~%") nil)
+      ((null has4)
+       (format *error-output* "FAIL: no init count of 4 — the :cluster ring's :arrivals 2 was not scaled by the group extent 2.  The barrier would complete one full round of arrivals early.~%") nil)
+      (t t))))

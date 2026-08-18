@@ -2927,3 +2927,484 @@
     (llvm-position-builder-at-end builder merge-bb)
     (%ptx-barrier builder module)
     (values cell-val nil)))
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 5 — `:mode :cluster`
+;;;
+;;; A cluster barrier is a `:block` barrier in every respect but ONE: peers may arrive on it.
+;;; So the delta is deliberately small and lives in three places:
+;;;   * the mode parser accepts :cluster and gates it (arch, backend, cluster declared)
+;;;   * the barrier ALLOCATES as an mbarrier, exactly as :block does
+;;;   * `signal` becomes a REMOTE arrive -- mapa into each peer's view, then arrive with
+;;;     cluster scope -- instead of a local one
+;;;
+;;; ALL-TO-ALL, NOT LEADER-ONLY.  CUTLASS spreads the reverse-barrier arrivals across the whole
+;;; multicast group rather than electing one receiver (sm90_pipeline.hpp: `arrive(dst_blockid_)`
+;;; guarded by `is_same_row_or_col`), so every workgroup arrives on every peer's barrier, its own
+;;; included.  With group extent N and A arrivals per workgroup each barrier then receives N*A --
+;;; which is exactly why the init count is scaled by N.  The two must agree or the barrier either
+;;; never completes (count too high -> hang) or completes early (too low -> a peer reads a slot
+;;; that is still being written).
+;;; =====================================================================
+
+;; src/analysis/control.lisp  (new)
+(defun %mbarrier-mode-p (mode)
+  "T if MODE denotes a real mbarrier object.  :linear is the backend's group-async-copy handle
+   (a phantom on PTX); :block and :cluster are both genuine mbarriers and differ only in reach."
+  (and mode (member mode (list :block :cluster)) t))
+
+;; src/codegen.lisp  (new)
+(defun %module-cluster-extent ()
+  "The 1-D cluster extent declared by some kernel in this module, or NIL.
+   *kernel-dispatch-declarations* is cleared per module, so this is module-scoped."
+  (let ((found nil))
+    (maphash (lambda (k plist)
+               (declare (ignore k))
+               (let* ((dims (getf plist :cluster-size))
+                      (e    (and dims (%multicast-1d-extent dims))))
+                 (when (and e (> e 1)) (setf found e))))
+             *kernel-dispatch-declarations*)
+    found))
+
+;; src/analysis/control.lisp
+(defun %parse-async-barrier-keys (expr location)
+  "Parse (make-async-barrier &key mode) -> barrier-mode.
+   Endeavor 152: also accepts :cluster — an mbarrier that PEER WORKGROUPS may arrive on."
+  (let ((keys (rest expr))
+        (bmode :linear))
+    (unless (evenp (length keys))
+      (error 'crisp-compiler-error
+        :message "make-async-barrier: keys must be :mode value pairs"
+        :source-location location))
+    (loop for (k v) on keys by (function cddr) do
+      (cond
+        ((eq k :mode) (setf bmode v))
+        ((eq k :type)
+         (error 'crisp-compiler-error
+           :message "make-async-barrier: the :type key was removed (def-topology is set aside); use only :mode"
+           :source-location location))
+        (t (error 'crisp-compiler-error
+             :message (format nil "make-async-barrier: unknown key ~S (expected :mode)" k)
+             :source-location location))))
+    (unless (member bmode (list :linear :block :cluster))
+      (error 'crisp-compiler-error
+        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy), :block (a workgroup-local mbarrier) or :cluster (an mbarrier peers may arrive on)" bmode)
+        :source-location location))
+    ;; :block and :cluster are both NVIDIA mbarriers and share the arch gate.
+    (when (%mbarrier-mode-p bmode)
+      (case crisp.compiler:*target-backend*
+        (:spirv
+         (error 'crisp-compiler-error
+           :message (format nil ":mode ~(~a~) is not supported on Intel / SPIR-V — Intel's fast 2D path (LSC block loads) loads global into registers directly and is not a barrier mode, and Intel has no workgroup-cluster hardware at all. Use :mode :linear, or the direct block-load path." bmode)
+           :source-location location))
+        (:ptx
+         (unless (%arch-supports-block-p (resolved-target-arch))
+           (error 'crisp-compiler-error
+             :message (format nil ":mode ~(~a~) needs a Hopper-or-newer NVIDIA arch (sm_90+); got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
+                              bmode (resolved-target-arch))
+             :source-location location)))))
+    ;; :cluster additionally asserts that PEERS EXIST.  Without a declared cluster a remote
+    ;; arrive resolves to the signaller's own barrier — releasing something nobody waits on
+    ;; while the intended peer waits forever.  At cluster extent 1 the two addresses coincide,
+    ;; so such a kernel passes small tests and hangs at scale; hence a hard error, not a degrade.
+    (when (eq bmode :cluster)
+      (unless (and *current-kernel-cluster-dims*
+                   (> (reduce (function *) *current-kernel-cluster-dims*) 1))
+        (error 'crisp-compiler-error
+          :message ":mode :cluster requires the kernel to declare a cluster of more than one workgroup.  Add (cluster-size :set-to N) to the declare block.  A cluster barrier's whole meaning is that PEER workgroups may arrive on it; with no peers the remote arrive would resolve to this workgroup's own barrier, releasing a barrier nobody is waiting on."
+          :source-location location))
+      (unless (%multicast-1d-extent *current-kernel-cluster-dims*)
+        (error 'crisp-compiler-error
+          :message (format nil ":mode :cluster currently supports only a ONE-DIMENSIONAL cluster, but cluster-size is ~a.  With more than one clustered axis the arrival group is a row or a column rather than the whole cluster, so both the peer set and the :arrivals multiplier become rank-dependent."
+                           *current-kernel-cluster-dims*)
+          :source-location location)))
+    bmode))
+
+;; --- signal: the remote arrive ---------------------------------------------------------
+
+;; src/codegen.lisp  (new)
+(defvar *signal-cluster-extent* (make-hash-table :test 'eq)
+  "semantic-signal node -> cluster group extent, when its barrier is :mode :cluster.
+   A side table because the struct cannot gain a slot from an overlay — the same pattern
+   Endeavor 140 used for *tma-copy-ws-leader*.  Keyed by node identity, so a stale entry is
+   unreachable from a fresh compile's nodes.")
+
+;; src/analysis/control.lisp
+(defun analyze-signal-expression (expr env context location)
+  "Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive.
+   Endeavor 152: when the barrier is :mode :cluster the arrive must reach PEER workgroups, so
+   tag the node with the cluster extent for codegen."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message (format nil "signal: expected (signal BARRIER), got ~S" expr)
+      :source-location location))
+  (let* ((bmode (async-barrier-mode-of (second expr)))
+         (barrier-node (analyze-expression (second expr) env context (append location (list 1)))))
+    (if (eq *target-backend* :ptx)
+        (let ((node (make-semantic-signal
+                     :barrier-node barrier-node
+                     :type 'ulong
+                     :source-location location)))
+          (when (eq bmode :cluster)
+            (let ((ext (and *current-kernel-cluster-dims*
+                            (%multicast-1d-extent *current-kernel-cluster-dims*))))
+              (when (and ext (> ext 1))
+                (log:info "signal: cluster-scoped remote arrive across ~a peers" ext)
+                (setf (gethash node *signal-cluster-extent*) ext))))
+          node)
+        (analyze-expression nil env context location))))
+
+;; src/codegen.lisp  (new)
+(defun %gen-nvvm-mapa-shared-cluster (builder addr-i32 rank-i32)
+  "Inline PTX: mapa.shared::cluster.u32 $0, $1, $2;
+   Maps a shared-memory address in THIS workgroup's view to the same offset in the workgroup with
+   the given cluster rank.  This is what makes a remote arrive addressable at all."
+  (%build-inline-asm-call builder (llvm-int32-type)
+                          (list (llvm-int32-type) (llvm-int32-type))
+                          (list addr-i32 rank-i32)
+                          "mapa.shared::cluster.u32 $0, $1, $2;" "=r,r,r"))
+
+;; src/codegen.lisp  (new)
+(defun %gen-nvvm-mbarrier-arrive-cluster (builder peer-addr-i32)
+  "Inline PTX: mbarrier.arrive.shared::cluster.b64 _, [$0];
+   Arrives on a PEER workgroup's mbarrier.  The `.shared::cluster` scope is the whole point —
+   plain `.shared` (or the llvm.nvvm.mbarrier.arrive.shared intrinsic) arrives LOCALLY, which
+   would release a barrier nobody is waiting on."
+  (%build-inline-asm-call builder (llvm-void-type)
+                          (list (llvm-int32-type)) (list peer-addr-i32)
+                          "mbarrier.arrive.shared::cluster.b64 _, [$0];" "r"))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-signal) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 139 — (signal (ring-get empty slot)): a leader-guarded mbarrier.arrive on the slot's
+   mbarrier, releasing it to the producer.  One thread per warp (lane 0) arrives, so the arrival
+   count matches :arrivals.
+
+   Endeavor 152 — when the barrier is :mode :cluster the arrive is REMOTE and ALL-TO-ALL: this
+   workgroup arrives on EVERY workgroup's copy of the barrier, its own included, via mapa.  That
+   mirrors CUTLASS, and it is why the init count is scaled by the group extent: with N peers each
+   contributing A arrivals, the barrier must expect N*A."
+  (let* ((i32-type  (llvm-int32-type))
+         (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
+         (barrier-i (generate-node-ir (semantic-signal-barrier-node node) builder module var-env
+                                      di-builder di-scope location-map))
+         (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "sig_mbar"))
+         (lane      (%ptx-read-warp-sreg builder module "laneid"))
+         (is-leader (llvm-build-icmp builder +llvm-int-eq+ lane (llvm-const-int i32-type 0 nil) "sig_leader"))
+         (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (arrive-bb (llvm-append-basic-block parent "sig_arrive"))
+         (cont-bb   (llvm-append-basic-block parent "sig_cont"))
+         (extent    (gethash node *signal-cluster-extent*)))
+    (llvm-build-cond-br builder is-leader arrive-bb cont-bb)
+    (llvm-position-builder-at-end builder arrive-bb)
+    (cond
+      ((and extent (> extent 1))
+       (let ((addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "sig_mbar_addr")))
+         (dotimes (r extent)
+           (let* ((rank (llvm-const-int i32-type r nil))
+                  (peer (%gen-nvvm-mapa-shared-cluster builder addr rank)))
+             (%gen-nvvm-mbarrier-arrive-cluster builder peer)))))
+      (t
+       (%gen-nvvm-mbarrier-arrive-shared builder module mbar-ptr)))
+    (llvm-build-br builder cont-bb)
+    (llvm-position-builder-at-end builder cont-bb)
+    (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+
+;;; =====================================================================
+;;; Endeavor 152 step 5 (fix) — force the two CALLERS to recompile.
+;;;
+;;; SBCL DERIVED the return type of %parse-async-barrier-keys as (MEMBER :LINEAR :BLOCK)
+;;; when it compiled these callers, and baked that check into their code.  Widening the
+;;; function in an overlay is therefore not enough: the callers still reject :CLUSTER with
+;;;     The value :CLUSTER is not of type (MEMBER :LINEAR :BLOCK)
+;;;     from the function type declaration.
+;;; There is no declaim to relax — the type is inferred, so the only fix is to recompile the
+;;; callers against the new definition.  They are reproduced VERBATIM below (extracted from
+;;; src, not retyped) purely so that happens; nothing about their behaviour changes.
+;;;
+;;; A general overlay hazard worth remembering: redefining a function whose return type
+;;; SBCL can infer requires redefining its callers too, or they keep checking the old type.
+;;; =====================================================================
+
+;; src/analysis/control.lisp  (verbatim — recompilation only)
+
+;; src/analysis/control.lisp  (verbatim — recompilation only)
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 5 (revised) — :cluster is :block PLUS REACH
+;;;
+;;; WHY THE FIRST CUT WAS ABANDONED.  Returning a third `:mode` value broke on a type SBCL had
+;;; INFERRED, not declared:
+;;;     The value :CLUSTER is not of type (MEMBER :LINEAR :BLOCK)
+;;;     from the function type declaration.
+;;; Recompiling the two direct callers did not clear it — the narrowed type had propagated
+;;; further than that, and chasing every consumer of a mode value is exactly the kind of
+;;; open-ended hunt that should prompt a rethink rather than another grep.
+;;;
+;;; THE RETHINK IS ALSO THE BETTER DESIGN, and it is what the docs already say: a cluster
+;;; barrier is a `:block` barrier in every respect but one — peers may arrive on it.  So keep
+;;; the MODE at :block and carry the reach separately.  Consequences, all good:
+;;;
+;;;   * every existing mode consumer works unchanged and unexamined — allocation, the
+;;;     warp-spec :block guard, load-tile's TMA path, ring validation, the arch gate.  A
+;;;     cluster barrier IS an mbarrier, so it should take exactly those paths.
+;;;   * the blast radius collapses to the two places that genuinely differ: `signal` (a remote
+;;;     arrive) and the init count (scaled by the group extent).
+;;;   * no inferred type is widened anywhere, so nothing downstream needs recompiling.
+;;;
+;;; The cost is that `async-barrier-mode-of` reports :block for a cluster barrier.  That is
+;;; accurate about the OBJECT and silent about the reach, so anything needing the reach asks
+;;; %cluster-barrier-p instead.
+;;; =====================================================================
+
+;; src/analysis/control.lisp  (new)
+(defvar *cluster-barrier-bindings* (make-hash-table :test 'eq)
+  "Barrier binding SYMBOL (or ring symbol) -> T when declared :mode :cluster.
+   Parallel to *async-barrier-modes*, which records the OBJECT kind; this records the REACH.")
+
+;; src/codegen.lisp  (new)
+(defvar *cluster-barrier-nodes* (make-hash-table :test 'eq)
+  "semantic-make-async-barrier node -> cluster group extent, for scaling the mbarrier init
+   count.  Side table because the struct cannot gain a slot from an overlay.")
+
+;; src/analysis/control.lisp  (new)
+(defun %cluster-barrier-p (barrier-form)
+  "T if BARRIER-FORM names a barrier declared :mode :cluster.
+   Mirrors async-barrier-mode-of: accepts the barrier SYMBOL or a (ring-get RING i) form,
+   in which case the RING's declaration governs (every slot shares it)."
+  (let ((ring (%barrier-ring-form-p barrier-form)))
+    (or (and ring (gethash ring *cluster-barrier-bindings*))
+        (and (symbolp barrier-form) (gethash barrier-form *cluster-barrier-bindings*))
+        nil)))
+
+;; src/analysis/control.lisp
+(defun %parse-async-barrier-keys (expr location)
+  "Parse (make-async-barrier &key mode) -> barrier-mode.
+
+   Endeavor 152: `:cluster` is accepted, gated, and then RETURNED AS :block — a cluster barrier
+   is a workgroup-local mbarrier that peers may additionally arrive on, so every existing
+   consumer of the mode should treat it as :block.  The reach is recorded separately, against
+   this barrier's let-binding name, in *cluster-barrier-bindings*."
+  (let ((keys (rest expr))
+        (bmode :linear)
+        (clusterp nil))
+    (unless (evenp (length keys))
+      (error 'crisp-compiler-error
+        :message "make-async-barrier: keys must be :mode value pairs"
+        :source-location location))
+    (loop for (k v) on keys by (function cddr) do
+      (cond
+        ((eq k :mode) (setf bmode v))
+        ((eq k :type)
+         (error 'crisp-compiler-error
+           :message "make-async-barrier: the :type key was removed (def-topology is set aside); use only :mode"
+           :source-location location))
+        (t (error 'crisp-compiler-error
+             :message (format nil "make-async-barrier: unknown key ~S (expected :mode)" k)
+             :source-location location))))
+    (unless (member bmode (list :linear :block :cluster))
+      (error 'crisp-compiler-error
+        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy), :block (a workgroup-local mbarrier) or :cluster (an mbarrier peers may arrive on)" bmode)
+        :source-location location))
+    (when (eq bmode :cluster)
+      ;; :cluster asserts that PEERS EXIST.  With no cluster a remote arrive resolves to the
+      ;; signaller's own barrier — releasing something nobody waits on while the intended peer
+      ;; waits forever.  At extent 1 the two addresses coincide, so such a kernel passes small
+      ;; tests and hangs at scale; hence a hard error rather than a degrade.
+      (unless (and *current-kernel-cluster-dims*
+                   (> (reduce (function *) *current-kernel-cluster-dims*) 1))
+        (error 'crisp-compiler-error
+          :message ":mode :cluster requires the kernel to declare a cluster of more than one workgroup.  Add (cluster-size :set-to N) to the declare block.  A cluster barrier's whole meaning is that PEER workgroups may arrive on it; with no peers the remote arrive would resolve to this workgroup's own barrier, releasing a barrier nobody is waiting on."
+          :source-location location))
+      (unless (%multicast-1d-extent *current-kernel-cluster-dims*)
+        (error 'crisp-compiler-error
+          :message (format nil ":mode :cluster currently supports only a ONE-DIMENSIONAL cluster, but cluster-size is ~a.  With more than one clustered axis the arrival group is a row or a column rather than the whole cluster, so both the peer set and the :arrivals multiplier become rank-dependent."
+                           *current-kernel-cluster-dims*)
+          :source-location location))
+      (setf clusterp t
+            bmode :block))
+    ;; :block (which :cluster has now become) is NVIDIA-only.
+    (when (eq bmode :block)
+      (case crisp.compiler:*target-backend*
+        (:spirv
+         (error 'crisp-compiler-error
+           :message ":mode :block is not supported on Intel / SPIR-V — Intel's fast 2D path (LSC block loads) loads global into registers directly and is not a barrier mode, and Intel has no workgroup-cluster hardware at all, so :mode :cluster is unavailable for the same reason. Use :mode :linear, or the direct block-load path."
+           :source-location location))
+        (:ptx
+         (unless (%arch-supports-block-p (resolved-target-arch))
+           (error 'crisp-compiler-error
+             :message (format nil ":mode :block / :cluster needs a Hopper-or-newer NVIDIA arch (sm_90+); got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
+                              (resolved-target-arch))
+             :source-location location)))))
+    ;; Record the reach against this barrier's binding name.  The let analyzer set
+    ;; current-binding-name before analyzing us, which is the same hook *async-barrier-modes*
+    ;; uses for the mode itself.
+    (when clusterp
+      (let ((bname (and *compiler-context*
+                        (compiler-context-current-binding-name *compiler-context*))))
+        (when bname
+          (log:info "barrier ~a declared :mode :cluster (peers may arrive)" bname)
+          (setf (gethash bname *cluster-barrier-bindings*) t))))
+    bmode))
+
+;; --- tag the constructed node so codegen can scale the init count ----------------------
+
+(defvar *crisp-152-orig-amabe* nil)
+(unless *crisp-152-orig-amabe*
+  (setf *crisp-152-orig-amabe* (fdefinition 'analyze-make-async-barrier-expression)))
+
+;; src/analysis/control.lisp
+(defun analyze-make-async-barrier-expression (expr env context location)
+  "Endeavor 152 wrapper: builds the barrier node as before, then records the cluster group
+   extent against it when the binding was declared :mode :cluster, so codegen can scale the
+   mbarrier init count."
+  (let ((node (funcall *crisp-152-orig-amabe* expr env context location))
+        (bname (and context (compiler-context-current-binding-name context))))
+    (when (and node bname (gethash bname *cluster-barrier-bindings*))
+      (let ((ext (and *current-kernel-cluster-dims*
+                      (%multicast-1d-extent *current-kernel-cluster-dims*))))
+        (when (and ext (> ext 1))
+          (setf (gethash node *cluster-barrier-nodes*) ext))))
+    node))
+
+(defvar *crisp-152-orig-amabre* nil)
+(unless *crisp-152-orig-amabre*
+  (setf *crisp-152-orig-amabre* (fdefinition 'analyze-make-async-barrier-ring-expression)))
+
+;; src/analysis/control.lisp
+(defun analyze-make-async-barrier-ring-expression (expr env context location)
+  "Endeavor 152 wrapper — as above, for a barrier RING."
+  (let ((node (funcall *crisp-152-orig-amabre* expr env context location))
+        (bname (and context (compiler-context-current-binding-name context))))
+    (when (and node bname (gethash bname *cluster-barrier-bindings*))
+      (let ((ext (and *current-kernel-cluster-dims*
+                      (%multicast-1d-extent *current-kernel-cluster-dims*))))
+        (when (and ext (> ext 1))
+          (setf (gethash node *cluster-barrier-nodes*) ext))))
+    node))
+
+;; src/analysis/control.lisp
+(defun analyze-signal-expression (expr env context location)
+  "Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive.
+   Endeavor 152: when the barrier was declared :mode :cluster the arrive must reach PEER
+   workgroups, so tag the node with the group extent for codegen."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message (format nil "signal: expected (signal BARRIER), got ~S" expr)
+      :source-location location))
+  (let* ((clusterp (%cluster-barrier-p (second expr)))
+         (barrier-node (analyze-expression (second expr) env context (append location (list 1)))))
+    (if (eq *target-backend* :ptx)
+        (let ((node (make-semantic-signal
+                     :barrier-node barrier-node
+                     :type 'ulong
+                     :source-location location)))
+          (when clusterp
+            (let ((ext (and *current-kernel-cluster-dims*
+                            (%multicast-1d-extent *current-kernel-cluster-dims*))))
+              (when (and ext (> ext 1))
+                (log:info "signal: cluster-scoped remote arrive across ~a peers" ext)
+                (setf (gethash node *signal-cluster-extent*) ext))))
+          node)
+        (analyze-expression nil env context location))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 5 — scale the mbarrier init count for a :cluster barrier
+;;;
+;;; `:arrivals` is, and stays, a PER-WORKGROUP number: how many transfers one workgroup puts
+;;; through one slot in one stage.  A `:cluster` barrier collects more than that, because every
+;;; workgroup in the group arrives on every peer's copy (all-to-all, mirroring CUTLASS).  With
+;;; group extent N and A arrivals per workgroup the barrier receives N*A, so it must be
+;;; INITIALISED to N*A or it never completes.
+;;;
+;;; The user does not write N*A.  They state what their own workgroup does; the compiler
+;;; multiplies by a cluster shape it already knows.  That is the same division of labour the
+;;; existing `:arrivals` rule describes — and the alternative is that adding one `cluster-size`
+;;; line to a working kernel silently requires editing an unrelated barrier declaration, with a
+;;; hang as the penalty for forgetting.
+;;;
+;;; The NEGATIVE half matters just as much and is asserted by the same rung: the data-arrival
+;;; (`full`) ring stays `:block` and its count is NOT scaled, because a multicast completes its
+;;; transaction on each destination's OWN barrier — one arrival per workgroup, not N.
+;;; =====================================================================
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-make-async-barrier) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 136: a :linear async barrier is a PHANTOM on PTX.  On SPIR-V it owns a
+   target(\"spirv.Event\") slot.
+   Endeavor 152: emits the cluster entry fence after init for a clustered kernel, and scales the
+   mbarrier init count by the cluster group extent for a :mode :cluster barrier."
+  (when (semantic-make-async-barrier-spirv-event-p node)
+    (let* ((ev-type (%spirv-event-type module))
+           (slot    (llvm-build-alloca builder ev-type "async_evt_slot")))
+      (llvm-build-store builder (crisp.llvm-bindings:llvm-const-null ev-type) slot)
+      (return-from generate-node-ir
+        (values (llvm-build-ptr-to-int builder slot (llvm-int64-type) "evt_slot_i") nil))))
+  (when (and (eq (semantic-make-async-barrier-barrier-mode node) :block)
+             (eq *target-backend* :ptx))
+    (let* ((i64-type (llvm-int64-type))
+           (i32-type (llvm-int32-type))
+           (ring-n   (max 1 (semantic-make-async-barrier-ring-count node)))
+           (mbar-gv  (%gen-nvvm-tma-mbar-global module ring-n))
+           (tid-x    (%gen-nvvm-read-tid-x builder module))
+           (tid-y    (%gen-nvvm-read-tid-y builder module))
+           (tid-z    (%gen-nvvm-read-tid-z builder module))
+           (tid-sum  (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz"))
+           (is-zero  (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "is_tid_0"))
+           (init-bb  (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_init"))
+           (merge-bb (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_cont"))
+           ;; Endeavor 152: N for a :cluster barrier, else NIL.
+           (cl-ext   (gethash node *cluster-barrier-nodes*))
+           (base-cnt (max 1 (semantic-make-async-barrier-load-count node)))
+           (count    (if (and cl-ext (> cl-ext 1)) (* base-cnt cl-ext) base-cnt)))
+      (when (and cl-ext (> cl-ext 1))
+        (log:info "cluster barrier: :arrivals ~a x group extent ~a -> mbarrier init count ~a"
+                  base-cnt cl-ext count))
+      (llvm-build-cond-br builder is-zero init-bb merge-bb)
+      (llvm-position-builder-at-end builder init-bb)
+      (let ((cnt (llvm-const-int i32-type count nil)))
+        (dotimes (i ring-n)
+          (%gen-nvvm-mbarrier-init-shared builder module
+                                          (%gen-nvvm-mbar-slot-ptr builder mbar-gv i)
+                                          cnt)))
+      (%gen-nvvm-fence-proxy-async-shared builder)
+      (llvm-build-br builder merge-bb)
+      (llvm-position-builder-at-end builder merge-bb)
+      (%ptx-barrier builder module)
+      ;; Publish this workgroup's mbarrier init to its cluster PEERS.  Without it a multicast can
+      ;; land in a peer that has not run mbarrier.init yet — measured as `unspecified launch
+      ;; failure` on an H100.
+      (when (%module-has-cluster-p)
+        (%gen-nvvm-cluster-barrier builder))
+      (return-from generate-node-ir
+        (values (llvm-build-ptr-to-int builder mbar-gv i64-type "mbar_i") nil))))
+  (unless (semantic-make-async-barrier-cell-node node)
+    (return-from generate-node-ir (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
+  (let* ((cell-val (generate-node-ir (semantic-make-async-barrier-cell-node node) builder module var-env
+                                     di-builder di-scope location-map))
+         (i32-type (llvm-int32-type))
+         (tid-x    (%gen-nvvm-read-tid-x builder module))
+         (tid-y    (%gen-nvvm-read-tid-y builder module))
+         (tid-z    (%gen-nvvm-read-tid-z builder module))
+         (tid-sum  (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz"))
+         (is-zero  (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "is_tid_0"))
+         (init-bb  (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "mbar_init"))
+         (merge-bb (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "mbar_cont")))
+    (llvm-build-cond-br builder is-zero init-bb merge-bb)
+    (llvm-position-builder-at-end builder init-bb)
+    (let* ((ntid-x (%gen-nvvm-read-ntid-x builder module))
+           (ntid-y (%gen-nvvm-read-ntid-y builder module))
+           (ntid-z (%gen-nvvm-read-ntid-z builder module))
+           (wg-size (llvm-build-mul builder (llvm-build-mul builder ntid-x ntid-y "nxy") ntid-z "nxyz"))
+           (cell-storage (llvm-build-extract-value builder cell-val 0 "cell_storage"))
+           (cell-ptr     (llvm-build-extract-value builder cell-storage 0 "cell_ptr")))
+      (%gen-nvvm-mbarrier-init-shared builder module cell-ptr wg-size)
+      (llvm-build-br builder merge-bb))
+    (llvm-position-builder-at-end builder merge-bb)
+    (%ptx-barrier builder module)
+    (values cell-val nil)))

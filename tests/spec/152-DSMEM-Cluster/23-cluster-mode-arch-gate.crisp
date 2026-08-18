@@ -1,8 +1,16 @@
-;; CHECK-FAIL: "not supported on Intel"
+;; Endeavor 152 rung 23 — `:mode :cluster` is NVIDIA-only, and the arch gate IS the assertion.
+;;
+;; FILED AS A NORMAL SPEC, NOT UNDER errors/, and that placement was a correction.  It was first
+;; written as an errors/ spec, which requires the compiler to fail on the DEFAULT pass — and it
+;; does not, deliberately.  `%parse-async-barrier-keys` gates the mbarrier modes only on the real
+;; backends (:ptx / :spirv); the GENERIC compile-check pass has no arch and lowers them to the
+;; sync fallback.  `:mode :block` has behaved this way since Endeavor 137, and its own arch-gate
+;; spec (137/02-block-arch-gate-intel) is likewise a normal spec whose COMPILE-WITH FAIL carries
+;; the assertion.  Mine now matches it rather than inventing a second convention.
+;;
 ;; COMPILE-WITH[--ir-target=spv]: FAIL "not supported on Intel"
-;; NOTE: specific on purpose — see errors/20.  A bare "cluster" also matches the
-;; unimplemented-mode error, so it would have passed before the feature existed.
-;; Endeavor 152 — negative: `:mode :cluster` is NVIDIA-only, like `:block` before it.
+;; SKIP-WITH[--differentiate]: "negative arch-gate test: the COMPILE-WITH FAIL is the assertion, and the Intel gate fires long before AD"
+;;
 ;;
 ;; The `:mode` ladder's upper range is entirely NVIDIA: `:block` is already a hard compile error
 ;; on SPIR-V, and `:mode :linear` RINGS are unimplemented there too — so a barrier RING of any
