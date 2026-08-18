@@ -294,3 +294,52 @@ HARNESS DEFECTS FIXED ALONG THE WAY (pre-existing, not introduced here)
   resolves in one and not the other depending on which flags a spec carries.  Worked around
   by defining `validate-cluster-degrade-warning` in both, delegating to one shared body.
   Worth unifying properly at some point; it will bite again.
+
+
+AUTODIFF OF THE CLUSTER API (steps 7/8/9) — MEASURED 2026-08-17
+================================================================
+
+All three were planned as work.  Two were already done, and the third was one line of
+principle with an exact precedent.  Measured by stripping the SKIP-WITH from each spec and
+compiling with --differentiate, rather than reasoned about.
+
+**Step 9 — autodiff of `:multicast`: NOTHING TO DO.**  A multicast kernel differentiates today.
+
+And a CORRECTION to something recorded earlier in this endeavour: I wrote that "the adjoint of
+a multicast load is a cluster-wide reduction of adjoints".  That is wrong, and it is endeavour
+146's trap committed for the second time here -- treating a SCHEDULING optimisation as though
+it needed its own chain rule.  A multicast is a DELIVERY optimisation: the same bytes arrive,
+fetched once instead of N times.  Its adjoint is simply the adjoint of a load, and the existing
+scatter-with-atomics VJP already accumulates both workgroups' contributions correctly.  A
+cluster-wide reduction would be an OPTIMISATION of that accumulation, never a requirement.
+
+**Step 8 — widen `%warp-spec-check-block-only`: MOOT.**  The revised step-5 design returns
+`:cluster` AS `:block`, so the guard's `(not (eq mode :block))` test already passes for a
+cluster barrier.  This was listed as planned work twice; it evaporated as a side effect of
+choosing the better factoring.  Worth confirming with a warp-specialised cluster kernel, but
+the mechanism cannot fire.
+
+**Step 7 — autodiff of `:mode :cluster`: ONE REAL ITEM, and it was this endeavour's own check
+firing on the backward.**
+
+    :mode :cluster requires the kernel to declare a cluster of more than one workgroup.
+
+The AD walk replays the forward's BINDINGS, so the barrier construction appears in the `_grad`
+kernel -- but `cluster-size` is a DISPATCH declaration and deliberately does not propagate
+(rungs 03 and 05 assert exactly that).  So the backward legitimately has a cluster barrier and
+legitimately has no cluster.  Both halves correct; the refusal simply did not know which kernel
+it was in.
+
+FIXED by DOWNGRADING `:cluster` to `:block` in a backward kernel, gated on the `_GRAD` name so
+the user-facing refusal (errors/20) keeps working.  The precedent is exact:
+`%ad-canonicalize-wgmma` already substitutes sync MMA for wgmma when building a backward, on
+the stated grounds that "a backward is under no obligation to use the same instruction as its
+forward".  This is the same principle one level down -- a backward is under no obligation to use
+the same barrier REACH.  It runs no multicast pipeline and has no peers to co-ordinate with, so
+a workgroup-local mbarrier is exactly right.
+
+The alternative -- propagating `cluster-size` into the backward -- is the leak, and would make
+every backward inherit a launch geometry chosen for the forward's bandwidth.
+
+WHAT THIS LEAVES: the critical path to the MMA kernel is rung 11 on a RING, not any of the
+three AD steps.

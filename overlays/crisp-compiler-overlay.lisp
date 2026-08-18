@@ -3408,3 +3408,181 @@
     (llvm-position-builder-at-end builder merge-bb)
     (%ptx-barrier builder module)
     (values cell-val nil)))
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 7 — AD of `:mode :cluster`: the backward DOWNGRADES it to :block
+;;;
+;;; THE SYMPTOM.  A kernel with a `:mode :cluster` barrier fails under --differentiate with this
+;;; endeavour's OWN refusal:
+;;;     :mode :cluster requires the kernel to declare a cluster of more than one workgroup.
+;;;
+;;; THE CAUSE, and it is not a defect in either half.  The AD walk replays the forward's
+;;; BINDINGS, so the barrier construction appears in the backward kernel — but `cluster-size` is
+;;; a DISPATCH declaration and is deliberately NOT propagated (endeavour 146: scheduling is not
+;;; mathematics; a backward inheriting the forward's cluster shape would be a schedule leaking
+;;; into the math).  So the backward legitimately has a cluster barrier and legitimately has no
+;;; cluster.  Both halves are right; the refusal simply did not know which kernel it was in.
+;;;
+;;; THE FIX IS A CANONICALIZATION, WITH AN EXACT PRECEDENT.  `%ad-canonicalize-wgmma` already
+;;; substitutes the sync MMA for wgmma when building a backward, on the stated grounds that "a
+;;; backward is under no obligation to use the same instruction as its forward".  The same
+;;; applies here, one level down: a backward is under no obligation to use the same BARRIER REACH
+;;; as its forward.  It is not running the forward's cluster pipeline — it has no multicast to
+;;; release and no peers to co-ordinate with — so a workgroup-local mbarrier is exactly right.
+;;;
+;;; WHY NOT PROPAGATE cluster-size INSTEAD?  Because that is the leak.  It would make every
+;;; backward kernel inherit a launch geometry chosen for the forward's bandwidth, and the
+;;; gradient does not care where the forward's bytes came from.  Rung 03 and rung 05 already
+;;; assert the opposite — that a backward carries NO cluster records — and this keeps faith with
+;;; them.
+;;;
+;;; DISCRIMINATION.  The downgrade applies only when analysing a BACKWARD kernel (name ends
+;;; `_GRAD`), so a user who writes :mode :cluster without a cluster still gets the error.  That
+;;; is what errors/20 asserts, and it keeps working.
+;;; =====================================================================
+
+;; src/analysis/control.lisp  (new)
+(defvar *current-kernel-is-backward* nil
+  "T while analysing an AD-generated backward kernel (its name ends _GRAD).
+   Lets a check tell 'the user wrote this' from 'the differentiator generated this'.")
+
+;; src/analysis/core.lisp
+(defun internal-def-function (name params declarations body location)
+  "Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the
+   body analysis.  Otherwise identical to the Phase 2 definition."
+  (log:info "Analyzing function ~s" name)
+  (multiple-value-bind (explicit-env return-type)
+      (parse-function-declarations params declarations)
+    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (is-entry-p (loop for d in declarations
+                             thereis (and (listp d) (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (is-grid-fn-p (loop for d in declarations
+                               thereis (and (listp d) (symbolp (first d))
+                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
+           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
+           (*boundary-struct-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%boundary-struct-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-struct-params*))
+           (*boundary-array-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%array-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-array-params*))
+           (*current-kernel-is-backward*
+             (and name (symbolp name)
+                  (let ((n (symbol-name name)))
+                    (and (>= (length n) 5)
+                         (string-equal "_GRAD" (subseq n (- (length n) 5)))))))
+           (cluster-dims nil))
+      (when (and is-entry-p *boundary-struct-params*)
+            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
+      (when (and is-entry-p *boundary-array-params*)
+            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
+      (when is-grid-fn-p
+        (log:info "Compiling grid function ~a (dispatch context)" name)
+        (%validate-grid-function-return-type return-type))
+      (when is-entry-p
+        (let* ((global-size-decl (find "GLOBAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (local-size-decl  (find "LOCAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (num-groups-decl  (find "NUM-GROUPS" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (cluster-size-decl (find "CLUSTER-SIZE" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal)))
+          (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
+          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl)
+            (let ((dispatch-plist
+                    (append (when global-size-decl (list :global-size global-size-decl))
+                            (when local-size-decl  (list :local-size  local-size-decl))
+                            (when num-groups-decl  (list :num-groups  num-groups-decl))
+                            (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
+                            (when cluster-dims      (list :cluster-size cluster-dims)))))
+              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
+              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
+          (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
+      (let ((*current-kernel-cluster-dims* cluster-dims))
+        (internal-compile-function name explicit-env return-type params body declarations
+                                   location *compiler-context*)))))
+
+;; src/analysis/control.lisp
+(defun %parse-async-barrier-keys (expr location)
+  "Parse (make-async-barrier &key mode) -> barrier-mode.
+
+   Endeavor 152: `:cluster` is accepted, gated, and returned as :block — a cluster barrier is a
+   workgroup-local mbarrier that peers may additionally arrive on, so every existing consumer of
+   the mode should treat it as :block.  The reach is recorded separately.
+
+   In a BACKWARD kernel `:cluster` is downgraded to plain :block: the AD walk replays the
+   forward's bindings, but cluster-size is a dispatch declaration and does not propagate, so the
+   backward has a cluster barrier and no cluster — by design on both counts."
+  (let ((keys (rest expr))
+        (bmode :linear)
+        (clusterp nil))
+    (unless (evenp (length keys))
+      (error 'crisp-compiler-error
+        :message "make-async-barrier: keys must be :mode value pairs"
+        :source-location location))
+    (loop for (k v) on keys by (function cddr) do
+      (cond
+        ((eq k :mode) (setf bmode v))
+        ((eq k :type)
+         (error 'crisp-compiler-error
+           :message "make-async-barrier: the :type key was removed (def-topology is set aside); use only :mode"
+           :source-location location))
+        (t (error 'crisp-compiler-error
+             :message (format nil "make-async-barrier: unknown key ~S (expected :mode)" k)
+             :source-location location))))
+    (unless (member bmode (list :linear :block :cluster))
+      (error 'crisp-compiler-error
+        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy), :block (a workgroup-local mbarrier) or :cluster (an mbarrier peers may arrive on)" bmode)
+        :source-location location))
+    (when (eq bmode :cluster)
+      (cond
+        ;; BACKWARD kernel: downgrade rather than refuse.  A backward is under no obligation to
+        ;; use its forward's barrier reach — it runs no multicast pipeline and has no peers to
+        ;; co-ordinate with.  Same principle as %ad-canonicalize-wgmma substituting sync MMA.
+        (*current-kernel-is-backward*
+         (log:info "backward kernel: downgrading :mode :cluster to :block (the schedule does not propagate into a derivative)")
+         (setf bmode :block))
+        ((not (and *current-kernel-cluster-dims*
+                   (> (reduce (function *) *current-kernel-cluster-dims*) 1)))
+         (error 'crisp-compiler-error
+           :message ":mode :cluster requires the kernel to declare a cluster of more than one workgroup.  Add (cluster-size :set-to N) to the declare block.  A cluster barrier's whole meaning is that PEER workgroups may arrive on it; with no peers the remote arrive would resolve to this workgroup's own barrier, releasing a barrier nobody is waiting on."
+           :source-location location))
+        ((not (%multicast-1d-extent *current-kernel-cluster-dims*))
+         (error 'crisp-compiler-error
+           :message (format nil ":mode :cluster currently supports only a ONE-DIMENSIONAL cluster, but cluster-size is ~a.  With more than one clustered axis the arrival group is a row or a column rather than the whole cluster, so both the peer set and the :arrivals multiplier become rank-dependent."
+                            *current-kernel-cluster-dims*)
+           :source-location location))
+        (t (setf clusterp t
+                 bmode :block))))
+    (when (eq bmode :block)
+      (case crisp.compiler:*target-backend*
+        (:spirv
+         (error 'crisp-compiler-error
+           :message ":mode :block is not supported on Intel / SPIR-V — Intel's fast 2D path (LSC block loads) loads global into registers directly and is not a barrier mode, and Intel has no workgroup-cluster hardware at all, so :mode :cluster is unavailable for the same reason. Use :mode :linear, or the direct block-load path."
+           :source-location location))
+        (:ptx
+         (unless (%arch-supports-block-p (resolved-target-arch))
+           (error 'crisp-compiler-error
+             :message (format nil ":mode :block / :cluster needs a Hopper-or-newer NVIDIA arch (sm_90+); got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
+                              (resolved-target-arch))
+             :source-location location)))))
+    (when clusterp
+      (let ((bname (and *compiler-context*
+                        (compiler-context-current-binding-name *compiler-context*))))
+        (when bname
+          (log:info "barrier ~a declared :mode :cluster (peers may arrive)" bname)
+          (setf (gethash bname *cluster-barrier-bindings*) t))))
+    bmode))
