@@ -513,3 +513,117 @@ the question is what makes the base resolve absolutely here.
 
 Only after both should anything be changed.  This endeavour has twice paid for guessing at a
 fix before bisecting.
+
+
+---
+
+## ROOT CAUSE (2026-08-17, bisected on H100) — `:local` SCRATCH IS BROKEN UNDER A CLUSTER
+
+Not multicast.  Not the barrier.  Not `mapa`.  Not the cluster entry fence.  The minimal
+reproduction has none of those:
+
+| variant | cluster-size | scratch | TMA / barriers | result |
+| --- | --- | --- | --- | --- |
+| H | no  | yes | none | **PASSES**, correct output |
+| G | YES | yes | none | **illegal instruction** |
+| B | no  | yes | ring + :block | **PASSES**, correct output |
+| C | YES | yes | ring, all :block, no multicast | HANGS |
+| A | YES | yes | ring, :mode :cluster, no multicast | HANGS |
+| rung 11 | YES | yes | ring + multicast | illegal instruction |
+
+G vs H differ ONLY in `(cluster-size :set-to (2 1))`.  So:
+
+> **A kernel that declares a cluster and allocates ANY `:local` scratch tensor is broken,
+> independent of every other cluster feature.**
+
+MECHANISM, and it matches the sanitizer verbatim.  The hoist passes a `:local` scratch base as a
+literal shared-memory OFFSET (`..._ptr = 0ULL; // shared mem offset`), which the kernel uses as
+an absolute shared address.  Without a cluster every CTA's shared window starts at 0, so that is
+correct.  Under `.reqnctapercluster` the window is the DISTRIBUTED one and a low absolute address
+names **rank 0's** shared memory -- so every non-rank-0 workgroup reads a peer.  The sanitizer
+said exactly this:
+
+    Invalid __shared__ read of size 4 bytes
+      by thread (0,0,0) in block (1,0,0)
+      Address 0x0 is not located in executing CTA
+
+WHY RUNG 04 PASSED AND HID THIS: it copies through global memory and allocates no scratch.  Its
+conclusion ("a .reqnctapercluster kernel launches correctly under a plain cuLaunchKernel")
+remains true and was independently re-confirmed against NVIDIA's own __cluster_dims__ kernel.
+It simply never exercised shared memory.
+
+THINGS THIS EXONERATES, each disproved by measurement rather than argument:
+  * multicast -- variant A has none and still fails
+  * the `:mode :cluster` barrier and remote arrive -- variant C uses only :block
+  * the cluster entry fence -- rebuilt with `%module-has-cluster-p` forced NIL (0 fences
+    emitted); A and C still hang.  The fence structure was ALSO reproduced in raw CUDA (two
+    inline-asm `barrier.cluster.arrive; barrier.cluster.wait;` with tid-0-guarded inits between)
+    and returns cudaSuccess.
+  * `mapa` -- now matches NVIDIA's codegen, and G contains no mapa at all
+
+### THE FIX BELONGS IN SCRATCH ADDRESSING, NOT IN THE CLUSTER API
+
+The scratch base must resolve to the EXECUTING workgroup's own shared window rather than an
+absolute offset.  Candidates, cheapest first, none yet tried:
+  1. Derive the base from a `.shared` symbol (cvta.shared) instead of a literal integer, so the
+     address is CTA-relative by construction.
+  2. Check whether NVCC-generated `extern __shared__` under `__cluster_dims__` resolves
+     differently -- i.e. get ground truth the same way the mapa question was settled.
+
+UNTIL THEN: every 152 metal rung that stages through `:local` scratch is blocked, which is rungs
+11 and (when written) the MMA realization.  The compile-and-inspect rungs are unaffected and
+remain green.
+
+NOTE: the pod carries a TEMPORARY hack appended to its overlay (`%module-has-cluster-p` -> NIL)
+from the fence bisect.  It is POD-ONLY; the repo copy is untouched.
+
+### What the PTX says (static, no GPU needed)
+
+G and H were compiled locally and diffed.  **The PTX is byte-identical apart from two lines:**
+
+    < .explicitcluster
+    < .reqnctapercluster 2, 1, 1
+
+Same registers, same address arithmetic, same `st.shared.b32` / `ld.shared.b32`.  So this is not
+a codegen divergence -- it is the SAME code behaving differently once the entry is marked as
+clustered.
+
+Three things that static reading DID settle, each of which was a candidate:
+
+* **Shared memory is allocated.**  The launch passes 32 bytes of dynamic shared (`cuLaunchKernel(
+  ..., 32, 1, 1, 32, 0, ...)`), exactly the tile size.  A "cluster kernel with zero shared" theory
+  is dead.
+* **The cluster axis mapping is CORRECT.**  Crisp's row axis maps to CUDA's x on the hoist path
+  (`gridX = (c_ext0+1)/2`, extent 0 = rows), `.reqnctapercluster 2,1,1` puts the 2 on x, and the
+  grid fixup pads gridX by 2.  Declaration, directive and launch all agree.
+* **How the scratch base reaches the kernel**, and this is the suspect.  A `:local` scratch tensor
+  is passed as a u64 **kernel parameter holding the literal integer 0** and used DIRECTLY as a
+  shared-space address -- there is no `.shared` symbol anywhere in the module and no `cvta`:
+
+      // host
+      uint64_t tile_from_g_sync_1_ptr = 0ULL;  // shared mem offset
+      // device
+      add.s64      %rd128, %rd45, %rd142;   // %rd45 traces back to that parameter
+      st.shared.b32 [%rd128], %r15;
+
+  With no cluster, "shared offset 0" is unambiguous.  Under `.reqnctapercluster` the shared window
+  is the distributed one, and whether a bare 0 still names the EXECUTING CTA is exactly the
+  question -- the sanitizer's "Address 0x0 is not located in executing CTA" says it does not.
+
+### The experiment that settles it: `put_temp_files_here/lds/lds_base.cu`
+
+Static reading has gone as far as it can; the remaining question is a runtime address-encoding
+question.  Four kernels, one file, ~70 lines, needs an H100:
+
+| | addressing | cluster | asks |
+| --- | --- | --- | --- |
+| Q1a | `extern __shared__` symbol | no  | is a CTA's own shared base 0 without a cluster? |
+| Q1b | `extern __shared__` symbol | 2,1,1 | **does it stay 0 WITH one?** |
+| Q2a | raw address 0 (what Crisp does) | no  | control -- must pass |
+| Q2b | raw address 0 (what Crisp does) | 2,1,1 | **must reproduce the illegal instruction** |
+
+Q1b is the whole endeavour in one number.  If the symbol base is NON-ZERO under a cluster while
+Q2b faults, the diagnosis is proven and the fix is scoped: a `:local` scratch base must be derived
+from the executing CTA's shared window rather than passed in as a literal offset.  If Q1b is 0 and
+Q2b passes, the cause is somewhere else entirely and this note is wrong -- which is why the
+control rows are there.
