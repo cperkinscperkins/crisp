@@ -462,3 +462,54 @@ NEXT SESSION STARTS HERE, and needs no pod until there is a candidate fix.  Susp
 first: the scratch-matrix-ring's slot addressing under a cluster; whether the tile ring's dynamic
 SMEM size accounts for ring-count; and whether `store-tile` reads a slot the multicast wrote at a
 different offset.
+
+
+---
+
+## RUNG 11 — narrowed further, LOCALLY (2026-08-17). The faulting read is `store-tile`.
+
+Static analysis, no pod needed, and it rules several things out.
+
+THE FAULT IS THE KERNEL'S ONLY `ld.shared`.  There is exactly one in the module
+(`ld.shared.b32 %r33, [%rd57]`), and it belongs to `store-tile` reading the staged tile back out
+to global.  The sanitizer's two reported addresses map onto it exactly:
+
+    tile ring = 2 slots x 2 rows x 4 cols x 4B = 64B   (launcher requests 64B dynamic SMEM)
+    row stride = 4 floats = 16 bytes
+    reported: thread 0 -> 0x0 (row 0), thread 1 -> 0x10 (row 1)
+
+So store-tile computes CORRECT tile-relative offsets.  What is wrong is that those ABSOLUTE
+shared addresses are reported as not CTA-local in block (1,0,0).
+
+RULED OUT:
+  * the ring SLOT.  `slot = (mod grid-x 2)`, and with `:tile-shape (2 4)` over a 4x4 C the
+    column axis has ONE tile, so grid-x is always 0 and slot is always 0.  Not a slot bug.
+  * `mapa` / the remote arrive / the multicast instruction.  All now match NVIDIA's own codegen,
+    and none of them is an `ld.shared`.
+  * "scratch at shared offset 0 is inherently wrong".  The shipped chap3 kernel does exactly the
+    same thing -- `b-ring_from_matmul_2 ... shared offset 0`, `ptr = 0ULL`, 81920 bytes of
+    dynamic SMEM -- and is known-good on H100.  The DIFFERENCE is that chap3 has no cluster.
+
+THE LIVE HYPOTHESIS, unconfirmed: a `:local` scratch tensor addressed from a base of literal 0
+behaves differently under `.reqnctapercluster`, because with a cluster the shared window is the
+DISTRIBUTED one and a low absolute address belongs to rank 0 rather than to the executing CTA.
+That would make every non-rank-0 workgroup read a peer's memory -- which is precisely what
+"Address 0x0 is not located in executing CTA" says.
+
+It cannot be the WHOLE story (a clustered kernel must be able to use its own shared memory), so
+the question is what makes the base resolve absolutely here.
+
+### NEXT POD SESSION — run these two FIRST, in this order.  Both are bisects, not fixes.
+
+1. **Same ring kernel, `:multicast` removed, cluster-size KEPT.**  Isolates multicast from
+   cluster+ring+scratch.  If it still faults, multicast is innocent and the bug is in scratch
+   addressing under a cluster.  (An equivalent control was run for the earlier ONE-SHOT kernel
+   at tile (8 8) and passed, but never at the current geometry with a ring -- so this is
+   genuinely undone, not merely unrepeated.)
+
+2. **Same kernel, `cluster-size` removed, multicast removed.**  If THAT passes and (1) fails,
+   the cluster is what changes scratch addressing, and the fix is in how a `:local` scratch base
+   is computed for a clustered kernel.
+
+Only after both should anything be changed.  This endeavour has twice paid for guessing at a
+fix before bisecting.
