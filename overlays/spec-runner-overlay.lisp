@@ -704,3 +704,43 @@
           ((eq ir-target :ptx)    (run-spec-ptx-in-process file :emit-metadata emit-metadata :validator validator))
           ((eq ir-target :llvmir) (run-spec-llvmir-in-process file :validator validator))
           (t (run-spec-lisp-loader file))))))
+
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cluster-remote-arrive (file ptx-string)
+  "Endeavor 152 rung 21 — `signal` on a :cluster barrier must arrive on PEERS.
+
+   UPDATED after a hardware finding.  The first version looked for `mapa.shared::cluster`, which
+   was the form Crisp emitted -- and that form DOES NOT MAP.  Compiling NVIDIA's own
+   cluster_group::map_shared_rank() shows the required sequence goes through a GENERIC address:
+
+       cvta.shared.u64    <generic>, <shared offset>
+       mapa.u64           <peer>,    <generic>, <rank>
+       cvta.to.shared.u64 <shared>,  <peer>
+       mbarrier.arrive.shared::cluster.b64 _, [<shared>];
+
+   Handing `mapa` a raw shared-window offset silently yields an UNMAPPED address, so the arrive
+   lands on the caller's own barrier -- exactly the silent-local-arrive failure this validator
+   exists to catch.  On an H100 that surfaced as
+       Invalid __shared__ read ... Address 0x0 is not located in executing CTA.
+
+   So the assertion is now on the CONVERSION, not merely on the presence of a mapa: a `mapa` that
+   is not bracketed by the generic round-trip is the bug, not the fix."
+  (declare (ignore file))
+  (let ((cvta-in  (search "cvta.shared.u64" ptx-string))
+        (mapa     (search "mapa.u64" ptx-string))
+        (cvta-out (search "cvta.to.shared.u64" ptx-string))
+        (arr      (search "mbarrier.arrive.shared::cluster" ptx-string))
+        (oldform  (search "mapa.shared::cluster" ptx-string)))
+    (cond
+      (oldform
+       (format *error-output* "FAIL: emits `mapa.shared::cluster` on a raw shared offset.  That form does not map -- the arrive would land on the CALLER'S OWN barrier while the peer waits forever.  Use the generic round-trip (cvta.shared.u64 -> mapa.u64 -> cvta.to.shared.u64).~%") nil)
+      ((null arr)
+       (format *error-output* "FAIL: no `mbarrier.arrive.shared::cluster` -- the arrive is not cluster-scoped.~%") nil)
+      ((null mapa)
+       (format *error-output* "FAIL: no `mapa.u64` -- nothing maps the barrier into a peer's view, so any arrive is local.~%") nil)
+      ((or (null cvta-in) (null cvta-out))
+       (format *error-output* "FAIL: `mapa.u64` is present but not bracketed by the generic conversion (cvta.shared.u64 in, cvta.to.shared.u64 out).  mapa operates on GENERIC addresses; a raw shared offset yields an unmapped result.~%") nil)
+      ((> mapa arr)
+       (format *error-output* "FAIL: the cluster arrive precedes the mapa that computes its peer address.~%") nil)
+      (t t))))

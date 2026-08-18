@@ -45,6 +45,23 @@
 ;; width are the likely culprits, exactly as they were for rung 04 (which predicted `2 2 2 2` and
 ;; measured `0 2 4 6`).
 ;;
+;;
+;; THE RING SLOT MUST BE INVARIANT ALONG THE CLUSTER AXIS, and getting this wrong DEADLOCKS.
+;; The first cut computed `slot` from `grid-y` -- which IS the cluster axis, the one variable
+;; that differs between cluster members.  Measured on an H100: the kernel hung with the GPU
+;; pegged at 100% and 529 MiB used, i.e. a spin-wait, not a crash.
+;;
+;; Why: a multicast completes the barrier at ONE offset in every destination workgroup, and
+;; writes the data to ONE tile-ring offset in every destination.  With a per-workgroup slot,
+;; rank 0 issued against slot 0 while its peer expected and awaited slot 1 -- so the peer waited
+;; on a barrier nothing would ever complete, and would have read the wrong tile slot even if it
+;; had woken.
+;;
+;; So the rule is the multicast coordinate rule, one level up: the SLOT expression must not
+;; mention the clustered axis's loop variable.  `grid-x` is invariant across this cluster (the
+;; members differ only in grid-y), so it is the correct choice.  Rung 22 already used grid-x and
+;; is unaffected.
+;;
 ;; HOIST-ARCH: sm_90
 ;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
 ;; TEST-HOIST[CUDA]: validate-cuda-host-run
@@ -69,7 +86,7 @@
         ;; free.  :arrivals 1 is per-workgroup; the compiler scales it by the group extent.
         (empty (make-async-barrier-ring :ring-count 2 :mode :cluster :arrivals 1)))
     (tile-stride C (2 4) (grid-y grid-x)
-      (let ((slot (mod (to-ulong grid-y) (to-ulong 2))))
+      (let ((slot (mod (to-ulong grid-x) (to-ulong 2))))
         ;; row coordinate is the CONSTANT 0 -> both workgroups want the same tile -> multicast
         (load-tile A (ring-get tile-ring slot) (0 grid-x)
                    :barrier (ring-get full slot) :multicast true)

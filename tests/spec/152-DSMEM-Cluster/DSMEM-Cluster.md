@@ -343,3 +343,48 @@ every backward inherit a launch geometry chosen for the forward's bandwidth.
 
 WHAT THIS LEAVES: the critical path to the MMA kernel is rung 11 on a RING, not any of the
 three AD steps.
+
+
+RUNG 11 REBUILT ON A RING (2026-08-17)
+=======================================
+
+Renamed 11-multicast-oneshot-metal -> 11-multicast-ring-metal.  The one-shot shape is unsound
+for a cluster and the filename was asserting otherwise.
+
+WHY THE RING.  `await` re-initialises the mbarrier INSIDE the loop, so a single re-used barrier
+lets the leader re-init and issue the next multicast before a peer has re-inited its own -- the
+entry-fence race, one iteration later.  A ring is the fix and it is what the real matmul uses.
+
+THE GEOMETRY IS CHOSEN SO A FAILURE IS ATTRIBUTABLE.  Both workgroups load the SAME tile (the
+row coordinate is the constant 0) and store it to their own row band of C:
+
+    A (4x4, harness fill 0..15)   tile = A[0:2][0:4] = 0 1 2 3 / 4 5 6 7
+    C[0:2] <- tile  (grid-y 0)    C[2:4] <- tile  (grid-y 1)
+    => C = 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
+
+Only cluster rank 0 issues the multicast.  So if delivery to the non-issuer fails, exactly ONE
+HALF of C is wrong and the other is right -- attributable to a workgroup rather than an
+aggregate that could be wrong for several reasons.
+
+TILE (2 4) is forced twice over, both by measurement: 4 columns because TMA needs the innermost
+box dimension to be a multiple of 16 bytes (a 2-float row is 8 -> `invalid argument` from
+cuTensorMapEncodeTiled); 2 rows so a 4-row C yields TWO row-tiles, one per cluster member --
+with a taller tile there is ONE tile, the grid pads for cluster divisibility, and the surplus
+workgroup exits without initialising its mbarrier, so the multicast targets a dead peer.
+
+WHAT IT STILL CANNOT PROVE: the ring never WRAPS here (2 tiles over 2 workgroups = one iteration
+each), so back-pressure is not exercised.  That claim belongs to step 10, where MMA-DIMS gives
+real sizes.  Recorded so a green rung 11 is not over-read.
+
+
+PROCESS NOTE — a regression run was invalidated by rebuilding underneath it
+---------------------------------------------------------------------------
+A full-suite run was reported as "in progress" and then silently produced NO summaries for any
+phase.  Cause: the compiler was rebuilt WHILE that run was in flight, replacing
+bin/crisp-compile.exe under it.  The run was meaningless, not merely noisy.
+
+Two habits from it: do not rebuild while a suite is running (the build also fails with
+DELETE-FILE-ERROR when it loses the race, which is the louder half of the same collision), and
+treat "a phase produced no Spec Summary line at all" as a CRASH signal rather than a grep miss.
+The pod runner already encodes the second rule -- run_phase records `CRASH` when no summary line
+appears -- and the local flow does not.

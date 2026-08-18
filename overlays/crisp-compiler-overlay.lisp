@@ -3586,3 +3586,56 @@
           (log:info "barrier ~a declared :mode :cluster (peers may arrive)" bname)
           (setf (gethash bname *cluster-barrier-bindings*) t))))
     bmode))
+
+
+;;; =====================================================================
+;;; Endeavor 152 (fix) — mapa needs a GENERIC address, not a shared-window offset
+;;;
+;;; MEASURED ON AN H100.  rung 11 died with:
+;;;     Invalid __shared__ read of size 4 bytes
+;;;       by thread (0,0,0) in block (1,0,0)
+;;;       Address 0x0 is not located in executing CTA
+;;; and a second at 0x10 -- which are exactly the shared-window offsets of __crisp_mbar_1 and
+;;; __crisp_mbar_2.  So the address reaching mbarrier.arrive.shared::cluster was the UNMAPPED
+;;; local offset: mapa was not producing a peer address at all.
+;;;
+;;; GROUND TRUTH, obtained by compiling NVIDIA's own cluster_group::map_shared_rank() with
+;;; nvcc -arch=sm_90a -ptx and reading what it emits:
+;;;
+;;;     cvt.u64.u32        %tmp, %r4
+;;;     cvta.shared.u64    %rd2, %tmp        <- shared offset -> GENERIC
+;;;     mapa.u64           %rd3, %rd2, %r5   <- mapa on the GENERIC address, .u64
+;;;     cvta.to.shared.u64 %tmp, %rd3        <- back to the shared window
+;;;     cvt.u32.u64        %r3, %tmp
+;;;     mbarrier.arrive.shared::cluster.b64 _, [%r3];
+;;;
+;;; I had emitted `mapa.shared::cluster.u32 d, a, b` directly on the shared offset.  That form
+;;; did not map, so the arrive hit the executing CTA's own barrier -- which is precisely the
+;;; silent-local-arrive failure rung 21's validator was written to catch, arriving instead as a
+;;; hardware fault because the sanitizer noticed the address was not CTA-local.
+;;;
+;;; Emitted as ONE inline-asm block so the whole conversion is atomic and no intermediate leaks
+;;; into register allocation, mirroring how the TMA helpers already package multi-step PTX.
+;;; =====================================================================
+
+;; src/codegen.lisp
+(defun %gen-nvvm-mapa-shared-cluster (builder addr-i32 rank-i32)
+  "Map a shared-memory address in THIS workgroup's view to the same offset in the workgroup with
+   the given cluster rank, returning a shared-window u32 suitable for
+   mbarrier.arrive.shared::cluster.
+
+   The conversion through GENERIC is required, not incidental: `mapa` operates on generic
+   addresses.  Handing it a raw shared-window offset silently yields an unmapped address, so the
+   subsequent arrive lands on the CALLER'S OWN barrier -- the exact bug this fix repairs, caught
+   on hardware as `Address 0x0 is not located in executing CTA`."
+  (%build-inline-asm-call builder (llvm-int32-type)
+                          (list (llvm-int32-type) (llvm-int32-type))
+                          (list addr-i32 rank-i32)
+                          (concatenate 'string
+                            "{ .reg .b64 %gaddr; .reg .b64 %maddr; "
+                            "cvt.u64.u32 %gaddr, $1; "
+                            "cvta.shared.u64 %gaddr, %gaddr; "
+                            "mapa.u64 %maddr, %gaddr, $2; "
+                            "cvta.to.shared.u64 %maddr, %maddr; "
+                            "cvt.u32.u64 $0, %maddr; }")
+                          "=r,r,r"))
