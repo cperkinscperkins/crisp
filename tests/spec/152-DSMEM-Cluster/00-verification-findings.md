@@ -1363,3 +1363,70 @@ CUBLAS_Optimal run was averaged in with its Crisp run and made the static build 
 tripled.  This is the SECOND time in this endeavour that an unfiltered results query produced a
 spurious headline (the first mixed H100 PCIe rows into an H100 NVL table).  Any query over
 benchmarks/results must filter BOTH hardware and competitor.
+
+## THE PROBE: MULTICAST DOES WORK, AND WE FOUND ITS REGIME (H100 NVL, 2026-08-19)
+
+Sweeping the OUTPUT TILE of the chapter-4 kernel walks arithmetic intensity without writing
+FlashAttention.  Cluster fixed at (2 1) throughout -- a cluster of two is free (0.97-1.01x), so
+this isolates the multicast delta from the cluster-of-four cliff.  B multicasts, A does not.  Each
+`+mc` variant is measured against its OWN no-multicast control at the same tile, so tile-shape
+effects cancel out of the delta.  RUN TWICE, both runs shown:
+
+    tile     AI     N=2048 run1/run2      N=4096 run1/run2
+    64x256   25.6   -6.8%  / -7.0%        -6.4%  / -9.7%
+    64x128   21.3   +16.3% / +15.5%       +12.1% / +10.7%
+    64x64    16.0   +0.8%  / +1.1%        +7.7%  / +4.4%
+    64x32    10.7   (mc CRASHES -- see below)
+
+THE SIGN FLIP IS REAL AND REPRODUCIBLE.  Multicast is a consistent ~7% LOSS at the 64x256 tile and
+a consistent +10 to +16% GAIN at 64x128.  Two independent runs agree to within about a point on
+every cell that matters.  This answers the question the endeavour has been circling: the mechanism
+is not broken and it is not useless -- it simply cannot help a kernel that has already hidden its
+operand fetch behind compute, and it helps materially once that is no longer true.
+
+### The confound, stated plainly
+
+Shrinking the tile changes far more than arithmetic intensity:
+
+    tile     AI     regs   CTA/SM   waves @2048
+    64x256   25.6   165      2       0.97
+    64x128   21.3    96      4       0.97
+    64x64    16.0    66      5       1.55
+    64x32    10.7    52      7       2.22
+
+So "multicast helps at low arithmetic intensity" and "multicast helps at high occupancy" are NOT
+separated by this design, and this probe cannot tell them apart.  What it does establish -- which
+is what it was built to establish -- is that a regime exists where multicast pays substantially.
+Note that 64x256 and 64x128 sit at the SAME wave count (0.97), so wave quantisation alone does not
+explain the swing between them.
+
+The non-monotonicity (64x64 gains less than 64x128) is itself reproducible, so it is a real effect
+rather than noise -- most likely the kernel becoming latency-bound as the tile narrows, the same
+regime chapter 2 sits in.
+
+### THE PRACTICAL CATCH, and it decides what to do next
+
+    N=2048   64x256 no-mc 233.0 TF  <-- best overall
+             64x128 +mc   193.8 TF
+    N=4096   64x256 no-mc 262.3 TF  <-- best overall
+             64x128 +mc   209.8 TF
+
+Multicast improves a configuration that is itself SLOWER.  The +16% is real, but it is 16% of a
+worse kernel: 64x128 with multicast still loses to 64x256 without it, by 17% at 2048 and 20% at
+4096.  For this matmul, big tiles and no multicast remains the optimum, and no amount of multicast
+tuning changes that -- the tile shape dominates.
+
+WHAT THAT MEANS FOR FLASHATTENTION.  The premise is now evidence-backed rather than hopeful: a
+kernel in the low-AI / high-occupancy regime does benefit.  But it also sets the bar honestly --
+FA would have to be worth building on its own terms, because "multicast helps it" does not imply
+"it beats the big-tile GEMM".  FA is a different computation, so that comparison is not even the
+right one; the point is only that multicast should be expected to help there, and now we know why.
+
+### NEW BUG: the narrowest tile crashes with multicast
+
+`p_mc32` (64x32 output tile, cluster (2 1), B multicast) fails with `unspecified launch failure`;
+the matching no-multicast control at the same tile runs fine, as do all wider tiles with multicast.
+Grid divisibility is satisfied (2048/64 = 32, and 32 % 2 == 0), so this is NOT BUG 049.  The B ring
+at this shape is 32x32 floats = 4 KB per slot, which is 128-byte aligned, so it is not obviously
+BUG 048 either.  Filed as BUG 050.  It cost the lowest-AI point of the sweep, which is the point
+that would have best separated the AI and occupancy explanations.

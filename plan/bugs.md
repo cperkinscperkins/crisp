@@ -1755,3 +1755,23 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         STILL OPEN as the better long-term fix: let padded workgroups PARTICIPATE in the cluster's
         barriers rather than exiting, which would make padding safe instead of forbidden.  That
         needs the tile-stride trip count to be uniform across a cluster -- a real change.
+
+[ ] 050 - A MULTICAST load CRASHES at a narrow output tile (64x32), while the same tile without
+        multicast runs fine.
+
+        FOUND 2026-08-19 by the arithmetic-intensity probe.  `p_mc32` -- chapter 4's kernel with a
+        64x32 output tile, cluster (2 1), B multicast only -- fails with `unspecified launch
+        failure` at N=2048 and N=4096.  Its no-multicast control at the SAME tile runs correctly,
+        and every wider multicast tile (64x64, 64x128, 64x256) runs correctly.  So it is the
+        combination of multicast with this narrow shape.
+
+        NOT BUG 049: grid divisibility is satisfied (2048/64 = 32 rows of tiles, 32 % 2 == 0), so
+        no padding is required and the new refusal does not fire.
+
+        PROBABLY NOT BUG 048 either: the B ring at this shape is 32x32 floats = 4096 bytes per
+        slot, so slot 1 begins at a 128-byte aligned offset.
+
+        WHAT IT COST: the lowest-arithmetic-intensity point of the probe (AI 10.7), which is the
+        point that would best have separated the two competing explanations for why multicast
+        helps at 64x128 -- lower arithmetic intensity versus higher occupancy.  Worth fixing for
+        that reason alone if that question is ever pursued.
