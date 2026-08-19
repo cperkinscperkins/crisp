@@ -1084,3 +1084,85 @@ This was PREDICTED days ago and left open ("padded workgroups exit without parti
 fatal for multicast"), and docs/topology.md still describes padding as costing only wasted
 dispatch.  That sentence is false for any kernel with a cluster-scoped barrier or a multicast
 load and needs qualifying.
+
+## WHY MULTICAST DOES NOT PAY HERE, AND WHERE IT WOULD (H100 NVL, 2026-08-18)
+
+### The decisive measurement: the multicast delta does not scale with sharing
+
+If multicast were saving bandwidth that mattered, doubling the number of workgroups served by one
+fetch should roughly double the benefit.  Measured against each configuration's OWN no-multicast
+control:
+
+    N       sharing group = 2        sharing group = 4
+    2048    233.5 -> 218.7  -6.3%    139.2 -> 128.3  -7.8%
+    4096    258.4 -> 240.8  -6.8%    224.6 -> 209.4  -6.8%
+
+It is FLAT.  Going from 2-way to 4-way sharing changes nothing, which means the bandwidth saved is
+not on the critical path at all.  What IS on the critical path is the fixed bookkeeping -- the
+leader guard, `expect_tx` on every destination, and one CTA issuing where N used to -- and that is
+the ~7% we pay.
+
+### The explanation, and it is a compliment to chapter 3
+
+Chapter 3 is warp-specialised and ring-pipelined: a producer warp streams TMA loads while the
+consumer warpgroup runs wgmma.  When that pipeline is deep enough, operand fetch is ALREADY hidden
+behind compute.  Multicast makes a fetch cheaper; it cannot make a fetch that was never being
+waited on any cheaper still.  The overhead, by contrast, sits in the producer's issue path, which
+IS serial.  Cheaper off the critical path, more expensive on it -- hence a flat loss.
+
+### Cluster cost is about CTA COUNT, not shape
+
+    (2 2) no-mc @2048 = 0.58x        (4 1) no-mc @2048 = 0.58x
+    (2 2) no-mc @4096 = 0.87x        (4 1) no-mc @4096 = 0.87x
+
+A cluster of two is free (0.97-1.01x).  A cluster of four cliffs hard at 2048 and recovers by
+4096.  Grid geometry for a 64x256 tile: 64 workgroups at N=1024 (below one wave on ~130 SMs),
+256 at N=2048 (about two waves), 1024 at N=4096 (about eight).  Cluster CTAs must be co-resident
+on one GPC, and that constraint is worst when the grid is a small number of waves -- nothing to
+constrain below one wave, and it averages out over many.  HYPOTHESIS, consistent with all six data
+points but not directly confirmed: `ncu` is unavailable on this pod (ERR_NVGPUCTRPERM, a driver
+restriction that cannot be lifted inside the container), so achieved occupancy was not measured.
+
+### Roofline, for scale
+
+    chap3 @4096: 1024 output tiles, 5.37 GB of L2->SMEM operand traffic in 0.535 ms = ~10 TB/s
+    chap2 @4096: 4096 output tiles, 8.59 GB in 36.2 ms = ~0.24 TB/s
+
+chap2 is 16x below any bandwidth roof -- it is latency-bound at one warp per CTA -- so it cannot
+answer the bandwidth question either, which is why the chap2 multicast variant was not pursued.
+
+### So where WOULD multicast pay?
+
+The condition is not "the tile is shared" -- it is "operand fetch is ON THE CRITICAL PATH".  That
+points at:
+
+  * Kernels WITHOUT deep pipelining or warp specialisation, where a load stalls the math.
+    Ironically multicast helps a simple kernel more than a sophisticated one.
+  * Attention / FlashAttention, where K and V tiles are consumed by many query blocks at once and
+    arithmetic intensity is far lower than GEMM's.
+  * Any low-arithmetic-intensity op with wide tile sharing.
+  * A cluster of TWO, always -- it is free, so multicast there costs only its own ~7%, whereas a
+    cluster of four also buys the co-residency cliff.
+
+WORTH SAYING PLAINLY: CUTLASS and cuBLAS DO use TMA multicast on Hopper GEMM.  So the feature is
+not useless -- either their kernels sit closer to the bandwidth roof than ours, or their issue
+path costs less than our ~7%.  That 7% is IMPLEMENTATION, not physics, and is the first thing to
+attack if multicast is ever wanted here.
+
+### And on a larger / newer GPU?
+
+Directionally more useful, for two independent reasons:
+  * Each generation adds FLOPs faster than it adds bandwidth, so kernels drift toward being
+    bandwidth-bound -- which is exactly the regime where multicast earns its keep.
+  * More SMs means more waves for a given problem size, and the cluster-of-four cliff we measured
+    is a small-wave-count effect that amortises away.
+Neither is a reason to expect it to pay on THIS kernel, whose fetch is hidden behind compute
+regardless of how fast the memory is.
+
+### Recommended path forward
+
+  1. Do NOT delete the feature.  It is correct, spec'd, metal-verified, and free when unused.
+  2. Attack the ~7% issue-path overhead before ever re-testing multicast for speed.
+  3. Fix BUG 049 (grid padding kills a multicast kernel) before shipping it for real use.
+  4. For chapter 3's remaining 26-33% gap to cuBLAS, stop looking at bandwidth.  The next
+     measurement is occupancy: registers per warpgroup against resident warpgroups per SM.
