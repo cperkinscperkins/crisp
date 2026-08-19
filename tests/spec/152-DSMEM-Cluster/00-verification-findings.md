@@ -989,3 +989,98 @@ says is only that THIS kernel is not where it pays.
 
 CHAPTER 4 IS KEPT, negative result and all.  A deleted experiment teaches nobody which bottleneck
 to attack next.
+
+## CORRECTION TO THE BENCHMARK SECTION ABOVE — MEASUREMENT FIDELITY
+
+Found while generating benchmarks/REPORT.md, which crashed and led back into the data.
+
+**1. A real bug in scripts/crisp_bench/report.py (fixed).**  `ceiling_list` was assigned only
+inside two conditionals, so a chapter that is NOT an activation chapter AND has no vendor ceiling
+recorded for that GPU+precision fell through both and `list(ceiling_list)` raised
+UnboundLocalError.  That is the normal state of any result set before someone runs the vendor
+baseline on that machine.  Now initialised to [] up front.
+
+**2. The comparison table mixed HARDWARE.**  The ad-hoc script globbed every chap3 JSON without
+filtering on GPU, so the N=256 and N=512 rows came from an H100 **PCIe** run in July rather than
+this pod.  The 1024/2048/4096 rows -- the ones the conclusion rests on -- were correctly from the
+2026-08-18 session, but the contaminated rows were shown alongside them.
+
+**3. THE PROTOCOL WAS NON-STANDARD, and this is the one that could move the answer.**  The run
+used `warmup=5 iters=30`; every other number in this repo uses `warmup=20 iters=100`.  Measured
+against the SAME kernel on the SAME GPU (the 2026-08-16 chap3 run):
+
+    N=1024   mine 73.1  vs house 88.8   -> 17.7% low
+    N=2048   mine 222.3 vs house 242.2  ->  8.2% low
+    N=4096   mine 265.9 vs house 287.6  ->  7.5% low
+
+The deficit is SIZE-DEPENDENT, worst where warmup matters most.
+
+### What survives and what does not
+
+SURVIVES: the chap3-vs-chap4 RATIOS were all produced in one invocation with identical settings,
+so they are internally consistent, and the factorial's shape is corroborated from inside itself --
+cluster-of-2 costs nothing (0.98-0.99x) while cluster-of-4 costs 0.40x, with `:multicast` removed
+in both cases.  A 0.60x effect is far outside an 8% protocol deficit.
+
+DOES NOT SURVIVE: the absolute TFLOPS, which understate every kernel by 8-18%, and any claim
+about chapter 4 versus cuBLAS -- no vendor baseline was run on this machine at all, which is
+precisely why report.py crashed.
+
+NOT RULED OUT, and it is the reason to re-run rather than to patch the text: a DIFFERENTIAL
+warm-up effect between the two kernels.  Five warmup iterations is thin, and a clustered launch
+plausibly pays more on its first launches (co-residency placement, TMA descriptor setup) than an
+unclustered one.  That would inflate chapter 4's apparent penalty without changing its sign.
+
+### Before these numbers are quoted anywhere
+
+Re-run at `--warmup=20 --iters=100`, including the CUBLAS_Optimal target so the chapter has a
+ceiling, and filter the comparison by GPU model.  The direction of the result is not in doubt;
+the magnitudes are provisional.
+
+## CONFIRMED AT HOUSE PROTOCOL (H100, warmup=20 iters=100, 2026-08-18)
+
+All prior H100 results were purged and the whole NVIDIA suite re-run clean.  The provisional
+caveat above is now DISCHARGED: the ratios reproduce almost exactly at 4x the warmup and 3.3x the
+iterations, so the differential-warm-up worry was unfounded.
+
+    N        cuBLAS    chap3    chap4    chap3/cuBLAS   chap4/chap3   (5/30 ratio this morning)
+    256        4.9      2.5    LAUNCH FAIL     51%          -
+    512       30.0     15.0     13.8          50%        0.92x
+    1024     141.3     79.7     74.0          56%        0.93x            0.93x
+    2048     322.7    238.2    128.2          74%        0.54x            0.55x
+    4096     381.6    257.1    205.6          67%        0.80x            0.76x
+
+Full factorial, same protocol:
+
+    N       chap3      clu2 no-mc   clu2 +mc B   clu2 +mc A   clu4 no-mc   clu4 +mc
+    1024    79.7 1.00x 77.1 0.97x   72.6 0.91x   74.2 0.93x   78.0 0.98x   74.2 0.93x
+    2048   238.1 1.00x 233.5 0.98x  218.7 0.92x  227.0 0.95x  138.4 0.58x  128.1 0.54x
+    4096   256.2 1.00x 258.4 1.01x  240.8 0.94x  243.2 0.95x  223.1 0.87x  205.3 0.80x
+
+The conclusion is unchanged and now rests on clean data: a cluster of two is free (0.97-1.01x),
+multicast costs a flat 5-8% and never repays it, and a cluster of FOUR collapses at 2048 (0.58x)
+even with multicast removed entirely.
+
+### Two harness defects found on the way, both fixed
+
+**1. A missing baseline source was a SILENT skip.**  `run_target` did `if not src_path.exists():
+return`.  chap3 and chap4 have no `cublas_optimal.cu` in their directories, so their vendor
+ceiling never ran -- the single most important comparison in the tensor-core chapters was simply
+absent, and the only symptom was report.py crashing on an empty ceiling list.  It now WARNS, and
+chap3/chap4 have been given the (chapter-generic) cuBLAS driver.  This is why chapter 3's
+"~66% of cuBLAS" could not be reproduced from the repo: nothing was measuring it.
+
+**2. report.py's `ceiling_list` could be unbound** — fixed, see the correction section above.
+
+### And a real product bug: BUG 049
+
+chap4 fails with `unspecified launch failure` at N=256.  The CUDA hoist pads the grid up to a
+multiple of the cluster shape, and padded workgroups exit WITHOUT participating.  For an ordinary
+kernel that is wasted dispatch; for a multicast kernel it is fatal, because those workgroups are
+still cluster members that a cluster-scoped barrier is waiting on.  At N=256 with a 64x256 tile
+the grid is 4x1, so a (2 2) cluster makes HALF of every cluster padding.
+
+This was PREDICTED days ago and left open ("padded workgroups exit without participating --
+fatal for multicast"), and docs/topology.md still describes padding as costing only wasted
+dispatch.  That sentence is false for any kernel with a cluster-scoped barrier or a multicast
+load and needs qualifying.

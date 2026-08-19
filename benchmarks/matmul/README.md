@@ -322,7 +322,14 @@ Endeavor 152. Chapter 4 is chapter 3 with three changes and nothing else: `clust
 as an exact control is the point — any difference is attributable to clustering rather than to a
 rewrite.
 
-**It is correct (MMA_CORRECT on an H100) and slower than chapter 3.** Full factorial, tf32,
+**It is correct (MMA_CORRECT on an H100) and slower than chapter 3.**
+
+CONFIRMED at house protocol (warmup=20 iters=100) on 2026-08-18; the ratios reproduced
+within ~0.04x.  Numbers below are from the earlier 5/30 run and understate absolute
+throughput by 8-18%; the confirmed 20/100 table is in 00-verification-findings.md.  Note
+also BUG 049: this kernel FAILS TO LAUNCH at N=256, where the grid must be padded to fit
+the cluster and padded workgroups never reach the cluster barrier.
+ Full factorial, tf32,
 iters=30, chapter 3 as the 1.00x control:
 
 | N | chap3 | clu2 no-mc | clu2 +mc | clu4 no-mc | clu4 +mc |

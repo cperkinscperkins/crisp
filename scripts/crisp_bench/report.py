@@ -45,6 +45,13 @@ CHAPTER_LABEL = {
     "chap2_pipelined_block": "Pipelined block + tf32 MMA",
     "chap3_wgmma":           "Hopper warpgroup MMA (wgmma, tf32)",
     "chap4_cluster_multicast": "Cluster + TMA multicast / DSMEM (wgmma, tf32)",
+    # Endeavor 152 CONTROLS, not chapters.  They exist to separate the cost of forming a cluster
+    # from the cost of multicasting over it -- without them the two are confounded and chapter 4
+    # looks like "multicast is slow", which the data says it is not.
+    "c4_clusteronly":        "CONTROL: cluster (2 2), NO multicast",
+    "c4_c2only":             "CONTROL: cluster (2 1), NO multicast",
+    "c4_21":                 "CONTROL: cluster (2 1), multicast B only",
+    "c4_12":                 "CONTROL: cluster (1 2), multicast A only",
     "intel_prefetch":        "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
     "chap5_fused_epilogue":  "Fused ReLU epilogue (tf32)",
     "chap6_fused_custom":    "Fused CUSTOM activation (tf32)",

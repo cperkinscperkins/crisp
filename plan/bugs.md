@@ -1699,3 +1699,37 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         where a TMA-legal tile still leaves a sub-128-byte slot stride.  If it faults, decide
         between padding slots to 128 and refusing at compile time.  If it does not, delete this
         entry.  Do NOT act on it before it is reproduced.
+
+[ ] 049 - A MULTICAST kernel CRASHES when the launch grid must be PADDED to fit its cluster.
+
+        FOUND 2026-08-18 on an H100, running the full NVIDIA matmul suite.  chap4_cluster_multicast
+        (cluster (2 2), :multicast true) reports `unspecified launch failure` at N=256 and produces
+        no result; every larger size runs correctly.  chap3, the same kernel without a cluster,
+        runs N=256 fine.
+
+        THE MECHANISM WAS PREDICTED BEFORE IT WAS SEEN.  Endeavor 152 noted the open question days
+        earlier: the CUDA hoist pads the grid up to a multiple of the cluster shape, and PADDED
+        WORKGROUPS EXIT WITHOUT PARTICIPATING.  For an ordinary kernel that is what the docs say --
+        "a small amount of wasted dispatch, not correctness".  For a MULTICAST kernel it is fatal:
+        the padded workgroups are still members of a cluster, so a barrier that expects arrivals
+        from the whole cluster never receives them, and a multicast addressed to the whole group
+        writes into a workgroup that has already left.
+
+        At N=256 with a 64x256 output tile the grid is 4x1.  A (2 2) cluster forces the second axis
+        to be padded from 1 to 2, so HALF of every cluster is padding.
+
+        DOCUMENTATION IS CURRENTLY WRONG: docs/topology.md describes grid padding as costing only
+        wasted dispatch.  That sentence must be qualified -- it is false for any kernel with a
+        cluster-scoped barrier or a multicast load.
+
+        LIKELY FIXES, in increasing order of ambition:
+          (a) REFUSE at compile time when a multicast/cluster-barrier kernel's grid could require
+              padding, naming the offending size relationship.  Smallest, and honest.
+          (b) Have padded workgroups still participate in the cluster's barriers (arrive and
+              leave) rather than exiting early.  Correct, but every barrier's arrival count then
+              depends on how much padding a given launch has.
+          (c) Choose the cluster shape per launch so the grid divides exactly.  That is the
+              `:exact` strategy the hoist already refuses to pad for -- worth revisiting.
+
+        DOES NOT BLOCK the endeavour's conclusion: chapter 4 is slower than chapter 3 at every
+        size that runs, and 256 is far below where either kernel is interesting.

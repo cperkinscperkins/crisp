@@ -636,6 +636,14 @@ def main():
                 return
             src_path = HERE / chapter / source_name
             if not src_path.exists():
+                # WARN, do not vanish.  A declared target whose source is missing used to
+                # return silently -- and that is how chap3/chap4 ran with NO cuBLAS ceiling:
+                # the most important comparison in the tensor-core chapters simply was not
+                # there, and the only symptom was report.py raising UnboundLocalError on an
+                # empty ceiling list.  A missing baseline must be loud.
+                print("  WARNING: " + str(chapter) + "/" + str(source_name) + " not found -- "
+                      "SKIPPING target '" + str(comp_name) + "'.  If this is a vendor "
+                      "ceiling, the chapter's 'vs Optimal' column will be empty.")
                 return
 
             dev_c_ms = 0.0
