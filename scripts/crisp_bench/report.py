@@ -44,7 +44,7 @@ CHAPTER_LABEL = {
     "chap1.5_async_block":   "Block TMA load + tf32 MMA",
     "chap2_pipelined_block": "Pipelined block + tf32 MMA",
     "chap3_wgmma":           "Hopper warpgroup MMA (wgmma, tf32)",
-    "chap4_cluster_multicast": "Cluster + TMA multicast / DSMEM (wgmma, tf32)",
+    "chap4_cluster_multicast": "SIDE CHAPTER: does TMA multicast pay? (64x128, wgmma tf32)",
     # Endeavor 152 CONTROLS, not chapters.  They exist to separate the cost of forming a cluster
     # from the cost of multicasting over it -- without them the two are confounded and chapter 4
     # looks like "multicast is slow", which the data says it is not.

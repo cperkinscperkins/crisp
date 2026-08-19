@@ -102,18 +102,18 @@
 
 | Chapter | Technique | Size | Crisp (TFLOPS) | cuBLAS (TFLOPS) | Crisp % of cuBLAS |
 |---|---|---:|---:|---:|---:|
-| chap0_sync | Synchronous tiling (fp32, no tensor cores) | 4096 | 4.8 | 381.6 | 1.3% |
-| chap1_async_linear | Async linear pipelining (fp32) | 4096 | 7.9 | 381.6 | 2.1% |
-| chap1.5_async_block | Block TMA load + tf32 MMA | 4096 | 71.5 | 381.6 | 18.7% |
-| chap2_pipelined_block | Pipelined block + tf32 MMA | 4096 | 67.9 | 381.6 | 17.8% |
-| chap3_wgmma | Hopper warpgroup MMA (wgmma, tf32) | 4096 | 257.1 | 381.6 | 67.4% |
-| chap5_fused_epilogue | Fused ReLU epilogue (tf32) | 4096 | 253.7 | 381.6 | 66.5% |
-| chap6_fused_custom | Fused CUSTOM activation (tf32) | 4096 | 257.1 | 381.6 | 67.4% |
-| c4_12 | CONTROL: cluster (1 2), multicast A only | 4096 | 243.2 | 381.6 | 63.7% |
-| c4_21 | CONTROL: cluster (2 1), multicast B only | 4096 | 240.8 | 381.6 | 63.1% |
-| c4_c2only | CONTROL: cluster (2 1), NO multicast | 4096 | 258.4 | 381.6 | 67.7% |
-| c4_clusteronly | CONTROL: cluster (2 2), NO multicast | 4096 | 223.1 | 381.6 | 58.5% |
-| chap4_cluster_multicast | Cluster + TMA multicast / DSMEM (wgmma, tf32) | 4096 | 205.6 | 381.6 | 53.9% |
+| chap0_sync | Synchronous tiling (fp32, no tensor cores) | 4096 | 4.8 | 381.0 | 1.3% |
+| chap1_async_linear | Async linear pipelining (fp32) | 4096 | 7.9 | 381.0 | 2.1% |
+| chap1.5_async_block | Block TMA load + tf32 MMA | 4096 | 71.5 | 381.0 | 18.8% |
+| chap2_pipelined_block | Pipelined block + tf32 MMA | 4096 | 67.9 | 381.0 | 17.8% |
+| chap3_wgmma | Hopper warpgroup MMA (wgmma, tf32) | 4096 | 257.1 | 381.0 | 67.5% |
+| chap5_fused_epilogue | Fused ReLU epilogue (tf32) | 4096 | 253.7 | 381.0 | 66.6% |
+| chap6_fused_custom | Fused CUSTOM activation (tf32) | 4096 | 257.1 | 381.0 | 67.5% |
+| c4_12 | CONTROL: cluster (1 2), multicast A only | 4096 | 243.2 | 381.0 | 63.8% |
+| c4_21 | CONTROL: cluster (2 1), multicast B only | 4096 | 240.8 | 381.0 | 63.2% |
+| c4_c2only | CONTROL: cluster (2 1), NO multicast | 4096 | 258.4 | 381.0 | 67.8% |
+| c4_clusteronly | CONTROL: cluster (2 2), NO multicast | 4096 | 223.1 | 381.0 | 58.6% |
+| chap4_cluster_multicast | SIDE CHAPTER: does TMA multicast pay? (64x128, wgmma tf32) | 4096 | 188.8 | 381.0 | 49.6% |
 
 > Largest measured size per chapter, `fast` precision (Crisp and cuBLAS both tf32). The ladder runs low-to-high on the optimization axis for this hardware.
 
@@ -123,11 +123,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | 2.50 | 0.01 | 0.09 | 0.38 | 2.0% | 3.6% |
-| 512x512x512 | 29.93 | 0.01 | 4.34 | 0.06 | 0.35 | 0.78 | 1.2% | 8.0% |
-| 1024x1024x1024 | 141.04 | 0.02 | 4.92 | 0.44 | 1.32 | 1.62 | 0.9% | 26.9% |
-| 2048x2048x2048 | 321.16 | 0.05 | 5.15 | 3.33 | 4.82 | 3.56 | 1.5% | 93.6% |
-| 4096x4096x4096 | 381.61 | 0.36 | 5.18 | 26.54 | 4.83 | 28.45 | 1.3% | 93.3% |
+| 256x256x256 | 5.39 | 0.01 | 2.50 | 0.01 | 0.09 | 0.38 | 1.7% | 3.6% |
+| 512x512x512 | 30.58 | 0.01 | 4.34 | 0.06 | 0.35 | 0.78 | 1.1% | 8.0% |
+| 1024x1024x1024 | 132.43 | 0.02 | 4.92 | 0.44 | 1.32 | 1.62 | 1.0% | 26.9% |
+| 2048x2048x2048 | 318.68 | 0.05 | 5.15 | 3.33 | 4.82 | 3.56 | 1.5% | 93.6% |
+| 4096x4096x4096 | 380.96 | 0.36 | 5.18 | 26.54 | 4.83 | 28.45 | 1.3% | 93.3% |
 
 ### chap1_async_linear — Async linear pipelining (fp32)
 
@@ -135,11 +135,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | 2.33 | 0.01 | 0.14 | 0.25 | 3.1% | 5.9% |
-| 512x512x512 | 29.93 | 0.01 | 3.70 | 0.07 | 0.55 | 0.49 | 1.8% | 14.9% |
-| 1024x1024x1024 | 141.04 | 0.02 | 4.10 | 0.52 | 2.23 | 0.96 | 1.6% | 54.3% |
-| 2048x2048x2048 | 321.16 | 0.05 | 4.28 | 4.02 | 7.81 | 2.20 | 2.4% | 182.6% |
-| 4096x4096x4096 | 381.61 | 0.36 | 4.31 | 31.92 | 7.89 | 17.42 | 2.1% | 183.2% |
+| 256x256x256 | 5.39 | 0.01 | 2.33 | 0.01 | 0.14 | 0.25 | 2.5% | 5.9% |
+| 512x512x512 | 30.58 | 0.01 | 3.70 | 0.07 | 0.55 | 0.49 | 1.8% | 14.9% |
+| 1024x1024x1024 | 132.43 | 0.02 | 4.10 | 0.52 | 2.23 | 0.96 | 1.7% | 54.3% |
+| 2048x2048x2048 | 318.68 | 0.05 | 4.28 | 4.02 | 7.81 | 2.20 | 2.5% | 182.6% |
+| 4096x4096x4096 | 380.96 | 0.36 | 4.31 | 31.92 | 7.89 | 17.42 | 2.1% | 183.2% |
 
 ### chap1.5_async_block — Block TMA load + tf32 MMA
 
@@ -147,11 +147,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | 2.33 | 0.01 | 1.43 | 0.02 | 32.2% | 61.3% |
-| 512x512x512 | 29.93 | 0.01 | 3.69 | 0.07 | 6.31 | 0.04 | 21.1% | 171.3% |
-| 1024x1024x1024 | 141.04 | 0.02 | 4.11 | 0.52 | 25.26 | 0.09 | 17.9% | 614.8% |
-| 2048x2048x2048 | 321.16 | 0.05 | 4.28 | 4.02 | 68.28 | 0.25 | 21.3% | 1596.2% |
-| 4096x4096x4096 | 381.61 | 0.36 | 4.30 | 31.98 | 71.55 | 1.92 | 18.7% | 1664.7% |
+| 256x256x256 | 5.39 | 0.01 | 2.33 | 0.01 | 1.43 | 0.02 | 26.5% | 61.3% |
+| 512x512x512 | 30.58 | 0.01 | 3.69 | 0.07 | 6.31 | 0.04 | 20.6% | 171.3% |
+| 1024x1024x1024 | 132.43 | 0.02 | 4.11 | 0.52 | 25.26 | 0.09 | 19.1% | 614.8% |
+| 2048x2048x2048 | 318.68 | 0.05 | 4.28 | 4.02 | 68.28 | 0.25 | 21.4% | 1596.2% |
+| 4096x4096x4096 | 380.96 | 0.36 | 4.30 | 31.98 | 71.55 | 1.92 | 18.8% | 1664.7% |
 > ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a tensor-core mirror of the Crisp algorithm — the "Crisp vs Apples" figures are not apples-to-apples.
 
 
@@ -161,11 +161,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | CUDA_Apples (TFLOPS) | CUDA_Apples (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) | Crisp vs Apples (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | 2.04 | 0.02 | 1.58 | 0.02 | 35.6% | 77.2% |
-| 512x512x512 | 29.93 | 0.01 | 3.24 | 0.08 | 7.05 | 0.04 | 23.6% | 217.8% |
-| 1024x1024x1024 | 141.04 | 0.02 | 3.56 | 0.60 | 27.33 | 0.08 | 19.4% | 767.7% |
-| 2048x2048x2048 | 321.16 | 0.05 | 3.71 | 4.63 | 63.74 | 0.27 | 19.8% | 1717.7% |
-| 4096x4096x4096 | 381.61 | 0.36 | 3.77 | 36.44 | 67.94 | 2.02 | 17.8% | 1801.3% |
+| 256x256x256 | 5.39 | 0.01 | 2.04 | 0.02 | 1.58 | 0.02 | 29.3% | 77.2% |
+| 512x512x512 | 30.58 | 0.01 | 3.24 | 0.08 | 7.05 | 0.04 | 23.0% | 217.8% |
+| 1024x1024x1024 | 132.43 | 0.02 | 3.56 | 0.60 | 27.33 | 0.08 | 20.6% | 767.7% |
+| 2048x2048x2048 | 318.68 | 0.05 | 3.71 | 4.63 | 63.74 | 0.27 | 20.0% | 1717.7% |
+| 4096x4096x4096 | 380.96 | 0.36 | 3.77 | 36.44 | 67.94 | 2.02 | 17.8% | 1801.3% |
 > ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a tensor-core mirror of the Crisp algorithm — the "Crisp vs Apples" figures are not apples-to-apples.
 
 
@@ -175,11 +175,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
 |---|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | 2.50 | 0.01 | 56.4% |
-| 512x512x512 | 29.93 | 0.01 | 14.98 | 0.02 | 50.0% |
-| 1024x1024x1024 | 141.04 | 0.02 | 79.69 | 0.03 | 56.5% |
-| 2048x2048x2048 | 321.16 | 0.05 | 238.23 | 0.07 | 74.2% |
-| 4096x4096x4096 | 381.61 | 0.36 | 257.08 | 0.53 | 67.4% |
+| 256x256x256 | 5.39 | 0.01 | 2.50 | 0.01 | 46.4% |
+| 512x512x512 | 30.58 | 0.01 | 14.98 | 0.02 | 49.0% |
+| 1024x1024x1024 | 132.43 | 0.02 | 79.69 | 0.03 | 60.2% |
+| 2048x2048x2048 | 318.68 | 0.05 | 238.23 | 0.07 | 74.8% |
+| 4096x4096x4096 | 380.96 | 0.36 | 257.08 | 0.53 | 67.5% |
 
 ### chap5_fused_epilogue — Fused ReLU epilogue (tf32)
 
@@ -213,11 +213,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
 |---|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | - | - | - |
-| 512x512x512 | 29.93 | 0.01 | - | - | - |
-| 1024x1024x1024 | 141.04 | 0.02 | 74.22 | 0.03 | 52.6% |
-| 2048x2048x2048 | 321.16 | 0.05 | 227.03 | 0.08 | 70.7% |
-| 4096x4096x4096 | 381.61 | 0.36 | 243.21 | 0.57 | 63.7% |
+| 256x256x256 | 5.39 | 0.01 | - | - | - |
+| 512x512x512 | 30.58 | 0.01 | - | - | - |
+| 1024x1024x1024 | 132.43 | 0.02 | 74.22 | 0.03 | 56.0% |
+| 2048x2048x2048 | 318.68 | 0.05 | 227.03 | 0.08 | 71.2% |
+| 4096x4096x4096 | 380.96 | 0.36 | 243.21 | 0.57 | 63.8% |
 
 ### c4_21 — CONTROL: cluster (2 1), multicast B only
 
@@ -225,11 +225,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
 |---|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | - | - | - |
-| 512x512x512 | 29.93 | 0.01 | - | - | - |
-| 1024x1024x1024 | 141.04 | 0.02 | 72.62 | 0.03 | 51.5% |
-| 2048x2048x2048 | 321.16 | 0.05 | 218.72 | 0.08 | 68.1% |
-| 4096x4096x4096 | 381.61 | 0.36 | 240.82 | 0.57 | 63.1% |
+| 256x256x256 | 5.39 | 0.01 | - | - | - |
+| 512x512x512 | 30.58 | 0.01 | - | - | - |
+| 1024x1024x1024 | 132.43 | 0.02 | 72.62 | 0.03 | 54.8% |
+| 2048x2048x2048 | 318.68 | 0.05 | 218.72 | 0.08 | 68.6% |
+| 4096x4096x4096 | 380.96 | 0.36 | 240.82 | 0.57 | 63.2% |
 
 ### c4_c2only — CONTROL: cluster (2 1), NO multicast
 
@@ -237,11 +237,11 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
 |---|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | - | - | - |
-| 512x512x512 | 29.93 | 0.01 | - | - | - |
-| 1024x1024x1024 | 141.04 | 0.02 | 77.14 | 0.03 | 54.7% |
-| 2048x2048x2048 | 321.16 | 0.05 | 233.54 | 0.07 | 72.7% |
-| 4096x4096x4096 | 381.61 | 0.36 | 258.39 | 0.53 | 67.7% |
+| 256x256x256 | 5.39 | 0.01 | - | - | - |
+| 512x512x512 | 30.58 | 0.01 | - | - | - |
+| 1024x1024x1024 | 132.43 | 0.02 | 77.14 | 0.03 | 58.3% |
+| 2048x2048x2048 | 318.68 | 0.05 | 233.54 | 0.07 | 73.3% |
+| 4096x4096x4096 | 380.96 | 0.36 | 258.39 | 0.53 | 67.8% |
 
 ### c4_clusteronly — CONTROL: cluster (2 2), NO multicast
 
@@ -249,23 +249,23 @@
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
 |---|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | - | - | - |
-| 512x512x512 | 29.93 | 0.01 | - | - | - |
-| 1024x1024x1024 | 141.04 | 0.02 | 77.99 | 0.03 | 55.3% |
-| 2048x2048x2048 | 321.16 | 0.05 | 138.38 | 0.12 | 43.1% |
-| 4096x4096x4096 | 381.61 | 0.36 | 223.10 | 0.62 | 58.5% |
+| 256x256x256 | 5.39 | 0.01 | - | - | - |
+| 512x512x512 | 30.58 | 0.01 | - | - | - |
+| 1024x1024x1024 | 132.43 | 0.02 | 77.99 | 0.03 | 58.9% |
+| 2048x2048x2048 | 318.68 | 0.05 | 138.38 | 0.12 | 43.4% |
+| 4096x4096x4096 | 380.96 | 0.36 | 223.10 | 0.62 | 58.6% |
 
-### chap4_cluster_multicast — Cluster + TMA multicast / DSMEM (wgmma, tf32)
+### chap4_cluster_multicast — SIDE CHAPTER: does TMA multicast pay? (64x128, wgmma tf32)
 
 #### Precision: fast (ftz=preserve)
 
-| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
-|---|---:|---:|---:|---:|---:|
-| 256x256x256 | 4.44 | 0.01 | - | - | - |
-| 512x512x512 | 29.93 | 0.01 | 13.80 | 0.02 | 46.1% |
-| 1024x1024x1024 | 141.04 | 0.02 | 74.02 | 0.03 | 52.5% |
-| 2048x2048x2048 | 321.16 | 0.05 | 128.17 | 0.13 | 39.9% |
-| 4096x4096x4096 | 381.61 | 0.36 | 205.63 | 0.67 | 53.9% |
+| Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp_Multicast (TFLOPS) | Crisp_Multicast (Kernel ms) | Crisp vs Optimal (%) | Crisp_Multicast vs Optimal (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256x256x256 | 5.39 | 0.01 | 3.27 | 0.01 | 3.17 | 0.01 | 60.7% | 58.8% |
+| 512x512x512 | 30.58 | 0.01 | 20.04 | 0.01 | 19.01 | 0.01 | 65.5% | 62.1% |
+| 1024x1024x1024 | 132.43 | 0.02 | 100.31 | 0.02 | 94.20 | 0.02 | 75.7% | 71.1% |
+| 2048x2048x2048 | 318.68 | 0.05 | 164.88 | 0.10 | 190.72 | 0.09 | 51.7% | 59.8% |
+| 4096x4096x4096 | 380.96 | 0.36 | 188.77 | 0.73 | 212.81 | 0.65 | 49.6% | 55.9% |
 
 ### Compile Times (avg across precision)
 
@@ -288,6 +288,7 @@
 | c4_21 | Crisp | 766 | 1.0× (baseline) |
 | c4_c2only | Crisp | 585 | 1.0× (baseline) |
 | c4_clusteronly | Crisp | 577 | 1.0× (baseline) |
-| chap4_cluster_multicast | Crisp | 584 | 1.0× (baseline) |
+| chap4_cluster_multicast | Crisp | 301 | 1.0× (baseline) |
+| chap4_cluster_multicast | Crisp_Multicast | 294 | — (Crisp variant) |
 
 > **Device-only compilation on both sides.**  Crisp `--ir-target=ptx`; the competitor `nvcc -ptx`.  Neither figure includes host-code compilation, linking, or the driver's JIT of the resulting IR.  Library ceilings (cuBLAS) are omitted — their kernels ship precompiled inside the library, so there is no device compile to measure.  Lower is better.

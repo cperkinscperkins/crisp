@@ -1,0 +1,50 @@
+;; Chapter 4 (side chapter) — CLUSTERS + TMA MULTICAST: the BASELINE half.
+;;
+;; THIS CHAPTER IS NOT A RUNG.  Every other chapter adds a technique and goes faster.  This one
+;; is a CONTROLLED COMPARISON: two kernels identical in every respect except one `:multicast true`
+;; per load, so the difference between them is attributable to multicast and nothing else.
+;;
+;; It is deliberately NOT faster than chapter 3.  Chapter 3 uses a 64x256 output tile and reaches
+;; ~268 TFLOPS; this pair uses 64x128 and reaches ~190/210.  The narrower tile is the POINT: a
+;; 64x256 tile requires N >= 256, and plenty of real matmuls do not have that.  The question this
+;; chapter answers is what multicast is worth WHEN YOUR PROBLEM FORCES A NARROWER TILE.
+;;
+;; WHY THIS BASELINE STILL DECLARES A CLUSTER.  It never multicasts, so the cluster buys it
+;; nothing -- but forming a cluster of two is free (measured 0.97-1.01x), and holding it constant
+;; means the only variable between the two kernels is the multicast itself.  Removing it here
+;; would fold the cluster's cost into the comparison.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 160)              ; 4 consumer warps + 1 producer warp
+           (cluster-size :set-to (2 1)))         ; CHANGE 1: 4 workgroups, 2 rows x 2 cols          ; 4 consumer warps (warpgroup 0) + 1 producer warp
+  (let ((A-ring (make-scratch-matrix-ring float (64 32)  :ring-count 2))   ; 2 x 64(M) x 32(K)
+        (B-ring (make-scratch-matrix-ring float (128 32) :ring-count 2))   ; 2 x 128(N) x 32(K) B^T
+        (D      (make-wgmma-accumulator float (64 128) 0.0))
+        (K      (inner-dimension A B))
+        ; CHANGE 3: peers must release the slot, not just our own consumers
+        (empty  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 4 :initial-state :signaled))
+        (full   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 128) (grid-y grid-x)
+      (with-warp-specialization (:consumer 4 :producer 1)
+        (:consumer
+          (set! D (make-wgmma-accumulator float (64 128) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 128 32) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile D C (grid-y grid-x)))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              ; CHANGE 2: A is invariant along the COLUMN axis -> its group is a cluster ROW
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+              ; B is invariant along the ROW axis -> its group is a cluster COLUMN
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b))))))))

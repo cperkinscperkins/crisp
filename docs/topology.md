@@ -319,9 +319,58 @@ Once a `def-orchestration` is expanded to use a topology then the topologically 
 Clusters and Distributed Shared Memory
 --------------------------------------
 
-Workgroup clusters and Distributed Shared Memory (DSMEM) are performance features introduced by NVidia in their Hopper architecture (`sm_90` and later).  In contrast, Intel hardware uses prefetching directly to large GRF banks instead  (discussed later).
+Workgroup clusters and Distributed Shared Memory (DSMEM) are performance features introduced by NVidia in their Hopper architecture (`sm_90` and later).  In contrast, Intel hardware uses prefetching directly to large GRF banks instead (discussed later).
 
-If targeting modern NVidia architectures and hoping to exploirt clusters and DSMEM you will want your kernel to declare this.  
+### What a cluster is, and what it buys you
+
+Ordinarily a workgroup's shared memory is private: no other workgroup can see it, and the hardware
+gives you no way to co-ordinate with a neighbour except by going all the way out to global memory.
+A **cluster** relaxes exactly that.  It is a small group of workgroups — two, four, or eight — that
+the hardware guarantees are resident *at the same time on the same GPC*, and which can therefore
+see one another's shared memory.  That shared window across the group is what NVidia calls
+**Distributed Shared Memory**.
+
+Two capabilities follow, and everything else in this section is a consequence of one of them:
+
+1. **A workgroup can reach a peer's shared memory** — so a barrier can be released by another
+   workgroup ([`:mode :cluster`](#mode)), and a `sync-cluster` can rendezvous the whole group.
+2. **One fetch can serve the whole group** — a single `load-tile` can pull a tile from global
+   memory *once* and have the hardware deliver it into every member's shared memory
+   ([`:multicast`](#multicast)).  In a matrix multiply, workgroups in the same cluster row want
+   byte-identical `B` tiles, so the traffic for that operand falls by the size of the group.
+
+The second is the reason most kernels reach for a cluster at all.
+
+### The honest part: it is not free, and it does not always pay
+
+A cluster constrains the scheduler.  Its workgroups must be co-resident on one GPC, so the more
+of them there are, the less freedom the hardware has to place them.  Measured on an H100:
+a cluster of **two costs nothing** (0.97–1.01× against the same kernel with no cluster), while a
+cluster of **four can cost a great deal** — as much as 0.58× at a problem size where the grid
+exactly fills the machine, and that penalty is paid whether or not you multicast anything.
+
+Multicast has its own applicability rule, and it is narrower than it first appears.  It pays only
+when **both** of these hold:
+
+* **the machine is saturated** — below full occupancy there is no contention for memory bandwidth
+  to relieve, so multicast is pure overhead; and
+* **the kernel is fetch-limited rather than compute-limited** — a well-pipelined kernel that
+  already hides its loads behind computation is not waiting on the fetch that multicast makes
+  cheaper, while multicast's bookkeeping is on the critical path regardless.
+
+Both conditions are easy to miss.  The same `:multicast true` that wins **+15.7%** on a 64×128
+tile at N=2048 *loses* **7–10%** on a 64×256 tile that is equally saturated but has enough
+arithmetic per byte to hide its loads.  There is a worked measurement of both sides in
+`benchmarks/matmul/chap4_cluster_multicast/cluster-multicast.md`.
+
+The practical advice: **reach for a cluster of two before a cluster of four**, and treat
+`:multicast` as something to measure rather than something to assume.  Crisp is built so that
+measuring it is a one-keyword change with everything else held fixed.
+
+### Declaring it
+
+If targeting modern NVidia architectures and hoping to exploit clusters and DSMEM you will want
+your kernel to declare this.
 
 ### cluster-size 📝
 

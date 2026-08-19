@@ -747,8 +747,15 @@ def main():
             # from cluster-size (2 2), :multicast true on both loads, and a cluster-scoped `empty`.
             # Same 64x256 out tile and same cuBLAS ceiling ON PURPOSE: chapter 3 is the control, so
             # any difference is attributable to multicast rather than to a rewrite.
-            run_target("chap4_cluster_multicast", "matmul_cluster_multicast.crisp",
-                       "matmul_cluster_multicast.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
+            # A CONTROLLED PAIR, not a rung: two kernels identical except for `:multicast true`.
+            # Same 64x128 tile in both, so the difference is attributable to multicast alone.
+            # 64x128 rather than chapter 3's 64x256 on purpose -- that is the shape a problem with
+            # N < 256 forces you into, and the shape where multicast actually pays.
+            run_target("chap4_cluster_multicast", "matmul_tile128.crisp",
+                       "matmul_tile128.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,128")
+            run_target("chap4_cluster_multicast", "matmul_tile128_multicast.crisp",
+                       "matmul_tile128_multicast.ptx", "Crisp_Multicast", [], is_crisp=True,
+                       crisp_grid_tile="64,128")
             run_target("chap4_cluster_multicast", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 

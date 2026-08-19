@@ -4839,3 +4839,72 @@
 ;; src/codegen.lisp  (new)
 
 ;; src/analysis/control.lisp
+
+
+;; src/codegen.lisp
+;; BUG 050: cluster EXIT fence.
+(defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
+  "Generates the body of the function.
+   Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the
+   PTX kernel-entry receive site can inttoptr demoted i64 params back
+   to their original-addrspace pointer.
+   Binds *kernel-readonly-tensor-syms* around the body codegen so the
+   semantic-aref tensor case can attach !invariant.load to direct
+   reads of read-only kernel-param tensors."
+  (let ((entry-block (llvm-append-basic-block func "entry"))
+        (var-env (make-hash-table))
+        (param-nodes (semantic-function-param-list semantic-function))
+        (return-types (semantic-function-return-type semantic-function))
+        (is-entry-point (semantic-function-is-entry-point semantic-function)))
+
+    (log:debug "Positioning builder at entry block...")
+    (llvm-position-builder-at-end builder entry-block)
+
+    (initialize-function-parameters builder func param-nodes module var-env is-entry-point)
+
+    (let ((*kernel-readonly-tensor-syms*
+           (%collect-readonly-tensor-param-syms semantic-function)))
+      (when *kernel-readonly-tensor-syms*
+        (log:debug "Read-only tensor params for kernel ~a: ~a"
+                   (semantic-function-name semantic-function)
+                   (loop for k being the hash-keys of *kernel-readonly-tensor-syms*
+                         collect k)))
+
+      (let* ((body-nodes (semantic-function-body semantic-function))
+             (is-void-return (or (null return-types)
+                                 (equal return-types '(nil))
+                                 (and (consp return-types) (symbolp (first return-types)) (string-equal (first return-types) "VOID"))))
+             (last-val nil)
+             (last-loc nil))
+        (dolist (node body-nodes)
+          (multiple-value-bind (val loc)
+              (generate-expression-ir builder module var-env di-builder di-subprogram location-map node)
+            (setf last-val val)
+            (setf last-loc loc)))
+
+        ;; BUG 050: a CTA must not LEAVE its cluster while a peer may still be writing into
+        ;; its shared memory.  With multicast that is exactly what happens -- the group leader
+        ;; issues a copy whose destination is every member's SMEM -- so a member that finishes
+        ;; its tiles and returns early can be written into after it is gone.  CUDA requires a
+        ;; cluster sync before exit for precisely this reason.
+        ;;
+        ;; The existing fences are emitted at BARRIER CONSTRUCTION, i.e. in the prologue; there
+        ;; was none before `ret`.  The failure is therefore a RACE, and shape-dependent: a narrow
+        ;; output tile means less work per workgroup, which widens the window in which one member
+        ;; can exit while peers are still streaming.  It reproduced as `unspecified launch
+        ;; failure` at a 64x32 tile and vanished under compute-sanitizer, whose serialisation
+        ;; closes the window -- the signature of a race rather than a bad address.
+        (when (and (eq *target-backend* :ptx) is-entry-point (%module-has-cluster-p))
+          (log:info "cluster kernel: emitting exit fence before ret (BUG 050)")
+          (%gen-nvvm-cluster-barrier builder))
+        (let ((ret-inst (if is-void-return
+                            (llvm-build-ret-void builder)
+                            (let* ((ret-type-spec (first return-types))
+                                   (expected-type (crisp-type-to-llvm-type ret-type-spec module))
+                                   (actual-type (llvm-type-of last-val)))
+                              (if (and (llvm-type-kind-is-pointer? actual-type)
+                                       (not (llvm-type-kind-is-pointer? expected-type)))
+                                  (llvm-build-ret builder (llvm-build-load2 builder expected-type last-val "ret_val"))
+                                  (llvm-build-ret builder last-val))))))
+          (when last-loc (llvm-instruction-set-debug-loc ret-inst last-loc)))))))
+

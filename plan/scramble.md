@@ -759,6 +759,7 @@ MMA
 [ ] NVidia: DEMEM and Clusters! 
 [ ] prefetch-tile probably need L1, L2, L3 targets
 [ ] why small sizes faring poorly against CuBLAS and MKL?
+[ ] performance ratchet updated, with control for multicast
 [/] out of core orchestration 
 
 

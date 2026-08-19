@@ -1756,7 +1756,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         barriers rather than exiting, which would make padding safe instead of forbidden.  That
         needs the tile-stride trip count to be uniform across a cluster -- a real change.
 
-[ ] 050 - A MULTICAST load CRASHES at a narrow output tile (64x32), while the same tile without
+[x] 050 - A MULTICAST load CRASHES at a narrow output tile (64x32), while the same tile without
         multicast runs fine.
 
         FOUND 2026-08-19 by the arithmetic-intensity probe.  `p_mc32` -- chapter 4's kernel with a
@@ -1775,3 +1775,22 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         point that would best have separated the two competing explanations for why multicast
         helps at 64x128 -- lower arithmetic intensity versus higher occupancy.  Worth fixing for
         that reason alone if that question is ever pursued.
+
+        FIXED 2026-08-19.  A CTA was RETURNING from a cluster kernel while its peers could still
+        be multicasting into its shared memory.  CUDA requires a cluster sync before exit when
+        distributed shared memory is in use; Crisp's fences were all emitted at BARRIER
+        CONSTRUCTION -- i.e. in the prologue -- and there was none before `ret`.
+        generate-function-body now emits one for any clustered PTX entry point.
+
+        THE DIAGNOSIS TURNED ON A DETAIL WORTH REMEMBERING: under compute-sanitizer the kernel
+        RAN CORRECTLY (MMA_CORRECT, 3985 GFLOPS) and failed only without it.  That is the
+        signature of a RACE rather than a bad address -- the sanitizer's serialisation closes the
+        window.  Checking that the kernel had actually run, rather than accepting "0 errors", is
+        what turned a clean sanitizer report into evidence.
+
+        THE SHAPE DEPENDENCE WAS THE OTHER CLUE: a narrow output tile means less work per
+        workgroup, which widens the window in which one member finishes and exits while peers are
+        still streaming.  That is why 64x32 failed while 64x64, 64x128 and 64x256 did not.
+
+        VERIFIED: p_mc32 now runs MMA_CORRECT at 73.9 TFLOPS; chapter 3 (no cluster) emits zero
+        cluster fences and is byte-unchanged; 1023/1023 both ways.
