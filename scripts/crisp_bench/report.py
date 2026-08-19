@@ -259,6 +259,13 @@ def _throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings):
     for sz, comps in hardware_groups[gpu][chapter][prec_key].items():
         competitors.update(comps.keys())
 
+    # `ceiling_list` is initialised HERE, before the branches below, because it used to be
+    # assigned only inside two conditionals: a chapter that is NOT an activation chapter and
+    # has no vendor ceiling recorded for this GPU+precision fell through both, and
+    # `list(ceiling_list)` raised UnboundLocalError.  That is not an exotic case -- it is what
+    # every result set looks like before anyone has run the vendor baseline on that machine.
+    ceiling_list = []
+
     # Endeavor 150: an activation chapter's denominator is its own library contender (the one
     # that also applies the activation), so the global plain-GEMM ceiling is excluded entirely.
     if chapter in ACTIVATION_CHAPTERS:

@@ -109,6 +109,11 @@
 | chap3_wgmma | Hopper warpgroup MMA (wgmma, tf32) | 4096 | 287.8 | 432.2 | 66.6% |
 | chap5_fused_epilogue | Fused ReLU epilogue (tf32) | 4096 | 281.8 | 432.2 | 65.2% |
 | chap6_fused_custom | Fused CUSTOM activation (tf32) | 4096 | 282.7 | 432.2 | 65.4% |
+| c4_12 |  | 4096 | 250.8 | — | — |
+| c4_21 |  | 4096 | 249.6 | — | — |
+| c4_c2only |  | 4096 | 263.9 | — | — |
+| c4_clusteronly |  | 4096 | 218.7 | — | — |
+| chap4_cluster_multicast | Cluster + TMA multicast / DSMEM (wgmma, tf32) | 4096 | 203.1 | — | — |
 
 > Largest measured size per chapter, `fast` precision (Crisp and cuBLAS both tf32). The ladder runs low-to-high on the optimization axis for this hardware.
 
@@ -255,6 +260,14 @@
 | 2048x2048x2048 | 356.95 | 0.05 | 242.83 | 0.07 | 68.0% |
 | 4096x4096x4096 | 432.18 | 0.32 | 287.80 | 0.48 | 66.6% |
 
+#### Precision: fast (ftz=preserve)
+
+| Size | Crisp (TFLOPS) | Crisp (Kernel ms) |
+|---|---:|---:|
+| 1024x1024x1024 | 73.10 | 0.03 |
+| 2048x2048x2048 | 222.31 | 0.08 |
+| 4096x4096x4096 | 265.95 | 0.52 |
+
 #### Precision: ieee (ftz=ftz)
 
 | Size | CUBLAS_Optimal (TFLOPS) | CUBLAS_Optimal (Kernel ms) | Crisp (TFLOPS) | Crisp (Kernel ms) | Crisp vs Optimal (%) |
@@ -347,6 +360,52 @@
 > ⚠️ **cuBLASLt cannot fuse this activation.** Its epilogues are a fixed enum; CUBLASLT_EPILOGUE_RELU covers chap5 but a quadratic sub-threshold tail is not in the set, so cuBLASLt falls back to a second kernel and a full HBM round trip of C. That costs it ~13-18% (418.45 → 361.83 TF at 4096; 307.31 → 251.34 at 2048), which matches the H100's HBM3 bandwidth for a 2·N² round trip. Crisp pays ~0% because its epilogue is a function the user wrote. **The gap to the best library therefore narrows from 67.4% (chap5) to 78.1% (chap6) at 4096** — that shift, not the absolute number, is what this chapter measures.
 
 
+### c4_12
+
+#### Precision: fast (ftz=preserve)
+
+| Size | Crisp (TFLOPS) | Crisp (Kernel ms) |
+|---|---:|---:|
+| 2048x2048x2048 | 210.57 | 0.08 |
+| 4096x4096x4096 | 250.82 | 0.55 |
+
+### c4_21
+
+#### Precision: fast (ftz=preserve)
+
+| Size | Crisp (TFLOPS) | Crisp (Kernel ms) |
+|---|---:|---:|
+| 2048x2048x2048 | 206.33 | 0.08 |
+| 4096x4096x4096 | 249.62 | 0.55 |
+
+### c4_c2only
+
+#### Precision: fast (ftz=preserve)
+
+| Size | Crisp (TFLOPS) | Crisp (Kernel ms) |
+|---|---:|---:|
+| 2048x2048x2048 | 218.54 | 0.08 |
+| 4096x4096x4096 | 263.92 | 0.52 |
+
+### c4_clusteronly
+
+#### Precision: fast (ftz=preserve)
+
+| Size | Crisp (TFLOPS) | Crisp (Kernel ms) |
+|---|---:|---:|
+| 2048x2048x2048 | 132.77 | 0.13 |
+| 4096x4096x4096 | 218.71 | 0.63 |
+
+### chap4_cluster_multicast — Cluster + TMA multicast / DSMEM (wgmma, tf32)
+
+#### Precision: fast (ftz=preserve)
+
+| Size | Crisp (TFLOPS) | Crisp (Kernel ms) |
+|---|---:|---:|
+| 1024x1024x1024 | 68.18 | 0.03 |
+| 2048x2048x2048 | 122.32 | 0.14 |
+| 4096x4096x4096 | 203.06 | 0.68 |
+
 ### Compile Times (avg across precision)
 
 | Chapter | Competitor | Avg Compile (ms) | × vs Crisp |
@@ -359,11 +418,16 @@
 | chap1.5_async_block | CUDA_Apples | 683 | 2.7× slower |
 | chap2_pipelined_block | Crisp | 334 | 1.0× (baseline) |
 | chap2_pipelined_block | CUDA_Apples | 704 | 2.1× slower |
-| chap3_wgmma | Crisp | 357 | 1.0× (baseline) |
+| chap3_wgmma | Crisp | 378 | 1.0× (baseline) |
 | chap5_fused_epilogue | Crisp_Fused_Relu | 483 | 1.0× (baseline) |
 | chap5_fused_epilogue | CUBLASLt_Fused_Relu | 504 | 1.0× slower |
 | chap6_fused_custom | Crisp_Fused_Custom | 499 | 1.0× (baseline) |
 | chap6_fused_custom | CUBLASLt_Plus_Custom | 509 | 1.0× slower |
+| c4_12 | Crisp | 352 | 1.0× (baseline) |
+| c4_21 | Crisp | 339 | 1.0× (baseline) |
+| c4_c2only | Crisp | 361 | 1.0× (baseline) |
+| c4_clusteronly | Crisp | 359 | 1.0× (baseline) |
+| chap4_cluster_multicast | Crisp | 347 | 1.0× (baseline) |
 
 > **Device-only compilation on both sides.**  Crisp `--ir-target=ptx`; the competitor `nvcc -ptx`.  Neither figure includes host-code compilation, linking, or the driver's JIT of the resulting IR.  Library ceilings (cuBLAS) are omitted — their kernels ship precompiled inside the library, so there is no device compile to measure.  Lower is better.
 
