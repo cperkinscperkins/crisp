@@ -735,6 +735,15 @@ def main():
             run_target("chap3_wgmma", "matmul_wgmma.crisp", "matmul_wgmma.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
             run_target("chap3_wgmma", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
+            # Chap 4 (endeavor 152) — CLUSTERS + TMA MULTICAST (DSMEM).  Identical to chap3 apart
+            # from cluster-size (2 2), :multicast true on both loads, and a cluster-scoped `empty`.
+            # Same 64x256 out tile and same cuBLAS ceiling ON PURPOSE: chapter 3 is the control, so
+            # any difference is attributable to multicast rather than to a rewrite.
+            run_target("chap4_cluster_multicast", "matmul_cluster_multicast.crisp",
+                       "matmul_cluster_multicast.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
+            run_target("chap4_cluster_multicast", "cublas_optimal.cu", "cublas_optimal",
+                       "CUBLAS_Optimal", cublas_flags, is_cublas=True)
+
             # chap5_fused_epilogue (endeavor 150) — the fused epilogue on the COMPETITIVE kernel:
             # wgmma + TMA + warp specialization (m64n256), plus one (map-elements! D #'relu).
             #

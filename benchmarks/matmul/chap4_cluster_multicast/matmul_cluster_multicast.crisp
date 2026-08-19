@@ -1,27 +1,34 @@
-;; *** DO NOT BENCHMARK THIS YET -- IT IS NOT CORRECT. ***
+;; *** THIS KERNEL IS CORRECT (MMA_CORRECT on an H100) AND SLOWER THAN CHAPTER 3. ***
 ;;
-;; The multicast half works: the PTX carries `.reqnctapercluster 2, 2, 1`, TWO
-;; `.multicast::cluster` copies with two DIFFERENT computed ctaMasks, both cluster axes read,
-;; and the four wgmma instructions are untouched.
+;; Measured 2026-08-18 on an H100 80GB HBM3, tf32, iters=30, vs chapter 3 as the control:
 ;;
-;; The `empty` half does NOT.  Although it is declared `:mode :cluster` below, the emitted PTX
-;; contains NO `mapa` and NO `mbarrier.arrive.shared::cluster` -- only a workgroup-local
-;; `mbarrier.arrive.shared`.  The signal is silently lowering as :block.  On hardware that is
-;; not a slowdown, it is a CORRECTNESS bug: the group leader would be free to overwrite a ring
-;; slot while a peer workgroup was still reading it.
+;;     N       chap3     clu2 no-mc   clu2 +mc    clu4 no-mc   clu4 +mc (this kernel)
+;;     2048    222.3 TF  218.5 0.98x  206-211     132.8 0.60x  122.3 0.55x
+;;     4096    265.9 TF  263.9 0.99x  250  0.94x  218.7 0.82x  203.1 0.76x
 ;;
-;; It is specific to THIS kernel, not to the feature.  A cluster-scoped `signal` on a ring, from
-;; inside `with-warp-specialization`, inside a `dotimes`, emits the remote arrive correctly --
-;; verified in isolation (put_temp_files_here/lds/wsclu2.crisp -> 8 mapa) and by shipped spec
-;; 22-cluster-barrier-ring-arrivals (2 mapa).
+;; READ THE CONTROLS, not just the last column.  A full factorial of cluster size x multicast
+;; separates two costs that would otherwise be confounded:
 ;;
-;; ELIMINATED as the cause, each by building the variant and reading its PTX:
-;;   warp specialization . dotimes . sm_90 vs sm_90a . :initial-state :signaled
-;;   wgmma-accumulate-via-tile . the binding's position in the let . a missing global-size/:tile-shape
+;;   * Forming a cluster of TWO is free            (0.98-0.99x with no multicast at all)
+;;   * Forming a cluster of FOUR is expensive      (0.60x at 2048, 0.82x at 4096)
+;;   * Multicast itself costs a consistent ~5%     (0.98 -> 0.94, 0.60 -> 0.55, 0.82 -> 0.76)
+;;   * Multicast never pays that back at any size or shape tried
 ;;
-;; So the difference is still one of: make-wgmma-accumulator, inner-dimension, or `store-tile D`.
-;; Resume by bisecting those three; the answer is a false NEGATIVE from %cluster-barrier-p, which
-;; resolves `(ring-get empty slot)` through *cluster-barrier-bindings* keyed by let-binding name.
+;; SO THE LEVER WAS MIS-CHOSEN, and now we know by measurement rather than argument.  Multicast
+;; only reduces L2->SMEM traffic on the operand fetch path.  That it buys nothing here says
+;; chapter 3's ~34% gap to cuBLAS is NOT on that path -- the kernel is bound by something else
+;; (occupancy / scheduling / the wgmma pipeline), so removing bandwidth it was not waiting on
+;; cannot help, and the leader-guard plus per-workgroup expect_tx cost ~5% for nothing.
+;;
+;; WHY A CLUSTER OF FOUR IS SO COSTLY HERE: a cluster's CTAs must be co-resident on one GPC.
+;; This kernel is m64n256 with ~16K registers per warpgroup, so demanding four such CTAs share
+;; a GPC constrains placement badly.  That cost is unrelated to multicast and is paid even with
+;; `:multicast` removed entirely (the clu4 no-mc column).
+;;
+;; KEEP THIS CHAPTER.  It is a correct, working demonstration of clusters + DSMEM multicast, and
+;; the honest negative result is worth more than a quietly deleted experiment: it tells the next
+;; person which bottleneck to attack instead.
+;;
 ;; Chapter 4 — CLUSTERS + TMA MULTICAST (DSMEM).  Accreted directly onto chapter 3's warp-
 ;; specialized wgmma kernel; the ONLY changes are the three marked below.  Everything that made
 ;; chapter 3 fast is untouched, so the benchmark difference is attributable to multicast alone.

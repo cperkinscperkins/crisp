@@ -44,6 +44,7 @@ CHAPTER_LABEL = {
     "chap1.5_async_block":   "Block TMA load + tf32 MMA",
     "chap2_pipelined_block": "Pipelined block + tf32 MMA",
     "chap3_wgmma":           "Hopper warpgroup MMA (wgmma, tf32)",
+    "chap4_cluster_multicast": "Cluster + TMA multicast / DSMEM (wgmma, tf32)",
     "intel_prefetch":        "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
     "chap5_fused_epilogue":  "Fused ReLU epilogue (tf32)",
     "chap6_fused_custom":    "Fused CUSTOM activation (tf32)",

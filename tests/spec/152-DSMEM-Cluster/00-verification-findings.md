@@ -938,3 +938,54 @@ THE LESSON, and it generalises past this endeavour: when an overlay accumulates 
 of a function, never transform "the" copy -- locate the LAST one, and prefer appending a whole
 new definition over editing in place.  A string replace across a file with near-duplicate
 definitions is not a targeted edit.
+
+## THE BENCHMARK ANSWER (H100, 2026-08-18).  MULTICAST DOES NOT PAY HERE.
+
+Chapter 4 = chapter 3 + `cluster-size (2 2)` + `:multicast true` on both loads + a cluster-scoped
+`empty`.  It is **MMA_CORRECT on an H100** — clusters, 2-D multicast, DSMEM remote arrives and
+wgmma all working together, correct numerics.  It is also **slower than chapter 3 at every size
+and every cluster shape tried.**
+
+A full factorial of cluster size x multicast, because the two costs are otherwise confounded
+(tf32, iters=30, chapter 3 as the 1.00x control):
+
+    N       chap3      clu2 no-mc    clu2 +mc(2 1)  clu2 +mc(1 2)  clu4 no-mc    clu4 +mc
+    2048    222.3 TF   218.5 0.98x   206.3 0.93x    210.6 0.95x    132.8 0.60x   122.3 0.55x
+    4096    265.9 TF   263.9 0.99x   249.6 0.94x    250.8 0.94x    218.7 0.82x   203.1 0.76x
+
+Each variant's cluster shape and multicast count was verified in BOTH the source and the emitted
+PTX before its number was believed.
+
+WHAT THE COLUMNS SEPARATE:
+
+  * **Forming a cluster of two is free** — 0.98-0.99x with no multicast at all.
+  * **Forming a cluster of four is expensive** — 0.60x at 2048, 0.82x at 4096.  A cluster's CTAs
+    must be co-resident on one GPC; this kernel is m64n256 at ~16K registers per warpgroup, so
+    demanding four of them share a GPC constrains placement badly.  This cost is paid with
+    `:multicast` removed entirely, so it is nothing to do with multicast.
+  * **Multicast itself costs a consistent ~5%** — 0.98->0.94, 0.60->0.55, 0.82->0.76 — presumably
+    the leader guard plus expect_tx on every workgroup, and one CTA issuing where four did.
+  * **It never pays that back**, at any size or shape tried.
+
+### The finding that matters, and it is not about clusters
+
+Multicast reduces L2->SMEM traffic on the operand fetch path and nothing else.  That it buys
+nothing here is evidence that **chapter 3's ~34% gap to cuBLAS is not on that path.**  The kernel
+is bound by something else — occupancy, scheduling, or the wgmma pipeline itself — so removing
+bandwidth it was never waiting on cannot help, and the ~5% of bookkeeping is paid for nothing.
+
+The lever was mis-chosen.  That is worth knowing precisely, and it was only knowable by building
+it: the argument for multicast (neighbours fetch byte-identical tiles) is *true*, it simply is not
+where the time goes.  The next attack should be aimed at occupancy or the wgmma pipeline, and the
+cheapest next measurement is what limits chapter 3 — registers per warpgroup against resident
+warpgroups per SM — not another bandwidth feature.
+
+### What still stands
+
+None of this retracts the mechanism.  `cluster-size`, N-D `:multicast`, `:mode :cluster` and the
+CTA-relative scratch base are all implemented, spec'd and metal-verified; 152 is 20/20 on an H100
+including the metal rungs.  The DSMEM machinery is correct and available.  What the benchmark
+says is only that THIS kernel is not where it pays.
+
+CHAPTER 4 IS KEPT, negative result and all.  A deleted experiment teaches nobody which bottleneck
+to attack next.

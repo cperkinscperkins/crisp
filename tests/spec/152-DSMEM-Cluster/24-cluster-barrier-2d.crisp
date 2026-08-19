@@ -1,0 +1,48 @@
+;; Endeavor 152 rung 24 — a `:mode :cluster` barrier in a TWO-DIMENSIONAL cluster.
+;;
+;; THIS RUNG EXISTS BECAUSE ITS ABSENCE COST A DAY.  Every other cluster-barrier spec uses a
+;; 1-D cluster (2 1).  Three separate places computed the cluster reach with
+;; %multicast-1d-extent, which by design returns NIL when more than one axis is non-trivial:
+;;
+;;   analyze-signal-expression                   -> the signal was never tagged cluster-scoped
+;;   analyze-make-async-barrier-expression        -> the mbarrier init count was never scaled
+;;   analyze-make-async-barrier-ring-expression   -> likewise
+;;
+;; With a 1-D cluster all three return a real extent and everything works, so the whole suite
+;; passed.  With a 2-D cluster all three silently returned NIL and `signal` lowered to an
+;; ordinary workgroup-local `mbarrier.arrive` -- no error, no warning, correct-looking PTX.
+;;
+;; THAT IS A CORRECTNESS BUG, NOT A MISSED OPTIMISATION.  Under multicast the group leader
+;; writes into every peer's shared memory, so an `empty` barrier that only its own workgroup
+;; can release lets the leader overwrite a ring slot while a peer is still reading it.  Nothing
+;; about the kernel's OUTPUT reveals this at small sizes.
+;;
+;; SO THE ASSERTION IS ON THE INSTRUCTION, and specifically on the address round-trip a remote
+;; arrive requires: a peer's mbarrier address is only reachable by mapping it into this
+;; workgroup's view (cvta.shared -> mapa.u64 -> cvta.to.shared), which is what NVIDIA's own
+;; cluster_group::map_shared_rank() compiles to.  A local arrive has none of that.
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cluster-remote-arrive
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "cluster-size is a DISPATCH declaration and does not propagate
+;; into a backward kernel, so the _GRAD twin downgrades :mode :cluster to :block -- endeavour
+;; 146: a schedule is not mathematics.  The forward's PTX is what this rung asserts."
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_bar_2d (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (16 16))
+           (local-size  :set-to 128)
+           (cluster-size :set-to (2 2)))
+  (let ((tile  (make-scratch-matrix float (16 16)))
+        (full  (make-async-barrier :mode :block))
+        (empty (make-async-barrier :mode :cluster)))
+    (tile-stride C (16 16) (grid-y grid-x)
+      ;; invariant along the column axis -> multicast group is a cluster ROW
+      (load-tile A tile (grid-y 0) :barrier full :multicast true)
+      (await full)
+      (store-tile tile C (grid-y grid-x))
+      ;; must reach PEERS in a 2-D cluster, not just this workgroup
+      (signal empty))))

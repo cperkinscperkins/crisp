@@ -4381,3 +4381,113 @@
 
 
 ;; src/codegen.lisp
+
+
+;; src/analysis/control.lisp
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 10d — THE 2-D CLUSTER BARRIER FIX (the chapter-4 bug)
+;;;
+;;; Step 10c lifted the 1-D restriction in %parse-async-barrier-keys and %module-cluster-extent
+;;; but MISSED three more uses of %multicast-1d-extent, which returns NIL for any cluster with
+;;; more than one non-trivial axis -- that is the function's entire purpose.  So with a (2 2)
+;;; cluster:
+;;;
+;;;   analyze-signal-expression                  ext = NIL -> node never tagged cluster-scoped
+;;;   analyze-make-async-barrier-expression      ext = NIL -> init count never scaled
+;;;   analyze-make-async-barrier-ring-expression ext = NIL -> init count never scaled
+;;;
+;;; SILENTLY.  The kernel compiled, the multicast half was perfect, and `signal` lowered as an
+;;; ordinary workgroup-local `mbarrier.arrive`.  That is not a slowdown: with multicast, the
+;;; group leader writes into every peer's shared memory, so a local-only `empty` lets it
+;;; overwrite a ring slot a peer is still reading.
+;;;
+;;; WHY IT HID.  Every 152 spec and every isolated reproduction used a 1-D cluster (2 1), where
+;;; %multicast-1d-extent returns 2 and everything works.  chap4 is the first (2 2) kernel with a
+;;; cluster barrier.  Seven structural bisects (warp-spec, dotimes, arch, :initial-state, wgmma,
+;;; binding order, tile-shape) all missed it because none of them varied the CLUSTER RANK.
+;;; Logging the resolution found it in one run -- %cluster-barrier-p was returning T all along,
+;;; so the fault was downstream of where every bisect was looking.
+;;;
+;;; ALL THREE MUST MOVE TOGETHER, and that is why they are fixed in one place: the init count
+;;; and the number of arrivals are two halves of one number.  A barrier initialised for fewer
+;;; arrivals than it receives releases early; for more, it never releases at all.  Both are now
+;;; the FULL cluster product, matching %module-cluster-extent and the cluster-wide arrival
+;;; decision.
+;;; =====================================================================
+;; src/analysis/control.lisp
+(defun analyze-make-async-barrier-expression (expr env context location)
+  "Endeavor 152 wrapper: builds the barrier node as before, then records the cluster group
+   extent against it when the binding was declared :mode :cluster, so codegen can scale the
+   mbarrier init count."
+  (let ((node (funcall *crisp-152-orig-amabe* expr env context location))
+        (bname (and context (compiler-context-current-binding-name context))))
+    (when (and node bname (gethash bname *cluster-barrier-bindings*))
+      (let ((ext (and *current-kernel-cluster-dims*
+                      (reduce (function *) *current-kernel-cluster-dims*))))
+        (when (and ext (> ext 1))
+          (setf (gethash node *cluster-barrier-nodes*) ext))))
+    node))
+
+;; src/analysis/control.lisp
+(defun analyze-make-async-barrier-ring-expression (expr env context location)
+  "Endeavor 152 wrapper — as above, for a barrier RING."
+  (let ((node (funcall *crisp-152-orig-amabre* expr env context location))
+        (bname (and context (compiler-context-current-binding-name context))))
+    (when (and node bname (gethash bname *cluster-barrier-bindings*))
+      (let ((ext (and *current-kernel-cluster-dims*
+                      (reduce (function *) *current-kernel-cluster-dims*))))
+        (when (and ext (> ext 1))
+          (setf (gethash node *cluster-barrier-nodes*) ext))))
+    node))
+
+;; src/analysis/control.lisp
+
+;; src/analysis/control.lisp
+(defun analyze-signal-expression (expr env context location)
+  "Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive.
+   Endeavor 152: when the barrier was declared :mode :cluster the arrive must reach PEER
+   workgroups, so tag the node with the group extent for codegen."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+      :message (format nil "signal: expected (signal BARRIER), got ~S" expr)
+      :source-location location))
+  (let* ((clusterp (%cluster-barrier-p (second expr)))
+         (barrier-node (analyze-expression (second expr) env context (append location (list 1)))))
+    (if (eq *target-backend* :ptx)
+        (let ((node (make-semantic-signal
+                     :barrier-node barrier-node
+                     :type 'ulong
+                     :source-location location)))
+          (when clusterp
+            (let ((ext (and *current-kernel-cluster-dims*
+                            (reduce (function *) *current-kernel-cluster-dims*))))
+              (when (and ext (> ext 1))
+                (log:info "signal: cluster-scoped remote arrive across ~a peers" ext)
+                (setf (gethash node *signal-cluster-extent*) ext))))
+          node)
+        (analyze-expression nil env context location))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 5 — scale the mbarrier init count for a :cluster barrier
+;;;
+;;; `:arrivals` is, and stays, a PER-WORKGROUP number: how many transfers one workgroup puts
+;;; through one slot in one stage.  A `:cluster` barrier collects more than that, because every
+;;; workgroup in the group arrives on every peer's copy (all-to-all, mirroring CUTLASS).  With
+;;; group extent N and A arrivals per workgroup the barrier receives N*A, so it must be
+;;; INITIALISED to N*A or it never completes.
+;;;
+;;; The user does not write N*A.  They state what their own workgroup does; the compiler
+;;; multiplies by a cluster shape it already knows.  That is the same division of labour the
+;;; existing `:arrivals` rule describes — and the alternative is that adding one `cluster-size`
+;;; line to a working kernel silently requires editing an unrelated barrier declaration, with a
+;;; hang as the penalty for forgetting.
+;;;
+;;; The NEGATIVE half matters just as much and is asserted by the same rung: the data-arrival
+;;; (`full`) ring stays `:block` and its count is NOT scaled, because a multicast completes its
+;;; transaction on each destination's OWN barrier — one arrival per workgroup, not N.
+;;; =====================================================================
+
+;; src/codegen.lisp
