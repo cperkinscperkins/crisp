@@ -1166,3 +1166,132 @@ regardless of how fast the memory is.
   3. Fix BUG 049 (grid padding kills a multicast kernel) before shipping it for real use.
   4. For chapter 3's remaining 26-33% gap to cuBLAS, stop looking at bandwidth.  The next
      measurement is occupancy: registers per warpgroup against resident warpgroups per SM.
+
+## THE CLIFF, EXPLAINED EXACTLY (static register data, 2026-08-18)
+
+`ncu` was unavailable, but the essential occupancy number is STATIC and `ptxas -v` gives it:
+
+    chap3 (wgmma, warp-spec)   165 regs x 160 thr -> 26880 regs/CTA -> 2 CTA/SM -> 264 resident
+    chap4 (+ multicast)        166 regs x 160 thr -> 26880 regs/CTA -> 2 CTA/SM -> 264 resident
+    chap2 (1 warp/CTA)         250 regs x  32 thr ->  8192 regs/CTA -> 8 CTA/SM -> 1056 resident
+
+    (H100: 65536 registers/SM, 132 SMs, 256-register allocation granularity.  No spills in any
+     of the three.)
+
+chap3's residency capacity is 264 CTAs.  Its grid for a 64x256 output tile:
+
+    N=1024     64 CTAs = 0.24 residency waves   machine 24% full, slack everywhere
+    N=2048    256 CTAs = 0.97 residency waves   <-- EXACTLY full, ZERO scheduling slack
+    N=4096   1024 CTAs = 3.88 residency waves   later waves backfill
+
+The cluster-of-four cliff lands precisely at N=2048.  This upgrades the earlier wave-quantisation
+HYPOTHESIS to a calculation: a cluster requires its four CTAs to be co-resident on one GPC, and at
+0.97 waves every residency slot is already spoken for, so a cluster that cannot be placed blocks
+rather than being deferred into slack.  Below one wave there is room; above four waves the later
+waves backfill.  It also explains why the cliff depends on CTA COUNT and not cluster SHAPE --
+(2 2) and (4 1) measured identically.
+
+### And this retires one theory about the ~7% multicast tax
+
+Multicast costs ONE register (165 -> 166), no additional shared memory, and does NOT change
+CTAs/SM.  So the overhead is not an occupancy or resource effect at all -- it is pure
+serialisation in the producer's issue path (leader guard, per-destination expect_tx, one CTA
+issuing where four did).  That makes it an ordinary code-generation optimisation target rather
+than a fundamental tradeoff, which is the single most useful thing to know before deciding
+whether multicast is worth another attempt.
+
+## WHERE THE ~7% MULTICAST TAX ACTUALLY GOES (static PTX analysis, no GPU needed)
+
+Having ruled out occupancy (multicast costs ONE register and does not change CTAs/SM), the cost
+had to be visible in the instruction stream.  It is not:
+
+    opcode      chap3   chap4   delta
+    mov           282     290      +8
+    mbarrier        7      10      +3
+    barrier         0       2      +2      <- the cluster entry fence
+    setp           16      18      +2
+    TOTAL        1832    1852     +20      <- about 1% more instructions, for a 7% slowdown
+
+And the code generation is GOOD, which is worth saying:
+
+  * the cluster entry fence is in the PROLOGUE (lines 1597/1613), not the k-loop -- paid once
+  * the leader predicate is LOOP-INVARIANT and hoisted: %cluster_ctaid.x/.y are read once at
+    ~1712 and the setp lands there, far above the multicast copies at 3310/3326
+
+So the tax is not instruction count.  It is STRUCTURAL COUPLING.
+
+### The mechanism, and the fix it implies
+
+With multicast exactly ONE CTA per group issues the bulk copy; the other members' producer warps
+issue nothing and simply wait.  Total copies go DOWN (one multicast serves N destinations), so this
+is not extra work -- it is a change of shape: N independent producer pipelines become ONE shared
+pipeline feeding N consumers.  The whole group now advances at the rate of a single issuer, and any
+jitter in that one CTA stalls every consumer in the cluster.  In a warp-specialised kernel whose
+entire design is "keep the producer ahead of the consumers", collapsing N producers into 1 is
+exactly the wrong direction.
+
+AND OUR LEADER IS STATIC.  It is `ctaid == 0 on the group axes`, computed once before the loop, so
+the SAME CTA issues every stage for the lifetime of the kernel.  It is a permanent bottleneck
+rather than a rotating duty.
+
+CUTLASS does not do this: it distributes multicast issue across the cluster's CTAs so no single
+member is the standing issuer.  That is the difference between "multicast pays" and "multicast
+costs 7%", and it is an implementation choice, not physics.
+
+### The concrete next experiment, if multicast is ever revisited
+
+ROTATE THE LEADER BY RING SLOT: leader = (position on group axes == slot mod group_extent).  With
+ring-count 2 and a group of 2, rank 0 issues slot 0 and rank 1 issues slot 1, so both CTAs share
+the issue work and neither is a permanent choke point.
+
+NOT A QUICK PATCH, and worth saying why: at the TMA codegen site the ring slot has already been
+folded into the destination address, so the slot INDEX is not available as a value there.  Making
+it available means threading it from the `ring-get` through to the copy node -- a real change to
+what the TMA node carries, not a tweak to %gen-multicast-leader-pred.
+
+MINOR, ALSO SPOTTED: two `barrier.cluster.arrive; barrier.cluster.wait;` pairs are emitted in the
+prologue where one rendezvous should do.  Cheap (once per launch) but probably redundant.
+
+## STEP 11 — THE MULTICAST ISSUER NOW ROTATES (compile-verified; NOT yet measured on metal)
+
+The ~7% multicast tax was diagnosed as structural: exactly ONE CTA per group issued every stage,
+for the kernel's lifetime, so N producer pipelines collapsed into one and the group advanced at a
+single issuer's rate.  The issuing duty now rotates across the group.
+
+ROTATION SOURCE, and why not the obvious one.  What is needed is a value that changes per PIPELINE
+STAGE and exists where the copy is emitted.  The ring SLOT index is the natural choice but has
+already been folded into the destination address by codegen time; recovering it means threading
+the slot expression down from `analyze-load-tile-expression` and re-generating a node in a second
+place.  The MBARRIER ADDRESS carries the same information and is already in hand: a barrier ring
+is `base + slot*8`, so `(mbar_addr >> 3)` counts stages.  No new plumbing.
+
+Emitted PTX for chap4 (cluster (2 2), ring of 2) -- LLVM folds the whole thing into ONE bfe:
+
+    bfe.u32     %r416, %r448, 3, 1;    ; (mbar_addr >> 3) & 1  -- the stage parity
+    setp.ne.b32 %p13, %r7, %r416;      ; A's issuer: cluster_ctaid.y vs stage
+    setp.eq.b32 %p14, %r8, %r416;      ; B's issuer: cluster_ctaid.x vs stage
+
+So both operands alternate issuer per slot, and the rotation itself is essentially free.  A power
+of two extent lets `mod` become a mask, which also avoids needing a URem binding the LLVM layer
+does not have.
+
+WHY THIS IS CORRECT.  Rotating WHO issues does not change WHAT is issued: the ctaMask still names
+the whole group, so every member still receives the tile, and every member still runs `expect_tx`
+on its own mbarrier.  The condition that makes exactly ONE member elect itself is that all members
+compute the SAME stage value -- which holds because the ring slot derives from the K-loop counter,
+which is uniform across a cluster.  If a kernel ever made the slot rank-dependent, two members
+could both elect (or neither), so that uniformity is the contract.  Note this is the same
+uniformity a cluster-wide barrier already requires.
+
+COST: the leader predicate is no longer loop-invariant -- it now depends on the mbarrier address,
+so it sits inside the loop rather than being hoisted.  That is one `bfe` and one `setp` per stage,
+against the pipeline serialisation it is meant to remove.
+
+FALLBACK: rotation applies only when the group spans exactly ONE clustered axis and the extent is
+a power of two -- which covers every real case (in a matmul A's group is a cluster ROW and B's a
+COLUMN, both single-axis).  Anything else keeps the original static leader, which remains correct.
+
+*** NOT YET MEASURED.  Whether this recovers the ~7% is an open question that needs a GPU. ***
+The prediction is specific and falsifiable: if the tax was pipeline serialisation, chap4 should
+move from ~0.93x toward 1.0x at N=1024/4096 where the cluster itself is cheap; the N=2048
+cluster-of-four cliff (0.58x) should NOT move, because that is co-residency, not issue.

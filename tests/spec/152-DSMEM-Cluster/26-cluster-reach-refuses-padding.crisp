@@ -1,0 +1,43 @@
+;; Endeavor 152 rung 26 — BUG 049: a cluster-REACH kernel must REFUSE grid padding.
+;;
+;; THE HOIST PADS THE LAUNCH GRID up to a multiple of the cluster shape, on the stated grounds
+;; that the surplus blocks "find no tiles left to claim and exit".  That is true, and harmless,
+;; for an ordinary clustered kernel.  It is FATAL for one that uses its cluster's reach:
+;;
+;;   * a MULTICAST addresses every member of the group, including the padded ones
+;;   * a :mode :cluster barrier WAITS for every member, including the padded ones
+;;
+;; and the padded ones have already left.  Measured as `unspecified launch failure` on an H100
+;; at N=256, where a 64x256 tile gives a 4x1 grid and a (2 2) cluster pads the second axis from
+;; 1 to 2 -- making HALF of every cluster padding.  Every larger size ran correctly, which is
+;; exactly why this needs a structural assertion rather than a benchmark.
+;;
+;; WHY IT CANNOT BE A COMPILE-TIME REFUSAL: the grid comes from `:derive-from C` and is not known
+;; until launch.  The check has to be emitted INTO the host code, so that is where it is asserted.
+;;
+;; THE OTHER SIDE OF THE RULE IS COVERED BY RUNG 04, which declares a cluster but uses neither
+;; multicast nor a cluster barrier, and must still PAD.  Over-refusing there would cost real
+;; launches for no safety gain, so the distinction is deliberate and both halves are pinned.
+;;
+;; NEW VALIDATOR REQUIRED: validate-cuda-cluster-no-pad
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-cluster-no-pad
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "cluster-size is a DISPATCH declaration and does not propagate into
+;; a backward kernel -- endeavour 146: a schedule is not mathematics."
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_reach_nopad (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (16 16))
+           (local-size  :set-to 128)
+           (cluster-size :set-to (2 2)))
+  (let ((tile (make-scratch-matrix float (16 16)))
+        (bar  (make-async-barrier :mode :block)))
+    (tile-stride C (16 16) (grid-y grid-x)
+      (load-tile A tile (grid-y 0) :barrier bar :multicast true)
+      (await bar)
+      (store-tile tile C (grid-y grid-x)))))

@@ -1700,7 +1700,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         between padding slots to 128 and refusing at compile time.  If it does not, delete this
         entry.  Do NOT act on it before it is reproduced.
 
-[ ] 049 - A MULTICAST kernel CRASHES when the launch grid must be PADDED to fit its cluster.
+[x] 049 - A MULTICAST kernel CRASHES when the launch grid must be PADDED to fit its cluster.
 
         FOUND 2026-08-18 on an H100, running the full NVIDIA matmul suite.  chap4_cluster_multicast
         (cluster (2 2), :multicast true) reports `unspecified launch failure` at N=256 and produces
@@ -1733,3 +1733,25 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         DOES NOT BLOCK the endeavour's conclusion: chapter 4 is slower than chapter 3 at every
         size that runs, and 256 is far below where either kernel is interesting.
+
+        FIXED 2026-08-18.  The compiler records `:cluster-reach` in the metacrisp when a module
+        multicasts a load or declares a :mode :cluster barrier, and the CUDA hoist refuses to pad
+        the grid of such a kernel -- treating it exactly like `:strategy :exact`, with a message
+        naming the real constraint.  An `unspecified launch failure` becomes a refusal that says
+        why.
+
+        NOT A COMPILE-TIME REFUSAL, deliberately: the grid comes from `:derive-from C` and is only
+        known at launch, so the check is emitted into the host code.
+
+        THE FLAG IS MODULE-SCOPED and therefore conservative -- if any kernel in a module uses
+        reach, every clustered kernel in it declines padding.  Precise per-kernel attribution
+        would mean threading a flag through the whole analysis; over-refusing a kernel that gains
+        nothing from its cluster anyway is the cheaper error, and it errs safely.
+
+        BOTH SIDES ARE PINNED: spec 26-cluster-reach-refuses-padding asserts a multicast kernel's
+        launcher REFUSES, and spec 04-cluster-size-on-metal (a cluster with no reach) still PADS.
+        Verified: rung 04 emits no reach flag and keeps its padding arithmetic.
+
+        STILL OPEN as the better long-term fix: let padded workgroups PARTICIPATE in the cluster's
+        barriers rather than exiting, which would make padding safe instead of forbidden.  That
+        needs the tile-stride trip count to be uniform across a cluster -- a real change.

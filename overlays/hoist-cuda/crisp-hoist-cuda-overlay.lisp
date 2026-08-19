@@ -522,3 +522,194 @@
   ;; layout it chose is visible in the emitted .cu as a `shared offset` comment per param.
   (setf *cuda-shared-cell-offset* (nth-value 1 (%cuda-shared-layout declared-sig aliases)))
   (funcall *crisp-045-orig-emit-kernel-args* stream declared-sig aliases records dispatch-info))
+
+
+;;; =====================================================================
+;;; BUG 049 (hoist half) — refuse to PAD the grid of a cluster-REACH kernel
+;;;
+;;; See the compiler half in crisp-compiler-overlay.lisp for the diagnosis.  In short: the
+;;; :strided branch pads on the grounds that surplus blocks "find no tiles left to claim and
+;;; exit", which is exactly what makes it unsafe once those blocks are cluster members someone
+;;; is waiting on.  This turns an `unspecified launch failure` into a refusal that names the
+;;; cause.
+;;; =====================================================================
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-cluster-grid-fixup-string (dispatch-info)
+  "The C++ that reconciles the computed grid with the cluster shape, or \"\" when the
+   kernel has no cluster.
+
+   :strided pads the grid up (the tile-stride loop covers every tile, so surplus
+   blocks simply find nothing to claim); :exact refuses, because it has no stride loop
+   and so can neither pad (blocks with no tile) nor truncate (skipped tiles).
+
+   The driver rejects a non-divisible grid per axis with CUDA_ERROR_INVALID_CLUSTER_SIZE
+   -- measured on H100 PCIe / CUDA 12.4, see 00-verification-findings.md -- so doing
+   nothing is not an option."
+  (let* ((dims (and dispatch-info (getf dispatch-info :effective-cluster-size)))
+         (cx (or (first dims) 1))
+         (cy (or (second dims) 1))
+         (cz (or (third dims) 1)))
+    (if (or (null dims) (<= (* cx cy cz) 1))
+        ""
+        (let* ((gs (and dispatch-info (getf dispatch-info :global-size)))
+               (strategy (and (consp gs) (getf (cdr gs) :strategy)))
+               (exact-p (and strategy (symbolp strategy)
+                             (string-equal (symbol-name strategy) "EXACT")))
+               ;; BUG 049: a kernel that USES its cluster's reach cannot tolerate padding.
+               ;; Padded blocks are still cluster members -- a multicast addresses them and a
+               ;; cluster barrier waits on them -- but they claim no tile and exit, so the
+               ;; survivors wait on peers that are gone.  Treat it exactly like :exact: refuse,
+               ;; with a message that names the real constraint.
+               (reach-p (and dispatch-info (getf dispatch-info :cluster-reach)))
+               (s (make-string-output-stream)))
+          (format s "~%    // --- Endeavor 152: cluster grid reconciliation ---~%")
+          (format s "    // The driver requires gridDim % clusterDim == 0 on EVERY axis and~%")
+          (format s "    // rejects a non-divisible grid with CUDA_ERROR_INVALID_CLUSTER_SIZE.~%")
+          (format s "    { const unsigned int _ccx = ~d, _ccy = ~d, _ccz = ~d;~%" cx cy cz)
+          (if (or exact-p reach-p)
+              (progn
+                (format s "      // :strategy :exact has no stride loop -- padding would launch blocks~%")
+                (format s "      // with no tile, and truncating would silently skip tiles.~%")
+                (format s "      if ((gridX % _ccx) || (gridY % _ccy) || (gridZ % _ccz)) {~%")
+                (format s "        std::cerr << \"error: grid (\" << gridX << \",\" << gridY << \",\" << gridZ~%")
+                (format s "                  << \") is not divisible by cluster (~d,~d,~d).\"~%" cx cy cz)
+                (format s "                  << \"  ~a\"~%"
+                        (if reach-p
+                            "this kernel MULTICASTS or uses a :mode :cluster barrier, so padded blocks would be cluster members that exit before their peers' multicast lands or their barrier completes -- padding cannot be made safe here"
+                            ":strategy :exact cannot pad (blocks with no tile) or truncate"))
+                (format s "                  << \" (skipped tiles).  Use :strategy :strided, or a :tile-shape that\"~%")
+                (format s "                  << \" divides the problem evenly by the cluster shape.\" << std::endl;~%")
+                (format s "        return;~%")
+                (format s "      }~%"))
+              (progn
+                (format s "      // :strategy :strided has a tile-stride loop, so padding UP is safe:~%")
+                (format s "      // the surplus blocks find no tiles left to claim and exit.~%")
+                (format s "      unsigned int _px = ((gridX + _ccx - 1) / _ccx) * _ccx;~%")
+                (format s "      unsigned int _py = ((gridY + _ccy - 1) / _ccy) * _ccy;~%")
+                (format s "      unsigned int _pz = ((gridZ + _ccz - 1) / _ccz) * _ccz;~%")
+                (format s "      if (_px != gridX || _py != gridY || _pz != gridZ) {~%")
+                (format s "        std::cerr << \"note: grid padded (\" << gridX << \",\" << gridY << \",\" << gridZ~%")
+                (format s "                  << \") -> (\" << _px << \",\" << _py << \",\" << _pz~%")
+                (format s "                  << \") for cluster (~d,~d,~d)\" << std::endl;~%" cx cy cz)
+                (format s "      }~%")
+                (format s "      gridX = _px; gridY = _py; gridZ = _pz;~%")))
+          (format s "    }~%")
+          (get-output-stream-string s)))))
+
+;;; =====================================================================
+;;; Endeavor 152 rung 04/11 (fix) — inject AFTER the grid is final, not after gridX
+;;;
+;;; FOUND ON METAL.  The first cut anchored on `unsigned int gridX = `, which is wrong
+;;; twice over and each way was invisible locally:
+;;;
+;;;  1. The TILE-SHAPE dispatch path declares the axes on SEPARATE lines --
+;;;         unsigned int gridX = ...;   <- anchor matched here
+;;;         unsigned int gridY = ...;   <- declared AFTER the injected block
+;;;         unsigned int gridZ = 1;
+;;;     so the emitted C++ referenced gridY/gridZ before they existed:
+;;;         error: identifier "gridY" is undefined
+;;;     The :set-to path declares all three on ONE line, which is why rung 04 passed on
+;;;     the H100 and rung 11 did not.
+;;;
+;;;  2. Even where all three existed, the injection preceded the DEVICE GRID LIMIT
+;;;     clamping, which lowers gridX toward maxGridDimX -- and a clamp applied after a
+;;;     divisibility pad can BREAK the divisibility again.  That one would not have been a
+;;;     compile error; it would have been an intermittent CUDA_ERROR_INVALID_CLUSTER_SIZE
+;;;     on large problems only.
+;;;
+;;; Both fixed by moving the anchor to `auto _crisp_launch`, the lambda every strategy
+;;; emits once, immediately after ALL grid computation and immediately before the launch
+;;; that consumes it.  Injecting BEFORE that line means the reconciliation always sees the
+;;; final values of all three axes.
+;;;
+;;; WHY LOCAL TESTING MISSED IT: there is no nvcc on the dev box, so every TEST-HOIST[CUDA]
+;;; spec SKIPs.  The broken .cu WAS generated locally and I read it -- but I checked only
+;;; that the block appeared, not that the identifiers it referenced were in scope yet.
+;;; Generating C++ and reading it is not the same as compiling it.
+;;; =====================================================================
+
+;; src/hoist-cuda/main.lisp
+
+
+;; src/hoist-cuda/main.lisp
+;; BUG 049: thread :cluster-reach from the metacrisp into dispatch-info.
+(defun generate-cuda-launcher (metacrisp-path)
+  "Generate CUDA Driver API C++ launcher code from metacrisp file.
+   Endeavor 152: also threads :effective-cluster-size (what codegen actually built,
+   NOT what the source declared) into dispatch-info, so the launch can enforce the
+   driver's grid-divisibility requirement."
+  (let* ((data     (parse-metacrisp-file metacrisp-path))
+         (kernels  (metacrisp-kernels data))
+         (aliases  (metacrisp-aliases data))
+         ;; Endeavor 130 Phase 5: an active hardware profile's :compute-units
+         ;; OVERRIDES the runtime device query for grid sizing (so a deliberately
+         ;; shrunken profile actually takes effect host-side).
+         (hw-profile (metacrisp-hardware-profile data))
+         (hw-compute-units (getf hw-profile :compute-units))
+         (base-name (pathname-name metacrisp-path)))
+
+    (format t "Processing ~a~%" metacrisp-path)
+    (format t "  Kernels: ~a~%" (length kernels))
+
+    (when (null kernels)
+      (format t "WARNING: No kernels found in ~a. Nothing to hoist.~%" metacrisp-path))
+
+    (let ((*hoist-current-structs* (metacrisp-structs data)))
+      (dolist (kernel kernels)
+        (let* ((kernel-name    (getf kernel :name))
+               (declared-sig  (getf kernel :declared-signature))
+               (implicit-sig  (getf kernel :implicit-params))
+               (dispatch-info (let ((gs (getf kernel :global-size))
+                                    (ls (getf kernel :local-size))
+                                    (ng (getf kernel :num-groups))
+                                    (cd (getf kernel :effective-cluster-size))
+                                    ;; BUG 049: does this kernel USE its cluster's reach?  If so
+                                    ;; the grid must not be padded -- padded blocks are cluster
+                                    ;; members that a multicast addresses and a cluster barrier
+                                    ;; waits on, and they exit immediately.
+                                    (cr (getf kernel :cluster-reach)))
+                                 (when (or gs ls ng cd)
+                                   (append (when gs (list :global-size gs))
+                                           (when ls (list :local-size  ls))
+                                           (when ng (list :num-groups  ng))
+                                           (when cr (list :cluster-reach cr))
+                                           (when cd (list :effective-cluster-size cd))))))
+               (comparable-range-start
+                 (lambda (param)
+                   (let ((r (getf param :range)))
+                     (if (listp r) (first r) -1))))
+               (full-sig      (sort (append declared-sig implicit-sig) #'<
+                                    :key comparable-range-start))
+               (output-targets (getf kernel :output-targets)))
+
+          (let* ((ptx-path-entry (assoc :ptx output-targets))
+                 (ptx-path  (when ptx-path-entry (second ptx-path-entry)))
+                 (suffix    (format nil "_~a" kernel-name))
+                 (name-part (if (uiop:string-suffix-p base-name suffix)
+                                base-name
+                                (format nil "~a~a" base-name suffix)))
+                 (output-name (format nil "~a_CUDA.cu" name-part))
+                 (output-path (make-pathname :name (pathname-name output-name)
+                                             :type "cu"
+                                             :defaults metacrisp-path)))
+
+            (if (null ptx-path)
+                (format t "WARNING: No PTX target found for kernel ~a. Skipping host generation.~%"
+                        kernel-name)
+                (progn
+                 (format t "  Generating: ~a~%" output-name)
+                 (let ((dvec-types (%collect-dvec-types declared-sig aliases)))
+                   (with-open-file (stream output-path :direction :output :if-exists :supersede)
+                     (emit-preamble stream metacrisp-path kernel-name output-name)
+                     (emit-includes stream)
+                     (emit-typedefs stream aliases)
+                     (emit-cuda-dvec-ostream-operators stream dvec-types)
+                     (emit-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
+                     (emit-helpers stream)
+                     (emit-main stream kernel-name ptx-path full-sig aliases
+                                (metacrisp-records data) dispatch-info
+                                hw-compute-units)))
+                 (format t "  Done: ~a~%" (namestring output-path))))))))))
+
+;; src/hoist-cuda/main.lisp  (new)

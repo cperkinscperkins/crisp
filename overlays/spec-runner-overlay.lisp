@@ -874,3 +874,38 @@
   (declare (ignore file))
   (%152-check-cluster-product ptx-string 8))
 
+
+;;; BUG 049 — a cluster-REACH kernel must REFUSE grid padding, not perform it.
+(defun validate-cuda-cluster-no-pad (crisp-file cu-files)
+  "The generated launcher for a multicast / :mode :cluster kernel must refuse a non-divisible
+   grid instead of padding it up.
+
+   WHY THIS IS ASSERTED ON THE GENERATED C++ AND NOT ON A RUN.  The failure it guards against is
+   `unspecified launch failure` at ONE problem size -- N=256, where a 64x256 tile gives a 4x1 grid
+   and a (2 2) cluster must pad the second axis, making half of every cluster padding.  Every
+   larger size runs correctly, so a passing benchmark proves nothing; the evidence that the guard
+   exists is in the emitted host code.
+
+   Padding is still CORRECT, and still emitted, for a clustered kernel that does NOT use its
+   cluster's reach -- surplus blocks really do just exit.  Spec 04 covers that side."
+  (declare (ignore crisp-file))
+  (let ((ok nil))
+    (dolist (cu cu-files ok)
+      (let ((content (uiop:read-file-string cu)))
+        (when (search "reqnctapercluster" content)  ; not every emitted file is the kernel
+          nil)
+        (cond
+          ((search "padding cannot be made safe here" content)
+           (if (search "_px = ((gridX" content)
+               (progn (format *error-output*
+                        "FAIL: ~a emits BOTH the cluster-reach refusal AND the padding arithmetic.~%"
+                        (file-namestring cu))
+                      (return nil))
+               (progn (format t "  [cluster-no-pad] ~a refuses padding, as required.~%"
+                              (file-namestring cu))
+                      (setf ok t))))
+          ((search "_px = ((gridX" content)
+           (format *error-output*
+             "FAIL: ~a PADS the grid, but this kernel uses its cluster's reach.  Padded blocks are cluster members that a multicast addresses and a cluster barrier waits on, and they exit immediately -- this is BUG 049 and it manifests as `unspecified launch failure`.~%"
+             (file-namestring cu))
+           (return nil)))))))

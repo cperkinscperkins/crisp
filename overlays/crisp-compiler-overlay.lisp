@@ -4491,3 +4491,344 @@
 ;;; =====================================================================
 
 ;; src/codegen.lisp
+
+
+;;; =====================================================================
+;;; BUG 049 — grid padding is FATAL for a kernel that uses its cluster's reach
+;;;
+;;; The CUDA hoist pads the launch grid up to a multiple of the cluster shape, on the stated
+;;; grounds that "the surplus blocks find no tiles left to claim and exit".  True for an ordinary
+;;; kernel.  FALSE for one with a multicast load or a :mode :cluster barrier: those surplus
+;;; blocks are still CLUSTER MEMBERS.  A multicast addresses them, and a cluster-scoped barrier
+;;; waits for them -- and they have already left.
+;;;
+;;; MEASURED: chap4_cluster_multicast reports `unspecified launch failure` at N=256, where a
+;;; 64x256 tile gives a 4x1 grid and a (2 2) cluster pads the second axis 1 -> 2, making HALF of
+;;; every cluster padding.  Every larger size runs correctly.  chap3 (same kernel, no cluster)
+;;; runs N=256 fine.
+;;;
+;;; WHY THIS CANNOT BE A COMPILE-TIME REFUSAL: the grid comes from `:derive-from C` and is only
+;;; known at launch.  The check therefore has to be emitted INTO the host code, which is what
+;;; the hoist half of this fix does.
+;;; =====================================================================
+
+;; src/metadata.lisp
+(defun %module-uses-cluster-reach-p ()
+  "T if anything in this module multicasts a load or declares a :mode :cluster barrier.
+
+   Both tables are populated during analysis and cleared per module, so by serialization time
+   they are a complete record of whether the module's kernels depend on peers."
+  (or (plusp (hash-table-count *tma-copy-multicast*))
+      (plusp (hash-table-count *cluster-barrier-bindings*))))
+
+;; src/metadata.lisp
+(defun serialize-kernels (output-stream kernel-names &key source output-targets)
+  "Emits the (:kernels ...) section of the metacrisp file.
+   Extended to include :global-size, :local-size, :num-groups dispatch declarations.
+   Endeavor 152: also emits :cluster-size (what the SOURCE asked for) and
+   :effective-cluster-size (what codegen BUILT).  Both, deliberately -- a degraded
+   cluster is otherwise indistinguishable from a working one."
+  (when kernel-names
+        (format output-stream "(:kernels~%")
+        (dolist (k-name (sort (copy-list kernel-names) (function string<) :key (function symbol-name)))
+          (let ((sigs (gethash k-name *function-table*))
+                (blocks-to-emit nil))
+            ;; Use only the FIRST signature (Pass 1 registered, Pass 2 updated)
+            (dolist (actual-sig (list (first sigs)))
+              (when actual-sig
+                    (let* ((phys-sig-str (generate-physical-signature actual-sig))
+                           (declared-types (gethash k-name *kernel-declared-signatures*))
+                           (decl-sig-list (generate-declared-signature actual-sig declared-types))
+                           (implicit-sig-list (generate-implicit-signature actual-sig declared-types))
+                           (dispatch-info (gethash k-name *kernel-dispatch-declarations*))
+                           (source-loc (if source source
+                                           (namestring (uiop/filesystem:native-namestring (first (function-signature-source-location actual-sig)))))))
+
+                      (push (list :name (string-downcase (symbol-name k-name))
+                                  :source source-loc
+                                  :output output-targets
+                                  :phys phys-sig-str
+                                  :decl decl-sig-list
+                                  :impl implicit-sig-list
+                                  :dispatch dispatch-info)
+                            blocks-to-emit))))
+
+            (setf blocks-to-emit (remove-duplicates (nreverse blocks-to-emit) :test (function equalp)))
+
+            (dolist (blk blocks-to-emit)
+              (let ((dispatch (getf blk :dispatch)))
+                (format output-stream "  (:name ~s~%" (getf blk :name))
+                (format output-stream "    :source ~s~%" (pathname (getf blk :source)))
+                (when (getf blk :output) (format output-stream "    :output-targets ~s~%" (getf blk :output)))
+                ;; Emit dispatch declarations before physical/declared signatures
+                (let ((global-size-decl (getf dispatch :global-size))
+                      (local-size-decl  (getf dispatch :local-size))
+                      (num-groups-decl  (getf dispatch :num-groups))
+                      (cluster-decl     (getf dispatch :cluster-size-decl))
+                      (cluster-dims     (getf dispatch :cluster-size)))
+                  (when global-size-decl
+                    (format output-stream "    :global-size ")
+                    (print-without-packages global-size-decl output-stream)
+                    (format output-stream "~%"))
+                  (when local-size-decl
+                    (format output-stream "    :local-size ")
+                    (print-without-packages local-size-decl output-stream)
+                    (format output-stream "~%"))
+                  (when num-groups-decl
+                    (format output-stream "    :num-groups ")
+                    (print-without-packages num-groups-decl output-stream)
+                    (format output-stream "~%"))
+                  ;; Endeavor 152.  BOTH are emitted on purpose:
+                  ;;   :cluster-size            -- the declaration, as written
+                  ;;   :effective-cluster-size  -- what codegen actually built
+                  ;; They differ exactly when the kernel degraded, which is the one
+                  ;; case a correctness test cannot see.
+                  (when cluster-decl
+                    (format output-stream "    :cluster-size ")
+                    (print-without-packages cluster-decl output-stream)
+                    (format output-stream "~%"))
+                  ;; BUG 049: does this kernel actually USE its cluster's reach -- a
+                  ;; multicast load or a :mode :cluster barrier?  The hoist needs to know,
+                  ;; because padding the grid up to the cluster shape is safe for an ordinary
+                  ;; clustered kernel (surplus blocks find no tiles and exit) and FATAL for one
+                  ;; with reach: the padded blocks are still cluster members that a multicast
+                  ;; addresses and a cluster barrier waits on, so they must not simply leave.
+                  ;;
+                  ;; Deliberately MODULE-scoped and therefore conservative: if any kernel in the
+                  ;; module uses reach, every clustered kernel in it declines padding.  Precise
+                  ;; per-kernel attribution would mean threading a flag through the whole
+                  ;; analysis; over-refusing a kernel that gains nothing from its cluster anyway
+                  ;; is the cheaper error, and it is an error in the safe direction.
+                  (when (and cluster-dims (%module-uses-cluster-reach-p))
+                    (format output-stream "    :cluster-reach t~%"))
+                  (when cluster-dims
+                    (format output-stream "    :effective-cluster-size ")
+                    (print-without-packages (%effective-cluster-dims dispatch cluster-dims) output-stream)
+                    (format output-stream "~%")))
+                (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
+                (format output-stream "    :declared-signature ")
+                (print-without-packages (getf blk :decl) output-stream)
+                (format output-stream "~%")
+                (when (getf blk :impl)
+                      (format output-stream "    :implicit-params ")
+                      (print-without-packages (getf blk :impl) output-stream)
+                      (format output-stream "~%"))
+                (format output-stream "  )~%"))))
+        (format output-stream "  )~%"))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 Phase 1 (fix 2) — the degrade diagnostic must fire on SPIR-V too
+;;;
+
+;;; =====================================================================
+;;; Endeavor 152 step 11 — ROTATE the multicast issuer across the group
+;;;
+;;; THE PROBLEM, measured: multicast costs a flat ~6-8% on chapter 3 regardless of how many
+;;; workgroups share a fetch (2-way and 4-way are indistinguishable).  It is not instruction
+;;; overhead -- chap4 emits only +20 instructions on 1832, the cluster fence is in the prologue,
+;;; and the leader predicate is loop-invariant and hoisted.  It is STRUCTURAL: with multicast
+;;; exactly ONE CTA per group issues, so N independent producer pipelines become ONE shared
+;;; pipeline feeding N consumers, and the whole group advances at that single issuer's rate.
+;;; In a warp-specialised kernel whose entire design is "keep the producer ahead", collapsing
+;;; N producers into 1 is the wrong direction.
+;;;
+;;; AND THE ISSUER WAS STATIC: `ctaid == 0 on the group axes`, computed once before the loop, so
+;;; the SAME CTA issued every stage for the kernel's lifetime -- a permanent bottleneck rather
+;;; than a rotating duty.  CUTLASS distributes multicast issue across a cluster instead.
+;;;
+;;; THE ROTATION SOURCE, and why this one.  What we need is a value that changes per PIPELINE
+;;; STAGE and is already available where the copy is emitted.  The ring SLOT index is the natural
+;;; choice but has been folded into the destination address by codegen time; recovering it means
+;;; threading the slot expression down from `analyze-load-tile-expression` and re-generating a
+;;; node in a second place.  The MBARRIER ADDRESS is right there and already carries the same
+;;; information: a barrier ring is `base + slot*8` (see %gen-nvvm-mbar-slot-ptr), so
+;;; `(mbar_addr >> 3)` advances by one per slot.  Zero new plumbing, and it degrades correctly --
+;;; a ring of one gives a constant, i.e. exactly the old static leader.
+;;;
+;;; SCOPE: rotation applies when the group spans exactly ONE clustered axis, which is the case
+;;; that matters (in a matmul A's group is a cluster ROW and B's a COLUMN -- both single-axis).
+;;; A multi-axis group falls back to the static all-zero leader, which remains correct.
+;;;
+;;; CORRECTNESS NOTE: rotating WHO issues does not change WHAT is issued.  The ctaMask still
+;;; names the whole group, so every member still receives the tile; only the issuing duty moves.
+;;; All members still run `expect_tx` on their own mbarrier, exactly as before.
+;;; =====================================================================
+
+;; src/codegen.lisp
+(defun %gen-multicast-leader-pred (builder module plan &optional rot-src)
+  "True in exactly ONE workgroup per multicast group.
+
+   With ROT-SRC (an i32 that advances once per pipeline stage -- in practice the mbarrier
+   address) and a single-axis group, the issuing duty ROTATES: the CTA at position
+   `rot-src mod extent` along the group axis issues this stage.  Over a ring of stages every
+   member takes a turn, so no single CTA is a standing bottleneck.
+
+   Without ROT-SRC, or for a multi-axis group, falls back to the original static leader (position
+   0 on every group axis).  Both are correct; only the distribution of work differs."
+  (let* ((i32   (llvm-int32-type))
+         (dims  (getf plan :dims))
+         (group (getf plan :group-axes))
+         (live  (remove-if-not (lambda (a) (> (nth a dims) 1)) group)))
+    (cond
+      ;; ROTATING: one group axis, and a per-stage value to rotate on.
+      ((and rot-src (= (length live) 1)
+            (let ((e (nth (first live) dims))) (zerop (logand e (1- e)))))   ; power of two
+       (let* ((a      (first live))
+              (extent (nth a dims))
+              (c      (%ptx-read-warp-sreg builder module (%cluster-axis-sreg a)))
+              ;; mbarrier ring slots are 8 bytes apart, so >>3 counts stages.
+              (stage  (crisp.llvm-bindings::llvm-build-l-shr
+                       builder rot-src (llvm-const-int i32 3 nil) "mc_stage"))
+              ;; AND, not a remainder: a cluster extent is always a power of two (2/4/8 are the
+              ;; only portable values), so `mod extent` is `and (extent-1)` -- cheaper, and it
+              ;; needs no URem binding, which the LLVM layer does not currently have.
+              (turn   (crisp.llvm-bindings::llvm-build-and
+                       builder stage (llvm-const-int i32 (1- extent) nil) "mc_turn")))
+         (log:info "multicast: ROTATING issuer across ~a workgroups on cluster axis ~a" extent a)
+         (llvm-build-icmp builder +llvm-int-eq+ c turn "mc_leader_rot")))
+      (t
+       (let ((pred nil))
+         (loop for a in live
+               do (let* ((c   (%ptx-read-warp-sreg builder module (%cluster-axis-sreg a)))
+                         (is0 (llvm-build-icmp builder +llvm-int-eq+ c (llvm-const-int i32 0 nil)
+                                               (format nil "mc_axis~a_is0" a))))
+                    (setf pred (if pred (crisp.llvm-bindings::llvm-build-and builder pred is0 "mc_leader") is0))))
+         (or pred (llvm-const-int (llvm-int1-type) 1 nil)))))))
+
+
+;; src/codegen.lisp
+;; Step 11: pass a per-stage rotation source to the multicast leader predicate.
+(defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 137 + 140 + 152 — one bulk TMA copy issued by a single elected leader.
+   Leader = laneid==0 (the producer warp's lane 0) inside a warp-spec role block, else global
+   tid==0.
+
+   Endeavor 152 splits the guard when the copy is a MULTICAST.  `expect_tx` announces the bytes
+   a workgroup EXPECTS TO RECEIVE, so every destination workgroup must run it on its own
+   mbarrier; only the leader WORKGROUP (ctarank 0) issues the copy that serves them all.
+   Keeping both inside one guard -- correct for an ordinary per-workgroup load -- would leave
+   every non-issuing workgroup waiting on a barrier that was never told to expect anything."
+  (multiple-value-bind (dv di dst-ptr)
+      (generate-node-ir (semantic-nvvm-tma-tile-copy-dst-aref-node node) builder module var-env
+                        di-builder di-scope location-map)
+    (declare (ignore dv di))
+    (multiple-value-bind (sv si src-ptr)
+        (generate-node-ir (semantic-nvvm-tma-tile-copy-src-aref-node node) builder module var-env
+                          di-builder di-scope location-map)
+      (declare (ignore sv si))
+      (unless (and dst-ptr src-ptr)
+        (error "nvvm-tma-tile-copy: aref did not yield an element pointer (dst ~A src ~A)" dst-ptr src-ptr))
+      (let* ((i32-type   (llvm-int32-type))
+             (ptr-as3    (llvm-pointer-type (llvm-int8-type) 3))
+             (ptr-gen    (llvm-pointer-type (llvm-int8-type) 0))
+             (ptr-glob   (llvm-pointer-type (llvm-int8-type) 1))
+             (desc-ptr   (%tma-lookup-descriptor-ptr builder var-env
+                          (semantic-nvvm-tma-tile-copy-src-name node) ptr-glob))
+             (tmap-ptr   (llvm-build-addrspace-cast builder (or desc-ptr src-ptr) ptr-gen "tma_map"))
+             (barrier-i  (generate-node-ir (semantic-nvvm-tma-tile-copy-barrier-node node) builder module var-env
+                                           di-builder di-scope location-map))
+             (mbar-ptr   (llvm-build-int-to-ptr builder barrier-i ptr-as3 "tma_mbar"))
+             (coord-vals (loop for cn in (semantic-nvvm-tma-tile-copy-coord-nodes node)
+                               collect (%coerce-to-i32 builder
+                                          (generate-node-ir cn builder module var-env
+                                                             di-builder di-scope location-map))))
+             (coord0     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))
+             (coord1     (or (first coord-vals)  (llvm-const-int i32-type 0 nil)))
+             (mc-plan    (gethash node *tma-copy-multicast*))
+             (mc-extent  (and mc-plan (getf mc-plan :extent)))
+             (ws-leader  (gethash node *tma-copy-ws-leader*))
+             (is-leader  (if ws-leader
+                             (llvm-build-icmp builder +llvm-int-eq+
+                                (%ptx-read-warp-sreg builder module "laneid")
+                                (llvm-const-int i32-type 0 nil) "is_lane0")
+                             (let* ((tid-x (%gen-nvvm-read-tid-x builder module))
+                                    (tid-y (%gen-nvvm-read-tid-y builder module))
+                                    (tid-z (%gen-nvvm-read-tid-z builder module))
+                                    (tid-sum (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz")))
+                               (llvm-build-icmp builder +llvm-int-eq+ tid-sum
+                                  (llvm-const-int i32-type 0 nil) "is_tid_0"))))
+             (issue-bb   (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_issue"))
+             (cont-bb    (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_cont")))
+        (llvm-build-cond-br builder is-leader issue-bb cont-bb)
+        (llvm-position-builder-at-end builder issue-bb)
+        ;; expect_tx: EVERY workgroup, on its own mbarrier -- including the ones that will not
+        ;; issue the multicast, because they are still receiving the bytes.
+        (let* ((len-val   (generate-node-ir (semantic-nvvm-tma-tile-copy-tile-length-node node) builder module var-env
+                                            di-builder di-scope location-map))
+               (elem-b    (semantic-nvvm-tma-tile-copy-elem-bytes node))
+               (len-i32   (%coerce-to-i32 builder len-val))
+               (tx-bytes  (llvm-build-mul builder len-i32 (llvm-const-int i32-type elem-b nil) "tma_tx_bytes"))
+               (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr")))
+          (%gen-nvvm-mbarrier-arrive-expect-tx builder mbar-addr tx-bytes))
+        (cond
+          (mc-extent
+           ;; Multicast: exactly ONE workgroup per group issues.  Which workgroup, and which
+           ;; peers receive, both depend on the group's shape -- see %multicast-axis-plan.
+           (let* ((parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                  ;; Leader predicate is built in the CURRENT block, before the branch.
+                  ;; Step 11: rotate the issuing duty across the group.  The mbarrier address
+                  ;; advances by 8 per ring slot, so it is a per-stage value already in hand --
+                  ;; no need to thread the slot index down from the front end.
+                  (is-mc-leader (%gen-multicast-leader-pred
+                                 builder module mc-plan
+                                 (llvm-build-ptr-to-int builder mbar-ptr i32-type "mc_rot_src")))
+                  (mc-bb     (llvm-append-basic-block parent "tma_mcast_issue"))
+                  (mc-cont   (llvm-append-basic-block parent "tma_mcast_cont")))
+             (log:info "TMA copy: multicast group axes ~a of cluster ~a (serves ~a workgroups, pattern ~x)"
+                       (getf mc-plan :group-axes) (getf mc-plan :dims)
+                       (getf mc-plan :extent) (getf mc-plan :pattern))
+             (llvm-build-cond-br builder is-mc-leader mc-bb mc-cont)
+             (llvm-position-builder-at-end builder mc-bb)
+             ;; Mask is built INSIDE mc-bb -- the builder is positioned there, so the sreg
+             ;; reads and the shift land on the issuing path only.
+             (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1
+                                               (%gen-multicast-mask-value builder module mc-plan) t)
+             (llvm-build-br builder mc-cont)
+             (llvm-position-builder-at-end builder mc-cont)))
+          (t
+           (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1)))
+        (llvm-build-br builder cont-bb)
+        (llvm-position-builder-at-end builder cont-bb)
+        (values nil nil)))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 — the COMPILER-EMITTED CLUSTER ENTRY FENCE
+;;;
+;;; FOUND ON METAL: rung 11 compiled, launched, and died with `unspecified launch
+;;; failure`.  A control run of the identical kernel with `:multicast` removed ran
+;;; correctly, so the fault was multicast-specific rather than the spec's geometry.
+;;;
+;;; THE CAUSE IS THE ONE THE DESIGN NAMED AND I THEN SKIPPED.  From the sync-cluster
+;;; discussion, the first of two obligatory compiler-emitted fences:
+;;;
+;;;     "After mbarrier init, before the mainloop.  CTA 0 can reach the loop and
+;;;      remote-arrive on CTA 1's barrier before CTA 1 has initialized it."
+;;;
+;;; The emitted PTX was exactly that race:
+;;;
+;;;     mbarrier.init.shared.b64  [__crisp_mbar_1], %r22;
+;;;     fence.proxy.async.shared::cta;
+;;;     bar.sync 0;                                  <- WORKGROUP sync only
+;;;     cp.async.bulk.tensor...multicast::cluster    <- writes into PEER shared memory
+;;;
+;;; with ZERO `barrier.cluster` in the module.  `bar.sync` orders the threads of one
+;;; workgroup; it says nothing about a PEER workgroup.  So the leader could multicast into
+;;; a peer's SMEM and complete a transaction on an mbarrier that peer had not yet
+;;; initialised.
+;;;
+;;; This is why the fence is an OBLIGATION rather than a user-facing choice: the failure is
+;;; a launch fault at best, and silent corruption at worst, and nothing about the source
+;;; suggests it.  Q2 of Phase 0 verified the fence is sufficient on its own -- the cluster
+;;; barrier subsumes intra-workgroup convergence -- so no extra sync-workgroup is needed.
+;;;
+;;; GATED so non-clustered kernels are byte-identical: emitted only when some kernel in
+;;; this module declares a cluster extent > 1.  *kernel-dispatch-declarations* is cleared
+;;; per module, so the scan is correctly module-scoped.
+;;; =====================================================================
+
+;; src/codegen.lisp  (new)
+
+;; src/analysis/control.lisp
