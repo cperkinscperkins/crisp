@@ -756,10 +756,10 @@ MMA
 - [ ] still some loose ends
 [x] new macro for rings (prefetch/pipeline) that handles rings
 [ ] push FURTHER - mix prefetch, SLM and warp specialization
-[ ] NVidia: DEMEM and Clusters! 
+[x] NVidia: DEMEM and Clusters! 
 [ ] prefetch-tile probably need L1, L2, L3 targets
 [ ] why small sizes faring poorly against CuBLAS and MKL?
-[ ] performance ratchet updated, with control for multicast
+[ ] performance ratchet updated, with control for multicastno
 [/] out of core orchestration 
 
 

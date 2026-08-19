@@ -96,6 +96,11 @@ Benchmark MMA tests and their development.
 THEN benchmark  MMA+Activation, where MMA is the always the "fastest" MMA. 
 So the fused vs kernel, custom vs predetermined thing is its own benchmarking independent of MMA algorithm.
 
+** FUTURE DIRECTIONS (also not in table*) **
+- CUTLASS / SYCL-TLA
+- multiple tiles, multiple GPUS.
+- Out of Core.  
+
 
 **Ch 4, Intel.**  Not a dash.  `with-warp-specialization` genuinely works on SPV — 146/01
 compiles under `--hardware-profile=bmg --ir-target=spv`, differentiates, and has its gradients

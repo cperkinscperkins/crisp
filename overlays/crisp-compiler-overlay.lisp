@@ -4894,7 +4894,14 @@
         ;; can exit while peers are still streaming.  It reproduced as `unspecified launch
         ;; failure` at a 64x32 tile and vanished under compute-sanitizer, whose serialisation
         ;; closes the window -- the signature of a race rather than a bad address.
-        (when (and (eq *target-backend* :ptx) is-entry-point (%module-has-cluster-p))
+        ;; ARCH-GATED, and this was missed on the first cut: %module-has-cluster-p reports what
+        ;; the SOURCE declared, not what codegen could build.  On a pre-Hopper target the cluster
+        ;; is degraded to extent 1 (%apply-cluster-dims-attribute) and no .reqnctapercluster is
+        ;; emitted -- but the fence was still emitted, putting a `barrier.cluster` instruction in
+        ;; a module whose target has no clusters.  A degraded cluster needs no exit fence anyway:
+        ;; with one workgroup per cluster there is no peer that could still be writing.
+        (when (and (eq *target-backend* :ptx) is-entry-point (%module-has-cluster-p)
+                   (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
           (log:info "cluster kernel: emitting exit fence before ret (BUG 050)")
           (%gen-nvvm-cluster-barrier builder))
         (let ((ret-inst (if is-void-return
@@ -4908,3 +4915,300 @@
                                   (llvm-build-ret builder last-val))))))
           (when last-loc (llvm-instruction-set-debug-loc ret-inst last-loc)))))))
 
+
+
+;;; =====================================================================
+;;; Endeavor 152 — (sync-cluster): a cluster-wide rendezvous
+;;;
+;;; The last documented-but-unbuilt piece of this endeavour.  topology.md has described
+;;; `sync-cluster` since the design discussion; it did not exist, and using it failed with
+;;; "Unsupported form 'SYNC-CLUSTER'".  A doc that promises a form which is not there is a trap
+;;; for the next reader, so this closes that gap rather than deleting the promise.
+;;;
+;;; WHAT IS BUILT: the DEFAULT form `(sync-cluster)` only -- arrive and wait, ordered.
+;;;
+;;; WHAT IS DELIBERATELY NOT BUILT: the split `(sync-cluster :arrive)` / `(sync-cluster :wait)`.
+;;; Its codegen would be trivial -- the two halves of the same fence -- but the docs promise the
+;;; compiler REFUSES four things around it: unpaired or nested :arrive, divergent placement, peer
+;;; access inside the window, and returning before the :wait.  Those four static analyses are the
+;;; real cost, and there is no use case in hand.  This endeavour showed repeatedly that a cluster
+;;; rendezvous is subtle enough to hang a GPU, so shipping the split form without its guards
+;;; would be worse than not shipping it.  It stays a design sketch in the docs.
+;;;
+;;; NO NEW CODEGEN.  On PTX this lowers to %gen-nvvm-cluster-barrier -- the same
+;;; `barrier.cluster.arrive; barrier.cluster.wait;` already emitted as the cluster entry fence and
+;;; (since BUG 050) the exit fence.  The risk here is in the plumbing, not the instruction.
+;;; =====================================================================
+
+;; src/analysis/core.lisp
+(defun %gpu-builtin-info (builtin-kw)
+  "Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.
+   BASE-RETURN-TYPE: return type when called with no args (nil = void).
+   ACCEPTS-DIM-P: T if the builtin accepts a scalar dimension arg 0/1/2."
+  (case builtin-kw
+    ((:get-global-id :get-local-id :get-workgroup-id :get-num-groups
+      :get-local-work-size :get-global-work-size :get-global-offset
+      :get-global-id-abs)
+     (list 'ulong3 t))
+    (:get-work-dim          (list 'uint  nil))
+    ((:get-local-linear-id :get-local-linear-size
+      :get-global-linear-id :get-global-linear-size
+      :get-total-threads :get-total-groups)
+     (list 'ulong nil))
+    ((:sync-workgroup :sync-warp :mem-fence :sync-cluster)
+     (list nil nil))
+    ;; 110 — warp helpers (scalar uint, no dim arg)
+    ((:warp-id :warp-lane :warp-count)
+     (list 'uint nil))
+    (t (error "Unknown GPU builtin: ~a" builtin-kw))))
+
+;;; ----- Analyzer -----
+
+;; src/analysis/core.lisp
+(defun %analyze-gpu-builtin (builtin-kw name-str expr env context location)
+  "Analyzer for all GPU built-in function forms."
+  (declare (ignore env context))
+  (unless *in-dispatch-context*
+    (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
+  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :sync-cluster))
+    ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
+    ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
+    (%warp-spec-check-sync builtin-kw name-str location))
+  (let* ((info     (%gpu-builtin-info builtin-kw))
+         (base-ty  (first info))
+         (acc-dim  (second info))
+         (args     (rest expr)))
+    (cond
+      ((null args)
+       (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                  :dimension nil
+                                  :type base-ty
+                                  :source-location location))
+      ((= (length args) 1)
+       (let ((dim-arg (first args)))
+         (unless acc-dim
+           (error "GPU built-in '~a' does not accept a dimension argument" name-str))
+         (unless (integerp dim-arg)
+           (error "GPU built-in '~a': dimension must be a compile-time integer constant (0, 1, or 2), got: ~a"
+                  name-str dim-arg))
+         (unless (member dim-arg '(0 1 2))
+           (error "GPU built-in '~a': dimension ~a is out of valid range (must be 0, 1, or 2)"
+                  name-str dim-arg))
+         (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                    :dimension dim-arg
+                                    :type 'ulong
+                                    :source-location location)))
+      (t
+       (error "GPU built-in '~a' takes 0 or 1 arguments, got ~a" name-str (length args))))))
+
+
+
+;; ==========================================================================
+;; IGC SROA-aliasing workaround (endeavor 103 phase B, 2026-05-16):
+;;   %volatile-read pseudo-op
+;;
+;; Symptom: when the shadow-struct write at the end of a backward kernel reads
+;; two (or more) sibling float adjoint allocas (e.g. P_X_ADJ and P_Y_ADJ) into
+;; a {float, float} aggregate that is then stored to addrspace(1), Intel/IGC
+;; coalesces the allocas — both reads return the value of one of them.  E.g.
+;; the canonical 056/01 case wrote {4.0, 4.0} instead of the IR-correct
+;; {4.0, 3.0}.  The same LLVM IR translated to PTX (NVPTX backend) produces
+;; the correct output, so the IR itself is well-formed — see
+;; put_temp_files_here/igc-bug-report/ for the minimal reproducer.
+;;
+;; Workaround: emit each leaf adjoint read in the shadow-write as
+;; `load volatile`, which inhibits SROA promotion of the alloca and avoids
+;; the miscompilation.  We do this surgically — only the loads that feed the
+;; shadow constructor — not all loads in the backward kernel.
+;;
+;; Implementation:
+;;   1. A new Crisp pseudo-op `%volatile-read` whose analyzer is a no-op on
+;;      semantics but records the underlying semantic-var-read in a side
+;;      table (*volatile-var-reads*).
+;;   2. The var-read codegen consults that side table and, if present,
+;;      calls LLVMSetVolatile on the emitted load.
+;;   3. %build-shadow-ctor-form wraps each leaf adj-sym in (%volatile-read ...).
+;;
+;; Remove the wrap (and ideally this whole block) once IGC ships the fix.
+
+;; src/analysis/core.lisp
+(defun initialize-expression-analyzers ()
+  "Registers all expression analyzers; extended for 087-gpu-builtins.
+   Endeavor 103 phase B: adds %volatile-read for the IGC workaround."
+  (clrhash *expression-analyzers*)
+  (register-ops-analyzers)
+  (register-control-analyzers)
+  (register-struct-analyzers)
+  (register-mma-analyzers)         ; Endeavor 132 — MMA fundamentals (src/mma.lisp)
+  ;; ##(...) device vector literal
+  (setf (gethash 'crisp-vec-literal *expression-analyzers*)
+        #'analyze-crisp-dvec-literal)
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    ;; Component accessors x~ / y~ / z~ / w~
+    (dolist (name '("X~" "Y~" "Z~" "W~"))
+      (let ((sym-cl (intern name cl-pkg))
+            (sym-cc (intern name cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) #'analyze-dvec-component-ref)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) #'analyze-dvec-component-ref))))
+    ;; 083 matrix helpers: transpose, col, row, transpose!
+    (dolist (entry `(("TRANSPOSE"  . ,#'analyze-transpose-expression)
+                     ("COL"        . ,#'analyze-col-expression)
+                     ("ROW"        . ,#'analyze-row-expression)
+                     ("TRANSPOSE!" . ,#'analyze-transpose-bang-expression)))
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg))
+            (fn     (cdr entry)))
+        (setf (gethash sym-cl *expression-analyzers*) fn)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) fn))))
+    ;; 087 GPU built-in functions
+    (dolist (entry '(("GET-GLOBAL-ID"          :get-global-id)
+                     ("GET-LOCAL-ID"            :get-local-id)
+                     ("GET-WORKGROUP-ID"        :get-workgroup-id)
+                     ("GET-NUM-GROUPS"          :get-num-groups)
+                     ("GET-LOCAL-WORK-SIZE"     :get-local-work-size)
+                     ("GET-GLOBAL-WORK-SIZE"    :get-global-work-size)
+                     ("GET-GLOBAL-OFFSET"       :get-global-offset)
+                     ("GET-GLOBAL-ID-ABS"       :get-global-id-abs)
+                     ("GET-WORK-DIM"            :get-work-dim)
+                     ("GET-LOCAL-LINEAR-ID"     :get-local-linear-id)
+                     ("GET-LOCAL-LINEAR-SIZE"   :get-local-linear-size)
+                     ("GET-GLOBAL-LINEAR-ID"    :get-global-linear-id)
+                     ("GET-GLOBAL-LINEAR-SIZE"  :get-global-linear-size)
+                     ("GET-TOTAL-THREADS"       :get-total-threads)
+                     ("GET-TOTAL-GROUPS"        :get-total-groups)
+                     ("SYNC-WORKGROUP"          :sync-workgroup)
+                     ("SYNC-CLUSTER"            :sync-cluster)
+                     ("SYNC-WARP"               :sync-warp)
+                     ("MEM-FENCE"               :mem-fence)))
+      (let* ((name-str (first entry))
+             (kw       (second entry))
+             (fn       (let ((kw0 kw) (ns0 name-str))
+                         (lambda (expr env context location)
+                           (%analyze-gpu-builtin kw0 ns0 expr env context location)))))
+        (let ((sym-cl (intern name-str cl-pkg))
+              (sym-cc (intern name-str cc-pkg)))
+          (setf (gethash sym-cl *expression-analyzers*) fn)
+          (unless (eq sym-cl sym-cc)
+            (setf (gethash sym-cc *expression-analyzers*) fn)))))
+    ;; IGC SROA-aliasing workaround (endeavor 103 phase B): %volatile-read
+    (setf (gethash '%volatile-read *expression-analyzers*)
+          #'analyze-%volatile-read-expression)))
+
+;; ---------------------------------
+;; The Brain (Semantic Analyzer)
+;; ---------------------------------
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Multi-Pass Orchestration
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; src/analysis/control.lisp
+(defun %warp-spec-check-sync (builtin-kw name-str location)
+  "Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective
+   (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped
+   ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, defer to the normal
+   thread-divergent check."
+  (if *in-warp-spec-block*
+      (when (member builtin-kw '(:sync-workgroup :sync-cluster))
+        (error 'crisp-compiler-error
+          :message (format nil "~a cannot appear inside a with-warp-specialization role block — it is a COLLECTIVE and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering." name-str)
+          :source-location location))
+      (%tlc-check-not-divergent name-str location)))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
+  "Generates LLVM IR for a GPU built-in function call.
+   Endeavor 115 Phase 2: full PTX dispatch for all builtins."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let* ((bname (semantic-gpu-builtin-builtin-name node))
+         (dim   (semantic-gpu-builtin-dimension node)))
+    (log:info "Generating GPU builtin IR: ~a dim=~a backend=~a" bname dim *target-backend*)
+    (labels
+        ((vec3-or-scalar (spirv-name)
+           (let ((vec (%get-builtin-vec3 builder module spirv-name)))
+             (if dim
+                 (values (%extract-vec3-i64 builder vec dim
+                                            (format nil "~a_~a" (string-downcase spirv-name) dim))
+                         nil)
+                 (values vec nil)))))
+      (case bname
+        ;; --- Primitive 3D/scalar vector builtins ---
+        (:get-global-id       (vec3-or-scalar "GlobalInvocationId"))
+        (:get-local-id        (vec3-or-scalar "LocalInvocationId"))
+        (:get-workgroup-id    (vec3-or-scalar "WorkgroupId"))
+        (:get-num-groups      (vec3-or-scalar "NumWorkgroups"))
+        (:get-local-work-size (vec3-or-scalar "WorkgroupSize"))
+        (:get-global-work-size (vec3-or-scalar "GlobalSize"))
+        (:get-global-offset   (vec3-or-scalar "GlobalOffset"))
+        ;; --- Synthesized: GlobalInvocationId + GlobalOffset ---
+        (:get-global-id-abs
+         (if (eq *target-backend* :ptx)
+             ;; PTX has no GlobalOffset — same as get-global-id
+             (vec3-or-scalar "GlobalInvocationId")
+             (let* ((gid  (%call-spirv-vec3-builtin builder module "GlobalInvocationId"))
+                    (goff (%call-spirv-vec3-builtin builder module "GlobalOffset")))
+               (if dim
+                   (let* ((gid-n  (%extract-vec3-i64 builder gid  dim "gid_n"))
+                          (goff-n (%extract-vec3-i64 builder goff dim "goff_n")))
+                     (values (crisp.llvm-bindings::llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
+                   (values (crisp.llvm-bindings::llvm-build-add builder gid goff "gid_abs") nil)))))
+        ;; --- WorkDim (hidden kernel parameter, uint) ---
+        (:get-work-dim
+         (values (%call-spirv-uint-builtin builder module "WorkDim") nil))
+        ;; --- Synthesized scalar builtins ---
+        (:get-local-linear-id
+         (values (%gen-local-linear-id builder module) nil))
+        (:get-local-linear-size
+         (values (%gen-product-of-vec3 builder module "WorkgroupSize" "local_linear_size") nil))
+        (:get-global-linear-id
+         (values (%gen-global-linear-id builder module) nil))
+        ((:get-global-linear-size :get-total-threads)
+         (values (%gen-product-of-vec3 builder module "GlobalSize" "total_threads") nil))
+        (:get-total-groups
+         (values (%gen-product-of-vec3 builder module "NumWorkgroups" "total_groups") nil))
+        ;; --- 110: warp helpers ---
+        (:warp-id
+         (if (eq *target-backend* :ptx)
+             ;; Endeavor 139: synthesize local-linear-id/32 (stable), NOT %warpid (volatile).
+             (values (%ptx-synthesize-warp-id builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil)))
+        (:warp-lane
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-read-warp-sreg builder module "laneid") nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupLocalInvocationId") nil)))
+        (:warp-count
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-synthesize-warp-count builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
+        ;; --- Barriers (void) ---
+        ;; Endeavor 152: a cluster-wide rendezvous.  On PTX this is exactly the fence Crisp
+        ;; already emits for cluster entry/exit (%gen-nvvm-cluster-barrier), so the lowering is
+        ;; one that has run on hardware in every clustered kernel, not a new one.
+        ;;
+        ;; EVERYWHERE ELSE IT DEGRADES TO sync-workgroup, and that degrade is EXACT rather than
+        ;; approximate: a cluster of one workgroup IS a workgroup, and NVIDIA's own
+        ;; cluster_group::sync() is barrier_arrive + barrier_wait with no __syncthreads(), so a
+        ;; cluster barrier already covers intra-workgroup convergence.  Verified in Phase 0.
+        (:sync-cluster
+         (if (and (eq *target-backend* :ptx)
+                  (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+             (%gen-nvvm-cluster-barrier builder)
+             (if (eq *target-backend* :ptx)
+                 (%ptx-barrier builder module)
+                 (%gen-spirv-control-barrier builder module))))
+        (:sync-workgroup
+         (if (eq *target-backend* :ptx)
+             (%ptx-barrier builder module)
+             (%gen-spirv-control-barrier builder module)))
+        (:sync-warp
+         (if (eq *target-backend* :ptx)
+             (%ptx-syncwarp builder module)
+             (%gen-spirv-warp-barrier builder module)))
+        (:mem-fence
+         (if (eq *target-backend* :ptx)
+             (%ptx-membar-cta builder module)
+             (%gen-spirv-memory-barrier builder module)))
+        (t (error "Unknown GPU builtin ~a" builtin-name))))))

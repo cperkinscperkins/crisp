@@ -1,0 +1,29 @@
+;; Endeavor 152 rung 30 — `(sync-cluster)`: a cluster-wide rendezvous.
+;;
+;; `sync-workgroup` synchronises the threads of ONE workgroup.  `sync-cluster` synchronises every
+;; thread of every workgroup in the cluster, which is what makes DSMEM usable by hand: without it
+;; there is no way to know a peer has finished writing the shared memory you are about to read.
+;;
+;; WHY THE ASSERTION IS ON THE INSTRUCTION.  A `sync-cluster` that lowered to `bar.sync` would
+;; compile, run, and produce entirely plausible numbers -- it would simply fail to synchronise the
+;; peers it was written to synchronise, and only at a scale and timing that makes it look like a
+;; flake.  Reading the emitted instruction is the only way to tell the two apart.
+;;
+;; NEW VALIDATOR REQUIRED: validate-ptx-sync-cluster
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-sync-cluster
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "cluster-size is a DISPATCH declaration and does not propagate into
+;; a backward kernel -- endeavour 146: a schedule is not mathematics."
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel sync_cluster_basic (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (2 4))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))
+  (tile-stride C (2 4) (grid-y grid-x)
+    (sync-cluster)
+    (set! (~ C grid-y grid-x) (~ A grid-y grid-x))))

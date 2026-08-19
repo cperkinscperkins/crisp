@@ -909,3 +909,37 @@
              "FAIL: ~a PADS the grid, but this kernel uses its cluster's reach.  Padded blocks are cluster members that a multicast addresses and a cluster barrier waits on, and they exit immediately -- this is BUG 049 and it manifests as `unspecified launch failure`.~%"
              (file-namestring cu))
            (return nil)))))))
+
+;;; Endeavor 152 — (sync-cluster)
+(defun validate-ptx-sync-cluster (file ptx-string)
+  "On a Hopper target `(sync-cluster)` must lower to the cluster rendezvous, NOT a workgroup one.
+
+   The distinction matters and is invisible in output: a `bar.sync` synchronises the threads of
+   ONE workgroup, so a kernel that meant to rendezvous its whole cluster would run, produce
+   plausible numbers, and simply not synchronise the peers it was written to synchronise."
+  (declare (ignore file))
+  (let ((cluster (search "barrier.cluster" ptx-string)))
+    (if cluster
+        (progn (format t "  [sync-cluster] emits barrier.cluster on sm_90.~%") t)
+        (progn (format *error-output*
+                 "FAIL: no `barrier.cluster` in the emitted PTX -- (sync-cluster) did not lower to a cluster rendezvous.~%")
+               nil))))
+
+(defun validate-ptx-sync-cluster-degrade (file ptx-string)
+  "On a target with no clusters, `(sync-cluster)` must DEGRADE to a workgroup barrier -- and must
+   not leave a `barrier.cluster` instruction behind in a module whose arch cannot execute one.
+
+   The degrade is exact rather than approximate: a cluster of one workgroup IS a workgroup, and
+   NVIDIA's cluster_group::sync() carries no separate __syncthreads(), so a cluster barrier
+   already covers intra-workgroup convergence."
+  (declare (ignore file))
+  (let ((cluster (search "barrier.cluster" ptx-string))
+        (bar     (search "bar.sync" ptx-string)))
+    (cond
+      (cluster (format *error-output*
+                 "FAIL: `barrier.cluster` emitted for a pre-Hopper target, which cannot execute it.~%")
+               nil)
+      ((null bar) (format *error-output*
+                    "FAIL: (sync-cluster) degraded to NOTHING -- expected a workgroup barrier (bar.sync).~%")
+                  nil)
+      (t (format t "  [sync-cluster] degrades to bar.sync, no cluster instruction left behind.~%") t))))

@@ -372,7 +372,7 @@ measuring it is a one-keyword change with everything else held fixed.
 If targeting modern NVidia architectures and hoping to exploit clusters and DSMEM you will want
 your kernel to declare this.
 
-### cluster-size 📝
+### cluster-size ✅
 
 ```
 (cluster-size &key set-to msg)
@@ -745,7 +745,7 @@ Initiates a bulk memory transfer from the `src` tensor to the `dest` tensor (typ
 * **`:barrier`:** Links this memory transfer to a previously created `async-barrier`. The hardware DMA engine will automatically signal this barrier when the bytes physically arrive in the destination memory space.
 * **`:multicast`:** A boolean asserting that this tile is identical across one axis of the workgroup cluster and should be fetched once for all of them. Omitting it gives an ordinary per-workgroup load. See below.
 
-#### `:multicast` 📝
+#### `:multicast` ✅
 
 `(load-tile src dest (... grid-y grid-x) &key transpose identity barrier multicast)`
 
@@ -899,16 +899,24 @@ Because b1 and b2 have separate, dedicated signal flags in memory, b1 can safely
 (sync-wait sync-handle) => nil
 ```
 
-#### sync-cluster
+#### sync-cluster ✅
 
 ```
 (sync-cluster)          ; arrive + wait, ordered.  The safe default.
 
 ;;  - OR -
 
-(sync-cluster :arrive)  ; non-blocking: "I'm here"
-(sync-cluster :wait)    ; block until all CTAs have arrived
+(sync-cluster :arrive)  ; non-blocking: "I'm here"        📝 NOT IMPLEMENTED
+(sync-cluster :wait)    ; block until all CTAs have arrived  📝 NOT IMPLEMENTED
 ```
+
+> **The split form is a design sketch, not shipped.**  `(sync-cluster)` — the fused, ordered
+> default — is implemented.  The `:arrive` / `:wait` split is not, and the reason is the list of
+> restrictions below rather than the lowering, which would be trivial (the two halves of the same
+> fence).  Honouring those restrictions means four static analyses — unpaired or nested `:arrive`,
+> divergent placement, peer access inside the window, and returning before the `:wait` — and a
+> cluster rendezvous is subtle enough to hang a GPU, so shipping the split form without its guards
+> would be worse than not shipping it.  It will be built when a kernel needs it.
 
 `sync-cluster` makes every thread in the workgroup cluster wait until they have all arrived at the same point.
 
