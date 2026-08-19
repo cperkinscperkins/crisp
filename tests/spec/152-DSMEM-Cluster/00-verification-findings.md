@@ -1295,3 +1295,71 @@ COLUMN, both single-axis).  Anything else keeps the original static leader, whic
 The prediction is specific and falsifiable: if the tax was pipeline serialisation, chap4 should
 move from ~0.93x toward 1.0x at N=1024/4096 where the cluster itself is cheap; the N=2048
 cluster-of-four cliff (0.58x) should NOT move, because that is co-residency, not issue.
+
+## STEP 11 MEASURED AND REVERTED — the serialisation hypothesis is FALSIFIED (H100 NVL)
+
+The prediction was written down before the run and was specific: if the multicast tax were
+single-issuer pipeline serialisation, rotating the issuing duty should move chap4 from ~0.93x
+toward 1.0x where the cluster itself is cheap, while leaving the N=2048 cluster-of-four cliff
+(co-residency, not issue) untouched.
+
+    N       clu2 +mc  before -> after     clu4 +mc  before -> after
+    1024      0.91x   ->   0.92x            0.93x   ->   0.93x
+    2048      0.92x   ->   0.88x            0.54x   ->   0.53x
+    4096      0.94x   ->   0.91x            0.80x   ->   0.79x
+
+The no-multicast CONTROLS reproduced within 1-2% across the two sessions (0.97/0.98/1.01 ->
+0.97/0.97/0.99), which establishes the noise floor and makes the comparison fair.  Against that
+floor multicast is unchanged at 1024 and slightly WORSE at 2048 and 4096 -- 4 and 3 points.
+
+So rotation costs (the leader predicate stops being loop-invariant, adding a bfe and a setp per
+stage) and recovers nothing.  The hypothesis that the ~7% was a static single issuer starving the
+group's pipeline is WRONG.
+
+REVERTED at the call site.  The rotation capability is kept in %gen-multicast-leader-pred and is
+selected by passing a rotation source; omitting it gives the static leader, which is what
+measurement says to use.  It is retained rather than deleted because the hypothesis may still be
+right for a kernel whose producer really is the bottleneck -- chapter 3's is not -- and rebuilding
+it would be wasted work.  Verified after the revert: the leader test is `setp.eq %p14, %r8, 0`
+again and %cluster_ctaid is read once at ~1712, i.e. hoisted.
+
+### What this closes
+
+Two candidate explanations for the multicast tax have now been tested and rejected:
+
+  * occupancy / resource pressure -- rejected by static register data (multicast costs ONE
+    register, 165 -> 166, and does not change CTAs/SM)
+  * single-issuer pipeline serialisation -- rejected here
+
+What remains unexplained is a flat ~6-9% that does not scale with sharing group size, is not
+instruction count (+20 on 1832), is not resources, and is not issue distribution.  The most likely
+remaining candidate is the multicast instruction's own latency/fan-out cost inside the TMA engine,
+which is not something Crisp can schedule around.
+
+ON THIS KERNEL, MULTICAST IS DONE.  Chapter 3 hides its operand fetch behind compute, so there is
+no bandwidth on the critical path to reclaim, and every mechanism for reclaiming it costs more
+than it returns.  The mechanism remains correct, spec'd and metal-verified for a kernel that IS
+fetch-bound; FlashAttention, where K/V tiles are shared across many query blocks at far lower
+arithmetic intensity, is the honest next place to look.
+
+### Revert confirmed on the same pod, and stated honestly
+
+Rebuilt with the static leader and re-measured in the SAME session, Crisp targets only:
+
+    c4_21 (clu2, mc B)   N=2048   rotating 218.7 -> static 212.4   -2.9%
+    c4_21                N=4096   rotating 240.8 -> static 251.1   +4.3%
+    chap4 (clu4, mc)     N=2048   rotating 128.1 -> static 129.7   +1.3%
+    chap4                N=4096   rotating 205.3 -> static 211.9   +3.2%
+
+Static is ahead on three of four points and behind on one, all within a few percent.  The honest
+reading is NOT "reverting won back 3%" -- it is that ROTATION AND STATIC ARE WITHIN NOISE OF EACH
+OTHER, with static slightly ahead on balance and considerably simpler (a loop-invariant predicate
+instead of a per-stage one).  That is enough to justify the revert; it is not enough to claim the
+revert is a speedup, and it must not be quoted as one.
+
+A METHOD NOTE, because it nearly went in the report as a 150% improvement: the first version of
+this comparison grouped results by (chapter, size) WITHOUT filtering on competitor, so chap4's
+CUBLAS_Optimal run was averaged in with its Crisp run and made the static build look like it had
+tripled.  This is the SECOND time in this endeavour that an unfiltered results query produced a
+spurious headline (the first mixed H100 PCIe rows into an H100 NVL table).  Any query over
+benchmarks/results must filter BOTH hardware and competitor.

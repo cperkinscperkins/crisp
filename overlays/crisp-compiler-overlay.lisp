@@ -4768,12 +4768,19 @@
            ;; peers receive, both depend on the group's shape -- see %multicast-axis-plan.
            (let* ((parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
                   ;; Leader predicate is built in the CURRENT block, before the branch.
-                  ;; Step 11: rotate the issuing duty across the group.  The mbarrier address
-                  ;; advances by 8 per ring slot, so it is a per-stage value already in hand --
-                  ;; no need to thread the slot index down from the front end.
-                  (is-mc-leader (%gen-multicast-leader-pred
-                                 builder module mc-plan
-                                 (llvm-build-ptr-to-int builder mbar-ptr i32-type "mc_rot_src")))
+                  ;; Step 11 REVERTED, and deliberately kept reachable.  Rotating the issuing
+                  ;; duty across the group was MEASURED on an H100 and did not recover the
+                  ;; multicast tax: clu2 +mc went 0.92x -> 0.88x at 2048 and 0.94x -> 0.91x at
+                  ;; 4096, while the no-multicast controls reproduced within 1-2%.  So rotation
+                  ;; costs (the predicate stops being loop-invariant) and buys nothing, which
+                  ;; falsifies the hypothesis that the tax was single-issuer serialisation.
+                  ;;
+                  ;; %gen-multicast-leader-pred still IMPLEMENTS rotation and is exercised by
+                  ;; passing a rotation source; omitting it selects the static leader, which is
+                  ;; what measurement says to use.  The capability is kept because the hypothesis
+                  ;; may yet be right for a DIFFERENT kernel -- one whose producer really is the
+                  ;; bottleneck -- and rebuilding it from scratch would be wasteful.
+                  (is-mc-leader (%gen-multicast-leader-pred builder module mc-plan))
                   (mc-bb     (llvm-append-basic-block parent "tma_mcast_issue"))
                   (mc-cont   (llvm-append-basic-block parent "tma_mcast_cont")))
              (log:info "TMA copy: multicast group axes ~a of cluster ~a (serves ~a workgroups, pattern ~x)"
