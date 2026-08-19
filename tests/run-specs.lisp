@@ -1328,7 +1328,7 @@
    (case (%vad-ensure-runner-loaded)
     (:unavailable
      (format t "SKIP (on-metal AD runner unavailable)~%")
-     t)
+     :skipped)
     (:ready
      (let* ((pinned-runtime (getf spec :runtime))
             (selected-runtime (cl-user::ad-select-runtime pinned-runtime))
@@ -1384,7 +1384,7 @@
              (format t "SKIP (VERIFY-AUTODIFF pinned to ~A; not available here)~%"
                      pinned-runtime)
              (format t "SKIP (no on-metal AD runtime available)~%"))
-         t)
+         :skipped)
         (t
          (let* ((cl-user::*ad-runtime* selected-runtime)
                 ;; :cuda consumes PTX; :l0 / :opencl consume SPIR-V.
