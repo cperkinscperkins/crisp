@@ -866,7 +866,8 @@ AG TASKS
 [ ] benchmark A|D ??
 [x] add full hardware profile to samples on readme
 [x] some sort of CTS?
-
+[ ] add more adversarial tests
+[ ] forward-only is still in a bunch of the tests.  remove. 
 
 
 

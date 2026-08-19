@@ -30,10 +30,6 @@
 ;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-multicast-2d
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "cluster-size is a DISPATCH declaration and does not propagate
-;; into a backward kernel, so the _GRAD twin has the multicast loads but no cluster to serve
-;; them.  Endeavor 146's rule: a schedule is not mathematics.  The forward's PTX is what this
-;; rung asserts."
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 

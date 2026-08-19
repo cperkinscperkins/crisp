@@ -25,8 +25,6 @@
 ;; HOIST-ARCH: sm_90
 ;; TEST-HOIST[CUDA]: validate-cuda-cluster-no-pad
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "cluster-size is a DISPATCH declaration and does not propagate into
-;; a backward kernel -- endeavour 146: a schedule is not mathematics."
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 
