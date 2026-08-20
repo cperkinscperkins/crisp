@@ -1,9 +1,158 @@
 # Crisp Codebase Reference
 
-Generated on 2026-08-15T00:01:11.110196Z
+Generated on 2026-08-20T05:44:24.373068Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
+### DEFUN `%MMTS-ACCUMULATOR-MAP-TARGET`
+- **Args**: `(REDUCTION-BODY C-TILE)`
+
+  > The target symbol of a map-elements! applied to the ACCUMULATOR anywhere in REDUCTION-BODY,  >    or NIL.  The accumulator is either C-TILE itself or the accum binding of a via-tile in the  >    body.  Walks structurally; deliberately does not use an escape construct, because `return`  >    in :crisp.compiler is Crisp's RETURN macro, not cl:return.
+
+
+---
+### DEFUN `%MAP-ELEMENTS-FRAGMENT-FIELDS`
+- **Args**: `(FRAG-TYPE)`
+
+  > The number of scalar register fields in a PTX accumulator record type, or NIL if FRAG-TYPE is  >    not one.  Covers the tf32 m16n8k8 fragments (acc/A 16x8 -> 4 regs, B 8x8 -> 2) and Hopper  >    wgmma accumulators (N/2 f32 registers per thread across the 128-thread warpgroup), which are  >    minted as flat f32 records by %ensure-wgmma-acc-type and so fit the fieldwise lowering as-is.
+
+
+---
+### DEFUN `ANALYZE-MAP-ELEMENTS`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.  >   >    Endeavor 150.  TWO LOWERINGS, because the vendors represent a fragment differently:  >   >      PTX   a record of scalar fields, count known at compile time -> UNROLLED fieldwise onto  >            %construct-struct / %extract-struct-member, which already exist.  >      SPV   an opaque cooperative matrix whose per-invocation component count is a RUNTIME  >            value (OpCooperativeMatrixLengthKHR) -> a semantic-coop-op :map node that codegen  >            turns into a LOOP, rewriting each component through the variable's own alloca via  >            OpAccessChain.  >   >    Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register  >    or component holds, which is why this is portable and why layout-aware epilogues are out of  >    scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which  >    expands it to one of these per fragment.
+
+
+---
+### DEFUN `ANALYZE-MAP-ELEMENTS-VJP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (%map-elements-vjp! ADJ PRIMAL #'F_GRAD [IDX]) -> adj[i] <- F_GRAD(primal[i], adj[i]).  >   >    IDX is bookkeeping for the tile explosion (see %emit-map-vjp-explode) and is inert here: by  >    the time this analyzer runs, both operands are already single fragments.
+
+
+---
+### DEFUN `%PARSE-CLUSTER-SIZE-DECL`
+- **Args**: `(DECL KERNEL-NAME DECLARATIONS)`
+
+  > Validate a (cluster-size ...) declaration and return its dims as a 3-list (x y z),  >    padding absent axes with 1.  Returns NIL when DECL is NIL.  >   >    Refuses, with a message that says WHY rather than merely that a key is unknown:  >      * :derive-from  -- cluster-size is consumed at CODEGEN, so its shape cannot come  >                         from a host-side runtime value.  Every sibling declaration in  >                         the enqueue family is advisory; this one is not.  >      * a missing or non-integer :set-to  >      * rank > 3, or rank exceeding an explicit :tile-shape  >      * extent > 8 (the portable maximum; 16 needs a non-portable opt-in the hoist  >                    does not yet emit)
+
+
+---
+### DEFUN `%EFFECTIVE-CLUSTER-DIMS`
+- **Args**: `(DISPATCH DECLARED)`
+
+  > The cluster dims codegen ACTUALLY built for this kernel, as recorded by  >    %apply-cluster-dims-attribute.  >   >    Falls back to (1 1 1) when no codegen pass ever stamped one -- which is the honest  >    answer, since a kernel whose PTX carries no cluster directive forms clusters of one.  >    DECLARED is accepted for symmetry with the caller but deliberately NOT used as a  >    fallback: reporting the declaration as though it were the outcome is the exact  >    confusion this field exists to prevent.
+
+
+---
+### DEFVAR `*TS-GRID-BINDINGS*`
+
+  > The enclosing tile-stride's loop variables, IN AXIS ORDER, during analysis of its body.  >    Endeavor 152: the multicast eligibility test needs to know which symbol is bound to a  >    clustered axis.  Nothing else tracked this.
+
+
+---
+### DEFVAR `*CURRENT-KERNEL-CLUSTER-DIMS*`
+
+  > The normalised (x y z) cluster dims of the kernel currently being analysed, or NIL.  >    Bound by internal-def-function so a load-tile deep in the body can consult it without  >    having to rediscover which kernel it is inside.
+
+
+---
+### DEFUN `%FORM-MENTIONS-SYMBOL-P`
+- **Args**: `(FORM SYM)`
+
+  > T if SYM appears anywhere in FORM.  Symbol identity, not name equality -- a coordinate  >    built from a DIFFERENT variable that happens to share a name is a different variable.
+
+
+---
+### DEFUN `%MULTICAST-REQUESTED-P`
+- **Args**: `(KEY-ARGS)`
+
+  > T if KEY-ARGS asks for a multicast.  >   >    Crisp has no boolean literal yet -- `true` and `false` are still pending -- so the value  >    arrives as a bare symbol and a naive non-NIL test would read `:multicast false` as a  >    REQUEST.  Treat NIL and anything named FALSE as 'no'.  When the real literals land this  >    predicate keeps working unchanged.
+
+
+---
+### DEFVAR `*MULTICAST-CLUSTER-DIMS*`
+
+  > Bound by analyze-load-tile-expression around its delegation when the load carried a  >    validated :multicast, so the TMA analyzer can tag the node it builds.
+
+
+---
+### DEFUN `%MULTICAST-1D-EXTENT`
+- **Args**: `(DIMS)`
+
+  > The extent of a 1-D cluster, or NIL if DIMS clusters more than one axis.  >    v1 supports only 1-D: the mask is then cluster-wide constant.
+
+
+---
+### DEFUN `%MBARRIER-MODE-P`
+- **Args**: `(MODE)`
+
+  > T if MODE denotes a real mbarrier object.  :linear is the backend's group-async-copy handle  >    (a phantom on PTX); :block and :cluster are both genuine mbarriers and differ only in reach.
+
+
+---
+### DEFVAR `*CLUSTER-BARRIER-BINDINGS*`
+
+  > Barrier binding SYMBOL (or ring symbol) -> T when declared :mode :cluster.  >    Parallel to *async-barrier-modes*, which records the OBJECT kind; this records the REACH.
+
+
+---
+### DEFUN `%CLUSTER-BARRIER-P`
+- **Args**: `(BARRIER-FORM)`
+
+  > T if BARRIER-FORM names a barrier declared :mode :cluster.  >    Mirrors async-barrier-mode-of: accepts the barrier SYMBOL or a (ring-get RING i) form,  >    in which case the RING's declaration governs (every slot shares it).
+
+
+---
+### DEFVAR `*CURRENT-KERNEL-IS-BACKWARD*`
+
+  > T while analysing an AD-generated backward kernel (its name ends _GRAD).  >    Lets a check tell 'the user wrote this' from 'the differentiator generated this'.
+
+
+---
+### DEFUN `%CLUSTER-AXIS-STRIDES`
+- **Args**: `(DIMS)`
+
+  > Rank strides for a cluster shape.  PTX linearises %cluster_ctarank with x fastest, and  >    Crisp's cluster-size list is in that same order, so stride[0]=1, stride[1]=d0, ...
+
+
+---
+### DEFUN `%CLUSTER-AXIS-SREG`
+- **Args**: `(AXIS)`
+
+  > NVVM special-register name for a cluster axis index.
+
+
+---
+### DEFUN `%MULTICAST-MASK-PATTERN`
+- **Args**: `(DIMS GROUP-AXES)`
+
+  > The ctaMask for a multicast group anchored at the cluster origin, as a compile-time integer.  >   >    Every combination of coordinates on the GROUP axes contributes one bit, at that  >    combination's linearised rank.  Shifting this pattern by a workgroup's position on the  >    NON-group axes slides it onto that workgroup's own slice of the cluster.
+
+
+---
+### DEFUN `%MULTICAST-GROUP-EXTENT`
+- **Args**: `(DIMS GROUP-AXES)`
+
+  > How many workgroups one multicast serves: the product of the group axes' extents.
+
+
+---
+### DEFUN `%MULTICAST-AXIS-PLAN`
+- **Args**: `(DIMS GRID-LIST LOCATION &KEY (ERRORP T))`
+
+  > Classify each clustered axis as INVARIANT (the tile is identical across it, so the axis  >    joins the multicast group) or VARYING (the workgroups want different tiles).  >   >    Returns a plist (:dims :group-axes :extent :pattern), or NIL when ERRORP is false and the  >    request cannot be honoured.  This is the SINGLE place the group is decided; the validator,  >    the analyzer and codegen all read its answer rather than each re-deriving it.
+
+
+---
+### DEFUN `%VALIDATE-MULTICAST-REQUEST`
+- **Args**: `(GRID-LIST LOCATION)`
+
+  > Refuse a `:multicast` that cannot be honoured, naming the reason.  >   >    `:multicast` is an ASSERTION, not a directive: the user says 'I expect this load to  >    multicast' and the compiler either does it or refuses.  A load that quietly declined would  >    be a silent bandwidth regression no correctness test can see -- which is why the key is  >    explicit rather than inferred.  >   >    Endeavor 152 step 10a: the axis classification now lives in %multicast-axis-plan, which  >    accepts an N-D cluster provided the tile is invariant along at least one clustered axis.
+
+
+---
 ### DEFUN `ENSURE-BRANCH-COMPATIBILITY`
 - **Args**: `(THEN-NODE ELSE-NODE LOCATION)`
 
@@ -122,10 +271,17 @@ Generated on 2026-08-15T00:01:11.110196Z
 
 
 ---
-### DEFUN `%ANALYZE-NVVM-TMA-LOAD-TILE-AT`
+### DEFUN `%ANALYZE-NVVM-TMA-LOAD-TILE-AT-BASE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Endeavor 137 (Chapter 1.5, Phase 2) — analyze (load-tile-at SRC TILE (ORIGIN...) :barrier BAR)  >    for a NVIDIA :block barrier into a semantic-nvvm-tma-tile-copy.  Codegen emits one bulk  >    cp.async.bulk.tensor copy issued by an elected leader, tracked by BAR's mbarrier.  We build  >    the dest/source as aref-at-base forms so codegen can reuse the aref element-address machinery  >    for the SLM tile base (addrspace 3) and the source tensor base (addrspace 1, the STAND-IN  >    tensormap pointer).  The ORIGIN coords become the TMA {x,y} tile-box operands (element units).
+
+
+---
+### DEFUN `%ANALYZE-NVVM-TMA-LOAD-TILE-AT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 152 wrapper: builds the copy node as before, then tags it as a multicast when the  >    enclosing load-tile validated one.  Wrapped rather than copied -- this adds two lines to a  >    45-line analyzer.
 
 
 ---
@@ -524,7 +680,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `ANALYZE-TILE-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Validates tensor-arity-vs-bindings and tile-arity-vs-bindings, then  >    delegates codegen via %expand-tile-stride-form.
+  > Analyzes (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Validates tensor-arity-vs-bindings and tile-arity-vs-bindings, then  >    delegates codegen via %expand-tile-stride-form.  >    Endeavor 152: publishes BINDINGS as *ts-grid-bindings* so a load-tile in the body can  >    test whether its coordinates vary along a clustered axis.
 
 
 ---
@@ -628,6 +784,9 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `ANALYZE-LOAD-TILE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
+  > Endeavor 152: validates a `:multicast` assertion against the kernel's cluster shape and the  >    enclosing tile-stride's axis bindings, then delegates to load-tile-at.  >   >    Step 10a: what gets published to the TMA analyzer is now the multicast AXIS PLAN, not the  >    raw cluster dims -- codegen needs to know WHICH axes form the group, since in an N-D cluster  >    the group is a slice rather than the whole cluster.
+
+
 ---
 ### DEFUN `ANALYZE-STORE-TILE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
@@ -650,14 +809,21 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `%PARSE-ASYNC-BARRIER-KEYS`
 - **Args**: `(EXPR LOCATION)`
 
-  > Parse (make-async-barrier &key mode) -> barrier-mode (Endeavor 137).  >    Omitted :mode is arch-automatic (resolved elsewhere; defaults to :linear here).  :type was  >    removed with def-topology.  Validates the mode and gates :block per backend/arch.
+  > Parse (make-async-barrier &key mode) -> barrier-mode.  >   >    Step 10c: :mode :cluster accepts an N-D cluster; arrivals are cluster-wide (see below).  >   >    Endeavor 152: `:cluster` is accepted, gated, and then RETURNED AS :block — a cluster barrier  >    is a workgroup-local mbarrier that peers may additionally arrive on, so every existing  >    consumer of the mode should treat it as :block.  The reach is recorded separately, against  >    this barrier's let-binding name, in *cluster-barrier-bindings*.
+
+
+---
+### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-EXPRESSION-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 136/137: (make-async-barrier &key mode).  :linear is a PHANTOM barrier on PTX —  >    commit_group/wait_group need no object, so we codegen a constant 0; on SPV it owns a  >    target("spirv.Event") slot to chain OpGroupAsyncCopy events.  The node carries :mode so  >    load-tile/await pick the lowering (Endeavor 137 mode-threading).
 
 
 ---
 ### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavor 136/137: (make-async-barrier &key mode).  :linear is a PHANTOM barrier on PTX —  >    commit_group/wait_group need no object, so we codegen a constant 0; on SPV it owns a  >    target("spirv.Event") slot to chain OpGroupAsyncCopy events.  The node carries :mode so  >    load-tile/await pick the lowering (Endeavor 137 mode-threading).
+  > Endeavor 152 wrapper: builds the barrier node as before, then records the cluster group  >    extent against it when the binding was declared :mode :cluster, so codegen can scale the  >    mbarrier init count.
 
 
 ---
@@ -668,10 +834,17 @@ Generated on 2026-08-15T00:01:11.110196Z
 
 
 ---
-### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-RING-EXPRESSION`
+### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-RING-EXPRESSION-BASE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Endeavor 138 (Chapter 2): (make-async-barrier-ring &key ring-count mode arrivals) -> a ring  >    of RING-COUNT async barriers for pipelining.  >   >    Unification: a plain (make-async-barrier) is simply a RING OF 1.  Both build the same  >    semantic-make-async-barrier node; this one just sets :ring-count N.  Codegen allocates  >    [N x i64] of SLM mbarriers and yields the BASE address as an i64 — so (ring-get r i) is  >    nothing but (base + i*8), which load-tile/await already inttoptr back to an mbarrier ptr.  >    That means the whole 137 barrier path is reused verbatim for every slot.  >   >    :ARRIVALS is how many transfers EACH SLOT tracks per pipeline stage.  It is REQUIRED for every  >    barrier ring (both modes) — the mbarrier arrival count on :block, the cp.async wait_group depth  >    factor on :linear — see %check-barrier-ring-arrivals for why it is explicit not scan-inferred.
+
+
+---
+### DEFUN `ANALYZE-MAKE-ASYNC-BARRIER-RING-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 152 wrapper — as above, for a barrier RING.
 
 
 ---
@@ -699,7 +872,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `ANALYZE-SIGNAL-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive on an  >    empty ring slot, releasing it to the producer.  PTX/:block only (mbarrier); a no-op on other  >    backends (the generic compile-check pass has no mbarriers).
+  > Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive.  >    Endeavor 152: when the barrier was declared :mode :cluster the arrive must reach PEER  >    workgroups, so tag the node with the group extent for codegen.
 
 
 ---
@@ -791,7 +964,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 - **Args**: `(C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY
               LOCATION &OPTIONAL (RESET-VALUE 0.0))`
 
-  > The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO  >    auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit  >    store + any fusion.  Warns if the C-tile is never stored.  >   >    BUG 036: emits a per-OUTPUT-TILE reset of the accumulator to RESET-VALUE before the K-loop.  >    Without it a workgroup that strides onto a second tile carries the first tile's partial sums.  >    A scratch C-tile's fill is workgroup-collective, so it is followed by a sync-workgroup; a  >    register tile's is per-lane and needs none.
+  > The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO  >    auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit  >    store + any fusion.  Warns if the C-tile is never stored.  >   >    BUG 036: emits a per-OUTPUT-TILE reset of the accumulator to RESET-VALUE before the K-loop.  >   >    Endeavor 150: REFUSES a map-elements! on the accumulator inside the reduction body, where  >    the accumulator is a partial sum.
 
 
 ---
@@ -1302,7 +1475,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params*, *boundary-array-params*, and  >    *in-dispatch-context* to enforce kernel-boundary rules.  >    Extended to capture global-size/local-size/num-groups dispatch declarations.  >    Extended (091) to handle (grid-function) declaration: sets dispatch context,  >    validates void return type.  >    Note: ANF pre-processing removed from forward pass — backward pass applies  >    its own anf-transform in %generate-backward-function-ast.
+  > Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the  >    body analysis.  Otherwise identical to the Phase 2 definition.
 
 
 ---
@@ -2077,6 +2250,13 @@ Generated on 2026-08-15T00:01:11.110196Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\autodiff.lisp`
 
+### DEFUN `%VJP-VIA-TILE-BODY-MAP`
+- **Args**: `(FORM)`
+
+  > The (map-elements! ACC #'FN) call in a via-tile BODY, or NIL.  >   >    Returns (values ACC-SYM FN-FORM).  Looks only after the accum binding, which is the only  >    place a fused epilogue can legally be — it does not search the whole form.
+
+
+---
 ### DEFUN `%EMIT-SUB-FN-BACKWARD`
 - **Args**: `(FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN
               &OPTIONAL (SYM-PREFIX BW))`
@@ -3265,7 +3445,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `%VJP-MMA-ACCUMULATE-VIA-TILE`
 - **Args**: `(FORM CTX)`
 
-  > VJP for (mma-accumulate-via-tile (M N K) C-TILE A B ...).  >   >    Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk  >    never learns the MMA path's shape requirements, so they cannot leak back out as a  >    language-level contract the way the 'K-tile contract' did.  >   >      MMA fast path  -- when both backward accumulators decompose into whole fragments.  >      Scalar path    -- otherwise.  Correct at any shape, slower.  >   >    Endeavor 138: operands may be RING VIEWS.  Shape and source questions resolve through  >    %ad-tile-base to the ring (every slot has the ring's element shape); the ADJOINT keeps the  >    view, because slot i's adjoint is slot i of the adjoint ring.  A ring operand also forces the  >    SCALAR lowering: the MMA path stages a transposed operand out of the tile it was given, and  >    for a pipelined ring that tile holds a DIFFERENT stage than the one being differentiated.  >    The scalar lowering indexes the original global operands directly, so it is immune — and  >    correct-but-slow was always the default anyway.  >   >    DECLINES (NIL) when the tile shapes are not compile-time known, or when a ring's load sites  >    do not agree on one global source, which the walk then reports through its existing error.
+  > VJP for (mma-accumulate-via-tile (M N K) C-TILE A B [(acc) BODY...]).  >   >    Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk  >    never learns the MMA path shape requirements, so they cannot leak back out as a  >    language-level contract.  >   >    Endeavor 150: if BODY fuses an activation onto the accum binding with map-elements!, the  >    chain rule needs dP = dC * f'(P).  A prefix re-stages the operands from their GLOBAL sources,  >    recomputes P into a fresh register tile, and scales the C adjoint through the function's  >    _GRAD twin before the existing backward runs.  The forward kernel is untouched.
 
 
 ---
@@ -3312,6 +3492,125 @@ Generated on 2026-08-15T00:01:11.110196Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
 
+### DEFUN `%COOP-LENGTH`
+- **Args**: `(BUILDER MODULE MAT-VAL ELEM-LLVM ROWS COLS USE)`
+
+  > Emit OpCooperativeMatrixLengthKHR(MAT-VAL) -> i32, the number of components THIS  >    invocation holds.  Runtime value by design (see the header).  >   >    The name carries a _use_rows_cols suffix for the same reason the Load/Store builtins do:  >    %coop-call reuses a declaration by NAME, so two different coop types under one name would  >    collide on the second call's signature.  The translator matches on the prefix — verified  >    by spike2 in put_temp_files_here/150-spv/, which emits the real instruction.
+
+
+---
+### DEFUN `%COOP-ACCESS-CHAIN`
+- **Args**: `(BUILDER MODULE MAT-PTR IDX-I64)`
+
+  > Emit OpAccessChain(MAT-PTR, IDX) -> ptr to component IDX of the cooperative matrix that  >    MAT-PTR points at.  Needs no name suffix: with opaque pointers the signature is  >    (ptr, i64) -> ptr for every coop type.
+
+
+---
+### DEFVAR `*CLUSTER-DEGRADE-WARNED*`
+
+  > Kernels we have already emitted the cluster-degrade diagnostic for, so a  >    multi-pass compile does not repeat it once per pass.
+
+
+---
+### DEFUN `%WARN-CLUSTER-DEGRADED`
+- **Args**: `(KERNEL-NAME DECLARED)`
+
+  > Endeavor 152 rung 05: a kernel declaring cluster-size on a target without cluster  >    support still computes the correct answer -- every multicast becomes an ordinary  >    per-workgroup load and the traffic reduction the declaration was written for is  >    simply gone, with nothing in the output to reveal it.  >   >    Unlike sync-cluster, whose degrade to sync-workgroup is semantically exact and free,  >    THIS degrade costs bandwidth.  So it is never silent.
+
+
+---
+### DEFUN `%RECORD-EFFECTIVE-CLUSTER-DIMS`
+- **Args**: `(KERNEL-NAME DIMS)`
+
+  > Write the effective cluster extent into KERNEL-NAME's dispatch plist.  >    Returns T if this is the first time (so the caller may warn once).
+
+
+---
+### DEFUN `%APPLY-CLUSTER-DIMS-ATTRIBUTE`
+- **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
+
+  > Endeavor 152: stamp the cluster dimensions on a PTX entry point, and record what  >    was actually built.  >   >    Emits the nvvm.cluster_dim function attribute, which LLVM 21 lowers to  >    .explicitcluster + .reqnctapercluster x, y, z on the .entry.  Baking the shape into  >    the PTX is what makes the host/kernel agreement DRIVER-ENFORCED rather than a  >    convention the hoisting code is trusted to honour.  >   >    Gated on CAPABILITY, not merely on the backend: clusters need sm_90+, so a default  >    (sm_80) PTX compile degrades to extent 1 and warns rather than emitting a directive  >    the target cannot honour.
+
+
+---
+### DEFVAR `*TMA-COPY-MULTICAST*`
+
+  > semantic-nvvm-tma-tile-copy node -> the cluster dims it should multicast across.  >    Mirrors *tma-copy-ws-leader* (Endeavor 140), which exists for the same reason:  >    the node struct cannot gain a slot from an overlay.
+
+
+---
+### DEFUN `%GEN-NVVM-CLUSTER-BARRIER`
+- **Args**: `(BUILDER)`
+
+  > Inline PTX: barrier.cluster.arrive; barrier.cluster.wait;  >   >    The non-`.relaxed` form, deliberately: it carries release/acquire ordering, which is what  >    publishes this workgroup's mbarrier initialisation to its peers.  The relaxed form would  >    rendezvous without ordering and reintroduce the race it exists to close.  >   >    Matches what NVIDIA's own cooperative_groups cluster_group::sync() emits (verified by  >    compiling it with nvcc -arch=sm_90a -ptx; see 00-verification-findings.md Q2).
+
+
+---
+### DEFUN `%MODULE-HAS-CLUSTER-P`
+
+  > T if any kernel in the module being compiled declares a cluster of extent > 1.  >    Gates the entry fence so a kernel without clusters emits byte-identical PTX.
+
+
+---
+### DEFVAR `*SIGNAL-CLUSTER-EXTENT*`
+
+  > semantic-signal node -> cluster group extent, when its barrier is :mode :cluster.  >    A side table because the struct cannot gain a slot from an overlay — the same pattern  >    Endeavor 140 used for *tma-copy-ws-leader*.  Keyed by node identity, so a stale entry is  >    unreachable from a fresh compile's nodes.
+
+
+---
+### DEFUN `%GEN-NVVM-MBARRIER-ARRIVE-CLUSTER`
+- **Args**: `(BUILDER PEER-ADDR-I32)`
+
+  > Inline PTX: mbarrier.arrive.shared::cluster.b64 _, [$0];  >    Arrives on a PEER workgroup's mbarrier.  The `.shared::cluster` scope is the whole point —  >    plain `.shared` (or the llvm.nvvm.mbarrier.arrive.shared intrinsic) arrives LOCALLY, which  >    would release a barrier nobody is waiting on.
+
+
+---
+### DEFVAR `*CLUSTER-BARRIER-NODES*`
+
+  > semantic-make-async-barrier node -> cluster group extent, for scaling the mbarrier init  >    count.  Side table because the struct cannot gain a slot from an overlay.
+
+
+---
+### DEFUN `%GEN-NVVM-MAPA-SHARED-CLUSTER`
+- **Args**: `(BUILDER ADDR-I32 RANK-I32)`
+
+  > Map a shared-memory address in THIS workgroup's view to the same offset in the workgroup with  >    the given cluster rank, returning a shared-window u32 suitable for  >    mbarrier.arrive.shared::cluster.  >   >    The conversion through GENERIC is required, not incidental: `mapa` operates on generic  >    addresses.  Handing it a raw shared-window offset silently yields an unmapped address, so the  >    subsequent arrive lands on the CALLER'S OWN barrier -- the exact bug this fix repairs, caught  >    on hardware as `Address 0x0 is not located in executing CTA`.
+
+
+---
+### DEFPARAMETER `*CRISP-DYNAMIC-SMEM-SYMBOL*`
+
+  > Name of the external addrspace(3) symbol standing for the start of the kernel's DYNAMIC  >    shared memory -- the LLVM spelling of CUDA's `extern __shared__`.  One per module.
+
+
+---
+### DEFUN `%PTX-DYNAMIC-SMEM-BASE`
+- **Args**: `(BUILDER MODULE)`
+
+  > i64 address of the EXECUTING CTA's dynamic shared-memory window.  >   >    Declares (once per module) an external addrspace(3) symbol and ptrtoints it.  Because the  >    symbol carries no initializer it stays a DECLARATION, which NVPTX emits as  >    `.extern .shared .align 128 .b8 __crisp_dynamic_smem[]` -- resolved by the hardware to the  >    executing CTA's own window, including the cluster rank bits.  Aligned to 128, which is what cp.async.bulk.tensor  >    requires of a shared destination; the tensors themselves are packed from it by  >    the hoister's layout.
+
+
+---
+### DEFUN `%GEN-MULTICAST-MASK-VALUE`
+- **Args**: `(BUILDER MODULE PLAN)`
+
+  > The i16 ctaMask for THIS workgroup's multicast group: PATTERN << (position on the  >    non-group axes).  When every clustered axis is in the group -- the 1-D case -- there are no  >    non-group axes, the shift vanishes and this folds back to the old compile-time constant.
+
+
+---
+### DEFUN `%MODULE-CLUSTER-EXTENT`
+
+  > How many workgroups a :mode :cluster barrier must expect arrivals from.  >   >    Endeavor 152 step 10c: this is now the FULL cluster size (the product of every axis), not  >    a 1-D extent.  That follows directly from the decision above -- if peers arrive cluster-wide  >    then the count must be cluster-wide too.  Getting these two out of step is precisely the  >    failure that hangs a GPU: a barrier initialised for fewer arrivals than it receives releases  >    early, one initialised for more never releases at all.  >   >    *kernel-dispatch-declarations* is cleared per module, so this is module-scoped.
+
+
+---
+### DEFUN `%GEN-MULTICAST-LEADER-PRED`
+- **Args**: `(BUILDER MODULE PLAN &OPTIONAL ROT-SRC)`
+
+  > True in exactly ONE workgroup per multicast group.  >   >    With ROT-SRC (an i32 that advances once per pipeline stage -- in practice the mbarrier  >    address) and a single-axis group, the issuing duty ROTATES: the CTA at position  >    `rot-src mod extent` along the group axis issues this stage.  Over a ring of stages every  >    member takes a turn, so no single CTA is a standing bottleneck.  >   >    Without ROT-SRC, or for a multi-axis group, falls back to the original static leader (position  >    0 on every group axis).  Both are correct; only the distribution of work differs.
+
+
+---
 ### DEFUN `GET-OR-CREATE-DI-TYPE`
 - **Args**: `(CRISP-TYPE DI-BUILDER DI-TYPE-CACHE)`
 
@@ -3351,7 +3650,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `%PTX-ENTRY-RESTORE-SHARED-PTRS-FOR-IMPLODE`
 - **Args**: `(BUILDER COMPONENTS TYPE-SPEC MODULE IS-ENTRY-POINT)`
 
-  > Counterpart to the demoter: at the receive site, the kernel's LLVM  >    param at a demoted slot is now an i64.  IMPLODE-VALUE expects a  >    pointer in the original addrspace there, so inttoptr each demoted  >    component back before packing.  No-op for non-PTX, non-entry, and  >    for params whose expanded types had no demotable pointer.
+  > Counterpart to the demoter: at the receive site, the kernel's LLVM param at a demoted slot  >    is now an i64.  IMPLODE-VALUE expects a pointer in the original addrspace there, so  >    inttoptr each demoted component back before packing.  >   >    Endeavor 152 fix B: for addrspace 3 (SHARED) the incoming i64 is a byte OFFSET chosen by  >    the hoister, not an address.  The executing CTA's dynamic shared-memory window base is  >    added to it first, so the result is CTA-relative.  addrspace 5 (thread-local) is left  >    exactly as it was -- it has no window base to speak of.
 
 
 ---
@@ -3379,7 +3678,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `ENSURE-OPENCL-KERNEL-METADATA`
 - **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
 
-  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).  >   >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.
+  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).  >    Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records  >    the EFFECTIVE extent (warning on degrade) for every entry point on every backend.  >   >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.
 
 
 ---
@@ -3982,9 +4281,10 @@ Generated on 2026-08-15T00:01:11.110196Z
 
 ---
 ### DEFUN `%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D`
-- **Args**: `(BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1)`
+- **Args**: `(BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1
+              &OPTIONAL (MCAST-MASK 0) (MCAST-P NIL))`
 
-  > Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,  >    cachehint, flag_mcast, flag_cachehint) ->  >      cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes  >        [dst], [tensormap, {x, y}], [mbar];  >    DST-SMEM-PTR and MBAR-PTR are addrspace(3); TENSORMAP-PTR is a generic ptr to the 128-byte  >    CUtensorMap; COORD0/COORD1 are i32 tile-box origins (element units).  The trailing multicast  >    / cache-hint flags are immarg 0 (disabled) — Phase 2b may enable a cache hint.
+  > Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,  >    cachehint, flag_mcast, flag_cachehint).  >   >    Endeavor 152: the intrinsic ALREADY carried the multicast operands -- an i16 destination  >    mask and an i1 enable flag -- which Endeavor 137 passed as immarg 0.  Multicast is therefore  >    plumbing those two, not a new instruction: with the flag set the emitted PTX gains  >    `.multicast::cluster` and the ctaMask operand.
 
 
 ---
@@ -7178,6 +7478,12 @@ Generated on 2026-08-15T00:01:11.110196Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
 
+### DEFUN `%MODULE-USES-CLUSTER-REACH-P`
+
+  > T if anything in this module multicasts a load or declares a :mode :cluster barrier.  >   >    Both tables are populated during analysis and cleared per module, so by serialization time  >    they are a complete record of whether the module's kernels depend on peers.
+
+
+---
 ### DEFVAR `*EMIT-METADATA*`
 
   > If T, the compiler will generate a .metacrisp sidecar file for each orchestration/kernel.
@@ -7298,7 +7604,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `SERIALIZE-KERNELS`
 - **Args**: `(OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)`
 
-  > Emits the (:kernels ...) section of the metacrisp file.  >    Extended to include :global-size, :local-size, :num-groups dispatch declarations.
+  > Emits the (:kernels ...) section of the metacrisp file.  >    Extended to include :global-size, :local-size, :num-groups dispatch declarations.  >    Endeavor 152: also emits :cluster-size (what the SOURCE asked for) and  >    :effective-cluster-size (what codegen BUILT).  Both, deliberately -- a degraded  >    cluster is otherwise indistinguishable from a working one.
 
 
 ---
@@ -7318,6 +7624,62 @@ Generated on 2026-08-15T00:01:11.110196Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\mma.lisp`
 
+### DEFUN `%MAP-ELEMENTS-FN-NAME`
+- **Args**: `(FN-FORM)`
+
+  > The function NAME out of a #'FOO argument to map-elements!, or NIL if FN-FORM is not  >    that shape.  #'FOO reads as (FUNCTION FOO); the head is matched by name so it does not  >    matter which package the reader interned it in.
+
+
+---
+### DEFUN `%MAP-ELEMENTS-CHECK-UNARY`
+- **Args**: `(FN-FORM LOCATION)`
+
+  > Refuse a fused function that is not UNARY, before it reaches the funcall lowering.  >   >    map-elements! applies its function to ONE element at a time, so there is no second  >    argument to supply.  Checked against *function-table*, the same registry  >    analyze-funcall-expression consults.  When the name is unknown (not a #'FOO form, or no  >    signature registered yet) this stays silent and lets the normal path report — the goal is  >    a better message for a real mistake, not a new source of false refusals.
+
+
+---
+### DEFUN `%MAP-ELEMENTS-COOP-DIMS`
+- **Args**: `(TY)`
+
+  > (ROWS COLS USE) if TY is a (coop-matrix ELEM ROWS COLS USE) type spec, else NIL.
+
+
+---
+### DEFUN `%EMIT-PER-FRAG-MAP`
+- **Args**: `(ENTRY FN-FORM)`
+
+  > Per-fragment expansion of (map-elements! V #'FN) for a register tile: apply FN elementwise  >    to every fragment of V that this warp holds.  >   >    Mirrors %emit-per-frag-fill — no logical fragment index is needed, because an elementwise  >    map is indifferent to which fragments of the tile this warp owns, so n-true / first-true  >    are deliberately ignored.
+
+
+---
+### DEFUN `%MAP-ELEMENTS-CALL`
+- **Args**: `(FN-FORM ARG-FORM)`
+
+  > Build the call applying the fused function to ARG-FORM.  >   >    Prefers a DIRECT call (FOO arg) when FN-FORM is #'FOO, because that is the form the AD  >    engine can differentiate; falls back to (funcall FN-FORM arg) otherwise.
+
+
+---
+### DEFUN `%MAP-ELEMENTS-GRAD-NAME`
+- **Args**: `(FN-FORM PKG)`
+
+  > The <NAME>_GRAD symbol for the fused function in FN-FORM (a #'NAME), interned in PKG.  >    Matches the convention the AD walk itself uses (src/autodiff.lisp:2553).
+
+
+---
+### DEFUN `%EMIT-PER-FRAG-MAP-VJP`
+- **Args**: `(ADJ-ENTRY PRIMAL-ENTRY FN-FORM)`
+
+  > Per-fragment expansion of (%map-elements-vjp! ADJ PRIMAL #'F_GRAD) for register tiles:  >    zip the two tiles' fragment lists and pair them positionally.  Positional pairing is right  >    because both tiles carry the SAME shape and the same warp distribution, so fragment k of one  >    corresponds to fragment k of the other.
+
+
+---
+### DEFUN `%EMIT-MAP-VJP-EXPLODE`
+- **Args**: `(FORM TILES)`
+
+  > Rewrite (%map-elements-vjp! ADJ PRIMAL FN [IDX]) when EITHER operand names an exploded tile.  >   >    Resolves ONE side per call, so the adjoint tile and the primal tile may be bound at  >    different LET levels — which they always are, since the VJP binds the primal itself while  >    the walk binds the adjoint outside.  See the header above for the three-step shape.
+
+
+---
 ### DEFUN `%SPV-DECIDE-REGISTER-MODE`
 - **Args**: `(KERNEL-NAME PROFILE)`
 
@@ -7706,7 +8068,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 ### DEFUN `%EXPLODE-REWRITE-BODY-FORM`
 - **Args**: `(FORM TILES)`
 
-  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references  >    to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;  >    otherwise recurse structurally.
+  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile /  >    map-elements! / %map-elements-vjp! references to any exploded tile in TILES with  >    per-fragment progns; otherwise recurse structurally.
 
 
 ---
@@ -7768,7 +8130,7 @@ Generated on 2026-08-15T00:01:11.110196Z
 ---
 ### DEFUN `REGISTER-MMA-ANALYZERS`
 
-  > Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms.  >    Endeavor 145 P2: adds LOAD-FRAGMENT-ACC (the store-fragment inverse).
+  > Registers the MMA + wgmma expression analyzers.  >    Endeavor 150: adds MAP-ELEMENTS! and its backward twin %MAP-ELEMENTS-VJP!.
 
 
 ---
@@ -8842,6 +9204,13 @@ Generated on 2026-08-15T00:01:11.110196Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\types\registry.lisp`
 
+### DEFUN `%ARCH-SUPPORTS-CLUSTERS-P`
+- **Args**: `(ARCH)`
+
+  > T if ARCH can form workgroup clusters.  NVIDIA Hopper (sm_90) or later only;  >    no Intel architecture has an equivalent.
+
+
+---
 ### DEFVAR `*GENERIC-FUNCTIONS*`
 
   > Registry of generic function templates (functions with &optional or &key parameters)   >    that are instantiated lazily. Key: function name symbol. Value: generic-function-def struct.
