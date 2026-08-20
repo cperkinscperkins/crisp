@@ -6,6 +6,17 @@
 ;; src/metadata.lisp
 (in-package :crisp.compiler)
 
+;;; ---- migrated from overlays/crisp-compiler-overlay.lisp (endeavour 152) ----
+
+(defun %module-uses-cluster-reach-p ()
+  "T if anything in this module multicasts a load or declares a :mode :cluster barrier.
+
+   Both tables are populated during analysis and cleared per module, so by serialization time
+   they are a complete record of whether the module's kernels depend on peers."
+  (or (plusp (hash-table-count *tma-copy-multicast*))
+      (plusp (hash-table-count *cluster-barrier-bindings*))))
+
+
 ;;; =========================================================
 ;;; Metadata Generation (.metacrisp)
 ;;; =========================================================
@@ -624,10 +635,13 @@
 
 (defun serialize-kernels (output-stream kernel-names &key source output-targets)
   "Emits the (:kernels ...) section of the metacrisp file.
-   Extended to include :global-size, :local-size, :num-groups dispatch declarations."
+   Extended to include :global-size, :local-size, :num-groups dispatch declarations.
+   Endeavor 152: also emits :cluster-size (what the SOURCE asked for) and
+   :effective-cluster-size (what codegen BUILT).  Both, deliberately -- a degraded
+   cluster is otherwise indistinguishable from a working one."
   (when kernel-names
         (format output-stream "(:kernels~%")
-        (dolist (k-name (sort (copy-list kernel-names) #'string< :key #'symbol-name))
+        (dolist (k-name (sort (copy-list kernel-names) (function string<) :key (function symbol-name)))
           (let ((sigs (gethash k-name *function-table*))
                 (blocks-to-emit nil))
             ;; Use only the FIRST signature (Pass 1 registered, Pass 2 updated)
@@ -650,7 +664,7 @@
                                   :dispatch dispatch-info)
                             blocks-to-emit))))
 
-            (setf blocks-to-emit (remove-duplicates (nreverse blocks-to-emit) :test #'equalp))
+            (setf blocks-to-emit (remove-duplicates (nreverse blocks-to-emit) :test (function equalp)))
 
             (dolist (blk blocks-to-emit)
               (let ((dispatch (getf blk :dispatch)))
@@ -660,7 +674,9 @@
                 ;; Emit dispatch declarations before physical/declared signatures
                 (let ((global-size-decl (getf dispatch :global-size))
                       (local-size-decl  (getf dispatch :local-size))
-                      (num-groups-decl  (getf dispatch :num-groups)))
+                      (num-groups-decl  (getf dispatch :num-groups))
+                      (cluster-decl     (getf dispatch :cluster-size-decl))
+                      (cluster-dims     (getf dispatch :cluster-size)))
                   (when global-size-decl
                     (format output-stream "    :global-size ")
                     (print-without-packages global-size-decl output-stream)
@@ -672,6 +688,33 @@
                   (when num-groups-decl
                     (format output-stream "    :num-groups ")
                     (print-without-packages num-groups-decl output-stream)
+                    (format output-stream "~%"))
+                  ;; Endeavor 152.  BOTH are emitted on purpose:
+                  ;;   :cluster-size            -- the declaration, as written
+                  ;;   :effective-cluster-size  -- what codegen actually built
+                  ;; They differ exactly when the kernel degraded, which is the one
+                  ;; case a correctness test cannot see.
+                  (when cluster-decl
+                    (format output-stream "    :cluster-size ")
+                    (print-without-packages cluster-decl output-stream)
+                    (format output-stream "~%"))
+                  ;; BUG 049: does this kernel actually USE its cluster's reach -- a
+                  ;; multicast load or a :mode :cluster barrier?  The hoist needs to know,
+                  ;; because padding the grid up to the cluster shape is safe for an ordinary
+                  ;; clustered kernel (surplus blocks find no tiles and exit) and FATAL for one
+                  ;; with reach: the padded blocks are still cluster members that a multicast
+                  ;; addresses and a cluster barrier waits on, so they must not simply leave.
+                  ;;
+                  ;; Deliberately MODULE-scoped and therefore conservative: if any kernel in the
+                  ;; module uses reach, every clustered kernel in it declines padding.  Precise
+                  ;; per-kernel attribution would mean threading a flag through the whole
+                  ;; analysis; over-refusing a kernel that gains nothing from its cluster anyway
+                  ;; is the cheaper error, and it is an error in the safe direction.
+                  (when (and cluster-dims (%module-uses-cluster-reach-p))
+                    (format output-stream "    :cluster-reach t~%"))
+                  (when cluster-dims
+                    (format output-stream "    :effective-cluster-size ")
+                    (print-without-packages (%effective-cluster-dims dispatch cluster-dims) output-stream)
                     (format output-stream "~%")))
                 (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
                 (format output-stream "    :declared-signature ")

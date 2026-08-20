@@ -8,6 +8,272 @@
 ;; Forced update to clear stale FASL
 (in-package :crisp.compiler)
 
+;;; ---- migrated from overlays/crisp-compiler-overlay.lisp (endeavour 152) ----
+
+(defun %coop-length (builder module mat-val elem-llvm rows cols use)
+  "Emit OpCooperativeMatrixLengthKHR(MAT-VAL) -> i32, the number of components THIS
+   invocation holds.  Runtime value by design (see the header).
+
+   The name carries a _use_rows_cols suffix for the same reason the Load/Store builtins do:
+   %coop-call reuses a declaration by NAME, so two different coop types under one name would
+   collide on the second call's signature.  The translator matches on the prefix — verified
+   by spike2 in put_temp_files_here/150-spv/, which emits the real instruction."
+  (%coop-call builder module
+              (format nil "__spirv_CooperativeMatrixLengthKHR_~d_~d_~d" use rows cols)
+              (crisp.llvm-bindings::llvm-int32-type)
+              (list (%coop-type elem-llvm rows cols use))
+              (list mat-val)))
+
+(defun %coop-access-chain (builder module mat-ptr idx-i64)
+  "Emit OpAccessChain(MAT-PTR, IDX) -> ptr to component IDX of the cooperative matrix that
+   MAT-PTR points at.  Needs no name suffix: with opaque pointers the signature is
+   (ptr, i64) -> ptr for every coop type."
+  (%coop-call builder module "__spirv_AccessChain"
+              (%coop-ptr-type 0)
+              (list (%coop-ptr-type 0) (crisp.llvm-bindings::llvm-int64-type))
+              (list mat-ptr idx-i64)))
+
+(defvar *cluster-degrade-warned* (make-hash-table :test #'eq)
+  "Kernels we have already emitted the cluster-degrade diagnostic for, so a
+   multi-pass compile does not repeat it once per pass.")
+
+(defun %warn-cluster-degraded (kernel-name declared)
+  "Endeavor 152 rung 05: a kernel declaring cluster-size on a target without cluster
+   support still computes the correct answer -- every multicast becomes an ordinary
+   per-workgroup load and the traffic reduction the declaration was written for is
+   simply gone, with nothing in the output to reveal it.
+
+   Unlike sync-cluster, whose degrade to sync-workgroup is semantically exact and free,
+   THIS degrade costs bandwidth.  So it is never silent."
+  (unless (gethash kernel-name *cluster-degrade-warned*)
+    (setf (gethash kernel-name *cluster-degrade-warned*) t)
+    (log:warn "Kernel ~a declares (cluster-size :set-to ~a) but the selected target (~a~@[/~a~]) has no cluster support -- the effective cluster extent is 1.  The kernel is still CORRECT, but any multicast becomes an ordinary per-workgroup load and the bandwidth reduction is lost.  Clusters require NVIDIA sm_90 or later.  The effective extent is recorded in the kernel metadata; assert on that rather than on a timing number."
+              kernel-name declared *target-backend*
+              (and (eq *target-backend* :ptx) *ir-target-arch*))))
+
+(defun %record-effective-cluster-dims (kernel-name dims)
+  "Write the effective cluster extent into KERNEL-NAME's dispatch plist.
+   Returns T if this is the first time (so the caller may warn once)."
+  (let* ((plist (gethash kernel-name *kernel-dispatch-declarations*))
+         (first-time (null (getf plist :effective-cluster-size))))
+    (when plist
+      (setf (getf plist :effective-cluster-size) dims)
+      (setf (gethash kernel-name *kernel-dispatch-declarations*) plist))
+    first-time))
+
+(defun %apply-cluster-dims-attribute (func semantic-function module)
+  "Endeavor 152: stamp the cluster dimensions on a PTX entry point, and record what
+   was actually built.
+
+   Emits the nvvm.cluster_dim function attribute, which LLVM 21 lowers to
+   .explicitcluster + .reqnctapercluster x, y, z on the .entry.  Baking the shape into
+   the PTX is what makes the host/kernel agreement DRIVER-ENFORCED rather than a
+   convention the hoisting code is trusted to honour.
+
+   Gated on CAPABILITY, not merely on the backend: clusters need sm_90+, so a default
+   (sm_80) PTX compile degrades to extent 1 and warns rather than emitting a directive
+   the target cannot honour."
+  (let* ((kname (semantic-function-name semantic-function))
+         (decls (and kname (gethash kname *kernel-dispatch-declarations*)))
+         (dims  (and decls (getf decls :cluster-size))))
+    (when (and dims (> (reduce (function *) dims) 1))
+      (cond
+        ((and (eq *target-backend* :ptx)
+              (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+         (let* ((ctx  (llvm-get-module-context module))
+                (key  "nvvm.cluster_dim")
+                (val  (format nil "~{~a~^,~}" dims))
+                (attr (llvm-create-string-attribute ctx key (length key) val (length val))))
+           (log:info "Kernel ~a: stamping cluster dims ~a (.reqnctapercluster)" kname val)
+           (llvm-add-attribute-at-index func +llvm-attribute-function-index+ attr)
+           (%record-effective-cluster-dims kname dims)))
+        (t
+         (when (%record-effective-cluster-dims kname (list 1 1 1))
+           (%warn-cluster-degraded kname dims)))))))
+
+(defvar *tma-copy-multicast* (make-hash-table :test 'eq)
+  "semantic-nvvm-tma-tile-copy node -> the cluster dims it should multicast across.
+   Mirrors *tma-copy-ws-leader* (Endeavor 140), which exists for the same reason:
+   the node struct cannot gain a slot from an overlay.")
+
+(defun %gen-nvvm-cluster-barrier (builder)
+  "Inline PTX: barrier.cluster.arrive; barrier.cluster.wait;
+
+   The non-`.relaxed` form, deliberately: it carries release/acquire ordering, which is what
+   publishes this workgroup's mbarrier initialisation to its peers.  The relaxed form would
+   rendezvous without ordering and reintroduce the race it exists to close.
+
+   Matches what NVIDIA's own cooperative_groups cluster_group::sync() emits (verified by
+   compiling it with nvcc -arch=sm_90a -ptx; see 00-verification-findings.md Q2)."
+  (%build-inline-asm-call builder (llvm-void-type) nil nil
+                          "barrier.cluster.arrive; barrier.cluster.wait;" ""))
+
+(defun %module-has-cluster-p ()
+  "T if any kernel in the module being compiled declares a cluster of extent > 1.
+   Gates the entry fence so a kernel without clusters emits byte-identical PTX."
+  (let ((found nil))
+    (maphash (lambda (k plist)
+               (declare (ignore k))
+               (let ((dims (getf plist :cluster-size)))
+                 (when (and dims (> (reduce (function *) dims) 1))
+                   (setf found t))))
+             *kernel-dispatch-declarations*)
+    found))
+
+(defvar *signal-cluster-extent* (make-hash-table :test 'eq)
+  "semantic-signal node -> cluster group extent, when its barrier is :mode :cluster.
+   A side table because the struct cannot gain a slot from an overlay — the same pattern
+   Endeavor 140 used for *tma-copy-ws-leader*.  Keyed by node identity, so a stale entry is
+   unreachable from a fresh compile's nodes.")
+
+(defun %gen-nvvm-mbarrier-arrive-cluster (builder peer-addr-i32)
+  "Inline PTX: mbarrier.arrive.shared::cluster.b64 _, [$0];
+   Arrives on a PEER workgroup's mbarrier.  The `.shared::cluster` scope is the whole point —
+   plain `.shared` (or the llvm.nvvm.mbarrier.arrive.shared intrinsic) arrives LOCALLY, which
+   would release a barrier nobody is waiting on."
+  (%build-inline-asm-call builder (llvm-void-type)
+                          (list (llvm-int32-type)) (list peer-addr-i32)
+                          "mbarrier.arrive.shared::cluster.b64 _, [$0];" "r"))
+
+(defvar *cluster-barrier-nodes* (make-hash-table :test 'eq)
+  "semantic-make-async-barrier node -> cluster group extent, for scaling the mbarrier init
+   count.  Side table because the struct cannot gain a slot from an overlay.")
+
+(defun %gen-nvvm-mapa-shared-cluster (builder addr-i32 rank-i32)
+  "Map a shared-memory address in THIS workgroup's view to the same offset in the workgroup with
+   the given cluster rank, returning a shared-window u32 suitable for
+   mbarrier.arrive.shared::cluster.
+
+   The conversion through GENERIC is required, not incidental: `mapa` operates on generic
+   addresses.  Handing it a raw shared-window offset silently yields an unmapped address, so the
+   subsequent arrive lands on the CALLER'S OWN barrier -- the exact bug this fix repairs, caught
+   on hardware as `Address 0x0 is not located in executing CTA`."
+  (%build-inline-asm-call builder (llvm-int32-type)
+                          (list (llvm-int32-type) (llvm-int32-type))
+                          (list addr-i32 rank-i32)
+                          (concatenate 'string
+                            "{ .reg .b64 %gaddr; .reg .b64 %maddr; "
+                            "cvt.u64.u32 %gaddr, $1; "
+                            "cvta.shared.u64 %gaddr, %gaddr; "
+                            "mapa.u64 %maddr, %gaddr, $2; "
+                            "cvta.to.shared.u64 %maddr, %maddr; "
+                            "cvt.u32.u64 $0, %maddr; }")
+                          "=r,r,r"))
+
+(defparameter *crisp-dynamic-smem-symbol* "__crisp_dynamic_smem"
+  "Name of the external addrspace(3) symbol standing for the start of the kernel's DYNAMIC
+   shared memory -- the LLVM spelling of CUDA's `extern __shared__`.  One per module.")
+
+(defun %ptx-dynamic-smem-base (builder module)
+  "i64 address of the EXECUTING CTA's dynamic shared-memory window.
+
+   Declares (once per module) an external addrspace(3) symbol and ptrtoints it.  Because the
+   symbol carries no initializer it stays a DECLARATION, which NVPTX emits as
+   `.extern .shared .align 128 .b8 __crisp_dynamic_smem[]` -- resolved by the hardware to the
+   executing CTA's own window, including the cluster rank bits.  Aligned to 128, which is what cp.async.bulk.tensor
+   requires of a shared destination; the tensors themselves are packed from it by
+   the hoister's layout."
+  (let* ((i8   (llvm-int8-type))
+         (ty   (crisp.llvm-bindings::llvm-array-type i8 0))
+         (existing (crisp.llvm-bindings:llvm-get-named-global module *crisp-dynamic-smem-symbol*))
+         (gv   (if (and existing (not (cffi:null-pointer-p existing)))
+                   existing
+                   (let ((g (crisp.llvm-bindings:llvm-add-global-in-addrspace
+                             module ty *crisp-dynamic-smem-symbol* 3)))
+                     ;; NO initializer: that is what keeps it a declaration (.extern .shared).
+                     ;; 128, not 16: cp.async.bulk.tensor requires a 128-BYTE aligned shared
+                     ;; destination.  Q1a measured the window landing at 0x400 anyway, but that
+                     ;; is an observation about one driver, not a guarantee -- declare it.
+                     (crisp.llvm-bindings::llvm-set-alignment g 128)
+                     (log:info "declared ~a (.extern .shared) for CTA-relative scratch"
+                               *crisp-dynamic-smem-symbol*)
+                     g))))
+    (crisp.llvm-bindings:llvm-build-ptr-to-int builder gv (llvm-int64-type) "smem_window_base")))
+
+(defun %gen-multicast-mask-value (builder module plan)
+  "The i16 ctaMask for THIS workgroup's multicast group: PATTERN << (position on the
+   non-group axes).  When every clustered axis is in the group -- the 1-D case -- there are no
+   non-group axes, the shift vanishes and this folds back to the old compile-time constant."
+  (let* ((i32     (llvm-int32-type))
+         (i16     (llvm-int16-type))
+         (dims    (getf plan :dims))
+         (group   (getf plan :group-axes))
+         (pattern (getf plan :pattern))
+         (strides (%cluster-axis-strides dims))
+         (shift   nil))
+    (loop for d in dims
+          for a from 0
+          when (and (> d 1) (not (member a group)))
+          do (let* ((c    (%ptx-read-warp-sreg builder module (%cluster-axis-sreg a)))
+                    (term (llvm-build-mul builder c (llvm-const-int i32 (nth a strides) nil)
+                                          "mc_shift_term")))
+               (setf shift (if shift (llvm-build-add builder shift term "mc_shift") term))))
+    (if (null shift)
+        (llvm-const-int i16 pattern nil)
+        (let* ((pat32 (llvm-const-int i32 pattern nil))
+               (sh    (crisp.llvm-bindings::llvm-build-shl builder pat32 shift "mc_mask32")))
+          (llvm-build-trunc builder sh i16 "mc_mask")))))
+
+(defun %module-cluster-extent ()
+  "How many workgroups a :mode :cluster barrier must expect arrivals from.
+
+   Endeavor 152 step 10c: this is now the FULL cluster size (the product of every axis), not
+   a 1-D extent.  That follows directly from the decision above -- if peers arrive cluster-wide
+   then the count must be cluster-wide too.  Getting these two out of step is precisely the
+   failure that hangs a GPU: a barrier initialised for fewer arrivals than it receives releases
+   early, one initialised for more never releases at all.
+
+   *kernel-dispatch-declarations* is cleared per module, so this is module-scoped."
+  (let ((found nil))
+    (maphash (lambda (k plist)
+               (declare (ignore k))
+               (let* ((dims (getf plist :cluster-size))
+                      (e    (and dims (reduce (function *) dims))))
+                 (when (and e (> e 1)) (setf found e))))
+             *kernel-dispatch-declarations*)
+    found))
+
+(defun %gen-multicast-leader-pred (builder module plan &optional rot-src)
+  "True in exactly ONE workgroup per multicast group.
+
+   With ROT-SRC (an i32 that advances once per pipeline stage -- in practice the mbarrier
+   address) and a single-axis group, the issuing duty ROTATES: the CTA at position
+   `rot-src mod extent` along the group axis issues this stage.  Over a ring of stages every
+   member takes a turn, so no single CTA is a standing bottleneck.
+
+   Without ROT-SRC, or for a multi-axis group, falls back to the original static leader (position
+   0 on every group axis).  Both are correct; only the distribution of work differs."
+  (let* ((i32   (llvm-int32-type))
+         (dims  (getf plan :dims))
+         (group (getf plan :group-axes))
+         (live  (remove-if-not (lambda (a) (> (nth a dims) 1)) group)))
+    (cond
+      ;; ROTATING: one group axis, and a per-stage value to rotate on.
+      ((and rot-src (= (length live) 1)
+            (let ((e (nth (first live) dims))) (zerop (logand e (1- e)))))   ; power of two
+       (let* ((a      (first live))
+              (extent (nth a dims))
+              (c      (%ptx-read-warp-sreg builder module (%cluster-axis-sreg a)))
+              ;; mbarrier ring slots are 8 bytes apart, so >>3 counts stages.
+              (stage  (crisp.llvm-bindings::llvm-build-l-shr
+                       builder rot-src (llvm-const-int i32 3 nil) "mc_stage"))
+              ;; AND, not a remainder: a cluster extent is always a power of two (2/4/8 are the
+              ;; only portable values), so `mod extent` is `and (extent-1)` -- cheaper, and it
+              ;; needs no URem binding, which the LLVM layer does not currently have.
+              (turn   (crisp.llvm-bindings::llvm-build-and
+                       builder stage (llvm-const-int i32 (1- extent) nil) "mc_turn")))
+         (log:info "multicast: ROTATING issuer across ~a workgroups on cluster axis ~a" extent a)
+         (llvm-build-icmp builder +llvm-int-eq+ c turn "mc_leader_rot")))
+      (t
+       (let ((pred nil))
+         (loop for a in live
+               do (let* ((c   (%ptx-read-warp-sreg builder module (%cluster-axis-sreg a)))
+                         (is0 (llvm-build-icmp builder +llvm-int-eq+ c (llvm-const-int i32 0 nil)
+                                               (format nil "mc_axis~a_is0" a))))
+                    (setf pred (if pred (crisp.llvm-bindings::llvm-build-and builder pred is0 "mc_leader") is0))))
+         (or pred (llvm-const-int (llvm-int1-type) 1 nil)))))))
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
@@ -128,23 +394,32 @@
 
 (defun %ptx-entry-restore-shared-ptrs-for-implode
     (builder components type-spec module is-entry-point)
-  "Counterpart to the demoter: at the receive site, the kernel's LLVM
-   param at a demoted slot is now an i64.  IMPLODE-VALUE expects a
-   pointer in the original addrspace there, so inttoptr each demoted
-   component back before packing.  No-op for non-PTX, non-entry, and
-   for params whose expanded types had no demotable pointer."
+  "Counterpart to the demoter: at the receive site, the kernel's LLVM param at a demoted slot
+   is now an i64.  IMPLODE-VALUE expects a pointer in the original addrspace there, so
+   inttoptr each demoted component back before packing.
+
+   Endeavor 152 fix B: for addrspace 3 (SHARED) the incoming i64 is a byte OFFSET chosen by
+   the hoister, not an address.  The executing CTA's dynamic shared-memory window base is
+   added to it first, so the result is CTA-relative.  addrspace 5 (thread-local) is left
+   exactly as it was -- it has no window base to speak of."
   (if (and (eq *target-backend* :ptx) is-entry-point)
-      (let ((expected-types (get-expanded-types type-spec module)))
+      (let ((expected-types (get-expanded-types type-spec module))
+            (smem-base nil))
         (loop for comp in components
               for exp-ty in expected-types
               collect (if (and (llvm-type-kind-is-pointer? exp-ty)
                                (%ptx-entry-illegal-addrspace-p
                                 (llvm-get-pointer-address-space exp-ty)))
-                          (progn
-                            (log:info "PTX kernel-entry receive: inttoptr i64 -> addrspace(~A) ptr"
-                                      (llvm-get-pointer-address-space exp-ty))
-                            (llvm-build-int-to-ptr builder comp exp-ty
-                                                   "demoted_param_to_ptr"))
+                          (let ((as (llvm-get-pointer-address-space exp-ty)))
+                            (log:info "PTX kernel-entry receive: inttoptr i64 -> addrspace(~A) ptr" as)
+                            (if (= as 3)
+                                (let* ((base (or smem-base
+                                                 (setf smem-base
+                                                       (%ptx-dynamic-smem-base builder module))))
+                                       (abs  (llvm-build-add builder base comp "smem_abs")))
+                                  (log:debug "shared param is a hoister OFFSET; rebased on the CTA's window")
+                                  (llvm-build-int-to-ptr builder abs exp-ty "demoted_param_to_ptr"))
+                                (llvm-build-int-to-ptr builder comp exp-ty "demoted_param_to_ptr")))
                           comp)))
       components))
 
@@ -218,6 +493,8 @@
   "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).
+   Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records
+   the EFFECTIVE extent (warning on degrade) for every entry point on every backend.
 
    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
    as text during IR printing for SPIR-V."
@@ -240,7 +517,13 @@
           (t
            ;; Default to C calling convention (0) for generic/unknown
            (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
-           (llvm-set-function-call-conv func 0))))
+           (llvm-set-function-call-conv func 0)))
+
+        ;; Endeavor 152: OUTSIDE the case on purpose.  This must run for every entry
+        ;; point on every backend -- it is what records the effective cluster extent
+        ;; and warns when a declared cluster could not be formed.  Gating it per
+        ;; backend is what let the SPIR-V degrade go silent.
+        (%apply-cluster-dims-attribute func semantic-function module))
 
   (unless (semantic-function-is-entry-point semantic-function)
     (case *target-backend*
@@ -458,6 +741,28 @@
             (setf last-val val)
             (setf last-loc loc)))
 
+        ;; BUG 050: a CTA must not LEAVE its cluster while a peer may still be writing into
+        ;; its shared memory.  With multicast that is exactly what happens -- the group leader
+        ;; issues a copy whose destination is every member's SMEM -- so a member that finishes
+        ;; its tiles and returns early can be written into after it is gone.  CUDA requires a
+        ;; cluster sync before exit for precisely this reason.
+        ;;
+        ;; The existing fences are emitted at BARRIER CONSTRUCTION, i.e. in the prologue; there
+        ;; was none before `ret`.  The failure is therefore a RACE, and shape-dependent: a narrow
+        ;; output tile means less work per workgroup, which widens the window in which one member
+        ;; can exit while peers are still streaming.  It reproduced as `unspecified launch
+        ;; failure` at a 64x32 tile and vanished under compute-sanitizer, whose serialisation
+        ;; closes the window -- the signature of a race rather than a bad address.
+        ;; ARCH-GATED, and this was missed on the first cut: %module-has-cluster-p reports what
+        ;; the SOURCE declared, not what codegen could build.  On a pre-Hopper target the cluster
+        ;; is degraded to extent 1 (%apply-cluster-dims-attribute) and no .reqnctapercluster is
+        ;; emitted -- but the fence was still emitted, putting a `barrier.cluster` instruction in
+        ;; a module whose target has no clusters.  A degraded cluster needs no exit fence anyway:
+        ;; with one workgroup per cluster there is no peer that could still be writing.
+        (when (and (eq *target-backend* :ptx) is-entry-point (%module-has-cluster-p)
+                   (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+          (log:info "cluster kernel: emitting exit fence before ret (BUG 050)")
+          (%gen-nvvm-cluster-barrier builder))
         (let ((ret-inst (if is-void-return
                             (llvm-build-ret-void builder)
                             (let* ((ret-type-spec (first return-types))
@@ -3021,6 +3326,7 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (wid64    (crisp.llvm-bindings::llvm-build-udiv builder llid c32 "warp_id64")))
     (crisp.llvm-bindings::llvm-build-trunc builder wid64 i32-type "warp_id")))
 
+#|
 (defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
   "Generates LLVM IR for a GPU built-in function call.
    Endeavor 115 Phase 2: full PTX dispatch for all builtins."
@@ -3086,6 +3392,102 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (values (%ptx-synthesize-warp-count builder module) nil)
              (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
         ;; --- Barriers (void) ---
+        (:sync-workgroup
+         (if (eq *target-backend* :ptx)
+             (%ptx-barrier builder module)
+             (%gen-spirv-control-barrier builder module)))
+        (:sync-warp
+         (if (eq *target-backend* :ptx)
+             (%ptx-syncwarp builder module)
+             (%gen-spirv-warp-barrier builder module)))
+        (:mem-fence
+         (if (eq *target-backend* :ptx)
+             (%ptx-membar-cta builder module)
+             (%gen-spirv-memory-barrier builder module)))
+        (t (error "Unknown GPU builtin ~a" builtin-name))))))
+        |#
+
+
+(defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
+  "Generates LLVM IR for a GPU built-in function call.
+   Endeavor 115 Phase 2: full PTX dispatch for all builtins."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let* ((bname (semantic-gpu-builtin-builtin-name node))
+         (dim   (semantic-gpu-builtin-dimension node)))
+    (log:info "Generating GPU builtin IR: ~a dim=~a backend=~a" bname dim *target-backend*)
+    (labels
+        ((vec3-or-scalar (spirv-name)
+           (let ((vec (%get-builtin-vec3 builder module spirv-name)))
+             (if dim
+                 (values (%extract-vec3-i64 builder vec dim
+                                            (format nil "~a_~a" (string-downcase spirv-name) dim))
+                         nil)
+                 (values vec nil)))))
+      (case bname
+        ;; --- Primitive 3D/scalar vector builtins ---
+        (:get-global-id       (vec3-or-scalar "GlobalInvocationId"))
+        (:get-local-id        (vec3-or-scalar "LocalInvocationId"))
+        (:get-workgroup-id    (vec3-or-scalar "WorkgroupId"))
+        (:get-num-groups      (vec3-or-scalar "NumWorkgroups"))
+        (:get-local-work-size (vec3-or-scalar "WorkgroupSize"))
+        (:get-global-work-size (vec3-or-scalar "GlobalSize"))
+        (:get-global-offset   (vec3-or-scalar "GlobalOffset"))
+        ;; --- Synthesized: GlobalInvocationId + GlobalOffset ---
+        (:get-global-id-abs
+         (if (eq *target-backend* :ptx)
+             ;; PTX has no GlobalOffset — same as get-global-id
+             (vec3-or-scalar "GlobalInvocationId")
+             (let* ((gid  (%call-spirv-vec3-builtin builder module "GlobalInvocationId"))
+                    (goff (%call-spirv-vec3-builtin builder module "GlobalOffset")))
+               (if dim
+                   (let* ((gid-n  (%extract-vec3-i64 builder gid  dim "gid_n"))
+                          (goff-n (%extract-vec3-i64 builder goff dim "goff_n")))
+                     (values (crisp.llvm-bindings::llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
+                   (values (crisp.llvm-bindings::llvm-build-add builder gid goff "gid_abs") nil)))))
+        ;; --- WorkDim (hidden kernel parameter, uint) ---
+        (:get-work-dim
+         (values (%call-spirv-uint-builtin builder module "WorkDim") nil))
+        ;; --- Synthesized scalar builtins ---
+        (:get-local-linear-id
+         (values (%gen-local-linear-id builder module) nil))
+        (:get-local-linear-size
+         (values (%gen-product-of-vec3 builder module "WorkgroupSize" "local_linear_size") nil))
+        (:get-global-linear-id
+         (values (%gen-global-linear-id builder module) nil))
+        ((:get-global-linear-size :get-total-threads)
+         (values (%gen-product-of-vec3 builder module "GlobalSize" "total_threads") nil))
+        (:get-total-groups
+         (values (%gen-product-of-vec3 builder module "NumWorkgroups" "total_groups") nil))
+        ;; --- 110: warp helpers ---
+        (:warp-id
+         (if (eq *target-backend* :ptx)
+             ;; Endeavor 139: synthesize local-linear-id/32 (stable), NOT %warpid (volatile).
+             (values (%ptx-synthesize-warp-id builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil)))
+        (:warp-lane
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-read-warp-sreg builder module "laneid") nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupLocalInvocationId") nil)))
+        (:warp-count
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-synthesize-warp-count builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
+        ;; --- Barriers (void) ---
+        ;; Endeavor 152: a cluster-wide rendezvous.  On PTX this is exactly the fence Crisp
+        ;; already emits for cluster entry/exit (%gen-nvvm-cluster-barrier), so the lowering is
+        ;; one that has run on hardware in every clustered kernel, not a new one.
+        ;;
+        ;; EVERYWHERE ELSE IT DEGRADES TO sync-workgroup, and that degrade is EXACT rather than
+        ;; approximate: a cluster of one workgroup IS a workgroup, and NVIDIA's own
+        ;; cluster_group::sync() is barrier_arrive + barrier_wait with no __syncthreads(), so a
+        ;; cluster barrier already covers intra-workgroup convergence.  Verified in Phase 0.
+        (:sync-cluster
+         (if (and (eq *target-backend* :ptx)
+                  (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+             (%gen-nvvm-cluster-barrier builder)
+             (if (eq *target-backend* :ptx)
+                 (%ptx-barrier builder module)
+                 (%gen-spirv-control-barrier builder module))))
         (:sync-workgroup
          (if (eq *target-backend* :ptx)
              (%ptx-barrier builder module)
@@ -3369,14 +3771,15 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
           ((> width 64) (llvm-build-trunc builder val i64 "off_i64"))
           (t            (llvm-build-zext  builder val i64 "off_i64")))))
 
-(defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1)
+(defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1
+                                         &optional (mcast-mask 0) (mcast-p nil))
   "Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,
-   cachehint, flag_mcast, flag_cachehint) ->
-     cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes
-       [dst], [tensormap, {x, y}], [mbar];
-   DST-SMEM-PTR and MBAR-PTR are addrspace(3); TENSORMAP-PTR is a generic ptr to the 128-byte
-   CUtensorMap; COORD0/COORD1 are i32 tile-box origins (element units).  The trailing multicast
-   / cache-hint flags are immarg 0 (disabled) — Phase 2b may enable a cache hint."
+   cachehint, flag_mcast, flag_cachehint).
+
+   Endeavor 152: the intrinsic ALREADY carried the multicast operands -- an i16 destination
+   mask and an i1 enable flag -- which Endeavor 137 passed as immarg 0.  Multicast is therefore
+   plumbing those two, not a new instruction: with the flag set the emitted PTX gains
+   `.multicast::cluster` and the ctaMask operand."
   (let* ((fn-name  "llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d")
          (void     (llvm-void-type))
          (i8       (llvm-int8-type))
@@ -3388,15 +3791,15 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (ptr-gen  (llvm-pointer-type i8 0))
          (n        9)
          (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count n)))
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3) ;; dst smem
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) ptr-as3) ;; mbar
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 2) ptr-gen) ;; tensormap
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 3) i32)     ;; coord0
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 4) i32)     ;; coord1
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 5) i16)     ;; mcast mask
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 6) i64)     ;; cache hint
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 7) i1)      ;; flag mcast
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 8) i1)      ;; flag cachehint
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) ptr-as3)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 2) ptr-gen)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 3) i32)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 4) i32)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 5) i16)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 6) i64)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 7) i1)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 8) i1)
                         arr))
          (fn-type  (llvm-function-type void param-types n nil))
          (fn       (%spirv-get-or-create-fn module fn-name void param-types n))
@@ -3406,11 +3809,18 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (setf (cffi:mem-aref args 'llvm-value-ref 2) tensormap-ptr)
     (setf (cffi:mem-aref args 'llvm-value-ref 3) coord0)
     (setf (cffi:mem-aref args 'llvm-value-ref 4) coord1)
-    (setf (cffi:mem-aref args 'llvm-value-ref 5) (llvm-const-int i16 0 nil))
+    ;; Endeavor 152 step 10b: MCAST-MASK is an integer for a compile-time mask (the 1-D
+    ;; case) or an already-built i16 LLVM value for an N-D group, whose mask depends on the
+    ;; workgroup's position in the cluster.  Accepting both keeps every existing caller.
+    (setf (cffi:mem-aref args 'llvm-value-ref 5)
+          (if (integerp mcast-mask) (llvm-const-int i16 mcast-mask nil) mcast-mask))
     (setf (cffi:mem-aref args 'llvm-value-ref 6) (llvm-const-int i64 0 nil))
-    (setf (cffi:mem-aref args 'llvm-value-ref 7) (llvm-const-int i1 0 nil))
+    (setf (cffi:mem-aref args 'llvm-value-ref 7) (llvm-const-int i1 (if mcast-p 1 0) nil))
     (setf (cffi:mem-aref args 'llvm-value-ref 8) (llvm-const-int i1 0 nil))
-    (llvm-build-call2 builder fn-type fn args n "")))
+    (let ((call (llvm-build-call2 builder fn-type fn args n "")))
+      (cffi:foreign-free args)
+      (cffi:foreign-free param-types)
+      call)))
 
 (defun %gen-nvvm-tma-mbar-global (module &optional (count 1))
   "Creates a fresh per-CTA SLM mbarrier object: a module-level addrspace(3) global with an undef
@@ -3644,30 +4054,20 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-make-async-barrier) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 136: a :linear async barrier is a PHANTOM on PTX — commit_group/wait_group
-   need no object, so it emits nothing and returns const 0.  On SPIR-V it owns a
-   target(\"spirv.Event\") slot (OpGroupAsyncCopy chains its event through it); the slot
-   address rides the ulong barrier binding as an i64 (ptrtoint).  The legacy mbarrier.init
-   path below runs only if a future :block/mbarrier mode sets cell-node."
-  ;; SPIR-V :linear — allocate the event slot, initialize it to a null event.
+  "Endeavor 136: a :linear async barrier is a PHANTOM on PTX.  On SPIR-V it owns a
+   target(\"spirv.Event\") slot.
+   Endeavor 152: emits the cluster entry fence after init for a clustered kernel, and scales the
+   mbarrier init count by the cluster group extent for a :mode :cluster barrier."
   (when (semantic-make-async-barrier-spirv-event-p node)
     (let* ((ev-type (%spirv-event-type module))
            (slot    (llvm-build-alloca builder ev-type "async_evt_slot")))
       (llvm-build-store builder (crisp.llvm-bindings:llvm-const-null ev-type) slot)
       (return-from generate-node-ir
         (values (llvm-build-ptr-to-int builder slot (llvm-int64-type) "evt_slot_i") nil))))
-  ;; Endeavor 137 (Chapter 1.5) — :block on PTX (NVIDIA TMA).  Allocate a fresh per-CTA SLM
-  ;; mbarrier (a module addrspace(3) i64 global), init it once from an elected leader thread,
-  ;; and return its address as an i64 so the bulk copy (load-tile) and await can recover the
-  ;; mbarrier pointer via inttoptr.  Init count 1 = the single bulk-copy completion (Phase 2a
-  ;; shape; Phase 2b sets the transaction byte count via expect_tx).
   (when (and (eq (semantic-make-async-barrier-barrier-mode node) :block)
              (eq *target-backend* :ptx))
     (let* ((i64-type (llvm-int64-type))
            (i32-type (llvm-int32-type))
-           ;; Endeavor 138: ring-count > 1 allocates a RING of mbarriers; a plain barrier is a
-           ;; ring of 1.  We init EVERY slot (unrolled — ring depth is a small compile-time N)
-           ;; and return the BASE address, so (ring-get r i) = base + i*8.
            (ring-n   (max 1 (semantic-make-async-barrier-ring-count node)))
            (mbar-gv  (%gen-nvvm-tma-mbar-global module ring-n))
            (tid-x    (%gen-nvvm-read-tid-x builder module))
@@ -3676,23 +4076,30 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
            (tid-sum  (llvm-build-add builder (llvm-build-add builder tid-x tid-y "txy") tid-z "txyz"))
            (is-zero  (llvm-build-icmp builder +llvm-int-eq+ tid-sum (llvm-const-int i32-type 0 nil) "is_tid_0"))
            (init-bb  (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_init"))
-           (merge-bb (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_cont")))
+           (merge-bb (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_mbar_cont"))
+           ;; Endeavor 152: N for a :cluster barrier, else NIL.
+           (cl-ext   (gethash node *cluster-barrier-nodes*))
+           (base-cnt (max 1 (semantic-make-async-barrier-load-count node)))
+           (count    (if (and cl-ext (> cl-ext 1)) (* base-cnt cl-ext) base-cnt)))
+      (when (and cl-ext (> cl-ext 1))
+        (log:info "cluster barrier: :arrivals ~a x group extent ~a -> mbarrier init count ~a"
+                  base-cnt cl-ext count))
       (llvm-build-cond-br builder is-zero init-bb merge-bb)
       (llvm-position-builder-at-end builder init-bb)
-      ;; Init arrival count = #block loads sharing this barrier (each TMA load arrives once via
-      ;; mbarrier.arrive.expect_tx); a single-load barrier is count 1.  Every ring slot shares
-      ;; the count (each stage issues the same loads), so init all N.
-      (let ((cnt (llvm-const-int i32-type
-                                 (max 1 (semantic-make-async-barrier-load-count node)) nil)))
+      (let ((cnt (llvm-const-int i32-type count nil)))
         (dotimes (i ring-n)
           (%gen-nvvm-mbarrier-init-shared builder module
                                           (%gen-nvvm-mbar-slot-ptr builder mbar-gv i)
                                           cnt)))
-      ;; make the init visible to the async (TMA) proxy before any bulk copy is issued.
       (%gen-nvvm-fence-proxy-async-shared builder)
       (llvm-build-br builder merge-bb)
       (llvm-position-builder-at-end builder merge-bb)
       (%ptx-barrier builder module)
+      ;; Publish this workgroup's mbarrier init to its cluster PEERS.  Without it a multicast can
+      ;; land in a peer that has not run mbarrier.init yet — measured as `unspecified launch
+      ;; failure` on an H100.
+      (when (%module-has-cluster-p)
+        (%gen-nvvm-cluster-barrier builder))
       (return-from generate-node-ir
         (values (llvm-build-ptr-to-int builder mbar-gv i64-type "mbar_i") nil))))
   (unless (semantic-make-async-barrier-cell-node node)
@@ -3863,8 +4270,15 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 137 + 140 — one bulk TMA copy issued by a single elected leader.  Leader = laneid==0 (the
-   producer warp's lane 0) inside a warp-spec role block, else global tid==0."
+  "Endeavor 137 + 140 + 152 — one bulk TMA copy issued by a single elected leader.
+   Leader = laneid==0 (the producer warp's lane 0) inside a warp-spec role block, else global
+   tid==0.
+
+   Endeavor 152 splits the guard when the copy is a MULTICAST.  `expect_tx` announces the bytes
+   a workgroup EXPECTS TO RECEIVE, so every destination workgroup must run it on its own
+   mbarrier; only the leader WORKGROUP (ctarank 0) issues the copy that serves them all.
+   Keeping both inside one guard -- correct for an ordinary per-workgroup load -- would leave
+   every non-issuing workgroup waiting on a barrier that was never told to expect anything."
   (multiple-value-bind (dv di dst-ptr)
       (generate-node-ir (semantic-nvvm-tma-tile-copy-dst-aref-node node) builder module var-env
                         di-builder di-scope location-map)
@@ -3891,8 +4305,8 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                                                              di-builder di-scope location-map))))
              (coord0     (or (second coord-vals) (llvm-const-int i32-type 0 nil)))
              (coord1     (or (first coord-vals)  (llvm-const-int i32-type 0 nil)))
-             ;; Endeavor 140: role-aware leader.  WS role block -> laneid==0 (producer warp's lane 0);
-             ;; else global tid==0.
+             (mc-plan    (gethash node *tma-copy-multicast*))
+             (mc-extent  (and mc-plan (getf mc-plan :extent)))
              (ws-leader  (gethash node *tma-copy-ws-leader*))
              (is-leader  (if ws-leader
                              (llvm-build-icmp builder +llvm-int-eq+
@@ -3908,6 +4322,8 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (cont-bb    (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "tma_cont")))
         (llvm-build-cond-br builder is-leader issue-bb cont-bb)
         (llvm-position-builder-at-end builder issue-bb)
+        ;; expect_tx: EVERY workgroup, on its own mbarrier -- including the ones that will not
+        ;; issue the multicast, because they are still receiving the bytes.
         (let* ((len-val   (generate-node-ir (semantic-nvvm-tma-tile-copy-tile-length-node node) builder module var-env
                                             di-builder di-scope location-map))
                (elem-b    (semantic-nvvm-tma-tile-copy-elem-bytes node))
@@ -3915,7 +4331,40 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                (tx-bytes  (llvm-build-mul builder len-i32 (llvm-const-int i32-type elem-b nil) "tma_tx_bytes"))
                (mbar-addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "mbar_addr")))
           (%gen-nvvm-mbarrier-arrive-expect-tx builder mbar-addr tx-bytes))
-        (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1)
+        (cond
+          (mc-extent
+           ;; Multicast: exactly ONE workgroup per group issues.  Which workgroup, and which
+           ;; peers receive, both depend on the group's shape -- see %multicast-axis-plan.
+           (let* ((parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                  ;; Leader predicate is built in the CURRENT block, before the branch.
+                  ;; Step 11 REVERTED, and deliberately kept reachable.  Rotating the issuing
+                  ;; duty across the group was MEASURED on an H100 and did not recover the
+                  ;; multicast tax: clu2 +mc went 0.92x -> 0.88x at 2048 and 0.94x -> 0.91x at
+                  ;; 4096, while the no-multicast controls reproduced within 1-2%.  So rotation
+                  ;; costs (the predicate stops being loop-invariant) and buys nothing, which
+                  ;; falsifies the hypothesis that the tax was single-issuer serialisation.
+                  ;;
+                  ;; %gen-multicast-leader-pred still IMPLEMENTS rotation and is exercised by
+                  ;; passing a rotation source; omitting it selects the static leader, which is
+                  ;; what measurement says to use.  The capability is kept because the hypothesis
+                  ;; may yet be right for a DIFFERENT kernel -- one whose producer really is the
+                  ;; bottleneck -- and rebuilding it from scratch would be wasteful.
+                  (is-mc-leader (%gen-multicast-leader-pred builder module mc-plan))
+                  (mc-bb     (llvm-append-basic-block parent "tma_mcast_issue"))
+                  (mc-cont   (llvm-append-basic-block parent "tma_mcast_cont")))
+             (log:info "TMA copy: multicast group axes ~a of cluster ~a (serves ~a workgroups, pattern ~x)"
+                       (getf mc-plan :group-axes) (getf mc-plan :dims)
+                       (getf mc-plan :extent) (getf mc-plan :pattern))
+             (llvm-build-cond-br builder is-mc-leader mc-bb mc-cont)
+             (llvm-position-builder-at-end builder mc-bb)
+             ;; Mask is built INSIDE mc-bb -- the builder is positioned there, so the sreg
+             ;; reads and the shift land on the issuing path only.
+             (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1
+                                               (%gen-multicast-mask-value builder module mc-plan) t)
+             (llvm-build-br builder mc-cont)
+             (llvm-position-builder-at-end builder mc-cont)))
+          (t
+           (%gen-nvvm-tma-bulk-tensor-g2s-2d builder module dst-ptr mbar-ptr tmap-ptr coord0 coord1)))
         (llvm-build-br builder cont-bb)
         (llvm-position-builder-at-end builder cont-bb)
         (values nil nil)))))
@@ -4013,9 +4462,14 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 (defmethod generate-node-ir ((node semantic-signal) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 139 (Chapter 3) — (signal (ring-get empty slot)): a leader-guarded mbarrier.arrive on
-   the slot's mbarrier, releasing it to the producer.  One thread per warp (lane 0) arrives, so the
-   arrival count matches :arrivals (one release per consumer warp)."
+  "Endeavor 139 — (signal (ring-get empty slot)): a leader-guarded mbarrier.arrive on the slot's
+   mbarrier, releasing it to the producer.  One thread per warp (lane 0) arrives, so the arrival
+   count matches :arrivals.
+
+   Endeavor 152 — when the barrier is :mode :cluster the arrive is REMOTE and ALL-TO-ALL: this
+   workgroup arrives on EVERY workgroup's copy of the barrier, its own included, via mapa.  That
+   mirrors CUTLASS, and it is why the init count is scaled by the group extent: with N peers each
+   contributing A arrivals, the barrier must expect N*A."
   (let* ((i32-type  (llvm-int32-type))
          (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
          (barrier-i (generate-node-ir (semantic-signal-barrier-node node) builder module var-env
@@ -4025,10 +4479,19 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (is-leader (llvm-build-icmp builder +llvm-int-eq+ lane (llvm-const-int i32-type 0 nil) "sig_leader"))
          (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
          (arrive-bb (llvm-append-basic-block parent "sig_arrive"))
-         (cont-bb   (llvm-append-basic-block parent "sig_cont")))
+         (cont-bb   (llvm-append-basic-block parent "sig_cont"))
+         (extent    (gethash node *signal-cluster-extent*)))
     (llvm-build-cond-br builder is-leader arrive-bb cont-bb)
     (llvm-position-builder-at-end builder arrive-bb)
-    (%gen-nvvm-mbarrier-arrive-shared builder module mbar-ptr)
+    (cond
+      ((and extent (> extent 1))
+       (let ((addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "sig_mbar_addr")))
+         (dotimes (r extent)
+           (let* ((rank (llvm-const-int i32-type r nil))
+                  (peer (%gen-nvvm-mapa-shared-cluster builder addr rank)))
+             (%gen-nvvm-mbarrier-arrive-cluster builder peer)))))
+      (t
+       (%gen-nvvm-mbarrier-arrive-shared builder module mbar-ptr)))
     (llvm-build-br builder cont-bb)
     (llvm-position-builder-at-end builder cont-bb)
     (values (llvm-const-int (llvm-int64-type) 0 nil) nil)))
@@ -4190,7 +4653,7 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
               (list elem-llvm) (list init-val)))
 
 (defmethod generate-node-ir ((node semantic-coop-op) builder module var-env di-builder di-scope location-map)
-  "Endeavor 133: lower a cooperative-matrix op (fill / load / store)."
+  "Cooperative-matrix op: fill / load / store / prefetch / map / map2."
   (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
     (let ((kind (semantic-coop-op-kind node))
           (rows (semantic-coop-op-rows node))
@@ -4200,11 +4663,41 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
           (i64 (llvm-int64-type))
           (f32 (llvm-float-type)))
       (labels ((origin (dim-node dim)
-                 ;; element origin along an axis = (tile-id * DIM), computed at runtime:
-                 ;; generate the tile-id int node, sext to i64, multiply by the compile-time DIM.
                  (llvm-build-mul builder
                                  (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
-                                 (llvm-const-int i64 dim nil) "coop_orig")))
+                                 (llvm-const-int i64 dim nil) "coop_orig"))
+               (ptr-of (name)
+                 (or (gethash name var-env)
+                     (error 'crisp-compiler-error
+                            :message (format nil "cooperative-matrix map: no storage found for variable ~a." name)
+                            :source-location (semantic-coop-op-source-location node))))
+               (map-loop (primary-ptr per-elem)
+                 (let* ((i32 (llvm-int32-type))
+                        (coop-ty (%coop-type f32 rows cols use))
+                        (mat (llvm-build-load2 builder coop-ty primary-ptr "cm_map_mat"))
+                        (len (%coop-length builder module mat f32 rows cols use))
+                        (current-fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                        (i-alloca (llvm-build-alloca builder i32 "cm_i"))
+                        (check-block (llvm-append-basic-block current-fn "cm_check"))
+                        (body-block  (llvm-append-basic-block current-fn "cm_body"))
+                        (exit-block  (llvm-append-basic-block current-fn "cm_exit")))
+                   (llvm-build-store builder (llvm-const-int i32 0 0) i-alloca)
+                   (llvm-build-br builder check-block)
+                   (llvm-position-builder-at-end builder check-block)
+                   (let* ((i-val  (llvm-build-load2 builder i32 i-alloca "cm_i_v"))
+                          (cond-v (llvm-build-icmp builder +llvm-int-slt+ i-val len "cm_cond")))
+                     (llvm-build-cond-br builder cond-v body-block exit-block))
+                   (llvm-position-builder-at-end builder body-block)
+                   (let* ((i-val (llvm-build-load2 builder i32 i-alloca "cm_i_b"))
+                          (i-x   (llvm-build-sext builder i-val i64 "cm_i64")))
+                     (funcall per-elem i-x)
+                     (let* ((i-cur  (llvm-build-load2 builder i32 i-alloca "cm_i_c"))
+                            (i-next (llvm-build-add builder i-cur (llvm-const-int i32 1 0) "cm_i_n")))
+                       (llvm-build-store builder i-next i-alloca)))
+                   (unless (terminator-p (llvm-get-insert-block builder))
+                     (llvm-build-br builder check-block))
+                   (llvm-position-builder-at-end builder exit-block)
+                   (values nil nil))))
         (ecase kind
           (:fill
            (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
@@ -4225,9 +4718,6 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                  (%coop-tensor-ptr+stride builder tv orow ocol layout)
                (%coop-store builder module ptr mat stride f32 rows cols use layout)
                (values nil nil))))
-          ;; Endeavor 142 (Phase B): prefetch-tile -> Subgroup2DBlockPrefetchINTEL.  Like :store it is a
-          ;; void statement, but it WRITES no registers and READS no matrix value — just warms L1 for the
-          ;; ROWS x COLS block whose origin is (ty*rows, tx*cols).
           (:prefetch
            (let* ((tv   (gen (semantic-coop-op-tensor-node node)))
                   (orow (origin (semantic-coop-op-ty node) rows))
@@ -4235,4 +4725,42 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (multiple-value-bind (ptr stride)
                  (%coop-tensor-ptr+stride builder tv orow ocol layout)
                (%block-prefetch builder module ptr stride rows cols)
-               (values nil nil)))))))))
+               (values nil nil))))
+          (:map
+           (let* ((tgt (ptr-of (semantic-coop-op-ty node)))
+                  (temp-name (semantic-coop-op-tx node))
+                  (body-node (semantic-coop-op-tensor-node node))
+                  (t-alloca (llvm-build-alloca builder f32 "cm_elem")))
+             (map-loop tgt
+                       (lambda (i-x)
+                         (let* ((ep   (%coop-access-chain builder module tgt i-x))
+                                (elem (llvm-build-load2 builder f32 ep "cm_elem_v"))
+                                (benv (alexandria:copy-hash-table var-env)))
+                           (llvm-build-store builder elem t-alloca)
+                           (setf (gethash temp-name benv) t-alloca)
+                           (let ((res (generate-node-ir body-node builder module benv
+                                                        di-builder di-scope location-map)))
+                             (llvm-build-store builder res ep)))))))
+          (:map2
+           (let* ((adj-ptr (ptr-of (semantic-coop-op-ty node)))
+                  (prm-ptr (ptr-of (semantic-coop-op-tx node)))
+                  (temps   (semantic-coop-op-layout node))
+                  (tp-name (first temps))
+                  (ta-name (second temps))
+                  (body-node (semantic-coop-op-tensor-node node))
+                  (tp-alloca (llvm-build-alloca builder f32 "cm_prm"))
+                  (ta-alloca (llvm-build-alloca builder f32 "cm_adj")))
+             (map-loop adj-ptr
+                       (lambda (i-x)
+                         (let* ((ep-a (%coop-access-chain builder module adj-ptr i-x))
+                                (ep-p (%coop-access-chain builder module prm-ptr i-x))
+                                (v-a  (llvm-build-load2 builder f32 ep-a "cm_adj_v"))
+                                (v-p  (llvm-build-load2 builder f32 ep-p "cm_prm_v"))
+                                (benv (alexandria:copy-hash-table var-env)))
+                           (llvm-build-store builder v-p tp-alloca)
+                           (llvm-build-store builder v-a ta-alloca)
+                           (setf (gethash tp-name benv) tp-alloca)
+                           (setf (gethash ta-name benv) ta-alloca)
+                           (let ((res (generate-node-ir body-node builder module benv
+                                                        di-builder di-scope location-map)))
+                             (llvm-build-store builder res ep-a))))))))))))

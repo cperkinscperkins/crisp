@@ -146,7 +146,7 @@
       :get-global-linear-id :get-global-linear-size
       :get-total-threads :get-total-groups)
      (list 'ulong nil))
-    ((:sync-workgroup :sync-warp :mem-fence)
+    ((:sync-workgroup :sync-warp :mem-fence :sync-cluster)
      (list nil nil))
     ;; 110 — warp helpers (scalar uint, no dim arg)
     ((:warp-id :warp-lane :warp-count)
@@ -160,7 +160,7 @@
   (declare (ignore env context))
   (unless *in-dispatch-context*
     (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
-  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence))
+  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :sync-cluster))
     ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
     ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
     (%warp-spec-check-sync builtin-kw name-str location))
@@ -235,6 +235,7 @@
     (setf (gethash inner *volatile-var-reads*) t)
     inner))
 
+#|
 (defun initialize-expression-analyzers ()
   "Registers all expression analyzers; extended for 087-gpu-builtins.
    Endeavor 103 phase B: adds %volatile-read for the IGC workaround."
@@ -298,7 +299,74 @@
     ;; IGC SROA-aliasing workaround (endeavor 103 phase B): %volatile-read
     (setf (gethash '%volatile-read *expression-analyzers*)
           #'analyze-%volatile-read-expression)))
+|#
 
+
+(defun initialize-expression-analyzers ()
+  "Registers all expression analyzers; extended for 087-gpu-builtins.
+   Endeavor 103 phase B: adds %volatile-read for the IGC workaround."
+  (clrhash *expression-analyzers*)
+  (register-ops-analyzers)
+  (register-control-analyzers)
+  (register-struct-analyzers)
+  (register-mma-analyzers)         ; Endeavor 132 — MMA fundamentals (src/mma.lisp)
+  ;; ##(...) device vector literal
+  (setf (gethash 'crisp-vec-literal *expression-analyzers*)
+        #'analyze-crisp-dvec-literal)
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    ;; Component accessors x~ / y~ / z~ / w~
+    (dolist (name '("X~" "Y~" "Z~" "W~"))
+      (let ((sym-cl (intern name cl-pkg))
+            (sym-cc (intern name cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) #'analyze-dvec-component-ref)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) #'analyze-dvec-component-ref))))
+    ;; 083 matrix helpers: transpose, col, row, transpose!
+    (dolist (entry `(("TRANSPOSE"  . ,#'analyze-transpose-expression)
+                     ("COL"        . ,#'analyze-col-expression)
+                     ("ROW"        . ,#'analyze-row-expression)
+                     ("TRANSPOSE!" . ,#'analyze-transpose-bang-expression)))
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg))
+            (fn     (cdr entry)))
+        (setf (gethash sym-cl *expression-analyzers*) fn)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) fn))))
+    ;; 087 GPU built-in functions
+    (dolist (entry '(("GET-GLOBAL-ID"          :get-global-id)
+                     ("GET-LOCAL-ID"            :get-local-id)
+                     ("GET-WORKGROUP-ID"        :get-workgroup-id)
+                     ("GET-NUM-GROUPS"          :get-num-groups)
+                     ("GET-LOCAL-WORK-SIZE"     :get-local-work-size)
+                     ("GET-GLOBAL-WORK-SIZE"    :get-global-work-size)
+                     ("GET-GLOBAL-OFFSET"       :get-global-offset)
+                     ("GET-GLOBAL-ID-ABS"       :get-global-id-abs)
+                     ("GET-WORK-DIM"            :get-work-dim)
+                     ("GET-LOCAL-LINEAR-ID"     :get-local-linear-id)
+                     ("GET-LOCAL-LINEAR-SIZE"   :get-local-linear-size)
+                     ("GET-GLOBAL-LINEAR-ID"    :get-global-linear-id)
+                     ("GET-GLOBAL-LINEAR-SIZE"  :get-global-linear-size)
+                     ("GET-TOTAL-THREADS"       :get-total-threads)
+                     ("GET-TOTAL-GROUPS"        :get-total-groups)
+                     ("SYNC-WORKGROUP"          :sync-workgroup)
+                     ("SYNC-CLUSTER"            :sync-cluster)
+                     ("SYNC-WARP"               :sync-warp)
+                     ("MEM-FENCE"               :mem-fence)))
+      (let* ((name-str (first entry))
+             (kw       (second entry))
+             (fn       (let ((kw0 kw) (ns0 name-str))
+                         (lambda (expr env context location)
+                           (%analyze-gpu-builtin kw0 ns0 expr env context location)))))
+        (let ((sym-cl (intern name-str cl-pkg))
+              (sym-cc (intern name-str cc-pkg)))
+          (setf (gethash sym-cl *expression-analyzers*) fn)
+          (unless (eq sym-cl sym-cc)
+            (setf (gethash sym-cc *expression-analyzers*) fn)))))
+    ;; IGC SROA-aliasing workaround (endeavor 103 phase B): %volatile-read
+    (setf (gethash '%volatile-read *expression-analyzers*)
+          #'analyze-%volatile-read-expression)))
+          
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
 ;; ---------------------------------
@@ -1649,26 +1717,17 @@ in single-pass mode."
 ;; src/analysis/core.lisp
 
 (defun internal-def-function (name params declarations body location)
-  "Wrapper around internal-compile-function. Detects kernel entry-points and
-   binds *boundary-struct-params*, *boundary-array-params*, and
-   *in-dispatch-context* to enforce kernel-boundary rules.
-   Extended to capture global-size/local-size/num-groups dispatch declarations.
-   Extended (091) to handle (grid-function) declaration: sets dispatch context,
-   validates void return type.
-   Note: ANF pre-processing removed from forward pass — backward pass applies
-   its own anf-transform in %generate-backward-function-ast."
+  "Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the
+   body analysis.  Otherwise identical to the Phase 2 definition."
   (log:info "Analyzing function ~s" name)
-
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
     (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
            (is-entry-p (loop for d in declarations
-                             thereis (and (listp d)
-                                          (symbolp (first d))
+                             thereis (and (listp d) (symbolp (first d))
                                           (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
            (is-grid-fn-p (loop for d in declarations
-                               thereis (and (listp d)
-                                            (symbolp (first d))
+                               thereis (and (listp d) (symbolp (first d))
                                             (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
            (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
            (*boundary-struct-params*
@@ -1682,42 +1741,47 @@ in single-pass mode."
                  (loop for param in explicit-env
                        when (%array-type-p (parameter-def-type param))
                        collect (string-upcase (symbol-name (parameter-def-name param))))
-                 *boundary-array-params*)))
+                 *boundary-array-params*))
+           (*current-kernel-is-backward*
+             (and name (symbolp name)
+                  (let ((n (symbol-name name)))
+                    (and (>= (length n) 5)
+                         (string-equal "_GRAD" (subseq n (- (length n) 5)))))))
+           (cluster-dims nil))
       (when (and is-entry-p *boundary-struct-params*)
             (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
       (when (and is-entry-p *boundary-array-params*)
             (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
-
-      ;; Void return type enforcement for grid functions
       (when is-grid-fn-p
         (log:info "Compiling grid function ~a (dispatch context)" name)
         (%validate-grid-function-return-type return-type))
-
-      ;; Extract and store dispatch declarations for entry-point kernels
       (when is-entry-p
-        (let ((global-size-decl (find "GLOBAL-SIZE" declarations
-                                      :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                      :test #'string-equal))
-              (local-size-decl  (find "LOCAL-SIZE" declarations
-                                      :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                      :test #'string-equal))
-              (num-groups-decl  (find "NUM-GROUPS" declarations
-                                      :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                      :test #'string-equal)))
-          (when (or global-size-decl local-size-decl num-groups-decl)
+        (let* ((global-size-decl (find "GLOBAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (local-size-decl  (find "LOCAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (num-groups-decl  (find "NUM-GROUPS" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (cluster-size-decl (find "CLUSTER-SIZE" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal)))
+          (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
+          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl)
             (let ((dispatch-plist
                     (append (when global-size-decl (list :global-size global-size-decl))
                             (when local-size-decl  (list :local-size  local-size-decl))
-                            (when num-groups-decl  (list :num-groups  num-groups-decl)))))
+                            (when num-groups-decl  (list :num-groups  num-groups-decl))
+                            (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
+                            (when cluster-dims      (list :cluster-size cluster-dims)))))
               (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
               (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
-          ;; Endeavor 130 Phase 1: validate the workgroup (local-size) bounds against
-          ;; the active hardware profile, when one is selected and local-size is
-          ;; compile-time-known.  active-hardware-profile also errors here if the
-          ;; --hardware-profile flag names a profile that isn't registered.
           (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
-
-      (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
+      (let ((*current-kernel-cluster-dims* cluster-dims))
+        (internal-compile-function name explicit-env return-type params body declarations
+                                   location *compiler-context*)))))
 
 
 

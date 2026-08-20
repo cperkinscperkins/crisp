@@ -1,6 +1,396 @@
 ;;; src/analysis/control.lisp
 (in-package :crisp.compiler)
 
+;;; ---- migrated from overlays/crisp-compiler-overlay.lisp (endeavour 152) ----
+
+(defun %mmts-accumulator-map-target (reduction-body c-tile)
+  "The target symbol of a map-elements! applied to the ACCUMULATOR anywhere in REDUCTION-BODY,
+   or NIL.  The accumulator is either C-TILE itself or the accum binding of a via-tile in the
+   body.  Walks structurally; deliberately does not use an escape construct, because `return`
+   in :crisp.compiler is Crisp's RETURN macro, not cl:return."
+  (let ((acc-names (list c-tile)))
+    ;; Collect via-tile accum bindings that appear in this reduction body.
+    (labels ((collect (f)
+               (when (consp f)
+                 (when (and (%head-name-eq (first f) "MMA-ACCUMULATE-VIA-TILE")
+                            (>= (length f) 6)
+                            (consp (nth 5 f))
+                            (= (length (nth 5 f)) 1)
+                            (symbolp (first (nth 5 f))))
+                   (push (first (nth 5 f)) acc-names))
+                 (mapc #'collect f))))
+      (mapc #'collect reduction-body))
+    (labels ((find-map (f)
+               (cond
+                 ((not (consp f)) nil)
+                 ((and (%head-name-eq (first f) "MAP-ELEMENTS!")
+                       (>= (length f) 3)
+                       (symbolp (second f))
+                       (member (second f) acc-names))
+                  (second f))
+                 (t (some #'find-map f)))))
+      (some #'find-map reduction-body))))
+
+(defun %map-elements-fragment-fields (frag-type)
+  "The number of scalar register fields in a PTX accumulator record type, or NIL if FRAG-TYPE is
+   not one.  Covers the tf32 m16n8k8 fragments (acc/A 16x8 -> 4 regs, B 8x8 -> 2) and Hopper
+   wgmma accumulators (N/2 f32 registers per thread across the 128-thread warpgroup), which are
+   minted as flat f32 records by %ensure-wgmma-acc-type and so fit the fieldwise lowering as-is."
+  (or (case frag-type
+        (register-fragment-acc-f32-16x8 4)
+        (register-fragment-a-tf32-16x8  4)
+        (register-fragment-b-tf32-8x8   2)
+        (t nil))
+      (when (%wgmma-acc-type-p frag-type)
+        (floor (second (gethash frag-type *wgmma-acc-dims*)) 2))))
+
+(defun analyze-map-elements (expr env context location)
+  "(map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.
+
+   Endeavor 150.  TWO LOWERINGS, because the vendors represent a fragment differently:
+
+     PTX   a record of scalar fields, count known at compile time -> UNROLLED fieldwise onto
+           %construct-struct / %extract-struct-member, which already exist.
+     SPV   an opaque cooperative matrix whose per-invocation component count is a RUNTIME
+           value (OpCooperativeMatrixLengthKHR) -> a semantic-coop-op :map node that codegen
+           turns into a LOOP, rewriting each component through the variable's own alloca via
+           OpAccessChain.
+
+   Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register
+   or component holds, which is why this is portable and why layout-aware epilogues are out of
+   scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which
+   expands it to one of these per fragment."
+  (unless (= (length (cdr expr)) 2)
+    (error 'crisp-compiler-error
+           :message (format nil "map-elements!: expects exactly 2 arguments — (map-elements! <fragment-or-tile> #'<unary-fn>) — got ~a."
+                            (length (cdr expr)))
+           :source-location location))
+  (destructuring-bind (target fn-form) (cdr expr)
+    (%map-elements-check-unary fn-form location)
+    (let* ((node (analyze-expression target env context location))
+           (ty   (get-single-value-type node))
+           (nf   (%map-elements-fragment-fields ty))
+           (coop (%map-elements-coop-dims ty)))
+      (cond
+        ;; ---- NVIDIA / PTX: unrolled fieldwise rewrite ----
+        (nf
+         (analyze-expression
+          `(set! ,target
+                 (%construct-struct ,ty
+                                    ,@(loop for i below nf
+                                            collect (%map-elements-call
+                                                     fn-form
+                                                     `(%extract-struct-member ,target ,i)))))
+          env context location))
+        ;; ---- Intel / SPV: runtime-length component loop ----
+        (coop
+         (unless (symbolp target)
+           (error 'crisp-compiler-error
+                  :message (format nil "map-elements!: on SPIR-V the target must be a cooperative-matrix VARIABLE (its storage is what OpAccessChain indexes), got ~a."
+                                   target)
+                  :source-location location))
+         (destructuring-bind (rows cols use) coop
+           (let* ((temp (gensym "CMELEM"))
+                  (env2 (cons (make-parameter-def :name temp :type 'float :kind :local) env))
+                  (body-node (analyze-expression (%map-elements-call fn-form temp)
+                                                 env2 context location)))
+             (make-semantic-coop-op
+              :type 'void :kind :map
+              :ty target :tx temp :tensor-node body-node
+              :rows rows :cols cols :use use
+              :source-location location))))
+        (t
+         (error 'crisp-compiler-error
+                :message (format nil "map-elements!: unsupported target type ~a. Implemented for MMA fragments (PTX records and SPV cooperative matrices) and, via the tile explosion, whole register tiles."
+                                 ty)
+                :source-location location))))))
+
+(defun analyze-map-elements-vjp (expr env context location)
+  "(%map-elements-vjp! ADJ PRIMAL #'F_GRAD [IDX]) -> adj[i] <- F_GRAD(primal[i], adj[i]).
+
+   IDX is bookkeeping for the tile explosion (see %emit-map-vjp-explode) and is inert here: by
+   the time this analyzer runs, both operands are already single fragments."
+  (unless (member (length (cdr expr)) '(3 4))
+    (error 'crisp-compiler-error
+           :message (format nil "%map-elements-vjp!: expects 3 or 4 arguments (adj primal #'fn-grad [idx]), got ~a."
+                            (length (cdr expr)))
+           :source-location location))
+  (destructuring-bind (adj primal fn-form &optional idx) (cdr expr)
+    (declare (ignore idx))
+    (let* ((adj-node (analyze-expression adj env context location))
+           (ty       (get-single-value-type adj-node))
+           (nf       (%map-elements-fragment-fields ty))
+           (coop     (%map-elements-coop-dims ty))
+           (gname    (or (%map-elements-fn-name fn-form)
+                         (error 'crisp-compiler-error
+                                :message "%map-elements-vjp!: the gradient callee must be a #'NAME form."
+                                :source-location location))))
+      (cond
+        (nf
+         (analyze-expression
+          `(set! ,adj
+                 (%construct-struct ,ty
+                                    ,@(loop for i below nf
+                                            collect `(,gname (%extract-struct-member ,primal ,i)
+                                                             (%extract-struct-member ,adj ,i)))))
+          env context location))
+        (coop
+         (unless (and (symbolp adj) (symbolp primal))
+           (error 'crisp-compiler-error
+                  :message "%map-elements-vjp!: on SPIR-V both operands must be cooperative-matrix VARIABLES."
+                  :source-location location))
+         (destructuring-bind (rows cols use) coop
+           (let* ((tp (gensym "CMPRM"))
+                  (ta (gensym "CMADJ"))
+                  (env2 (list* (make-parameter-def :name tp :type 'float :kind :local)
+                               (make-parameter-def :name ta :type 'float :kind :local)
+                               env))
+                  (body-node (analyze-expression (list gname tp ta) env2 context location)))
+             (make-semantic-coop-op
+              :type 'void :kind :map2
+              :ty adj :tx primal :layout (list tp ta) :tensor-node body-node
+              :rows rows :cols cols :use use
+              :source-location location))))
+        (t
+         (error 'crisp-compiler-error
+                :message (format nil "%map-elements-vjp!: unsupported operand type ~a." ty)
+                :source-location location))))))
+
+(defun %parse-cluster-size-decl (decl kernel-name declarations)
+  "Validate a (cluster-size ...) declaration and return its dims as a 3-list (x y z),
+   padding absent axes with 1.  Returns NIL when DECL is NIL.
+
+   Refuses, with a message that says WHY rather than merely that a key is unknown:
+     * :derive-from  -- cluster-size is consumed at CODEGEN, so its shape cannot come
+                        from a host-side runtime value.  Every sibling declaration in
+                        the enqueue family is advisory; this one is not.
+     * a missing or non-integer :set-to
+     * rank > 3, or rank exceeding an explicit :tile-shape
+     * extent > 8 (the portable maximum; 16 needs a non-portable opt-in the hoist
+                   does not yet emit)"
+  (when decl
+    (let* ((opts   (cdr decl))
+           (set-to (getf opts :set-to))
+           (derive (getf opts :derive-from)))
+      (when derive
+        (error 'crisp-compiler-error
+               :message (format nil "cluster-size does not support :derive-from (kernel ~a).  Unlike global-size / local-size, which only advise the hoisting code, cluster-size is consumed at code generation -- it decides the multicast mask, the leader predicate, and the cluster dimensions baked into the PTX -- so its shape cannot be computed from a host-side runtime value.  Use :set-to with a compile-time literal."
+                                kernel-name)))
+      (unless set-to
+        (error 'crisp-compiler-error
+               :message (format nil "cluster-size requires :set-to (kernel ~a), e.g. (cluster-size :set-to 2) or (cluster-size :set-to (2 1))."
+                                kernel-name)))
+      ;; Accept the scalar shorthand, following (local-size :set-to 256).  Tolerate a
+      ;; quoted list too -- the docs show both (2 1) and '(2 2) in the wild.
+      (let* ((raw  (if (and (consp set-to) (eq (car set-to) 'quote)) (second set-to) set-to))
+             (dims (if (listp raw) raw (list raw))))
+        (unless (and dims (every (lambda (d) (and (integerp d) (plusp d))) dims))
+          (error 'crisp-compiler-error
+                 :message (format nil "cluster-size :set-to must be a positive compile-time integer or a list of them (kernel ~a), got ~S."
+                                  kernel-name set-to)))
+        (when (> (length dims) 3)
+          (error 'crisp-compiler-error
+                 :message (format nil "cluster-size has rank ~a (kernel ~a); the maximum is 3."
+                                  (length dims) kernel-name)))
+        ;; Rank must agree with an EXPLICIT :tile-shape, mirroring the existing rule that
+        ;; global-size and local-size must agree in arity.  Axes beyond the declared rank
+        ;; default to 1, so an UNDER-specified cluster rank is legal -- only an
+        ;; over-specified one is an error.
+        ;;
+        ;; TODO(152): an INFERRED :tile-shape (Endeavor 143, %ts-maybe-infer-tile-shape)
+        ;; is not visible here -- inference runs during body analysis, after this point.
+        ;; A kernel that relies on inference therefore escapes this check.  Move the rank
+        ;; comparison to a post-inference pass when the multicast axis analysis lands,
+        ;; since that pass needs the same information.
+        (let* ((gs (find "GLOBAL-SIZE" declarations
+                         :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                         :test #'string-equal))
+               (ts (and gs (getf (cdr gs) :tile-shape))))
+          (when (and ts (listp ts) (> (length dims) (length ts)))
+            (error 'crisp-compiler-error
+                   :message (format nil "cluster-size rank ~a exceeds the :tile-shape rank ~a (kernel ~a).  Cluster axes are interpreted in the tile grid's axis order, so a cluster axis with no corresponding tile axis has nothing to cluster along.  Axes beyond the tile-shape rank default to 1, so a SHORTER cluster-size is fine; a longer one is not."
+                                    (length dims) (length ts) kernel-name))))
+        (let ((total (reduce (function *) dims)))
+          (when (> total 8)
+            (error 'crisp-compiler-error
+                   :message (format nil "cluster-size ~a gives ~a workgroups per cluster (kernel ~a); the portable maximum is 8.  Larger clusters (16 on Hopper) require cudaFuncAttributeNonPortableClusterSizeAllowed to be set at launch, which Crisp does not yet emit."
+                                    dims total kernel-name))))
+        ;; Normalise to 3 axes so codegen and the hoist never re-derive the padding.
+        (let ((d (copy-list dims)))
+          (loop while (< (length d) 3) do (setf d (append d (list 1))))
+          (log:info "Kernel ~a: cluster-size ~a -> normalised dims ~a" kernel-name dims d)
+          d)))))
+
+(defun %effective-cluster-dims (dispatch declared)
+  "The cluster dims codegen ACTUALLY built for this kernel, as recorded by
+   %apply-cluster-dims-attribute.
+
+   Falls back to (1 1 1) when no codegen pass ever stamped one -- which is the honest
+   answer, since a kernel whose PTX carries no cluster directive forms clusters of one.
+   DECLARED is accepted for symmetry with the caller but deliberately NOT used as a
+   fallback: reporting the declaration as though it were the outcome is the exact
+   confusion this field exists to prevent."
+  (declare (ignore declared))
+  (or (getf dispatch :effective-cluster-size) (list 1 1 1)))
+
+(defvar *ts-grid-bindings* nil
+  "The enclosing tile-stride's loop variables, IN AXIS ORDER, during analysis of its body.
+   Endeavor 152: the multicast eligibility test needs to know which symbol is bound to a
+   clustered axis.  Nothing else tracked this.")
+
+(defvar *current-kernel-cluster-dims* nil
+  "The normalised (x y z) cluster dims of the kernel currently being analysed, or NIL.
+   Bound by internal-def-function so a load-tile deep in the body can consult it without
+   having to rediscover which kernel it is inside.")
+
+(defun %form-mentions-symbol-p (form sym)
+  "T if SYM appears anywhere in FORM.  Symbol identity, not name equality -- a coordinate
+   built from a DIFFERENT variable that happens to share a name is a different variable."
+  (cond
+    ((null form) nil)
+    ((symbolp form) (eq form sym))
+    ((consp form) (or (%form-mentions-symbol-p (car form) sym)
+                      (%form-mentions-symbol-p (cdr form) sym)))
+    (t nil)))
+
+(defun %multicast-requested-p (key-args)
+  "T if KEY-ARGS asks for a multicast.
+
+   Crisp has no boolean literal yet -- `true` and `false` are still pending -- so the value
+   arrives as a bare symbol and a naive non-NIL test would read `:multicast false` as a
+   REQUEST.  Treat NIL and anything named FALSE as 'no'.  When the real literals land this
+   predicate keeps working unchanged."
+  (let ((v (%extract-key-arg key-args :multicast nil)))
+    (and v
+         (not (and (symbolp v) (string-equal (symbol-name v) "FALSE"))))))
+
+(defvar *multicast-cluster-dims* nil
+  "Bound by analyze-load-tile-expression around its delegation when the load carried a
+   validated :multicast, so the TMA analyzer can tag the node it builds.")
+
+(defun %multicast-1d-extent (dims)
+  "The extent of a 1-D cluster, or NIL if DIMS clusters more than one axis.
+   v1 supports only 1-D: the mask is then cluster-wide constant."
+  (let ((nontrivial (remove-if (lambda (d) (= d 1)) dims)))
+    (cond ((null nontrivial) nil)
+          ((= (length nontrivial) 1) (first nontrivial))
+          (t nil))))
+
+(defun %mbarrier-mode-p (mode)
+  "T if MODE denotes a real mbarrier object.  :linear is the backend's group-async-copy handle
+   (a phantom on PTX); :block and :cluster are both genuine mbarriers and differ only in reach."
+  (and mode (member mode (list :block :cluster)) t))
+
+(defvar *cluster-barrier-bindings* (make-hash-table :test 'eq)
+  "Barrier binding SYMBOL (or ring symbol) -> T when declared :mode :cluster.
+   Parallel to *async-barrier-modes*, which records the OBJECT kind; this records the REACH.")
+
+(defun %cluster-barrier-p (barrier-form)
+  "T if BARRIER-FORM names a barrier declared :mode :cluster.
+   Mirrors async-barrier-mode-of: accepts the barrier SYMBOL or a (ring-get RING i) form,
+   in which case the RING's declaration governs (every slot shares it)."
+  (let ((ring (%barrier-ring-form-p barrier-form)))
+    (or (and ring (gethash ring *cluster-barrier-bindings*))
+        (and (symbolp barrier-form) (gethash barrier-form *cluster-barrier-bindings*))
+        nil)))
+
+(defvar *current-kernel-is-backward* nil
+  "T while analysing an AD-generated backward kernel (its name ends _GRAD).
+   Lets a check tell 'the user wrote this' from 'the differentiator generated this'.")
+
+(defun %cluster-axis-strides (dims)
+  "Rank strides for a cluster shape.  PTX linearises %cluster_ctarank with x fastest, and
+   Crisp's cluster-size list is in that same order, so stride[0]=1, stride[1]=d0, ..."
+  (let ((s 1))
+    (loop for d in dims collect (prog1 s (setf s (* s d))))))
+
+(defun %cluster-axis-sreg (axis)
+  "NVVM special-register name for a cluster axis index."
+  (nth axis (list "cluster.ctaid.x" "cluster.ctaid.y" "cluster.ctaid.z")))
+
+(defun %multicast-mask-pattern (dims group-axes)
+  "The ctaMask for a multicast group anchored at the cluster origin, as a compile-time integer.
+
+   Every combination of coordinates on the GROUP axes contributes one bit, at that
+   combination's linearised rank.  Shifting this pattern by a workgroup's position on the
+   NON-group axes slides it onto that workgroup's own slice of the cluster."
+  (let ((strides (%cluster-axis-strides dims))
+        (pattern 0))
+    (labels ((walk (axes acc)
+               (if (null axes)
+                   (setf pattern (logior pattern (ash 1 acc)))
+                   (let ((a (first axes)))
+                     (dotimes (c (nth a dims))
+                       (walk (rest axes) (+ acc (* c (nth a strides)))))))))
+      (walk group-axes 0))
+    pattern))
+
+(defun %multicast-group-extent (dims group-axes)
+  "How many workgroups one multicast serves: the product of the group axes' extents."
+  (reduce (function *) (mapcar (lambda (a) (nth a dims)) group-axes) :initial-value 1))
+
+(defun %multicast-axis-plan (dims grid-list location &key (errorp t))
+  "Classify each clustered axis as INVARIANT (the tile is identical across it, so the axis
+   joins the multicast group) or VARYING (the workgroups want different tiles).
+
+   Returns a plist (:dims :group-axes :extent :pattern), or NIL when ERRORP is false and the
+   request cannot be honoured.  This is the SINGLE place the group is decided; the validator,
+   the analyzer and codegen all read its answer rather than each re-deriving it."
+  (let ((group-axes '())
+        (varying '()))
+    (loop for d in dims
+          for i from 0
+          when (> d 1)
+          do (let ((axis-var (nth i *ts-grid-bindings*)))
+               (cond
+                 ((null axis-var)
+                  (when errorp
+                    (error 'crisp-compiler-error
+                           :message (format nil ":multicast could not be verified: the cluster is ~a (extent ~a on axis ~a) but no enclosing tile-stride binds a loop variable for that axis, so there is nothing to prove the tile is identical across the cluster against.  Use :multicast only on a load inside a tile-stride whose rank covers the cluster."
+                                            dims d i)
+                           :source-location location))
+                  (return-from %multicast-axis-plan nil))
+                 ((%form-mentions-symbol-p grid-list axis-var) (push i varying))
+                 (t (push i group-axes)))))
+    (setf group-axes (nreverse group-axes)
+          varying    (nreverse varying))
+    (when (null group-axes)
+      (when errorp
+        (error 'crisp-compiler-error
+               :message (format nil ":multicast is not possible here -- the tile coordinates ~a vary along EVERY clustered axis ~a, so each workgroup of the cluster wants a different tile and one fetch cannot serve them; multicasting would deliver one workgroup's tile to another.  Drop :multicast, or cluster on an axis this load does not vary along (in a matmul, A does not vary along N and B does not vary along M)."
+                              grid-list varying)
+               :source-location location))
+      (return-from %multicast-axis-plan nil))
+    (let ((plan (list :dims dims
+                      :group-axes group-axes
+                      :extent  (%multicast-group-extent dims group-axes)
+                      :pattern (%multicast-mask-pattern dims group-axes))))
+      (log:info "multicast plan: cluster ~a, invariant axes ~a (group of ~a), mask pattern ~x"
+                dims group-axes (getf plan :extent) (getf plan :pattern))
+      plan)))
+
+(defun %validate-multicast-request (grid-list location)
+  "Refuse a `:multicast` that cannot be honoured, naming the reason.
+
+   `:multicast` is an ASSERTION, not a directive: the user says 'I expect this load to
+   multicast' and the compiler either does it or refuses.  A load that quietly declined would
+   be a silent bandwidth regression no correctness test can see -- which is why the key is
+   explicit rather than inferred.
+
+   Endeavor 152 step 10a: the axis classification now lives in %multicast-axis-plan, which
+   accepts an N-D cluster provided the tile is invariant along at least one clustered axis."
+  (let ((dims *current-kernel-cluster-dims*))
+    (unless dims
+      (error 'crisp-compiler-error
+             :message ":multicast requires the kernel to declare a cluster.  Add (cluster-size :set-to N) to the kernel's declare block -- without a cluster there is no group of workgroups to deliver the tile to, so the request cannot be honoured.  This is a hard error rather than a silent fallback because a load-tile that quietly declines to multicast still computes the correct answer, at exactly the bandwidth the declaration was meant to avoid."
+             :source-location location))
+    (unless (> (reduce (function *) dims) 1)
+      (error 'crisp-compiler-error
+             :message (format nil ":multicast requires a cluster of more than one workgroup, but cluster-size is ~a.  A cluster of one has nobody to deliver to." dims)
+             :source-location location))
+    (%multicast-axis-plan dims grid-list location :errorp t)))
+
+
 (defun ensure-branch-compatibility (then-node else-node location)
   "Unifies types of then/else branches. Returns (values unified-type new-then new-else)."
   (let ((t-type (semantic-node-type then-node)))
@@ -510,6 +900,7 @@
                      op-name)
           :source-location location)))
 
+#|
 (defun %warp-spec-check-sync (builtin-kw name-str location)
   "Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective
    (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped
@@ -519,6 +910,20 @@
       (when (eq builtin-kw :sync-workgroup)
         (error 'crisp-compiler-error
           :message "sync-workgroup cannot appear inside a with-warp-specialization role block — it is a workgroup collective and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering."
+          :source-location location))
+      (%tlc-check-not-divergent name-str location)))
+      |#
+
+
+(defun %warp-spec-check-sync (builtin-kw name-str location)
+  "Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective
+   (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped
+   ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, defer to the normal
+   thread-divergent check."
+  (if *in-warp-spec-block*
+      (when (member builtin-kw '(:sync-workgroup :sync-cluster))
+        (error 'crisp-compiler-error
+          :message (format nil "~a cannot appear inside a with-warp-specialization role block — it is a COLLECTIVE and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering." name-str)
           :source-location location))
       (%tlc-check-not-divergent name-str location)))
 
@@ -575,7 +980,11 @@
          (analyze-expression (%expand-load-tile-at-form expr location)
                              env context location))))))
 
-(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+;;; Endeavour 152: this function was an OVERLAY WRAPPER around the original definition,
+;;; captured with (fdefinition ...) at load time.  That trick cannot survive the move into
+;;; src -- the capture would find the wrapper itself.  The original body is preserved
+;;; verbatim as %analyze-nvvm-tma-load-tile-at-base, and the wrapper below calls it directly.
+(defun %analyze-nvvm-tma-load-tile-at-base (expr env context location)
   "Endeavor 137 (Chapter 1.5, Phase 2) — analyze (load-tile-at SRC TILE (ORIGIN...) :barrier BAR)
    for a NVIDIA :block barrier into a semantic-nvvm-tma-tile-copy.  Codegen emits one bulk
    cp.async.bulk.tensor copy issued by an elected leader, tracked by BAR's mbarrier.  We build
@@ -626,6 +1035,16 @@
       (when *in-warp-spec-block*
         (setf (gethash node *tma-copy-ws-leader*) t))
       node)))
+
+(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+  "Endeavor 152 wrapper: builds the copy node as before, then tags it as a multicast when the
+   enclosing load-tile validated one.  Wrapped rather than copied -- this adds two lines to a
+   45-line analyzer."
+  (let ((node (%analyze-nvvm-tma-load-tile-at-base expr env context location)))
+    (when (and node *multicast-cluster-dims*)
+      (log:info "load-tile: tagging TMA copy node as multicast across ~a" *multicast-cluster-dims*)
+      (setf (gethash node *tma-copy-multicast*) *multicast-cluster-dims*))
+    node))
 
 (defun %expand-spirv-async-load-tile-at-form (expr location)
   "Endeavor 136 (Chapter 1, SPV) — async load-tile-at via OpGroupAsyncCopy.
@@ -2482,7 +2901,9 @@
 (defun analyze-tile-stride-expression (expr env context location)
   "Analyzes (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
    Validates tensor-arity-vs-bindings and tile-arity-vs-bindings, then
-   delegates codegen via %expand-tile-stride-form."
+   delegates codegen via %expand-tile-stride-form.
+   Endeavor 152: publishes BINDINGS as *ts-grid-bindings* so a load-tile in the body can
+   test whether its coordinates vary along a clustered axis."
   (multiple-value-bind (strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)
       (%tile-stride-parse expr)
     (declare (ignore layout-tag body-forms))
@@ -2518,8 +2939,9 @@
                            "tile-stride: tile size-list has ~A dimension(s) but tensor has ~A dimension(s)"
                          (length tile-spec) n)
               :source-location location))
-      (analyze-expression (%expand-tile-stride-form expr ct location)
-                          env context location))))
+      (let ((*ts-grid-bindings* bindings))
+        (analyze-expression (%expand-tile-stride-form expr ct location)
+                            env context location)))))
 
 
 (defun %hardware-stride-parse (expr)
@@ -3188,6 +3610,12 @@
             (%detect-bare-load-store-tile-in-form sub path))))))))
 
 (defun analyze-load-tile-expression (expr env context location)
+  "Endeavor 152: validates a `:multicast` assertion against the kernel's cluster shape and the
+   enclosing tile-stride's axis bindings, then delegates to load-tile-at.
+
+   Step 10a: what gets published to the TMA analyzer is now the multicast AXIS PLAN, not the
+   raw cluster dims -- codegen needs to know WHICH axes form the group, since in an N-D cluster
+   the group is a slice rather than the whole cluster."
   (let* ((src (second expr))
          (tile (third expr))
          (grid-list (fourth expr))
@@ -3195,17 +3623,23 @@
          (cl-pkg (find-package :crisp-language))
          (mul-sym (intern "*" cl-pkg))
          (extents-sym (intern "EXTENTS~" cl-pkg))
-         (aref-sym (intern "~" cl-pkg)))
+         (aref-sym (intern "~" cl-pkg))
+         (mcast-p (%multicast-requested-p key-args))
+         (mc-plan nil))
     (unless (and (listp grid-list) (>= (length grid-list) 1))
       (error 'crisp-compiler-error :message "load-tile: origin must be a non-empty list of grid coords" :source-location location))
+    (when mcast-p (setf mc-plan (%validate-multicast-request grid-list location)))
     (let ((pixel-coords
            (loop for g in grid-list
                  for i from 0
                  collect (list mul-sym (list (intern "TO-ULONG" cl-pkg) g)
                                (list aref-sym (list extents-sym tile) i)))))
-      (analyze-load-tile-at-expression
-       (append (list (intern "LOAD-TILE-AT" cl-pkg) src tile pixel-coords) key-args)
-       env context location))))
+      (let ((delegated-keys (loop for (k v) on key-args by (function cddr)
+                                  unless (eq k :multicast) append (list k v)))
+            (*multicast-cluster-dims* mc-plan))
+        (analyze-load-tile-at-expression
+         (append (list (intern "LOAD-TILE-AT" cl-pkg) src tile pixel-coords) delegated-keys)
+         env context location)))))
 
 (defun analyze-store-tile-expression (expr env context location)
   (let* ((tile (second expr))
@@ -3262,16 +3696,22 @@
        env context location))))
 
 (defun %parse-async-barrier-keys (expr location)
-  "Parse (make-async-barrier &key mode) -> barrier-mode (Endeavor 137).
-   Omitted :mode is arch-automatic (resolved elsewhere; defaults to :linear here).  :type was
-   removed with def-topology.  Validates the mode and gates :block per backend/arch."
+  "Parse (make-async-barrier &key mode) -> barrier-mode.
+
+   Step 10c: :mode :cluster accepts an N-D cluster; arrivals are cluster-wide (see below).
+
+   Endeavor 152: `:cluster` is accepted, gated, and then RETURNED AS :block — a cluster barrier
+   is a workgroup-local mbarrier that peers may additionally arrive on, so every existing
+   consumer of the mode should treat it as :block.  The reach is recorded separately, against
+   this barrier's let-binding name, in *cluster-barrier-bindings*."
   (let ((keys (rest expr))
-        (bmode :linear))
+        (bmode :linear)
+        (clusterp nil))
     (unless (evenp (length keys))
       (error 'crisp-compiler-error
         :message "make-async-barrier: keys must be :mode value pairs"
         :source-location location))
-    (loop for (k v) on keys by #'cddr do
+    (loop for (k v) on keys by (function cddr) do
       (cond
         ((eq k :mode) (setf bmode v))
         ((eq k :type)
@@ -3281,27 +3721,75 @@
         (t (error 'crisp-compiler-error
              :message (format nil "make-async-barrier: unknown key ~S (expected :mode)" k)
              :source-location location))))
-    (unless (member bmode '(:linear :block))
+    (unless (member bmode (list :linear :block :cluster))
       (error 'crisp-compiler-error
-        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy) or :block (CuTensorMap)" bmode)
+        :message (format nil "make-async-barrier :mode ~S unknown — expected :linear (cp.async / OpGroupAsyncCopy), :block (a workgroup-local mbarrier) or :cluster (an mbarrier peers may arrive on)" bmode)
         :source-location location))
-    ;; Endeavor 137: :block is NVIDIA-CuTensorMap only.  Gated on real backends (:ptx/:spirv);
-    ;; the GENERIC compile-check pass has no arch and lowers :block to the sync fallback.
+    (when (eq bmode :cluster)
+      ;; A BACKWARD kernel DOWNGRADES rather than refusing.  The AD walk replays the forward's
+      ;; bindings, so the barrier appears in the _GRAD twin -- but cluster-size is a DISPATCH
+      ;; declaration and deliberately does NOT propagate (endeavour 146: a schedule is not
+      ;; mathematics).  A backward therefore legitimately has a cluster barrier and legitimately
+      ;; has no cluster, and a workgroup-local mbarrier is exactly right: it runs no multicast
+      ;; pipeline and has no peers.  Same principle as %ad-canonicalize-wgmma substituting sync
+      ;; MMA for wgmma.
+      ;;
+      ;; THIS BRANCH WAS LOST AND RESTORED.  Step 10c rebuilt this function from a copy that
+      ;; predated it, which made every :mode :cluster RING spec fail under --differentiate on
+      ;; the endeavour's own refusal.  It must stay ahead of that refusal.
+      (when *current-kernel-is-backward*
+        (log:info "backward kernel: downgrading :mode :cluster to :block (a schedule does not propagate into a derivative)")
+        (setf bmode :block)))
+    (when (eq bmode :cluster)
+      ;; :cluster asserts that PEERS EXIST.  With no cluster a remote arrive resolves to the
+      ;; signaller's own barrier — releasing something nobody waits on while the intended peer
+      ;; waits forever.  At extent 1 the two addresses coincide, so such a kernel passes small
+      ;; tests and hangs at scale; hence a hard error rather than a degrade.
+      (unless (and *current-kernel-cluster-dims*
+                   (> (reduce (function *) *current-kernel-cluster-dims*) 1))
+        (error 'crisp-compiler-error
+          :message ":mode :cluster requires the kernel to declare a cluster of more than one workgroup.  Add (cluster-size :set-to N) to the declare block.  A cluster barrier's whole meaning is that PEER workgroups may arrive on it; with no peers the remote arrive would resolve to this workgroup's own barrier, releasing a barrier nobody is waiting on."
+          :source-location location))
+      ;; Endeavor 152 step 10c: the 1-D restriction is LIFTED.  A :mode :cluster barrier now
+      ;; collects arrivals from the WHOLE cluster regardless of its rank, which is deliberately
+      ;; the simpler of the two available answers.  The precise alternative -- scoping each
+      ;; barrier to the multicast group that feeds it -- is not merely more code: in a 2-D
+      ;; matmul cluster A's group is a ROW and B's is a COLUMN, so a single shared `empty` ring
+      ;; cannot be scoped to both and the kernel would need one ring per operand.  Full-cluster
+      ;; arrivals over-synchronise slightly (a row neighbour waits on a column neighbour that
+      ;; never touched its slot) and cost nothing in correctness.  If that shows up in the
+      ;; benchmark, per-operand rings are the contained follow-up to measure against it.
+      (setf clusterp t
+            bmode :block))
+    ;; :block (which :cluster has now become) is NVIDIA-only.
     (when (eq bmode :block)
       (case crisp.compiler:*target-backend*
         (:spirv
          (error 'crisp-compiler-error
-           :message ":mode :block is not supported on Intel / SPIR-V — Intel's fast 2D path (LSC block loads) loads global into registers directly and is not a barrier mode. Use :mode :linear, or the direct block-load path."
+           :message ":mode :block is not supported on Intel / SPIR-V — Intel's fast 2D path (LSC block loads) loads global into registers directly and is not a barrier mode, and Intel has no workgroup-cluster hardware at all, so :mode :cluster is unavailable for the same reason. Use :mode :linear, or the direct block-load path."
            :source-location location))
         (:ptx
          (unless (%arch-supports-block-p (resolved-target-arch))
            (error 'crisp-compiler-error
-             :message (format nil ":mode :block needs a Hopper-or-newer NVIDIA arch (sm_90+) for TMA / CuTensorMap; got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
+             :message (format nil ":mode :block / :cluster needs a Hopper-or-newer NVIDIA arch (sm_90+); got ~(~a~). Pass --ir-target-arch=sm_90 (or later)."
                               (resolved-target-arch))
              :source-location location)))))
+    ;; Record the reach against this barrier's binding name.  The let analyzer set
+    ;; current-binding-name before analyzing us, which is the same hook *async-barrier-modes*
+    ;; uses for the mode itself.
+    (when clusterp
+      (let ((bname (and *compiler-context*
+                        (compiler-context-current-binding-name *compiler-context*))))
+        (when bname
+          (log:info "barrier ~a declared :mode :cluster (peers may arrive)" bname)
+          (setf (gethash bname *cluster-barrier-bindings*) t))))
     bmode))
 
-(defun analyze-make-async-barrier-expression (expr env context location)
+;;; Endeavour 152: this function was an OVERLAY WRAPPER around the original definition,
+;;; captured with (fdefinition ...) at load time.  That trick cannot survive the move into
+;;; src -- the capture would find the wrapper itself.  The original body is preserved
+;;; verbatim as analyze-make-async-barrier-expression-base, and the wrapper below calls it directly.
+(defun analyze-make-async-barrier-expression-base (expr env context location)
   "Endeavor 136/137: (make-async-barrier &key mode).  :linear is a PHANTOM barrier on PTX —
    commit_group/wait_group need no object, so we codegen a constant 0; on SPV it owns a
    target(\"spirv.Event\") slot to chain OpGroupAsyncCopy events.  The node carries :mode so
@@ -3324,6 +3812,19 @@
        :spirv-event-p (and (eq crisp.compiler:*target-backend* :spirv) (eq bmode :linear))
        :type 'ulong
        :source-location location))))
+
+(defun analyze-make-async-barrier-expression (expr env context location)
+  "Endeavor 152 wrapper: builds the barrier node as before, then records the cluster group
+   extent against it when the binding was declared :mode :cluster, so codegen can scale the
+   mbarrier init count."
+  (let ((node (analyze-make-async-barrier-expression-base expr env context location))
+        (bname (and context (compiler-context-current-binding-name context))))
+    (when (and node bname (gethash bname *cluster-barrier-bindings*))
+      (let ((ext (and *current-kernel-cluster-dims*
+                      (reduce (function *) *current-kernel-cluster-dims*))))
+        (when (and ext (> ext 1))
+          (setf (gethash node *cluster-barrier-nodes*) ext))))
+    node))
 
 (defun %check-barrier-ring-arrivals (arrivals bmode location)
   "Endeavor 138: validate :arrivals on a barrier ring.  Positive compile-time integer, and
@@ -3358,7 +3859,11 @@
                  "  e.g. (make-async-barrier-ring :ring-count 3 :mode " (string-downcase (symbol-name bmode)) " :arrivals 2)")
       :source-location location)))
 
-(defun analyze-make-async-barrier-ring-expression (expr env context location)
+;;; Endeavour 152: this function was an OVERLAY WRAPPER around the original definition,
+;;; captured with (fdefinition ...) at load time.  That trick cannot survive the move into
+;;; src -- the capture would find the wrapper itself.  The original body is preserved
+;;; verbatim as analyze-make-async-barrier-ring-expression-base, and the wrapper below calls it directly.
+(defun analyze-make-async-barrier-ring-expression-base (expr env context location)
   "Endeavor 138 (Chapter 2): (make-async-barrier-ring &key ring-count mode arrivals) -> a ring
    of RING-COUNT async barriers for pipelining.
 
@@ -3436,6 +3941,17 @@
        :type 'ulong
        :source-location location))))
 
+(defun analyze-make-async-barrier-ring-expression (expr env context location)
+  "Endeavor 152 wrapper — as above, for a barrier RING."
+  (let ((node (analyze-make-async-barrier-ring-expression-base expr env context location))
+        (bname (and context (compiler-context-current-binding-name context))))
+    (when (and node bname (gethash bname *cluster-barrier-bindings*))
+      (let ((ext (and *current-kernel-cluster-dims*
+                      (reduce (function *) *current-kernel-cluster-dims*))))
+        (when (and ext (> ext 1))
+          (setf (gethash node *cluster-barrier-nodes*) ext))))
+    node))
+
 (defun %barrier-ring-form-p (form)
   "T if FORM is (ring-get RING i) naming an async-barrier RING; returns the ring symbol."
   (and (consp form)
@@ -3475,20 +3991,27 @@
                1))))
 
 (defun analyze-signal-expression (expr env context location)
-  "Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive on an
-   empty ring slot, releasing it to the producer.  PTX/:block only (mbarrier); a no-op on other
-   backends (the generic compile-check pass has no mbarriers)."
+  "Endeavor 139: (signal (ring-get empty-ring slot)) — the consumer's manual mbarrier.arrive.
+   Endeavor 152: when the barrier was declared :mode :cluster the arrive must reach PEER
+   workgroups, so tag the node with the group extent for codegen."
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error
       :message (format nil "signal: expected (signal BARRIER), got ~S" expr)
       :source-location location))
-  (let ((barrier-node (analyze-expression (second expr) env context (append location '(1)))))
+  (let* ((clusterp (%cluster-barrier-p (second expr)))
+         (barrier-node (analyze-expression (second expr) env context (append location (list 1)))))
     (if (eq *target-backend* :ptx)
-        (make-semantic-signal
-         :barrier-node barrier-node
-         :type 'ulong
-         :source-location location)
-        ;; No mbarriers off the PTX/:block path — signal is a no-op there.
+        (let ((node (make-semantic-signal
+                     :barrier-node barrier-node
+                     :type 'ulong
+                     :source-location location)))
+          (when clusterp
+            (let ((ext (and *current-kernel-cluster-dims*
+                            (reduce (function *) *current-kernel-cluster-dims*))))
+              (when (and ext (> ext 1))
+                (log:info "signal: cluster-scoped remote arrive across ~a peers" ext)
+                (setf (gethash node *signal-cluster-extent*) ext))))
+          node)
         (analyze-expression nil env context location))))
 
 (defun barrier-initial-phase-of (barrier-form)
@@ -3789,11 +4312,16 @@
    store + any fusion.  Warns if the C-tile is never stored.
 
    BUG 036: emits a per-OUTPUT-TILE reset of the accumulator to RESET-VALUE before the K-loop.
-   Without it a workgroup that strides onto a second tile carries the first tile's partial sums.
-   A scratch C-tile's fill is workgroup-collective, so it is followed by a sync-workgroup; a
-   register tile's is per-lane and needs none."
-  (declare (ignore location))
+
+   Endeavor 150: REFUSES a map-elements! on the accumulator inside the reduction body, where
+   the accumulator is a partial sum."
   (multiple-value-bind (reduction-body epilogue-body) (%mmts-split-epilogue body)
+    (let ((bad (%mmts-accumulator-map-target reduction-body c-tile)))
+      (when bad
+        (error 'crisp-compiler-error
+               :message (format nil "map-elements! on ~a inside a matrix-multiply-tile-stride reduction body: the macro runs this body once per K-step, so ~:*~a holds a partial sum here and mapping it re-transforms the running total on every step (even a linear function is wrong — only the identity survives). Move the map into the :epilogue, where the C-tile is complete."
+                                bad)
+               :source-location location)))
     (unless (%form-tree-mentions-store-tile-p epilogue-body)
       (format *error-output*
         "WARNING: matrix-multiply-tile-stride: the C-tile is computed but never stored — add an :epilogue with (store-tile ~a ~a (~a ~a)).~%"
@@ -3805,17 +4333,7 @@
            (to-ulong-sym    (intern "TO-ULONG" cl-pkg))
            (fill-sym        (intern "FILL-TILE" cl-pkg))
            (sync-sym        (intern "SYNC-WORKGROUP" cl-pkg))
-           ;; A register tile's spec is the compile-time (M N) size list; a scratch tile's is
-           ;; the tile tensor itself.
            (register-p      (and (listp tile-spec) tile-spec (every #'integerp tile-spec)))
-           ;; REGISTER TILES ONLY.  A scratch C-tile is deliberately left alone: endeavor 135
-           ;; documented that contract in 135/01-macro-envelope — "The macro does NOT auto-reset
-           ;; a scratch C-tile — the user owns init" — and 135/02 duly resets by hand.  The
-           ;; measured bug was a REGISTER tile, whose init lives in a make-register-tile binding
-           ;; OUTSIDE the loop where the user cannot reach it per-tile; that asymmetry is exactly
-           ;; why the register path needs the macro to own the reset and the scratch path does
-           ;; not.  (sync-sym is retained for the scratch path should that contract ever change;
-           ;; a collective fill would need it.)
            (reset-forms     (when register-p
                               (list (list fill-sym c-tile reset-value)))))
       (declare (ignorable sync-sym))
