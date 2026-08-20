@@ -5,6 +5,27 @@
 
 (in-package :crisp.compiler)
 
+;;; ---- migrated from overlays/crisp-compiler-overlay.lisp (endeavour 152) ----
+
+(defun %vjp-via-tile-body-map (form)
+  "The (map-elements! ACC #'FN) call in a via-tile BODY, or NIL.
+
+   Returns (values ACC-SYM FN-FORM).  Looks only after the accum binding, which is the only
+   place a fused epilogue can legally be — it does not search the whole form."
+  (when (>= (length form) 7)
+    (let ((binding (nth 5 form))
+          (body    (nthcdr 6 form)))
+      (when (and (consp binding) (= (length binding) 1) (symbolp (first binding)))
+        (let ((hit (find-if (lambda (f)
+                              (and (consp f)
+                                   (%head-name-eq (first f) "MAP-ELEMENTS!")
+                                   (= (length f) 3)
+                                   (eq (second f) (first binding))))
+                            body)))
+          (when hit
+            (values (second hit) (third hit))))))))
+
+
 ;;; ===================================================================
 ;;; SPECIALS DECLARED EARLY -- these three are LET-BOUND above their DEFVAR.
 ;;;
@@ -5152,27 +5173,18 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
     (nreverse acc)))
 
 (defun %vjp-mma-accumulate-via-tile (form ctx)
-  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B ...).
+  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B [(acc) BODY...]).
 
    Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk
-   never learns the MMA path's shape requirements, so they cannot leak back out as a
-   language-level contract the way the 'K-tile contract' did.
+   never learns the MMA path shape requirements, so they cannot leak back out as a
+   language-level contract.
 
-     MMA fast path  -- when both backward accumulators decompose into whole fragments.
-     Scalar path    -- otherwise.  Correct at any shape, slower.
-
-   Endeavor 138: operands may be RING VIEWS.  Shape and source questions resolve through
-   %ad-tile-base to the ring (every slot has the ring's element shape); the ADJOINT keeps the
-   view, because slot i's adjoint is slot i of the adjoint ring.  A ring operand also forces the
-   SCALAR lowering: the MMA path stages a transposed operand out of the tile it was given, and
-   for a pipelined ring that tile holds a DIFFERENT stage than the one being differentiated.
-   The scalar lowering indexes the original global operands directly, so it is immune — and
-   correct-but-slow was always the default anyway.
-
-   DECLINES (NIL) when the tile shapes are not compile-time known, or when a ring's load sites
-   do not agree on one global source, which the walk then reports through its existing error."
+   Endeavor 150: if BODY fuses an activation onto the accum binding with map-elements!, the
+   chain rule needs dP = dC * f'(P).  A prefix re-stages the operands from their GLOBAL sources,
+   recomputes P into a fresh register tile, and scales the C adjoint through the function's
+   _GRAD twin before the existing backward runs.  The forward kernel is untouched."
   (destructuring-bind (shape c-tile a-op b-op &rest ignored) (cdr form)
-    (declare (ignore ignored shape))
+    (declare (ignore ignored))
     (let* ((flat-anf  (getf ctx :flat-anf))
            (inputs    (getf ctx :inputs))
            (outputs   (getf ctx :outputs))
@@ -5191,9 +5203,6 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
             (when (and a-src b-src)
               (let* ((mt (second c-dims))
                      (nt (third c-dims))
-                     ;; A staged operand's K is its own column extent.  A DIRECT global operand
-                     ;; has runtime extents, and the forward reads exactly one native K-step
-                     ;; from it, so its Kt is the instruction's K.
                      (kt (if a-dims
                              (third a-dims)
                              (nth-value 2 (%spv-mma-shape))))
@@ -5201,15 +5210,50 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                      (ringp (or (eq a-kind :ring) (eq b-kind :ring)))
                      (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj kernel-pkg))
                      (a-adj (%tlc-bwd-adj-name a-op  inputs outputs local-adj kernel-pkg))
-                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg)))
+                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg))
+                     (core (if (and (not ringp) (%mma-vjp-mma-admissible-p mt nt kt))
+                               (%mma-via-tile-backward form dims-map src-map inputs outputs
+                                                       local-adj kernel-pkg)
+                               (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
+                                                         a-src aoy aox b-src boy box pkg))))
                 (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) ring=~a mma-path=~a"
                            mt nt kt a-op a-kind b-op b-kind ringp
                            (%mma-vjp-mma-admissible-p mt nt kt))
-                (if (and (not ringp) (%mma-vjp-mma-admissible-p mt nt kt))
-                    (%mma-via-tile-backward form dims-map src-map inputs outputs
-                                            local-adj kernel-pkg)
-                    (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
-                                              a-src aoy aox b-src boy box pkg))))))))))
+                (multiple-value-bind (acc-sym fn-form) (%vjp-via-tile-body-map form)
+                  (if (not acc-sym)
+                      core
+                      (let* ((cl    (find-package :crisp-language))
+                             (grad  (%map-elements-grad-name fn-form pkg))
+                             (base  (symbol-name (or (%ad-tile-base c-tile) c-tile)))
+                             (p-sym  (intern (format nil "~a_PRIMAL" base) pkg))
+                             (ap-sym (intern (format nil "~a_PRIMAL_A" base) pkg))
+                             (bp-sym (intern (format nil "~a_PRIMAL_B" base) pkg))
+                             (progn-s (intern "PROGN" cl))
+                             (let-s   (intern "LET" cl))
+                             (mrt-s   (intern "MAKE-REGISTER-TILE" cl))
+                             (msm-s   (intern "MAKE-SCRATCH-MATRIX" cl))
+                             (lta-s   (intern "LOAD-TILE-AT" cl))
+                             (sync-s  (intern "SYNC-WORKGROUP" cl))
+                             (flt-s   (intern "FLOAT" cl))
+                             (via-s   (intern "MMA-ACCUMULATE-VIA-TILE" cl))
+                             (vjp-s   (intern "%MAP-ELEMENTS-VJP!" cl))
+                             (fn-s    (intern "FUNCTION" cl)))
+                        (unless grad
+                          (error 'crisp-compiler-error
+                                 :message "map-elements! in a via-tile body: the fused function must be a #'NAME form for its gradient twin to be nameable."
+                                 :source-location nil))
+                        (log:debug "VJP via-tile: fused activation ~a -> dP = dC * ~a(P, dC); re-staging P from ~a / ~a"
+                                   fn-form grad a-src b-src)
+                        `(,progn-s
+                          (,let-s ((,ap-sym (,msm-s ,flt-s (,mt ,kt)))
+                                   (,bp-sym (,msm-s ,flt-s (,kt ,nt)))
+                                   (,p-sym  (,mrt-s ,flt-s (,mt ,nt) 0.0)))
+                                  (,lta-s ,a-src ,ap-sym (,aoy ,aox))
+                                  (,lta-s ,b-src ,bp-sym (,boy ,box))
+                                  (,sync-s)
+                                  (,via-s ,shape ,p-sym ,ap-sym ,bp-sym)
+                                  (,vjp-s ,c-adj ,p-sym (,fn-s ,grad)))
+                          ,core))))))))))))
 
 (register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
 

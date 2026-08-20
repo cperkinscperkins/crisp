@@ -1,0 +1,39 @@
+;; Endeavor 152 rung 03 — the EFFECTIVE cluster extent must appear in the metadata.
+;;
+;; WHY THIS RUNG EXISTS, and it is not bookkeeping.  A kernel whose cluster silently collapsed
+;; to extent 1 still computes the correct answer.  Every multicast becomes an ordinary
+;; per-workgroup load, the bandwidth win the declaration was written for is gone, and NOTHING in
+;; the output reveals it.  That is the 143 failure class exactly — two bugs there let a benchmark
+;; report 69.65 TFLOPS for a kernel running at 1.40, and correctness testing could not see it.
+;;
+;; So the effective extent — what the compiler actually built, not what the source asked for —
+;; has to be an assertable artefact.  A benchmark harness or a spec can then check that the
+;; cluster formed, instead of inferring it from a timing number that has many other explanations.
+;;
+;; The distinction matters: `:set-to 4` in the source and an effective extent of 4 are two
+;; different facts, and on a target without cluster support the second is 1 while the first is
+;; still 4.  The metadata must report the SECOND.
+;;
+;; NEW VALIDATOR REQUIRED: validate-metacrisp-cluster-extent — assert the kernel's metadata
+;; records an effective cluster extent, and that it matches the declaration on a capable target.
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--metadata --ir-target=ptx --ir-target-arch=sm_90] : validate-metacrisp-cluster-extent
+;;
+;; UNDER --differentiate THIS ASSERTS THE OPPOSITE, and that is deliberate.  `--metadata
+;; --differentiate` emits only the BACKWARD kernel's metacrisp (the forward's comes from an
+;; ordinary compile), and a backward kernel SHOULD NOT carry cluster-size at all.  Endeavour
+;; 146's thesis: scheduling is not mathematics.  cluster-size says where the bytes arrive, not
+;; what is computed, so a derivative has no use for it -- and its presence there would mean a
+;; schedule had leaked into the math.  The validator therefore flips: on a forward metacrisp it
+;; asserts the cluster formed, on a backward one it asserts nothing leaked.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_metadata (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 128)
+           (local-size  :set-to 32)
+           (cluster-size :set-to 4 :msg "four workgroups per cluster"))
+  (let ((tid (to-int (get-global-linear-id))))
+    (set! (~ C 0 tid) (~ A 0 tid))))

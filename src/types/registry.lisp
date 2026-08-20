@@ -6,6 +6,16 @@
 ;; src/types/registry.lisp
 (in-package :crisp.compiler)
 
+;;; ---- migrated from overlays/crisp-compiler-overlay.lisp (endeavour 152) ----
+
+(defun %arch-supports-clusters-p (arch)
+  "T if ARCH can form workgroup clusters.  NVIDIA Hopper (sm_90) or later only;
+   no Intel architecture has an equivalent."
+  (and (eq (%arch-vendor arch) :nvidia)
+       (let ((n (%arch-sm-number arch)))
+         (and n (>= n 90)))))
+
+
 ;; Global Compiler State
 ;; =====================
 

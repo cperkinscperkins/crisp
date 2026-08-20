@@ -1,0 +1,52 @@
+;; Chapter 4 (side chapter) — CLUSTERS + TMA MULTICAST: the MULTICAST half.
+;;
+;; Identical to matmul_tile128.crisp except that B is fetched ONCE PER CLUSTER instead of once per
+;; workgroup.  The cluster is (2 1), i.e. two workgroups along the ROW axis; B's tile coordinates
+;; do not mention the row loop variable, so both workgroups want the same B and one fetch serves
+;; both.  A DOES vary along that axis, so A cannot multicast and does not ask to -- the compiler
+;; would refuse it if it did.
+;;
+;; ONE HONEST CAVEAT.  The `empty` barrier is also upgraded to `:mode :cluster` here, and that is
+;; not an independent choice: with multicast the group leader writes into its PEERS' shared
+;; memory, so it may not reuse a ring slot until those peers have drained it -- which a
+;; workgroup-local barrier cannot express.  The measured gain is therefore "multicast and what it
+;; requires", not multicast in isolation.
+;;
+;; MEASURED +15.5% at N=2048 and +10.7% at N=4096 against the baseline, reproduced across
+;; independent runs.  At chapter 3's WIDER 64x256 tile the same change LOSES 7-10%; see the
+;; chapter's .md for that crossover, which is the actual lesson.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 160)              ; 4 consumer warps + 1 producer warp
+           (cluster-size :set-to (2 1)))         ; CHANGE 1: 4 workgroups, 2 rows x 2 cols          ; 4 consumer warps (warpgroup 0) + 1 producer warp
+  (let ((A-ring (make-scratch-matrix-ring float (64 32)  :ring-count 2))   ; 2 x 64(M) x 32(K)
+        (B-ring (make-scratch-matrix-ring float (128 32) :ring-count 2))   ; 2 x 128(N) x 32(K) B^T
+        (D      (make-wgmma-accumulator float (64 128) 0.0))
+        (K      (inner-dimension A B))
+        ; CHANGE 3: peers must release the slot, not just our own consumers
+        (empty  (make-async-barrier-ring :ring-count 2 :mode :cluster :arrivals 4 :initial-state :signaled))
+        (full   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 128) (grid-y grid-x)
+      (with-warp-specialization (:consumer 4 :producer 1)
+        (:consumer
+          (set! D (make-wgmma-accumulator float (64 128) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 128 32) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile D C (grid-y grid-x)))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              ; CHANGE 2: A is invariant along the COLUMN axis -> its group is a cluster ROW
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+              ; B is invariant along the ROW axis -> its group is a cluster COLUMN
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b :multicast true))))))))

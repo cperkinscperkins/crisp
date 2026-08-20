@@ -1,0 +1,31 @@
+;; Endeavor 152 rung 01 — the SMALLEST kernel that declares a cluster.
+;;
+;; This rung asks one question only: does `(cluster-size :set-to 2)` parse, survive analysis,
+;; and reach code generation?  Nothing here is about multicast, DSMEM, or barriers.
+;;
+;; WHY THIS IS FIRST.  Nothing else in the endeavor is testable at non-degenerate scale without
+;; it.  With no cluster declared the extent is 1, so `sync-cluster` degrades to `sync-workgroup`
+;; and `:multicast` has no group to multicast to.  `cluster-size` is the enabling declaration.
+;;
+;; WHAT THE PTX MUST CARRY.  `cluster-size` is NOT advisory — unlike `global-size` / `local-size`
+;; it is consumed at code generation, so the cluster dimensions must appear in the emitted PTX
+;; (`.reqnctapercluster`), which is what makes the host/kernel agreement driver-enforced rather
+;; than a convention the hoisting code is trusted to honour.  A kernel that compiles but emits
+;; no cluster directive would pass a correctness check and silently launch unclustered — so the
+;; validator below inspects the PTX rather than trusting the exit code.
+;;
+;; NEW VALIDATOR REQUIRED: validate-ptx-cluster-dims — assert the emitted PTX declares a cluster
+;; of the expected extent for this kernel.
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cluster-dims
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_minimal (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 32)
+           (cluster-size :set-to 2))          ; 2 WORKGROUPS per cluster, not 2 threads
+  (let ((tid (to-int (get-global-linear-id))))
+    (set! (~ C 0 tid) (~ A 0 tid))))

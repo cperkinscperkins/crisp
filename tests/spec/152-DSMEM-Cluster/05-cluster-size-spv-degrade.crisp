@@ -1,0 +1,45 @@
+;; Endeavor 152 rung 05 — `cluster-size` on a target with no clusters DEGRADES, and SAYS SO.
+;;
+;; Intel has no cluster hardware, so the extent collapses to 1.  The kernel still computes the
+;; correct answer.  That is precisely the problem: degrading `cluster-size` is NOT free the way
+;; degrading `sync-cluster` is.  `sync-cluster` at extent 1 is semantically exact — every thread
+;; in the cluster reaching the same point IS every thread in the workgroup reaching it.  A
+;; collapsed `cluster-size` instead means every multicast quietly became an ordinary
+;; per-workgroup load and the traffic reduction the declaration was written for is gone.
+;;
+;; So this rung asserts TWO things, and the second is the one that matters:
+;;   1. the kernel still compiles and is correct on SPV  (the degrade is not an error)
+;;   2. a DIAGNOSTIC is emitted, and the metadata records the effective extent as 1
+;;
+;; Without (2) this is indistinguishable from success, which is how a 2x regression ships.
+;;
+;; DELIBERATELY NOT AN ERROR SPEC.  Compare with rung errors/10: a `:multicast` request on a
+;; target that cannot honour it IS a hard compile error, because it is an object-level request
+;; that cannot exist.  `cluster-size` is launch geometry and harmless on its own, so it degrades
+;; — the same way `local-size` does not error merely because a device cannot honour the value.
+;; The asymmetry is deliberate; this rung and errors/10 are the pair that pin it.
+;;
+;; NEW VALIDATOR REQUIRED: validate-cluster-degrade-warning — assert the diagnostic is present
+;; AND that the recorded effective extent is 1.
+;;
+;; COMPILE-WITH[--ir-target=spv]: PASS
+;; TEST-WITH[--metadata --ir-target=spv] : validate-cluster-degrade-warning
+;; SKIP-DEFAULT-PASS
+;;
+;; UNDER --differentiate THIS ASSERTS THE OPPOSITE, and that is deliberate.  `--metadata
+;; --differentiate` emits only the BACKWARD kernel's metacrisp (the forward's comes from an
+;; ordinary compile), and a backward kernel SHOULD NOT carry cluster-size at all.  Endeavour
+;; 146's thesis: scheduling is not mathematics.  cluster-size says where the bytes arrive; it
+;; has no place in a derivative, and its presence there would mean a schedule had leaked into
+;; the math.  So the validator flips: on a forward metacrisp it asserts the degrade was
+;; recorded, on a backward one it asserts nothing leaked.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel cluster_degrade (A &out C)
+  (declare #'(vec-t &out vec-t)
+           (global-size :set-to 128)
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))
+  (let ((tid (to-int (get-global-linear-id))))
+    (set! (~ C tid) (* 2.0 (~ A tid)))))

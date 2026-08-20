@@ -1,0 +1,42 @@
+;; Endeavor 152 rung 23 — `:mode :cluster` is NVIDIA-only, and the arch gate IS the assertion.
+;;
+;; FILED AS A NORMAL SPEC, NOT UNDER errors/, and that placement was a correction.  It was first
+;; written as an errors/ spec, which requires the compiler to fail on the DEFAULT pass — and it
+;; does not, deliberately.  `%parse-async-barrier-keys` gates the mbarrier modes only on the real
+;; backends (:ptx / :spirv); the GENERIC compile-check pass has no arch and lowers them to the
+;; sync fallback.  `:mode :block` has behaved this way since Endeavor 137, and its own arch-gate
+;; spec (137/02-block-arch-gate-intel) is likewise a normal spec whose COMPILE-WITH FAIL carries
+;; the assertion.  Mine now matches it rather than inventing a second convention.
+;;
+;; COMPILE-WITH[--ir-target=spv]: FAIL "not supported on Intel"
+;; SKIP-WITH[--differentiate]: "negative arch-gate test: the COMPILE-WITH FAIL is the assertion, and the Intel gate fires long before AD"
+;;
+;;
+;; The `:mode` ladder's upper range is entirely NVIDIA: `:block` is already a hard compile error
+;; on SPIR-V, and `:mode :linear` RINGS are unimplemented there too — so a barrier RING of any
+;; mode is NVIDIA-only today.  `:cluster` adds a third value to a range Intel never had, rather
+;; than removing portability that existed.
+;;
+;; A HARD ERROR, NOT A DEGRADE, and the distinction is the one this endeavour keeps returning to.
+;; `cluster-size` degrades because it is launch geometry: the kernel still computes the right
+;; answer, just without the bandwidth win, and the loss is recorded in metadata.  `:mode
+;; :cluster` cannot degrade, because a barrier whose whole meaning is "peers may arrive on this"
+;; has no meaningful single-workgroup fallback — silently making it local would release a barrier
+;; nobody is waiting on.
+;;
+;; The message should name CLUSTERS and the architecture requirement, not merely report an
+;; unsupported keyword; a user reaching for it on Intel is reasoning by analogy from `:block` and
+;; deserves the same explanation `:block` gives.
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_mode_on_spv (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (2 4))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))
+  (let ((tile (make-scratch-matrix float (2 4)))
+        (done (make-async-barrier :mode :cluster)))
+    (tile-stride C (2 4) (grid-y grid-x)
+      (load-tile A tile (0 grid-x))
+      (store-tile tile C (grid-y grid-x))
+      (signal done))))

@@ -1,0 +1,22 @@
+;; CHECK-FAIL: "rank"
+;; Endeavor 152 — negative: `cluster-size` rank must agree with `:tile-shape` rank.
+;;
+;; The multicast deduction relates cluster axes to tile-grid axes.  If the ranks disagree there
+;; is no well-founded correspondence and the compiler would have to guess which axis is which —
+;; the exact failure class that cost 7.6x in Endeavor 143, where a 1-D grid under an N-D
+;; tile-stride loop silently serialized an axis and stayed CORRECT the whole time.
+;;
+;; This mirrors the existing rule that `global-size` and `local-size` must agree in arity.
+;;
+;; Rank 3 against a rank-2 tile shape.  Note this is NOT the same as omitting an axis: axes
+;; BEYOND the declared rank default to 1 and that is legal, so `(2)` against a rank-2 tile shape
+;; must PASS.  Only an OVER-specified rank is an error.
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_rank_mismatch (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (8 8))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1 1)))
+  (tile-stride C (8 8) (grid-y grid-x)
+    (set! (~ C grid-y grid-x) (~ A grid-y grid-x))))

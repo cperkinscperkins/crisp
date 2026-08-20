@@ -1,0 +1,1432 @@
+# Phase 0 — paper verification
+
+Two facts carry the design.  **Do these before writing any lowering** — each one changes what
+gets built.
+
+Status after the 2026-08-16 pass: **ALL SETTLED.**  Q1, Q1b, Q2, extent limits and grid
+divisibility are all resolved — the last four empirically, on an H100 PCIe (sm_90, CUDA 12.4)
+and against CUTLASS `main` source.  A bonus finding settles the deferred `empty`-barrier
+lowering question too.  **No design change is required; one secondary source was wrong and is
+corrected below.**
+
+---
+
+## Q1. Does a TMA multicast complete on each destination CTA's own mbarrier, or only the issuer's?
+
+**Why it is load-bearing.**  The whole `:mode` ladder rests on this.  We concluded that the
+data-arrival ring (`full`) stays `:mode :block` — a *workgroup-local* mbarrier — even in a
+clustered kernel, because each destination CTA waits on a barrier it owns and the TMA hardware
+credits that barrier as its copy lands.
+
+### FINDING — CONFIRMED (2026-08-16). Each destination CTA's OWN mbarrier.
+
+TMA multicast places the loaded data into the SMEM of every CTA named in the bitmask **and
+arrives at the mbarrier of those CTAs** — plural, per-CTA, at the same shared-memory address.
+Each participating CTA then **waits on its own local barrier**, which completes when its own
+transaction-byte counter reaches zero.  `ctaMask` is a bitmask whose i-th bit selects the CTA
+with cluster index i.
+
+Corroborating evidence from our own codegen, which already emits the CTA-scoped forms for the
+non-multicast case: [src/codegen.lisp:3475](../../../src/codegen.lisp)
+`mbarrier.arrive.expect_tx.shared::cta` and :3484 `mbarrier.try_wait.parity.shared::cta`.
+
+**Consequence: the design stands.**  `full` stays `:mode :block`, `:arrivals 2` is unchanged,
+and the `:linear < :block < :cluster` ladder keeps its meaning — `:block` really does describe a
+workgroup-local mbarrier even when a multicast is what fills it.
+
+**Confidence caveat.**  Both sources are high-quality *secondary* sources (Colfax's CUTLASS
+tutorials), not the ISA text itself.  The single-page PTX ISA HTML truncates before the
+instruction section under fetch, so the primary text was not read directly.  The claim is
+consistent across two independent tutorials, the libcudacxx syntax reference, and our own
+shipped codegen — but if anything downstream behaves oddly, re-read the ISA before assuming the
+bug is ours.
+
+Sources:
+- [CUTLASS Tutorial: GEMM with Thread Block Clusters (Colfax)](https://research.colfax-intl.com/cutlass-tutorial-gemm-with-thread-block-clusters-on-nvidia-blackwell-gpus/)
+- [CUTLASS Tutorial: Mastering the TMA (Colfax)](https://research.colfax-intl.com/tutorial-hopper-tma/)
+- [cp.async.bulk.tensor — libcudacxx](https://nvidia.github.io/cccl/libcudacxx/ptx/instructions/cp_async_bulk_tensor.html)
+
+---
+
+## Q1b (NEW). Who issues `expect_tx` — the leader only, or every destination CTA?
+
+**This sub-question emerged from the Q1 research and it is API-relevant.**
+
+Colfax's Blackwell cluster tutorial attributes `set_barrier_transaction_bytes()` — i.e.
+`mbarrier.arrive.expect_tx` — to the **elected leader CTA only**, alongside issuing the copy.
+Our `:arrivals` design assumed the opposite: that every destination CTA announces its own
+expected byte count on its own barrier, and that the compiler therefore scales the user's
+per-workgroup `:arrivals` by the cluster extent.
+
+If the leader alone sets the transaction bytes — for all destination barriers, remotely — then
+the compiler's scaling rule is wrong, and `:arrivals` may need no cluster adjustment at all.
+
+**This must be settled before step 6 (`make-async-barrier-ring :mode :cluster`).**  It does not
+block steps 1-2.  Settle it by reading CUTLASS's `PipelineTmaAsync` producer path directly
+rather than a tutorial's prose.
+
+### FINDING — RESOLVED (2026-08-16). EVERY CTA does its own local `expect_tx`. The tutorial was wrong.
+
+CUTLASS `include/cutlass/pipeline/sm90_pipeline.hpp`, `PipelineTmaAsync::producer_acquire`:
+
+```cpp
+empty_barrier_ptr_[stage].wait(phase);
+if (params_.is_leader) {
+  full_barrier_ptr_[stage].arrive_and_expect_tx(params_.transaction_bytes);
+}
+```
+
+`is_leader` looks like it might mean "the leader CTA of the multicast group", which is how the
+Colfax tutorial reads it.  It does not.  The debug assertion immediately below it settles the
+question:
+
+```cpp
+// Most likely you have elected more than one leader
+if (params_.is_leader && (threadIdx.x % 32 != 0)) { asm volatile ("brkpt;\n" ::); }
+```
+
+That is a **lane-0 check within a CTA** — a *thread* election.  Every CTA elects one, and every
+CTA therefore calls `arrive_and_expect_tx` on **its own local** `full_barrier_ptr_[stage]`.
+
+**Consequence: the original design stands, unchanged.**  `:arrivals` on the data-arrival ring is
+a per-workgroup count and needs no cluster adjustment, because each workgroup announces its own
+expected bytes on its own barrier.
+
+### DATE / SOURCE: 2026-08-16 — CUTLASS `main`, `include/cutlass/pipeline/sm90_pipeline.hpp:512-527`
+
+---
+
+## Q1c (BONUS). How is the `empty` barrier arrived on across the cluster?
+
+This was the deferred lowering question — leader-only, or all-to-all?  The same file answers it.
+
+```cpp
+empty_barrier_ptr_[stage].arrive(dst_blockid_, is_signaling_thread_ & (!skip));
+```
+
+`arrive` takes a **remote** block id, confirming the reverse barrier is arrived on across CTAs —
+which is exactly what `:mode :cluster` is for.  And the destination is *spread across threads*:
+
+```cpp
+auto [is_signaling_thread, dst_blockid] = detail::spread_arrivals_to_warpgroup(...);
+is_signaling_thread_ &= dst_blockid_ < cluster_size;
+is_signaling_thread_ &= is_same_row_or_col(dst_blockid_, block_id, cluster_shape);
+```
+
+**So it is ALL-TO-ALL within the multicast group, not leader-only**, with each signalling thread
+responsible for one peer.  `is_same_row_or_col` confirms the group is the row or the column —
+matching A-multicast-along-rows / B-multicast-along-columns.
+
+**Consequence for `:arrivals` scaling:** the compiler's multiplier applies to the **`empty`**
+ring only (the `:mode :cluster` one), and the factor is the **multicast group extent** — the row
+or column length — *not* the total cluster size.  For a `(2 1)` cluster those coincide; for
+`(2 2)` they do not.  Get this wrong on a 2x2 and the kernel hangs.
+
+---
+
+## Q2. Does `barrier.cluster.arrive` subsume intra-CTA thread convergence?
+
+**Why it is load-bearing.**  `topology.md` states as fact that with cluster count 1,
+`sync-cluster` is *"functionally exactly the same as `sync-workgroup`"*.  That holds only if the
+cluster barrier also rendezvouses the threads **within** a CTA.
+
+**If the answer is no:** the fused `(sync-cluster)` must emit an implicit `sync-workgroup`
+alongside the cluster barrier, the degrade story changes, and that sentence is wrong as written.
+
+### FINDING — CONFIRMED (2026-08-16). It DOES subsume. The topology.md sentence is correct.
+
+Evidence, in increasing order of force:
+
+1. **NVIDIA's own `cluster_group::sync()` contains no `__syncthreads()`.**  In CUDA 12.4's
+   `cooperative_groups/details/helpers.h`, the cluster implementation is exactly:
+   ```cpp
+   _CG_STATIC_QUALIFIER void sync() { barrier_arrive(); barrier_wait(); }
+   ```
+   which bottoms out in the `__cluster_barrier_arrive()` / `__cluster_barrier_wait()` intrinsics
+   (`crt/sm_90_rt.h:104-106`) and nothing else.
+
+2. **The emitted PTX confirms it.**  Compiling `cg::this_cluster().sync()` with
+   `nvcc -arch=sm_90a -ptx` yields precisely:
+   ```
+   barrier.cluster.arrive;
+   barrier.cluster.wait;
+   ```
+   No `bar.sync`, no `barrier.sync`, no fence.
+
+3. **The logic closes it.**  Cooperative Groups documents `sync()` as *"All threads in the group
+   reach the synchronization point before any thread is allowed to proceed beyond it."*  A
+   `cluster_group`'s threads are all the threads of all CTAs in the cluster.  If the cluster
+   barrier did not rendezvous threads within a CTA, NVIDIA's own documented contract for its own
+   API would be broken.
+
+**Consequence: no implicit `sync-workgroup` is needed**, and `topology.md`'s "functionally
+exactly the same as `sync-workgroup`" at cluster count 1 stands as written.
+
+**Incidental but useful:** the default `cluster.sync()` emits the **non-`.relaxed`** form.  Our
+decision to make `(sync-cluster)` memory-ordered by default, with no user-facing `:relaxed`, is
+the same default NVIDIA ships.
+
+### Superseded — what was NOT established in the first (web-only) pass:
+- All threads of the group must participate.  The Cooperative Groups contract is that *"all
+  threads in the group reach the synchronization point before any thread is allowed to proceed
+  beyond it"*, and that memory accesses before the point are visible to the group after it.
+- The `.aligned` qualifier is documented as being for the case where *all threads in the CTA
+  will execute the same instruction*.
+- `cluster.sync.aligned` is described as a cluster-wide barrier that all CTAs must reach.
+
+Whether reaching that barrier also constitutes an intra-CTA rendezvous.  The CUDA Programming
+Guide's Cooperative Groups page has no dedicated `cluster_group` semantics section, and the PTX
+ISA single-page HTML truncates before `barrier.cluster` — so the web-only pass could not close
+it.  Reading the shipped CUDA headers on the pod did, in about two minutes.
+
+---
+
+## Also settled while here
+
+### Cluster extent limits — CONFIRMED (2026-08-16)
+
+- **Portable maximum is 8.**
+- **H100 allows a non-portable 16**, requiring the
+  `cudaFuncAttributeNonPortableClusterSizeAllowed` function attribute to be set (1 = allowed).
+- Larger clusters may reduce the maximum number of active blocks across the GPU — which
+  corroborates the scheduler-quantization argument for preferring a 2-workgroup cluster.
+
+`topology.md`'s text is therefore **correct as written** and the hedge on it can be removed.
+
+Source: [NVIDIA Hopper Tuning Guide](https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html)
+
+Empirically re-confirmed on the H100 (`/root/probe/q3.cu`): cluster 8 launches, cluster 16 fails
+with `cudaErrorInvalidClusterSize`, and cluster 16 succeeds after
+`cudaFuncSetAttribute(k, cudaFuncAttributeNonPortableClusterSizeAllowed, 1)`.
+
+### Grid divisibility — CONFIRMED REQUIRED (2026-08-16). It is a hard launch error.
+
+Measured on H100 PCIe via `cudaLaunchKernelEx`:
+
+| grid | cluster | launch result |
+|---|---|---|
+| `(4,1,1)` | `(2,1,1)` | `cudaSuccess` |
+| `(3,1,1)` | `(2,1,1)` | **`cudaErrorInvalidClusterSize`** |
+| `(4,3,1)` | `(2,2,1)` | **`cudaErrorInvalidClusterSize`** (the y axis) |
+
+So `gridDim % clusterDim == 0` is enforced **per axis**, at launch, as a hard error — not a
+warning and not a silent clamp.
+
+**This CLOSES the open decision in `topology.md`, and closes it in favour of the proposed
+policy** — but note the reasoning is stronger than "we chose to pad."  Something *must* happen,
+because a non-divisible grid does not launch at all:
+
+- **`:strided`** — pad the grid up to a multiple of the cluster dims.  The surplus workgroups
+  find no tiles left to claim and exit; the `tile-stride` loop still covers every tile.  Safe.
+- **`:exact`** — padding would create workgroups with no tile, and truncating would skip one.
+  Neither is acceptable, so it must be a hoist-time **error** naming the tile shape and cluster
+  shape that conflict.
+
+The "Open decision" blockquote in `topology.md` can now be removed and replaced with this
+measurement.
+
+Probe source is on the pod at `/root/probe/q3.cu`; worth copying into the repo as a permanent
+artifact if we want the table reproducible.
+
+
+---
+
+## Rung 04's launch assumption — SETTLED ON METAL (2026-08-16)
+
+The hoist deliberately does not use `cuLaunchKernelEx`; it relies on the shape being baked
+into the PTX as `.reqnctapercluster` and launches with a plain `cuLaunchKernel`.  That was
+written down as an assumption, with the note that being wrong would fail loudly.
+
+**It is correct.**  On an H100 PCIe (CUDA 12.4), `04-cluster-size-on-metal` produced:
+
+    Device: NVIDIA H100 PCIe
+    PTX module loaded successfully
+    Kernel executed successfully
+    BUFFER a: 0 1 2 3
+    BUFFER c: 0 2 4 6
+    Success!
+
+A clustered kernel loads, launches and computes correctly without any launch-time cluster
+attribute.  `CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION` is for setting the shape DYNAMICALLY,
+which Crisp does not support by design.
+
+The spec still failed, and only because of its own expectation: it predicted `BUFFER c:
+2 2 2 2` on the guess that the harness fills tensors with a constant.  It fills them
+0,1,2,3, and allocates a fixed 4 elements per param regardless of the declared global-size.
+Expectation corrected to `0 2 4 6`.
+
+**Also cleared by the same run:** the CUDA hoist path had NEVER executed before this.  Every
+`TEST-HOIST[CUDA]` spec reports `SKIP (nvcc not available)` on the dev box, so
+`generate-cuda-launcher` and the grid reconciliation were unexercised code behind four green
+suites.  Pod result: `--differentiate` 1012/1012, negative 217/217, and the only default-phase
+failures were this expectation plus the two multicast rungs whose lowering is not written yet.
+
+---
+
+## FINDING (2026-08-16, on metal) — grid PADDING and MULTICAST are in conflict
+
+Rung 11 failed on an H100 with `unspecified launch failure`.  `compute-sanitizer memcheck`
+reported no invalid access, so it is not a bounds bug.  The launcher's own note gives it away:
+
+    note: grid padded (1,1,1) -> (2,1,1) for cluster (2,1,1)
+
+The tensor is small enough to be ONE tile.  The cluster needs two workgroups, so the
+divisibility policy pads the grid to 2 — and the surplus workgroup, by design, "finds no tiles
+left to claim and exits".  That is exactly right for an ordinary strided kernel and **fatal for
+a multicast**: the issuing workgroup multicasts into a peer that has already exited, never
+initialised its mbarrier, and never ran `expect_tx`.
+
+A control run of the identical kernel with `:multicast` removed completes correctly, which is
+what isolates this to multicast rather than to the spec's geometry in general.
+
+### Why this matters beyond one spec
+
+The padding policy was settled from a MEASUREMENT — the driver rejects a non-divisible grid per
+axis — and the reasoning was "`:strided` has a stride loop, so surplus workgroups are harmless."
+That reasoning holds for loads, and does NOT hold for multicast, because a multicast has a
+*destination* that must still be alive and participating.
+
+So `pad for :strided` is not sufficient on its own once `:multicast` is in play.  The options,
+none of them free:
+
+1. **Require the problem to cover the cluster.**  A multicast kernel whose grid needed padding
+   is refused, the way `:exact` already is.  Honest, and it makes the constraint visible, but it
+   rejects ragged problem sizes that would otherwise be fine.
+2. **Make padded workgroups participate.**  They would have to run the barrier protocol —
+   mbarrier init, the cluster fence, `expect_tx`, the awaits — while claiming no tile.  That is
+   the CUTLASS-shaped answer but it means the "surplus workgroups just exit" story is no longer
+   true for clustered kernels.
+3. **Pad the PROBLEM rather than the grid**, so every workgroup has a real (possibly
+   identity-filled) tile.  `scramble.md` already lists an "oversubscribe and fill with an
+   identity value" idea for `:strategy :tiled`; this is the same idea arriving from a different
+   direction.
+
+NOT YET DECIDED.  Recorded here because it is a genuine constraint discovered by measurement,
+and because the note in `topology.md` that padding is "a small amount of wasted dispatch, not
+correctness" is **false for multicast kernels** and must be qualified when this is settled.
+
+### Immediate consequence for rung 11
+
+The rung's own geometry is degenerate: one tile, so the second cluster member exists only
+because of padding.  A real matmul has many tiles and both members have work.  The spec needs a
+tile shape that yields at least two tiles along the clustered axis, so it exercises multicast
+between two workgroups that are BOTH doing work — which is the case that matters.
+
+### Rung 11 status as of 2026-08-16 — NOT WORKING.  Three distinct faults peeled back so far.
+
+The multicast is EMITTED correctly (rung 10 asserts that and passes: `.multicast::cluster`,
+ctaMask 3, `%cluster_ctarank` leader, `expect_tx` outside the guard, cluster entry fence).  It
+does not yet RUN.  Each fix exposed the next fault, and all three were real:
+
+| # | geometry | fault | cause |
+|---|---|---|---|
+| 1 | tile (8 8), 1 tile | `unspecified launch failure` | padded peer exits; multicast targets a dead workgroup (see above) |
+| 2 | tile (2 2), 2x2 tiles | `invalid argument` at `cuTensorMapEncodeTiled` | TMA needs the innermost box dim to be a multiple of 16 bytes; 2 floats = 8 |
+| 3 | tile (2 4), 2 row-tiles, no padding | **`an illegal instruction was encountered`** | UNKNOWN — current blocker |
+
+Fault 3 is the live one.  What is known:
+  * the grid no longer pads, so both cluster members have real work
+  * a control run with `:multicast` removed at the SAME geometry is the next thing to get
+    (the run that would have produced it timed out under compute-sanitizer)
+  * `compute-sanitizer memcheck` on fault 1 reported NO invalid access, so these are not
+    out-of-bounds
+
+Candidates not yet eliminated, roughly in order of suspicion:
+  1. The cluster entry fence is emitted INSIDE the `tile-stride` loop, because
+     `make-async-barrier` is bound inside the loop in this spec.  A cluster barrier executed a
+     different number of times by different workgroups is a hang or a fault.  Check whether both
+     workgroups run the same trip count, and consider whether the fence belongs at kernel entry
+     rather than at barrier-construction.
+  2. The multicast destination SMEM address must be identical in every destination workgroup.
+     Believed automatic (same kernel, same allocation) but NOT verified.
+  3. Whether the mbarrier used by a multicast must itself be `shared::cluster` rather than
+     `shared::cta`.  Phase 0 Q1 says the transaction completes on each destination's OWN
+     barrier, which implies `.cta` is right — but that was settled from secondary sources, and
+     the caveat recorded there says to re-read the ISA if something downstream behaves oddly.
+     This is downstream behaving oddly.
+
+NOTE ON METHOD: rung 10 and rung 11 are doing exactly the job they were designed for.  Rung 10
+proves the instruction is emitted; rung 11 proves — or in this case refuses to prove — that it
+works.  A suite that only had rung 10 would currently be reporting success.
+
+---
+
+## ANSWER to the fence-placement question (2026-08-17)
+
+**The fence is in the right place.  The SPEC was wrong, and behind it sits a real structural
+limit on one-shot multicast.**
+
+### What was actually wrong
+
+Rungs 10/11 bound `make-async-barrier` INSIDE `tile-stride`.  The emitted PTX put
+`mbarrier.init`, the cluster entry fence and the multicast all inside a depth-2 loop.  Two
+independent hazards, either fatal:
+
+* a cluster-wide rendezvous executed a DIFFERENT number of times by workgroups that claim
+  different numbers of tiles — mismatched trip counts hang
+* `mbarrier.init` re-initialising the same module-global barrier every iteration while a peer
+  may still be waiting on it
+
+The shipped chapter-3 kernel binds its barriers OUTSIDE `tile-stride`, which is why it has never
+hit this.  Rungs 10/11 now match it: init and fence are emitted once, before the loop; only the
+multicast is per-tile.  Verified in the emitted PTX.
+
+### The deeper limit, which fence placement cannot fix
+
+`await` RE-INITIALISES the mbarrier inside the loop (src/codegen.lisp, `tma_reinit`), guarded by
+`tid==0` and a workgroup `bar.sync`.  For a cluster that is the same race one iteration later:
+the leader can re-init and issue the NEXT multicast before a peer has re-inited its own barrier.
+
+Adding a cluster fence there would put a cluster-wide rendezvous back inside a
+variable-trip-count loop — strictly worse.  So:
+
+> **A single re-used barrier is not sound for multicast in a cluster across loop iterations.
+> The correct construct is a barrier RING whose reverse (`empty`) barrier is cluster-scoped —
+> i.e. Phase 2 steps 5 and 6, which are not built yet.  That is also exactly what the real
+> chapter-3 kernel uses, and why it will be the first sound multicast pipeline.**
+
+Rungs 10/11 remain valid ONLY because their trip count is uniformly 1 (2 tiles over 2
+workgroups, one each), so the re-init is never followed by another multicast.  That is a narrow
+soundness condition and it is recorded here rather than left implicit.
+
+### Consequence for the plan
+
+Step 2 ("one-shot multicast, no ring") was designed as the de-risking spike precisely because it
+needs no ring.  That was right for proving the INSTRUCTION — rung 10 passes and did its job.  It
+was over-optimistic for proving the DATA PATH, which turns out to need the ring after all.
+Rung 11 should be expected to go green only once steps 5/6 land, unless its one-iteration
+geometry holds.
+
+STILL UNVERIFIED ON METAL: the pod was released before the restructured kernels could be run.
+Everything above about the PTX structure is verified; nothing about rung 11 executing is.
+
+
+---
+
+## FINDING (2026-08-17, on metal) — `mapa` needs a GENERIC address. The obvious form does not map.
+
+Crisp emitted, for a cluster-scoped `signal`:
+
+    mapa.shared::cluster.u32 %rD, %rSharedOffset, %rRank;
+    mbarrier.arrive.shared::cluster.b64 _, [%rD];
+
+which reads correctly and is WRONG.  On an H100 it produced
+
+    Invalid __shared__ read of size 4 bytes
+      by thread (0,0,0) in block (1,0,0)
+      Address 0x0 is not located in executing CTA
+
+where 0x0 and 0x10 are precisely the shared-window offsets of the two mbarrier globals -- i.e.
+the address reaching the arrive was the UNMAPPED local offset.
+
+GROUND TRUTH, obtained the same way Q2 was settled: compile NVIDIA's own
+`cooperative_groups::cluster_group::map_shared_rank()` with `nvcc -arch=sm_90a -ptx` and read it.
+
+    cvt.u64.u32        %tmp,  %rSharedOffset
+    cvta.shared.u64    %gen,  %tmp            <- shared window -> GENERIC
+    mapa.u64           %peer, %gen, %rRank    <- mapa operates on GENERIC addresses
+    cvta.to.shared.u64 %tmp,  %peer           <- back to the shared window
+    cvt.u32.u64        %r,    %tmp
+    mbarrier.arrive.shared::cluster.b64 _, [%r];
+
+FIXED.  `%gen-nvvm-mapa-shared-cluster` now emits that round-trip as one inline-asm block.
+
+WHY IT MATTERS BEYOND THE BUG: an unmapped arrive lands on the CALLER'S OWN barrier.  That is
+exactly the silent-local-arrive failure rung 21 was written to catch -- and at cluster extent 1
+the two addresses coincide, so it would pass every small test.  Here it surfaced as a hardware
+fault only because the sanitizer noticed the address was not CTA-local.  `validate-ptx-cluster-
+remote-arrive` now asserts the CONVERSION, and explicitly fails the old form.
+
+## FINDING — rung 04's launch conclusion was right, but under-evidenced
+
+Rung 04 proved a `.reqnctapercluster` kernel LAUNCHES under a plain `cuLaunchKernel`.  It used no
+cluster INSTRUCTIONS, so it did not prove a usable cluster was formed.  Closed properly: NVIDIA's
+own `__cluster_dims__(2,1,1)` kernel doing `mapa` + `mbarrier.arrive.shared::cluster` +
+`cluster.sync()` under `k<<<2,32>>>` returns `cudaSuccess`.  The assumption holds, now for the
+right reason.  `cuLaunchKernelEx` remains unnecessary.
+
+## RUNG 11 — still failing, but the fault has MOVED OUT of the cluster machinery
+
+After the slot fix and the mapa fix, rung 11 still faults.  `compute-sanitizer` + `nvdisasm` put
+it at:
+
+        /*1250*/  @!P0 VIADD  R19, R16, UR12 ;
+        /*1270*/  @!P0 IADD3.X R7, R18, UR13, RZ, P6, !PT ;   <- reported PC
+        /*1280*/  @!P0 LDS    R19, [R19] ;                    <- the access
+
+A PLAIN shared load with a computed index, reading outside the executing CTA's shared window in
+block (1,0,0).  That is tile addressing or shared allocation -- NOT multicast, NOT the barrier,
+NOT mapa.  Both remaining cluster instructions now match NVIDIA's own codegen.
+
+NEXT SESSION STARTS HERE, and needs no pod until there is a candidate fix.  Suspects, cheapest
+first: the scratch-matrix-ring's slot addressing under a cluster; whether the tile ring's dynamic
+SMEM size accounts for ring-count; and whether `store-tile` reads a slot the multicast wrote at a
+different offset.
+
+
+---
+
+## RUNG 11 — narrowed further, LOCALLY (2026-08-17). The faulting read is `store-tile`.
+
+Static analysis, no pod needed, and it rules several things out.
+
+THE FAULT IS THE KERNEL'S ONLY `ld.shared`.  There is exactly one in the module
+(`ld.shared.b32 %r33, [%rd57]`), and it belongs to `store-tile` reading the staged tile back out
+to global.  The sanitizer's two reported addresses map onto it exactly:
+
+    tile ring = 2 slots x 2 rows x 4 cols x 4B = 64B   (launcher requests 64B dynamic SMEM)
+    row stride = 4 floats = 16 bytes
+    reported: thread 0 -> 0x0 (row 0), thread 1 -> 0x10 (row 1)
+
+So store-tile computes CORRECT tile-relative offsets.  What is wrong is that those ABSOLUTE
+shared addresses are reported as not CTA-local in block (1,0,0).
+
+RULED OUT:
+  * the ring SLOT.  `slot = (mod grid-x 2)`, and with `:tile-shape (2 4)` over a 4x4 C the
+    column axis has ONE tile, so grid-x is always 0 and slot is always 0.  Not a slot bug.
+  * `mapa` / the remote arrive / the multicast instruction.  All now match NVIDIA's own codegen,
+    and none of them is an `ld.shared`.
+  * "scratch at shared offset 0 is inherently wrong".  The shipped chap3 kernel does exactly the
+    same thing -- `b-ring_from_matmul_2 ... shared offset 0`, `ptr = 0ULL`, 81920 bytes of
+    dynamic SMEM -- and is known-good on H100.  The DIFFERENCE is that chap3 has no cluster.
+
+THE LIVE HYPOTHESIS, unconfirmed: a `:local` scratch tensor addressed from a base of literal 0
+behaves differently under `.reqnctapercluster`, because with a cluster the shared window is the
+DISTRIBUTED one and a low absolute address belongs to rank 0 rather than to the executing CTA.
+That would make every non-rank-0 workgroup read a peer's memory -- which is precisely what
+"Address 0x0 is not located in executing CTA" says.
+
+It cannot be the WHOLE story (a clustered kernel must be able to use its own shared memory), so
+the question is what makes the base resolve absolutely here.
+
+### NEXT POD SESSION — run these two FIRST, in this order.  Both are bisects, not fixes.
+
+1. **Same ring kernel, `:multicast` removed, cluster-size KEPT.**  Isolates multicast from
+   cluster+ring+scratch.  If it still faults, multicast is innocent and the bug is in scratch
+   addressing under a cluster.  (An equivalent control was run for the earlier ONE-SHOT kernel
+   at tile (8 8) and passed, but never at the current geometry with a ring -- so this is
+   genuinely undone, not merely unrepeated.)
+
+2. **Same kernel, `cluster-size` removed, multicast removed.**  If THAT passes and (1) fails,
+   the cluster is what changes scratch addressing, and the fix is in how a `:local` scratch base
+   is computed for a clustered kernel.
+
+Only after both should anything be changed.  This endeavour has twice paid for guessing at a
+fix before bisecting.
+
+
+---
+
+## ROOT CAUSE (2026-08-17, bisected on H100) — `:local` SCRATCH IS BROKEN UNDER A CLUSTER
+
+Not multicast.  Not the barrier.  Not `mapa`.  Not the cluster entry fence.  The minimal
+reproduction has none of those:
+
+| variant | cluster-size | scratch | TMA / barriers | result |
+| --- | --- | --- | --- | --- |
+| H | no  | yes | none | **PASSES**, correct output |
+| G | YES | yes | none | **illegal instruction** |
+| B | no  | yes | ring + :block | **PASSES**, correct output |
+| C | YES | yes | ring, all :block, no multicast | HANGS |
+| A | YES | yes | ring, :mode :cluster, no multicast | HANGS |
+| rung 11 | YES | yes | ring + multicast | illegal instruction |
+
+G vs H differ ONLY in `(cluster-size :set-to (2 1))`.  So:
+
+> **A kernel that declares a cluster and allocates ANY `:local` scratch tensor is broken,
+> independent of every other cluster feature.**
+
+MECHANISM, and it matches the sanitizer verbatim.  The hoist passes a `:local` scratch base as a
+literal shared-memory OFFSET (`..._ptr = 0ULL; // shared mem offset`), which the kernel uses as
+an absolute shared address.  Without a cluster every CTA's shared window starts at 0, so that is
+correct.  Under `.reqnctapercluster` the window is the DISTRIBUTED one and a low absolute address
+names **rank 0's** shared memory -- so every non-rank-0 workgroup reads a peer.  The sanitizer
+said exactly this:
+
+    Invalid __shared__ read of size 4 bytes
+      by thread (0,0,0) in block (1,0,0)
+      Address 0x0 is not located in executing CTA
+
+WHY RUNG 04 PASSED AND HID THIS: it copies through global memory and allocates no scratch.  Its
+conclusion ("a .reqnctapercluster kernel launches correctly under a plain cuLaunchKernel")
+remains true and was independently re-confirmed against NVIDIA's own __cluster_dims__ kernel.
+It simply never exercised shared memory.
+
+THINGS THIS EXONERATES, each disproved by measurement rather than argument:
+  * multicast -- variant A has none and still fails
+  * the `:mode :cluster` barrier and remote arrive -- variant C uses only :block
+  * the cluster entry fence -- rebuilt with `%module-has-cluster-p` forced NIL (0 fences
+    emitted); A and C still hang.  The fence structure was ALSO reproduced in raw CUDA (two
+    inline-asm `barrier.cluster.arrive; barrier.cluster.wait;` with tid-0-guarded inits between)
+    and returns cudaSuccess.
+  * `mapa` -- now matches NVIDIA's codegen, and G contains no mapa at all
+
+### THE FIX BELONGS IN SCRATCH ADDRESSING, NOT IN THE CLUSTER API
+
+The scratch base must resolve to the EXECUTING workgroup's own shared window rather than an
+absolute offset.  Candidates, cheapest first, none yet tried:
+  1. Derive the base from a `.shared` symbol (cvta.shared) instead of a literal integer, so the
+     address is CTA-relative by construction.
+  2. Check whether NVCC-generated `extern __shared__` under `__cluster_dims__` resolves
+     differently -- i.e. get ground truth the same way the mapa question was settled.
+
+UNTIL THEN: every 152 metal rung that stages through `:local` scratch is blocked, which is rungs
+11 and (when written) the MMA realization.  The compile-and-inspect rungs are unaffected and
+remain green.
+
+NOTE: the pod carries a TEMPORARY hack appended to its overlay (`%module-has-cluster-p` -> NIL)
+from the fence bisect.  It is POD-ONLY; the repo copy is untouched.
+
+### What the PTX says (static, no GPU needed)
+
+G and H were compiled locally and diffed.  **The PTX is byte-identical apart from two lines:**
+
+    < .explicitcluster
+    < .reqnctapercluster 2, 1, 1
+
+Same registers, same address arithmetic, same `st.shared.b32` / `ld.shared.b32`.  So this is not
+a codegen divergence -- it is the SAME code behaving differently once the entry is marked as
+clustered.
+
+Three things that static reading DID settle, each of which was a candidate:
+
+* **Shared memory is allocated.**  The launch passes 32 bytes of dynamic shared (`cuLaunchKernel(
+  ..., 32, 1, 1, 32, 0, ...)`), exactly the tile size.  A "cluster kernel with zero shared" theory
+  is dead.
+* **The cluster axis mapping is CORRECT.**  Crisp's row axis maps to CUDA's x on the hoist path
+  (`gridX = (c_ext0+1)/2`, extent 0 = rows), `.reqnctapercluster 2,1,1` puts the 2 on x, and the
+  grid fixup pads gridX by 2.  Declaration, directive and launch all agree.
+* **How the scratch base reaches the kernel**, and this is the suspect.  A `:local` scratch tensor
+  is passed as a u64 **kernel parameter holding the literal integer 0** and used DIRECTLY as a
+  shared-space address -- there is no `.shared` symbol anywhere in the module and no `cvta`:
+
+      // host
+      uint64_t tile_from_g_sync_1_ptr = 0ULL;  // shared mem offset
+      // device
+      add.s64      %rd128, %rd45, %rd142;   // %rd45 traces back to that parameter
+      st.shared.b32 [%rd128], %r15;
+
+  With no cluster, "shared offset 0" is unambiguous.  Under `.reqnctapercluster` the shared window
+  is the distributed one, and whether a bare 0 still names the EXECUTING CTA is exactly the
+  question -- the sanitizer's "Address 0x0 is not located in executing CTA" says it does not.
+
+### The experiment that settles it: `put_temp_files_here/lds/lds_base.cu`
+
+Static reading has gone as far as it can; the remaining question is a runtime address-encoding
+question.  Four kernels, one file, ~70 lines, needs an H100:
+
+| | addressing | cluster | asks |
+| --- | --- | --- | --- |
+| Q1a | `extern __shared__` symbol | no  | is a CTA's own shared base 0 without a cluster? |
+| Q1b | `extern __shared__` symbol | 2,1,1 | **does it stay 0 WITH one?** |
+| Q2a | raw address 0 (what Crisp does) | no  | control -- must pass |
+| Q2b | raw address 0 (what Crisp does) | 2,1,1 | **must reproduce the illegal instruction** |
+
+Q1b is the whole endeavour in one number.  If the symbol base is NON-ZERO under a cluster while
+Q2b faults, the diagnosis is proven and the fix is scoped: a `:local` scratch base must be derived
+from the executing CTA's shared window rather than passed in as a literal offset.  If Q1b is 0 and
+Q2b passes, the cause is somewhere else entirely and this note is wrong -- which is why the
+control rows are there.
+### ANSWERED ON AN H100 (2026-08-17).  Hypothesis confirmed, with the exact encoding.
+
+    Q1a symbol base, NO cluster     blocks 0,1,2,3 -> smem_base = 0x400        no error
+    Q1b symbol base, CLUSTER 2      blocks 0,2     -> smem_base = 0x400
+                                    blocks 1,3     -> smem_base = 0x1000400    no error
+    Q2a raw base 0, NO cluster                                                 no error
+    Q2b raw base 0, CLUSTER 2                          ILLEGAL INSTRUCTION
+
+**A CTA's shared window base is rank-dependent under a cluster.**  The CTA rank sits at bit 24
+(`1 << 24 == 0x1000000`), so rank 1's shared memory begins at `0x1000400`, not `0x400`.  A raw
+address of 0 therefore names *rank 0's* window; for every non-rank-0 CTA it is a peer's memory,
+and the hardware refuses it.  That is the sanitizer message word for word.
+
+**And a second, larger finding fell out of Q1a: the base is 0x400 even WITHOUT a cluster.**
+Dynamic shared memory begins 1024 bytes into the window.  Crisp addresses `:local` scratch from
+an absolute 0, i.e. *below the dynamic region it actually requested* -- for every PTX kernel it
+has ever compiled, cluster or not.  Q2a shows the hardware tolerates this when there is no
+cluster, so it has never been visible.  It is nonetheless wrong, and clusters are simply the
+first configuration in which the hardware says so.
+
+### The fix, validated in Crisp's own idiom (Q3)
+
+`put_temp_files_here/lds/lds_fix.cu` re-runs the failing case with one change -- the base comes
+from the shared SYMBOL rather than a literal -- while keeping Crisp's exact addressing style
+(`st.shared.b32` / `ld.shared.b32` on a u64 register, plus a per-tensor offset operand):
+
+    Q3 raw asm, base from shared SYMBOL, CLUSTER 2
+      block=0 base=0x400   block=1 base=0x1000400   block=2 base=0x400   block=3 base=0x1000400
+      -> no error
+      out = 3 3 3 3   (expect 3 3 3 3)
+
+So the shape of the fix is settled and it is small: **keep the host-side per-tensor offset scheme
+exactly as it is, and add the executing CTA's shared base to it inside the kernel.**  In NVVM that
+is an external `addrspace(3)` global, which NVPTX lowers to `.extern .shared .align N .b8 sym[]`;
+`ptrtoint` of it yields the per-CTA base the hardware resolves correctly.  This is precisely what
+NVCC emits for `extern __shared__`, which is why Q1b/Q3 work.
+
+The host cannot compute this -- the base is not knowable before the CTA is placed -- so the
+correction must be kernel-side.
+
+### Consequences to settle BEFORE patching
+
+1. **Scope.**  This is scratch addressing, not the cluster API.  It touches every `:local` tensor
+   on PTX, so it is not a 152-local change and wants its own verification pass.
+2. **Does the requested dynamic size cover all scratch?**  Today the kernel writes below the
+   dynamic region, so an under-request would never have faulted.  Once the base is correct, an
+   under-request becomes a real overflow.  The G hoist requested exactly 32 bytes for a 32-byte
+   tile, which is the right answer for one tensor; the multi-tensor and ring cases must be
+   confirmed before flipping the base.
+3. **Intel / SPIR-V is out of scope and must stay that way** unless measurement says otherwise --
+   Intel has no cluster hardware and its local memory is reached differently.
+
+### Consequence 2 answered: the dynamic-size request is SOUND, but the offset allocator has a hole
+
+Measured by compiling representative kernels and comparing the allocator's `shared offset` lines
+against the `cuLaunchKernel` sharedMemBytes argument:
+
+| kernel | offsets assigned | launch requests | agree? |
+| --- | --- | --- | --- |
+| two scratch tensors | 0, 32 | 64 | YES |
+| `make-scratch-matrix-ring :ring-count 4` | 0 (one rank-3 param, 128 B) | 128 | YES -- the ring folds into ONE param |
+| scratch tensor + scratch CELL | **0 and 0** | 36 (=32+4) | **NO -- they alias** |
+
+So `compute-total-shared-bytes` (src/hoist-cuda/main.lisp:541) counts cells correctly, but
+`%cuda-emit-cell-arg` emits `<name>_local_ptr = 0` without ever consulting
+`*cuda-shared-scratch-offset*` -- the running allocator that `%cuda-emit-local-scratch-tensor-arg`
+uses.  Cells therefore always sit at offset 0, on top of the first scratch tensor.
+
+**This is not theoretical -- it silently corrupts data on an H100 today, with no cluster
+involved.**  A kernel whose cell write lands between the tile load and the tile store:
+
+      (load-tile A tile (0 grid-x))
+      (set! (~ acc) 99.0)
+      (store-tile tile C (grid-y grid-x))
+
+      BUFFER a: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+      BUFFER c: 99 1 2 3 4 5 6 7 99 1 2 3 4 5 6 7      <-- element 0 of every tile clobbered
+
+Ordering decides whether it shows: the same kernel with the `set!` moved ABOVE `tile-stride`
+produces perfectly correct output, because the tile load simply overwrites the cell.  That is why
+it has survived -- it is invisible unless a cell write is interleaved with tile use.
+
+It is the same class as BUG 034, which was fixed for tensor-vs-tensor and never extended to
+cell-vs-tensor.  Proposed as **BUG 046**.
+
+**Intel / SPIR-V is structurally immune to both problems.**  The L0 hoister does not build a
+shared blob with offsets at all -- each local tensor gets its own runtime-allocated SLM argument
+(`zeKernelSetArgumentValue(kernel, idx, bytesize, nullptr)`), so there is nothing to collide in
+and no base to get wrong.  Both findings are NVIDIA/CUDA-hoist only, which is what the earlier
+"keep Intel out of scope" note hoped for and this confirms.
+
+### Where that leaves the fix
+
+The cluster base fix is SAFE from the under-request angle: for tensors and rings the requested
+size already covers every byte addressed.  The cell hole is an OVERLAP, not an overflow, so it
+does not block the base change -- but both touch the same allocator and are cheapest to reason
+about together.
+
+Two independent changes, both small, both CUDA-only:
+
+* **A (BUG 046, cell offsets):** make `%cuda-emit-cell-arg` draw from `*cuda-shared-scratch-offset*`
+  exactly as the tensor path does.  Fixes a live silent corruption; independent of clusters.
+* **B (152, CTA-relative base):** add the executing CTA's shared base to the host-supplied offset
+  inside the kernel, via an external `addrspace(3)` global.  Mechanism already validated (Q3).
+
+## FIX B IMPLEMENTED AND VERIFIED ON AN H100 (2026-08-17)
+
+The `:local` scratch base is now CTA-relative.  `%ptx-entry-restore-shared-ptrs-for-implode`
+is the single choke point where a demoted i64 entry param becomes an addrspace(3) pointer, and
+for addrspace 3 ONLY it now adds the executing CTA's dynamic shared window base first.  The
+base comes from an external addrspace(3) symbol, which NVPTX emits as
+
+    .extern .shared .align 128 .b8 __crisp_dynamic_smem[];
+    mov.b64  %rd80, __crisp_dynamic_smem;
+
+i.e. the exact mechanism NVCC uses for `extern __shared__`, so the hardware resolves the rank
+bits per-CTA rather than us computing them.  addrspace 5 (thread-local) is untouched; mbarriers
+never pass through here (they are module globals) which is why the barrier half always worked.
+
+RESULT ON THE MINIMAL REPRODUCER (G -- cluster + scratch, no barriers, no TMA, no multicast):
+
+    before:  CUDA error -- an illegal instruction was encountered
+    after :  BUFFER c: 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7   -- identical to H, the no-cluster control
+
+## A MISDIAGNOSIS, CORRECTED -- AND RUNG 11 NOW PASSES ON AN H100
+
+The first draft of this section claimed fix B had uncovered a ring-slot alignment defect.  It had
+not.  Recording the error because it is the same trap this endeavour has hit before.
+
+WHAT HAPPENED.  With fix B in, rung 11 reported `misaligned address`.  The cause was IN FIX B:
+the `.extern .shared` window symbol was declared `.align 16`, so the CTA's window base -- and
+with it ring slot 0 at base+0 -- was not 128-byte aligned, which `cp.async.bulk.tensor` requires
+of its destination.  Declaring the symbol `.align 128` fixed it.
+
+    .extern .shared .align 128 .b8 __crisp_dynamic_smem[];
+
+HOW THE MISDIAGNOSIS HAPPENED: the symbol alignment AND the spec's tile shape ((2 4) -> (2 16))
+were changed in ONE step, and the resulting pass was credited to the tile shape.  It was the
+alignment.  Change one thing at a time -- the endeavour has now paid for this twice.
+
+AND RUNG 11 COULD NOT HAVE SHOWN A SLOT-STRIDE PROBLEM ANYWAY.  Its C is 4x4 under a (2 4) tile,
+so the column axis holds exactly ONE tile: `grid-x` is always 0, `slot = (mod grid-x 2)` is always
+0, and slot 1 is never reached.
+
+## WHERE 152 ACTUALLY STANDS AFTER FIX B (measured on an H100, 2026-08-17)
+
+    152-DSMEM-Cluster                     16/16 PASS   -- including 11-multicast-ring-metal:
+                                                          BUFFER c: 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
+    136-mm-async                           6/6  PASS   2x MMA_CORRECT
+    137-mm-async-block (TMA / :block)      5/5  PASS   1x MMA_CORRECT
+    138-pipeline-ring                     11/11 PASS   1x MMA_CORRECT
+    local default suite                 1018/1018 PASS
+
+Rung 11 was the endeavour's blocker and it is now green ON METAL: cluster + multicast + ring +
+TMA + mbarriers, all engaged, correct data.  The 136/137/138 results matter as much -- those are
+the most scratch- and TMA-heavy kernels in the tree, and they are the evidence that rebasing every
+PTX kernel's scratch did not regress the paths that were already working.
+
+Five existing scratch-using metal specs were also re-run under fix B and match their HOIST-EXPECT
+exactly: 076/01 (c: 43), 076/02 (c: 99), 074/05 (c: 7 1 2 3 ...), 109/15 (out: 0 1 2 3),
+029/19 (out-c: 8).
+
+## STILL OPEN, as a hypothesis rather than a finding
+
+The PTX ISA does require a 128-byte aligned TMA destination, and Crisp packs ring slots at a
+stride of one tile's byte size with nothing checking it.  A 32-byte tile would leave slot 1 at
+base+32.  That concern is grounded in the ISA but UNDEMONSTRATED -- filed as BUG 048 with the
+failed reproduction attempt recorded, and explicitly not to be acted on until reproduced.
+
+## STEP 10a/10c — N-D CLUSTERS (2026-08-18).  COMPILE-VERIFIED ONLY; NO METAL RUN.
+
+The H100 was released before this work, so everything below is verified by COMPILING and
+READING THE EMITTED PTX.  None of it has run on a GPU.  That distinction is the point of this
+heading -- do not read these as metal results.
+
+### What changed
+
+`:multicast` and `:mode :cluster` both refused any cluster with more than one non-trivial axis.
+Both restrictions are lifted.
+
+THE ANALYSIS WAS ALREADY PRESENT AND WAS BEING THROWN AWAY.  %validate-multicast-request
+already asked, per clustered axis, "do these tile coordinates mention that axis's tile-stride
+variable?"  Keeping the answer IS the generalisation:
+
+    coords do NOT mention axis a   -> tile INVARIANT along a -> a joins the multicast group
+    coords DO mention axis a       -> tiles genuinely differ -> a stays out
+    no invariant axes              -> refuse, exactly as before
+    every clustered axis invariant -> group is the whole cluster == the old 1-D behaviour
+
+1-D is therefore not a special case but a corner of the general one, which is the reason to
+trust it rather than a second code path.
+
+The mask and leader stop being compile-time constants and become a compile-time PATTERN shifted
+by a runtime offset:
+
+    PATTERN = OR over coordinate combinations on the GROUP axes of (1 << linearised rank)
+    shift   = SUM over the NON-group axes of ctaid[a] * stride[a]
+    mask    = PATTERN << shift ;  leader = AND over group axes of (ctaid[a] == 0)
+
+`:mode :cluster` now takes cluster-wide arrivals (the agreed option 1), so %module-cluster-extent
+returns the FULL cluster product rather than a 1-D extent.  Those two must move together: a
+barrier expecting fewer arrivals than it receives releases early, one expecting more never
+releases.
+
+### Read out of the emitted PTX (a (2 2) cluster, A and B loaded with orthogonal invariance)
+
+    .reqnctapercluster 2, 2, 1
+
+    mov.u32 %r6, %cluster_ctaid.x;      mov.b16 %rs3, 5;   shl.b16 %rs1, %rs3, %r6;
+    mov.u32 %r5, %cluster_ctaid.y;      shl.b32 %r25, %r5, 1;
+                                        mov.b16 %rs4, 3;   shl.b16 %rs2, %rs4, %r25;
+
+    setp.eq.b32 %p9,  %r5, 0;    <- A's leader: ctaid.y == 0
+    setp.ne.b32 %p11, %r6, 0;    <- B's leader: ctaid.x == 0 (inverted branch)
+
+PATTERN 5 = 0b101 = ranks 0 and 2 = a cluster COLUMN, shifted by ctaid.x -- that is B.
+PATTERN 3 = 0b011 = ranks 0 and 1 = a cluster ROW,    shifted by ctaid.y*2 -- that is A.
+Exactly the CUTLASS arrangement, derived from the coordinates rather than hard-coded.
+
+The 1-D case still folds to a constant: rung 10 emits ZERO runtime shifts and a bare
+`mov.b16 %rs1, 3`, so the generalisation costs the old path nothing.
+
+### New rungs
+
+    12-multicast-2d-two-operands   two operands, two DIFFERENT computed masks
+    14-cluster-of-4                (2 2) -- the square shape a matmul wants
+    18-cluster-of-8                (4 2) -- non-square, and the largest portable cluster
+
+152 is 19/19 locally.
+
+### A validator lesson worth keeping
+
+The first version of validate-ptx-multicast-2d required `shl.b16` and `mov.b16`, and FAILED
+against correct PTX.  The in-process compile shifts in 32 bits and truncates
+(`shl.b32` + `cvt.u16.u32`); the CLI compile narrows the shift to 16 (`mov.b16` + `shl.b16`).
+Same IR, different optimisation level.  The validator was testing LLVM's instruction selection,
+not Crisp's multicast grouping.  It now asserts STRUCTURE -- two copies, two DISTINCT and
+non-immediate mask registers, both cluster axes consulted -- which is what actually
+distinguishes a correct 2-D multicast from one that collapses both operands onto one group.
+
+### Still to do, and it needs hardware
+
+Nothing here has run.  The next step is chap3_wgmma with `cluster-size (2 2)` and `:multicast
+true` on both loads -- the accretion A/B against the 66%-of-cuBLAS baseline -- and that is a
+metal measurement, not a compile check.
+
+## CHAPTER 4 EXISTS AND IS HALF-RIGHT — benchmarks/matmul/chap4_cluster_multicast/
+
+Accreted onto chap3_wgmma with exactly three changes, as agreed: `cluster-size (2 2)`,
+`:multicast true` on both loads, and `empty` promoted to `:mode :cluster`.  It compiles.
+
+WHAT IS RIGHT, read out of its PTX:
+
+    .reqnctapercluster 2, 2, 1
+    2 x cp.async.bulk.tensor ... .multicast::cluster, with TWO DIFFERENT computed ctaMasks
+    both %cluster_ctaid.x and %cluster_ctaid.y consulted
+    4 x wgmma.mma_async still present -- chapter 3's engine untouched
+    .extern .shared .align 128 .b8 __crisp_dynamic_smem[]
+
+WHAT IS WRONG, and it is a correctness bug rather than a slowdown: the `empty` ring is declared
+`:mode :cluster` but lowers as a WORKGROUP-LOCAL arrive.  The module contains no `mapa` and no
+`mbarrier.arrive.shared::cluster` -- only `mbarrier.arrive.shared`.  On hardware the group leader
+could then overwrite a ring slot while a peer workgroup was still reading it.
+
+IT IS SPECIFIC TO THIS KERNEL, NOT TO THE FEATURE.  A cluster-scoped `signal` on a ring, from
+inside `with-warp-specialization`, inside a `dotimes`, emits the remote arrive correctly --
+verified standalone (put_temp_files_here/lds/wsclu2.crisp -> 8 mapa) and by shipped spec 22
+(2 mapa).
+
+ELIMINATED AS THE CAUSE, each by building the variant and reading its PTX rather than reasoning:
+
+    warp specialization              dotimes around the signal
+    sm_90 vs sm_90a                  :initial-state :signaled
+    wgmma-accumulate-via-tile        the binding's position within the let
+    a missing global-size/:tile-shape declaration
+
+REMAINING SUSPECTS, in order: `make-wgmma-accumulator`, `inner-dimension`, `store-tile D`.  The
+failure is a false NEGATIVE from %cluster-barrier-p, which resolves `(ring-get empty slot)`
+through *cluster-barrier-bindings*, a table keyed by the barrier's LET-BINDING NAME and
+populated at %parse-async-barrier-keys time.  The next move is to log both the registration and
+the lookup -- per [[log-before-iterating]], that should have happened two bisects ago.
+
+The kernel file carries this warning at the top so nobody benchmarks it by accident.
+
+## A REGRESSION I INTRODUCED AND FIXED, worth recording because of HOW it happened
+
+Step 10c rebuilt `%parse-async-barrier-keys` by extracting the copy the overlay's late binding
+was using and transforming it.  The copy I extracted PREDATED step 7's backward-kernel
+downgrade, so the rebuilt version silently dropped it, and every `:mode :cluster` RING spec
+began failing under --differentiate on this endeavour's OWN refusal:
+
+    :mode :cluster requires the kernel to declare a cluster of more than one workgroup.
+
+THE OVERLAY FILE NOW CARRIES FOUR COPIES of that function (2971, 3184, 3535, 4189 at the time),
+and only the LAST is live.  Two things went wrong in sequence, both mine:
+
+  1. I extracted from the wrong copy -- `grep | tail -1` found 3184, not the later 3535 that
+     actually had the step-7 branch.
+  2. Repairing it with a plain string replace hit a DIFFERENT copy than the live one (the
+     comment text differed by four words between copies), corrupting an earlier definition's
+     parens while leaving the live one untouched.  `check-parens` still reported balance 0,
+     because the file was balanced overall -- a whole-file paren count cannot see a misplaced
+     paren inside one of several definitions.
+
+FIXED by appending ONE fresh, complete definition derived from the LIVE copy, so late binding
+settles it rather than surgery across four.  19/19 under --differentiate.
+
+THE LESSON, and it generalises past this endeavour: when an overlay accumulates several copies
+of a function, never transform "the" copy -- locate the LAST one, and prefer appending a whole
+new definition over editing in place.  A string replace across a file with near-duplicate
+definitions is not a targeted edit.
+
+## THE BENCHMARK ANSWER (H100, 2026-08-18).  MULTICAST DOES NOT PAY HERE.
+
+Chapter 4 = chapter 3 + `cluster-size (2 2)` + `:multicast true` on both loads + a cluster-scoped
+`empty`.  It is **MMA_CORRECT on an H100** — clusters, 2-D multicast, DSMEM remote arrives and
+wgmma all working together, correct numerics.  It is also **slower than chapter 3 at every size
+and every cluster shape tried.**
+
+A full factorial of cluster size x multicast, because the two costs are otherwise confounded
+(tf32, iters=30, chapter 3 as the 1.00x control):
+
+    N       chap3      clu2 no-mc    clu2 +mc(2 1)  clu2 +mc(1 2)  clu4 no-mc    clu4 +mc
+    2048    222.3 TF   218.5 0.98x   206.3 0.93x    210.6 0.95x    132.8 0.60x   122.3 0.55x
+    4096    265.9 TF   263.9 0.99x   249.6 0.94x    250.8 0.94x    218.7 0.82x   203.1 0.76x
+
+Each variant's cluster shape and multicast count was verified in BOTH the source and the emitted
+PTX before its number was believed.
+
+WHAT THE COLUMNS SEPARATE:
+
+  * **Forming a cluster of two is free** — 0.98-0.99x with no multicast at all.
+  * **Forming a cluster of four is expensive** — 0.60x at 2048, 0.82x at 4096.  A cluster's CTAs
+    must be co-resident on one GPC; this kernel is m64n256 at ~16K registers per warpgroup, so
+    demanding four of them share a GPC constrains placement badly.  This cost is paid with
+    `:multicast` removed entirely, so it is nothing to do with multicast.
+  * **Multicast itself costs a consistent ~5%** — 0.98->0.94, 0.60->0.55, 0.82->0.76 — presumably
+    the leader guard plus expect_tx on every workgroup, and one CTA issuing where four did.
+  * **It never pays that back**, at any size or shape tried.
+
+### The finding that matters, and it is not about clusters
+
+Multicast reduces L2->SMEM traffic on the operand fetch path and nothing else.  That it buys
+nothing here is evidence that **chapter 3's ~34% gap to cuBLAS is not on that path.**  The kernel
+is bound by something else — occupancy, scheduling, or the wgmma pipeline itself — so removing
+bandwidth it was never waiting on cannot help, and the ~5% of bookkeeping is paid for nothing.
+
+The lever was mis-chosen.  That is worth knowing precisely, and it was only knowable by building
+it: the argument for multicast (neighbours fetch byte-identical tiles) is *true*, it simply is not
+where the time goes.  The next attack should be aimed at occupancy or the wgmma pipeline, and the
+cheapest next measurement is what limits chapter 3 — registers per warpgroup against resident
+warpgroups per SM — not another bandwidth feature.
+
+### What still stands
+
+None of this retracts the mechanism.  `cluster-size`, N-D `:multicast`, `:mode :cluster` and the
+CTA-relative scratch base are all implemented, spec'd and metal-verified; 152 is 20/20 on an H100
+including the metal rungs.  The DSMEM machinery is correct and available.  What the benchmark
+says is only that THIS kernel is not where it pays.
+
+CHAPTER 4 IS KEPT, negative result and all.  A deleted experiment teaches nobody which bottleneck
+to attack next.
+
+## CORRECTION TO THE BENCHMARK SECTION ABOVE — MEASUREMENT FIDELITY
+
+Found while generating benchmarks/REPORT.md, which crashed and led back into the data.
+
+**1. A real bug in scripts/crisp_bench/report.py (fixed).**  `ceiling_list` was assigned only
+inside two conditionals, so a chapter that is NOT an activation chapter AND has no vendor ceiling
+recorded for that GPU+precision fell through both and `list(ceiling_list)` raised
+UnboundLocalError.  That is the normal state of any result set before someone runs the vendor
+baseline on that machine.  Now initialised to [] up front.
+
+**2. The comparison table mixed HARDWARE.**  The ad-hoc script globbed every chap3 JSON without
+filtering on GPU, so the N=256 and N=512 rows came from an H100 **PCIe** run in July rather than
+this pod.  The 1024/2048/4096 rows -- the ones the conclusion rests on -- were correctly from the
+2026-08-18 session, but the contaminated rows were shown alongside them.
+
+**3. THE PROTOCOL WAS NON-STANDARD, and this is the one that could move the answer.**  The run
+used `warmup=5 iters=30`; every other number in this repo uses `warmup=20 iters=100`.  Measured
+against the SAME kernel on the SAME GPU (the 2026-08-16 chap3 run):
+
+    N=1024   mine 73.1  vs house 88.8   -> 17.7% low
+    N=2048   mine 222.3 vs house 242.2  ->  8.2% low
+    N=4096   mine 265.9 vs house 287.6  ->  7.5% low
+
+The deficit is SIZE-DEPENDENT, worst where warmup matters most.
+
+### What survives and what does not
+
+SURVIVES: the chap3-vs-chap4 RATIOS were all produced in one invocation with identical settings,
+so they are internally consistent, and the factorial's shape is corroborated from inside itself --
+cluster-of-2 costs nothing (0.98-0.99x) while cluster-of-4 costs 0.40x, with `:multicast` removed
+in both cases.  A 0.60x effect is far outside an 8% protocol deficit.
+
+DOES NOT SURVIVE: the absolute TFLOPS, which understate every kernel by 8-18%, and any claim
+about chapter 4 versus cuBLAS -- no vendor baseline was run on this machine at all, which is
+precisely why report.py crashed.
+
+NOT RULED OUT, and it is the reason to re-run rather than to patch the text: a DIFFERENTIAL
+warm-up effect between the two kernels.  Five warmup iterations is thin, and a clustered launch
+plausibly pays more on its first launches (co-residency placement, TMA descriptor setup) than an
+unclustered one.  That would inflate chapter 4's apparent penalty without changing its sign.
+
+### Before these numbers are quoted anywhere
+
+Re-run at `--warmup=20 --iters=100`, including the CUBLAS_Optimal target so the chapter has a
+ceiling, and filter the comparison by GPU model.  The direction of the result is not in doubt;
+the magnitudes are provisional.
+
+## CONFIRMED AT HOUSE PROTOCOL (H100, warmup=20 iters=100, 2026-08-18)
+
+All prior H100 results were purged and the whole NVIDIA suite re-run clean.  The provisional
+caveat above is now DISCHARGED: the ratios reproduce almost exactly at 4x the warmup and 3.3x the
+iterations, so the differential-warm-up worry was unfounded.
+
+    N        cuBLAS    chap3    chap4    chap3/cuBLAS   chap4/chap3   (5/30 ratio this morning)
+    256        4.9      2.5    LAUNCH FAIL     51%          -
+    512       30.0     15.0     13.8          50%        0.92x
+    1024     141.3     79.7     74.0          56%        0.93x            0.93x
+    2048     322.7    238.2    128.2          74%        0.54x            0.55x
+    4096     381.6    257.1    205.6          67%        0.80x            0.76x
+
+Full factorial, same protocol:
+
+    N       chap3      clu2 no-mc   clu2 +mc B   clu2 +mc A   clu4 no-mc   clu4 +mc
+    1024    79.7 1.00x 77.1 0.97x   72.6 0.91x   74.2 0.93x   78.0 0.98x   74.2 0.93x
+    2048   238.1 1.00x 233.5 0.98x  218.7 0.92x  227.0 0.95x  138.4 0.58x  128.1 0.54x
+    4096   256.2 1.00x 258.4 1.01x  240.8 0.94x  243.2 0.95x  223.1 0.87x  205.3 0.80x
+
+The conclusion is unchanged and now rests on clean data: a cluster of two is free (0.97-1.01x),
+multicast costs a flat 5-8% and never repays it, and a cluster of FOUR collapses at 2048 (0.58x)
+even with multicast removed entirely.
+
+### Two harness defects found on the way, both fixed
+
+**1. A missing baseline source was a SILENT skip.**  `run_target` did `if not src_path.exists():
+return`.  chap3 and chap4 have no `cublas_optimal.cu` in their directories, so their vendor
+ceiling never ran -- the single most important comparison in the tensor-core chapters was simply
+absent, and the only symptom was report.py crashing on an empty ceiling list.  It now WARNS, and
+chap3/chap4 have been given the (chapter-generic) cuBLAS driver.  This is why chapter 3's
+"~66% of cuBLAS" could not be reproduced from the repo: nothing was measuring it.
+
+**2. report.py's `ceiling_list` could be unbound** — fixed, see the correction section above.
+
+### And a real product bug: BUG 049
+
+chap4 fails with `unspecified launch failure` at N=256.  The CUDA hoist pads the grid up to a
+multiple of the cluster shape, and padded workgroups exit WITHOUT participating.  For an ordinary
+kernel that is wasted dispatch; for a multicast kernel it is fatal, because those workgroups are
+still cluster members that a cluster-scoped barrier is waiting on.  At N=256 with a 64x256 tile
+the grid is 4x1, so a (2 2) cluster makes HALF of every cluster padding.
+
+This was PREDICTED days ago and left open ("padded workgroups exit without participating --
+fatal for multicast"), and docs/topology.md still describes padding as costing only wasted
+dispatch.  That sentence is false for any kernel with a cluster-scoped barrier or a multicast
+load and needs qualifying.
+
+## WHY MULTICAST DOES NOT PAY HERE, AND WHERE IT WOULD (H100 NVL, 2026-08-18)
+
+### The decisive measurement: the multicast delta does not scale with sharing
+
+If multicast were saving bandwidth that mattered, doubling the number of workgroups served by one
+fetch should roughly double the benefit.  Measured against each configuration's OWN no-multicast
+control:
+
+    N       sharing group = 2        sharing group = 4
+    2048    233.5 -> 218.7  -6.3%    139.2 -> 128.3  -7.8%
+    4096    258.4 -> 240.8  -6.8%    224.6 -> 209.4  -6.8%
+
+It is FLAT.  Going from 2-way to 4-way sharing changes nothing, which means the bandwidth saved is
+not on the critical path at all.  What IS on the critical path is the fixed bookkeeping -- the
+leader guard, `expect_tx` on every destination, and one CTA issuing where N used to -- and that is
+the ~7% we pay.
+
+### The explanation, and it is a compliment to chapter 3
+
+Chapter 3 is warp-specialised and ring-pipelined: a producer warp streams TMA loads while the
+consumer warpgroup runs wgmma.  When that pipeline is deep enough, operand fetch is ALREADY hidden
+behind compute.  Multicast makes a fetch cheaper; it cannot make a fetch that was never being
+waited on any cheaper still.  The overhead, by contrast, sits in the producer's issue path, which
+IS serial.  Cheaper off the critical path, more expensive on it -- hence a flat loss.
+
+### Cluster cost is about CTA COUNT, not shape
+
+    (2 2) no-mc @2048 = 0.58x        (4 1) no-mc @2048 = 0.58x
+    (2 2) no-mc @4096 = 0.87x        (4 1) no-mc @4096 = 0.87x
+
+A cluster of two is free (0.97-1.01x).  A cluster of four cliffs hard at 2048 and recovers by
+4096.  Grid geometry for a 64x256 tile: 64 workgroups at N=1024 (below one wave on ~130 SMs),
+256 at N=2048 (about two waves), 1024 at N=4096 (about eight).  Cluster CTAs must be co-resident
+on one GPC, and that constraint is worst when the grid is a small number of waves -- nothing to
+constrain below one wave, and it averages out over many.  HYPOTHESIS, consistent with all six data
+points but not directly confirmed: `ncu` is unavailable on this pod (ERR_NVGPUCTRPERM, a driver
+restriction that cannot be lifted inside the container), so achieved occupancy was not measured.
+
+### Roofline, for scale
+
+    chap3 @4096: 1024 output tiles, 5.37 GB of L2->SMEM operand traffic in 0.535 ms = ~10 TB/s
+    chap2 @4096: 4096 output tiles, 8.59 GB in 36.2 ms = ~0.24 TB/s
+
+chap2 is 16x below any bandwidth roof -- it is latency-bound at one warp per CTA -- so it cannot
+answer the bandwidth question either, which is why the chap2 multicast variant was not pursued.
+
+### So where WOULD multicast pay?
+
+The condition is not "the tile is shared" -- it is "operand fetch is ON THE CRITICAL PATH".  That
+points at:
+
+  * Kernels WITHOUT deep pipelining or warp specialisation, where a load stalls the math.
+    Ironically multicast helps a simple kernel more than a sophisticated one.
+  * Attention / FlashAttention, where K and V tiles are consumed by many query blocks at once and
+    arithmetic intensity is far lower than GEMM's.
+  * Any low-arithmetic-intensity op with wide tile sharing.
+  * A cluster of TWO, always -- it is free, so multicast there costs only its own ~7%, whereas a
+    cluster of four also buys the co-residency cliff.
+
+WORTH SAYING PLAINLY: CUTLASS and cuBLAS DO use TMA multicast on Hopper GEMM.  So the feature is
+not useless -- either their kernels sit closer to the bandwidth roof than ours, or their issue
+path costs less than our ~7%.  That 7% is IMPLEMENTATION, not physics, and is the first thing to
+attack if multicast is ever wanted here.
+
+### And on a larger / newer GPU?
+
+Directionally more useful, for two independent reasons:
+  * Each generation adds FLOPs faster than it adds bandwidth, so kernels drift toward being
+    bandwidth-bound -- which is exactly the regime where multicast earns its keep.
+  * More SMs means more waves for a given problem size, and the cluster-of-four cliff we measured
+    is a small-wave-count effect that amortises away.
+Neither is a reason to expect it to pay on THIS kernel, whose fetch is hidden behind compute
+regardless of how fast the memory is.
+
+### Recommended path forward
+
+  1. Do NOT delete the feature.  It is correct, spec'd, metal-verified, and free when unused.
+  2. Attack the ~7% issue-path overhead before ever re-testing multicast for speed.
+  3. Fix BUG 049 (grid padding kills a multicast kernel) before shipping it for real use.
+  4. For chapter 3's remaining 26-33% gap to cuBLAS, stop looking at bandwidth.  The next
+     measurement is occupancy: registers per warpgroup against resident warpgroups per SM.
+
+## THE CLIFF, EXPLAINED EXACTLY (static register data, 2026-08-18)
+
+`ncu` was unavailable, but the essential occupancy number is STATIC and `ptxas -v` gives it:
+
+    chap3 (wgmma, warp-spec)   165 regs x 160 thr -> 26880 regs/CTA -> 2 CTA/SM -> 264 resident
+    chap4 (+ multicast)        166 regs x 160 thr -> 26880 regs/CTA -> 2 CTA/SM -> 264 resident
+    chap2 (1 warp/CTA)         250 regs x  32 thr ->  8192 regs/CTA -> 8 CTA/SM -> 1056 resident
+
+    (H100: 65536 registers/SM, 132 SMs, 256-register allocation granularity.  No spills in any
+     of the three.)
+
+chap3's residency capacity is 264 CTAs.  Its grid for a 64x256 output tile:
+
+    N=1024     64 CTAs = 0.24 residency waves   machine 24% full, slack everywhere
+    N=2048    256 CTAs = 0.97 residency waves   <-- EXACTLY full, ZERO scheduling slack
+    N=4096   1024 CTAs = 3.88 residency waves   later waves backfill
+
+The cluster-of-four cliff lands precisely at N=2048.  This upgrades the earlier wave-quantisation
+HYPOTHESIS to a calculation: a cluster requires its four CTAs to be co-resident on one GPC, and at
+0.97 waves every residency slot is already spoken for, so a cluster that cannot be placed blocks
+rather than being deferred into slack.  Below one wave there is room; above four waves the later
+waves backfill.  It also explains why the cliff depends on CTA COUNT and not cluster SHAPE --
+(2 2) and (4 1) measured identically.
+
+### And this retires one theory about the ~7% multicast tax
+
+Multicast costs ONE register (165 -> 166), no additional shared memory, and does NOT change
+CTAs/SM.  So the overhead is not an occupancy or resource effect at all -- it is pure
+serialisation in the producer's issue path (leader guard, per-destination expect_tx, one CTA
+issuing where four did).  That makes it an ordinary code-generation optimisation target rather
+than a fundamental tradeoff, which is the single most useful thing to know before deciding
+whether multicast is worth another attempt.
+
+## WHERE THE ~7% MULTICAST TAX ACTUALLY GOES (static PTX analysis, no GPU needed)
+
+Having ruled out occupancy (multicast costs ONE register and does not change CTAs/SM), the cost
+had to be visible in the instruction stream.  It is not:
+
+    opcode      chap3   chap4   delta
+    mov           282     290      +8
+    mbarrier        7      10      +3
+    barrier         0       2      +2      <- the cluster entry fence
+    setp           16      18      +2
+    TOTAL        1832    1852     +20      <- about 1% more instructions, for a 7% slowdown
+
+And the code generation is GOOD, which is worth saying:
+
+  * the cluster entry fence is in the PROLOGUE (lines 1597/1613), not the k-loop -- paid once
+  * the leader predicate is LOOP-INVARIANT and hoisted: %cluster_ctaid.x/.y are read once at
+    ~1712 and the setp lands there, far above the multicast copies at 3310/3326
+
+So the tax is not instruction count.  It is STRUCTURAL COUPLING.
+
+### The mechanism, and the fix it implies
+
+With multicast exactly ONE CTA per group issues the bulk copy; the other members' producer warps
+issue nothing and simply wait.  Total copies go DOWN (one multicast serves N destinations), so this
+is not extra work -- it is a change of shape: N independent producer pipelines become ONE shared
+pipeline feeding N consumers.  The whole group now advances at the rate of a single issuer, and any
+jitter in that one CTA stalls every consumer in the cluster.  In a warp-specialised kernel whose
+entire design is "keep the producer ahead of the consumers", collapsing N producers into 1 is
+exactly the wrong direction.
+
+AND OUR LEADER IS STATIC.  It is `ctaid == 0 on the group axes`, computed once before the loop, so
+the SAME CTA issues every stage for the lifetime of the kernel.  It is a permanent bottleneck
+rather than a rotating duty.
+
+CUTLASS does not do this: it distributes multicast issue across the cluster's CTAs so no single
+member is the standing issuer.  That is the difference between "multicast pays" and "multicast
+costs 7%", and it is an implementation choice, not physics.
+
+### The concrete next experiment, if multicast is ever revisited
+
+ROTATE THE LEADER BY RING SLOT: leader = (position on group axes == slot mod group_extent).  With
+ring-count 2 and a group of 2, rank 0 issues slot 0 and rank 1 issues slot 1, so both CTAs share
+the issue work and neither is a permanent choke point.
+
+NOT A QUICK PATCH, and worth saying why: at the TMA codegen site the ring slot has already been
+folded into the destination address, so the slot INDEX is not available as a value there.  Making
+it available means threading it from the `ring-get` through to the copy node -- a real change to
+what the TMA node carries, not a tweak to %gen-multicast-leader-pred.
+
+MINOR, ALSO SPOTTED: two `barrier.cluster.arrive; barrier.cluster.wait;` pairs are emitted in the
+prologue where one rendezvous should do.  Cheap (once per launch) but probably redundant.
+
+## STEP 11 — THE MULTICAST ISSUER NOW ROTATES (compile-verified; NOT yet measured on metal)
+
+The ~7% multicast tax was diagnosed as structural: exactly ONE CTA per group issued every stage,
+for the kernel's lifetime, so N producer pipelines collapsed into one and the group advanced at a
+single issuer's rate.  The issuing duty now rotates across the group.
+
+ROTATION SOURCE, and why not the obvious one.  What is needed is a value that changes per PIPELINE
+STAGE and exists where the copy is emitted.  The ring SLOT index is the natural choice but has
+already been folded into the destination address by codegen time; recovering it means threading
+the slot expression down from `analyze-load-tile-expression` and re-generating a node in a second
+place.  The MBARRIER ADDRESS carries the same information and is already in hand: a barrier ring
+is `base + slot*8`, so `(mbar_addr >> 3)` counts stages.  No new plumbing.
+
+Emitted PTX for chap4 (cluster (2 2), ring of 2) -- LLVM folds the whole thing into ONE bfe:
+
+    bfe.u32     %r416, %r448, 3, 1;    ; (mbar_addr >> 3) & 1  -- the stage parity
+    setp.ne.b32 %p13, %r7, %r416;      ; A's issuer: cluster_ctaid.y vs stage
+    setp.eq.b32 %p14, %r8, %r416;      ; B's issuer: cluster_ctaid.x vs stage
+
+So both operands alternate issuer per slot, and the rotation itself is essentially free.  A power
+of two extent lets `mod` become a mask, which also avoids needing a URem binding the LLVM layer
+does not have.
+
+WHY THIS IS CORRECT.  Rotating WHO issues does not change WHAT is issued: the ctaMask still names
+the whole group, so every member still receives the tile, and every member still runs `expect_tx`
+on its own mbarrier.  The condition that makes exactly ONE member elect itself is that all members
+compute the SAME stage value -- which holds because the ring slot derives from the K-loop counter,
+which is uniform across a cluster.  If a kernel ever made the slot rank-dependent, two members
+could both elect (or neither), so that uniformity is the contract.  Note this is the same
+uniformity a cluster-wide barrier already requires.
+
+COST: the leader predicate is no longer loop-invariant -- it now depends on the mbarrier address,
+so it sits inside the loop rather than being hoisted.  That is one `bfe` and one `setp` per stage,
+against the pipeline serialisation it is meant to remove.
+
+FALLBACK: rotation applies only when the group spans exactly ONE clustered axis and the extent is
+a power of two -- which covers every real case (in a matmul A's group is a cluster ROW and B's a
+COLUMN, both single-axis).  Anything else keeps the original static leader, which remains correct.
+
+*** NOT YET MEASURED.  Whether this recovers the ~7% is an open question that needs a GPU. ***
+The prediction is specific and falsifiable: if the tax was pipeline serialisation, chap4 should
+move from ~0.93x toward 1.0x at N=1024/4096 where the cluster itself is cheap; the N=2048
+cluster-of-four cliff (0.58x) should NOT move, because that is co-residency, not issue.
+
+## STEP 11 MEASURED AND REVERTED — the serialisation hypothesis is FALSIFIED (H100 NVL)
+
+The prediction was written down before the run and was specific: if the multicast tax were
+single-issuer pipeline serialisation, rotating the issuing duty should move chap4 from ~0.93x
+toward 1.0x where the cluster itself is cheap, while leaving the N=2048 cluster-of-four cliff
+(co-residency, not issue) untouched.
+
+    N       clu2 +mc  before -> after     clu4 +mc  before -> after
+    1024      0.91x   ->   0.92x            0.93x   ->   0.93x
+    2048      0.92x   ->   0.88x            0.54x   ->   0.53x
+    4096      0.94x   ->   0.91x            0.80x   ->   0.79x
+
+The no-multicast CONTROLS reproduced within 1-2% across the two sessions (0.97/0.98/1.01 ->
+0.97/0.97/0.99), which establishes the noise floor and makes the comparison fair.  Against that
+floor multicast is unchanged at 1024 and slightly WORSE at 2048 and 4096 -- 4 and 3 points.
+
+So rotation costs (the leader predicate stops being loop-invariant, adding a bfe and a setp per
+stage) and recovers nothing.  The hypothesis that the ~7% was a static single issuer starving the
+group's pipeline is WRONG.
+
+REVERTED at the call site.  The rotation capability is kept in %gen-multicast-leader-pred and is
+selected by passing a rotation source; omitting it gives the static leader, which is what
+measurement says to use.  It is retained rather than deleted because the hypothesis may still be
+right for a kernel whose producer really is the bottleneck -- chapter 3's is not -- and rebuilding
+it would be wasted work.  Verified after the revert: the leader test is `setp.eq %p14, %r8, 0`
+again and %cluster_ctaid is read once at ~1712, i.e. hoisted.
+
+### What this closes
+
+Two candidate explanations for the multicast tax have now been tested and rejected:
+
+  * occupancy / resource pressure -- rejected by static register data (multicast costs ONE
+    register, 165 -> 166, and does not change CTAs/SM)
+  * single-issuer pipeline serialisation -- rejected here
+
+What remains unexplained is a flat ~6-9% that does not scale with sharing group size, is not
+instruction count (+20 on 1832), is not resources, and is not issue distribution.  The most likely
+remaining candidate is the multicast instruction's own latency/fan-out cost inside the TMA engine,
+which is not something Crisp can schedule around.
+
+ON THIS KERNEL, MULTICAST IS DONE.  Chapter 3 hides its operand fetch behind compute, so there is
+no bandwidth on the critical path to reclaim, and every mechanism for reclaiming it costs more
+than it returns.  The mechanism remains correct, spec'd and metal-verified for a kernel that IS
+fetch-bound; FlashAttention, where K/V tiles are shared across many query blocks at far lower
+arithmetic intensity, is the honest next place to look.
+
+### Revert confirmed on the same pod, and stated honestly
+
+Rebuilt with the static leader and re-measured in the SAME session, Crisp targets only:
+
+    c4_21 (clu2, mc B)   N=2048   rotating 218.7 -> static 212.4   -2.9%
+    c4_21                N=4096   rotating 240.8 -> static 251.1   +4.3%
+    chap4 (clu4, mc)     N=2048   rotating 128.1 -> static 129.7   +1.3%
+    chap4                N=4096   rotating 205.3 -> static 211.9   +3.2%
+
+Static is ahead on three of four points and behind on one, all within a few percent.  The honest
+reading is NOT "reverting won back 3%" -- it is that ROTATION AND STATIC ARE WITHIN NOISE OF EACH
+OTHER, with static slightly ahead on balance and considerably simpler (a loop-invariant predicate
+instead of a per-stage one).  That is enough to justify the revert; it is not enough to claim the
+revert is a speedup, and it must not be quoted as one.
+
+A METHOD NOTE, because it nearly went in the report as a 150% improvement: the first version of
+this comparison grouped results by (chapter, size) WITHOUT filtering on competitor, so chap4's
+CUBLAS_Optimal run was averaged in with its Crisp run and made the static build look like it had
+tripled.  This is the SECOND time in this endeavour that an unfiltered results query produced a
+spurious headline (the first mixed H100 PCIe rows into an H100 NVL table).  Any query over
+benchmarks/results must filter BOTH hardware and competitor.
+
+## THE PROBE: MULTICAST DOES WORK, AND WE FOUND ITS REGIME (H100 NVL, 2026-08-19)
+
+Sweeping the OUTPUT TILE of the chapter-4 kernel walks arithmetic intensity without writing
+FlashAttention.  Cluster fixed at (2 1) throughout -- a cluster of two is free (0.97-1.01x), so
+this isolates the multicast delta from the cluster-of-four cliff.  B multicasts, A does not.  Each
+`+mc` variant is measured against its OWN no-multicast control at the same tile, so tile-shape
+effects cancel out of the delta.  RUN TWICE, both runs shown:
+
+    tile     AI     N=2048 run1/run2      N=4096 run1/run2
+    64x256   25.6   -6.8%  / -7.0%        -6.4%  / -9.7%
+    64x128   21.3   +16.3% / +15.5%       +12.1% / +10.7%
+    64x64    16.0   +0.8%  / +1.1%        +7.7%  / +4.4%
+    64x32    10.7   (mc CRASHES -- see below)
+
+THE SIGN FLIP IS REAL AND REPRODUCIBLE.  Multicast is a consistent ~7% LOSS at the 64x256 tile and
+a consistent +10 to +16% GAIN at 64x128.  Two independent runs agree to within about a point on
+every cell that matters.  This answers the question the endeavour has been circling: the mechanism
+is not broken and it is not useless -- it simply cannot help a kernel that has already hidden its
+operand fetch behind compute, and it helps materially once that is no longer true.
+
+### The confound, stated plainly
+
+Shrinking the tile changes far more than arithmetic intensity:
+
+    tile     AI     regs   CTA/SM   waves @2048
+    64x256   25.6   165      2       0.97
+    64x128   21.3    96      4       0.97
+    64x64    16.0    66      5       1.55
+    64x32    10.7    52      7       2.22
+
+So "multicast helps at low arithmetic intensity" and "multicast helps at high occupancy" are NOT
+separated by this design, and this probe cannot tell them apart.  What it does establish -- which
+is what it was built to establish -- is that a regime exists where multicast pays substantially.
+Note that 64x256 and 64x128 sit at the SAME wave count (0.97), so wave quantisation alone does not
+explain the swing between them.
+
+The non-monotonicity (64x64 gains less than 64x128) is itself reproducible, so it is a real effect
+rather than noise -- most likely the kernel becoming latency-bound as the tile narrows, the same
+regime chapter 2 sits in.
+
+### THE PRACTICAL CATCH, and it decides what to do next
+
+    N=2048   64x256 no-mc 233.0 TF  <-- best overall
+             64x128 +mc   193.8 TF
+    N=4096   64x256 no-mc 262.3 TF  <-- best overall
+             64x128 +mc   209.8 TF
+
+Multicast improves a configuration that is itself SLOWER.  The +16% is real, but it is 16% of a
+worse kernel: 64x128 with multicast still loses to 64x256 without it, by 17% at 2048 and 20% at
+4096.  For this matmul, big tiles and no multicast remains the optimum, and no amount of multicast
+tuning changes that -- the tile shape dominates.
+
+WHAT THAT MEANS FOR FLASHATTENTION.  The premise is now evidence-backed rather than hopeful: a
+kernel in the low-AI / high-occupancy regime does benefit.  But it also sets the bar honestly --
+FA would have to be worth building on its own terms, because "multicast helps it" does not imply
+"it beats the big-tile GEMM".  FA is a different computation, so that comparison is not even the
+right one; the point is only that multicast should be expected to help there, and now we know why.
+
+### NEW BUG: the narrowest tile crashes with multicast
+
+`p_mc32` (64x32 output tile, cluster (2 1), B multicast) fails with `unspecified launch failure`;
+the matching no-multicast control at the same tile runs fine, as do all wider tiles with multicast.
+Grid divisibility is satisfied (2048/64 = 32, and 32 % 2 == 0), so this is NOT BUG 049.  The B ring
+at this shape is 32x32 floats = 4 KB per slot, which is 128-byte aligned, so it is not obviously
+BUG 048 either.  Filed as BUG 050.  It cost the lowest-AI point of the sweep, which is the point
+that would have best separated the AI and occupancy explanations.

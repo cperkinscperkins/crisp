@@ -1597,3 +1597,200 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         If the AD walk sees the SOURCE form rather than that lowered node, the cheapest correct
         fix may be to normalise `(funcall #'NAME args...)` -> `(NAME args...)` before the walk,
         rather than to teach the walk about funcall.  Unverified.
+[x] 046 - A LOCAL scratch CELL and a LOCAL scratch TENSOR were given the SAME shared-memory
+        offset by the CUDA hoister, so they silently overwrote each other on the GPU.
+
+        FOUND BY: endeavor 152's investigation into why a clustered kernel faulted.  Found
+        incidentally -- it has nothing to do with clusters and has been live on `main` for as
+        long as both features have coexisted.
+
+        BUG 034 gave scratch TENSORS a running offset allocator (*cuda-shared-scratch-offset*)
+        so they would not alias one another.  Cells were never added to it:
+        %cuda-emit-cell-arg emitted `<name>_local_ptr = 0` unconditionally.  Every cell
+        therefore sat at offset 0, directly on top of the first scratch tile.
+
+        DEMONSTRATED ON AN H100.  Kernel loads a tile, writes a cell, stores the tile:
+
+            BUFFER a: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+            BUFFER c: 99 1 2 3 4 5 6 7 99 1 2 3 4 5 6 7   <- element 0 of every tile clobbered
+
+        WHY IT SURVIVED SO LONG: it is ORDERING-SENSITIVE and therefore invisible in the
+        obvious test.  Put the cell write BEFORE the tile-stride loop and the tile load simply
+        overwrites the cell -- output is perfectly correct.  Put it AFTER the store and the
+        tile has already been banked out -- also correct.  Only a cell write INTERLEAVED with
+        tile use exposes it, and no spec did that.  (The first version of the regression test
+        written for this bug passed against the broken compiler for exactly this reason.)
+
+        THE DEEPER CAUSE, and what the fix actually addresses: the hoister computed its
+        shared-memory layout TWICE, independently -- compute-total-shared-bytes summed bytes
+        for the launch parameter while the emitters assigned offsets.  Two computations of one
+        number is what allowed them to disagree, and merely teaching the cell emitter to bump
+        the counter would have left that structure in place to fail again.  Both now consult a
+        single %cuda-shared-layout.
+
+        Cells are laid out ABOVE the tensors rather than interleaved, so every existing
+        kernel's tensor offsets are BYTE-IDENTICAL to before the fix -- verified.
+
+        INTEL WAS NEVER AFFECTED: the L0 hoister gives each local tensor its own
+        runtime-allocated SLM argument (zeKernelSetArgumentValue(..., bytes, nullptr)) instead
+        of slicing one blob, so it has nothing to alias.
+
+        FIX: overlays/hoist-cuda/crisp-hoist-cuda-overlay.lisp -- %cuda-local-param-bytes,
+        %cuda-shared-layout, compute-total-shared-bytes, %cuda-emit-cell-arg, and an
+        emit-kernel-args wrapper that seeds the cell offset.
+        REGRESSION: tests/spec/074-scratch-tensor/05-cell-tensor-no-alias.crisp (metal, both
+        vendors).  Verified failing before the fix and passing after, on an H100.
+
+[ ] 047 - A scratch CELL bound in a def-kernel `let` crashes the compiler under --differentiate.
+
+        FOUND BY: writing BUG 046's regression spec, which is the first spec to bind a
+        make-scratch-cell inside a def-kernel let and then differentiate it.
+
+        %promote-scratch-init-for-ad assumes a scratch initialiser is a TENSOR.  Handed
+        (make-scratch-cell float) it constructs the incomplete type specifier (tensor float)
+        and %expand-tensor-type-specifier signals CRISP-INCOMPLETE-TYPE-ERROR:
+
+            2: (ERROR CRISP-INCOMPLETE-TYPE-ERROR :TYPE-SPEC (TENSOR FLOAT))
+            3: (%EXPAND-TENSOR-TYPE-SPECIFIER TENSOR FLOAT NIL (TENSOR FLOAT))
+            4: (%PROMOTE-SCRATCH-INIT-FOR-AD (MAKE-SCRATCH-CELL FLOAT))
+            5: (GENERATE-BACKWARD-WALK ...)
+
+        Unrelated to BUG 046 -- it fires in the AD walk, not the hoister.  The kernel is
+        differentiable in principle (in the regression spec the cell is written and never read,
+        so its adjoint is zero); the promoter simply has no cell case.
+
+        CURRENTLY SKIPPED: tests/spec/074-scratch-tensor/05-cell-tensor-no-alias.crisp carries a
+        SKIP-WITH[--differentiate] pointing here.  Remove it when this is fixed.
+
+[ ] 048 - UNVERIFIED: a ring slot used as a TMA destination may violate the 128-byte
+        alignment `cp.async.bulk.tensor` requires of its shared destination.
+
+        FILED 2026-08-17 AND IMMEDIATELY CORRECTED.  The first version of this entry claimed the
+        defect had been demonstrated by spec 152/11.  IT HAD NOT, and the reasoning was wrong in
+        a way worth recording, because it is the same trap this endeavour has fallen into before.
+
+        WHAT ACTUALLY HAPPENED.  152/11 reported `misaligned address` after endeavor 152's fix B.
+        The real cause was in fix B itself: the `.extern .shared` window symbol was declared
+        `.align 16`, so the CTA's window base -- and therefore ring slot 0 at base+0 -- was not
+        128-byte aligned.  Declaring the symbol `.align 128` fixed it, and 152/11 now PASSES on
+        an H100 with the expected buffer.  Nothing about ring slot stride was involved.
+
+        HOW THE MISDIAGNOSIS HAPPENED: two variables were changed in a single step -- the symbol
+        alignment AND the spec's tile shape (2 4)->(2 16) -- and the resulting pass was credited
+        to the tile shape.  It was the alignment.  Change one thing at a time.
+
+        AND 152/11 COULD NOT HAVE SHOWN IT ANYWAY.  Its C is 4x4 with a (2 4) tile, so the column
+        axis has exactly ONE tile: `grid-x` is always 0 and `slot = (mod grid-x 2)` is always 0.
+        The spec never reaches slot 1.
+
+        WHAT REMAINS, AS A HYPOTHESIS AND NOT A FINDING.  The PTX ISA does require a
+        `cp.async.bulk.tensor` shared destination to be 128-byte aligned, and Crisp packs ring
+        slots at a stride of one tile's byte size with nothing checking that figure.  A 32-byte
+        tile would put slot 1 at base+32, which is not 128-aligned.  So the concern is grounded
+        in the ISA -- but it is UNDEMONSTRATED.
+
+        ATTEMPTED AND FAILED TO REPRODUCE: reaching slot 1 needs more than one column tile, which
+        with the harness's fixed 4-element dim extents needs a tile narrower than 4 floats; but
+        TMA also requires the innermost box to be a multiple of 16 bytes, so a (2 2) float tile is
+        rejected by the descriptor with `invalid argument` before any alignment check runs.  The
+        two constraints exclude each other at this buffer size.
+
+        TO CLOSE THIS: build a case with larger buffers (a hoist harness with dim extents > 4)
+        where a TMA-legal tile still leaves a sub-128-byte slot stride.  If it faults, decide
+        between padding slots to 128 and refusing at compile time.  If it does not, delete this
+        entry.  Do NOT act on it before it is reproduced.
+
+[x] 049 - A MULTICAST kernel CRASHES when the launch grid must be PADDED to fit its cluster.
+
+        FOUND 2026-08-18 on an H100, running the full NVIDIA matmul suite.  chap4_cluster_multicast
+        (cluster (2 2), :multicast true) reports `unspecified launch failure` at N=256 and produces
+        no result; every larger size runs correctly.  chap3, the same kernel without a cluster,
+        runs N=256 fine.
+
+        THE MECHANISM WAS PREDICTED BEFORE IT WAS SEEN.  Endeavor 152 noted the open question days
+        earlier: the CUDA hoist pads the grid up to a multiple of the cluster shape, and PADDED
+        WORKGROUPS EXIT WITHOUT PARTICIPATING.  For an ordinary kernel that is what the docs say --
+        "a small amount of wasted dispatch, not correctness".  For a MULTICAST kernel it is fatal:
+        the padded workgroups are still members of a cluster, so a barrier that expects arrivals
+        from the whole cluster never receives them, and a multicast addressed to the whole group
+        writes into a workgroup that has already left.
+
+        At N=256 with a 64x256 output tile the grid is 4x1.  A (2 2) cluster forces the second axis
+        to be padded from 1 to 2, so HALF of every cluster is padding.
+
+        DOCUMENTATION IS CURRENTLY WRONG: docs/topology.md describes grid padding as costing only
+        wasted dispatch.  That sentence must be qualified -- it is false for any kernel with a
+        cluster-scoped barrier or a multicast load.
+
+        LIKELY FIXES, in increasing order of ambition:
+          (a) REFUSE at compile time when a multicast/cluster-barrier kernel's grid could require
+              padding, naming the offending size relationship.  Smallest, and honest.
+          (b) Have padded workgroups still participate in the cluster's barriers (arrive and
+              leave) rather than exiting early.  Correct, but every barrier's arrival count then
+              depends on how much padding a given launch has.
+          (c) Choose the cluster shape per launch so the grid divides exactly.  That is the
+              `:exact` strategy the hoist already refuses to pad for -- worth revisiting.
+
+        DOES NOT BLOCK the endeavour's conclusion: chapter 4 is slower than chapter 3 at every
+        size that runs, and 256 is far below where either kernel is interesting.
+
+        FIXED 2026-08-18.  The compiler records `:cluster-reach` in the metacrisp when a module
+        multicasts a load or declares a :mode :cluster barrier, and the CUDA hoist refuses to pad
+        the grid of such a kernel -- treating it exactly like `:strategy :exact`, with a message
+        naming the real constraint.  An `unspecified launch failure` becomes a refusal that says
+        why.
+
+        NOT A COMPILE-TIME REFUSAL, deliberately: the grid comes from `:derive-from C` and is only
+        known at launch, so the check is emitted into the host code.
+
+        THE FLAG IS MODULE-SCOPED and therefore conservative -- if any kernel in a module uses
+        reach, every clustered kernel in it declines padding.  Precise per-kernel attribution
+        would mean threading a flag through the whole analysis; over-refusing a kernel that gains
+        nothing from its cluster anyway is the cheaper error, and it errs safely.
+
+        BOTH SIDES ARE PINNED: spec 26-cluster-reach-refuses-padding asserts a multicast kernel's
+        launcher REFUSES, and spec 04-cluster-size-on-metal (a cluster with no reach) still PADS.
+        Verified: rung 04 emits no reach flag and keeps its padding arithmetic.
+
+        STILL OPEN as the better long-term fix: let padded workgroups PARTICIPATE in the cluster's
+        barriers rather than exiting, which would make padding safe instead of forbidden.  That
+        needs the tile-stride trip count to be uniform across a cluster -- a real change.
+
+[x] 050 - A MULTICAST load CRASHES at a narrow output tile (64x32), while the same tile without
+        multicast runs fine.
+
+        FOUND 2026-08-19 by the arithmetic-intensity probe.  `p_mc32` -- chapter 4's kernel with a
+        64x32 output tile, cluster (2 1), B multicast only -- fails with `unspecified launch
+        failure` at N=2048 and N=4096.  Its no-multicast control at the SAME tile runs correctly,
+        and every wider multicast tile (64x64, 64x128, 64x256) runs correctly.  So it is the
+        combination of multicast with this narrow shape.
+
+        NOT BUG 049: grid divisibility is satisfied (2048/64 = 32 rows of tiles, 32 % 2 == 0), so
+        no padding is required and the new refusal does not fire.
+
+        PROBABLY NOT BUG 048 either: the B ring at this shape is 32x32 floats = 4096 bytes per
+        slot, so slot 1 begins at a 128-byte aligned offset.
+
+        WHAT IT COST: the lowest-arithmetic-intensity point of the probe (AI 10.7), which is the
+        point that would best have separated the two competing explanations for why multicast
+        helps at 64x128 -- lower arithmetic intensity versus higher occupancy.  Worth fixing for
+        that reason alone if that question is ever pursued.
+
+        FIXED 2026-08-19.  A CTA was RETURNING from a cluster kernel while its peers could still
+        be multicasting into its shared memory.  CUDA requires a cluster sync before exit when
+        distributed shared memory is in use; Crisp's fences were all emitted at BARRIER
+        CONSTRUCTION -- i.e. in the prologue -- and there was none before `ret`.
+        generate-function-body now emits one for any clustered PTX entry point.
+
+        THE DIAGNOSIS TURNED ON A DETAIL WORTH REMEMBERING: under compute-sanitizer the kernel
+        RAN CORRECTLY (MMA_CORRECT, 3985 GFLOPS) and failed only without it.  That is the
+        signature of a RACE rather than a bad address -- the sanitizer's serialisation closes the
+        window.  Checking that the kernel had actually run, rather than accepting "0 errors", is
+        what turned a clean sanitizer report into evidence.
+
+        THE SHAPE DEPENDENCE WAS THE OTHER CLUE: a narrow output tile means less work per
+        workgroup, which widens the window in which one member finishes and exits while peers are
+        still streaming.  That is why 64x32 failed while 64x64, 64x128 and 64x256 did not.
+
+        VERIFIED: p_mc32 now runs MMA_CORRECT at 73.9 TFLOPS; chapter 3 (no cluster) emits zero
+        cluster fences and is byte-unchanged; 1023/1023 both ways.

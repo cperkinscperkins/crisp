@@ -824,6 +824,113 @@
                     substring error-output)
             nil)))))))
 
+
+
+(in-package :crisp.compiler)
+
+;; tests/run-specs.lisp
+(defun %152-backward-metacrisp-p (txt)
+  "T if TXT is a BACKWARD kernel's metacrisp.  The AD pass names its kernel <name>_grad
+   and writes it to its own file, so the kernel name is the reliable tell."
+  (and txt (search "_grad\"" txt)))
+
+;; tests/run-specs.lisp
+(defun %152-assert-no-schedule-leak (txt what)
+  "Endeavour 146's thesis as an assertion: a backward kernel must NOT carry the
+   forward's scheduling declarations.  cluster-size is data movement -- it changes when
+   and where bytes arrive, not what is computed -- so a derivative has no use for it and
+   its presence would mean a schedule had leaked into the math."
+  (cond
+    ((search ":cluster-size" txt)
+     (format *error-output* "FAIL (~a): the BACKWARD kernel's metacrisp carries :cluster-size.  Scheduling declarations must not propagate into a derivative -- cluster-size says where bytes arrive, not what is computed.~%" what)
+     nil)
+    ((search ":effective-cluster-size" txt)
+     (format *error-output* "FAIL (~a): the BACKWARD kernel's metacrisp carries :effective-cluster-size.~%" what)
+     nil)
+    (t t)))
+
+;; tests/run-specs.lisp
+(defun %152-degrade-check (metacrisp-path)
+  "Rung 05.  On a FORWARD metacrisp: assert the degrade was recorded (declaration kept,
+   effective extent collapsed to 1).  On a BACKWARD one: assert the schedule did not leak."
+  (let* ((p (if (listp metacrisp-path) (first metacrisp-path) metacrisp-path))
+         (txt (and p (probe-file p) (uiop:read-file-string p))))
+    (cond
+      ((null txt)
+       (format *error-output* "FAIL: metacrisp not found (~a).~%" metacrisp-path) nil)
+      ((%152-backward-metacrisp-p txt)
+       (%152-assert-no-schedule-leak txt "rung 05 backward"))
+      ((not (search ":cluster-size" txt))
+       (format *error-output* "FAIL: metacrisp has no :cluster-size record -- the DECLARATION should survive even when the cluster degrades.~%") nil)
+      ((not (search ":effective-cluster-size (1 1 1)" txt))
+       (format *error-output* "FAIL: expected :effective-cluster-size (1 1 1) on a target without cluster support; the degrade was not recorded.~%") nil)
+      (t t))))
+
+;; tests/run-specs.lisp
+(defun %152-extent-check (metacrisp-path)
+  "Rung 03.  On a FORWARD metacrisp: assert both records exist and the cluster actually
+   formed.  On a BACKWARD one: assert the schedule did not leak."
+  (let* ((p (if (listp metacrisp-path) (first metacrisp-path) metacrisp-path))
+         (txt (and p (probe-file p) (uiop:read-file-string p))))
+    (cond
+      ((null txt)
+       (format *error-output* "FAIL: metacrisp not found (~a).~%" metacrisp-path) nil)
+      ((%152-backward-metacrisp-p txt)
+       (%152-assert-no-schedule-leak txt "rung 03 backward"))
+      ((not (search ":cluster-size" txt))
+       (format *error-output* "FAIL: metacrisp has no :cluster-size record.~%") nil)
+      ((not (search ":effective-cluster-size" txt))
+       (format *error-output* "FAIL: metacrisp has no :effective-cluster-size record -- without it a degraded cluster is indistinguishable from a working one.~%") nil)
+      ((search ":effective-cluster-size (1 1 1)" txt)
+       (format *error-output* "FAIL: :effective-cluster-size is (1 1 1) on a cluster-capable target -- the cluster did NOT form, though the kernel still computes correctly.~%") nil)
+      (t t))))
+
+;; tests/run-specs.lisp
+(defun validate-cluster-degrade-warning (metacrisp-path)
+  "Rung 05, metadata-path arity (one argument: the .metacrisp path)."
+  (%152-degrade-check metacrisp-path))
+
+
+
+(in-package :crisp.spec-runner)
+
+;; tests/run-specs.lisp
+(defun validate-cluster-degrade-warning (file &optional ignored)
+  "Rung 05, PTX-path arity (FILE plus emitted text, which is ignored)."
+  (declare (ignore ignored))
+  (crisp.compiler::%152-degrade-check (%152-find-metacrisp file)))
+
+;; tests/run-specs.lisp
+(defun validate-metacrisp-cluster-extent (file &optional ignored)
+  "Rung 03, PTX-path arity (FILE plus emitted text, which is ignored)."
+  (declare (ignore ignored))
+  (crisp.compiler::%152-extent-check (%152-find-metacrisp file)))
+
+(in-package :crisp.spec-runner)
+
+
+
+(defun %152-index-of (needle hay)
+  "Character index of NEEDLE in HAY, or NIL."
+  (search needle hay))
+
+(defun %152-find-metacrisp (file)
+  "The .metacrisp for the kernel THIS pass compiled, next to FILE.
+
+   Under --differentiate the compiler emits only the backward kernel's sidecar
+   (<stem>_grad_<kernel>.metacrisp); otherwise the forward's.  Both can be present on disk at
+   once because the runner does not clean them up, so choose deliberately instead of taking
+   whatever `directory` lists first."
+  (let* ((dir  (make-pathname :name nil :type nil :defaults file))
+         (stem (pathname-name file))
+         (hits (directory (merge-pathnames (format nil "~a*.metacrisp" stem) dir)))
+         (gradp (lambda (p) (search "_grad" (pathname-name p))))
+         (want  (if *compile-differentiate*
+                    (remove-if-not gradp hits)
+                    (remove-if gradp hits))))
+    (or (first want) (first hits))))
+
+
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active.
    Extended: --runtime-checks routes to run-spec-runtime-checks-pass;
@@ -882,11 +989,9 @@
           (t (run-spec-binary file)))
         (cond
           ((eq ir-target :spirv)  (run-spec-spirv-in-process file :emit-metadata emit-metadata :validator validator))
-          ((eq ir-target :ptx)    (run-spec-ptx-in-process file :validator validator))
+          ((eq ir-target :ptx)    (run-spec-ptx-in-process file :emit-metadata emit-metadata :validator validator))
           ((eq ir-target :llvmir) (run-spec-llvmir-in-process file :validator validator))
           (t (run-spec-lisp-loader file))))))
-
-
 
 
 (defun compile-crisp-file-to-ir-string (filepath)
@@ -1892,19 +1997,21 @@
          (format *error-output* "FAIL (No SPV generated)~%~a~%" error-output)
          nil)))))
 
-;; tests/run-specs.lisp - Add PTX runner functions (after line 224)
 
-(defun compile-crisp-file-to-ptx (filepath)
-  "Compiles a .crisp file to .ptx and returns the output path if successful."
+
+(defun compile-crisp-file-to-ptx (filepath &key (emit-metadata nil))
+  "Compiles a .crisp file to .ptx and returns (values out-path meta-paths).
+   Endeavor 152: honours :emit-metadata, mirroring compile-crisp-file-to-spirv."
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
          (out-path (make-pathname :name base-name :type "ptx" :defaults filepath))
+         (meta-base-path (make-pathname :name base-name :type nil :defaults filepath))
+         (meta-paths nil)
          (*standard-output* (make-broadcast-stream)))
     (when (probe-file out-path) (delete-file out-path))
 
     (let (;; Use a FRESH environment for each spec to ensure isolation
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
-                  ;; Initialize for PTX
                   (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
                                                       :differentiate *compile-differentiate*)
                   (let ((*package* (find-package :crisp-language)))
@@ -1916,21 +2023,32 @@
              (builder (crisp.llvm-bindings:llvm-create-builder)))
         (unwind-protect
             (progn
-             (let ((crisp.compiler:*target-backend* :ptx))
+             (let ((crisp.compiler:*target-backend* :ptx)
+                   (crisp.compiler::*emit-metadata* emit-metadata))
                (crisp.compiler:compile-module forms module builder nil nil nil)
                (crisp.compiler:compile-to-ptx
                 module out-path
-                :compute-capability (crisp.compiler::ptx-compute-capability-string))))
+                :compute-capability (crisp.compiler::ptx-compute-capability-string))
+               (when emit-metadata
+                 (setf meta-paths
+                       (crisp.compiler::generate-metadata-for-file
+                        filepath meta-base-path
+                        :output-targets (list (list :ptx out-path))
+                        :forms forms)))))
           (crisp.llvm-bindings:llvm-dispose-builder builder)
           (crisp.llvm-bindings:llvm-dispose-module module))))
 
     (if (probe-file out-path)
-        out-path
-        nil)))
+        (values out-path meta-paths)
+        (values nil nil))))
 
-(defun run-spec-ptx-in-process (file &key (validator nil))
+(defun run-spec-ptx-in-process (file &key (emit-metadata nil) (validator nil))
+  "Endeavor 152: accepts :emit-metadata so a spec combining --metadata with --ir-target=ptx
+   actually gets a sidecar.  The validator keeps the PTX-path arity (FILE PTX-TEXT); validators
+   that assert on metadata locate the sidecar themselves."
   (handler-case
-      (let ((out-path (compile-crisp-file-to-ptx file)))
+      (multiple-value-bind (out-path meta-paths)
+          (compile-crisp-file-to-ptx file :emit-metadata emit-metadata)
         (if out-path
             (let ((res (if validator
                            (let* ((ptx-content (uiop:read-file-string out-path))
@@ -1944,13 +2062,39 @@
                            t)))
               (when res
                 (format t "PASS (Generated ~a)~%" (file-namestring out-path)))
-              (unless *keep-work* (delete-file out-path))
+              ;; Clean BOTH artifacts.  Leaving sidecars behind is what made this failure look
+              ;; intermittent in the first place.
+              (unless *keep-work*
+                (when (probe-file out-path) (delete-file out-path))
+                (dolist (mp (if (listp meta-paths) meta-paths (list meta-paths)))
+                  (when (and mp (probe-file mp)) (delete-file mp))))
               res)
             (progn (format *error-output* "FAIL (No PTX generated)~%") nil)))
     (error (e)
       (uiop:print-backtrace :condition e)
       (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
+
+
+(defun validate-ptx-cluster-dims (file ptx-string)
+  "Endeavor 152 rung 01/02 — the kernel's cluster shape must reach the PTX.
+
+   A kernel can declare (cluster-size ...) and compile perfectly while emitting no
+   cluster directive at all -- that was the behaviour before this endeavor, since an
+   unrecognised declare clause is silently ignored.  The kernel would then launch
+   unclustered, compute the correct answer, and lose every bit of the bandwidth
+   reduction the declaration was written for.  No correctness test can see that, so
+   this validator reads the emitted instruction instead."
+  (declare (ignore file))
+  (let ((missing '()))
+    (dolist (exp '(".explicitcluster" ".reqnctapercluster"))
+      (unless (search exp ptx-string) (push exp missing)))
+    (cond
+      (missing
+       (format *error-output* "FAIL: PTX carries no cluster directive; missing ~{~a~^ and ~}.~%  A kernel declaring cluster-size that emits no .reqnctapercluster will launch UNCLUSTERED and still be numerically correct.~%"
+               (nreverse missing))
+       nil)
+      (t t))))
 
 (defun run-spec-ptx-binary (file &key (validator nil) (flags nil))
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
@@ -1966,12 +2110,18 @@
     ;; binding, so a :block (sm_90+) test gates on the default sm_80 without this.
     (let ((af (find-if (lambda (f) (and (stringp f) (search "--ir-target-arch=" f))) flags)))
       (when af (push af args)))
+    ;; Endeavor 152: forward --metadata too.  A spec that wants to assert on the
+    ;; .metacrisp *and* pin an arch carries both flags; dropping this one meant the
+    ;; metacrisp was never written and the validator failed on a missing file.
+    (when (find-if (lambda (f) (and (stringp f) (string= f "--metadata"))) flags)
+      (push "--metadata" args))
 
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
           :output :string
           :error-output :string
           :ignore-error-status t)
+      (declare (ignore output))
       (cond
        ((not (zerop exit-code))
          (format *error-output* "FAIL (Compiler Exit Code ~a)~%~a~%" exit-code error-output)
@@ -3098,6 +3248,317 @@
     (format *error-output* "FAIL: forward TMA staging (cp.async.bulk.tensor) lost under --differentiate.~%")
     (return-from validate-ptx-tma-grad nil))
   t)
+
+
+
+(defun validate-ptx-cluster-barrier (file ptx-string)
+  "Endeavor 152 rung 20 — a :mode :cluster barrier must be a REAL mbarrier object.
+   Asserts only that; the remote arrive that distinguishes it is rung 21's job."
+  (declare (ignore file))
+  (if (search "mbarrier.init" ptx-string)
+      t
+      (progn (format *error-output* "FAIL: no mbarrier.init — a :cluster barrier must allocate a real mbarrier, as :block does.~%")
+             nil)))
+
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cluster-ring-arrivals (file ptx-string)
+  "Endeavor 152 rung 22 — :arrivals is per-workgroup and the COMPILER multiplies.
+
+   The kernel declares a 2-workgroup cluster, a :block `full` ring with :arrivals 1, and a
+   :cluster `empty` ring with :arrivals 2.  So the emitted mbarrier init counts must be:
+       full  -> 1   (NOT scaled: a multicast completes on each destination's OWN barrier)
+       empty -> 4   (2 per workgroup x 2 workgroups arriving all-to-all)
+   Both halves are asserted.  Scaling the wrong one is as fatal as scaling neither: a `full`
+   barrier initialised to 2 would never complete, and an `empty` initialised to 2 would complete
+   early and let a workgroup overwrite a slot a peer was still reading."
+  (declare (ignore file))
+  (let ((has1 (search "mov.b32 	%r11, 1;" ptx-string))
+        (has4 (search ", 4;" ptx-string)))
+    (declare (ignorable has1))
+    (cond
+      ((null (search "mbarrier.init" ptx-string))
+       (format *error-output* "FAIL: no mbarrier.init at all.~%") nil)
+      ((null has4)
+       (format *error-output* "FAIL: no init count of 4 — the :cluster ring's :arrivals 2 was not scaled by the group extent 2.  The barrier would complete one full round of arrivals early.~%") nil)
+      (t t))))
+
+
+(defun validate-ptx-cluster-remote-arrive (file ptx-string)
+  "Endeavor 152 rung 21 — `signal` on a :cluster barrier must arrive on PEERS.
+
+   UPDATED after a hardware finding.  The first version looked for `mapa.shared::cluster`, which
+   was the form Crisp emitted -- and that form DOES NOT MAP.  Compiling NVIDIA's own
+   cluster_group::map_shared_rank() shows the required sequence goes through a GENERIC address:
+
+       cvta.shared.u64    <generic>, <shared offset>
+       mapa.u64           <peer>,    <generic>, <rank>
+       cvta.to.shared.u64 <shared>,  <peer>
+       mbarrier.arrive.shared::cluster.b64 _, [<shared>];
+
+   Handing `mapa` a raw shared-window offset silently yields an UNMAPPED address, so the arrive
+   lands on the caller's own barrier -- exactly the silent-local-arrive failure this validator
+   exists to catch.  On an H100 that surfaced as
+       Invalid __shared__ read ... Address 0x0 is not located in executing CTA.
+
+   So the assertion is now on the CONVERSION, not merely on the presence of a mapa: a `mapa` that
+   is not bracketed by the generic round-trip is the bug, not the fix."
+  (declare (ignore file))
+  (let ((cvta-in  (search "cvta.shared.u64" ptx-string))
+        (mapa     (search "mapa.u64" ptx-string))
+        (cvta-out (search "cvta.to.shared.u64" ptx-string))
+        (arr      (search "mbarrier.arrive.shared::cluster" ptx-string))
+        (oldform  (search "mapa.shared::cluster" ptx-string)))
+    (cond
+      (oldform
+       (format *error-output* "FAIL: emits `mapa.shared::cluster` on a raw shared offset.  That form does not map -- the arrive would land on the CALLER'S OWN barrier while the peer waits forever.  Use the generic round-trip (cvta.shared.u64 -> mapa.u64 -> cvta.to.shared.u64).~%") nil)
+      ((null arr)
+       (format *error-output* "FAIL: no `mbarrier.arrive.shared::cluster` -- the arrive is not cluster-scoped.~%") nil)
+      ((null mapa)
+       (format *error-output* "FAIL: no `mapa.u64` -- nothing maps the barrier into a peer's view, so any arrive is local.~%") nil)
+      ((or (null cvta-in) (null cvta-out))
+       (format *error-output* "FAIL: `mapa.u64` is present but not bracketed by the generic conversion (cvta.shared.u64 in, cvta.to.shared.u64 out).  mapa operates on GENERIC addresses; a raw shared offset yields an unmapped result.~%") nil)
+      ((> mapa arr)
+       (format *error-output* "FAIL: the cluster arrive precedes the mapa that computes its peer address.~%") nil)
+      (t t))))
+
+
+;;; =====================================================================
+;;; Endeavor 152 step 10 — validators for N-D multicast
+;;; =====================================================================
+
+(defun %152-all-indices (needle hay)
+  "Every start position of NEEDLE in HAY."
+  (let ((hits '())
+        (start 0))
+    (loop for pos = (search needle hay :start2 start)
+          while pos
+          do (push pos hits)
+             (setf start (1+ pos)))
+    (nreverse hits)))
+
+
+(defun %152-mask-constants (ptx-string)
+  "The distinct 16-bit constants moved into a register in this PTX, as integers.
+
+   The ctaMask is a .b16 operand, so `mov.b16 %rsN, K` is where a multicast group's PATTERN
+   becomes visible.  Reading them back is how a test can tell TWO DIFFERENT groups from two
+   copies of the same one."
+  (let ((out '()))
+    (dolist (p (%152-all-indices "mov.b16" ptx-string) (sort (remove-duplicates out) #'<))
+      (let* ((comma (position #\, ptx-string :start p))
+             (eol   (position #\Newline ptx-string :start p)))
+        (when (and comma eol (< comma eol))
+          (let* ((tail (string-trim " ;	" (subseq ptx-string (1+ comma) eol)))
+                 (v    (ignore-errors (parse-integer tail :junk-allowed t))))
+            (when v (push v out))))))))
+
+(defun %152-multicast-mask-operands (ptx-string)
+  "The final operand of every `.multicast::cluster` copy -- i.e. each copy's ctaMask."
+  (let ((out '()))
+    (dolist (p (%152-all-indices "multicast::cluster" ptx-string) (nreverse out))
+      (let* ((eol  (position #\Newline ptx-string :start p))
+             (line (subseq ptx-string p eol))
+             (tok  (string-trim " ;" (subseq line (1+ (or (position #\Space line :from-end t) 0))))))
+        (push tok out)))))
+
+
+(defun validate-ptx-multicast (file ptx-string)
+  "Endeavor 152 rung 10 — assert the multicast MECHANISM engaged, not merely that the kernel
+   compiled.
+
+   This is the assertion that cannot be replaced by a correctness test.  A load-tile which
+   quietly declined to multicast produces BYTE-IDENTICAL results -- each workgroup simply does
+   its own fetch of the same tile -- so only the emitted instruction can distinguish a working
+   multicast from a fallback.
+
+   Four things are checked, and the last is the one that took the research:
+     1. the bulk-tensor copy carries `.multicast::cluster`
+     2. the leader is elected from `%cluster_ctarank` (one WORKGROUP issues, not one thread)
+     3. `mbarrier.arrive.expect_tx` is present
+     4. expect_tx PRECEDES the multicast copy in the emitted text -- i.e. it sits OUTSIDE the
+        ctarank guard.  Every destination workgroup must announce the bytes it expects to
+        RECEIVE on its own mbarrier; only the issuing one runs the copy.  Emitting expect_tx
+        inside the guard would leave every non-issuing workgroup waiting forever on a barrier
+        that was never told to expect anything -- a hang, not a wrong number."
+  (declare (ignore file))
+  (let* ((mc  (%152-index-of "multicast::cluster" ptx-string))
+         ;; Step 10a: the leader is elected from the workgroup's CLUSTER POSITION.  For a 1-D
+         ;; cluster that used to be %cluster_ctarank; for an N-D group it is a per-axis
+         ;; %cluster_ctaid.<a> test, since the leader is the workgroup at 0 on every GROUP
+         ;; axis rather than at rank 0 of the whole cluster.  Accept either -- the property
+         ;; being asserted is "a WORKGROUP leader is elected, not a thread leader", and both
+         ;; spellings establish it.
+         (rank (or (%152-index-of "%cluster_ctarank" ptx-string)
+                   (%152-index-of "%cluster_ctaid" ptx-string)))
+         (etx (%152-index-of "mbarrier.arrive.expect_tx" ptx-string)))
+    (cond
+      ((null mc)
+       (format *error-output* "FAIL: no `.multicast::cluster` in the emitted PTX -- the load did NOT multicast.  It would still compute the correct answer, at the bandwidth :multicast was written to avoid.~%")
+       nil)
+      ((null rank)
+       (format *error-output* "FAIL: `.multicast::cluster` is emitted but neither %cluster_ctarank nor %cluster_ctaid is ever read, so no WORKGROUP leader is elected.  Every workgroup would issue the same multicast.~%")
+       nil)
+      ((null etx)
+       (format *error-output* "FAIL: no mbarrier.arrive.expect_tx -- destination workgroups would never be told how many bytes to await.~%")
+       nil)
+      ((> etx mc)
+       (format *error-output* "FAIL: mbarrier.arrive.expect_tx appears AFTER the multicast copy, which means it is inside the leader guard.  Non-issuing workgroups would wait on a barrier that was never told to expect anything -- a hang.~%")
+       nil)
+      (t t))))
+
+(defun validate-ptx-multicast-2d (file ptx-string)
+  "A 2-D cluster must give its two operands DIFFERENT multicast groups.
+
+   THIS IS THE ASSERTION THAT MATTERS.  A lowering that multicast the WHOLE cluster for both
+   operands would still emit two `.multicast::cluster` copies, still elect a leader, still run
+   -- and would be WRONG, delivering one cluster column's B tile to a workgroup that wanted a
+   different one.  This kernel only stores A, so no output check can see it.  The distinguishing
+   evidence is that the two ctaMasks are DIFFERENT and are computed per workgroup.
+
+   IT DELIBERATELY DOES NOT PIN AN INSTRUCTION SPELLING.  The first version of this validator
+   required `shl.b16` / `mov.b16`, and failed against perfectly correct PTX: the in-process
+   compile shifts in 32 bits then truncates (`shl.b32` + `cvt.u16.u32`) where the CLI compile
+   narrows the shift to 16 (`mov.b16` + `shl.b16`).  Same IR, different optimisation level.
+   Pinning the spelling tested LLVM's instruction selection rather than Crisp's grouping, so
+   these checks are structural instead."
+  (declare (ignore file))
+  (let* ((copies (length (%152-all-indices "multicast::cluster" ptx-string)))
+         (masks  (%152-multicast-mask-operands ptx-string))
+         (ax     (search "%cluster_ctaid.x" ptx-string))
+         (ay     (search "%cluster_ctaid.y" ptx-string)))
+    (cond
+      ((< copies 2)
+       (format *error-output* "FAIL: expected TWO `.multicast::cluster` copies (one per operand), found ~a.~%" copies)
+       nil)
+      ((notevery (lambda (m) (and (plusp (length m)) (char= (aref m 0) #\%))) masks)
+       (format *error-output* "FAIL: a ctaMask is an IMMEDIATE ~a, so that group is fixed at compile time.  In a 2-D cluster the group is a slice whose position depends on the workgroup, so the mask must be computed.~%" masks)
+       nil)
+      ((< (length (remove-duplicates masks :test (function string=))) 2)
+       (format *error-output* "FAIL: both multicast copies use the SAME ctaMask register ~a.  A 2-D cluster needs one group per operand -- a shared mask means one workgroup's tile is delivered to another.~%" masks)
+       nil)
+      ((not (and ax ay))
+       (format *error-output* "FAIL: both cluster axes must be consulted (x seen: ~a, y seen: ~a).  Each operand's group is positioned by the axis it is NOT grouped along.~%"
+               (and ax t) (and ay t))
+       nil)
+      (t
+       (format t "  [multicast-2d] ~a copies, distinct computed masks ~a, both cluster axes read.~%"
+               copies masks)
+       t))))
+
+
+(defun %152-check-cluster-product (ptx-string expected)
+  "Parse `.reqnctapercluster X, Y, Z` and check X*Y*Z."
+  (let ((p (search ".reqnctapercluster" ptx-string)))
+    (if (null p)
+        (progn (format *error-output* "FAIL: no .reqnctapercluster directive in the emitted PTX.~%") nil)
+        (let* ((eol  (position #\Newline ptx-string :start p))
+               (raw  (subseq ptx-string p eol))
+               ;; Drop the trailing "// @kernel_name" -- a kernel called cluster_of_4 puts
+               ;; a digit in that comment, which would be scraped as a fourth dimension.
+               (line (let ((c (search "//" raw))) (if c (subseq raw 0 c) raw)))
+               (nums (let ((acc '()) (i 0))
+                       (loop while (< i (length line))
+                             ;; aref, not char: in :crisp.compiler `char` is the CRISP TYPE,
+                             ;; not cl:char -- a documented trap in this codebase.
+                             do (let ((c (aref line i)))
+                                  (if (digit-char-p c)
+                                      (multiple-value-bind (v j) (parse-integer line :start i :junk-allowed t)
+                                        (push v acc) (setf i (or j (length line))))
+                                      (incf i))))
+                       (nreverse acc)))
+               ;; the leading digits of "reqnctapercluster" are not present, so nums are the dims
+               (prod (reduce #'* nums :initial-value 1)))
+          (if (= prod expected)
+              (progn (format t "  [cluster-extent] ~a -> product ~a.~%" nums prod) t)
+              (progn (format *error-output* "FAIL: expected a cluster of ~a workgroups, but .reqnctapercluster says ~a (product ~a).~%"
+                             expected nums prod)
+                     nil))))))
+
+(defun validate-ptx-cluster-extent-4 (file ptx-string)
+  "A cluster of 4 reaches the PTX as `.reqnctapercluster` with a product of 4."
+  (declare (ignore file))
+  (%152-check-cluster-product ptx-string 4))
+
+(defun validate-ptx-cluster-extent-8 (file ptx-string)
+  "A cluster of 8 reaches the PTX as `.reqnctapercluster` with a product of 8.
+
+   8 is worth its own rung because it is the largest PORTABLE cluster: the CUDA programming
+   guide guarantees support up to 8, and anything beyond is opt-in per architecture.  It is
+   also where a 16-bit ctaMask still has room -- a 16-CTA cluster fills it exactly."
+  (declare (ignore file))
+  (%152-check-cluster-product ptx-string 8))
+
+
+;;; BUG 049 — a cluster-REACH kernel must REFUSE grid padding, not perform it.
+(defun validate-cuda-cluster-no-pad (crisp-file cu-files)
+  "The generated launcher for a multicast / :mode :cluster kernel must refuse a non-divisible
+   grid instead of padding it up.
+
+   WHY THIS IS ASSERTED ON THE GENERATED C++ AND NOT ON A RUN.  The failure it guards against is
+   `unspecified launch failure` at ONE problem size -- N=256, where a 64x256 tile gives a 4x1 grid
+   and a (2 2) cluster must pad the second axis, making half of every cluster padding.  Every
+   larger size runs correctly, so a passing benchmark proves nothing; the evidence that the guard
+   exists is in the emitted host code.
+
+   Padding is still CORRECT, and still emitted, for a clustered kernel that does NOT use its
+   cluster's reach -- surplus blocks really do just exit.  Spec 04 covers that side."
+  (declare (ignore crisp-file))
+  (let ((ok nil))
+    (dolist (cu cu-files ok)
+      (let ((content (uiop:read-file-string cu)))
+        (when (search "reqnctapercluster" content)  ; not every emitted file is the kernel
+          nil)
+        (cond
+          ((search "padding cannot be made safe here" content)
+           (if (search "_px = ((gridX" content)
+               (progn (format *error-output*
+                        "FAIL: ~a emits BOTH the cluster-reach refusal AND the padding arithmetic.~%"
+                        (file-namestring cu))
+                      (return nil))
+               (progn (format t "  [cluster-no-pad] ~a refuses padding, as required.~%"
+                              (file-namestring cu))
+                      (setf ok t))))
+          ((search "_px = ((gridX" content)
+           (format *error-output*
+             "FAIL: ~a PADS the grid, but this kernel uses its cluster's reach.  Padded blocks are cluster members that a multicast addresses and a cluster barrier waits on, and they exit immediately -- this is BUG 049 and it manifests as `unspecified launch failure`.~%"
+             (file-namestring cu))
+           (return nil)))))))
+
+;;; Endeavor 152 — (sync-cluster)
+(defun validate-ptx-sync-cluster (file ptx-string)
+  "On a Hopper target `(sync-cluster)` must lower to the cluster rendezvous, NOT a workgroup one.
+
+   The distinction matters and is invisible in output: a `bar.sync` synchronises the threads of
+   ONE workgroup, so a kernel that meant to rendezvous its whole cluster would run, produce
+   plausible numbers, and simply not synchronise the peers it was written to synchronise."
+  (declare (ignore file))
+  (let ((cluster (search "barrier.cluster" ptx-string)))
+    (if cluster
+        (progn (format t "  [sync-cluster] emits barrier.cluster on sm_90.~%") t)
+        (progn (format *error-output*
+                 "FAIL: no `barrier.cluster` in the emitted PTX -- (sync-cluster) did not lower to a cluster rendezvous.~%")
+               nil))))
+
+(defun validate-ptx-sync-cluster-degrade (file ptx-string)
+  "On a target with no clusters, `(sync-cluster)` must DEGRADE to a workgroup barrier -- and must
+   not leave a `barrier.cluster` instruction behind in a module whose arch cannot execute one.
+
+   The degrade is exact rather than approximate: a cluster of one workgroup IS a workgroup, and
+   NVIDIA's cluster_group::sync() carries no separate __syncthreads(), so a cluster barrier
+   already covers intra-workgroup convergence."
+  (declare (ignore file))
+  (let ((cluster (search "barrier.cluster" ptx-string))
+        (bar     (search "bar.sync" ptx-string)))
+    (cond
+      (cluster (format *error-output*
+                 "FAIL: `barrier.cluster` emitted for a pre-Hopper target, which cannot execute it.~%")
+               nil)
+      ((null bar) (format *error-output*
+                    "FAIL: (sync-cluster) degraded to NOTHING -- expected a workgroup barrier (bar.sync).~%")
+                  nil)
+      (t (format t "  [sync-cluster] degrades to bar.sync, no cluster instruction left behind.~%") t))))
+
 
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))

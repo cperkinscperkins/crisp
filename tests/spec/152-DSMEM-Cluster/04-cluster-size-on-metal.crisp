@@ -1,0 +1,44 @@
+;; Endeavor 152 rung 04 — a clustered kernel that actually LAUNCHES and runs.
+;;
+;; Rungs 01-03 are compile-and-inspect.  This is the first rung that proves the launch path:
+;; the CUDA hoist must emit `cudaLaunchKernelEx` with a cluster-dimension launch attribute, and
+;; the driver must accept the pairing of that attribute with the cluster dimensions baked into
+;; the PTX.  A mismatch between the two is a LAUNCH FAILURE, not a wrong answer, which is why
+;; this rung is worth its own step rather than being folded into a later one.
+;;
+;; WHAT IT DOES NOT PROVE.  Nothing here shows a cluster is doing anything useful — the kernel
+;; would produce identical output unclustered.  It proves only that a clustered launch is
+;; well-formed and survives contact with the driver.  Proving a cluster PAYS is rung 11 and the
+;; MMA phase; proving multicast FIRES is rung 10's PTX inspection.
+;;
+;; GEOMETRY.  Deliberately more than one cluster's worth of work: 4 workgroups of 32 threads
+;; over a (2 1) cluster = 2 clusters.  A single-cluster launch would not exercise the scheduler
+;; placing several clusters, and grid==cluster is the one geometry where a divisibility bug
+;; cannot show up.
+;;
+;; HARNESS NOTE, now MEASURED rather than guessed.  The hoist allocates a fixed 4 elements per
+;; tensor param (generate-kernel-arguments-with-usm) regardless of the declared global-size, and
+;; fills them 0,1,2,3 -- NOT a constant.  So `c = 2*a` reads 0 2 4 6.  The first cut of this spec
+;; expected `2 2 2 2` on the assumption of a constant fill, and that guess was the only thing
+;; wrong with it: on an H100 PCIe the clustered kernel loaded, launched and computed correctly.
+;;
+;; VERIFIED ON METAL 2026-08-16 (H100 PCIe, CUDA 12.4).  The rung's open assumption is now
+;; settled: a kernel carrying .reqnctapercluster launches correctly under a PLAIN cuLaunchKernel.
+;; cuLaunchKernelEx / CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION is NOT required when the shape is
+;; baked into the PTX, exactly as CUDA C++ pairs __cluster_dims__ with ordinary <<<>>> syntax.
+;;
+;; HOIST-ARCH: sm_90
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90 --differentiate]: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 0 2 4 6
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel cluster_launch (A &out C)
+  (declare #'(vec-t &out vec-t)
+           (global-size :set-to 128)
+           (local-size  :set-to 32)           ; 4 workgroups
+           (cluster-size :set-to (2 1)))      ; -> 2 clusters of 2
+  (let ((tid (to-int (get-global-linear-id))))
+    (set! (~ C tid) (* 2.0 (~ A tid)))))

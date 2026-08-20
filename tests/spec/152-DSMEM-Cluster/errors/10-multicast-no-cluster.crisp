@@ -1,0 +1,30 @@
+;; CHECK-FAIL: "multicast"
+;; Endeavor 152 — negative: `:multicast` with no cluster declared is a HARD ERROR.
+;;
+;; THIS IS THE PAIR TO RUNG 05, and together they pin a deliberate asymmetry that will otherwise
+;; look like an inconsistency:
+;;
+;;   `cluster-size` on a target without clusters   -> DEGRADES, with a diagnostic (rung 05)
+;;   `:multicast` that cannot be honoured          -> COMPILE ERROR (this spec)
+;;
+;; The reason is not arbitrary.  `cluster-size` is launch geometry and harmless on its own — the
+;; same way `local-size` does not error merely because a device cannot honour the value you asked
+;; for.  `:multicast` is an ASSERTION about a specific load: the user is saying "I expect this
+;; one to multicast," and the entire point of making it explicit rather than inferred is that a
+;; load which quietly declines to multicast is a silent 2x bandwidth regression that no
+;; correctness test can see.  Degrading it would reintroduce exactly the failure the key exists
+;; to prevent.
+;;
+;; The message should name the missing `cluster-size`, not merely report an unsupported key.
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mc_no_cluster (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (8 8))
+           (local-size  :set-to 32))
+  (tile-stride C (8 8) (grid-y grid-x)
+    (let ((tile (make-scratch-matrix float (8 8)))
+          (bar  (make-async-barrier :mode :block)))
+      (load-tile A tile (0 grid-x) :barrier bar :multicast true)
+      (await bar)
+      (store-tile tile C (grid-y grid-x)))))

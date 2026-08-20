@@ -17,6 +17,129 @@
 
 (in-package :crisp.compiler)
 
+;;; ---- migrated from overlays/crisp-compiler-overlay.lisp (endeavour 152) ----
+
+(defun %map-elements-fn-name (fn-form)
+  "The function NAME out of a #'FOO argument to map-elements!, or NIL if FN-FORM is not
+   that shape.  #'FOO reads as (FUNCTION FOO); the head is matched by name so it does not
+   matter which package the reader interned it in."
+  (and (consp fn-form)
+       (%head-name-eq (first fn-form) "FUNCTION")
+       (second fn-form)))
+
+(defun %map-elements-check-unary (fn-form location)
+  "Refuse a fused function that is not UNARY, before it reaches the funcall lowering.
+
+   map-elements! applies its function to ONE element at a time, so there is no second
+   argument to supply.  Checked against *function-table*, the same registry
+   analyze-funcall-expression consults.  When the name is unknown (not a #'FOO form, or no
+   signature registered yet) this stays silent and lets the normal path report — the goal is
+   a better message for a real mistake, not a new source of false refusals."
+  (let* ((name (%map-elements-fn-name fn-form))
+         (sigs (and name (gethash name *function-table*))))
+    (when sigs
+      (unless (find 1 sigs :key (lambda (s) (length (function-signature-parameters s))))
+        (error 'crisp-compiler-error
+               :message (format nil "map-elements!: the fused function ~a must be unary — it is applied to one element at a time — but its declared signature takes ~{~a~^ or ~} argument(s)."
+                                name
+                                (remove-duplicates
+                                 (mapcar (lambda (s) (length (function-signature-parameters s))) sigs)))
+               :source-location location)))))
+
+(defun %map-elements-coop-dims (ty)
+  "(ROWS COLS USE) if TY is a (coop-matrix ELEM ROWS COLS USE) type spec, else NIL."
+  (and (consp ty)
+       (%head-name-eq (first ty) "COOP-MATRIX")
+       (= (length ty) 5)
+       (list (third ty) (fourth ty) (fifth ty))))
+
+(defun %emit-per-frag-map (entry fn-form)
+  "Per-fragment expansion of (map-elements! V #'FN) for a register tile: apply FN elementwise
+   to every fragment of V that this warp holds.
+
+   Mirrors %emit-per-frag-fill — no logical fragment index is needed, because an elementwise
+   map is indifferent to which fragments of the tile this warp owns, so n-true / first-true
+   are deliberately ignored."
+  (destructuring-bind (m n syms &optional n-true first-true operand) (cdr entry)
+    (declare (ignore m n n-true first-true operand))
+    `(progn
+       ,@(loop for s in syms
+               collect `(map-elements! ,s ,fn-form)))))
+
+(defun %map-elements-call (fn-form arg-form)
+  "Build the call applying the fused function to ARG-FORM.
+
+   Prefers a DIRECT call (FOO arg) when FN-FORM is #'FOO, because that is the form the AD
+   engine can differentiate; falls back to (funcall FN-FORM arg) otherwise."
+  (let ((name (%map-elements-fn-name fn-form)))
+    (if name
+        (list name arg-form)
+        (list (intern "FUNCALL" (find-package :crisp-language)) fn-form arg-form))))
+
+(defun %map-elements-grad-name (fn-form pkg)
+  "The <NAME>_GRAD symbol for the fused function in FN-FORM (a #'NAME), interned in PKG.
+   Matches the convention the AD walk itself uses (src/autodiff.lisp:2553)."
+  (let ((name (%map-elements-fn-name fn-form)))
+    (when name
+      (intern (format nil "~a_GRAD" (symbol-name name))
+              (or pkg (symbol-package name))))))
+
+(defun %emit-per-frag-map-vjp (adj-entry primal-entry fn-form)
+  "Per-fragment expansion of (%map-elements-vjp! ADJ PRIMAL #'F_GRAD) for register tiles:
+   zip the two tiles' fragment lists and pair them positionally.  Positional pairing is right
+   because both tiles carry the SAME shape and the same warp distribution, so fragment k of one
+   corresponds to fragment k of the other."
+  (let ((asyms (fourth adj-entry))
+        (psyms (fourth primal-entry)))
+    (unless (= (length asyms) (length psyms))
+      (error 'crisp-compiler-error
+             :message (format nil "%map-elements-vjp!: adjoint tile has ~a fragments but the primal tile has ~a — they must match."
+                              (length asyms) (length psyms))
+             :source-location nil))
+    `(progn
+       ,@(loop for a in asyms
+               for p in psyms
+               collect `(%map-elements-vjp! ,a ,p ,fn-form)))))
+
+(defun %emit-map-vjp-explode (form tiles)
+  "Rewrite (%map-elements-vjp! ADJ PRIMAL FN [IDX]) when EITHER operand names an exploded tile.
+
+   Resolves ONE side per call, so the adjoint tile and the primal tile may be bound at
+   different LET levels — which they always are, since the VJP binds the primal itself while
+   the walk binds the adjoint outside.  See the header above for the three-step shape."
+  (destructuring-bind (adj primal fn &optional idx) (cdr form)
+    (let ((vjp-s (first form))
+          (adj-e (assoc adj tiles))
+          (prm-e (assoc primal tiles)))
+      (cond
+        ;; Both sides known here — pair positionally and we are done.  Positional pairing is
+        ;; right because the two tiles carry the same shape and the same warp distribution.
+        ((and adj-e prm-e)
+         (let ((asyms (fourth adj-e)) (psyms (fourth prm-e)))
+           (unless (= (length asyms) (length psyms))
+             (error 'crisp-compiler-error
+                    :message (format nil "%map-elements-vjp!: adjoint tile has ~a fragments but the primal tile has ~a — they must match."
+                                     (length asyms) (length psyms))
+                    :source-location nil))
+           `(progn ,@(loop for a in asyms for p in psyms
+                           collect `(,vjp-s ,a ,p ,fn)))))
+        ;; Only the adjoint is known at this level.
+        (adj-e
+         (let ((asyms (fourth adj-e)))
+           (if idx
+               `(,vjp-s ,(nth idx asyms) ,primal ,fn ,idx)
+               `(progn ,@(loop for a in asyms for i from 0
+                               collect `(,vjp-s ,a ,primal ,fn ,i))))))
+        ;; Only the primal is known at this level.
+        (prm-e
+         (let ((psyms (fourth prm-e)))
+           (if idx
+               `(,vjp-s ,adj ,(nth idx psyms) ,fn ,idx)
+               `(progn ,@(loop for p in psyms for i from 0
+                               collect `(,vjp-s ,adj ,p ,fn ,i))))))
+        (t form)))))
+
+
 
 ;;; ===================================================================
 ;;; P1 — the register-fragment record type.
@@ -1244,9 +1367,9 @@
 
 ;; Re-definition of the src/ original.  CHANGE: one added clause for %load-register-tile-acc.
 (defun %explode-rewrite-body-form (form tiles)
-  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile references
-   to any exploded tile in TILES (alist V -> (V m n syms)) with per-fragment progns;
-   otherwise recurse structurally."
+  "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile /
+   map-elements! / %map-elements-vjp! references to any exploded tile in TILES with
+   per-fragment progns; otherwise recurse structurally."
   (cond
     ((not (consp form)) form)
     ((and (%head-name-eq (first form) "MMA-ACCUMULATE-VIA-TILE") (>= (length form) 5)
@@ -1268,10 +1391,6 @@
           (assoc (second form) tiles))
      (destructuring-bind (v dest tile-id) (cdr form)
        (%emit-per-frag-store dest tile-id (assoc v tiles))))
-    ;; Endeavor 145 P3b: (%load-register-tile-acc TILE SRC (TY TX)) — the inverse of the
-    ;; store-tile clause above, and the only way to get a global matrix INTO a register
-    ;; accumulator tile.  Emitted by the AD walk to seed C-tile_ADJ from C_GRAD.  Compiler-
-    ;; internal (leading %), so it is gradient-inert to the backward walk by construction.
     ((and (%head-name-eq (first form) "%LOAD-REGISTER-TILE-ACC") (= (length form) 4)
           (assoc (second form) tiles))
      (destructuring-bind (v src tile-id) (cdr form)
@@ -1279,14 +1398,12 @@
     ((and (%head-name-eq (first form) "FILL-TILE") (= (length form) 3)
           (assoc (second form) tiles))
      (%emit-per-frag-fill (assoc (second form) tiles) (third form)))
-    ;; Endeavor 142 (Intel MMA prefetch): load-tile with a register-tile DEST (third form) -> Intel
-    ;; block-load (Subgroup2DBlockLoadINTEL, global -> GRF, hardware-scoreboard async, no :barrier).
-    ;; Handled in the explosion (like store-tile), before the whole-tile var is gone.  The tile's
-    ;; :operand (A/B) picks the coop-matrix Use/layout.  Requires the SPV/Intel target + an active
-    ;; hardware profile (its GRF/L1 limits drive the Phase-C register-pipeline safety analysis);
-    ;; PTX has no mapping for this register-pipeline model.
-    ;; Endeavor 142: the DEST may be a bare register-tile OR (ring-get RING SLOT) into a register ring —
-    ;; %resolve-tile-ref handles both (and errors on a non-constant register-ring slot).
+    ((and (%head-name-eq (first form) "MAP-ELEMENTS!") (= (length form) 3)
+          (assoc (second form) tiles))
+     (%emit-per-frag-map (assoc (second form) tiles) (third form)))
+    ((and (%head-name-eq (first form) "%MAP-ELEMENTS-VJP!") (>= (length form) 4)
+          (or (assoc (second form) tiles) (assoc (third form) tiles)))
+     (%emit-map-vjp-explode form tiles))
     ((and (%head-name-eq (first form) "LOAD-TILE") (= (length form) 4)
           (%resolve-tile-ref (third form) tiles))
      (unless (active-hardware-profile)
@@ -1507,24 +1624,23 @@
 
 ;; VERBATIM re-definition of the src/ original, with ONE added entry: LOAD-FRAGMENT-ACC.
 (defun register-mma-analyzers ()
-  "Registers the MMA + wgmma expression analyzers.  Overlay (Endeavor 140): adds the wgmma forms.
-   Endeavor 145 P2: adds LOAD-FRAGMENT-ACC (the store-fragment inverse)."
+  "Registers the MMA + wgmma expression analyzers.
+   Endeavor 150: adds MAP-ELEMENTS! and its backward twin %MAP-ELEMENTS-VJP!."
   (let ((cl-pkg (find-package :crisp-language))
         (cc-pkg (find-package :crisp.compiler)))
     (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
                          (cons "STORE-FRAGMENT"          #'analyze-store-fragment)
                          (cons "LOAD-FRAGMENT-A"         #'analyze-load-fragment-a)
                          (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)
-                         ;; Endeavor 145 (P2) — the accumulator READ, inverse of store-fragment.
                          (cons "LOAD-FRAGMENT-ACC"       #'analyze-load-fragment-acc)
                          (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
                          (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
                          (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
-                         ;; Endeavor 142 (Phase B) — Intel L1 prefetch (Subgroup2DBlockPrefetchINTEL)
+                         (cons "MAP-ELEMENTS!"           #'analyze-map-elements)
+                         (cons "%MAP-ELEMENTS-VJP!"      #'analyze-map-elements-vjp)
                          (cons "PREFETCH-TILE"           #'analyze-prefetch-tile)
                          (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
                          (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
-                         ;; Endeavor 140 (Chapter 4) -- wgmma forms
                          (cons "MAKE-WGMMA-ACCUMULATOR"    #'analyze-make-wgmma-accumulator)
                          (cons "WGMMA-ACCUMULATE"          #'analyze-wgmma-accumulate)
                          (cons "WGMMA-ACCUMULATE-VIA-TILE" #'analyze-wgmma-accumulate-via-tile)

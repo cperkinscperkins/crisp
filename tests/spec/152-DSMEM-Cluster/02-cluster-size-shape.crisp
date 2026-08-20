@@ -1,0 +1,37 @@
+;; Endeavor 152 rung 02 — a rank-2 cluster shape, and its agreement with `:tile-shape`.
+;;
+;; Rung 01 used the scalar shorthand.  This one writes the shape explicitly and pins the axis
+;; convention, which is the part most likely to be got backwards.
+;;
+;; THE AXIS CONVENTION, restated because it is the opposite of CUDA's.  `cluster-size` inherits
+;; `:tile-shape`'s order: **axis 0 tracks dimension 0**, so for a row-major output tile grid
+;; axis 0 is ROWS.  `(cluster-size :set-to (2 1))` therefore means two workgroups stacked
+;; VERTICALLY — same columns, adjacent rows.  That is the configuration a matmul wants, because
+;; the two workgroups then need the same columns of B and different rows of A.
+;;
+;; This is measured, not stylistic: `:tile-shape`'s own axis order was established on a
+;; non-square problem where getting it backwards cost ~1.3x (see ideal_001.md :tile-shape).
+;;
+;; WHAT THIS RUNG PINS:
+;;   - the rank of `cluster-size` must agree with the rank of `:tile-shape` (2 here)
+;;   - the (2 1) shape reaches codegen intact and is not silently transposed
+;;   - a 4x4 tile grid over a (2 1) cluster divides evenly, so no padding path is exercised
+;;     (divisibility gets its own rung)
+;;
+;; A TRANSPOSED LOWERING WOULD STILL COMPUTE THE RIGHT ANSWER — it would just cluster the wrong
+;; pairs — so the validator has to read the emitted cluster dimensions, not the output buffer.
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cluster-dims
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_shape_2d (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (8 8))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))      ; 2 along ROWS, 1 along columns
+  (tile-stride C (8 8) (grid-y grid-x)
+    (let ((tile (make-scratch-matrix float (8 8))))
+      (load-tile A tile (grid-y grid-x))
+      (store-tile tile C (grid-y grid-x)))))

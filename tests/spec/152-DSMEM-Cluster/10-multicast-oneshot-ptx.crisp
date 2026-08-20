@@ -1,0 +1,64 @@
+;; Endeavor 152 rung 10 — ONE-SHOT MULTICAST, and the PTX that proves it fired.
+;;
+;; THIS RUNG IS THE DE-RISKING SPIKE FOR THE WHOLE ENDEAVOR.  A single multicast needs no ring,
+;; no `empty` barrier, and no warp specialization: one workgroup in each cluster issues the
+;; fetch, both workgroups await their OWN barrier, done.  That makes it the smallest kernel that
+;; exercises the fact everything else is built on (Phase 0 / Q1) — that a multicast completes on
+;; each destination workgroup's own mbarrier rather than only the issuer's.  If that assumption
+;; is wrong, we want to know here and not after the ring and the handshake are built on it.
+;;
+;; WHY THE ASSERTION IS ON THE PTX AND NOT THE OUTPUT.  A `load-tile` that quietly declined to
+;; multicast produces BYTE-IDENTICAL RESULTS — each workgroup simply does its own fetch of the
+;; same tile.  No correctness test anywhere can distinguish the two.  The only evidence that the
+;; mechanism engaged is in the emitted instruction, which is why CLAUDE.md says not to rely on
+;; the validators to verify a new feature.
+;;
+;; WHAT THE VALIDATOR MUST LOOK FOR:
+;;   - `cp.async.bulk.tensor` carrying `.multicast::cluster`
+;;   - a ctaMask operand that is not zero and not all-ones for a 2-workgroup cluster
+;;   - a leader guard around the issue (exactly one workgroup per group issues)
+;;   - `mbarrier.arrive.expect_tx` still present in EVERY workgroup, not only the leader —
+;;     each destination announces its own expected bytes even though it does not issue
+;;
+;; WHY THIS LOAD IS MULTICAST-ELIGIBLE.  The cluster is (2 1), so its axis is ROWS (grid-y).
+;; The tile coordinates are `(0 grid-x)` — constant in the row axis — so both workgroups in a
+;; cluster resolve to the SAME source tile and one fetch can serve both.  Change that first
+;; coordinate to `grid-y` and the request must be refused; that is errors/11.
+;;
+;; NEW VALIDATOR REQUIRED: validate-ptx-multicast
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-multicast
+;; DIFFERENTIATES, and the backward correctly carries NO cluster reach.  The AD walk replays
+;; the forward's bindings so the barrier appears in the _grad kernel, but `cluster-size` is a
+;; DISPATCH declaration and does not propagate — so `:mode :cluster` is DOWNGRADED to :block
+;; there.  A backward runs no multicast pipeline and has no peers to co-ordinate with, so a
+;; workgroup-local mbarrier is exactly right.  Same principle as %ad-canonicalize-wgmma
+;; substituting sync MMA for wgmma: a backward is under no obligation to use its forward's
+;; schedule.  Verified: the emitted _grad module's mapa.shared::cluster instructions all sit
+;; inside the FORWARD entry; the backward entry has none.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mc_oneshot (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (8 8))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))
+  ;; THE BARRIER IS BOUND OUTSIDE tile-stride, and for a clustered kernel that is not a
+  ;; style preference -- it is the difference between working and hanging.  The first cut of
+  ;; this spec bound it INSIDE the loop, which put mbarrier.init, the compiler's cluster entry
+  ;; fence, and the multicast all inside a depth-2 loop.  Two consequences, both fatal:
+  ;;   * the cluster barrier would be executed a DIFFERENT NUMBER OF TIMES by workgroups that
+  ;;     happen to claim different numbers of tiles -- a cluster-wide rendezvous with mismatched
+  ;;     trip counts hangs
+  ;;   * mbarrier.init would re-initialise the SAME module-global barrier every iteration, while
+  ;;     a peer workgroup may still be waiting on it
+  ;; The shipped chapter-3 kernel binds its barriers outside tile-stride for the same reason.
+  (let ((tile (make-scratch-matrix float (8 8)))
+        (bar  (make-async-barrier :mode :block)))
+    (tile-stride C (8 8) (grid-y grid-x)
+      ;; row coordinate is CONSTANT -> identical tile for both workgroups of the cluster
+      (load-tile A tile (0 grid-x) :barrier bar :multicast true)
+      (await bar)
+      (store-tile tile C (grid-y grid-x)))))

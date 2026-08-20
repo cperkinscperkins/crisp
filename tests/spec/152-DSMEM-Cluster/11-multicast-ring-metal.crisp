@@ -1,0 +1,95 @@
+;; Endeavor 152 rung 11 — the multicast lands the RIGHT BYTES in the workgroup that did NOT
+;; fetch them.  On metal.
+;;
+;; RENAMED from 11-multicast-oneshot-metal, because the one-shot shape it originally used is now
+;; known to be UNSOUND for a cluster.  `await` re-initialises the mbarrier inside the loop, so a
+;; single re-used barrier lets the leader re-init and issue the next multicast before a peer has
+;; re-inited its own — the same race one iteration later.  A RING is the fix, and it is what the
+;; real matmul uses anyway.  See 00-verification-findings.md.
+;;
+;; WHAT THIS RUNG CAN PROVE, and what it cannot.  Rung 10 reads the emitted PTX and shows the
+;; multicast INSTRUCTION was issued.  This rung shows the mechanism is CORRECT once issued.
+;; Neither replaces the other, and a pass here with rung 10 failing would mean we are measuring a
+;; fallback.
+;;
+;; THE OBSERVABLE IS ATTRIBUTABLE, which is the point of the geometry.  Both workgroups of the
+;; cluster load the SAME tile — row-tile 0 of A — because the row coordinate is the constant 0.
+;; Each then stores it to its OWN row band of C, keyed by grid-y.  So:
+;;
+;;     A (4x4, harness fill 0..15)      row0 = 0 1 2 3
+;;                                      row1 = 4 5 6 7
+;;                                      row2 = 8 9 10 11
+;;                                      row3 = 12 13 14 15
+;;
+;;     tile = A[0:2][0:4]             = 0 1 2 3 / 4 5 6 7
+;;     C[0:2] <- tile   (workgroup at grid-y 0)
+;;     C[2:4] <- tile   (workgroup at grid-y 1)
+;;
+;;     => C = 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
+;;
+;; ONE OF THOSE TWO WORKGROUPS NEVER ISSUED A FETCH.  Only cluster rank 0 issues the multicast;
+;; the other receives it.  So if the multicast fails to reach the non-issuer, exactly one half of
+;; C is wrong while the other is right — the failure is attributable to a workgroup rather than
+;; showing up as one aggregate that could be wrong for several reasons.
+;;
+;; TILE SHAPE (2 4) IS FORCED, both numbers by measurement on an H100:
+;;   * 4 columns because TMA requires the innermost box dimension to be a multiple of 16 bytes;
+;;     a 2-float row is 8 and cuTensorMapEncodeTiled returns `invalid argument`
+;;   * 2 rows so the 4-row C yields TWO row-tiles, one per cluster member.  With a taller tile
+;;     there is ONE tile, the grid is padded to satisfy cluster divisibility, and the surplus
+;;     workgroup exits without initialising its mbarrier — so the multicast targets a dead peer
+;;     and the launch fails outright.
+;;
+;; THE EXPECTATION BELOW IS DERIVED, NOT YET MEASURED.  If it disagrees with hardware, read the
+;; arithmetic above before assuming the compiler is wrong — the harness fill and buffer print
+;; width are the likely culprits, exactly as they were for rung 04 (which predicted `2 2 2 2` and
+;; measured `0 2 4 6`).
+;;
+;;
+;; THE RING SLOT MUST BE INVARIANT ALONG THE CLUSTER AXIS, and getting this wrong DEADLOCKS.
+;; The first cut computed `slot` from `grid-y` -- which IS the cluster axis, the one variable
+;; that differs between cluster members.  Measured on an H100: the kernel hung with the GPU
+;; pegged at 100% and 529 MiB used, i.e. a spin-wait, not a crash.
+;;
+;; Why: a multicast completes the barrier at ONE offset in every destination workgroup, and
+;; writes the data to ONE tile-ring offset in every destination.  With a per-workgroup slot,
+;; rank 0 issued against slot 0 while its peer expected and awaited slot 1 -- so the peer waited
+;; on a barrier nothing would ever complete, and would have read the wrong tile slot even if it
+;; had woken.
+;;
+;; So the rule is the multicast coordinate rule, one level up: the SLOT expression must not
+;; mention the clustered axis's loop variable.  `grid-x` is invariant across this cluster (the
+;; members differ only in grid-y), so it is the correct choice.  Rung 22 already used grid-x and
+;; is unaffected.
+;;
+;; HOIST-ARCH: sm_90
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mc_ring_lands (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (2 4))
+           (local-size  :set-to 32)
+           (cluster-size :set-to (2 1)))
+  ;; Rings and barriers bound OUTSIDE tile-stride.  Inside the loop, mbarrier.init and the
+  ;; compiler's cluster entry fence would sit on a per-tile trip count, which hangs the moment
+  ;; two workgroups of a cluster claim different numbers of tiles.  The shipped chapter-3 kernel
+  ;; binds its barriers outside for the same reason.
+  (let ((tile-ring (make-scratch-matrix-ring float (2 4) :ring-count 2))
+        ;; data arrival stays WORKGROUP-LOCAL: a multicast completes its transaction on each
+        ;; destination's OWN mbarrier, so :block describes it exactly and :arrivals is unscaled.
+        (full  (make-async-barrier-ring :ring-count 2 :mode :block   :arrivals 1))
+        ;; buffer-free is the ring that needs cluster reach: peers must tell the issuer a slot is
+        ;; free.  :arrivals 1 is per-workgroup; the compiler scales it by the group extent.
+        (empty (make-async-barrier-ring :ring-count 2 :mode :cluster :arrivals 1)))
+    (tile-stride C (2 4) (grid-y grid-x)
+      (let ((slot (mod (to-ulong grid-x) (to-ulong 2))))
+        ;; row coordinate is the CONSTANT 0 -> both workgroups want the same tile -> multicast
+        (load-tile A (ring-get tile-ring slot) (0 grid-x)
+                   :barrier (ring-get full slot) :multicast true)
+        (await (ring-get full slot))
+        (store-tile (ring-get tile-ring slot) C (grid-y grid-x))
+        (signal (ring-get empty slot))))))

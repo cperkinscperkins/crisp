@@ -1,0 +1,32 @@
+;; Endeavor 152 rung 18 — a cluster of 8 workgroups, shape (4 2).
+;;
+;; Everything before this ran on a cluster of TWO, which is the smallest cluster that is a
+;; cluster at all and therefore the weakest possible evidence: with two workgroups almost every
+;; index is 0 or 1, so an off-by-one in a stride, a mask pattern or a rank calculation cannot
+;; show itself.  This rung is a NON-SQUARE 4x2 -- 8 is the largest cluster CUDA guarantees portably, and a non-square shape proves the mask arithmetic is derived from the axis strides rather than assuming equal extents.
+;;
+;; WHAT IT PINS.  The declared shape must survive to the PTX as `.reqnctapercluster` with the
+;; right product -- that is what the driver enforces the launch against, so a kernel whose
+;; directive disagrees with its cluster-size would be rejected at load time rather than
+;; computing something wrong.
+;;
+;; The multicast mask is asserted separately by rung 12; here the concern is purely that the
+;; SHAPE survives, because the shape is what every other cluster mechanism is derived from.
+;;
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cluster-extent-8
+;; SKIP-DEFAULT-PASS
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_of_8 (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (16 16))
+           (local-size  :set-to 128)
+           (cluster-size :set-to (4 2)))
+  (let ((tile (make-scratch-matrix float (16 16)))
+        (bar  (make-async-barrier :mode :block)))
+    (tile-stride C (16 16) (grid-y grid-x)
+      (load-tile A tile (grid-y 0) :barrier bar :multicast true)
+      (await bar)
+      (store-tile tile C (grid-y grid-x)))))

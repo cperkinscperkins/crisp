@@ -314,3 +314,41 @@ register reallocation (`setmaxnreg.dec` on the producer so it stops reserving th
 
 Reproduce: `put_temp_files_here/bench06.sh "1024 2048 4096"` (correctness gate @512 + GFLOPS sweep;
 same `crisp-hoist-cuda --mma-bench=M,N,K --grid-tile=64` → `nvcc -arch=sm_90a … -lcuda` flow).
+
+## Chapter 4 — Clusters + TMA multicast (DSMEM). A measured negative result.
+
+Endeavor 152. Chapter 4 is chapter 3 with three changes and nothing else: `cluster-size (2 2)`,
+`:multicast true` on both operand loads, and a cluster-scoped `empty` barrier. Keeping chapter 3
+as an exact control is the point — any difference is attributable to clustering rather than to a
+rewrite.
+
+**It is correct (MMA_CORRECT on an H100) and slower than chapter 3.**
+
+CONFIRMED at house protocol (warmup=20 iters=100) on 2026-08-18; the ratios reproduced
+within ~0.04x.  Numbers below are from the earlier 5/30 run and understate absolute
+throughput by 8-18%; the confirmed 20/100 table is in 00-verification-findings.md.  Note
+also BUG 049: this kernel FAILS TO LAUNCH at N=256, where the grid must be padded to fit
+the cluster and padded workgroups never reach the cluster barrier.
+ Full factorial, tf32,
+iters=30, chapter 3 as the 1.00x control:
+
+| N | chap3 | clu2 no-mc | clu2 +mc | clu4 no-mc | clu4 +mc |
+|---|---|---|---|---|---|
+| 2048 | 222.3 TF | 218.5 **0.98x** | 206–211 0.93–0.95x | 132.8 **0.60x** | 122.3 0.55x |
+| 4096 | 265.9 TF | 263.9 **0.99x** | 250 0.94x | 218.7 **0.82x** | 203.1 0.76x |
+
+The controls are the interesting part, because cluster cost and multicast cost are otherwise
+confounded:
+
+- forming a cluster of **two** is free (0.98–0.99x with no multicast at all)
+- forming a cluster of **four** is expensive (0.60x at 2048), and is paid even with `:multicast`
+  removed entirely — a cluster's CTAs must be co-resident on one GPC, and this kernel is m64n256
+  at ~16K registers per warpgroup
+- **multicast itself costs a consistent ~5%** and never pays it back
+
+Multicast reduces L2→SMEM traffic on the operand fetch path and nothing else. That it buys nothing
+here is evidence that chapter 3's ~34% gap to cuBLAS **is not on that path** — so the next attack
+belongs on occupancy or the wgmma pipeline, not on another bandwidth feature.
+
+The chapter is kept deliberately. A deleted experiment teaches nobody which bottleneck to attack
+next.

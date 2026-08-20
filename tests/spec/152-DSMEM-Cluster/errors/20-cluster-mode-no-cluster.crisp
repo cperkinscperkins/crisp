@@ -1,0 +1,34 @@
+;; CHECK-FAIL: "requires the kernel to declare a cluster"
+;; NOTE: this string is deliberately SPECIFIC.  Before :mode :cluster was implemented the
+;; spec failed with "make-async-barrier :mode :CLUSTER unknown", which a looser CHECK-FAIL of
+;; just "cluster" MATCHED — so the spec passed for entirely the wrong reason.  A negative test
+;; that accepts any error is not a test.
+;; Endeavor 152 — negative: `:mode :cluster` on a kernel that declares no cluster.
+;;
+;; `:mode :cluster` is an ASSERTION about reach — "peer workgroups may arrive on this barrier".
+;; With no cluster declared there are no peers, so the assertion cannot be honoured and a remote
+;; arrive would resolve to the signaller's own barrier.
+;;
+;; THIS IS THE PAIR TO `errors/10`, and the asymmetry is the same one that rung 05 pins:
+;;
+;;   `cluster-size` on a target without clusters   -> DEGRADES, with a diagnostic
+;;   `:multicast` that cannot be honoured          -> COMPILE ERROR
+;;   `:mode :cluster` with no cluster              -> COMPILE ERROR  (this spec)
+;;
+;; Launch geometry is harmless on its own and degrades.  An object-level request that cannot
+;; exist errors.  A `:cluster` barrier silently lowered as a local one is the worst of both: it
+;; releases a barrier nobody waits on, while the intended peer waits forever — and in a
+;; single-workgroup launch the two addresses coincide, so it passes small tests and hangs at
+;; scale.
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel cluster_mode_no_cluster (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :derive-from C :strategy :strided :tile-shape (2 4))
+           (local-size  :set-to 32))
+  (let ((tile (make-scratch-matrix float (2 4)))
+        (done (make-async-barrier :mode :cluster)))
+    (tile-stride C (2 4) (grid-y grid-x)
+      (load-tile A tile (0 grid-x))
+      (store-tile tile C (grid-y grid-x))
+      (signal done))))

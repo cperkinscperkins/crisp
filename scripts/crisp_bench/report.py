@@ -44,6 +44,14 @@ CHAPTER_LABEL = {
     "chap1.5_async_block":   "Block TMA load + tf32 MMA",
     "chap2_pipelined_block": "Pipelined block + tf32 MMA",
     "chap3_wgmma":           "Hopper warpgroup MMA (wgmma, tf32)",
+    "chap4_cluster_multicast": "SIDE CHAPTER: does TMA multicast pay? (64x128, wgmma tf32)",
+    # Endeavor 152 CONTROLS, not chapters.  They exist to separate the cost of forming a cluster
+    # from the cost of multicasting over it -- without them the two are confounded and chapter 4
+    # looks like "multicast is slow", which the data says it is not.
+    "c4_clusteronly":        "CONTROL: cluster (2 2), NO multicast",
+    "c4_c2only":             "CONTROL: cluster (2 1), NO multicast",
+    "c4_21":                 "CONTROL: cluster (2 1), multicast B only",
+    "c4_12":                 "CONTROL: cluster (1 2), multicast A only",
     "intel_prefetch":        "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
     "chap5_fused_epilogue":  "Fused ReLU epilogue (tf32)",
     "chap6_fused_custom":    "Fused CUSTOM activation (tf32)",
@@ -257,6 +265,13 @@ def _throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings):
     competitors = set()
     for sz, comps in hardware_groups[gpu][chapter][prec_key].items():
         competitors.update(comps.keys())
+
+    # `ceiling_list` is initialised HERE, before the branches below, because it used to be
+    # assigned only inside two conditionals: a chapter that is NOT an activation chapter and
+    # has no vendor ceiling recorded for this GPU+precision fell through both, and
+    # `list(ceiling_list)` raised UnboundLocalError.  That is not an exotic case -- it is what
+    # every result set looks like before anyone has run the vendor baseline on that machine.
+    ceiling_list = []
 
     # Endeavor 150: an activation chapter's denominator is its own library contender (the one
     # that also applies the activation), so the global plain-GEMM ceiling is excluded entirely.
