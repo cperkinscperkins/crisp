@@ -1005,3 +1005,62 @@ does not see through it.
 That makes store WIDTH a better next lever than coalescing: cheaper to reach, no occupancy cost,
 and aimed at the larger share of the residual.  It needs a way to express (or a codegen pass to
 recognise) an adjacent-pair store.
+
+PHASE 10 — STORE WIDTH, AND A METHODOLOGICAL DISCOVERY THAT MATTERS MORE
+=========================================================================
+Phase 9 named store WIDTH as the next lever: all 128 stores are `st.global.b32`, and the column
+pairs `(c0+8j, c0+8j+1)` are already ADJACENT, so an 8-byte `st.global.v2.f32` should be free.
+
+WHY LLVM WAS NOT MERGING THEM.  The emitted address arithmetic went
+`ld.local(c0) -> add.s32 -> cvt.s64.s32 -> ... -> st.global.b32`.  The **sign extension** is the
+first blocker: `sext(c0+1) != sext(c0)+1` when overflow is possible, so LLVM cannot prove the two
+addresses differ by 4.  Widening the index arithmetic to ulong REMOVED it and LLVM immediately
+started folding the offset (`st.global.b32 [%rd162+4]`) -- but still emitted two scalar stores,
+because the base register was RECOMPUTED for the second one.
+
+And the reason it was recomputed is the second blocker: **`c0` lives in local memory and is
+reloaded 128 times** (one `ld.local.b64` per store).  Two loads from memory cannot be assumed to
+return the same value, so LLVM rebuilds the address from scratch and never sees adjacency.
+Inlining `c0` to remove the variable made it WORSE (ld.local 206 -> 335): the inlined expression
+depends on `col`, which is *also* a let-bound scalar in local memory.  Systemic, not local.
+
+**THE CAUSE IS THAT `opt -O3` IS NOT RUNNING ON THIS MACHINE.**
+
+src/compiler.lisp:378-398 documents an `opt -O3` pass between IR emission and llc, with an
+explicit graceful fallback: "if `opt` is not on the system, the pipeline runs unchanged (just
+llc / llvm-spirv)".  `%opt-available-p` probes for the tool and returns NIL when absent.
+
+On this box there is **no `opt` binary at all** -- `bin/` carries llc, llvm-as and llvm-spirv but
+not opt; nothing named opt/opt-21 is on PATH; `CRISP_USE_SYSTEM_TOOLS` is unset.  So every PTX
+generated locally in this endeavour skipped mem2reg, DCE and unrolling.  Unpromoted `let`-bound
+scalars sitting in `.local` are exactly what that produces.  The compiler's own note puts the
+measured cost of skipping it at ~13% on the reduction benchmark.
+
+WHAT THIS DOES AND DOES NOT INVALIDATE
+---------------------------------------
+UNAFFECTED — every A/B in this endeavour compiled BOTH arms with the same compiler, so the
+relative results stand: the wgmma group fix (+4.3-10.8%), the tile sweep (1.88x at 256), the ring
+depth sweep (ring 4 at 256-1024), row-major store order (+1.5%/+0.7%), the coalescing ceiling
+(26% of the epilogue), and the intercept decomposition (20.80 -> 1.03 us).
+
+IN DOUBT — the ABSOLUTE "% of cuBLAS" figures, if `opt` would have helped these kernels.
+
+AND ONE PIECE OF EVIDENCE AGAINST IT MATTERING MUCH: the Phase 1 pipeline check reproduced
+REPORT.md's published chap3 number to **0.1%** (79.61 vs 79.69 TFLOPS) using a locally-built,
+un-opt'd PTX.  Either opt does little for this kernel family, or REPORT.md's numbers were
+produced the same way.  Both are worth knowing and neither is established.
+
+STORE WIDTH IS THEREFORE UNRESOLVED, NOT REFUTED.  The v2 merge is blocked by an artefact of a
+missing optimisation pass, not by anything about the store.  With mem2reg running, `c0` would be
+a register, the base would be reused, and the adjacent pair may well merge on its own with no
+compiler change at all.  Chasing it by hand before establishing that would be work against a
+phantom.
+
+NEXT STEP IS NOT A LEVER, IT IS A CONTROL: get `opt` onto the toolchain (bundle it in `bin/`
+beside llc, or set CRISP_USE_SYSTEM_TOOLS with opt-21 on PATH), regenerate one kernel, and diff.
+That single check tells us whether months of local PTX reading has been looking at code the
+shipped compiler does not actually emit.
+
+KEPT FROM THIS PHASE: row-major emission order only (measured).  The ulong widening was reverted
+-- it demonstrably removed the sext blocker, but it is unmeasured for performance and its
+motivation may dissolve once opt runs.
