@@ -1064,3 +1064,114 @@ shipped compiler does not actually emit.
 KEPT FROM THIS PHASE: row-major emission order only (measured).  The ulong widening was reverted
 -- it demonstrably removed the sext blocker, but it is unmeasured for performance and its
 motivation may dissolve once opt runs.
+
+PHASE 11 — OVERLAY FOLDED INTO src/ (2026-08-22)
+=================================================
+Six definitions moved from `overlays/crisp-compiler-overlay.lisp` into `src/mma.lisp`.  All plain
+defuns -- no defvars, macros or structs -- so unlike endeavour 152's fold this one needed no
+insert-after-`in-package` care; only ONE ordering constraint applied, and it is recorded below.
+
+| definition | disposition | src/mma.lisp |
+|---|---|---|
+| `%emit-wgmma-mma-only` | NEW | beside `%emit-nvvm-wgmma` |
+| `%emit-nvvm-wgmma` | REPLACED | one fence / N mma_async / one commit / one wait |
+| `%wgmma-store-rewrite-origin` | NEW | absolute (ROW COL) origin, TO-INT coercion, row-major order |
+| `%wgmma-store-rewrite` | REPLACED | thin caller of -origin; behaviour unchanged |
+| `analyze-store-tile-at-mma` | NEW | placed BEFORE `register-mma-analyzers` |
+| `register-mma-analyzers` | REPLACED | STORE-TILE-AT added to the dispatch table |
+
+ORDERING CONSTRAINT: `register-mma-analyzers` takes `#'analyze-store-tile-at-mma`, so the analyzer
+is defined ahead of it.  Strictly this is belt-and-braces -- `#'` is evaluated when the registrar
+RUNS (at initialize-compiler), not when it is compiled -- but it keeps the build free of
+undefined-function style warnings.
+
+VERIFIED BEHAVIOUR-PRESERVING BY CONSTRUCTION, not by inspection: PTX was emitted for four
+kernels (n64 r4, n128 r4, n256 r2, coop) plus spec 03 BEFORE the fold, md5'd, and re-checked
+after.  **All five byte-identical.**  That is the check worth having -- a fold that compiles and
+passes tests can still have quietly changed codegen.
+
+The overlay is now empty again, with a header recording what moved.  The two spec validators
+(`validate-ptx-wgmma-group`, `validate-ptx-wgmma-store-direct`) stay in
+`overlays/spec-runner-overlay.lisp` and were deliberately NOT folded: `tests/run-specs.lisp`
+calls `(main)` on its last line, so anything appended after it is defined too late to be found.
+They belong in that overlay or ahead of the `(main)` call.
+
+
+WHERE TO PICK THIS UP  (written 2026-08-22 for the post-merge branch)
+=====================================================================
+Endeavour 154 is at a natural pause, not a conclusion.  What follows is what I would do next and
+why, ordered by expected value.
+
+STANDING (best config per size, H100 NVL, tf32, vs cuBLAS)
+
+| size | best config | % of cuBLAS |
+|---:|---|---:|
+| 256  | n64 tile, ring 4  | 99.5% |
+| 512  | n64 tile, ring 4  | 109.8% |
+| 1024 | n128 tile, ring 4 | ~100% |
+| 2048 | n256 tile, ring 2 | 78.2% |
+| 4096 | n256 tile, ring 2 | 71.3% |
+| 8192 | coop 128x256, ring 2 | 70.5% |
+
+Small-to-mid is DONE -- at parity, nothing left worth chasing.  Everything from 2048 up sits in a
+70-78% band, and it is a PLATEAU rather than a defect at one size (8192 confirmed that; cuBLAS
+itself falls 12% off its 4096 peak there, so the wall at 8192 is the machine's, not ours).
+
+--- 1. THE CONTROL THAT GATES EVERYTHING ELSE: get `opt` onto Windows ---------
+`tools/` bundles llvm-spirv, llvm-as, llc and LLVM-C -- **not opt** -- and the build copies
+exactly those four (build/build-compiler.lisp:27).  `C:\Program Files\LLVM-x` is a clang-only
+distribution with no opt.exe either.  Meanwhile EVERY Linux harness sets
+`CRISP_USE_SYSTEM_TOOLS=true` (run-on-pod.sh:228, bench-on-pod.sh:223, Dockerfile.bench-intel:80)
+and installs llvm-21, and `resolve-tool-executable` probes versioned names ONLY under that flag --
+so `opt-21` is found and `-O3` RUNS on pods and in Docker, and is SILENTLY SKIPPED on the dev box.
+
+Consequence: all local PTX analysis in this endeavour was of un-optimised code.  Every A/B is
+still valid (both arms, same compiler), but codegen READING has been of code the shipped compiler
+does not emit on Linux.  Add `opt-windows.exe` / `opt-linux` to `tools/` and to that copy list.
+
+One data point says this may matter less than it sounds: the Phase 1 pipeline check reproduced
+REPORT.md's published chap3 number to **0.1%** with locally-built, un-opt'd PTX.  Not established
+either way -- which is exactly why it should be checked before more codegen work.
+
+--- 2. RE-BASE THE PUBLISHED LADDER ------------------------------------------
+The shipped chapters all still use the OLD shape -- n256 tile, ring 2, at every size.  chap3's
+67.5% at 4096 is stale twice over (before the wgmma group fix, before tile/ring selection).  On
+current knowledge the ladder should carry, per size, the best (tile, ring) and the row-major
+epilogue.  This is mostly mechanical and it is the largest single improvement available to the
+NUMBERS, without any new compiler work.
+
+Reporting decision already settled with Chris: report best-kernel-per-size and say plainly that
+cuBLAS is doing the same thing one layer down.  Size-conditional selection is a HOST-side enqueue
+concern (possibly `def-orchestration` one day), not a compiler feature.
+
+--- 3. LEVERS, HONESTLY RANKED -----------------------------------------------
+`wait_group N` (N>=1) -- the per-K-BLOCK pipeline drain; endeavour 154 removed only the per-SLICE
+one.  Still untried, and it is the last enumerated lever with a clear mechanism.  But its evidence
+WEAKENED: removing the per-slice drain bought +10.3-10.8% at 512-1024 and only +4.3-4.5% at
+2048-4096 -- it helped LEAST exactly where help is needed.  Needs a `wait_group 0` before the
+epilogue reads D, so it is a loop/epilogue change and cannot be prototyped by PTX patching.
+
+Store WIDTH -- all 128 stores are `st.global.b32`; the column pairs are already adjacent so an
+8-byte `v2` should be free.  Blocked today by an unpromoted `c0` alloca reloaded 128 times, which
+is precisely what mem2reg exists to fix.  **Do item 1 first** -- this may evaporate on its own.
+
+SMEM-staged epilogue -- ceiling MEASURED at 7.0% (2048) / 3.5% (4096) via a coalesced-store probe.
+A lot of machinery for that.  I would not build it, and that is a measurement not a preference.
+
+--- 4. WHAT IS KNOWN AND SHOULD NOT BE RE-DERIVED ----------------------------
+- The epilogue is 95% of the K-independent intercept (20.80 -> 1.03 us when the store is skipped)
+  and 27.9% of runtime at 2048^3.  Its cost is NOT coalescing (sector fill is already 100%) and
+  NOT the register->local round trip (removing that was a measured LOSS).
+- Occupancy (CTAs/SM, bounded by registers and SMEM) decided the outcome of THREE separate levers:
+  cooperative tiles, ring depth, and tile width.  It predicted two of them before measurement.
+  It is the first thing to compute for any new shape.
+- Two changes that look like pure wins are measured LOSSES: removing the accumulator's local
+  round trip, and removing the per-tile accumulator zero-init.  Both unexplained.  Do not
+  re-attempt either without a profiler.
+
+--- 5. PROFILING IS STILL BLOCKED --------------------------------------------
+`ncu` fails with ERR_NVGPUCTRPERM on RunPod: container is uid 0 but CapEff lacks CAP_SYS_ADMIN and
+the driver has `RmProfilingAdminOnly: 1`.  `nsys` would not answer these questions (tracing, not
+stall analysis).  The narrower ask, worth pressing: host driver loaded with
+`NVreg_RestrictProfilingToAdminUsers=0` -- same access, no container capability.  Support request
+is in flight as of 2026-08-22.  Several open questions in section 4 are one profile away.
