@@ -1,0 +1,54 @@
+;; Endeavour 154 rung 01 — the wgmma k-slices must be issued as ONE GROUP.
+;;
+;; WHAT THIS PINS.  A K-block of 32 is four k8 wgmma slices.  They must be bracketed by ONE
+;; fence, ONE commit_group and ONE wait_group -- not four of each.  Before 154 the lowering
+;; emitted the full `fence / mma_async / commit_group / wait_group 0` quadruple per slice, and
+;; because `wait_group 0` waits for ALL outstanding groups, every async MMA was fully awaited
+;; before the next one issued.  The async in `mma_async` was defeated.
+;;
+;; WHY IT NEEDS ITS OWN SPEC, AND WHY THE VALIDATOR READS INSTRUCTIONS.  The pre-154 code was
+;; CORRECT.  It computed exactly the right answer; it merely serialised four MMAs that the
+;; hardware was willing to pipeline.  So no correctness test -- not MMA_CORRECT, not a gradient
+;; check, not a metal run -- could ever have caught it, and 140/03 (which compiles this same
+;; shape) passes `validate-ptx-wgmma` both before and after the fix, because that validator only
+;; asserts the four opcodes are PRESENT.  Presence was never the question; multiplicity was.
+;;
+;; The cost was measured on an H100 NVL rather than argued: interleaved A/B, 3-4 reps per arm,
+;; clocks pinned at 1770-1785 MHz, MMA_CORRECT at every size --
+;;     256 n64  4.788 -> 5.164 TFLOPS (+7.9%)     1024 n128 109.314 -> 119.726 (+9.5%)
+;;     512 n64  28.264 -> 31.191     (+10.4%)     2048 n256 239.170 -> 249.560 (+4.3%)
+;;                                                4096 n256 258.888 -> 273.617 (+5.7%)
+;;
+;; SIBLING TO 140/03, DELIBERATELY.  That rung asks "does the TMA + swizzle wgmma path lower at
+;; all"; this one asks "does it lower as a PIPELINE".  Same kernel shape so the two are directly
+;; comparable, and so a regression in either is attributable.
+;;
+;; NEW VALIDATOR: validate-ptx-wgmma-group -- one fence, N>=2 mma_async, one commit, one wait,
+;; in that order.  It refuses a single-slice kernel outright, so this spec cannot decay into
+;; vacuously passing if someone later edits the K-block down to 8.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma-group
+;;
+;; MMA-DIMS: 64 64 32
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+;; wgmma is tf32 — declare fast so the tf32/precision warning stays silent (see 126-precision/20).
+(declaim (precision fast))
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_group (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 32)))
+        (B-tile (make-scratch-matrix float (64 32)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 32) D A-tile B-tile :swizzle :128b)
+    (store-tile D C (0 0))))

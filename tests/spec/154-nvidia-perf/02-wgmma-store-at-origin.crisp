@@ -1,0 +1,52 @@
+;; Endeavour 154 rung 02 — a wgmma accumulator can be stored at an ABSOLUTE origin.
+;;
+;; WHAT THIS PINS.  `store-tile-at` now has a wgmma-accumulator overload.  Before 154 it had
+;; none: a wgmma accumulator handed to `store-tile-at` fell through to the GENERIC cooperative
+;; store, which stages through memory and brackets the copy with `sync-workgroup`.  Only
+;; `store-tile` knew about wgmma, and it computes its row base as `bty * 64` -- the wgmma
+;; instruction's fixed M -- which silently assumes ONE warpgroup owns the tile.
+;;
+;; WHY THAT MATTERS.  A cooperative 128x256 output tile (two consumer warpgroups splitting M and
+;; sharing one B tile, the shape CUTLASS uses) needs the second warpgroup to write rows 64-127.
+;; With only the grid-index spelling available, both warpgroups write the SAME 64 rows.  This
+;; rung is the enabling overload for that kernel; it is not itself the cooperative kernel.
+;;
+;; THE ORIGIN HERE IS (0 0), DELIBERATELY, AND THAT IS A LIMITATION WORTH NAMING.  The metal
+;; check verifies C == A.B over the whole matrix, so a kernel that stored its one accumulator at
+;; row 64 would leave rows 0-63 zero and MMA_CORRECT would fail for a reason that has nothing to
+;; do with the overload.  So what this rung proves on metal is that the overload computes the
+;; SAME answer as `store-tile`; that it computes the right OFFSET was verified differentially
+;; during development (`store-tile D C (0 0)` and `store-tile-at D C (0 0)` emit byte-identical
+;; PTX, and at origin (64 0) the row pair becomes `r0|64` / `r0|72`), and will be exercised for
+;; real by the two-warpgroup kernel.  Recorded so a green rung 02 is not over-read.
+;;
+;; NEW VALIDATOR: validate-ptx-wgmma-store-direct -- no `bar.sync` after the final
+;; `wgmma.wait_group`.  That is the signature that separates the register-direct store from the
+;; cooperative staged one, and it is invisible to a correctness check: the cooperative path can
+;; produce the right numbers too, just in the wrong shape and at the wrong cost.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma-store-direct
+;;
+;; MMA-DIMS: 64 64 32
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+;; wgmma is tf32 — declare fast so the tf32/precision warning stays silent (see 126-precision/20).
+(declaim (precision fast))
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_store_at (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 32)))
+        (B-tile (make-scratch-matrix float (64 32)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 32) D A-tile B-tile :swizzle :128b)
+    (store-tile-at D C (0 0))))
