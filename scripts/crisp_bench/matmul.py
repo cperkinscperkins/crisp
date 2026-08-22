@@ -391,7 +391,7 @@ def icpx_math_flags(prec, ftz):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sizes", default="256,512,1024,2048,4096")
+    ap.add_argument("--sizes", default="canonical")
     ap.add_argument("--warmup", type=int, default=20)
     ap.add_argument("--iters", type=int, default=100)
     ap.add_argument("--output-dir", default=str(HERE.parent / "results"))
@@ -417,8 +417,8 @@ def main():
         "medium": ["2048", "4096"],
         "large": ["8192", "16384"],
         "xl": ["32768", "40960"],
-        "canonical": ["256", "512", "1024", "2048", "4096"],
-        "all": ["256", "512", "1024", "2048", "4096", "8192", "16384"] if a.platform == "intel" else ["256", "512", "1024", "2048", "4096", "8192", "16384", "32768"],
+        "canonical": ["256", "512", "1024", "2048", "4096", "8192", "16384"] if a.platform == "intel" else ["256", "512", "1024", "2048", "4096", "8192", "16384", "32768"],
+        "all": ["256", "512", "1024", "2048", "4096", "8192", "16384"] if a.platform == "intel" else ["256", "512", "1024", "2048", "4096", "8192", "16384", "32768", "40960"],
     }
 
     raw_sizes = [x.strip() for x in a.sizes.split(",") if x.strip()]
