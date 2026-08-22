@@ -118,8 +118,10 @@ def run_bin(path, M, N, K, warmup, iters, env_extra=None):
         return None
 
 def build_harness():
-    sh(["nvcc", "-O3", "-arch=sm_90", *nvcc_math_flags("ieee", False),
-        str(HERE/"crisp/bench_harness.cu"), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
+    harness = HERE / "crisp" / "bench_harness.cu"
+    if harness.exists():
+        sh(["nvcc", "-O3", "-arch=sm_90", *nvcc_math_flags("ieee", False),
+            str(harness), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
 
 def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, precision: str, ftz: bool, compile_dev_ms: float, compile_all_ms: float, env_extra: dict = None) -> BenchmarkSweep:
     meta = _apply_hw(create_metadata())
