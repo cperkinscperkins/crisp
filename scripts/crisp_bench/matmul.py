@@ -164,6 +164,44 @@ def run_bench_proc(cmd, *, verify: bool, timeout: float = BENCH_TIMEOUT, cwd=Non
         return (out, "early")
     return (out, "ok" if p.returncode == 0 else "error")
 
+# §4 of plan/benchmark-harness.md, adaptively rather than as a per-chapter table.
+#
+# Matmul work grows as N^3, so ONE size doubling is 8x the work.  A point that took ~90s is
+# therefore certain to blow the 900s BENCH_TIMEOUT at the next size up.  Attempting it anyway
+# costs 900 wasted seconds and yields NOTHING -- the point is skipped either way.  Measured on
+# the H100: chap0_naive (no tensor cores) collapses to ~0.55 TFLOPS at 32768, and every naive
+# chapter x contender x precision combination burned a full timeout there.
+#
+# So: once a point is this slow, stop growing the size for THAT contender.  This removes no data
+# that would otherwise have been collected -- it only declines to wait for a known failure.  The
+# skip is announced, so a gap in the table is attributable rather than mysterious.
+SIZE_GIVEUP_SECONDS = 90.0
+
+# ...and a SIZE-SCALED timeout, because the give-up above cannot catch a CLIFF.
+#
+# It predicts the next size from the last one assuming N^3 scaling (8x per doubling).  Measured on
+# the H100 that assumption fails exactly where it matters: chap0_naive completes 16384 in seconds
+# and then collapses at 32768 -- roughly 60x, not 8x -- because the naive kernel falls off a cache
+# cliff.  No extrapolation from 16384 can see that coming.
+#
+# So bound the WAIT instead of predicting.  At 32768 anything worth measuring finishes its 7
+# iterations in well under ~20s (cuBLAS ~1.3s, Crisp wgmma ~1.8s); 150s is a 7x margin.  A kernel
+# that needs longer is reporting "this does not work at this scale", which the resulting gap in
+# the table already says -- at 1/6th the wall time.
+XL_SIZE_THRESHOLD = 16384
+XL_BENCH_TIMEOUT  = 150.0
+
+def bench_timeout_for(n: int) -> float:
+    return XL_BENCH_TIMEOUT if n > XL_SIZE_THRESHOLD else BENCH_TIMEOUT
+
+def _too_slow_to_grow(chapter, comp_name, S, elapsed):
+    if elapsed < SIZE_GIVEUP_SECONDS:
+        return False
+    nxt = bench_timeout_for(S * 2)
+    print(f"  ! {chapter} ({comp_name}) {S}^3 took {elapsed:.0f}s; larger sizes would exceed their "
+          f"{nxt:.0f}s timeout — skipping them", file=sys.stderr)
+    return True
+
 def time_compile(cmd, **kw):
     t0 = time.time()
     res = sh(cmd, **kw)
@@ -212,6 +250,7 @@ def run_bin(path, M, N, K, warmup, iters, env_extra=None):
     # file it wants is there too.
     out, status = run_bench_proc([path, M, N, K, warmup, iters],
                                  verify=True,          # competitor harnesses emit JSON, not BENCH
+                                 timeout=bench_timeout_for(N),
                                  cwd=str(Path(path).parent), env=env)
     if status != "ok":
         print(f"  ! {Path(path).name} {M}x{N}x{K}: {status}\n{out[-800:]}", file=sys.stderr)
@@ -234,8 +273,12 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
     for s in sizes:
         S = int(s)
         w, it = scaled_counts(warmup, iters, S)
+        _t0 = time.time()
         out = run_bin(exe_path, S, S, S, w, it, env_extra)
-        if not out: continue
+        _el = time.time() - _t0
+        if not out:
+            if _too_slow_to_grow(chapter, competitor_name, S, _el): break
+            continue
 
         if not out.get("correct", True):
             print(f"  DROPPED {competitor_name} @ {S}: harness reported correct=false "
@@ -255,6 +298,7 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
             )
         )
         results.append(point)
+        if _too_slow_to_grow(chapter, competitor_name, S, _el): break
 
     return BenchmarkSweep(
         run_metadata=meta,
@@ -294,9 +338,9 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
     if c.returncode != 0:
         print("autobench nvcc failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
     verify = should_full_verify(N)
-    out, status = run_bench_proc([str(exe)], verify=verify)
+    out, status = run_bench_proc([str(exe)], verify=verify, timeout=bench_timeout_for(N))
     if status == "timeout":
-        print(f"  ! autobench {N}^3 TIMED OUT after {BENCH_TIMEOUT:.0f}s — skipping point", file=sys.stderr)
+        print(f"  ! autobench {N}^3 TIMED OUT after {bench_timeout_for(N):.0f}s — skipping point", file=sys.stderr)
         return None
     m = re.search(r'BENCH\s+matmul\s+\d+x\d+x\d+:\s*([\d.]+)\s*GFLOPS\s*\(([\d.eE+-]+)\s*ms/iter\)', out)
     if not m:
@@ -322,8 +366,11 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
     results = []
     for s in sizes:
         S = int(s)
+        _t0 = time.time()
         out = run_crisp_autobench(src, grid_tile, S, S, S, crisp_compiler, prec_flags, nvcc_math)
+        _el = time.time() - _t0
         if not out:
+            if _too_slow_to_grow(chapter, comp_name, S, _el): break
             continue
         # correct is None when the size is above VERIFY_MAX_N and the host reference was
         # deliberately not run (§5).  Only a MEASURED failure discards the point; "not checked"
@@ -340,6 +387,7 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
+        if _too_slow_to_grow(chapter, comp_name, S, _el): break
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
 
@@ -378,9 +426,9 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
         print("autobench-l0 build failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
     
     verify = should_full_verify(N)
-    out, status = run_bench_proc([str(exe)], verify=verify)
+    out, status = run_bench_proc([str(exe)], verify=verify, timeout=bench_timeout_for(N))
     if status == "timeout":
-        print(f"  ! autobench-l0 {N}^3 TIMED OUT after {BENCH_TIMEOUT:.0f}s — skipping point", file=sys.stderr)
+        print(f"  ! autobench-l0 {N}^3 TIMED OUT after {bench_timeout_for(N):.0f}s — skipping point", file=sys.stderr)
         return None
     m = re.search(r'BENCH\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s*GFLOPS\s*\((\d+)\s*iters,\s*([\d.eE+-]+)\s*s\)', out)
     if not m:
@@ -459,7 +507,8 @@ def run_l0_bin(path, M, N, K, warmup, iters, env_extra=None):
     if env_extra: env.update(env_extra)
     # Timeout only: this harness emits JSON on completion rather than a BENCH line, so there is
     # nothing to stop early at -- but it still must not be able to wedge the sweep.
-    out, status = run_bench_proc([path, M, N, K, warmup, iters], verify=True, env=env)
+    out, status = run_bench_proc([path, M, N, K, warmup, iters], verify=True,
+                                 timeout=bench_timeout_for(N), env=env)
     if status != "ok":
         print(f"  ! {Path(path).name} {M}x{N}x{K}: {status}\n{out[-600:]}", file=sys.stderr)
         return None
