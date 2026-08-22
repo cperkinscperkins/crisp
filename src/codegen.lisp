@@ -3500,7 +3500,10 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (if (eq *target-backend* :ptx)
              (%ptx-membar-cta builder module)
              (%gen-spirv-memory-barrier builder module)))
-        (t (error "Unknown GPU builtin ~a" builtin-name))))))
+        ;; The local is BNAME; `builtin-name` was a stale name carried over from the
+        ;; commented-out copy of this method above, and would have signalled
+        ;; unbound-variable instead of naming the offending builtin.
+        (t (error "Unknown GPU builtin ~a" bname))))))
 
 (defmethod generate-node-ir ((node semantic-to-workgroup-uniform) builder module var-env di-builder di-scope location-map)
   "Emits IR to make a value uniform across the workgroup.
