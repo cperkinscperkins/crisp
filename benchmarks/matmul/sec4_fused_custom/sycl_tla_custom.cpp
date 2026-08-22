@@ -64,8 +64,8 @@ using LayoutB = cutlass::layout::RowMajor;
 using LayoutC = cutlass::layout::RowMajor;
 using LayoutD = cutlass::layout::RowMajor;
 
-using ElementInputA = cutlass::tfloat32_t;
-using ElementInputB = cutlass::tfloat32_t;
+using ElementInputA = cutlass::bfloat16_t;
+using ElementInputB = cutlass::bfloat16_t;
 using ElementOutput = float;
 using ElementAccumulator = float;
 using ElementComputeEpilogue = float;
@@ -77,7 +77,7 @@ using StrideD = cutlass::gemm::TagToStrideC_t<LayoutD>;
 
 using TileShape = Shape<_256, _256, _32>;
 using TiledMma = typename TiledMMAHelper<
-    MMA_Atom<XE_DPAS_TT<8, float, cute::tfloat32_t>>,
+    MMA_Atom<XE_DPAS_TT<8, float, cute::bfloat16_t>>,
     Layout<TileShape>,
     Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>>::TiledMMA;
 

@@ -151,6 +151,19 @@ We test across three distinct math configurations to accurately map performance 
 2. `IEEE + FTZ` (`--precision=ieee --ftz`): The sweet spot. Precise for normal numbers, but flushes subnormals to zero to avoid pipeline stalls.
 3. `Fast Math` (`--precision=fast`): Peak throughput mode. Allows reassociation and enables Tensor Cores (TF32) on NVIDIA.
 
+## External Benchmark Dependencies
+
+Crisp itself has zero runtime or external library dependencies. However, to run peer comparison suites against vendor template libraries (e.g. `SYCL-TLA` / CUTLASS for SYCL), header-only dependencies are placed in `third_party/` (ignored by git):
+
+### Intel SYCL-TLA (CUTLASS for SYCL)
+To benchmark against Intel's official SYCL Tensor Linear Algebra library (`intel/sycl-tla`):
+```bash
+mkdir -p third_party
+git clone https://github.com/intel/sycl-tla.git third_party/sycl-tla
+```
+When running in Docker via `scripts/bench-intel.sh` or `matmul.py`, `third_party/sycl-tla` is automatically mounted and included during peer kernel compilation.
+
 ## Hardware variance
 
 Absolute metrics (GB/s, TFLOPS) shift drastically depending on L2 size, memory subsystems, and background load. **Never claim "Crisp is X GB/s" without naming the GPU. Always quote ratios when comparing across runs.**
+

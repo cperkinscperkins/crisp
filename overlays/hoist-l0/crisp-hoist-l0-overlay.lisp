@@ -37,7 +37,7 @@
         (format stream "        }~%")
         (format stream "        std::cout << std::endl;~%")
         (format stream "    }~%")))
-    (when *mma-test-dims*
+    (when (and *mma-test-dims* (not *mma-bench-iters*))
       (%l0-emit-mma-reference stream allocations))
     (format stream "    std::cout << \"Success!\" << std::endl;~%")
     (format stream "    return 0;~%")

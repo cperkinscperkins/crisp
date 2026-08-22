@@ -394,13 +394,20 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
 
             c_str = f"{c_tf:.1f} ({c_ms:.3f})" if c_tf else "—"
             ctrl_str = f"{ctrl_tf:.1f} ({ctrl_ms:.3f})" if ctrl_tf else "—"
-            peer_str = f"{peer_tf:.1f} ({peer_ms:.3f})" if peer_tf else "—"
+            if platform == "intel":
+                peer_str = "N/A*"
+                vs_peer = "—"
+            else:
+                peer_str = f"{peer_tf:.1f} ({peer_ms:.3f})" if peer_tf else "—"
+                vs_peer = format_ratio(c_tf, peer_tf)
             ceil_str = f"{ceil_tf:.1f} ({ceil_ms:.3f})" if ceil_tf else "—"
 
-            vs_peer = format_ratio(c_tf, peer_tf)
             vs_ceil = format_ratio(c_tf, ceil_tf, as_pct=True)
 
             lines.append(f"| {s} | {c_str} | {ctrl_str} | {peer_str} | {ceil_str} | {vs_peer} | {vs_ceil} |")
+
+        if platform == "intel":
+            lines.append("\n> *\\*Note: SYCL-TLA does not implement TF32 DPAS on Xe2 (only BF16/FP16/FP8). See §2.1 below for the native 270+ TFLOPS BF16 suite.*\n")
 
         # Compile time summary table
         def _fmt_ms(ms):
@@ -545,7 +552,10 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             for s in r_sizes:
                 pts = relu_data[s]
                 c_pt = next((pt for comp, pt in pts.items() if "Crisp" in comp), None)
-                p_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None)
+                if platform == "intel":
+                    p_pt = None
+                else:
+                    p_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None)
                 ceil_fused_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["OneDNN_Fused", "CUBLASLt_Fused"])), None)
                 ceil_plus_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["Plus_Relu"])), None)
 
@@ -559,10 +569,14 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 p_tf = p_pt.get("metrics", {}).get("throughput", {}).get("tflops") if p_pt else None
                 cf_tf = ceil_fused_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_fused_pt else None
 
-                vs_p = format_ratio(c_tf, p_tf)
+                vs_p = "—" if platform == "intel" else format_ratio(c_tf, p_tf)
                 vs_cf = format_ratio(c_tf, cf_tf, as_pct=True)
 
-                lines.append(f"| {s} | {_fmt(c_pt)} | {_fmt(p_pt)} | {_fmt(ceil_fused_pt)} | {_fmt(ceil_plus_pt)} | {vs_p} | {vs_cf} |")
+                p_cell = "N/A*" if platform == "intel" else _fmt(p_pt)
+                lines.append(f"| {s} | {_fmt(c_pt)} | {p_cell} | {_fmt(ceil_fused_pt)} | {_fmt(ceil_plus_pt)} | {vs_p} | {vs_cf} |")
+
+            if platform == "intel":
+                lines.append("\n> *\\*Note: SYCL-TLA only implements BF16/FP16/FP8 on Xe2.*\n")
 
             # Ch 1 Compile table
             target_ir = "SPIR-V" if platform == "intel" else "PTX"
@@ -587,7 +601,8 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                         ratio = f"**{d_ms / rc_dev:.1f}× slower**" if rc_dev > 0 and d_ms > rc_dev * 1.05 else ("1.00×" if rc_dev > 0 and abs(d_ms - rc_dev) < 10 else f"{d_ms / rc_dev:.2f}×")
                         lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
                     _r_row("Crisp Fused", "Crisp", rc_pt)
-                    _r_row(peer_relu_label, "Peer", next((pt for comp, pt in r_pts0.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None))
+                    if platform == "nvidia":
+                        _r_row(peer_relu_label, "Peer", next((pt for comp, pt in r_pts0.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None))
                     _r_row(ceil_relu_label, "Ceiling", next((pt for comp, pt in r_pts0.items() if any(k in comp for k in ["OneDNN_Fused", "CUBLASLt_Fused"])), None), is_ceil=True)
                     lines.append("\n</details>\n")
                 else:
@@ -609,7 +624,10 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             for s in c_sizes:
                 pts = custom_data[s]
                 c_pt = next((pt for comp, pt in pts.items() if "Crisp" in comp), None)
-                p_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None)
+                if platform == "intel":
+                    p_pt = None
+                else:
+                    p_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None)
                 ceil_plus_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["OneDNN_Plus", "CUBLASLt_Plus", "Plus_Custom"])), None)
 
                 def _fmt(pt):
@@ -622,10 +640,11 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 p_tf = p_pt.get("metrics", {}).get("throughput", {}).get("tflops") if p_pt else None
                 cp_tf = ceil_plus_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_plus_pt else None
 
-                vs_p = format_ratio(c_tf, p_tf)
+                vs_p = "—" if platform == "intel" else format_ratio(c_tf, p_tf)
                 vs_cp = format_ratio(c_tf, cp_tf, as_pct=True)
+                p_cell = "N/A*" if platform == "intel" else _fmt(p_pt)
 
-                lines.append(f"| {s} | {_fmt(c_pt)} | {_fmt(p_pt)} | {_fmt(ceil_plus_pt)} | {vs_p} | {vs_cp} |")
+                lines.append(f"| {s} | {_fmt(c_pt)} | {p_cell} | {_fmt(ceil_plus_pt)} | {vs_p} | **{vs_cp}** |")
 
             # Ch 2 Compile table
             target_ir = "SPIR-V" if platform == "intel" else "PTX"
@@ -650,8 +669,9 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                         ratio = f"**{d_ms / cc_dev:.1f}× slower**" if cc_dev > 0 and d_ms > cc_dev * 1.05 else ("1.00×" if cc_dev > 0 and abs(d_ms - cc_dev) < 10 else f"{d_ms / cc_dev:.2f}×")
                         lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
                     _c_row("Crisp Fused", "Crisp", cc_pt)
-                    _c_row(peer_custom_label, "Peer", next((pt for comp, pt in c_pts0.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None))
-                    _c_row(ceil_plus_label, "Ceiling (2nd Kernel)", next((pt for comp, pt in c_pts0.items() if any(k in comp for k in ["OneDNN_Plus", "CUBLASLt_Plus", "Plus_Custom"])), None))
+                    if platform == "nvidia":
+                        _c_row(peer_custom_label, "Peer", next((pt for comp, pt in c_pts0.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None))
+                    _c_row(ceil_plus_label, "Ceiling", next((pt for comp, pt in c_pts0.items() if any(k in comp for k in ["OneDNN_Plus", "CUBLASLt_Plus", "Plus_Custom"])), None), is_ceil=True)
                     lines.append("\n</details>\n")
                 else:
                     lines.append("")
