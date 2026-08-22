@@ -926,3 +926,82 @@ worth roughly nothing and sometimes less.
 STILL TRUE AND WORTH KEEPING: `%explode-register-tiles` does not cover `make-wgmma-accumulator`.
 That is a real gap in a mechanism built to prevent exactly this class of bug.  It simply turns
 out not to be a performance bug here.
+
+PHASE 9 — THE INTERCEPT IS THE EPILOGUE.  MEASURED, NOT ATTRIBUTED.
+====================================================================
+Phase 8 measured a 20.2 us K-independent intercept and ATTRIBUTED it to the epilogue by
+elimination.  Phase 8c then showed the local round trip -- the epilogue's most obvious defect --
+was worth nothing.  So the attribution needed a direct test.
+
+METHOD: two probe kernels, differing from the baseline in exactly one thing each.
+  - `pb_nostore` — the store guarded by `(> (get-global-linear-id) 999999999)`, a predicate the
+    compiler cannot fold (verified: `setp.gt.s32 %p18, %r9, 999999999` survives in the PTX, and
+    is absent from the baseline).  Accumulator stays live, mainloop runs, no store executes.
+  - `pb_noinit` — the per-tile `(set! D (make-wgmma-accumulator ...))` removed.  Numerically
+    harmless here because grid == tile count, so each block owns exactly one tile.  Verified to
+    differ from baseline by exactly **128 `mov.b32`** — the accumulator zero-splat, one per
+    register — and nothing else.
+
+M=N=2048, K in {1024, 2048, 4096, 8192}, 3 reps, spread <0.5%:
+
+| arm | slope a (ms per unit K) | intercept b |
+|---|---:|---:|
+| baseline | 2.2627e-5 | **20.80 us** |
+| nostore  | 2.3240e-5 | **1.03 us** |
+| noinit   | 2.2450e-5 | 24.95 us |
+
+**The intercept collapses 20.80 -> 1.03 us when the store is skipped.**  Slopes agree within
+2.7%, confirming the mainloop is untouched.  So the epilogue is ~95% of the intercept and
+launch + prologue + accumulator init together are ~1 us.  Phase 8's attribution was right, and
+is now a measurement.
+
+| K | epilogue | % of runtime |
+|---:|---:|---:|
+| 1024 | 19.14 us | **43.5%** |
+| 2048 | 19.20 us | **27.9%** |
+| 4096 | 15.58 us | 13.8% |
+| 8192 | 14.74 us | 7.2% |
+
+(And `noinit` is SLOWER than baseline -- intercept 24.95 vs 20.80.  Removing 128 movs costs
+4 us.  Same inversion as Phase 8c.  Still unexplained; still not storified.)
+
+LEVER 1 — ROW-MAJOR EMISSION ORDER.  KEPT.
+--------------------------------------------
+The natural loop is j-outer, interleaving r0 and r8, so the tile is written column-strip by
+column-strip -- 32 passes revisiting the same rows.  Emitting all of row r0 then all of row r8
+lets each warp lay down a contiguous 1 KB row.  Pure reordering: same stores, values, addresses.
+
+Interleaved A/B, 3 reps: **+1.5% at 2048, +0.7% at 4096, +0.5% at 1024, neutral (noise) at
+256/512.**  Nothing regresses.  Small, free, universal — kept.
+
+LEVER 2 — COALESCING.  ITS CEILING IS NOW MEASURED, AND IT IS LOW.
+--------------------------------------------------------------------
+Rather than build SMEM staging and find out, a probe build emitted a PERFECTLY COALESCED
+(numerically wrong) store of the same 128 values -- element e = i*128 + tid, so consecutive
+lanes hit consecutive columns.  That is the floor SMEM staging could ever reach.
+
+| K | epilogue, scattered | epilogue, perfectly coalesced | recovered | % of epilogue | % of TOTAL |
+|---:|---:|---:|---:|---:|---:|
+| 2048 | 18.07 us | 13.34 us | 4.73 us | 26% | **7.0%** |
+| 4096 | 14.73 us | 10.82 us | 3.90 us | 27% | **3.5%** |
+
+**So SMEM staging is worth at most 7.0% at 2048 and 3.5% at 4096.**  That is a lot of machinery
+-- an SMEM epilogue tile, a barrier, a transposed read, and the occupancy cost of the extra
+shared memory -- for a bounded and modest return.  On this evidence I would NOT build it, and
+the reason is a measurement rather than a preference.
+
+LEVER 3 — STORE WIDTH.  THE REAL RESIDUAL, AND NOT YET TRIED.
+---------------------------------------------------------------
+Even PERFECTLY COALESCED the store costs 13.34 us against a 4.3 us HBM floor for 16.8 MB — 3x.
+The reason is visible in the PTX: all 128 stores are **`st.global.b32`**, 4 bytes per lane, so a
+warp-store moves only 128 bytes.
+
+And the fix does not need a layout change at all.  In the REAL fragment layout the column pairs
+`(c0+8j, c0+8j+1)` are already ADJACENT, so an 8-byte `st.global.v2.f32` is available for free —
+halving both the store count and the address arithmetic.  LLVM is not merging them today; they
+are emitted as two independent scalar `set!`s on a 2-D `~` index and the load/store vectorizer
+does not see through it.
+
+That makes store WIDTH a better next lever than coalescing: cheaper to reach, no occupancy cost,
+and aimed at the larger share of the residual.  It needs a way to express (or a codegen pass to
+recognise) an adjacent-pair store.

@@ -176,13 +176,23 @@
              (let ((r8 (+ r0 8))
                    (c0 (+ (,to-int ,col-origin) col)))
                (progn
-                 ,@(loop for j below n8
-                         for base = (* j 4)
-                         append (list
-                                 `(set! (~ ,dest r0 (+ c0 ,(* 8 j)))         (%extract-struct-member wgv ,(+ base 0)))
-                                 `(set! (~ ,dest r0 (+ (+ c0 ,(* 8 j)) 1))   (%extract-struct-member wgv ,(+ base 1)))
-                                 `(set! (~ ,dest r8 (+ c0 ,(* 8 j)))         (%extract-struct-member wgv ,(+ base 2)))
-                                 `(set! (~ ,dest r8 (+ (+ c0 ,(* 8 j)) 1))   (%extract-struct-member wgv ,(+ base 3)))))))))))))
+                 ;; Endeavour 154 Phase 9: ROW-MAJOR emission order.  The natural loop is
+                 ;; j-outer, which interleaves r0 and r8 and so writes the tile column-strip by
+                 ;; column-strip -- 32 passes revisiting the same two rows.  Emitting all of row
+                 ;; r0 first, then all of row r8, lets each WARP lay down a full contiguous row
+                 ;; (4 lanes x 2 floats x 32 groups = 256 floats = 1 KB) before moving on.  Pure
+                 ;; reordering: same stores, same values, same addresses.
+                 ,@(append
+                    (loop for j below n8
+                          for base = (* j 4)
+                          append (list
+                                  `(set! (~ ,dest r0 (+ c0 ,(* 8 j)))         (%extract-struct-member wgv ,(+ base 0)))
+                                  `(set! (~ ,dest r0 (+ (+ c0 ,(* 8 j)) 1))   (%extract-struct-member wgv ,(+ base 1)))))
+                    (loop for j below n8
+                          for base = (* j 4)
+                          append (list
+                                  `(set! (~ ,dest r8 (+ c0 ,(* 8 j)))         (%extract-struct-member wgv ,(+ base 2)))
+                                  `(set! (~ ,dest r8 (+ (+ c0 ,(* 8 j)) 1))   (%extract-struct-member wgv ,(+ base 3))))))))))))))
 
 ;; src/mma.lisp
 (defun %wgmma-store-rewrite (tile dest tile-id n)
