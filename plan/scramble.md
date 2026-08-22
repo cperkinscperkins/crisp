@@ -725,6 +725,7 @@ Should we do something for the compiler itself?
 - [x] README.md should link to INSTALL.md
 - [x] handling of opt.exe / 
 - [x] INSTALL.md has outdated info ( L0 only no CUDA, etc)
+- [ ] opt-windows.exe and opt-linux need to be added to tools distro!!
 
 Integer Only Operations
 =======================
