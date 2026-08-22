@@ -456,3 +456,207 @@ two-warpgroup matmul exists:
     practice, not merely warp-aligned -- the lowering is a warp-id `<`-cascade, so consumer0 =
     warps 0-3 and consumer1 = warps 4-7 gives threads 0-127 and 128-255, which IS aligned, but
     it has never been exercised and wgmma requires it.
+
+
+PHASE 3 — ITEM 1 CONFIRMED ON HARDWARE (2026-08-21, second pod)
+================================================================
+Second H100 NVL, CUDA 12.4 — same part and same toolkit as the M7 session, so the numbers are
+directly comparable.  (CUDA 13 was offered and declined: wgmma, TMA and sm_90a all landed in
+12.0; 13 matters for Blackwell-class features we do not use, and changing major versions
+mid-endeavour would put a ptxas revision inside the A/B.)
+
+THE BASELINE IS NOW A TRUE ONE.  M7 compared the shipped kernel against a HAND-PATCHED PTX.
+This compares two COMPILER OUTPUTS: the pre-154 overlay (recovered with `git show
+a1bdd2f:overlays/crisp-compiler-overlay.lisp`) rebuilt and used to emit `base_n*.ptx`, then the
+154 overlay rebuilt to emit `fix_n*.ptx`.  Arms interleaved, 3 reps each.
+
+| size | variant | base | fixed | gain | M7 predicted |
+|---:|---|---:|---:|---:|---:|
+| 256  | n64  | 4.701   | 5.028   | +7.0%  | +7.9% |
+| 512  | n64  | 27.841  | 30.702  | +10.3% | +10.4% |
+| 1024 | n128 | 108.790 | 120.556 | +10.8% | +9.5% |
+| 2048 | n256 | 238.882 | 249.098 | +4.3%  | +4.3% |
+| 4096 | n256 | 257.260 | 268.710 | +4.5%  | +5.7% |
+
+**MMA_CORRECT at every size and every rep.**  Every `fix` reading exceeded every `base` reading;
+the distributions do not overlap at any size.  The compiler-emitted fix reproduces the
+hand-patched measurement on a different pod, so item 1 is closed: the +4-11% is real and it is
+what the shipped compiler now does.
+
+AND A RETROACTIVE CHECK THAT PAID OFF.  The synthetic "pre-154 shape" PTX used to test the
+validator (built by re-inserting per-slice brackets into the fixed output) turns out to be
+**byte-identical to the true pre-154 compiler output**.  The validator test was therefore
+testing the real thing, not an approximation of it.
+
+INSTRUMENTATION ARTEFACT, RECORDED SO THE TABLE IS NOT MISREAD.  The `clocks.sm` column reads
+1785 MHz at 256-2048 but **345 MHz at 4096**.  That is not a downclock during the benchmark: the
+script samples nvidia-smi AFTER the binary exits, and at 4096 the harness's O(N^3) host-side
+correctness check runs long enough after the timed region for the GPU to drop to idle clocks.
+The GFLOPS are CUevent-timed around the kernel launches only and are unaffected — but the clock
+column is uninformative at 4096 and would need sampling DURING the timed loop to mean anything.
+
+A BUG IN MY OWN ITEM 3, FOUND BY WRITING THE KERNEL THAT USES IT
+=================================================================
+`%wgmma-store-rewrite-origin` generated `(+ (+ ROW-ORIGIN (* wgw 16)) rlo)` where `wgw` and `rlo`
+are INT (they come from `to-int` of warp-id / warp-lane).  Handed a ULONG origin -- which is what
+ANY tile-stride grid binding produces, e.g. `(* grid-y (to-ulong 128))` -- this fails with
+"Type mismatch for operator '+'. Cannot operate on ULONG and INT."
+
+Rung 02 did not catch it because its origin is the literal `(0 0)`, and integer literals are INT.
+The grid-index caller never hit it either, because it has always passed `(* (to-int bty) 64)`.
+So the overload worked for every input a test exercised and failed for the input it exists to
+serve.  FIXED by coercing both origins with `to-int` inside the rewrite -- which is what the
+grid path was already doing by hand.  Verified the `store-tile` path is unchanged: `store-tile
+D C (0 0)` and `store-tile-at D C (0 0)` still emit byte-identical PTX.
+
+THE COOPERATIVE KERNEL COMPILES
+--------------------------------
+`put_temp_files_here/154/mm_coop.crisp` — 128x256 output tile, two consumer warpgroups splitting
+M and sharing one B tile, one producer warp (local-size 288).
+
+A is staged as TWO 64-row rings rather than one 128-row ring: a wgmma A operand is a 64-row
+descriptor and Crisp cannot point one at a sub-tile of a larger scratch matrix.  Two A loads
+instead of one; B -- the big operand -- is fetched ONCE and consumed by both warpgroups, which
+is the entire point.  Arithmetic intensity 128*256/(128+256) = 85.3 vs n256's 51.2, a 1.67x
+improvement in operand bytes per flop at the SAME accumulator registers per thread.
+
+Emitted structure confirms the roles split as intended:
+  - **2 wgmma fences, 8 mma_async, 2 commit_groups, 2 wait_groups** — one correctly-grouped
+    4-slice sequence per warpgroup, so item 1's fix composes with two warpgroups.
+  - 3 TMA bulk copies (A0, A1, shared B).
+  - `ptxas -v`: **166 registers/thread, 0 spills** — no worse per-thread than n256's 165, while
+    covering twice the output-tile area per CTA.  288 threads x 166 = 47,808 of the SM's 65,536
+    registers, so ONE CTA per SM (n256 fits two at 160 x 165 = 26,400 each).
+  - 96 KB dynamic shared memory, under the 227 KB opt-in cap.
+
+So the open question from Phase 2 -- whether `with-warp-specialization`'s warp-id cascade would
+give WARPGROUP-aligned role blocks -- is answered in the affirmative by construction: consumer0
+is warps 0-3 (threads 0-127) and consumer1 is warps 4-7 (threads 128-255), and each emitted its
+own independent wgmma group.
+
+
+PHASE 4 — THE COOPERATIVE KERNEL IS MEASURED, AND MY PREDICTION WAS WRONG
+==========================================================================
+`mm_coop.crisp` is MMA_CORRECT at 512/1024/2048/4096 (3 reps each, interleaved against the
+n256 kernel), so the two-warpgroup construction WORKS.  It is also SLOWER than the kernel it
+was supposed to beat, everywhere the endeavour actually needs it.
+
+| size | coop 128x256 | n256 (fixed) | ratio | coop grid | n256 grid |
+|---:|---:|---:|---:|---:|---:|
+| 512  | 10.68  | 30.64  | **0.35x** | 8 blocks    | 16 blocks |
+| 1024 | 59.55  | 120.41 | **0.49x** | 32          | 64 |
+| 2048 | 205.06 | 249.69 | **0.82x** | 128         | 256 |
+| 4096 | 249.03 | 272.29 | **0.91x** | 512         | 1024 |
+| 8192 | 235.12 | 219.38 | **1.07x** | 2048        | 4096 |
+
+**The crossover is between 4096 and 8192, not below 2048 as the intensity argument implied.**
+
+WHAT I GOT WRONG, AND WHY.  M2 computed that a 128x256 tile has arithmetic intensity 85.3 vs
+n256's 51.2 -- a 1.67x improvement in operand bytes per flop -- and F3/M3 concluded that this was
+the lever for the 2048/4096 deficit.  That was a PAPER argument about bandwidth that ignored
+occupancy entirely, and occupancy is what actually decides it below 8192:
+
+  - The tile is twice as tall, so there are HALF as many blocks.  At 512 that is 8 blocks on
+    132 SMs -- 6% of the machine -- which is worse starvation than the problem M2 identified.
+  - `ptxas -v`: coop is 288 threads x 166 registers = 47,808 of the SM's 65,536, so **ONE CTA
+    per SM**.  n256 is 160 x 165 = 26,400, so **TWO** fit.  Halving resident CTAs halves the
+    independent pipelines available to hide TMA latency, and nothing in the intensity argument
+    accounted for that.
+
+The ratio climbing monotonically 0.35 -> 0.49 -> 0.82 -> 0.91 -> 1.07 is exactly the signature
+of an occupancy penalty being amortised as the grid grows.  By 8192 both kernels have plenty of
+blocks, the penalty is paid off, and the intensity advantage finally shows: BOTH kernels fall
+off their 4096 peak there (n256 272 -> 219, coop 249 -> 235) because 8192 is past the bandwidth
+wall, but coop falls **much less**, which is precisely what higher intensity is for.
+
+SO THE LEVER IS REAL BUT IT IS AIMED AT THE WRONG SIZES.  It does not close 2048/4096.  It is
+the right answer for 8192+, where the current ladder is weakest in absolute terms and where
+REPORT.md does not even measure NVIDIA today.
+
+STANDING AFTER THIS SESSION (best Crisp kernel per size, vs cuBLAS)
+
+| size | best kernel | TFLOPS | cuBLAS | % |
+|---:|---|---:|---:|---:|
+| 256  | n64 fixed  | 5.028   | 5.39   | 93.3% |
+| 512  | n64 fixed  | 30.702  | 30.58  | 100.4% |
+| 1024 | n128 fixed | 120.556 | 132.43 | 91.0% |
+| 2048 | n256 fixed | 249.098 | 318.68 | 78.2% |
+| 4096 | n256 fixed | 268.710 | 380.96 | 70.5% |
+| 8192 | coop       | 235.12  | (not measured) | — |
+
+Three of five sizes at or above 90%.  2048 and 4096 are unchanged by this phase and remain the
+endeavour's open problem — and the mechanism nominated to fix them has now been measured and
+does not.
+
+WHAT IS LEFT FOR 2048/4096
+---------------------------
+Of the levers enumerated in Phase 0, the only untried one with a clear mechanism is
+**`wait_group N` (N >= 1)** — letting one K-block's MMA overlap the next, rather than draining
+the group every block.  Item 1 removed the per-SLICE drain; the per-BLOCK drain is still there.
+That needs a `wait_group 0` before the epilogue reads D, so it is a loop/epilogue change, not an
+emitter change, and it cannot be tested by PTX patching.
+
+Two others are now argued DOWN rather than up:
+  - `setmaxnreg` would free the producer warp's register reservation, but n256 already fits two
+    CTAs/SM and a third would need 79,200 of 65,536 registers.  It cannot buy a CTA here.
+  - A TMA-store epilogue matters least exactly where the deficit is: at 4096 the epilogue is a
+    small fraction of a K=4096 mainloop, and chap5's fused-relu number sits within 1.5% of
+    chap3's, which bounds how much the store can be costing.
+
+PHASE 5 — METAL VERIFICATION AND RUNG 03 (2026-08-21)
+======================================================
+All three 154 rungs run on the H100 NVL through the spec runner: **3/3 Passed, MMA_CORRECT
+emitted once per spec.**
+
+RUNG 03 ADDED — the cooperative kernel is now a spec, not just a benchmark artefact.  It is the
+rung that WOULD HAVE CAUGHT the ULONG/INT bug: rung 02 stores at the literal `(0 0)` and integer
+literals are INT, while any real cooperative kernel derives its origin from a tile-stride grid
+binding, which is ULONG.  Its performance is deliberately NOT what it claims -- the header says
+so explicitly, with the measured 0.35x/0.82x/0.91x/1.07x -- so nobody reads it as "cooperating
+is faster".  It claims cooperating WORKS.
+
+THE GROUP VALIDATOR WAS GENERALISED, because rung 03 broke it and the break was the validator's
+fault.  `validate-ptx-wgmma-group` asserted EXACTLY one fence / one commit / one wait for the
+whole module, which silently assumed one wgmma group per kernel.  Two consumer warpgroups emit
+TWO groups, both perfectly well-formed.  The real invariant is the SHAPE of each group, not how
+many there are, so it now parses the opcode stream into groups and requires each to be
+`fence, >=2 mma_async, commit_group, wait_group`, with nothing left over.
+
+Re-tested against six inputs, now including the TRUE pre-154 compiler output (not just the
+synthesised one) and the two-warpgroup kernel:
+
+| input | expected | got |
+|---|---|---|
+| synthesised pre-154 shape | FAIL | FAIL |
+| **true pre-154 compiler output** | FAIL | FAIL |
+| single-slice kernel (vacuous) | FAIL | FAIL |
+| commit hoisted above the mma_asyncs | FAIL | FAIL |
+| fixed, ONE warpgroup | PASS | PASS |
+| **fixed, TWO warpgroups** | PASS | PASS |
+
+A GAP FOUND AND NAMED (not introduced here)
+--------------------------------------------
+The cooperative kernel does not differentiate:
+
+    mma-accumulate-via-tile: cannot differentiate this tile multiply — the A operand has no
+    compile-time shape.
+
+MEASURED, not assumed, before writing the skip: the **SHIPPED chap3 kernel shape fails
+identically**, with the same message.  So every ring-staged wgmma kernel in the benchmark ladder
+is non-differentiable, and the cause is not wgmma, warp specialization, or two warpgroups — it
+is that `ring-get` erases the operand's compile-time shape from the tile-multiply VJP.  Same
+family as the blocker recorded on 140/01 and 140/02.
+
+That is a real endeavour-sized item: make `ring-get` shape-transparent to the VJP.  Recorded in
+rung 03's SKIP-WITH with the evidence, rather than as a vague "wgmma is forward-only" — which is
+the exact anti-pattern endeavour 146 existed to retract.
+
+REGRESSION: 1028/1028 specs locally, 3/3 on metal, 218/218 negative, 291/291 unit.
+
+A PROCESS NOTE, TWICE EARNED
+-----------------------------
+I twice raised a false alarm from my own log truncation.  `... | tail -N` on a spec run keeps
+only N lines AND returns TAIL's exit code, not sbcl's; and the CUDA hoist prints multi-kilobyte
+BUFFER dumps that blow a small window instantly.  Both times the underlying run was fine and the
+evidence (a `Spec Summary` line; an `MMA_CORRECT`) was present in the full log.  Capture spec
+runs to a FILE and grep the file; never judge a run from a piped tail.

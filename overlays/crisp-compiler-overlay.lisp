@@ -157,6 +157,12 @@
   "Store the m64xN wgmma accumulator TILE into DEST with its top-left element at
    (ROW-ORIGIN COL-ORIGIN), both absolute element indices.
 
+   Both origins are coerced with TO-INT.  The lane arithmetic below is INT throughout (wgw and
+   rlo come from to-int of warp-id / warp-lane), so a ULONG origin expression -- which is what
+   you get from any tile-stride grid binding, e.g. (* grid-y (to-ulong 128)) -- would otherwise
+   fail to type-check with \"Cannot operate on ULONG and INT\".  The grid-index caller has always
+   passed an INT for the same reason; this just makes the absolute spelling accept either.
+
    Lane mapping (= wgmma_ref.cu, unchanged): warp w within the warpgroup owns rows
    [16w, 16w+16); within a warp, lane -> row lane/4 and column pair (lane mod 4)*2; each n8
    group contributes the standard mma m16n8 C fragment at rows r0 and r0+8."
@@ -166,9 +172,9 @@
        (let ((wgw (rem (,to-int (warp-id)) 4))
              (lane (,to-int (warp-lane))))
          (let ((rlo (/ lane 4)) (col (* (rem lane 4) 2)))
-           (let ((r0 (+ (+ ,row-origin (* wgw 16)) rlo)))
+           (let ((r0 (+ (+ (,to-int ,row-origin) (* wgw 16)) rlo)))
              (let ((r8 (+ r0 8))
-                   (c0 (+ ,col-origin col)))
+                   (c0 (+ (,to-int ,col-origin) col)))
                (progn
                  ,@(loop for j below n8
                          for base = (* j 4)

@@ -1,0 +1,87 @@
+;; Endeavour 154 rung 03 — TWO consumer warpgroups cooperating on one 128x256 output tile.
+;;
+;; WHAT THIS PINS.  Everything rungs 01 and 02 enable, exercised together and for real:
+;;   - `with-warp-specialization` role blocks are WARPGROUP-aligned, not merely warp-aligned.
+;;     consumer0 = warps 0-3 = threads 0-127, consumer1 = warps 4-7 = threads 128-255.  wgmma is
+;;     a warpgroup instruction and requires that alignment; the lowering is a warp-id `<`-cascade
+;;     which happens to give it, but nothing exercised it until now.
+;;   - each warpgroup emits its OWN well-formed wgmma group, so rung 01's fix composes: the
+;;     emitted PTX carries 2 fences / 8 mma_async / 2 commit_groups / 2 wait_groups.
+;;   - rung 02's absolute-origin store is used the way it was built to be used, with the two
+;;     warpgroups writing DIFFERENT row bands of C.
+;;
+;; AND IT IS THE RUNG THAT WOULD HAVE CAUGHT MY BUG.  Rung 02 stores at the literal origin
+;; `(0 0)`, and integer literals are INT.  A real cooperative kernel computes its origin from a
+;; tile-stride grid binding, which is ULONG -- and the first cut of %wgmma-store-rewrite-origin
+;; generated INT lane arithmetic, so it failed with "Cannot operate on ULONG and INT".  The
+;; overload worked for every input a test exercised and failed for the input it exists to serve.
+;; This rung closes that hole.
+;;
+;; A IS STAGED AS TWO 64-ROW RINGS, not one 128-row ring: a wgmma A operand is a 64-row
+;; descriptor and Crisp cannot point one at a sub-tile of a larger scratch matrix.  Two A loads
+;; instead of one.  B -- the big operand -- is fetched ONCE and consumed by both warpgroups,
+;; which is the entire point of cooperating.
+;;
+;; PERFORMANCE IS NOT WHAT THIS RUNG CLAIMS, AND THE MEASURED ANSWER IS INSTRUCTIVE.  This tile
+;; has arithmetic intensity 128*256/(128+256) = 85.3 against the 64x256 kernel's 51.2, and that
+;; predicted a large-size win.  Measured on an H100 NVL it is SLOWER below 8192 -- 0.35x at 512,
+;; 0.82x at 2048, 0.91x at 4096 -- and only wins at 8192 (1.07x).  The intensity argument ignored
+;; occupancy: the taller tile halves the block count, and at 288 threads x 166 registers only ONE
+;; CTA fits per SM where the 64x256 kernel fits TWO.  Recorded here so nobody reads this rung as
+;; a claim that cooperating is faster.  It is a claim that cooperating WORKS.
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "ring-get erases the operand's compile-time shape, so the tile-multiply VJP cannot resolve (Mt Nt Kt).  MEASURED, not assumed: the SHIPPED chap3 kernel shape fails identically under --differentiate with the same message, so this is a pre-existing gap in ALL ring-staged wgmma kernels and is not introduced here.  Same family as the blocker on 140/01 and 140/02.  Wants its own endeavour: make ring-get shape-transparent to the VJP."
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma-group
+;;
+;; MMA-DIMS: 128 256 32
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+;; wgmma is tf32 — declare fast so the tf32/precision warning stays silent (see 126-precision/20).
+(declaim (precision fast))
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_two_wg (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 288))          ; 2 consumer warpgroups (8 warps) + 1 producer warp
+  (let ((A0-ring (make-scratch-matrix-ring float (64 32)  :ring-count 2))
+        (A1-ring (make-scratch-matrix-ring float (64 32)  :ring-count 2))
+        (B-ring  (make-scratch-matrix-ring float (256 32) :ring-count 2))
+        (D0      (make-wgmma-accumulator float (64 256) 0.0))
+        (D1      (make-wgmma-accumulator float (64 256) 0.0))
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 8 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 3 :initial-state :waiting)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (with-warp-specialization (:consumer0 4 :consumer1 4 :producer 1)
+        (:consumer0
+          (set! D0 (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 32) D0 (ring-get A0-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at D0 C ((* grid-y (to-ulong 128)) (* grid-x (to-ulong 256)))))
+        (:consumer1
+          (set! D1 (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 32) D1 (ring-get A1-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at D1 C ((+ (* grid-y (to-ulong 128)) (to-ulong 64)) (* grid-x (to-ulong 256)))))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A0-ring slot) ((* grid-y (to-ulong 2)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile A (ring-get A1-ring slot) ((+ (* grid-y (to-ulong 2)) (to-ulong 1)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b))))))))

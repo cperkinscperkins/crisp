@@ -3,29 +3,25 @@
 
 
 (defun validate-ptx-wgmma-group (file ptx-string)
-  "Endeavour 154 — assert the wgmma k-slices are issued as ONE GROUP.
+  "Endeavour 154 — assert the wgmma k-slices are issued as WELL-FORMED GROUPS.
 
    THIS IS THE ASSERTION A CORRECTNESS TEST CANNOT MAKE.  The pre-154 lowering emitted
    `fence / mma_async / commit_group / wait_group 0` for EVERY k8 slice, so a K-block of 32
    emitted four of each.  That code is CORRECT -- it computes exactly the right answer -- but
    `wait_group 0` waits for ALL outstanding groups, so each async MMA was fully awaited before
    the next issued and the async in `mma_async` was defeated.  Measured cost on an H100 NVL:
-   4.3% to 10.4% depending on size.  No numeric check can see it; only the emitted instruction
+   4.3% to 10.8% depending on size.  No numeric check can see it; only the emitted instruction
    sequence can.
 
-   The required shape, which is also CUTLASS's:  one fence, N mma_async, one commit_group,
-   one wait_group.  A fence is needed only before the FIRST wgmma of a sequence; back-to-back
-   wgmmas within a group need none, and the accumulator RAW between them is honoured in issue
-   order by the hardware.
+   A well-formed group is:  fence, TWO OR MORE mma_async, commit_group, wait_group.
 
-   Asserts, over the wgmma opcodes in emitted order:
-     1. at least TWO mma_async (otherwise the grouping property is vacuous and this spec is
-        silently not testing what it claims)
-     2. exactly one fence, one commit_group, one wait_group
-     3. the order is fence ... all mma_async ... commit_group, wait_group"
+   The emitted opcodes must be a whole number of such groups and nothing else.  ONE group is the
+   single-warpgroup case; a kernel with two consumer warpgroups emits TWO, which is equally
+   correct -- the invariant is the SHAPE of each group, not how many there are.  Requiring >= 2
+   mma_async per group is what stops a spec decaying into a vacuous pass: with a single-slice
+   K-block the grouping property is untestable, and this must say so rather than go green."
   (declare (ignore file))
   (let ((ops '()) (pos 0))
-    ;; collect the wgmma opcodes in emission order
     (loop
       (let ((i (search "wgmma." ptx-string :start2 pos)))
         (unless i (return))
@@ -39,25 +35,28 @@
                 ops))
         (setf pos (1+ i))))
     (setf ops (nreverse (remove :other ops)))
-    (let ((n-mma    (count :mma ops))
-          (n-fence  (count :fence ops))
-          (n-commit (count :commit ops))
-          (n-wait   (count :wait ops)))
-      (cond
-        ((null ops)
-         (format *error-output* "FAIL: no wgmma opcodes in the emitted PTX at all.~%") nil)
-        ((< n-mma 2)
-         (format *error-output* "FAIL: only ~a wgmma.mma_async emitted.  This spec must use a MULTI-SLICE K-block (:swizzle :128b with K>8) or it cannot test grouping at all.~%" n-mma)
-         nil)
-        ((not (and (= n-fence 1) (= n-commit 1) (= n-wait 1)))
-         (format *error-output* "FAIL: wgmma group brackets are PER-SLICE, not per-group: ~a fence / ~a mma_async / ~a commit_group / ~a wait_group.  Expected 1 / ~a / 1 / 1.  Each `wait_group 0` awaits every outstanding group, so the MMAs cannot pipeline -- correct output, ~~4-10% slower.~%"
-                 n-fence n-mma n-commit n-wait n-mma)
-         nil)
-        ((not (equal ops (append (list :fence) (make-list n-mma :initial-element :mma)
-                                 (list :commit :wait))))
-         (format *error-output* "FAIL: wgmma opcodes are in the wrong order: ~a.  Expected fence, ~a x mma_async, commit_group, wait_group.~%" ops n-mma)
-         nil)
-        (t t)))))
+    (if (null ops)
+        (progn (format *error-output* "FAIL: no wgmma opcodes in the emitted PTX at all.~%") nil)
+        (let ((rest ops) (groups 0))
+          (loop
+            (when (null rest) (return t))
+            (unless (eq (first rest) :fence)
+              (format *error-output* "FAIL: expected a wgmma.fence to open group ~a, got ~a.  Full opcode sequence: ~a~%"
+                      (1+ groups) (first rest) ops)
+              (return nil))
+            (pop rest)
+            (let ((n 0))
+              (loop while (eq (first rest) :mma) do (pop rest) (incf n))
+              (cond
+                ((< n 2)
+                 (format *error-output* "FAIL: group ~a has ~a wgmma.mma_async.  A group must hold TWO OR MORE, otherwise the grouping property is untestable -- use a MULTI-SLICE K-block (:swizzle :128b with K>8).  Pre-154 codegen produced exactly this shape: one mma per fence/commit/wait quadruple.~%"
+                         (1+ groups) n)
+                 (return nil))
+                ((not (and (eq (first rest) :commit) (eq (second rest) :wait)))
+                 (format *error-output* "FAIL: group ~a is not closed by commit_group then wait_group; found ~a then ~a.  Full opcode sequence: ~a~%"
+                         (1+ groups) (first rest) (second rest) ops)
+                 (return nil))
+                (t (pop rest) (pop rest) (incf groups)))))))))
 
 (defun validate-ptx-wgmma-store-direct (file ptx-string)
   "Endeavour 154 item 3 — assert a wgmma accumulator stored via `store-tile-at` took the
