@@ -30,7 +30,8 @@ SCRATCH_DIR = RESULTS_DIR / "scratch"
 MMA_TECHNIQUES = [
     {
         "num": 0,
-        "key": "chap0_sync",
+        "key": "chap0_naive",
+        "alt_keys": ["chap0_sync"],
         "question": "Does it run at all?",
         "desc_nv": "naive loops, no tensor cores",
         "desc_intel": "naive loops, no XMX",
@@ -38,7 +39,7 @@ MMA_TECHNIQUES = [
     },
     {
         "num": 1,
-        "key": "chap1_sync_tensor",
+        "key": "chap1_handrolled_mma",
         "alt_keys": ["chap1_async_linear"],
         "question": "Can we reach the tensor cores?",
         "desc_nv": "hand-rolled mma-accumulate-via-tile",
@@ -47,7 +48,7 @@ MMA_TECHNIQUES = [
     },
     {
         "num": 2,
-        "key": "chap2_tiled",
+        "key": "chap2_tiling",
         "alt_keys": ["chap0_sync"],
         "question": "What does tiling buy?",
         "desc_nv": "matrix-multiply-tile-stride",
@@ -56,7 +57,7 @@ MMA_TECHNIQUES = [
     },
     {
         "num": 3,
-        "key": "chap3_async_linear",
+        "key": "chap3_async",
         "alt_keys": ["chap1_async_linear"],
         "question": "Can the fetch overlap the math?",
         "desc_nv": "cp.async",
@@ -65,7 +66,7 @@ MMA_TECHNIQUES = [
     },
     {
         "num": 4,
-        "key": "chap4_async_block",
+        "key": "chap4_cheap_fetch",
         "alt_keys": ["chap1.5_async_block"],
         "question": "Can the fetch itself be cheap?",
         "desc_nv": "TMA descriptor (CUtensorMap)",
@@ -74,7 +75,7 @@ MMA_TECHNIQUES = [
     },
     {
         "num": 5,
-        "key": "chap5_pipelined_block",
+        "key": "chap5_multistage_ring",
         "alt_keys": ["chap2_pipelined_block", "intel_prefetch"],
         "question": "Can several fetches be in flight?",
         "desc_nv": "SMEM ring",
@@ -355,20 +356,32 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
         lines.append(f"| N | Crisp | Control<br>{ctrl_label} | **Peer**<br>{peer_label} | Ceiling<br>{ceil_label} | vs Peer | vs Ceiling |")
         lines.append("|---:|---:|---:|---:|---:|---:|---:|")
 
-        # Top chapter is chap3_wgmma / intel_prefetch
-        top_keys = ["chap3_wgmma", "chap7_wgmma", "intel_prefetch"]
-        top_sizes = sorted([s for s in matmul_data[gpu].get("chap3_wgmma", {}).get("fast", {}).keys() if isinstance(s, int)] or [512, 1024, 2048, 4096])
+        # Top chapters to draw best mainloop from
+        top_keys = ["chap7_wgmma", "chap6_warp_specialization", "chap5_multistage_ring", "chap3_wgmma", "intel_prefetch", "chap2_tiling", "chap0_sync"]
+        
+        # Collect all unique sizes across top keys
+        all_s = set()
+        for tk in top_keys:
+            if tk in matmul_data[gpu] and "fast" in matmul_data[gpu][tk]:
+                all_s.update(matmul_data[gpu][tk]["fast"].keys())
+        top_sizes = sorted([s for s in all_s if isinstance(s, int) and s >= 256]) or [512, 1024, 2048, 4096]
 
         for s in top_sizes:
-            pts = {}
+            cand_pts = []
             for tk in top_keys:
                 if tk in matmul_data[gpu] and "fast" in matmul_data[gpu][tk] and s in matmul_data[gpu][tk]["fast"]:
-                    pts.update(matmul_data[gpu][tk]["fast"][s])
+                    for comp, pt in matmul_data[gpu][tk]["fast"][s].items():
+                        cand_pts.append((comp, pt))
 
-            c_pt = next((pts[k] for k in pts if _is_crisp(k)), None)
-            ctrl_pt = next((pts[k] for k in pts if _is_control(k)), None)
-            peer_pt = next((pts[k] for k in pts if _is_peer(k)), None)
-            ceil_pt = next((pts[k] for k in pts if _is_ceiling(k) and "_Plus_" not in k), None)
+            def _best_pt(predicate):
+                matching = [pt for comp, pt in cand_pts if predicate(comp)]
+                if not matching: return None
+                return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
+
+            c_pt = _best_pt(_is_crisp)
+            ctrl_pt = _best_pt(_is_control)
+            peer_pt = _best_pt(_is_peer)
+            ceil_pt = _best_pt(lambda k: _is_ceiling(k) and "_Plus_" not in k)
 
             c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
             c_ms = c_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if c_pt else None

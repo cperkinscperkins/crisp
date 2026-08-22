@@ -412,7 +412,26 @@ def main():
         print(f"Hardware detected: {HW['gpu_model']}")
     SIZE_SCALE_REF = 1024 if a.platform == "intel" else 2048
 
-    sizes = a.sizes.split(",")
+    SIZE_PRESETS = {
+        "small": ["256", "512", "1024"],
+        "medium": ["2048", "4096"],
+        "large": ["8192", "16384"],
+        "xl": ["32768", "40960"],
+        "canonical": ["256", "512", "1024", "2048", "4096"],
+        "all": ["256", "512", "1024", "2048", "4096", "8192", "16384"] if a.platform == "intel" else ["256", "512", "1024", "2048", "4096", "8192", "16384", "32768"],
+    }
+
+    raw_sizes = [x.strip() for x in a.sizes.split(",") if x.strip()]
+    sizes = []
+    for s in raw_sizes:
+        if s.lower() in SIZE_PRESETS:
+            sizes.extend(SIZE_PRESETS[s.lower()])
+        else:
+            sizes.append(s)
+    # Deduplicate while preserving order
+    seen = set()
+    sizes = [x for x in sizes if not (x in seen or seen.add(x))]
+
     base_out_dir = Path(a.output_dir)
     out_dir = base_out_dir / "scratch" if a.scratch else base_out_dir
 
@@ -529,29 +548,33 @@ def main():
             run_target("chap1_handrolled_mma", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap1_handrolled_mma", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
-            # §1 Ch 2 (formerly chap0_sync) — matrix-multiply-tile-stride macro
-            run_target("chap0_sync", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True)
-            run_target("chap0_sync", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
-            run_target("chap0_sync", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
-            run_target("chap0_sync", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
-            run_target("chap0_sync", "onemkl_optimal.cpp", "onemkl_optimal", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
+            # §1 Ch 2 — matrix-multiply-tile-stride macro (tiling)
+            run_target("chap2_tiling", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True)
+            run_target("chap2_tiling", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+            run_target("chap2_tiling", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+            run_target("chap2_tiling", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
-            # §1 Ch 3 (formerly chap1_async_linear) — cp.async linear pipelining
-            run_target("chap1_async_linear", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True)
-            run_target("chap1_async_linear", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
-            run_target("chap1_async_linear", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+            # §1 Ch 3 — cp.async linear pipelining
+            run_target("chap3_async", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True)
+            run_target("chap3_async", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+            run_target("chap3_async", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
-            # §1 Ch 4 (formerly chap1.5_async_block) — TMA :block
-            run_target("chap1.5_async_block", "matmul_async_block.crisp", "matmul_async_block.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
-            run_target("chap1.5_async_block", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+            # §1 Ch 4 — TMA descriptor (CUtensorMap)
+            run_target("chap4_cheap_fetch", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap4_cheap_fetch", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
 
-            # §1 Ch 5 (formerly chap2_pipelined_block) — pipelined rings
-            run_target("chap2_pipelined_block", "matmul_pipe.crisp", "matmul_pipe.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
-            run_target("chap2_pipelined_block", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+            # §1 Ch 5 — SMEM ring (multi-stage pipeline)
+            run_target("chap5_multistage_ring", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap5_multistage_ring", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
 
-            # §1 Ch 6/7 (formerly chap3_wgmma) — wgmma Hopper warpgroup MMA
-            run_target("chap3_wgmma", "matmul_wgmma.crisp", "matmul_wgmma.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
-            run_target("chap3_wgmma", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
+            # §1 Ch 6 — Warp specialization with sync MMA
+            run_target("chap6_warp_specialization", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap6_warp_specialization", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
+
+            # §1 Ch 7 — WGMMA + Warp Specialization (Hopper warpgroup MMA)
+            run_target("chap7_wgmma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
+            run_target("chap7_wgmma", "cutlass_gemm.cu", "cutlass_gemm", "CUTLASS", ["-O3", "-std=c++17", "-arch=sm_90a", "-I/workspace/cutlass/include"])
+            run_target("chap7_wgmma", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §3 Situational — CLUSTERS + TMA MULTICAST (DSMEM)
             run_target("chap4_cluster_multicast", "matmul_tile128.crisp",
@@ -587,14 +610,23 @@ def main():
             run_l0_crisp("chap1_handrolled_mma", "matmul_bmg.crisp", use_autobench=True)
             run_target("chap1_handrolled_mma", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
-            # §1 Ch 2 (formerly chap0_sync) — synchronous coop-matrix tiling
-            run_l0_crisp("chap0_sync", "matmul_bmg.crisp")
-            run_target("chap0_sync", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
-            run_target("chap0_sync", "onemkl_optimal.cpp", "onemkl_optimal", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
+            # §1 Ch 2 — synchronous coop-matrix tiling (matrix-multiply-tile-stride)
+            run_l0_crisp("chap2_tiling", "matmul_bmg.crisp")
+            run_target("chap2_tiling", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+            run_target("chap2_tiling", "onemkl_optimal.cpp", "onemkl_optimal", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
 
-            # §1 Ch 3 (formerly chap1_async_linear) — OpGroupAsyncCopy staging
-            run_l0_crisp("chap1_async_linear", "matmul_bmg_async.crisp")
-            run_target("chap1_async_linear", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+            # §1 Ch 3 — OpGroupAsyncCopy staging
+            run_l0_crisp("chap3_async", "matmul_bmg_async.crisp")
+            run_target("chap3_async", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+
+            # §1 Ch 4 — Register-resident load (global -> GRF)
+            run_l0_crisp("chap4_cheap_fetch", "matmul_bmg.crisp", use_autobench=True)
+            run_target("chap4_cheap_fetch", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+
+            # §1 Ch 5 — Register ring + prefetch (intel_prefetch)
+            run_l0_crisp("chap5_multistage_ring", "matmul_bmg.crisp", use_autobench=True)
+            run_target("chap5_multistage_ring", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            run_target("chap5_multistage_ring", "sycl_tla_gemm.cpp", "sycl_tla_gemm", "SYCL-TLA", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
 
             # §4 Activation Ch 1 — Fused ReLU
             run_l0_crisp("chap5_fused_epilogue", "matmul_bmg_prefetch_relu.crisp",
@@ -615,10 +647,6 @@ def main():
                        "OneMKL_Plus_Custom", sycl_flags, is_sycl=True, is_cublas=True)
             run_target("chap6_fused_custom", "onednn_optimal.cpp", "onednn_optimal",
                        "OneDNN_Plus_Custom", sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
-
-            # §1 Ch 5 (intel_prefetch) — register ring + prefetch
-            run_l0_crisp("intel_prefetch", "matmul_bmg_prefetch.crisp", use_autobench=True)
-            run_target("intel_prefetch", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,44 @@
+;; Crisp tiled matmul (grid-stride) — PIPELINED :block TMA (NVIDIA sm_90), tf32.
+;; Endeavor 138 (Chapter 2): the single :block barrier + single A/B SLM tile of
+;; matmul_async_block.crisp become 2-deep RINGS, so stage k+2's TMA transfer is in flight while
+;; stage k feeds the tensor cores.  Same 64x64 register tile, (16 8 8) tf32 MMA, B col-major.
+;;
+;; Hand-rolled tile-stride + dotimes (= what matrix-multiply-tile-stride lowers to) so a PROLOGUE
+;; can precede the K-loop.  Ring slot = (mod grid-k 2); no mutable ring-idx.  :arrivals 2 (A+B per
+;; slot).  Measures Chapter-2 pipelining vs the Chapter-1.5 :block floor at competitive GEMM sizes.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))          ; one warp / tile
+  (let ((A-ring (make-scratch-matrix-ring float (64 8) :ring-count 2))   ; SLM: 2 x (64 x k-step)
+        (B-ring (make-scratch-matrix-ring float (8 64) :ring-count 2))   ; SLM: 2 x (k-step x 64)
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B))
+        (bars   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2)))
+    (tile-stride C (64 64) (grid-y grid-x)
+      ;; per-output-tile: grid-strided reuse means we must reset the register C-tile each tile.
+      (fill-tile C-tile 0.0)
+
+      ;; 1. PROLOGUE — put both stages' transfers in flight before any math.
+      (dotimes (i 2)
+        (load-tile A (ring-get A-ring (to-ulong i)) (grid-y (to-ulong i)) :barrier (ring-get bars (to-ulong i)))
+        (load-tile B (ring-get B-ring (to-ulong i)) ((to-ulong i) grid-x) :barrier (ring-get bars (to-ulong i))))
+
+      ;; 2. MAIN K-LOOP — await stage k while stage k+1 is still landing.
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+        (let ((slot (mod grid-k (to-ulong 2))))
+          (await (ring-get bars slot))
+          (mma-accumulate-via-tile (16 8 8) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+          (sync-workgroup)                    ; every thread done reading the slot before we refill it
+          (let ((next-k (+ grid-k (to-ulong 2))))
+            (let ((more-k? (to-workgroup-uniform (< next-k (/ (to-ulong K) (to-ulong 8))))))
+              (when more-k?
+                (load-tile A (ring-get A-ring slot) (grid-y next-k) :barrier (ring-get bars slot))
+                (load-tile B (ring-get B-ring slot) (next-k grid-x) :barrier (ring-get bars slot)))))))
+
+      ;; 3. EPILOGUE — C-tile complete.
+      (store-tile C-tile C (grid-y grid-x)))))
