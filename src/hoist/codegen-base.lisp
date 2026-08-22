@@ -21,6 +21,8 @@
          ((string-equal name "ULONG")  "uint64_t")
          ((string-equal name "FLOAT")  "float")
          ((string-equal name "DOUBLE") "double")
+         ((string-equal name "BFLOAT16") "uint16_t")
+         ((string-equal name "HALF")   "uint16_t")
          ((string-equal name "CHAR")   "char")
          ((string-equal name "UCHAR")  "unsigned char")
          ((string-equal name "SHORT")  "short")

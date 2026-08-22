@@ -435,11 +435,79 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
 
             _row("Crisp", "Crisp", c_pt0)
             _row(ctrl_label, "Control", ctrl_pt0)
-            _row(peer_label, "Peer", peer_pt0)
+            if platform == "nvidia":
+                _row(peer_label, "Peer", peer_pt0)
             _row(ceil_label, "Ceiling", ceil_pt0, is_ceil=True)
             lines.append("\n</details>\n")
-        else:
-            lines.append("")
+
+        # §2.1 BFloat16 Top MMA Benchmarks (if available)
+        if "sec2_top_bf16" in matmul_data[gpu] and "fast" in matmul_data[gpu]["sec2_top_bf16"]:
+            bf16_data = matmul_data[gpu]["sec2_top_bf16"]["fast"]
+            lines.append(f"### {gpu} · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*\n")
+            lines.append(f"| N | Crisp BF16 | Control<br>{ctrl_label}_BF16 | **Peer**<br>{peer_label}_BF16 | Ceiling<br>{ceil_label}_BF16 | vs Peer | vs Ceiling |")
+            lines.append("|---:|---:|---:|---:|---:|---:|---:|")
+
+            bf16_sizes = sorted([s for s in bf16_data.keys() if isinstance(s, int)])
+            for s in bf16_sizes:
+                cand_pts = [(comp, pt) for comp, pt in bf16_data[s].items()]
+                def _best_bf(predicate):
+                    matching = [pt for comp, pt in cand_pts if predicate(comp)]
+                    if not matching: return None
+                    return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
+
+                c_pt = _best_bf(_is_crisp)
+                ctrl_pt = _best_bf(_is_control)
+                peer_pt = _best_bf(_is_peer)
+                ceil_pt = _best_bf(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+
+                c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
+                c_ms = c_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if c_pt else None
+                ctrl_tf = ctrl_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ctrl_pt else None
+                ctrl_ms = ctrl_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ctrl_pt else None
+                peer_tf = peer_pt.get("metrics", {}).get("throughput", {}).get("tflops") if peer_pt else None
+                peer_ms = peer_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if peer_pt else None
+                ceil_tf = ceil_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_pt else None
+                ceil_ms = ceil_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ceil_pt else None
+
+                c_str = f"{c_tf:.1f} ({c_ms:.3f})" if c_tf else "—"
+                ctrl_str = f"{ctrl_tf:.1f} ({ctrl_ms:.3f})" if ctrl_tf else "—"
+                peer_str = f"{peer_tf:.1f} ({peer_ms:.3f})" if peer_tf else "—"
+                ceil_str = f"{ceil_tf:.1f} ({ceil_ms:.3f})" if ceil_tf else "—"
+
+                vs_peer = format_ratio(ctrl_tf or c_tf, peer_tf)
+                vs_ceil = format_ratio(ctrl_tf or c_tf, ceil_tf, as_pct=True)
+
+                lines.append(f"| {s} | {c_str} | {ctrl_str} | {peer_str} | {ceil_str} | {vs_peer} | {vs_ceil} |")
+
+            c_pt0 = _best_bf(_is_crisp)
+            ctrl_pt0 = _best_bf(_is_control)
+            peer_pt0 = _best_bf(_is_peer)
+            ceil_pt0 = _best_bf(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+
+            ref_pt = ctrl_pt0 or peer_pt0
+            ref_dev = ref_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if ref_pt else 0.0
+
+            target_ir = "SPIR-V" if platform == "intel" else "PTX"
+            lines.append("\n<details><summary><b>Compilation & Build Overhead (BF16)</b></summary>\n")
+            lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Control codegen** |")
+            lines.append("|---|---|---:|---:|---:|")
+
+            def _row_bf(name, role, pt, is_ceil=False):
+                if not pt: return
+                cm = pt.get("metrics", {}).get("compile_time", {})
+                d_ms = cm.get("device_compile_ms", 0.0)
+                a_ms = cm.get("all_compile_ms", 0.0)
+                if is_ceil:
+                    lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                    return
+                if d_ms <= 0 and a_ms <= 0: return
+                ratio = f"**{d_ms / ref_dev:.1f}× slower**" if ref_dev > 0 and d_ms > ref_dev * 1.05 else ("1.00×" if ref_dev > 0 and abs(d_ms - ref_dev) < 10 else f"{d_ms / ref_dev:.2f}×" if ref_dev > 0 else "—")
+                lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
+
+            _row_bf(f"{ctrl_label}_BF16", "Control", ctrl_pt0)
+            _row_bf(f"{peer_label}_BF16", "Peer", peer_pt0)
+            _row_bf(f"{ceil_label}_BF16", "Ceiling", ceil_pt0, is_ceil=True)
+            lines.append("\n</details>\n")
 
     # Section 3: Situational Techniques
     lines.append("## § 3 — Situational Techniques\n")
@@ -495,7 +563,37 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 vs_cf = format_ratio(c_tf, cf_tf, as_pct=True)
 
                 lines.append(f"| {s} | {_fmt(c_pt)} | {_fmt(p_pt)} | {_fmt(ceil_fused_pt)} | {_fmt(ceil_plus_pt)} | {vs_p} | {vs_cf} |")
-            lines.append("")
+
+            # Ch 1 Compile table
+            target_ir = "SPIR-V" if platform == "intel" else "PTX"
+            r_sz0 = r_sizes[0] if r_sizes else None
+            if r_sz0:
+                r_pts0 = relu_data[r_sz0]
+                rc_pt = next((pt for comp, pt in r_pts0.items() if "Crisp" in comp), None)
+                rc_dev = rc_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if rc_pt else 0.0
+                if rc_dev > 0:
+                    lines.append("\n<details><summary><b>Compilation & Build Overhead (Fused ReLU)</b></summary>\n")
+                    lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Crisp codegen** |")
+                    lines.append("|---|---|---:|---:|---:|")
+                    def _r_row(name, role, pt, is_ceil=False):
+                        if not pt: return
+                        cm = pt.get("metrics", {}).get("compile_time", {})
+                        d_ms = cm.get("device_compile_ms", 0.0)
+                        a_ms = cm.get("all_compile_ms", 0.0)
+                        if is_ceil:
+                            lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                            return
+                        if d_ms <= 0 and a_ms <= 0: return
+                        ratio = f"**{d_ms / rc_dev:.1f}× slower**" if rc_dev > 0 and d_ms > rc_dev * 1.05 else ("1.00×" if rc_dev > 0 and abs(d_ms - rc_dev) < 10 else f"{d_ms / rc_dev:.2f}×")
+                        lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
+                    _r_row("Crisp Fused", "Crisp", rc_pt)
+                    _r_row(peer_relu_label, "Peer", next((pt for comp, pt in r_pts0.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None))
+                    _r_row(ceil_relu_label, "Ceiling", next((pt for comp, pt in r_pts0.items() if any(k in comp for k in ["OneDNN_Fused", "CUBLASLt_Fused"])), None), is_ceil=True)
+                    lines.append("\n</details>\n")
+                else:
+                    lines.append("")
+            else:
+                lines.append("")
 
         # Ch 2: Fused Custom
         custom_data = matmul_data[gpu].get("sec4_fused_custom", {}).get("fast", {}) or matmul_data[gpu].get("chap6_fused_custom", {}).get("fast", {})
@@ -528,7 +626,37 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 vs_cp = format_ratio(c_tf, cp_tf, as_pct=True)
 
                 lines.append(f"| {s} | {_fmt(c_pt)} | {_fmt(p_pt)} | {_fmt(ceil_plus_pt)} | {vs_p} | {vs_cp} |")
-            lines.append("")
+
+            # Ch 2 Compile table
+            target_ir = "SPIR-V" if platform == "intel" else "PTX"
+            c_sz0 = c_sizes[0] if c_sizes else None
+            if c_sz0:
+                c_pts0 = custom_data[c_sz0]
+                cc_pt = next((pt for comp, pt in c_pts0.items() if "Crisp" in comp), None)
+                cc_dev = cc_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if cc_pt else 0.0
+                if cc_dev > 0:
+                    lines.append("\n<details><summary><b>Compilation & Build Overhead (Fused Custom)</b></summary>\n")
+                    lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Crisp codegen** |")
+                    lines.append("|---|---|---:|---:|---:|")
+                    def _c_row(name, role, pt, is_ceil=False):
+                        if not pt: return
+                        cm = pt.get("metrics", {}).get("compile_time", {})
+                        d_ms = cm.get("device_compile_ms", 0.0)
+                        a_ms = cm.get("all_compile_ms", 0.0)
+                        if is_ceil:
+                            lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                            return
+                        if d_ms <= 0 and a_ms <= 0: return
+                        ratio = f"**{d_ms / cc_dev:.1f}× slower**" if cc_dev > 0 and d_ms > cc_dev * 1.05 else ("1.00×" if cc_dev > 0 and abs(d_ms - cc_dev) < 10 else f"{d_ms / cc_dev:.2f}×")
+                        lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
+                    _c_row("Crisp Fused", "Crisp", cc_pt)
+                    _c_row(peer_custom_label, "Peer", next((pt for comp, pt in c_pts0.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None))
+                    _c_row(ceil_plus_label, "Ceiling (2nd Kernel)", next((pt for comp, pt in c_pts0.items() if any(k in comp for k in ["OneDNN_Plus", "CUBLASLt_Plus", "Plus_Custom"])), None))
+                    lines.append("\n</details>\n")
+                else:
+                    lines.append("")
+            else:
+                lines.append("")
 
     # Section 5: Scaling Out
     lines.append("## § 5 — Scaling Out\n")

@@ -244,7 +244,7 @@
      :l2-cache-size 18MB
      :native-cache-line-size 64            ; Xe2 LSC line; not queryable
      :tile-visit-strip-width 4             ; measured; see the Phase 1 revision comment
-     :mma-shapes ((8 16 8))))              ; XMX tf32
+     :mma-shapes ((8 16 8) (8 16 16) (8 16 32)))) ; XMX tf32, bf16/fp16, int8
   ;; NVIDIA H100 PCIe (Hopper).  Device-queried 2026-07-28.
   ;; :compute-units 114 is the PCIe part (SXM is 132); this value OVERRIDES the device SM query
   ;; in the generated CUDA launch grid, so the variant distinction is load-bearing.

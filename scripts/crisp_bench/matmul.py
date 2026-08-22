@@ -285,6 +285,8 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
     measured_hoist_ms = 0.0
     for s in sizes:
         S = int(s)
+        if S > 8192:
+            continue
         w, it = scaled_counts(warmup, iters, S)
         out = run_l0_autobench(src, S, S, S, w, it, crisp_compiler, prec_flags, [])
         if not out:
@@ -628,11 +630,28 @@ def main():
             run_l0_crisp("chap5_multistage_ring", "matmul_bmg.crisp", use_autobench=True)
             run_target("chap5_multistage_ring", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
 
-            # §2 — Top MMA Benchmarks (All 4 contender classes)
+            # SYCL-TLA (CUTLASS 3.x for Intel Xe2) specific flags
+            tla_dir = HERE.parent.parent / "third_party" / "sycl-tla"
+            tla_inc = [f"-I{tla_dir}/include", f"-I{tla_dir}/tools/util/include"]
+            sycl_tla_flags = sycl_flags + tla_inc + [
+                "-DCUTLASS_ENABLE_SYCL=ON", "-DSYCL_INTEL_TARGET=1",
+                "-fno-sycl-instrument-device-code",
+                "-fsycl-targets=spir64_gen",
+                "-Xsycl-target-backend=spir64_gen", "-device bmg-g21",
+                "-Xspirv-translator",
+                "-spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io,+SPV_INTEL_subgroup_matrix_multiply_accumulate"
+            ]
+
+            # §2 — Top MMA Benchmarks (TF32 / FP32 Precision Tier)
             run_l0_crisp("sec2_top", "matmul_bmg.crisp", use_autobench=True)
             run_target("sec2_top", "sycl_control.cpp", "sycl_control", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
-            run_target("sec2_top", "sycl_tla_peer.cpp", "sycl_tla_peer", "SYCL-TLA", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top", "onemkl_ceiling.cpp", "onemkl_ceiling", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
+
+            # §2.1 — Top MMA Benchmarks (BFloat16 Low-Precision Tier)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16.crisp", use_autobench=True)
+            run_target("sec2_top_bf16", "sycl_control_bf16.cpp", "sycl_control_bf16", "SYCL_Apples_BF16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            run_target("sec2_top_bf16", "sycl_tla_peer.cpp", "sycl_tla_peer", "SYCL-TLA_BF16", sycl_tla_flags, is_sycl=True)
+            run_target("sec2_top_bf16", "onemkl_bf16.cpp", "onemkl_bf16", "OneMKL_BF16", sycl_flags, is_sycl=True, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU
             run_l0_crisp("sec4_fused_relu", "matmul_bmg_prefetch_relu.crisp",
@@ -640,7 +659,7 @@ def main():
             run_target("sec4_fused_relu", "sycl_apples.cpp", "sycl_apples",
                        "SYCL_Apples_Relu", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec4_fused_relu", "sycl_tla_relu.cpp", "sycl_tla_relu",
-                       "SYCL-TLA_Fused_Relu", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+                       "SYCL-TLA_Fused_Relu", sycl_tla_flags, is_sycl=True)
             run_target("sec4_fused_relu", "onemkl_optimal.cpp", "onemkl_optimal",
                        "OneMKL_Plus_Relu", sycl_flags, is_sycl=True, is_cublas=True)
             run_target("sec4_fused_relu", "onednn_fused.cpp", "onednn_fused",
@@ -652,7 +671,7 @@ def main():
             run_target("sec4_fused_custom", "sycl_apples.cpp", "sycl_apples",
                        "SYCL_Apples_Custom", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec4_fused_custom", "sycl_tla_custom.cpp", "sycl_tla_custom",
-                       "SYCL-TLA_Fused_Custom", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+                       "SYCL-TLA_Fused_Custom", sycl_tla_flags, is_sycl=True)
             run_target("sec4_fused_custom", "onemkl_optimal.cpp", "onemkl_optimal",
                        "OneMKL_Plus_Custom", sycl_flags, is_sycl=True, is_cublas=True)
             run_target("sec4_fused_custom", "onednn_optimal.cpp", "onednn_optimal",

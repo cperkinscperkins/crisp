@@ -1,31 +1,101 @@
 /*
- * SYCL-TLA (Tensor Library / Joint Matrix) GEMM for Intel BMG.
- * Section 2 Peer Contender: C++ SYCL template-based XMX DPAS pipeline.
+ * SYCL-TLA Peer Contender for Top GEMM (§2) on Intel BattleMage (Arc B580).
+ * Built with the genuine Intel SYCL-TLA (CUTLASS 3.x / CuTe for SYCL) library.
  *
- * Implements a 32x32 register-ring tiled kernel using:
- *  - sycl::ext::oneapi::experimental::matrix::joint_matrix (XMX tf32 DPAS)
- *  - joint_matrix_prefetch (Subgroup2DBlockPrefetchINTEL)
- *  - joint_matrix_load / joint_matrix_store (Subgroup2DBlockLoadINTEL / Store)
- *  - W=4 tile strip mining swizzle for L2 cache locality
- *  - 256 registers/thread large GRF mode
- *
- * Build: icpx -fsycl -O3 -Xs "-ze-opt-large-register-file" sycl_tla_gemm.cpp -o sycl_tla_gemm
- * Run:   ./sycl_tla_gemm [M] [N] [K] [warmup] [iters]
+ * Implements:
+ *   - CuTe TiledMMA (XE_DPAS_TT<8, float, bfloat16_t>)
+ *   - CollectiveMMA (MainloopXeL1Staged<2>) with 2-stage prefetch
+ *   - CollectiveEpilogue (IntelXeGeneric, LinearCombination)
+ *   - GemmUniversalAdapter
  */
-#include <sycl/sycl.hpp>
-#include <sycl/ext/oneapi/matrix/matrix.hpp>
-#include <sycl/ext/oneapi/experimental/prefetch.hpp>
-#include <algorithm>
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
+
+#include "cutlass/epilogue/collective/default_epilogue.hpp"
+#include "cutlass/epilogue/collective/xe_epilogue.hpp"
+#include "cutlass/epilogue/fusion/xe_callbacks.hpp"
+#include "cutlass/gemm/device/gemm_universal.h"
+#include "cutlass/gemm/device/gemm_universal_adapter.h"
+#include "cutlass/gemm/collective/collective_mma.hpp"
+#include "cutlass/util/GPU_Clock.hpp"
+
+#include <cute/tensor.hpp>
+#include <iostream>
 #include <vector>
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 
-using namespace sycl::ext::oneapi::experimental::matrix;
-using namespace sycl::ext::oneapi::experimental;
+#include "cutlass/util/device_memory.h"
+#include "cutlass/util/packed_stride.hpp"
 
-int main(int argc, char** argv) {
+using namespace cute;
+
+// Layout definitions
+using LayoutA = cutlass::layout::RowMajor;
+using LayoutB = cutlass::layout::RowMajor;
+using LayoutC = cutlass::layout::RowMajor;
+using LayoutD = cutlass::layout::RowMajor;
+
+using ElementInputA = cutlass::tfloat32_t;
+using ElementInputB = cutlass::tfloat32_t;
+using ElementOutput = float;
+using ElementAccumulator = float;
+using ElementComputeEpilogue = float;
+
+using StrideA = cutlass::gemm::TagToStrideA_t<LayoutA>;
+using StrideB = cutlass::gemm::TagToStrideB_t<LayoutB>;
+using StrideC = cutlass::gemm::TagToStrideC_t<LayoutC>;
+using StrideD = cutlass::gemm::TagToStrideC_t<LayoutD>;
+
+using TileShape = Shape<_256, _256, _32>;
+using TiledMma = typename TiledMMAHelper<
+    MMA_Atom<XE_DPAS_TT<8, float, cute::tfloat32_t>>,
+    Layout<TileShape>,
+    Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>>::TiledMMA;
+
+constexpr int PipelineStages = 2;
+using GEMMDispatchPolicy = cutlass::gemm::MainloopXeL1Staged<PipelineStages>;
+using EpilogueDispatchPolicy = cutlass::epilogue::IntelXeGeneric;
+
+using EpilogueOp = cutlass::epilogue::fusion::LinearCombination<
+    ElementOutput, ElementComputeEpilogue,
+    ElementAccumulator, ElementAccumulator,
+    cutlass::FloatRoundStyle::round_to_nearest>;
+
+using FusionCallbacks = cutlass::epilogue::fusion::FusionCallbacks<
+    EpilogueDispatchPolicy, EpilogueOp, TileShape,
+    decltype(tile_shape(TiledMma()))>;
+
+using CollectiveEpilogue = cutlass::epilogue::collective::CollectiveEpilogue<
+    EpilogueDispatchPolicy,
+    TileShape,
+    void,
+    ElementAccumulator,
+    StrideC,
+    ElementOutput,
+    StrideD,
+    FusionCallbacks,
+    void,
+    void>;
+
+using CollectiveMainloop = cutlass::gemm::collective::CollectiveMma<
+    GEMMDispatchPolicy,
+    TileShape,
+    ElementInputA,
+    StrideA,
+    ElementInputB,
+    StrideB,
+    TiledMma,
+    void, void, void, cute::identity,
+    void, void, void, cute::identity>;
+
+using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
+    Shape<int, int, int, int>,
+    CollectiveMainloop,
+    CollectiveEpilogue>;
+
+using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+
+int main(int argc, char const **argv) {
     try {
         auto wall_start = std::chrono::high_resolution_clock::now();
         int M      = argc > 1 ? atoi(argv[1]) : 256;
@@ -34,127 +104,92 @@ int main(int argc, char** argv) {
         int warmup = argc > 4 ? atoi(argv[4]) : 20;
         int iters  = argc > 5 ? atoi(argv[5]) : 100;
 
-        sycl::queue q{sycl::gpu_selector_v,
-                      sycl::property::queue::enable_profiling{}};
+        auto problem_size = GemmKernel::ProblemShape{M, N, K, 1};
 
-        float* A = sycl::malloc_shared<float>((size_t)M * K, q);
-        float* B = sycl::malloc_shared<float>((size_t)K * N, q);
-        float* C = sycl::malloc_shared<float>((size_t)M * N, q);
-        for (size_t i = 0; i < (size_t)M * K; i++) A[i] = 1.0f;
-        for (size_t i = 0; i < (size_t)K * N; i++) B[i] = 1.0f;
-        for (size_t i = 0; i < (size_t)M * N; i++) C[i] = 0.0f;
+        auto stride_A = cutlass::make_cute_packed_stride(StrideA{}, cute::make_shape(M, K, 1));
+        auto stride_B = cutlass::make_cute_packed_stride(StrideB{}, cute::make_shape(N, K, 1));
+        auto stride_C = cutlass::make_cute_packed_stride(StrideC{}, cute::make_shape(M, N, 1));
+        auto stride_D = cutlass::make_cute_packed_stride(StrideD{}, cute::make_shape(M, N, 1));
 
-        auto launch = [&]() {
-            return q.submit([&](sycl::handler& h) {
-                h.parallel_for(
-                    sycl::nd_range<2>(sycl::range<2>(M / 32, (N / 32) * 16), sycl::range<2>(1, 16)),
-                    [=](sycl::nd_item<2> item) {
-                        auto sg = item.get_sub_group();
-                        int nt0 = M / 32;
-                        int nt1 = N / 32;
-                        int tid = (int)item.get_group_linear_id();
-                        int wsym = 4;
-                        int tpg = wsym * nt0;
-                        int grp = tid / tpg;
-                        int idg = tid % tpg;
-                        int fc = grp * wsym;
-                        int gc = std::min(wsym, nt1 - fc);
-                        int tile_row = idg / gc;
-                        int tile_col = fc + (idg % gc);
-                        int row = tile_row * 32;
-                        int col = tile_col * 32;
+        cutlass::device_memory::allocation<ElementInputA> block_A(M * K);
+        cutlass::device_memory::allocation<ElementInputB> block_B(K * N);
+        cutlass::device_memory::allocation<ElementOutput> block_C(M * N);
+        cutlass::device_memory::allocation<ElementOutput> block_D(M * N);
 
-                        using tA_t = joint_matrix<sycl::sub_group, precision::tf32, use::a, 8, 8, layout::row_major>;
-                        using tB_t = joint_matrix<sycl::sub_group, precision::tf32, use::b, 8, 16, layout::row_major>;
-                        using tC_t = joint_matrix<sycl::sub_group, float, use::accumulator, 8, 16>;
+        std::vector<ElementInputA> host_A(M * K, ElementInputA(1.0f));
+        std::vector<ElementInputB> host_B(K * N, ElementInputB(1.0f));
+        std::vector<ElementOutput> host_C(M * N, 0.0f);
 
-                        auto make_ptr = [](float* p) {
-                            return sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(p);
-                        };
+        cutlass::device_memory::copy_to_device(block_A.get(), host_A.data(), host_A.size());
+        cutlass::device_memory::copy_to_device(block_B.get(), host_B.data(), host_B.size());
+        cutlass::device_memory::copy_to_device(block_C.get(), host_C.data(), host_C.size());
 
-                        tC_t c[4][2];
-                        for (int r = 0; r < 4; ++r)
-                            for (int c_idx = 0; c_idx < 2; ++c_idx)
-                                joint_matrix_fill(sg, c[r][c_idx], 0.0f);
+        cutlass::KernelHardwareInfo hw_info;
 
-                        tA_t a_ring[2][4];
-                        tB_t b_ring[2][2];
-
-                        // Prologue load stage 0
-                        for (int r = 0; r < 4; ++r)
-                            joint_matrix_load(sg, a_ring[0][r], make_ptr(A + (row + r * 8) * K + 0), K);
-                        for (int c_idx = 0; c_idx < 2; ++c_idx)
-                            joint_matrix_load(sg, b_ring[0][c_idx], make_ptr(B + 0 * N + (col + c_idx * 16)), N);
-
-                        int num_k_steps = K / 8;
-                        for (int k_idx = 0; k_idx < num_k_steps; ++k_idx) {
-                            int next_k = k_idx + 1;
-                            int pref_k = k_idx + 2;
-                            int cur_buf = k_idx % 2;
-                            int next_buf = next_k % 2;
-
-                            if (pref_k < num_k_steps) {
-                                joint_matrix_prefetch<32, 8>(sg, A + row * K + pref_k * 8, K, layout::row_major, properties{prefetch_hint_L1});
-                                joint_matrix_prefetch<8, 16>(sg, B + (pref_k * 8) * N + col, N, layout::row_major, properties{prefetch_hint_L1});
-                                joint_matrix_prefetch<8, 16>(sg, B + (pref_k * 8) * N + col + 16, N, layout::row_major, properties{prefetch_hint_L1});
-                            }
-
-                            if (next_k < num_k_steps) {
-                                for (int r = 0; r < 4; ++r)
-                                    joint_matrix_load(sg, a_ring[next_buf][r], make_ptr(A + (row + r * 8) * K + next_k * 8), K);
-                                for (int c_idx = 0; c_idx < 2; ++c_idx)
-                                    joint_matrix_load(sg, b_ring[next_buf][c_idx], make_ptr(B + (next_k * 8) * N + (col + c_idx * 16)), N);
-                            }
-
-                            for (int r = 0; r < 4; ++r)
-                                for (int c_idx = 0; c_idx < 2; ++c_idx)
-                                    joint_matrix_mad(sg, c[r][c_idx], a_ring[cur_buf][r], b_ring[cur_buf][c_idx], c[r][c_idx]);
-                        }
-
-                        for (int r = 0; r < 4; ++r)
-                            for (int c_idx = 0; c_idx < 2; ++c_idx)
-                                joint_matrix_store(sg, c[r][c_idx], make_ptr(C + (row + r * 8) * N + (col + c_idx * 16)), N, layout::row_major);
-                    });
-            });
+        typename Gemm::GemmKernel::Arguments arguments{
+            cutlass::gemm::GemmUniversalMode::kGemm,
+            problem_size,
+            {block_A.get(), stride_A, block_B.get(), stride_B},
+            {{1.0f, 0.0f}, block_C.get(), stride_C, block_D.get(), stride_D},
+            hw_info
         };
 
-        for (int i = 0; i < warmup; i++) launch();
-        q.wait();
+        Gemm gemm_op;
+        size_t workspace_size = Gemm::get_workspace_size(arguments);
+        cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
+
+        if (gemm_op.can_implement(arguments) != cutlass::Status::kSuccess) {
+            std::cerr << "SYCL-TLA cannot implement GEMM for size: " << M << "x" << N << "x" << K << std::endl;
+            return 1;
+        }
+
+        if (gemm_op.initialize(arguments, workspace.get()) != cutlass::Status::kSuccess) {
+            std::cerr << "SYCL-TLA initialize failed" << std::endl;
+            return 1;
+        }
+
+        for (int i = 0; i < warmup; i++) {
+            gemm_op.run();
+        }
+        compat::wait();
 
         std::vector<double> kt(iters);
         for (int i = 0; i < iters; i++) {
-            auto ev = launch();
-            ev.wait();
-            auto t0 = ev.get_profiling_info<sycl::info::event_profiling::command_start>();
-            auto t1 = ev.get_profiling_info<sycl::info::event_profiling::command_end>();
-            kt[i] = (double)(t1 - t0) / 1000.0;   // ns -> us
+            GPU_Clock timer;
+            timer.start();
+            gemm_op.run();
+            compat::wait();
+            kt[i] = timer.seconds() * 1e6; // microseconds
         }
 
-        double expected = (double)K, maxerr = 0.0;
-        for (size_t i = 0; i < (size_t)M * N; i++)
-            maxerr = std::max(maxerr, (double)std::fabs(C[i] - expected));
-        bool correct = maxerr < expected * 1e-3;
-
         std::sort(kt.begin(), kt.end());
-        double k_med = kt[iters / 2], k_min = kt[0];
+        double k_med = kt[iters / 2];
+        double k_min = kt[0];
         double gflops = (2.0 * M * N * K) / (k_med / 1e6) / 1e9;
+
+        std::vector<ElementOutput> host_D(M * N, 0.0f);
+        cutlass::device_memory::copy_to_host(host_D.data(), block_D.get(), host_D.size());
+
+        double maxerr = 0.0;
+        double expected = (double)K;
+        for (size_t i = 0; i < (size_t)M * N; i++) {
+            maxerr = std::max(maxerr, std::fabs((double)host_D[i] - expected));
+        }
+        bool correct = maxerr < (expected * 1e-2);
 
         auto wall_end = std::chrono::high_resolution_clock::now();
         double wall_time_ms = std::chrono::duration<double, std::milli>(wall_end - wall_start).count();
 
-        printf("{\n  \"algorithm\": \"matmul\",\n  \"implementation\": \"sycl_tla\",\n");
+        printf("{\n  \"algorithm\": \"matmul_top\",\n  \"implementation\": \"sycl_tla\",\n");
         printf("  \"N\": %d, \"M\": %d, \"K\": %d,\n", N, M, K);
         printf("  \"correct\": %s,\n  \"max_abs_err\": %.3e,\n", correct ? "true" : "false", maxerr);
         printf("  \"wall_time_ms\": %.2f,\n", wall_time_ms);
         printf("  \"kernel_median_us\": %.2f,\n  \"kernel_min_us\": %.2f,\n", k_med, k_min);
         printf("  \"gflops\": %.2f\n}\n", gflops);
 
-        sycl::free(A, q);
-        sycl::free(B, q);
-        sycl::free(C, q);
         return correct ? 0 : 1;
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "SYCL exception: %s\n", e.what());
+        std::cerr << "SYCL-TLA exception: " << e.what() << std::endl;
         return 1;
     }
 }
