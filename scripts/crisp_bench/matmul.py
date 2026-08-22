@@ -552,7 +552,6 @@ def main():
             run_target("chap2_tiling", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True)
             run_target("chap2_tiling", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap2_tiling", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
-            run_target("chap2_tiling", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §1 Ch 3 — cp.async linear pipelining
             run_target("chap3_async", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True)
@@ -569,12 +568,15 @@ def main():
 
             # §1 Ch 6 — Warp specialization with sync MMA
             run_target("chap6_warp_specialization", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
-            run_target("chap6_warp_specialization", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §1 Ch 7 — WGMMA + Warp Specialization (Hopper warpgroup MMA)
             run_target("chap7_wgmma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
-            run_target("chap7_wgmma", "cutlass_gemm.cu", "cutlass_gemm", "CUTLASS", ["-O3", "-std=c++17", "-arch=sm_90a", "-I/workspace/cutlass/include"])
-            run_target("chap7_wgmma", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
+
+            # §2 — Top MMA Benchmarks (All 4 contender classes)
+            run_target("sec2_top", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
+            run_target("sec2_top", "cuda_control.cu", "cuda_control", "CUDA_Apples", nvcc_flags)
+            run_target("sec2_top", "cutlass_peer.cu", "cutlass_peer", "CUTLASS", ["-O3", "-std=c++17", "-arch=sm_90a", "-I/workspace/cutlass/include"])
+            run_target("sec2_top", "cublas_ceiling.cu", "cublas_ceiling", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §3 Situational — CLUSTERS + TMA MULTICAST (DSMEM)
             run_target("chap4_cluster_multicast", "matmul_tile128.crisp",
@@ -613,7 +615,6 @@ def main():
             # §1 Ch 2 — synchronous coop-matrix tiling (matrix-multiply-tile-stride)
             run_l0_crisp("chap2_tiling", "matmul_bmg.crisp")
             run_target("chap2_tiling", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
-            run_target("chap2_tiling", "onemkl_optimal.cpp", "onemkl_optimal", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
 
             # §1 Ch 3 — OpGroupAsyncCopy staging
             run_l0_crisp("chap3_async", "matmul_bmg_async.crisp")
@@ -626,7 +627,12 @@ def main():
             # §1 Ch 5 — Register ring + prefetch (intel_prefetch)
             run_l0_crisp("chap5_multistage_ring", "matmul_bmg.crisp", use_autobench=True)
             run_target("chap5_multistage_ring", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
-            run_target("chap5_multistage_ring", "sycl_tla_gemm.cpp", "sycl_tla_gemm", "SYCL-TLA", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+
+            # §2 — Top MMA Benchmarks (All 4 contender classes)
+            run_l0_crisp("sec2_top", "matmul_bmg.crisp", use_autobench=True)
+            run_target("sec2_top", "sycl_control.cpp", "sycl_control", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            run_target("sec2_top", "sycl_tla_peer.cpp", "sycl_tla_peer", "SYCL-TLA", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            run_target("sec2_top", "onemkl_ceiling.cpp", "onemkl_ceiling", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU
             run_l0_crisp("chap5_fused_epilogue", "matmul_bmg_prefetch_relu.crisp",

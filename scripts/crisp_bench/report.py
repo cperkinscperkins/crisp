@@ -357,7 +357,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
         lines.append("|---:|---:|---:|---:|---:|---:|---:|")
 
         # Top chapters to draw best mainloop from
-        top_keys = ["chap7_wgmma", "chap6_warp_specialization", "chap5_multistage_ring", "chap3_wgmma", "intel_prefetch", "chap2_tiling", "chap0_sync"]
+        top_keys = ["sec2_top", "chap7_wgmma", "chap6_warp_specialization", "chap5_multistage_ring", "chap3_wgmma", "intel_prefetch"]
         
         # Collect all unique sizes across top keys
         all_s = set()
