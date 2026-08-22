@@ -90,6 +90,28 @@ VERIFY_MAX_N   = 2048     # full host-reference verification at or below this si
 BENCH_TIMEOUT  = 900.0    # seconds per benchmark binary, verification included
 _BENCH_RE      = re.compile(r'^\s*BENCH\b')
 
+# §3 of plan/benchmark-harness.md, for the AUTO-BENCH path specifically.
+#
+# scaled_counts() bounds the timed loop for competitor binaries, which take warmup/iters as argv.
+# The generated auto-bench harness does NOT: crisp-hoist-cuda bakes `const int WARMUP = 20,
+# ITERS = 100;` into the .cu and --mma-bench has no flag to override it.  So every auto-bench
+# point ran 120 iterations regardless of size -- for chap0_naive (no tensor cores, ~8 s/iter at
+# 16384) that is ~16 minutes for ONE point, and ~2.2 hours at 32768.  That, not verification, is
+# what made the H100 sweep look hung.
+#
+# The runner already rewrites this .cu to repoint its PTX path, so the counts are rewritten in the
+# same pass.  No compiler change, and the harness's GFLOPS formula divides by ITERS so it stays
+# consistent with whatever we substitute.
+_COUNTS_RE = re.compile(r'const\s+int\s+WARMUP\s*=\s*\d+\s*,\s*ITERS\s*=\s*\d+\s*;')
+
+def _rewrite_bench_counts(txt: str, n: int, base_warmup: int = 20, base_iters: int = 100) -> str:
+    w, it = scaled_counts(base_warmup, base_iters, n)
+    new, k = _COUNTS_RE.subn(f"const int WARMUP = {w}, ITERS = {it};", txt)
+    if k == 0:
+        print(f"  (note: could not rewrite WARMUP/ITERS in the generated harness for N={n}; "
+              f"it will use the baked-in 20/100)", file=sys.stderr)
+    return new
+
 def should_full_verify(n: int) -> bool:
     """Full host-reference verification only for N <= VERIFY_MAX_N (§5)."""
     return n <= VERIFY_MAX_N
@@ -265,6 +287,7 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
         print(f"autobench: no bench .cu {cu}", file=sys.stderr); return None
     txt = cu.read_text()
     txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.ptx"', '"' + str(ptx).replace("\\", "/") + '"', txt)
+    txt = _rewrite_bench_counts(txt, N)
     cu.write_text(txt)
     exe = chap_dir / f"{base}_bench"
     c = sh(["nvcc", "-O3", "-arch=sm_90a", "-Xcompiler", "-fopenmp", *nvcc_math, str(cu), "-o", str(exe), "-lcuda"], capture_output=True, text=True)
@@ -345,6 +368,7 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     
     txt = cpp.read_text()
     txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.spv"', '"' + str(spv).replace("\\", "/") + '"', txt)
+    txt = _rewrite_bench_counts(txt, N)
     cpp.write_text(txt)
     
     exe = chap_dir / f"{base}_bench_l0"
