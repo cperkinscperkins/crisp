@@ -26,21 +26,10 @@ HERE = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "matmul"
 import platform as _platform
 
 # Endeavor 144 Phase 0 — the Crisp hardware profile forwarded to every device compile.
-#
-# Both names are compiler BUILTINS (decision D2), queried from real devices rather than spec
-# sheets, so nothing needs to define them in a .crisp file.  Named constants rather than
-# literals-at-each-call-site on purpose: the Intel path used to hardcode "bmg" at three
-# separate places while each benchmark kernel ALSO carried its own inline definition, and that
-# drift is why Phase 4's large-GRF win initially reached only one of the three BMG chapters.
-#
-# The NVIDIA path previously forwarded NO profile at all — it passed only
-# --ir-target-arch=sm_90 — so five profile consumers sat dormant on that backend.
 NVIDIA_HW_PROFILE = "h100"     # H100 PCIe: 114 SMs (the SXM part is 132)
 INTEL_HW_PROFILE  = "bmg"      # Arc B580 (Xe2)
 
-# Hardware metadata stamped into every BenchmarkSweep's run_metadata.  Set by main() from
-# --platform so the JSON is tagged per platform (report.py groups by hardware.gpu_model).
-# Endeavor 143: the Intel path runs inside the bench Docker container on a BMG.
+# Hardware metadata stamped into every BenchmarkSweep's run_metadata.
 HW = {"gpu_model": "NVIDIA H100", "arch_target": "sm_90", "environment": "runpod"}
 HW_BY_PLATFORM = {
     "nvidia": {"gpu_model": "NVIDIA H100", "arch_target": "sm_90", "environment": "runpod"},
@@ -48,13 +37,6 @@ HW_BY_PLATFORM = {
 }
 
 def _detect_gpu_model(fallback):
-    """Ask the driver what this actually is, instead of trusting a hardcoded string.
-
-    Endeavor 143: 'NVIDIA H100' was stamped on every nvidia run, but H100 SXM and H100 PCIe
-    differ by ~2x — a 2026-07-26 PCIe run reported cuBLAS at 200 TFLOPS where an earlier run
-    (same label) had 364.  Since report.py groups by gpu_model, two variants under one name
-    silently OVERWRITE each other and any cross-run comparison is meaningless.  Record the real
-    device name so the variant is visible and the two never merge."""
     try:
         p = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
                            capture_output=True, text=True, timeout=20)
@@ -66,25 +48,16 @@ def _detect_gpu_model(fallback):
     return fallback
 
 def _apply_hw(meta):
-    """Stamp the active platform's hardware info onto a run_metadata (replaces the old hardcoded
-    'NVIDIA H100' so the same sweep builders serve both platforms)."""
     meta.hardware.gpu_model   = HW["gpu_model"]
     meta.hardware.arch_target = HW["arch_target"]
     meta.hardware.environment = HW["environment"]
     return meta
 
-# Per-size iteration scaling (Endeavor 143).  Matmul work ~ size^3, so a fixed iter count pins the GPU
-# for time ~ size^3.  On the Intel BMG that GPU is ALSO the Windows display, so a big GEMM at full iters
-# FREEZES the desktop; on any GPU, 4096 at 100 iters can wall the harness on time.  So above a reference
-# size we scale warmup+iters down cubically (keeping GPU-time-per-run roughly bounded) to a floor.  The
-# JSON records the ACTUAL counts, so a smaller-sample large-size point is transparent, not hidden.
-SIZE_SCALE_REF = 2048   # sizes <= this keep full counts.  Set by main(): 1024 (intel/display GPU) / 2048 (nvidia).
+SIZE_SCALE_REF = 2048
 WARMUP_MIN = 2
 ITERS_MIN  = 5
 
 def scaled_counts(base_warmup, base_iters, size):
-    """(warmup, iters) for SIZE: full counts up to SIZE_SCALE_REF, cubic falloff beyond, floored at
-    (WARMUP_MIN, ITERS_MIN)."""
     if size <= SIZE_SCALE_REF:
         return base_warmup, base_iters
     frac = (SIZE_SCALE_REF / size) ** 3
@@ -103,45 +76,22 @@ def time_compile(cmd, **kw):
     return (t1 - t0) * 1000.0
 
 def time_device_only_compile(compiler, flags, src_path, out_dir, is_sycl):
-    """Time the DEVICE-ONLY compile of a vendor source — the apples-to-apples counterpart of
-    Crisp's `--ir-target=ptx` / `--ir-target=spv`.
-
-    Endeavor 144: the compile-time table used to compare Crisp's source->IR against the
-    competitors' source->LINKED EXECUTABLE (nvcc/icpx were timed with `-o binary`, including
-    host C++ compilation and linking `-lcublas` / `-qmkl`).  That inflated the competitors by
-    everything Crisp never does, and the resulting "8.5x slower" claims would not survive an
-    adversarial reading.  Now both sides are timed to a device artifact.
-
-    Stops after device codegen:
-      nvcc -ptx                                          -> .ptx
-      icpx -fsycl -fsycl-device-only -fsycl-targets=spir64 -> SPIR-V
-    (Same convention already used by scripts/bench-intel-driver.py:build_sycl.)
-
-    Link flags are stripped: they are meaningless without a link step and `-ptx` rejects them.
-    Returns milliseconds, or None if the device-only compile is unavailable/fails — callers
-    then omit the datum rather than reporting a misleading zero."""
     dev_out = Path(out_dir) / (Path(src_path).stem + (".devbc" if is_sycl else ".devptx"))
     keep = [f for f in flags if not f.startswith("-l") and f != "-qmkl"]
     if is_sycl:
-        # Some icpx versions reject -fsycl-targets without a matching toolchain config
-        # (noted in scripts/bench-intel-driver.py), so fall back to plain device-only rather
-        # than losing the row — it is the only meaningful compile comparison on this platform.
         attempts = [[compiler, *keep, "-fsycl-device-only", "-fsycl-targets=spir64",
                      str(src_path), "-o", str(dev_out)],
                     [compiler, *keep, "-fsycl-device-only", str(src_path), "-o", str(dev_out)]]
     else:
         attempts = [[compiler, *keep, "-ptx", str(src_path), "-o", str(dev_out)]]
 
-    # This is an OPTIONAL measurement: it must never be able to fail the benchmark run.  A
-    # missing compiler raises FileNotFoundError rather than returning non-zero, so catch
-    # broadly and treat any problem as "no datum".
     r, ms = None, 0.0
     for cmd in attempts:
         try:
             t0 = time.time()
             r = sh(cmd, capture_output=True, text=True)
             ms = (time.time() - t0) * 1000.0
-        except Exception as e:                      # noqa: BLE001 - see comment above
+        except Exception as e:
             print(f"  (device-only compile could not run: {e})", file=sys.stderr)
             r = None
             continue
@@ -153,9 +103,7 @@ def time_device_only_compile(compiler, flags, src_path, out_dir, is_sycl):
     if r is None:
         return None
     if r.returncode != 0:
-        print(f"  (device-only compile failed for {Path(src_path).name}; omitting its compile "
-              f"time rather than reporting a misleading 0)", file=sys.stderr)
-        print("    " + (r.stderr or "")[-300:], file=sys.stderr)
+        print(f"  (device-only compile failed for {Path(src_path).name}; omitting its compile time)", file=sys.stderr)
         return None
     return ms
 
@@ -170,35 +118,23 @@ def run_bin(path, M, N, K, warmup, iters, env_extra=None):
         return None
 
 def build_harness():
-    # Build the crisp harness (chap0/chap1 launcher — loads the Crisp PTX and times it).
-    # It is precision-agnostic (the measured kernel is the Crisp PTX, compiled separately with its
-    # own explicit flags), and it's built once, so it has no per-pass precision.  Still, per the
-    # MATH-FLAG POLICY we never emit a bare nvcc: pin it to the strict/reference config (ieee +
-    # preserve) so the harness's A=B=1 -> C=K correctness check is exact.
     sh(["nvcc", "-O3", "-arch=sm_90", *nvcc_math_flags("ieee", False),
         str(HERE/"crisp/bench_harness.cu"), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
 
 def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, precision: str, ftz: bool, compile_dev_ms: float, compile_all_ms: float, env_extra: dict = None) -> BenchmarkSweep:
     meta = _apply_hw(create_metadata())
-
     results = []
     for s in sizes:
         S = int(s)
-        w, it = scaled_counts(warmup, iters, S)   # bound GPU pin time at large sizes
+        w, it = scaled_counts(warmup, iters, S)
         out = run_bin(exe_path, S, S, S, w, it, env_extra)
         if not out: continue
 
-        # Endeavor 150: REFUSE a point whose own harness says the answer is wrong.  Every
-        # contender prints "correct": <bool> from its A=B=1 => C==K gate; recording a failing
-        # point publishes a fast wrong number, and the report schema does not carry the flag so
-        # nobody downstream can tell.  Absent flag => treat as correct (older harnesses).
         if not out.get("correct", True):
             print(f"  DROPPED {competitor_name} @ {S}: harness reported correct=false "
-                  f"(max_abs_err={out.get('max_abs_err')}) — not recording a wrong number.",
-                  file=sys.stderr)
+                  f"(max_abs_err={out.get('max_abs_err')})", file=sys.stderr)
             continue
 
-        # If the harness returns driver_jit_ms, we add it to the measured all_compile_ms
         driver_jit = out.get("driver_jit_ms", 0.0)
         final_all_compile_ms = compile_all_ms + driver_jit
 
@@ -222,38 +158,16 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
         results=results
     )
 
-# ---------------------------------------------------------------------------
-# Auto-bench path for ADVANCED Crisp kernels (TMA :block, pipelined rings, wgmma).
-# bench_harness.cu has a single fixed 45-slot param layout (2 SLM tiles + A/B/C,
-# 32 threads, 4KB shared) — it only fits chap0/chap1.  The advanced kernels have
-# different params (CuTensorMap descriptors, barriers, ring tiles, 128+ threads,
-# >48KB dynamic SMEM), so we instead let `crisp-hoist-cuda --mma-bench` generate a
-# per-kernel harness that reads the real param layout from the kernel's metacrisp
-# (and emits col-major B strides + the cuFuncSetAttribute SMEM opt-in as needed).
-# ---------------------------------------------------------------------------
-
 def _hoist_cuda_bin(crisp_compiler):
-    """Sibling crisp-hoist-cuda binary next to crisp-compile."""
     p = Path(crisp_compiler)
     return str(p.parent / ("crisp-hoist-cuda" + (".exe" if p.suffix == ".exe" else "")))
 
 def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, crisp_compiler: str,
                         prec_flags=(), nvcc_math=()):
-    """Compile + hoist + --mma-bench + nvcc + run one advanced Crisp matmul kernel.
-    The mma-bench harness fills A/B, launches with the kernel's real params, checks
-    C == A.B, and warmup+times.  Returns a dict shaped like run_bin's JSON (gflops,
-    kernel_median_us, correct), or None on failure.  PREC_FLAGS are the Crisp precision
-    flags (--math-precision / --denormal-handling) for the kernel compile; NVCC_MATH are
-    the explicit nvcc FP flags for the bench-harness compile (the C=A.B reference math) —
-    both always passed, never elided (see MATH-FLAG POLICY)."""
     chap_dir = src_path.parent
     base = src_path.stem
     ptx = chap_dir / f"{base}.ptx"
     metacrisp = chap_dir / f"{base}_matmul.metacrisp"
-    # device PTX + the hoist metacrisp (param layout / descriptor metadata).  Size-invariant,
-    # so compile once per kernel and reuse across sizes (the sweep is slow otherwise) — but the
-    # PRECISION flags change the kernel, so run_autobench_sweep clears the metacrisp between
-    # precisions, forcing a fresh compile+hoist for each precision's first size.
     if not (ptx.exists() and metacrisp.exists()):
         sh([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)], check=True)
         sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)], check=True)
@@ -263,14 +177,10 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
     cu = chap_dir / f"{base}_matmul_CUDA.cu"
     if not cu.exists():
         print(f"autobench: no bench .cu {cu}", file=sys.stderr); return None
-    # rewrite the build-machine PTX path to this machine's absolute path
     txt = cu.read_text()
     txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.ptx"', '"' + str(ptx).replace("\\", "/") + '"', txt)
     cu.write_text(txt)
     exe = chap_dir / f"{base}_bench"
-    # -Xcompiler -fopenmp: the generated harness parallelizes its O(N^3) host C=A.B reference
-    # with OpenMP (else 4096 verification is single-threaded minutes).  Forwarded to the host
-    # compiler for both compile and link (libgomp).
     c = sh(["nvcc", "-O3", "-arch=sm_90a", "-Xcompiler", "-fopenmp", *nvcc_math, str(cu), "-o", str(exe), "-lcuda"], capture_output=True, text=True)
     if c.returncode != 0:
         print("autobench nvcc failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
@@ -284,15 +194,10 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
 
 def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, iters,
                         precision, ftz, dev_c_ms, crisp_compiler):
-    """run_sweep twin that drives run_crisp_autobench per size (advanced Crisp kernels)."""
     meta = _apply_hw(create_metadata())
-    # Crisp precision flags for this pass — a DIFFERENT flag set than nvcc's (Crisp defaults to
-    # ieee, so we must pass these or Crisp competes at IEEE against fast-math cuBLAS).
     prec_flags = [f"--math-precision={precision}",
                   f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
-    # Explicit nvcc FP flags for the bench-harness compile (the C=A.B reference) — same policy.
     nvcc_math = nvcc_math_flags(precision, ftz)
-    # Invalidate the per-kernel compile cache for THIS precision (the kernel differs by precision).
     src = Path(src_path)
     stale = src.parent / f"{src.stem}_matmul.metacrisp"
     if stale.exists():
@@ -317,18 +222,7 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
 
-# ---------------------------------------------------------------------------
-# Endeavor 143 — Intel/L0 Crisp path (fixed-harness twin of the NVIDIA chap0/chap1 CRISP_MATMUL_PTX path).
-# benchmarks/matmul/crisp/bench_harness_l0.cpp launches the (M/32, N/32) sub-group tile-grid the
-# matmul_bmg kernels expect, times with GPU timestamps, and emits {gflops, kernel_median_us}.  The .spv
-# is selected at runtime via CRISP_MATMUL_SPV, so the harness builds ONCE (precision-agnostic) and the
-# kernel recompiles per precision.  Compiled with icpx in the Docker container / clang++ for a native
-# Windows-BMG smoke test.  (Advanced kernels with a different param layout — e.g. the register-ring
-# prefetch chapter — will need their own harness / a --grid-tile hoist path, added in Step 4.)
-# ---------------------------------------------------------------------------
-
 def _hoist_l0_bin(crisp_compiler):
-    """Sibling crisp-hoist-l0 binary next to crisp-compile."""
     p = Path(crisp_compiler)
     return str(p.parent / ("crisp-hoist-l0" + (".exe" if p.suffix == ".exe" else "")))
 
@@ -338,11 +232,6 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     base = src_path.stem
     spv = chap_dir / f"{base}.spv"
     metacrisp = chap_dir / f"{base}_matmul.metacrisp"
-    # Endeavor 143: actually MEASURE the Crisp compile instead of reporting 0.  Only the
-    # --ir-target=spv pass is device-code compilation (the analogue of what icpx/nvcc are timed
-    # for); the --hoist=l0 pass emits the host harness, so it is timed separately and not folded
-    # into device_compile_ms.  0.0 when the artifacts were already on disk and we skipped the work
-    # — the caller carries the first measured value across the sweep rather than reporting a zero.
     compile_ms = 0.0
     hoist_ms = 0.0
     if not (spv.exists() and metacrisp.exists()):
@@ -374,8 +263,6 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     gflops = float(m.group(4))
     secs = float(m.group(6))
     iters_ran = int(m.group(5))
-    # Endeavor 143: the harness now emits a true per-launch median (kernel-timestamp events).
-    # Prefer it; fall back to secs/iters only for a harness generated before that fix.
     mm = re.search(r'median_us=([\d.eE+-]+)', out)
     k_us = float(mm.group(1)) if mm else (secs / iters_ran) * 1e6
     method = re.search(r'method=(\w+)', out)
@@ -394,10 +281,6 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
     if stale.exists():
         stale.unlink()
     results = []
-    # Endeavor 143: the .spv is compiled once per sweep (the first size), so only that call
-    # returns a nonzero compile time.  Carry it across every point of the sweep — it is the cost
-    # of compiling THIS kernel, which does not vary with M/N/K — instead of reporting 0 ms and
-    # making Crisp look infinitely faster than icpx in the compile-time table.
     measured_c_ms = 0.0
     measured_hoist_ms = 0.0
     for s in sizes:
@@ -409,9 +292,6 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
         if out.get("compile_ms", 0.0) > 0.0:
             measured_c_ms = out["compile_ms"]
             measured_hoist_ms = out.get("hoist_ms", 0.0)
-        if out.get("timing_method") == "batched_submit_legacy":
-            print(f"  ! {chapter} ({comp_name}) {S}^3: harness predates the Endeavor-143 timing fix — "
-                  f"GFLOPS is inflated by the iteration count.  Rebuild crisp-hoist-l0.", file=sys.stderr)
         if not out.get("correct", False):
             print(f"  ! {chapter} ({comp_name}) {S}^3: NOT MMA_CORRECT — skipping point", file=sys.stderr)
             continue
@@ -423,8 +303,6 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
-    # Backfill: points measured before the compile landed (none today, since the first size
-    # triggers the compile, but robust if artifact caching changes).
     if measured_c_ms > 0.0:
         for p in results:
             if p.metrics.compile_time.device_compile_ms == 0.0:
@@ -434,9 +312,6 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
 
 def _resolve_cxx_and_l0_link():
-    """(cxx, link_pre, link_post) for the L0 harness compile.  Container(Linux): icpx + -lze_loader
-    (system Level Zero headers).  Windows(native smoke test): clang++ (llvm-mingw) + the L0 include dir
-    + ze_loader.dll (-static).  All overridable via CRISP_CLANGXX / CRISP_L0_INCLUDE / CRISP_ZE_LOADER."""
     if _platform.system() == "Windows":
         clang  = os.environ.get("CRISP_CLANGXX",
                  "C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe")
@@ -447,8 +322,6 @@ def _resolve_cxx_and_l0_link():
     return cxx, [], ["-lze_loader"]
 
 def run_l0_bin(path, M, N, K, warmup, iters, env_extra=None):
-    """Run the fixed L0 harness — its args are [M, N, K, warmup, iters].
-    JSON on stdout ({gflops, kernel_median_us, ...}); the device name goes to stderr."""
     env = dict(os.environ)
     if env_extra: env.update(env_extra)
     p = sh([path, str(M), str(N), str(K), str(warmup), str(iters)], capture_output=True, text=True, env=env)
@@ -459,9 +332,6 @@ def run_l0_bin(path, M, N, K, warmup, iters, env_extra=None):
         return None
 
 def build_l0_harness(crisp_compiler):
-    """Compile benchmarks/matmul/crisp/bench_harness_l0.cpp once -> the timed L0 launcher binary.
-    Precision-agnostic (it measures whatever .spv CRISP_MATMUL_SPV points at).  Returns the binary
-    path, or None if the harness source / a C++ compiler is unavailable."""
     harness = HERE / "crisp" / "bench_harness_l0.cpp"
     if not harness.exists():
         print(f"Skipping Intel Crisp — {harness} not found."); return None
@@ -474,8 +344,6 @@ def build_l0_harness(crisp_compiler):
 
 def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmup, iters,
                        precision, ftz, crisp_compiler):
-    """Compile the Crisp kernel -> SPV (bmg, explicit precision flags), then run the fixed L0 harness
-    per size (CRISP_MATMUL_SPV env) and collect {gflops, kernel_median_us} into a BenchmarkSweep."""
     meta = _apply_hw(create_metadata())
     src = Path(kernel_src)
     spv = src.parent / f"{src.stem}.spv"
@@ -495,7 +363,7 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
     results = []
     for s in sizes:
         S = int(s)
-        w, it = scaled_counts(warmup, iters, S)   # bound GPU pin time (BMG is the display GPU)
+        w, it = scaled_counts(warmup, iters, S)
         out = run_l0_bin(harness_bin, S, S, S, w, it, env_extra=env_ext)
         if not out:
             continue
@@ -509,28 +377,7 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
 
-# ===========================================================================
-# MATH-FLAG POLICY — ALWAYS explicit, NEVER rely on a compiler's defaults.
-# ---------------------------------------------------------------------------
-# nvcc, icpx, and crisp-compile each have their OWN default precision and
-# denormal behavior, they are NOT the same across compilers, and the documented/
-# reported defaults conflict (asking different sources gives different answers).
-# So every compile in this driver passes a COMPLETE, explicit set of flags for
-# BOTH precision AND denormal handling — a bare `nvcc -O3 ...` (relying on the
-# default) is never emitted.  If you add a compiler, give it an explicit builder
-# here too.  (crisp-compile's explicit flags are --math-precision / --denormal-
-# handling, applied on both Crisp paths in run_target / run_autobench_sweep.)
-# ===========================================================================
-
 def nvcc_math_flags(prec, ftz):
-    """Explicit nvcc floating-point flags — never rely on nvcc's defaults.  Four independent knobs:
-         -ftz=<b>       : flush denormals to zero (true) vs keep them (false)
-         -prec-div=<b>  : IEEE-correct division (true) vs fast approximation (false)
-         -prec-sqrt=<b> : IEEE-correct sqrt (true) vs fast approximation (false)
-         -fmad=<b>      : fuse mul+add into an FMA (single-rounding, IEEE-754 conformant)
-       'fast' is the explicit expansion of -use_fast_math (approx div/sqrt + flush).  -fmad is kept
-       ON for every mode: an FMA is a single correctly-rounded op (more accurate than mul-then-add),
-       and it's what the tensor-core path uses — the precision axis here is div/sqrt + denormals."""
     b = lambda x: "true" if x else "false"
     return [f"-ftz={b(ftz)}",
             f"-prec-div={b(prec != 'fast')}",
@@ -538,15 +385,6 @@ def nvcc_math_flags(prec, ftz):
             "-fmad=true"]
 
 def icpx_math_flags(prec, ftz):
-    """Explicit icpx (Intel DPC++/SYCL) floating-point flags — never rely on icpx's defaults.
-         -fp-model=<fast|precise> : overall FP model (fast permits reassociation + approximations)
-         -ffp-contract=<fast|on>  : FMA contraction (kept on; single-rounding, IEEE-safe)
-         -ftz / -no-ftz           : flush denormals to zero (true) vs preserve (false)
-       CONFIDENCE NOTE: -fp-model and -ffp-contract are solid.  -ftz/-no-ftz are the documented
-       Intel-compiler denormal knobs and icpx accepts them, but whether they reach the SYCL *device*
-       (SPIR-V DenormFlushToZero/Preserve) rather than just host code is NOT something I want to
-       assert — VERIFY on Intel HW before trusting the ftz-vs-preserve split for SYCL.  (Moot on the
-       NVIDIA pods, where SYCL/icpx is absent and these targets are skipped.)"""
     return [f"-fp-model={'fast' if prec == 'fast' else 'precise'}",
             "-ffp-contract=fast",
             ("-ftz" if ftz else "-no-ftz")]
@@ -560,48 +398,36 @@ def main():
     ap.add_argument("--precision", choices=["ieee", "fast"], default="fast")
     ap.add_argument("--ftz", action="store_true", help="Enable Flush-To-Zero")
     ap.add_argument("--sweep-all", action="store_true", help="Run full precision matrix (Fast, IEEE+FTZ, IEEE)")
+    ap.add_argument("--scratch", action="store_true", help="Force saving to results/scratch/")
     ap.add_argument("--chapters", default="",
-                    help="Comma-separated chapter dirs to run (default: all).  A pod session "
-                         "that only wants the fused-epilogue chapters should not pay for the "
-                         "whole ladder at 8192.")
+                    help="Comma-separated chapter dirs to run (default: all).")
     ap.add_argument("--platform", choices=["nvidia", "intel"], default="nvidia",
-                    help="nvidia (default): nvcc/cuBLAS + Crisp PTX, runs natively on a RunPod. "
-                         "intel: icpx SYCL/oneMKL + Crisp SPIR-V/L0, runs inside the bench Docker container (BMG).")
+                    help="nvidia (default) or intel.")
     a = ap.parse_args()
 
     global HW, SIZE_SCALE_REF
-    HW = dict(HW_BY_PLATFORM[a.platform])   # copy: we mutate gpu_model below
+    HW = dict(HW_BY_PLATFORM[a.platform])
     if a.platform == "nvidia":
-        # Record the real device (H100 PCIe vs H100 SXM differ ~2x) — see _detect_gpu_model.
         HW["gpu_model"] = _detect_gpu_model(HW["gpu_model"])
         print(f"Hardware detected: {HW['gpu_model']}")
-    # Intel BMG is the display GPU here, so 2048 at full iters already freezes the desktop — scale from
-    # 1024.  NVIDIA runs on a dedicated pod (no display to starve), so only 4096 needs bounding.
     SIZE_SCALE_REF = 1024 if a.platform == "intel" else 2048
 
     sizes = a.sizes.split(",")
-    out_dir = Path(a.output_dir)
+    base_out_dir = Path(a.output_dir)
+    out_dir = base_out_dir / "scratch" if a.scratch else base_out_dir
 
     matrix = [(a.precision, a.ftz)]
     if a.sweep_all:
-        # Fast math implies flush-to-zero (nvcc --use_fast_math flushes denormals), so the
-        # coherent "peak" point is fast+ftz, not fast+preserve.  The three meaningful math
-        # configs: peak (fast+ftz), sweet-spot (ieee+ftz), strict (ieee+preserve).
         matrix = [
             ("fast", True),
             ("ieee", True),
             ("ieee", False)
         ]
 
-    # Absolute path to crisp-compile binary (assumes ran from repo root).  .exe on Windows (native Intel
-    # smoke test), unadorned in the Linux container / on the pod.
     repo_root = HERE.parent.parent
     exe_name = "crisp-compile.exe" if sys.platform.startswith("win") else "crisp-compile"
     crisp_compiler = str(repo_root / "bin" / exe_name)
 
-    # Pre-build the Crisp launcher harness ONCE (precision-agnostic — it measures the separately-compiled
-    # device code).  NVIDIA: the nvcc PTX harness.  Intel: the L0 fixed harness (nvcc is absent in the
-    # bench container).
     l0_harness = None
     if a.platform == "nvidia":
         build_harness()
@@ -611,22 +437,15 @@ def main():
     for prec, ftz in matrix:
         print(f"\n--- Running Suite with precision={prec}, ftz={ftz} ---")
         
-        # Flags — ALWAYS explicit for precision AND denormals (see MATH-FLAG POLICY above);
-        # never a bare `nvcc -O3` / `icpx -O3` that would inherit an unknown default.
         nv_math = nvcc_math_flags(prec, ftz)
         nvcc_flags   = ["-O3", "-arch=sm_90", *nv_math]
         cublas_flags = ["-O3", "-arch=sm_90", "-lcublas", *nv_math]
         if prec == "fast":
-            # -DFAST_MATH selects the tf32 tensor-core math mode inside cublas_optimal.cu
-            # (cublasSetMathMode).  cuBLAS's own GEMM ignores the nvcc FP flags above, so this
-            # tf32-vs-fp32 choice — not -ftz — is what actually moves cuBLAS between precisions.
             cublas_flags.append("-DFAST_MATH")
         sycl_flags   = ["-fsycl", "-O3", *icpx_math_flags(prec, ftz)]
         if prec == "fast":
             sycl_flags.append("-DFAST_MATH")
 
-        # Endeavor 150: --chapters= filter.  Applied at the two dispatch points rather than
-        # around each call site, so it cannot drift out of sync with the ladder below.
         _want = set(x.strip() for x in a.chapters.split(",") if x.strip())
         def _skip(chapter):
             return bool(_want) and chapter not in _want
@@ -636,14 +455,8 @@ def main():
                 return
             src_path = HERE / chapter / source_name
             if not src_path.exists():
-                # WARN, do not vanish.  A declared target whose source is missing used to
-                # return silently -- and that is how chap3/chap4 ran with NO cuBLAS ceiling:
-                # the most important comparison in the tensor-core chapters simply was not
-                # there, and the only symptom was report.py raising UnboundLocalError on an
-                # empty ceiling list.  A missing baseline must be loud.
                 print("  WARNING: " + str(chapter) + "/" + str(source_name) + " not found -- "
-                      "SKIPPING target '" + str(comp_name) + "'.  If this is a vendor "
-                      "ceiling, the chapter's 'vs Optimal' column will be empty.")
+                      "SKIPPING target '" + str(comp_name) + "'.")
                 return
 
             dev_c_ms = 0.0
@@ -654,16 +467,11 @@ def main():
                 if not Path(crisp_compiler).exists():
                     print(f"Skipping {comp_name} because {crisp_compiler} not found.")
                     return
-                # Crisp compile (device compile) — also measures device compile time
-                # Crisp precision flags (Crisp's own axis — distinct from nvcc's — defaulting to
-                # ieee, so we must pass them or Crisp competes at IEEE vs fast-math cuBLAS).
                 crisp_prec = [f"--math-precision={prec}",
                               f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
                 dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *crisp_prec, "--log-level=off", str(src_path)])
-                all_c_ms = dev_c_ms # Harness adds driver_jit later
+                all_c_ms = dev_c_ms
                 if crisp_grid_tile:
-                    # Advanced kernel (TMA / rings / wgmma): the fixed-layout bench_harness.cu
-                    # can't launch it — use the per-kernel --mma-bench auto-harness instead.
                     sweep = run_autobench_sweep(chapter, src_path, crisp_grid_tile, comp_name, sizes,
                                                 a.warmup, a.iters, prec, ftz, dev_c_ms, crisp_compiler)
                     sweep.save(out_dir)
@@ -672,19 +480,13 @@ def main():
                 exe_path = str(HERE / "crisp" / "matmul_crisp")
                 env_ext = {"CRISP_MATMUL_PTX": str(bin_path)}
             else:
-                # NVCC / ICPX compile
                 compiler = "icpx" if is_sycl else "nvcc"
                 if is_sycl and not shutil.which("icpx"): return
                 
                 cmd = [compiler] + flags + [str(src_path), "-o", str(bin_path)]
-                if is_sycl and is_cublas: cmd.insert(1, "-qmkl") # OneMKL Optimal
+                if is_sycl and is_cublas: cmd.insert(1, "-qmkl")
 
-                all_c_ms = time_compile(cmd)          # source -> linked executable
-                # Endeavor 144: device-only timing is what the report compares against Crisp.
-                # NOTE for the LIBRARY competitors (cuBLAS / oneMKL): their GEMM kernels ship
-                # precompiled inside the vendor library, so a device-only compile of the caller
-                # measures almost nothing.  We still record it, and report.py excludes those
-                # rows from the compile table — see the note there.
+                all_c_ms = time_compile(cmd)
                 dev_only = time_device_only_compile(compiler, flags, src_path, bin_path.parent, is_sycl)
                 dev_c_ms = dev_only if dev_only is not None else 0.0
                 exe_path = str(bin_path)
@@ -694,7 +496,6 @@ def main():
             sweep.save(out_dir)
             print(f"Saved {chapter} ({comp_name}) sweep to {out_dir}")
 
-        # Endeavor 143: the Intel Crisp path is SPIR-V/L0 (not PTX/CUDA) — the fixed L0 harness.
         def run_l0_crisp(chapter, source_name, comp_name="Crisp", use_autobench=False):
             if _skip(chapter):
                 return
@@ -705,7 +506,7 @@ def main():
                 print(f"Skipping {comp_name} ({chapter}) — {crisp_compiler} not found."); return
             
             if use_autobench:
-                dev_c_ms = 0.0 # Will be measured during sweep if needed
+                dev_c_ms = 0.0
                 sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
                                                prec, ftz, dev_c_ms, crisp_compiler)
             else:
@@ -718,39 +519,41 @@ def main():
             print(f"Saved {chapter} ({comp_name}) L0 sweep to {out_dir}")
 
         if a.platform == "nvidia":
-            # Chap 0
+            # §1 Ch 0 — Naive loops, no tensor cores (fp32)
+            run_target("chap0_naive", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True)
+            run_target("chap0_naive", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+            run_target("chap0_naive", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+
+            # §1 Ch 1 — Hand-rolled mma-accumulate-via-tile (tf32)
+            run_target("chap1_handrolled_mma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True)
+            run_target("chap1_handrolled_mma", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
+            run_target("chap1_handrolled_mma", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+
+            # §1 Ch 2 (formerly chap0_sync) — matrix-multiply-tile-stride macro
             run_target("chap0_sync", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True)
             run_target("chap0_sync", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap0_sync", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
             run_target("chap0_sync", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
             run_target("chap0_sync", "onemkl_optimal.cpp", "onemkl_optimal", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
 
-            # Chap 1
+            # §1 Ch 3 (formerly chap1_async_linear) — cp.async linear pipelining
             run_target("chap1_async_linear", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True)
             run_target("chap1_async_linear", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap1_async_linear", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
-            # Chap 1.5 — TMA :block; needs the auto-bench (CuTensorMap params, 64x64 out tile)
+            # §1 Ch 4 (formerly chap1.5_async_block) — TMA :block
             run_target("chap1.5_async_block", "matmul_async_block.crisp", "matmul_async_block.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
             run_target("chap1.5_async_block", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
 
-            # Chap 2 — pipelined rings; auto-bench (ring tiles, 64x64 out tile)
+            # §1 Ch 5 (formerly chap2_pipelined_block) — pipelined rings
             run_target("chap2_pipelined_block", "matmul_pipe.crisp", "matmul_pipe.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
             run_target("chap2_pipelined_block", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
 
-            # Chap 3 — wgmma tensor cores (Hopper warpgroup async MMA). Auto-bench: 64x256 out tile,
-            # tf32.  cuBLAS tf32 is the vendor ceiling.  This is the tensor-core headline.
+            # §1 Ch 6/7 (formerly chap3_wgmma) — wgmma Hopper warpgroup MMA
             run_target("chap3_wgmma", "matmul_wgmma.crisp", "matmul_wgmma.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
             run_target("chap3_wgmma", "cublas_optimal.cu", "cublas_optimal", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
-            # Chap 4 (endeavor 152) — CLUSTERS + TMA MULTICAST (DSMEM).  Identical to chap3 apart
-            # from cluster-size (2 2), :multicast true on both loads, and a cluster-scoped `empty`.
-            # Same 64x256 out tile and same cuBLAS ceiling ON PURPOSE: chapter 3 is the control, so
-            # any difference is attributable to multicast rather than to a rewrite.
-            # A CONTROLLED PAIR, not a rung: two kernels identical except for `:multicast true`.
-            # Same 64x128 tile in both, so the difference is attributable to multicast alone.
-            # 64x128 rather than chapter 3's 64x256 on purpose -- that is the shape a problem with
-            # N < 256 forces you into, and the shape where multicast actually pays.
+            # §3 Situational — CLUSTERS + TMA MULTICAST (DSMEM)
             run_target("chap4_cluster_multicast", "matmul_tile128.crisp",
                        "matmul_tile128.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,128")
             run_target("chap4_cluster_multicast", "matmul_tile128_multicast.crisp",
@@ -759,27 +562,7 @@ def main():
             run_target("chap4_cluster_multicast", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
-            # chap5_fused_epilogue (endeavor 150) — the fused epilogue on the COMPETITIVE kernel:
-            # wgmma + TMA + warp specialization (m64n256), plus one (map-elements! D #'relu).
-            #
-            # TWO baselines on purpose, because they answer different questions:
-            #   CUBLASLt_Fused  cuBLASLt CUBLASLT_EPILOGUE_RELU — the vendor fusing relu ITSELF.
-            #                   The strong baseline; beating "cuBLAS + a separate kernel" at plain
-            #                   relu would be a strawman, since NVIDIA can fuse relu.
-            #   CUBLAS_Plus_Relu  cuBLAS + separate kernel — what any OFF-MENU activation costs,
-            #                   which is the case this endeavour is actually about.
-            #   CUDA_Apples_Fused  a human hand-fusing the same activation in the same algorithm;
-            #                   the control on whether Crisp's abstraction costs anything.
-            #
-            # NOTE ON SIZES: the existing chap3 cuBLAS numbers stop at N=2048, where an H100 is
-            # not saturated (34.1 TF).  Sweep to 4096+ or this comparison flatters us.
-            # chap5_fused_epilogue — +ReLU on the competitive kernel (wgmma + TMA + warp-spec,
-            # m64n256) plus one (map-elements! D #'relu).
-            #
-            # cuBLASLt CAN fuse relu (CUBLASLT_EPILOGUE_RELU), so IT is the honest ceiling here —
-            # not cuBLAS+separate-kernel, which would be a strawman.  Expect to LOSE this one:
-            # Crisp is ~63% of cuBLAS on NVIDIA (unlike Intel, where it leads oneMKL).  That is
-            # the point of running it; chapter 6 is where the argument actually lives.
+            # §4 Activation Ch 1 — Fused ReLU
             run_target("chap5_fused_epilogue", "matmul_wgmma_ws_relu.crisp", "matmul_wgmma_ws_relu.ptx",
                        "Crisp_Fused_Relu", [], is_crisp=True, crisp_grid_tile="64,256")
             run_target("chap5_fused_epilogue", "cublaslt_relu.cu", "cublaslt_relu",
@@ -787,107 +570,54 @@ def main():
             run_target("chap5_fused_epilogue", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Plus_Relu", cublas_flags, is_cublas=True)
 
-            # chap6_fused_custom — the SAME kernel with an activation no vendor ships.
-            # cuBLASLt's epilogues are a FIXED ENUM and a quadratic tail is not in it, so the
-            # library that fused relu one chapter ago must now pay a second kernel and an HBM
-            # round trip of C.  Intel measured the analogous drop: oneDNN 14.04 -> 13.54 while
-            # Crisp moved 24.11 -> 24.03.
+            # §4 Activation Ch 2 — Fused Custom
             run_target("chap6_fused_custom", "matmul_wgmma_ws_custom.crisp", "matmul_wgmma_ws_custom.ptx",
                        "Crisp_Fused_Custom", [], is_crisp=True, crisp_grid_tile="64,256")
             run_target("chap6_fused_custom", "cublaslt_optimal.cu", "cublaslt_optimal",
                        "CUBLASLt_Plus_Custom", cublas_flags + ["-lcublasLt"], is_cublas=True)
             run_target("chap6_fused_custom", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Plus_Custom", cublas_flags, is_cublas=True)
-
-            # NOTE: no CUDA_Apples in either chapter, deliberately.  The only hand-written CUDA
-            # reference available is the chap1-era cuda::pipeline tiled kernel, and pitting that
-            # against a wgmma+TMA+warp-spec Crisp kernel is not apples-to-apples — it is the exact
-            # mistake the Intel side made (its apples column read 1.4 TF against Crisp's 24 before
-            # being rebased onto joint_matrix_apply).  chap3_wgmma ships without one for the same
-            # reason.  A hand-written wgmma CUDA mirror is its own piece of work.
         else:
             # --- Intel/BMG ladder (endeavor 143) ---
-            # chap0_sync — synchronous coop-matrix tiling.  Crisp (SPV/L0) vs SYCL_Apples vs OneMKL ceiling.
+            # §1 Ch 0 — Naive loops, no XMX tensor cores
+            run_l0_crisp("chap0_naive", "matmul_bmg.crisp", use_autobench=True)
+            run_target("chap0_naive", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+
+            # §1 Ch 1 — Hand-rolled XMX coop-matrix
+            run_l0_crisp("chap1_handrolled_mma", "matmul_bmg.crisp", use_autobench=True)
+            run_target("chap1_handrolled_mma", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
+
+            # §1 Ch 2 (formerly chap0_sync) — synchronous coop-matrix tiling
             run_l0_crisp("chap0_sync", "matmul_bmg.crisp")
             run_target("chap0_sync", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
             run_target("chap0_sync", "onemkl_optimal.cpp", "onemkl_optimal", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
 
-            # chap1_async_linear — OpGroupAsyncCopy staging.
+            # §1 Ch 3 (formerly chap1_async_linear) — OpGroupAsyncCopy staging
             run_l0_crisp("chap1_async_linear", "matmul_bmg_async.crisp")
             run_target("chap1_async_linear", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
-            # chap5_fused_epilogue (endeavor 150) — the SAME chap1 kernel plus ONE line,
-            # (map-elements! C-tile #'relu), so any delta is attributable to the fusion.
-            #
-            # HOW TO READ THIS CHAPTER.  Two costs are being compared, and neither is a raw
-            # GFLOPS ranking:
-            #   cost of the activation WHEN FUSED     = chap5 Crisp_Fused  vs  chap1 Crisp
-            #                                           (same kernel +/- the epilogue line)
-            #   cost of the activation WHEN NOT FUSED = onemkl_optimal's kernel_median_us
-            #                                           vs its gemm_median_us (same run, so
-            #                                           the HBM round trip is priced directly)
-            # SYCL_Apples_Fused is the control on the abstraction: a human fusing the same
-            # activation into the same algorithm by hand.  If Crisp tracks it, fusion is free.
-            #
-            # NOT WIRED YET: matmul_unfused_bmg.crisp, which pairs the matmul with a separate
-            # relu_pass kernel.  It compiles, but bench_harness_l0.cpp launches exactly ONE
-            # kernel, so timing the pair needs its own harness.  Until then the two costs above
-            # carry the argument; adding it would make the Crisp-side round trip direct rather
-            # than inferred.
-            # THE HEADLINE PAIR.  Fused onto the register-ring + Subgroup2DBlockPrefetch kernel,
-            # which is the Crisp kernel that is actually competitive on Intel — 24.09 TF against
-            # oneMKL's 13.81 at N=2048, i.e. already AHEAD.  Compare it with the UNFUSED
-            # intel_prefetch run above (same kernel minus one line) and with OneMKL_Plus_Relu,
-            # which cannot fuse and must pay a second kernel plus an HBM round trip of C.
-            #
-            # The first cut of this chapter fused onto chap1 instead and was uninformative:
-            # chap1 Crisp is ~15x off oneMKL, so a few-percent fusion win vanished into the gap.
-            # TWO ACTIVATION CATEGORIES, which is the point of the chapter:
-            #
-            #   +ReLU    everyone can express it.  On NVIDIA cuBLASLt can even FUSE it, so that
-            #            is the hard comparison.  On Intel oneMKL BLAS has NO epilogue parameter,
-            #            so it pays a separate kernel + an HBM round trip of C regardless.
-            #   +CUSTOM  an arbitrary activation.  NO vendor library has it on a menu, so oneMKL
-            #            pays exactly the same separate kernel as for relu — which is why its
-            #            column is repeated rather than absent.  (oneDNN, not oneMKL, is the
-            #            Intel library with post-op fusion; adding it would be the true analog
-            #            of cuBLASLt and is the obvious next contender.)
-            #
-            # All contenders below are the SAME algorithm — register-ring + Subgroup2DBlockPrefetch
-            # — so the columns differ only in who can fuse and who cannot.  SYCL_Apples uses
-            # joint_matrix_apply, SYCL's own analog of (map-elements! C-tile #'f), so the apples
-            # column measures Crisp's abstraction cost and nothing else.
+            # §4 Activation Ch 1 — Fused ReLU
             run_l0_crisp("chap5_fused_epilogue", "matmul_bmg_prefetch_relu.crisp",
                          comp_name="Crisp_Fused_Relu", use_autobench=True)
             run_target("chap5_fused_epilogue", "sycl_apples.cpp", "sycl_apples",
                        "SYCL_Apples_Relu", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("chap5_fused_epilogue", "onemkl_optimal.cpp", "onemkl_optimal",
                        "OneMKL_Plus_Relu", sycl_flags, is_sycl=True, is_cublas=True)
-            # oneDNN CAN fuse relu (post-op), so this — not oneMKL — is the honest ceiling here.
             run_target("chap5_fused_epilogue", "onednn_fused.cpp", "onednn_fused",
                        "OneDNN_Fused_Relu", sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
 
-            # chap6_fused_custom — the SAME kernel with an activation NO library ships.  Split
-            # from chapter 5 so each table carries one activation and stays readable.
+            # §4 Activation Ch 2 — Fused Custom
             run_l0_crisp("chap6_fused_custom", "matmul_bmg_prefetch_custom.crisp",
                          comp_name="Crisp_Fused_Custom", use_autobench=True)
             run_target("chap6_fused_custom", "sycl_apples.cpp", "sycl_apples",
                        "SYCL_Apples_Custom", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("chap6_fused_custom", "onemkl_optimal.cpp", "onemkl_optimal",
                        "OneMKL_Plus_Custom", sycl_flags, is_sycl=True, is_cublas=True)
-            # ...and here oneDNN CANNOT: a quadratic tail is not one of its eltwise primitives,
-            # so even the fusing library falls back to a second kernel.  That contrast is the
-            # entire point of splitting chapter 6 out.
             run_target("chap6_fused_custom", "onednn_optimal.cpp", "onednn_optimal",
                        "OneDNN_Plus_Custom", sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
 
-            # chap_intel_prefetch — the endeavor-142 register-ring + Subgroup2DBlockPrefetch pipeline.
-            # STEP 4 (this is where Q1 gets answered): the register-ring kernel has a DIFFERENT param
-            # layout than the fixed bench_harness_l0.cpp (no scratch tiles), so it needs its own harness
-            # (or a --grid-tile hoist path).  Parked until the chap0/chap1 plumbing is proven.
+            # §1 Ch 5 (intel_prefetch) — register ring + prefetch
             run_l0_crisp("intel_prefetch", "matmul_bmg_prefetch.crisp", use_autobench=True)
-            # Endeavor 144 Phase 4: Pass large register file mode (-ze-opt-large-register-file)
-            # to IGC so SYCL_Apples gets 256 GRF registers per thread, matching Crisp's hardware profile.
             run_target("intel_prefetch", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
 
 if __name__ == "__main__":
