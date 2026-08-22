@@ -769,3 +769,160 @@ AND THE COOPERATIVE KERNEL EARNS ITS KEEP AFTER ALL.  At 8192 it is the best Cri
 70.5% of cuBLAS against the n256 kernel's 65.8%.  Phase 4 measured it as a large-size lever and
 that is exactly what it turned out to be; it simply needed a size past the ladder's old edge to
 show it.  It should stay in the ladder as the 8192 entry.
+
+PHASE 8 — THE EPILOGUE, WHICH I HAD RULED OUT ON A BAD ARGUMENT
+================================================================
+CORRECTION FIRST.  Phase 4 argued the store could not be costing much because "chap5's
+fused-relu number sits within 1.5% of chap3's, which bounds what the store can be costing."
+**That is invalid.**  Fusing ReLU changes the ARITHMETIC applied before the store; it does not
+change the store pattern by a single instruction.  chap5 ~= chap3 shows the ACTIVATION is free.
+It says nothing whatever about the store.  The epilogue was never ruled out.
+
+MEASURED WITHOUT A PROFILER, by scaling K at fixed M=N.  The mainloop is O(K); the epilogue,
+prologue and launch are O(1) in K.  M=N=2048 throughout, so the grid is an identical 256 blocks
+in every run and only the mainloop length varies.  3 reps each, all MMA_CORRECT, spread <0.3%:
+
+| K | ms/iter |
+|---:|---:|
+| 1024 | 0.04409 |
+| 2048 | 0.06903 |
+| 4096 | 0.11488 |
+| 8192 | 0.21103 |
+
+Least-squares on `t = a*K + b`: **a = 2.33e-5 ms per unit K** (consistent to +-3% across all
+three intervals) and **b = 20.2 us**, which predicts every one of the four points to within 1.6%.
+
+**So 20.2 us per launch is K-INDEPENDENT — 29% of runtime at K=2048, 17.6% at K=4096.**
+
+WHAT IS IN b, AND HOW MUCH OF IT IS THE STORE.  b covers launch overhead + prologue + epilogue.
+Launch is ~3-5 us for a 256-block `cuLaunchKernel`; the prologue is two TMA issues and barrier
+init.  The epilogue writes C = 2048^2 floats = 16.8 MB, which at this part's HBM3 bandwidth
+(~3.9 TB/s) costs **4.3 us even if perfectly coalesced**.  That leaves roughly 15 us for a store
+whose floor is 4.3 — about **3.5x off bandwidth**.
+
+Which is exactly what the emitted code predicts.  `%wgmma-store-rewrite-origin` emits, per
+thread, FOUR SCALAR STORES per n8 group -- 8-byte pieces scattered across two rows 8 apart --
+128 of them per thread at N=256.  There is no SMEM staging and no TMA store.  CUTLASS stages the
+accumulator through shared memory precisely so the global writes can be coalesced 128-byte
+transactions.
+
+EXPECTED VALUE, stated as an estimate and not a result:
+  - 2048: bringing the store to near-bandwidth saves ~11 us of 69 -> ~+19% -> ~296 TFLOPS,
+    which would be ~93% of cuBLAS.
+  - 4096: the output is 4x larger so the epilogue is ~60 us of 504 -> ~+10% -> ~79%.
+
+**This displaces `wait_group N` as the leading candidate.**  Two reasons.  First, it is
+QUANTIFIED -- 20.2 us measured, with a mechanism visible in the emitted PTX -- where wait_group
+N is still an argument.  Second, the evidence for wait_group N got weaker this session: item 1
+removed the per-SLICE drain and bought +10.3-10.8% at 512-1024 but only +4.3-4.5% at 2048-4096,
+i.e. it helped LEAST exactly where we now need help.  Removing the per-BLOCK drain plausibly
+follows the same pattern.
+
+HONEST LIMIT OF THIS MEASUREMENT.  b is attributed to the epilogue by elimination plus a
+bandwidth floor calculation, not by direct measurement of the store alone.  A profiler would
+settle the split in one run.  What is NOT in doubt is that 20.2 us is real, K-independent, and
+large, and that the store instruction sequence is non-coalesced by construction.
+
+PHASE 8b — WHAT b ACTUALLY IS.  BOTH OF MY EXPLANATIONS WERE WRONG.
+====================================================================
+Phase 8 attributed the 20.2 us to "scattered 8-byte stores, ~3.5x off bandwidth".  Reading the
+emitted code properly kills that too.
+
+FIRST, COALESCING WAS NEVER THE PROBLEM.  Work the lane mapping through: for a fixed n8 group,
+lanes 0-3 hold rlo=0 and col=0,2,4,6, so they write EIGHT CONTIGUOUS FLOATS -- 32 bytes, a full
+sector -- at one row; lanes 4-7 do the next row, and so on.  A warp writes 8 rows x 32 bytes per
+group, and every one of those is a complete 32-byte sector.  Sector efficiency is 100%.  A
+perfectly linear warp store would move 128 bytes in 4 sectors; ours moves 256 in 8.  Identical
+bytes per transaction.  There was nothing to coalesce.
+
+WHAT IS ACTUALLY THERE.  In the epilogue's basic block:
+
+    st.local.v2.b32 [%rd147],    {%r1887, %r1888}      <- the very registers wgmma just wrote
+    ...  (64 of these)
+    ld.local.v2.b32 {%r1501, %r1502}, [%rd147+8]       <- loaded straight back
+    ...  (189 local loads)
+    st.global.b32 [%rd159], %r1498
+
+**The accumulator goes registers -> .local -> registers -> global.**  A complete round trip
+through the stack for 128 values that wgmma had already left in registers, plus ~500
+instructions of address arithmetic.  The PTX marks the block `in Loop: Header=BB71_18 Depth=2`
+-- the TILE-STRIDE loop, not the K-loop -- so it is O(1) in K.  That is exactly the shape of the
+measured intercept.
+
+THE CAUSE, and it is a one-line habit.  `%wgmma-store-rewrite-origin` opened with
+`(let ((wgv ,tile)) ...)`.  Binding a 128-field struct to a fresh variable materialises it into
+an alloca, and nothing splits it back up: `%explode-register-tiles` -- the 2026-07-05 fix that
+made register TILES register-resident, and which is registered on LET/LET* precisely to catch
+this -- tests `%register-tile-init-form-p` and **has no notion of `make-wgmma-accumulator`**.
+So the mechanism that exists to prevent this exact bug does not cover the wgmma path.
+
+THE FIX (this phase): do not copy at all when TILE is already a variable -- extract the members
+straight from it.  A symbol needs no alias; only a compound expression does, and then once.
+
+MEASURED IN THE EMITTED PTX (mm_n256, N=256):
+
+| | st.local | ld.local | st.global | wgmma |
+|---|---:|---:|---:|---:|
+| before | 80 | 207 | 128 | 4 |
+| after  | **15** | **142** | 128 | 4 |
+
+The accumulator now feeds `st.global` directly from registers (`st.global.b32 [%rd155], %r1759`).
+Regression: **1028/1028 specs, 218/218 negative, 291/291 unit.**
+
+RESIDUAL, DELIBERATELY NOT CHASED YET.  126 `ld.local.b32` remain -- all reloads of ONE stack
+slot (`c0`, the column base) once per store, with ~6 instructions of address arithmetic each.
+Why a let-bound int is not promoted is not yet understood, and guessing has a poor record in
+this endeavour.  It is second-order against the 253 local accesses already removed.
+
+**UNMEASURED.**  This is a PTX-shape improvement with a plausible mechanism and a green
+regression.  It has not run on hardware -- not for speed, and more importantly not for
+CORRECTNESS.  The change is semantically an alias removal (nothing mutates the accumulator
+between extractions, and every `set!` in the generated form targets the destination), but this
+endeavour's record on "obviously fine" reasoning is not good enough to skip the metal check.
+
+PHASE 8c — THE EPILOGUE FIX IS A NEGATIVE RESULT.  MEASURED, AND REVERTED.
+===========================================================================
+Third H100 NVL, CUDA 12.4.  Interleaved arms, the two PTX files differing ONLY in the epilogue
+(verified by opcode histogram: 27 local-memory ops removed, 760 -> 729 instructions for n64,
+nothing else changed).  `ptxas -v`: register counts IDENTICAL (64 / 96 / 164-165), zero spills
+both ways, stack frames 136/320/616 bytes -> 0/0/96.
+
+| size | kernel | old epilogue | new epilogue | delta |
+|---:|---|---:|---:|---:|
+| 256  | n64  | 5,307   | 5,106   | **-3.8%** |
+| 512  | n64  | 33,082  | 30,582  | **-7.6%** |
+| 1024 | n128 | 132,855 | 121,220 | **-8.8%** |
+| 2048 | n256 | 249,798 | 256,463 | +2.7% |
+| 4096 | n256 | 271,692 | 272,821 | +0.4% |
+| 8192 | coop | 233,843 | 241,373 | +3.2% |
+
+2 reps per cell, all MMA_CORRECT, within-arm spread <0.3%.  The result is not noise.
+
+**AND IT INVERTS EXACTLY WHERE THE MECHANISM SAYS IT SHOULD NOT.**  The kernels whose local
+traffic went to ZERO (n64 17/10 -> 0/0; n128 40/43 -> 0/0) got SLOWER.  The kernels that kept
+residual traffic (n256 80/207 -> 15/142; coop 147/418 -> 18/264) got FASTER.  Strictly fewer
+instructions, strictly less memory traffic, identical registers, no spills -- and slower.
+
+I do not have an explanation.  Candidate stories (live-range pressure limiting the scheduler,
+the LSU pipelining local loads that registers cannot overlap) are exactly the kind of reasoning
+that has lost to measurement four times in this endeavour, so they are recorded as unexplained
+rather than dressed up.
+
+REVERTED, and the reasoning for reverting rather than shape-gating:
+  - It is not a net win: -3.8/-7.6/-8.8% against +2.7/+0.4/+3.2%.
+  - Counting sizes at >=90% of cuBLAS it is a WASH -- three either way (old: 99.5/109.8/99.9;
+    new: 94.7/100.0/91.5).  Old has the higher peaks, new the higher floor.
+  - A compiler that switches codegen on accumulator width, justified only by "it measured
+    faster on one H100 and I cannot say why", is a heuristic this codebase should not carry.
+    The `:tile-visit-strip-width` precedent is a MEASURED MACHINE FACT in a profile; this would
+    be an unexplained shape rule inside the emitter.  Not the same thing.
+
+WHAT SURVIVES THIS PHASE.  The 20.2 us intercept is still real and still unexplained -- the
+K-scaling re-run that would have said whether the local round trip was any part of it did not
+finish before the pod was released.  What Phase 8b established is narrower than it claimed: the
+round trip EXISTS and is removable, not that it COSTS anything.  Removing it, on its own, is
+worth roughly nothing and sometimes less.
+
+STILL TRUE AND WORTH KEEPING: `%explode-register-tiles` does not cover `make-wgmma-accumulator`.
+That is a real gap in a mechanism built to prevent exactly this class of bug.  It simply turns
+out not to be a performance bug here.
