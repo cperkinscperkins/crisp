@@ -15,6 +15,10 @@
            ;; load components in exactly this order
            :serial t
            :components ((:file "src/package") ; 1. Defines all packages
+                                             ;; 1.5 Proclaims every global special BEFORE anything can bind one.
+                                             ;;     A `let` on a not-yet-special *var* compiles to a LEXICAL
+                                             ;;     binding, silently.  GENERATED -- see scripts/gen-specials.lisp.
+                                             (:file "src/specials")
                                              (:file "src/llvm-bindings") ; 2. Uses one package, defines FFI
                                              (:file "src/utils")
                                              (:file "src/session") ;; NEW - Compiler Session
