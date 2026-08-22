@@ -5,15 +5,15 @@
 *.metacrisp
 *_CUDA.cu
 
-# Compiled kernels (.ptx / .spv) are regenerable too — but a few are committed as fallbacks
-# for machines where crisp-compile is absent, so they are re-included by exception below:
-#   run.py                 ships crisp/matmul.ptx + crisp/matmul_async.ptx to a Linux CUDA pod
+# Compiled kernels (.ptx / .spv) are regenerable too — but a fallback may be committed for
+# machines where crisp-compile is absent, and is re-included by exception below:
 #   bench-intel-driver.py  ships the .spv into the oneAPI Docker container
-# Everything else (matmul_async_block.ptx, matmul_pipelined.ptx, …) is a throwaway artifact.
+# Everything else is a throwaway artifact.
+#
+# The four `!matmul/crisp/...` exceptions that used to sit here were removed 2026-08-22: the
+# benchmark reorganisation replaced the technique-named chapters with question-named ones and
+# `matmul/crisp/` went away with them, so those lines protected files that no longer exist.
+# Nothing under matmul/crisp was tracked.  See the note in matmul/README.md if it returns.
 *.ptx
 *.spv
-!matmul/crisp/matmul.ptx
-!matmul/crisp/matmul_async.ptx
-!matmul/crisp/matmul_bmg.spv
-!matmul/crisp/matmul_bmg_async.spv
 !reduction/crisp/sum-reduce.spv
