@@ -4,7 +4,6 @@
 # Compiled executables
 bin/
 
-
 # === Recommended Lisp / SBCL ===
 
 # Compiled Common Lisp "fast-load" files (binaries)
@@ -30,3 +29,6 @@ site/
 
 # Coverage Report
 coverage-report/
+
+# External Benchmark Dependencies (Header-only libraries)
+third_party/

@@ -1,0 +1,24 @@
+;; Crisp Register-Resident Matmul for INTEL BMG (SPIR-V / L0)
+;; Section 1 Chapter 4: Register-resident load directly to GRF (unpipelined, single-buffer, no prefetch distance).
+;; Isolates the direct hardware 2D block load benefit before adding multi-stage rings and prefetch in Chapter 5.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K (inner-dimension A B))
+        (n-k-steps (/ (inner-dimension A B) (to-ulong 8))))
+    (tile-stride C (32 32) (grid-y grid-x)
+      (let ((A-tile (make-register-tile float (32 8) 0.0 :operand :a))
+            (B-tile (make-register-tile float (8 32) 0.0 :operand :b))
+            (C-tile (make-register-tile float (32 32) 0.0)))
+        (dotimes (grid-k n-k-steps)
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x))
+          (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

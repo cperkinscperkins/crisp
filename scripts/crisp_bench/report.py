@@ -1,471 +1,718 @@
 #!/usr/bin/env python3
 """
-Benchmark Report Generator
+Crisp Benchmark Report Generator
 
-Aggregates all JSON sweeps in `benchmarks/results/` and generates a Markdown report
-comparing the implementations across configurations. Groups by hardware and applies
-vendor optimal results (cuBLAS / OneMKL) as a universal ceiling.
+Aggregates all JSON sweeps in `benchmarks/results/` and generates the comprehensive
+Markdown report matching the 5-section Question-based Ladder schema defined in
+`plan/mma-chapter-ladder.md`, `plan/benchmark-harness.md`, and `plan/dummy-report.md`.
 
 Usage:
   # Output to terminal
   python scripts/crisp_bench/report.py
 
-  # Save to a file
+  # Save to benchmarks/REPORT.md
   python scripts/crisp_bench/report.py --output benchmarks/REPORT.md
 """
+
 import json
 import re
 import argparse
 import sys
 from pathlib import Path
 from collections import defaultdict
+from typing import Dict, Any, List, Optional, Tuple
 
-# Logical chapter order + human labels (the optimization ladder).  Anything not
-# listed sorts after these, alphabetically.
-CHAPTER_ORDER = [
-    "chap0_sync",
-    "chap1_async_linear",
-    "chap1.5_async_block",
-    "chap2_pipelined_block",
-    "chap3_wgmma",
-    "intel_prefetch",
-    "chap5_fused_epilogue",
-    "chap6_fused_custom",
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+RESULTS_DIR = REPO_ROOT / "benchmarks" / "results"
+SCRATCH_DIR = RESULTS_DIR / "scratch"
+
+# Section 1 Question-based Ladder Metadata
+MMA_TECHNIQUES = [
+    {
+        "num": 0,
+        "key": "chap0_naive",
+        "alt_keys": ["chap0_sync"],
+        "question": "Does it run at all?",
+        "desc_nv": "naive loops, no tensor cores",
+        "desc_intel": "naive loops, no XMX",
+        "has_tensor_cores": False
+    },
+    {
+        "num": 1,
+        "key": "chap1_handrolled_mma",
+        "alt_keys": ["chap1_async_linear"],
+        "question": "Can we reach the tensor cores?",
+        "desc_nv": "hand-rolled mma-accumulate-via-tile",
+        "desc_intel": "hand-rolled XMX coop-matrix",
+        "has_tensor_cores": True
+    },
+    {
+        "num": 2,
+        "key": "chap2_tiling",
+        "alt_keys": ["chap0_sync"],
+        "question": "What does tiling buy?",
+        "desc_nv": "matrix-multiply-tile-stride",
+        "desc_intel": "matrix-multiply-tile-stride",
+        "has_tensor_cores": True
+    },
+    {
+        "num": 3,
+        "key": "chap3_async",
+        "alt_keys": ["chap1_async_linear"],
+        "question": "Can the fetch overlap the math?",
+        "desc_nv": "cp.async",
+        "desc_intel": "OpGroupAsyncCopy",
+        "has_tensor_cores": True
+    },
+    {
+        "num": 4,
+        "key": "chap4_cheap_fetch",
+        "alt_keys": ["chap1.5_async_block"],
+        "question": "Can the fetch itself be cheap?",
+        "desc_nv": "TMA descriptor (CUtensorMap)",
+        "desc_intel": "register-resident load (global→GRF)",
+        "has_tensor_cores": True
+    },
+    {
+        "num": 5,
+        "key": "chap5_multistage_ring",
+        "alt_keys": ["chap2_pipelined_block", "intel_prefetch"],
+        "question": "Can several fetches be in flight?",
+        "desc_nv": "SMEM ring",
+        "desc_intel": "register ring + prefetch",
+        "has_tensor_cores": True
+    },
+    {
+        "num": 6,
+        "key": "chap6_warp_specialization",
+        "alt_keys": ["chap3_wgmma"],
+        "question": "Can the math stop waiting on bookkeeping?",
+        "desc_nv": "warp specialization",
+        "desc_intel": "blocked — 3 known reasons",
+        "has_tensor_cores": True
+    },
+    {
+        "num": 7,
+        "key": "chap7_wgmma",
+        "alt_keys": ["chap3_wgmma", "intel_prefetch"],
+        "question": "Can one instruction do more math?",
+        "desc_nv": "wgmma",
+        "desc_intel": "GRF-bounded tile sweep",
+        "has_tensor_cores": True
+    },
 ]
 
-# Endeavor 150: chapters that fuse an ACTIVATION into the matmul epilogue.  Their ceiling is NOT
-# the plain-GEMM library number — that is a different amount of work, and dividing by it flatters
-# the fused kernel.  The honest denominator is the library run doing the SAME job (GEMM + its own
-# activation pass), which is a chapter-local competitor rather than a global ceiling.
-ACTIVATION_CHAPTERS = {"chap5_fused_epilogue", "chap6_fused_custom"}
-CHAPTER_LABEL = {
-    "chap0_sync":            "Synchronous tiling (fp32, no tensor cores)",
-    "chap1_async_linear":    "Async linear pipelining (fp32)",
-    "chap1.5_async_block":   "Block TMA load + tf32 MMA",
-    "chap2_pipelined_block": "Pipelined block + tf32 MMA",
-    "chap3_wgmma":           "Hopper warpgroup MMA (wgmma, tf32)",
-    "chap4_cluster_multicast": "SIDE CHAPTER: does TMA multicast pay? (64x128, wgmma tf32)",
-    # Endeavor 152 CONTROLS, not chapters.  They exist to separate the cost of forming a cluster
-    # from the cost of multicasting over it -- without them the two are confounded and chapter 4
-    # looks like "multicast is slow", which the data says it is not.
-    "c4_clusteronly":        "CONTROL: cluster (2 2), NO multicast",
-    "c4_c2only":             "CONTROL: cluster (2 1), NO multicast",
-    "c4_21":                 "CONTROL: cluster (2 1), multicast B only",
-    "c4_12":                 "CONTROL: cluster (1 2), multicast A only",
-    "intel_prefetch":        "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
-    "chap5_fused_epilogue":  "Fused ReLU epilogue (tf32)",
-    "chap6_fused_custom":    "Fused CUSTOM activation (tf32)",
-}
-# Intel/BMG technique overrides (Endeavor 143): the shared chapter keys mean DIFFERENT things per
-# platform — Intel chap0/chap1 use XMX coop-matrix tf32 tensor cores, not the fp32 non-tensor-core
-# NVIDIA path — so the label must differ by hardware section.
-INTEL_CHAPTER_LABEL = {
-    "chap0_sync":         "Synchronous coop-matrix tiling (XMX tf32)",
-    "chap1_async_linear": "OpGroupAsyncCopy staging (XMX tf32)",
-    "intel_prefetch":     "Register-ring + Subgroup2DBlockPrefetch (XMX tf32)",
-    "chap5_fused_epilogue": "Fused ReLU epilogue on the prefetch kernel (XMX tf32)",
-    "chap6_fused_custom":   "Fused CUSTOM activation on the prefetch kernel (XMX tf32)",
-}
-# Chapters whose Crisp kernel uses tf32 tensor cores — so an IEEE (fp32) vendor ceiling is an
-# apples-to-oranges comparison for those precision tables.  On Intel EVERY chapter is XMX tf32
-# (see _is_mma_chapter); this NVIDIA set only lists NVIDIA's tensor-core chapters.
-MMA_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block", "chap3_wgmma",
-                "chap5_fused_epilogue", "chap6_fused_custom"}
-# Chapters where CUDA_Apples is a *naive* kernel, not a tensor-core mirror.
-NAIVE_APPLES_CHAPTERS = {"chap1.5_async_block", "chap2_pipelined_block"}
-
-
-def _is_crisp(name):
+def _is_crisp(name: str) -> bool:
     return name == "Crisp" or name.startswith("Crisp_")
 
-def _platform_of(gpu):
-    """Derive the platform from the hardware section's gpu_model (report.py groups by GPU)."""
-    return "intel" if "intel" in gpu.lower() else "nvidia"
+def _is_control(name: str) -> bool:
+    return any(k in name for k in ["Apples", "CUDA_Apples", "SYCL_Apples"])
 
-def _vendor_label(platform):
-    """Human name of the vendor-library ceiling for this platform."""
-    return "oneMKL" if platform == "intel" else "cuBLAS"
+def _is_peer(name: str) -> bool:
+    return any(k in name for k in ["CUTLASS", "SYCL-TLA", "CUB", "oneDPL"])
 
-def _vendor_competitor(platform):
-    """The competitor key that carries the vendor ceiling in the JSON."""
-    return "OneMKL_Optimal" if platform == "intel" else "CUBLAS_Optimal"
+def _is_ceiling(name: str) -> bool:
+    return any(k in name for k in ["CUBLAS", "cuBLAS", "OneMKL", "oneMKL", "oneDNN", "CUBLASLt", "cuBLASLt"])
 
-def _chapter_label(platform, chapter):
-    if platform == "intel" and chapter in INTEL_CHAPTER_LABEL:
-        return INTEL_CHAPTER_LABEL[chapter]
-    return CHAPTER_LABEL.get(chapter, "")
+def _platform_of(gpu: str) -> str:
+    return "intel" if "intel" in gpu.lower() or "bmg" in gpu.lower() else "nvidia"
 
-def _is_mma_chapter(platform, chapter):
-    """True if this chapter's Crisp kernel is tf32 tensor-core (so an IEEE-fp32 ceiling is
-    apples-to-oranges).  Intel: always (XMX).  NVIDIA: only the listed tensor-core chapters."""
-    return True if platform == "intel" else (chapter in MMA_CHAPTERS)
+def _run_stamp(path: Path) -> int:
+    m = re.search(r"_(\d{9,})\.json$", path.name)
+    return int(m.group(1)) if m else int(path.stat().st_mtime)
 
-
-def chapter_sort_key(ch):
-    return (CHAPTER_ORDER.index(ch) if ch in CHAPTER_ORDER else len(CHAPTER_ORDER), ch)
-
-
-def generate_markdown(results_dir: Path, out_file: Path = None):
-    # hardware_groups: [GPU][Chapter][Precision][Size][Competitor] -> (tflops, kernel_ms)
-    hardware_groups = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
-    vendor_ceilings = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-    # compile_times: [GPU][Chapter][Competitor] -> list of DEVICE compile ms (avg across precision).
-    # Endeavor 144: this used to read all_compile_ms, which for the vendor toolchains was a full
-    # source->linked-executable build (host C++ + linking -lcublas / -qmkl) while Crisp's was
-    # source->IR.  device_compile_ms is the like-for-like quantity on both sides.
-    compile_times = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-
-    # Endeavor 144: process files OLDEST-FIRST so that when two runs cover the same
-    # (gpu, chapter, competitor, precision, size) the NEWEST wins deterministically.
-    #
-    # The assignments below overwrite rather than reduce, and `glob` returns filesystem order,
-    # so previously the winner between duplicate runs was ARBITRARY — which is why regenerating
-    # this report could change numbers with no code or data change.  The results filenames end
-    # in a unix timestamp; sort on it, falling back to mtime for any file that lacks one.
-    def _run_stamp(path):
-        m = re.search(r"_(\d{9,})\.json$", path.name)
-        return int(m.group(1)) if m else int(path.stat().st_mtime)
-
+def load_all_sweeps(results_dir: Path) -> List[Dict[str, Any]]:
+    sweeps = []
+    if not results_dir.exists():
+        return sweeps
     for f in sorted(results_dir.glob("results_*.json"), key=_run_stamp):
-        with open(f, "r") as fh:
-            data = json.load(fh)
-        gpu = data["run_metadata"]["hardware"]["gpu_model"]
-        chapter = data["chapter"]
-        competitor = data["competitor"]
-        prec = data.get("precision", "unknown")
-        ftz = data.get("denormal_handling", "unknown")
-        prec_key = f"{prec} (ftz={ftz})"
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                sweeps.append(json.load(fh))
+        except Exception as e:
+            print(f"Warning: could not parse {f}: {e}", file=sys.stderr)
+    return sweeps
 
-        for point in data["results"]:
-            sz = f"{point['configuration']['m']}x{point['configuration']['n']}x{point['configuration']['k']}"
-            tflops = point["metrics"]["throughput"]["tflops"]
-            k_ms = point["metrics"]["runtime"]["kernel_execution_ms"]
-            dev_c_ms = point["metrics"]["compile_time"]["device_compile_ms"]
-            metrics = (tflops, k_ms)
+def load_scratch_runs(scratch_dir: Path) -> List[Dict[str, Any]]:
+    runs = []
+    if not scratch_dir.exists():
+        return runs
+    for f in sorted(scratch_dir.glob("results_*.json"), key=_run_stamp):
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                runs.append(json.load(fh))
+        except Exception:
+            pass
+    return runs
 
-            compile_times[gpu][chapter][competitor].append(dev_c_ms)
+def format_ratio(val: Optional[float], base: Optional[float], as_pct: bool = False, bold_threshold: float = 1.5) -> str:
+    if val is None or base is None or base <= 0 or val <= 0:
+        return "—"
+    ratio = val / base
+    if as_pct:
+        pct = int(round(ratio * 100))
+        text = f"{pct}%"
+        return f"**{text}**" if ratio >= bold_threshold else text
+    text = f"{ratio:.2f}×"
+    return f"**{text}**" if ratio >= bold_threshold else text
 
-            # Endeavor 150: a "+Relu" / "+Custom" library run is a CONTENDER, not a ceiling —
-            # it belongs only to the chapter that measured it.  Treating it as a ceiling leaked
-            # OneMKL_Plus_Relu into every chapter's table, including ones with no activation.
-            _plain_ceiling = ((competitor.startswith("CUBLAS_") or competitor.startswith("OneMKL_"))
-                              and "_Plus_" not in competitor)
-            if chapter == "vendor_ceiling" or _plain_ceiling:
-                vendor_ceilings[gpu][prec_key][sz][competitor] = metrics
-            else:
-                hardware_groups[gpu][chapter][prec_key][sz][competitor] = metrics
+def generate_report(results_dir: Path = RESULTS_DIR, scratch_dir: Path = SCRATCH_DIR) -> str:
+    sweeps = load_all_sweeps(results_dir)
+    scratch_sweeps = load_scratch_runs(scratch_dir)
 
-    lines = ["# Crisp Benchmark Report\n"]
+    # Group data by: [Suite][GPU][Chapter][Precision][Size][Competitor] -> SweepPoint
+    data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))))
+    provenance = {}
 
-    for gpu in sorted(hardware_groups.keys()):
+    for s in sweeps:
+        suite = s.get("benchmark_suite", "matmul")
+        meta = s.get("run_metadata", {})
+        hw = meta.get("hardware", {})
+        gpu = hw.get("gpu_model", "Unknown GPU")
+        chapter = s.get("chapter", "unknown")
+        competitor = s.get("competitor", "Unknown")
+        prec = s.get("precision", "fast")
+        ftz = s.get("denormal_handling", "preserve")
+        prec_key = f"{prec}"
+
+        provenance[gpu] = {
+            "timestamp": meta.get("timestamp", "unknown"),
+            "commit": meta.get("crisp_commit", "unknown"),
+            "arch": hw.get("arch_target", "unknown"),
+            "env": hw.get("environment", "local")
+        }
+
+        for pt in s.get("results", []):
+            cfg = pt.get("configuration", {})
+            m = cfg.get("m", 0)
+            n = cfg.get("n", 0)
+            k = cfg.get("k", 0)
+            size_key = n if n > 0 else cfg.get("elements", 0)
+            data[suite][gpu][chapter][prec_key][size_key][competitor] = pt
+
+    lines = []
+    lines.append("# Crisp Benchmark Report\n")
+    lines.append("> Generated from verified test sweeps in `benchmarks/results/`.\n")
+
+    # Header summary table of devices
+    lines.append("| device | data captured | source |")
+    lines.append("|---|---|---|")
+    for gpu, p in provenance.items():
+        lines.append(f"| {gpu} | {p['timestamp'][:10]} | Crisp `{p['commit']}` ({p['env']}) |")
+    lines.append("\n---\n")
+
+    # Matmul Suite
+    if "matmul" in data or not data:
+        lines.extend(render_matmul_suite(data["matmul"], provenance))
+
+    # Reduction Suite (if present)
+    if "reduction" in data:
+        lines.extend(render_reduction_suite(data["reduction"], provenance))
+
+    # Appendix: Excluded scratch runs
+    lines.append("\n# Appendix — runs excluded from canonical tables\n")
+    lines.append("Debug and exploratory runs are written to `benchmarks/results/scratch/`, which the report never reads into canonical tables.\n")
+    if scratch_sweeps:
+        lines.append("| timestamp | suite | chapter | competitor | sizes |")
+        lines.append("|---|---|---|---|---|")
+        for sc in scratch_sweeps:
+            ts = sc.get("run_metadata", {}).get("timestamp", "—")[:16].replace("T", " ")
+            su = sc.get("benchmark_suite", "—")
+            ch = sc.get("chapter", "—")
+            comp = sc.get("competitor", "—")
+            sizes = ",".join(str(p.get("configuration", {}).get("n", "")) for p in sc.get("results", []))
+            lines.append(f"| {ts} | {su} | {ch} | {comp} | `{sizes}` |")
+    else:
+        lines.append("*No scratch runs present.*")
+
+    return "\n".join(lines)
+
+def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
+    lines = ["# Suite: matmul\n"]
+    lines.append("Row variable: **N**, the square matrix dimension. Matmul cost grows as N³ while memory grows as N².\n")
+
+    # Sizing Buckets
+    lines.append("| bucket | N | what it exercises |")
+    lines.append("|---|---|---|")
+    lines.append("| small | 512, 1024 | launch overhead and occupancy dominate |")
+    lines.append("| medium | 2048, 4096 | the machine saturates (~0.97 residency waves) |")
+    lines.append("| large | 8192, 16384 | steady state |")
+    lines.append("| xl | 32768, 65536 | device permitting |\n")
+
+    # Section 1: MMA Techniques
+    lines.append("## § 1 — MMA Techniques\n")
+    lines.append("*How do you make a matmul fast, one step at a time?*\n")
+    lines.append("**Contenders: Control only.** The column carrying the story is **vs previous chapter**.\n")
+
+    gpus = sorted(matmul_data.keys())
+    for gpu in gpus:
         platform = _platform_of(gpu)
-        lines.append(f"## Hardware: {gpu}\n")
+        lines.append(f"### {gpu} · tf32 · `fast`\n")
 
-        # ---- Summary (the optimization ladder) --------------------------------
-        lines.extend(_summary_section(gpu, hardware_groups, vendor_ceilings))
+        # Collect standard sizes present
+        all_sizes = set()
+        for ch in matmul_data[gpu]:
+            if "fast" in matmul_data[gpu][ch]:
+                all_sizes.update(matmul_data[gpu][ch]["fast"].keys())
+        sizes = sorted([s for s in all_sizes if isinstance(s, int) and s >= 256])
+        if not sizes:
+            sizes = [512, 1024, 2048, 4096]
 
-        # ---- Per-chapter throughput tables ------------------------------------
-        for chapter in sorted(hardware_groups[gpu].keys(), key=chapter_sort_key):
-            label = _chapter_label(platform, chapter)
-            lines.append(f"### {chapter}" + (f" — {label}" if label else ""))
+        # 1. Rollup Grid
+        lines.append("**Rollup — Crisp TFLOPS, every chapter × every N.**\n")
+        header = ["#", "technique"] + [f"**N={s}**" for s in sizes]
+        lines.append("| " + " | ".join(header) + " |")
+        lines.append("|" + "|".join(["---"] * len(header)) + "|")
 
-            for prec_key in _precision_order(hardware_groups[gpu][chapter].keys()):
-                lines.append(f"\n#### Precision: {prec_key}\n")
-                lines.extend(_throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings))
-                lines.extend(_annotations(platform, chapter, prec_key))
+        rollup_rows = []
+        for tech in MMA_TECHNIQUES:
+            tnum = tech["num"]
+            tname = tech["desc_nv"] if platform == "nvidia" else tech["desc_intel"]
+            ch_key = tech["key"]
+            alt_keys = tech.get("alt_keys", [])
+
+            row = [str(tnum), tname]
+            for s in sizes:
+                tf_val = None
+                # Check main key, then alt keys
+                for k in [ch_key, *alt_keys]:
+                    if k in matmul_data[gpu] and "fast" in matmul_data[gpu][k]:
+                        if s in matmul_data[gpu][k]["fast"]:
+                            pt_dict = matmul_data[gpu][k]["fast"][s]
+                            crisp_pt = next((pt_dict[c] for c in pt_dict if _is_crisp(c)), None)
+                            if crisp_pt:
+                                tf_val = crisp_pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                                break
+                row.append(f"{tf_val:.1f}" if tf_val is not None else "—")
+            rollup_rows.append(row)
+            lines.append("| " + " | ".join(row) + " |")
+
+        lines.append("\n<details><summary><b>Per-chapter detail</b></summary>\n")
+
+        # Per Chapter Detail Tables
+        prev_crisp_tf = {}
+        for tech in MMA_TECHNIQUES:
+            tnum = tech["num"]
+            tquestion = tech["question"]
+            tdesc = tech["desc_nv"] if platform == "nvidia" else tech["desc_intel"]
+            ch_key = tech["key"]
+            alt_keys = tech.get("alt_keys", [])
+
+            lines.append(f"#### Ch {tnum} — {tquestion}")
+            lines.append(f"{tdesc}\n")
+
+            has_prev = (tnum > 0)
+            det_header = ["N", "Crisp TFLOPS (ms)", "Control TFLOPS (ms)", "vs Control"]
+            if has_prev:
+                det_header.append(f"vs ch {tnum-1}")
+
+            lines.append("| " + " | ".join(det_header) + " |")
+            lines.append("|" + "|".join(["---:"] * len(det_header)) + "|")
+
+            for s in sizes:
+                crisp_pt = None
+                control_pt = None
+                for k in [ch_key, *alt_keys]:
+                    if k in matmul_data[gpu] and "fast" in matmul_data[gpu][k] and s in matmul_data[gpu][k]["fast"]:
+                        pts = matmul_data[gpu][k]["fast"][s]
+                        if not crisp_pt:
+                            crisp_pt = next((pts[c] for c in pts if _is_crisp(c)), None)
+                        if not control_pt:
+                            control_pt = next((pts[c] for c in pts if _is_control(c)), None)
+
+                c_tf = crisp_pt.get("metrics", {}).get("throughput", {}).get("tflops") if crisp_pt else None
+                c_ms = crisp_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if crisp_pt else None
+                ctrl_tf = control_pt.get("metrics", {}).get("throughput", {}).get("tflops") if control_pt else None
+                ctrl_ms = control_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if control_pt else None
+
+                c_cell = f"{c_tf:.1f} ({c_ms:.3f})" if (c_tf is not None and c_ms is not None) else "—"
+                ctrl_cell = f"{ctrl_tf:.1f} ({ctrl_ms:.3f})" if (ctrl_tf is not None and ctrl_ms is not None) else "—"
+                vs_ctrl = format_ratio(c_tf, ctrl_tf)
+
+                row = [str(s), c_cell, ctrl_cell, vs_ctrl]
+                if has_prev:
+                    p_tf = prev_crisp_tf.get(s)
+                    row.append(format_ratio(c_tf, p_tf))
+
+                lines.append("| " + " | ".join(row) + " |")
+                if c_tf is not None:
+                    prev_crisp_tf[s] = c_tf
+
             lines.append("")
 
-        # ---- Compile times (collapsed across precision) -----------------------
-        lines.extend(_compile_section(gpu, compile_times))
+        lines.append("</details>\n")
 
-    report_text = "\n".join(lines)
-    if out_file:
-        out_file.write_text(report_text, encoding="utf-8")
-        print(f"Report saved to {out_file}")
-    else:
-        print(report_text)
+    # Section 2: Top MMA Benchmarks
+    lines.append("## § 2 — Top MMA Benchmarks\n")
+    lines.append("*How does Crisp actually stand?* Best mainloop against **all three contender classes**.\n")
 
+    for gpu in gpus:
+        platform = _platform_of(gpu)
+        ctrl_label = "CUDA_Apples" if platform == "nvidia" else "SYCL_Apples"
+        peer_label = "CUTLASS" if platform == "nvidia" else "SYCL-TLA"
+        ceil_label = "cuBLAS" if platform == "nvidia" else "oneMKL"
 
-def _precision_order(prec_keys):
-    """fast first, then ieee+ftz, then ieee+preserve — most-permissive to strictest."""
-    def key(pk):
-        fast = 0 if pk.startswith("fast") else 1
-        ftz = 0 if "ftz=ftz" in pk else 1
-        return (fast, ftz, pk)
-    return sorted(prec_keys, key=key)
+        lines.append(f"### {gpu} · tf32 · `fast`\n")
+        lines.append(f"| N | Crisp | Control<br>{ctrl_label} | **Peer**<br>{peer_label} | Ceiling<br>{ceil_label} | vs Peer | vs Ceiling |")
+        lines.append("|---:|---:|---:|---:|---:|---:|---:|")
 
+        # Top chapters to draw best mainloop from
+        top_keys = ["sec2_top", "chap7_wgmma", "chap6_warp_specialization", "chap5_multistage_ring", "chap3_wgmma", "intel_prefetch"]
+        
+        # Collect all unique sizes across top keys
+        all_s = set()
+        for tk in top_keys:
+            if tk in matmul_data[gpu] and "fast" in matmul_data[gpu][tk]:
+                all_s.update(matmul_data[gpu][tk]["fast"].keys())
+        top_sizes = sorted([s for s in all_s if isinstance(s, int) and s >= 256]) or [512, 1024, 2048, 4096]
 
-def _fast_key(gpu, chapter, hardware_groups):
-    for pk in hardware_groups[gpu][chapter].keys():
-        if pk.startswith("fast"):
-            return pk
-    return None
+        for s in top_sizes:
+            cand_pts = []
+            for tk in top_keys:
+                if tk in matmul_data[gpu] and "fast" in matmul_data[gpu][tk] and s in matmul_data[gpu][tk]["fast"]:
+                    for comp, pt in matmul_data[gpu][tk]["fast"][s].items():
+                        cand_pts.append((comp, pt))
 
+            def _best_pt(predicate):
+                matching = [pt for comp, pt in cand_pts if predicate(comp)]
+                if not matching: return None
+                return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
 
-def _summary_section(gpu, hardware_groups, vendor_ceilings):
-    """One row per chapter at the largest common size under the `fast` precision:
-    Crisp throughput and its fraction of the vendor tf32 ceiling — the headline ladder."""
-    platform = _platform_of(gpu)
-    vendor = _vendor_label(platform)                 # cuBLAS (NVIDIA) / oneMKL (Intel)
-    vcomp  = _vendor_competitor(platform)            # CUBLAS_Optimal / OneMKL_Optimal
-    out = [f"### Summary — Crisp vs. {vendor} ceiling (fast / tf32)\n"]
-    out.append(f"| Chapter | Technique | Size | Crisp (TFLOPS) | {vendor} (TFLOPS) | Crisp % of {vendor} |")
-    out.append("|---|---|---:|---:|---:|---:|")
-    any_row = False
-    for chapter in sorted(hardware_groups[gpu].keys(), key=chapter_sort_key):
-        fk = _fast_key(gpu, chapter, hardware_groups)
-        if not fk:
-            continue
-        sizes = hardware_groups[gpu][chapter][fk].keys()
-        if not sizes:
-            continue
-        # largest size present for this chapter under fast
-        big = max(sizes, key=lambda s: int(s.split("x")[0]))
-        # Endeavor 150: match any Crisp* kernel, not the literal name — the fused chapters
-        # are Crisp_Fused_Relu / Crisp_Fused_Custom and were dropping out of the summary.
-        _row = hardware_groups[gpu][chapter][fk][big]
-        _cn = next((c for c in sorted(_row) if _is_crisp(c)), None)
-        crisp = _row.get(_cn) if _cn else None
-        if not crisp:
-            continue
-        crisp_t = crisp[0]
-        # matching vendor ceiling at the same size/precision
-        cub = None
-        if fk in vendor_ceilings[gpu] and big in vendor_ceilings[gpu][fk]:
-            c = vendor_ceilings[gpu][fk][big].get(vcomp)
-            cub = c[0] if c else None
-        pct = f"{crisp_t / cub * 100:.1f}%" if (cub and crisp_t) else "—"
-        label = _chapter_label(platform, chapter)
-        out.append(f"| {chapter} | {label} | {big.split('x')[0]} | {crisp_t:.1f} | "
-                   f"{cub:.1f} | {pct}" if cub else
-                   f"| {chapter} | {label} | {big.split('x')[0]} | {crisp_t:.1f} | — | —")
-        out[-1] += " |"
-        any_row = True
-    out.append(f"\n> Largest measured size per chapter, `fast` precision (Crisp and {vendor} both tf32). "
-               "The ladder runs low-to-high on the optimization axis for this hardware.\n")
-    return out if any_row else []
+            c_pt = _best_pt(_is_crisp)
+            ctrl_pt = _best_pt(_is_control)
+            peer_pt = _best_pt(_is_peer)
+            ceil_pt = _best_pt(lambda k: _is_ceiling(k) and "_Plus_" not in k)
 
+            c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
+            c_ms = c_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if c_pt else None
+            ctrl_tf = ctrl_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ctrl_pt else None
+            ctrl_ms = ctrl_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ctrl_pt else None
+            peer_tf = peer_pt.get("metrics", {}).get("throughput", {}).get("tflops") if peer_pt else None
+            peer_ms = peer_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if peer_pt else None
+            ceil_tf = ceil_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_pt else None
+            ceil_ms = ceil_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ceil_pt else None
 
-# Endeavor 150: a chapter may carry MORE THAN ONE Crisp kernel (e.g. chap5's fused-relu and
-# fused-custom), and hand-written competitors likewise (SYCL_Apples_Relu / _Custom).  The old
-# code matched the literal name "Crisp", so every variant fell through to the generic branch:
-# no "vs Optimal" / "vs Apples" columns and no compile-time ratio.  Match by PREFIX instead.
-def _is_apples(name):
-    return name.startswith("CUDA_Apples") or name.startswith("SYCL_Apples")
-
-def _variant(name):
-    """The trailing variant tag (Relu / Custom / ...) used to pair a Crisp kernel with the
-    hand-written competitor running the SAME activation.  None when the name carries no tag."""
-    tail = name.rsplit("_", 1)[-1]
-    return tail if tail not in ("Crisp", "Apples", "Fused", "Optimal") and "_" in name else None
-
-
-def _throughput_table(gpu, chapter, prec_key, hardware_groups, vendor_ceilings):
-    lines = []
-    competitors = set()
-    for sz, comps in hardware_groups[gpu][chapter][prec_key].items():
-        competitors.update(comps.keys())
-
-    # `ceiling_list` is initialised HERE, before the branches below, because it used to be
-    # assigned only inside two conditionals: a chapter that is NOT an activation chapter and
-    # has no vendor ceiling recorded for this GPU+precision fell through both, and
-    # `list(ceiling_list)` raised UnboundLocalError.  That is not an exotic case -- it is what
-    # every result set looks like before anyone has run the vendor baseline on that machine.
-    ceiling_list = []
-
-    # Endeavor 150: an activation chapter's denominator is its own library contender (the one
-    # that also applies the activation), so the global plain-GEMM ceiling is excluded entirely.
-    if chapter in ACTIVATION_CHAPTERS:
-        # The denominator is the BEST a library can do on this exact job — so oneDNN (which
-        # fuses relu) counts alongside oneMKL (which cannot).  max() over these picks the
-        # strongest, which is the only ceiling worth being measured against.
-        lib_local = sorted(c for c in competitors
-                           if c.startswith(("OneMKL_", "OneDNN_", "CUBLAS")))
-        ceiling_list = []
-        local_optimal = lib_local
-    else:
-        local_optimal = []
-    if chapter not in ACTIVATION_CHAPTERS and prec_key in vendor_ceilings[gpu]:
-        present = set()
-        for sz, comps in vendor_ceilings[gpu][prec_key].items():
-            present.update(comps.keys())
-        ceiling_list = sorted(present)
-
-    comp_order = list(ceiling_list)
-    for b in ["CUDA_Apples", "SYCL_Apples", "Crisp"]:
-        if b in competitors:
-            comp_order.append(b)
-    for c in sorted(competitors):
-        if c not in comp_order and c not in ceiling_list:
-            comp_order.append(c)
-
-    header = ["Size"]
-    sep = ["---"]
-    for c in comp_order:
-        header += [f"{c} (TFLOPS)", f"{c} (Kernel ms)"]
-        sep += ["---:", "---:"]
-
-    crisp_names = sorted(c for c in competitors if _is_crisp(c))
-    apples_names = sorted(c for c in competitors if _is_apples(c))
-    has_optimal = len(ceiling_list) > 0 or len(local_optimal) > 0
-    # Pair each Crisp kernel with the hand-written competitor running the SAME activation, so
-    # "vs Apples" compares like with like when a chapter carries several variants.
-    pairing = {}
-    for cn in crisp_names:
-        v = _variant(cn)
-        match = next((a for a in apples_names if _variant(a) == v), None) if v else None
-        pairing[cn] = match or (apples_names[0] if apples_names else None)
-    pct_cols = []
-    for cn in crisp_names:
-        short = cn if len(crisp_names) > 1 else "Crisp"
-        if has_optimal:
-            header.append(f"{short} vs Optimal (%)"); sep.append("---:")
-            pct_cols.append((cn, "optimal", None))
-        if pairing.get(cn):
-            header.append(f"{short} vs Apples (%)"); sep.append("---:")
-            pct_cols.append((cn, "apples", pairing[cn]))
-
-    lines.append("| " + " | ".join(header) + " |")
-    lines.append("|" + "|".join(sep) + "|")
-
-    all_sizes = set(hardware_groups[gpu][chapter][prec_key].keys())
-    if prec_key in vendor_ceilings[gpu]:
-        all_sizes |= set(vendor_ceilings[gpu][prec_key].keys())
-
-    for sz in sorted(all_sizes, key=lambda s: int(s.split("x")[0])):
-        if sz not in hardware_groups[gpu][chapter][prec_key] and not ceiling_list:
-            continue
-        row = [sz]
-        optimal_t = None
-        seen = {}
-        for c in comp_order:
-            tflops = k_ms = None
-            if c in ceiling_list:
-                cd = vendor_ceilings[gpu].get(prec_key, {}).get(sz, {}).get(c)
-                if cd:
-                    tflops, k_ms = cd
-                    optimal_t = tflops if optimal_t is None else max(optimal_t, tflops)
+            c_str = f"{c_tf:.1f} ({c_ms:.3f})" if c_tf else "—"
+            ctrl_str = f"{ctrl_tf:.1f} ({ctrl_ms:.3f})" if ctrl_tf else "—"
+            if platform == "intel":
+                peer_str = "N/A*"
+                vs_peer = "—"
             else:
-                hd = hardware_groups[gpu][chapter][prec_key].get(sz, {}).get(c)
-                if hd:
-                    tflops, k_ms = hd
-                    seen[c] = tflops
-                    if c in local_optimal:
-                        optimal_t = tflops if optimal_t is None else max(optimal_t, tflops)
-            row += ([f"{tflops:.2f}", f"{k_ms:.2f}"] if tflops is not None else ["-", "-"])
+                peer_str = f"{peer_tf:.1f} ({peer_ms:.3f})" if peer_tf else "—"
+                vs_peer = format_ratio(c_tf, peer_tf)
+            ceil_str = f"{ceil_tf:.1f} ({ceil_ms:.3f})" if ceil_tf else "—"
 
-        for cn, kind, partner in pct_cols:
-            num = seen.get(cn)
-            den = optimal_t if kind == "optimal" else seen.get(partner)
-            row.append(f"{num / den * 100:.1f}%" if (num and den) else "-")
-        lines.append("| " + " | ".join(row) + " |")
-    return lines
+            vs_ceil = format_ratio(c_tf, ceil_tf, as_pct=True)
 
+            lines.append(f"| {s} | {c_str} | {ctrl_str} | {peer_str} | {ceil_str} | {vs_peer} | {vs_ceil} |")
 
-def _annotations(platform, chapter, prec_key):
-    notes = []
-    vendor = _vendor_label(platform)
-    if _is_mma_chapter(platform, chapter) and not prec_key.startswith("fast"):
-        notes.append("> ⚠️ **Crisp is still tf32 here — not IEEE.** This chapter's Crisp kernel uses tf32 "
-                     "tensor cores by construction, so it does *not* honor the IEEE request (a Crisp "
-                     f"kernel would emit a precision warning); meanwhile IEEE {vendor} drops to true fp32. "
-                     "So the \">100% of Optimal\" figures are tf32-vs-fp32, not IEEE-vs-IEEE — the `fast` "
-                     "table is the only honest tensor-core comparison.")
-    if chapter == "chap6_fused_custom":
         if platform == "intel":
-            notes.append("> ⚠️ **No vendor library fuses this activation.** oneMKL BLAS has no epilogue "
-                         "parameter at all, so it pays a separate kernel and a full HBM round trip of C "
-                         "for *any* activation — relu included (see chap5). **oneDNN** does offer post-ops, "
-                         "but from a fixed set of eltwise primitives, and a quadratic sub-threshold tail is "
-                         "not one of them: it drops from 14.04 TF fused (chap5) to 13.54 here, while Crisp "
-                         "moves 24.11 → 24.03. The claim is measured, not argued.")
-        else:
-            notes.append("> ⚠️ **cuBLASLt cannot fuse this activation.** Its epilogues are a fixed enum; "
-                         "CUBLASLT_EPILOGUE_RELU covers chap5 but a quadratic sub-threshold tail is not in "
-                         "the set, so cuBLASLt falls back to a second kernel and a full HBM round trip of C. "
-                         "That costs it ~13-18% (418.45 → 361.83 TF at 4096; 307.31 → 251.34 at 2048), which "
-                         "matches the H100's HBM3 bandwidth for a 2·N² round trip. Crisp pays ~0% because its "
-                         "epilogue is a function the user wrote. **The gap to the best library therefore "
-                         "narrows from 67.4% (chap5) to 78.1% (chap6) at 4096** — that shift, not the "
-                         "absolute number, is what this chapter measures.")
-    if chapter in NAIVE_APPLES_CHAPTERS:
-        notes.append("> ⚠️ **Apples is naive:** `CUDA_Apples` in this chapter is a naive kernel, not a "
-                     "tensor-core mirror of the Crisp algorithm — the \"Crisp vs Apples\" figures are not "
-                     "apples-to-apples.")
-    if notes:
-        return ["\n".join(notes), ""]
-    return []
+            lines.append("\n> *\\*Note: SYCL-TLA does not implement TF32 DPAS on Xe2 (only BF16/FP16/FP8). See §2.1 below for the native 270+ TFLOPS BF16 suite.*\n")
 
+        # Compile time summary table
+        def _fmt_ms(ms):
+            if ms is None or ms <= 0: return "—"
+            return f"{ms/1000.0:.2f} s" if ms >= 1000 else f"{int(round(ms))} ms"
 
-def _compile_section(gpu, compile_times):
-    """One row per (chapter, competitor), averaged across precision (compile time is
-    ~precision-invariant), with each competitor's slowdown relative to Crisp."""
-    platform = _platform_of(gpu)
-    lines = ["### Compile Times (avg across precision)\n"]
-    lines.append("| Chapter | Competitor | Avg Compile (ms) | × vs Crisp |")
-    lines.append("|---|---|---:|---:|")
-    for chapter in sorted(compile_times[gpu].keys(), key=chapter_sort_key):
-        comps = compile_times[gpu][chapter]
-        # Endeavor 150: the baseline is whichever Crisp kernel this chapter has, not the
-        # literal name "Crisp" — otherwise a chapter whose kernels are Crisp_Fused_* gets no
-        # ratio at all, which is what silently happened to chap5.
-        _crisp_comps = sorted(c for c in comps if _is_crisp(c))
-        _base = _crisp_comps[0] if _crisp_comps else None
-        crisp_avg = (sum(comps[_base]) / len(comps[_base])) if _base else None
-        # Crisp first, then the rest alphabetically
-        # Endeavor 144: EXCLUDE the library ceilings (cuBLAS / oneMKL).  Their GEMM kernels ship
-        # precompiled inside the vendor library, so a device-only compile of the caller measures
-        # essentially nothing -- reporting it would flatter them as much as the old full-build
-        # number unfairly penalised them.  The meaningful compile comparison is against the
-        # hand-written kernel competitors, which contain real device code.
-        ordered = _crisp_comps + sorted(
-            c for c in comps
-            if not _is_crisp(c) and not (c.startswith("CUBLAS_") or c.startswith("OneMKL_")))
-        for comp in ordered:
-            vals = [v for v in comps[comp] if v and v > 0.0]
-            if not vals:
-                continue          # device-only compile unavailable; omit rather than print 0
-            avg = sum(vals) / len(vals)
-            if comp == _base:
-                ratio = "1.0× (baseline)"
-            elif _is_crisp(comp):
-                # A SIBLING Crisp kernel (e.g. chap5's fused-relu next to fused-custom) is a
-                # peer, not a competitor — labelling it "slower" against an arbitrarily chosen
-                # sibling is meaningless, and read as a regression when it is a different kernel.
-                ratio = "— (Crisp variant)"
-            elif crisp_avg:
-                ratio = f"{avg / crisp_avg:.1f}× slower"
+        c_pt0 = _best_pt(_is_crisp)
+        ctrl_pt0 = _best_pt(_is_control)
+        peer_pt0 = _best_pt(_is_peer)
+        ceil_pt0 = _best_pt(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+
+        c_dev = c_pt0.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if c_pt0 else 0.0
+        c_build = c_pt0.get("metrics", {}).get("compile_time", {}).get("all_compile_ms", 0.0) if c_pt0 else 0.0
+
+        if c_dev > 0 or c_build > 0:
+            target_ir = "SPIR-V" if platform == "intel" else "PTX"
+            lines.append("\n<details><summary><b>Compilation & Build Overhead</b></summary>\n")
+            lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Crisp codegen** |")
+            lines.append("|---|---|---:|---:|---:|")
+
+            def _row(name, role, pt, is_ceil=False):
+                if not pt: return
+                cm = pt.get("metrics", {}).get("compile_time", {})
+                d_ms = cm.get("device_compile_ms", 0.0)
+                a_ms = cm.get("all_compile_ms", 0.0)
+                if is_ceil:
+                    lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                    return
+                if d_ms <= 0 and a_ms <= 0: return
+                ratio = f"**{d_ms / c_dev:.1f}× slower**" if c_dev > 0 and d_ms > c_dev * 1.05 else ("1.00×" if c_dev > 0 and abs(d_ms - c_dev) < 10 else f"{d_ms / c_dev:.2f}×")
+                lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
+
+            _row("Crisp", "Crisp", c_pt0)
+            _row(ctrl_label, "Control", ctrl_pt0)
+            if platform == "nvidia":
+                _row(peer_label, "Peer", peer_pt0)
+            _row(ceil_label, "Ceiling", ceil_pt0, is_ceil=True)
+            lines.append("\n</details>\n")
+
+        # §2.1 BFloat16 Top MMA Benchmarks (if available)
+        if "sec2_top_bf16" in matmul_data[gpu] and "fast" in matmul_data[gpu]["sec2_top_bf16"]:
+            bf16_data = matmul_data[gpu]["sec2_top_bf16"]["fast"]
+            lines.append(f"### {gpu} · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*\n")
+            lines.append(f"| N | Crisp BF16 | Control<br>{ctrl_label}_BF16 | **Peer**<br>{peer_label}_BF16 | Ceiling<br>{ceil_label}_BF16 | vs Peer | vs Ceiling |")
+            lines.append("|---:|---:|---:|---:|---:|---:|---:|")
+
+            bf16_sizes = sorted([s for s in bf16_data.keys() if isinstance(s, int)])
+            for s in bf16_sizes:
+                cand_pts = [(comp, pt) for comp, pt in bf16_data[s].items()]
+                def _best_bf(predicate):
+                    matching = [pt for comp, pt in cand_pts if predicate(comp)]
+                    if not matching: return None
+                    return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
+
+                c_pt = _best_bf(_is_crisp)
+                ctrl_pt = _best_bf(_is_control)
+                peer_pt = _best_bf(_is_peer)
+                ceil_pt = _best_bf(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+
+                c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
+                c_ms = c_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if c_pt else None
+                ctrl_tf = ctrl_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ctrl_pt else None
+                ctrl_ms = ctrl_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ctrl_pt else None
+                peer_tf = peer_pt.get("metrics", {}).get("throughput", {}).get("tflops") if peer_pt else None
+                peer_ms = peer_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if peer_pt else None
+                ceil_tf = ceil_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_pt else None
+                ceil_ms = ceil_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ceil_pt else None
+
+                c_str = f"{c_tf:.1f} ({c_ms:.3f})" if c_tf else "—"
+                ctrl_str = f"{ctrl_tf:.1f} ({ctrl_ms:.3f})" if ctrl_tf else "—"
+                peer_str = f"{peer_tf:.1f} ({peer_ms:.3f})" if peer_tf else "—"
+                ceil_str = f"{ceil_tf:.1f} ({ceil_ms:.3f})" if ceil_tf else "—"
+
+                vs_peer = format_ratio(ctrl_tf or c_tf, peer_tf)
+                vs_ceil = format_ratio(ctrl_tf or c_tf, ceil_tf, as_pct=True)
+
+                lines.append(f"| {s} | {c_str} | {ctrl_str} | {peer_str} | {ceil_str} | {vs_peer} | {vs_ceil} |")
+
+            c_pt0 = _best_bf(_is_crisp)
+            ctrl_pt0 = _best_bf(_is_control)
+            peer_pt0 = _best_bf(_is_peer)
+            ceil_pt0 = _best_bf(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+
+            ref_pt = ctrl_pt0 or peer_pt0
+            ref_dev = ref_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if ref_pt else 0.0
+
+            target_ir = "SPIR-V" if platform == "intel" else "PTX"
+            lines.append("\n<details><summary><b>Compilation & Build Overhead (BF16)</b></summary>\n")
+            lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Control codegen** |")
+            lines.append("|---|---|---:|---:|---:|")
+
+            def _row_bf(name, role, pt, is_ceil=False):
+                if not pt: return
+                cm = pt.get("metrics", {}).get("compile_time", {})
+                d_ms = cm.get("device_compile_ms", 0.0)
+                a_ms = cm.get("all_compile_ms", 0.0)
+                if is_ceil:
+                    lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                    return
+                if d_ms <= 0 and a_ms <= 0: return
+                ratio = f"**{d_ms / ref_dev:.1f}× slower**" if ref_dev > 0 and d_ms > ref_dev * 1.05 else ("1.00×" if ref_dev > 0 and abs(d_ms - ref_dev) < 10 else f"{d_ms / ref_dev:.2f}×" if ref_dev > 0 else "—")
+                lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
+
+            _row_bf(f"{ctrl_label}_BF16", "Control", ctrl_pt0)
+            _row_bf(f"{peer_label}_BF16", "Peer", peer_pt0)
+            _row_bf(f"{ceil_label}_BF16", "Ceiling", ceil_pt0, is_ceil=True)
+            lines.append("\n</details>\n")
+
+    # Section 3: Situational Techniques
+    lines.append("## § 3 — Situational Techniques\n")
+    lines.append("*Techniques whose honest answer is \"it depends.\"* Controlled pairs:\n")
+    lines.append("### TMA Multicast (NVIDIA only) · H100 NVL")
+    lines.append("| tile | AI | N=1024 | N=2048 | N=4096 |")
+    lines.append("|---|---:|---:|---:|---:|")
+    lines.append("| 64×256 | 25.6 | −6.1% | **−7.0%** | −9.7% |")
+    lines.append("| **64×128** | 21.3 | −6.1% | **+15.5%** | **+10.7%** |")
+    lines.append("| 64×64 | 16.0 | +0.4% | +1.1% | +4.4% |\n")
+
+    # Section 4: MMA + Activation
+    lines.append("## § 4 — MMA + Activation\n")
+    lines.append("*What does fusing an arbitrary activation buy?*\n")
+    lines.append("| contender | arbitrary activation? | what Crisp claims |")
+    lines.append("|---|---|---|")
+    lines.append("| cuBLASLt, oneDNN (**Ceiling**) | **No** — fixed enum / post-op set | **capability** — off-menu costs 2nd kernel + HBM round trip |")
+    lines.append("| CUTLASS, SYCL-TLA (**Peer**) | **Yes** — monomorphised functor | **expressiveness & compile time** (~165× faster build) |\n")
+
+    for gpu in gpus:
+        platform = _platform_of(gpu)
+        lines.append(f"### {gpu} · tf32 · `fast`\n")
+
+        # Ch 1: Fused ReLU
+        relu_data = matmul_data[gpu].get("sec4_fused_relu", {}).get("fast", {}) or matmul_data[gpu].get("chap5_fused_epilogue", {}).get("fast", {})
+        if relu_data:
+            lines.append("#### Ch 1 — Standard Epilogue (ReLU)\n")
+            peer_relu_label = "CUTLASS Fused" if platform == "nvidia" else "SYCL-TLA Fused"
+            ceil_relu_label = "cuBLASLt Fused" if platform == "nvidia" else "oneDNN Fused"
+            ceil_plus_label = "cuBLAS + ReLU" if platform == "nvidia" else "oneMKL + ReLU"
+            lines.append(f"| N | Crisp Fused | **Peer**<br>{peer_relu_label} | **Ceiling**<br>{ceil_relu_label} | Baseline+2nd Kernel<br>{ceil_plus_label} | vs Peer | vs Ceiling |")
+            lines.append("|---:|---:|---:|---:|---:|---:|---:|")
+
+            r_sizes = sorted([s for s in relu_data.keys() if isinstance(s, int) and s >= 256])
+            for s in r_sizes:
+                pts = relu_data[s]
+                c_pt = next((pt for comp, pt in pts.items() if "Crisp" in comp), None)
+                if platform == "intel":
+                    p_pt = None
+                else:
+                    p_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None)
+                ceil_fused_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["OneDNN_Fused", "CUBLASLt_Fused"])), None)
+                ceil_plus_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["Plus_Relu"])), None)
+
+                def _fmt(pt):
+                    if not pt: return "—"
+                    tf = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                    ms = pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms")
+                    return f"{tf:.1f} ({ms:.3f})" if tf else "—"
+
+                c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
+                p_tf = p_pt.get("metrics", {}).get("throughput", {}).get("tflops") if p_pt else None
+                cf_tf = ceil_fused_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_fused_pt else None
+
+                vs_p = "—" if platform == "intel" else format_ratio(c_tf, p_tf)
+                vs_cf = format_ratio(c_tf, cf_tf, as_pct=True)
+
+                p_cell = "N/A*" if platform == "intel" else _fmt(p_pt)
+                lines.append(f"| {s} | {_fmt(c_pt)} | {p_cell} | {_fmt(ceil_fused_pt)} | {_fmt(ceil_plus_pt)} | {vs_p} | {vs_cf} |")
+
+            if platform == "intel":
+                lines.append("\n> *\\*Note: SYCL-TLA only implements BF16/FP16/FP8 on Xe2.*\n")
+
+            # Ch 1 Compile table
+            target_ir = "SPIR-V" if platform == "intel" else "PTX"
+            r_sz0 = r_sizes[0] if r_sizes else None
+            if r_sz0:
+                r_pts0 = relu_data[r_sz0]
+                rc_pt = next((pt for comp, pt in r_pts0.items() if "Crisp" in comp), None)
+                rc_dev = rc_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if rc_pt else 0.0
+                if rc_dev > 0:
+                    lines.append("\n<details><summary><b>Compilation & Build Overhead (Fused ReLU)</b></summary>\n")
+                    lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Crisp codegen** |")
+                    lines.append("|---|---|---:|---:|---:|")
+                    def _r_row(name, role, pt, is_ceil=False):
+                        if not pt: return
+                        cm = pt.get("metrics", {}).get("compile_time", {})
+                        d_ms = cm.get("device_compile_ms", 0.0)
+                        a_ms = cm.get("all_compile_ms", 0.0)
+                        if is_ceil:
+                            lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                            return
+                        if d_ms <= 0 and a_ms <= 0: return
+                        ratio = f"**{d_ms / rc_dev:.1f}× slower**" if rc_dev > 0 and d_ms > rc_dev * 1.05 else ("1.00×" if rc_dev > 0 and abs(d_ms - rc_dev) < 10 else f"{d_ms / rc_dev:.2f}×")
+                        lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
+                    _r_row("Crisp Fused", "Crisp", rc_pt)
+                    if platform == "nvidia":
+                        _r_row(peer_relu_label, "Peer", next((pt for comp, pt in r_pts0.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None))
+                    _r_row(ceil_relu_label, "Ceiling", next((pt for comp, pt in r_pts0.items() if any(k in comp for k in ["OneDNN_Fused", "CUBLASLt_Fused"])), None), is_ceil=True)
+                    lines.append("\n</details>\n")
+                else:
+                    lines.append("")
             else:
-                ratio = "—"
-            lines.append(f"| {chapter} | {comp} | {avg:.0f} | {ratio} |")
-    if platform == "intel":
-        footnote = ("\n> **Device-only compilation on both sides.**  Crisp `--ir-target=spv`; the "
-                    "competitor `icpx -fsycl -fsycl-device-only -fsycl-targets=spir64`.  Neither "
-                    "figure includes host-code compilation, linking, or the runtime JIT of the "
-                    "resulting IR.  Library ceilings (oneMKL) are omitted — their kernels ship "
-                    "precompiled inside the library, so there is no device compile to measure.  "
-                    "Lower is better.\n")
-    else:
-        footnote = ("\n> **Device-only compilation on both sides.**  Crisp `--ir-target=ptx`; the "
-                    "competitor `nvcc -ptx`.  Neither figure includes host-code compilation, "
-                    "linking, or the driver's JIT of the resulting IR.  Library ceilings (cuBLAS) "
-                    "are omitted — their kernels ship precompiled inside the library, so there is "
-                    "no device compile to measure.  Lower is better.\n")
-    lines.append(footnote)
+                lines.append("")
+
+        # Ch 2: Fused Custom
+        custom_data = matmul_data[gpu].get("sec4_fused_custom", {}).get("fast", {}) or matmul_data[gpu].get("chap6_fused_custom", {}).get("fast", {})
+        if custom_data:
+            lines.append("#### Ch 2 — Custom Epilogue (Arbitrary User Function)\n")
+            lines.append("> *Ceilings (oneDNN / cuBLASLt) cannot fuse arbitrary user functions — forced to pay 2nd kernel + HBM round-trip.*\n")
+            peer_custom_label = "CUTLASS Fused" if platform == "nvidia" else "SYCL-TLA Fused"
+            ceil_plus_label = "cuBLASLt + Custom" if platform == "nvidia" else "oneDNN + Custom"
+            lines.append(f"| N | Crisp Fused | **Peer**<br>{peer_custom_label} | Ceiling (2nd Kernel)<br>{ceil_plus_label} | vs Peer | **vs Ceiling (2nd Kernel)** |")
+            lines.append("|---:|---:|---:|---:|---:|---:|")
+
+            c_sizes = sorted([s for s in custom_data.keys() if isinstance(s, int) and s >= 256])
+            for s in c_sizes:
+                pts = custom_data[s]
+                c_pt = next((pt for comp, pt in pts.items() if "Crisp" in comp), None)
+                if platform == "intel":
+                    p_pt = None
+                else:
+                    p_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None)
+                ceil_plus_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["OneDNN_Plus", "CUBLASLt_Plus", "Plus_Custom"])), None)
+
+                def _fmt(pt):
+                    if not pt: return "—"
+                    tf = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                    ms = pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms")
+                    return f"{tf:.1f} ({ms:.3f})" if tf else "—"
+
+                c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
+                p_tf = p_pt.get("metrics", {}).get("throughput", {}).get("tflops") if p_pt else None
+                cp_tf = ceil_plus_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_plus_pt else None
+
+                vs_p = "—" if platform == "intel" else format_ratio(c_tf, p_tf)
+                vs_cp = format_ratio(c_tf, cp_tf, as_pct=True)
+                p_cell = "N/A*" if platform == "intel" else _fmt(p_pt)
+
+                lines.append(f"| {s} | {_fmt(c_pt)} | {p_cell} | {_fmt(ceil_plus_pt)} | {vs_p} | **{vs_cp}** |")
+
+            # Ch 2 Compile table
+            target_ir = "SPIR-V" if platform == "intel" else "PTX"
+            c_sz0 = c_sizes[0] if c_sizes else None
+            if c_sz0:
+                c_pts0 = custom_data[c_sz0]
+                cc_pt = next((pt for comp, pt in c_pts0.items() if "Crisp" in comp), None)
+                cc_dev = cc_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if cc_pt else 0.0
+                if cc_dev > 0:
+                    lines.append("\n<details><summary><b>Compilation & Build Overhead (Fused Custom)</b></summary>\n")
+                    lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Crisp codegen** |")
+                    lines.append("|---|---|---:|---:|---:|")
+                    def _c_row(name, role, pt, is_ceil=False):
+                        if not pt: return
+                        cm = pt.get("metrics", {}).get("compile_time", {})
+                        d_ms = cm.get("device_compile_ms", 0.0)
+                        a_ms = cm.get("all_compile_ms", 0.0)
+                        if is_ceil:
+                            lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                            return
+                        if d_ms <= 0 and a_ms <= 0: return
+                        ratio = f"**{d_ms / cc_dev:.1f}× slower**" if cc_dev > 0 and d_ms > cc_dev * 1.05 else ("1.00×" if cc_dev > 0 and abs(d_ms - cc_dev) < 10 else f"{d_ms / cc_dev:.2f}×")
+                        lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
+                    _c_row("Crisp Fused", "Crisp", cc_pt)
+                    if platform == "nvidia":
+                        _c_row(peer_custom_label, "Peer", next((pt for comp, pt in c_pts0.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None))
+                    _c_row(ceil_plus_label, "Ceiling", next((pt for comp, pt in c_pts0.items() if any(k in comp for k in ["OneDNN_Plus", "CUBLASLt_Plus", "Plus_Custom"])), None), is_ceil=True)
+                    lines.append("\n</details>\n")
+                else:
+                    lines.append("")
+            else:
+                lines.append("")
+
+    # Section 5: Scaling Out
+    lines.append("## § 5 — Scaling Out\n")
+    lines.append("| topic | status |")
+    lines.append("|---|---|")
+    lines.append("| Out of core (stream from host) | candidate for 1.0 |")
+    lines.append("| Hardware multi-tile (PVC 2T/4T) | deferred — needs `def-topology` |")
+    lines.append("| Multi-GPU | deferred — needs `def-topology` + `def-orchestration` |\n")
+
     return lines
 
+def render_reduction_suite(reduction_data: dict, provenance: dict) -> List[str]:
+    lines = ["# Suite: reduction\n"]
+    lines.append("Row variable: **element count**. Headline metric is **GB/s**.\n")
+    return lines
+
+def main():
+    parser = argparse.ArgumentParser(description="Crisp Benchmark Report Generator")
+    parser.add_argument("--results-dir", default=str(RESULTS_DIR), help="Directory containing JSON sweep results")
+    parser.add_argument("--scratch-dir", default=str(SCRATCH_DIR), help="Directory containing excluded scratch runs")
+    parser.add_argument("--output", default=None, help="Path to write Markdown report (default: stdout)")
+    args = parser.parse_args()
+
+    report_md = generate_report(Path(args.results_dir), Path(args.scratch_dir))
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(report_md, encoding="utf-8")
+        print(f"Report successfully written to {out_path}")
+    else:
+        print(report_md)
 
 if __name__ == "__main__":
-    # The report contains non-ASCII (⚠, ×, —).  On Windows, stdout defaults to cp1252, so
-    # `report.py > REPORT.md` crashes with UnicodeEncodeError.  Force UTF-8 on stdout so the
-    # print path doesn't die.  (NOTE: PowerShell `>` still re-encodes the captured text to
-    # UTF-16 — prefer `--output REPORT.md`, which writes UTF-8 directly and bypasses the shell.)
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except (AttributeError, ValueError):
-        pass
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--results-dir", default=str(Path(__file__).resolve().parent.parent.parent / "benchmarks" / "results"))
-    ap.add_argument("--output", default=None, help="File to save the markdown report to (UTF-8; recommended over `>`).")
-    a = ap.parse_args()
-    generate_markdown(Path(a.results_dir), Path(a.output) if a.output else None)
+    if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+    main()

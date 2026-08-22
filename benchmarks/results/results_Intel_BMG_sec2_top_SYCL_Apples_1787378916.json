@@ -1,0 +1,95 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-08-22T06:08:35.753603Z",
+    "hardware": {
+      "gpu_model": "Intel BMG",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null
+    },
+    "crisp_commit": "077cd54",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "sec2_top",
+  "competitor": "SYCL_Apples",
+  "precision": "fast",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 256,
+        "n": 256,
+        "k": 256,
+        "warmup": 20,
+        "iters": 100
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1876.248836517334,
+          "all_compile_ms": 4268.862009048462
+        },
+        "runtime": {
+          "wall_time_ms": 274.8,
+          "kernel_execution_ms": 0.02194
+        },
+        "throughput": {
+          "tflops": 1.5290899999999998,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "warmup": 20,
+        "iters": 100
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1876.248836517334,
+          "all_compile_ms": 4268.862009048462
+        },
+        "runtime": {
+          "wall_time_ms": 163.08,
+          "kernel_execution_ms": 0.05221
+        },
+        "throughput": {
+          "tflops": 5.141649999999999,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "warmup": 20,
+        "iters": 100
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1876.248836517334,
+          "all_compile_ms": 4268.862009048462
+        },
+        "runtime": {
+          "wall_time_ms": 204.54,
+          "kernel_execution_ms": 0.21330000000000002
+        },
+        "throughput": {
+          "tflops": 10.06771,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    }
+  ],
+  "is_canonical": true
+}

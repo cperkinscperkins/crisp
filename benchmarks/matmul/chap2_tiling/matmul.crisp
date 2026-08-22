@@ -1,0 +1,23 @@
+;; Crisp Tiled MMA Matmul (tf32): C[M x N] = A[M x K] . B[K x N]
+;; Section 1 Chapter 2 baseline: matrix-multiply-tile-stride macro.
+;; The first rung that introduces the unified tile-stride macro.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      :body
+      (load-tile-at A A-tile ((* grid-y (to-ulong 64)) (* grid-k (to-ulong 8))))
+      (load-tile-at B B-tile ((* grid-k (to-ulong 8)) (* grid-x (to-ulong 64))))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+      (sync-workgroup))))
