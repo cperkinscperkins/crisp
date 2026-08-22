@@ -68,6 +68,80 @@ def sh(cmd, **kw):
     print("  $", " ".join(str(c) for c in cmd), file=sys.stderr)
     return subprocess.run([str(c) for c in cmd], **kw)
 
+# --------------------------------------------------------------------------------------
+# §5 of plan/benchmark-harness.md — verification does not scale, and it is the real ceiling.
+#
+# The generated auto-bench harness validates with a HOST reference matmul: an OpenMP'd but
+# cache-hostile triple loop, O(N^3).  At N=16384 that is 8.8 TFLOP (~a minute); at N=32768 it is
+# 7.0e13 FLOP (many minutes) plus three 4.3 GB host allocations.  The NVIDIA canonical size list
+# goes to 32768 where Intel's stops at 16384, which is why this bit on an H100 and not on BMG.
+#
+# The harness prints its BENCH line BEFORE the reference check.  So we do not need a compiler-side
+# "bench without verify" flag (there isn't one -- --mma-bench implies --mma-test): we stream the
+# child's output, and above VERIFY_MAX_N we stop at BENCH and terminate it.  Correctness is still
+# established at every size <= VERIFY_MAX_N, which is the split §5 asks for -- the tile loops are
+# the same code at 16384 as at 2048.
+#
+# Every benchmark child also gets a WALL TIMEOUT.  Verification is not the only way to hang: a
+# deadlocking kernel (cluster/barrier chapters have a known padded-grid failure mode) would
+# otherwise wedge the whole sweep with no diagnostic.  A timeout turns that into one lost point.
+# --------------------------------------------------------------------------------------
+VERIFY_MAX_N   = 2048     # full host-reference verification at or below this size
+BENCH_TIMEOUT  = 900.0    # seconds per benchmark binary, verification included
+_BENCH_RE      = re.compile(r'^\s*BENCH\b')
+
+def should_full_verify(n: int) -> bool:
+    """Full host-reference verification only for N <= VERIFY_MAX_N (§5)."""
+    return n <= VERIFY_MAX_N
+
+def run_bench_proc(cmd, *, verify: bool, timeout: float = BENCH_TIMEOUT, cwd=None, env=None):
+    """Run a benchmark binary, streaming stdout.
+
+    Returns (output_text, status) where status is one of "ok", "early" (stopped at BENCH by
+    design), "timeout", or "error".  stderr is folded into stdout so a parse failure still shows
+    the child's complaint.
+    """
+    import threading
+    cmd = [str(c) for c in cmd]
+    print("  $", " ".join(cmd), file=sys.stderr)
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, bufsize=1, cwd=cwd, env=env)
+    except OSError as e:
+        return (f"failed to launch: {e}", "error")
+
+    lines, state = [], {"early": False}
+
+    def _reader():
+        try:
+            for line in p.stdout:
+                lines.append(line)
+                if not verify and _BENCH_RE.match(line):
+                    state["early"] = True
+                    return          # got the number; the host reference is not worth waiting for
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+    t.join(timeout)
+    timed_out = t.is_alive()
+
+    if timed_out or state["early"]:
+        p.kill()
+    try:
+        p.wait(timeout=10)
+    except Exception:
+        pass
+    t.join(2)
+
+    out = "".join(lines)
+    if timed_out:
+        return (out, "timeout")
+    if state["early"]:
+        return (out, "early")
+    return (out, "ok" if p.returncode == 0 else "error")
+
 def time_compile(cmd, **kw):
     t0 = time.time()
     res = sh(cmd, **kw)
@@ -110,11 +184,20 @@ def time_device_only_compile(compiler, flags, src_path, out_dir, is_sycl):
 def run_bin(path, M, N, K, warmup, iters, env_extra=None):
     env = dict(os.environ)
     if env_extra: env.update(env_extra)
-    p = sh([path, str(M), str(N), str(K), str(warmup), str(iters)], cwd=str(HERE/"crisp"), capture_output=True, text=True, env=env)
+    # cwd is the BINARY'S OWN directory.  This used to be HERE/"crisp", which the benchmark
+    # reorganisation removed along with the technique-named chapters -- a non-existent cwd makes
+    # Popen raise rather than run.  A competitor binary lives in its chapter dir and any relative
+    # file it wants is there too.
+    out, status = run_bench_proc([path, M, N, K, warmup, iters],
+                                 verify=True,          # competitor harnesses emit JSON, not BENCH
+                                 cwd=str(Path(path).parent), env=env)
+    if status != "ok":
+        print(f"  ! {Path(path).name} {M}x{N}x{K}: {status}\n{out[-800:]}", file=sys.stderr)
+        return None
     try:
-        return json.loads(p.stdout)
+        return json.loads(out)
     except Exception:
-        print(p.stdout, p.stderr, file=sys.stderr)
+        print(out[-800:], file=sys.stderr)
         return None
 
 def build_harness():
@@ -141,7 +224,8 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
         final_all_compile_ms = compile_all_ms + driver_jit
 
         point = SweepPoint(
-            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it},
+            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
+                           "verified": bool(out.get("verified", True))},
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(device_compile_ms=compile_dev_ms, all_compile_ms=final_all_compile_ms), 
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0), kernel_execution_ms=out.get("kernel_median_us", 0.0)/1000.0),
@@ -186,13 +270,21 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
     c = sh(["nvcc", "-O3", "-arch=sm_90a", "-Xcompiler", "-fopenmp", *nvcc_math, str(cu), "-o", str(exe), "-lcuda"], capture_output=True, text=True)
     if c.returncode != 0:
         print("autobench nvcc failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
-    p = sh([str(exe)], capture_output=True, text=True)
-    out = (p.stdout or "") + (p.stderr or "")
+    verify = should_full_verify(N)
+    out, status = run_bench_proc([str(exe)], verify=verify)
+    if status == "timeout":
+        print(f"  ! autobench {N}^3 TIMED OUT after {BENCH_TIMEOUT:.0f}s — skipping point", file=sys.stderr)
+        return None
     m = re.search(r'BENCH\s+matmul\s+\d+x\d+x\d+:\s*([\d.]+)\s*GFLOPS\s*\(([\d.eE+-]+)\s*ms/iter\)', out)
     if not m:
-        print("autobench parse failed:\n" + out[-800:], file=sys.stderr); return None
+        print(f"autobench parse failed (status={status}):\n" + out[-800:], file=sys.stderr); return None
+    # Above VERIFY_MAX_N the child is terminated before its host reference runs, so there is no
+    # MMA_CORRECT to find.  Report correctness as None (unknown) rather than False, so a caller
+    # cannot mistake "not checked at this size" for "checked and wrong".
     return {"gflops": float(m.group(1)), "kernel_median_us": float(m.group(2)) * 1000.0,
-            "correct": ("MMA_CORRECT" in out), "wall_time_ms": 0.0, "driver_jit_ms": 0.0}
+            "correct": ("MMA_CORRECT" in out) if verify else None,
+            "verified": verify,
+            "wall_time_ms": 0.0, "driver_jit_ms": 0.0}
 
 def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, iters,
                         precision, ftz, dev_c_ms, crisp_compiler):
@@ -210,11 +302,15 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
         out = run_crisp_autobench(src, grid_tile, S, S, S, crisp_compiler, prec_flags, nvcc_math)
         if not out:
             continue
-        if not out.get("correct", False):
+        # correct is None when the size is above VERIFY_MAX_N and the host reference was
+        # deliberately not run (§5).  Only a MEASURED failure discards the point; "not checked"
+        # must not be read as "wrong", or every large size would silently vanish from the report.
+        if out.get("correct") is False:
             print(f"  ! {chapter} ({comp_name}) {S}^3: NOT MMA_CORRECT — skipping point", file=sys.stderr)
             continue
         results.append(SweepPoint(
-            configuration={"m": S, "n": S, "k": S, "warmup": warmup, "iters": iters},
+            configuration={"m": S, "n": S, "k": S, "warmup": warmup, "iters": iters,
+                           "verified": bool(out.get("verified", True))},
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms,
                                                 all_compile_ms=dev_c_ms + out.get("driver_jit_ms", 0.0)),
@@ -257,11 +353,14 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     if c.returncode != 0:
         print("autobench-l0 build failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
     
-    p = sh([str(exe)], capture_output=True, text=True)
-    out = (p.stdout or "") + (p.stderr or "")
+    verify = should_full_verify(N)
+    out, status = run_bench_proc([str(exe)], verify=verify)
+    if status == "timeout":
+        print(f"  ! autobench-l0 {N}^3 TIMED OUT after {BENCH_TIMEOUT:.0f}s — skipping point", file=sys.stderr)
+        return None
     m = re.search(r'BENCH\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s*GFLOPS\s*\((\d+)\s*iters,\s*([\d.eE+-]+)\s*s\)', out)
     if not m:
-        print("autobench-l0 parse failed:\n" + out[-800:], file=sys.stderr); return None
+        print(f"autobench-l0 parse failed (status={status}):\n" + out[-800:], file=sys.stderr); return None
     gflops = float(m.group(4))
     secs = float(m.group(6))
     iters_ran = int(m.group(5))
@@ -271,7 +370,9 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     return {"gflops": gflops, "kernel_median_us": k_us,
             "timing_method": method.group(1) if method else "batched_submit_legacy",
             "compile_ms": compile_ms, "hoist_ms": hoist_ms,
-            "correct": ("MMA_CORRECT" in out), "wall_time_ms": 0.0, "driver_jit_ms": 0.0}
+            "correct": ("MMA_CORRECT" in out) if verify else None,
+            "verified": verify,
+            "wall_time_ms": 0.0, "driver_jit_ms": 0.0}
 
 def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
                            precision, ftz, dev_c_ms, crisp_compiler):
@@ -296,11 +397,15 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
         if out.get("compile_ms", 0.0) > 0.0:
             measured_c_ms = out["compile_ms"]
             measured_hoist_ms = out.get("hoist_ms", 0.0)
-        if not out.get("correct", False):
+        # correct is None when the size is above VERIFY_MAX_N and the host reference was
+        # deliberately not run (§5).  Only a MEASURED failure discards the point; "not checked"
+        # must not be read as "wrong", or every large size would silently vanish from the report.
+        if out.get("correct") is False:
             print(f"  ! {chapter} ({comp_name}) {S}^3: NOT MMA_CORRECT — skipping point", file=sys.stderr)
             continue
         results.append(SweepPoint(
-            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it},
+            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
+                           "verified": bool(out.get("verified", True))},
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(device_compile_ms=measured_c_ms or dev_c_ms,
                                                 all_compile_ms=(measured_c_ms + measured_hoist_ms) or dev_c_ms),
@@ -328,11 +433,16 @@ def _resolve_cxx_and_l0_link():
 def run_l0_bin(path, M, N, K, warmup, iters, env_extra=None):
     env = dict(os.environ)
     if env_extra: env.update(env_extra)
-    p = sh([path, str(M), str(N), str(K), str(warmup), str(iters)], capture_output=True, text=True, env=env)
+    # Timeout only: this harness emits JSON on completion rather than a BENCH line, so there is
+    # nothing to stop early at -- but it still must not be able to wedge the sweep.
+    out, status = run_bench_proc([path, M, N, K, warmup, iters], verify=True, env=env)
+    if status != "ok":
+        print(f"  ! {Path(path).name} {M}x{N}x{K}: {status}\n{out[-600:]}", file=sys.stderr)
+        return None
     try:
-        return json.loads(p.stdout)
+        return json.loads(out)
     except Exception:
-        print(p.stdout, (p.stderr or "")[-600:], file=sys.stderr)
+        print(out[-600:], file=sys.stderr)
         return None
 
 def build_l0_harness(crisp_compiler):
@@ -372,7 +482,8 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
         if not out:
             continue
         results.append(SweepPoint(
-            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it},
+            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
+                           "verified": bool(out.get("verified", True))},
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms, all_compile_ms=dev_c_ms),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
