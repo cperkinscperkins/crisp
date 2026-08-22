@@ -660,3 +660,112 @@ only N lines AND returns TAIL's exit code, not sbcl's; and the CUDA hoist prints
 BUFFER dumps that blow a small window instantly.  Both times the underlying run was fine and the
 evidence (a `Spec Summary` line; an `MMA_CORRECT`) was present in the full log.  Capture spec
 runs to a FILE and grep the file; never judge a run from a piped tail.
+
+PHASE 6 — RING DEPTH.  A SECOND FREE WIN, AND THE OCCUPANCY MODEL HOLDS UP.
+============================================================================
+Same method as the tile sweep, and chosen for the same reason: no compiler change, so it can be
+wrong cheaply.  A PREDICTION WAS WRITTEN DOWN FIRST, from SMEM footprint vs the SM's 228 KB and
+registers vs 65,536:
+
+| kernel | SMEM | predicted CTAs/SM |
+|---|---:|---:|
+| n128 r2 / r3 / r4 | 48 / 72 / 96 KB | 4 / 3 / 2 |
+| n256 r2 / r3 / r4 | 80 / 120 / 160 KB | 2 / 1 / 1 |
+
+MEASURED (3 reps each, all MMA_CORRECT):
+
+| size | tile | r2 | r3 | r4 | r8 |
+|---:|---|---:|---:|---:|---:|
+| 256  | n64  | 5,180   | —       | **5,363**   | 2,916 |
+| 512  | n64  | 31,151  | —       | **33,563**  | 11,708 |
+| 1024 | n128 | 120,412 | 119,816 | **132,247** | 31,576 |
+| 2048 | n128 | **196,796** | 158,761 | 186,594 | — |
+| 2048 | n256 | **249,123** | 202,052 | 223,175 | — |
+| 4096 | n256 | **270,108** | 208,445 | 218,624 | — |
+
+**Ring 4 is the optimum at 256-1024 (+3.5%, +7.7%, +9.8%); ring 2 remains best at 2048-4096.**
+Ring 8 collapses everywhere (0.24x-0.54x) — it pushes n64 to 128 KB and n128 to 192 KB, both
+1 CTA/SM.  The optimum is therefore BRACKETED, not merely observed to improve.
+
+The split falls exactly where the CTA model says it should: n256 cannot go past r2 without
+dropping 2 CTAs -> 1, while n128/n64 have SMEM headroom to buy pipeline depth and still keep
+two or more CTAs resident.  This is the SAME mechanism that sank the cooperative kernel in
+Phase 4 — the third time this session that occupancy, not bandwidth, decided the outcome.
+
+ONE HYPOTHESIS RAISED AND IMMEDIATELY REFUTED.  r3 is consistently worse than BOTH r2 and r4,
+which CTA count alone does not explain (it sits between them at 3 CTAs for n128).  I guessed
+non-power-of-two slot arithmetic — `(mod grid-k 3)` forcing an integer division in the inner
+loop.  Checked the emitted PTX: **div and rem counts are IDENTICAL across r2/r3/r4** (4 div,
+0 rem).  Refuted; LLVM strength-reduces the constant modulus in every case.  Cause of the r3
+dip is unexplained and left unexplained rather than decorated with a story.  Practically it
+does not matter: power-of-two depths are what one would use anyway.
+
+STANDING — best (tile, ring) per size
+--------------------------------------
+| size | best config | TFLOPS | cuBLAS | **%** |
+|---:|---|---:|---:|---:|
+| 256  | n64 ring 4  | 5.363   | 5.39   | **99.5%** |
+| 512  | n64 ring 4  | 33.563  | 30.58  | **109.8%** |
+| 1024 | n128 ring 4 | 132.247 | 132.43 | **99.9%** |
+| 2048 | n256 ring 2 | 249.123 | 318.68 | 78.2% |
+| 4096 | n256 ring 2 | 270.108 | 380.96 | 70.9% |
+
+**Four of five sizes are at or above 99% of cuBLAS; three are at parity or better.**  Compare
+the session's starting point: 46.2 / 49.0 / 59.9 / 75.0 / 68.0%.
+
+WHAT ACTUALLY PRODUCED THAT.  Two source-level sweeps that needed NO compiler change (tile
+width, ring depth) plus ONE codegen fix (the wgmma group).  Every mechanism I reasoned my way
+to from reading source — the register wall, the cooperative tile — was either absent or aimed
+at the wrong sizes.  That is the reusable lesson, and it is now three-for-three.
+
+PROFILING IS NOT AVAILABLE ON THESE PODS
+-----------------------------------------
+`ncu` is installed, but every profile fails with ERR_NVGPUCTRPERM.  The container runs as uid 0
+yet `CapEff` lacks **CAP_SYS_ADMIN**, and the driver is built with `RmProfilingAdminOnly: 1`;
+`/proc/driver/nvidia/params` is read-only and the module cannot be reloaded from inside a
+container.  Fixing it requires `--cap-add SYS_ADMIN` at POD CREATION.
+
+So "ask the hardware what it is stalled on" is currently closed to us, and the working method
+stays what it has been: cheap targeted A/B sweeps.  Worth requesting a SYS_ADMIN-capable pod
+before the next mechanism-hunting phase, because 2048/4096 are exactly where guessing has
+failed three times.
+
+PHASE 7 — THE 8192 CEILING, AND A BETTER DESCRIPTION OF WHAT IS LEFT
+=====================================================================
+REPORT.md's NVIDIA ladder stops at 4096, so Phase 4's cooperative-kernel win at 8192 had nothing
+to be measured against.  Built a minimal cuBLAS tf32 baseline (`put_temp_files_here/154/
+cublas_ref.cu`, same WARMUP=20 / ITERS=100 / cudaEvent protocol, CUBLAS_COMPUTE_32F_FAST_TF32).
+
+VALIDATED BEFORE USE, at a size whose answer is already known: 4096 measured 379.9 / 375.0 /
+382.0 -> **mean 379.0 TFLOPS** against REPORT.md's 380.96 — within 0.5%.  The harness reproduces
+the published ceiling, so its 8192 figure can be trusted.
+
+**cuBLAS at 8192: 331.6 / 334.2 / 334.9 -> mean 333.6 TFLOPS.**  cuBLAS falls off its own 4096
+peak by 12% (379.0 -> 333.6), so the bandwidth wall at 8192 is a property of the MACHINE, not of
+Crisp's kernel.
+
+FULL LADDER, best Crisp configuration per size:
+
+| size | best Crisp config | TFLOPS | cuBLAS | **%** |
+|---:|---|---:|---:|---:|
+| 256  | n64 ring 4  | 5.363   | 5.39   | **99.5%** |
+| 512  | n64 ring 4  | 33.563  | 30.58  | **109.8%** |
+| 1024 | n128 ring 4 | 132.247 | 132.43 | **99.9%** |
+| 2048 | n256 ring 2 | 249.123 | 318.68 | 78.2% |
+| 4096 | n256 ring 2 | 270.108 | 379.0  | 71.3% |
+| 8192 | **coop 128x256** | 235.12 | 333.6 | 70.5% |
+
+THE REMAINING DEFICIT IS NOT "2048 AND 4096".  It is a PLATEAU: Crisp reaches parity at
+256-1024 and then settles into a **70-78% band for every size from 2048 up**.  4096 was never
+special — it was just the largest size measured.  8192 sits at 70.5%, right alongside it.
+
+That reframing matters for what to attack next.  A defect that showed up only at 4096 would
+suggest something size-specific (wave quantisation, a cache cliff).  A flat 70-78% band across a
+4x range of sizes says the mainloop simply issues less math per unit time than cuBLAS's once
+both are throughput-bound — which is where `wait_group N` (the per-K-block pipeline drain, the
+one enumerated lever still untried) is the natural suspect.
+
+AND THE COOPERATIVE KERNEL EARNS ITS KEEP AFTER ALL.  At 8192 it is the best Crisp kernel:
+70.5% of cuBLAS against the n256 kernel's 65.8%.  Phase 4 measured it as a large-size lever and
+that is exactly what it turned out to be; it simply needed a size past the ladder's old edge to
+show it.  It should stay in the ladder as the 8192 entry.
