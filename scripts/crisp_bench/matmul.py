@@ -763,7 +763,13 @@ def main():
             # §2 — Top MMA Benchmarks (All 4 contender classes)
             run_target("sec2_top", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
             run_target("sec2_top", "cuda_control.cu", "cuda_control", "CUDA_Apples", nvcc_flags)
-            run_target("sec2_top", "cutlass_peer.cu", "cutlass_peer", "CUTLASS", ["-O3", "-std=c++17", "-arch=sm_90a", "-I/workspace/cutlass/include"])
+            # CUTLASS include is REPO-RELATIVE, matching how SYCL-TLA is located below.  It used
+            # to be the absolute "-I/workspace/cutlass/include" -- a path specific to one RunPod
+            # volume that nothing ever created, so on every other machine the contender silently
+            # took its "headers not found" branch.  scripts/setup-third-party.sh provisions this.
+            cutlass_inc = HERE.parent.parent / "third_party" / "cutlass" / "include"
+            run_target("sec2_top", "cutlass_peer.cu", "cutlass_peer", "CUTLASS",
+                       ["-O3", "-std=c++17", "-arch=sm_90a", f"-I{cutlass_inc}"])
             run_target("sec2_top", "cublas_ceiling.cu", "cublas_ceiling", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §3 Situational — CLUSTERS + TMA MULTICAST (DSMEM)

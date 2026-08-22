@@ -108,11 +108,23 @@ def _is_crisp(name: str) -> bool:
 def _is_control(name: str) -> bool:
     return any(k in name for k in ["Apples", "CUDA_Apples", "SYCL_Apples"])
 
-def _is_peer(name: str) -> bool:
-    return any(k in name for k in ["CUTLASS", "SYCL-TLA", "CUB", "oneDPL"])
-
 def _is_ceiling(name: str) -> bool:
     return any(k in name for k in ["CUBLAS", "cuBLAS", "OneMKL", "oneMKL", "oneDNN", "CUBLASLt", "cuBLASLt"])
+
+def _is_peer(name: str) -> bool:
+    # CEILING WINS.  "CUB" (NVIDIA's CUB library) is a PREFIX OF "CUBLAS", so a plain substring
+    # test classified CUBLAS_Optimal as a peer -- and since the peer column takes the best-scoring
+    # peer, cuBLAS was printed in the CUTLASS column.  That is how the H100 table came to show
+    # Peer and Ceiling identical at every size while CUTLASS had in fact recorded 0.0 TFLOPS at
+    # every size (its harness could not find the CUTLASS headers).  A fabricated competitor row is
+    # worse than a missing one.
+    #
+    # Fixed by precedence rather than by word-boundary matching: `\bCUB\b` would correctly reject
+    # CUBLAS but would ALSO reject the "SYCL-TLA_BF16" style names the bf16 section builds, since
+    # the trailing "_" is a word character.  Anything that is a ceiling is not a peer.
+    if _is_ceiling(name):
+        return False
+    return any(k in name for k in ["CUTLASS", "SYCL-TLA", "CUB", "oneDPL"])
 
 def _platform_of(gpu: str) -> str:
     return "intel" if "intel" in gpu.lower() or "bmg" in gpu.lower() else "nvidia"

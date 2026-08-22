@@ -53,6 +53,15 @@ sbcl --non-interactive --load build/build.lisp
 trap 'rm -f bin/crisp-compile bin/crisp-hoist-l0 bin/crisp-hoist-cuda 2>/dev/null' EXIT
 echo ''
 
+# Provision the PEER library (SYCL-TLA).  third_party/ lives in the bind-mounted repo, so this
+# persists on the host across container runs and costs nothing after the first.  Without it the
+# SYCL-TLA contender cannot build and the report's Peer column is empty -- and on Intel the peer
+# is the ONLY contender reaching the bf16 matrix engines at full rate, so its absence hides the
+# largest gap in the ladder.
+echo '=== Provisioning peer libraries ==='
+bash scripts/setup-third-party.sh sycl-tla 2>&1 | tail -6 ||     echo '  (peer provisioning failed — SYCL-TLA contenders will be skipped)'
+echo ''
+
 echo "=== Running matmul.py (Intel/BMG) — sizes=${SIZES} iters=${ITERS} precision=${PRECISION} ==="
 # --platform=intel: Crisp via SPIR-V/L0 (crisp-compile --hardware-profile=bmg + the L0 fixed harness),
 # SYCL_Apples + OneMKL_Optimal via icpx (the CUDA/cuBLAS targets auto-skip — no nvcc here).  JSON lands

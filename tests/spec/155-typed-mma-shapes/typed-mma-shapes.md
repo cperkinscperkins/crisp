@@ -18,13 +18,13 @@ H100 NVL plus the standing BMG data, says one thing louder than anything else:
 | SYCL-TLA bf16 (**Peer**) | **237.5** |
 
 BMG's matrix engines deliver roughly **18x** what Crisp currently reaches in tf32, and Crisp
-cannot address them at all.  There is no NVIDIA bf16 section in the report whatsoever — not
+records nothing against them.  There is no NVIDIA bf16 section in the report whatsoever — not
 attempted, not skipped.
 
-And it is worse than "not implemented": `benchmarks/results/` holds **SEVEN**
-`sec2_top_bf16_Crisp_*.json` files and **every one has `results: []`**.  The kernel is being
-attempted, repeatedly, and producing nothing.  Whatever is wrong fails quietly enough that six
-re-runs did not make it obvious.
+`benchmarks/results/` holds **SEVEN** `sec2_top_bf16_Crisp_*.json` files and **every one has
+`results: []`**.  The kernel is being attempted, repeatedly, and producing nothing, quietly
+enough that six re-runs did not make it obvious.  Phase 0 below establishes why — and it is NOT
+the reason any of us assumed.
 
 That is the whole case.  Every other item below is real but smaller.
 
@@ -37,17 +37,19 @@ That is the whole case.  Every other item below is real but smaller.
 `src/mma.lisp`:
 
 ```lisp
-:mma-shapes ((8 16 8))                      ; bmg   — XMX tf32
-:mma-shapes ((16 8 8) (16 8 4) (16 8 16))   ; h100  — tf32 / and NOT tf32
+:mma-shapes ((8 16 8) (8 16 16) (8 16 32))  ; bmg  — XMX tf32, bf16/fp16, int8
+:mma-shapes ((16 8 8) (16 8 4) (16 8 16))   ; h100 — tf32 / and NOT tf32
 ```
 
-A shape triple alone cannot say **what element type it is a shape FOR**, and the native shape
-differs by type on both vendors.  So a profile cannot currently express "this device does
-`(8 16 16)` in bf16 and `(8 16 8)` in tf32", and `%check-mma-shape` has no type to validate
-against.  That is the gap this endeavour closes.
+A shape triple alone cannot say **what element type it is a shape FOR**.  Both profiles already
+LIST shapes belonging to several types; the type is recorded only in the trailing comment, where
+no code can reach it.
 
-Note the h100 list already mixes tf32 and non-tf32 shapes with no way to tell them apart —
-so the untyped form is not merely incomplete, it is already ambiguous.
+So the defect is not that bf16 shapes are missing — they are present and they pass.  It is that
+`%check-mma-shape` can only ask "is this triple in the list", which makes it **vacuous in both
+directions**: a tf32 kernel requesting the bf16 shape is accepted just as readily, and a profile
+has no way to state which element types the device supports at all.  That is the gap this
+endeavour closes.
 
 ---
 
@@ -72,20 +74,71 @@ are the load-bearing ones: read the emitted instruction, then run it.
 
 ---
 
-## Phase 0 — diagnose before designing  (DO THIS FIRST)
+## Phase 0 — DONE 2026-08-22.  The diagnosis changed the endeavour.
 
-Seven empty result files mean the current failure is not understood.  Before touching the
-profile schema, establish:
+The working assumption (mine and Chris's) was "the bf16 kernels fail to compile because
+`:mma-shapes` is untyped".  **That is not what happens.**  Measured, not assumed:
 
-1. Does `benchmarks/matmul/sec2_top_bf16/matmul_bmg_bf16.crisp` **compile**?  To what?
-2. Does its harness (`matmul_bmg_bf16_bench_l0`) **run**, and what does it print?
-3. Is the empty `results: []` a compile failure, a run failure, or a parse failure in the driver?
+```
+$ ./bin/crisp-compile.exe --ir-target=spv --hardware-profile=bmg --math-precision=fast       benchmarks/matmul/sec2_top_bf16/matmul_bmg_bf16.crisp
+WARNING: kernel MATMUL needs 384 registers/thread (3072 register-tile elements x 4 B / 32 B per
+GRF register), exceeding every selectable allocation (128 256) in the hardware profile — it will
+SPILL in any mode.
+; ...All compilation passes finished.
+```
 
-It is entirely possible the answer changes the shape of this endeavour — e.g. if bf16 lowers
-but the DPAS shape is wrong, that is a narrower fix than a schema change.  **Do not assume the
-schema is the blocker until the current failure is named.**
+It **compiles**, and emits a 30 KB `.spv`.  Two separate things are actually wrong, and only one
+of them is the shape schema.
 
----
+### 1. The shapes list already carries bf16 — but the TYPE is in a comment
+
+`src/mma.lisp` (bmg profile) has already been extended:
+
+```lisp
+:mma-shapes ((8 16 8) (8 16 16) (8 16 32))   ; XMX tf32, bf16/fp16, int8
+```
+
+So `(8 16 16)` passes `%check-mma-shape`'s membership test and the kernel is accepted.  The
+element type each shape belongs to exists only in that trailing comment — it is not data, so
+nothing can validate against it.  The consequence is not "bf16 is rejected"; it is that **the
+check is vacuous in both directions**: a tf32 kernel asking for the bf16 shape would be accepted
+just as readily, and a profile cannot say which types it supports at all.
+
+h100 has the same defect and it is already visibly ambiguous there:
+`((16 8 8) (16 8 4) (16 8 16))` mixes tf32 and non-tf32 shapes with no way to tell them apart.
+
+### 2. The Intel GRF register model hardcodes 4 BYTES PER ELEMENT
+
+`src/mma.lisp::%spv-kernel-register-demand`:
+
+```lisp
+(values (ceiling (* elements 4) *spv-grf-register-bytes*) elements)
+```
+
+That `4` is an element width, applied regardless of type.  bfloat16 is **two** bytes, so every
+bf16 register tile is counted at exactly double its real size:
+
+| | GRF registers/thread | fits? |
+|---|---:|---|
+| counted as 4 B (today) | **384** | exceeds BOTH selectable modes (128, 256) |
+| actual, at 2 B | **192** | **fits the 256 mode** |
+
+So the compiler believes this kernel must spill in every available allocation, when in truth it
+fits the large-GRF mode.  That is the far likelier cause of the seven empty result files than
+anything about shapes — and it is a second, independent place where the compiler is blind to
+element width.
+
+### What Phase 0 changes about this endeavour
+
+The endeavour is not "make `:mma-shapes` typed so bf16 compiles".  bf16 already compiles.  It is:
+
+> **The compiler is type-blind about element width in at least two places — MMA shape selection
+> and Intel register accounting — and bf16 is where that stops being harmless.**
+
+Still to establish (needs a BMG run): what the emitted `.spv` actually does at run time, and
+whether fixing the byte width alone is enough to produce a number.  Do that BEFORE the schema
+work, because it may turn out that (2) is the whole bug and (1) is a correctness/hygiene fix
+rather than the unblocker.
 
 ## Secondary items, in the order the report justifies them
 

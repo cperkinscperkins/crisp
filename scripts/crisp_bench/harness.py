@@ -29,10 +29,13 @@ def classify_contender(name: str) -> ContenderClass:
         return ContenderClass.CRISP
     if any(k in name_clean for k in ["Apples", "cuda_apples", "sycl_apples"]):
         return ContenderClass.CONTROL
-    if any(k in name_clean for k in ["CUTLASS", "SYCL-TLA", "CUB", "oneDPL"]):
-        return ContenderClass.PEER
+    # CEILING IS TESTED FIRST, deliberately.  "CUB" (NVIDIA's CUB library) is a PREFIX OF
+    # "CUBLAS", so with PEER first every cuBLAS/cuBLASLt contender classified as a PEER.  See the
+    # note on report.py::_is_peer for what that did to the published table.
     if any(k in name_clean for k in ["CUBLAS", "cuBLAS", "OneMKL", "oneMKL", "oneDNN", "CUBLASLt", "cuBLASLt"]):
         return ContenderClass.CEILING
+    if any(k in name_clean for k in ["CUTLASS", "SYCL-TLA", "CUB", "oneDPL"]):
+        return ContenderClass.PEER
     return ContenderClass.CONTROL
 
 @dataclass

@@ -200,6 +200,15 @@ sbcl --non-interactive --load build/build.lisp 2>&1 | tail -5
 BUILD
 echo ""
 
+# --- 4a. Provision the PEER libraries (CUTLASS / SYCL-TLA) ---
+#
+# Without these the peer contender silently takes its "headers not found" branch and the report's
+# Peer column is empty -- which removes the only contender that answers "is 77% of cuBLAS good?".
+# Idempotent: an existing checkout is reported and left alone, so re-runs cost nothing.
+echo "--- Step 4a: provision peer libraries ---"
+pod_run "cd ${WORK_DIR} && bash scripts/setup-third-party.sh 2>&1 | tail -8"
+echo ""
+
 # --- 4b. Clear the pod's results dir so the pull is precise ---
 #
 # The pod cloned the repo, so benchmarks/results/ already contains every committed result from
