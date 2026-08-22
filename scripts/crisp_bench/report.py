@@ -402,7 +402,44 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
 
             lines.append(f"| {s} | {c_str} | {ctrl_str} | {peer_str} | {ceil_str} | {vs_peer} | {vs_ceil} |")
 
-        lines.append("")
+        # Compile time summary table
+        def _fmt_ms(ms):
+            if ms is None or ms <= 0: return "—"
+            return f"{ms/1000.0:.2f} s" if ms >= 1000 else f"{int(round(ms))} ms"
+
+        c_pt0 = _best_pt(_is_crisp)
+        ctrl_pt0 = _best_pt(_is_control)
+        peer_pt0 = _best_pt(_is_peer)
+        ceil_pt0 = _best_pt(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+
+        c_dev = c_pt0.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if c_pt0 else 0.0
+        c_build = c_pt0.get("metrics", {}).get("compile_time", {}).get("all_compile_ms", 0.0) if c_pt0 else 0.0
+
+        if c_dev > 0 or c_build > 0:
+            target_ir = "SPIR-V" if platform == "intel" else "PTX"
+            lines.append("\n<details><summary><b>Compilation & Build Overhead</b></summary>\n")
+            lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Crisp codegen** |")
+            lines.append("|---|---|---:|---:|---:|")
+
+            def _row(name, role, pt, is_ceil=False):
+                if not pt: return
+                cm = pt.get("metrics", {}).get("compile_time", {})
+                d_ms = cm.get("device_compile_ms", 0.0)
+                a_ms = cm.get("all_compile_ms", 0.0)
+                if is_ceil:
+                    lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                    return
+                if d_ms <= 0 and a_ms <= 0: return
+                ratio = f"**{d_ms / c_dev:.1f}× slower**" if c_dev > 0 and d_ms > c_dev * 1.05 else ("1.00×" if c_dev > 0 and abs(d_ms - c_dev) < 10 else f"{d_ms / c_dev:.2f}×")
+                lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
+
+            _row("Crisp", "Crisp", c_pt0)
+            _row(ctrl_label, "Control", ctrl_pt0)
+            _row(peer_label, "Peer", peer_pt0)
+            _row(ceil_label, "Ceiling", ceil_pt0, is_ceil=True)
+            lines.append("\n</details>\n")
+        else:
+            lines.append("")
 
     # Section 3: Situational Techniques
     lines.append("## § 3 — Situational Techniques\n")
@@ -421,6 +458,77 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
     lines.append("|---|---|---|")
     lines.append("| cuBLASLt, oneDNN (**Ceiling**) | **No** — fixed enum / post-op set | **capability** — off-menu costs 2nd kernel + HBM round trip |")
     lines.append("| CUTLASS, SYCL-TLA (**Peer**) | **Yes** — monomorphised functor | **expressiveness & compile time** (~165× faster build) |\n")
+
+    for gpu in gpus:
+        platform = _platform_of(gpu)
+        lines.append(f"### {gpu} · tf32 · `fast`\n")
+
+        # Ch 1: Fused ReLU
+        relu_data = matmul_data[gpu].get("sec4_fused_relu", {}).get("fast", {}) or matmul_data[gpu].get("chap5_fused_epilogue", {}).get("fast", {})
+        if relu_data:
+            lines.append("#### Ch 1 — Standard Epilogue (ReLU)\n")
+            peer_relu_label = "CUTLASS Fused" if platform == "nvidia" else "SYCL-TLA Fused"
+            ceil_relu_label = "cuBLASLt Fused" if platform == "nvidia" else "oneDNN Fused"
+            ceil_plus_label = "cuBLAS + ReLU" if platform == "nvidia" else "oneMKL + ReLU"
+            lines.append(f"| N | Crisp Fused | **Peer**<br>{peer_relu_label} | **Ceiling**<br>{ceil_relu_label} | Baseline+2nd Kernel<br>{ceil_plus_label} | vs Peer | vs Ceiling |")
+            lines.append("|---:|---:|---:|---:|---:|---:|---:|")
+
+            r_sizes = sorted([s for s in relu_data.keys() if isinstance(s, int) and s >= 256])
+            for s in r_sizes:
+                pts = relu_data[s]
+                c_pt = next((pt for comp, pt in pts.items() if "Crisp" in comp), None)
+                p_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None)
+                ceil_fused_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["OneDNN_Fused", "CUBLASLt_Fused"])), None)
+                ceil_plus_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["Plus_Relu"])), None)
+
+                def _fmt(pt):
+                    if not pt: return "—"
+                    tf = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                    ms = pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms")
+                    return f"{tf:.1f} ({ms:.3f})" if tf else "—"
+
+                c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
+                p_tf = p_pt.get("metrics", {}).get("throughput", {}).get("tflops") if p_pt else None
+                cf_tf = ceil_fused_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_fused_pt else None
+
+                vs_p = format_ratio(c_tf, p_tf)
+                vs_cf = format_ratio(c_tf, cf_tf, as_pct=True)
+
+                lines.append(f"| {s} | {_fmt(c_pt)} | {_fmt(p_pt)} | {_fmt(ceil_fused_pt)} | {_fmt(ceil_plus_pt)} | {vs_p} | {vs_cf} |")
+            lines.append("")
+
+        # Ch 2: Fused Custom
+        custom_data = matmul_data[gpu].get("sec4_fused_custom", {}).get("fast", {}) or matmul_data[gpu].get("chap6_fused_custom", {}).get("fast", {})
+        if custom_data:
+            lines.append("#### Ch 2 — Custom Epilogue (Arbitrary User Function)\n")
+            lines.append("> *Ceilings (oneDNN / cuBLASLt) cannot fuse arbitrary user functions — forced to pay 2nd kernel + HBM round-trip.*\n")
+            peer_custom_label = "CUTLASS Fused" if platform == "nvidia" else "SYCL-TLA Fused"
+            ceil_plus_label = "cuBLASLt + Custom" if platform == "nvidia" else "oneDNN + Custom"
+            lines.append(f"| N | Crisp Fused | **Peer**<br>{peer_custom_label} | Ceiling (2nd Kernel)<br>{ceil_plus_label} | vs Peer | **vs Ceiling (2nd Kernel)** |")
+            lines.append("|---:|---:|---:|---:|---:|---:|")
+
+            c_sizes = sorted([s for s in custom_data.keys() if isinstance(s, int) and s >= 256])
+            for s in c_sizes:
+                pts = custom_data[s]
+                c_pt = next((pt for comp, pt in pts.items() if "Crisp" in comp), None)
+                p_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["TLA", "CUTLASS"])), None)
+                ceil_plus_pt = next((pt for comp, pt in pts.items() if any(k in comp for k in ["OneDNN_Plus", "CUBLASLt_Plus", "Plus_Custom"])), None)
+
+                def _fmt(pt):
+                    if not pt: return "—"
+                    tf = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                    ms = pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms")
+                    return f"{tf:.1f} ({ms:.3f})" if tf else "—"
+
+                c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
+                p_tf = p_pt.get("metrics", {}).get("throughput", {}).get("tflops") if p_pt else None
+                cp_tf = ceil_plus_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_plus_pt else None
+
+                vs_p = format_ratio(c_tf, p_tf)
+                vs_cp = format_ratio(c_tf, cp_tf, as_pct=True)
+
+                lines.append(f"| {s} | {_fmt(c_pt)} | {_fmt(p_pt)} | {_fmt(ceil_plus_pt)} | {vs_p} | {vs_cp} |")
+            lines.append("")
 
     # Section 5: Scaling Out
     lines.append("## § 5 — Scaling Out\n")

@@ -4,7 +4,7 @@
 
 | device | data captured | source |
 |---|---|---|
-| Intel BMG | 2026-08-22 | Crisp `f1d4d77` (docker) |
+| Intel BMG | 2026-08-22 | Crisp `c174dd5` (docker) |
 | NVIDIA H100 NVL | 2026-08-19 | Crisp `unknown` (runpod) |
 
 ---
@@ -272,6 +272,17 @@ wgmma
 | 8192 | 13.7 (80.362) | 7.6 (144.065) | 7.5 (147.327) | 14.2 (77.562) | **1.83×** | 97% |
 | 16384 | 10.4 (845.229) | 4.9 (1810.277) | 4.8 (1826.209) | 14.4 (611.614) | **2.16×** | 72% |
 
+<details><summary><b>Compilation & Build Overhead</b></summary>
+
+| contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 714 ms | 1.52 s | 1.00× |
+| **SYCL_Apples** | Control | 1.91 s | 4.23 s | **2.7× slower** |
+| **SYCL-TLA** | Peer | 1.88 s | 4.34 s | **2.6× slower** |
+| **oneMKL** | Ceiling | *precompiled* | 7.45 s | — |
+
+</details>
+
 ### NVIDIA H100 NVL · tf32 · `fast`
 
 | N | Crisp | Control<br>CUDA_Apples | **Peer**<br>CUTLASS | Ceiling<br>cuBLAS | vs Peer | vs Ceiling |
@@ -281,6 +292,16 @@ wgmma
 | 1024 | 79.7 (0.027) | — | 141.3 (0.015) | 141.3 (0.015) | 0.56× | 56% |
 | 2048 | 238.2 (0.072) | — | 322.7 (0.053) | 322.7 (0.053) | 0.74× | 74% |
 | 4096 | 257.1 (0.535) | — | 381.6 (0.360) | 381.6 (0.360) | 0.67× | 67% |
+
+<details><summary><b>Compilation & Build Overhead</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 568 ms | 568 ms | 1.00× |
+| **CUTLASS** | Peer | 604 ms | 1.89 s | **1.1× slower** |
+| **cuBLAS** | Ceiling | *precompiled* | 1.89 s | — |
+
+</details>
 
 ## § 3 — Situational Techniques
 
@@ -301,6 +322,58 @@ wgmma
 |---|---|---|
 | cuBLASLt, oneDNN (**Ceiling**) | **No** — fixed enum / post-op set | **capability** — off-menu costs 2nd kernel + HBM round trip |
 | CUTLASS, SYCL-TLA (**Peer**) | **Yes** — monomorphised functor | **expressiveness & compile time** (~165× faster build) |
+
+### Intel BMG · tf32 · `fast`
+
+#### Ch 1 — Standard Epilogue (ReLU)
+
+| N | Crisp Fused | **Peer**<br>SYCL-TLA Fused | **Ceiling**<br>oneDNN Fused | Baseline+2nd Kernel<br>oneMKL + ReLU | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 3.1 (0.011) | 1.5 (0.022) | 5.5 (0.006) | 3.8 (0.009) | **2.05×** | 57% |
+| 512 | 9.6 (0.028) | 5.2 (0.052) | 9.8 (0.027) | 8.5 (0.031) | **1.87×** | 98% |
+| 1024 | 21.4 (0.101) | 10.1 (0.212) | 13.3 (0.162) | 11.2 (0.191) | **2.11×** | **161%** |
+| 2048 | 24.2 (0.710) | 11.2 (1.533) | 14.0 (1.223) | 13.2 (1.303) | **2.16×** | **172%** |
+| 4096 | 16.8 (8.192) | 9.6 (14.278) | 14.3 (9.585) | 13.9 (9.901) | **1.74×** | 117% |
+| 8192 | 11.6 (94.964) | 7.6 (144.648) | 14.5 (76.082) | 13.9 (78.936) | **1.52×** | 80% |
+| 16384 | 7.3 (1199.990) | 4.9 (1809.792) | 14.5 (608.352) | 14.2 (617.297) | **1.51×** | 51% |
+
+#### Ch 2 — Custom Epilogue (Arbitrary User Function)
+
+> *Ceilings (oneDNN / cuBLASLt) cannot fuse arbitrary user functions — forced to pay 2nd kernel + HBM round-trip.*
+
+| N | Crisp Fused | **Peer**<br>SYCL-TLA Fused | Ceiling (2nd Kernel)<br>oneDNN + Custom | vs Peer | **vs Ceiling (2nd Kernel)** |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 3.1 (0.011) | 1.5 (0.022) | 3.7 (0.009) | **2.03×** | 84% |
+| 512 | 9.5 (0.028) | 5.1 (0.052) | 8.5 (0.032) | **1.85×** | 111% |
+| 1024 | 21.2 (0.101) | 10.1 (0.212) | 11.3 (0.190) | **2.09×** | **187%** |
+| 2048 | 24.3 (0.707) | 11.2 (1.533) | 13.2 (1.306) | **2.17×** | **185%** |
+| 4096 | 16.4 (8.398) | 9.6 (14.364) | 13.8 (9.979) | **1.71×** | 119% |
+| 8192 | 12.4 (89.018) | 7.4 (147.819) | 13.9 (78.963) | **1.66×** | 89% |
+| 16384 | 10.1 (869.512) | 4.9 (1790.884) | 14.3 (617.185) | **2.06×** | 71% |
+
+### NVIDIA H100 NVL · tf32 · `fast`
+
+#### Ch 1 — Standard Epilogue (ReLU)
+
+| N | Crisp Fused | **Peer**<br>CUTLASS Fused | **Ceiling**<br>cuBLASLt Fused | Baseline+2nd Kernel<br>cuBLAS + ReLU | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 2.5 (0.014) | — | 2.8 (0.012) | 2.2 (0.015) | — | 89% |
+| 512 | 14.9 (0.018) | — | 18.2 (0.015) | 13.3 (0.020) | — | 82% |
+| 1024 | 79.9 (0.027) | — | 79.0 (0.027) | 61.0 (0.035) | — | 101% |
+| 2048 | 234.1 (0.073) | — | 264.2 (0.065) | 211.4 (0.081) | — | 89% |
+| 4096 | 253.7 (0.542) | — | 365.8 (0.376) | 321.0 (0.428) | — | 69% |
+
+#### Ch 2 — Custom Epilogue (Arbitrary User Function)
+
+> *Ceilings (oneDNN / cuBLASLt) cannot fuse arbitrary user functions — forced to pay 2nd kernel + HBM round-trip.*
+
+| N | Crisp Fused | **Peer**<br>CUTLASS Fused | Ceiling (2nd Kernel)<br>cuBLASLt + Custom | vs Peer | **vs Ceiling (2nd Kernel)** |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 2.5 (0.014) | — | 1.6 (0.021) | — | **155%** |
+| 512 | 14.9 (0.018) | — | 12.3 (0.022) | — | 121% |
+| 1024 | 79.1 (0.027) | — | 57.2 (0.038) | — | 138% |
+| 2048 | 235.9 (0.073) | — | 206.2 (0.083) | — | 114% |
+| 4096 | 257.1 (0.535) | — | 315.7 (0.435) | — | 81% |
 
 ## § 5 — Scaling Out
 

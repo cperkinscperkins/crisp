@@ -579,28 +579,28 @@ def main():
             run_target("sec2_top", "cublas_ceiling.cu", "cublas_ceiling", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §3 Situational — CLUSTERS + TMA MULTICAST (DSMEM)
-            run_target("chap4_cluster_multicast", "matmul_tile128.crisp",
+            run_target("sec3_cluster_multicast", "matmul_tile128.crisp",
                        "matmul_tile128.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,128")
-            run_target("chap4_cluster_multicast", "matmul_tile128_multicast.crisp",
+            run_target("sec3_cluster_multicast", "matmul_tile128_multicast.crisp",
                        "matmul_tile128_multicast.ptx", "Crisp_Multicast", [], is_crisp=True,
                        crisp_grid_tile="64,128")
-            run_target("chap4_cluster_multicast", "cublas_optimal.cu", "cublas_optimal",
+            run_target("sec3_cluster_multicast", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU
-            run_target("chap5_fused_epilogue", "matmul_wgmma_ws_relu.crisp", "matmul_wgmma_ws_relu.ptx",
+            run_target("sec4_fused_relu", "matmul_wgmma_ws_relu.crisp", "matmul_wgmma_ws_relu.ptx",
                        "Crisp_Fused_Relu", [], is_crisp=True, crisp_grid_tile="64,256")
-            run_target("chap5_fused_epilogue", "cublaslt_relu.cu", "cublaslt_relu",
+            run_target("sec4_fused_relu", "cublaslt_relu.cu", "cublaslt_relu",
                        "CUBLASLt_Fused_Relu", cublas_flags + ["-lcublasLt"], is_cublas=True)
-            run_target("chap5_fused_epilogue", "cublas_optimal.cu", "cublas_optimal",
+            run_target("sec4_fused_relu", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Plus_Relu", cublas_flags, is_cublas=True)
 
             # §4 Activation Ch 2 — Fused Custom
-            run_target("chap6_fused_custom", "matmul_wgmma_ws_custom.crisp", "matmul_wgmma_ws_custom.ptx",
+            run_target("sec4_fused_custom", "matmul_wgmma_ws_custom.crisp", "matmul_wgmma_ws_custom.ptx",
                        "Crisp_Fused_Custom", [], is_crisp=True, crisp_grid_tile="64,256")
-            run_target("chap6_fused_custom", "cublaslt_optimal.cu", "cublaslt_optimal",
+            run_target("sec4_fused_custom", "cublaslt_optimal.cu", "cublaslt_optimal",
                        "CUBLASLt_Plus_Custom", cublas_flags + ["-lcublasLt"], is_cublas=True)
-            run_target("chap6_fused_custom", "cublas_optimal.cu", "cublas_optimal",
+            run_target("sec4_fused_custom", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Plus_Custom", cublas_flags, is_cublas=True)
         else:
             # --- Intel/BMG ladder (endeavor 143) ---
@@ -635,23 +635,27 @@ def main():
             run_target("sec2_top", "onemkl_ceiling.cpp", "onemkl_ceiling", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU
-            run_l0_crisp("chap5_fused_epilogue", "matmul_bmg_prefetch_relu.crisp",
+            run_l0_crisp("sec4_fused_relu", "matmul_bmg_prefetch_relu.crisp",
                          comp_name="Crisp_Fused_Relu", use_autobench=True)
-            run_target("chap5_fused_epilogue", "sycl_apples.cpp", "sycl_apples",
+            run_target("sec4_fused_relu", "sycl_apples.cpp", "sycl_apples",
                        "SYCL_Apples_Relu", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
-            run_target("chap5_fused_epilogue", "onemkl_optimal.cpp", "onemkl_optimal",
+            run_target("sec4_fused_relu", "sycl_tla_relu.cpp", "sycl_tla_relu",
+                       "SYCL-TLA_Fused_Relu", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            run_target("sec4_fused_relu", "onemkl_optimal.cpp", "onemkl_optimal",
                        "OneMKL_Plus_Relu", sycl_flags, is_sycl=True, is_cublas=True)
-            run_target("chap5_fused_epilogue", "onednn_fused.cpp", "onednn_fused",
+            run_target("sec4_fused_relu", "onednn_fused.cpp", "onednn_fused",
                        "OneDNN_Fused_Relu", sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
 
             # §4 Activation Ch 2 — Fused Custom
-            run_l0_crisp("chap6_fused_custom", "matmul_bmg_prefetch_custom.crisp",
+            run_l0_crisp("sec4_fused_custom", "matmul_bmg_prefetch_custom.crisp",
                          comp_name="Crisp_Fused_Custom", use_autobench=True)
-            run_target("chap6_fused_custom", "sycl_apples.cpp", "sycl_apples",
+            run_target("sec4_fused_custom", "sycl_apples.cpp", "sycl_apples",
                        "SYCL_Apples_Custom", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
-            run_target("chap6_fused_custom", "onemkl_optimal.cpp", "onemkl_optimal",
+            run_target("sec4_fused_custom", "sycl_tla_custom.cpp", "sycl_tla_custom",
+                       "SYCL-TLA_Fused_Custom", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            run_target("sec4_fused_custom", "onemkl_optimal.cpp", "onemkl_optimal",
                        "OneMKL_Plus_Custom", sycl_flags, is_sycl=True, is_cublas=True)
-            run_target("chap6_fused_custom", "onednn_optimal.cpp", "onednn_optimal",
+            run_target("sec4_fused_custom", "onednn_optimal.cpp", "onednn_optimal",
                        "OneDNN_Plus_Custom", sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
 
 if __name__ == "__main__":
