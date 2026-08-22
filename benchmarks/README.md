@@ -31,19 +31,33 @@ Benchmarks are organized topologically by algorithm and "Chapter" (representing 
 ```text
 benchmarks/
   matmul/
-    chap0_sync/             # Basic synchronous tiling (no tensor cores)
-    chap1_async_linear/     # Asynchronous linear pipelining
-    chap1.5_async_block/    # (NVIDIA-only) Block-level async (TMA) + tf32 MMA tensor cores
-    chap2_pipelined_block/  # (NVIDIA-only) Deep software pipelining + tf32 MMA
-    chap3_wgmma/            # (NVIDIA-only) Hopper warpgroup async MMA (wgmma) — the tensor-core headline
-    intel_prefetch/         # (Intel-only) Register-ring + Subgroup2DBlockPrefetch pipeline
-    crisp/                  # The Crisp C++ runner harnesses (chap0/chap1 only)
-  results/                  # Output directory for raw JSON sweeps
+    # §1 — MMA Techniques (Technique Ladder with Control)
+    chap0_naive/                # Ch 0: Naive scalar loops (no tensor cores)
+    chap1_handrolled_mma/       # Ch 1: Hand-rolled tensor core instructions
+    chap2_tiling/               # Ch 2: Synchronous hardware tiling (matrix-multiply-tile-stride)
+    chap3_async/                # Ch 3: Asynchronous staging (cp.async / OpGroupAsyncCopy)
+    chap4_cheap_fetch/          # Ch 4: Cheap fetch (TMA CUtensorMap / Register-resident load)
+    chap5_multistage_ring/      # Ch 5: Multi-stage pipeline (SMEM ring / Register ring prefetch)
+    chap6_warp_specialization/  # Ch 6: Warp specialization (sm_90+ asynchronous staging)
+    chap7_wgmma/                # Ch 7: Wide math (Hopper WGMMA 64x256)
+
+    # §2 & §2.1 — Top MMA Benchmarks (All Contender Classes)
+    sec2_top/                   # TF32/FP32 Top MMA (Crisp vs Apples vs CUTLASS vs cuBLAS/oneMKL)
+    sec2_top_bf16/              # BF16 Top MMA (270+ TFLOPS Matrix Engines)
+
+    # §3 — Situational Techniques
+    sec3_cluster_multicast/     # TMA Multicast controlled pairs (64x128 vs 64x256)
+
+    # §4 — MMA + Activation (Fused Epilogues)
+    sec4_fused_relu/            # Ch 1: Standard Epilogue (Fused ReLU)
+    sec4_fused_custom/          # Ch 2: Custom Epilogue (Arbitrary User Function)
+
+  results/                      # Canonical JSON benchmark results
   scripts/
     crisp_bench/
-      harness.py            # Reusable JSON sweep definitions
-      matmul.py             # Driver to execute matmul sweeps
-      report.py             # Generates Markdown tables from JSONs
+      harness.py                # Reusable JSON sweep definitions & dataclasses
+      matmul.py                 # Driver to execute matmul sweeps
+      report.py                 # Markdown report generator (produces REPORT.md)
 ```
 
 ## How to Run & Generate Reports
