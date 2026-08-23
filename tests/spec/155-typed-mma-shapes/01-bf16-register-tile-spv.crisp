@@ -1,0 +1,80 @@
+;; Endeavour 155 rung 01 — a bf16 register tile must reach the hardware as bf16.
+;;
+;; WHAT THIS PINS.  `(make-register-tile bfloat16 ...)` must produce a cooperative matrix whose
+;; COMPONENT TYPE is 16-bit, and the module must request SPV_KHR_bfloat16.  Before endeavour 155
+;; the element type was discarded outright:
+;;
+;;     (elem (first args))
+;;     ...
+;;     (declare (ignore elem))          ; tf32/fp32 fixed for now
+;;
+;; so a bf16 tile silently produced float32 matrices.  The benchmark kernel
+;; benchmarks/matmul/sec2_top_bf16/matmul_bmg_bf16.crisp COMPILED CLEANLY the whole time and
+;; emitted a module containing exactly ONE float type -- 32-bit -- and no 16-bit type at all.
+;; `bfloat16` survived only in mangled parameter NAMES.
+;;
+;; WHY A COMPILE-ONLY CHECK IS USELESS HERE, and this is the whole point of the rung.  The
+;; pre-155 kernel compiled.  It produced a .spv.  It ran.  It simply computed with the wrong
+;; element type, and the only visible symptom was seven benchmark result files containing
+;; `results: []` -- which nobody chased for six re-runs.  A validator must therefore read the
+;; EMITTED TYPES, not the exit code.
+;;
+;; THE ACCUMULATOR IS DELIBERATELY float, NOT bfloat16.  XMX/DPAS (and the NVIDIA tensor cores)
+;; take bf16 operands and accumulate in fp32.  A module carrying BOTH a 16-bit and a 32-bit float
+;; type is the correct shape for mixed-precision MMA -- so the validator asserts both are present,
+;; and would fail an "everything is bf16" regression just as readily as the old all-f32 one.
+;;
+;; NEW VALIDATOR: validate-spv-bf16-coop -- a 16-bit float type exists, at least one cooperative
+;; matrix uses it, a 32-bit float type ALSO exists (the accumulator), and SPV_KHR_bfloat16 is
+;; declared.
+;;
+;; ===================================================================
+;; STATUS 2026-08-22: RED, and deliberately left BEYOND ci-stop (which sits at 154-nvidia-perf).
+;;
+;; The IMPLEMENTATION this rung describes is DONE and verified by hand -- the bf16 benchmark
+;; kernel now emits `TypeFloat 396 16`, two cooperative matrices using it, an f32 accumulator
+;; beside them, and SPV_KHR_bfloat16.  What is not done is WIRING THIS SPEC INTO THE HARNESS.
+;;
+;; Three obstacles, all in the runner rather than the compiler, and all worth fixing on their
+;; own account:
+;;   1. --ir-target=spv resolves the validator in :CRISP.COMPILER and passes ONE argument (the
+;;      .spv path); the in-process paths resolve in :CRISP.SPEC-RUNNER.  (152 hit this too and
+;;      worked around it by defining the name in both packages -- done here as well.)
+;;   2. Adding --math-precision to a TEST-WITH silently re-routes the spec to
+;;      run-spec-precision-pass, which hands the validator the LLVM IR TEXT instead.
+;;   3. --hardware-profile in a TEST-WITH was SILENTLY DROPPED.  Fixed in the spec-runner
+;;      overlay (run-single-spec-pass binds it, run-spec-spirv-binary forwards it), mirroring
+;;      what endeavour 137 did for --ir-target-arch -- but this rung still does not go green,
+;;      so at least one more path is dropping it.
+;;
+;; Left red ON PURPOSE.  ci-stop is this project's mechanism for "TDD tests we have not yet
+;; implemented", and a rung that documents a real harness gap is worth more than one deleted to
+;; keep a suite green.  Move ci-stop to 155-typed-mma-shapes when it passes.
+;; ===================================================================
+;;
+;; SKIP-DEFAULT-PASS
+;; NOTE: --math-precision is NOT in the TEST-WITH.  Including it routes the spec to
+;; run-spec-precision-pass, which hands the validator the LLVM IR TEXT rather than the .spv
+;; path — a different contract entirely.  The kernel sets precision in-source via
+;; (declaim (precision fast)), so the flag is redundant here anyway.
+;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-bf16-coop
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel bf16_tile (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K (inner-dimension A B)))
+    (tile-stride C (8 16) (grid-y grid-x)
+      (let ((A-tile (make-register-tile bfloat16 (8 16) 0.0 :operand :a))
+            (B-tile (make-register-tile bfloat16 (16 16) 0.0 :operand :b))
+            (C-tile (make-register-tile float (8 16) 0.0)))
+        (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x))
+          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

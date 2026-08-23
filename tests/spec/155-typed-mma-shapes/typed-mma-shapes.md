@@ -275,3 +275,77 @@ CAVEAT on these: they are a blend of today's run with 25 older files via `alt_ke
 treat them as indicative rather than exact until that is resolved.  The Crisp figures at
 2048/4096 do agree closely with endeavour 154's independent measurements (78.2% / 71.3%), which
 is the main reason to trust the shape of the curve.
+
+PHASE 1 — ELEMENT TYPE THREADED END TO END.  bf16 REACHES THE HARDWARE INSTRUCTION.
+====================================================================================
+2026-08-22.  All changes in `overlays/crisp-compiler-overlay.lisp`, each with a
+NOTE FOR THE SRC PATCH.  **1028/1028 specs, 218/218 negative, 291/291 unit.**
+
+THE RESULT, stated as the artefact rather than the intent.  Disassembling
+`benchmarks/matmul/sec2_top_bf16/matmul_bmg_bf16.spv`:
+
+| | before | after |
+|---|---|---|
+| float/int types | `TypeFloat 259 32` only | `TypeFloat 259 32` **and `TypeFloat 396 16`** |
+| coop matrices | 3, all component `259` (f32) | **5: three f32, two bf16** |
+| extensions | coop_matrix, 2d_block_io | + **`SPV_KHR_bfloat16`** |
+| GRF verdict | "384 regs — will SPILL in any mode" | "256 regs — selecting the 256-register mode" |
+
+The bf16 operands and the f32 accumulator now coexist in one module, which is what a
+mixed-precision MMA IS.
+
+WHAT HAD TO CHANGE, and it was five layers rather than one
+-----------------------------------------------------------
+Each was invisible until the one above it was fixed — the reason this could not be planned in
+advance, and the reason the endeavour was scoped wrongly twice.
+
+1. `analyze-make-register-tile` — deleted `(declare (ignore elem))`; threads the type into the
+   fragments it generates.
+2. `%explode-register-tiles` — binds `elem` from the constructor form in BOTH branches (tile and
+   ring) and passes `:elem` down.
+3. `analyze-make-register-fragment` — new `:elem` key (default `float`, so every existing caller
+   is unchanged); it reaches the coop-matrix component type and the GRF byte tally.
+4. `%coop-elem-of` (new) + `load-fragment-a` / `-b` — the component type is DERIVED from the
+   operand's tensor, mirroring how `%coop-layout-of` already derives the memory layout.
+5. `%coop-mma` — declares the MulAdd signature from `LLVMTypeOf` of the actual A/B/C values
+   instead of rebuilding all three from one element type.
+
+Plus `%module-uses-bfloat-p` + `compile-to-spirv`, to request `SPV_KHR_bfloat16` only when a
+bfloat type is actually present.
+
+ACCUMULATORS ARE DELIBERATELY STILL f32.  XMX/DPAS and the NVIDIA tensor cores take bf16
+operands and accumulate in fp32, so an f32 accumulator beside bf16 operands is correct.  Only A
+and B were routed through `%coop-elem-of`; `analyze-mma-accumulate`'s f32 accumulator type was
+left alone on purpose.
+
+THE GRF BYTE WIDTH — the "fix" this endeavour nearly made first, and why the order mattered
+--------------------------------------------------------------------------------------------
+`%spv-kernel-register-demand` now tallies BYTES (`%elem-bytes`) rather than elements-times-four.
+Doing this FIRST — as the original plan proposed — would have produced a register model that was
+precisely wrong about real code, because the compiler still emitted float32 and 4 B/element was
+the truth about it.  The model only became safe to change once the emitted type changed.
+
+THREE TRAPS HIT WHILE DOING THIS, all worth remembering
+--------------------------------------------------------
+- **Retyping a function from memory.** My first `analyze-make-register-fragment` dropped the
+  `:rows/:cols/:use/:layout` fields, flattened the PTX register demand (really
+  `(:acc 4) (:a 4) (:b 2)`), and collapsed three fragment struct types into one — it would have
+  broken NVIDIA silently.  Caught by reading the original before installing.  Everything after
+  that was EXTRACTED FROM SOURCE PROGRAMMATICALLY rather than retyped.
+- **`src/compiler.lisp` is CRLF; `src/mma.lisp` is LF.**  A multi-line search string with `\n`
+  silently fails to match the CRLF file.  Normalise on extraction.
+- **`:crisp.compiler` shadows `char`, `float`, `let`, `when`, `unless`, `cond` and `return`**
+  (src/package.lisp).  `(char ir i)` resolves to the Crisp TYPE and fails with
+  "The function CRISP.COMPILER:CHAR is undefined".  The sibling predicates use `return-from`,
+  never bare `return` — that is the house style for this reason.
+
+STILL OPEN
+-----------
+- **Not run on hardware.**  The SPIR-V contains bf16 coop matrices; whether BMG executes them
+  correctly is unmeasured.  That needs a BMG run and is the next step.
+- **NVIDIA bf16 untouched.**  The PTX fragment records are tf32/f32 by construction
+  (`register-fragment-a-tf32-16x8` etc.) and this phase deliberately did not touch them.
+- **Typed `:mma-shapes` not yet done** — and Phase 1 makes the case for it sharper, not weaker.
+  Nothing currently stops a bf16 tile pairing with a tf32 shape; the profile lists
+  `((8 16 8) (8 16 16) (8 16 32))` with the types recorded only in a comment.  That is now the
+  guard rail on work already done, which is the right time to build it.

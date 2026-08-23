@@ -402,3 +402,225 @@
                     (~ ,src r c) (~ ,src (+ r 4) c)))))
            env context location)))))
 
+
+
+;; src/compiler.lisp
+(defun %module-uses-bfloat-p (module)
+  "T if MODULE contains the LLVM `bfloat` TYPE — used to add --spirv-ext=+SPV_KHR_bfloat16 only
+   when needed, matching how the coop-matrix and 2d-block-io extensions are gated.
+
+   Endeavour 155.  Once the element type actually reaches codegen, a bf16 register tile lowers to
+   `target(\"spirv.CooperativeMatrixKHR\", bfloat, ...)`, and llvm-spirv refuses the module without
+   this extension:
+
+       RequiresExtension: Feature requires the following SPIR-V extension:
+        SPV_KHR_bfloat16
+
+   MATCHES THE TYPE, NOT THE SUBSTRING.  Crisp mangles element types into parameter names, so a
+   bf16 kernel's IR contains `parent__tensor_bfloat16_2_global_compact_last` whether or not any
+   bfloat VALUE exists — which is exactly what it looked like BEFORE this endeavour, when every
+   matrix was silently float32.  A bare (search \"bfloat\" ir) would therefore report true for a
+   module containing no bfloat type at all.  Requiring the next character to be a non-identifier
+   character separates the type token `bfloat,` / `bfloat)` / `bfloat ` from the name fragment
+   `bfloat16_2_...`.
+
+   NOTE the CL: qualifications.  :crisp.compiler SHADOWS char (it is the Crisp scalar TYPE, not
+   the accessor) and return, among others — see the shadow list in src/package.lisp.  The sibling
+   predicates here use RETURN-FROM for the same reason."
+  (cl:let* ((ir  (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
+            (len (cl:length ir))
+            (pos 0))
+    (cl:loop
+      (cl:let ((i (cl:search "bfloat" ir :start2 pos)))
+        (cl:unless i (return-from %module-uses-bfloat-p nil))
+        (cl:let* ((after (cl:+ i 6))
+                  (ch    (cl:when (cl:< after len) (cl:char ir after))))
+          (cl:when (cl:or (cl:null ch)
+                          (cl:not (cl:or (cl:alphanumericp ch) (cl:char= ch #\_))))
+            (return-from %module-uses-bfloat-p t)))
+        (cl:setf pos (cl:1+ i))))))
+
+;; src/compiler.lisp  (REPLACES the one at src/compiler.lisp:605)
+(defun compile-to-spirv (module output-path &key debug-p)
+  "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
+  (let* ((base-path (uiop:pathname-directory-pathname output-path))
+         (name (pathname-name output-path))
+         (ll-file     (merge-pathnames (format nil "~a.temp.ll" name) base-path))
+         (ll-opt-file (merge-pathnames (format nil "~a.opt.ll"  name) base-path))
+         (bc-file     (merge-pathnames (format nil "~a.temp.bc" name) base-path))
+         (spv-file output-path))
+    (%remove-dead-array-returning-functions module)
+    (llvm-set-target module "spir64-unknown-unknown")
+    (when (or (%module-uses-native-builtin-p module)
+              (%module-uses-async-copy-builtin-p module))
+      (%emit-opencl-version-metadata module))
+    (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
+           (ir-with-metadata (inject-spir-kernel-metadata ir)))
+      (with-open-file (stream ll-file :direction :output :if-exists :supersede)
+        (write-string ir-with-metadata stream)))
+    (let* ((opt-ok        (%run-opt-pipeline ll-file ll-opt-file +spv-opt-pipeline+))
+           (llvm-as-input (if opt-ok ll-opt-file ll-file)))
+      (let ((tool (resolve-tool-executable "llvm-as")))
+        (run-tool-command
+         (list tool (namestring llvm-as-input) "-o" (namestring bc-file))
+         :log-prefix "[SPIR-V] ")))
+    (let* ((tool (resolve-tool-executable "llvm-spirv"))
+           (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
+           (ext-flags (append '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
+                              (when (%module-uses-coop-matrix-p module)
+                                '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
+                              (when (%module-uses-2d-block-io-p module)
+                                '("--spirv-ext=+SPV_INTEL_2d_block_io"))
+                              ;; 155: a bf16 register tile lowers to a `bfloat` coop matrix,
+                              ;; which llvm-spirv refuses without this extension.
+                              (when (%module-uses-bfloat-p module)
+                                '("--spirv-ext=+SPV_KHR_bfloat16"))))
+           (flags (append debug-flags ext-flags)))
+      (run-tool-command
+       (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
+       :log-prefix "[SPIR-V] "))
+    (unless debug-p
+      (when (probe-file ll-file)     (delete-file ll-file))
+      (when (probe-file ll-opt-file) (delete-file ll-opt-file))
+      (when (probe-file bc-file)     (delete-file bc-file)))
+    (log:info "Generated SPIR-V: ~a" spv-file)))
+
+
+;; src/mma.lisp
+(defun %coop-mma (builder module a-val b-val c-val elem-llvm m n k)
+  "Emit CooperativeMatrixMulAddKHR(A, B, C, 0) -> the MxN accumulator coop matrix.
+
+   Endeavour 155.  The declared operand types are now taken from the ACTUAL VALUES via
+   LLVMTypeOf, not rebuilt from a single ELEM-LLVM applied to all three.
+
+   WHY.  A mixed-precision MMA has two element types, not one: XMX/DPAS and the NVIDIA tensor
+   cores take bf16 (or fp16) OPERANDS and accumulate in fp32.  Rebuilding A, B and C from one
+   element type can only ever express the uniform case, so once the operand loads started
+   producing bfloat matrices the declaration still said float and llvm-spirv refused the module:
+
+       FunctionPointers: Can't translate function pointer:
+        declare target(\"spirv.CooperativeMatrixKHR\", float, 3, 8, 16, 2)
+          @__spirv_CooperativeMatrixMulAddKHR(target(...float, 3, 8, 8, 0), ...)
+
+   Deriving from the values makes the declaration correct BY CONSTRUCTION: whatever A, B and C
+   actually are is what gets declared, so the signature cannot drift from the operands again --
+   including for the fp32 case, where this is exactly what it built before.
+
+   ELEM-LLVM is retained (unused) so the lambda list is unchanged for any other caller; M, N and
+   K likewise remain for the fp32 path's shape, though the shapes now come from the values too."
+  (declare (ignorable elem-llvm m n k))
+  (let* ((a-ty (crisp.llvm-bindings::llvm-type-of a-val))
+         (b-ty (crisp.llvm-bindings::llvm-type-of b-val))
+         (c-ty (crisp.llvm-bindings::llvm-type-of c-val))
+         (i32  (crisp.llvm-bindings::llvm-int32-type)))
+    (%coop-call builder module "__spirv_CooperativeMatrixMulAddKHR"
+                c-ty (list a-ty b-ty c-ty i32)
+                (list a-val b-val c-val (crisp.llvm-bindings::llvm-const-int i32 0 nil)))))
+
+
+;;; ===================================================================
+;;; ENDEAVOUR 155 — spec validator for the bf16 coop-matrix lowering.
+;;;
+;;; Lives in :CRISP.COMPILER and takes ONE argument, because that is what the --ir-target=spv
+;;; runner path does: it resolves the validator name with (find-symbol ... :crisp.compiler) and
+;;; calls it with the OUTPUT PATH.  (The PTX path resolves in :crisp.spec-runner and passes two
+;;; arguments -- a long-standing asymmetry noted in endeavour 152.)
+;;; ===================================================================
+
+;; tests/run-specs.lisp  (spv validators are resolved in :crisp.compiler)
+(defun validate-spv-bf16-coop (spv-path)
+  "Endeavour 155 — assert a bf16 register tile reached the hardware AS bf16.
+
+   THE ASSERTION A COMPILE CHECK CANNOT MAKE.  Before 155 the element type was discarded at
+   make-register-tile, so a bf16 kernel compiled cleanly, emitted a valid .spv and ran — with
+   every cooperative matrix silently float32.  The only symptom was benchmark result files
+   containing `results: []`, which went unchased through six re-runs.  Exit codes cannot see
+   this; only the emitted types can.
+
+   Asserts, on the disassembled module:
+     1. a 16-bit float type exists              — bf16 reached codegen at all
+     2. a cooperative matrix names it           — it reached the MMA operands, not just the module
+     3. a 32-bit float type ALSO exists         — the accumulator is still fp32
+     4. SPV_KHR_bfloat16 is declared            — the module is self-consistent
+
+   (3) is not padding.  Mixed-precision MMA is bf16 operands with an fp32 accumulator, so an
+   all-bf16 module would be as wrong as the all-f32 one it replaced.  This fails both directions.
+
+   DEGRADES TO PASS when llvm-spirv is unavailable (a CUDA-only box has no bundled bin/), matching
+   %spv-contains-opcode-p: returns NIL only when the module WAS disassembled and the property is
+   definitively absent."
+  (cl:let* ((tool (resolve-tool-executable "llvm-spirv"))
+            (txt-path (cl:format cl:nil "~a.155txt" (uiop:native-namestring spv-path))))
+    (cl:multiple-value-bind (o e code)
+        (uiop:run-program (cl:list (uiop:native-namestring tool) "--to-text"
+                                   (uiop:native-namestring spv-path) "-o" txt-path)
+                          :output :string :error-output :string :ignore-error-status cl:t)
+      (cl:declare (cl:ignore o e))
+      (cl:if (cl:or (cl:not (cl:zerop code)) (cl:not (probe-file txt-path)))
+          (cl:progn
+            (cl:format cl:*error-output*
+                       "  (validate-spv-bf16-coop: llvm-spirv unavailable or failed — SKIPPING, not failing)~%")
+            cl:t)
+          (cl:let ((txt (uiop:read-file-string txt-path)))
+            (cl:ignore-errors (cl:delete-file txt-path))
+            ;; SPIR-V text form: "<id> TypeFloat <result-id> <width>" and
+            ;; "<n> TypeCooperativeMatrixKHR <result> <component-type-id> ..."
+            (cl:let* ((f16-ids (%spv-float-ids txt 16))
+                      (f32-ids (%spv-float-ids txt 32))
+                      (coop-16 (cl:some (cl:lambda (id) (%spv-coop-uses-p txt id)) f16-ids))
+                      (has-ext (cl:search "SPV_KHR_bfloat16" txt)))
+              (cl:cond
+                ((cl:null f16-ids)
+                 (cl:format cl:*error-output* "FAIL: no 16-bit float type in the module — the bf16 element type was discarded before codegen (the pre-155 behaviour: every matrix became float32).~%")
+                 cl:nil)
+                ((cl:not coop-16)
+                 (cl:format cl:*error-output* "FAIL: a 16-bit float type exists but NO cooperative matrix uses it — bf16 reached the module but not the MMA operands.~%")
+                 cl:nil)
+                ((cl:null f32-ids)
+                 (cl:format cl:*error-output* "FAIL: no 32-bit float type — a bf16 MMA accumulates in fp32, so an all-bf16 module is as wrong as an all-f32 one.~%")
+                 cl:nil)
+                ((cl:not has-ext)
+                 (cl:format cl:*error-output* "FAIL: module contains bfloat but does not declare SPV_KHR_bfloat16 — llvm-spirv would refuse it.~%")
+                 cl:nil)
+                (cl:t cl:t))))))))
+
+;; tests/run-specs.lisp
+(defun %spv-float-ids (txt width)
+  "Result-ids of every `TypeFloat <id> <width>` in a disassembled SPIR-V module, as strings."
+  (cl:let ((ids cl:nil) (pos 0))
+    (cl:loop
+      (cl:let ((i (cl:search "TypeFloat " txt :start2 pos)))
+        (cl:unless i (cl:return-from %spv-float-ids (cl:nreverse ids)))
+        (cl:let* ((rest (cl:subseq txt (cl:+ i 10) (cl:min (cl:length txt) (cl:+ i 40))))
+                  (toks (%spv-tokens rest)))
+          (cl:when (cl:and (cl:>= (cl:length toks) 2)
+                           (cl:equal (cl:second toks) (cl:princ-to-string width)))
+            (cl:push (cl:first toks) ids)))
+        (cl:setf pos (cl:1+ i))))))
+
+;; tests/run-specs.lisp
+(defun %spv-tokens (s)
+  "Whitespace-split S into a list of strings."
+  (cl:let ((out cl:nil) (cur (cl:make-string-output-stream)))
+    (cl:loop for ch across s do
+      (cl:if (cl:member ch (cl:list #\Space #\Tab #\Newline #\Return))
+          (cl:let ((tok (cl:get-output-stream-string cur)))
+            (cl:when (cl:plusp (cl:length tok)) (cl:push tok out)))
+          (cl:write-char ch cur)))
+    (cl:let ((tok (cl:get-output-stream-string cur)))
+      (cl:when (cl:plusp (cl:length tok)) (cl:push tok out)))
+    (cl:nreverse out)))
+
+;; tests/run-specs.lisp
+(defun %spv-coop-uses-p (txt type-id)
+  "T if any TypeCooperativeMatrixKHR in TXT names TYPE-ID as its COMPONENT TYPE (the token
+   immediately after the matrix's own result id)."
+  (cl:let ((pos 0))
+    (cl:loop
+      (cl:let ((i (cl:search "TypeCooperativeMatrixKHR " txt :start2 pos)))
+        (cl:unless i (cl:return-from %spv-coop-uses-p cl:nil))
+        (cl:let* ((rest (cl:subseq txt (cl:+ i 25) (cl:min (cl:length txt) (cl:+ i 80))))
+                  (toks (%spv-tokens rest)))
+          (cl:when (cl:and (cl:>= (cl:length toks) 2) (cl:equal (cl:second toks) type-id))
+            (cl:return-from %spv-coop-uses-p cl:t)))
+        (cl:setf pos (cl:1+ i))))))
