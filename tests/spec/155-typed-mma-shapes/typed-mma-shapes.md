@@ -1176,3 +1176,80 @@ FOR CONTEXT, the tf32 top kernel on the same part peaks at 16.33 TFLOPS (N=4096)
 tf32's 14.31 — i.e. Crisp BEATS the vendor library in tf32 and reaches a quarter to a half of it
 in fp16.  The gap is not in Crisp's MMA lowering, which is now correct and shape-optimal; it is in
 everything around the MMA at 16 bits.
+
+
+PHASE G — bf16 WORKS ON INTEL.  IT WAS AN ENCODING CHOICE, NOT A DRIVER WALL.
+================================================================================
+2026-08-23.
+
+Phase 2 of this document concluded that bf16 is blocked by the BMG driver, that Crisp's module was
+well-formed, and that the options were (1) wait for a driver, (2) port the lowering to
+SPV_INTEL_subgroup_matrix_multiply_accumulate, or (3) refuse bf16 in the hardware profile.  That
+conclusion was correct about the symptom and WRONG about the remedy.  There was a fourth option,
+and it is what Intel itself does.
+
+THE EXPERIMENT THAT SETTLED IT.  Compile a minimal bf16 joint_matrix kernel with Intel's own
+toolchain, translate it, and read the SPIR-V.  Then do the same in `half` as a control:
+
+    bf16:   TypeInt   25 16 0                        <- a 16-bit INTEGER, no float type at all
+            TypeCooperativeMatrixKHR 27 25 ...       <- A and B use the INTEGER component
+            CooperativeMatrixMulAddKHR 22 35 30 34 23 64
+                                                          ^^ operands mask 0x40
+            extensions: SPV_KHR_cooperative_matrix ONLY
+
+    half:   TypeFloat 25 16                          <- a real f16 float type
+            CooperativeMatrixMulAddKHR ... 0         <- mask 0
+
+So Intel carries bf16 as RAW 16-BIT INTEGERS and signals its bfloat-ness with ONE BIT on the
+MulAdd — 0x40, MatrixAAndBBFloat16ComponentsINTEL.  No bfloat type exists in the module, so
+SPV_KHR_bfloat16 is never required.
+
+TWO QUESTIONS ANSWERED, BOTH DIFFERENTLY THAN EXPECTED
+  - SPV_INTEL_bfloat16_conversion is NOT the workaround and is not needed.  It supplies SCALAR
+    f32<->bf16 conversion ops; an MMA does not use them, and Intel's own bf16 kernel does not
+    declare it.
+  - "Is it the SPIR-V intermediary?"  No.  SYCL-TLA goes through SPIR-V exactly as Crisp does,
+    with the SAME extension and the SAME opcode.  Nothing about the toolchain differs.  Crisp had
+    simply chosen the newer, more principled encoding — a genuine bfloat type — and this driver
+    only reads the older Intel-flavoured one.
+  - Corroboration: Crisp's fp16 output was ALREADY byte-for-byte what Intel emits (real f16
+    components, mask 0).  That is why fp16 worked the moment the six element-type layers were
+    fixed, and why only bf16 differed.
+
+THE CHANGE
+  - %coop-type rewrites an LLVM `bfloat` element to i16 on the SPIR-V backend.  This is the ONE
+    place every cooperative-matrix LLVM type is constructed, and putting the decision there is
+    what made every route agree.  My first attempt changed %coop-op-elem-llvm instead, which
+    covered fill / load / store / address but NOT the fragment ALLOCA — that reaches LLVM through
+    resolve-type-to-llvm — and produced a module that disagreed with itself:
+        %27 = call target("...", i16, 3, 8, 16, 0) @__spirv_CompositeConstruct_0_8_16(float 0.0)
+        ...  @__spirv_CooperativeMatrixMulAddKHR(target("...", bfloat, 3, 8, 16, 0) ...
+    Same lesson as the six layers: put the decision where the thing is CONSTRUCTED, not at each
+    site that consumes it.
+  - %coop-mma passes 0x40 when A/B are i16 matrices, 0 otherwise.
+  - %coop-coerce-scalar encodes a float literal to bf16 bits (bitcast -> lshr 16 -> trunc), so no
+    bfloat VALUE is ever created either.
+  - %module-uses-bfloat-p is now always NIL: nothing emits the bfloat type, so SPV_KHR_bfloat16 is
+    never requested — which is precisely what the driver refused.
+  - %elem-llvm-bytes learned INTEGER widths.  It computed size via a float-only lookup, so once
+    bf16 became i16 it returned NIL and fell back to 4 bytes, and %block-prefetch again described
+    a 2-byte surface as 4-byte.  The symptom was the already-seen one: a constant ~500 ms at every size
+    with wrong results — a GPU fault and reset — in the kernel that prefetches and not in the one
+    that does not.
+
+A DETECTION BUG WORTH RECORDING.  The first mask test compared A against a reconstructed
+(%coop-type i16 m k 0) and never matched.  The reason: this call site computes its shape with an
+UNTYPED (%spv-mma-shape) (src/mma.lisp:653), so K is the tf32 8 even when the operands are 16-bit
+and K is really 16.  Those arguments are unused for codegen — the types come from the values — so
+the stale shape was harmless to fp16 and bf16 alike, and only defeated a check that trusted it.
+Reading the component off the printed type is exact and depends on nothing else.
+
+RESULT ON AN ARC B580
+    simple bf16 kernel        MMA_CORRECT at N = 128, 256, 512
+    benchmark bf16 kernel     N=256 4.89   N=1024 39.48   N=2048 41.52 TFLOPS, all MMA_CORRECT
+
+which is the same throughput as fp16, as expected — XMX runs both at the same DPAS rate.
+
+REGRESSION after the encoding change (before the %elem-llvm-bytes fix): 1028/1028 E2E, 218/218
+negative, 291/291 unit, 3/3 rungs — including rung 01, whose validator now asserts the i16
+encoding rather than the bfloat one it was written for.

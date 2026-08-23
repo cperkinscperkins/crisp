@@ -459,74 +459,93 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             _row(ceil_label, "Ceiling", ceil_pt0, is_ceil=True)
             lines.append("\n</details>\n")
 
-        # §2.1 BFloat16 Top MMA Benchmarks (if available)
-        if "sec2_top_bf16" in matmul_data[gpu] and "fast" in matmul_data[gpu]["sec2_top_bf16"]:
-            bf16_data = matmul_data[gpu]["sec2_top_bf16"]["fast"]
-            lines.append(f"### {gpu} · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*\n")
-            lines.append(f"| N | Crisp BF16 | Control<br>{ctrl_label}_BF16 | **Peer**<br>{peer_label}_BF16 | Ceiling<br>{ceil_label}_BF16 | vs Peer | vs Ceiling |")
+        # §2.1 / §2.2 — 16-BIT TOP MMA SECTIONS.
+        #
+        # Endeavour 155: bf16 and fp16 share one implementation rather than two near-identical
+        # copies.  The bf16 block this replaces had drifted from §2 in a way that mattered: its
+        # "vs Peer" / "vs Ceiling" columns were computed as format_ratio(ctrl_tf or c_tf, ...),
+        # i.e. they reported the CONTROL's ratio in a table whose first column is Crisp.  With
+        # Crisp bf16 absent on this driver that went unnoticed; copying it for fp16, where Crisp
+        # DOES have data, would have published the SYCL control's ratios as Crisp's.  Both
+        # sections now use c_tf, matching §2.
+        def _emit_16bit_top(chapter_key, tag, note):
+            if chapter_key not in matmul_data[gpu] or "fast" not in matmul_data[gpu][chapter_key]:
+                return
+            data = matmul_data[gpu][chapter_key]["fast"]
+            sizes = sorted([s for s in data.keys() if isinstance(s, int)])
+            if not sizes:
+                return
+
+            lines.append(f"### {gpu} \u00b7 {tag.lower()} \u00b7 `fast` *({note})*\n")
+            lines.append(f"| N | Crisp {tag} | Control<br>{ctrl_label}_{tag} | **Peer**<br>{peer_label}_{tag} | Ceiling<br>{ceil_label}_{tag} | vs Peer | vs Ceiling |")
             lines.append("|---:|---:|---:|---:|---:|---:|---:|")
 
-            bf16_sizes = sorted([s for s in bf16_data.keys() if isinstance(s, int)])
-            for s in bf16_sizes:
-                cand_pts = [(comp, pt) for comp, pt in bf16_data[s].items()]
-                def _best_bf(predicate):
-                    matching = [pt for comp, pt in cand_pts if predicate(comp)]
-                    if not matching: return None
-                    return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
+            def _best(cand_pts, predicate):
+                matching = [pt for comp, pt in cand_pts if predicate(comp)]
+                if not matching:
+                    return None
+                return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
 
-                c_pt = _best_bf(_is_crisp)
-                ctrl_pt = _best_bf(_is_control)
-                peer_pt = _best_bf(_is_peer)
-                ceil_pt = _best_bf(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+            def _tf(pt):
+                return pt.get("metrics", {}).get("throughput", {}).get("tflops") if pt else None
 
-                c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
-                c_ms = c_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if c_pt else None
-                ctrl_tf = ctrl_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ctrl_pt else None
-                ctrl_ms = ctrl_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ctrl_pt else None
-                peer_tf = peer_pt.get("metrics", {}).get("throughput", {}).get("tflops") if peer_pt else None
-                peer_ms = peer_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if peer_pt else None
-                ceil_tf = ceil_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_pt else None
-                ceil_ms = ceil_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ceil_pt else None
+            def _ms(pt):
+                return pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if pt else None
 
-                c_str = f"{c_tf:.1f} ({c_ms:.3f})" if c_tf else "—"
-                ctrl_str = f"{ctrl_tf:.1f} ({ctrl_ms:.3f})" if ctrl_tf else "—"
-                peer_str = f"{peer_tf:.1f} ({peer_ms:.3f})" if peer_tf else "—"
-                ceil_str = f"{ceil_tf:.1f} ({ceil_ms:.3f})" if ceil_tf else "—"
+            def _cell(pt):
+                tf, ms = _tf(pt), _ms(pt)
+                return f"{tf:.1f} ({ms:.3f})" if tf else "\u2014"
 
-                vs_peer = format_ratio(ctrl_tf or c_tf, peer_tf)
-                vs_ceil = format_ratio(ctrl_tf or c_tf, ceil_tf, as_pct=True)
+            last = {}
+            for s in sizes:
+                cand = list(data[s].items())
+                c_pt = _best(cand, _is_crisp)
+                ctrl_pt = _best(cand, _is_control)
+                peer_pt = _best(cand, _is_peer)
+                ceil_pt = _best(cand, lambda k: _is_ceiling(k) and "_Plus_" not in k)
+                # Keep the last size at which EACH contender actually has a point, not the last
+                # size overall: Crisp has no 16384 entry yet, and taking the final row wholesale
+                # dropped its compile row from the table below entirely.
+                for _k, _v in (("c", c_pt), ("ctrl", ctrl_pt), ("peer", peer_pt), ("ceil", ceil_pt)):
+                    if _v is not None:
+                        last[_k] = _v
 
-                lines.append(f"| {s} | {c_str} | {ctrl_str} | {peer_str} | {ceil_str} | {vs_peer} | {vs_ceil} |")
+                c_tf = _tf(c_pt)
+                vs_peer = format_ratio(c_tf, _tf(peer_pt))
+                vs_ceil = format_ratio(c_tf, _tf(ceil_pt), as_pct=True)
 
-            c_pt0 = _best_bf(_is_crisp)
-            ctrl_pt0 = _best_bf(_is_control)
-            peer_pt0 = _best_bf(_is_peer)
-            ceil_pt0 = _best_bf(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+                lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ctrl_pt)} | {_cell(peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
 
-            ref_pt = ctrl_pt0 or peer_pt0
+            ref_pt = last.get("ctrl") or last.get("peer")
             ref_dev = ref_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if ref_pt else 0.0
 
             target_ir = "SPIR-V" if platform == "intel" else "PTX"
-            lines.append("\n<details><summary><b>Compilation & Build Overhead (BF16)</b></summary>\n")
+            lines.append(f"\n<details><summary><b>Compilation & Build Overhead ({tag})</b></summary>\n")
             lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Control codegen** |")
             lines.append("|---|---|---:|---:|---:|")
 
-            def _row_bf(name, role, pt, is_ceil=False):
-                if not pt: return
+            def _row16(name, role, pt, is_ceil=False):
+                if not pt:
+                    return
                 cm = pt.get("metrics", {}).get("compile_time", {})
                 d_ms = cm.get("device_compile_ms", 0.0)
                 a_ms = cm.get("all_compile_ms", 0.0)
                 if is_ceil:
-                    lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                    lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | \u2014 |")
                     return
-                if d_ms <= 0 and a_ms <= 0: return
-                ratio = f"**{d_ms / ref_dev:.1f}× slower**" if ref_dev > 0 and d_ms > ref_dev * 1.05 else ("1.00×" if ref_dev > 0 and abs(d_ms - ref_dev) < 10 else f"{d_ms / ref_dev:.2f}×" if ref_dev > 0 else "—")
+                if d_ms <= 0 and a_ms <= 0:
+                    return
+                ratio = f"**{d_ms / ref_dev:.1f}\u00d7 slower**" if ref_dev > 0 and d_ms > ref_dev * 1.05 else ("1.00\u00d7" if ref_dev > 0 and abs(d_ms - ref_dev) < 10 else f"{d_ms / ref_dev:.2f}\u00d7" if ref_dev > 0 else "\u2014")
                 lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
 
-            _row_bf(f"{ctrl_label}_BF16", "Control", ctrl_pt0)
-            _row_bf(f"{peer_label}_BF16", "Peer", peer_pt0)
-            _row_bf(f"{ceil_label}_BF16", "Ceiling", ceil_pt0, is_ceil=True)
+            _row16("Crisp", "Crisp", last.get("c"))
+            _row16(f"{ctrl_label}_{tag}", "Control", last.get("ctrl"))
+            _row16(f"{peer_label}_{tag}", "Peer", last.get("peer"))
+            _row16(f"{ceil_label}_{tag}", "Ceiling", last.get("ceil"), is_ceil=True)
             lines.append("\n</details>\n")
+
+        _emit_16bit_top("sec2_top_bf16", "BF16", "Native 270+ TFLOPS Matrix Engines")
+        _emit_16bit_top("sec2_top_fp16", "FP16", "Native 270+ TFLOPS Matrix Engines")
 
     # Section 3: Situational Techniques
     lines.append("## § 3 — Situational Techniques\n")

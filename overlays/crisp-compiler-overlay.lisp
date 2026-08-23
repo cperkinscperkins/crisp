@@ -2287,3 +2287,363 @@
                            (let ((res (generate-node-ir body-node builder module benv
                                                         di-builder di-scope location-map)))
                              (llvm-build-store builder res ep-a))))))))))))
+
+
+;; tests/run-specs.lisp
+(defun %spv-int-widths (txt)
+  "Alist of (type-id-string . width) for every OpTypeInt in TXT.
+   Endeavour 155: needed because a bf16 cooperative matrix's component type is an INTEGER."
+  (cl:let ((out cl:nil))
+    (cl:dolist (toks (%spv-lines txt) (cl:nreverse out))
+      (cl:when (cl:and (cl:string= (cl:second toks) "TypeInt")
+                       (cl:>= (cl:length toks) 4))
+        (cl:let ((w (cl:ignore-errors (cl:parse-integer (cl:fourth toks)))))
+          (cl:when w (cl:push (cl:cons (cl:third toks) w) out)))))))
+
+;; tests/run-specs.lisp  (REPLACES %spv-coop-matrices -- 155 bf16)
+(defun %spv-coop-matrices (txt)
+  "List of (RESULT-ID COMPONENT-WIDTH USE KIND) for every TypeCooperativeMatrixKHR in TXT.
+
+   KIND is :FLOAT or :INT — Endeavour 155, because Intel encodes a bf16 matrix as 16-bit INTEGER
+   components with the bfloat-ness carried by the MulAdd operands mask, so width alone no longer
+   identifies the element type.  Either field may be NIL when the operand is not a scalar type or
+   not a resolvable constant; callers must treat NIL as 'unknown', never as 'fine'."
+  (cl:let ((floats (%spv-float-widths txt))
+           (ints   (%spv-int-widths txt))
+           (consts (%spv-int-constants txt))
+           (out cl:nil))
+    (cl:dolist (toks (%spv-lines txt) (cl:nreverse out))
+      (cl:when (cl:and (cl:string= (cl:second toks) "TypeCooperativeMatrixKHR")
+                       (cl:>= (cl:length toks) 8))
+        (cl:let* ((comp (cl:fourth toks))
+                  (fw (cl:cdr (cl:assoc comp floats :test #'cl:string=)))
+                  (iw (cl:cdr (cl:assoc comp ints   :test #'cl:string=))))
+          (cl:push (cl:list (cl:third toks)
+                            (cl:or fw iw)
+                            (cl:cdr (cl:assoc (cl:eighth toks) consts :test #'cl:string=))
+                            (cl:cond (fw :float) (iw :int) (cl:t cl:nil)))
+                   out))))))
+
+;; tests/run-specs.lisp  (REPLACES %validate-coop-operand-elem -- 155 bf16)
+(defun %validate-coop-operand-elem (spv-path want-width label &key require-ext int-components)
+  "Assert that EVERY A/B cooperative matrix in SPV-PATH has component width WANT-WIDTH — and, when
+   INT-COMPONENTS, that they are INTEGER components rather than float ones — and that every
+   Accumulator is 32-bit float.  LABEL names the element type for the failure text; REQUIRE-EXT,
+   when given, must appear in the module.
+
+   Endeavour 155: the INT-COMPONENTS distinction is the difference between fp16 and bf16 on Intel.
+   Both are 16 bits wide; only the KIND separates them, so checking width alone would let a bf16
+   kernel silently emit fp16 matrices and still pass.
+
+   DEGRADES TO PASS when llvm-spirv is unavailable (a CUDA-only box has no bundled bin/), matching
+   %spv-contains-opcode-p: returns NIL only when the module WAS disassembled and the property is
+   definitively absent."
+  (cl:let* ((tool (resolve-tool-executable "llvm-spirv"))
+            (txt-path (cl:format cl:nil "~a.155txt" (uiop:native-namestring spv-path)))
+            (want-kind (cl:if int-components :int :float)))
+    (cl:multiple-value-bind (o e code)
+        (uiop:run-program (cl:list (uiop:native-namestring tool) "--to-text"
+                                   (uiop:native-namestring spv-path) "-o" txt-path)
+                          :output :string :error-output :string :ignore-error-status cl:t)
+      (cl:declare (cl:ignore o e))
+      (cl:if (cl:or (cl:not (cl:zerop code)) (cl:not (probe-file txt-path)))
+          (cl:progn
+            (cl:format cl:*error-output*
+                       "  (~a: llvm-spirv unavailable or failed — SKIPPING, not failing)~%" label)
+            cl:t)
+          (cl:let ((txt (uiop:read-file-string txt-path)))
+            (cl:ignore-errors (cl:delete-file txt-path))
+            (cl:let* ((mats (%spv-coop-matrices txt))
+                      (ops  (cl:remove-if-not (cl:lambda (m) (cl:member (cl:third m) (cl:list 0 1))) mats))
+                      (accs (cl:remove-if-not (cl:lambda (m) (cl:eql (cl:third m) 2)) mats))
+                      (bad-ops (cl:remove-if (cl:lambda (m)
+                                               (cl:and (cl:eql (cl:second m) want-width)
+                                                       (cl:eq (cl:fourth m) want-kind)))
+                                             ops))
+                      (bad-acc (cl:remove-if (cl:lambda (m)
+                                               (cl:and (cl:eql (cl:second m) 32)
+                                                       (cl:eq (cl:fourth m) :float)))
+                                             accs)))
+              (cl:cond
+                ((cl:null mats)
+                 (cl:format cl:*error-output*
+                            "FAIL: no cooperative matrix in the module at all — the MMA did not lower.~%")
+                 cl:nil)
+                ((cl:null ops)
+                 (cl:format cl:*error-output*
+                            "FAIL: no A/B-use cooperative matrix — operands did not reach the MMA.~%")
+                 cl:nil)
+                (bad-ops
+                 (cl:format cl:*error-output*
+                            "FAIL: ~d of ~d A/B cooperative matrices are not ~a (~d-bit ~a).~%~
+                             Offenders (result-id, component-width, kind, use):~%"
+                            (cl:length bad-ops) (cl:length ops) label want-width
+                            (cl:string-downcase (cl:symbol-name want-kind)))
+                 (cl:dolist (m bad-ops)
+                   (cl:format cl:*error-output* "    id ~a  component=~a-bit ~a  use=~a~%"
+                              (cl:first m) (cl:or (cl:second m) "?")
+                              (cl:or (cl:fourth m) "?") (%spv-use-name (cl:third m))))
+                 cl:nil)
+                (bad-acc
+                 (cl:format cl:*error-output*
+                            "FAIL: ~d accumulator matrix/matrices are not fp32.  A ~a MMA~%~
+                             accumulates in fp32; an all-~a module is as wrong as an all-f32 one.~%"
+                            (cl:length bad-acc) label label)
+                 cl:nil)
+                ((cl:null accs)
+                 (cl:format cl:*error-output*
+                            "FAIL: no Accumulator cooperative matrix — nothing is accumulating in fp32.~%")
+                 cl:nil)
+                ((cl:and require-ext (cl:not (cl:search require-ext txt)))
+                 (cl:format cl:*error-output*
+                            "FAIL: module uses ~a but does not declare ~a — llvm-spirv would refuse it.~%"
+                            label require-ext)
+                 cl:nil)
+                (cl:t cl:t))))))))
+
+
+;;;; ============================================================================
+;;;; Endeavour 155 — bf16 ON INTEL, THE WAY INTEL ACTUALLY ENCODES IT.
+;;;;
+;;;; Crisp emitted bf16 as a genuine bfloat cooperative-matrix component type and requested
+;;;; SPV_KHR_bfloat16.  The BMG driver's SPIR-V reader does not implement that extension: it
+;;;; reports `unknown extension 'SPV_KHR_bfloat16'` and then dies.  The obvious readings were
+;;;; "wait for a driver" or "switch to SPV_INTEL_subgroup_matrix_multiply_accumulate".  BOTH ARE
+;;;; WRONG, and compiling Intel's own bf16 joint_matrix kernel and disassembling it shows why.
+;;;;
+;;;; WHAT INTEL EMITS.  Same extension Crisp uses, same opcode Crisp uses:
+;;;;
+;;;;    bf16:   TypeInt 25 16 0                      <- a 16-bit INTEGER, not a float type
+;;;;            TypeCooperativeMatrixKHR 27 25 ...   <- A and B use the INTEGER component
+;;;;            CooperativeMatrixMulAddKHR 22 35 30 34 23 64
+;;;;                                                      ^^ operands mask 0x40
+;;;;            extensions: SPV_KHR_cooperative_matrix ONLY
+;;;;
+;;;;    half:   TypeFloat 25 16                      <- a real f16 float type
+;;;;            CooperativeMatrixMulAddKHR ... 0     <- mask 0
+;;;;
+;;;; So bf16 is carried as raw 16-bit integers and its bfloat-ness is signalled by ONE BIT on the
+;;;; MulAdd: 0x40, MatrixAAndBBFloat16ComponentsINTEL.  No bfloat type exists in the module, so no
+;;;; SPV_KHR_bfloat16 is needed — and SPV_INTEL_bfloat16_conversion is not needed either (it
+;;;; provides SCALAR f32<->bf16 conversion ops, which an MMA does not use; Intel's own kernel does
+;;;; not declare it).
+;;;;
+;;;; This also explains why fp16 started working the moment the element type reached codegen:
+;;;; Crisp's fp16 encoding was ALREADY byte-for-byte what Intel emits — real f16 components,
+;;;; mask 0.  Only bf16 differed, and it differed by choosing the newer, more principled encoding
+;;;; that this driver does not yet read.
+;;;;
+;;;; PORTABILITY, STATED.  0x40 is an INTEL-vendored value in the KHR operands enum, and the
+;;;; module declares no INTEL extension for it — that is what Intel's own output does and it works
+;;;; here.  Whether another KHR cooperative-matrix implementation accepts it is unknown, so this
+;;;; is applied on the SPIR-V backend only, which is the Intel path.  A different vendor reaching
+;;;; the SPV backend would want this behind a hardware-profile key.
+;;;; ============================================================================
+
+;; src/codegen.lisp  (REPLACES %coop-op-elem-llvm -- 155 bf16)
+(defun %coop-op-elem-llvm (node)
+  "The LLVM type for a coop-op node's component type (see %coop-node-elem).
+
+   Endeavour 155: BFLOAT16 lowers to a 16-BIT INTEGER, not to LLVM `bfloat`.  That is how Intel
+   encodes a bf16 cooperative matrix (see header) — the type carries no float-ness and the MulAdd
+   operands mask supplies it.  i16 is also the correct width for the tile ADDRESS arithmetic, so
+   one answer serves both uses."
+  (let ((e (%coop-node-elem node)))
+    (cond ((string= (symbol-name e) "HALF")     (llvm-half-type))
+          ((string= (symbol-name e) "BFLOAT16") (crisp.llvm-bindings::llvm-int16-type))
+          ((string= (symbol-name e) "DOUBLE")   (llvm-double-type))
+          (t                                    (llvm-float-type)))))
+
+;; src/mma.lisp  (REPLACES %coop-mma -- 155 bf16)
+(defun %coop-mma (builder module a-val b-val c-val elem-llvm m n k)
+  "Emit CooperativeMatrixMulAddKHR(A, B, C, <operands>) -> the MxN accumulator coop matrix.
+
+   Operand types come from the ACTUAL VALUES via LLVMTypeOf, so the declaration cannot drift from
+   what is passed (Endeavour 155, Phase 1).
+
+   THE OPERANDS MASK.  Last argument of the MulAdd.  0 for f32/tf32 and for fp16, whose component
+   type already says what it is.  0x40 (MatrixAAndBBFloat16ComponentsINTEL) when A and B are
+   16-bit INTEGER matrices, which is how bf16 is represented — the integer type cannot say
+   'bfloat' on its own, so the bit says it instead.
+
+   Detection is by comparing A's type against a freshly built i16 A-type: LLVM uniques types, so
+   pointer equality is exact and needs no string parsing.  M/K are the A operand's own dims."
+  (declare (ignorable elem-llvm))
+  (let* ((a-ty (crisp.llvm-bindings::llvm-type-of a-val))
+         (b-ty (crisp.llvm-bindings::llvm-type-of b-val))
+         (c-ty (crisp.llvm-bindings::llvm-type-of c-val))
+         (i32  (crisp.llvm-bindings::llvm-int32-type))
+         (i16  (crisp.llvm-bindings::llvm-int16-type))
+         (bf16-p (cffi:pointer-eq a-ty (%coop-type i16 m k 0)))
+         (operands (if bf16-p #x40 0)))
+    (%coop-call builder module "__spirv_CooperativeMatrixMulAddKHR"
+                c-ty (list a-ty b-ty c-ty i32)
+                (list a-val b-val c-val (crisp.llvm-bindings::llvm-const-int i32 operands nil)))))
+
+;; src/compiler.lisp  (REPLACES %module-uses-bfloat-p -- 155 bf16)
+(defun %module-uses-bfloat-p (module)
+  "Always NIL now.
+
+   Endeavour 155: Crisp no longer emits the LLVM `bfloat` TYPE at all — a bf16 cooperative matrix
+   is a 16-bit INTEGER matrix plus an operands-mask bit (see the bf16 header).  So no module needs
+   SPV_KHR_bfloat16, and requesting it is what the BMG driver refused to read.
+
+   Kept as a function rather than deleted because compile-to-spirv calls it, and because the day a
+   backend DOES want a real bfloat type this is the single place that decides."
+  (declare (ignore module))
+  cl:nil)
+
+;; tests/run-specs.lisp  (REPLACES validate-spv-bf16-coop -- 155 bf16)
+(defun validate-spv-bf16-coop (spv-path)
+  "Endeavour 155 — assert a bf16 register tile reached the hardware in INTEL'S bf16 ENCODING.
+
+   That encoding is: A/B cooperative matrices with 16-BIT INTEGER components, an fp32 accumulator,
+   and NO SPV_KHR_bfloat16 (there is no bfloat type in the module to require it).  Verified
+   against what Intel's own bf16 joint_matrix kernel emits.
+
+   This rung previously asserted the opposite — a 16-bit FLOAT component and a declared
+   SPV_KHR_bfloat16 — which is the encoding this driver refuses.  The change is not a relaxation:
+   it is the same per-operand strictness applied to the correct target."
+  (%validate-coop-operand-elem spv-path 16 "bfloat16 (as i16)" :int-components cl:t))
+
+
+;;;; ------------------------------------------------------------------------------------------
+;;;; Endeavour 155 — bf16 becomes i16 AT THE ONE PLACE COOP TYPES ARE BUILT.
+;;;;
+;;;; Changing %coop-op-elem-llvm covered the fill / load / store / address paths, but not the
+;;;; FRAGMENT ALLOCA, which reaches LLVM by a different route: resolve-type-to-llvm sees the
+;;;; semantic `(coop-matrix bfloat16 8 16 0)` and resolves the element through the type registry,
+;;;; where bfloat16 maps to LLVM `bfloat`.  The result was a module that disagreed with itself —
+;;;; i16 matrices from the fill, `bfloat` matrices in the MulAdd operands:
+;;;;
+;;;;     %27 = call target("spirv.CooperativeMatrixKHR", i16, 3, 8, 16, 0) @__spirv_CompositeConstruct_0_8_16(float 0.0)
+;;;;     ... @__spirv_CooperativeMatrixMulAddKHR(target("spirv.CooperativeMatrixKHR", bfloat, 3, 8, 16, 0) ...
+;;;;
+;;;; %coop-type is the single choke point every cooperative-matrix LLVM type passes through — the
+;;;; alloca path calls it via resolve-type-to-llvm, and codegen calls it directly.  Making the
+;;;; substitution HERE means every route agrees by construction, rather than requiring each route
+;;;; to remember.  That is the same lesson as the six element-type layers: put the decision where
+;;;; the thing is CONSTRUCTED, not at each site that consumes it.
+;;;;
+;;;; Scoped to :spirv because it is an Intel encoding (see the bf16 header); on any other backend
+;;;; a bfloat element passes through untouched.
+;;;; ------------------------------------------------------------------------------------------
+
+;; src/codegen.lisp  (REPLACES %coop-type -- 155 bf16)
+(defun %coop-type (elem-llvm rows cols use)
+  "Build target(\"spirv.CooperativeMatrixKHR\", ELEM-LLVM, 3, ROWS, COLS, USE) in the
+   global context (= the module's context, so the type matches).
+
+   Endeavour 155: an LLVM `bfloat` element is rewritten to i16 on the SPIR-V backend, because that
+   is how Intel encodes a bf16 cooperative matrix — raw 16-bit integers, with the bfloat-ness
+   carried by the MulAdd operands mask (0x40).  Emitting a real bfloat type instead requires
+   SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement."
+  (let* ((bf (crisp.llvm-bindings::llvm-bfloat-type))
+         (elem (if (and (eq *target-backend* :spirv)
+                        elem-llvm
+                        (cffi:pointer-eq elem-llvm bf))
+                   (crisp.llvm-bindings::llvm-int16-type)
+                   elem-llvm))
+         (ctx (crisp.llvm-bindings::llvm-get-global-context)))
+    (cffi:with-foreign-objects ((tps :pointer 1) (ips :unsigned-int 4))
+      (setf (cffi:mem-aref tps :pointer 0) elem
+            (cffi:mem-aref ips :unsigned-int 0) 3          ; Subgroup scope
+            (cffi:mem-aref ips :unsigned-int 1) rows
+            (cffi:mem-aref ips :unsigned-int 2) cols
+            (cffi:mem-aref ips :unsigned-int 3) use)
+      (crisp.llvm-bindings::llvm-target-ext-type-in-context
+       ctx "spirv.CooperativeMatrixKHR" tps 1 ips 4))))
+
+;; src/codegen.lisp  (REPLACES %coop-coerce-scalar -- 155 bf16)
+(defun %coop-coerce-scalar (builder val want-ty name)
+  "Coerce scalar VAL to WANT-TY, if it is not already that type.
+
+   Float-to-float goes by fptrunc / fpext (Endeavour 155, fp16).
+
+   FLOAT TO i16 IS THE bf16 FILL.  A bf16 cooperative matrix has INTEGER components, so filling
+   one with a literal `0.0` means storing that float's BF16 BIT PATTERN as an i16.  bfloat16 is
+   the top half of an IEEE f32, so the encoding is a bitcast to i32, a 16-bit logical shift right,
+   and a truncate — no bfloat type is introduced anywhere, which is the entire point (see the bf16
+   header).  This truncates rather than round-to-nearest; for the 0.0 that fills every accumulator
+   and operand tile it is exact, and a rounding form would need a bfloat type or a carry chain to
+   express.
+
+   LLVM has no direct cast between two DIFFERENT 16-bit float types, so half<->bfloat16 would route
+   through f32; that path cannot arise from a literal today."
+  (let ((have (llvm-type-of val))
+        (i16  (crisp.llvm-bindings::llvm-int16-type))
+        (i32  (crisp.llvm-bindings::llvm-int32-type)))
+    (cond
+      ((cffi:pointer-eq have want-ty) val)
+      ;; f32 -> bf16 bits, carried as i16
+      ((and (cffi:pointer-eq want-ty i16) (%llvm-float-width have))
+       (let* ((as-f32 (if (cffi:pointer-eq have (llvm-float-type))
+                          val
+                          (llvm-build-fp-ext builder val (llvm-float-type) "bf_f32")))
+              (bits (crisp.llvm-bindings::llvm-build-bit-cast builder as-f32 i32 "bf_bits"))
+              (hi   (crisp.llvm-bindings::llvm-build-l-shr
+                     builder bits (crisp.llvm-bindings::llvm-const-int i32 16 nil) "bf_hi")))
+         (crisp.llvm-bindings::llvm-build-trunc builder hi i16 name)))
+      (t
+       (let ((hw (%llvm-float-width have))
+             (ww (%llvm-float-width want-ty)))
+         (cond
+           ((not (and hw ww)) val)
+           ((> hw ww) (llvm-build-fp-trunc builder val want-ty name))
+           ((< hw ww) (llvm-build-fp-ext   builder val want-ty name))
+           (t (llvm-build-fp-trunc builder
+                                   (llvm-build-fp-ext builder val (llvm-float-type)
+                                                      (format nil "~a_via_f32" name))
+                                   want-ty name))))))))
+
+;; src/mma.lisp  (REPLACES %coop-mma -- 155 bf16, corrected detection)
+(defun %coop-mma (builder module a-val b-val c-val elem-llvm m n k)
+  "Emit CooperativeMatrixMulAddKHR(A, B, C, <operands>) -> the MxN accumulator coop matrix.
+
+   Operand types come from the ACTUAL VALUES via LLVMTypeOf, so the declaration cannot drift from
+   what is passed (Endeavour 155, Phase 1).
+
+   THE OPERANDS MASK.  0 for f32/tf32 and for fp16, whose component type already says what it is.
+   0x40 (MatrixAAndBBFloat16ComponentsINTEL) when A and B are 16-bit INTEGER matrices, which is
+   how Intel represents bf16 — an integer type cannot say 'bfloat' on its own, so the bit says it.
+
+   DETECTION READS THE TYPE, IT DOES NOT REBUILD IT.  The first attempt compared A against a
+   freshly constructed (%coop-type i16 m k 0), which failed for a reason worth recording: this
+   function's M/N/K come from a caller that computes them with an UNTYPED (%spv-mma-shape) —
+   src/mma.lisp:653 — so K is the tf32 8 even when the operands are 16-bit and K is really 16.
+   Those arguments are otherwise unused here (the types come from the values), so the wrong shape
+   is harmless to codegen and was harmless to fp16; it only defeated a check that trusted it.
+   Printing the type and reading its component is exact and depends on nothing else."
+  (declare (ignorable elem-llvm m n k))
+  (let* ((a-ty (crisp.llvm-bindings::llvm-type-of a-val))
+         (b-ty (crisp.llvm-bindings::llvm-type-of b-val))
+         (c-ty (crisp.llvm-bindings::llvm-type-of c-val))
+         (i32  (crisp.llvm-bindings::llvm-int32-type))
+         (a-str (crisp.llvm-bindings::llvm-print-type-to-string a-ty))
+         (bf16-p (and (eq *target-backend* :spirv)
+                      a-str
+                      (search ", i16," a-str)))
+         (operands (if bf16-p #x40 0)))
+    (%coop-call builder module "__spirv_CooperativeMatrixMulAddKHR"
+                c-ty (list a-ty b-ty c-ty i32)
+                (list a-val b-val c-val (crisp.llvm-bindings::llvm-const-int i32 operands nil)))))
+
+;; src/codegen.lisp  (REPLACES %elem-llvm-bytes -- 155 bf16)
+(defun %elem-llvm-bytes (elem-llvm)
+  "Bytes per element for an LLVM scalar type, defaulting to 4 — which is what every hardcoded
+   constant this replaces assumed.
+
+   Endeavour 155 (bf16): must handle INTEGER types, not just floats.  Once bf16 lowered to i16,
+   the float-only lookup returned NIL and fell back to 4, so %block-prefetch again described a
+   2-byte surface as 4-byte — twice as wide as the data, off the end of the allocation.  The
+   symptom was the one already seen for fp16: a constant ~500 ms at every problem size with wrong
+   results, i.e. a GPU fault and reset, in the kernel that prefetches and not in the one that
+   does not."
+  (let ((bits (and elem-llvm
+                   (or (%llvm-float-width elem-llvm)
+                       (cond ((cffi:pointer-eq elem-llvm (crisp.llvm-bindings::llvm-int8-type))   8)
+                             ((cffi:pointer-eq elem-llvm (crisp.llvm-bindings::llvm-int16-type)) 16)
+                             ((cffi:pointer-eq elem-llvm (crisp.llvm-bindings::llvm-int32-type)) 32)
+                             ((cffi:pointer-eq elem-llvm (crisp.llvm-bindings::llvm-int64-type)) 64)
+                             (t nil))))))
+    (if bits (max 1 (floor bits 8)) 4)))

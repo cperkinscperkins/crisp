@@ -4,7 +4,7 @@
 
 | device | data captured | source |
 |---|---|---|
-| Intel BMG | 2026-08-22 | Crisp `7df1296` (docker) |
+| Intel BMG | 2026-08-23 | Crisp `2602077` (docker) |
 | NVIDIA H100 NVL | 2026-08-22 | Crisp `209687fd` (runpod) |
 
 ---
@@ -313,21 +313,44 @@ wgmma
 
 | N | Crisp BF16 | Control<br>SYCL_Apples_BF16 | **Peer**<br>SYCL-TLA_BF16 | Ceiling<br>oneMKL_BF16 | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|
-| 256 | — | 2.0 (0.017) | 0.5 (0.069) | 9.8 (0.003) | **4.13×** | 21% |
-| 512 | — | 7.5 (0.036) | 3.7 (0.073) | 41.0 (0.007) | **2.02×** | 18% |
-| 1024 | — | 15.3 (0.141) | 25.7 (0.084) | 75.4 (0.029) | 0.59× | 20% |
-| 2048 | — | 17.6 (0.975) | 105.8 (0.162) | 87.1 (0.197) | 0.17× | 20% |
-| 4096 | — | 17.9 (7.688) | 198.7 (0.692) | 105.0 (1.308) | 0.09× | 17% |
-| 8192 | — | 15.2 (72.201) | 237.5 (4.630) | 112.9 (9.739) | 0.06× | 13% |
-| 16384 | — | 11.0 (802.757) | 249.3 (35.279) | 115.2 (76.378) | 0.04× | 10% |
+| 256 | 4.8 (0.007) | 2.0 (0.017) | 0.5 (0.069) | 9.8 (0.003) | **9.87×** | 49% |
+| 512 | 15.8 (0.017) | 7.5 (0.036) | 3.7 (0.073) | 41.0 (0.007) | **4.28×** | 39% |
+| 1024 | 39.9 (0.054) | 15.3 (0.141) | 25.7 (0.084) | 75.4 (0.029) | **1.55×** | 53% |
+| 2048 | 41.0 (0.419) | 17.6 (0.975) | 105.8 (0.162) | 87.2 (0.197) | 0.39× | 47% |
+| 4096 | 33.1 (4.151) | 17.8 (7.717) | 198.7 (0.692) | 104.7 (1.312) | 0.17× | 32% |
+| 8192 | 27.1 (40.549) | 15.3 (72.005) | 237.5 (4.630) | 113.0 (9.733) | 0.11× | 24% |
+| 16384 | — | 11.0 (801.803) | 249.3 (35.279) | 114.6 (76.722) | — | — |
 
 <details><summary><b>Compilation & Build Overhead (BF16)</b></summary>
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Control codegen** |
 |---|---|---:|---:|---:|
-| **SYCL_Apples_BF16** | Control | 1.88 s | 4.15 s | 1.00× |
-| **SYCL-TLA_BF16** | Peer | 30.15 s | 55.97 s | **16.0× slower** |
-| **oneMKL_BF16** | Ceiling | *precompiled* | 7.05 s | — |
+| **Crisp** | Crisp | 726 ms | 1.52 s | 0.36× |
+| **SYCL_Apples_BF16** | Control | 1.99 s | 5.24 s | 1.00× |
+| **SYCL-TLA_BF16** | Peer | 30.15 s | 55.97 s | **15.1× slower** |
+| **oneMKL_BF16** | Ceiling | *precompiled* | 7.20 s | — |
+
+</details>
+
+### Intel BMG · fp16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
+
+| N | Crisp FP16 | Control<br>SYCL_Apples_FP16 | **Peer**<br>SYCL-TLA_FP16 | Ceiling<br>oneMKL_FP16 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 4.8 (0.007) | 2.0 (0.017) | — | 9.8 (0.003) | — | 49% |
+| 512 | 15.8 (0.017) | 7.5 (0.036) | — | 41.0 (0.007) | — | 39% |
+| 1024 | 39.8 (0.054) | 15.3 (0.141) | — | 75.1 (0.029) | — | 53% |
+| 2048 | 42.1 (0.409) | 17.6 (0.974) | — | 89.1 (0.193) | — | 47% |
+| 4096 | 34.1 (4.027) | 17.8 (7.719) | — | 110.7 (1.242) | — | 31% |
+| 8192 | 26.8 (41.057) | 15.2 (72.125) | — | 111.7 (9.842) | — | 24% |
+| 16384 | — | 10.9 (808.290) | — | 110.7 (79.480) | — | — |
+
+<details><summary><b>Compilation & Build Overhead (FP16)</b></summary>
+
+| contender | class | device codegen (SPIR-V) | total build | **vs Control codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 723 ms | 1.50 s | 0.38× |
+| **SYCL_Apples_FP16** | Control | 1.89 s | 4.91 s | 1.00× |
+| **oneMKL_FP16** | Ceiling | *precompiled* | 7.10 s | — |
 
 </details>
 
@@ -522,3 +545,12 @@ Debug and exploratory runs are written to `benchmarks/results/scratch/`, which t
 | 2026-08-22 02:48 | matmul | chap4_cheap_fetch | SYCL_Apples | `256,512` |
 | 2026-08-22 02:48 | matmul | chap5_multistage_ring | Crisp | `256,512` |
 | 2026-08-22 02:48 | matmul | chap5_multistage_ring | SYCL_Apples | `256,512` |
+| 2026-08-23 02:51 | matmul | sec2_top | Crisp | `4096,8192` |
+| 2026-08-23 02:51 | matmul | sec2_top | SYCL_Apples | `` |
+| 2026-08-23 02:52 | matmul | sec2_top | OneMKL_Optimal | `256,512,1024,2048,4096,8192,16384` |
+| 2026-08-23 17:40 | matmul | sec2_top_fp16 | Crisp | `256,512,1024,2048,4096,8192` |
+| 2026-08-23 17:40 | matmul | sec2_top_fp16 | SYCL_Apples_FP16 | `256,512,1024,2048,4096,8192,16384` |
+| 2026-08-23 17:40 | matmul | sec2_top_fp16 | OneMKL_FP16 | `256,512,1024,2048,4096,8192,16384` |
+| 2026-08-23 18:29 | matmul | sec2_top_bf16 | Crisp | `256,512,1024,2048,4096,8192` |
+| 2026-08-23 18:29 | matmul | sec2_top_bf16 | SYCL_Apples_BF16 | `256,512,1024,2048,4096,8192,16384` |
+| 2026-08-23 18:29 | matmul | sec2_top_bf16 | OneMKL_BF16 | `256,512,1024,2048,4096,8192,16384` |
