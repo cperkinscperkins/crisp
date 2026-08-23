@@ -873,11 +873,23 @@ def main():
             # SYCL-TLA (CUTLASS 3.x for Intel Xe2) specific flags
             tla_dir = HERE.parent.parent / "third_party" / "sycl-tla"
             tla_inc = [f"-I{tla_dir}/include", f"-I{tla_dir}/tools/util/include"]
+            # AOT (spir64_gen + -device bmg-g21) needs `ocloc`, which is NOT on PATH in the
+            # crisp-bench-intel image -- it ships only under vtune/.../GTPin.  Without it icpx
+            # fails, and before the ContenderBuildError fix that killed the whole sweep; after it,
+            # the peer is merely SKIPPED, which is how the bf16 ladder ended up with a peer column
+            # from an older run.  JIT (the default spir64 target) produces the same device code
+            # and the same kernel performance -- AOT only moves compilation from load time to
+            # build time -- so falling back costs a slower first launch and nothing else.  The
+            # device_compile_ms column for this contender is therefore not comparable to an AOT
+            # run; that is the honest trade and it is visible in the report's compile table.
+            _aot = ["-fsycl-targets=spir64_gen",
+                    "-Xsycl-target-backend=spir64_gen", "-device bmg-g21"] if shutil.which("ocloc") else []
+            if not _aot:
+                print("  (note: ocloc not found — SYCL-TLA will be built JIT rather than AOT)")
             sycl_tla_flags = sycl_flags + tla_inc + [
                 "-DCUTLASS_ENABLE_SYCL=ON", "-DSYCL_INTEL_TARGET=1",
                 "-fno-sycl-instrument-device-code",
-                "-fsycl-targets=spir64_gen",
-                "-Xsycl-target-backend=spir64_gen", "-device bmg-g21",
+                *_aot,
                 "-Xspirv-translator",
                 "-spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io,+SPV_INTEL_subgroup_matrix_multiply_accumulate"
             ]
