@@ -810,3 +810,122 @@ NEXT
     for every benchmarked kernel);
   - fix the host-side reference to read operands through a device->host copy rather than a direct host read;
   - only then trust an fp16 number, and only then add the report.py section.
+
+
+PHASE D — VERIFICATION RESTORED, AND THE FIRST REAL VERDICT ON fp16
+================================================================================
+2026-08-23.
+
+Phase C got the fp16 module onto the GPU.  Phase D was supposed to be "check correctness, then
+find the slowness."  Neither question could be answered, because the two instruments needed to
+answer them were both broken.  Both are now fixed, and both were broken in the same way this
+whole endeavour has been about: the element type was not carried to the place that needed it.
+
+(1) THE --mma-bench MYSTERY, SOLVED — AND IT WAS NOT IN src/ AT ALL
+--------------------------------------------------------------------
+Reading src/hoist-l0/main.lisp could never explain it, because the live definition is not there.
+`overlays/hoist-l0/crisp-hoist-l0-overlay.lisp` (endeavour 150) redefines generate-cpp-main, and
+its version says:
+
+    (when (and *mma-test-dims* (not *mma-bench-iters*))
+      (%l0-emit-mma-reference stream allocations))
+
+against the original's plain `(when *mma-test-dims* ...)`.  That `(not *mma-bench-iters*)` is the
+whole thing: the host-reference check is emitted ONLY when --mma-bench is absent, and every
+benchmark sweep passes --mma-bench.
+
+THE OVERLAY'S OWN HEADER SAYS: "Everything else in this function is byte-identical to the
+original."  It is not.  150 needed the buffer-print cap raised from 100 to 512, documented that,
+and silently disabled benchmark verification in the same edit.  Recorded here because the
+misleading part was not the code — it was the comment asserting the code was unchanged, which is
+what kept me reading src/ for the cause.
+
+CONSEQUENCE, now measured rather than inferred: NO BENCHMARKED KERNEL HAS BEEN VERIFIED on this
+backend, for any chapter, since 150.  matmul.py looks for an MMA_CORRECT token, never finds one,
+reports "NOT MMA_CORRECT", drops every point at N <= 2048, and keeps the points above 2048 where
+verification is skipped by design.  Restored to the src condition; verifying once and then
+benchmarking costs a 64x64 corner (full K) once per run.
+
+(2) A 16-BIT TENSOR WAS FILLED AND READ AS AN INTEGER
+------------------------------------------------------
+crisp-type-to-cpp-type maps BOTH half and bfloat16 to uint16_t, so the harness carried a 16-bit
+float buffer as an unsigned integer and treated it as one at both ends:
+
+    for (...) a_ptr[_i] = (uint16_t)(_i % 5);          // fill
+    acc += (float)a_ptr[...] * (float)b_ptr[...];      // host reference
+
+The bit pattern 0x0001 is not 1.0 in fp16 — it is a SUBNORMAL near 6e-8.  So the GPU was handed
+denormal noise while the host reference computed with 1..4.  They could not agree even in
+principle, the input data was meaningless, and any timing taken over it timed the wrong problem.
+Fixed at both ends with converters emitted into the harness; half and bfloat16 get DIFFERENT
+converters (same width, different exponent split), which is why the element TYPE is now recorded
+in the allocation plist rather than being guessed from "uint16_t".
+
+(3) THE REFERENCE COULD NOT READ DEVICE MEMORY ANYWAY
+------------------------------------------------------
+With the decode fixed, the check still aborted before comparing anything:
+
+    Abort was called at 30 line in file:
+    ./level_zero/core/source/memory/cpu_page_fault_memory_manager.cpp
+
+The reference dereferenced a_ptr / b_ptr from the HOST; on this driver a host dereference of that
+USM aborts outright.  But the harness FILLS those buffers itself, from the index — so their
+contents are known by construction and need not be read back at all.  The reference now
+reconstructs them.  C is still read properly, by device->host memcpy, which is the thing actually
+under test.
+
+  THE TRADE, STATED PLAINLY.  This now checks "C equals the product of the values the harness
+  WROTE" rather than "...of the bytes currently IN the operand buffers".  That differs only if the
+  fill itself is broken, which is a louder and separate failure.  The risk introduced is drift
+  between fill and reference, so both take their modulus from %l0-mma-fill-modulus and the
+  constant exists once.  0..4 and 0..2 are exact in fp16/bf16/tf32/f32, so the check is exact for
+  every element type.
+
+(I re-made a mistake I had already made in endeavour 152: `%%` in a CL FORMAT string emits TWO
+percent signs, because `%` is already literal there.  It reached the C++ compiler as `%%` and
+failed to parse.  Third time this bug has cost me a cycle; it is worth remembering that FORMAT is
+not printf.)
+
+THE VERDICT: fp16 IS WRONG, AND THE TWO SYMPTOMS ARE TWO DIFFERENT BUGS
+================================================================================
+With working instruments, the benchmark kernel finally reports:
+
+    BENCH 256 256 256 ... median_us=500072
+      C[0][0]=-2.07349e-33 ref 510
+      C[0][1]=0            ref 510
+    MMA_WRONG
+
+(The reference is sane: C[0][0] = sum over kk<256 of (kk%5)*(kk%3), which is ~510.)
+
+Running the SIMPLE fp16 kernel — rung 02's, no prefetch and no ring — separates the symptoms
+cleanly:
+
+    BENCH 64 64 64  148.271 GFLOPS  median_us=3.536
+      C[0][0]=64 ref 125     C[0][1]=60 ref 125
+      C[0][2]=62 ref 128     C[0][3]=64 ref 125
+    MMA_WRONG
+
+So:
+
+  A. THE 500 ms IS NOT THE fp16 PATH.  The simple kernel runs in 3.5 MICROSECONDS and reports 148
+     GFLOPS.  The constant 500 ms — identical at 256, 512, 4096 and 8192, which was never a
+     measurement of anything — belongs to the BENCHMARK kernel specifically, i.e. to its
+     prefetch / register-ring pipeline, not to 16-bit MMA.  That is a separate bug and probably a
+     GPU fault being reset, given the fixed duration.
+
+  B. THE SIMPLE KERNEL IS WRONG BY ABOUT HALF.  64 vs 125, 60 vs 125, 62 vs 128, 64 vs 125 —
+     ratios 0.48 to 0.51.  Not garbage, not scrambled: roughly half the contraction.  That is the
+     signature of BUG 040 ("%mma-k-steps silently truncated to ONE native K-step and the MMA
+     computed HALF the dot product"), which is encouraging in that it is a known shape of bug, and
+     suspicious in that Phase C changed exactly how K-steps are counted.
+
+REGRESSION after all of Phase D: 1028/1028 E2E, 218/218 negative, 291/291 unit.  The hoist changes
+touch every HOIST-EXPECT spec, so this was not optional.
+
+NEXT
+  - chase (B) first: it is in the core MMA path, it is the thing rung 02 asserts, and it is now
+    measurable on hardware.  Prime suspect is the interaction between the K-step count and the
+    per-fragment walk at K=16, i.e. Phase C part 3.
+  - then (A), the benchmark kernel's 500 ms.
+  - rung 04 (on-metal fp16) should be written once (B) is fixed, so the suite pins this on
+    hardware rather than only in the emitted types.

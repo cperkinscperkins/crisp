@@ -24,6 +24,32 @@
 // Type aliases
 
 // Struct Definitions
+// Helper: 16-bit float conversions (Endeavour 155)
+static inline float crisp_f16_to_f32(uint16_t h) {
+    uint32_t s = (uint32_t)(h >> 15) & 1u, e = (uint32_t)(h >> 10) & 0x1Fu, m = (uint32_t)h & 0x3FFu;
+    uint32_t out;
+    if (e == 0) { if (m == 0) { out = s << 31; } else {
+        e = 127 - 15 + 1; while ((m & 0x400u) == 0) { m <<= 1; e--; } m &= 0x3FFu;
+        out = (s << 31) | (e << 23) | (m << 13); } }
+    else if (e == 31) { out = (s << 31) | 0x7F800000u | (m << 13); }
+    else { out = (s << 31) | ((e - 15 + 127) << 23) | (m << 13); }
+    float f; memcpy(&f, &out, 4); return f;
+}
+static inline uint16_t crisp_f32_to_f16(float f) {
+    uint32_t u; memcpy(&u, &f, 4);
+    uint32_t s = (u >> 31) & 1u; int32_t e = (int32_t)((u >> 23) & 0xFFu) - 127 + 15;
+    uint32_t m = u & 0x7FFFFFu;
+    if (e <= 0) return (uint16_t)(s << 15);
+    if (e >= 31) return (uint16_t)((s << 15) | 0x7C00u);
+    return (uint16_t)((s << 15) | ((uint32_t)e << 10) | (m >> 13));
+}
+static inline float crisp_bf16_to_f32(uint16_t b) {
+    uint32_t u = ((uint32_t)b) << 16; float f; memcpy(&f, &u, 4); return f;
+}
+static inline uint16_t crisp_f32_to_bf16(float f) {
+    uint32_t u; memcpy(&u, &f, 4); return (uint16_t)(u >> 16);
+}
+
 // Helper: Read SPIR-V binary from file
 std::vector<uint8_t> read_spirv_file(const char* filename) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
@@ -137,7 +163,7 @@ int main() {
         std::cerr << "ERROR: zeMemAllocShared failed for a" << std::endl;
         return 1;
     }
-    for (size_t _i = 0; _i < 65536; _i++) a_ptr[_i] = (uint16_t)(_i % 5);
+    for (size_t _i = 0; _i < 65536; _i++) a_ptr[_i] = crisp_f32_to_f16((float)(_i % 5));
     // Arg 0: a PTR
     zeKernelSetArgumentValue(kernel, 0, sizeof(void*), &a_ptr);
     // Arg 1: a BYTE_SIZE = 131072
@@ -174,7 +200,7 @@ int main() {
         std::cerr << "ERROR: zeMemAllocShared failed for b" << std::endl;
         return 1;
     }
-    for (size_t _i = 0; _i < 65536; _i++) b_ptr[_i] = (uint16_t)(_i % 3);
+    for (size_t _i = 0; _i < 65536; _i++) b_ptr[_i] = crisp_f32_to_f16((float)(_i % 3));
     // Arg 9: b PTR
     zeKernelSetArgumentValue(kernel, 9, sizeof(void*), &b_ptr);
     // Arg 10: b BYTE_SIZE = 131072
@@ -302,6 +328,95 @@ int main() {
 
     std::cout << "Kernel executed successfully" << std::endl;
 
+    // --mma-bench: per-launch kernel-timestamp timing (Endeavor 142; fixed 143)
+    {
+        const int BENCH_ITERS = 5;
+        ze_device_properties_t _bmProps = { ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES };
+        zeDeviceGetProperties(device, &_bmProps);
+        uint64_t _timerRes  = _bmProps.timerResolution;
+        uint64_t _validBits = _bmProps.kernelTimestampValidBits;
+        uint64_t _clockMask = (_validBits >= 64) ? ~0ULL : ((1ULL << _validBits) - 1ULL);
+        bool _timerInHz = (_timerRes > 1000000ULL);
+
+        ze_event_pool_desc_t _poolDesc = { ZE_STRUCTURE_TYPE_EVENT_POOL_DESC };
+        _poolDesc.flags = ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP;
+        _poolDesc.count = 1;
+        ze_event_pool_handle_t _pool = nullptr;
+        ze_event_handle_t _tsEvent = nullptr;
+        ze_command_list_handle_t _measList = nullptr;
+        bool _poolOk = (zeEventPoolCreate(context, &_poolDesc, 1, &device, &_pool) == ZE_RESULT_SUCCESS);
+        bool _tsOk = _poolOk;
+        if (_tsOk) {
+            ze_event_desc_t _evDesc = { ZE_STRUCTURE_TYPE_EVENT_DESC };
+            _evDesc.index  = 0;
+            _evDesc.signal = ZE_EVENT_SCOPE_FLAG_HOST;
+            _evDesc.wait   = ZE_EVENT_SCOPE_FLAG_HOST;
+            _tsOk = (zeEventCreate(_pool, &_evDesc, &_tsEvent) == ZE_RESULT_SUCCESS);
+        }
+        if (_tsOk) {
+            zeCommandListCreate(context, device, &cmdListDesc, &_measList);
+            zeCommandListAppendLaunchKernel(_measList, kernel, &groupCount, _tsEvent, 0, nullptr);
+            zeCommandListClose(_measList);
+        }
+
+        // Warmup: real submit + sync pairs, so caches/clocks settle per execution.
+        for (int _w = 0; _w < 20; ++_w) {
+            zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr);
+            zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);
+        }
+
+        double _kt[BENCH_ITERS];
+        int _kn = 0;
+        double _total_s = 0.0;
+        for (int _it = 0; _it < BENCH_ITERS; ++_it) {
+            bool _gotTs = false;
+            if (_tsOk) {
+                zeEventHostReset(_tsEvent);
+                zeCommandQueueExecuteCommandLists(cmdQueue, 1, &_measList, nullptr);
+                zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);
+                zeEventHostSynchronize(_tsEvent, UINT64_MAX);
+                ze_kernel_timestamp_result_t _ts = {};
+                if (zeEventQueryKernelTimestamp(_tsEvent, &_ts) == ZE_RESULT_SUCCESS) {
+                    uint64_t _s = _ts.context.kernelStart & _clockMask;
+                    uint64_t _e = _ts.context.kernelEnd   & _clockMask;
+                    uint64_t _d = (_e >= _s) ? (_e - _s) : (_clockMask + 1 - _s + _e);
+                    double _ns = _timerInHz ? ((double)_d * 1e9 / (double)_timerRes)
+                                            : ((double)_d * (double)_timerRes);
+                    _kt[_kn++] = _ns / 1000.0;
+                    _total_s += _ns / 1e9;
+                    _gotTs = true;
+                }
+            }
+            if (!_gotTs) {
+                auto _w0 = std::chrono::high_resolution_clock::now();
+                zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr);
+                zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);
+                auto _w1 = std::chrono::high_resolution_clock::now();
+                double _ws = std::chrono::duration<double>(_w1 - _w0).count();
+                _kt[_kn++] = _ws * 1e6;
+                _total_s += _ws;
+            }
+        }
+
+        // Median via insertion sort (BENCH_ITERS is small; avoids an <algorithm> include).
+        for (int _i = 1; _i < _kn; ++_i) {
+            double _v = _kt[_i]; int _j = _i - 1;
+            while (_j >= 0 && _kt[_j] > _v) { _kt[_j + 1] = _kt[_j]; --_j; }
+            _kt[_j + 1] = _v;
+        }
+        double _med_us = (_kn > 0) ? _kt[_kn / 2] : 0.0;
+        double _min_us = (_kn > 0) ? _kt[0] : 0.0;
+        double _flops = 2.0 * 256.0 * 256.0 * 256.0;
+        double _gflops = (_med_us > 0.0) ? (_flops / (_med_us / 1e6) / 1e9) : 0.0;
+        std::cout << "BENCH 256 256 256 " << _gflops << " GFLOPS (" << _kn << " iters, " << _total_s << " s)"
+                  << " median_us=" << _med_us << " min_us=" << _min_us
+                  << (_tsOk ? " method=kernel_timestamp" : " method=wallclock_per_iter")
+                  << std::endl;
+        if (_measList) zeCommandListDestroy(_measList);
+        if (_tsEvent)  zeEventDestroy(_tsEvent);
+        if (_poolOk)   zeEventPoolDestroy(_pool);
+    }
+
     // Verify Output (skipped if large)
     if (65536 <= 512) {
         std::cout << "BUFFER a: ";
@@ -338,7 +453,7 @@ int main() {
       for (uint64_t i = 0; i < chk_m; i++) for (uint64_t j = 0; j < chk_n; j++) {
         float acc = 0.0f;
         for (uint64_t kk = 0; kk < 256ULL; kk++)
-            acc += (float)a_ptr[i*a_str0 + kk*a_str1] * (float)b_ptr[kk*b_str0 + j*b_str1];
+            acc += (float)((i*a_str0 + kk*a_str1) % 5ULL) * (float)((kk*b_str0 + j*b_str1) % 3ULL);
         float got = host_c_buf[i*chk_n + j];
         float d = got - acc; if (d < 0) d = -d;
         if (d > 1e-2f * (acc < 0 ? -acc : acc) + 1e-3f) { mma_ok = 0;
