@@ -929,3 +929,151 @@ NEXT
   - then (A), the benchmark kernel's 500 ms.
   - rung 04 (on-metal fp16) should be written once (B) is fixed, so the suite pins this on
     hardware rather than only in the emitted types.
+
+
+PHASE E — fp16 IS CORRECT ON HARDWARE.  TWO MORE LAYERS HAD THE ELEMENT TYPE WRONG.
+================================================================================
+2026-08-23.
+
+THE HALF-CONTRACTION, AND HOW THE ARITHMETIC PROVED IT
+--------------------------------------------------------
+Rather than reason about the %5 / %3 fill pattern, the operands were temporarily set to ALL ONES.
+That makes the result equal the NUMBER OF CONTRACTED TERMS, so a partial contraction is readable
+straight off the output:
+
+    K=16    correct 16    got 16   (correct)
+    K=32    correct 32    got 16
+    K=64    correct 64    got 32
+    K=128   correct 128   got 64
+
+One K-step was exact; beyond that, half the terms vanished.  The cause was in the tile ADDRESS:
+
+    %coop_elem_ptr = getelementptr float, ptr addrspace(1) %coop_base, i64 %coop_flat
+
+%coop-tensor-ptr+stride computed a correct flat ELEMENT index and then indexed it with a hardcoded
+`float`.  On a 2-byte tensor that scales every offset by 4 bytes instead of 2, so each tile after
+the first starts at TWICE its intended element offset.  The STRIDE operand is passed separately and
+was already right, which is exactly why the first tile of every kernel read perfectly and nothing
+looked wrong until a K-loop took a second step.
+
+The prediction is quantitative, which is what makes it a cause rather than a candidate.  For an
+8xK operand, the tile at step k should start at element 16k but starts at 32k; a tile whose last
+element (base + 7K + 15) exceeds the allocation reads past the buffer and contributes nothing:
+
+    K=16    bases 0                  1 of 1 in bounds  -> 16     measured 16
+    K=32    bases 0,32               1 of 2            -> 16     measured 16
+    K=64    bases 0,32,64,96         2 of 4            -> 32     measured 32
+    K=128   bases 0,32,...,224       4 of 8            -> 64     measured 64
+
+Four predictions, four matches.
+
+WHY NO EXISTING TEST COULD HAVE CAUGHT IT.  Every kernel in the tree was f32 until this endeavour,
+and for f32 the hardcoded type is the CORRECT one — the bug is exactly zero-cost at 32 bits.  No
+amount of f32 testing could find it, and no .spv-reading validator could either: the emitted TYPES
+were already right by this point, and types are all such a validator can see.  It took running a
+16-bit kernel on hardware.  That is the case for rung 04.
+
+RESULT: the simple fp16 kernel is MMA_CORRECT on an Arc B580 at K = 16, 32, 64, 128 and 256, with
+the real deterministic fill (not the all-ones diagnostic).  **fp16 MMA works on Intel.**
+
+THE 500 ms, AND WHY A PREFETCH WAS NEVER HARMLESS
+---------------------------------------------------
+The benchmark kernel still took a constant 500 ms at every size and still returned garbage, while
+the simple kernel — same MMA path — ran in 3.5 MICROSECONDS.  The difference between them is
+prefetch and the register ring.
+
+%block-prefetch emitted Subgroup2DBlockPrefetchINTEL with ElementSize hardcoded to 4 bytes and
+MemoryPitch as leading-dim * 4.  On a 16-bit tensor both are double the truth, so the surface
+handed to the driver is twice as wide as the data and runs off the end of the allocation.
+
+Its own docstring calls it "a fire-and-forget L1 cache hint... never changes data".  That is true
+of a VALID prefetch.  An invalid one is a memory access like any other — and a constant 500 ms
+independent of problem size, with garbage output, is the signature of a GPU fault and reset rather
+than of slow work.
+
+COUNTING THE LAYERS.  The element type has now had to be threaded through, each invisible to the
+one above it:
+    1. the analyzer                              (Phase 1)
+    2. the coop-matrix TYPE in codegen           (Phase B)
+    3. the instruction SHAPE                     (Phase C)
+    4. the tile ADDRESS (getelementptr)          (Phase E)
+    5. the PREFETCH surface                      (Phase E)
+    6. the host FILL and host REFERENCE          (Phase D)
+Every one of them was a hardcoded f32 that had been correct for as long as Crisp only ever ran
+f32 kernels.  The lesson is not that any single one was careless — it is that "the element type is
+float" had been a safe assumption everywhere, so it was made everywhere, and the first non-f32
+kernel had to find each site the hard way.
+
+ONE MORE SITE: A PREFETCH NODE HAS NO MATRIX TO ASK
+-----------------------------------------------------
+Fixing %block-prefetch's ElementSize was not enough, and the emitted IR said why.  Counting GEPs
+by element type after that fix:
+
+    20 getelementptr float, ptr addrspace(1) %coop_base
+    18 getelementptr half,  ptr addrspace(1) %coop_base
+
+18 half is right for the A/B loads.  20 float is 8 C-tile stores (correct — C really is f32) plus
+12 PREFETCHES of the very tensors that had just been loaded as half.  The totals had to add up,
+and 20 was too many; that arithmetic is what located it.
+
+Two causes, both about a prefetch not being a matrix:
+  - %coop-node-elem answered from the node's own (coop-matrix ELEM ...) type, falling back to the
+    VALUE node for a :store.  A :prefetch node has NEITHER — it names a tensor and a region and
+    produces no matrix — so it fell through to FLOAT.  It now asks the TENSOR, which is the same
+    source %coop-elem-of uses on the analysis side.
+  - the :store and :prefetch branches call %coop-tensor-ptr+stride through a SHORTER argument form
+    than :load does, so the earlier edit — which matched on the :load call's layout — reached only
+    one of the three sites.  A reminder that "replace the call" is not one edit when the same
+    function is called three ways.
+
+Final: 8 float GEPs (the C stores) and 30 half (18 loads + 12 prefetches).
+
+
+RESULTS ON AN ARC B580
+================================================================================
+The 500 ms constant is GONE — it was the faulting prefetch all along.  fp16, precision=fast:
+
+    N                512     1024     2048     4096     8192
+    Crisp fp16     15.84    39.79    41.85    34.39    26.91   TFLOPS
+    SYCL control    7.48    15.35    17.71    17.80    15.23
+    oneMKL fp16    40.97    75.09    88.48   110.75   111.38
+    vs control      2.12x    2.59x    2.36x    1.93x    1.77x
+    vs oneMKL         39%      53%      47%      31%      24%
+
+So Crisp's first working fp16 kernel peaks at ~42 TFLOPS, beats the hand-written SYCL
+joint_matrix control by roughly 2x across the range, and reaches a quarter to a half of oneMKL.
+It has not been tuned for fp16 at all — it is the tf32 top kernel with the element type changed —
+so the shape of the curve (peak at 2048, falling away after) is the obvious next thing to look at,
+not a settled result.
+
+
+RESTORING VERIFICATION IMMEDIATELY CAUGHT A REAL BUG — IN THE TF32 KERNEL
+================================================================================
+fp16 verifies CORRECT at N >= 512 and WRONG at N = 128 and 256.  Before attributing that to fp16,
+the same test was run on the TF32 top kernel, which has been shipping numbers for months:
+
+    tf32   N=128  MMA_WRONG      N=256  MMA_WRONG      N=512  MMA_CORRECT     N=1024  MMA_CORRECT
+    fp16   N=128  MMA_WRONG      N=256  MMA_WRONG      N=512  MMA_CORRECT     N=1024  MMA_CORRECT
+
+Identical.  So this is NOT an fp16 defect: the sec2_top prefetch-pipeline kernel family computes
+the wrong answer at N <= 256, on both element types, and has done so for as long as it has
+existed.  It was invisible because endeavour 150 disabled host verification whenever --mma-bench
+was passed, and every benchmark sweep passes it.
+
+THE PUBLISHED tf32 LADDER INCLUDES N=256.  That row has been reporting a kernel that computes the
+wrong answer.  The sweep now drops it correctly (matmul.py sees NOT MMA_CORRECT and skips the
+point), which is why the fp16 table above starts at 512.
+
+This is the whole argument for verification being on by default: it took one run to surface a
+defect that had survived every benchmark since 150.  Cause unknown so far — the prologue
+prefetches two K-steps ahead and the tile cover is 32x32, so small N is where the pipeline has
+fewest steps to hide an off-by-one; that is a hypothesis, not a diagnosis.
+
+STATUS
+  - fp16 MMA is CORRECT on Intel at every size the tf32 kernel is correct at, and roughly 2x the
+    SYCL control.  [[the 6-layer element-type sweep is complete]]
+  - OPEN: sec2_top family wrong at N <= 256, BOTH element types.  Pre-existing, now visible.
+  - OPEN: rung 04 (on-metal fp16 spec) — the whole point being that the emitted TYPES were correct
+    while the ADDRESS was not, and only hardware could tell the difference.
+  - OPEN: report.py has no fp16 section; do not add one until N<=256 is understood, or the table
+    will silently start at 512 with no explanation of why.
