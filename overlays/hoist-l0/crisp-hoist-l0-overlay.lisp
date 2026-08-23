@@ -506,3 +506,87 @@
           (format stream "      }~%")
           (format stream "      free(host_c_buf);~%")
           (format stream "      std::cout << (mma_ok ? \"MMA_CORRECT\" : \"MMA_WRONG\") << std::endl; }~%"))))))
+
+
+;;;; ------------------------------------------------------------------------------------------
+;;;; Endeavour 155 — the host reference compared THE WRONG ELEMENTS OF C.
+;;;;
+;;;; The block calls itself "stride-agnostic", and it is — for A and B, which it indexes with
+;;;; their real strides.  For C it did not:
+;;;;
+;;;;     memcpy(host_c_buf, c_ptr, chk_m * chk_n * sizeof(float));   // flat 64*64 prefix
+;;;;     float got = host_c_buf[i*chk_n + j];                        // indexed as if C were 64 wide
+;;;;
+;;;; C is N wide, so flat offset i*64+j is really C[(i*64+j)/N][(i*64+j)%N].  At N=128, i=1, j=0
+;;;; that is C[0][64] — compared against ref(1,0).  The check was reading a DIFFERENT ELEMENT than
+;;;; the one it computed a reference for, for every row after the first, at every N > 64.
+;;;;
+;;;; WHY IT LOOKED LIKE A KERNEL BUG, and this is the cautionary part.  With the deterministic
+;;;; %5 / %3 fill, C is very nearly uniform — it varies only with (row mod 5, col mod 3) — so
+;;;; comparing the wrong element gave a SMALL error, about 6 absolute, roughly independent of N.
+;;;; Against a 1% relative tolerance that is:
+;;;;
+;;;;     N=128   248 vs 255   2.7%  -> FAIL
+;;;;     N=256   510 vs 516   1.2%  -> FAIL
+;;;;     N=512  ~1030         0.6%  -> PASSES, silently, while being just as wrong
+;;;;
+;;;; which reads exactly like "the kernel breaks below 512".  It is not: the kernel is correct at
+;;;; every size, and an all-ones fill (where C IS uniform, so a misindexed read is indistinguishable
+;;;; from a correct one) passes at 128, 256, 512 and 1024 — which is what proved the term COUNT was
+;;;; right and pointed the finger back here.
+;;;;
+;;;; Copying chk_m WHOLE ROWS and indexing by C's own strides fixes it.  Cost is chk_m * c_str0
+;;;; floats — 4 MB at N=16384, once per run.
+;;;; ------------------------------------------------------------------------------------------
+
+;; src/hoist-l0/main.lisp  (REPLACES %l0-emit-mma-reference -- 155: index C by its own strides)
+(defun %l0-emit-mma-reference (stream allocations)
+  "Emit a stride-agnostic host reference C = A·B and compare against the device C."
+  (destructuring-bind (m n k) *mma-test-dims*
+    (let ((a (find :a allocations :key (lambda (x) (getf x :mma-role))))
+          (b (find :b allocations :key (lambda (x) (getf x :mma-role))))
+          (c (find :c allocations :key (lambda (x) (getf x :mma-role)))))
+      (when (and a b c)
+        (let ((ab (getf a :base)) (bb (getf b :base)) (cb (getf c :base)))
+          (format stream "~%    // Endeavor 134: MMA host reference C = A.B (stride-agnostic)~%")
+          (format stream "    { int mma_ok = 1; int mma_bad = 0;~%")
+          (format stream "      uint64_t chk_m = (~dULL < 64 ? ~dULL : 64); uint64_t chk_n = (~dULL < 64 ? ~dULL : 64);~%" m m n n)
+          ;; Endeavour 155: copy chk_m WHOLE ROWS (chk_m * c_str0 elements), not a flat
+          ;; chk_m*chk_n prefix.  See header.
+          (format stream "      float* host_c_buf = (float*)malloc(chk_m * ~a_str0 * sizeof(float));~%" cb)
+          (format stream "      zeCommandListCreate(context, device, &cmdListDesc, &cmdList);~%")
+          (format stream "      zeCommandListAppendMemoryCopy(cmdList, host_c_buf, ~a_ptr, chk_m * ~a_str0 * sizeof(float), nullptr, 0, nullptr);~%" cb cb)
+          (format stream "      zeCommandListClose(cmdList);~%")
+          (format stream "      zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr);~%")
+          (format stream "      zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
+          (format stream "      zeCommandListDestroy(cmdList);~%")
+          (format stream "      for (uint64_t i = 0; i < chk_m; i++) for (uint64_t j = 0; j < chk_n; j++) {~%")
+          (format stream "        float acc = 0.0f;~%")
+          (format stream "        for (uint64_t kk = 0; kk < ~dULL; kk++)~%" k)
+          ;; Endeavour 155: RECOMPUTE the operands rather than reading them back.
+          ;;
+          ;; The previous form dereferenced a_ptr / b_ptr from the HOST.  Those are USM
+          ;; allocations, and on the BMG/WSL driver a host dereference of one aborts outright:
+          ;;     Abort was called at 30 line in file:
+          ;;     ./level_zero/core/source/memory/cpu_page_fault_memory_manager.cpp
+          ;; so the check could never complete regardless of element type.
+          ;;
+          ;; But the harness FILLED these buffers itself, from the index, a few hundred lines
+          ;; above -- so their contents are known by construction and need not be read at all.
+          ;; The modulus comes from %l0-mma-fill-modulus, which the fill emitter also uses, so the
+          ;; two cannot drift apart.  C is still read back properly, by device->host memcpy, which
+          ;; is what is actually under test.
+          ;;
+          ;; The values 0..4 and 0..2 are exactly representable in fp16, bf16 and tf32 alike, so
+          ;; this is exact for every element type rather than only for f32.
+          (format stream "            acc += (float)((i*~a_str0 + kk*~a_str1) % ~dULL) * (float)((kk*~a_str0 + j*~a_str1) % ~dULL);~%"
+                  ab ab (%l0-mma-fill-modulus :a) bb bb (%l0-mma-fill-modulus :b))
+          (when (/= *mma-scale* 1)
+            (format stream "        acc = acc * ~d.0f;   // --mma-scale (MMA fired ~:*~d× per fragment)~%" *mma-scale*))
+          (format stream "        float got = host_c_buf[i*~a_str0 + j*~a_str1];~%" cb cb)
+          (format stream "        float d = got - acc; if (d < 0) d = -d;~%")
+          (format stream "        if (d > 1e-2f * (acc < 0 ? -acc : acc) + 1e-3f) { mma_ok = 0;~%")
+          (format stream "            if (mma_bad < 4) { std::cout << \"  C[\" << i << \"][\" << j << \"]=\" << got << \" ref \" << acc << std::endl; mma_bad++; } }~%")
+          (format stream "      }~%")
+          (format stream "      free(host_c_buf);~%")
+          (format stream "      std::cout << (mma_ok ? \"MMA_CORRECT\" : \"MMA_WRONG\") << std::endl; }~%"))))))

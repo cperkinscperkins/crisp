@@ -1077,3 +1077,102 @@ STATUS
     while the ADDRESS was not, and only hardware could tell the difference.
   - OPEN: report.py has no fp16 section; do not add one until N<=256 is understood, or the table
     will silently start at 512 with no explanation of why.
+
+
+PHASE F — A RETRACTION: THE "N <= 256 KERNEL BUG" WAS IN THE VERIFIER
+================================================================================
+2026-08-23.
+
+RETRACTED.  Phase E recorded that "the sec2_top prefetch-pipeline kernel family computes the wrong
+answer at N <= 256, on both element types, and has done so for as long as it has existed", and
+that "the published tf32 ladder includes N=256 — that row has been reporting a kernel that computes
+the wrong answer."
+
+BOTH KERNELS ARE CORRECT AT EVERY SIZE.  The defect was in the host reference that had just been
+re-enabled.
+
+    tf32 top   N=128 MMA_CORRECT  N=256 MMA_CORRECT  N=512 MMA_CORRECT  N=1024 MMA_CORRECT
+    fp16 top   N=128 MMA_CORRECT  N=256 MMA_CORRECT  N=512 MMA_CORRECT  N=1024 MMA_CORRECT
+
+WHAT WAS ACTUALLY WRONG.  The reference block calls itself "stride-agnostic", and it is — for A
+and B, which it indexes with their real strides.  For C it was not:
+
+    memcpy(host_c_buf, c_ptr, chk_m * chk_n * sizeof(float));   // a flat 64*64 prefix
+    float got = host_c_buf[i*chk_n + j];                        // indexed as if C were 64 wide
+
+C is N wide, so flat offset i*64+j is C[(i*64+j)/N][(i*64+j)%N].  At N=128, i=1, j=0 that is
+C[0][64], compared against a reference computed for (1,0).  For EVERY row after the first, at
+EVERY N > 64, the check read a different element than the one it had computed a reference for.
+Fixed by copying chk_m WHOLE ROWS and indexing by C's own strides.
+
+WHY IT IMITATED A KERNEL BUG SO WELL — the part worth remembering.  With the deterministic %5 / %3
+fill, C is very nearly uniform: it varies only with (row mod 5, col mod 3).  So reading the wrong
+element produced a SMALL error, about 6 absolute, roughly independent of N.  Against the 1%
+relative tolerance that yields:
+
+    N=128    248 vs 255    2.7%   FAIL
+    N=256    510 vs 516    1.2%   FAIL
+    N=512   ~1030          0.6%   PASSES — just as wrong, silently
+    N=1024                 0.3%   PASSES
+
+A clean monotone story — "it breaks below 512" — produced entirely by a fixed error crossing a
+relative threshold.  Both element types failed identically, which I read as strong evidence the
+fault was shared and therefore in the kernel family.  It was shared because it was in the
+INSTRUMENT they shared.
+
+THE STEP THAT ACTUALLY SETTLED IT was the all-ones fill.  With A = B = 1 the result equals the
+number of contracted terms, and it was CORRECT at 128, 256, 512 and 1024.  That proved the term
+count was right at every size — and, on reflection, that an all-ones C is UNIFORM, so a misindexed
+read is indistinguishable from a correct one.  The test that exonerated the kernel is precisely
+the test that is blind to this class of verifier bug; it was the DISAGREEMENT between all-ones
+(pass) and %5/%3 (fail) that located the problem, not either result alone.
+
+METHOD NOTE.  This is the second time in this endeavour that a confident causal claim about the
+compiler turned out to be about the harness (the first: "--mma-bench drops the reference because
+rank is not recoverable" — it was an overlay explicitly disabling it).  Both times the giveaway was
+available earlier than I used it: a symptom that is identical across two independent element types,
+or two independent kernels, is more likely to live in what they share than in each of them.
+
+STANDING CORRECTED, THE PHASE D/E RESULTS ARE UNCHANGED IN SUBSTANCE:
+  - the six element-type layers were all real compiler bugs, all still fixed;
+  - fp16 MMA is correct on Intel;
+  - --mma-bench really was suppressing verification since endeavour 150, and that really did mean
+    no benchmarked kernel was verified — the fix simply did not reveal what I first thought it had.
+
+CRISP fp16 ON AN ARC B580 — THE COMPLETE LADDER
+================================================================================
+With the verifier fixed, the sweep runs every size and skips nothing.  precision=fast:
+
+    N                 256      512     1024     2048     4096     8192    16384
+    Crisp fp16       4.82    15.84    39.79    42.05    34.13    26.78       --
+    SYCL control     2.02     7.50    15.28    17.64    17.81    15.24    10.88
+    oneMKL fp16      9.78    40.97    75.09    89.05   110.68   111.72   110.67
+    vs control      2.39x    2.11x    2.60x    2.38x    1.92x    1.76x
+    vs oneMKL         49%      39%      53%      47%      31%      24%
+
+Every Crisp point is MMA_CORRECT — verified against a host reference on the same run, which is
+newly true for benchmark mode (see Phase D).
+
+READING THESE HONESTLY
+  - Crisp beats the hand-written SYCL joint_matrix control at every size, by 1.8x to 2.6x.  That
+    is the PEER-class comparison and it is a genuine result.
+  - Against oneMKL the curve is the story: 47-53% in the middle, falling to 24% at 8192.  oneMKL
+    keeps climbing to ~111 TFLOPS and holds it; Crisp peaks at 42 TFLOPS at N=2048 and then
+    DECLINES.  A kernel that gets slower as the problem grows is not merely untuned — it is losing
+    something structural (cache behaviour, occupancy, or the prefetch distance being wrong for the
+    working-set size).  That falloff, not the peak, is where the next performance work is.
+  - This kernel has had NO fp16 tuning whatsoever.  It is the tf32 top kernel with the element
+    type changed: same 32x32 output tile, same ring depth of 2, same prefetch distance of 2
+    K-steps.  Those were tuned for 32-bit operands, and at 16 bits every one of them describes a
+    different amount of data.  The tile is now half the bytes; the prefetch reaches half as far in
+    bytes; the register budget per fragment halved.  There is no reason to expect the tf32 optimum
+    to be the fp16 optimum, and 16384 was not even reached before the sweep's growth guard stopped
+    it.
+  - 16384 is absent because the sweep stopped after 8192; the peers ran it.  Not a failure, but
+    the ladder is incomplete at the top end and should not be presented as if Crisp declined to
+    compete there.
+
+FOR CONTEXT, the tf32 top kernel on the same part peaks at 16.33 TFLOPS (N=4096) against oneMKL
+tf32's 14.31 — i.e. Crisp BEATS the vendor library in tf32 and reaches a quarter to a half of it
+in fp16.  The gap is not in Crisp's MMA lowering, which is now correct and shape-optimal; it is in
+everything around the MMA at 16 bits.
