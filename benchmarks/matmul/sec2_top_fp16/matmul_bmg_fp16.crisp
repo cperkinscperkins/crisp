@@ -1,3 +1,33 @@
+;; Section 2 top MMA kernel — Intel BMG, half.
+;;
+;; TILE WIDTH IS THE TUNED PARAMETER.  This kernel was originally the tf32 top kernel with the
+;; element type changed, which meant all three of its tuning parameters had been chosen for 32-bit
+;; operands: a 32x32 output tile, ring depth 2, prefetch distance 2 K-steps.  At 16 bits each of
+;; those describes HALF the bytes it was sized for, so arithmetic intensity per subgroup was
+;; halved exactly where it matters.
+;;
+;; Measured on an Arc B580 (endeavour 155), bf16, every point MMA_CORRECT:
+;;
+;;     N            1024    2048    4096    8192
+;;     32x32        40.0    41.3    33.3    27.1   TFLOPS
+;;     32x64        49.8    60.8    57.3    38.7
+;;     gain        1.25x   1.47x   1.72x   1.43x
+;;
+;; It raises the plateau AND improves the scaling, which is what identifies it as an arithmetic
+;; intensity fix rather than a constant-factor one.
+;;
+;; WHAT DID NOT WORK, so nobody re-tries them blind:
+;;   ring depth 3     +9% at 32x32 but COLLAPSES 32x64 (57 -> 23 TFLOPS)
+;;   prefetch dist 3  1.38x vs base, i.e. worse than 32x64's 1.70x
+;;   prefetch dist 4  0.80x — actively harmful
+;;   TM 64 (64x32)    does not run at all
+;;   TN 96            MMA_WRONG at 0.27 TFLOPS — the GPU-fault signature, under investigation
+;;   TN 128           correct but 0.14x
+;;
+;; Occupancy is NOT the limiter here: stripping -ze-opt-large-register-file from the 32x32
+;; baseline HALVES it (34 -> 17 TFLOPS, three interleaved reps), so endeavour 144's large-GRF
+;; selection is doing real work and the kernel is not thread-starved.
+(declaim (precision fast))
 (def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
 (def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
@@ -9,37 +39,38 @@
   (let ((K      (inner-dimension A B))
         (n-k-steps (/ (inner-dimension A B) (to-ulong 16))))
 
-    (tile-stride C (32 32) (grid-y grid-x)
+    (tile-stride C (32 64) (grid-y grid-x)
       (let ((A-ring (make-register-tile-ring half (32 16) :ring-count 2 :operand :a))
-            (B-ring (make-register-tile-ring half (16 32) :ring-count 2 :operand :b))
-            (C-tile (make-register-tile float (32 32) 0.0)))
-      
-      ;; Prologue
+            (B-ring (make-register-tile-ring half (16 64) :ring-count 2 :operand :b))
+            (C-tile (make-register-tile float (32 64) 0.0)))
       (prefetch-tile A (grid-y 0) :size (32 16))
-      (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (16 16))
-      (prefetch-tile B (0 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (16 16))
+      (prefetch-tile B (0 (* grid-x (to-ulong 4))) :size (16 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (16 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (16 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (16 16))
       (prefetch-tile A (grid-y 1) :size (32 16))
-      (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (16 16))
-      (prefetch-tile B (1 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (16 16))
+      (prefetch-tile B (1 (* grid-x (to-ulong 4))) :size (16 16))
+      (prefetch-tile B (1 (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (16 16))
+      (prefetch-tile B (1 (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (16 16))
+      (prefetch-tile B (1 (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (16 16))
       (load-tile A (ring-get A-ring 0) (grid-y 0))
       (load-tile B (ring-get B-ring 0) (0 grid-x))
 
       (dotimes (grid-k n-k-steps)
         (let ((next-k (+ grid-k (to-ulong 1)))
               (prefetch-k (+ grid-k (to-ulong 2))))
-          
-          ;; 1. Issue prefetch for future K.
+
           (when (< prefetch-k n-k-steps)
             (prefetch-tile A (grid-y prefetch-k) :size (32 16))
-            (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (16 16))
-            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (16 16)))
+            (prefetch-tile B (prefetch-k (* grid-x (to-ulong 4))) :size (16 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (16 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (16 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (16 16)))
 
-          ;; 2. Issue register load for the NEXT k.
           (when (< next-k n-k-steps)
             (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
             (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
 
-          ;; 3. Compute on the CURRENT k.
           (mma-accumulate-via-tile (8 16 16) C-tile
                                    (ring-get A-ring (mod grid-k (to-ulong 2)))
                                    (ring-get B-ring (mod grid-k (to-ulong 2))))))

@@ -292,12 +292,12 @@ int main() {
     }
 
     // Compute dispatch group count
-    // :tile-shape (32 32) — one workgroup per output tile; axis k <- dimension k.
+    // :tile-shape (32 64) — one workgroup per output tile; axis k <- dimension k.
     // Endeavor 143: exact tile cover measured strictly better than an
     // occupancy-clamped grid at every size up to 4096 (see overlay notes).
     uint32_t _gx = (uint32_t)(((uint64_t)c_ext0 + 31) / 32);
     if (_gx < 1) _gx = 1;
-    uint32_t _gy = (uint32_t)(((uint64_t)c_ext1 + 31) / 32);
+    uint32_t _gy = (uint32_t)(((uint64_t)c_ext1 + 63) / 64);
     if (_gy < 1) _gy = 1;
     // Device dispatch limits (Endeavor 143).  The tile grid scales with the
     // problem, not the hardware, so bound it by what the device will accept.
