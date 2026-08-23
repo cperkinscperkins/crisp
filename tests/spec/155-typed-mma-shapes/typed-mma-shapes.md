@@ -698,3 +698,115 @@ the module MEANS.
 NEXT: make %spv-mma-shape select by element type — the entry whose K matches the operand width —
 and reconcile it with the shape the kernel requests, so `(8 16 16)` on an fp16 tile mints A=8x16
 and B=16x16.  Then rung 04 on metal, then the benchmark, then the report section.
+
+
+PHASE C — TYPED SHAPES.  fp16 NOW BUILDS ON THE GPU.
+================================================================================
+2026-08-23.
+
+Phase B made every cooperative matrix carry its element type; the module then failed to LOAD
+because 16-bit matrices were still being minted in TF32 shapes.  Phase C makes the SHAPE follow
+the type as well, which is what this endeavour was named for.
+
+THE MECHANISM.  %spv-mma-shape now takes an optional ELEMENT TYPE and selects the profile entry
+that matches it, by one of two rules:
+  1. an explicitly TYPED entry wins -- :mma-shapes ((float 8 16 8) (half 8 16 16) ...) is now an
+     accepted format, which is the honest long-term encoding;
+  2. otherwise the WIDTH rule: K x element-bits is a fixed fragment footprint (256 bits on both
+     shipped profiles), so the right entry is the one whose K equals footprint/width.  The
+     footprint is read off the profile's own 32-bit entry rather than hardcoded.
+Both shipped profiles resolve exactly as their comments always claimed:
+    bmg  ((8 16 8) (8 16 16) (8 16 32))   tf32 K=8   fp16 K=16   int8 K=32
+    h100 ((16 8 8) (16 8 4) (16 8 16))    tf32 K=8   fp16 K=16
+When nothing matches -- e.g. the many specs carrying :mma-shapes ((8 16 8)) -- it returns
+(first shapes), exactly the pre-155 behaviour, so nothing regresses.
+
+FOUR CALL SITES had to pass the element type; the other ~14 keep their previous behaviour because
+ELEM is optional.  Finding all four took three iterations, each surfaced by the same symptom
+("Unknown variable NIL" -- a fragment index that no longer exists) and each in a different layer:
+
+  1. analyze-make-register-fragment      the fill        :elem was already in its lambda list
+  2. analyze-load-fragment-a / -b        the loads       element comes from the SOURCE TENSOR;
+                                                         these needed their nesting INVERTED, as
+                                                         the shape was computed before the tensor
+                                                         was analysed -- nothing yet knew what the
+                                                         shape was a shape OF
+  3. %emit-per-frag-accumulate           the MMA walker  fixed by NOT re-deriving: the kernel wrote
+                                                         `(mma-accumulate-via-tile (8 16 16) ...)`
+                                                         and %check-mma-shape had already validated
+                                                         it; the shape was in hand at the call site
+                                                         and simply never passed down
+  4. %emit-per-frag-block-load           the load-tile   the tile ENTRY records no element type
+
+(4) wanted a structural change -- appending ELEM to the tile entry -- which several fixed-arity
+destructuring-binds would have turned into a wide, brittle edit.  145 P3a had already solved the
+identical problem with *mma-scratch-tile-dims*, a special bound by %explode-register-tiles, so
+*REGISTER-TILE-ELEMS* is the same mechanism for the same reason and degrades the same way (NIL
+outside an explosion; an unknown tile falls back to FLOAT).
+
+RESULT.  The fp16 kernel emits the correct DPAS shapes --
+    half  8x16  use A        half 16x16  use B        float 8x16  use Accumulator
+-- and, on an Arc B580:
+
+    RESULT: MODULE BUILT OK
+       kernel: matmul
+
+That is the milestone.  Before Phase C the driver refused the module outright:
+    undefined reference to `..._PackedA_RowMajor_SG16_8x8_i16_4_...'
+The TF32 top kernel is byte-for-byte unchanged (A=8x8, B=8x16), and the suites are green:
+1028/1028 E2E, 218/218 negative, 291/291 unit.  All three 155 rungs pass.
+
+WHAT IS NOT YET TRUE, STATED PLAINLY.  fp16 BUILDS and RUNS; it is not yet shown CORRECT, and it
+is not yet fast.  The benchmark reports a kernel time of 500.07 ms at BOTH 4096 and 8192 -- an
+identical wall time for 8x the work, which is not a measurement of anything.  The same constant
+appeared before Phase C, so it is not a property of the new shapes.  Two candidates: the kernel
+is not doing size-proportional work, or the kernel-timestamp path is returning a constant for
+this kernel.  The TF32 kernel in the same harness reports sensible, varying times, so it is not
+the timing path in general.
+
+
+A CORRECTION, AND IT MATTERS MORE THAN THE THING IT CORRECTS
+================================================================================
+Phase 3 of this document claimed the sec2_top* chapters get no host reference because
+%l0-emit-mma-reference cannot recover rank=2 from the parameter type.  THAT WAS WRONG.  The
+metacrisp plainly carries `:rank 2` for all three parameters, the MMA roles ARE assigned, and the
+role-driven extent override IS applied (a/b/c extents come out 256, not the default 4).
+
+The actual rule is simpler and much worse:
+
+    --mma-test=256,256,256                  ->  MMA_CORRECT emitted   (mma_ok x3, 13912 bytes)
+    --mma-test=256,256,256 --mma-bench=5    ->  NOT emitted           (mma_ok x0, 17085 bytes)
+
+**--mma-bench SUPPRESSES THE HOST REFERENCE.**  Reproducible, on the same metacrisp, changing only
+that flag.  In the generated C++ the block simply is not there: buffer dump at line 394, then
+"Success!" at 416, with nothing between.
+
+WHY THIS IS THE MORE SERIOUS FINDING.  Every autobench chapter passes --mma-bench.  So it is not
+that these chapters happen to be unverified -- it is that BENCHMARK MODE NEVER VERIFIES, for any
+chapter, on this backend.  Chapters that show MMA_CORRECT=1 in their checked-in .cpp (chap0,
+chap1, chap4, chap5) are the ones run through the NON-autobench path.  matmul.py then reads "no
+MMA_CORRECT token" as "incorrect" and drops every point at N <= 2048, while keeping points above
+2048 because verification is skipped there by design.  The net effect stands as previously
+recorded, and is if anything wider than stated: for autobench chapters every published Crisp
+number comes from sizes where nothing was checked.
+
+The generator's own logic does not obviously explain this -- generate-cpp-main has a single
+unconditional `(when *mma-test-dims* (%l0-emit-mma-reference stream allocations))`, allocations
+are non-empty in both modes, and the roles are present in both.  So the cause is one layer below
+where reading the source suggests, and it wants an instrumented run rather than more reading.
+That is the next thing worth doing, because it gates knowing whether ANY benchmarked kernel is
+correct.
+
+A SECOND, SEPARATE OBSTACLE on the same path: running the non-bench (verifying) harness for this
+chapter aborts inside the driver --
+    Abort was called at 30 line in file:
+    ./level_zero/core/source/memory/cpu_page_fault_memory_manager.cpp
+The emitted reference reads a_ptr/b_ptr directly from the HOST while they are device USM
+allocations.  So even the verifying path cannot currently confirm this chapter.  Both of these are
+harness defects, not compiler defects, and both are now precisely characterised.
+
+NEXT
+  - instrument the hoist generator to find why --mma-bench drops the reference (gates correctness
+    for every benchmarked kernel);
+  - fix the host-side reference to read operands through a device->host copy rather than a direct host read;
+  - only then trust an fp16 number, and only then add the report.py section.
