@@ -511,3 +511,91 @@ TWO SMALLER HARNESS DEFECTS, ONE FIXED
   every module-build failure on Intel reports only a numeric code.  This is what turned a one-line
   diagnosis into an afternoon.  put_temp_files_here/bf16probe/spvload.cpp is the stopgap; the
   generator should pass a log handle and print it on failure.
+
+
+PHASE A — TDD RUNGS, AND THE THREE HARNESS BUGS THAT WERE HIDING BEHIND ONE ANOTHER
+================================================================================
+2026-08-22.  Goal: state the f32/f16 defect as a failing spec before fixing anything.
+
+WHY THERE WAS NOTHING TO BUILD ON.  A survey of the whole tree found that 16-bit is essentially
+untested in Crisp:
+  - ALL 25 benchmark kernels are `float` (tf32) except the two 16-bit ones, both of which are the
+    ones just found broken.  The activation chapters (sec4_fused_relu, sec4_fused_custom) are
+    float too, so there is NO working 16-bit benchmark on BMG in ANY category.
+  - EXACTLY ONE spec in the entire suite declares a 16-bit type — rung 01, written last session
+    and parked beyond ci-stop.  Every other apparent hit was the word "half" in prose.
+That is why a systemic element-type leak survived: nothing exercised it.
+
+THE VALIDATOR, REBUILT AROUND THE RIGHT INVARIANT.  A cooperative matrix declares BOTH what it is
+made of and what it is for:
+
+    7 TypeCooperativeMatrixKHR <result> <component> <scope> <rows> <cols> <use>
+
+with <use> an ID naming a constant: 0=A, 1=B, 2=Accumulator.  So the real invariant of a
+mixed-precision MMA is checkable exactly — every A/B matrix has the declared element width, every
+Accumulator is fp32 — instead of the old "at least one matrix is 16-bit somewhere", which a mostly
+-f32 module satisfies.  New: %spv-lines, %spv-int-constants, %spv-float-widths, %spv-coop-matrices,
+%validate-coop-operand-elem, and validate-spv-fp16-coop beside a strengthened
+validate-spv-bf16-coop.
+
+PROVEN BOTH WAYS BEFORE BEING TRUSTED, using a standalone harness (put_temp_files_here/
+test-155-parse.lisp) so the logic could be checked without a compiler rebuild:
+    probe_half.spv   -> FAIL, 2 of 4 A/B operands are 32-bit   (the real defect)
+    sec2_top tf32    -> PASS, 2 of 2 A/B operands are 32-bit   (no false positive)
+
+NEW RUNGS
+  02-fp16-register-tile-spv       plain make-register-tile
+  03-fp16-register-tile-ring-spv  make-register-tile-ring, the benchmark's construction path
+Both fp16, because bf16 cannot be loaded on this driver at all while fp16 goes through the
+identical typed path and runs.  Rung 01 stays bf16 and compile-only.
+
+All three are RED, with the diagnostic naming the offending ids:
+    FAIL: 2 of 4 A/B cooperative matrices are NOT half/fp16 (16-bit).
+        id 364  component=32-bit  use=A
+        id 376  component=32-bit  use=B
+Rung 03 fails identically to 02, reconfirming from a second construction path that the defect is
+not ring-specific.
+
+THREE HARNESS BUGS, FOUND ONLY BECAUSE EACH MASKED THE NEXT
+--------------------------------------------------------------
+Rung 01 had recorded three "obstacles" last session.  Working through them showed that two of the
+three descriptions were wrong about the cause, and the real causes were stacked:
+
+1. --hardware-profile IN A TEST-WITH WAS PARSED BUT NEVER APPLIED.  The runner PRINTS the flag in
+   the pass name, so it is plainly parsed; the compile then failed with "load-tile into a
+   register-tile requires a hardware profile", exactly as if it had been omitted.  My earlier fix
+   bound *compile-hardware-profile*, which is the spec runner's own variable for HOIST runs.  The
+   compiler reads crisp.compiler::*requested-hardware-profile* — and binding THAT would not have
+   worked either, because initialize-compiler SETFs it from its :hardware-profile argument
+   (src/compiler.lisp:1033), clobbering any surrounding binding with NIL.  The value has to
+   travel as an ARGUMENT.  Fixed by overriding compile-crisp-file-to-spirv to pass it.
+
+   This is the FOURTH instance of one class: 137 (--ir-target-arch), 152 (--metadata), rung 01
+   (--hardware-profile), and now its actual cause.  A directive flag that no code path consumes
+   should be an ERROR, not a no-op.  Worth doing once rather than rediscovering a fifth time.
+
+2. AN --ir-target=spv VALIDATOR COULD NEVER RECEIVE THE .spv, IN PROCESS.  run-spec-spirv-in-
+   process passed the validator META-PATHS, which only exist under --metadata.  Without it,
+   meta-paths is NIL and NIL flowed into (probe-file val-arg), producing
+       The value NIL is not of type VECTOR when binding #:N-ARRAY
+   — an opaque type error that says nothing about the real problem, and which rung 01 had
+   mis-diagnosed as a package-resolution issue.  The package was a red herring; the ARGUMENT was
+   the bug.  Fixed by falling back to OUT-PATH.  Safe by construction: any spec reaching that
+   branch without metadata ALREADY crashed every time, so nothing could depend on it.
+
+3. THE CRLF TRAP, AGAIN.  tests/run-specs.lisp is CRLF while the overlays are LF, so a multi-line
+   anchor written with \\n silently matched ZERO times.  The first fix survived only because it
+   matched by line index.  Extraction now normalises line endings, and the overlay was scrubbed of
+   the 122 CR characters the first append had carried in.
+
+REGRESSION AFTER ALL THREE: 1028/1028 E2E, 218/218 negative, 291/291 unit.  The two overridden
+runner functions are shared, so this was not optional.
+
+ci-stop remains at 154-nvidia-perf; the 155 rungs are deliberately beyond it and RED.  Advance it
+to 155-typed-mma-shapes when Phase B turns them green.
+
+NEXT: PHASE B — find where the f32 A/B cooperative-matrix types are minted.  All five
+(list 'coop-matrix 'float ...) sites in src/mma.lisp are accounted for (337/469/497 overridden to
+use the element type; 568/2048 are the accumulator and correctly f32), so the source is somewhere
+not yet located.  With the rungs now failing for the right reason, the fix has a target to aim at
+and a test that will confirm it.

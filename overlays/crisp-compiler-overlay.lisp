@@ -624,3 +624,185 @@
           (cl:when (cl:and (cl:>= (cl:length toks) 2) (cl:equal (cl:second toks) type-id))
             (cl:return-from %spv-coop-uses-p cl:t)))
         (cl:setf pos (cl:1+ i))))))
+
+
+;;;; ============================================================================
+;;;; Endeavour 155 Phase A — a coop-matrix element-type validator that is actually strong enough.
+;;;;
+;;;; WHY THE FIRST ONE WAS NOT.  validate-spv-bf16-coop asserted "a 16-bit float type exists, SOME
+;;;; cooperative matrix uses it, and an f32 type also exists".  Every one of those is true of a
+;;;; module in which MOST A/B operands are still float32 — which is exactly the module Crisp emits
+;;;; today.  The validator was built to catch "the element type was discarded" and cannot see "the
+;;;; element type was discarded ON SOME PATHS", which is the bug that was really there.
+;;;;
+;;;; THE ASSERTION THAT ACTUALLY PINS IT.  In SPIR-V a cooperative matrix declares its role:
+;;;;
+;;;;     7 TypeCooperativeMatrixKHR <result> <component> <scope> <rows> <cols> <use>
+;;;;
+;;;; where <use> is an ID naming an integer constant: 0 = A, 1 = B, 2 = Accumulator.  So the
+;;;; module states, per matrix, both what it is FOR and what it is MADE OF.  The real invariant of
+;;;; a mixed-precision MMA is therefore checkable exactly:
+;;;;
+;;;;     every A-use and B-use matrix has the DECLARED ELEMENT width
+;;;;     every Accumulator-use matrix is fp32
+;;;;
+;;;; and a stray f32 A-operand — the actual defect — fails it.  Observed on probe_half.spv:
+;;;;     360 comp=f32 use=A   <-- caught      363 comp=f16 use=A   ok
+;;;;     372 comp=f32 use=B   <-- caught      374 comp=f16 use=B   ok
+;;;;                                          383 comp=f32 use=Acc ok
+;;;; ============================================================================
+
+;; tests/run-specs.lisp
+(defun %spv-lines (txt)
+  "TXT split into lines, each tokenised.  The disassembled SPIR-V text form is one instruction per
+   line, `<word-count> <Opcode> <operands...>`, so token 1 is the opcode and token 2 is normally
+   the result id.  Parsing by line rather than by substring search matters: a bare (search
+   \"Constant \" ...) also matches SpecConstant, ConstantComposite and ConstantNull."
+  (cl:let ((out cl:nil) (start 0) (len (cl:length txt)))
+    (cl:loop
+      (cl:let ((nl (cl:position #\Newline txt :start start)))
+        (cl:let ((line (cl:subseq txt start (cl:or nl len))))
+          (cl:let ((toks (%spv-tokens line)))
+            (cl:when (cl:>= (cl:length toks) 2) (cl:push toks out))))
+        (cl:if nl (cl:setf start (cl:1+ nl)) (cl:return-from %spv-lines (cl:nreverse out)))))))
+
+;; tests/run-specs.lisp
+(defun %spv-int-constants (txt)
+  "Alist of (result-id-string . integer-value) for every scalar OpConstant in TXT.
+
+   Needed because a cooperative matrix's Use operand is not a literal — it is an ID pointing at a
+   constant, so `use 130` means nothing until 130 is resolved to 0 / 1 / 2."
+  (cl:let ((out cl:nil))
+    (cl:dolist (toks (%spv-lines txt) (cl:nreverse out))
+      (cl:when (cl:and (cl:string= (cl:second toks) "Constant")
+                       (cl:>= (cl:length toks) 5))
+        (cl:let ((v (cl:ignore-errors (cl:parse-integer (cl:fifth toks)))))
+          (cl:when v (cl:push (cl:cons (cl:fourth toks) v) out)))))))
+
+;; tests/run-specs.lisp
+(defun %spv-float-widths (txt)
+  "Alist of (type-id-string . width) for every OpTypeFloat in TXT."
+  (cl:let ((out cl:nil))
+    (cl:dolist (toks (%spv-lines txt) (cl:nreverse out))
+      (cl:when (cl:and (cl:string= (cl:second toks) "TypeFloat")
+                       (cl:>= (cl:length toks) 4))
+        (cl:let ((w (cl:ignore-errors (cl:parse-integer (cl:fourth toks)))))
+          (cl:when w (cl:push (cl:cons (cl:third toks) w) out)))))))
+
+;; tests/run-specs.lisp
+(defun %spv-coop-matrices (txt)
+  "List of (RESULT-ID COMPONENT-WIDTH USE) for every TypeCooperativeMatrixKHR in TXT.
+
+   COMPONENT-WIDTH is resolved through OpTypeFloat and USE through OpConstant, so the caller gets
+   the two things it actually wants to assert about — how wide is it, and what is it for — rather
+   than raw ids.  Either may be NIL when the operand is not a float type or not a resolvable
+   constant; callers must treat NIL as 'unknown', never as 'fine'."
+  (cl:let ((floats (%spv-float-widths txt))
+           (consts (%spv-int-constants txt))
+           (out cl:nil))
+    (cl:dolist (toks (%spv-lines txt) (cl:nreverse out))
+      (cl:when (cl:and (cl:string= (cl:second toks) "TypeCooperativeMatrixKHR")
+                       (cl:>= (cl:length toks) 8))
+        (cl:push (cl:list (cl:third toks)
+                          (cl:cdr (cl:assoc (cl:fourth toks) floats :test #'cl:string=))
+                          (cl:cdr (cl:assoc (cl:eighth toks) consts :test #'cl:string=)))
+                 out)))))
+
+;; tests/run-specs.lisp
+(defun %spv-use-name (use)
+  "Human name for a cooperative-matrix Use operand value."
+  (cl:case use (0 "A") (1 "B") (2 "Accumulator") (cl:t (cl:format cl:nil "use=~a" use))))
+
+;; tests/run-specs.lisp
+(defun %validate-coop-operand-elem (spv-path want-width label &key require-ext)
+  "Assert that EVERY A/B cooperative matrix in SPV-PATH has component width WANT-WIDTH, and that
+   every Accumulator matrix is 32-bit.  LABEL names the element type for the failure text;
+   REQUIRE-EXT, when given, must appear in the module.
+
+   DEGRADES TO PASS when llvm-spirv is unavailable (a CUDA-only box has no bundled bin/), matching
+   %spv-contains-opcode-p: returns NIL only when the module WAS disassembled and the property is
+   definitively absent."
+  (cl:let* ((tool (resolve-tool-executable "llvm-spirv"))
+            (txt-path (cl:format cl:nil "~a.155txt" (uiop:native-namestring spv-path))))
+    (cl:multiple-value-bind (o e code)
+        (uiop:run-program (cl:list (uiop:native-namestring tool) "--to-text"
+                                   (uiop:native-namestring spv-path) "-o" txt-path)
+                          :output :string :error-output :string :ignore-error-status cl:t)
+      (cl:declare (cl:ignore o e))
+      (cl:if (cl:or (cl:not (cl:zerop code)) (cl:not (probe-file txt-path)))
+          (cl:progn
+            (cl:format cl:*error-output*
+                       "  (~a: llvm-spirv unavailable or failed — SKIPPING, not failing)~%" label)
+            cl:t)
+          (cl:let ((txt (uiop:read-file-string txt-path)))
+            (cl:ignore-errors (cl:delete-file txt-path))
+            (cl:let* ((mats (%spv-coop-matrices txt))
+                      (ops  (cl:remove-if-not (cl:lambda (m) (cl:member (cl:third m) (cl:list 0 1))) mats))
+                      (accs (cl:remove-if-not (cl:lambda (m) (cl:eql (cl:third m) 2)) mats))
+                      (bad-ops (cl:remove-if (cl:lambda (m) (cl:eql (cl:second m) want-width)) ops))
+                      (bad-acc (cl:remove-if (cl:lambda (m) (cl:eql (cl:second m) 32)) accs)))
+              (cl:cond
+                ((cl:null mats)
+                 (cl:format cl:*error-output*
+                            "FAIL: no cooperative matrix in the module at all — the MMA did not lower.~%")
+                 cl:nil)
+                ((cl:null ops)
+                 (cl:format cl:*error-output*
+                            "FAIL: no A/B-use cooperative matrix — operands did not reach the MMA.~%")
+                 cl:nil)
+                (bad-ops
+                 (cl:format cl:*error-output*
+                            "FAIL: ~d of ~d A/B cooperative matrices are NOT ~a (~d-bit).~%~
+                             This is the element type reaching codegen on SOME paths only — the module~%~
+                             carries both widths for the same operand, so most fragments still compute~%~
+                             in the wrong precision.  Offenders (result-id, component-width, use):~%"
+                            (cl:length bad-ops) (cl:length ops) label want-width)
+                 (cl:dolist (m bad-ops)
+                   (cl:format cl:*error-output* "    id ~a  component=~a-bit  use=~a~%"
+                              (cl:first m) (cl:or (cl:second m) "?") (%spv-use-name (cl:third m))))
+                 cl:nil)
+                (bad-acc
+                 (cl:format cl:*error-output*
+                            "FAIL: ~d accumulator cooperative matrix/matrices are not fp32.  A ~a MMA~%~
+                             accumulates in fp32; an all-~a module is as wrong as an all-f32 one.~%"
+                            (cl:length bad-acc) label label)
+                 cl:nil)
+                ((cl:null accs)
+                 (cl:format cl:*error-output*
+                            "FAIL: no Accumulator cooperative matrix — nothing is accumulating in fp32.~%")
+                 cl:nil)
+                ((cl:and require-ext (cl:not (cl:search require-ext txt)))
+                 (cl:format cl:*error-output*
+                            "FAIL: module uses ~a but does not declare ~a — llvm-spirv would refuse it.~%"
+                            label require-ext)
+                 cl:nil)
+                (cl:t cl:t))))))))
+
+;; tests/run-specs.lisp  (REPLACES the weaker version earlier in this overlay)
+(defun validate-spv-bf16-coop (spv-path)
+  "Endeavour 155 — assert a bf16 register tile reached the hardware AS bf16, on EVERY operand.
+
+   See %validate-coop-operand-elem for why the per-operand form of this assertion is the only one
+   that catches the real bug.  Also requires SPV_KHR_bfloat16 to be declared, without which
+   llvm-spirv refuses the module.
+
+   NOTE ON RUNNING THIS ON INTEL METAL: it cannot be, on the BMG driver present 2026-08-22.  The
+   Level Zero SPIR-V reader (IGC 1.6.33578) does not implement SPV_KHR_bfloat16 — it reports
+   `input SPIR-V module uses unknown extension` and then crashes.  That is a driver gap, not a
+   Crisp defect: three independent translators accept the same module, and the identical kernel in
+   fp16 builds and runs.  This validator therefore checks the EMITTED MODULE only."
+  (%validate-coop-operand-elem spv-path 16 "bfloat16" :require-ext "SPV_KHR_bfloat16"))
+
+;; tests/run-specs.lisp
+(defun validate-spv-fp16-coop (spv-path)
+  "Endeavour 155 — assert an fp16 (`half`) register tile reached the hardware AS fp16, on EVERY
+   operand, with an fp32 accumulator.
+
+   WHY fp16 CARRIES THE 16-BIT COVERAGE AND bf16 CANNOT.  bf16 cannot be loaded on the BMG driver
+   at all (see validate-spv-bf16-coop), so a bf16 rung can never be taken to metal here.  fp16
+   goes through the IDENTICAL typed path — same register tiles, same (8 16 16) shape, same DPAS
+   rate — and DOES load and run.  So fp16 is what makes 16-bit MMA testable end to end on Intel,
+   and bf16 rungs stay compile-and-inspect until the driver catches up.
+
+   No extension is required: fp16 is core SPIR-V."
+  (%validate-coop-operand-elem spv-path 16 "half/fp16"))

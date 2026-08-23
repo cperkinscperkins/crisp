@@ -1,0 +1,62 @@
+;; Endeavour 155 rung 03 — the RING path must carry the element type too.
+;;
+;; WHY A SEPARATE RUNG FOR THE RING, WHEN 02 ALREADY PINS THE TYPE.  Because the shape of the
+;; benchmark kernel is the ring, and because this codebase has a documented precedent for the ring
+;; being the path that silently drops information: BUG 040, where %mma-k-steps truncated to a
+;; single native K-step whenever a `ring-get` operand's K extent was not compile-time resolvable,
+;; and the MMA quietly computed half the dot product.  A construct that resolves fine as a plain
+;; binding and degrades behind `ring-get` is a known failure mode here, so the ring deserves its
+;; own assertion rather than an assumption that 02 covers it.
+;;
+;; A PREDICTION THIS RUNG ALREADY FALSIFIED, recorded because the falsification is the point.
+;; When the fp16 benchmark kernel came back 50x slow, the ring was the natural suspect — it is
+;; what the benchmark uses and what rung 01 never exercised.  Compiling the NON-ring kernel (rung
+;; 02) and dumping its types refutes that: the identical f32/f16 duplication is present there too.
+;; The defect is systemic in the 155 lowering, not ring-specific, and a fix aimed at the ring
+;; would have missed it entirely.
+;;
+;; SO WHY KEEP THIS RUNG.  Because "02 and 03 fail the same way" and "03 fails a way 02 does not"
+;; are different facts, and only one of them is currently established.  Once the systemic defect
+;; is fixed, this rung is what says whether the ring path was fixed WITH it or merely resembles it.
+;; Ring and non-ring mint their fragments through different branches of %explode-register-tiles,
+;; and only one of those branches can be checked by rung 02.
+;;
+;; VALIDATOR: validate-spv-fp16-coop — every A-use and B-use cooperative matrix is 16-bit, every
+;; Accumulator is fp32.  Same assertion as 02, different construction path.
+;;
+;; ===================================================================
+;; STATUS: RED ON PURPOSE, and beyond ci-stop.  Goes green with 02, or reveals that the ring needs
+;; its own fix.  Either outcome is information the fix needs.
+;; ===================================================================
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-fp16-coop
+(declaim (precision fast))
+(def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel fp16_ring (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((n-k-steps (/ (inner-dimension A B) (to-ulong 16))))
+    (tile-stride C (32 32) (grid-y grid-x)
+      (let ((A-ring (make-register-tile-ring half  (32 16) :ring-count 2 :operand :a))
+            (B-ring (make-register-tile-ring half  (16 32) :ring-count 2 :operand :b))
+            (C-tile (make-register-tile      float (32 32) 0.0)))
+        (load-tile A (ring-get A-ring 0) (grid-y 0))
+        (load-tile B (ring-get B-ring 0) (0 grid-x))
+        (dotimes (grid-k n-k-steps)
+          (let ((next-k (+ grid-k (to-ulong 1))))
+            ;; The slot must fold to a compile-time integer, so it is written inline as
+            ;; (mod LOOPVAR ring-count); routing it through the NEXT-K binding does not fold
+            ;; and the compiler says so.  NEXT-K is still fine as a COORDINATE.
+            (when (< next-k n-k-steps)
+              (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
+              (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
+            (mma-accumulate-via-tile (8 16 16) C-tile
+                                     (ring-get A-ring (mod grid-k (to-ulong 2)))
+                                     (ring-get B-ring (mod grid-k (to-ulong 2))))))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

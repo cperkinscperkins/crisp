@@ -90,6 +90,14 @@
 ;; delegating to ONE shared body so the two can never drift.
 (defun validate-spv-bf16-coop (spv-path)
   (funcall (find-symbol "VALIDATE-SPV-BF16-COOP" :crisp.compiler) spv-path))
+
+;; tests/run-specs.lisp
+;; Endeavour 155.  Same two-package dance as validate-spv-bf16-coop above: --ir-target=spv
+;; resolves the validator in :CRISP.COMPILER, while the in-process paths resolve it here, so the
+;; name has to exist in both.  The body lives in the compiler overlay next to the SPIR-V text
+;; helpers it needs.
+(defun validate-spv-fp16-coop (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-FP16-COOP" :crisp.compiler) spv-path))
 ;; tests/run-specs.lisp  (REPLACES run-single-spec-pass at line 934)
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active.
@@ -233,3 +241,157 @@
        (t
          (format *error-output* "FAIL (No SPV generated)~%~a~%" error-output)
          nil)))))
+
+
+;; tests/run-specs.lisp  (REPLACES compile-crisp-file-to-spirv)
+;;
+;; Endeavour 155 -- make --hardware-profile in a TEST-WITH actually REACH the compiler.
+;;
+;; THE SYMPTOM, and why it was confusing.  A spec whose directive reads
+;;     TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-fp16-coop
+;; failed with
+;;     load-tile into a register-tile requires a hardware profile (pass --hardware-profile)
+;; while the IDENTICAL flags on the command line compiled fine.  The runner even PRINTS the flag
+;; in the pass name, so it is plainly parsed -- it just never arrives.
+;;
+;; WHY MY FIRST FIX DID NOT WORK.  The earlier override of run-single-spec-pass bound
+;; *compile-hardware-profile*, which is the spec runner's own variable for HOIST runs.  The
+;; compiler reads a different one, crisp.compiler::*requested-hardware-profile*, and binding THAT
+;; in a let would not have worked either: initialize-compiler SETFs it
+;;     (setf *requested-hardware-profile* hardware-profile)      ; src/compiler.lisp:1033
+;; from its :hardware-profile argument, clobbering any surrounding binding with NIL.  So the value
+;; has to travel as an ARGUMENT to initialize-compiler; no binding survives.
+;;
+;; That is the whole fix.  compile-crisp-file-to-spirv is the in-process SPIR-V entry point (via
+;; run-spec-spirv-in-process), and was the one initialize-compiler call site in the runner that
+;; needed the profile and did not pass it.
+;;
+;; THE FOURTH INSTANCE OF THIS EXACT CLASS.  137 found --ir-target-arch dropped, 152 found
+;; --metadata dropped, rung 01 found --hardware-profile dropped, and this is its actual cause.
+;; The shape is always the same: a flag is parsed for DISPLAY and for routing, but the in-process
+;; compile is invoked without it, so the spec silently tests something other than what it says.
+;; A directive flag that no code path consumes should be an ERROR rather than a no-op -- worth
+;; doing once instead of rediscovering a fifth time.
+;;
+;; NOTE: compile-crisp-file-to-ptx and compile-crisp-file-to-llvmir have the same omission.  They
+;; are deliberately NOT changed here -- no spec currently needs a profile on those paths, and
+;; changing an entry point that no failing test exercises is how silent breakage gets introduced.
+;; When one does need it, this is the pattern.
+(defun compile-crisp-file-to-spirv (filepath &key (emit-metadata nil))
+  "Compiles a .crisp file to .spv and returns the output path and metadata paths if successful."
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
+         (out-path (make-pathname :name base-name :type "spv" :defaults filepath))
+         (meta-base-path (make-pathname :name base-name :type "metacrisp" :defaults filepath))
+         (meta-paths nil)
+         (*standard-output* (make-broadcast-stream)))
+    (when (probe-file out-path) (delete-file out-path))
+
+    (let (;; Use a FRESH environment for each spec to ensure isolation
+          (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
+          (forms (progn
+                  ;; Initialize for SPIR-V, passing differentiate flag so *differentiate-p* is set
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
+                                                      :differentiate *compile-differentiate*
+                                                      ;; Endeavour 155: the missing argument -- see header.
+                                                      :hardware-profile *compile-hardware-profile*)
+                  ;; FIX: Set *package* to :crisp-language to match binary compiler behavior
+                  (let ((*package* (find-package :crisp-language)))
+                    (with-open-file (stream filepath)
+                      (loop for form = (read stream nil :eof)
+                            until (eq form :eof)
+                            collect form))))))
+      (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filepath)))
+             (builder (crisp.llvm-bindings:llvm-create-builder)))
+        (unwind-protect
+            (progn
+             (let ((crisp.compiler:*target-backend* :spirv)
+                   (crisp.compiler::*emit-metadata* emit-metadata))
+               (crisp.compiler:compile-module forms module builder nil nil nil)
+               (crisp.compiler:compile-to-spirv module out-path)
+
+               (when emit-metadata
+                     (setf meta-paths
+                       (crisp.compiler::generate-metadata-for-file filepath meta-base-path
+                                                                   :output-targets (list (list :spv out-path))
+                                                                   :forms forms))))
+             (crisp.llvm-bindings:llvm-dispose-builder builder)
+             (crisp.llvm-bindings:llvm-dispose-module module)))))
+
+    (if (probe-file out-path)
+        (values out-path meta-paths)
+        nil)))
+
+
+;; tests/run-specs.lisp  (REPLACES run-spec-spirv-in-process)
+;;
+;; Endeavour 155 -- let a validator on an --ir-target=spv pass actually receive the .spv.
+;;
+;; THE GAP.  The in-process SPIR-V runner handed the validator META-PATHS, the .metacrisp files.
+;; Those only exist when --metadata is on the directive, so a spec written as
+;;     TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-fp16-coop
+;; produced meta-paths = NIL, and NIL flowed straight into (probe-file val-arg).  The result was
+;; not a clean diagnostic but an opaque type error from deep inside the runner:
+;;     The value NIL is not of type VECTOR when binding #:N-ARRAY
+;; which says nothing whatsoever about the actual problem.
+;;
+;; So there was NO working way to validate an emitted SPIR-V module in process.  The binary path
+;; (run-spec-spirv-binary) does pass the .spv, which is why the two paths disagreed and why rung
+;; 01 recorded 'the validator is resolved in a different package' as obstacle 1 -- the package was
+;; a red herring; the ARGUMENT was the problem.
+;;
+;; WHY THE FALLBACK IS SAFE.  Any spec reaching this cond branch with no metadata ALREADY crashed,
+;; every time, with the type error above.  Nothing can depend on the old behaviour, so falling
+;; back to OUT-PATH strictly converts a crash into a working validation.  Specs that do request
+;; --metadata are untouched: they still take the first branch.
+;;
+;; The second added clause covers (NIL) -- a one-element list whose single element is NIL, which
+;; the length-1 branch would otherwise pass through as a NIL val-arg.
+(defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
+  (block :runner
+    (handler-bind ((error (lambda (e)
+                            (format *error-output* "FAIL (Condition: ~a)~%" e)
+                            (return-from :runner nil))))
+      (multiple-value-bind (out-path meta-paths)
+          (compile-crisp-file-to-spirv file :emit-metadata emit-metadata)
+        (if out-path
+            (let ((res (if validator
+                           (progn
+                            (log:info "Running Validator: ~a" validator)
+                            ;; Determine validation target
+                            (let ((val-arg (cond
+                                            ((and (listp meta-paths) (= (length meta-paths) 1)) (first meta-paths))
+                                            ;; Endeavour 155: no metadata was requested, so the
+                                            ;; thing worth validating is the MODULE.  See header.
+                                            ((null meta-paths) out-path)
+                                            ((and (listp meta-paths) (null (remove nil meta-paths))) out-path)
+                                            (t meta-paths))))
+
+                              (if (or (and (pathnamep val-arg) (probe-file val-arg))
+                                      (and (listp val-arg) (every #'probe-file val-arg)))
+                                  (progn
+                                   ;; Dispatch validator
+                                   (if (fboundp validator)
+                                       (if (funcall validator val-arg)
+                                           (progn (format t "Validator PASS. ") t)
+                                           (progn (format *error-output* "Validator FAIL. ") nil))
+                                       (progn
+                                        ;; Try finding it in crisp.compiler package if symbol has no package
+                                        (let ((sym (find-symbol (symbol-name validator) :crisp.compiler)))
+                                          (if (and sym (fboundp sym))
+                                              (if (funcall sym val-arg)
+                                                  (progn (format t "Validator PASS. ") t)
+                                                  (progn (format *error-output* "Validator FAIL. ") nil))
+                                              (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))))
+                                  (progn (format *error-output* "FAIL (Metadata Missing: ~a)~%" val-arg) nil))))
+                           (progn
+                            (format t "PASS (Generated ~a)~%" (file-namestring out-path))
+                            t))))
+
+              ;; Cleanup generated artifacts
+              (unless *keep-work*
+                (when (probe-file out-path) (delete-file out-path))
+                (dolist (mp (if (listp meta-paths) meta-paths (list meta-paths)))
+                  (when (probe-file mp) (delete-file mp))))
+
+              res)
+            (progn (format *error-output* "FAIL (No SPV generated)~%") nil))))))
