@@ -806,3 +806,252 @@
 
    No extension is required: fp16 is core SPIR-V."
   (%validate-coop-operand-elem spv-path 16 "half/fp16"))
+
+
+;;;; ============================================================================
+;;;; Endeavour 155 Phase B — the element type reaches CODEGEN, not just the analyzer.
+;;;;
+;;;; THE DEFECT.  Phase 1 threaded the element type through the ANALYZER, so a semantic coop-op
+;;;; node carries `(coop-matrix half 8 8 0)`.  Codegen then ignored it and passed a literal F32:
+;;;;
+;;;;     (:fill (values (%coop-fill builder module (gen ...) f32 rows cols use) nil))
+;;;;     (:load          (%coop-load builder module ptr stride f32 rows cols use layout))
+;;;;
+;;;; so the emitted module was INTERNALLY INCONSISTENT — and silently so, because opaque pointers
+;;;; mean LLVM never objects:
+;;;;
+;;;;     %"a-tile$f0" = alloca target("spirv.CooperativeMatrixKHR", half,  3, 8, 8, 0)
+;;;;     %27 = call   target("spirv.CooperativeMatrixKHR", float, 3, 8, 8, 0) @__spirv_CompositeConstruct_0_8_8(float 0.0)
+;;;;     store        target("spirv.CooperativeMatrixKHR", float, 3, 8, 8, 0) %27, ptr %"a-tile$f0"
+;;;;
+;;;; An f32 cooperative matrix stored into an f16 slot and read back as f16 — a REINTERPRET, not a
+;;;; conversion.  That is why the disassembly showed both widths for every operand and ZERO
+;;;; FConvert ops, and why the fp16 matmul measured 0.27 TFLOPS against oneMKL's 110.
+;;;;
+;;;; Note which parts were already right, because it explains why the bug was so quiet: the ALLOCA
+;;;; came from the fragment's semantic type (half, correct), and __spirv_CooperativeMatrixMulAddKHR
+;;;; derives its signature from LLVMTypeOf of the actual values (half, correct — Phase 1's %coop-mma
+;;;; fix).  Only the producers disagreed, so every individual piece looked defensible in isolation.
+;;;;
+;;;; The mangled names gave it away: `__spirv_CompositeConstruct_0_8_8` and
+;;;; `__spirv_CooperativeMatrixLoadKHR_0_8_8_as1` encode use/rows/cols and NO element type, so one
+;;;; name necessarily served every element type — the signature could not be anything but wrong for
+;;;; all but one of them.  %coop-call interns by name, so the FIRST declaration wins and the rest
+;;;; silently alias it.  The mangling is left alone here (changing it is a wider change than the
+;;;; failing rungs justify); what changes is that the type passed is now the matrix's own.
+;;;;
+;;;; THE MAP PATH IS REFUSED, NOT FIXED.  :map / :map2 extract scalar elements through f32 allocas
+;;;; (cm_elem, cm_prm, cm_adj).  Making those width-correct is a real change to a path that no
+;;;; failing rung exercises and that autodiff depends on, and this endeavour has already been
+;;;; lengthened twice by fixing things it could not test.  A compile-time refusal that names the
+;;;; limitation is the honest option — and it cannot regress anything today, since every kernel in
+;;;; the tree that uses map is float.
+;;;; ============================================================================
+
+;; src/codegen.lisp
+(defun %coop-node-elem (node)
+  "The CRISP element type of the cooperative matrix a coop-op node operates on.
+
+   Reads the node's own `(coop-matrix ELEM rows cols use)` type.  A :store node's own type is
+   'void — the matrix is its VALUE node — so fall back to that.  Anything unrecognised yields
+   FLOAT, which is the pre-155 behaviour: an element type this has not been taught about degrades
+   to what the compiler did before rather than erroring somewhere unrelated."
+  (flet ((coop-elem (ty)
+           (and (consp ty)
+                (symbolp (first ty))
+                (string= (symbol-name (first ty)) "COOP-MATRIX")
+                (>= (length ty) 2)
+                (second ty))))
+    (or (coop-elem (semantic-coop-op-type node))
+        (let ((vn (semantic-coop-op-value-node node)))
+          (and vn (coop-elem (semantic-node-type vn))))
+        'float)))
+
+;; src/codegen.lisp
+(defun %coop-op-elem-llvm (node)
+  "The LLVM type for a coop-op node's component type (see %coop-node-elem)."
+  (let ((e (%coop-node-elem node)))
+    (cond ((string= (symbol-name e) "HALF")     (llvm-half-type))
+          ((string= (symbol-name e) "BFLOAT16") (llvm-bfloat-type))
+          ((string= (symbol-name e) "DOUBLE")   (llvm-double-type))
+          (t                                    (llvm-float-type)))))
+
+;; src/codegen.lisp  (REPLACES generate-node-ir for semantic-coop-op)
+(defmethod generate-node-ir ((node semantic-coop-op) builder module var-env di-builder di-scope location-map)
+  "Cooperative-matrix op: fill / load / store / prefetch / map / map2."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let ((kind (semantic-coop-op-kind node))
+          (rows (semantic-coop-op-rows node))
+          (cols (semantic-coop-op-cols node))
+          (use  (semantic-coop-op-use node))
+          (layout (semantic-coop-op-layout node))
+          (i64 (llvm-int64-type))
+          (f32 (llvm-float-type))
+          ;; Endeavour 155: the matrix's REAL component type.  See header.
+          (elem-llvm (%coop-op-elem-llvm node)))
+      (labels ((origin (dim-node dim)
+                 (llvm-build-mul builder
+                                 (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
+                                 (llvm-const-int i64 dim nil) "coop_orig"))
+               (ptr-of (name)
+                 (or (gethash name var-env)
+                     (error 'crisp-compiler-error
+                            :message (format nil "cooperative-matrix map: no storage found for variable ~a." name)
+                            :source-location (semantic-coop-op-source-location node))))
+               (map-loop (primary-ptr per-elem)
+                 ;; Endeavour 155: the map loops extract SCALAR elements into f32 allocas
+                 ;; (cm_elem / cm_prm / cm_adj below).  For a 16-bit matrix those would be the
+                 ;; wrong width, so refuse rather than miscompile.  See header for why this is a
+                 ;; refusal and not a fix.
+                 (unless (eq (%coop-node-elem node) 'float)
+                   (error 'crisp-compiler-error
+                          :message (format nil "cooperative-matrix elementwise map is only implemented for float (fp32) matrices; this one is ~a.  The map loop extracts scalar elements through f32 temporaries, which would silently truncate a ~:*~a matrix."
+                                           (%coop-node-elem node))
+                          :source-location (semantic-coop-op-source-location node)))
+                 (let* ((i32 (llvm-int32-type))
+                        (coop-ty (%coop-type f32 rows cols use))
+                        (mat (llvm-build-load2 builder coop-ty primary-ptr "cm_map_mat"))
+                        (len (%coop-length builder module mat f32 rows cols use))
+                        (current-fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                        (i-alloca (llvm-build-alloca builder i32 "cm_i"))
+                        (check-block (llvm-append-basic-block current-fn "cm_check"))
+                        (body-block  (llvm-append-basic-block current-fn "cm_body"))
+                        (exit-block  (llvm-append-basic-block current-fn "cm_exit")))
+                   (llvm-build-store builder (llvm-const-int i32 0 0) i-alloca)
+                   (llvm-build-br builder check-block)
+                   (llvm-position-builder-at-end builder check-block)
+                   (let* ((i-val  (llvm-build-load2 builder i32 i-alloca "cm_i_v"))
+                          (cond-v (llvm-build-icmp builder +llvm-int-slt+ i-val len "cm_cond")))
+                     (llvm-build-cond-br builder cond-v body-block exit-block))
+                   (llvm-position-builder-at-end builder body-block)
+                   (let* ((i-val (llvm-build-load2 builder i32 i-alloca "cm_i_b"))
+                          (i-x   (llvm-build-sext builder i-val i64 "cm_i64")))
+                     (funcall per-elem i-x)
+                     (let* ((i-cur  (llvm-build-load2 builder i32 i-alloca "cm_i_c"))
+                            (i-next (llvm-build-add builder i-cur (llvm-const-int i32 1 0) "cm_i_n")))
+                       (llvm-build-store builder i-next i-alloca)))
+                   (unless (terminator-p (llvm-get-insert-block builder))
+                     (llvm-build-br builder check-block))
+                   (llvm-position-builder-at-end builder exit-block)
+                   (values nil nil))))
+        (ecase kind
+          (:fill
+           (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
+                               elem-llvm rows cols use)
+                   nil))
+          (:load
+           (multiple-value-bind (ptr stride)
+               (%coop-tensor-ptr+stride builder (gen (semantic-coop-op-tensor-node node))
+                                        (origin (semantic-coop-op-ty node) rows)
+                                        (origin (semantic-coop-op-tx node) cols) layout)
+             (values (%coop-load builder module ptr stride elem-llvm rows cols use layout) nil)))
+          (:store
+           (let* ((mat (gen (semantic-coop-op-value-node node)))
+                  (tv  (gen (semantic-coop-op-tensor-node node)))
+                  (orow (origin (semantic-coop-op-ty node) rows))
+                  (ocol (origin (semantic-coop-op-tx node) cols)))
+             (multiple-value-bind (ptr stride)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
+               (%coop-store builder module ptr mat stride elem-llvm rows cols use layout)
+               (values nil nil))))
+          (:prefetch
+           (let* ((tv   (gen (semantic-coop-op-tensor-node node)))
+                  (orow (origin (semantic-coop-op-ty node) rows))
+                  (ocol (origin (semantic-coop-op-tx node) cols)))
+             (multiple-value-bind (ptr stride)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
+               (%block-prefetch builder module ptr stride rows cols)
+               (values nil nil))))
+          (:map
+           (let* ((tgt (ptr-of (semantic-coop-op-ty node)))
+                  (temp-name (semantic-coop-op-tx node))
+                  (body-node (semantic-coop-op-tensor-node node))
+                  (t-alloca (llvm-build-alloca builder f32 "cm_elem")))
+             (map-loop tgt
+                       (lambda (i-x)
+                         (let* ((ep   (%coop-access-chain builder module tgt i-x))
+                                (elem (llvm-build-load2 builder f32 ep "cm_elem_v"))
+                                (benv (alexandria:copy-hash-table var-env)))
+                           (llvm-build-store builder elem t-alloca)
+                           (setf (gethash temp-name benv) t-alloca)
+                           (let ((res (generate-node-ir body-node builder module benv
+                                                        di-builder di-scope location-map)))
+                             (llvm-build-store builder res ep)))))))
+          (:map2
+           (let* ((adj-ptr (ptr-of (semantic-coop-op-ty node)))
+                  (prm-ptr (ptr-of (semantic-coop-op-tx node)))
+                  (temps   (semantic-coop-op-layout node))
+                  (tp-name (first temps))
+                  (ta-name (second temps))
+                  (body-node (semantic-coop-op-tensor-node node))
+                  (tp-alloca (llvm-build-alloca builder f32 "cm_prm"))
+                  (ta-alloca (llvm-build-alloca builder f32 "cm_adj")))
+             (map-loop adj-ptr
+                       (lambda (i-x)
+                         (let* ((ep-a (%coop-access-chain builder module adj-ptr i-x))
+                                (ep-p (%coop-access-chain builder module prm-ptr i-x))
+                                (v-a  (llvm-build-load2 builder f32 ep-a "cm_adj_v"))
+                                (v-p  (llvm-build-load2 builder f32 ep-p "cm_prm_v"))
+                                (benv (alexandria:copy-hash-table var-env)))
+                           (llvm-build-store builder v-p tp-alloca)
+                           (llvm-build-store builder v-a ta-alloca)
+                           (setf (gethash tp-name benv) tp-alloca)
+                           (setf (gethash ta-name benv) ta-alloca)
+                           (let ((res (generate-node-ir body-node builder module benv
+                                                        di-builder di-scope location-map)))
+                             (llvm-build-store builder res ep-a))))))))))))
+
+
+;; src/codegen.lisp
+(defun %llvm-float-width (ty)
+  "Bit width of an LLVM floating-point type, or NIL if TY is not one of the four Crisp knows.
+   HALF and BFLOAT16 are both 16 bits and are DIFFERENT types — same width, not interchangeable."
+  (cond ((cffi:pointer-eq ty (llvm-half-type))   16)
+        ((cffi:pointer-eq ty (llvm-bfloat-type)) 16)
+        ((cffi:pointer-eq ty (llvm-float-type))  32)
+        ((cffi:pointer-eq ty (llvm-double-type)) 64)
+        (t nil)))
+
+;; src/codegen.lisp
+(defun %coop-coerce-scalar (builder val want-ty name)
+  "Coerce scalar VAL to WANT-TY, if it is not already that type.
+
+   Endeavour 155.  A fill's init value comes from a Crisp literal — `(make-register-tile half
+   (8 16) 0.0 ...)` reads 0.0 as an f32 constant — while the cooperative matrix it initialises is
+   now correctly declared with the tile's own element type.  Without this coercion the emitted
+   call is a type error that LLVM will not catch (the callee is a declare, so nothing checks the
+   argument) and that llvm-spirv rejects only at translation time, with exit code 13:
+
+       %27 = call target(\"spirv.CooperativeMatrixKHR\", half, 3, 8, 8, 0)
+               @__spirv_CompositeConstruct_0_8_8(float 0.000000e+00)
+                                                 ^^^^^ declared parameter is half
+
+   LLVM has no direct cast between two DIFFERENT 16-bit float types, so half<->bfloat16 is routed
+   through f32.  That path cannot arise from a literal today (literals are f32, so the common case
+   is a single fptrunc) but writing it is cheaper than discovering it later."
+  (let ((have (llvm-type-of val)))
+    (if (cffi:pointer-eq have want-ty)
+        val
+        (let ((hw (%llvm-float-width have))
+              (ww (%llvm-float-width want-ty)))
+          (cond
+            ((not (and hw ww)) val)                       ; not both float — leave it alone
+            ((> hw ww) (llvm-build-fp-trunc builder val want-ty name))
+            ((< hw ww) (llvm-build-fp-ext   builder val want-ty name))
+            (t (llvm-build-fp-trunc builder
+                                    (llvm-build-fp-ext builder val (llvm-float-type)
+                                                       (format nil "~a_via_f32" name))
+                                    want-ty name)))))))
+
+;; src/codegen.lisp  (REPLACES %coop-fill)
+(defun %coop-fill (builder module init-val elem-llvm rows cols use)
+  "Construct a coop matrix filled with INIT-VAL (scalar) via __spirv_CompositeConstruct.
+
+   Endeavour 155: INIT-VAL is coerced to ELEM-LLVM first.  Before the element type reached
+   codegen this was vacuous — everything was f32, so the literal already matched.  Now that the
+   matrix carries the tile's real element type, the literal has to follow it."
+  (%coop-call builder module
+              (format nil "__spirv_CompositeConstruct_~d_~d_~d" use rows cols)
+              (%coop-type elem-llvm rows cols use)
+              (list elem-llvm)
+              (list (%coop-coerce-scalar builder init-val elem-llvm "coop_init"))))

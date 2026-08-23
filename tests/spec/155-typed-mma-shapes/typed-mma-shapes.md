@@ -599,3 +599,102 @@ NEXT: PHASE B — find where the f32 A/B cooperative-matrix types are minted.  A
 use the element type; 568/2048 are the accumulator and correctly f32), so the source is somewhere
 not yet located.  With the rungs now failing for the right reason, the fix has a target to aim at
 and a test that will confirm it.
+
+
+PHASE B — THE ELEMENT TYPE REACHES CODEGEN.  RUNGS GREEN.  AND THE NEXT LAYER IS NAMED.
+================================================================================
+2026-08-22.
+
+FOUND IT, AND NOT BY GUESSING.  Dumping the LLVM IR rather than reading more source located it in
+one step.  The module declared FIVE distinct cooperative-matrix types where it should have had
+three, and the mangled callee names said why:
+
+    declare target("spirv.CooperativeMatrixKHR", float, 3, 8, 8, 0)  @__spirv_CompositeConstruct_0_8_8(float)
+    declare target("spirv.CooperativeMatrixKHR", float, 3, 8, 8, 0)  @__spirv_CooperativeMatrixLoadKHR_0_8_8_as1(...)
+
+`_0_8_8` encodes use/rows/cols and NO element type — one name necessarily serves every element
+type, and %coop-call interns by name, so the FIRST declaration wins and every later one silently
+aliases it.
+
+THE DEFECT was two literals in src/codegen.lisp:4706 and :4714 —
+
+    (:fill (values (%coop-fill builder module (gen ...) f32 rows cols use) nil))
+    (:load          (%coop-load builder module ptr stride f32 rows cols use layout))
+
+Phase 1 had threaded the element type through the ANALYZER, so the semantic node correctly carried
+`(coop-matrix half 8 8 0)`.  Codegen never read it.  The emitted IR was therefore internally
+inconsistent, and silently so, because opaque pointers mean LLVM never objects:
+
+    %"a-tile$f0" = alloca target("spirv.CooperativeMatrixKHR", half,  3, 8, 8, 0)
+    %27 = call   target("spirv.CooperativeMatrixKHR", float, 3, 8, 8, 0) @__spirv_CompositeConstruct_0_8_8(float 0.0)
+    store        target("spirv.CooperativeMatrixKHR", float, 3, 8, 8, 0) %27, ptr %"a-tile$f0"
+
+An f32 cooperative matrix stored into an f16 slot and read back as f16 — a REINTERPRET, not a
+conversion.  That is exactly why the disassembly showed both widths per operand and ZERO FConvert
+ops.
+
+WHY IT STAYED QUIET.  Every piece was individually defensible: the ALLOCA came from the fragment's
+semantic type (half, right), and __spirv_CooperativeMatrixMulAddKHR derives its signature from
+LLVMTypeOf of the actual values (half, right — Phase 1's %coop-mma fix).  Only the PRODUCERS
+disagreed, and nothing cross-checked producer against consumer.
+
+THE FIX (overlay, three parts)
+  - %coop-node-elem / %coop-op-elem-llvm: read the node's own (coop-matrix ELEM ...) type.
+  - generate-node-ir for semantic-coop-op: :fill / :load / :store now pass that element type.
+  - %coop-fill: COERCE the init scalar to it.  This surfaced immediately — a literal `0.0` is an
+    f32 constant, so a correctly-typed `half` matrix was being constructed from a `float` argument
+    and llvm-spirv rejected the module with exit code 13.  Before the element type reached codegen
+    this coercion was vacuous (everything was f32); now the literal has to follow the tile.
+
+  THE MAP PATH IS REFUSED, NOT FIXED.  :map / :map2 extract scalar elements through f32 temporaries
+  (cm_elem / cm_prm / cm_adj).  Making those width-correct is a real change to a path no failing
+  rung exercises and that autodiff depends on, so it now raises a compile-time error naming the
+  limitation instead of miscompiling.  It cannot regress anything today: every kernel in the tree
+  that uses map is float.
+
+RESULT.  The module now declares exactly three coop types, which is the correct mixed-precision
+shape:
+    half  8x8   use A        half  8x16  use B        float 8x16  use Accumulator
+All three rungs GREEN, including rung 01 (bf16), which had been red since it was written.
+Regression: 1028/1028 E2E, 218/218 negative, 291/291 unit.
+
+
+THE NEXT LAYER, NAMED BY THE HARDWARE ITSELF
+================================================================================
+With the types right, the fp16 benchmark kernel STILL does not run on BMG — but the failure has
+changed from silent garbage to a precise diagnosis.  Where the type-inconsistent module loaded and
+computed nonsense at 0.27 TFLOPS, the type-correct one is REJECTED at load, and says why:
+
+    undefined reference to `__builtin_spriv_OpJointMatrixLoadINTEL_PackedA_RowMajor_SG16_8x8_i16_4_...'
+    undefined reference to `__builtin_spriv_OpJointMatrixLoadINTEL_PackedB_RowMajor_SG16_8x16_i16_4_...'
+
+IGC lowers KHR cooperative-matrix loads to internal JointMatrix builtins, and there is no
+`8x8_i16` builtin because 8x8 IS NOT A VALID 16-BIT DPAS SHAPE.  Read the shapes: A is 8x8 and B
+is 8x16 — those are the K=8 TF32 shapes, carrying 16-bit elements.
+
+THE CAUSE IS %spv-mma-shape, AND IT IS THIS ENDEAVOUR'S ORIGINAL SUBJECT.  It returns
+`(first shapes)` from the profile's :mma-shapes — for bmg that is (8 16 8), tf32 — ignoring BOTH
+the element type AND the shape the kernel explicitly asked for.  The kernel says
+`(mma-accumulate-via-tile (8 16 16) ...)`, i.e. K=16, which is correct for fp16; the fragments are
+minted at K=8 anyway.  The profile's own comment has said so all along:
+
+    :mma-shapes ((8 16 8) (8 16 16) (8 16 32))  ; XMX tf32, bf16/fp16, int8
+
+K scales inversely with element width, because K x element-bits is a fixed fragment footprint.  So
+the shape list is only meaningful WITH the type — which is precisely what "typed :mma-shapes"
+means, and why it was the endeavour's name from the start.
+
+RE-SCOPING, HONESTLY.  Typed :mma-shapes was scheduled as Phase E, a guard rail to be added once
+16-bit worked.  It is not a guard rail: it is a HARD PREREQUISITE for 16-bit working at all.  The
+type and the shape are one decision, not two, and Phase B fixed only half of it.
+
+WHAT THIS SAYS ABOUT THE RUNGS, which is worth saying plainly.  02 and 03 are green and the kernel
+still does not run.  They assert the emitted TYPES, and the types are now right; a shape that no
+hardware implements is invisible to them because it is only rejected at load time.  That is not a
+flaw in the rungs — it is the argument for rung 04, the on-metal rung the plan already listed.  A
+compile-and-inspect rung can only ever check what the module SAYS; it takes hardware to check what
+the module MEANS.
+
+NEXT: make %spv-mma-shape select by element type — the entry whose K matches the operand width —
+and reconcile it with the shape the kernel requests, so `(8 16 16)` on an fp16 tile mints A=8x16
+and B=16x16.  Then rung 04 on metal, then the benchmark, then the report section.
