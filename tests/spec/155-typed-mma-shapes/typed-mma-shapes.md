@@ -1253,3 +1253,110 @@ which is the same throughput as fp16, as expected — XMX runs both at the same 
 REGRESSION after the encoding change (before the %elem-llvm-bytes fix): 1028/1028 E2E, 218/218
 negative, 291/291 unit, 3/3 rungs — including rung 01, whose validator now asserts the i16
 encoding rather than the bfloat one it was written for.
+
+
+PHASE H — TUNING: A 1.7x WIN, A SILENT-WRONGNESS BUG, AND THE STRUCTURAL WALL
+================================================================================
+2026-08-23.
+
+THE WIN: TILE WIDTH
+---------------------
+The shipped kernel was the tf32 top kernel with the element type changed, so all three tuning
+parameters were sized for 32-bit operands.  Sweeping them one at a time at N=4096 (every variant
+correctness-checked, which --mma-bench can do again since Phase D):
+
+    32x32 r2 d2   33.65 TFLOPS   1.00x   baseline
+    32x64 r2 d2   57.19          1.70x   <- the win
+    32x32 r3 d2   36.73          1.09x
+    32x64 r3 d2   22.90          0.68x   ring depth 3 COLLAPSES the wide tile
+    32x64 r2 d3   46.48          1.38x
+    32x32 r2 d4   26.93          0.80x   deeper prefetch is actively harmful
+    64x32 / 64x64  do not run at all
+
+So tile WIDTH is the lever and it does not compound with ring depth or prefetch distance.  Full
+ladder, bf16, every point MMA_CORRECT:
+
+    N              256     512    1024    2048    4096    8192
+    32x32         4.82   15.84   39.79   40.52   34.89   27.41
+    32x64         3.80   16.98   50.00   60.91   56.76   40.08
+    gain         0.79x   1.07x   1.26x   1.50x   1.63x   1.46x
+
+N=256 REGRESSED 0.79x — a 32x64 tile is wasteful when the whole problem is 256 wide.  That is a
+real loss at one point, traded for 1.3-1.6x across everything above it.  Size-conditional tile
+selection would recover it and is a host-side enqueue concern, out of scope here.
+
+fp16 tracks bf16 almost exactly (57.08 vs 56.76 at 4096), which is the expected result — XMX runs
+both at the same DPAS rate — and is a useful consistency check on the whole 16-bit stack.
+
+OCCUPANCY IS NOT THE LIMITER, and I claimed otherwise before checking.  Seeing that 32x32 printed
+a "needs 256 registers/thread" NOTE while the faster 32x64 printed none, I inferred the GRF demand
+model was non-monotonic and buggy.  It is not: the generated harness passes
+-ze-opt-large-register-file for BOTH, so the A/B I ran to "prove" it was comparing two identical
+binaries (56.6-57.8 either way).  The model's selection is in fact right — stripping the flag from
+the 32x32 baseline HALVES it, 34 -> 17 TFLOPS over three interleaved reps.  Endeavour 144's
+large-GRF work is doing real work and the kernel is not thread-starved.  The lesson, again: check
+the artifact (the build flags), not the log line.
+
+A REAL BUG: TILE WIDTH MUST BE A POWER OF TWO
+-----------------------------------------------
+    TN     32    48    64    80    96   112   128
+           ok  WRONG   ok  WRONG WRONG WRONG   ok
+
+Non-power-of-two widths are SILENTLY WRONG — MMA_WRONG, mostly with the ~0.27 TFLOPS GPU-fault
+signature.  Reproduced with NO prefetch and NO ring, so it is in the core tile-stride /
+register-tile / MMA path, not in the pipelining machinery.  This should be a COMPILE-TIME REFUSAL
+(cf. BUG 035): it is a trap for exactly the person doing tile tuning, which is the person most
+likely to try 96.  It also bounds the tuning space — 128 is correct but 0.14x, so 64 is the
+optimum and there is no 96 to explore.
+
+THE STRUCTURAL WALL, AND WHERE IT ACTUALLY IS
+-----------------------------------------------
+Every Intel kernel in the tree is `local-size 16` — ONE subgroup per output tile — while SYCL-TLA
+uses large multi-subgroup tiles staged through SLM.  That is the remaining structural difference,
+and the obvious next lever.  Crisp already has the mechanism: endeavour 139's `:warps` mask
+distributes a register tile's fragments across participating subgroups.
+
+Attempting it gives a clean compile-time refusal:
+
+    register-resident A/B operands are not yet supported with a warp-distributed accumulator
+    (n-true > 1)
+
+which is the compiler correctly saying that the multi-subgroup path requires SLM-STAGED A/B — the
+same shape as spec 139/04 (A/B scratch, only C distributed) and as SYCL-TLA.  So the route is:
+make-scratch-matrix for A/B + sync-workgroup + a :warps-distributed C, i.e. chap2_tiling's shape
+with more warps and a bigger tile.
+
+THAT ROUTE IS BLOCKED, IN THREE LAYERS, AND THE FIRST TWO ARE OURS
+  1. bf16 SLM does not TRANSLATE:
+         RequiresExtension: SPV_KHR_bfloat16
+         NOTE: LLVM module contains bfloat type
+     The Phase G fix put bf16 -> i16 in %coop-type, which covers COOPERATIVE MATRIX types.  A
+     `(make-scratch-matrix bfloat16 ...)` allocates ordinary SLM STORAGE of bfloat, which never
+     goes through %coop-type.  The right rule is broader than what was implemented: on the SPIR-V
+     backend bfloat16 should lower to i16 EVERYWHERE, not only inside a coop type.  Same lesson as
+     the six layers, one layer further out.
+  2. fp16 SLM translates and runs but is MMA_WRONG at 1, 2 and 4 warps.
+  3. float SLM — including the SHIPPED chap2_tiling kernel — returns C ALL ZEROS under
+     --mma-test, with all-ones inputs too, while reporting 2.4 TFLOPS of work done.
+
+(3) IS NOT YET A VERDICT, DELIBERATELY.  An all-zero C means nothing was written to the region the
+reference reads — which is equally consistent with "the kernel is wrong" and with "the harness
+dispatches this kernel family differently than it checks it".  chap2_tiling uses
+matrix-multiply-tile-stride, whose grid mapping differs from plain tile-stride, and the harness
+computes its dispatch from :tile-shape.  I have twice this endeavour attributed a harness defect
+to a kernel (the N<=256 "kernel bug" that was the verifier's C indexing; the "--mma-bench drops
+the reference because rank is unrecoverable" that was an overlay disabling it).  The tell both
+times was a symptom shared across independent things.  Here the symptom is shared across float,
+fp16 and bf16 SLM kernels — i.e. across everything that uses SLM staging — which points at what
+they share.  Determining whether that is the SLM path or the harness's treatment of it is the
+next task, and it must be settled BEFORE any multi-subgroup work, because SLM staging is the
+prerequisite for all of it.
+
+NEXT, in order
+  1. Settle (3): is SLM-staged output actually wrong, or is the harness checking the wrong place?
+     Cheapest discriminator: dump C's first row directly (BUFFER print) rather than through the
+     MMA reference, and compare against a hand-computed value.
+  2. Extend bf16 -> i16 beyond coop types so SLM storage translates.
+  3. Then multi-subgroup: :warps-distributed C over SLM-staged A/B, which is the only path to the
+     peer's 230 TFLOPS and is currently gated behind (1) and (2).
+  4. Compile-time refusal for non-power-of-two register-tile widths, plus a spec rung.
