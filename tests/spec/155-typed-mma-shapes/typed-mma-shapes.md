@@ -107,38 +107,76 @@ just as readily, and a profile cannot say which types it supports at all.
 h100 has the same defect and it is already visibly ambiguous there:
 `((16 8 8) (16 8 4) (16 8 16))` mixes tf32 and non-tf32 shapes with no way to tell them apart.
 
-### 2. The Intel GRF register model hardcodes 4 BYTES PER ELEMENT
+### 2. THE ELEMENT TYPE IS DISCARDED.  This is the root cause.
 
-`src/mma.lisp::%spv-kernel-register-demand`:
+`src/mma.lisp::analyze-make-register-tile`:
 
 ```lisp
-(values (ceiling (* elements 4) *spv-grf-register-bytes*) elements)
+(elem     (first args))
+...
+(declare (ignore elem))          ; tf32/fp32 fixed for now
 ```
 
-That `4` is an element width, applied regardless of type.  bfloat16 is **two** bytes, so every
-bf16 register tile is counted at exactly double its real size:
+`(make-register-tile-ring bfloat16 (32 16) ...)` parses, and `bfloat16` is **thrown away**.
+Every fragment is then built with the element type hardcoded — `(list 'coop-matrix 'float ...)`,
+at FIVE sites in src/mma.lisp.
 
-| | GRF registers/thread | fits? |
-|---|---:|---|
-| counted as 4 B (today) | **384** | exceeds BOTH selectable modes (128, 256) |
-| actual, at 2 B | **192** | **fits the 256 mode** |
+**Confirmed in the emitted SPIR-V**, not inferred.  Disassembling
+`benchmarks/matmul/sec2_top_bf16/matmul_bmg_bf16.spv`:
 
-So the compiler believes this kernel must spill in every available allocation, when in truth it
-fits the large-GRF mode.  That is the far likelier cause of the seven empty result files than
-anything about shapes — and it is a second, independent place where the compiler is blind to
-element width.
+```
+491:4 TypeInt   2  64 0
+492:4 TypeInt   8   8 0
+493:4 TypeInt  20  32 0
+532:3 TypeFloat 259 32          <- the ONLY float type in the module
+539:7 TypeCooperativeMatrixKHR 396 259 ...   <- component type 259 = float32
+541:7 TypeCooperativeMatrixKHR 423 259 ...
+543:7 TypeCooperativeMatrixKHR 437 259 ...
+```
 
-### What Phase 0 changes about this endeavour
+There is **no 16-bit type of any kind** in the module.  All three cooperative matrices are
+float32.  `bfloat16` survives only in PARAMETER NAMES
+(`parent__tensor_bfloat16_2_global_compact_last`), inherited from the `def-type` — nowhere in a
+type.
 
-The endeavour is not "make `:mma-shapes` typed so bf16 compiles".  bf16 already compiles.  It is:
+So the tensors are bf16 in memory while the matrices consuming them are fp32, with no conversion
+type available to bridge them.  **That is a correctness bug, not a performance one**, and it is a
+far better explanation for seven empty result files than register pressure ever was.
 
-> **The compiler is type-blind about element width in at least two places — MMA shape selection
-> and Intel register accounting — and bf16 is where that stops being harmless.**
+### 3. The GRF byte width is a SYMPTOM, and "fixing" it alone would be actively wrong
 
-Still to establish (needs a BMG run): what the emitted `.spv` actually does at run time, and
-whether fixing the byte width alone is enough to produce a number.  Do that BEFORE the schema
-work, because it may turn out that (2) is the whole bug and (1) is a correctness/hygiene fix
-rather than the unblocker.
+`%spv-kernel-register-demand` computes `(ceiling (* elements 4) *spv-grf-register-bytes*)`.  The
+`4` is an element width applied regardless of type, which produced:
+
+```
+WARNING: kernel MATMUL needs 384 registers/thread (3072 register-tile elements x 4 B / 32 B per
+GRF register), exceeding every selectable allocation (128 256) — it will SPILL in any mode.
+```
+
+**That warning is ACCURATE for the code actually being generated.**  The compiler really does
+emit float32 matrices, so 4 B/element is the truth about them.  An earlier version of this plan
+proposed patching the model to count 2 B for bf16.  That would have been a mistake: a register
+model precisely wrong about real code is worse than one obviously broken, because it stops
+warning about a kernel that genuinely will spill.
+
+The byte width is not a fix to make.  It is a consequence that falls out once (2) is done.
+
+### What Phase 0 changes about this endeavour — REVISED
+
+The dependency chain runs the OPPOSITE way to how this endeavour was scoped:
+
+> **1. Thread the element type through** (`make-register-tile` -> fragments -> the `coop-matrix`
+> type).  This is the actual unblocker; nothing else matters until bf16 tiles are bf16.
+>
+> **2. Byte width follows BY CONSTRUCTION** — 4 for float, 2 for bf16/half — rather than being
+> patched.
+>
+> **3. Typed `:mma-shapes` becomes the GUARD RAIL, not the fix.**  Its job is to stop a bf16 tile
+> pairing with a tf32 shape — precisely the mistake the current code cannot detect, and the one
+> most likely to be made while doing (1).
+
+Typed shapes are still worth building.  They are simply not what unblocks bf16, and building them
+first would have left the element type still being discarded one layer down.
 
 ## Secondary items, in the order the report justifies them
 
