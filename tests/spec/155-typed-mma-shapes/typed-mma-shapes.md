@@ -349,3 +349,165 @@ STILL OPEN
   Nothing currently stops a bf16 tile pairing with a tf32 shape; the profile lists
   `((8 16 8) (8 16 16) (8 16 32))` with the types recorded only in a comment.  That is now the
   guard rail on work already done, which is the right time to build it.
+
+PHASE 2 — ON METAL (BMG, Arc B580).  bf16 IS BLOCKED BY THE DRIVER, NOT BY CRISP.
+================================================================================
+2026-08-22, in the crisp-bench-intel container with /dev/dxg passthrough.  BMG confirmed live:
+[level_zero:gpu] Intel(R) Graphics [0xe20b] 20.1.0 [1.6.33578+15].
+
+FIRST OBSERVATION, AND IT WAS MISLEADING.  Loading the bf16 module failed with
+zeModuleCreate -> 0x70000004 and nothing else, because the generated L0 harness passes nullptr
+for the build log.  Capturing the log showed "IGC: Internal Compiler Error: Segmentation
+violation", and the obvious reading was: IGC cannot compile our bf16 cooperative matrix; Intel's
+own bf16 path uses SPV_INTEL_subgroup_matrix_multiply_accumulate, so we must switch extension.
+
+THAT READING WAS WRONG, and one experiment separated it from the truth.
+
+THE EXPERIMENT.  `half` and `bfloat16` differ by one token in the same kernel, go through the same
+typed path added in Phase 1, and use the same (8 16 16) shape.  Compile both, load both:
+
+    half      ->  RESULT: MODULE BUILT OK      kernel: probe_tile        exit 0
+    bfloat16  ->  InvalidModule: Invalid SPIR-V module: input SPIR-V module uses
+                  unknown extension 'SPV_KHR_bfloat16'                   process dies, exit 11
+
+Note the wording: "INPUT SPIR-V module uses unknown extension".  That is a READER speaking.  The
+message arrives on the LOADER PROCESS'S STDERR, not from any Crisp tool -- it had looked like a
+compile error only because stdout was block-buffered and stderr was not, so it interleaved ahead
+of the loader's own output.  Running the pipeline by hand confirms the other half: llvm-spirv
+translates the bf16 module SUCCESSFULLY, and all three translators present on the image
+(LLVM 21.1.1 /usr/bin, oneAPI 2025.3, and the repo's LLVM 22 tools/) accept it.
+
+CONCLUSION.  The BMG driver's embedded SPIR-V reader (IGC 1.6.33578) DOES NOT IMPLEMENT
+SPV_KHR_bfloat16.  It says so, and then crashes instead of returning an error.  Crisp's module is
+well-formed; nothing in Crisp is at fault, and switching to the INTEL extension is a possible
+WORKAROUND, not a correction of a Crisp bug.  The tooling to prove this now lives in
+put_temp_files_here/bf16probe/spvload.cpp -- a standalone loader that prints the IGC build log.
+
+  16-BIT COOPERATIVE MATRICES ARE FINE ON THIS HARDWARE.  fp16 proves it: same KHR coop-matrix
+  construct, same shape, same Phase 1 plumbing, builds and runs.  The blocker is specific to the
+  bfloat16 EXTENSION, not to 16-bit MMA.
+
+So Phase 1 stands, and stands stronger than before: the element type reaches codegen, and on the
+one 16-bit type this driver supports it reaches the GPU and executes.
+
+WHAT TO DO ABOUT bf16 ON INTEL — A DESIGN DECISION, NOT A BUG FIX
+------------------------------------------------------------------
+Three routes, none of them "fix our SPIR-V":
+  1. WAIT / UPGRADE THE DRIVER.  SPV_KHR_bfloat16 is recent; a newer compute runtime may simply
+     support it.  Cheapest to test, and it should be tested before any code is written.
+  2. LOWER Intel bf16 through SPV_INTEL_subgroup_matrix_multiply_accumulate instead
+     (OpSubgroupMatrixMultiplyAccumulateINTEL).  This is what Intel's own SYCL-TLA peer compiles
+     with, so it is known-good on this hardware -- but it is a SECOND MMA lowering for one
+     backend, and it should not be adopted on the strength of a flag string alone.
+  3. DECLINE bf16 on Intel for now and say so in the hardware profile, which is what typed
+     :mma-shapes exists to express.  A compile-time refusal that names the driver limitation is
+     far better than a module that crashes the loader.
+Recommend (1) then (3), with (2) only if bf16 on Intel becomes a requirement -- and Chris should
+make that call.
+
+
+PHASE 3 — fp16 END TO END, AND WHAT IT EXPOSED
+================================================================================
+Since fp16 runs where bf16 cannot, a parallel fp16 chapter was added so a 16-bit MMA number can be
+measured on BMG today: benchmarks/matmul/sec2_top_fp16/ (Crisp kernel + SYCL joint_matrix control
++ oneMKL ceiling, all converted from their bf16 counterparts).
+
+KEPT DELIBERATELY SEPARATE FROM sec2_top_bf16.  The report picks a chapter's Crisp row by name and
+would have rendered an fp16 measurement under a "Crisp BF16" heading -- precisely the class of
+fabrication this report was just repaired for (the CUB/CUBLAS substring collision that published
+CUTLASS numbers from a run where CUTLASS never executed).  Different element type, different
+section.
+
+RESULT: THE KERNEL BUILDS, RUNS, AND IS WRONG AND SLOW.  Measured on BMG, precision=fast:
+
+    N=4096   N=8192
+    16.33    13.50   TFLOPS   Crisp  tf32  (sec2_top -- the tuned kernel, for control)
+    14.31    14.17   TFLOPS   oneMKL tf32
+     0.27     2.20   TFLOPS   Crisp  fp16  (sec2_top_fp16)
+    17.92    15.25   TFLOPS   SYCL joint_matrix fp16 control
+   110.38   111.62   TFLOPS   oneMKL fp16
+
+The tf32 control run in the same session rules out the environment and the harness: Crisp tf32 is
+healthy and beats oneMKL tf32.  The fp16 kernel is ~50x off, at 0.5 s per 256^3 launch.
+
+IT IS NOT SPILLING, which was the first guess and the wrong one.  The IGC build logs say the
+opposite of the theory:
+
+    tf32 (fast, healthy) : "compiled SIMD16 allocated 128 regs and spilled around 28"
+    fp16 (broken)        : clean, no spill  (it selected the 256-register mode)
+
+THE ACTUAL DEFECT, and it is in Phase 1's own work.  Disassembling the fp16 module shows the
+element type reached codegen only PARTIALLY.  Every operand exists TWICE, once per component type:
+
+    TypeCooperativeMatrixKHR 387 259 ... 130     259 = TypeFloat 32     A as f32
+    TypeCooperativeMatrixKHR 390 389 ... 130     389 = TypeFloat 16     A as f16
+    TypeCooperativeMatrixKHR 433 259 ...  26                            B as f32
+    TypeCooperativeMatrixKHR 435 389 ...  26                            B as f16
+    TypeCooperativeMatrixKHR 457 259 ... 347                            accumulator f32 (correct)
+
+There are NO conversion ops (FConvert, CooperativeMatrixConvert: zero), and the f32 operand types
+are referenced MORE than the f16 ones (42/22 vs 18/10).  So the majority of A/B fragments are
+still being minted as float32 and fed 16-bit memory -- which is both a correctness bug and an
+ample explanation for a 50x slowdown.
+
+A HYPOTHESIS I FORMED AND THEN DISPROVED, recorded because the disproof is the useful part.  The
+benchmark kernel uses make-register-tile-ring, which the Phase 1 probe spec never exercised, and
+this codebase has a documented precedent for exactly that shape of bug (BUG 040: %mma-k-steps
+silently truncating for a ring-get operand whose extent was not compile-time resolvable).  So:
+"the ring path drops the element type."  Compiling the NON-ring probe kernel and dumping its types
+refutes it -- probe_half.spv shows the identical f32/f16 duplication.  The defect is systemic in
+the 155 lowering, not ring-specific, and a fix aimed at the ring would have missed.
+
+  All five (list 'coop-matrix 'float ...) sites in src/mma.lisp are accounted for: 337/469/497 are
+  overridden in the overlay to use the element type, and 568/2048 are the ACCUMULATOR, which is
+  correctly f32.  So the f32 A/B types are minted somewhere not yet found.  That is the next
+  investigation, and it wants a REPL session with a breakpoint, not more static reading.
+
+MY PHASE 1 VALIDATOR IS TOO WEAK, and this is the lesson that generalises.  validate-spv-bf16-coop
+asserts that a 16-bit float type exists, that at least one cooperative matrix uses it, and that an
+f32 type also exists.  A module in which MOST operands are still f32 satisfies all three.  The
+validator was written to catch "the element type was discarded" and does not catch "the element
+type was discarded on SOME paths" -- which is the bug that was actually there.  It should assert
+that NO A/B-use cooperative matrix carries a component type other than the declared element type.
+
+STATUS OF THE fp16 NUMBERS: NOT PUBLISHED.  The three sec2_top_fp16 result files were moved out of
+benchmarks/results/scratch/ into put_temp_files_here/bf16probe/unpublished-results/ so no report
+run can pick up a Crisp row produced by a kernel known to compute the wrong answer.  No report was
+regenerated.
+
+
+A HARNESS GAP FOUND ALONG THE WAY, AND IT IS BIGGER THAN THIS ENDEAVOUR
+================================================================================
+matmul.py reports "NOT MMA_CORRECT -- skipping point" for EVERY size <= 2048 in sec2_top,
+sec2_top_bf16 and sec2_top_fp16 -- including the tf32 kernel that is demonstrably healthy.  The
+cause is not a wrong answer: the generated L0 harness for these chapters contains NO HOST
+REFERENCE AT ALL.  %l0-emit-mma-reference (src/hoist-l0/main.lisp:385) emits the check only when
+it can assign :a/:b/:c MMA roles, which requires rank = 2 to be recoverable from the parameter
+type; for these chapters it is not, and the harness is emitted silently without a verification
+block.  matmul.py then treats "no MMA_CORRECT token in the output" as "incorrect".
+
+THE CONSEQUENCE IS AN INTEGRITY ONE.  Points at N <= 2048 are dropped, while points at N > 2048
+are recorded -- because section 5 skips verification above 2048.  So for these chapters EVERY
+PUBLISHED CRISP NUMBER COMES FROM EXACTLY THE SIZES WHERE NOTHING IS CHECKED, and the sizes that
+would be checked are discarded for failing a check that was never emitted.  The tf32 top chapter
+has been reporting under this regime.
+
+Two separate defects, worth separate fixes:
+  1. the hoist generator should emit the reference for these chapters (or say out loud that it
+     cannot, rather than emitting a harness that silently verifies nothing);
+  2. matmul.py must distinguish "verification ran and FAILED" from "no verification was emitted".
+     Silently equating them is what let (1) hide.
+
+TWO SMALLER HARNESS DEFECTS, ONE FIXED
+----------------------------------------
+- FIXED: a contender that fails to compile no longer aborts the sweep.  time_compile called
+  check_returncode(), so when third_party/sycl-tla was absent the SYCL-TLA peer's compile failure
+  raised CalledProcessError and killed the whole chapter -- discarding Crisp's and the control's
+  already-measured results.  It now raises a typed ContenderBuildError carrying the compiler's own
+  diagnostic; run_target and run_l0_crisp catch it, print a skip line with the reason (and a
+  pointer to scripts/setup-third-party.sh when the reason is missing peer headers), and continue.
+  Verified: the fp16 sweep ran to completion and saved all three contenders.
+- OPEN: the generated L0 harness discards the IGC build log (zeModuleCreate(..., nullptr)), so
+  every module-build failure on Intel reports only a numeric code.  This is what turned a one-line
+  diagnosis into an afternoon.  put_temp_files_here/bf16probe/spvload.cpp is the stopgap; the
+  generator should pass a log handle and print it on failure.

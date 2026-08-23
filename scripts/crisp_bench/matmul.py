@@ -202,11 +202,32 @@ def _too_slow_to_grow(chapter, comp_name, S, elapsed):
           f"{nxt:.0f}s timeout — skipping them", file=sys.stderr)
     return True
 
-def time_compile(cmd, **kw):
+class ContenderBuildError(Exception):
+    """A contender failed to COMPILE.  Distinct from a crash at run time, and -- importantly --
+    survivable: one contender that cannot be built must not abort the whole sweep.
+
+    Carries the compiler's own diagnostic so the skip line says WHY, which is the difference
+    between "SYCL-TLA skipped" and "SYCL-TLA skipped: cutlass/... file not found" -- the latter
+    tells you to run scripts/setup-third-party.sh."""
+    def __init__(self, name, cmd, returncode, output):
+        self.name, self.cmd, self.returncode, self.output = name, cmd, returncode, output
+        super().__init__("%s failed to build (exit %s)" % (name, returncode))
+
+
+def time_compile(cmd, name=None, **kw):
+    """Compile, returning wall-clock ms.  Raises ContenderBuildError on a non-zero exit.
+
+    Output is captured rather than inherited so the reason for a failure can be attached to the
+    exception (and printed once, at the skip site) instead of being interleaved into the sweep log
+    at a point where it looks like it belongs to whichever contender ran last."""
+    kw.setdefault("capture_output", True)
+    kw.setdefault("text", True)
     t0 = time.time()
     res = sh(cmd, **kw)
     t1 = time.time()
-    res.check_returncode()
+    if res.returncode != 0:
+        out = (res.stdout or "") + (res.stderr or "")
+        raise ContenderBuildError(name or Path(cmd[-1]).name, cmd, res.returncode, out)
     return (t1 - t0) * 1000.0
 
 def time_device_only_compile(compiler, flags, src_path, out_dir, is_sycl):
@@ -404,7 +425,7 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     compile_ms = 0.0
     hoist_ms = 0.0
     if not (spv.exists() and metacrisp.exists()):
-        compile_ms = time_compile([crisp_compiler, "--ir-target=spv", f"--hardware-profile={INTEL_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)])
+        compile_ms = time_compile([crisp_compiler, "--ir-target=spv", f"--hardware-profile={INTEL_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)], name=src_path.stem)
         hoist_ms = time_compile([crisp_compiler, "--hoist=l0", f"--hardware-profile={INTEL_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)])
     if not metacrisp.exists():
         print(f"autobench-l0: no metacrisp {metacrisp}", file=sys.stderr); return None
@@ -666,9 +687,26 @@ def main():
                       "SKIPPING target '" + str(comp_name) + "'.")
                 return
 
+            bin_path = HERE / chapter / bin_name
+            try:
+                return _run_target_inner(chapter, comp_name, flags, is_sycl, is_cublas,
+                                         is_crisp, crisp_grid_tile, src_path, bin_path)
+            except ContenderBuildError as e:
+                # A missing peer library (third_party/ not provisioned) used to raise
+                # CalledProcessError out of time_compile and abort the entire chapter -- AFTER
+                # Crisp and the control had already produced results, which were then lost.
+                print("  WARNING: SKIPPING '" + str(comp_name) + "' -- it failed to compile "
+                      "(exit " + str(e.returncode) + ").")
+                for line in [l for l in (e.output or "").splitlines() if l.strip()][:6]:
+                    print("    | " + line)
+                if "cutlass" in (e.output or "").lower():
+                    print("    -> peer headers missing; run scripts/setup-third-party.sh")
+                return
+
+        def _run_target_inner(chapter, comp_name, flags, is_sycl, is_cublas,
+                              is_crisp, crisp_grid_tile, src_path, bin_path):
             dev_c_ms = 0.0
             all_c_ms = 0.0
-            bin_path = HERE / chapter / bin_name
 
             if is_crisp:
                 if not Path(crisp_compiler).exists():
@@ -676,7 +714,7 @@ def main():
                     return
                 crisp_prec = [f"--math-precision={prec}",
                               f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
-                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *crisp_prec, "--log-level=off", str(src_path)])
+                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *crisp_prec, "--log-level=off", str(src_path)], name=comp_name)
                 all_c_ms = dev_c_ms
                 if crisp_grid_tile:
                     sweep = run_autobench_sweep(chapter, src_path, crisp_grid_tile, comp_name, sizes,
@@ -693,7 +731,7 @@ def main():
                 cmd = [compiler] + flags + [str(src_path), "-o", str(bin_path)]
                 if is_sycl and is_cublas: cmd.insert(1, "-qmkl")
 
-                all_c_ms = time_compile(cmd)
+                all_c_ms = time_compile(cmd, name=comp_name)
                 dev_only = time_device_only_compile(compiler, flags, src_path, bin_path.parent, is_sycl)
                 dev_c_ms = dev_only if dev_only is not None else 0.0
                 exe_path = str(bin_path)
@@ -712,15 +750,25 @@ def main():
             if not Path(crisp_compiler).exists():
                 print(f"Skipping {comp_name} ({chapter}) — {crisp_compiler} not found."); return
             
-            if use_autobench:
-                dev_c_ms = 0.0
-                sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
-                                               prec, ftz, dev_c_ms, crisp_compiler)
-            else:
-                if not l0_harness:
-                    print(f"Skipping {comp_name} ({chapter}) — L0 harness not built."); return
-                sweep = run_l0_fixed_sweep(chapter, src, comp_name, l0_harness, sizes, a.warmup, a.iters,
-                                           prec, ftz, crisp_compiler)
+            try:
+                if use_autobench:
+                    dev_c_ms = 0.0
+                    sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
+                                                   prec, ftz, dev_c_ms, crisp_compiler)
+                else:
+                    if not l0_harness:
+                        print(f"Skipping {comp_name} ({chapter}) — L0 harness not built."); return
+                    sweep = run_l0_fixed_sweep(chapter, src, comp_name, l0_harness, sizes, a.warmup, a.iters,
+                                               prec, ftz, crisp_compiler)
+            except ContenderBuildError as e:
+                # Crisp itself can fail to compile a chapter's kernel — an unsupported element
+                # type, a shape the hardware profile does not carry.  That is a result about ONE
+                # chapter, not a reason to lose the other chapters' measurements.
+                print("  WARNING: SKIPPING '" + str(comp_name) + "' (" + str(chapter) + ") -- "
+                      "Crisp failed to compile it (exit " + str(e.returncode) + ").")
+                for line in [l for l in (e.output or "").splitlines() if l.strip()][:6]:
+                    print("    | " + line)
+                return
                 
             sweep.save(out_dir)
             print(f"Saved {chapter} ({comp_name}) L0 sweep to {out_dir}")
@@ -844,6 +892,23 @@ def main():
             run_target("sec2_top_bf16", "sycl_control_bf16.cpp", "sycl_control_bf16", "SYCL_Apples_BF16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top_bf16", "sycl_tla_peer.cpp", "sycl_tla_peer", "SYCL-TLA_BF16", sycl_tla_flags, is_sycl=True)
             run_target("sec2_top_bf16", "onemkl_bf16.cpp", "onemkl_bf16", "OneMKL_BF16", sycl_flags, is_sycl=True, is_cublas=True)
+
+            # §2.2 Top FP16 (endeavour 155).
+            #
+            # WHY THIS CHAPTER EXISTS SEPARATELY FROM sec2_top_bf16, AND MUST STAY SEPARATE.
+            # bf16 does not run on this BMG driver at all: the Level Zero SPIR-V reader (IGC
+            # 1.6.33578) does not implement SPV_KHR_bfloat16, reports
+            #   "input SPIR-V module uses unknown extension 'SPV_KHR_bfloat16'"
+            # and then dies, taking the host process with it.  fp16 goes through the IDENTICAL
+            # Crisp path -- same typed register tiles, same (8 16 16) mma-accumulate-via-tile,
+            # same DPAS rate on Xe2 -- and builds and runs.
+            #
+            # Reporting the fp16 number in the bf16 table would be exactly the fabrication this
+            # report was just fixed for (the CUB/CUBLAS substring collision).  Different element
+            # type, different section, contenders converted to match.
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16.crisp", use_autobench=True)
+            run_target("sec2_top_fp16", "sycl_control_fp16.cpp", "sycl_control_fp16", "SYCL_Apples_FP16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            run_target("sec2_top_fp16", "onemkl_fp16.cpp", "onemkl_fp16", "OneMKL_FP16", sycl_flags, is_sycl=True, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU
             run_l0_crisp("sec4_fused_relu", "matmul_bmg_prefetch_relu.crisp",
