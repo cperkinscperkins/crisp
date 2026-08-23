@@ -2647,3 +2647,46 @@
                              ((cffi:pointer-eq elem-llvm (crisp.llvm-bindings::llvm-int64-type)) 64)
                              (t nil))))))
     (if bits (max 1 (floor bits 8)) 4)))
+
+;;;; ------------------------------------------------------------------------------------------
+;;;; Endeavour 155 — bfloat16 lowers to i16 EVERYWHERE on SPIR-V, not only inside a coop type.
+;;;;
+;;;; Phase G put the bf16 -> i16 substitution in %coop-type, which is where cooperative-matrix
+;;;; types are built.  That covered the MMA operands and missed everything else that can hold a
+;;;; bf16: `(make-scratch-matrix bfloat16 ...)` allocates ordinary SLM STORAGE, resolved through
+;;;; the type registry's thunk, and never passes through %coop-type at all.  The result was a
+;;;; module carrying a real `bfloat` array, which llvm-spirv refuses:
+;;;;
+;;;;     RequiresExtension: SPV_KHR_bfloat16
+;;;;     NOTE: LLVM module contains bfloat type, translation of which requires this extension
+;;;;
+;;;; -- the same extension the BMG driver cannot read, arrived at from a different direction.
+;;;; SLM staging is the prerequisite for multi-subgroup tiles, so this blocked the whole
+;;;; structural direction for bf16 while fp16 sailed through.
+;;;;
+;;;; The rule is simply broader than it was implemented: ON SPIR-V, bfloat16 IS i16.  Applying it
+;;;; at the registry thunk makes every consumer agree by construction -- scratch matrices, plain
+;;;; arrays, struct fields, anything -- rather than requiring each to remember, which is the
+;;;; lesson this endeavour has now learned at six separate layers.
+;;;;
+;;;; PTX is untouched: NVIDIA has a real bfloat and will want it when 16-bit lands there.
+;;;; ------------------------------------------------------------------------------------------
+
+;; src/llvm-bindings.lisp / src/types/registry.lisp
+(cl:unless (cl:fboundp '%llvm-bfloat-type-native)
+  ;; Capture the REAL binding once.  Guarded so re-loading the overlay cannot wrap the wrapper
+  ;; and recurse -- the overlay is loaded on every build, and this is a symbol-function swap.
+  (cl:setf (cl:symbol-function '%llvm-bfloat-type-native)
+           (cl:symbol-function 'crisp.llvm-bindings::llvm-bfloat-type)))
+
+(cl:setf (cl:symbol-function 'crisp.llvm-bindings::llvm-bfloat-type)
+         (cl:lambda ()
+           "LLVM type for Crisp's BFLOAT16.  On SPIR-V this is i16: Intel encodes a bf16
+            cooperative matrix as raw 16-bit integers with the bfloat-ness carried by the MulAdd
+            operands mask (0x40), and emitting a real bfloat type instead requires
+            SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  On every
+            other backend this is the native bfloat."
+           (cl:if (cl:and (cl:boundp 'crisp.compiler::*target-backend*)
+                          (cl:eq crisp.compiler::*target-backend* :spirv))
+               (crisp.llvm-bindings::llvm-int16-type)
+               (%llvm-bfloat-type-native))))

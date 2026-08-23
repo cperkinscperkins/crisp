@@ -1360,3 +1360,89 @@ NEXT, in order
   3. Then multi-subgroup: :warps-distributed C over SLM-staged A/B, which is the only path to the
      peer's 230 TFLOPS and is currently gated behind (1) and (2).
   4. Compile-time refusal for non-power-of-two register-tile widths, plus a spec rung.
+
+
+PHASE I — THE STRUCTURAL PATH IS OPEN, AND IT LEADS TO A DIFFERENT WALL
+================================================================================
+2026-08-23.
+
+THREE BLOCKERS, TWO OF WHICH WERE MINE
+----------------------------------------
+Phase H listed three obstacles to multi-subgroup tiles.  Testing them properly:
+
+  bf16 SLM will not translate      REAL.  Fixed (below).
+  fp16 SLM wrong at 1/2/4 warps    REFUTED.  Works via plain tile-stride; the earlier failures
+                                   were through the matrix-multiply-tile-stride MACRO, a
+                                   different construct.
+  float SLM returns C all zeros    MY TEST'S FAULT.  I used shape (8 16 16) — the SIXTEEN-BIT
+                                   K-step — on FLOAT tiles, which mint at K=8.  Since Phase C the
+                                   MMA walker honours the REQUESTED shape, so the walk and the
+                                   tiles disagreed and the kernel computed garbage.  Exactly the
+                                   trap typed :mma-shapes exists to create, sprung on its author.
+
+That also withdraws what Phase H implied about the shipped chap2_tiling kernel: my evidence
+carried the same shape error, so its status is UNKNOWN, not suspect.
+
+A controlled comparison settled it.  Same 8x16 tile, C small enough that the harness PRINTS it:
+
+    reg/float  MMA_WRONG   C = 11 18 10 ...     (wrong K-step — mine)
+    slm/float  MMA_WRONG   C = 11 18 10 ...     identical to reg, i.e. staging is not the variable
+    reg/half   MMA_CORRECT C = 30 30 30 ...
+    slm/half   MMA_CORRECT C = 30 30 30 ...
+
+SLM and register staging produce BYTE-IDENTICAL results.  The SLM path was never broken.
+
+THE ONE REAL FIX: bfloat16 IS i16 EVERYWHERE ON SPIR-V
+--------------------------------------------------------
+Phase G put the bf16 -> i16 substitution in %coop-type, which is where cooperative-matrix types
+are built — and missed everything else that can hold a bf16.  `(make-scratch-matrix bfloat16 ...)`
+allocates ordinary SLM storage through the type registry's thunk and never passes through
+%coop-type, so the module carried a real `bfloat` array and llvm-spirv refused it for want of
+SPV_KHR_bfloat16 — the same extension the driver cannot read, reached from a different direction.
+
+Fixed at the registry thunk, so every consumer agrees by construction: scratch matrices, plain
+arrays, struct fields, anything.  PTX is untouched; NVIDIA has a real bfloat and will want it.
+
+  Result: bf16 SLM MMA_CORRECT at 1, 2 AND 4 subgroups.  Multi-subgroup works for both 16-bit
+  formats.  The mechanism — 139's :warps mask distributing C over SLM-staged A/B — is proven.
+
+AND THEN THE ACTUAL WALL: SLM STAGING COSTS 17x
+-------------------------------------------------
+With the path open, the first performance measurement kills the hypothesis.  Identical tile,
+identical loop, NO prefetch and NO ring in either — the ONLY difference is how A/B reach the MMA:
+
+    N=4096, bf16, workgroup tile 32x64, one subgroup
+        register staging   48.32 TFLOPS
+        SLM staging         2.81 TFLOPS      <- 17x slower
+
+and adding subgroups does not amortise it, it makes it worse:
+
+        slm 32x64  nw=1     2.81
+        slm 32x128 nw=2     1.00
+        slm 32x256 nw=4     1.09
+
+The lowering is not naive — the IR shows 34 2D block loads and almost no scalar traffic.  The cost
+is the ROUND TRIP itself: register staging goes global -> cooperative matrix directly, while SLM
+goes global -> block-load -> SLM store -> barrier -> SLM -> cooperative matrix.  For one subgroup
+that is pure overhead; for several it evidently still does not pay.
+
+WHY THIS MATTERS MORE THAN IT LOOKS.  The compiler REQUIRES SLM-staged A/B for a warp-distributed
+accumulator:
+
+    register-resident A/B operands are not yet supported with a warp-distributed accumulator
+
+so multi-subgroup is gated behind a 17x tax.  The structural direction cannot be evaluated at all
+until SLM staging is competitive.  "Multi-subgroup will close the gap to SYCL-TLA" remains
+UNTESTED, not disproven — what is now measured is that the only available route to it is far too
+expensive to reveal whether the idea is any good.
+
+NEXT — and the ordering has changed because of this
+  1. Understand the 17x.  It is the gate on everything structural.  Candidates, in the order I
+     would test them: the SLM store path's access pattern; whether the coop-matrix load from
+     addrspace(3) is as well-optimised as the addrspace(1) one; barrier cost per K-step (2 per
+     iteration, 512 at K=4096); and whether prefetch/ring pipelining, absent here, hides it.
+     A prefetched SLM variant is the cheapest of these to try and would separate "SLM is slow" from
+     "unpipelined SLM is slow".
+  2. Only then multi-subgroup tiles, which is where the peer's 230 TFLOPS lives.
+  3. Independent of both: the power-of-two tile-width refusal (Phase H), which is a silent-
+     wrongness trap for anyone doing exactly this tuning work.
