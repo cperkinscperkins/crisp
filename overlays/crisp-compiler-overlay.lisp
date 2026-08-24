@@ -3496,3 +3496,274 @@
                 (cl:t
                  (cl:format cl:*error-output* "  (~d i64 IMul for ~d coop loads)~%" imul loads)
                  cl:t))))))))
+
+;;;; ============================================================================
+;;;; Endeavour 155 Step 4 — BASE-PLUS-DELTA TILE ADDRESSING.
+;;;;
+;;;; THE MEASUREMENT.  ISA opcode histogram for a Crisp 256x256 bf16 matmul (IGC, Arc B580):
+;;;;
+;;;;     mov 727    mul 311    macl 224    mach 75    dpas 16
+;;;;
+;;;; `mach`/`macl` are the halves of an EMULATED 64-bit multiply -- Xe has no native one -- and the
+;;;; kernel issues hundreds of them to address SIXTEEN dpas.  Every fragment of every tile recomputes
+;;;; its whole flat offset from scratch, and both multiplies have a RUNTIME stride as an operand.
+;;;;
+;;;; THE STRUCTURE THAT WAS BEING THROWN AWAY.  %emit-per-frag-block-load emits each fragment's
+;;;; coordinate as (+ (* (to-int gy) n-rows) ri) -- a per-tile base plus a COMPILE-TIME fragment
+;;;; index -- and codegen then multiplies by the fragment extent and by the stride:
+;;;;
+;;;;     off0 = ((base + ri) * dim) * s0        <- s0 runtime, so emulated, once PER FRAGMENT
+;;;;
+;;;; but that distributes:
+;;;;
+;;;;     off0 = (base * dim) * s0  +  (ri * dim) * s0
+;;;;            ^^^^^^^^^^^^^^^^^     ^^^^^^^^^^^^^^^
+;;;;            identical for every    constant x stride: IGC strength-reduces this to
+;;;;            fragment -> CSE'd      shifts and adds, with no mach/macl at all
+;;;;
+;;;; so the emulated multiplies fall from two per FRAGMENT to two per TILE.
+;;;;
+;;;; WHY LLVM WILL NOT DO THIS ITSELF.  Distributing a multiply over an add is normally a
+;;;; PESSIMISATION -- it turns one multiply into two.  It pays here only because the first term is
+;;;; shared across every fragment of the tile, which is not visible at the point where reassociate
+;;;; runs.  Doing it at emission is not a workaround for a missed optimisation; emission is the only
+;;;; place the sharing is known.
+;;;;
+;;;; WHY NOT SIMPLY NARROW TO 32-BIT.  That makes each multiply native rather than emulated, and it
+;;;; is correct for realistic sizes -- but an element offset at N=65536 is 4.3e9, which wraps
+;;;; SILENTLY in uint32.  This endeavour has produced enough silent-wrongness traps already.
+;;;; Hoisting is correct at every size and REMOVES the multiplies rather than cheapening them.
+;;;;
+;;;; Pinned by tests/spec/155-typed-mma-shapes/04-tile-address-arithmetic.crisp.
+;;;; ============================================================================
+
+;; src/codegen.lisp
+(defconstant +llvm-opcode-add+ 8 "LLVMOpcode enum value for the integer Add instruction.")
+(defconstant +llvm-opcode-mul+ 12 "LLVMOpcode enum value for the integer Mul instruction.")
+(defconstant +llvm-opcode-sext+ 32 "LLVMOpcode enum value for the SExt cast instruction.")
+
+;; src/codegen.lisp
+(defun %llvm-const-int-value (val)
+  "If VAL is an LLVM ConstantInt, its signed value; otherwise NIL."
+  (when (and val (not (cffi:null-pointer-p val)))
+    (let ((ci (crisp.llvm-bindings::llvm-is-a-constant-int val)))
+      (unless (cffi:null-pointer-p ci)
+        (crisp.llvm-bindings::llvm-const-int-get-sext-value ci)))))
+
+;; src/codegen.lisp
+(defun %llvm-instr-opcode (val)
+  "If VAL is an LLVM Instruction, its opcode as an LLVMOpcode integer; otherwise NIL.
+
+   Guarded by LLVMIsAInstruction because LLVMGetInstructionOpcode is an unchecked
+   unwrap<Instruction> -- handing it a constant or a function argument crashes the process.  That
+   exact trap is what BUG 033 turned out to be, in LLVMInstructionSetDebugLoc."
+  (when (and val (not (cffi:null-pointer-p val)))
+    (let ((i (crisp.llvm-bindings::llvm-is-a-instruction val)))
+      (unless (cffi:null-pointer-p i)
+        (crisp.llvm-bindings::llvm-get-instruction-opcode i)))))
+
+;; src/codegen.lisp
+(defun %llvm-binop-with-const (val opcode)
+  "Match VAL as `<OPCODE> %x, <const>` and return (values %x const), or NIL when it does not match.
+
+   Only the SECOND operand is tested for constness: LLVM canonicalises commutative operations to put
+   the constant on the right, and both producers here -- the fragment-index add and the
+   fragment-extent multiply -- are built that way explicitly."
+  (when (eql (%llvm-instr-opcode val) opcode)
+    (let* ((op0 (crisp.llvm-bindings::llvm-get-operand val 0))
+           (op1 (crisp.llvm-bindings::llvm-get-operand val 1))
+           (c   (%llvm-const-int-value op1)))
+      (when c (values op0 c)))))
+
+;; src/codegen.lisp
+(defun %coop-split-origin (builder origin)
+  "Split a cooperative-tile ORIGIN into (values base-i64 constant-element-offset).
+
+   ORIGIN is emitted by generate-node-ir for semantic-coop-op as
+
+       mul i64 (sext i32 (add i32 %tile-base, <frag-index>)), <fragment-extent>
+
+   i.e. (tile-base + frag-index) * extent.  The distributed form is
+
+       tile-base * extent   +   frag-index * extent
+
+   whose first term is identical for every fragment of the tile and is therefore CSE'd down to a
+   single value, while the second is a compile-time integer that costs nothing to carry.
+
+   Returns ORIGIN itself with a zero offset when the pattern does not hold: an origin that is not
+   base-plus-constant has nothing to hoist, and the caller then emits bit-for-bit what it did
+   before."
+  (multiple-value-bind (inner extent) (%llvm-binop-with-const origin +llvm-opcode-mul+)
+    (if (not inner)
+        (values origin 0)
+        (if (not (eql (%llvm-instr-opcode inner) +llvm-opcode-sext+))
+            (values origin 0)
+            (let ((sum (crisp.llvm-bindings::llvm-get-operand inner 0)))
+              (multiple-value-bind (tile-base frag) (%llvm-binop-with-const sum +llvm-opcode-add+)
+                (if (not tile-base)
+                    (values origin 0)
+                    (let* ((i64 (crisp.llvm-bindings::llvm-int64-type))
+                           (b64 (llvm-build-sext builder tile-base i64 "coop_tbase"))
+                           (scaled (llvm-build-mul builder b64
+                                                   (llvm-const-int i64 extent nil)
+                                                   "coop_tbase_scaled")))
+                      (values scaled (* frag extent))))))))))
+
+;; src/codegen.lisp
+(defun %coop-tensor-ptr+stride (builder tensor-val orow ocol layout)
+  "From a Crisp tensor STRUCT value, return (values element-ptr stride-i64) for the coop tile whose
+   element origin is (OROW, OCOL) -- both i64 LLVM values.  Tensor layout: field0 = parent storage
+   {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0] (RowMajor) / strides[1]
+   (ColMajor).
+
+   Endeavour 155 Step 4: the flat offset is now computed as BASE PLUS DELTA rather than from
+   scratch.  Each origin arrives as (tile-base + compile-time-fragment-index) * extent, so
+
+       flat = (tb_r*ext_r)*s0 + (tb_c*ext_c)*s1   +   (fr*ext_r)*s0 + (fc*ext_c)*s1
+
+   The first bracket is identical for every fragment of the tile and collapses to one computation;
+   each multiply in the second has a compile-time constant operand, which IGC strength-reduces to
+   shifts.  Xe has no native 64-bit multiply, so the runtime-by-runtime products in the first
+   bracket are the expensive ones -- and there are now two per TILE instead of two per FRAGMENT.
+
+   When an origin does not have that shape the split degrades to (origin, 0) and this emits exactly
+   what it always did."
+  (let* ((f32 (llvm-float-type))
+         (i64 (crisp.llvm-bindings::llvm-int64-type))
+         (storage (llvm-build-extract-value builder tensor-val 0 "coop_storage"))
+         (base    (llvm-build-extract-value builder storage 0 "coop_base"))
+         (strides (llvm-build-extract-value builder tensor-val 2 "coop_strides"))
+         (s0 (llvm-build-extract-value builder strides 0 "coop_s0"))
+         (s1 (llvm-build-extract-value builder strides 1 "coop_s1"))
+         (stride (if (= layout 0) s0 s1)))
+    (multiple-value-bind (row-base row-delta) (%coop-split-origin builder orow)
+      (multiple-value-bind (col-base col-delta) (%coop-split-origin builder ocol)
+        (let* ((off0 (llvm-build-mul builder row-base s0 "coop_off0"))
+               (off1 (llvm-build-mul builder col-base s1 "coop_off1"))
+               (flat (llvm-build-add builder off0 off1 "coop_flat"))
+               ;; The deltas are compile-time element counts, so these multiply a runtime stride by
+               ;; a CONSTANT -- strength-reducible, unlike the runtime-by-runtime products above.
+               (flat (if (zerop row-delta)
+                         flat
+                         (llvm-build-add builder flat
+                                         (llvm-build-mul builder (llvm-const-int i64 row-delta nil)
+                                                         s0 "coop_dr")
+                                         "coop_flat_r")))
+               (flat (if (zerop col-delta)
+                         flat
+                         (llvm-build-add builder flat
+                                         (llvm-build-mul builder (llvm-const-int i64 col-delta nil)
+                                                         s1 "coop_dc")
+                                         "coop_flat_c"))))
+          (log:debug "coop addr: row-delta=~a col-delta=~a hoisted=~a"
+                     row-delta col-delta (or (/= row-delta 0) (/= col-delta 0)))
+          (cffi:with-foreign-object (idx :pointer 1)
+            (setf (cffi:mem-aref idx :pointer 0) flat)
+            (values (llvm-build-gep2 builder f32 base idx 1 "coop_elem_ptr") stride)))))))
+
+;; src/codegen.lisp  (REPLACES %coop-tensor-ptr+stride -- 155 Step 4, derived from the LIVE 6-arg
+;; overlay copy, not from src/.  The previous append dropped ELEM-LLVM, which is the GEP's element
+;; type: defaulting it to f32 scales every 16-bit tile address by 4 instead of 2.  That is the
+;; overlay-duplicate-definition trap -- only the LAST copy is live, so an extraction must come from
+;; the overlay whenever one exists there.)
+(defun %coop-tensor-ptr+stride (builder tensor-val orow ocol layout &optional elem-llvm)
+  "From a Crisp tensor STRUCT value, return (values element-ptr stride-i64) for the coop tile whose
+   element origin is (OROW, OCOL) -- both i64 LLVM values.  Tensor layout: field0 = parent storage
+   {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0] (RowMajor) / strides[1]
+   (ColMajor).  ELEM-LLVM is the tensor's element type for the GEP and defaults to f32.
+
+   Endeavour 155 Step 4: the flat offset is computed as BASE PLUS DELTA rather than from scratch.
+   Each origin arrives as (tile-base + compile-time-fragment-index) * extent, so
+
+       flat = (tb_r*ext_r)*s0 + (tb_c*ext_c)*s1   +   (fr*ext_r)*s0 + (fc*ext_c)*s1
+
+   The first bracket is identical for every fragment of the tile and collapses to one computation;
+   each multiply in the second has a compile-time constant operand, which IGC strength-reduces to
+   shifts.  Xe has no native 64-bit multiply, so the runtime-by-runtime products in the first
+   bracket are the expensive ones -- and there are now two per TILE instead of two per FRAGMENT.
+
+   When an origin does not have that shape the split degrades to (origin, 0) and this emits exactly
+   what it always did."
+  (let* ((elem (or elem-llvm (llvm-float-type)))
+         (i64 (crisp.llvm-bindings::llvm-int64-type))
+         (storage (llvm-build-extract-value builder tensor-val 0 "coop_storage"))
+         (base    (llvm-build-extract-value builder storage 0 "coop_base"))
+         (strides (llvm-build-extract-value builder tensor-val 2 "coop_strides"))
+         (s0 (llvm-build-extract-value builder strides 0 "coop_s0"))
+         (s1 (llvm-build-extract-value builder strides 1 "coop_s1"))
+         (stride (if (= layout 0) s0 s1)))
+    (multiple-value-bind (row-base row-delta) (%coop-split-origin builder orow)
+      (multiple-value-bind (col-base col-delta) (%coop-split-origin builder ocol)
+        (let* ((off0 (llvm-build-mul builder row-base s0 "coop_off0"))
+               (off1 (llvm-build-mul builder col-base s1 "coop_off1"))
+               (flat (llvm-build-add builder off0 off1 "coop_flat"))
+               ;; The deltas are compile-time element counts, so these multiply a runtime stride by
+               ;; a CONSTANT -- strength-reducible, unlike the runtime-by-runtime products above.
+               (flat (if (zerop row-delta)
+                         flat
+                         (llvm-build-add builder flat
+                                         (llvm-build-mul builder (llvm-const-int i64 row-delta nil)
+                                                         s0 "coop_dr")
+                                         "coop_flat_r")))
+               (flat (if (zerop col-delta)
+                         flat
+                         (llvm-build-add builder flat
+                                         (llvm-build-mul builder (llvm-const-int i64 col-delta nil)
+                                                         s1 "coop_dc")
+                                         "coop_flat_c"))))
+          (log:debug "coop addr: row-delta=~a col-delta=~a hoisted=~a"
+                     row-delta col-delta (or (/= row-delta 0) (/= col-delta 0)))
+          (cffi:with-foreign-object (idx :pointer 1)
+            (setf (cffi:mem-aref idx :pointer 0) flat)
+            (values (llvm-build-gep2 builder elem base idx 1 "coop_elem_ptr") stride)))))))
+
+;; TEMPORARY BISECTION PROBE -- not a fix.  Neuters the Step 4 split so %coop-tensor-ptr+stride
+;; emits exactly the pre-155-Step-4 address arithmetic, to determine whether the 256x256 :warps
+;; probe's MMA_WRONG is caused by base-plus-delta or was already there.
+(defun %coop-split-origin (builder origin)
+  "BISECTION STUB: always declines to split."
+  (declare (ignore builder))
+  (values origin 0))
+
+;; src/codegen.lisp  (RESTORES %coop-split-origin after the bisection stub above --
+;; the stub proved the 256x256 :warps probe was ALREADY MMA_WRONG without base-plus-delta.)
+(defun %coop-split-origin (builder origin)
+  "Split a cooperative-tile ORIGIN into (values base-i64 constant-element-offset).
+
+   ORIGIN is emitted by generate-node-ir for semantic-coop-op as
+
+       mul i64 (sext i32 (add i32 %tile-base, <frag-index>)), <fragment-extent>
+
+   i.e. (tile-base + frag-index) * extent.  The distributed form is
+
+       tile-base * extent   +   frag-index * extent
+
+   whose first term is identical for every fragment of the tile and is therefore CSE'd down to a
+   single value, while the second is a compile-time integer that costs nothing to carry.
+
+   Returns ORIGIN itself with a zero offset when the pattern does not hold: an origin that is not
+   base-plus-constant has nothing to hoist, and the caller then emits bit-for-bit what it did
+   before."
+  (multiple-value-bind (inner extent) (%llvm-binop-with-const origin +llvm-opcode-mul+)
+    (if (not inner)
+        (values origin 0)
+        (if (not (eql (%llvm-instr-opcode inner) +llvm-opcode-sext+))
+            (values origin 0)
+            (let ((sum (crisp.llvm-bindings::llvm-get-operand inner 0)))
+              (multiple-value-bind (tile-base frag) (%llvm-binop-with-const sum +llvm-opcode-add+)
+                (if (not tile-base)
+                    (values origin 0)
+                    (let* ((i64 (crisp.llvm-bindings::llvm-int64-type))
+                           (b64 (llvm-build-sext builder tile-base i64 "coop_tbase"))
+                           (scaled (llvm-build-mul builder b64
+                                                   (llvm-const-int i64 extent nil)
+                                                   "coop_tbase_scaled")))
+                      (values scaled (* frag extent))))))))))
+
+;; TEMPORARY BISECTION PROBE -- not a fix.  Neuters the Step 4 split so %coop-tensor-ptr+stride
+;; emits exactly the pre-155-Step-4 address arithmetic, to determine whether the 256x256 :warps
+;; probe's MMA_WRONG is caused by base-plus-delta or was already there.
+(defun %coop-split-origin (builder origin)
+  "BISECTION STUB: always declines to split."
+  (declare (ignore builder))
+  (values origin 0))
