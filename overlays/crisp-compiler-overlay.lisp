@@ -3433,3 +3433,66 @@
                           (loop for nj below n-frags
                                 for idx = (+ (* mi n-frags) nj)
                                 append (one-frag (nth idx syms) mi nj))))))))))))
+
+;; tests/run-specs.lisp
+(defun %spv-i64-type-ids (txt)
+  "Result-ids of every 64-bit OpTypeInt in TXT."
+  (cl:let ((out cl:nil))
+    (cl:dolist (toks (%spv-lines txt) (cl:nreverse out))
+      (cl:when (cl:and (cl:string= (cl:second toks) "TypeInt")
+                       (cl:>= (cl:length toks) 4)
+                       (cl:equal (cl:fourth toks) "64"))
+        (cl:push (cl:third toks) out)))))
+
+;; tests/run-specs.lisp
+(defun validate-spv-tile-address-arith (spv-path)
+  "Endeavour 155 rung 04 — assert tile address arithmetic does not scale PER FRAGMENT.
+
+   Counts 64-bit OpIMul against OpCooperativeMatrixLoadKHR.  Address computation is per-TILE work
+   and fragment loads are per-FRAGMENT work, so more 64-bit multiplies than loads means the
+   arithmetic is being redone for every fragment -- which on Xe is an EMULATED multiply
+   (mul/mach/macl, no native 64-bit multiply) and measured ~98% of the emitted instruction stream.
+
+   A ratio rather than a threshold, deliberately: absolute instruction counts move with tile shape
+   and compiler version, but 'address math must not be per-fragment' is the actual property.
+
+   DEGRADES TO PASS when llvm-spirv is unavailable, matching the other .spv validators."
+  (cl:let* ((tool (resolve-tool-executable "llvm-spirv"))
+            (txt-path (cl:format cl:nil "~a.155addr" (uiop:native-namestring spv-path))))
+    (cl:multiple-value-bind (o e code)
+        (uiop:run-program (cl:list (uiop:native-namestring tool) "--to-text"
+                                   (uiop:native-namestring spv-path) "-o" txt-path)
+                          :output :string :error-output :string :ignore-error-status cl:t)
+      (cl:declare (cl:ignore o e))
+      (cl:if (cl:or (cl:not (cl:zerop code)) (cl:not (probe-file txt-path)))
+          (cl:progn
+            (cl:format cl:*error-output*
+                       "  (validate-spv-tile-address-arith: llvm-spirv unavailable — SKIPPING)~%")
+            cl:t)
+          (cl:let ((txt (uiop:read-file-string txt-path)))
+            (cl:ignore-errors (cl:delete-file txt-path))
+            (cl:let* ((i64s (%spv-i64-type-ids txt))
+                      (imul 0) (loads 0))
+              (cl:dolist (toks (%spv-lines txt))
+                (cl:when (cl:string= (cl:second toks) "IMul")
+                  (cl:when (cl:member (cl:third toks) i64s :test #'cl:string=)
+                    (cl:incf imul)))
+                (cl:when (cl:string= (cl:second toks) "CooperativeMatrixLoadKHR")
+                  (cl:incf loads)))
+              (cl:cond
+                ((cl:zerop loads)
+                 (cl:format cl:*error-output*
+                            "FAIL: no cooperative-matrix loads in the module — the tile did not lower.~%")
+                 cl:nil)
+                ((cl:>= imul loads)
+                 (cl:format cl:*error-output*
+                            "FAIL: ~d 64-bit integer multiplies for ~d cooperative-matrix loads.~%~
+                             Address arithmetic is being recomputed PER FRAGMENT.  Xe has no native~%~
+                             64-bit multiply, so each is emulated as mul/mach/macl -- measured ~~98%~
+                             of the emitted instruction stream against 16 dpas.  Addresses within a~%~
+                             tile differ by a fixed delta and should come from one per-tile base.~%"
+                            imul loads)
+                 cl:nil)
+                (cl:t
+                 (cl:format cl:*error-output* "  (~d i64 IMul for ~d coop loads)~%" imul loads)
+                 cl:t))))))))

@@ -1,0 +1,73 @@
+;; Endeavour 155 rung 04 — TILE ADDRESS ARITHMETIC MUST NOT SCALE PER FRAGMENT.
+;;
+;; WHAT THIS PINS, AND WHY NO CORRECTNESS TEST CAN SEE IT.  This kernel computes the right answer
+;; either way.  All 1028 E2E specs pass either way.  What differs is that the emitted address
+;; arithmetic is ~98% of the instruction stream:
+;;
+;;     ISA opcode histogram, Crisp 256x256 bf16 matmul (IGC, Arc B580):
+;;         mov   727     mul   311     macl  224     mach   75     dpas   16
+;;
+;; `mach`/`macl` are the halves of an EMULATED 64-BIT MULTIPLY -- Xe has no native one -- and the
+;; kernel issues hundreds of them to compute addresses for SIXTEEN dpas instructions.  The shipped
+;; 32x64 kernel is the same shape: 314 mul/mach/macl for 32 dpas.
+;;
+;; THE SOURCE, from the emitted LLVM IR, per cooperative load:
+;;
+;;     %coop_orig = mul i64 %coop_tid, 8            ; strength-reduced to a shift by opt -- fine
+;;     %coop_off0 = mul i64 %coop_orig, %coop_s0    ; RUNTIME stride -- emulated, per fragment
+;;     %coop_off1 = mul i64 %coop_orig, %coop_s1    ; RUNTIME stride -- emulated, per fragment
+;;     %coop_flat = add i64 %coop_off0, %coop_off1
+;;     %coop_elem_ptr = getelementptr float, ptr addrspace(1) %coop_base, i64 %coop_flat
+;;
+;; but the addresses WITHIN a tile are arithmetically related:
+;;
+;;     addr(ri) = (base_row + ri)*s0 + col*s1  =  [base_row*s0 + col*s1] + ri*s0
+;;                                                 ^^^^ invariant ^^^^     ^^ constant x stride
+;;
+;; so consecutive fragments differ by a FIXED delta.  The whole chain should collapse to one base
+;; computed per tile plus an add per fragment.
+;;
+;; THE INVARIANT ASSERTED HERE is deliberately not a threshold on instruction counts, which would
+;; be brittle.  It is a SCALING claim: the number of 64-bit integer multiplies must be FEWER than
+;; the number of cooperative-matrix loads.  Address math is per-TILE work; loads are per-FRAGMENT
+;; work.  If the multiplies outnumber the loads, the arithmetic is being redone per fragment.
+;;
+;; Measured at the time of writing: 72 i64 IMul against 38 coop loads -> FAILS, correctly.
+;; With base-plus-delta addressing the multiplies should fall to a handful regardless of tile size.
+;;
+;; WHY NARROWING TO 32-BIT IS NOT THE FIX BEING PINNED.  Typing offsets as uint would make each
+;; multiply native rather than emulated, and it works for realistic sizes -- but an element offset
+;; at N=65536 is 4.3e9, which overflows uint32 and would wrap SILENTLY.  This endeavour has already
+;; produced enough silent-wrongness traps (non-power-of-two tile widths; crisp-language FLOOR
+;; returning a float that is fine in a comparison and catastrophic in an address).  Hoisting is
+;; correct at every size AND removes the multiplies rather than cheapening them, so that is what
+;; this rung asserts.  A 32-bit narrowing could still be added later as a profile-gated option; it
+;; would also satisfy this invariant.
+;;
+;; ===================================================================
+;; STATUS: RED ON PURPOSE, and beyond ci-stop.  Goes green when tile addresses are derived from a
+;; per-tile base instead of recomputed per fragment.
+;; ===================================================================
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-tile-address-arith
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel addr_arith (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K (inner-dimension A B)))
+    (tile-stride C (32 64) (grid-y grid-x)
+      (let ((A-tile (make-register-tile bfloat16 (32 16) 0.0 :operand :a))
+            (B-tile (make-register-tile bfloat16 (16 64) 0.0 :operand :b))
+            (C-tile (make-register-tile float    (32 64) 0.0)))
+        (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x))
+          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

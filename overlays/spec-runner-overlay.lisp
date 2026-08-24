@@ -395,3 +395,8 @@
 
               res)
             (progn (format *error-output* "FAIL (No SPV generated)~%") nil))))))
+
+;; tests/run-specs.lisp
+;; Endeavour 155 rung 04: same two-package dance as the other .spv validators.
+(defun validate-spv-tile-address-arith (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-TILE-ADDRESS-ARITH" :crisp.compiler) spv-path))
