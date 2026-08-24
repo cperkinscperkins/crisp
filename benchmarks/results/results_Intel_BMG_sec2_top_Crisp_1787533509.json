@@ -1,6 +1,6 @@
 {
   "run_metadata": {
-    "timestamp": "2026-08-23T19:44:54.436435Z",
+    "timestamp": "2026-08-24T01:04:59.825370Z",
     "hardware": {
       "gpu_model": "Intel BMG",
       "arch_target": "bmg",
@@ -8,12 +8,12 @@
       "vram_bytes": null,
       "sm_count": null
     },
-    "crisp_commit": "878b3af",
+    "crisp_commit": "40a906a",
     "cuda_version": null,
     "driver_version": null
   },
   "benchmark_suite": "matmul",
-  "chapter": "sec2_top_bf16",
+  "chapter": "sec2_top",
   "competitor": "Crisp",
   "precision": "fast",
   "denormal_handling": "preserve",
@@ -29,15 +29,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 743.3695793151855,
-          "all_compile_ms": 1545.668363571167
+          "device_compile_ms": 1027.4877548217773,
+          "all_compile_ms": 1850.7916927337646
         },
         "runtime": {
           "wall_time_ms": 0.0,
-          "kernel_execution_ms": 0.00884
+          "kernel_execution_ms": 0.014247999999999999
         },
         "throughput": {
-          "tflops": 3.79575,
+          "tflops": 2.35503,
           "bandwidth_gbps": null
         },
         "verification": null
@@ -54,15 +54,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 743.3695793151855,
-          "all_compile_ms": 1545.668363571167
+          "device_compile_ms": 1027.4877548217773,
+          "all_compile_ms": 1850.7916927337646
         },
         "runtime": {
           "wall_time_ms": 0.0,
-          "kernel_execution_ms": 0.015808
+          "kernel_execution_ms": 0.027768
         },
         "throughput": {
-          "tflops": 16.981,
+          "tflops": 9.66708,
           "bandwidth_gbps": null
         },
         "verification": null
@@ -79,15 +79,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 743.3695793151855,
-          "all_compile_ms": 1545.668363571167
+          "device_compile_ms": 1027.4877548217773,
+          "all_compile_ms": 1850.7916927337646
         },
         "runtime": {
           "wall_time_ms": 0.0,
-          "kernel_execution_ms": 0.042952
+          "kernel_execution_ms": 0.069368
         },
         "throughput": {
-          "tflops": 49.9973,
+          "tflops": 30.9578,
           "bandwidth_gbps": null
         },
         "verification": null
@@ -104,15 +104,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 743.3695793151855,
-          "all_compile_ms": 1545.668363571167
+          "device_compile_ms": 1027.4877548217773,
+          "all_compile_ms": 1850.7916927337646
         },
         "runtime": {
           "wall_time_ms": 0.0,
-          "kernel_execution_ms": 0.282048
+          "kernel_execution_ms": 0.551616
         },
         "throughput": {
-          "tflops": 60.911199999999994,
+          "tflops": 31.144599999999997,
           "bandwidth_gbps": null
         },
         "verification": null
@@ -129,15 +129,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 743.3695793151855,
-          "all_compile_ms": 1545.668363571167
+          "device_compile_ms": 1027.4877548217773,
+          "all_compile_ms": 1850.7916927337646
         },
         "runtime": {
           "wall_time_ms": 0.0,
-          "kernel_execution_ms": 2.42143
+          "kernel_execution_ms": 4.93095
         },
         "throughput": {
-          "tflops": 56.7594,
+          "tflops": 27.872700000000002,
           "bandwidth_gbps": null
         },
         "verification": null
@@ -154,15 +154,15 @@
       },
       "metrics": {
         "compile_time": {
-          "device_compile_ms": 743.3695793151855,
-          "all_compile_ms": 1545.668363571167
+          "device_compile_ms": 1027.4877548217773,
+          "all_compile_ms": 1850.7916927337646
         },
         "runtime": {
           "wall_time_ms": 0.0,
-          "kernel_execution_ms": 27.4347
+          "kernel_execution_ms": 67.6905
         },
         "throughput": {
-          "tflops": 40.077400000000004,
+          "tflops": 16.2432,
           "bandwidth_gbps": null
         },
         "verification": null

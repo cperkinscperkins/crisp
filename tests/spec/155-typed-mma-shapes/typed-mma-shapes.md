@@ -1446,3 +1446,156 @@ NEXT — and the ordering has changed because of this
   2. Only then multi-subgroup tiles, which is where the peer's 230 TFLOPS lives.
   3. Independent of both: the power-of-two tile-width refusal (Phase H), which is a silent-
      wrongness trap for anyone doing exactly this tuning work.
+
+
+PHASE J — CLOSING OFF THE REGISTER PATH, AND ELIMINATING THE ALTERNATIVE TO SLM
+================================================================================
+2026-08-23.
+
+Phase I ended by asserting SLM was the structural route.  Chris pushed back with the right
+question: the fastest Intel kernel on TF32 uses NO SLM -- prefetch plus register tiles is enough --
+so why would 16-bit be different?  That challenge was correct, and answering it properly took
+four measurements, two of which killed my own proposals.
+
+1. TM=64 WAS NOT A TILE LIMIT.  IT WAS A PREFETCH BLOCK-HEIGHT LIMIT.
+-----------------------------------------------------------------------
+64x32 and 64x64 "did not run" in the tuning sweep.  The cause, from the IGC build log:
+
+    undefined reference to `__internal_intel_sub_group_2d_block_prefetch_16b_64r16x1c_cache_controls'
+
+`64r` = 64 rows.  Intel's 2D block prefetch has a MAXIMUM BLOCK HEIGHT of 32 rows for 16-bit
+elements, so Crisp emitted a call to a builtin that does not exist -- and the failure surfaced at
+MODULE LOAD (zeModuleCreate 0x70000004), not at compile time.  Splitting tall A prefetches into
+32-row blocks makes every one of them run and verify.
+
+No performance came of it: 64x32 pipelined is 35.1 (WORSE than its own 44.0 unpipelined -- the
+extra prefetch blocks cost more than they buy), and 64x64 / 128x32 collapse to 5.0 / 2.7.  A
+compile-time refusal for prefetch heights over 32 is the right fix; this is the second
+silent-failure trap found in tile tuning (the first being non-power-of-two tile widths).
+
+2. THE REGISTER PATH IS AT ITS CEILING, CONFIRMED AGAINST IGC RATHER THAN AGAINST THE MODEL
+--------------------------------------------------------------------------------------------
+    tile      Crisp predicts    IGC actually did
+    32x32          192          fits, no spill
+    32x64          352          FITS IN 256, NO SPILL
+    64x32          352          FITS IN 256, NO SPILL
+    64x64          640          256 regs, spilled 112
+    128x32         672          256 regs, spilled 133
+
+Two corrections fall out.  My "the model is off by the subgroup width (16x)" guess was WRONG -- it
+over-predicts by about 1.5x, which is real but minor and does not change the mode choice (256 is
+the top mode anyway).  And we are AT the register ceiling, not past it: 32x64 and 64x32 are the
+largest tiles that fit WITHOUT spilling, and the next size up spills and collapses 47 -> 20 -> 8
+TFLOPS.  So "just use bigger register tiles" is closed off, for a measured reason.
+
+3. THE 17x IS NOT BARRIERS.  IT IS PARTLY MISSING OPERAND REUSE.
+-----------------------------------------------------------------
+Crisp REFUSES to compile SLM staging with the barriers removed, so they cannot be isolated by
+deletion.  Raising the staging depth KT divides the barrier count while holding data volume
+constant -- and throughput falls MONOTONICALLY:
+
+    KT=16  2.82     KT=32  0.97     KT=64  0.46     KT=128  0.26  TFLOPS
+
+4x/8x fewer barriers, ~10x worse.  Barriers are definitively not the cost.
+
+The instruction profile names a real one.  For a 32x64 tile (4 M-steps x 4 N-steps = 16 MMAs):
+
+    cooperative-matrix loads      SLM 34      register 10
+
+The register path loads 4 A-fragments and 4 B-fragments ONCE and reuses them across the walk
+(8 + 2 = 10).  The SLM path re-reads BOTH operands from SLM for EVERY MMA (16 x 2 + 2 = 34).  The
+arithmetic matches exactly, which is what makes this the explanation rather than a candidate.
+
+BUT IT IS NOT THE WHOLE 17x, AND I SAID IT WAS.  The load-count gap is 3.4x; the performance gap
+is 17x.  The remainder is elsewhere -- SLM load latency versus global 2D block loads, the extra
+global->SLM traffic, SLM footprint against occupancy.  Fixing reuse alone would plausibly take SLM
+from 2.8 to ~9 TFLOPS, still far short of register's 47.
+
+4. THE DISTRIBUTED-ACCUMULATOR REFUSAL WAS INCIDENTAL -- AND LIFTING IT DID NOT HELP
+-------------------------------------------------------------------------------------
+    register-resident A/B operands are not yet supported with a warp-distributed accumulator
+
+This was the only thing forcing SLM, so the question was whether it guarded a real constraint.  It
+did not, and %emit-frag-loop-distributed says so in its own docstring:
+
+    "PER-FRAG-FN is called with (fv mi nj) where mi/nj are INTEGERS
+     (same contract as the n-true=1 static path)."
+
+computing them as (floor logical n-frags) / (mod logical n-frags).  a-operand/b-operand index the
+tile's fragment SYMBOL LIST with (nth ...), which needs exactly a constant.  139 step-4 made the
+distributed path static precisely so operand addressing could be static -- the machinery the
+refusal was waiting for already existed when it was written.
+
+Lifted.  Register A/B with a warp-distributed accumulator now compiles and is MMA_CORRECT:
+
+    32x64   nw=1   47.90
+    32x128  nw=2   49.83      <- +4%
+    32x256  nw=4   21.06
+    64x128  nw=2   15.89
+
++4% at two subgroups, worse beyond, and the best of them still loses to the shipped
+single-subgroup PIPELINED kernel at 57.59.
+
+WHY, AND IT IS THE POINT OF THE WHOLE PHASE.  Without SLM each subgroup loads the FULL A and B
+tiles into its own registers, so doubling subgroups doubles operand traffic at the same time as it
+doubles C capacity.  The value of multi-subgroup was never more accumulator capacity -- it is
+SHARING THE OPERANDS, and sharing needs a common view of A/B.  That is what SLM is for.
+
+CONCLUSION
+------------
+Both paths converge on the same target, and now by elimination rather than by analogy to
+SYCL-TLA: make SLM staging cheap, starting with operand reuse in the MMA walk.  The alternative
+was tested and does not deliver.
+
+KEPT FROM THIS PHASE
+  - a real capability: Crisp can now distribute an accumulator across subgroups with
+    register-resident operands.  The SLM version will want distributed C AND shared A/B, so this
+    is a prerequisite either way, not a dead end.
+  - the prefetch block-height diagnosis and the 32-row split.
+  - two compile-time-refusal candidates: non-power-of-two tile widths (silently WRONG results) and
+    prefetch block height > 32 (opaque module-load failure).
+
+PHASE K — A NEGATIVE RESULT: OPERAND REUSE WAS NOT THE CAUSE
+================================================================================
+2026-08-23.
+
+Phase J identified missing operand reuse as the explanation for SLM's 17x deficit: the SLM path
+emitted 34 cooperative-matrix loads where the register path emitted 10, and the arithmetic matched
+exactly (16 MMAs x 2 operands + 2 = 34; 4 A-frags + 4 B-frags + 2 = 10).
+
+IMPLEMENTED IT.  %emit-per-frag-accumulate now could hoist each distinct (mi,ks) A-fragment and
+(nj,ks) B-fragment into a binding ahead of the walk, instead of re-emitting the load inside the
+(mi, nj) double loop.  Verified at the IR level:
+
+    SLM cooperative-matrix loads   34 -> 10      (register path unchanged at 10)
+
+PERFORMANCE: UNCHANGED.  2.80 TFLOPS against 2.82 before.  Zero.
+
+So the load-count gap was CORRELATIONAL, NOT CAUSAL — the JIT was evidently already CSE-ing the
+redundant SLM reads, and removing them at the IR level bought nothing.  The diagnosis was wrong,
+and it was wrong in a specific way worth naming: the arithmetic matched so cleanly that I treated
+a CONSISTENT explanation as a CONFIRMED one.  That is the third time in this endeavour (the GRF
+model "off by the subgroup width"; the N<=256 "kernel bug"), and the pattern each time is the
+same — a tidy story that fits the numbers, adopted without an intervention that could falsify it.
+The intervention here was cheap and available: change the thing and see if the number moves.
+
+REVERTED.  The hoisting is correct and produces leaner IR, but carries compiler surface for no
+measured benefit.
+
+WHAT IS NOW RULED OUT for SLM's 17x, all by measurement:
+    barriers          deeper staging gives 4x/8x fewer, and is ~10x WORSE
+    operand reuse     fixed at the IR level, no change
+    tile footprint    does not explain the KT=16 baseline (~3KB/workgroup)
+
+WHAT REMAINS, and it may not be a defect at all:
+    the register path goes global -> cooperative matrix in ONE step.
+    the SLM path goes global -> SLM -> cooperative matrix.
+With ONE subgroup there is no sharing, so the extra hop is pure overhead — the 17x may simply be
+what an unshared SLM round trip costs on this hardware.  If so the question is not "how do we make
+SLM fast" but "can multi-subgroup sharing ever recover more than the hop costs", which is a
+different experiment: measure SLM where sharing actually helps — several subgroups that would
+otherwise each re-load the same operands — rather than at nw=1 where it can only lose.
+
+STILL STANDING from Phase J: the distributed-accumulator refusal is lifted (register-resident A/B
+with a warp-distributed accumulator now compiles and verifies), and that survived a full
+regression: 1028/1028 E2E, 218/218 negative, 291/291 unit.
