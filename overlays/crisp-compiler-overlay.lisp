@@ -3024,3 +3024,202 @@
                                   (%explode-rewrite-body-form
                                    (%unroll-register-ring-loops f tiles) tiles))
                                 body)))))))
+
+
+;;;; ============================================================================
+;;;; Endeavour 155 Step 2b — INDEXING AND LOADING A WARP-SLICED OPERAND.
+;;;;
+;;;; Step 2a made an operand tile allocate only its warp's slice.  Two consumers still assumed the
+;;;; whole tile, and both must follow or the kernel indexes a fragment that no longer exists
+;;;; ("Unknown variable NIL"):
+;;;;
+;;;;   a-operand / b-operand      map a LOGICAL (mi, ks) / (nj, ks) to the warp's LOCAL index.
+;;;;                              mi and nj are compile-time integers and a warp's rows are the
+;;;;                              contiguous range [wm*mp, (wm+1)*mp), so the local row is just
+;;;;                              (mod mi mp) -- the warp's own position never has to be known.
+;;;;
+;;;;   %emit-per-frag-block-load  emit only the warp's fragments, at global coordinates offset by
+;;;;                              its grid position.  This one CANNOT be arithmetic on compile-time
+;;;;                              indices: load-tile appears ONCE in the body while each warp loads
+;;;;                              a DIFFERENT slice, so it needs the static per-warp switch the MMA
+;;;;                              walk uses.  A has gm distinct slices (selected by wp/gn), B has
+;;;;                              gn (selected by wp mod gn) -- warps in a grid row share A rows,
+;;;;                              warps in a column share B columns.
+;;;; ============================================================================
+
+;; src/mma.lisp
+(defun %warp-slice-extent (entry operand)
+  "For a warp-sliced operand ENTRY, how many fragments along its SLICED axis one warp holds --
+   mp for :a (rows), np for :b (columns) -- or NIL when the tile is not sliced.
+
+   ENTRY is (NAME M N SYMS N-TRUE FIRST-TRUE OPERAND); sliced means a warp grid is in scope and
+   this tile's N-TRUE exceeds 1, i.e. it carried its own :warps mask."
+  (let ((g *warp-grid*)
+        (n-true (fifth entry)))
+    (when (and g (integerp n-true) (> n-true 1) (member operand '(:a :b)))
+      (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+        (declare (ignorable sk))
+        (if (eq operand :a)
+            (max 1 (floor (max 1 (floor (second entry) sm)) (car g)))
+            (max 1 (floor (max 1 (floor (third entry) sn)) (cdr g))))))))
+
+;; src/mma.lisp  (REPLACES %emit-per-frag-accumulate -- 155 Step 2b)
+(defun %emit-per-frag-accumulate (a b entry tiles &optional accum-binding body shape)
+  "Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a
+   static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B
+   are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its
+   pre-loaded fragment var instead of load-fragment-a/b.
+
+   Endeavor 145 P3a: the staged operands may span SEVERAL native K-steps (Kt / K_n, compile-time)
+   and every one of them now fires.  Previously only K-index 0 was emitted and any surplus staged
+   data was silently dropped.  For the F3 body/accum-op API this means (accum-op) fires the
+   fragment's WHOLE contraction — all of its K-steps — which keeps the promise that the body
+   controls WHEN a fragment accumulates, not how its contraction is chopped up."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
+    (destructuring-bind (fm . fn) (%frag-mn)
+      ;; Endeavour 155 Phase C: honour the shape the KERNEL asked for.
+      ;;
+      ;; (mma-accumulate-via-tile (8 16 16) C A B) states K=16, which is the correct native
+      ;; K-step for a 16-bit operand.  Re-deriving it from (first :mma-shapes) returned the TF32
+      ;; K=8 instead, so the walker indexed fragments on a different K than the tiles were minted
+      ;; with -- the A-tile held one K=16 fragment while the walker asked for two K=8 ones, and
+      ;; the second came back NIL ("Unknown variable NIL").
+      ;;
+      ;; The requested shape was already in hand at the call site and already validated against
+      ;; the profile by %check-mma-shape; it simply was not passed down.  Falling back to
+      ;; %spv-mma-shape keeps every other caller behaving exactly as before.
+      (multiple-value-bind (sm sn sk)
+          (if (and shape (listp shape) (= (length shape) 3) (every #'integerp shape))
+              (values-list shape)
+              (%spv-mma-shape))
+        (declare (ignore sm))
+        (let* ((m-frags (floor m fm))
+               (n-frags (floor n fn))
+               (k-steps (%mma-k-steps a b tiles sk nil)))
+          (labels ((a-operand (mi ks)
+                     (let ((ta (%resolve-tile-ref a tiles)))
+                       (if ta
+                           ;; A register tile is Mt x Kt of sm x sk fragments: row-major over
+                           ;; (mi, ks), row stride = its own K-step count.
+                           (let* ((mp (%warp-slice-extent ta :a))          ; 155 Step 2b
+                                  (row (if mp (mod mi mp) mi)))
+                             (nth (+ (* row (max 1 (floor (third ta) sk))) ks) (fourth ta)))
+                           `(load-fragment-a ,a (,mi ,ks)))))
+                   (b-operand (nj ks)
+                     (let ((tb (%resolve-tile-ref b tiles)))
+                       (if tb
+                           ;; A register tile is Kt x Nt of sk x sn fragments: row-major over
+                           ;; (ks, nj), row stride = its own column-fragment count.
+                           (let* ((np (%warp-slice-extent tb :b))          ; 155 Step 2b
+                                  (stride (or np (max 1 (floor (third tb) sn))))
+                                  (col (if np (mod nj np) nj)))
+                             (nth (+ (* ks stride) col) (fourth tb)))
+                           `(load-fragment-b ,b (,ks ,nj)))))
+                   (one-frag (fv mi-form nj-form)
+                     (let* ((sets (loop for ks below k-steps
+                                        collect `(set! ,fv (mma-accumulate ,fv
+                                                                           ,(a-operand mi-form ks)
+                                                                           ,(b-operand nj-form ks)))))
+                            (acc-set (if (= (length sets) 1) (first sets) `(progn ,@sets))))
+                       (if body
+                           (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                           (list acc-set)))))
+            (if (> n-true 1)
+                ;; Endeavour 155: register-resident A/B ARE supported with a warp-distributed
+                ;; accumulator.  The refusal this replaces was incidental, not essential --
+                ;; %emit-frag-loop-distributed's own contract says so:
+                ;;
+                ;;   "PER-FRAG-FN is called with (fv mi nj) where mi/nj are INTEGERS
+                ;;    (same contract as the n-true=1 static path)."
+                ;;
+                ;; and it computes them as (floor logical n-frags) / (mod logical n-frags), both
+                ;; compile-time.  a-operand/b-operand index the tile's fragment SYMBOL LIST with
+                ;; (nth ...), which needs exactly that -- a constant.  139 step-4 made this path
+                ;; static precisely so operand addressing could be static, so the machinery the
+                ;; refusal was waiting for already existed when it was written.
+                ;;
+                ;; WHY THIS MATTERS.  It is the only route to a bigger workgroup tile that does
+                ;; NOT go through SLM.  C is what limits tile size -- 64x64 in one subgroup spills
+                ;; 112 registers and collapses to 20 TFLOPS -- and splitting C across subgroups
+                ;; divides exactly that pressure, while A/B keep the register+prefetch path that
+                ;; is the fastest thing on this hardware.  A/B are then loaded redundantly per
+                ;; warp, which costs bandwidth the cache may absorb; that is the trade to measure.
+                (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
+                `(progn
+                   ,@(loop for mi below m-frags append
+                           (loop for nj below n-frags
+                                 for idx = (+ (* mi n-frags) nj)
+                                 append (one-frag (nth idx syms) mi nj)))))))))))
+
+;; src/mma.lisp  (REPLACES %emit-per-frag-block-load -- 155 Step 2b)
+(defun %emit-per-frag-block-load (src entry coords)
+  "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS).
+
+   Endeavour 155 Step 2b: when the tile is WARP-SLICED, each warp loads only its own rows (:a) or
+   columns (:b), at global coordinates offset by its grid position.  load-tile appears once in the
+   body, so the choice is a STATIC per-warp switch -- static so the offsets fold to literals and the
+   block-load addresses stay compile-time, which is the same reason 139 step-4 made the MMA walk
+   static."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) (operand :acc)) (cdr entry)
+    (declare (ignore n-true))
+    (let ((cl (find-package :crisp-language)))
+      (destructuring-bind (fr . fc) (%frag-mn-for-operand operand (%register-tile-elem-of (first entry)))
+        (let* ((frag-fn (ecase operand
+                          (:a (intern "LOAD-FRAGMENT-A" cl))
+                          (:b (intern "LOAD-FRAGMENT-B" cl))
+                          (:acc (error 'crisp-compiler-error
+                                  :message "load-tile into an accumulator register-tile is not supported (only :operand :a / :b tiles are load targets)."
+                                  :source-location nil))))
+               (to-int  (intern "TO-INT" cl))
+               (n-rows  (floor m fr))
+               (n-cols  (floor n fc))
+               (gy      (first coords))
+               (gx      (second coords))
+               (slice   (%warp-slice-extent entry operand))
+               (grid    *warp-grid*))
+          (flet ((one (idx row col)
+                   `(set! ,(nth idx syms)
+                          (,frag-fn ,src
+                                    ((+ (* (,to-int ,gy) ,n-rows) ,row)
+                                     (+ (* (,to-int ,gx) ,n-cols) ,col))))))
+            (if (not (and slice grid))
+                `(progn
+                   ,@(loop for ri below n-rows append
+                           (loop for ci below n-cols
+                                 for idx = (+ (* ri n-cols) ci)
+                                 collect (one idx ri ci))))
+                (let* ((progn-sym (intern "PROGN" cl))
+                       (let-sym   (intern "LET" cl))
+                       (if-sym    (intern "IF" cl))
+                       (lt-sym    (intern "<" cl))
+                       (minus-sym (intern "-" cl))
+                       (floor-sym (intern "FLOOR" cl))
+                       (mod-sym   (intern "MOD" cl))
+                       (warp-id   (intern "WARP-ID" cl))
+                       (gn        (cdr grid))
+                       (nslice    (if (eq operand :a) (car grid) (cdr grid)))
+                       (wp        (gensym "WP"))
+                       (sl        (gensym "SL")))
+                  (labels ((arm (w)
+                             `(,progn-sym
+                                ,@(if (eq operand :a)
+                                      (loop for lr below slice append
+                                            (loop for ci below n-cols
+                                                  for idx = (+ (* lr n-cols) ci)
+                                                  collect (one idx (+ (* w slice) lr) ci)))
+                                      (loop for ri below n-rows append
+                                            (loop for lc below slice
+                                                  for idx = (+ (* ri slice) lc)
+                                                  collect (one idx ri (+ (* w slice) lc)))))))
+                           (chain (w)
+                             (if (>= w (1- nslice))
+                                 (arm w)
+                                 `(,if-sym (,lt-sym ,sl ,(1+ w))
+                                           ,(arm w)
+                                           ,(chain (1+ w))))))
+                    `(,let-sym ((,wp (,minus-sym (,to-int (,warp-id)) ,first-true)))
+                       (,let-sym ((,sl ,(if (eq operand :a)
+                                            `(,floor-sym ,wp ,gn)
+                                            `(,mod-sym ,wp ,gn))))
+                         ,(chain 0))))))))))))
