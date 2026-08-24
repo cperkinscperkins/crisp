@@ -2690,3 +2690,87 @@
                           (cl:eq crisp.compiler::*target-backend* :spirv))
                (crisp.llvm-bindings::llvm-int16-type)
                (%llvm-bfloat-type-native))))
+
+;; src/mma.lisp  (REPLACES %emit-per-frag-accumulate -- 155: allow register A/B with distributed C)
+(defun %emit-per-frag-accumulate (a b entry tiles &optional accum-binding body shape)
+  "Per-fragment expansion of mma-accumulate-via-tile.  Endeavor 139 step-4: distributed path is a
+   static per-warp switch (n-true threaded to %emit-frag-loop-distributed).  Endeavor 142: when A/B
+   are register-tiles (present in TILES, pre-loaded via load-tile), the operand is read from its
+   pre-loaded fragment var instead of load-fragment-a/b.
+
+   Endeavor 145 P3a: the staged operands may span SEVERAL native K-steps (Kt / K_n, compile-time)
+   and every one of them now fires.  Previously only K-index 0 was emitted and any surplus staged
+   data was silently dropped.  For the F3 body/accum-op API this means (accum-op) fires the
+   fragment's WHOLE contraction — all of its K-steps — which keeps the promise that the body
+   controls WHEN a fragment accumulates, not how its contraction is chopped up."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
+    (destructuring-bind (fm . fn) (%frag-mn)
+      ;; Endeavour 155 Phase C: honour the shape the KERNEL asked for.
+      ;;
+      ;; (mma-accumulate-via-tile (8 16 16) C A B) states K=16, which is the correct native
+      ;; K-step for a 16-bit operand.  Re-deriving it from (first :mma-shapes) returned the TF32
+      ;; K=8 instead, so the walker indexed fragments on a different K than the tiles were minted
+      ;; with -- the A-tile held one K=16 fragment while the walker asked for two K=8 ones, and
+      ;; the second came back NIL ("Unknown variable NIL").
+      ;;
+      ;; The requested shape was already in hand at the call site and already validated against
+      ;; the profile by %check-mma-shape; it simply was not passed down.  Falling back to
+      ;; %spv-mma-shape keeps every other caller behaving exactly as before.
+      (multiple-value-bind (sm sn sk)
+          (if (and shape (listp shape) (= (length shape) 3) (every #'integerp shape))
+              (values-list shape)
+              (%spv-mma-shape))
+        (declare (ignore sm))
+        (let* ((m-frags (floor m fm))
+               (n-frags (floor n fn))
+               (k-steps (%mma-k-steps a b tiles sk nil)))
+          (labels ((a-operand (mi ks)
+                     (let ((ta (%resolve-tile-ref a tiles)))
+                       (if ta
+                           ;; A register tile is Mt x Kt of sm x sk fragments: row-major over
+                           ;; (mi, ks), row stride = its own K-step count.
+                           (nth (+ (* mi (max 1 (floor (third ta) sk))) ks) (fourth ta))
+                           `(load-fragment-a ,a (,mi ,ks)))))
+                   (b-operand (nj ks)
+                     (let ((tb (%resolve-tile-ref b tiles)))
+                       (if tb
+                           ;; A register tile is Kt x Nt of sk x sn fragments: row-major over
+                           ;; (ks, nj), row stride = its own column-fragment count.
+                           (nth (+ (* ks (max 1 (floor (third tb) sn))) nj) (fourth tb))
+                           `(load-fragment-b ,b (,ks ,nj)))))
+                   (one-frag (fv mi-form nj-form)
+                     (let* ((sets (loop for ks below k-steps
+                                        collect `(set! ,fv (mma-accumulate ,fv
+                                                                           ,(a-operand mi-form ks)
+                                                                           ,(b-operand nj-form ks)))))
+                            (acc-set (if (= (length sets) 1) (first sets) `(progn ,@sets))))
+                       (if body
+                           (mapcar (lambda (f) (%subst-accum f accum-binding fv acc-set)) body)
+                           (list acc-set)))))
+            (if (> n-true 1)
+                ;; Endeavour 155: register-resident A/B ARE supported with a warp-distributed
+                ;; accumulator.  The refusal this replaces was incidental, not essential --
+                ;; %emit-frag-loop-distributed's own contract says so:
+                ;;
+                ;;   "PER-FRAG-FN is called with (fv mi nj) where mi/nj are INTEGERS
+                ;;    (same contract as the n-true=1 static path)."
+                ;;
+                ;; and it computes them as (floor logical n-frags) / (mod logical n-frags), both
+                ;; compile-time.  a-operand/b-operand index the tile's fragment SYMBOL LIST with
+                ;; (nth ...), which needs exactly that -- a constant.  139 step-4 made this path
+                ;; static precisely so operand addressing could be static, so the machinery the
+                ;; refusal was waiting for already existed when it was written.
+                ;;
+                ;; WHY THIS MATTERS.  It is the only route to a bigger workgroup tile that does
+                ;; NOT go through SLM.  C is what limits tile size -- 64x64 in one subgroup spills
+                ;; 112 registers and collapses to 20 TFLOPS -- and splitting C across subgroups
+                ;; divides exactly that pressure, while A/B keep the register+prefetch path that
+                ;; is the fastest thing on this hardware.  A/B are then loaded redundantly per
+                ;; warp, which costs bandwidth the cache may absorb; that is the trade to measure.
+                (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
+                `(progn
+                   ,@(loop for mi below m-frags append
+                           (loop for nj below n-frags
+                                 for idx = (+ (* mi n-frags) nj)
+                                 append (one-frag (nth idx syms) mi nj)))))))))))
