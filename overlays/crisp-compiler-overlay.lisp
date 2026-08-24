@@ -3352,3 +3352,84 @@
                                   (%explode-rewrite-body-form
                                    (%unroll-register-ring-loops f tiles) tiles))
                                 body)))))))
+
+;; src/mma.lisp  (REPLACES %emit-per-frag-store -- 155 Step 3: runtime-addressed distributed store)
+(defun %emit-per-frag-store (dest tile-id entry)
+  "Per-fragment expansion of (store-tile V DEST (BTY BTX)).
+
+   Endeavour 155 Step 3: RUNTIME-ADDRESSED distributed store.
+
+   139 step-4 made this a static per-warp switch, which is right at 2-3 warps and catastrophic at
+   32.  Each arm stores to a DIFFERENT global address, so unlike the MMA walk -- whose arms became
+   identical once operands were warp-sliced, and collapsed -- every arm survives:
+
+       tile          instrs   MulAdd   stores
+       32x64  nw=1     1001       16       16
+       128x128 nw=8    2025       16      121
+       256x256 nw=32   5168       16      481     <- 32 arms x 16 fragments
+
+   481 static stores for 16 dynamic ones, and 5168 instructions against SYCL-TLA's 2219 for the
+   same geometry.
+
+   With the 2-D warp grid the address is REGULAR, so one arm suffices:
+
+       mi = wm*mp + (l / np)      wm = wp / gn      (runtime)
+       nj = wn*np + (l mod np)    wn = wp mod gn    (runtime)
+
+   l/np and l mod np are compile-time per fragment; only wm and wn are runtime, and they are two
+   scalar ops shared by every fragment.  The static path is kept for the no-grid case, where the
+   arms are few and literal addresses are preferable."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
+    (destructuring-bind (fm . fn) (%frag-mn)
+      (let* ((cl (find-package :crisp-language))
+             (to-int-sym (intern "TO-INT" cl))
+             (m-frags (floor m fm)) (n-frags (floor n fn))
+             (bty (list to-int-sym (first tile-id)))
+             (btx (list to-int-sym (second tile-id))))
+        (flet ((one-frag (fv mi-form nj-form)
+                 (list `(store-fragment ,fv ,dest
+                                        ((+ (* ,bty ,m-frags) ,mi-form)
+                                         (+ (* ,btx ,n-frags) ,nj-form))))))
+          (let ((grid (and (> n-true 1) (%warp-grid-dims n-true m-frags n-frags))))
+            (cond
+              ((and grid (> n-true 1))
+               (let* ((let-sym (intern "LET" cl))
+                      (progn-sym (intern "PROGN" cl))
+                      (minus-sym (intern "-" cl))
+                      (plus-sym (intern "+" cl))
+                      (times-sym (intern "*" cl))
+                      (floor-sym (intern "FLOOR" cl))
+                      (mod-sym (intern "MOD" cl))
+                      (warp-id (intern "WARP-ID" cl))
+                      (gm (car grid)) (gn (cdr grid))
+                      (mp (max 1 (floor m-frags gm)))
+                      (np (max 1 (floor n-frags gn)))
+                      (per-warp (length syms))
+                      (wp (gensym "WP")) (wm (gensym "WM")) (wn (gensym "WN")))
+                 `(,let-sym ((,wp (,minus-sym (,to-int-sym (,warp-id)) ,first-true)))
+                    ;; Integer division/remainder via / and - : kernels use / for integer
+                    ;; division throughout, whereas FLOOR/MOD in crisp-language are not verified
+                    ;; for this use.  Previously they fed only comparisons (which tolerate a wrong
+                    ;; value by selecting an arm); here they compute a global ADDRESS, where a
+                    ;; wrong value is an out-of-bounds write.
+                    ;; ISOLATED BY TEST: crisp-language FLOOR/MOD here yield a value that is fine
+                    ;; for a COMPARISON but wrong as an ADDRESS -- almost certainly a float.  The
+                    ;; step-2b load switch feeds its selector to (< ...) and is therefore correct;
+                    ;; this store feeds a global index and was not.  Integer / and - instead.
+                    (,let-sym ((,wm (,(intern "/" cl) ,wp ,gn)))
+                      (,let-sym ((,wn (,minus-sym ,wp (,times-sym ,wm ,gn))))
+                      (,progn-sym
+                        ,@(loop for l below per-warp
+                                for fv = (nth l syms)
+                                append (one-frag fv
+                                                 `(,plus-sym (,times-sym ,wm ,mp) ,(floor l np))
+                                                 `(,plus-sym (,times-sym ,wn ,np) ,(mod l np))))))))))
+              ((> n-true 1)
+               (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag))
+              (t
+               `(progn
+                  ,@(loop for mi below m-frags append
+                          (loop for nj below n-frags
+                                for idx = (+ (* mi n-frags) nj)
+                                append (one-frag (nth idx syms) mi nj))))))))))))
