@@ -1599,3 +1599,75 @@ otherwise each re-load the same operands — rather than at nw=1 where it can on
 STILL STANDING from Phase J: the distributed-accumulator refusal is lifted (register-resident A/B
 with a warp-distributed accumulator now compiles and verifies), and that survived a full
 regression: 1028/1028 E2E, 218/218 negative, 291/291 unit.
+
+PHASE L — READING THE PEER'S SPIR-V, AND WHAT IT OVERTURNED
+================================================================================
+2026-08-23.  Chris's suggestion: get SYCL-TLA's .spv and read it.  It was worth more than the
+entire priority list I had proposed, and it falsified two of my conclusions in a row.
+
+WHAT THE PEER ACTUALLY IS
+    TileShape = Shape<_256, _256, _32>                    workgroup tile 256x256, K-step 32
+    Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>         8 x 4 = 32 subgroups
+    -> per subgroup 256/8 x 256/4 = 32x64                 IDENTICAL to Crisp's tuned tile
+
+and in its SPIR-V: ZERO Workgroup variables (no SLM), zero cooperative matrices, inline Xe
+assembly doing lsc_load_block2d + dpas.bf.bf.8, and NOT declaring SPV_INTEL_cache_controls.
+
+FIRST CONCLUSION, WRONG: "it uses no SLM and the same structure as us, so the 3x is instruction
+scheduling."  I reached that from the extension list and the absence of SLM, without checking the
+tile geometry.  Chris pushed back -- "I'm really surprised it's not wg size or warp usage" -- and
+he was right.  It IS workgroup size and subgroup layout.  The per-subgroup work is identical to
+ours; the peer simply runs 32 of them over one 256x256 block, and the operand sharing happens
+through the CACHE (co-resident subgroups touching overlapping A rows / B columns), not through
+SLM.  This also retires the entire SLM direction: the fastest kernel on this hardware does not
+use SLM at all.
+
+SECOND CONCLUSION, ALSO WRONG: "each subgroup would re-load the full operands, so multi-subgroup
+cannot help."  Measured at a FIXED 64x128 tile, varying only the subgroup count:
+    nw=1  1.68     nw=2  2.77     nw=4  8.38     nw=8  13.07   TFLOPS
+Monotonically BETTER -- 7.8x.  Distributing C is a large win; my +4% earlier came from testing
+1-D strips of 2 and 4 subgroups, which is far too few and shares along one axis only.
+
+THE ACTUAL BLOCKER, with numbers
+    config            per-subgroup A+B      IGC spill
+    32x64  nw=1        6KB                  none
+    64x128 nw=8       12KB                   53
+    128x128 nw=8      16KB                  220
+    256x256 nw=32     32KB                  508
+Crisp allocates the FULL workgroup-tile operands in EVERY subgroup's registers.  The peer gives
+each subgroup only its slice -- 6KB at 256x256, the same as our smallest config.  That is how it
+holds a 32x larger tile without spilling.
+
+A SIDE-EFFECT WORTH KEEPING: the register RING doubles the operand footprint, and at scale that is
+what spills.  Dropping it: 64x128 nw=8 13.07 -> 27.84, 128x128 nw=8 2.33 -> 26.60.
+
+PROBE: IS THE MECHANISM ALREADY THERE?  :warps on an A/B tile is accepted and DOES shrink the
+allocation, but the MMA walk still indexes the full fragment set -> "Unknown variable NIL", the
+same signature as the fragment-index bugs fixed earlier this endeavour.  So: PARTLY PLUMBED, NOT
+WIRED.
+
+THE PLAN, and why it needs NO new API
+  The slice is DERIVABLE, not a user decision: the compiler already computes which (mi, nj) each
+  warp owns, as compile-time integers, so the A fragments it needs are {mi} x {ks} and the B
+  fragments {nj} x {ks}.  C already follows this convention -- the tile is declared at WORKGROUP
+  size and each warp gets its share -- and A/B should simply match it.
+
+  The one genuinely new decision is the WARP GRID SHAPE, and it is load-bearing rather than
+  cosmetic: the current flattening gives row strips, under which A slices but every warp still
+  needs ALL of B.  An 8x4 grid slices both.  By the project's own D1 precedent (%tile-visit-
+  override: "a compiler-level knob, never kernel syntax"), that belongs in the hardware profile
+  beside :tile-visit-strip-width.
+
+  Work items, all internal:
+    1. %emit-frag-loop-distributed: 2-D warp layout (wm, wn) from a profile key, replacing
+       mi = logical/n-frags, nj = logical mod n-frags.
+    2. a-operand / b-operand: map a logical (mi, ks) / (nj, ks) to the warp's LOCAL fragment
+       index when the operand tile is distributed.
+    3. %emit-per-frag-block-load: emit only the warp's fragments, at global coordinates offset by
+       the warp's grid position.  Expected to be the fiddliest -- it must compose with
+       tile-stride's existing grid mapping.
+
+  EXPECTATION, STATED BEFORE THE WORK: this unlocks the large-tile regime (256x256 at 6KB per
+  subgroup, the peer's exact footprint).  Plausibly 57 -> ~100+, i.e. oneMKL territory.  Closing
+  on the peer's 236 likely needs more, since it also hand-schedules its instruction stream.
+  Matching the shape does not guarantee matching the number.

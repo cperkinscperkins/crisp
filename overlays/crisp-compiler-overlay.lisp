@@ -2774,3 +2774,82 @@
                            (loop for nj below n-frags
                                  for idx = (+ (* mi n-frags) nj)
                                  append (one-frag (nth idx syms) mi nj)))))))))))
+
+
+;; src/mma.lisp
+(defun %warp-grid-dims (n-warps m-frags n-frags)
+  "Endeavour 155: factor N-WARPS into a (GM . GN) 2-D warp grid over an M-FRAGS x N-FRAGS fragment
+   grid, or NIL when no factorisation divides both axes evenly (caller then walks linearly).
+
+   Prefers the SQUAREST per-warp block, minimising |m-frags/GM - n-frags/GN|.  That is what
+   maximises operand sharing: a warp holding an mp x np block needs mp A-fragments and np
+   B-fragments, and for a fixed mp*np the SUM mp+np is smallest when they are equal.  A row strip
+   (GM=1) is the degenerate worst case -- np = n-frags, so every warp needs the whole of B."
+  (when (and (integerp n-warps) (> n-warps 1)
+             (integerp m-frags) (integerp n-frags) (plusp m-frags) (plusp n-frags))
+    (let ((best nil) (best-score nil))
+      (loop for gm from 1 to n-warps do
+        (when (zerop (mod n-warps gm))
+          (let ((gn (floor n-warps gm)))
+            (when (and (<= gm m-frags) (<= gn n-frags)
+                       (zerop (mod m-frags gm)) (zerop (mod n-frags gn)))
+              (let ((score (abs (- (floor m-frags gm) (floor n-frags gn)))))
+                (when (or (null best-score) (< score best-score))
+                  (setf best (cons gm gn) best-score score)))))))
+      best)))
+
+;; src/mma.lisp  (REPLACES %emit-frag-loop-distributed -- 155: 2-D warp grid)
+(defun %emit-frag-loop-distributed (syms n-frags first-true n-true per-frag-fn)
+  "Endeavor 139 step-4 perf: emit a COMPILE-TIME-STATIC per-warp switch (was a runtime
+   fragment-index loop).  wp = warp-position is runtime, so branch on it once via a `<`-cascade
+   (the role-branch pattern, last warp = bare else since wp is gated into [0,n-true)); inside each
+   arm the fragment (mi nj) fold to integer LITERALS so the SMEM operand loads get static addresses
+   and ptxas can CSE them.  PER-FRAG-FN is called with (fv mi nj) where mi/nj are INTEGERS (same
+   contract as the n-true=1 static path)."
+  (let* ((cl        (find-package :crisp-language))
+         (progn-sym (intern "PROGN" cl))  (let-sym (intern "LET" cl))
+         (if-sym    (intern "IF" cl))     (lt-sym  (intern "<" cl))
+         (minus-sym (intern "-" cl))      (to-int-sym (intern "TO-INT" cl))
+         (warp-id-sym (intern "WARP-ID" cl))
+         (per-warp  (length syms))
+         (wp        (gensym "WP")))
+    (labels ((arm (k)
+               ;; Endeavour 155: 2-D WARP GRID.  The linear form (kept as the fallback below)
+               ;; gave warp k the logical range [k*per-warp, ...), which for a row-major (mi, nj)
+               ;; flattening is a ROW STRIP -- and a strip shares operands along ONE axis only:
+               ;; A slices by mi, but every warp still needs ALL of B.  SYCL-TLA's bf16 kernel uses
+               ;; Layout<Shape<_8,_4,_1>>, an 8x4 grid of 32 subgroups over a 256x256 tile, so each
+               ;; subgroup needs 1/8 of A AND 1/4 of B.  That is what makes both operands sliceable,
+               ;; which is the prerequisite for a large workgroup tile that does not replicate
+               ;; operands into every subgroup.
+               ;; m-frags is not a parameter here -- the caller passes only n-frags -- but the
+               ;; total fragment count is per-warp * n-true, so the M extent follows.
+               (let* ((m-frags (floor (* per-warp n-true) (max 1 n-frags)))
+                      (grid (%warp-grid-dims n-true m-frags n-frags))
+                      (gm (car grid)) (gn (cdr grid)))
+                 (declare (ignorable gm))
+                 `(,progn-sym
+                    ,@(if grid
+                          (let* ((mp (floor m-frags gm))
+                                 (np (floor n-frags gn))
+                                 (wm (floor k gn))
+                                 (wn (mod k gn)))
+                            (loop for l below per-warp
+                                  for fv = (nth l syms)
+                                  for mi = (+ (* wm mp) (floor l np))
+                                  for nj = (+ (* wn np) (mod l np))
+                                  append (funcall per-frag-fn fv mi nj)))
+                          (loop for l below per-warp
+                                for fv = (nth l syms)
+                                for logical = (+ (* k per-warp) l)
+                                for mi = (floor logical n-frags)
+                                for nj = (mod logical n-frags)
+                                append (funcall per-frag-fn fv mi nj))))))
+             (chain (k)
+               (if (>= k (1- n-true))
+                   (arm k)                                   ; last warp = bare else
+                   `(,if-sym (,lt-sym ,wp ,(1+ k))
+                             ,(arm k)
+                             ,(chain (1+ k))))))
+      `(,let-sym ((,wp (,minus-sym (,to-int-sym (,warp-id-sym)) ,first-true)))
+         ,(chain 0)))))
