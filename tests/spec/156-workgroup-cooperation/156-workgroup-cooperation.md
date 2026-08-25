@@ -618,3 +618,59 @@ Prose was kept in place and only the code removed: several dropped copies sat un
 documenting real bugs (the 2D-block prefetch describing every surface as f32; the MMA walker and the
 tiles disagreeing on K). Those are still accurate as history and are the only record of those
 findings, so the headers stay where they are with a marker underneath saying what was removed.
+
+## Step 2 — the `:xe-native` MMA ABI, established (not guessed)
+
+Read off SYCL-TLA's own headers and verified by compiling a probe through our shipped toolchain.
+
+### The instruction
+
+```
+__spirv_SubgroupMatrixMultiplyAccumulateINTEL(K, A, B, C, Operands) -> D
+```
+
+For the `(8 16 16)` shape Crisp already uses — M=8, N=16 (the subgroup width), K=16:
+
+| operand | LLVM type | notes |
+|---|---|---|
+| K | `i32` | **an `<id>`, not a literal** — a constant, 16 for bf16/fp16 |
+| A | `<8 x i16>` | bf16 *and* fp16 both travel as raw 16-bit lanes |
+| B | `<8 x i32>` | 16 elements per lane, packed two per i32 |
+| C / D | `<8 x float>` | f32 accumulator |
+| Operands | literal `i32` | **a literal, not an id** |
+
+Operand masks (`cute/arch/mma_xe_legacy_spirv.hpp`):
+
+    MatrixASigned 0x1   MatrixBSigned 0x2   MatrixCBf16 0xC
+    MatrixAInt8  0x10   MatrixBInt8  0x20
+    MatrixAFp16 0x400   MatrixBFp16 0x800    -> fp16 : 0xC00
+    MatrixABf16 0x1000  MatrixBBf16 0x2000   -> bf16 : 0x3000
+
+Verified emission, from `put_temp_files_here/tune/madprobe2.spt`:
+
+    2 Capability SubgroupMatrixMultiplyAccumulateINTEL
+    8 SubgroupMatrixMultiplyAccumulateINTEL 33 51 50 27 32 37 12288
+
+**It is a real SPIR-V instruction, not an Import-linkage call, and the translator declares the
+capability by itself.** That matters: no name mangling and no linkage question, unlike the
+OpenCL-style `intel_sub_group_bf16_bf16_matrix_mad_k16`, which reaches SPIR-V as
+`_Z40intel_sub_group_bf16_bf16_matrix_mad_k16N4sycl3_V13vecIsLi8EEE...` with `Import` linkage —
+a SYCL-vec mangling that would be fragile to reproduce from raw LLVM IR.
+
+Note SYCL-TLA's own comment above its declarations: *"Use the spirv functions as the builtins do not
+work."*
+
+### What remains, and where the risk is
+
+The multiply is the easy part. The work is the **fragment representation**: `%coop-type-impl` for
+`:xe-native` must return a concrete vector (`<8 x i16>` for A, `<8 x i32>` for B, `<8 x float>` for
+the accumulator) instead of an opaque `CooperativeMatrixKHR`, and `%coop-fill-impl`, the loads and
+the stores all have to agree with that per-lane layout. `%coop-type` already receives the operand
+role, so the dispatch point is in the right place.
+
+**The layout is the silent-wrongness risk.** Endeavour 145 established that a load/store round-trip
+CANNOT detect a wrong fragment layout — it round-trips cleanly and computes garbage. So the first
+rung must be an on-metal `MMA_CORRECT` matmul, never a compile check or an IR inspection.
+
+If the vector layout turns out to be producible only by `Subgroup2DBlockLoadINTEL` (which Crisp
+already emits for prefetch), then Steps 2 and 3 merge and the loads come along with the multiply.
