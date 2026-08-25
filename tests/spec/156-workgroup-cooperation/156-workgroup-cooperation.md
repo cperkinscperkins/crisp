@@ -674,3 +674,52 @@ rung must be an on-metal `MMA_CORRECT` matmul, never a compile check or an IR in
 
 If the vector layout turns out to be producible only by `Subgroup2DBlockLoadINTEL` (which Crisp
 already emits for prefetch), then Steps 2 and 3 merge and the loads come along with the multiply.
+
+## Step 2 progress: multiply in, load path specified
+
+### Done and green
+
+`:xe-native` is offered by the BMG profile (`:coop-matrix` stays first, so it remains the default and
+no existing kernel changes), the declaration selects it, and three choke points have methods:
+
+- `%coop-type-impl` — concrete vectors per role, derived from `rows*cols/16`:
+  `<8 x i16>` (A), `<8 x i32>` (B, packed two-per-i32), `<8 x float>` (accumulator)
+- `%coop-fill-impl` — zero fill; a **non-zero init is refused**, since splatting one needs the
+  per-lane encoding and a wrong guess is silently wrong
+- `%coop-mma-impl` — `__spirv_SubgroupMatrixMultiplyAccumulateINTEL(16, A, B, C, mask)`,
+  mask `0x3000` bf16 / `0xC00` fp16
+
+1028/1028 E2E, 220/220 negative, 291 unit, with `:xe-native` available but not default.
+
+### The load operations, read off the peer's source
+
+| role | operation | result |
+|---|---|---|
+| A | `Subgroup2DBlockLoadINTEL` (plain) | `<8 x i16>` |
+| B | `Subgroup2DBlockLoad**Transform**INTEL` — VNNI packing | `<8 x i32>` |
+| accumulator | `Subgroup2DBlockStoreINTEL` | — |
+
+SYCL-TLA uses exactly this split: `__builtin_IB_subgroup_block_read_flat_u16_m8k16v1` for A and
+`__builtin_IB_subgroup_block_read_flat_**transform**_u16_k16` for B. **DPAS requires its B operand
+VNNI-packed**, and the transform variant is what produces it. Crisp already emits the prefetch
+sibling of these (`Subgroup2DBlockPrefetchINTEL`), so the ABI is familiar.
+
+### Why ptr+stride cannot survive — the real reason
+
+`%block-prefetch` describes the surface **as the block itself**: base = the pre-offset pointer,
+`MemWidth`/`MemHeight` = the block dimensions, `Coord` = `<0,0>`. It gets away with this because, as
+its own docstring says, "the operand values are perf hints, not correctness."
+
+A **load** has no such licence. `MemoryWidth` and `MemoryPitch` are in BYTES and carry hardware
+minimums (64 bytes). A 16-column bf16 block is 32 bytes — under the minimum. So the surface must be
+the REAL tensor (width `N * elem-bytes`, pitch `stride * elem-bytes`) with the tile selected by
+`Coordinate`, not a pre-offset pointer with the block passed off as the surface.
+
+That is the concrete reason the tile coordinates have to reach the load, and it is a better reason
+than the one given when the protocol was first laid out. `%coop-tensor-ptr+stride` folds the
+coordinates into the pointer one step too early; for `:xe-native` they are still needed.
+
+**The interface change:** `%coop-load` / `%coop-store` become the choke points and take the tensor
+value plus unfolded origins, with the `:coop-matrix` methods doing their own `ptr+stride` internally
+— preserving today's behaviour exactly — and the `:xe-native` methods extracting base, extents and
+pitch from the tensor struct and passing the origins as `Coordinate`.
