@@ -723,3 +723,65 @@ coordinates into the pointer one step too early; for `:xe-native` they are still
 value plus unfolded origins, with the `:coop-matrix` methods doing their own `ptr+stride` internally
 — preserving today's behaviour exactly — and the `:xe-native` methods extracting base, extents and
 pitch from the tensor struct and passing the origins as `Coordinate`.
+
+## :XE-NATIVE WORKS — first correct DPAS kernel, and it is faster
+
+**MMA_CORRECT on an Arc B580**, and faster than the portable path at matched geometry (`gen9`, 32×64,
+one subgroup, no ring, no prefetch — no tuning of any kind):
+
+| N | `:coop-matrix` | `:xe-native` | |
+|---|---|---|---|
+| 2048 | 51.0 | **57.7** | +13% |
+| 4096 | 47.6 | **52.0** | +9% |
+
+Both MMA_CORRECT. Full suite green with `:xe-native` available but not default: **1028/1028 E2E,
+220/220 negative, 291 unit.**
+
+**This is the first time in endeavours 155 or 156 that a MECHANISM change moved the number in the
+right direction.** Every geometry experiment landed in the same band; this did not.
+
+### What the SPIR-V contains
+
+    Capability SubgroupMatrixMultiplyAccumulateINTEL
+    Capability Subgroup2DBlockIOINTEL
+    Capability Subgroup2DBlockTransformINTEL
+
+     4  Subgroup2DBlockLoadINTEL            <- A, plain
+     4  Subgroup2DBlockLoadTransformINTEL   <- B, VNNI-packed
+    16  SubgroupMatrixMultiplyAccumulateINTEL
+    16  Subgroup2DBlockStoreINTEL
+     0  CooperativeMatrix<anything>
+
+Operand mask `12288` = `0x3000` = `MatrixABf16 | MatrixBBf16`. The translator declared all three
+capabilities itself. A 32×64 tile is 4 A-fragments × 4 B-fragments = 16 accumulators, so every count
+is exactly what the geometry predicts.
+
+### Three things that had to be right, and were not obvious
+
+**1. B needs the TRANSFORM load.** DPAS requires its B operand VNNI-packed, which is a different
+instruction. Plain loads for both would have compiled, run, and produced garbage — and per endeavour
+145 no round-trip test could have caught it. Found by reading which builtins SYCL-TLA uses:
+`..._flat_transform_u16_k16` for B against `..._flat_u16_m8k16v1` for A.
+
+**2. The multiply cannot see its own operand type.** `src/mma.lisp:654` passes `(llvm-float-type)`
+unconditionally — the ACCUMULATOR's type. `:coop-matrix` never noticed because it recovers
+everything from the values it is handed, and a cooperative-matrix type still names its component; a
+concrete `<8 x i16>` does not, and bf16 and fp16 are indistinguishable at that point. Resolved by
+having the fragment-type constructor record the operand kind, which is the earliest place it is
+known. A kernel mixing bf16 and fp16 operands is **refused** — one mask names both operands, so
+there is no correct value to choose.
+
+**3. bf16 does not arrive as `bfloat`.** Endeavour 155 swapped `llvm-bfloat-type`'s symbol-function
+on the SPIR-V backend so bf16 becomes **i16** before any of this runs, because Intel encodes bf16
+matrices as raw 16-bit integers and a real `bfloat` needs `SPV_KHR_bfloat16`, which the BMG driver's
+reader does not implement. So the classifier accepts `i16` as bf16 — with the one ambiguity recorded
+in its docstring: a genuine int16 MMA would also arrive as `i16`. None exists today (the integer
+shape in the BMG profile is int8), and when one arrives this must be given the Crisp-level element
+type instead of the LLVM one.
+
+### Honest scale
+
++9–13% is real and it is the right direction, but the peer is at 185 TFLOPS at 4096 against our 52.
+This proves the lowering axis is live; it does not close the gap. What it does mean is that the
+remaining differences — split barriers, and whatever SYCL-TLA's inline-asm DPAS buys over the SPIR-V
+instruction — are now testable one at a time on a working `:xe-native` path.
