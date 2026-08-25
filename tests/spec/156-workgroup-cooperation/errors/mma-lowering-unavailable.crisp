@@ -1,0 +1,20 @@
+;; CHECK-FAIL: "is not available on the active hardware profile"
+;;
+;; Endeavour 156: asking for a lowering the active profile does not offer is a REFUSAL, never a
+;; silent fallback to the portable path.  A downgrade would hand the user a slow kernel and no way
+;; to see that their request was ignored -- which is exactly how `:warps` being a no-op on ring
+;; tiles stayed hidden through two endeavours.
+;;
+;; :xe-native is a NAME the compiler knows but no profile offers yet, so this must refuse and say
+;; what the profile does offer.
+;; COMPILE-WITH[--ir-target=spv --hardware-profile=bmg]
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8) (8 16 16)))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel lowering_unavailable (A &out C)
+  (declare #'(a-mat &out c-mat)
+           (mma-lowering :xe-native)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (set! (~ C 0 0) 1.0))

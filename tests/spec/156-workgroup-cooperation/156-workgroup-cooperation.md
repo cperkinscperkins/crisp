@@ -370,3 +370,184 @@ none, because the hardware takes block coordinates directly.
 **Phase 3 (revised): move the Intel 2D block load to the ADDRESS-PAYLOAD form.** Create the payload
 once per tile; set BlockX/BlockY per fragment. This is the same "base plus delta" idea 155 Step 4
 reached for, at the layer where it actually exists, and it is what the peer's own SPIR-V does.
+
+## Phase 2 — DONE. And the endeavour's central hypothesis is FALSIFIED.
+
+### Phase 2 itself
+
+Register-tile RINGS now honour `:warps`. Two halves, both required:
+
+- `%explode-register-tiles`' ring branch read no `:warps` at all. It gave every warp the WHOLE tile
+  and pushed `(NAME :RING M N SLOT-SYMS-LIST OPERAND)` with no slice fields. `:warps` on a ring
+  kernel was a **silent no-op** — 32 subgroups each computing the identical tile.
+- `%resolve-tile-ref` returned `(rsym m n syms 1 0 operand)` for a ring slot, hardcoding n-true to
+  1, so even a sliced ring looked unsliced to every emitter downstream.
+
+Every shipped 16-bit kernel is a ring kernel. That is why none of them could ever use more than one
+subgroup, whatever `local-size` said. Now they can. 1028/1028.
+
+### The measurement, N=2048, every point MMA_CORRECT
+
+| tile | subgroups | ring | prefetch | TFLOPS |
+|---|---|---|---|---|
+| 32×64 | 1 | 2 | 2 | **60.8** ← the shipped kernel |
+| 256×256 | 32 | 1 | 2, warp-0 guarded | 34.6 |
+| 256×256 | 32 | 2 | 2, warp-0 guarded | 28.3 |
+| 256×256 | 32 | 2 | 2, unguarded | 19.5 |
+| 128×128 | 16 | 1 or 2 | 2 | **0.1** |
+| 64×128 | 8 | 2 | 2 | **0.1** |
+
+**Multi-subgroup does not beat one subgroup on this hardware.** The endeavour was scoped on the
+premise that it would. It does not. 60.8 stands.
+
+(The 0.1 entries are a ~600x collapse at 8 and 16 subgroups with a ring. That is a BUG, not a tuning
+outcome, and should be filed as one rather than tuned around.)
+
+### What this means, and it is the useful part
+
+The levers are now adequate to express the peer's **geometry** — 256×256 over 32 subgroups, any ring
+depth, any prefetch distance, correct on metal. The geometry is not what makes the peer fast.
+
+What SYCL-TLA's own SPIR-V does is not reachable through any lever, because none of it is a lever:
+
+- **No cooperative-matrix operations at all.** 11 `AsmCallINTEL` — the DPAS is hand-written Xe asm.
+- `createBlock2DAddressPayload` + `setBlockX`/`setBlockY` — a different block-load calling
+  convention than the pointer form Crisp emits.
+- `SPV_INTEL_split_barrier`; `grf_count 128` with 3904 bytes of deliberate spill.
+
+These are **codegen choices, not kernel-source choices**. Crisp's MMA always lowers to
+`CooperativeMatrixMulAddKHR` with pointer-form loads, and no combination of `tile-stride`,
+`local-size`, `:warps`, ring depth or prefetch distance changes that. It is why every geometry
+experiment in endeavours 155 and 156 has landed in the same 40–60 TFLOPS band regardless of shape.
+
+**The gap is a lowering gap, not a tuning gap.** Closing it means Crisp gaining a second lowering
+path, not tuning the one it has.
+
+### Standing position
+
+Crisp bf16 on BMG is 60.9 at 2048 — 71% of oneMKL, and ahead of SYCL-TLA at 256, 512 and 1024. The
+deficit is confined to 2048 and above.
+
+### Everything ruled out by measurement across 155 + 156
+
+| Hypothesis | Verdict |
+|---|---|
+| Barriers / synchronisation | ruled out |
+| Intra-subgroup operand reuse | 34→10 loads, zero change, reverted |
+| Register pressure / spilling | ruled out |
+| Tile geometry (single subgroup) | tuned; 32×64 is the optimum |
+| Prefetch distance | d=3 worse, d=4 harmful |
+| Code size | ruled out |
+| Address arithmetic (155 Step 4) | −36% emulated multiplies for +2.9%; identical instruction counts ran 17% SLOWER. Re-measured on correct kernels: noise both ways |
+| SLM operand staging | correct but **40x slower** — 2d_block_io is global-only, `load_block2d` 41→0 |
+| Large workgroups / multi-subgroup | **this endeavour** — 34.6 best vs 60.8 single-subgroup |
+| GRF mode | mixed; default beats large by +70% at 128×128/16 only |
+
+## The controlled experiment that aims the next endeavour
+
+**Question.** The peer runs `grf_count 128` with 3904 bytes of deliberate spill; every Crisp kernel
+runs at 256 because endeavour 144 takes the larger allocation to avoid spilling. Two explanations
+had been tangled together all endeavour, and one flag separates them:
+
+- peer TANKS at 256 → register budget and EU thread occupancy dominate the roofline, and the exotic
+  lowering matters much less than it looks.
+- peer STAYS fast → the SPIR-V lowering path really is the barrier.
+
+**Method.** Same source, same flags, same harness, same warmup/iters (2/10); only
+`-Xs -ze-opt-large-register-file` differs. The flag was verified to take effect rather than assumed:
+`strings` finds it in one binary and not the other, and the IGC `zeinfo` confirms the allocation
+actually changed.
+
+| | `grf_count` | `spill_size` | N=2048 | N=4096 |
+|---|---|---|---|---|
+| peer, default | **128** | 3904 | 66.6 | 185.0 |
+| peer, large-GRF | **256** | none | 71.0 | 189.6 |
+
+**Answer: the peer is indifferent to it — very slightly FASTER at 256.** IGC moved the allocation and
+removed the spill, and throughput did not care.
+
+**So register pressure is not the roofline, and the SPIR-V lowering path is the barrier.**
+
+This also narrows endeavour 144's result to what it actually is. Avoiding spill is worth ~3x to
+*Crisp's* lowering (measured again this endeavour: large GRF beats default 3x at 32×64/1 and at
+256×256/32) and worth **nothing** to the peer's. That is a property of our codegen, not of the
+hardware — a lowering that is not register-starved does not benefit from a bigger register file.
+
+### Note on absolute numbers
+
+Under these settings (warmup 2, iters 10) the peer reads 66.6 at 2048, against Crisp's 60.9 — much
+closer than the canonical benchmark's 108.6, which uses different iteration counts. The GRF
+comparison above is unaffected, since both arms used identical settings. But it is worth re-checking
+where the 2048 gap really sits before treating it as large; **the unambiguous gap is at 4096 and
+above** (185 vs 56.8).
+
+## The MMA lowering selector (the user-facing API)
+
+### What it looks like
+
+```lisp
+;; The PROFILE declares what this hardware can do.  First entry is the default.
+;; Absent means (:coop-matrix), so every existing profile stays valid and unchanged.
+(def-hardware-profile bmg
+  :simd-width 16
+  :mma-shapes ((8 16 8) (8 16 16) (8 16 32))
+  :mma-lowerings (:coop-matrix))
+
+;; The KERNEL declares what it wants.
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (mma-lowering :coop-matrix)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  ...)
+```
+
+The lowerings Crisp knows:
+
+| name | what it is | status |
+|---|---|---|
+| `:coop-matrix` | `SPV_KHR_cooperative_matrix` — the portable path | implemented, default |
+| `:xe-native` | Intel Xe: inline-assembly DPAS + Block2D address-payload loads | **named, not yet implemented** |
+
+Names describe what a lowering **is**, not how it works, so a reader of `(mma-lowering :xe-native)`
+can see at a glance that the kernel has left the portable path.
+
+### Why one name and not three knobs
+
+The peer differs in three ways — inline-asm DPAS, payload-form loads, split barriers — but they are
+not independent: hand-written DPAS fixes the fragment register layout, which constrains how operands
+must be loaded. Three free axes gives eight combinations of which most are invalid, and the work
+would go into writing refusals for the invalid ones. One name is also one thing to document.
+
+### Refusal, never fallback
+
+Asking for a lowering the active profile does not offer is a compile-time error naming both sides:
+
+```
+mma-lowering :XE-NATIVE is not available on the active hardware profile (kernel MATMUL).
+This profile offers: :COOP-MATRIX.  Crisp REFUSES rather than falling back to a different
+lowering, because a silent downgrade would give you a slow kernel and no way to see why.
+```
+
+This is the load-bearing rule, and it is a direct lesson from these two endeavours. `:warps` was a
+silent no-op on ring tiles for months. `(intern "MOD" :crisp-language)` minted a meaningless symbol
+rather than failing. Both cost real time precisely because nothing complained. A lowering that
+quietly downgraded would be the same failure in better clothes.
+
+An unknown NAME is distinguished from a known-but-unavailable one, because the first is a typo and
+the second is a portability decision, and they want different fixes.
+
+### The chosen lowering is recorded
+
+It goes into the kernel's dispatch plist even when defaulted, so the metacrisp — and therefore any
+benchmark row — can say which lowering produced a number. A figure you cannot attribute to a code
+path is not evidence. This is also what makes an eventual `:auto` acceptable: auto-selection is fine
+exactly when the choice is reported, and it is auto-selection plus *silence* that makes a compiler
+untrustworthy.
+
+### Status
+
+Surface complete and tested: 1028/1028 E2E, **220/220 negative** (two new refusal specs), 291 unit.
+`:xe-native` is a name with a refusal behind it, not an implementation — the next endeavour's work
+is the five choke points (`%coop-tensor-ptr+stride`, `%emit-per-frag-block-load`, `%coop-mma`,
+`%coop-type`/`%coop-fill`, barrier emission) becoming generic functions dispatched on the lowering.

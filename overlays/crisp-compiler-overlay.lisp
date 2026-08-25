@@ -4437,3 +4437,243 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
            ;; 1/0, which made every ring slot look unsliced to the emitters.
            (list rsym m n (nth slot slot-syms-list) n-true first-true operand)))))
     (t nil)))
+
+
+;;;; ============================================================================
+;;;; Endeavour 156 — MMA LOWERING SELECTION.
+;;;;
+;;;; Measured across 155 + 156: the Crisp/SYCL-TLA gap on BMG is a LOWERING gap, not a tuning gap.
+;;;; Every geometry the levers can express lands in the same 40-60 TFLOPS band (32x64 single-subgroup
+;;;; 60.8, 256x256 over 32 subgroups 34.6, SLM staging 0.9), and the peer is INDIFFERENT to register
+;;;; budget -- forced from grf_count 128 with 3904 bytes of spill to 256 with none, it went 185 ->
+;;;; 190 TFLOPS at 4096.  Occupancy is not its secret.
+;;;;
+;;;; What it does instead is not expressible in kernel source: no cooperative-matrix operations at
+;;;; all (11 AsmCallINTEL -- hand-written Xe assembly DPAS), the createBlock2DAddressPayload +
+;;;; setBlockX/setBlockY load convention, and SPV_INTEL_split_barrier.  Those are codegen choices,
+;;;; so Crisp needs a way to NAME a lowering.  This is that surface.
+;;;;
+;;;; THE RULE THAT MATTERS: REFUSAL, NEVER FALLBACK.  Both endeavours were derailed by silent
+;;;; no-ops -- :warps did nothing at all on ring tiles for months, and (intern "MOD" :crisp-language)
+;;;; minted a meaningless symbol.  A lowering that quietly downgraded to the portable path would be
+;;;; the same failure in better clothes: a slow kernel and no explanation.  Asking for a lowering the
+;;;; active profile does not offer is a compile-time error naming both sides.
+;;;; ============================================================================
+
+;; src/hardware-profile.lisp
+(defparameter *known-mma-lowerings* (list :coop-matrix :xe-native)
+  "Every MMA lowering NAME the compiler understands, whether or not a given backend implements it.
+
+   :coop-matrix  SPV_KHR_cooperative_matrix / the portable path.  Implemented; the default.
+   :xe-native    Intel Xe: inline-assembly DPAS + the Block2D address-payload load convention.
+                 NAMED but NOT YET IMPLEMENTED -- no profile lists it, so requesting it is refused
+                 with the profile's actual offering.  It is named here so the value type validates
+                 and so the intent is documented in one place.
+
+   A profile's :mma-lowerings is checked against this list, which turns a typo into an error at
+   def-hardware-profile time rather than a kernel that silently never selects its lowering.")
+
+;; src/hardware-profile.lisp
+(defun %hp-mma-lowerings (profile)
+  "The lowerings PROFILE offers, most-preferred first.  Absent means (:coop-matrix) -- the portable
+   path every backend has had until now, which keeps every existing profile valid and unchanged."
+  (or (and profile (getf profile :mma-lowerings))
+      (list :coop-matrix)))
+
+;; src/analysis/control.lisp
+(defun %parse-mma-lowering-decl (decl kernel-name profile)
+  "Validate a (mma-lowering <keyword>) declaration and return the chosen lowering keyword.
+
+   DECL absent -> the active profile's default (its first :mma-lowerings entry, else :coop-matrix).
+   DECL present -> that lowering, if the profile offers it; otherwise a compile-time REFUSAL.
+
+   The refusal is the point.  Silently falling back to the portable path would hand the user a slow
+   kernel with no way to tell that their request was ignored -- exactly the failure mode that hid
+   :warps-on-a-ring being a no-op through two endeavours."
+  (let ((available (%hp-mma-lowerings profile)))
+    (if (null decl)
+        (first available)
+        (let ((v (second decl)))
+          (unless (and (= (length decl) 2) (keywordp v))
+            (error 'crisp-compiler-error
+              :message (format nil "mma-lowering takes exactly one keyword (kernel ~a), e.g. (mma-lowering :coop-matrix).  Got ~S."
+                               kernel-name decl)
+              :source-location nil))
+          (unless (member v *known-mma-lowerings*)
+            (error 'crisp-compiler-error
+              :message (format nil "mma-lowering ~s is not a lowering Crisp knows (kernel ~a).  Known lowerings: ~{~s~^, ~}"
+                               v kernel-name *known-mma-lowerings*)
+              :source-location nil))
+          (unless (member v available)
+            (error 'crisp-compiler-error
+              :message (format nil "mma-lowering ~s is not available on the active hardware profile (kernel ~a).  This profile offers: ~{~s~^, ~}.  Crisp REFUSES rather than falling back to a different lowering, because a silent downgrade would give you a slow kernel and no way to see why.  Either pick an offered lowering, or add ~s to the profile's :mma-lowerings once a backend implements it"
+                               v kernel-name available v)
+              :source-location nil))
+          v))))
+
+;; 156 lowering selector: REPLACES *hardware-profile-schema* -- adds :mma-lowerings
+(defparameter *hardware-profile-schema*
+  '((:simd-width                  . :pos-int)
+    (:compute-units               . :pos-int)
+    (:max-registers-per-cu        . :pos-int)
+    (:max-registers-per-thread    . :pos-int-or-modes)  ; 144 D4: scalar OR (mode ...)
+    (:max-total-threads-per-block . :pos-int)
+    (:max-concurrent-kernels      . :pos-int)
+    (:native-cache-line-size      . :pos-int)   ; bytes
+    (:max-shared-memory-per-block . :size)      ; KB/MB/GB/TB literal -> bytes
+    (:l2-cache-size               . :size)
+    (:tile-visit-strip-width      . :pos-int)   ; 144 Phase 1: measured; absent/1 => linear
+    (:max-work-group-dims         . :dims3)     ; (x y z) positive ints
+    (:mma-shapes                  . :mma-shapes)  ; list of (M N K) triples
+    (:mma-lowerings               . :lowerings))  ; 156: ordered; first is the default
+  "Endeavor 130: canonical hardware-profile keys and their value types.
+
+   Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can
+   drive its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the
+   portable SPV_KHR_cooperative_matrix path every backend has had until now.
+
+   Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) — a scalar
+   for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose
+   register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the
+   MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent
+   means walk linearly.  It is deliberately a measured constant rather than a derived one — see
+   the block comment above for the two-device data that refuted the derivation.")
+
+;; 156 lowering selector: REPLACES %hp-validate-value -- adds the :lowerings value type
+(defun %hp-validate-value (profile-name key type raw)
+  "Validate/normalize RAW for KEY of TYPE.  Signals a clear compile error on a
+   malformed value; returns the normalized value (sizes in bytes, lists unquoted).
+
+   Endeavor 144 (D4): :pos-int-or-modes accepts a positive integer OR a list of
+   positive integers in STRICTLY ASCENDING order (selectable register-file modes;
+   ascending so 'first' is the default mode and 'last' is the largest)."
+  (ecase type
+    (:pos-int
+     (unless (and (integerp raw) (plusp raw))
+       (error "def-hardware-profile ~a: key ~a expects a positive integer, got ~s."
+              profile-name key raw))
+     raw)
+    (:pos-int-or-modes
+     (let ((v (%hp-unquote raw)))
+       (cond
+         ((and (integerp v) (plusp v)) v)
+         ((and (listp v) v (every (lambda (e) (and (integerp e) (plusp e))) v))
+          (unless (apply #'< v)
+            (error "def-hardware-profile ~a: key ~a expects selectable modes in strictly ascending order (the first is the default allocation, the last the largest), got ~s."
+                   profile-name key raw))
+          v)
+         (t
+          (error "def-hardware-profile ~a: key ~a expects a positive integer or a list of positive integers in ascending order (selectable modes, e.g. (128 256)), got ~s."
+                 profile-name key raw)))))
+    (:size
+     (let ((bytes (%hp-parse-size raw)))
+       (unless bytes
+         (error "def-hardware-profile ~a: key ~a expects a byte count or size literal (e.g. 227KB, 50MB, 8GB), got ~s."
+                profile-name key raw))
+       bytes))
+    (:dims3
+     (let ((d (%hp-unquote raw)))
+       (unless (%hp-3-pos-ints-p d)
+         (error "def-hardware-profile ~a: key ~a expects a list of 3 positive integers, got ~s."
+                profile-name key raw))
+       d))
+    (:mma-shapes
+     (let ((shapes (%hp-unquote raw)))
+       (unless (and (listp shapes) shapes (every #'%hp-3-pos-ints-p shapes))
+         (error "def-hardware-profile ~a: key ~a expects a non-empty list of (M N K) positive-integer triples, got ~s."
+                profile-name key raw))
+       shapes))
+    ;; 156: an ordered list of code-generation strategies, most-preferred first.  Validated against
+    ;; the names the COMPILER knows, so a typo is caught in the profile rather than surfacing later
+    ;; as a kernel that mysteriously will not select its lowering.
+    (:lowerings
+     (let ((ls (%hp-unquote raw)))
+       (unless (and (listp ls) ls (every #'keywordp ls))
+         (error "def-hardware-profile ~a: key ~a expects a non-empty list of lowering keywords, got ~s."
+                profile-name key raw))
+       (let ((bad (remove-if (lambda (l) (member l *known-mma-lowerings*)) ls)))
+         (when bad
+           (error "def-hardware-profile ~a: key ~a names unknown lowering~p ~{~s~^, ~}.  Known lowerings: ~{~s~^, ~}."
+                  profile-name key (length bad) bad *known-mma-lowerings*)))
+       ls))))
+
+;; 156 lowering selector: REPLACES internal-def-function -- parses (mma-lowering ...)
+(defun internal-def-function (name params declarations body location)
+  "Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the
+   body analysis.  Otherwise identical to the Phase 2 definition."
+  (log:info "Analyzing function ~s" name)
+  (multiple-value-bind (explicit-env return-type)
+      (parse-function-declarations params declarations)
+    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (is-entry-p (loop for d in declarations
+                             thereis (and (listp d) (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (is-grid-fn-p (loop for d in declarations
+                               thereis (and (listp d) (symbolp (first d))
+                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
+           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
+           (*boundary-struct-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%boundary-struct-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-struct-params*))
+           (*boundary-array-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%array-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-array-params*))
+           (*current-kernel-is-backward*
+             (and name (symbolp name)
+                  (let ((n (symbol-name name)))
+                    (and (>= (length n) 5)
+                         (string-equal "_GRAD" (subseq n (- (length n) 5)))))))
+           (cluster-dims nil))
+      (when (and is-entry-p *boundary-struct-params*)
+            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
+      (when (and is-entry-p *boundary-array-params*)
+            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
+      (when is-grid-fn-p
+        (log:info "Compiling grid function ~a (dispatch context)" name)
+        (%validate-grid-function-return-type return-type))
+      (when is-entry-p
+        (let* ((global-size-decl (find "GLOBAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (local-size-decl  (find "LOCAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (num-groups-decl  (find "NUM-GROUPS" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (cluster-size-decl (find "CLUSTER-SIZE" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal))
+               ;; 156: (mma-lowering :xe-native) -- which code-generation strategy this kernel wants
+               ;; for its matrix-engine operations.  Parsed here so an unavailable request is refused
+               ;; at analysis time, next to the other dispatch declarations.
+               (mma-lowering-decl (find "MMA-LOWERING" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal))
+               (mma-lowering (%parse-mma-lowering-decl mma-lowering-decl name
+                                                       (active-hardware-profile))))
+          (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
+          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl
+                    mma-lowering-decl)
+            (let ((dispatch-plist
+                    (append (when global-size-decl (list :global-size global-size-decl))
+                            (when local-size-decl  (list :local-size  local-size-decl))
+                            (when num-groups-decl  (list :num-groups  num-groups-decl))
+                            (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
+                            (when cluster-dims      (list :cluster-size cluster-dims))
+                            ;; Recorded even when defaulted, so the metacrisp -- and therefore any
+                            ;; benchmark row -- can say which lowering produced a number.  A figure
+                            ;; you cannot attribute to a code path is not evidence.
+                            (when mma-lowering      (list :mma-lowering mma-lowering)))))
+              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
+              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
+          (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
+      (let ((*current-kernel-cluster-dims* cluster-dims))
+        (internal-compile-function name explicit-env return-type params body declarations
+                                   location *compiler-context*)))))
