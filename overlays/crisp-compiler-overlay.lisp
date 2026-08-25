@@ -4232,3 +4232,208 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
                                             `(,div-sym ,wp ,gn)
                                             `(,minus-sym ,wp (,times-sym (,div-sym ,wp ,gn) ,gn)))))
                          ,(chain 0))))))))))))
+
+;; src/codegen.lisp  (RE-ENABLES %coop-split-origin -- 156: re-measuring 155 Step 4 on a
+;; CORRECT large-tile kernel.  Its original +2.9%% datapoint came from the 256x256/32 probe, which
+;; Phase 1 later proved was MMA_WRONG at the time.  That measurement has to be redone.)
+(defun %coop-split-origin (builder origin)
+  "Split a cooperative-tile ORIGIN into (values base-i64 constant-element-offset).
+
+   ORIGIN is emitted by generate-node-ir for semantic-coop-op as
+
+       mul i64 (sext i32 (add i32 %tile-base, <frag-index>)), <fragment-extent>
+
+   i.e. (tile-base + frag-index) * extent.  The distributed form is
+
+       tile-base * extent   +   frag-index * extent
+
+   whose first term is identical for every fragment of the tile and is therefore CSE'd down to a
+   single value, while the second is a compile-time integer that costs nothing to carry.
+
+   Returns ORIGIN itself with a zero offset when the pattern does not hold: an origin that is not
+   base-plus-constant has nothing to hoist, and the caller then emits bit-for-bit what it did
+   before."
+  (multiple-value-bind (inner extent) (%llvm-binop-with-const origin +llvm-opcode-mul+)
+    (if (not inner)
+        (values origin 0)
+        (if (not (eql (%llvm-instr-opcode inner) +llvm-opcode-sext+))
+            (values origin 0)
+            (let ((sum (crisp.llvm-bindings::llvm-get-operand inner 0)))
+              (multiple-value-bind (tile-base frag) (%llvm-binop-with-const sum +llvm-opcode-add+)
+                (if (not tile-base)
+                    (values origin 0)
+                    (let* ((i64 (crisp.llvm-bindings::llvm-int64-type))
+                           (b64 (llvm-build-sext builder tile-base i64 "coop_tbase"))
+                           (scaled (llvm-build-mul builder b64
+                                                   (llvm-const-int i64 extent nil)
+                                                   "coop_tbase_scaled")))
+                      (values scaled (* frag extent))))))))))
+
+;; TEMPORARY BISECTION PROBE -- not a fix.  Neuters the Step 4 split so %coop-tensor-ptr+stride
+;; emits exactly the pre-155-Step-4 address arithmetic, to determine whether the 256x256 :warps
+;; probe's MMA_WRONG is caused by base-plus-delta or was already there.
+(defun %coop-split-origin (builder origin)
+  "BISECTION STUB: always declines to split."
+  (declare (ignore builder))
+  (values origin 0))
+
+;; src/mma.lisp  (REPLACES %explode-register-tiles -- 156 Phase 2: rings honour :warps)
+(defun %explode-register-tiles (let-expr &optional location context)
+  "Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in
+   LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the
+   body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register
+   FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.
+   Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp
+   allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions
+   to reconstruct each warp's logical fragment range).
+   Endeavor 145 P3a: also publishes the LET's SLM scratch-tile shapes in *mma-scratch-tile-dims* so
+   the accumulate expansion can walk K within a staged tile."
+  (if (not (and (consp let-expr) (>= (length let-expr) 2) (listp (second let-expr))))
+      let-expr
+      (let* ((head (first let-expr))
+             (bindings (second let-expr))
+             (body (cddr let-expr))
+             ;; 145 P3a: SLM tile shapes for the K-step count (special -> dynamically scoped).
+             (*mma-scratch-tile-dims* (%mma-scratch-tile-dims-from-bindings bindings))
+             ;; 155 Step 2: the warp grid comes from the ACCUMULATOR and governs how the operand
+             ;; tiles slice.  First pass over the same bindings; see the Step 2 header.
+             (*warp-grid* (%warp-grid-from-bindings bindings context location))
+             ;; 155 Phase C: publish each register tile's ELEMENT TYPE for the same reason and by
+             ;; the same mechanism -- the load-tile expansion has only the tile entry, which does
+             ;; not record it.
+             (*register-tile-elems* (%register-tile-elems-from-bindings bindings))
+             (tiles '()))
+        (let ((new-bindings
+                (loop for b in bindings
+                      append
+                      (if (and (consp b) (= (length b) 2) (symbolp (first b))
+                               (%register-tile-init-form-p (second b)))
+                          (let* ((form    (second b))
+                                 (elem    (second form))   ; 155: element type, was discarded
+                                 (dims    (third form))
+                                 (init    (fourth form))
+                                 (m       (first dims)) (n (second dims))
+                                 (operand (getf (nthcdr 4 form) :operand :acc))
+                                 (nfrags  (destructuring-bind (fr . fc) (%frag-mn-for-operand operand elem)
+                                            (* (floor m fr) (floor n fc))))
+                                 (warps-in (getf (nthcdr 4 form) :warps))
+                                 (mask    (and warps-in
+                                               (%normalize-warp-mask (%warp-mask-unquote warps-in) location))))
+                            (%register-tile-fit-check m n location)
+                            (multiple-value-bind (n-true first-true)
+                                (if mask
+                                    ;; 155 Step 2: validate an operand tile against ITS divisor
+                                    ;; (gm for :a, gn for :b), not the warp count.
+                                    (%validate-warp-mask mask nfrags
+                                                         (%resolve-workgroup-warp-count context)
+                                                         m n location
+                                                         (and *warp-grid* (member operand '(:a :b))
+                                                              (%operand-warp-divisor operand)))
+                                    (values 1 0))
+                              ;; 155 Step 2: an OPERAND tile slices by the grid axis its warps
+                              ;; share, not by the total warp count -- gm slices for A, gn for B.
+                              ;; The accumulator keeps n-true.  Guarded on *warp-grid*, so a tile
+                              ;; without a distributed accumulator in scope allocates whole.
+                              (let* ((div (if (and *warp-grid* mask (member operand '(:a :b)))
+                                              (%operand-warp-divisor operand)
+                                              n-true))
+                                     (per-warp (max 1 (floor nfrags div)))
+                                     (syms     (%register-tile-frag-syms (first b) per-warp)))
+                                (push (list (first b) m n syms n-true first-true operand) tiles)
+                                (loop for s in syms
+                                      collect (list s `(make-register-fragment 16 8 ,init :operand ,operand :elem ,elem))))))
+                          (if (and (consp b) (= (length b) 2) (symbolp (first b))
+                                   (%register-tile-ring-init-form-p (second b)))
+                              (let* ((form    (second b))
+                                     (elem    (second form))   ; 155: element type, was discarded
+                                     (dims    (third form))
+                                     (m       (first dims)) (n (second dims))
+                                     (keys    (nthcdr 3 form))
+                                     (operand (getf keys :operand :acc))
+                                     (rc      (getf keys :ring-count))
+                                     ;; 156 Phase 2: a RING may carry :warps too.  Without this the
+                                     ;; ring branch gave every warp the WHOLE tile and recorded no
+                                     ;; slice fields, so :warps on a ring kernel was a silent no-op
+                                     ;; -- 32 subgroups each computing the identical tile.  Every
+                                     ;; shipped 16-bit kernel is a ring kernel, which is why none of
+                                     ;; them could use more than one subgroup whatever local-size said.
+                                     (warps-in (getf keys :warps))
+                                     (mask     (and warps-in
+                                                    (%normalize-warp-mask (%warp-mask-unquote warps-in) location))))
+                                (unless (and (integerp rc) (plusp rc))
+                                  (error 'crisp-compiler-error
+                                    :message (format nil "make-register-tile-ring: :ring-count must be a positive compile-time integer, got ~S." rc)
+                                    :source-location location))
+                                (%register-tile-fit-check m n location)
+                                (destructuring-bind (fr . fc) (%frag-mn-for-operand operand elem)
+                                  (let ((nfrags (* (floor m fr) (floor n fc))))
+                                    ;; Mirror the plain register-tile branch exactly: validate the
+                                    ;; mask against the tile's OWN divisor, then give each warp only
+                                    ;; its slice, per SLOT.
+                                    (multiple-value-bind (n-true first-true)
+                                        (if mask
+                                            (%validate-warp-mask mask nfrags
+                                                                 (%resolve-workgroup-warp-count context)
+                                                                 m n location
+                                                                 (and *warp-grid* (member operand (list :a :b))
+                                                                      (%operand-warp-divisor operand)))
+                                            (values 1 0))
+                                      (let* ((div (if (and *warp-grid* mask (member operand (list :a :b)))
+                                                      (%operand-warp-divisor operand)
+                                                      n-true))
+                                             (per-warp (max 1 (floor nfrags div)))
+                                             (slot-syms-list
+                                               (loop for slot below rc
+                                                     collect (%register-tile-frag-syms
+                                                              (intern (format nil "~a$S~d" (symbol-name (first b)) slot)
+                                                                      (symbol-package (first b)))
+                                                              per-warp))))
+                                        (push (list (first b) :ring m n slot-syms-list operand n-true first-true) tiles)
+                                        (loop for syms in slot-syms-list
+                                              append (loop for s in syms
+                                                           collect (list s `(make-register-fragment 16 8 0.0 :operand ,operand :elem ,elem)))))))))
+                              (list b))))))
+          (if (null tiles)
+              let-expr
+              `(,head ,new-bindings
+                      ,@(mapcar (lambda (f)
+                                  (%explode-rewrite-body-form
+                                   (%unroll-register-ring-loops f tiles) tiles))
+                                body)))))))
+
+;; src/mma.lisp  (REPLACES %resolve-tile-ref -- 156 Phase 2: ring slots carry n-true/first-true)
+(defun %resolve-tile-ref (ref tiles)
+  "Endeavor 142: resolve a tile operand REF to a per-slot tiles entry (V m n syms n-true first-true
+   operand).  REF is either a bare exploded register-tile symbol, or (ring-get RING SLOT) with a
+   COMPILE-TIME integer SLOT into a register-tile-RING (a ring entry is (RSYM :ring m n slot-syms-list
+   operand)).  The GRF cannot be runtime-indexed, so a register ring-get with a non-constant slot is a
+   hard error here — the Phase-C pipeline supplies static slots by unrolling / phase-flip.  Returns NIL
+   if REF names no exploded register tile/ring (a normal scratch operand)."
+  (cond
+    ((symbolp ref)
+     (let ((e (assoc ref tiles)))
+       (when (and e (eq (second e) :ring))
+         (error 'crisp-compiler-error
+           :message (format nil "~a is a register-tile-ring — index it with (ring-get ~a SLOT), it is not a plain tile." ref ref)
+           :source-location nil))
+       e))
+    ((and (consp ref) (%head-name-eq (first ref) "RING-GET") (= (length ref) 3))
+     (let ((ring-entry (assoc (second ref) tiles))
+           (slot (third ref)))
+       (when (and ring-entry (eq (second ring-entry) :ring))
+         (destructuring-bind (rsym marker m n slot-syms-list operand
+                              &optional (n-true 1) (first-true 0)) ring-entry
+           (declare (ignore marker))
+           (unless (integerp slot)
+             (error 'crisp-compiler-error
+               :message (format nil "ring-get into the REGISTER ring ~a needs a compile-time integer slot (the GRF is not runtime-indexable); got ~S.  Unroll the K-loop by :ring-count or use a static phase index."
+                                rsym slot)
+               :source-location nil))
+           (unless (< -1 slot (length slot-syms-list))
+             (error 'crisp-compiler-error
+               :message (format nil "ring-get slot ~a is out of range 0..~a for ring ~a." slot (1- (length slot-syms-list)) rsym)
+               :source-location nil))
+           ;; 156 Phase 2: carry the ring's slice fields through instead of the hardcoded
+           ;; 1/0, which made every ring slot look unsliced to the emitters.
+           (list rsym m n (nth slot slot-syms-list) n-true first-true operand)))))
+    (t nil)))

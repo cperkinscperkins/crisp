@@ -301,3 +301,72 @@ therefore measurable*, which it has never been before.
 
 Note these numbers sit below the shipped kernel's 60.9 at 2048 because `gen7` has neither ring nor
 prefetch, and the shipped kernel cannot be sliced at all until Phase 2.
+
+## Phase 3 — THE SLM PLAN IS WRONG. Corrected 2026-08-24, with measurements.
+
+### What was tried
+
+`gen9.py` stages A and B into `make-scratch-matrix` SLM tiles with a workgroup-collective
+`load-tile`, syncs, then loads MMA fragments from SLM per subgroup. It **works and is correct** --
+MMA_CORRECT at 64x64/4 and at every geometry up to 256x256/32. The SLM->fragment path compiles and
+computes the right answer, which was the one real unknown.
+
+It is also **40x slower**:
+
+| N | 256x256/32 no-SLM | 256x256/32 SLM |
+|---|---|---|
+| 2048 | 41.9 | **0.9** |
+| 4096 | 52.0 | **1.2** |
+
+### Why, from the ISA
+
+| | no-SLM | SLM-staged |
+|---|---|---|
+| `dpas` | 16 | 16 |
+| **`load_block2d`** | **41** | **0** |
+| `sync` | 26 | 79 |
+
+`SPV_INTEL_2d_block_io` is a **global-memory** facility. A cooperative-matrix load from Workgroup
+storage cannot use it, so staging through SLM throws away the 2D block load entirely and falls back
+to scalar loads -- and triples the barrier count on the way. The SPIR-V is otherwise identical
+between the two: same 8 coop loads, same 16 MulAdds. Only the memory path changes, and that is
+the whole performance story on this hardware.
+
+### What the peer actually does — read from its own SPIR-V
+
+`put_temp_files_here/tla/tla.spt`:
+
+- **Workgroup-storage variables: 0.** SYCL-TLA uses **no SLM at all** for operands.
+- **ControlBarrier: 2** in the whole module (we emit 79 in the SLM version).
+- `__builtin_IB_subgroup_createBlock2DAddressPayload`, then
+  `setBlock2DAddressPayloadBlockX` / `BlockY`.
+- `SPV_INTEL_inline_assembly` -- 11 `AsmCallINTEL`. The DPAS is raw Xe assembly, not
+  `CooperativeMatrixMulAddKHR`.
+- `SPV_INTEL_split_barrier`.
+- `ExecutionMode ... 35 16` -- SubgroupSize pinned to 16, which Crisp now also does (Phase 0).
+
+So the reuse does **not** come from explicit sharing through SLM. It comes from **cache locality
+between co-resident subgroups**: 32 subgroups of one workgroup run on the same Xe-core, touch
+overlapping operand blocks at the same moment, and hit L1/L2. The workgroup gives temporal locality,
+not a shared buffer.
+
+**This corrects the endeavour's opening premise.** "256x256 over 32 subgroups with SLM-shared
+operands" is right about the geometry and **wrong about the mechanism**. The target is 256x256 over
+32 subgroups **with 2D block loads from global and cache-resident reuse**. SLM staging is not a step
+toward it; it is a step away from it, and the 40x is the measurement that says so.
+
+### The real finding: the peer never materialises an address
+
+`createBlock2DAddressPayload` builds a payload ONCE (base pointer, width, height, pitch) and then
+`setBlockX`/`setBlockY` just move the block coordinates -- cheap register writes. The 64-bit flat
+offset is **never computed**.
+
+Crisp uses the *pointer* form of the same extension: `%coop-tensor-ptr+stride` computes a flat
+`i64` offset and GEPs it, per fragment. That is why address arithmetic dominates our ISA (~610
+mul/mach/macl for 16 `dpas`), and it is why endeavour 155 Step 4's hoisting failed to help -- it was
+optimising the wrong layer. Fewer 64-bit multiplies is still 64-bit multiplies; the payload form has
+none, because the hardware takes block coordinates directly.
+
+**Phase 3 (revised): move the Intel 2D block load to the ADDRESS-PAYLOAD form.** Create the payload
+once per tile; set BlockX/BlockY per fragment. This is the same "base plus delta" idea 155 Step 4
+reached for, at the layer where it actually exists, and it is what the peer's own SPIR-V does.
