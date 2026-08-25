@@ -551,3 +551,70 @@ Surface complete and tested: 1028/1028 E2E, **220/220 negative** (two new refusa
 `:xe-native` is a name with a refusal behind it, not an implementation — the next endeavour's work
 is the five choke points (`%coop-tensor-ptr+stride`, `%emit-per-frag-block-load`, `%coop-mma`,
 `%coop-type`/`%coop-fill`, barrier emission) becoming generic functions dispatched on the lowering.
+
+## Toolchain facts for `:xe-native` (probed 2026-08-24)
+
+The shipped `bin/llvm-spirv` accepts all of these, so none of them needs a toolchain change:
+
+    SPV_INTEL_subgroup_matrix_multiply_accumulate    SUPPORTED
+    SPV_INTEL_inline_assembly                        SUPPORTED
+    SPV_INTEL_split_barrier                          SUPPORTED
+    SPV_INTEL_2d_block_io                            SUPPORTED   (already used for prefetch)
+    SPV_KHR_cooperative_matrix                       SUPPORTED   (the current path)
+
+**The important one is the first.** `SPV_INTEL_subgroup_matrix_multiply_accumulate` provides
+`OpSubgroupMatrixMultiplyAccumulateINTEL`, which multiplies **plain vectors** rather than opaque
+`CooperativeMatrixKHR` values. It is a DPAS expressed in SPIR-V, and it is a far more tractable
+first target than hand-written Xe assembly.
+
+Note the peer REQUESTS that extension in its build flags but does not use it -- its capability list
+has `AsmINTEL`, not `SubgroupMatrixMultiplyAccumulateINTEL`. SYCL-TLA chose raw assembly. Crisp does
+not have to make the same choice to test the same axis.
+
+## Step 1 — the MMA lowering is now a PROTOCOL (done)
+
+Crisp had exactly one way to drive a matrix engine — cooperative-matrix types, a cooperative-matrix
+multiply, pointer-form loads — and that choice was never named. It was simply what five functions
+happened to do. Now it is a dispatch point.
+
+Each choke point became a generic function on the lowering, with the existing implementation moved
+**verbatim** into an `(eql :coop-matrix)` method, and the public name kept as a thin dispatcher:
+
+```lisp
+(defgeneric %coop-mma-impl (lowering builder module a-val b-val c-val elem-llvm m n k))
+(defmethod  %coop-mma-impl ((lowering (eql :coop-matrix)) ...)  <the existing body>)
+(defun      %coop-mma (...)  (%coop-mma-impl *mma-lowering* ...))
+```
+
+| choke point | what a second lowering would change |
+|---|---|
+| `%coop-type` | opaque `CooperativeMatrixKHR` vs a concrete vector type |
+| `%coop-fill` | how a fragment is materialised |
+| `%coop-tensor-ptr+stride` | a payload lowering produces no pointer at all |
+| `%coop-mma` | the multiply instruction itself |
+| `%emit-per-frag-block-load` | which load form is emitted (source-to-source, a different altitude — but still a lowering decision) |
+
+**No call site changed.** That was the point: call-site churn across six functions is how this
+overlay reached 4700 lines the first time. Adding `:xe-native` is adding methods, not editing
+conditionals.
+
+`*mma-lowering*` is bound per kernel by `generate-llvm-ir` from the kernel's declaration, which the
+analyzer has already validated and refused if unavailable. Confirmed live end to end:
+
+    generate-llvm-ir: ADDRESS~ uses mma lowering COOP-MATRIX
+
+**Behaviour unchanged by construction** — one method per generic, bodies verbatim, and
+`*mma-lowering*` can only hold `:coop-matrix` today. Verified anyway: **1028/1028 E2E, 220/220
+negative, 291 unit**, and on metal 60310 GFLOPS MMA_CORRECT against 60598 before the refactor.
+
+### Overlay consolidation (done, separately)
+
+4679 → 2836 lines; 115 top-level forms → 79; **36 dead definitions removed, 0 duplicates left.**
+Worst offenders were `%explode-register-tiles` and `%coop-split-origin` at six copies each, four
+identical `generate-node-ir` methods on `semantic-coop-op`, and `%emit-spirv-subgroup-size-execution-mode`
+at four.
+
+Prose was kept in place and only the code removed: several dropped copies sat under `;;;;` blocks
+documenting real bugs (the 2D-block prefetch describing every surface as f32; the MMA walker and the
+tiles disagreeing on K). Those are still accurate as history and are the only record of those
+findings, so the headers stay where they are with a marker underneath saying what was removed.

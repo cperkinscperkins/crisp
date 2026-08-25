@@ -2834,3 +2834,336 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
       (let ((*current-kernel-cluster-dims* cluster-dims))
         (internal-compile-function name explicit-env return-type params body declarations
                                    location *compiler-context*)))))
+
+
+;;;; ============================================================================
+;;;; Endeavour 156 Step 1 — THE MMA LOWERING BECOMES A PROTOCOL.
+;;;;
+;;;; Crisp has always had exactly one way to drive a matrix engine: cooperative-matrix types, a
+;;;; cooperative-matrix multiply, pointer-form loads.  That choice was never named -- it was simply
+;;;; what five functions happened to do.  155 and 156 established by measurement that this choice,
+;;;; and not the kernel-source geometry, is what separates Crisp from SYCL-TLA on BMG: every
+;;;; geometry the levers can express lands in the same 40-60 TFLOPS band, and the peer is
+;;;; indifferent to register budget (forced 128 -> 256 GRF it went 185 -> 190 TFLOPS).
+;;;;
+;;;; So the choice gets a name and a dispatch point.  Each choke point below becomes a generic
+;;;; function on the lowering, with the existing implementation moved VERBATIM into an
+;;;; (eql :coop-matrix) method.  The public name keeps its signature and becomes a thin dispatcher,
+;;;; so no call site changes -- call-site churn across six functions is how this overlay reached
+;;;; 4700 lines the first time.  Adding :xe-native later is adding methods, not editing conditionals.
+;;;;
+;;;; BEHAVIOUR IS UNCHANGED BY CONSTRUCTION: one method per generic, bodies moved verbatim, and
+;;;; *mma-lowering* can only ever hold :coop-matrix today because that is the only lowering any
+;;;; profile offers and asking for another is refused at analysis time.
+;;;; ============================================================================
+
+;; src/codegen.lisp
+(defvar *mma-lowering* :coop-matrix
+  "The MMA lowering in force while generating the current kernel's IR.
+
+   Bound per kernel by GENERATE-LLVM-IR from that kernel's (mma-lowering ...) declaration, which
+   the analyzer has already validated against the active hardware profile.  Defaults to
+   :coop-matrix so any code path reached outside a kernel -- and every existing kernel, which
+   declares nothing -- behaves exactly as before.")
+
+;; src/codegen.lisp
+(defun %kernel-mma-lowering (semantic-function)
+  "The lowering SEMANTIC-FUNCTION declared, or :coop-matrix when it declared none.
+
+   Reads the dispatch plist the analyzer populated, so the validation and the refusal have already
+   happened by the time codegen asks."
+  (let* ((name (and semantic-function (semantic-function-name semantic-function)))
+         (plist (and name (gethash name *kernel-dispatch-declarations*))))
+    (or (getf plist :mma-lowering) :coop-matrix)))
+
+;; src/codegen.lisp
+(defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
+  "Top-level function to generate LLVM IR for a given semantic function.
+
+   Endeavour 156: binds *mma-lowering* for the extent of this function's code generation, so every
+   choke point in the lowering protocol sees the kernel's declared choice without having to be
+   handed it explicitly."
+  (log:warn "GENERATE-LLVM-IR: ~a Params: ~a Ret: ~a"
+            (semantic-function-name semantic-function)
+            (semantic-function-param-list semantic-function)
+            (semantic-function-return-type semantic-function))
+  (log:warn "BODY: ~a" (semantic-function-body semantic-function))
+  (let ((*mma-lowering* (%kernel-mma-lowering semantic-function)))
+    (log:debug "generate-llvm-ir: ~a uses mma lowering ~a"
+               (semantic-function-name semantic-function) *mma-lowering*)
+    (multiple-value-bind (func di-subprogram)
+        (generate-function-prototype semantic-function module di-builder di-compile-unit location-map)
+      (when func
+            ;; Attach SPIR-V/PTX kernel metadata if this is an entry point
+            (ensure-opencl-kernel-metadata func semantic-function module)
+            (generate-function-body semantic-function func di-subprogram builder module di-builder location-map)))))
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %coop-type becomes a lowering-dispatched protocol)
+(defgeneric %coop-type-impl (lowering elem-llvm rows cols use)
+  (:documentation "The LLVM type of one MMA fragment.  :coop-matrix yields an opaque
+   CooperativeMatrixKHR type; a vector-based lowering yields a concrete vector type instead, which
+   is the main reason this is a dispatch point at all.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %coop-type-impl ((lowering (eql :coop-matrix)) elem-llvm rows cols use)
+  (declare (ignorable lowering))
+  "Build target(\"spirv.CooperativeMatrixKHR\", ELEM-LLVM, 3, ROWS, COLS, USE) in the
+   global context (= the module's context, so the type matches).
+
+   Endeavour 155: an LLVM `bfloat` element is rewritten to i16 on the SPIR-V backend, because that
+   is how Intel encodes a bf16 cooperative matrix — raw 16-bit integers, with the bfloat-ness
+   carried by the MulAdd operands mask (0x40).  Emitting a real bfloat type instead requires
+   SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement."
+  (let* ((bf (crisp.llvm-bindings::llvm-bfloat-type))
+         (elem (if (and (eq *target-backend* :spirv)
+                        elem-llvm
+                        (cffi:pointer-eq elem-llvm bf))
+                   (crisp.llvm-bindings::llvm-int16-type)
+                   elem-llvm))
+         (ctx (crisp.llvm-bindings::llvm-get-global-context)))
+    (cffi:with-foreign-objects ((tps :pointer 1) (ips :unsigned-int 4))
+      (setf (cffi:mem-aref tps :pointer 0) elem
+            (cffi:mem-aref ips :unsigned-int 0) 3          ; Subgroup scope
+            (cffi:mem-aref ips :unsigned-int 1) rows
+            (cffi:mem-aref ips :unsigned-int 2) cols
+            (cffi:mem-aref ips :unsigned-int 3) use)
+      (crisp.llvm-bindings::llvm-target-ext-type-in-context
+       ctx "spirv.CooperativeMatrixKHR" tps 1 ips 4))))
+
+(defun %coop-type (elem-llvm rows cols use)
+  "Dispatches to %coop-type-impl on the active lowering.  Kept as a plain function with its
+   original signature so no call site changes."
+  (%coop-type-impl *mma-lowering* elem-llvm rows cols use))
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %coop-fill becomes a lowering-dispatched protocol)
+(defgeneric %coop-fill-impl (lowering builder module init-val elem-llvm rows cols use)
+  (:documentation "Materialise a fragment with a scalar initial value.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %coop-fill-impl ((lowering (eql :coop-matrix)) builder module init-val elem-llvm rows cols use)
+  (declare (ignorable lowering))
+  "Construct a coop matrix filled with INIT-VAL (scalar) via __spirv_CompositeConstruct.
+
+   Endeavour 155: INIT-VAL is coerced to ELEM-LLVM first.  Before the element type reached
+   codegen this was vacuous — everything was f32, so the literal already matched.  Now that the
+   matrix carries the tile's real element type, the literal has to follow it."
+  (%coop-call builder module
+              (format nil "__spirv_CompositeConstruct_~d_~d_~d" use rows cols)
+              (%coop-type elem-llvm rows cols use)
+              (list elem-llvm)
+              (list (%coop-coerce-scalar builder init-val elem-llvm "coop_init"))))
+
+(defun %coop-fill (builder module init-val elem-llvm rows cols use)
+  "Dispatches to %coop-fill-impl on the active lowering.  Kept as a plain function with its
+   original signature so no call site changes."
+  (%coop-fill-impl *mma-lowering* builder module init-val elem-llvm rows cols use))
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %coop-tensor-ptr+stride becomes a lowering-dispatched protocol)
+(defgeneric %coop-tensor-ptr+stride-impl (lowering builder tensor-val orow ocol layout &optional elem-llvm)
+  (:documentation "Turn a tensor plus a tile origin into (values element-ptr stride) for one
+   fragment access.  A payload-based lowering would not produce a pointer at all, which is why the
+   dispatch is here rather than inside the load.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %coop-tensor-ptr+stride-impl ((lowering (eql :coop-matrix)) builder tensor-val orow ocol layout &optional elem-llvm)
+  (declare (ignorable lowering))
+  "From a Crisp tensor STRUCT value, return (values element-ptr stride-i64) for the coop tile whose
+   element origin is (OROW, OCOL) -- both i64 LLVM values.  Tensor layout: field0 = parent storage
+   {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0] (RowMajor) / strides[1]
+   (ColMajor).  ELEM-LLVM is the tensor's element type for the GEP and defaults to f32.
+
+   Endeavour 155 Step 4: the flat offset is computed as BASE PLUS DELTA rather than from scratch.
+   Each origin arrives as (tile-base + compile-time-fragment-index) * extent, so
+
+       flat = (tb_r*ext_r)*s0 + (tb_c*ext_c)*s1   +   (fr*ext_r)*s0 + (fc*ext_c)*s1
+
+   The first bracket is identical for every fragment of the tile and collapses to one computation;
+   each multiply in the second has a compile-time constant operand, which IGC strength-reduces to
+   shifts.  Xe has no native 64-bit multiply, so the runtime-by-runtime products in the first
+   bracket are the expensive ones -- and there are now two per TILE instead of two per FRAGMENT.
+
+   When an origin does not have that shape the split degrades to (origin, 0) and this emits exactly
+   what it always did."
+  (let* ((elem (or elem-llvm (llvm-float-type)))
+         (i64 (crisp.llvm-bindings::llvm-int64-type))
+         (storage (llvm-build-extract-value builder tensor-val 0 "coop_storage"))
+         (base    (llvm-build-extract-value builder storage 0 "coop_base"))
+         (strides (llvm-build-extract-value builder tensor-val 2 "coop_strides"))
+         (s0 (llvm-build-extract-value builder strides 0 "coop_s0"))
+         (s1 (llvm-build-extract-value builder strides 1 "coop_s1"))
+         (stride (if (= layout 0) s0 s1)))
+    (multiple-value-bind (row-base row-delta) (%coop-split-origin builder orow)
+      (multiple-value-bind (col-base col-delta) (%coop-split-origin builder ocol)
+        (let* ((off0 (llvm-build-mul builder row-base s0 "coop_off0"))
+               (off1 (llvm-build-mul builder col-base s1 "coop_off1"))
+               (flat (llvm-build-add builder off0 off1 "coop_flat"))
+               ;; The deltas are compile-time element counts, so these multiply a runtime stride by
+               ;; a CONSTANT -- strength-reducible, unlike the runtime-by-runtime products above.
+               (flat (if (zerop row-delta)
+                         flat
+                         (llvm-build-add builder flat
+                                         (llvm-build-mul builder (llvm-const-int i64 row-delta nil)
+                                                         s0 "coop_dr")
+                                         "coop_flat_r")))
+               (flat (if (zerop col-delta)
+                         flat
+                         (llvm-build-add builder flat
+                                         (llvm-build-mul builder (llvm-const-int i64 col-delta nil)
+                                                         s1 "coop_dc")
+                                         "coop_flat_c"))))
+          (log:debug "coop addr: row-delta=~a col-delta=~a hoisted=~a"
+                     row-delta col-delta (or (/= row-delta 0) (/= col-delta 0)))
+          (cffi:with-foreign-object (idx :pointer 1)
+            (setf (cffi:mem-aref idx :pointer 0) flat)
+            (values (llvm-build-gep2 builder elem base idx 1 "coop_elem_ptr") stride)))))))
+
+(defun %coop-tensor-ptr+stride (builder tensor-val orow ocol layout &optional elem-llvm)
+  "Dispatches to %coop-tensor-ptr+stride-impl on the active lowering.  Kept as a plain function with its
+   original signature so no call site changes."
+  (%coop-tensor-ptr+stride-impl *mma-lowering* builder tensor-val orow ocol layout elem-llvm))
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %coop-mma becomes a lowering-dispatched protocol)
+(defgeneric %coop-mma-impl (lowering builder module a-val b-val c-val elem-llvm m n k)
+  (:documentation "Emit one multiply-accumulate over three fragments.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %coop-mma-impl ((lowering (eql :coop-matrix)) builder module a-val b-val c-val elem-llvm m n k)
+  (declare (ignorable lowering))
+  "Emit CooperativeMatrixMulAddKHR(A, B, C, <operands>) -> the MxN accumulator coop matrix.
+
+   Operand types come from the ACTUAL VALUES via LLVMTypeOf, so the declaration cannot drift from
+   what is passed (Endeavour 155, Phase 1).
+
+   THE OPERANDS MASK.  0 for f32/tf32 and for fp16, whose component type already says what it is.
+   0x40 (MatrixAAndBBFloat16ComponentsINTEL) when A and B are 16-bit INTEGER matrices, which is
+   how Intel represents bf16 — an integer type cannot say 'bfloat' on its own, so the bit says it.
+
+   DETECTION READS THE TYPE, IT DOES NOT REBUILD IT.  The first attempt compared A against a
+   freshly constructed (%coop-type i16 m k 0), which failed for a reason worth recording: this
+   function's M/N/K come from a caller that computes them with an UNTYPED (%spv-mma-shape) —
+   src/mma.lisp:653 — so K is the tf32 8 even when the operands are 16-bit and K is really 16.
+   Those arguments are otherwise unused here (the types come from the values), so the wrong shape
+   is harmless to codegen and was harmless to fp16; it only defeated a check that trusted it.
+   Printing the type and reading its component is exact and depends on nothing else."
+  (declare (ignorable elem-llvm m n k))
+  (let* ((a-ty (crisp.llvm-bindings::llvm-type-of a-val))
+         (b-ty (crisp.llvm-bindings::llvm-type-of b-val))
+         (c-ty (crisp.llvm-bindings::llvm-type-of c-val))
+         (i32  (crisp.llvm-bindings::llvm-int32-type))
+         (a-str (crisp.llvm-bindings::llvm-print-type-to-string a-ty))
+         (bf16-p (and (eq *target-backend* :spirv)
+                      a-str
+                      (search ", i16," a-str)))
+         (operands (if bf16-p #x40 0)))
+    (%coop-call builder module "__spirv_CooperativeMatrixMulAddKHR"
+                c-ty (list a-ty b-ty c-ty i32)
+                (list a-val b-val c-val (crisp.llvm-bindings::llvm-const-int i32 operands nil)))))
+
+(defun %coop-mma (builder module a-val b-val c-val elem-llvm m n k)
+  "Dispatches to %coop-mma-impl on the active lowering.  Kept as a plain function with its
+   original signature so no call site changes."
+  (%coop-mma-impl *mma-lowering* builder module a-val b-val c-val elem-llvm m n k))
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %emit-per-frag-block-load becomes a lowering-dispatched protocol)
+(defgeneric %emit-per-frag-block-load-impl (lowering src entry coords)
+  (:documentation "Source-to-source expansion of (load-tile SRC <register-tile> COORDS)
+   into per-fragment loads.  This one is at a different altitude from the others -- it rewrites
+   Crisp forms rather than emitting LLVM -- but WHICH load form to emit is a lowering decision, so
+   it belongs to the same protocol.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %emit-per-frag-block-load-impl ((lowering (eql :coop-matrix)) src entry coords)
+  (declare (ignorable lowering))
+  "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS).
+
+   Endeavour 155 Step 2b: when the tile is WARP-SLICED, each warp loads only its own rows (:a) or
+   columns (:b), at global coordinates offset by its grid position.  load-tile appears once in the
+   body, so the choice is a STATIC per-warp switch -- static so the offsets fold to literals and the
+   block-load addresses stay compile-time, which is the same reason 139 step-4 made the MMA walk
+   static."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) (operand :acc)) (cdr entry)
+    (declare (ignore n-true))
+    (let ((cl (find-package :crisp-language)))
+      (destructuring-bind (fr . fc) (%frag-mn-for-operand operand (%register-tile-elem-of (first entry)))
+        (let* ((frag-fn (ecase operand
+                          (:a (intern "LOAD-FRAGMENT-A" cl))
+                          (:b (intern "LOAD-FRAGMENT-B" cl))
+                          (:acc (error 'crisp-compiler-error
+                                  :message "load-tile into an accumulator register-tile is not supported (only :operand :a / :b tiles are load targets)."
+                                  :source-location nil))))
+               (to-int  (intern "TO-INT" cl))
+               (n-rows  (floor m fr))
+               (n-cols  (floor n fc))
+               (gy      (first coords))
+               (gx      (second coords))
+               (slice   (%warp-slice-extent entry operand))
+               (grid    *warp-grid*))
+          (flet ((one (idx row col)
+                   `(set! ,(nth idx syms)
+                          (,frag-fn ,src
+                                    ((+ (* (,to-int ,gy) ,n-rows) ,row)
+                                     (+ (* (,to-int ,gx) ,n-cols) ,col))))))
+            (if (not (and slice grid))
+                `(progn
+                   ,@(loop for ri below n-rows append
+                           (loop for ci below n-cols
+                                 for idx = (+ (* ri n-cols) ci)
+                                 collect (one idx ri ci))))
+                (let* ((progn-sym (intern "PROGN" cl))
+                       (let-sym   (intern "LET" cl))
+                       (if-sym    (intern "IF" cl))
+                       (lt-sym    (intern "<" cl))
+                       (minus-sym (intern "-" cl))
+                       (div-sym   (intern "/" cl))
+                       (times-sym (intern "*" cl))
+                       (warp-id   (intern "WARP-ID" cl))
+                       (gn        (cdr grid))
+                       (nslice    (if (eq operand :a) (car grid) (cdr grid)))
+                       (wp        (gensym "WP"))
+                       (sl        (gensym "SL")))
+                  (labels ((arm (w)
+                             `(,progn-sym
+                                ,@(if (eq operand :a)
+                                      (loop for lr below slice append
+                                            (loop for ci below n-cols
+                                                  for idx = (+ (* lr n-cols) ci)
+                                                  collect (one idx (+ (* w slice) lr) ci)))
+                                      (loop for ri below n-rows append
+                                            (loop for lc below slice
+                                                  for idx = (+ (* ri slice) lc)
+                                                  collect (one idx ri (+ (* w slice) lc)))))))
+                           (chain (w)
+                             (if (>= w (1- nslice))
+                                 (arm w)
+                                 `(,if-sym (,lt-sym ,sl ,(1+ w))
+                                           ,(arm w)
+                                           ,(chain (1+ w))))))
+                    `(,let-sym ((,wp (,minus-sym (,to-int (,warp-id)) ,first-true)))
+                       ;; 156 Phase 1: INTEGER / and - , not FLOOR/MOD.
+                       ;;
+                       ;; (intern "FLOOR" :crisp-language) resolves to CRISP.COMPILER:FLOOR, which
+                       ;; returns a FLOAT -- %emit-per-frag-store already documents that and moved
+                       ;; to / and - for its addresses.  (intern "MOD" :crisp-language) is worse:
+                       ;; MOD does not exist there at all, so the intern MINTS a fresh symbol with
+                       ;; no operator behind it.  The load switch was never updated with the store.
+                       ;;
+                       ;; It survived because single-axis slicing never exercises either one: when
+                       ;; gm=1 or gn=1 the un-sliced operand emits a bare arm with NO selector, and
+                       ;; the sliced one divides by 1, which is exact under any semantics.  A 2-D
+                       ;; grid is the first case where a selector divides by something >1 -- which
+                       ;; is exactly where MMA_WRONG starts (verified: correct at 1 and 2 warps,
+                       ;; wrong from 4; correct at every 1-D-forced shape at 4 warps).
+                       (,let-sym ((,sl ,(if (eq operand :a)
+                                            `(,div-sym ,wp ,gn)
+                                            `(,minus-sym ,wp (,times-sym (,div-sym ,wp ,gn) ,gn)))))
+                         ,(chain 0))))))))))))
+
+(defun %emit-per-frag-block-load (src entry coords)
+  "Dispatches to %emit-per-frag-block-load-impl on the active lowering.  Kept as a plain function with its
+   original signature so no call site changes."
+  (%emit-per-frag-block-load-impl *mma-lowering* src entry coords))
