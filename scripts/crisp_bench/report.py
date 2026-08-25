@@ -580,6 +580,10 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                      "differs. `tuned` adds ring depth 2 and prefetch distance 2, which makes its "
                      "`:coop-matrix` arm the shipped section 2.1 kernel.*")
         lines.append("")
+        lines.append("Each cell reads **`:coop-matrix` TFLOPS -> `:xe-native` TFLOPS (change)**, "
+                     "where the change is `(xe_native / coop_matrix - 1)`. Higher TFLOPS is faster, "
+                     "so a positive change means `:xe-native` won at that size.")
+        lines.append("")
         lines.append("| pairing | " + " | ".join("N=%d" % n for n in l_sizes) + " |")
         lines.append("|---|" + "---:|" * len(l_sizes))
         for label, coop, xe in (("bare (no ring, no prefetch)", "Crisp_Coop_Bare", "Crisp_XeNative_Bare"),
@@ -591,8 +595,11 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                     cells.append("\u2014")
                     continue
                 d = (x / c - 1.0) * 100.0
-                cell = ("+" if d >= 0 else "\u2212") + ("%.1f%%" % abs(d))
-                cells.append("**" + cell + "**" if abs(d) >= 5.0 else cell)
+                pct = ("+" if d >= 0 else "\u2212") + ("%.1f%%" % abs(d))
+                if abs(d) >= 5.0:
+                    pct = "**" + pct + "**"
+                # Carry the absolutes so the ratio is checkable, not merely asserted.
+                cells.append("%.1f\u2192%.1f (%s)" % (c, x, pct))
             lines.append("| " + label + " | " + " | ".join(cells) + " |")
         lines.append("")
         lines.append("Positive means `:xe-native` is faster. It wins bare and loses tuned: the "

@@ -393,10 +393,12 @@ wgmma
 
 *Same kernel, same 32x64 bf16 geometry over one subgroup; only the lowering differs. `tuned` adds ring depth 2 and prefetch distance 2, which makes its `:coop-matrix` arm the shipped section 2.1 kernel.*
 
+Each cell reads **`:coop-matrix` TFLOPS -> `:xe-native` TFLOPS (change)**, where the change is `(xe_native / coop_matrix - 1)`. Higher TFLOPS is faster, so a positive change means `:xe-native` won at that size.
+
 | pairing | N=512 | N=1024 | N=2048 | N=4096 |
 |---|---:|---:|---:|---:|
-| bare (no ring, no prefetch) | **+23.2%** | **+15.8%** | **+12.7%** | **+9.8%** |
-| tuned (ring 2, prefetch 2) | **+29.9%** | **−9.4%** | **−16.6%** | — |
+| bare (no ring, no prefetch) | 16.8→20.6 (**+23.2%**) | 56.4→65.3 (**+15.8%**) | 52.4→59.0 (**+12.7%**) | 47.5→52.1 (**+9.8%**) |
+| tuned (ring 2, prefetch 2) | 17.0→22.1 (**+29.9%**) | 49.9→45.2 (**−9.4%**) | 61.5→51.3 (**−16.6%**) | — |
 
 Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowering is better in isolation and does **not** compose with the register-tile ring. See `docs/topology.md`, `mma-lowering`.
 
