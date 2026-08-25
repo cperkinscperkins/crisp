@@ -6,7 +6,10 @@
 ;; those describes HALF the bytes it was sized for, so arithmetic intensity per subgroup was
 ;; halved exactly where it matters.
 ;;
-;; Measured on an Arc B580 (endeavour 155), bf16, every point MMA_CORRECT:
+;; THE TUNING SWEEP BELOW WAS RUN ON BF16, NOT FP16.  It is reproduced here because the tile-width
+;; choice carries over -- the two element types have the same 16-bit operand size, the same (8 16 16)
+;; MMA shape and the same fragment counts -- but it is bf16 data and should not be read as an fp16
+;; measurement.  Measured on an Arc B580 (endeavour 155), bf16, every point MMA_CORRECT:
 ;;
 ;;     N            1024    2048    4096    8192
 ;;     32x32        40.0    41.3    33.3    27.1   TFLOPS
@@ -16,6 +19,14 @@
 ;; It raises the plateau AND improves the scaling, which is what identifies it as an arithmetic
 ;; intensity fix rather than a constant-factor one.
 ;;
+;; THIS kernel's own fp16 numbers, same hardware, every point MMA_CORRECT:
+;;
+;;     N            1024    2048    4096    8192
+;;     32x64        50.0    61.2    56.6    37.4   TFLOPS
+;;
+;; i.e. fp16 tracks bf16 to within measurement noise, which is the expected result and is why one
+;; sweep serves both.
+;;
 ;; WHAT DID NOT WORK, so nobody re-tries them blind:
 ;;   ring depth 3     +9% at 32x32 but COLLAPSES 32x64 (57 -> 23 TFLOPS)
 ;;   prefetch dist 3  1.38x vs base, i.e. worse than 32x64's 1.70x
@@ -24,9 +35,33 @@
 ;;   TN 96            MMA_WRONG at 0.27 TFLOPS — the GPU-fault signature, under investigation
 ;;   TN 128           correct but 0.14x
 ;;
-;; Occupancy is NOT the limiter here: stripping -ze-opt-large-register-file from the 32x32
-;; baseline HALVES it (34 -> 17 TFLOPS, three interleaved reps), so endeavour 144's large-GRF
-;; selection is doing real work and the kernel is not thread-starved.
+;; Added by endeavour 156, all measured on this hardware, all MMA_CORRECT -- these are the big
+;; structural ideas, and none of them beat this kernel:
+;;   multi-subgroup   256x256 over 32 subgroups = 34.6 TFLOPS @2048 vs this kernel's 60.8.  The
+;;                    geometry SYCL-TLA uses; it is not what makes SYCL-TLA fast.
+;;   SLM staging      correct but 40x SLOWER (0.9 vs 41.9 @2048).  SPV_INTEL_2d_block_io is a
+;;                    GLOBAL-memory facility, so staging operands through shared local memory
+;;                    loses the 2D block load entirely (load_block2d 41 -> 0).
+;;   :xe-native+ring  the second lowering does NOT compose with the ring: 50.0 @2048 with ring 2,
+;;                    against 57.7 for :xe-native bare and 60.4 for this kernel.
+;;   address hoisting cut emulated 64-bit multiplies 36% for +2.9%, and on THIS kernel gave
+;;                    identical instruction counts 17% SLOWER.  This kernel is not issue-bound.
+;;
+;; THE LOWERING.  This kernel uses the default :coop-matrix path.  Endeavour 156 added a second,
+;; (mma-lowering :xe-native) -- Intel's SubgroupMatrixMultiplyAccumulateINTEL with 2D block loads
+;; and a VNNI-transform load for B.  It is a BETTER lowering at matched geometry (+13% @2048, +9%
+;; @4096, both without ring or prefetch) and produces leaner code (42 instructions per dpas vs 57),
+;; but it loses more from being un-ringed than it gains, so this kernel is still the fastest thing
+;; we ship.  Retry the combination when the :xe-native load path stops degrading with live fragment
+;; count (32x128 collapses to 5.6 TFLOPS; it is NOT register spill -- the ISA shows zero).
+;;
+;; ON LARGE-GRF, narrowed by endeavour 156.  Stripping -ze-opt-large-register-file from the 32x32
+;; baseline HALVES it (34 -> 17 TFLOPS, three interleaved reps), so endeavour 144's selection is
+;; doing real work FOR THIS KERNEL SHAPE.  It is not a general law, and was being read as one:
+;; at 128x128 over 16 subgroups the DEFAULT allocation beats large-GRF by 70% (32.2 -> 54.9 @4096),
+;; and SYCL-TLA is INDIFFERENT to the choice -- forced from grf_count 128 (with 3904 bytes of
+;; deliberate spill) to 256 with none, it went 185 -> 190 TFLOPS.  Avoiding spill is worth ~3x to
+;; OUR lowering and nothing to its.  That is a property of our codegen, not of the hardware.
 (declaim (precision fast))
 (def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))

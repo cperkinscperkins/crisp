@@ -3917,3 +3917,107 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
       (when (probe-file ll-opt-file) (delete-file ll-opt-file))
       (when (probe-file bc-file)     (delete-file bc-file)))
     (log:info "Generated SPIR-V: ~a" spv-file)))
+
+;; src/metadata.lisp  (REPLACES serialize-kernels -- 156: record the kernel's CHOSEN mma
+;; lowering in the metacrisp, so a benchmark number can be attributed to a code path)
+(defun serialize-kernels (output-stream kernel-names &key source output-targets)
+  "Emits the (:kernels ...) section of the metacrisp file.
+   Extended to include :global-size, :local-size, :num-groups dispatch declarations.
+   Endeavor 152: also emits :cluster-size (what the SOURCE asked for) and
+   :effective-cluster-size (what codegen BUILT).  Both, deliberately -- a degraded
+   cluster is otherwise indistinguishable from a working one."
+  (when kernel-names
+        (format output-stream "(:kernels~%")
+        (dolist (k-name (sort (copy-list kernel-names) (function string<) :key (function symbol-name)))
+          (let ((sigs (gethash k-name *function-table*))
+                (blocks-to-emit nil))
+            ;; Use only the FIRST signature (Pass 1 registered, Pass 2 updated)
+            (dolist (actual-sig (list (first sigs)))
+              (when actual-sig
+                    (let* ((phys-sig-str (generate-physical-signature actual-sig))
+                           (declared-types (gethash k-name *kernel-declared-signatures*))
+                           (decl-sig-list (generate-declared-signature actual-sig declared-types))
+                           (implicit-sig-list (generate-implicit-signature actual-sig declared-types))
+                           (dispatch-info (gethash k-name *kernel-dispatch-declarations*))
+                           (source-loc (if source source
+                                           (namestring (uiop/filesystem:native-namestring (first (function-signature-source-location actual-sig)))))))
+
+                      (push (list :name (string-downcase (symbol-name k-name))
+                                  :source source-loc
+                                  :output output-targets
+                                  :phys phys-sig-str
+                                  :decl decl-sig-list
+                                  :impl implicit-sig-list
+                                  :dispatch dispatch-info)
+                            blocks-to-emit))))
+
+            (setf blocks-to-emit (remove-duplicates (nreverse blocks-to-emit) :test (function equalp)))
+
+            (dolist (blk blocks-to-emit)
+              (let ((dispatch (getf blk :dispatch)))
+                (format output-stream "  (:name ~s~%" (getf blk :name))
+                (format output-stream "    :source ~s~%" (pathname (getf blk :source)))
+                (when (getf blk :output) (format output-stream "    :output-targets ~s~%" (getf blk :output)))
+                ;; Emit dispatch declarations before physical/declared signatures
+                (let ((global-size-decl (getf dispatch :global-size))
+                      (local-size-decl  (getf dispatch :local-size))
+                      (num-groups-decl  (getf dispatch :num-groups))
+                      (cluster-decl     (getf dispatch :cluster-size-decl))
+                      (cluster-dims     (getf dispatch :cluster-size))
+                      ;; Endeavour 156: which MMA LOWERING generated this kernel.  Recorded even
+                      ;; when defaulted, so a benchmark row can be attributed to a code path -- a
+                      ;; number you cannot attribute is not evidence.  Note this is the kernel's
+                      ;; CHOSEN lowering, not the profile's :mma-lowerings capability list, which
+                      ;; is a different thing that also appears in this file.
+                      (mma-lowering     (getf dispatch :mma-lowering)))
+                  (when global-size-decl
+                    (format output-stream "    :global-size ")
+                    (print-without-packages global-size-decl output-stream)
+                    (format output-stream "~%"))
+                  (when local-size-decl
+                    (format output-stream "    :local-size ")
+                    (print-without-packages local-size-decl output-stream)
+                    (format output-stream "~%"))
+                  (when num-groups-decl
+                    (format output-stream "    :num-groups ")
+                    (print-without-packages num-groups-decl output-stream)
+                    (format output-stream "~%"))
+                  (when mma-lowering
+                    (format output-stream "    :mma-lowering ~s~%" mma-lowering))
+                  ;; Endeavor 152.  BOTH are emitted on purpose:
+                  ;;   :cluster-size            -- the declaration, as written
+                  ;;   :effective-cluster-size  -- what codegen actually built
+                  ;; They differ exactly when the kernel degraded, which is the one
+                  ;; case a correctness test cannot see.
+                  (when cluster-decl
+                    (format output-stream "    :cluster-size ")
+                    (print-without-packages cluster-decl output-stream)
+                    (format output-stream "~%"))
+                  ;; BUG 049: does this kernel actually USE its cluster's reach -- a
+                  ;; multicast load or a :mode :cluster barrier?  The hoist needs to know,
+                  ;; because padding the grid up to the cluster shape is safe for an ordinary
+                  ;; clustered kernel (surplus blocks find no tiles and exit) and FATAL for one
+                  ;; with reach: the padded blocks are still cluster members that a multicast
+                  ;; addresses and a cluster barrier waits on, so they must not simply leave.
+                  ;;
+                  ;; Deliberately MODULE-scoped and therefore conservative: if any kernel in the
+                  ;; module uses reach, every clustered kernel in it declines padding.  Precise
+                  ;; per-kernel attribution would mean threading a flag through the whole
+                  ;; analysis; over-refusing a kernel that gains nothing from its cluster anyway
+                  ;; is the cheaper error, and it is an error in the safe direction.
+                  (when (and cluster-dims (%module-uses-cluster-reach-p))
+                    (format output-stream "    :cluster-reach t~%"))
+                  (when cluster-dims
+                    (format output-stream "    :effective-cluster-size ")
+                    (print-without-packages (%effective-cluster-dims dispatch cluster-dims) output-stream)
+                    (format output-stream "~%")))
+                (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
+                (format output-stream "    :declared-signature ")
+                (print-without-packages (getf blk :decl) output-stream)
+                (format output-stream "~%")
+                (when (getf blk :impl)
+                      (format output-stream "    :implicit-params ")
+                      (print-without-packages (getf blk :impl) output-stream)
+                      (format output-stream "~%"))
+                (format output-stream "  )~%"))))
+        (format output-stream "  )~%"))))

@@ -785,3 +785,43 @@ type instead of the LLVM one.
 This proves the lowering axis is live; it does not close the gap. What it does mean is that the
 remaining differences — split barriers, and whatever SYCL-TLA's inline-asm DPAS buys over the SPIR-V
 instruction — are now testable one at a time on a working `:xe-native` path.
+
+## :xe-native combined with the shipped tuning — it does NOT compose
+
+| | 2048 | 4096 |
+|---|---|---|
+| shipped `:coop-matrix` + ring2 + prefetch2 | **60.4** | **56.7** |
+| `:xe-native` bare (no ring, no prefetch) | 57.7 | 52.0 |
+| `:xe-native` + ring1 + prefetch2 | 58.0 | 44.5 |
+| `:xe-native` + ring2 + prefetch2 | 50.0 | 43.6 |
+| `:xe-native` 32×128 + ring2 + prefetch2 | 5.6 | 5.1 |
+
+All MMA_CORRECT. `gen10` at 32×64 r2 d2 reproduces the shipped kernel exactly, so the first row IS
+the shipped kernel and the second row differs from it only in the lowering.
+
+**The combination is subtractive, not additive.** `:xe-native` wins at matched geometry (+13% at
+2048, +9% at 4096, both bare) but loses more from being un-ringed than the lowering gains — and
+adding the ring makes it WORSE, not better. So the tuned `:coop-matrix` kernel is still the fastest
+thing we ship.
+
+### The obvious explanation is wrong
+
+`Subgroup2DBlockLoadINTEL` writes through a POINTER, so the implementation allocas a fragment and
+loads it back, and an alloca whose address escapes into a call cannot normally be promoted. That
+would have explained everything — more fragments (a ring, or a wider tile) means more memory
+traffic.
+
+It is not what is happening. The ISA for the bare kernel:
+
+    total 680   dpas 16   load_block2d 8   store_block2d 16   spill 0   fill 0   scratch 0
+
+Zero spill, zero fill, zero scratch — the allocas were promoted. And the code is LEAN: 42
+instructions per `dpas`, against the shipped `:coop-matrix` kernel's 57. The lowering is doing
+exactly what it should.
+
+### What is left to explain
+
+`32×128` collapsing to 5.6 TFLOPS is the loud signal: that is 8 B-fragments instead of 4, and the
+ring multiplies fragment count the same way. Something in the `:xe-native` load path scales badly
+with the number of live fragments, and it is not register spill. That is the thread to pull, and it
+is a specific question rather than a search.
