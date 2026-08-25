@@ -3167,3 +3167,216 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
   "Dispatches to %emit-per-frag-block-load-impl on the active lowering.  Kept as a plain function with its
    original signature so no call site changes."
   (%emit-per-frag-block-load-impl *mma-lowering* src entry coords))
+
+;;;; ============================================================================
+;;;; Endeavour 156 Step 2 — :XE-NATIVE, part 1: fragment type, fill, and the multiply.
+;;;;
+;;;; THE INSTRUCTION, established from SYCL-TLA's own headers and verified through our toolchain:
+;;;;
+;;;;   __spirv_SubgroupMatrixMultiplyAccumulateINTEL(K, A, B, C, Operands) -> D
+;;;;
+;;;; for the (8 16 16) shape Crisp already uses on BMG -- M=8, N=16 (the subgroup width), K=16:
+;;;;
+;;;;   K         i32, an <id> (a constant), 16 for both bf16 and fp16
+;;;;   A         <8 x i16>     bf16 AND fp16 both travel as raw 16-bit lanes
+;;;;   B         <8 x i32>     16 elements per lane, packed two per i32
+;;;;   C / D     <8 x float>   f32 accumulator
+;;;;   Operands  i32 LITERAL   bf16 0x3000, fp16 0xC00
+;;;;
+;;;; Verified emission (put_temp_files_here/tune/madprobe2.spt):
+;;;;   2 Capability SubgroupMatrixMultiplyAccumulateINTEL
+;;;;   8 SubgroupMatrixMultiplyAccumulateINTEL 33 51 50 27 32 37 12288
+;;;; -- a real SPIR-V INSTRUCTION with zero imports, and the translator declares the capability
+;;;; itself.  That is why this is the target rather than the OpenCL-style
+;;;; intel_sub_group_bf16_bf16_matrix_mad_k16, which arrives as a SYCL-vec-mangled Import symbol.
+;;;; SYCL-TLA's own header says it: "Use the spirv functions as the builtins do not work."
+;;;;
+;;;; THE PER-LANE SHAPE.  A cooperative matrix is opaque; an :xe-native fragment is a CONCRETE
+;;;; vector, and every lane holds rows*cols/subgroup-width elements of it.  B's are 16-bit but the
+;;;; instruction wants them packed two-per-i32, which is the one place the arithmetic differs.
+;;;;
+;;;; WHAT IS DELIBERATELY REFUSED HERE rather than guessed:
+;;;;   - element types other than bf16/half (K would not be 16, and the operand mask is unknown)
+;;;;   - a non-zero fragment init (the splat would have to know the lane encoding)
+;;;;   - a subgroup width other than 16
+;;;; Each of those is a silent-wrongness risk, and 145 established that a load/store round-trip
+;;;; CANNOT detect a wrong fragment layout -- it round-trips cleanly and computes garbage.
+;;;; ============================================================================
+
+;; src/codegen.lisp
+(defconstant +xe-native-operands-bf16+ #x3000
+  "MatrixABf16 | MatrixBBf16 for SubgroupMatrixMultiplyAccumulateINTEL.")
+(defconstant +xe-native-operands-fp16+ #xC00
+  "MatrixAFp16 | MatrixBFp16 for SubgroupMatrixMultiplyAccumulateINTEL.")
+
+;; src/codegen.lisp
+(defun %xe-native-subgroup-width ()
+  "The subgroup width :xe-native fragments are laid out for.  Refuses anything but 16: the whole
+   per-lane shape below assumes it, and endeavour 156 Phase 0 pins the kernel's SubgroupSize to the
+   profile's :simd-width, so a mismatch here would be a real inconsistency rather than a preference."
+  (let* ((profile (active-hardware-profile))
+         (w (or (and profile (getf profile :simd-width)) 16)))
+    (unless (= w 16)
+      (error 'crisp-compiler-error
+        :message (format nil "mma-lowering :xe-native is defined for a subgroup width of 16, but the active hardware profile declares :simd-width ~a.  The fragment layout (A <8 x i16>, B <8 x i32>, C <8 x float>) is derived from that width, so Crisp refuses rather than emitting a layout it cannot justify." w)
+        :source-location nil))
+    w))
+
+;; src/codegen.lisp
+(defun %xe-native-elem-kind (elem-llvm)
+  "Classify a fragment element type as :bf16, :fp16, or refuse.
+
+   Both reach the instruction as raw 16-bit lanes, so the vector type cannot tell them apart -- only
+   the operands mask does, and it must be right.  Anything else is refused: K would not be 16 and
+   the correct mask is not known, and guessing either produces a kernel that runs and is wrong."
+  (let ((s (and elem-llvm (crisp.llvm-bindings::llvm-print-type-to-string elem-llvm))))
+    (cond
+      ((and s (search "bfloat" s)) :bf16)
+      ((and s (search "half" s))   :fp16)
+      (t (error 'crisp-compiler-error
+           :message (format nil "mma-lowering :xe-native currently supports bfloat16 and half operands only; got element type ~a.  The instruction takes K=16 and an operand mask that names the 16-bit float encoding, neither of which Crisp can infer for this type."
+                            (or s "<unknown>"))
+           :source-location nil)))))
+
+;; src/codegen.lisp
+(defmethod %coop-type-impl ((lowering (eql :xe-native)) elem-llvm rows cols use)
+  (declare (ignorable lowering elem-llvm))
+  "An :xe-native fragment is a CONCRETE vector, not an opaque cooperative matrix.
+
+   Each lane holds rows*cols/16 of the matrix.  USE follows the SPIR-V cooperative-matrix roles that
+   the rest of Crisp already speaks: 0 = A, 1 = B, 2 = accumulator.
+
+     A   (8x16 of 16-bit)   -> 128/16 =  8 lanes-worth  -> <8 x i16>
+     B   (16x16 of 16-bit)  -> 256/16 = 16 elements     -> packed two per i32 -> <8 x i32>
+     acc (8x16 of f32)      -> 128/16 =  8              -> <8 x float>
+
+   B is the only one whose element count and vector width differ, because the instruction wants its
+   16-bit values packed."
+  (let* ((w (%xe-native-subgroup-width))
+         (per-lane (floor (* rows cols) w)))
+    (when (zerop per-lane)
+      (error 'crisp-compiler-error
+        :message (format nil "mma-lowering :xe-native: a ~ax~a fragment does not divide across a subgroup of ~a." rows cols w)
+        :source-location nil))
+    (ecase use
+      (0 (crisp.llvm-bindings::llvm-vector-type (crisp.llvm-bindings::llvm-int16-type) per-lane))
+      (1 (crisp.llvm-bindings::llvm-vector-type (crisp.llvm-bindings::llvm-int32-type)
+                                                (max 1 (floor per-lane 2))))
+      (2 (crisp.llvm-bindings::llvm-vector-type (llvm-float-type) per-lane)))))
+
+;; src/codegen.lisp
+(defmethod %coop-fill-impl ((lowering (eql :xe-native)) builder module init-val elem-llvm rows cols use)
+  (declare (ignorable lowering builder module))
+  "Materialise an :xe-native fragment.
+
+   Only a ZERO init is supported, and a non-zero one is refused rather than approximated.  Splatting
+   a non-zero value would require knowing how the scalar is encoded in a lane -- bf16's top 16 bits
+   for A and B, a plain float for the accumulator -- and getting that wrong yields a kernel that
+   runs and computes garbage, which no round-trip test can catch (endeavour 145).  Every register
+   tile Crisp emits today initialises to 0.0, so this refuses nothing that exists."
+  (let ((ty (%coop-type-impl :xe-native elem-llvm rows cols use)))
+    (unless (and init-val (crisp.llvm-bindings::llvm-is-null init-val))
+      (error 'crisp-compiler-error
+        :message "mma-lowering :xe-native currently supports only a zero fragment init.  A non-zero splat needs the per-lane encoding of the initial value, and an incorrect encoding produces a kernel that runs and is silently wrong."
+        :source-location nil))
+    (crisp.llvm-bindings::llvm-const-null ty)))
+
+;; src/codegen.lisp
+(defmethod %coop-mma-impl ((lowering (eql :xe-native)) builder module a-val b-val c-val elem-llvm m n k)
+  (declare (ignorable lowering m n k))
+  "Emit SubgroupMatrixMultiplyAccumulateINTEL(16, A, B, C, <mask>) -> D.
+
+   K is fixed at 16 rather than taken from the K argument, deliberately: that argument reaches here
+   from an UNTYPED (%spv-mma-shape) -- see the :coop-matrix method's note -- and is the tf32 8 even
+   when the operands are 16-bit.  :xe-native accepts only 16-bit elements (see %xe-native-elem-kind),
+   for which K is 16 by construction.
+
+   The operand mask is the only thing distinguishing bf16 from fp16 here, since both arrive as
+   <8 x i16>.  It comes from ELEM-LLVM, which still names the true element type."
+  (let* ((kind (%xe-native-elem-kind elem-llvm))
+         (i32  (crisp.llvm-bindings::llvm-int32-type))
+         (c-ty (crisp.llvm-bindings::llvm-type-of c-val))
+         (a-ty (crisp.llvm-bindings::llvm-type-of a-val))
+         (b-ty (crisp.llvm-bindings::llvm-type-of b-val))
+         (operands (ecase kind
+                     (:bf16 +xe-native-operands-bf16+)
+                     (:fp16 +xe-native-operands-fp16+))))
+    (log:debug "xe-native mma: kind=~a operands=#x~x A=~a B=~a C=~a"
+               kind operands
+               (crisp.llvm-bindings::llvm-print-type-to-string a-ty)
+               (crisp.llvm-bindings::llvm-print-type-to-string b-ty)
+               (crisp.llvm-bindings::llvm-print-type-to-string c-ty))
+    (%coop-call builder module "__spirv_SubgroupMatrixMultiplyAccumulateINTEL"
+                c-ty (list i32 a-ty b-ty c-ty i32)
+                (list (llvm-const-int i32 16 nil)
+                      a-val b-val c-val
+                      (llvm-const-int i32 operands nil)))))
+
+;; src/mma.lisp  (156 Step 2: BMG now OFFERS :xe-native, so the declaration stops being refused.
+;; Re-registers the same profile with one key added; :coop-matrix stays FIRST and therefore remains
+;; the default, so no existing kernel changes behaviour.)
+(register-hardware-profile
+ 'bmg
+ '(:simd-width 16
+   :compute-units 20
+   :max-registers-per-thread (128 256)
+   :max-total-threads-per-block 1024
+   :max-work-group-dims (1024 1024 1024)
+   :max-shared-memory-per-block 128KB
+   :l2-cache-size 18MB
+   :native-cache-line-size 64
+   :tile-visit-strip-width 4
+   :mma-lowerings (:coop-matrix :xe-native)
+   :mma-shapes ((8 16 8) (8 16 16) (8 16 32))))
+
+;; src/mma.lisp  (REPLACES register-builtin-hardware-profiles -- 156 Step 2: BMG offers :xe-native.
+;; Must be done HERE and not by a top-level register-hardware-profile call: initialize-compiler
+;; calls this function, so a top-level re-registration is overwritten a moment later.)
+(defun register-builtin-hardware-profiles ()
+  "Endeavor 144 Phase 0 (D2): register Crisp's predefined hardware profiles.
+
+   Called from register-mma-types, which initialize-compiler invokes AFTER it clrhash-es
+   *hardware-profiles* — so builtins survive the clear and a same-named user profile still
+   overrides them.
+
+   NOTE FOR THE SRC PATCH: this belongs as its own call in initialize-compiler next to
+   register-builtins."
+  ;; Intel Arc B580 (Battlemage / Xe2).  Device-queried 2026-07-27.
+  ;; :tile-visit-strip-width 4 — MEASURED: grouped visit order is worth +63% at 2048 here
+  ;; (linear 17.1 -> 27.9 TFLOPS), and 4 beat 2/8/16 across both sizes tested.
+  (register-hardware-profile
+   'bmg
+   '(:simd-width 16                        ; subGroupSizes reports BOTH 16 and 32
+     :compute-units 20                     ; Xe-cores (5 slices x 4 subslices)
+     :max-registers-per-thread (128 256)   ; GRF registers (32 B each) — selectable modes
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 1024)
+     :max-shared-memory-per-block 128KB
+     :l2-cache-size 18MB
+     :native-cache-line-size 64            ; Xe2 LSC line; not queryable
+     :tile-visit-strip-width 4             ; measured; see the Phase 1 revision comment
+     ;; 156 Step 2: BMG offers a second code-generation strategy.  :coop-matrix stays FIRST
+     ;; and is therefore still the default, so no existing kernel changes behaviour -- a
+     ;; kernel gets :xe-native only by asking for it with (mma-lowering :xe-native).
+     :mma-lowerings (:coop-matrix :xe-native)
+     :mma-shapes ((8 16 8) (8 16 16) (8 16 32)))) ; XMX tf32, bf16/fp16, int8
+  ;; NVIDIA H100 PCIe (Hopper).  Device-queried 2026-07-28.
+  ;; :compute-units 114 is the PCIe part (SXM is 132); this value OVERRIDES the device SM query
+  ;; in the generated CUDA launch grid, so the variant distinction is load-bearing.
+  ;; :max-shared-memory-per-block is the OPT-IN cap, not the 48KB default (chap2/chap3 exceed 48KB).
+  ;; :mma-shapes MUST include (16 8 8) — chap0/1/1.5/2 all pass that tf32 shape.
+  ;; NO :tile-visit-strip-width — MEASURED: grouped order is neutral-to-harmful here (chap2 worse
+  ;; at every width; chap3_wgmma -8.3% at W=4 degrading monotonically to -14.4% at W=16), and no
+  ;; cliff appears even at 4x L2.  Omitting the key means linear, which is what this part wants.
+  (register-hardware-profile
+   'h100
+   '(:simd-width 32
+     :compute-units 114
+     :max-registers-per-cu 65536
+     :max-registers-per-thread 255
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 64)
+     :max-shared-memory-per-block 227KB
+     :l2-cache-size 50MB
+     :native-cache-line-size 128
+     :mma-shapes ((16 8 8) (16 8 4) (16 8 16)))))

@@ -41,3 +41,9 @@
 (defcfun ("LLVMConstIntGetSExtValue" llvm-const-int-get-sext-value) :long-long
   "The sign-extended value of a ConstantInt."
   (val :pointer))
+
+;; Endeavour 156 Step 2: :xe-native refuses a non-zero fragment init rather than guessing the
+;; per-lane encoding of the initial value, and this is how it recognises the zero case.
+(defcfun ("LLVMIsNull" llvm-is-null) :boolean
+  "T if VAL is a null/zero constant."
+  (val :pointer))
