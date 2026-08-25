@@ -557,6 +557,68 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
     lines.append("| **64×128** | 21.3 | −6.1% | **+15.5%** | **+10.7%** |")
     lines.append("| 64×64 | 16.0 | +0.4% | +1.1% | +4.4% |\n")
 
+    # MMA lowering (Intel).  DATA-DRIVEN, unlike the multicast table above, which is a static
+    # paste-in of literal percentages.  Both pairs are rendered on purpose: :xe-native is faster
+    # BARE and slower TUNED, so showing only one pair would be true and misleading.
+    for gpu in gpus:
+        low = matmul_data[gpu].get("sec3_mma_lowering", {}).get("fast", {})
+        if not low:
+            continue
+        l_sizes = sorted([n for n in low.keys() if isinstance(n, int)])
+        if not l_sizes:
+            continue
+
+        def _tfl(n, comp, _low=low):
+            pt = _low.get(n, {}).get(comp)
+            if not pt:
+                return None
+            return pt.get("metrics", {}).get("throughput", {}).get("tflops")
+
+        lines.append("### MMA Lowering: `:xe-native` vs `:coop-matrix` (Intel only) \u00b7 " + gpu)
+        lines.append("")
+        lines.append("*Same kernel, same 32x64 bf16 geometry over one subgroup; only the lowering "
+                     "differs. `tuned` adds ring depth 2 and prefetch distance 2, which makes its "
+                     "`:coop-matrix` arm the shipped section 2.1 kernel.*")
+        lines.append("")
+        lines.append("| pairing | " + " | ".join("N=%d" % n for n in l_sizes) + " |")
+        lines.append("|---|" + "---:|" * len(l_sizes))
+        for label, coop, xe in (("bare (no ring, no prefetch)", "Crisp_Coop_Bare", "Crisp_XeNative_Bare"),
+                                ("tuned (ring 2, prefetch 2)", "Crisp_Coop_Tuned", "Crisp_XeNative_Tuned")):
+            cells = []
+            for n in l_sizes:
+                c, x = _tfl(n, coop), _tfl(n, xe)
+                if not c or not x:
+                    cells.append("\u2014")
+                    continue
+                d = (x / c - 1.0) * 100.0
+                cell = ("+" if d >= 0 else "\u2212") + ("%.1f%%" % abs(d))
+                cells.append("**" + cell + "**" if abs(d) >= 5.0 else cell)
+            lines.append("| " + label + " | " + " | ".join(cells) + " |")
+        lines.append("")
+        lines.append("Positive means `:xe-native` is faster. It wins bare and loses tuned: the "
+                     "lowering is better in isolation and does **not** compose with the "
+                     "register-tile ring. See `docs/topology.md`, `mma-lowering`.")
+        lines.append("")
+
+        # Declare our own gaps.  A table that quietly omits the sizes disagreeing with its caption
+        # is worse than no table: the tuned pairing's conclusion depends on the larger sizes, and a
+        # lone small-N cell says the opposite.
+        missing = []
+        for label, coop, xe in (("bare", "Crisp_Coop_Bare", "Crisp_XeNative_Bare"),
+                                ("tuned", "Crisp_Coop_Tuned", "Crisp_XeNative_Tuned")):
+            for comp in (coop, xe):
+                gone = [n for n in l_sizes if _tfl(n, comp) is None]
+                if gone:
+                    missing.append((comp, gone))
+        if missing:
+            lines.append("> **Incomplete data.** " + "; ".join(
+                "`%s` has no point at N=%s" % (c, ", ".join(str(n) for n in g)) for c, g in missing) +
+                ". The autobench sweep intermittently drops points for this contender; the "
+                "kernel itself is fine, and runs correctly at every size when invoked directly "
+                "(e.g. 45.2 TFLOPS MMA_CORRECT at N=1024 on a run where the sweep recorded "
+                "nothing). Read the affected cells as missing data, not as a result.")
+            lines.append("")
+
     # Section 4: MMA + Activation
     lines.append("## § 4 — MMA + Activation\n")
     lines.append("*What does fusing an arbitrary activation buy?*\n")

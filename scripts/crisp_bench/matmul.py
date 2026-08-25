@@ -919,6 +919,16 @@ def main():
             # report was just fixed for (the CUB/CUBLAS substring collision).  Different element
             # type, different section, contenders converted to match.
             run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16.crisp", use_autobench=True)
+
+            # §3 Situational — MMA LOWERING (:coop-matrix vs :xe-native), Intel only.
+            # Four kernels, one variable at a time.  All are 32x64 bf16 over one subgroup; the
+            # TUNED pair adds ring depth 2 + prefetch distance 2, making Crisp_Coop_Tuned the same
+            # kernel as sec2_top_bf16.  Both pairs are needed: :xe-native is FASTER bare and SLOWER
+            # tuned, so either pair alone tells a true and misleading story.
+            run_l0_crisp("sec3_mma_lowering", "matmul_coop_bare.crisp",  "Crisp_Coop_Bare",     use_autobench=True)
+            run_l0_crisp("sec3_mma_lowering", "matmul_xe_bare.crisp",    "Crisp_XeNative_Bare",  use_autobench=True)
+            run_l0_crisp("sec3_mma_lowering", "matmul_coop_tuned.crisp", "Crisp_Coop_Tuned",    use_autobench=True)
+            run_l0_crisp("sec3_mma_lowering", "matmul_xe_tuned.crisp",   "Crisp_XeNative_Tuned", use_autobench=True)
             run_target("sec2_top_fp16", "sycl_control_fp16.cpp", "sycl_control_fp16", "SYCL_Apples_FP16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top_fp16", "onemkl_fp16.cpp", "onemkl_fp16", "OneMKL_FP16", sycl_flags, is_sycl=True, is_cublas=True)
 

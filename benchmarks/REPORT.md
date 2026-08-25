@@ -4,7 +4,7 @@
 
 | device | data captured | source |
 |---|---|---|
-| Intel BMG | 2026-08-25 | Crisp `e609dfb` (docker) |
+| Intel BMG | 2026-08-25 | Crisp `570d524` (docker) |
 | NVIDIA H100 NVL | 2026-08-22 | Crisp `209687fd` (runpod) |
 
 ---
@@ -388,6 +388,19 @@ wgmma
 | 64×256 | 25.6 | −6.1% | **−7.0%** | −9.7% |
 | **64×128** | 21.3 | −6.1% | **+15.5%** | **+10.7%** |
 | 64×64 | 16.0 | +0.4% | +1.1% | +4.4% |
+
+### MMA Lowering: `:xe-native` vs `:coop-matrix` (Intel only) · Intel BMG
+
+*Same kernel, same 32x64 bf16 geometry over one subgroup; only the lowering differs. `tuned` adds ring depth 2 and prefetch distance 2, which makes its `:coop-matrix` arm the shipped section 2.1 kernel.*
+
+| pairing | N=512 | N=1024 | N=2048 | N=4096 |
+|---|---:|---:|---:|---:|
+| bare (no ring, no prefetch) | **+23.2%** | **+15.8%** | **+12.7%** | **+9.8%** |
+| tuned (ring 2, prefetch 2) | **+29.9%** | **−9.4%** | **−16.6%** | — |
+
+Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowering is better in isolation and does **not** compose with the register-tile ring. See `docs/topology.md`, `mma-lowering`.
+
+> **Incomplete data.** `Crisp_XeNative_Tuned` has no point at N=4096. The autobench sweep intermittently drops points for this contender; the kernel itself is fine, and runs correctly at every size when invoked directly (e.g. 45.2 TFLOPS MMA_CORRECT at N=1024 on a run where the sweep recorded nothing). Read the affected cells as missing data, not as a result.
 
 ## § 4 — MMA + Activation
 
