@@ -3767,3 +3767,468 @@
   "BISECTION STUB: always declines to split."
   (declare (ignore builder))
   (values origin 0))
+
+;;;; ============================================================================
+;;;; Endeavour 156 Phase 0 — PIN THE SUBGROUP SIZE.
+;;;;
+;;;; THE HOLE.  Crisp computes a workgroup's warp count as local-size / :simd-width
+;;;; (%resolve-workgroup-warp-count, src/mma.lisp), and every :warps mask, warp-id reference and
+;;;; per-warp switch arm is built on that number.  But the generated SPIR-V requests NO subgroup
+;;;; size: before this change the only OpExecutionMode in a Crisp kernel was 4459 (DenormPreserve).
+;;;;
+;;;; Unlike CUDA, where a warp is 32 by hardware definition, an Intel subgroup is one hardware
+;;;; thread executing the kernel at its COMPILED SIMD width, and IGC chooses that width per kernel
+;;;; from {8, 16, 32}.  BMG's subGroupSizes advertises both 16 and 32.  So Crisp was assuming 16
+;;;; while IGC decided independently -- and they agree today only by luck of a heuristic.  Verified
+;;;; 2026-08-24: both the shipped 16-work-item kernel and the 512-work-item 32-subgroup probe dump
+;;;; as ..._simd16_entry_0001.asm, which is the right answer arrived at by the wrong route.
+;;;;
+;;;; If IGC ever picks SIMD32, a 32-entry :warps mask describes SIXTEEN actual subgroups, every
+;;;; switch arm selects the wrong slice, and the kernel is silently wrong.  Endeavour 156 is about
+;;;; to make kernels much larger, which is exactly the input that moves IGC's heuristic.
+;;;;
+;;;; SIMD16 is also the width XMX/DPAS wants on Xe2, so pinning it is not a tradeoff -- it closes a
+;;;; hole and asks for the width the matrix engines want anyway.
+;;;;
+;;;; WHY THE GUARD IS NARROW.  A required subgroup size is a CONTRACT: a workgroup smaller than the
+;;;; subgroup, or not a whole multiple of it, is at best a partial subgroup and at worst a compile
+;;;; error in the driver.  1028 shipped specs run through this path, many with tiny or
+;;;; runtime-derived local sizes.  So the mode is emitted only when all four hold:
+;;;;
+;;;;     - a hardware profile is active and names a :simd-width
+;;;;     - the kernel's local-size is COMPILE-TIME known
+;;;;     - total work-items >= the simd width
+;;;;     - total work-items is a whole multiple of it
+;;;;
+;;;; Any kernel failing those emits exactly what it did before.  That deliberately leaves the
+;;;; profile-less case unpinned -- %resolve-workgroup-warp-count defaults warp-size to 32 there,
+;;;; which is a separate inconsistency and not Phase 0's to fix.
+;;;; ============================================================================
+
+;; src/codegen.lisp
+(defconstant +spirv-execution-mode-subgroup-size+ 35
+  "SPIR-V ExecutionMode SubgroupSize.  Takes one literal operand: the required size.")
+
+;; src/codegen.lisp
+(defun %emit-spirv-subgroup-size-execution-mode (func module semantic-function)
+  "Endeavour 156 Phase 0: emit an !spirv.ExecutionMode entry pinning kernel FUNC's subgroup size to
+   the active hardware profile's :simd-width, so the width Crisp ASSUMES and the width IGC COMPILES
+   are the same value by contract rather than by coincidence.
+
+   Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and
+   the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See
+   the header for why that guard is deliberately narrow.
+
+   Uses the same named-metadata mechanism endeavour 126 proved for the denorm modes; the
+   `reqd_sub_group_size` function attribute does NOT survive to SPIR-V on this path."
+  (let* ((profile (active-hardware-profile))
+         (simd    (and profile (getf profile :simd-width)))
+         (kname   (semantic-function-name semantic-function))
+         (disp    (and kname (gethash kname *kernel-dispatch-declarations*)))
+         (dims    (and disp (%hp-local-size-dims (getf disp :local-size))))
+         (total   (and dims (reduce #'* dims))))
+    (cond
+      ((not (integerp simd))
+       (log:debug "subgroup-size: no :simd-width in the active profile for ~a; not pinning." kname))
+      ((not total)
+       (log:debug "subgroup-size: local-size for ~a is not compile-time known; not pinning." kname))
+      ((or (< total simd) (not (zerop (mod total simd))))
+       (log:info "subgroup-size: local-size ~a for ~a is not a whole multiple of simd-width ~a; not pinning."
+                 total kname simd))
+      (t
+       (let* ((ctx (llvm-get-module-context module))
+              (i32 (llvm-int32-type))
+              (func-md (llvm-value-as-metadata func))
+              (mode-md (llvm-value-as-metadata
+                        (llvm-const-int i32 +spirv-execution-mode-subgroup-size+ 0)))
+              (size-md (llvm-value-as-metadata (llvm-const-int i32 simd 0))))
+         (cffi:with-foreign-object (arr :pointer 3)
+           (setf (cffi:mem-aref arr :pointer 0) func-md
+                 (cffi:mem-aref arr :pointer 1) mode-md
+                 (cffi:mem-aref arr :pointer 2) size-md)
+           (let* ((node (llvm-md-node-in-context2 ctx arr 3))
+                  (node-val (crisp.llvm-bindings::llvm-metadata-as-value ctx node)))
+             (llvm-add-named-metadata-operand module "spirv.ExecutionMode" node-val)))
+         (log:info "subgroup-size: pinned ~a to SubgroupSize ~a (local-size ~a = ~a subgroup~:p)."
+                   kname simd total (floor total simd)))))))
+
+;; src/codegen.lisp
+(defun ensure-opencl-kernel-metadata (func semantic-function module)
+  "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
+   Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
+   Endeavor 126: also stamps the denormal-fp-math attribute (all functions).
+   Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records
+   the EFFECTIVE extent (warning on degrade) for every entry point on every backend.
+   Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.
+
+   NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
+   as text during IR printing for SPIR-V."
+  (%apply-denormal-attribute func module)
+  (when (semantic-function-is-entry-point semantic-function)
+        (log:info "Marking function ~a as Kernel for backend ~a"
+                  (semantic-function-name semantic-function) *target-backend*)
+
+        (case *target-backend*
+          (:spirv
+           ;; calling convention spir_kernel (76)
+           (llvm-set-function-call-conv func 76)
+           ;; Endeavor 126: denormal handling reaches SPIR-V only via an execution mode.
+           (%emit-spirv-denorm-execution-mode func module)
+           ;; Endeavour 156 Phase 0: so does the subgroup size, and for the same reason --
+           ;; the function attribute does not survive the translator.
+           (%emit-spirv-subgroup-size-execution-mode func module semantic-function))
+          (:ptx
+           ;; Use ptx_kernel calling convention (71) so llc emits .entry
+           ;; If this crashes on Windows, we will need to revisit nvvm attributes.
+           (log:info "Setting CC 71 (ptx_kernel) for function ~a" (semantic-function-name semantic-function))
+           (llvm-set-function-call-conv func 71))
+          (t
+           ;; Default to C calling convention (0) for generic/unknown
+           (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
+           (llvm-set-function-call-conv func 0)))
+
+        ;; Endeavor 152: OUTSIDE the case on purpose.  This must run for every entry
+        ;; point on every backend -- it is what records the effective cluster extent
+        ;; and warns when a declared cluster could not be formed.  Gating it per
+        ;; backend is what let the SPIR-V degrade go silent.
+        (%apply-cluster-dims-attribute func semantic-function module))
+
+  (unless (semantic-function-is-entry-point semantic-function)
+    (case *target-backend*
+      (:spirv
+       ;; Use SPIR_FUNC (75) for non-kernel functions
+       (llvm-set-function-call-conv func 75)))))
+
+;; src/codegen.lisp  (REPLACES %emit-spirv-subgroup-size-execution-mode -- 156 Phase 0, second cut)
+;;
+;; The first cut wrote an !spirv.ExecutionMode entry, exactly as endeavour 126 does for the denorm
+;; modes, and the log confirmed it ran -- but the mode never reached the SPIR-V.  The translator
+;; drops it: ExecutionMode SubgroupSize (35) requires the SubgroupDispatch capability, which Crisp
+;; does not declare, and the translator will not invent a capability to satisfy a raw execution-mode
+;; request.  Its supported route from LLVM is the FUNCTION-LEVEL metadata that OpenCL C's
+;; __attribute__((intel_reqd_sub_group_size(N))) lowers to; the translator recognises that, emits
+;; the execution mode AND declares the capability that makes it legal.
+;;
+;; So this is not "a different way to write the same thing" -- it is the difference between asking
+;; for a mode and asking for the FEATURE, and only the latter brings its capability with it.
+(defun %emit-spirv-subgroup-size-execution-mode (func module semantic-function)
+  "Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's
+   :simd-width, so the width Crisp ASSUMES when computing warp counts and the width IGC COMPILES
+   are the same value by contract rather than by coincidence.
+
+   Attaches !intel_reqd_sub_group_size to the kernel.  The LLVM->SPIR-V translator turns that into
+   OpExecutionMode SubgroupSize together with the SubgroupDispatch capability it requires; writing
+   the execution mode directly does NOT work, because the capability would be missing and the
+   translator silently drops the mode (observed 2026-08-24).
+
+   Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and
+   the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See
+   the Phase 0 header for why that guard is deliberately narrow."
+  (declare (ignorable module))
+  (let* ((profile (active-hardware-profile))
+         (simd    (and profile (getf profile :simd-width)))
+         (kname   (semantic-function-name semantic-function))
+         (disp    (and kname (gethash kname *kernel-dispatch-declarations*)))
+         (dims    (and disp (%hp-local-size-dims (getf disp :local-size))))
+         (total   (and dims (reduce #'* dims))))
+    (cond
+      ((not (integerp simd))
+       (log:debug "subgroup-size: no :simd-width in the active profile for ~a; not pinning." kname))
+      ((not total)
+       (log:debug "subgroup-size: local-size for ~a is not compile-time known; not pinning." kname))
+      ((or (< total simd) (not (zerop (mod total simd))))
+       (log:info "subgroup-size: local-size ~a for ~a is not a whole multiple of simd-width ~a; not pinning."
+                 total kname simd))
+      (t
+       (let* ((ctx  (llvm-get-module-context func))
+              (i32  (llvm-int32-type))
+              (name "intel_reqd_sub_group_size")
+              (kind (llvm-get-md-kind-id-in-context ctx name (length name)))
+              (size-md (llvm-value-as-metadata (llvm-const-int i32 simd 0))))
+         (cffi:with-foreign-object (arr :pointer 1)
+           (setf (cffi:mem-aref arr :pointer 0) size-md)
+           (let ((node (llvm-md-node-in-context2 ctx arr 1)))
+             (llvm-global-set-metadata func kind node)))
+         (log:info "subgroup-size: pinned ~a to SubgroupSize ~a (local-size ~a = ~a subgroup~:p)."
+                   kname simd total (floor total simd)))))))
+
+;; src/codegen.lisp  (REPLACES %emit-spirv-subgroup-size-execution-mode -- 156 Phase 0, third cut)
+;;
+;; The first cut wrote an !spirv.ExecutionMode entry, exactly as endeavour 126 does for the denorm
+;; modes, and the log confirmed it ran -- but the mode never reached the SPIR-V.  The translator
+;; drops it: ExecutionMode SubgroupSize (35) requires the SubgroupDispatch capability, which Crisp
+;; does not declare, and the translator will not invent a capability to satisfy a raw execution-mode
+;; request.  Its supported route from LLVM is the FUNCTION-LEVEL metadata that OpenCL C's
+;; __attribute__((intel_reqd_sub_group_size(N))) lowers to; the translator recognises that, emits
+;; the execution mode AND declares the capability that makes it legal.
+;;
+;; The second cut ALSO passed FUNC to llvm-get-module-context, which takes a MODULE -- an unchecked
+;; unwrap that yields a garbage context, so the kind-id and the node were minted somewhere other
+;; than the module being compiled and the attachment silently did nothing.  Same family of trap as
+;; BUG 033: these LLVM-C entry points do not check what you hand them.
+;;
+;; So this is not "a different way to write the same thing" -- it is the difference between asking
+;; for a mode and asking for the FEATURE, and only the latter brings its capability with it.
+(defun %emit-spirv-subgroup-size-execution-mode (func module semantic-function)
+  "Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's
+   :simd-width, so the width Crisp ASSUMES when computing warp counts and the width IGC COMPILES
+   are the same value by contract rather than by coincidence.
+
+   Attaches !intel_reqd_sub_group_size to the kernel.  The LLVM->SPIR-V translator turns that into
+   OpExecutionMode SubgroupSize together with the SubgroupDispatch capability it requires; writing
+   the execution mode directly does NOT work, because the capability would be missing and the
+   translator silently drops the mode (observed 2026-08-24).
+
+   Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and
+   the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See
+   the Phase 0 header for why that guard is deliberately narrow."
+  (let* ((profile (active-hardware-profile))
+         (simd    (and profile (getf profile :simd-width)))
+         (kname   (semantic-function-name semantic-function))
+         (disp    (and kname (gethash kname *kernel-dispatch-declarations*)))
+         (dims    (and disp (%hp-local-size-dims (getf disp :local-size))))
+         (total   (and dims (reduce #'* dims))))
+    (cond
+      ((not (integerp simd))
+       (log:debug "subgroup-size: no :simd-width in the active profile for ~a; not pinning." kname))
+      ((not total)
+       (log:debug "subgroup-size: local-size for ~a is not compile-time known; not pinning." kname))
+      ((or (< total simd) (not (zerop (mod total simd))))
+       (log:info "subgroup-size: local-size ~a for ~a is not a whole multiple of simd-width ~a; not pinning."
+                 total kname simd))
+      (t
+       (let* ((ctx  (llvm-get-module-context module))
+              (i32  (llvm-int32-type))
+              (name "intel_reqd_sub_group_size")
+              (kind (llvm-get-md-kind-id-in-context ctx name (length name)))
+              (size-md (llvm-value-as-metadata (llvm-const-int i32 simd 0))))
+         (cffi:with-foreign-object (arr :pointer 1)
+           (setf (cffi:mem-aref arr :pointer 0) size-md)
+           (let ((node (llvm-md-node-in-context2 ctx arr 1)))
+             (llvm-global-set-metadata func kind node)))
+         (log:info "subgroup-size: pinned ~a to SubgroupSize ~a (local-size ~a = ~a subgroup~:p)."
+                   kname simd total (floor total simd)))))))
+
+;; src/codegen.lisp  (REPLACES %emit-spirv-subgroup-size-execution-mode -- 156 Phase 0, fourth cut)
+;;
+;; The first cut wrote an !spirv.ExecutionMode entry, exactly as endeavour 126 does for the denorm
+;; modes, and the log confirmed it ran -- but the mode never reached the SPIR-V.  The translator
+;; drops it: ExecutionMode SubgroupSize (35) requires the SubgroupDispatch capability, which Crisp
+;; does not declare, and the translator will not invent a capability to satisfy a raw execution-mode
+;; request.  Its supported route from LLVM is the FUNCTION-LEVEL metadata that OpenCL C's
+;; __attribute__((intel_reqd_sub_group_size(N))) lowers to; the translator recognises that, emits
+;; the execution mode AND declares the capability that makes it legal.
+;;
+;; Two further traps, both of which produced a stale .spt rather than a loud failure:
+;;   - FUNC was passed to llvm-get-module-context, which takes a MODULE.  Unchecked unwrap,
+;;     same family as BUG 033.
+;;   - llvm-global-set-metadata / llvm-get-md-kind-id-in-context are NOT exported from
+;;     crisp.llvm-bindings, so unqualified references are undefined in crisp.compiler.  That
+;;     aborted the compile, left the previous .spv in place, and every check read the old file.
+;;
+;; So this is not "a different way to write the same thing" -- it is the difference between asking
+;; for a mode and asking for the FEATURE, and only the latter brings its capability with it.
+(defun %emit-spirv-subgroup-size-execution-mode (func module semantic-function)
+  "Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's
+   :simd-width, so the width Crisp ASSUMES when computing warp counts and the width IGC COMPILES
+   are the same value by contract rather than by coincidence.
+
+   Attaches !intel_reqd_sub_group_size to the kernel.  The LLVM->SPIR-V translator turns that into
+   OpExecutionMode SubgroupSize together with the SubgroupDispatch capability it requires; writing
+   the execution mode directly does NOT work, because the capability would be missing and the
+   translator silently drops the mode (observed 2026-08-24).
+
+   Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and
+   the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See
+   the Phase 0 header for why that guard is deliberately narrow."
+  (let* ((profile (active-hardware-profile))
+         (simd    (and profile (getf profile :simd-width)))
+         (kname   (semantic-function-name semantic-function))
+         (disp    (and kname (gethash kname *kernel-dispatch-declarations*)))
+         (dims    (and disp (%hp-local-size-dims (getf disp :local-size))))
+         (total   (and dims (reduce #'* dims))))
+    (cond
+      ((not (integerp simd))
+       (log:debug "subgroup-size: no :simd-width in the active profile for ~a; not pinning." kname))
+      ((not total)
+       (log:debug "subgroup-size: local-size for ~a is not compile-time known; not pinning." kname))
+      ((or (< total simd) (not (zerop (mod total simd))))
+       (log:info "subgroup-size: local-size ~a for ~a is not a whole multiple of simd-width ~a; not pinning."
+                 total kname simd))
+      (t
+       (let* ((ctx  (llvm-get-module-context module))
+              (i32  (llvm-int32-type))
+              (name "intel_reqd_sub_group_size")
+              (kind (crisp.llvm-bindings::llvm-get-md-kind-id-in-context ctx name (length name)))
+              (size-md (llvm-value-as-metadata (llvm-const-int i32 simd 0))))
+         (cffi:with-foreign-object (arr :pointer 1)
+           (setf (cffi:mem-aref arr :pointer 0) size-md)
+           (let ((node (llvm-md-node-in-context2 ctx arr 1)))
+             (crisp.llvm-bindings::llvm-global-set-metadata func kind node)))
+         (log:info "subgroup-size: pinned ~a to SubgroupSize ~a (local-size ~a = ~a subgroup~:p)."
+                   kname simd total (floor total simd)))))))
+
+;; src/compiler.lisp  (REPLACES inject-spir-kernel-metadata -- 156 Phase 0)
+;;
+;; WHY THIS CHANGED.  This function splices the OpenCL !kernel_arg_* refs into a kernel's define
+;; line by taking everything from the signature's closing paren to the opening brace and REPLACING
+;; it.  Anything LLVM had already attached to that function is silently discarded -- which is why
+;; endeavour 156's !intel_reqd_sub_group_size vanished between the module and the .ll even though
+;; the attachment demonstrably ran.
+;;
+;; The discarded tail is not only ours.  A kernel define line normally carries `#0 !dbg !N` there:
+;; the attribute-group reference and the debug-info reference.  Both were being dropped for entry
+;; points while every non-kernel function kept them.  That is a very plausible explanation for the
+;; endeavour-126 observation that the `denormal-fp-math` function attribute "does NOT reach SPIR-V"
+;; -- the attribute was fine; the reference to its attribute group was being deleted here.  126
+;; worked around it with an explicit execution mode, which is why denormals still behave correctly
+;; and why this went unnoticed.
+;;
+;; The fix is to APPEND rather than replace: keep whatever LLVM emitted, then add our refs.  That is
+;; strictly more information in the IR, and it is what lets function-level metadata survive to the
+;; SPIR-V translator at all.
+(defun inject-spir-kernel-metadata (ir-text)
+  "Inject OpenCL kernel metadata for all SPIR kernels found in IR text.
+Returns modified IR text with metadata.
+
+Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attribute-group refs,
+!dbg, !intel_reqd_sub_group_size) instead of overwriting it -- see the comment above."
+  (let ((kernels (find-spir-kernels ir-text)))
+    (if (null kernels)
+        ir-text
+        (let ((result ir-text)
+              (metadata-id-base 100)
+              (all-metadata-defs ""))
+
+          (dolist (kernel-info kernels)
+            (destructuring-bind (func-name func-start brace-pos) kernel-info
+              (log:info "Injecting metadata for kernel: ~a" func-name)
+
+              (let ((params (extract-kernel-params result func-start brace-pos)))
+                (log:info "  Parameters: ~a" params)
+
+                (multiple-value-bind (metadata-refs metadata-defs next-id)
+                    (generate-kernel-metadata params metadata-id-base)
+
+                  (let* (;; Search for @funcname( to find the definition, not occurrences
+                         ;; of func-name inside struct type names like S_file_funcname_TYPE
+                         (at-name-str (format nil "@~a(" func-name))
+                         (kernel-sig-start (search at-name-str result))
+                         (new-brace-pos (when kernel-sig-start
+                                          (position #\{ result :start kernel-sig-start)))
+                         ;; Search for ) only AFTER kernel-sig-start to stay within the signature
+                         (close-paren-pos (when (and kernel-sig-start new-brace-pos)
+                                            (position #\) result
+                                                      :start kernel-sig-start
+                                                      :end new-brace-pos
+                                                      :from-end t))))
+
+                    (log:info "  at-name-str=~s kernel-sig-start=~a new-brace-pos=~a close-paren-pos=~a"
+                              at-name-str kernel-sig-start new-brace-pos close-paren-pos)
+
+                    (if (null close-paren-pos)
+                        (log:warn "inject-spir-kernel-metadata: could not find ) for ~a, skipping" func-name)
+                        ;; Endeavour 156: keep the existing tail (#N, !dbg, !intel_reqd_sub_group_size,
+                        ;; anything else LLVM attached) and append our refs after it.
+                        (let ((existing (string-trim '(#\Space #\Tab)
+                                                     (subseq result (1+ close-paren-pos) new-brace-pos))))
+                          (log:debug "  preserving existing kernel metadata for ~a: ~s" func-name existing)
+                          (setf result (concatenate 'string
+                                         (subseq result 0 (1+ close-paren-pos))
+                                         (if (string= existing "")
+                                             ""
+                                             (concatenate 'string " " existing))
+                                         metadata-refs
+                                         " "
+                                         (string #\{)
+                                         (subseq result (1+ new-brace-pos))))
+                          (setf all-metadata-defs (concatenate 'string all-metadata-defs metadata-defs))
+                          (setf metadata-id-base next-id))))))))
+
+          (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
+
+;; src/mma.lisp  (REPLACES %emit-per-frag-block-load -- 156 Phase 1: integer warp selectors)
+(defun %emit-per-frag-block-load (src entry coords)
+  "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS).
+
+   Endeavour 155 Step 2b: when the tile is WARP-SLICED, each warp loads only its own rows (:a) or
+   columns (:b), at global coordinates offset by its grid position.  load-tile appears once in the
+   body, so the choice is a STATIC per-warp switch -- static so the offsets fold to literals and the
+   block-load addresses stay compile-time, which is the same reason 139 step-4 made the MMA walk
+   static."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) (operand :acc)) (cdr entry)
+    (declare (ignore n-true))
+    (let ((cl (find-package :crisp-language)))
+      (destructuring-bind (fr . fc) (%frag-mn-for-operand operand (%register-tile-elem-of (first entry)))
+        (let* ((frag-fn (ecase operand
+                          (:a (intern "LOAD-FRAGMENT-A" cl))
+                          (:b (intern "LOAD-FRAGMENT-B" cl))
+                          (:acc (error 'crisp-compiler-error
+                                  :message "load-tile into an accumulator register-tile is not supported (only :operand :a / :b tiles are load targets)."
+                                  :source-location nil))))
+               (to-int  (intern "TO-INT" cl))
+               (n-rows  (floor m fr))
+               (n-cols  (floor n fc))
+               (gy      (first coords))
+               (gx      (second coords))
+               (slice   (%warp-slice-extent entry operand))
+               (grid    *warp-grid*))
+          (flet ((one (idx row col)
+                   `(set! ,(nth idx syms)
+                          (,frag-fn ,src
+                                    ((+ (* (,to-int ,gy) ,n-rows) ,row)
+                                     (+ (* (,to-int ,gx) ,n-cols) ,col))))))
+            (if (not (and slice grid))
+                `(progn
+                   ,@(loop for ri below n-rows append
+                           (loop for ci below n-cols
+                                 for idx = (+ (* ri n-cols) ci)
+                                 collect (one idx ri ci))))
+                (let* ((progn-sym (intern "PROGN" cl))
+                       (let-sym   (intern "LET" cl))
+                       (if-sym    (intern "IF" cl))
+                       (lt-sym    (intern "<" cl))
+                       (minus-sym (intern "-" cl))
+                       (div-sym   (intern "/" cl))
+                       (times-sym (intern "*" cl))
+                       (warp-id   (intern "WARP-ID" cl))
+                       (gn        (cdr grid))
+                       (nslice    (if (eq operand :a) (car grid) (cdr grid)))
+                       (wp        (gensym "WP"))
+                       (sl        (gensym "SL")))
+                  (labels ((arm (w)
+                             `(,progn-sym
+                                ,@(if (eq operand :a)
+                                      (loop for lr below slice append
+                                            (loop for ci below n-cols
+                                                  for idx = (+ (* lr n-cols) ci)
+                                                  collect (one idx (+ (* w slice) lr) ci)))
+                                      (loop for ri below n-rows append
+                                            (loop for lc below slice
+                                                  for idx = (+ (* ri slice) lc)
+                                                  collect (one idx ri (+ (* w slice) lc)))))))
+                           (chain (w)
+                             (if (>= w (1- nslice))
+                                 (arm w)
+                                 `(,if-sym (,lt-sym ,sl ,(1+ w))
+                                           ,(arm w)
+                                           ,(chain (1+ w))))))
+                    `(,let-sym ((,wp (,minus-sym (,to-int (,warp-id)) ,first-true)))
+                       ;; 156 Phase 1: INTEGER / and - , not FLOOR/MOD.
+                       ;;
+                       ;; (intern "FLOOR" :crisp-language) resolves to CRISP.COMPILER:FLOOR, which
+                       ;; returns a FLOAT -- %emit-per-frag-store already documents that and moved
+                       ;; to / and - for its addresses.  (intern "MOD" :crisp-language) is worse:
+                       ;; MOD does not exist there at all, so the intern MINTS a fresh symbol with
+                       ;; no operator behind it.  The load switch was never updated with the store.
+                       ;;
+                       ;; It survived because single-axis slicing never exercises either one: when
+                       ;; gm=1 or gn=1 the un-sliced operand emits a bare arm with NO selector, and
+                       ;; the sliced one divides by 1, which is exact under any semantics.  A 2-D
+                       ;; grid is the first case where a selector divides by something >1 -- which
+                       ;; is exactly where MMA_WRONG starts (verified: correct at 1 and 2 warps,
+                       ;; wrong from 4; correct at every 1-D-forced shape at 4 warps).
+                       (,let-sym ((,sl ,(if (eq operand :a)
+                                            `(,div-sym ,wp ,gn)
+                                            `(,minus-sym ,wp (,times-sym (,div-sym ,wp ,gn) ,gn)))))
+                         ,(chain 0))))))))))))
