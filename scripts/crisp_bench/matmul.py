@@ -539,6 +539,81 @@ def run_l0_bin(path, M, N, K, warmup, iters, env_extra=None):
         print(out[-600:], file=sys.stderr)
         return None
 
+def _sexp_after(text, key):
+    """The balanced s-expression following KEY in a metacrisp, as a string, or ''."""
+    i = text.find(key)
+    if i < 0:
+        return ""
+    i = text.find("(", i)
+    if i < 0:
+        return ""
+    d, j = 0, i
+    while j < len(text):
+        if text[j] == "(":
+            d += 1
+        elif text[j] == ")":
+            d -= 1
+            if d == 0:
+                return text[i:j + 1]
+        j += 1
+    return ""
+
+
+def l0_fixture_env(crisp_src, metacrisp):
+    """Environment for bench_harness_l0.cpp, DERIVED from what the compiler recorded.
+
+    Nothing here is restated by the caller: local size, grid strategy, tile shape and the register
+    mode all come from the metacrisp, and the element type from the kernel source.  A call site that
+    had to repeat them could drift from the kernel, which is the failure this fixture exists to end.
+    """
+    env = {}
+    try:
+        meta = Path(metacrisp).read_text(errors="replace")
+    except Exception:
+        meta = ""
+    try:
+        src = Path(crisp_src).read_text(errors="replace")
+    except Exception:
+        src = ""
+
+    ls = _sexp_after(meta, ":local-size")
+    nums = re.findall(r"\d+", ls)
+    if nums:
+        dims = (nums + ["1", "1"])[:3]
+        env["CRISP_MATMUL_LOCAL"] = ",".join(dims)
+
+    gs = _sexp_after(meta, ":global-size")
+    env["CRISP_MATMUL_GRID"] = "one-thread-per" if ":one-thread-per" in gs else "strided"
+    tshape = _sexp_after(gs, ":tile-shape")
+    tnums = re.findall(r"\d+", tshape)
+    if len(tnums) >= 2:
+        env["CRISP_MATMUL_TILE"] = f"{tnums[0]},{tnums[1]}"
+
+    m = re.search(r"matrix\s+(bfloat16|half|float)", src)
+    if m:
+        env["CRISP_MATMUL_ELEM"] = {"bfloat16": "bf16", "half": "f16", "float": "f32"}[m.group(1)]
+
+    m = re.search(r":selected-registers-per-thread\s+(\d+)", meta)
+    if m:
+        # The compiler picked this mode; the harness must ask the JIT for the same one, or the
+        # kernel it measures is not the kernel that was compiled.  Missing this was a 14x error.
+        env["CRISP_MATMUL_BUILD_FLAGS"] = ("-ze-opt-large-register-file" if int(m.group(1)) > 128 else "")
+
+    km = re.search(r"\(def-kernel\s+([A-Za-z0-9_\-]+)", src)
+    if km:
+        env["CRISP_MATMUL_KERNEL"] = km.group(1)
+
+    # SLM scratch tensors are passed as LEADING kernel arguments, so A/B/C are NOT at 0/9/18.
+    # The fixture binds the three global tensors at fixed offsets and has no way to allocate a
+    # group-local argument (which needs zeKernelSetArgumentValue(i, bytes, nullptr) plus extents
+    # taken from the kernel source).  Rather than bind the global tensors onto the SLM slots -- which
+    # produced a nonsense 135848 GFLOPS before verification rejected it -- say so and let the caller
+    # use the generated harness, which does handle these kernels.
+    env["_fixture_unsupported"] = ("scratch/SLM tensor arguments"
+                                   if "ADDRESS-SPACE LOCAL" in meta.upper() else "")
+    return env
+
+
 def build_l0_harness(crisp_compiler):
     harness = HERE / "crisp" / "bench_harness_l0.cpp"
     if not harness.exists():
@@ -567,7 +642,22 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
         print(f"l0-fixed: crisp-compile failed for {src.name}", file=sys.stderr); return empty
     if not spv.exists():
         print(f"l0-fixed: no spv {spv}", file=sys.stderr); return empty
+    # The metacrisp carries the dispatch geometry and the register mode the compiler chose.
+    # Generate it (metadata only -- this does not produce the harness we are replacing) and derive
+    # the fixture's environment from it, so nothing about the launch is restated by hand.
+    try:
+        sh([crisp_compiler, "--hoist=l0", f"--hardware-profile={INTEL_HW_PROFILE}",
+            *prec_flags, "--log-level=off", str(src)], capture_output=True, text=True)
+    except Exception:
+        pass
+    metacrisp = next(iter(sorted(src.parent.glob(f"{src.stem}_*.metacrisp"))), None)
     env_ext = {"CRISP_MATMUL_SPV": str(spv)}
+    if metacrisp:
+        _e = l0_fixture_env(src, metacrisp)
+        _e.pop("_fixture_unsupported", None)   # an internal flag, not an env var
+        env_ext.update(_e)
+    else:
+        print(f"l0-fixed: no metacrisp for {src.name}; using fixture defaults", file=sys.stderr)
     results = []
     for s in sizes:
         S = int(s)
@@ -751,15 +841,36 @@ def main():
                 print(f"Skipping {comp_name} ({chapter}) — {crisp_compiler} not found."); return
             
             try:
-                if use_autobench:
+                # PREFER THE FIXTURE whenever it is built.  `use_autobench` used to select the
+                # per-kernel generated harness, which is both the thing measured and the apparatus
+                # measuring it -- it silently dropped contenders (chap4/chap5 bf16 recorded ZERO
+                # points while running at 46 and 39 TFLOPS by hand), and it mis-dispatched 2-D local
+                # sizes (chap0_naive read MMA_WRONG for a kernel that was always correct).  The
+                # fixture is one reviewed harness, identical for every kernel, calibrated against
+                # the old path to within 0.5%.  Autobench remains only as a fallback for when the
+                # fixture has not been compiled.
+                unsupported = ""
+                _mc = next(iter(sorted(src.parent.glob(f"{src.stem}_*.metacrisp"))), None)
+                if _mc:
+                    unsupported = l0_fixture_env(src, _mc).get("_fixture_unsupported", "")
+                if l0_harness and not unsupported:
+                    sweep = run_l0_fixed_sweep(chapter, src, comp_name, l0_harness, sizes, a.warmup, a.iters,
+                                               prec, ftz, crisp_compiler)
+                elif use_autobench:
                     dev_c_ms = 0.0
+                    if unsupported:
+                        print(f"  NOTE: {comp_name} ({chapter}) uses {unsupported}, which the fixture "
+                              f"does not support — using the generated harness.", file=sys.stderr)
+                    sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
+                                                   prec, ftz, dev_c_ms, crisp_compiler)
+                elif use_autobench:
+                    dev_c_ms = 0.0
+                    print(f"  NOTE: {comp_name} ({chapter}) falling back to the generated harness "
+                          f"— the fixture was not built.", file=sys.stderr)
                     sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
                                                    prec, ftz, dev_c_ms, crisp_compiler)
                 else:
-                    if not l0_harness:
-                        print(f"Skipping {comp_name} ({chapter}) — L0 harness not built."); return
-                    sweep = run_l0_fixed_sweep(chapter, src, comp_name, l0_harness, sizes, a.warmup, a.iters,
-                                               prec, ftz, crisp_compiler)
+                    print(f"Skipping {comp_name} ({chapter}) — L0 harness not built."); return
             except ContenderBuildError as e:
                 # Crisp itself can fail to compile a chapter's kernel — an unsupported element
                 # type, a shape the hardware profile does not carry.  That is a result about ONE
