@@ -1,56 +1,109 @@
 ;; Section 2 top MMA kernel — Intel BMG, bfloat16.
 ;;
-;; TILE WIDTH IS THE TUNED PARAMETER.  This kernel was originally the tf32 top kernel with the
-;; element type changed, which meant all three of its tuning parameters had been chosen for 32-bit
-;; operands: a 32x32 output tile, ring depth 2, prefetch distance 2 K-steps.  At 16 bits each of
-;; those describes HALF the bytes it was sized for, so arithmetic intensity per subgroup was
-;; halved exactly where it matters.
+;; SUBGROUP COUNT x K-DEPTH ARE THE TUNED PARAMETERS, AND THEY ARE NOT INDEPENDENT.  This kernel
+;; distributes a 128x256 output tile across SIXTEEN subgroups and walks K in steps of 32.  Both
+;; halves of that are required; either alone loses.
 ;;
-;; Measured on an Arc B580 (endeavour 155), bf16, every point MMA_CORRECT:
+;; Measured on an Arc B580 through benchmarks/matmul/crisp/bench_harness_l0.cpp, TFLOPS,
+;; every point MMA_CORRECT.  ALL NUMBERS BELOW ARE LINUX (the Docker bench image, oneAPI +
+;; L0 over /dev/dxg) -- see the platform note further down, which is not a footnote.
+;;
+;;     N                        1024    2048    4096    8192
+;;     this kernel (16sg K=32)  63.1    57.7    64.5    66.2
+;;     the kernel it replaces   49.9    61.6    57.6    40.2
+;;
+;; +26.6% / -6.4% / +12.0% / +64.9%, geometric mean +21.7%.  Measured back to back in ONE
+;; container run, so the comparison is not carrying any cross-session drift.
+;;
+;; THE 2048 CELL IS A REAL LOSS AND IS BEING ACCEPTED, not explained away.  It is outside
+;; the 2.2% spread at that size.  It buys +65% at 8192, which is where the comparison
+;; against SYCL-TLA is actually decided, and +27% at 1024.  If someone finds a shape that
+;; keeps the large-N win without the 2048 cost, that strictly dominates this one.
+;;
+;; RUN-TO-RUN SPREAD, six repeats of this kernel, so deltas can be read against something:
+;;     1024 2.2%   2048 2.2%   4096 3.1%   8192 0.7%
+;; A 6% difference at 2048 is therefore signal, not noise.  One screen reading of 61.7 at
+;; 2048 sits outside the six-repeat band (56.6-57.8) and is unexplained; it is the only
+;; measurement here that does not reconcile.
+;;
+;; THE PLATFORM MATTERS MORE THAN ANY KNOB IN THIS FILE.  The same unchanged kernel measures
+;; very differently on Windows-native L0 and on Linux in the bench container:
 ;;
 ;;     N            1024    2048    4096    8192
-;;     32x32        40.0    41.3    33.3    27.1   TFLOPS
-;;     32x64        49.8    60.8    57.3    38.7
-;;     gain        1.25x   1.47x   1.72x   1.43x
+;;     Windows      69.3    62.3    56.0    51.3
+;;     Linux        63.1    57.7    64.5    66.2
 ;;
-;; It raises the plateau AND improves the scaling, which is what identifies it as an arithmetic
-;; intensity fix rather than a constant-factor one.
+;; Windows wins the small sizes, Linux wins the large ones, and at 8192 the gap is 29%.  A
+;; candidate ranking taken on one platform is NOT evidence about the other -- w64_k64 (one
+;; subgroup, 32x64 tile, K=64) led the Windows screen at 59.1 @4096 and collapses to 26.9 on
+;; Linux, last of six.  The Windows screen that originally chose this geometry has been
+;; re-run here; the choice survives, but it was luck that it did.  Screen on Linux.
 ;;
-;; WHAT DID NOT WORK, so nobody re-tries them blind:
+;; K DEPTH IS NOT MONOTONE.  Doubling K from the optimum regresses in both geometries.
+;; There is a K optimum per geometry and it moves with subgroup count.  Do not tune one
+;; without re-tuning the other.
+;;
+;; STANDING vs THE PEER.  At 8192 this reads 66.1 against SYCL-TLA's 239.9 -- 28% of it, up
+;; from 16%, and 59% of the oneMKL ceiling, up from 32%.  The remaining gap is a LOWERING
+;; gap, not a geometry gap: the peer uses inline Xe asm DPAS with createBlock2DAddressPayload
+;; and never materialises a 64-bit address.  Geometry is now roughly matched; the
+;; instruction stream is not.
+;;
+;; CORRECTED, AND THE REASON IT IS CORRECTED RATHER THAN DELETED.  The kernel this replaces recorded
+;; as a measured negative: "multi-subgroup 256x256 over 32 subgroups = 34.6 TFLOPS @2048 vs this
+;; kernel's 60.8.  The geometry SYCL-TLA uses; it is not what makes SYCL-TLA fast."  That was an
+;; honest reading of an honest measurement -- taken at K=16.  The geometry was never the problem;
+;; there was not enough work in flight per subgroup to pay for the participants.  A note saying
+;; "tried it, it lost" is what stops the next person re-running it, so it has to be the note that
+;; gets fixed when the finding turns over.
+;;
+;; NO RING, NO PREFETCH, NO BARRIER.  All three were in the kernel this replaces and none survives:
+;;   ring          the ring costs registers that K depth spends better.  Two native K-steps inside
+;;                 one tile are already two independent MMA chains; a second buffer buys nothing and
+;;                 at K=32 across 16 subgroups it does not fit.  (Crisp's :ring-count is a BUFFER
+;;                 count; SYCL-TLA's Stages is a PREFETCH DEPTH over one buffer.  Not the same knob.)
+;;   prefetch      warms a line for one consumer.  With 16 subgroups sharing a workgroup tile the
+;;                 hardware is already getting the reuse the prefetch was buying.
+;;   barrier       endeavour 157 measured this directly: a fused (sync-workgroup) in the K loop costs
+;;                 14.7% at 16 subgroups, and the split form -- which removes ~90% of that cost --
+;;                 still does not beat no barrier at all.  See tests/spec/157-split-barrier/.
+;;
+;; WHAT DID NOT WORK, so nobody re-tries them blind.  Measured at the single-subgroup 32x64 geometry
+;; unless noted; retained because they cost real hardware time:
 ;;   ring depth 3     +9% at 32x32 but COLLAPSES 32x64 (57 -> 23 TFLOPS)
 ;;   prefetch dist 3  1.38x vs base, i.e. worse than 32x64's 1.70x
 ;;   prefetch dist 4  0.80x — actively harmful
 ;;   TM 64 (64x32)    does not run at all
 ;;   TN 96            MMA_WRONG at 0.27 TFLOPS — the GPU-fault signature, under investigation
 ;;   TN 128           correct but 0.14x
-;;
-;; Added by endeavour 156, all measured on this hardware, all MMA_CORRECT -- these are the big
-;; structural ideas, and none of them beat this kernel:
-;;   multi-subgroup   256x256 over 32 subgroups = 34.6 TFLOPS @2048 vs this kernel's 60.8.  The
-;;                    geometry SYCL-TLA uses; it is not what makes SYCL-TLA fast.
 ;;   SLM staging      correct but 40x SLOWER (0.9 vs 41.9 @2048).  SPV_INTEL_2d_block_io is a
 ;;                    GLOBAL-memory facility, so staging operands through shared local memory
 ;;                    loses the 2D block load entirely (load_block2d 41 -> 0).
 ;;   :xe-native+ring  the second lowering does NOT compose with the ring: 50.0 @2048 with ring 2,
-;;                    against 57.7 for :xe-native bare and 60.4 for this kernel.
-;;   address hoisting cut emulated 64-bit multiplies 36% for +2.9%, and on THIS kernel gave
-;;                    identical instruction counts 17% SLOWER.  This kernel is not issue-bound.
+;;                    against 57.7 for :xe-native bare.
+;;   address hoisting cut emulated 64-bit multiplies 36% for +2.9%, and on the ring kernel gave
+;;                    identical instruction counts 17% SLOWER.  Not issue-bound.
 ;;
 ;; THE LOWERING.  This kernel uses the default :coop-matrix path.  Endeavour 156 added a second,
-;; (mma-lowering :xe-native) -- Intel's SubgroupMatrixMultiplyAccumulateINTEL with 2D block loads
-;; and a VNNI-transform load for B.  It is a BETTER lowering at matched geometry (+13% @2048, +9%
-;; @4096, both without ring or prefetch) and produces leaner code (42 instructions per dpas vs 57),
-;; but it loses more from being un-ringed than it gains, so this kernel is still the fastest thing
-;; we ship.  Retry the combination when the :xe-native load path stops degrading with live fragment
-;; count (32x128 collapses to 5.6 TFLOPS; it is NOT register spill -- the ISA shows zero).
+;; (mma-lowering :xe-native) -- Intel's SubgroupMatrixMultiplyAccumulateINTEL with 2D block loads and
+;; a VNNI-transform load for B.  It is a better lowering at matched geometry (+13% @2048, +9% @4096)
+;; and produces leaner code (42 instructions per dpas vs 57), but it has not been re-tried against
+;; THIS geometry.  That is now the most promising untested combination we have.  Retry it when the
+;; :xe-native load path stops degrading with live fragment count (32x128 collapses to 5.6 TFLOPS; it
+;; is NOT register spill -- the ISA shows zero).
 ;;
-;; ON LARGE-GRF, narrowed by endeavour 156.  Stripping -ze-opt-large-register-file from the 32x32
-;; baseline HALVES it (34 -> 17 TFLOPS, three interleaved reps), so endeavour 144's selection is
-;; doing real work FOR THIS KERNEL SHAPE.  It is not a general law, and was being read as one:
-;; at 128x128 over 16 subgroups the DEFAULT allocation beats large-GRF by 70% (32.2 -> 54.9 @4096),
-;; and SYCL-TLA is INDIFFERENT to the choice -- forced from grf_count 128 (with 3904 bytes of
-;; deliberate spill) to 256 with none, it went 185 -> 190 TFLOPS.  Avoiding spill is worth ~3x to
-;; OUR lowering and nothing to its.  That is a property of our codegen, not of the hardware.
+;; ON LARGE-GRF.  Endeavour 144 selects the register mode per kernel and the harness must ask the JIT
+;; for the same one.  Note the selection is geometry-dependent and was once read as a general law:
+;; large-GRF is worth ~2x to the single-subgroup 32x32 shape, while at 128x128 over 16 subgroups the
+;; DEFAULT allocation beats it by 70% (32.2 -> 54.9 @4096).  SYCL-TLA is INDIFFERENT to the choice --
+;; forced from grf_count 128 (with 3904 bytes of deliberate spill) to 256 with none, it went 185 ->
+;; 190 TFLOPS.  Avoiding spill is worth ~3x to OUR lowering and nothing to its.  That is a property
+;; of our codegen, not of the hardware.
+;;
+;; STANDING vs THE PEER.  At 8192 this reads 51.3 against SYCL-TLA's 235.8 -- 22% of it, up from the
+;; 15% the previous kernel managed.  The remaining gap is a LOWERING gap, not a geometry gap: the
+;; peer uses inline Xe asm DPAS with createBlock2DAddressPayload and never materialises a 64-bit
+;; address.  Geometry is now approximately matched; the instruction stream is not.
 (declaim (precision fast))
 (def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
@@ -59,44 +112,16 @@
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
            (global-size :derive-from C :strategy :strided)
-           (local-size :set-to 16))
-  (let ((K      (inner-dimension A B))
-        (n-k-steps (/ (inner-dimension A B) (to-ulong 16))))
-
-    (tile-stride C (32 64) (grid-y grid-x)
-      (let ((A-ring (make-register-tile-ring bfloat16 (32 16) :ring-count 2 :operand :a))
-            (B-ring (make-register-tile-ring bfloat16 (16 64) :ring-count 2 :operand :b))
-            (C-tile (make-register-tile float (32 64) 0.0)))
-      (prefetch-tile A (grid-y 0) :size (32 16))
-      (prefetch-tile B (0 (* grid-x (to-ulong 4))) :size (16 16))
-      (prefetch-tile B (0 (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (16 16))
-      (prefetch-tile B (0 (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (16 16))
-      (prefetch-tile B (0 (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (16 16))
-      (prefetch-tile A (grid-y 1) :size (32 16))
-      (prefetch-tile B (1 (* grid-x (to-ulong 4))) :size (16 16))
-      (prefetch-tile B (1 (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (16 16))
-      (prefetch-tile B (1 (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (16 16))
-      (prefetch-tile B (1 (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (16 16))
-      (load-tile A (ring-get A-ring 0) (grid-y 0))
-      (load-tile B (ring-get B-ring 0) (0 grid-x))
-
-      (dotimes (grid-k n-k-steps)
-        (let ((next-k (+ grid-k (to-ulong 1)))
-              (prefetch-k (+ grid-k (to-ulong 2))))
-
-          (when (< prefetch-k n-k-steps)
-            (prefetch-tile A (grid-y prefetch-k) :size (32 16))
-            (prefetch-tile B (prefetch-k (* grid-x (to-ulong 4))) :size (16 16))
-            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (16 16))
-            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (16 16))
-            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (16 16)))
-
-          (when (< next-k n-k-steps)
-            (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
-            (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
-
-          (mma-accumulate-via-tile (8 16 16) C-tile
-                                   (ring-get A-ring (mod grid-k (to-ulong 2)))
-                                   (ring-get B-ring (mod grid-k (to-ulong 2))))))
-      :epilogue
-      (store-tile C-tile C (grid-y grid-x))))))
+           (local-size :set-to 256))
+  (let ((A-tile (make-register-tile bfloat16 (128 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile bfloat16 (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (128 256) 0.0 :warps '(true true true true true true true true true true true true true true true true)))
+        (K (inner-dimension A B)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x))
+          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

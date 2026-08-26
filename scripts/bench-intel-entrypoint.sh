@@ -14,9 +14,12 @@
 # the host-side wrapper doesn't have to round-trip a multi-line bash -c
 # string — both PowerShell and Git Bash mangle that in different ways.
 #
-# Usage: bench-intel-entrypoint.sh <sizes> <iters> [precision]
+# Usage: bench-intel-entrypoint.sh <sizes> <iters> [precision] [chapters]
 #   precision: "all" (default) -> full precision sweep (--sweep-all);
 #              "fast" | "ieee"  -> a single precision pass.
+#   chapters:  comma-separated chapter filter passed to matmul.py --chapters;
+#              empty (default) runs every chapter.  Use this to refresh a couple of rows
+#              without pinning the display GPU for the whole suite.
 
 set -e
 
@@ -25,6 +28,7 @@ set -e
 SIZES="${1:-256,512,1024}"
 ITERS="${2:-100}"
 PRECISION="${3:-all}"
+CHAPTERS="${4:-}"
 
 # Activate the oneAPI environment, then extend LD_LIBRARY_PATH to include
 # the WSL2 D3D shim libs so the L0 driver can actually open the GPU.
@@ -68,4 +72,6 @@ echo "=== Running matmul.py (Intel/BMG) — sizes=${SIZES} iters=${ITERS} precis
 # in benchmarks/results/ (bind-mounted -> host), where report.py picks it up.
 PREC_FLAG="--sweep-all"
 if [ "${PRECISION}" != "all" ]; then PREC_FLAG="--precision=${PRECISION}"; fi
-python3 scripts/crisp_bench/matmul.py --platform=intel ${PREC_FLAG} --sizes="${SIZES}" --iters="${ITERS}"
+CHAP_FLAG=""
+if [ -n "${CHAPTERS}" ]; then CHAP_FLAG="--chapters=${CHAPTERS}"; fi
+python3 scripts/crisp_bench/matmul.py --platform=intel ${PREC_FLAG} ${CHAP_FLAG} --sizes="${SIZES}" --iters="${ITERS}"

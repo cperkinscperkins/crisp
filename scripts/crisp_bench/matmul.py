@@ -816,7 +816,12 @@ def main():
                 env_ext = {"CRISP_MATMUL_PTX": str(bin_path)}
             else:
                 compiler = "icpx" if is_sycl else "nvcc"
-                if is_sycl and not shutil.which("icpx"): return
+                if is_sycl and not shutil.which("icpx"):
+                    # Say so.  A silently absent contender reads as "we have no peer number"
+                    # rather than "this shell has no oneAPI", and those are very different facts.
+                    print(f"  SKIPPING {comp_name} ({chapter}) — icpx not on PATH; "
+                          f"run the sweep from a oneAPI shell (setvars) to include SYCL contenders.")
+                    return
                 
                 cmd = [compiler] + flags + [str(src_path), "-o", str(bin_path)]
                 if is_sycl and is_cublas: cmd.insert(1, "-qmkl")
@@ -857,16 +862,13 @@ def main():
                     sweep = run_l0_fixed_sweep(chapter, src, comp_name, l0_harness, sizes, a.warmup, a.iters,
                                                prec, ftz, crisp_compiler)
                 elif use_autobench:
+                    # ALWAYS say which harness produced the number.  The two do not agree, so a row
+                    # whose provenance is unstated is a row that cannot be compared to the others.
                     dev_c_ms = 0.0
-                    if unsupported:
-                        print(f"  NOTE: {comp_name} ({chapter}) uses {unsupported}, which the fixture "
-                              f"does not support — using the generated harness.", file=sys.stderr)
-                    sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
-                                                   prec, ftz, dev_c_ms, crisp_compiler)
-                elif use_autobench:
-                    dev_c_ms = 0.0
-                    print(f"  NOTE: {comp_name} ({chapter}) falling back to the generated harness "
-                          f"— the fixture was not built.", file=sys.stderr)
+                    why = (f"uses {unsupported}, which the fixture does not support"
+                           if unsupported else "the fixture was not built")
+                    print(f"  NOTE: {comp_name} ({chapter}) measured through the GENERATED harness "
+                          f"— {why}.", file=sys.stderr)
                     sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
                                                    prec, ftz, dev_c_ms, crisp_compiler)
                 else:
