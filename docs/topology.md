@@ -17,6 +17,8 @@ And for absolute maximum performance, you might want to name or provide a hardwa
 
 Note that Crisp is not auto-optimizing the kernel for you. That is an ongoing area of research. You will have to choose the optimization strategy that fits your problem domain and code it. But Crisp forms make this a straightforward endeavor. We'll use real examples of matrix multiplication and Flash Attention as we progress.
 
+> **What are the choices?**  [`performance-levers.md`](performance-levers.md) enumerates every knob that changes the speed of a tuned register-resident MMA matmul, organised by who sets it — kernel source, compiler, enqueue, and the platform underneath.  It records measured magnitudes, the levers that turn out **not** to be independent of one another, and a list of things that were tried and did not pay, so they are not re-tried blind.
+
 Hardware Profiles ✅
 -----------------
 
