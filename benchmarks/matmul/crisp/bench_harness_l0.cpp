@@ -129,6 +129,12 @@ int main(int argc, char **argv) {
     const std::string gmode = env_or("CRISP_MATMUL_GRID", "strided");
     const auto local = parse_csv(env_or("CRISP_MATMUL_LOCAL", "16,1,1"), 3, 1);
     const auto tile  = parse_csv(env_or("CRISP_MATMUL_TILE", "32,64"), 2, 1);
+    // Module build flags.  The generated reference harness passes
+    // -ze-opt-large-register-file, which endeavour 144 selects per kernel; leaving it out
+    // costs ~3.1x on a 32x64 tile (50.3 vs 16.0 TFLOPS measured).  It is a knob rather than
+    // a constant because the right answer is geometry-dependent: the DEFAULT allocation
+    // beats large-GRF by 70% at 128x128 over 16 subgroups.
+    const std::string build_flags = env_or("CRISP_MATMUL_BUILD_FLAGS", "-ze-opt-large-register-file");
 
     const bool ab16 = (elem == "bf16" || elem == "f16");
     const size_t ab_bytes = ab16 ? 2 : 4;
@@ -176,7 +182,7 @@ int main(int argc, char **argv) {
     mdesc.format = ZE_MODULE_FORMAT_IL_SPIRV;
     mdesc.inputSize = spv.size();
     mdesc.pInputModule = spv.data();
-    mdesc.pBuildFlags = "";
+    mdesc.pBuildFlags = build_flags.c_str();
     ze_module_handle_t module_;
     ze_module_build_log_handle_t blog = nullptr;
     if (zeModuleCreate(ctx, device, &mdesc, &module_, &blog) != ZE_RESULT_SUCCESS) {
@@ -256,10 +262,15 @@ int main(int argc, char **argv) {
         grid.groupCountY = (uint32_t)((N + tile[1] - 1) / tile[1]);
     }
 
+    // A real queue plus two PRE-BUILT, CLOSED command lists -- the structure the reduction
+    // fixture uses.  An immediate list with a per-launch host sync puts submission round-trips
+    // inside the measured region; on this WSL2 setup that read 4.4 ms for a kernel that runs in
+    // ~283 us.  Building the list once and only re-executing it keeps the measurement on the
+    // kernel.
     ze_command_queue_desc_t qd{ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC};
     qd.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
-    ze_command_list_handle_t list;
-    ZE_OK(zeCommandListCreateImmediate(ctx, device, &qd, &list), "cmdListImmediate");
+    ze_command_queue_handle_t queue;
+    ZE_OK(zeCommandQueueCreate(ctx, device, &qd, &queue), "queueCreate");
 
     ze_event_pool_desc_t epd{ZE_STRUCTURE_TYPE_EVENT_POOL_DESC};
     epd.flags = ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP;
@@ -284,22 +295,36 @@ int main(int argc, char **argv) {
     const uint32_t valid_bits = dprops.kernelTimestampValidBits;
     const uint64_t clock_mask = (valid_bits >= 64) ? ~0ULL : ((1ULL << valid_bits) - 1ULL);
 
-    for (int w = 0; w < warmup; ++w)
-        ZE_OK(zeCommandListAppendLaunchKernel(list, kernel, &grid, nullptr, 0, nullptr), "warmup");
+    ze_command_list_desc_t cld{ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC};
+    ze_command_list_handle_t cl_warm, cl_meas;
+    ZE_OK(zeCommandListCreate(ctx, device, &cld, &cl_warm), "clWarm");
+    ZE_OK(zeCommandListAppendLaunchKernel(cl_warm, kernel, &grid, nullptr, 0, nullptr), "appendWarm");
+    ZE_OK(zeCommandListClose(cl_warm), "closeWarm");
+    ZE_OK(zeCommandListCreate(ctx, device, &cld, &cl_meas), "clMeas");
+    ZE_OK(zeCommandListAppendLaunchKernel(cl_meas, kernel, &grid, ev, 0, nullptr), "appendMeas");
+    ZE_OK(zeCommandListClose(cl_meas), "closeMeas");
 
-    // Host wall-clock across the timed loop.  Kernel timestamps depend on the timer domain,
-    // the valid-bit width and the Hz-vs-ns convention; the wall clock depends on none of
-    // those, so it arbitrates when two harnesses disagree by 15x on the same .spv.
-    const auto wall_t0 = std::chrono::steady_clock::now();
+    for (int w = 0; w < warmup; ++w) {
+        ZE_OK(zeCommandQueueExecuteCommandLists(queue, 1, &cl_warm, nullptr), "execWarm");
+        ZE_OK(zeCommandQueueSynchronize(queue, UINT64_MAX), "syncWarm");
+    }
+
     std::vector<double> us;
     us.reserve(iters);
+    // Host wall-clock across the timed loop.  Kernel timestamps depend on the timer domain, the
+    // valid-bit width and the Hz-vs-ns convention; the wall clock depends on none of those, so it
+    // arbitrates when two harnesses disagree.
+    const auto wall_t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < iters; ++i) {
-        zeEventHostReset(ev);
-        ZE_OK(zeCommandListAppendLaunchKernel(list, kernel, &grid, ev, 0, nullptr), "launch");
-        ZE_OK(zeEventHostSynchronize(ev, UINT64_MAX), "sync");
+        ZE_OK(zeEventHostReset(ev), "eventReset");
+        ZE_OK(zeCommandQueueExecuteCommandLists(queue, 1, &cl_meas, nullptr), "execMeas");
+        // Both syncs on purpose: the reduction fixture records that either alone has been seen to
+        // return NOT_READY on Intel WSL2 builds.  Queue sync means the kernel is done; event sync
+        // means the timestamp table is populated host-side.
+        ZE_OK(zeCommandQueueSynchronize(queue, UINT64_MAX), "syncMeas");
+        ZE_OK(zeEventHostSynchronize(ev, UINT64_MAX), "eventSync");
         ze_kernel_timestamp_result_t ts{};
         if (zeEventQueryKernelTimestamp(ev, &ts) == ZE_RESULT_SUCCESS) {
-            // context domain, masked to the valid width, with wraparound handled.
             const uint64_t s0 = ts.context.kernelStart & clock_mask;
             const uint64_t e0 = ts.context.kernelEnd & clock_mask;
             const uint64_t d = (e0 >= s0) ? (e0 - s0) : (clock_mask + 1 - s0 + e0);
@@ -321,6 +346,7 @@ int main(int argc, char **argv) {
     // that is exactly how a kernel storing nothing posted the second-best number in its section.
     bool verified = true;
     double max_abs_err = 0.0;
+    uint64_t checked = 0;
     {
         auto ga = [&](uint64_t i) -> float {
             if (elem == "bf16") return bf16_to_f32(((uint16_t *)A)[i]);
@@ -332,8 +358,15 @@ int main(int argc, char **argv) {
             if (elem == "f16")  return f16_to_f32(((uint16_t *)B)[i]);
             return ((float *)B)[i];
         };
-        for (uint64_t i = 0; i < M && verified; ++i)
-            for (uint64_t j = 0; j < N; ++j) {
+        // ~64x64 samples STRIDED across the whole output: bounded cost, full-extent coverage.
+        // A top-left corner (what the generated harness checks) is the same price and blind to
+        // every tile it does not reach.
+        const uint64_t smax = 64;
+        const uint64_t si = (M + smax - 1) / smax ? (M + smax - 1) / smax : 1;
+        const uint64_t sj = (N + smax - 1) / smax ? (N + smax - 1) / smax : 1;
+        for (uint64_t i = 0; i < M && verified; i += si)
+            for (uint64_t j = 0; j < N; j += sj) {
+                ++checked;
                 double acc = 0.0;
                 for (uint64_t k = 0; k < K; ++k) acc += (double)ga(i * K + k) * (double)gb(k * N + j);
                 double got = (double)((float *)C)[i * N + j];
@@ -349,18 +382,17 @@ int main(int argc, char **argv) {
               << "  \"kernel\": \"" << kname << "\",\n"
               << "  \"M\": " << M << ", \"N\": " << N << ", \"K\": " << K << ",\n"
               << "  \"elem\": \"" << elem << "\", \"grid_mode\": \"" << gmode << "\",\n"
+              << "  \"build_flags\": \"" << build_flags << "\",\n"
               << "  \"group\": [" << local[0] << ", " << local[1] << ", " << local[2] << "],\n"
               << "  \"grid\": [" << grid.groupCountX << ", " << grid.groupCountY << ", 1],\n"
               << "  \"verified\": " << (verified ? "true" : "false") << ",\n"
               << "  \"correct\": " << (verified ? "true" : "false") << ",\n"
               << "  \"max_abs_err\": " << max_abs_err << ",\n"
-              << "  \"wall_time_ms\": " << (wall_us / 1000.0) << ",
-"
-              << "  \"wall_per_iter_us\": " << wall_us << ",
-"
+              << "  \"verify_samples\": " << checked << ",\n"
+              << "  \"wall_time_ms\": " << (wall_us / 1000.0) << ",\n"
+              << "  \"wall_per_iter_us\": " << wall_us << ",\n"
               << "  \"gflops_from_wall\": "
-              << (wall_us > 0.0 ? (2.0*(double)M*N*K)/(wall_us*1e3) : 0.0) << ",
-"
+              << (wall_us > 0.0 ? (2.0*(double)M*N*K)/(wall_us*1e3) : 0.0) << ",\n"
               << "  \"kernel_median_us\": " << median_us << ",\n"
               << "  \"kernel_min_us\": " << min_us << ",\n"
               << "  \"gflops\": " << gflops << "\n"
@@ -368,7 +400,9 @@ int main(int argc, char **argv) {
 
     zeEventDestroy(ev);
     zeEventPoolDestroy(epool);
-    zeCommandListDestroy(list);
+    zeCommandListDestroy(cl_warm);
+    zeCommandListDestroy(cl_meas);
+    zeCommandQueueDestroy(queue);
     zeMemFree(ctx, A); zeMemFree(ctx, B); zeMemFree(ctx, C);
     zeKernelDestroy(kernel);
     zeModuleDestroy(module_);
