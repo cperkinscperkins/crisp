@@ -151,19 +151,19 @@ int main() {
     ze_host_mem_alloc_desc_t hostDesc = { ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC };
 
 
-    // Tensor argument: a (rank=2, float, 16777216 elements, compact)
+    // Tensor argument: a (rank=2, float, 65536 elements, compact)
     float* a_ptr = nullptr;
     result = zeMemAllocShared(context, &deviceDesc, &hostDesc,
-        16777216 * sizeof(float), 1, device, (void**)&a_ptr);
+        65536 * sizeof(float), 1, device, (void**)&a_ptr);
     if (result != ZE_RESULT_SUCCESS) {
         std::cerr << "ERROR: zeMemAllocShared failed for a" << std::endl;
         return 1;
     }
-    for (size_t _i = 0; _i < 16777216; _i++) a_ptr[_i] = (float)(_i % 5);
+    for (size_t _i = 0; _i < 65536; _i++) a_ptr[_i] = (float)(_i % 5);
     // Arg 0: a PTR
     zeKernelSetArgumentValue(kernel, 0, sizeof(void*), &a_ptr);
-    // Arg 1: a BYTE_SIZE = 67108864
-    uint64_t a_byte_size = 67108864ULL;
+    // Arg 1: a BYTE_SIZE = 262144
+    uint64_t a_byte_size = 262144ULL;
     zeKernelSetArgumentValue(kernel, 1, sizeof(uint64_t), &a_byte_size);
     // Arg 2: a OFFSET_0 = 0
     uint64_t a_off0 = 0ULL;
@@ -171,36 +171,36 @@ int main() {
     // Arg 3: a OFFSET_1 = 0
     uint64_t a_off1 = 0ULL;
     zeKernelSetArgumentValue(kernel, 3, sizeof(uint64_t), &a_off1);
-    // Arg 4: a STRIDE_0 = 4096
-    uint64_t a_str0 = 4096ULL;
+    // Arg 4: a STRIDE_0 = 256
+    uint64_t a_str0 = 256ULL;
     zeKernelSetArgumentValue(kernel, 4, sizeof(uint64_t), &a_str0);
     // Arg 5: a STRIDE_1 = 1
     uint64_t a_str1 = 1ULL;
     zeKernelSetArgumentValue(kernel, 5, sizeof(uint64_t), &a_str1);
-    // Arg 6: a EXTENT_0 = 4096
-    uint64_t a_ext0 = 4096ULL;
+    // Arg 6: a EXTENT_0 = 256
+    uint64_t a_ext0 = 256ULL;
     zeKernelSetArgumentValue(kernel, 6, sizeof(uint64_t), &a_ext0);
-    // Arg 7: a EXTENT_1 = 4096
-    uint64_t a_ext1 = 4096ULL;
+    // Arg 7: a EXTENT_1 = 256
+    uint64_t a_ext1 = 256ULL;
     zeKernelSetArgumentValue(kernel, 7, sizeof(uint64_t), &a_ext1);
-    // Arg 8: a LENGTH = 16777216
-    uint64_t a_length = 16777216ULL;
+    // Arg 8: a LENGTH = 65536
+    uint64_t a_length = 65536ULL;
     zeKernelSetArgumentValue(kernel, 8, sizeof(uint64_t), &a_length);
 
 
-    // Tensor argument: b (rank=2, float, 16777216 elements, compact)
+    // Tensor argument: b (rank=2, float, 65536 elements, compact)
     float* b_ptr = nullptr;
     result = zeMemAllocShared(context, &deviceDesc, &hostDesc,
-        16777216 * sizeof(float), 1, device, (void**)&b_ptr);
+        65536 * sizeof(float), 1, device, (void**)&b_ptr);
     if (result != ZE_RESULT_SUCCESS) {
         std::cerr << "ERROR: zeMemAllocShared failed for b" << std::endl;
         return 1;
     }
-    for (size_t _i = 0; _i < 16777216; _i++) b_ptr[_i] = (float)(_i % 3);
+    for (size_t _i = 0; _i < 65536; _i++) b_ptr[_i] = (float)(_i % 3);
     // Arg 9: b PTR
     zeKernelSetArgumentValue(kernel, 9, sizeof(void*), &b_ptr);
-    // Arg 10: b BYTE_SIZE = 67108864
-    uint64_t b_byte_size = 67108864ULL;
+    // Arg 10: b BYTE_SIZE = 262144
+    uint64_t b_byte_size = 262144ULL;
     zeKernelSetArgumentValue(kernel, 10, sizeof(uint64_t), &b_byte_size);
     // Arg 11: b OFFSET_0 = 0
     uint64_t b_off0 = 0ULL;
@@ -208,36 +208,36 @@ int main() {
     // Arg 12: b OFFSET_1 = 0
     uint64_t b_off1 = 0ULL;
     zeKernelSetArgumentValue(kernel, 12, sizeof(uint64_t), &b_off1);
-    // Arg 13: b STRIDE_0 = 4096
-    uint64_t b_str0 = 4096ULL;
+    // Arg 13: b STRIDE_0 = 256
+    uint64_t b_str0 = 256ULL;
     zeKernelSetArgumentValue(kernel, 13, sizeof(uint64_t), &b_str0);
     // Arg 14: b STRIDE_1 = 1
     uint64_t b_str1 = 1ULL;
     zeKernelSetArgumentValue(kernel, 14, sizeof(uint64_t), &b_str1);
-    // Arg 15: b EXTENT_0 = 4096
-    uint64_t b_ext0 = 4096ULL;
+    // Arg 15: b EXTENT_0 = 256
+    uint64_t b_ext0 = 256ULL;
     zeKernelSetArgumentValue(kernel, 15, sizeof(uint64_t), &b_ext0);
-    // Arg 16: b EXTENT_1 = 4096
-    uint64_t b_ext1 = 4096ULL;
+    // Arg 16: b EXTENT_1 = 256
+    uint64_t b_ext1 = 256ULL;
     zeKernelSetArgumentValue(kernel, 16, sizeof(uint64_t), &b_ext1);
-    // Arg 17: b LENGTH = 16777216
-    uint64_t b_length = 16777216ULL;
+    // Arg 17: b LENGTH = 65536
+    uint64_t b_length = 65536ULL;
     zeKernelSetArgumentValue(kernel, 17, sizeof(uint64_t), &b_length);
 
 
-    // Tensor argument: c (rank=2, float, 16777216 elements, compact)
+    // Tensor argument: c (rank=2, float, 65536 elements, compact)
     float* c_ptr = nullptr;
     result = zeMemAllocShared(context, &deviceDesc, &hostDesc,
-        16777216 * sizeof(float), 1, device, (void**)&c_ptr);
+        65536 * sizeof(float), 1, device, (void**)&c_ptr);
     if (result != ZE_RESULT_SUCCESS) {
         std::cerr << "ERROR: zeMemAllocShared failed for c" << std::endl;
         return 1;
     }
-    memset(c_ptr, 0, 16777216 * sizeof(float));
+    memset(c_ptr, 0, 65536 * sizeof(float));
     // Arg 18: c PTR
     zeKernelSetArgumentValue(kernel, 18, sizeof(void*), &c_ptr);
-    // Arg 19: c BYTE_SIZE = 67108864
-    uint64_t c_byte_size = 67108864ULL;
+    // Arg 19: c BYTE_SIZE = 262144
+    uint64_t c_byte_size = 262144ULL;
     zeKernelSetArgumentValue(kernel, 19, sizeof(uint64_t), &c_byte_size);
     // Arg 20: c OFFSET_0 = 0
     uint64_t c_off0 = 0ULL;
@@ -245,20 +245,20 @@ int main() {
     // Arg 21: c OFFSET_1 = 0
     uint64_t c_off1 = 0ULL;
     zeKernelSetArgumentValue(kernel, 21, sizeof(uint64_t), &c_off1);
-    // Arg 22: c STRIDE_0 = 4096
-    uint64_t c_str0 = 4096ULL;
+    // Arg 22: c STRIDE_0 = 256
+    uint64_t c_str0 = 256ULL;
     zeKernelSetArgumentValue(kernel, 22, sizeof(uint64_t), &c_str0);
     // Arg 23: c STRIDE_1 = 1
     uint64_t c_str1 = 1ULL;
     zeKernelSetArgumentValue(kernel, 23, sizeof(uint64_t), &c_str1);
-    // Arg 24: c EXTENT_0 = 4096
-    uint64_t c_ext0 = 4096ULL;
+    // Arg 24: c EXTENT_0 = 256
+    uint64_t c_ext0 = 256ULL;
     zeKernelSetArgumentValue(kernel, 24, sizeof(uint64_t), &c_ext0);
-    // Arg 25: c EXTENT_1 = 4096
-    uint64_t c_ext1 = 4096ULL;
+    // Arg 25: c EXTENT_1 = 256
+    uint64_t c_ext1 = 256ULL;
     zeKernelSetArgumentValue(kernel, 25, sizeof(uint64_t), &c_ext1);
-    // Arg 26: c LENGTH = 16777216
-    uint64_t c_length = 16777216ULL;
+    // Arg 26: c LENGTH = 65536
+    uint64_t c_length = 65536ULL;
     zeKernelSetArgumentValue(kernel, 26, sizeof(uint64_t), &c_length);
 
     // Create command list
@@ -304,7 +304,7 @@ int main() {
 
     // --mma-bench: per-launch kernel-timestamp timing (Endeavor 142; fixed 143)
     {
-        const int BENCH_ITERS = 10;
+        const int BENCH_ITERS = 2;
         ze_device_properties_t _bmProps = { ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES };
         zeDeviceGetProperties(device, &_bmProps);
         uint64_t _timerRes  = _bmProps.timerResolution;
@@ -380,9 +380,9 @@ int main() {
         }
         double _med_us = (_kn > 0) ? _kt[_kn / 2] : 0.0;
         double _min_us = (_kn > 0) ? _kt[0] : 0.0;
-        double _flops = 2.0 * 4096.0 * 4096.0 * 4096.0;
+        double _flops = 2.0 * 256.0 * 256.0 * 256.0;
         double _gflops = (_med_us > 0.0) ? (_flops / (_med_us / 1e6) / 1e9) : 0.0;
-        std::cout << "BENCH 4096 4096 4096 " << _gflops << " GFLOPS (" << _kn << " iters, " << _total_s << " s)"
+        std::cout << "BENCH 256 256 256 " << _gflops << " GFLOPS (" << _kn << " iters, " << _total_s << " s)"
                   << " median_us=" << _med_us << " min_us=" << _min_us
                   << (_tsOk ? " method=kernel_timestamp" : " method=wallclock_per_iter")
                   << std::endl;
@@ -392,31 +392,31 @@ int main() {
     }
 
     // Verify Output (skipped if large)
-    if (16777216 <= 512) {
+    if (65536 <= 512) {
         std::cout << "BUFFER a: ";
-        for (size_t i = 0; i < 16777216; i++) {
-            std::cout << a_ptr[i] << (i == 16777216 - 1 ? "" : " ");
+        for (size_t i = 0; i < 65536; i++) {
+            std::cout << a_ptr[i] << (i == 65536 - 1 ? "" : " ");
         }
         std::cout << std::endl;
     }
-    if (16777216 <= 512) {
+    if (65536 <= 512) {
         std::cout << "BUFFER b: ";
-        for (size_t i = 0; i < 16777216; i++) {
-            std::cout << b_ptr[i] << (i == 16777216 - 1 ? "" : " ");
+        for (size_t i = 0; i < 65536; i++) {
+            std::cout << b_ptr[i] << (i == 65536 - 1 ? "" : " ");
         }
         std::cout << std::endl;
     }
-    if (16777216 <= 512) {
+    if (65536 <= 512) {
         std::cout << "BUFFER c: ";
-        for (size_t i = 0; i < 16777216; i++) {
-            std::cout << c_ptr[i] << (i == 16777216 - 1 ? "" : " ");
+        for (size_t i = 0; i < 65536; i++) {
+            std::cout << c_ptr[i] << (i == 65536 - 1 ? "" : " ");
         }
         std::cout << std::endl;
     }
 
     // Endeavor 134: MMA host reference C = A.B (stride-agnostic)
     { int mma_ok = 1; int mma_bad = 0;
-      uint64_t chk_m = (4096ULL < 64 ? 4096ULL : 64); uint64_t chk_n = (4096ULL < 64 ? 4096ULL : 64);
+      uint64_t chk_m = (256ULL < 64 ? 256ULL : 64); uint64_t chk_n = (256ULL < 64 ? 256ULL : 64);
       float* host_c_buf = (float*)malloc(chk_m * c_str0 * sizeof(float));
       zeCommandListCreate(context, device, &cmdListDesc, &cmdList);
       zeCommandListAppendMemoryCopy(cmdList, host_c_buf, c_ptr, chk_m * c_str0 * sizeof(float), nullptr, 0, nullptr);
@@ -426,7 +426,7 @@ int main() {
       zeCommandListDestroy(cmdList);
       for (uint64_t i = 0; i < chk_m; i++) for (uint64_t j = 0; j < chk_n; j++) {
         float acc = 0.0f;
-        for (uint64_t kk = 0; kk < 4096ULL; kk++)
+        for (uint64_t kk = 0; kk < 256ULL; kk++)
             acc += (float)((i*a_str0 + kk*a_str1) % 5ULL) * (float)((kk*b_str0 + j*b_str1) % 3ULL);
         float got = host_c_buf[i*c_str0 + j*c_str1];
         float d = got - acc; if (d < 0) d = -d;

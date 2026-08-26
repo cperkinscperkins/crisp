@@ -16,16 +16,16 @@ Arc B580, `--math-precision=fast`, `--mma-bench=10`. Format: `tf32 → bf16 (rat
 |---|---|---|---|---|---|
 | Ch 0 naive (no XMX) | 0.001→0.001 (1.00×) | 0.004→0.004 (1.00×) | 0.034→0.034 (1.00×) | 0.275→0.275 (1.00×) | **MMA_WRONG both** |
 | Ch 1 hand-rolled MMA | 0.387→0.850 (2.20×) | 1.356→2.317 (1.71×) | 1.434→2.442 (1.70×) | 1.502→2.032 (1.35×) | correct |
-| Ch 2 tiling macro | 0.645→0.952 (1.48×) | 2.371→2.319 (0.98×) | 2.380→2.151 (0.90×) | 2.164→2.026 (0.94×) | **MMA_WRONG both** |
+| Ch 2 tiling macro | 0.386→0.847 (2.19×) | 1.375→2.346 (1.71×) | 1.349→2.312 (1.71×) | 1.468→2.032 (1.38×) | correct *(after fix)* |
 | Ch 3 async staging | 0.001→0.003 | 0.001→0.003 | 0.001→0.003 | 0.001→0.003 | correct, **degenerate** |
 | Ch 4 register-resident | 12.118→19.703 (1.63×) | 25.908→**46.611** (1.80×) | 16.012→37.172 (**2.32×**) | 13.199→26.470 (2.01×) | correct |
 | Ch 5 ring + prefetch | 9.560→15.835 (1.66×) | 21.331→39.406 (1.85×) | 24.073→**41.537** (1.73×) | 16.084→34.332 (**2.13×**) | correct |
 
 ## The scaling factor
 
-Across the chapters that are correct and non-degenerate (Ch 1, 4, 5 — eleven data points):
+Across the chapters that are correct and non-degenerate (Ch 1, 2, 4, 5 — sixteen data points):
 
-    min 1.35x   median 1.73x   mean 1.81x   max 2.32x
+    min 1.35x   median 1.72x   mean 1.82x   max 2.32x   (16 points, Ch 1/2/4/5)
 
 **Centred on roughly 2×, and never near 4×.** That is what the hardware's own shape ladder predicts:
 `(8 16 8)` tf32 → `(8 16 16)` bf16 → `(8 16 32)` int8, same M×N with K doubling per step. One DPAS

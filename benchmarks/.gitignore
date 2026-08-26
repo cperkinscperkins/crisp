@@ -2,8 +2,29 @@
 # Do not check these in.
 
 # Hoist byproducts (metadata + per-kernel generated harnesses).
+# NOTE: `*_L0.cpp` was missing here until 2026-08-25 while its NVIDIA twin `*_CUDA.cu` was listed,
+# so 22 generated Intel harnesses ended up tracked -- they churn on every run and dirtied the tree
+# repeatedly.  Same rule, same reason: generated per kernel, regenerated on every sweep.
 *.metacrisp
 *_CUDA.cu
+*_L0.cpp
+
+# Compiled benchmark binaries.  These were tracked by accident (matmul_*_bench_l0, sycl_apples,
+# onemkl_optimal, sycl_tla_peer, ...).  Native executables do not belong in source control.
+*_bench_l0
+matmul_crisp_l0
+sycl_apples
+sycl_control*
+sycl_tla_peer
+onemkl_*
+cuda_apples
+cublas_*
+cutlass_peer
+
+# The hand-written fixture harness is SOURCE, not a byproduct, and must stay tracked.  Negated by
+# explicit path rather than a blanket `!*.cpp`, which would sit after `*_L0.cpp` above and re-include
+# every generated harness it is meant to exclude.
+!matmul/crisp/bench_harness_l0.cpp
 
 # Compiled kernels (.ptx / .spv) are regenerable too — but a fallback may be committed for
 # machines where crisp-compile is absent, and is re-included by exception below:
