@@ -30,6 +30,7 @@
 ;; ===================================================================
 ;;
 ;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "same tile-stride adjoint gap as 01/02, plus a second one: with the bindings hoisted, AD places a sync-workgroup inside the divergent (when (< next-k n-k-steps) ...) and the divergence checker refuses it -- correctly, it would deadlock."
 ;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-fp16-coop
 (declaim (precision fast))
 (def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))

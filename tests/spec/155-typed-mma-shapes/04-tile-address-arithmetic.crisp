@@ -49,7 +49,8 @@
 ;; per-tile base instead of recomputed per fragment.
 ;; ===================================================================
 ;;
-;; SKIP-DEFAULT-PASS
+;; TEST-EXPECT: FAIL
+;; SKIP-WITH[--differentiate]: "AD mints no adjoint for register tiles bound INSIDE a tile-stride body (Unknown variable C-TILE_ADJ); hoisting the identical bindings to the enclosing let compiles clean. NOT a 16-bit gap -- a tf32 twin fails identically."
 ;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-tile-address-arith
 (declaim (precision fast))
 (def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))

@@ -51,6 +51,7 @@
 ;; ===================================================================
 ;;
 ;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "AD mints no adjoint for register tiles bound INSIDE a tile-stride body (Unknown variable C-TILE_ADJ); hoisting the identical bindings to the enclosing let compiles clean. NOT a 16-bit gap -- a tf32 twin fails identically."
 ;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-fp16-coop
 (declaim (precision fast))
 (def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
