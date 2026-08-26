@@ -1,0 +1,60 @@
+;; Section 1, Chapter 5 -- register ring (depth 2) + 2D block prefetch.
+;;
+;; BF16 twin of matmul_bmg.crisp -- the SAME technique, measured in 16-bit.
+;;
+;; Differs from its tf32 twin in exactly two things: the OPERAND element type (float -> bfloat16;
+;; the C accumulator stays float, since XMX accumulates in f32 either way) and the K step (8 -> 16,
+;; the native XMX shape for 16-bit operands being (8 16 16) rather than (8 16 8)).  Tile K extents
+;; follow from that.  Everything else is byte-for-byte the tf32 kernel, so the pair isolates the
+;; datatype.
+;;
+;; Plus one deliberate third difference: `(declaim (precision fast))`, which the tf32 original does
+;; not carry.  The shipped section 2.1 bf16 kernels carry it and bf16 is an approximate format whose
+;; point is throughput.  It is a second variable; if this chapter's tf32->bf16 ratio looks anomalous,
+;; re-test this first.
+;;
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K      (inner-dimension A B))
+        (n-k-steps (/ (inner-dimension A B) (to-ulong 16))))
+
+    (tile-stride C (32 32) (grid-y grid-x)
+      (let ((A-ring (make-register-tile-ring bfloat16 (32 16) :ring-count 2 :operand :a))
+            (B-ring (make-register-tile-ring bfloat16 (16 32) :ring-count 2 :operand :b))
+            (C-tile (make-register-tile float (32 32) 0.0)))
+
+      ;; Prologue
+      (prefetch-tile A (grid-y 0) :size (32 16))
+      (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (16 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (16 16))
+      (prefetch-tile A (grid-y 1) :size (32 16))
+      (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (16 16))
+      (prefetch-tile B (1 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (16 16))
+      (load-tile A (ring-get A-ring 0) (grid-y 0))
+      (load-tile B (ring-get B-ring 0) (0 grid-x))
+
+      (dotimes (grid-k n-k-steps)
+        (let ((next-k (+ grid-k (to-ulong 1)))
+              (prefetch-k (+ grid-k (to-ulong 2))))
+
+          (when (< prefetch-k n-k-steps)
+            (prefetch-tile A (grid-y prefetch-k) :size (32 16))
+            (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (16 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (16 16)))
+
+          (when (< next-k n-k-steps)
+            (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
+            (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
+
+          (mma-accumulate-via-tile (8 16 16) C-tile
+                                   (ring-get A-ring (mod grid-k (to-ulong 2)))
+                                   (ring-get B-ring (mod grid-k (to-ulong 2))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x))))))

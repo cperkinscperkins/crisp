@@ -626,6 +626,67 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 "nothing). Read the affected cells as missing data, not as a result.")
             lines.append("")
 
+    # ---- Section 1 (bf16): the SAME technique ladder in 16-bit, with tf32 -> bf16 scaling ----
+    LADDER = [
+        ("chap0_naive", "Ch 0 naive (no XMX)"),
+        ("chap1_handrolled_mma", "Ch 1 hand-rolled MMA"),
+        ("chap2_tiling", "Ch 2 tiling macro"),
+        ("chap3_async", "Ch 3 async staging"),
+        ("chap4_cheap_fetch", "Ch 4 register-resident"),
+        ("chap5_multistage_ring", "Ch 5 ring + prefetch"),
+    ]
+    for gpu in gpus:
+        gd = matmul_data.get(gpu, {})
+        have = [(k, lbl) for k, lbl in LADDER if gd.get(k + "_bf16", {}).get("fast")]
+        if not have:
+            continue
+
+        def _tf(chapter, n, _gd=gd):
+            pts = _gd.get(chapter, {}).get("fast", {}).get(n, {})
+            for comp, pt in pts.items():
+                if _is_crisp(comp):
+                    v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                    if v:
+                        return v
+            return None
+
+        l_sizes = sorted({n for k, _ in have
+                          for n in gd.get(k + "_bf16", {}).get("fast", {}).keys()
+                          if isinstance(n, int)})
+        if not l_sizes:
+            continue
+
+        lines.append("## \u00a7 1b \u2014 The Technique Ladder in 16-bit (Intel) \u00b7 " + gpu)
+        lines.append("")
+        lines.append("*The same chapters as section 1, in bfloat16. Each kernel is its tf32 twin with "
+                     "two things changed: the operand element type, and the K step 8 \u2192 16 (the "
+                     "native XMX shape for 16-bit operands is (8 16 16), not (8 16 8)). The C "
+                     "accumulator stays f32 in both.*")
+        lines.append("")
+        lines.append("Cells read **bf16 TFLOPS (\u00d7 vs the same chapter in tf32)**. The 32-bit "
+                     "baseline is **tf32 on XMX**, not fp32 on the vector engines \u2014 the BMG shape "
+                     "ladder is (8 16 8) tf32, (8 16 16) bf16, (8 16 32) int8, i.e. same M\u00d7N with "
+                     "K doubling per step. No Control/Peer/Ceiling columns: the chapter SYCL controls "
+                     "are tf32 only, so this is a Crisp-vs-Crisp ladder.")
+        lines.append("")
+        lines.append("| chapter | " + " | ".join("N=%d" % n for n in l_sizes) + " |")
+        lines.append("|---|" + "---:|" * len(l_sizes))
+        for key, label in have:
+            cells = []
+            for n in l_sizes:
+                b16 = _tf(key + "_bf16", n)
+                t32 = _tf(key, n)
+                if b16 is None:
+                    cells.append("\u2014")
+                elif t32:
+                    r = b16 / t32
+                    cells.append("%.1f (%s%.2f\u00d7%s)" % (
+                        b16, "**" if r >= 1.8 else "", r, "**" if r >= 1.8 else ""))
+                else:
+                    cells.append("%.1f (tf32 n/a)" % b16)
+            lines.append("| " + label + " | " + " | ".join(cells) + " |")
+        lines.append("")
+
     # Section 4: MMA + Activation
     lines.append("## § 4 — MMA + Activation\n")
     lines.append("*What does fusing an arbitrary activation buy?*\n")

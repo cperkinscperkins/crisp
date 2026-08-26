@@ -1,0 +1,37 @@
+;; Section 1, Chapter 1 -- hand-rolled loops, explicit load-tile-at + mma-accumulate-via-tile.
+;;
+;; BF16 twin of matmul_bmg.crisp -- the SAME technique, measured in 16-bit.
+;;
+;; Differs from its tf32 twin in exactly two things: the OPERAND element type (float -> bfloat16;
+;; the C accumulator stays float, since XMX accumulates in f32 either way) and the K step (8 -> 16,
+;; the native XMX shape for 16-bit operands being (8 16 16) rather than (8 16 8)).  Tile K extents
+;; follow from that.  Everything else is byte-for-byte the tf32 kernel, so the pair isolates the
+;; datatype.
+;;
+;; Plus one deliberate third difference: `(declaim (precision fast))`, which the tf32 original does
+;; not carry.  The shipped section 2.1 bf16 kernels carry it and bf16 is an approximate format whose
+;; point is throughput.  It is a second variable; if this chapter's tf32->bf16 ratio looks anomalous,
+;; re-test this first.
+;;
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))          ; one sub-group
+  (tile-stride C (32 32) (grid-y grid-x)
+    (let ((A-tile (make-scratch-matrix bfloat16 (32 16)))
+          (B-tile (make-scratch-matrix bfloat16 (16 32)))
+          (C-tile (make-register-tile float (32 32) 0.0))
+          (K      (inner-dimension A B)))
+      (dotimes (kt (/ K (to-ulong 16)))
+        (load-tile-at A A-tile ((* grid-y (to-ulong 32)) (* kt (to-ulong 16))))
+        (load-tile-at B B-tile ((* kt (to-ulong 16)) (* grid-x (to-ulong 32))))
+        (sync-workgroup)
+        (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)
+        (sync-workgroup))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

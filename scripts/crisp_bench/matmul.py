@@ -868,6 +868,15 @@ def main():
 
             # §1 Ch 5 — Register ring + prefetch (intel_prefetch)
             run_l0_crisp("chap5_multistage_ring", "matmul_bmg.crisp", use_autobench=True)
+
+            # §1 (bf16) — the SAME technique ladder in 16-bit.  Registered as separate chapters, not
+            # extra contenders in the tf32 chapters: report.py's _is_crisp matches any "Crisp_*"
+            # name and _best takes the MAX, so a bf16 contender sharing a chapter would silently
+            # replace the tf32 number wherever it was faster.  Separate chapters also match the
+            # existing sec2_top / sec2_top_bf16 convention.
+            for _ch in ("chap0_naive", "chap1_handrolled_mma", "chap2_tiling",
+                        "chap3_async", "chap4_cheap_fetch", "chap5_multistage_ring"):
+                run_l0_crisp(_ch + "_bf16", "matmul_bmg_bf16.crisp", use_autobench=True)
             run_target("chap5_multistage_ring", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
 
             # SYCL-TLA (CUTLASS 3.x for Intel Xe2) specific flags

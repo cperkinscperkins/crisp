@@ -4021,3 +4021,279 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
                       (format output-stream "~%"))
                 (format output-stream "  )~%"))))
         (format output-stream "  )~%"))))
+
+;;;; Endeavour 156 — two bf16 gaps surfaced by building the 16-bit chapter ladder.
+
+;; src/codegen.lisp
+(defun %bf16-as-i16-p (val from-type)
+  "T when VAL is a bfloat16 that has already been rewritten to the i16 LLVM type.
+
+   Endeavour 155 swaps llvm-bfloat-type's symbol-function on the SPIR-V backend so bf16 becomes i16
+   before it reaches codegen -- Intel encodes bf16 matrices as raw 16-bit integers, and a real
+   `bfloat` needs SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  Any
+   code path that still assumes a float-typed value has to notice; this is how it notices.
+
+   Checks BOTH the Crisp type (it must really be bfloat16) and the LLVM type (it must really have
+   become i16), so a backend that keeps a native bfloat is unaffected."
+  (and from-type
+       (string-equal (string from-type) "BFLOAT16")
+       val
+       (let ((s (crisp.llvm-bindings::llvm-print-type-to-string
+                 (crisp.llvm-bindings::llvm-type-of val))))
+         (and s (string= (string-trim " " s) "i16")))))
+
+;; src/codegen.lisp  (REPLACES build-cast-if-needed -- widen bf16 by shifting, not fpext)
+(defun build-cast-if-needed (builder module from-val from-type-name to-type-name)
+  "Builds LLVM cast instruction if types differ, with alias resolution.
+   MODULE is required to resolve types correctly.
+   Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;
+   treat same symbol-name as no-op cast."
+  ;; Resolve aliases first
+  (let ((from-type-name (resolve-type-alias from-type-name))
+           (to-type-name (resolve-type-alias to-type-name)))
+    ;; Fast path: identical (eq)
+    (if (equal from-type-name to-type-name)
+        (progn
+         (log:debug "build-cast-if-needed: No cast needed for ~s" from-type-name)
+         from-val)
+        ;; Cross-package same-name: CRISP.COMPILER::USHORT2 == CRISP-LANGUAGE::USHORT2
+        (if (and (symbolp from-type-name) (symbolp to-type-name)
+                 (string= (symbol-name from-type-name) (symbol-name to-type-name)))
+            (progn
+             (log:debug "build-cast-if-needed: cross-package same-name, no cast needed for ~s" from-type-name)
+             from-val)
+            (let* ((from-type (if (symbolp from-type-name) (gethash from-type-name *crisp-types*) nil))
+                   (to-type (if (symbolp to-type-name) (gethash to-type-name *crisp-types*) nil))
+                   (to-llvm-type (crisp-type-to-llvm-type to-type-name module))
+                   (from-cat (get-type-cat-safe from-type-name from-type))
+                   (to-cat (get-type-cat-safe to-type-name to-type)))
+              (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
+              (cond
+               ;; Keywords and symbols cast to int
+               ((and (or (member from-type-name '(keyword symbol quote))
+                         (and (listp from-type-name) (member (first from-type-name) '(keyword symbol quote))))
+                     (member to-cat '(:signed-int :unsigned-int)))
+                 (let ((to-size (if to-type (crisp-type-size to-type) 32)))
+                   (cond
+                    ((< to-size 32)
+                      (llvm-build-trunc builder from-val to-llvm-type "trunc_kw_cast"))
+                    ((> to-size 32)
+                      (llvm-build-sext builder from-val to-llvm-type "sext_kw_cast"))
+                    (t from-val))))
+               ((and (member from-cat '(:signed-int :unsigned-int))
+                     (eq to-cat :float))
+                 (if (eq from-cat :signed-int)
+                     (llvm-build-si-to-fp builder from-val to-llvm-type "si2fp_cast")
+                     (llvm-build-ui-to-fp builder from-val to-llvm-type "ui2fp_cast")))
+               ((and (member from-cat '(:signed-int :unsigned-int))
+                     (member to-cat '(:signed-int :unsigned-int)))
+                 (let ((from-size (crisp-type-size from-type))
+                       (to-size (crisp-type-size to-type)))
+                   (cond
+                    ((< to-size from-size)
+                      (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
+                    ((> to-size from-size)
+                      (if (eq from-cat :signed-int)
+                          (llvm-build-sext builder from-val to-llvm-type "sext_cast")
+                          (llvm-build-zext builder from-val to-llvm-type "zext_cast")))
+                    (t from-val))))
+               ((and (eq from-cat :float) (eq to-cat :float))
+                 (let ((from-size (crisp-type-size from-type))
+                       (to-size (crisp-type-size to-type)))
+                   (cond
+                    ((< to-size from-size)
+                      (llvm-build-fp-trunc builder from-val to-llvm-type "fptrunc_cast"))
+                    ((> to-size from-size)
+                      ;; Endeavour 156: a bfloat16 reaches codegen as i16 on the SPIR-V backend
+                      ;; (endeavour 155 rewrote the type so Intel sees raw 16-bit integers), so
+                      ;; `fpext i16 ... to float` is emitted for (to-float <bfloat16>) and is not a
+                      ;; legal cast -- llvm-as rejects it.  A bf16 IS an f32 with the low 16
+                      ;; mantissa bits dropped, so widening is a SHIFT: zext to i32, shl 16,
+                      ;; bitcast to float.  Exactly the inverse of %coop-coerce-scalar's
+                      ;; f32 -> bf16 (bitcast -> lshr 16 -> trunc).
+                      (if (%bf16-as-i16-p from-val from-type)
+                          (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+                                 (wide (llvm-build-zext builder from-val i32 "bf16_zext"))
+                                 (up   (crisp.llvm-bindings::llvm-build-shl
+                                        builder wide (llvm-const-int i32 16 nil) "bf16_shl")))
+                            (crisp.llvm-bindings::llvm-build-bit-cast
+                             builder up (llvm-float-type) "bf16_to_f32"))
+                          (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast")))
+                    (t from-val))))
+               ((and (eq from-cat :float) (member to-cat '(:signed-int :unsigned-int)))
+                 (if (eq to-cat :signed-int)
+                     (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast")
+                     (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast")))
+               ((and (member from-cat '(:signed-int :unsigned-int))
+                     (eq to-cat :pointer))
+                 (let ((as (llvm-get-pointer-address-space to-llvm-type)))
+                   (if (= as 0)
+                       (llvm-build-int-to-ptr builder from-val to-llvm-type "int2ptr_cast")
+                       (let* ((generic-ptr-type (crisp-type-to-llvm-type '(c-pointer) module))
+                              (tmp-ptr (llvm-build-int-to-ptr builder from-val generic-ptr-type "int2generic")))
+                         (llvm-build-addrspace-cast builder tmp-ptr to-llvm-type "generic2as_cast")))))
+               ((and (eq from-cat :pointer) (member to-cat '(:signed-int :unsigned-int)))
+                 (llvm-build-ptr-to-int builder from-val to-llvm-type "ptr2int_cast"))
+               ((and (eq from-cat :pointer) (eq to-cat :pointer))
+                 (let ((from-as (llvm-get-pointer-address-space (llvm-type-of from-val)))
+                       (to-as (llvm-get-pointer-address-space to-llvm-type)))
+                   (if (= from-as to-as)
+                       (llvm-build-bit-cast builder from-val to-llvm-type "ptr2ptr_cast")
+                       (llvm-build-addrspace-cast builder from-val to-llvm-type "ptr2ptr_ascast"))))
+               ;; Handle casts between derived types with same base type (same memory layout)
+               ((and (symbolp from-type-name) (symbolp to-type-name))
+                 (let ((from-base (get-type-base from-type-name))
+                          (to-base (get-type-base to-type-name)))
+                   (if (eq from-base to-base)
+                       (progn
+                        (log:debug "Derived type cast: ~a -> ~a (same base ~a, no-op)"
+                                   from-type-name to-type-name from-base)
+                        from-val)
+                       (progn
+                        (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
+                        (log:error "  From Type: ~a (cat: ~a, base: ~a)" from-type from-cat from-base)
+                        (log:error "  To Type:   ~a (cat: ~a, base: ~a)" to-type to-cat to-base)
+                        (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
+                        (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name)))))
+               (t
+                (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
+                (log:error "  From Type: ~a (cat: ~a)" from-type from-cat)
+                (log:error "  To Type:   ~a (cat: ~a)" to-type to-cat)
+                (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
+                (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))))
+
+;; src/codegen.lisp  (REPLACES %spirv-mangle-elem -- bfloat16 copies as 16 raw bits)
+(defun %spirv-mangle-elem (elem-type)
+  "Itanium single-char mangle for the element type in the async_work_group_copy name."
+  (case elem-type
+    (float "f") (double "d")
+    (int "i") (uint "j")
+    (long "l") (ulong "m")
+    (char "c") (uchar "h")
+    (short "s") (ushort "t")
+    ;; Endeavour 156: an async copy MOVES BYTES and never interprets them, and a bf16 is 16 bits.
+    ;; It mangles as a short for the same reason endeavour 155 gives bf16 the i16 LLVM type: the
+    ;; float-ness is carried elsewhere and is irrelevant to a memcpy.
+    (bfloat16 "s")
+    (t (error "spirv async copy: unsupported element type ~S (need f/d/i/j/l/m/...)" elem-type))))
+
+;; src/codegen.lisp  (REPLACES build-cast-if-needed -- 156: FROM-TYPE is a struct; the
+;; symbol to test is the FROM-TYPE-NAME parameter)
+(defun build-cast-if-needed (builder module from-val from-type-name to-type-name)
+  "Builds LLVM cast instruction if types differ, with alias resolution.
+   MODULE is required to resolve types correctly.
+   Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;
+   treat same symbol-name as no-op cast."
+  ;; Resolve aliases first
+  (let ((from-type-name (resolve-type-alias from-type-name))
+           (to-type-name (resolve-type-alias to-type-name)))
+    ;; Fast path: identical (eq)
+    (if (equal from-type-name to-type-name)
+        (progn
+         (log:debug "build-cast-if-needed: No cast needed for ~s" from-type-name)
+         from-val)
+        ;; Cross-package same-name: CRISP.COMPILER::USHORT2 == CRISP-LANGUAGE::USHORT2
+        (if (and (symbolp from-type-name) (symbolp to-type-name)
+                 (string= (symbol-name from-type-name) (symbol-name to-type-name)))
+            (progn
+             (log:debug "build-cast-if-needed: cross-package same-name, no cast needed for ~s" from-type-name)
+             from-val)
+            (let* ((from-type (if (symbolp from-type-name) (gethash from-type-name *crisp-types*) nil))
+                   (to-type (if (symbolp to-type-name) (gethash to-type-name *crisp-types*) nil))
+                   (to-llvm-type (crisp-type-to-llvm-type to-type-name module))
+                   (from-cat (get-type-cat-safe from-type-name from-type))
+                   (to-cat (get-type-cat-safe to-type-name to-type)))
+              (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
+              (cond
+               ;; Keywords and symbols cast to int
+               ((and (or (member from-type-name '(keyword symbol quote))
+                         (and (listp from-type-name) (member (first from-type-name) '(keyword symbol quote))))
+                     (member to-cat '(:signed-int :unsigned-int)))
+                 (let ((to-size (if to-type (crisp-type-size to-type) 32)))
+                   (cond
+                    ((< to-size 32)
+                      (llvm-build-trunc builder from-val to-llvm-type "trunc_kw_cast"))
+                    ((> to-size 32)
+                      (llvm-build-sext builder from-val to-llvm-type "sext_kw_cast"))
+                    (t from-val))))
+               ((and (member from-cat '(:signed-int :unsigned-int))
+                     (eq to-cat :float))
+                 (if (eq from-cat :signed-int)
+                     (llvm-build-si-to-fp builder from-val to-llvm-type "si2fp_cast")
+                     (llvm-build-ui-to-fp builder from-val to-llvm-type "ui2fp_cast")))
+               ((and (member from-cat '(:signed-int :unsigned-int))
+                     (member to-cat '(:signed-int :unsigned-int)))
+                 (let ((from-size (crisp-type-size from-type))
+                       (to-size (crisp-type-size to-type)))
+                   (cond
+                    ((< to-size from-size)
+                      (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
+                    ((> to-size from-size)
+                      (if (eq from-cat :signed-int)
+                          (llvm-build-sext builder from-val to-llvm-type "sext_cast")
+                          (llvm-build-zext builder from-val to-llvm-type "zext_cast")))
+                    (t from-val))))
+               ((and (eq from-cat :float) (eq to-cat :float))
+                 (let ((from-size (crisp-type-size from-type))
+                       (to-size (crisp-type-size to-type)))
+                   (cond
+                    ((< to-size from-size)
+                      (llvm-build-fp-trunc builder from-val to-llvm-type "fptrunc_cast"))
+                    ((> to-size from-size)
+                      ;; Endeavour 156: a bfloat16 reaches codegen as i16 on the SPIR-V backend
+                      ;; (endeavour 155 rewrote the type so Intel sees raw 16-bit integers), so
+                      ;; `fpext i16 ... to float` is emitted for (to-float <bfloat16>) and is not a
+                      ;; legal cast -- llvm-as rejects it.  A bf16 IS an f32 with the low 16
+                      ;; mantissa bits dropped, so widening is a SHIFT: zext to i32, shl 16,
+                      ;; bitcast to float.  Exactly the inverse of %coop-coerce-scalar's
+                      ;; f32 -> bf16 (bitcast -> lshr 16 -> trunc).
+                      (if (%bf16-as-i16-p from-val from-type-name)
+                          (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+                                 (wide (llvm-build-zext builder from-val i32 "bf16_zext"))
+                                 (up   (crisp.llvm-bindings::llvm-build-shl
+                                        builder wide (llvm-const-int i32 16 nil) "bf16_shl")))
+                            (crisp.llvm-bindings::llvm-build-bit-cast
+                             builder up (llvm-float-type) "bf16_to_f32"))
+                          (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast")))
+                    (t from-val))))
+               ((and (eq from-cat :float) (member to-cat '(:signed-int :unsigned-int)))
+                 (if (eq to-cat :signed-int)
+                     (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast")
+                     (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast")))
+               ((and (member from-cat '(:signed-int :unsigned-int))
+                     (eq to-cat :pointer))
+                 (let ((as (llvm-get-pointer-address-space to-llvm-type)))
+                   (if (= as 0)
+                       (llvm-build-int-to-ptr builder from-val to-llvm-type "int2ptr_cast")
+                       (let* ((generic-ptr-type (crisp-type-to-llvm-type '(c-pointer) module))
+                              (tmp-ptr (llvm-build-int-to-ptr builder from-val generic-ptr-type "int2generic")))
+                         (llvm-build-addrspace-cast builder tmp-ptr to-llvm-type "generic2as_cast")))))
+               ((and (eq from-cat :pointer) (member to-cat '(:signed-int :unsigned-int)))
+                 (llvm-build-ptr-to-int builder from-val to-llvm-type "ptr2int_cast"))
+               ((and (eq from-cat :pointer) (eq to-cat :pointer))
+                 (let ((from-as (llvm-get-pointer-address-space (llvm-type-of from-val)))
+                       (to-as (llvm-get-pointer-address-space to-llvm-type)))
+                   (if (= from-as to-as)
+                       (llvm-build-bit-cast builder from-val to-llvm-type "ptr2ptr_cast")
+                       (llvm-build-addrspace-cast builder from-val to-llvm-type "ptr2ptr_ascast"))))
+               ;; Handle casts between derived types with same base type (same memory layout)
+               ((and (symbolp from-type-name) (symbolp to-type-name))
+                 (let ((from-base (get-type-base from-type-name))
+                          (to-base (get-type-base to-type-name)))
+                   (if (eq from-base to-base)
+                       (progn
+                        (log:debug "Derived type cast: ~a -> ~a (same base ~a, no-op)"
+                                   from-type-name to-type-name from-base)
+                        from-val)
+                       (progn
+                        (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
+                        (log:error "  From Type: ~a (cat: ~a, base: ~a)" from-type from-cat from-base)
+                        (log:error "  To Type:   ~a (cat: ~a, base: ~a)" to-type to-cat to-base)
+                        (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
+                        (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name)))))
+               (t
+                (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
+                (log:error "  From Type: ~a (cat: ~a)" from-type from-cat)
+                (log:error "  To Type:   ~a (cat: ~a)" to-type to-cat)
+                (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
+                (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))))
