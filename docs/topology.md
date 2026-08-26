@@ -971,7 +971,63 @@ Like many sync operations, using `sync-cluster` in a divergent context (`if`, `c
 
 #### sync-workgroup
 
-(sync-workgroup): Same as `barrier(CLK_LOCAL_MEM_FENCE)`.
+```lisp
+(sync-workgroup)          ; arrive + wait, ordered.  The safe default.
+
+;; --- the split form, SPIR-V only --------------------------------------------
+(sync-workgroup :arrive)  ; non-blocking: "I'm here"                    ✅ Intel
+(sync-workgroup :wait)    ; block until all threads have arrived        ✅ Intel
+```
+
+`(sync-workgroup)` is the same as `barrier(CLK_LOCAL_MEM_FENCE)`. It both announces that this thread
+has reached the point and blocks until every other thread in the workgroup has too.
+
+The **split form** separates those two, so useful work can sit between them — the thread announces,
+keeps going, and only blocks at the `:wait` if it actually outran its peers:
+
+```lisp
+(dotimes (grid-k n-k)
+  (sync-workgroup :arrive)
+  (load-tile A A-tile (grid-y grid-k))
+  (load-tile B B-tile (grid-k grid-x))
+  (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)
+  (sync-workgroup :wait))
+```
+
+**This is an execution rendezvous, not data movement.** It synchronises no memory of its own and
+signals no barrier object — `await` and `signal` are for "these bytes are now visible." A split
+barrier paces control flow, which is why it extends `sync-workgroup` rather than `await`, and why it
+reads like the [sync-cluster](#sync-cluster) split above: cluster, workgroup and warp are one scope
+ladder.
+
+The same restrictions apply as for `sync-cluster`, and for the same reason — every violation
+deadlocks rather than computing a wrong answer:
+
+- the `:arrive` MUST be paired with a `:wait`, and these CANNOT nest (one window at a time).
+- neither half may appear in a divergent context (`if` / `when` / `unless` / `cond`, or a warp
+  specialization role block).
+- `return` or otherwise exiting between `:arrive` and `:wait` is disallowed.
+- reading or writing SLM inside the window is discouraged — the barrier's memory semantics are
+  `AcquireRelease | WorkgroupMemory`, so that is exactly the ordering the split gives up.
+
+The compiler **refuses** the first two statically. The third and fourth are **not yet checked**;
+absence of an error is not proof of correctness for those two.
+
+`SPV_INTEL_split_barrier` is requested only by modules that actually use the split form, so a kernel
+that never splits does not oblige the driver to support the extension.
+
+> **PTX refuses rather than approximating.** NVIDIA's `bar.arrive` / `bar.sync` are not the same
+> rendezvous, so compiling either half for `--ir-target=ptx` is a compile error naming the backend.
+> Use the fused `(sync-workgroup)` there.
+
+> **Shipped and measured is not the same as recommended.** On Arc B580 the split form does what it
+> claims — at 16 subgroups it turns a fused barrier's 14.7% throughput loss into a 1.8% one, because
+> the stall was the expense and splitting removes the stall. But at that width the fastest kernel is
+> the one with **no barrier at all**, and at 4 subgroups, where pacing does pay, the *fused* form
+> beats the split one. There is currently no measured configuration where the split form is the right
+> choice on Intel. It is here because the scope ladder should be complete and because the mechanism
+> is now testable — not as a performance recommendation. See
+> `tests/spec/157-split-barrier/157-split-barrier.md` for the full matrix.
 
 #### sync-warp
 

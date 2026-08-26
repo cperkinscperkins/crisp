@@ -37,7 +37,11 @@
 //   ptr, byte_size, off0, off1, str0, str1, ext0, ext1, length
 // so A, B, C occupy argument indices 0-8, 9-17 and 18-26.
 
+#if __has_include(<level_zero/ze_api.h>)
 #include <level_zero/ze_api.h>
+#else
+#include <ze_api.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdint>

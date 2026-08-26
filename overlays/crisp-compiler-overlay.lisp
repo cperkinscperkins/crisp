@@ -4297,3 +4297,682 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
                 (log:error "  To Type:   ~a (cat: ~a)" to-type to-cat)
                 (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
                 (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))))
+
+;;;; Endeavour 157 Phase 1 — split workgroup barrier: parse, analyse, lower.
+
+;; src/codegen.lisp
+(defun %gen-spirv-split-barrier (builder module phase)
+  "Emit one half of a split workgroup barrier.
+
+   PHASE is :arrive -> __spirv_ControlBarrierArriveINTEL, or :wait -> ...WaitINTEL.  Both take the
+   same three arguments as the fused __spirv_ControlBarrier and with the same values Crisp already
+   uses for (sync-workgroup): Scope=Workgroup(2), MemScope=Workgroup(2),
+   Semantics=AcquireRelease(8)|WorkgroupMemory(256) = 264.
+
+   Splitting changes WHEN the rendezvous blocks, not what it orders -- so the memory semantics are
+   deliberately identical to the fused form.  A reader comparing the two should see one difference,
+   the opcode."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (name (ecase phase
+                 (:arrive "__spirv_ControlBarrierArriveINTEL")
+                 (:wait   "__spirv_ControlBarrierWaitINTEL"))))
+    (log:debug "split barrier: ~a" name)
+    (%coop-call builder module name (crisp.llvm-bindings::llvm-void-type)
+                (list i32 i32 i32)
+                (list (llvm-const-int i32 2 nil)
+                      (llvm-const-int i32 2 nil)
+                      (llvm-const-int i32 264 nil)))))
+
+;; src/compiler.lisp
+(defun %module-uses-split-barrier-p (module)
+  "T if MODULE calls either half of the INTEL split barrier.
+
+   Mirrors %module-uses-2d-block-io-p and %module-uses-subgroup-mma-p: the extension is requested
+   only when it is used, so a kernel that never splits does not oblige the driver to support it."
+  (let ((fn (crisp.llvm-bindings::llvm-get-first-function module)))
+    (loop until (cffi:null-pointer-p fn) do
+      (let ((name (crisp.llvm-bindings::llvm-get-value-name fn)))
+        (when (and name (search "ControlBarrier" name) (search "INTEL" name))
+          (return-from %module-uses-split-barrier-p t)))
+      (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
+    nil))
+
+;; src/analysis/core.lisp  (REPLACES %gpu-builtin-info -- 157 Phase 1)
+(defun %gpu-builtin-info (builtin-kw)
+  "Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.
+   BASE-RETURN-TYPE: return type when called with no args (nil = void).
+   ACCEPTS-DIM-P: T if the builtin accepts a scalar dimension arg 0/1/2."
+  (case builtin-kw
+    ((:get-global-id :get-local-id :get-workgroup-id :get-num-groups
+      :get-local-work-size :get-global-work-size :get-global-offset
+      :get-global-id-abs)
+     (list 'ulong3 t))
+    (:get-work-dim          (list 'uint  nil))
+    ((:get-local-linear-id :get-local-linear-size
+      :get-global-linear-id :get-global-linear-size
+      :get-total-threads :get-total-groups)
+     (list 'ulong nil))
+    ;; 157: the split halves are ordinary VOID builtins as far as everything downstream is
+    ;; concerned -- minting them as distinct keywords keeps semantic-gpu-builtin untouched.
+    ((:sync-workgroup :sync-warp :mem-fence :sync-cluster
+      :sync-workgroup-arrive :sync-workgroup-wait)
+     (list nil nil))
+    ;; 110 — warp helpers (scalar uint, no dim arg)
+    ((:warp-id :warp-lane :warp-count)
+     (list 'uint nil))
+    (t (error "Unknown GPU builtin: ~a" builtin-kw))))
+
+;; src/analysis/core.lisp  (REPLACES %analyze-gpu-builtin -- 157 Phase 1)
+(defun %analyze-gpu-builtin (builtin-kw name-str expr env context location)
+  "Analyzer for all GPU built-in function forms."
+  (declare (ignore env context))
+  (unless *in-dispatch-context*
+    (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
+  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :sync-cluster))
+    ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
+    ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
+    (%warp-spec-check-sync builtin-kw name-str location))
+  (let* ((info     (%gpu-builtin-info builtin-kw))
+         (base-ty  (first info))
+         (acc-dim  (second info))
+         (args     (rest expr)))
+    (cond
+      ((null args)
+       (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                  :dimension nil
+                                  :type base-ty
+                                  :source-location location))
+      ;; 157: (sync-workgroup :arrive) / (sync-workgroup :wait).  A split barrier separates the
+      ;; announcement from the block so work can sit between them; it is an EXECUTION rendezvous
+      ;; and moves no data, which is why it extends sync-workgroup rather than await/signal.
+      ;; The phase becomes its own builtin keyword so semantic-gpu-builtin needs no new field.
+      ((and (eq builtin-kw :sync-workgroup)
+            (= (length args) 1)
+            (member (first args) (list :arrive :wait)))
+       (make-semantic-gpu-builtin
+        :builtin-name (if (eq (first args) :arrive) :sync-workgroup-arrive :sync-workgroup-wait)
+        :dimension nil
+        :type nil
+        :source-location location))
+      ((and (eq builtin-kw :sync-workgroup) (= (length args) 1))
+       (error "sync-workgroup takes no argument, or one of :arrive / :wait (the split barrier's two halves), got: ~S"
+              (first args)))
+      ((= (length args) 1)
+       (let ((dim-arg (first args)))
+         (unless acc-dim
+           (error "GPU built-in '~a' does not accept a dimension argument" name-str))
+         (unless (integerp dim-arg)
+           (error "GPU built-in '~a': dimension must be a compile-time integer constant (0, 1, or 2), got: ~a"
+                  name-str dim-arg))
+         (unless (member dim-arg '(0 1 2))
+           (error "GPU built-in '~a': dimension ~a is out of valid range (must be 0, 1, or 2)"
+                  name-str dim-arg))
+         (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                    :dimension dim-arg
+                                    :type 'ulong
+                                    :source-location location)))
+      (t
+       (error "GPU built-in '~a' takes 0 or 1 arguments, got ~a" name-str (length args))))))
+
+;; src/codegen.lisp  (REPLACES generate-node-ir (semantic-gpu-builtin) -- 157 Phase 1)
+(defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
+  "Generates LLVM IR for a GPU built-in function call.
+   Endeavor 115 Phase 2: full PTX dispatch for all builtins."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let* ((bname (semantic-gpu-builtin-builtin-name node))
+         (dim   (semantic-gpu-builtin-dimension node)))
+    (log:info "Generating GPU builtin IR: ~a dim=~a backend=~a" bname dim *target-backend*)
+    (labels
+        ((vec3-or-scalar (spirv-name)
+           (let ((vec (%get-builtin-vec3 builder module spirv-name)))
+             (if dim
+                 (values (%extract-vec3-i64 builder vec dim
+                                            (format nil "~a_~a" (string-downcase spirv-name) dim))
+                         nil)
+                 (values vec nil)))))
+      (case bname
+        ;; --- Primitive 3D/scalar vector builtins ---
+        (:get-global-id       (vec3-or-scalar "GlobalInvocationId"))
+        (:get-local-id        (vec3-or-scalar "LocalInvocationId"))
+        (:get-workgroup-id    (vec3-or-scalar "WorkgroupId"))
+        (:get-num-groups      (vec3-or-scalar "NumWorkgroups"))
+        (:get-local-work-size (vec3-or-scalar "WorkgroupSize"))
+        (:get-global-work-size (vec3-or-scalar "GlobalSize"))
+        (:get-global-offset   (vec3-or-scalar "GlobalOffset"))
+        ;; --- Synthesized: GlobalInvocationId + GlobalOffset ---
+        (:get-global-id-abs
+         (if (eq *target-backend* :ptx)
+             ;; PTX has no GlobalOffset — same as get-global-id
+             (vec3-or-scalar "GlobalInvocationId")
+             (let* ((gid  (%call-spirv-vec3-builtin builder module "GlobalInvocationId"))
+                    (goff (%call-spirv-vec3-builtin builder module "GlobalOffset")))
+               (if dim
+                   (let* ((gid-n  (%extract-vec3-i64 builder gid  dim "gid_n"))
+                          (goff-n (%extract-vec3-i64 builder goff dim "goff_n")))
+                     (values (crisp.llvm-bindings::llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
+                   (values (crisp.llvm-bindings::llvm-build-add builder gid goff "gid_abs") nil)))))
+        ;; --- WorkDim (hidden kernel parameter, uint) ---
+        (:get-work-dim
+         (values (%call-spirv-uint-builtin builder module "WorkDim") nil))
+        ;; --- Synthesized scalar builtins ---
+        (:get-local-linear-id
+         (values (%gen-local-linear-id builder module) nil))
+        (:get-local-linear-size
+         (values (%gen-product-of-vec3 builder module "WorkgroupSize" "local_linear_size") nil))
+        (:get-global-linear-id
+         (values (%gen-global-linear-id builder module) nil))
+        ((:get-global-linear-size :get-total-threads)
+         (values (%gen-product-of-vec3 builder module "GlobalSize" "total_threads") nil))
+        (:get-total-groups
+         (values (%gen-product-of-vec3 builder module "NumWorkgroups" "total_groups") nil))
+        ;; --- 110: warp helpers ---
+        (:warp-id
+         (if (eq *target-backend* :ptx)
+             ;; Endeavor 139: synthesize local-linear-id/32 (stable), NOT %warpid (volatile).
+             (values (%ptx-synthesize-warp-id builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil)))
+        (:warp-lane
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-read-warp-sreg builder module "laneid") nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupLocalInvocationId") nil)))
+        (:warp-count
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-synthesize-warp-count builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
+        ;; --- Barriers (void) ---
+        ;; Endeavor 152: a cluster-wide rendezvous.  On PTX this is exactly the fence Crisp
+        ;; already emits for cluster entry/exit (%gen-nvvm-cluster-barrier), so the lowering is
+        ;; one that has run on hardware in every clustered kernel, not a new one.
+        ;;
+        ;; EVERYWHERE ELSE IT DEGRADES TO sync-workgroup, and that degrade is EXACT rather than
+        ;; approximate: a cluster of one workgroup IS a workgroup, and NVIDIA's own
+        ;; cluster_group::sync() is barrier_arrive + barrier_wait with no __syncthreads(), so a
+        ;; cluster barrier already covers intra-workgroup convergence.  Verified in Phase 0.
+        (:sync-cluster
+         (if (and (eq *target-backend* :ptx)
+                  (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+             (%gen-nvvm-cluster-barrier builder)
+             (if (eq *target-backend* :ptx)
+                 (%ptx-barrier builder module)
+                 (%gen-spirv-control-barrier builder module))))
+        (:sync-workgroup
+         (if (eq *target-backend* :ptx)
+             (%ptx-barrier builder module)
+             (%gen-spirv-control-barrier builder module)))
+        ;; 157: the two halves of a split workgroup barrier.  PTX is REFUSED rather than
+        ;; approximated -- NVIDIA's bar.arrive / bar.sync are not the same rendezvous, and a silent
+        ;; mis-mapping of a barrier deadlocks a GPU instead of producing a wrong number.
+        (:sync-workgroup-arrive
+         (if (eq *target-backend* :ptx)
+             (error 'crisp-compiler-error
+               :message "(sync-workgroup :arrive) is SPIR-V only.  The PTX backend has no equivalent rendezvous -- bar.arrive does not carry the same semantics -- so Crisp refuses rather than emitting a barrier that means something else.  Use the fused (sync-workgroup) on this backend."
+               :source-location nil)
+             (%gen-spirv-split-barrier builder module :arrive)))
+        (:sync-workgroup-wait
+         (if (eq *target-backend* :ptx)
+             (error 'crisp-compiler-error
+               :message "(sync-workgroup :wait) is SPIR-V only.  The PTX backend has no equivalent rendezvous -- bar.sync does not carry the same semantics -- so Crisp refuses rather than emitting a barrier that means something else.  Use the fused (sync-workgroup) on this backend."
+               :source-location nil)
+             (%gen-spirv-split-barrier builder module :wait)))
+        (:sync-warp
+         (if (eq *target-backend* :ptx)
+             (%ptx-syncwarp builder module)
+             (%gen-spirv-warp-barrier builder module)))
+        (:mem-fence
+         (if (eq *target-backend* :ptx)
+             (%ptx-membar-cta builder module)
+             (%gen-spirv-memory-barrier builder module)))
+        ;; The local is BNAME; `builtin-name` was a stale name carried over from the
+        ;; commented-out copy of this method above, and would have signalled
+        ;; unbound-variable instead of naming the offending builtin.
+        (t (error "Unknown GPU builtin ~a" bname))))))
+
+;; overlays/crisp-compiler-overlay.lisp  (REPLACES compile-to-spirv -- 157 Phase 1)
+(defun compile-to-spirv (module output-path &key debug-p)
+  "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
+  (let* ((base-path (uiop:pathname-directory-pathname output-path))
+         (name (pathname-name output-path))
+         (ll-file     (merge-pathnames (format nil "~a.temp.ll" name) base-path))
+         (ll-opt-file (merge-pathnames (format nil "~a.opt.ll"  name) base-path))
+         (bc-file     (merge-pathnames (format nil "~a.temp.bc" name) base-path))
+         (spv-file output-path))
+    (%remove-dead-array-returning-functions module)
+    (llvm-set-target module "spir64-unknown-unknown")
+    (when (or (%module-uses-native-builtin-p module)
+              (%module-uses-async-copy-builtin-p module))
+      (%emit-opencl-version-metadata module))
+    (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
+           (ir-with-metadata (inject-spir-kernel-metadata ir)))
+      (with-open-file (stream ll-file :direction :output :if-exists :supersede)
+        (write-string ir-with-metadata stream)))
+    (let* ((opt-ok        (%run-opt-pipeline ll-file ll-opt-file +spv-opt-pipeline+))
+           (llvm-as-input (if opt-ok ll-opt-file ll-file)))
+      (let ((tool (resolve-tool-executable "llvm-as")))
+        (run-tool-command
+         (list tool (namestring llvm-as-input) "-o" (namestring bc-file))
+         :log-prefix "[SPIR-V] ")))
+    (let* ((tool (resolve-tool-executable "llvm-spirv"))
+           (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
+           (ext-flags (append '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
+                              (when (%module-uses-coop-matrix-p module)
+                                '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
+                              (when (%module-uses-2d-block-io-p module)
+                                '("--spirv-ext=+SPV_INTEL_2d_block_io"))
+                              ;; 156: :xe-native's multiply.  Requested only when the module
+                              ;; actually contains one, like every other extension here -- an
+                              ;; unconditional flag would widen what the driver must accept for
+                              ;; every kernel Crisp emits.
+                              (when (%module-uses-subgroup-mma-p module)
+                                '("--spirv-ext=+SPV_INTEL_subgroup_matrix_multiply_accumulate"))
+                              (when (%module-uses-split-barrier-p module)
+                                '("--spirv-ext=+SPV_INTEL_split_barrier"))
+                              ;; 155: a bf16 register tile lowers to a `bfloat` coop matrix,
+                              ;; which llvm-spirv refuses without this extension.
+                              (when (%module-uses-bfloat-p module)
+                                '("--spirv-ext=+SPV_KHR_bfloat16"))))
+           (flags (append debug-flags ext-flags)))
+      (run-tool-command
+       (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
+       :log-prefix "[SPIR-V] "))
+    (unless debug-p
+      (when (probe-file ll-file)     (delete-file ll-file))
+      (when (probe-file ll-opt-file) (delete-file ll-opt-file))
+      (when (probe-file bc-file)     (delete-file bc-file)))
+    (log:info "Generated SPIR-V: ~a" spv-file)))
+
+;;;; Endeavour 157 — split-barrier validators.
+;;;;
+;;;; Why a validator and not a correctness test: emitting a FUSED ControlBarrier where a split half
+;;;; was asked for still computes the right answer.  It silently costs exactly what the feature
+;;;; exists to save -- a stall per iteration per subgroup -- so no amount of MMA_CORRECT can catch
+;;;; it.  The only place the difference is visible is the opcode.
+
+;; src/mma.lisp
+(defun %spv-disasm (spv-path)
+  "Disassembled SPIR-V text for SPV-PATH, or NIL when llvm-spirv is unavailable.
+
+   Degrades to NIL rather than erroring, matching %validate-coop-operand-elem: a CUDA-only box has
+   no bundled bin/llvm-spirv, and a missing tool should not read as a failing kernel."
+  (cl:let ((tool (ignore-errors (resolve-tool-executable "llvm-spirv"))))
+    (cl:when (cl:and tool (probe-file spv-path))
+      (multiple-value-bind (out err code)
+          (uiop:run-program (cl:list (uiop:native-namestring tool) "--to-text"
+                                     (uiop:native-namestring spv-path) "-o" "-")
+                            :output :string :error-output :string :ignore-error-status cl:t)
+        (cl:declare (cl:ignore err))
+        (cl:when (cl:zerop code) out)))))
+
+;; src/mma.lisp
+(defun validate-spv-split-barrier (spv-path)
+  "Endeavour 157 rung 01 — assert BOTH halves of the split barrier reached SPIR-V.
+
+   Checks three things, because two of them can be right while the third is wrong:
+     * ControlBarrierArriveINTEL is present   -- the announcement half
+     * ControlBarrierWaitINTEL is present     -- the blocking half
+     * Capability SplitBarrierINTEL declared  -- the driver is actually asked for the feature
+
+   A module missing the capability may still load on a permissive driver and fail on a strict one,
+   which is the kind of difference that shows up as someone else's bug report."
+  (cl:let ((txt (%spv-disasm spv-path)))
+    (cl:if (cl:null txt)
+        (cl:progn (format t "  (llvm-spirv unavailable -- split-barrier check skipped)~%") cl:t)
+        (cl:let ((arrive (search "ControlBarrierArriveINTEL" txt))
+                 (wait   (search "ControlBarrierWaitINTEL" txt))
+                 (cap    (search "Capability SplitBarrierINTEL" txt))
+                 (ok     cl:t))
+          (cl:unless arrive
+            (format t "FAIL: no ControlBarrierArriveINTEL -- (sync-workgroup :arrive) did not reach SPIR-V.~%")
+            (cl:setf ok cl:nil))
+          (cl:unless wait
+            (format t "FAIL: no ControlBarrierWaitINTEL -- (sync-workgroup :wait) did not reach SPIR-V.~%")
+            (cl:setf ok cl:nil))
+          (cl:unless cap
+            (format t "FAIL: SplitBarrierINTEL capability not declared -- the module uses the split ops without requesting SPV_INTEL_split_barrier.~%")
+            (cl:setf ok cl:nil))
+          ok))))
+
+;; src/mma.lisp
+(defun validate-spv-fused-barrier-unchanged (spv-path)
+  "Endeavour 157 rung 02 — assert the FUSED (sync-workgroup) is untouched.
+
+   A regression guard.  Teaching a builtin that has always taken zero arguments to accept one is
+   exactly the change that quietly alters the zero-argument path, and every kernel Crisp has ever
+   shipped uses that path.  So: a plain ControlBarrier must be present, and NEITHER split op may
+   appear -- a fused barrier that silently became a split pair would deadlock differently, not
+   compute differently."
+  (cl:let ((txt (%spv-disasm spv-path)))
+    (cl:if (cl:null txt)
+        (cl:progn (format t "  (llvm-spirv unavailable -- fused-barrier check skipped)~%") cl:t)
+        (cl:let ((fused  (search "ControlBarrier " txt))
+                 (arrive (search "ControlBarrierArriveINTEL" txt))
+                 (wait   (search "ControlBarrierWaitINTEL" txt))
+                 (ok     cl:t))
+          (cl:unless fused
+            (format t "FAIL: no plain ControlBarrier -- the fused (sync-workgroup) stopped lowering.~%")
+            (cl:setf ok cl:nil))
+          (cl:when (cl:or arrive wait)
+            (format t "FAIL: a split-barrier op appeared in a kernel that only uses the FUSED form.~%")
+            (cl:setf ok cl:nil))
+          ok))))
+
+;;;; Endeavour 157 Phase 2 — split-barrier pairing analysis.
+
+;; src/analysis/core.lisp
+(defvar *split-barrier-depth* nil
+  "How many split-barrier windows are open in the kernel currently being analysed, or NIL outside
+   one.  Bound per kernel by INTERNAL-DEF-FUNCTION and stepped by %ANALYZE-GPU-BUILTIN.
+
+   A counter rather than a flag so that nesting is DETECTED rather than silently tolerated: the
+   second :arrive sees a non-zero depth and refuses.")
+
+;; overlays/crisp-compiler-overlay.lisp  (REPLACES %analyze-gpu-builtin -- 157 Phase 2)
+(defun %analyze-gpu-builtin (builtin-kw name-str expr env context location)
+  "Analyzer for all GPU built-in function forms."
+  (declare (ignore env context))
+  (unless *in-dispatch-context*
+    (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
+  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :sync-cluster))
+    ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
+    ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
+    (%warp-spec-check-sync builtin-kw name-str location))
+  (let* ((info     (%gpu-builtin-info builtin-kw))
+         (base-ty  (first info))
+         (acc-dim  (second info))
+         (args     (rest expr)))
+    (cond
+      ((null args)
+       (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                  :dimension nil
+                                  :type base-ty
+                                  :source-location location))
+      ;; 157: (sync-workgroup :arrive) / (sync-workgroup :wait).  A split barrier separates the
+      ;; announcement from the block so work can sit between them; it is an EXECUTION rendezvous
+      ;; and moves no data, which is why it extends sync-workgroup rather than await/signal.
+      ;; The phase becomes its own builtin keyword so semantic-gpu-builtin needs no new field.
+      ((and (eq builtin-kw :sync-workgroup)
+            (= (length args) 1)
+            (member (first args) (list :arrive :wait)))
+       ;; 157 analysis 1: one window at a time, and it must close.  Both failures HANG rather than
+       ;; miscompute, so they are refused here rather than left to the user to discover on hardware.
+       (cl:when *split-barrier-depth*
+         (cl:if (eq (first args) :arrive)
+                (cl:progn
+                  (cl:when (cl:plusp *split-barrier-depth*)
+                    (error "(sync-workgroup :arrive) cannot nest -- a window is already open in this kernel.  There is one rendezvous per scope, not a stack of them; close the first with (sync-workgroup :wait) before opening another."))
+                  (cl:incf *split-barrier-depth*))
+                (cl:progn
+                  (cl:when (cl:zerop *split-barrier-depth*)
+                    (error "(sync-workgroup :wait) has no matching (sync-workgroup :arrive) -- the two halves must be paired.  A :wait with nothing to wait on blocks forever."))
+                  (cl:decf *split-barrier-depth*))))
+       (make-semantic-gpu-builtin
+        :builtin-name (if (eq (first args) :arrive) :sync-workgroup-arrive :sync-workgroup-wait)
+        :dimension nil
+        :type nil
+        :source-location location))
+      ((and (eq builtin-kw :sync-workgroup) (= (length args) 1))
+       (error "sync-workgroup takes no argument, or one of :arrive / :wait (the split barrier's two halves), got: ~S"
+              (first args)))
+      ((= (length args) 1)
+       (let ((dim-arg (first args)))
+         (unless acc-dim
+           (error "GPU built-in '~a' does not accept a dimension argument" name-str))
+         (unless (integerp dim-arg)
+           (error "GPU built-in '~a': dimension must be a compile-time integer constant (0, 1, or 2), got: ~a"
+                  name-str dim-arg))
+         (unless (member dim-arg '(0 1 2))
+           (error "GPU built-in '~a': dimension ~a is out of valid range (must be 0, 1, or 2)"
+                  name-str dim-arg))
+         (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                    :dimension dim-arg
+                                    :type 'ulong
+                                    :source-location location)))
+      (t
+       (error "GPU built-in '~a' takes 0 or 1 arguments, got ~a" name-str (length args))))))
+
+;; overlays/crisp-compiler-overlay.lisp  (REPLACES internal-def-function -- 157 Phase 2)
+(defun internal-def-function (name params declarations body location)
+  "Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the
+   body analysis.  Otherwise identical to the Phase 2 definition."
+  (log:info "Analyzing function ~s" name)
+  (multiple-value-bind (explicit-env return-type)
+      (parse-function-declarations params declarations)
+    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (is-entry-p (loop for d in declarations
+                             thereis (and (listp d) (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (is-grid-fn-p (loop for d in declarations
+                               thereis (and (listp d) (symbolp (first d))
+                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
+           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
+           (*boundary-struct-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%boundary-struct-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-struct-params*))
+           (*boundary-array-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%array-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-array-params*))
+           (*current-kernel-is-backward*
+             (and name (symbolp name)
+                  (let ((n (symbol-name name)))
+                    (and (>= (length n) 5)
+                         (string-equal "_GRAD" (subseq n (- (length n) 5)))))))
+           (cluster-dims nil))
+      (when (and is-entry-p *boundary-struct-params*)
+            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
+      (when (and is-entry-p *boundary-array-params*)
+            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
+      (when is-grid-fn-p
+        (log:info "Compiling grid function ~a (dispatch context)" name)
+        (%validate-grid-function-return-type return-type))
+      (when is-entry-p
+        (let* ((global-size-decl (find "GLOBAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (local-size-decl  (find "LOCAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (num-groups-decl  (find "NUM-GROUPS" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (cluster-size-decl (find "CLUSTER-SIZE" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal))
+               ;; 156: (mma-lowering :xe-native) -- which code-generation strategy this kernel wants
+               ;; for its matrix-engine operations.  Parsed here so an unavailable request is refused
+               ;; at analysis time, next to the other dispatch declarations.
+               (mma-lowering-decl (find "MMA-LOWERING" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal))
+               (mma-lowering (%parse-mma-lowering-decl mma-lowering-decl name
+                                                       (active-hardware-profile))))
+          (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
+          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl
+                    mma-lowering-decl)
+            (let ((dispatch-plist
+                    (append (when global-size-decl (list :global-size global-size-decl))
+                            (when local-size-decl  (list :local-size  local-size-decl))
+                            (when num-groups-decl  (list :num-groups  num-groups-decl))
+                            (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
+                            (when cluster-dims      (list :cluster-size cluster-dims))
+                            ;; Recorded even when defaulted, so the metacrisp -- and therefore any
+                            ;; benchmark row -- can say which lowering produced a number.  A figure
+                            ;; you cannot attribute to a code path is not evidence.
+                            (when mma-lowering      (list :mma-lowering mma-lowering)))))
+              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
+              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
+          (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
+      (let ((*current-kernel-cluster-dims* cluster-dims)
+            ;; 157: a split-barrier window is per KERNEL.  Bound here so the check below sees the
+            ;; whole body, and so one kernel's unclosed window cannot leak into the next.
+            (*split-barrier-depth* 0))
+        (multiple-value-prog1
+            (internal-compile-function name explicit-env return-type params body declarations
+                                       location *compiler-context*)
+          (cl:when (cl:plusp *split-barrier-depth*)
+            (error "(sync-workgroup :arrive) in kernel ~a must be paired with (sync-workgroup :wait) before the kernel ends.  An arrival that is never awaited leaves every other thread in the workgroup blocked on it."
+                   name)))))))
+
+;;;; Endeavour 157 Phase 2 (b) — pairing refusals as CRISP-COMPILER-ERROR.
+
+;; src/analysis/core.lisp  (REPLACES %analyze-gpu-builtin -- 157 Phase 2b)
+(defun %analyze-gpu-builtin (builtin-kw name-str expr env context location)
+  "Analyzer for all GPU built-in function forms."
+  (declare (ignore env context))
+  (unless *in-dispatch-context*
+    (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
+  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :sync-cluster))
+    ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
+    ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
+    (%warp-spec-check-sync builtin-kw name-str location))
+  (let* ((info     (%gpu-builtin-info builtin-kw))
+         (base-ty  (first info))
+         (acc-dim  (second info))
+         (args     (rest expr)))
+    (cond
+      ((null args)
+       (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                  :dimension nil
+                                  :type base-ty
+                                  :source-location location))
+      ;; 157: (sync-workgroup :arrive) / (sync-workgroup :wait).  A split barrier separates the
+      ;; announcement from the block so work can sit between them; it is an EXECUTION rendezvous
+      ;; and moves no data, which is why it extends sync-workgroup rather than await/signal.
+      ;; The phase becomes its own builtin keyword so semantic-gpu-builtin needs no new field.
+      ((and (eq builtin-kw :sync-workgroup)
+            (= (length args) 1)
+            (member (first args) (list :arrive :wait)))
+       ;; 157 analysis 1: one window at a time, and it must close.  Both failures HANG rather than
+       ;; miscompute, so they are refused here rather than left to the user to discover on hardware.
+       (cl:when *split-barrier-depth*
+         (cl:if (eq (first args) :arrive)
+                (cl:progn
+                  (cl:when (cl:plusp *split-barrier-depth*)
+                    (error 'crisp-compiler-error
+                      :message "(sync-workgroup :arrive) cannot nest -- a window is already open in this kernel.  There is one rendezvous per scope, not a stack of them; close the first with (sync-workgroup :wait) before opening another."
+                      :source-location location))
+                  (cl:incf *split-barrier-depth*))
+                (cl:progn
+                  (cl:when (cl:zerop *split-barrier-depth*)
+                    (error 'crisp-compiler-error
+                      :message "(sync-workgroup :wait) has no matching (sync-workgroup :arrive) -- the two halves must be paired.  A :wait with nothing to wait on blocks forever."
+                      :source-location location))
+                  (cl:decf *split-barrier-depth*))))
+       (make-semantic-gpu-builtin
+        :builtin-name (if (eq (first args) :arrive) :sync-workgroup-arrive :sync-workgroup-wait)
+        :dimension nil
+        :type nil
+        :source-location location))
+      ((and (eq builtin-kw :sync-workgroup) (= (length args) 1))
+       (error "sync-workgroup takes no argument, or one of :arrive / :wait (the split barrier's two halves), got: ~S"
+              (first args)))
+      ((= (length args) 1)
+       (let ((dim-arg (first args)))
+         (unless acc-dim
+           (error "GPU built-in '~a' does not accept a dimension argument" name-str))
+         (unless (integerp dim-arg)
+           (error "GPU built-in '~a': dimension must be a compile-time integer constant (0, 1, or 2), got: ~a"
+                  name-str dim-arg))
+         (unless (member dim-arg '(0 1 2))
+           (error "GPU built-in '~a': dimension ~a is out of valid range (must be 0, 1, or 2)"
+                  name-str dim-arg))
+         (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                    :dimension dim-arg
+                                    :type 'ulong
+                                    :source-location location)))
+      (t
+       (error "GPU built-in '~a' takes 0 or 1 arguments, got ~a" name-str (length args))))))
+
+;; src/analysis/core.lisp  (REPLACES internal-def-function -- 157 Phase 2b)
+(defun internal-def-function (name params declarations body location)
+  "Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the
+   body analysis.  Otherwise identical to the Phase 2 definition."
+  (log:info "Analyzing function ~s" name)
+  (multiple-value-bind (explicit-env return-type)
+      (parse-function-declarations params declarations)
+    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (is-entry-p (loop for d in declarations
+                             thereis (and (listp d) (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (is-grid-fn-p (loop for d in declarations
+                               thereis (and (listp d) (symbolp (first d))
+                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
+           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
+           (*boundary-struct-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%boundary-struct-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-struct-params*))
+           (*boundary-array-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%array-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-array-params*))
+           (*current-kernel-is-backward*
+             (and name (symbolp name)
+                  (let ((n (symbol-name name)))
+                    (and (>= (length n) 5)
+                         (string-equal "_GRAD" (subseq n (- (length n) 5)))))))
+           (cluster-dims nil))
+      (when (and is-entry-p *boundary-struct-params*)
+            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
+      (when (and is-entry-p *boundary-array-params*)
+            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
+      (when is-grid-fn-p
+        (log:info "Compiling grid function ~a (dispatch context)" name)
+        (%validate-grid-function-return-type return-type))
+      (when is-entry-p
+        (let* ((global-size-decl (find "GLOBAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (local-size-decl  (find "LOCAL-SIZE" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (num-groups-decl  (find "NUM-GROUPS" declarations
+                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                       :test #'string-equal))
+               (cluster-size-decl (find "CLUSTER-SIZE" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal))
+               ;; 156: (mma-lowering :xe-native) -- which code-generation strategy this kernel wants
+               ;; for its matrix-engine operations.  Parsed here so an unavailable request is refused
+               ;; at analysis time, next to the other dispatch declarations.
+               (mma-lowering-decl (find "MMA-LOWERING" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal))
+               (mma-lowering (%parse-mma-lowering-decl mma-lowering-decl name
+                                                       (active-hardware-profile))))
+          (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
+          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl
+                    mma-lowering-decl)
+            (let ((dispatch-plist
+                    (append (when global-size-decl (list :global-size global-size-decl))
+                            (when local-size-decl  (list :local-size  local-size-decl))
+                            (when num-groups-decl  (list :num-groups  num-groups-decl))
+                            (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
+                            (when cluster-dims      (list :cluster-size cluster-dims))
+                            ;; Recorded even when defaulted, so the metacrisp -- and therefore any
+                            ;; benchmark row -- can say which lowering produced a number.  A figure
+                            ;; you cannot attribute to a code path is not evidence.
+                            (when mma-lowering      (list :mma-lowering mma-lowering)))))
+              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
+              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
+          (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
+      (let ((*current-kernel-cluster-dims* cluster-dims)
+            ;; 157: a split-barrier window is per KERNEL.  Bound here so the check below sees the
+            ;; whole body, and so one kernel's unclosed window cannot leak into the next.
+            (*split-barrier-depth* 0))
+        (multiple-value-prog1
+            (internal-compile-function name explicit-env return-type params body declarations
+                                       location *compiler-context*)
+          (cl:when (cl:plusp *split-barrier-depth*)
+            (error 'crisp-compiler-error
+              :message (format nil "(sync-workgroup :arrive) in kernel ~a must be paired with (sync-workgroup :wait) before the kernel ends.  An arrival that is never awaited leaves every other thread in the workgroup blocked on it."
+                               name)
+              :source-location location)))))))

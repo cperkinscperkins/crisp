@@ -400,3 +400,13 @@
 ;; Endeavour 155 rung 04: same two-package dance as the other .spv validators.
 (defun validate-spv-tile-address-arith (spv-path)
   (funcall (find-symbol "VALIDATE-SPV-TILE-ADDRESS-ARITH" :crisp.compiler) spv-path))
+
+;; tests/run-specs.lisp
+;; Endeavour 157.  Same two-package delegation as the 155 coop validators: the spec runner resolves
+;; validator names in its own package, while the implementation lives in :crisp.compiler.
+(defun validate-spv-split-barrier (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-SPLIT-BARRIER" :crisp.compiler) spv-path))
+
+;; tests/run-specs.lisp
+(defun validate-spv-fused-barrier-unchanged (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-FUSED-BARRIER-UNCHANGED" :crisp.compiler) spv-path))

@@ -1,0 +1,16 @@
+;; CHECK-FAIL: "divergent"
+;; Analysis 2 of 4: a rendezvous inside a conditional deadlocks when only some threads reach it.
+;; The fused forms already refuse this; the split halves must refuse it too, and each half
+;; independently -- an :arrive under an `if` is just as fatal as a fused barrier under one.
+(def-type m-t (matrix float :address-space :global :align :compact))
+(def-kernel divergent_split (A &out C)
+  (declare #'(m-t &out m-t)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 64))
+  (tile-stride C (8 8) (gy gx)
+    (progn
+      (if (> (to-int gx) 0)
+          (sync-workgroup :arrive)
+          nil)
+      (set! (~ C (to-int gy) (to-int gx)) (~ A (to-int gy) (to-int gx)))
+      (sync-workgroup :wait))))
