@@ -1074,6 +1074,23 @@ def main():
             run_l0_crisp("_probe_roofline", "probe_full.crisp",  "Probe_Full",  use_autobench=True)
             run_l0_crisp("_probe_roofline", "probe_loads.crisp", "Probe_Loads", use_autobench=True)
             run_l0_crisp("_probe_roofline", "probe_math.crisp",  "Probe_Math",  use_autobench=True)
+            # Round 2 arms.  The first probe answered "which half is the critical path" (the
+            # loads, at 95%).  These three ask WHY T_loads is large, since fetch and math turned
+            # out to be ~95% overlapped already -- so the win has to come from shrinking T_loads
+            # itself, not from overlapping it better.  All are probe_loads with ONE change.
+            #   A  cache control   CacheControlLoadINTEL {L1,L3}=Cached, SYCL-TLA's kL1C_L3C.
+            #                      Needs CRISP_CACHE_CONTROL=l1c_l3c and
+            #                      CRISP_CACHE_CONTROL_KERNELS=probe_loads_cc in the environment;
+            #                      the kernel SOURCE is byte-identical to probe_loads, so a flat
+            #                      result means IGC ignored the decoration -- itself a real answer.
+            #   B  prefetch        24 block prefetches per K-iteration, running 2 or 3 ahead.
+            #                      Tests memory-level parallelism among the loads.
+            #   C  fixed coords    loop-invariant load address: both the per-iteration 64-bit
+            #                      address arithmetic and any cache miss vanish.  The CEILING arm.
+            run_l0_crisp("_probe_roofline", "probe_loads_cc.crisp",    "Probe_Loads_CC",    use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_loads_pf2.crisp",   "Probe_Loads_PF2",   use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_loads_pf3.crisp",   "Probe_Loads_PF3",   use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_loads_fixed.crisp", "Probe_Loads_Fixed", use_autobench=True)
 
             run_target("sec2_top_fp16", "sycl_control_fp16.cpp", "sycl_control_fp16", "SYCL_Apples_FP16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top_fp16", "onemkl_fp16.cpp", "onemkl_fp16", "OneMKL_FP16", sycl_flags, is_sycl=True, is_cublas=True)

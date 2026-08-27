@@ -122,6 +122,9 @@ docker run --rm \
     -v /usr/lib/wsl:/usr/lib/wsl \
     -v "${REPO_ROOT}:/workspace" \
     -e CRISP_CACHE_DIR=/root/.cache/common-lisp \
+    -e CRISP_CACHE_CONTROL \
+    -e CRISP_CACHE_CONTROL_KERNELS \
+    -e CRISP_TILE_VISIT \
     -w /workspace \
     "${IMAGE_TAG}" \
     bash scripts/bench-intel-entrypoint.sh "${SIZES}" "${ITERS}" "${PRECISION}" "${CHAPTERS}" "${EXTRA}"
