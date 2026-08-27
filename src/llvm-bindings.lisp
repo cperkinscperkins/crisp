@@ -995,12 +995,15 @@
   (int-params :pointer) (int-param-count :unsigned-int))
 
 
+(defcfun ("LLVMGetInstructionOpcode" llvm-get-instruction-opcode) :int
+  "Opcode of an instruction value (LLVMOpcode enum; Add = 11)."
+  (inst :pointer))
 
 ;;; LLVMIsAInstruction is the standard C-API cast-check: it returns the value when it
 ;;; IS an Instruction and NULL otherwise.  Used by %ATTACH-DEBUG-LOC to skip the attach.
+
 (defcfun ("LLVMIsAInstruction" llvm-is-a-instruction) :pointer
-  "Returns VAL if it is an Instruction, or a NULL pointer if it is not.
-   The LLVM C API's checked-cast idiom; see BUG 033."
+  "The value as an Instruction, or NULL if it is not one."
   (val :pointer))
 
 
@@ -1011,3 +1014,22 @@
 (defcfun ("LLVMSetAlignment" llvm-set-alignment) :void
   (global :pointer)
   (bytes :unsigned-int))
+
+
+(defcfun ("LLVMIsAConstantInt" llvm-is-a-constant-int) :pointer
+  "The value as a ConstantInt, or NULL if it is not one."
+  (val :pointer))
+
+(defcfun ("LLVMGetOperand" llvm-get-operand) :pointer
+  "Operand N of a user (instruction/constant-expr)."
+  (val :pointer) (index :unsigned-int))
+
+(defcfun ("LLVMConstIntGetSExtValue" llvm-const-int-get-sext-value) :long-long
+  "The sign-extended value of a ConstantInt."
+  (val :pointer))
+
+;; Endeavour 156 Step 2: :xe-native refuses a non-zero fragment init rather than guessing the
+;; per-lane encoding of the initial value, and this is how it recognises the zero case.
+(defcfun ("LLVMIsNull" llvm-is-null) :boolean
+  "T if VAL is a null/zero constant."
+  (val :pointer))
