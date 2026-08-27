@@ -20,10 +20,18 @@ Until Crisp can express that, "prefetch measured 2.6x slower" is an uninterpreta
 exactly the kind of note that stops the next person for the wrong reason, the way endeavour 156's
 premise was "falsified" for a whole endeavour because multi-subgroup was only ever tried at K=16.
 
-**This endeavour is about making prefetch measurable, not about making it win.** Round 1 showed
-fetch and math are already ~95% overlapped, so prefetch can only pay through memory-level
-parallelism among the loads, and arm C's headroom looks address- or locality-shaped. A flat result
-here is a perfectly good outcome; an *interpretable* one is the requirement.
+**This endeavour was about making prefetch measurable, not about making it win** -- and then it
+won. Measured 2026-08-27, full kernel, verified correct, one session:
+
+| N | no prefetch | dist 2 | dist 3 |
+|---:|---:|---:|---:|
+| 2048 | 58.10 TF | 67.66 (**+16.5%**) | 69.11 (**+18.9%**) |
+| 4096 | 65.41 TF | **86.33 (+32.0%)** | 80.50 (+23.1%) |
+
+51% of the memory wall captured (ceiling was 106.2 TF with free operands); 4096 goes from 59% to
+**78% of oneMKL** fp16. Round 2's "prefetch is 2.6-2.9x slower" was two stacked errors: the 16x
+over-issue this endeavour removes, measured on a loads-only arm that cannot show prefetch's
+benefit at all (see `benchmarks/matmul/_probe_roofline/README.md`, round 3).
 
 ## The API
 
@@ -183,7 +191,24 @@ globs `**/*.crisp` and two of those five variants encode BUGGY output as though 
 
 ## Status
 
-**Specs written, implementation not started.** The `:warps` spelling and the desugaring currently
+**IMPLEMENTED AND GREEN.** 1044/1044 E2E, 226/226 negative, 291/291 unit; `ci-stop.txt` bumped to
+`158-prefetch-warps`. Two additions beyond the plan, both worth review:
+
+* `tests/run-error-specs.lisp` gained a `;; CHECK-FAIL-FLAGS:` header. The negative runner
+  hardcoded its compiler flags, so every `errors/` spec compiled with the GENERIC target -- which
+  meant an Intel-only form's "this is SPV-only" gate fired first and **no Intel-only feature could
+  have a meaningful negative spec at all**. Backward compatible; absent the header nothing changes.
+* `%spv-prefetch-shapes` resolves constants through the EXISTING `%spv-int-constants`. An earlier
+  draft defined its own hash-table-returning copy in the overlay and silently clobbered the src
+  one, breaking three 155 validators with "hash-table is not of type LIST".
+
+Remaining: rung `03` (the target kernel as a spec) and rung `04` (`TEST-HOIST[L0]` on metal).
+The prefetch-distance optimum MOVES with size (3 at 2048, 2 at 4096), so a distance is a tuning
+parameter, not a constant -- sweep in progress.
+
+## Superseded
+
+**Old status:** The `:warps` spelling and the desugaring currently
 in `overlays/crisp-compiler-overlay.lisp` are a PROTOTYPE that this document supersedes:
 `:warp-partitioned` replaces the mask, and a branch-free distribution replaces the per-warp `when`
 chain. That prototype is fenced with a SUPERSEDED marker in the overlay; rewrite, do not merge.

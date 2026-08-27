@@ -1794,3 +1794,16 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         VERIFIED: p_mc32 now runs MMA_CORRECT at 73.9 TFLOPS; chapter 3 (no cluster) emits zero
         cluster fences and is byte-unchanged; 1023/1023 both ways.
+
+[ ] 051 prefetch-tile is DROPPED inside branches.  Sibling (when ...) forms each holding one
+        prefetch-tile emit only ONE prefetch; a nested (if ...) chain emits ZERO.  Sibling whens
+        holding load-tile are FINE (16/16), so this is specific to prefetch-tile -- the one
+        statement that is void and yields no value.  CAUSE IS A HYPOTHESIS: the branching
+        analyzers look value-oriented and discard a branch whose body yields nothing; same
+        family as the crisp.compiler::cond quirk.
+        Repro: put_temp_files_here/bug-051-repro/v1..v5 (deliberately NOT under tests/spec/ --
+        the spec runner globs **/*.crisp and two of the five encode BUGGY output as expected).
+        NOT a blocker for endeavour 158: the target kernel puts both prefetches inside ONE
+        (when ...), which is the working v1 shape, and :warp-partitioned distributes
+        BRANCH-FREE so the compiler never generates the sibling branches that trigger it.
+        Latent defect in the pre-existing coordinate form; a user CAN hit it by hand.

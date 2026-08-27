@@ -335,3 +335,94 @@ The container's LLVM 21 **unrolled** `probe_loads` (58 module-wide loads across 
 back-edges) but not `probe_loads_fixed` (16, simple structure). Total DYNAMIC load count is
 unchanged by unrolling, and unrolling generally helps -- so the baseline got a benefit arm C did
 not, and the 2.7x is if anything conservative.
+
+---
+
+# ROUND 3 — prefetch, distributed.  2026-08-27, one container session.
+
+Endeavour 158 gave `prefetch-tile` a `:warp-partitioned` keyword, so the prefetch footprint is
+divided across the workgroup's subgroups instead of every subgroup issuing every block. At the
+shipped geometry that is **2 prefetch instructions per subgroup per K-step instead of 24** --
+same coverage, 12x less issue.
+
+## The full kernel (numerically CORRECT, verified at both sizes)
+
+| N | no prefetch | distance 2 | distance 3 |
+|---:|---:|---:|---:|
+| 2048 | 58.10 TF | 67.66 (**+16.5%**) | 69.11 (**+18.9%**) |
+| 4096 | 65.41 TF | **86.33 (+32.0%)** | 80.50 (+23.1%) |
+
+`probe_full` re-measured at 65.41 against round 2's 64.85 -- 0.9% apart, so the sessions are
+comparable and +32% is far outside the 3.1% run-to-run spread at this size.
+
+Against round 1's decomposition this captures **51% of the memory wall**: 65.41 -> 86.33 where
+106.2 TF was the ceiling if operands were free. In context, 4096 goes from 59% to **78% of
+oneMKL** fp16, and from 34% to **46%** of SYCL-TLA's bf16.
+
+## THE LOADS-ONLY ARM IS INVALID FOR THIS MECHANISM
+
+Same prefetch, same distances, same session:
+
+| N | loads base | + prefetch d2 | + prefetch d3 |
+|---:|---:|---:|---:|
+| 2048 | 273.5 us | 263.0 (-3.8%) | 273.2 (-0.1%) |
+| 4096 | 2015.0 us | 2333.8 (**+15.8%**) | 2418.4 (**+20.0%**) |
+
+**Loads-only says prefetch costs 16%. The full kernel says it buys 32%.** Prefetch pays by
+filling stalls that only exist while the MMA is competing for issue and latency; deleting the
+math removes exactly the condition under which it helps.
+
+So the round-1 guidance in this file -- "watch `T_loads`, not `T_full`" -- is **correct for
+measuring what the loads cost and wrong for measuring what prefetch is worth.** A probe arm that
+deletes work is only valid for mechanisms whose benefit does not depend on the deleted work. The
+loads-only prefetch arms are parked in `matmul.py` for this reason, not deleted.
+
+## What round 2's arm B actually measured
+
+"Prefetch is 2.6-2.9x slower" was **two** errors stacked: a 16x over-issue Crisp could not avoid
+because the language had no way to distribute a prefetch, measured on an arm that cannot show
+prefetch's benefit even when it works. Same shape as endeavour 156's "premise falsified" --
+a mechanism written off because the language could not express it.
+
+## Open
+
+- The optimum distance MOVES with size: 3 wins at 2048, 2 wins at 4096. Same behaviour as K
+  depth. Needs a sweep, not a pick -- distances 1-4 across 2048/4096/8192 is running.
+- 8192 is where the shipped curve goes flat and where the peer comparison is decided; round 3
+  did not reach it.
+
+## THE DISTANCE SWEEP — and a cliff at 8192
+
+Distances 1-4 against the no-prefetch baseline, one session, every point verified correct.
+
+| kernel | N=2048 | N=4096 | N=8192 |
+|---|---:|---:|---:|
+| no prefetch | 56.49 TF | 64.90 TF | 65.96 TF |
+| **distance 1** | 70.62 (**+25.0%**) | **91.17 (+40.5%)** | 29.38 (**-55.5%**) |
+| distance 2 | 68.57 (+21.4%) | 87.10 (+34.2%) | 28.86 (-56.3%) |
+| distance 3 | 66.96 (+18.5%) | 78.87 (+21.5%) | 28.51 (-56.8%) |
+| distance 4 | 66.42 (+17.6%) | 75.16 (+15.8%) | 32.95 (-50.1%) |
+
+**Two findings, and the second is the more important one.**
+
+**1. Shorter is better, monotonically, and distance 1 is the best of the four.** 91.17 TF at
+N=4096 is 82% of oneMKL fp16 (110.7), 48% of SYCL-TLA bf16 (188.9), and **86% of the 106.2 TF
+ceiling round 1 measured for free operands**. Round 3 concluded "distance 2 beats distance 3"
+and inferred an interior optimum; adding distance 1 shows the trend simply runs to the shortest
+distance tested. 0 is not a distance, so 1 is the floor.
+
+**2. AT 8192 EVERY DISTANCE COLLAPSES — 2.0x to 2.3x SLOWER than no prefetch at all.** Not a
+tail-off; a cliff. Same kernels, same keyword, verified correct, and the no-prefetch baseline at
+8192 (65.96) matches the shipped kernel's 66.1, so the baseline is sound.
+
+**Do not ship prefetch unconditionally.** It would lift 1024-4096 substantially and destroy
+8192 and up, which is exactly where the peer comparison is decided. This is the same shape as
+the levers doc's standing observation that no geometry tested is best at every size -- except
+here the penalty is a factor of two, not a few percent.
+
+**Cause is unknown and the obvious explanation does not survive.** "The working set stops
+fitting in the 18 MB L2" fails: A+B is 64 MB at 4096 and 256 MB at 8192, so BOTH already exceed
+L2 while only one collapses. What does change at 8192 is the resident workgroup count (512 ->
+2048, 4x) and the K-loop trip count (128 -> 256, 2x), so aggregate concurrent prefetch pressure
+is the better suspect -- prefetches evicting the operands that the tile-visit swizzle is relying
+on other workgroups to reuse. That is a HYPOTHESIS. It wants a measurement, not a paragraph.

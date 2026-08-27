@@ -1,24 +1,13 @@
-;; ROOFLINE PROBE B2-W — LOADS + WARP-PARTITIONED PREFETCH, distance 2.
+;; THE DELIVERABLE — the shipped sec2_top_fp16 kernel plus warp-partitioned prefetch at
+;; distance 2.  Endeavour 158's target kernel.
 ;;
-;; The re-run of arm B now that `prefetch-tile` has `:warp-partitioned` (endeavour 158).  The
-;; original arm measured 2.6-2.9x SLOWER, but that was not a result about prefetch: every one of
-;; the 16 subgroups issued every one of the 24 prefetches -- 384 per workgroup per K-step against
-;; 256 loads.  This arm issues TWO per subgroup:
-;;   A  (128 32)  -> 4x2  =  8 blocks / 16 warps -> 1 round  (8 blocks, so 8 warps duplicate)
-;;   B  (32 256)  -> 1x16 = 16 blocks / 16 warps -> 1 round  (exact, no duplication)
-;; 2 instead of 24 per subgroup, i.e. 12x less prefetch issue for the SAME coverage.
+;; Unlike the loads-only probe arms this one is NUMERICALLY CORRECT -- a prefetch is a hint and
+;; changes no result -- so it VERIFIES at N<=2048 and its number can be compared directly against
+;; probe_full (the same kernel without prefetch).
 ;;
-;; Compare the source against probe_loads_pf2.crisp, which needed 24 hand-written forms with
-;; the 16-column hardware limit applied by hand.  The coordinates here are in the same units as
-;; the matching load-tile.
-;;
-;; WHAT IT TESTS.  Round 1 showed fetch and math are ALREADY ~95% overlapped, so prefetch cannot
-;; pay by hiding loads behind math.  The only way it can pay is by raising memory-level
-;; parallelism AMONG the loads -- i.e. by making T_loads itself smaller.  Watch T_loads, not
-;; T_full.  A flat result is a real answer; what it can no longer be is an ARTEFACT of Crisp
-;; over-issuing by 16x.
-;;
-;; THIS KERNEL IS NUMERICALLY WRONG BY CONSTRUCTION.  Diagnostic probe only -- see README.md.
+;; Per subgroup per K-step this issues TWO prefetches against SIXTEEN loads and 32 dpas.  Before
+;; :warp-partitioned the same coverage cost 24 prefetches per subgroup, which is what made the
+;; first arm B read 2.6-2.9x slower.
 (declaim (precision fast))
 (def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
@@ -40,6 +29,7 @@
               (prefetch-tile A (grid-y prefetch-k) :size (128 32) :warp-partitioned true)
               (prefetch-tile B (prefetch-k grid-x) :size (32 256) :warp-partitioned true))
             (load-tile A A-tile (grid-y grid-k))
-            (load-tile B B-tile (grid-k grid-x))))
+            (load-tile B B-tile (grid-k grid-x))
+            (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)))
         :epilogue
         (store-tile C-tile C (grid-y grid-x))))))

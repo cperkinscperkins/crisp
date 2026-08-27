@@ -1073,7 +1073,8 @@ def main():
             # and points are recorded with verified:false.
             run_l0_crisp("_probe_roofline", "probe_full.crisp",  "Probe_Full",  use_autobench=True)
             run_l0_crisp("_probe_roofline", "probe_loads.crisp", "Probe_Loads", use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_math.crisp",  "Probe_Math",  use_autobench=True)
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_math.crisp",  "Probe_Math",  use_autobench=True)
             # Round 2 arms.  The first probe answered "which half is the critical path" (the
             # loads, at 95%).  These three ask WHY T_loads is large, since fetch and math turned
             # out to be ~95% overlapped already -- so the win has to come from shrinking T_loads
@@ -1087,10 +1088,27 @@ def main():
             #                      Tests memory-level parallelism among the loads.
             #   C  fixed coords    loop-invariant load address: both the per-iteration 64-bit
             #                      address arithmetic and any cache miss vanish.  The CEILING arm.
-            run_l0_crisp("_probe_roofline", "probe_loads_cc.crisp",    "Probe_Loads_CC",    use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_loads_pf2.crisp",   "Probe_Loads_PF2",   use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_loads_pf3.crisp",   "Probe_Loads_PF3",   use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_loads_fixed.crisp", "Probe_Loads_Fixed", use_autobench=True)
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_loads_cc.crisp",    "Probe_Loads_CC",    use_autobench=True)
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_loads_pf2.crisp",   "Probe_Loads_PF2",   use_autobench=True)
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_loads_pf3.crisp",   "Probe_Loads_PF3",   use_autobench=True)
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_loads_fixed.crisp", "Probe_Loads_Fixed", use_autobench=True)
+            # Round 3 (endeavour 158): arm B re-run with a prefetch that is actually DISTRIBUTED.
+            # The round-2 arms above issued all 24 prefetches from all 16 subgroups because
+            # prefetch-tile had no :warps notion; these issue TWO per subgroup for the same
+            # coverage.  probe_full_pfw* are numerically CORRECT (a prefetch changes no result), so
+            # unlike the loads-only arms they verify at N<=2048 and compare directly to probe_full.
+            # LOADS-ONLY MISLEADS FOR PREFETCH (round 3) -- parked:
+            # run_l0_crisp("_probe_roofline", "probe_loads_pfw2.crisp",  "Probe_Loads_PFW2",  use_autobench=True)
+            # LOADS-ONLY MISLEADS FOR PREFETCH (round 3) -- parked:
+            # run_l0_crisp("_probe_roofline", "probe_loads_pfw3.crisp",  "Probe_Loads_PFW3",  use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_full_pfw1.crisp",   "Probe_Full_PFW1",   use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_full_pfw2.crisp",   "Probe_Full_PFW2",   use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_full_pfw3.crisp",   "Probe_Full_PFW3",   use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_full_pfw4.crisp",   "Probe_Full_PFW4",   use_autobench=True)
 
             run_target("sec2_top_fp16", "sycl_control_fp16.cpp", "sycl_control_fp16", "SYCL_Apples_FP16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top_fp16", "onemkl_fp16.cpp", "onemkl_fp16", "OneMKL_FP16", sycl_flags, is_sycl=True, is_cublas=True)
