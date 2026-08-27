@@ -73,6 +73,7 @@
 
 
 
+;; 156 lowering selector: REPLACES %hp-validate-value -- adds the :lowerings value type
 (defun %hp-validate-value (profile-name key type raw)
   "Validate/normalize RAW for KEY of TYPE.  Signals a clear compile error on a
    malformed value; returns the normalized value (sizes in bytes, lists unquoted).
@@ -115,7 +116,20 @@
        (unless (and (listp shapes) shapes (every #'%hp-3-pos-ints-p shapes))
          (error "def-hardware-profile ~a: key ~a expects a non-empty list of (M N K) positive-integer triples, got ~s."
                 profile-name key raw))
-       shapes))))
+       shapes))
+    ;; 156: an ordered list of code-generation strategies, most-preferred first.  Validated against
+    ;; the names the COMPILER knows, so a typo is caught in the profile rather than surfacing later
+    ;; as a kernel that mysteriously will not select its lowering.
+    (:lowerings
+     (let ((ls (%hp-unquote raw)))
+       (unless (and (listp ls) ls (every #'keywordp ls))
+         (error "def-hardware-profile ~a: key ~a expects a non-empty list of lowering keywords, got ~s."
+                profile-name key raw))
+       (let ((bad (remove-if (lambda (l) (member l *known-mma-lowerings*)) ls)))
+         (when bad
+           (error "def-hardware-profile ~a: key ~a names unknown lowering~p ~{~s~^, ~}.  Known lowerings: ~{~s~^, ~}."
+                  profile-name key (length bad) bad *known-mma-lowerings*)))
+       ls))))
 
 ;; src/hardware-profile.lisp
 (defun %hp-register-modes (&optional (profile (active-hardware-profile)))
@@ -308,6 +322,7 @@
 ;;; ===================================================================
 
 ;; src/hardware-profile.lisp
+;; 156 lowering selector: REPLACES *hardware-profile-schema* -- adds :mma-lowerings
 (defparameter *hardware-profile-schema*
   '((:simd-width                  . :pos-int)
     (:compute-units               . :pos-int)
@@ -320,8 +335,13 @@
     (:l2-cache-size               . :size)
     (:tile-visit-strip-width      . :pos-int)   ; 144 Phase 1: measured; absent/1 => linear
     (:max-work-group-dims         . :dims3)     ; (x y z) positive ints
-    (:mma-shapes                  . :mma-shapes)) ; list of (M N K) triples
+    (:mma-shapes                  . :mma-shapes)  ; list of (M N K) triples
+    (:mma-lowerings               . :lowerings))  ; 156: ordered; first is the default
   "Endeavor 130: canonical hardware-profile keys and their value types.
+
+   Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can
+   drive its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the
+   portable SPV_KHR_cooperative_matrix path every backend has had until now.
 
    Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) — a scalar
    for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose
@@ -451,3 +471,14 @@
                   "WARNING: kernel ~a reserves ~a registers/thread x ~a threads = ~a registers per block, against ~a per compute unit — so at most ~a block~:p can be resident.  With a single resident block there is nothing to overlap its memory stalls against; consider a smaller tile/accumulator, or distributing it across more warps (:warps).  (Counts explicit reservations only; the final allocation can only be larger.)~%"
                   kernel-name regs threads per-block per-cu blocks))
         blocks))))
+
+;;;; ============================================================================================
+;;;; Folded in from overlays/crisp-compiler-overlay.lisp on 2026-08-26.
+;;;; These were appended to the overlay in this order and are kept in it, because
+;;;; later definitions here reference earlier ones.
+;;;; ============================================================================================
+(defun %hp-mma-lowerings (profile)
+  "The lowerings PROFILE offers, most-preferred first.  Absent means (:coop-matrix) -- the portable
+   path every backend has had until now, which keeps every existing profile valid and unchanged."
+  (or (and profile (getf profile :mma-lowerings))
+      (list :coop-matrix)))

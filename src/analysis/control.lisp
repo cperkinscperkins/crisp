@@ -4548,3 +4548,38 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%spirv-async-copy-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%spirv-async-copy-expression))))
+
+;;;; ============================================================================================
+;;;; Folded in from overlays/crisp-compiler-overlay.lisp on 2026-08-26.
+;;;; These were appended to the overlay in this order and are kept in it, because
+;;;; later definitions here reference earlier ones.
+;;;; ============================================================================================
+(defun %parse-mma-lowering-decl (decl kernel-name profile)
+  "Validate a (mma-lowering <keyword>) declaration and return the chosen lowering keyword.
+
+   DECL absent -> the active profile's default (its first :mma-lowerings entry, else :coop-matrix).
+   DECL present -> that lowering, if the profile offers it; otherwise a compile-time REFUSAL.
+
+   The refusal is the point.  Silently falling back to the portable path would hand the user a slow
+   kernel with no way to tell that their request was ignored -- exactly the failure mode that hid
+   :warps-on-a-ring being a no-op through two endeavours."
+  (let ((available (%hp-mma-lowerings profile)))
+    (if (null decl)
+        (first available)
+        (let ((v (second decl)))
+          (unless (and (= (length decl) 2) (keywordp v))
+            (error 'crisp-compiler-error
+              :message (format nil "mma-lowering takes exactly one keyword (kernel ~a), e.g. (mma-lowering :coop-matrix).  Got ~S."
+                               kernel-name decl)
+              :source-location nil))
+          (unless (member v *known-mma-lowerings*)
+            (error 'crisp-compiler-error
+              :message (format nil "mma-lowering ~s is not a lowering Crisp knows (kernel ~a).  Known lowerings: ~{~s~^, ~}"
+                               v kernel-name *known-mma-lowerings*)
+              :source-location nil))
+          (unless (member v available)
+            (error 'crisp-compiler-error
+              :message (format nil "mma-lowering ~s is not available on the active hardware profile (kernel ~a).  This profile offers: ~{~s~^, ~}.  Crisp REFUSES rather than falling back to a different lowering, because a silent downgrade would give you a slow kernel and no way to see why.  Either pick an offered lowering, or add ~s to the profile's :mma-lowerings once a backend implements it"
+                               v kernel-name available v)
+              :source-location nil))
+          v))))

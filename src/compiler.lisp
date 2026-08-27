@@ -227,9 +227,30 @@ Returns (values addr-space-int access-qual-string type-name-string)."
 
 
 
+;;
+;; WHY THIS CHANGED.  This function splices the OpenCL !kernel_arg_* refs into a kernel's define
+;; line by taking everything from the signature's closing paren to the opening brace and REPLACING
+;; it.  Anything LLVM had already attached to that function is silently discarded -- which is why
+;; endeavour 156's !intel_reqd_sub_group_size vanished between the module and the .ll even though
+;; the attachment demonstrably ran.
+;;
+;; The discarded tail is not only ours.  A kernel define line normally carries `#0 !dbg !N` there:
+;; the attribute-group reference and the debug-info reference.  Both were being dropped for entry
+;; points while every non-kernel function kept them.  That is a very plausible explanation for the
+;; endeavour-126 observation that the `denormal-fp-math` function attribute "does NOT reach SPIR-V"
+;; -- the attribute was fine; the reference to its attribute group was being deleted here.  126
+;; worked around it with an explicit execution mode, which is why denormals still behave correctly
+;; and why this went unnoticed.
+;;
+;; The fix is to APPEND rather than replace: keep whatever LLVM emitted, then add our refs.  That is
+;; strictly more information in the IR, and it is what lets function-level metadata survive to the
+;; SPIR-V translator at all.
 (defun inject-spir-kernel-metadata (ir-text)
   "Inject OpenCL kernel metadata for all SPIR kernels found in IR text.
-Returns modified IR text with metadata."
+Returns modified IR text with metadata.
+
+Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attribute-group refs,
+!dbg, !intel_reqd_sub_group_size) instead of overwriting it -- see the comment above."
   (let ((kernels (find-spir-kernels ir-text)))
     (if (null kernels)
         ir-text
@@ -265,9 +286,16 @@ Returns modified IR text with metadata."
 
                     (if (null close-paren-pos)
                         (log:warn "inject-spir-kernel-metadata: could not find ) for ~a, skipping" func-name)
-                        (progn
+                        ;; Endeavour 156: keep the existing tail (#N, !dbg, !intel_reqd_sub_group_size,
+                        ;; anything else LLVM attached) and append our refs after it.
+                        (let ((existing (string-trim '(#\Space #\Tab)
+                                                     (subseq result (1+ close-paren-pos) new-brace-pos))))
+                          (log:debug "  preserving existing kernel metadata for ~a: ~s" func-name existing)
                           (setf result (concatenate 'string
                                          (subseq result 0 (1+ close-paren-pos))
+                                         (if (string= existing "")
+                                             ""
+                                             (concatenate 'string " " existing))
                                          metadata-refs
                                          " "
                                          (string #\{)
@@ -631,7 +659,19 @@ Returns modified IR text with metadata."
                               (when (%module-uses-coop-matrix-p module)
                                 '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
                               (when (%module-uses-2d-block-io-p module)
-                                '("--spirv-ext=+SPV_INTEL_2d_block_io"))))
+                                '("--spirv-ext=+SPV_INTEL_2d_block_io"))
+                              ;; 156: :xe-native's multiply.  Requested only when the module
+                              ;; actually contains one, like every other extension here -- an
+                              ;; unconditional flag would widen what the driver must accept for
+                              ;; every kernel Crisp emits.
+                              (when (%module-uses-subgroup-mma-p module)
+                                '("--spirv-ext=+SPV_INTEL_subgroup_matrix_multiply_accumulate"))
+                              (when (%module-uses-split-barrier-p module)
+                                '("--spirv-ext=+SPV_INTEL_split_barrier"))
+                              ;; 155: a bf16 register tile lowers to a `bfloat` coop matrix,
+                              ;; which llvm-spirv refuses without this extension.
+                              (when (%module-uses-bfloat-p module)
+                                '("--spirv-ext=+SPV_KHR_bfloat16"))))
            (flags (append debug-flags ext-flags)))
       (run-tool-command
        (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
@@ -1118,3 +1158,67 @@ Returns modified IR text with metadata."
   (register-mma-types)              ; Endeavor 132 — MMA fundamentals (src/mma.lisp)
 
   (log:info "Compiler initialized. differentiate=~a" differentiate))
+
+;;;; ============================================================================================
+;;;; Folded in from overlays/crisp-compiler-overlay.lisp on 2026-08-26.
+;;;; These were appended to the overlay in this order and are kept in it, because
+;;;; later definitions here reference earlier ones.
+;;;; ============================================================================================
+(defun %module-uses-bfloat-p (module)
+  "Always NIL now.
+
+   Endeavour 155: Crisp no longer emits the LLVM `bfloat` TYPE at all — a bf16 cooperative matrix
+   is a 16-bit INTEGER matrix plus an operands-mask bit (see the bf16 header).  So no module needs
+   SPV_KHR_bfloat16, and requesting it is what the BMG driver refused to read.
+
+   Kept as a function rather than deleted because compile-to-spirv calls it, and because the day a
+   backend DOES want a real bfloat type this is the single place that decides."
+  (declare (ignore module))
+  cl:nil)
+
+;; tests/run-specs.lisp  (REPLACES validate-spv-bf16-coop -- 155 bf16)
+(defun validate-spv-bf16-coop (spv-path)
+  "Endeavour 155 — assert a bf16 register tile reached the hardware in INTEL'S bf16 ENCODING.
+
+   That encoding is: A/B cooperative matrices with 16-BIT INTEGER components, an fp32 accumulator,
+   and NO SPV_KHR_bfloat16 (there is no bfloat type in the module to require it).  Verified
+   against what Intel's own bf16 joint_matrix kernel emits.
+
+   This rung previously asserted the opposite — a 16-bit FLOAT component and a declared
+   SPV_KHR_bfloat16 — which is the encoding this driver refuses.  The change is not a relaxation:
+   it is the same per-operand strictness applied to the correct target."
+  (%validate-coop-operand-elem spv-path 16 "bfloat16 (as i16)" :int-components cl:t))
+
+;; TEMPORARY BISECTION PROBE -- not a fix.  Neuters the Step 4 split so %coop-tensor-ptr+stride
+;; emits exactly the pre-155-Step-4 address arithmetic, to determine whether the 256x256 :warps
+;; probe's MMA_WRONG is caused by base-plus-delta or was already there.
+(defun %coop-split-origin (builder origin)
+  "BISECTION STUB: always declines to split."
+  (declare (ignore builder))
+  (values origin 0))
+
+(defun %module-uses-subgroup-mma-p (module)
+  "T if MODULE calls __spirv_SubgroupMatrixMultiplyAccumulateINTEL -- i.e. some kernel in it chose
+   the :xe-native lowering.  Mirrors %module-uses-2d-block-io-p exactly, and for the same reason:
+   the extension is requested only when it is used, so a kernel on the portable path does not oblige
+   the driver to support it."
+  (let ((fn (crisp.llvm-bindings::llvm-get-first-function module)))
+    (loop until (cffi:null-pointer-p fn) do
+      (let ((name (crisp.llvm-bindings::llvm-get-value-name fn)))
+        (when (and name (search "SubgroupMatrixMultiplyAccumulate" name))
+          (return-from %module-uses-subgroup-mma-p t)))
+      (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
+    nil))
+
+(defun %module-uses-split-barrier-p (module)
+  "T if MODULE calls either half of the INTEL split barrier.
+
+   Mirrors %module-uses-2d-block-io-p and %module-uses-subgroup-mma-p: the extension is requested
+   only when it is used, so a kernel that never splits does not oblige the driver to support it."
+  (let ((fn (crisp.llvm-bindings::llvm-get-first-function module)))
+    (loop until (cffi:null-pointer-p fn) do
+      (let ((name (crisp.llvm-bindings::llvm-get-value-name fn)))
+        (when (and name (search "ControlBarrier" name) (search "INTEL" name))
+          (return-from %module-uses-split-barrier-p t)))
+      (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
+    nil))

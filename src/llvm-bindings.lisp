@@ -77,8 +77,25 @@
 
 (defcfun ("LLVMHalfType" llvm-half-type) :pointer
          "Get a 16-bit floating-point type.")
-(defcfun ("LLVMBFloatType" llvm-bfloat-type) :pointer
-         "Get a 16-bit brain floating-point type.")
+(defcfun ("LLVMBFloatType" %llvm-bfloat-type-native) :pointer
+         "Get a 16-bit brain floating-point type -- the RAW LLVM entry point.
+          Callers want LLVM-BFLOAT-TYPE below, which is backend-aware.")
+
+(defun llvm-bfloat-type ()
+  "LLVM type for Crisp's BFLOAT16.  On SPIR-V this is i16: Intel encodes a bf16
+   cooperative matrix as raw 16-bit integers with the bfloat-ness carried by the MulAdd
+   operands mask (0x40), and emitting a real bfloat type instead requires
+   SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  On every
+   other backend this is the native bfloat.
+
+   Folded in from the overlay, where it was installed by swapping this symbol's
+   symbol-function over the defcfun above.  That shape cannot live in src -- the capture
+   would grab the function it is replacing -- so the defcfun was renamed instead and this
+   defun took the exported name.  Behaviour is unchanged."
+  (if (and (boundp 'crisp.compiler::*target-backend*)
+           (eq crisp.compiler::*target-backend* :spirv))
+      (llvm-int16-type)
+      (%llvm-bfloat-type-native)))
 (defcfun ("LLVMFloatType" llvm-float-type) :pointer
          "Get a 32-bit floating-point type.")
 (defcfun ("LLVMDoubleType" llvm-double-type) :pointer

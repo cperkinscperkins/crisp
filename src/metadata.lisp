@@ -633,6 +633,8 @@
     (nreverse implicit-args)))
 
 
+;; src/metadata.lisp  (REPLACES serialize-kernels -- 156: record the kernel's CHOSEN mma
+;; lowering in the metacrisp, so a benchmark number can be attributed to a code path)
 (defun serialize-kernels (output-stream kernel-names &key source output-targets)
   "Emits the (:kernels ...) section of the metacrisp file.
    Extended to include :global-size, :local-size, :num-groups dispatch declarations.
@@ -676,7 +678,13 @@
                       (local-size-decl  (getf dispatch :local-size))
                       (num-groups-decl  (getf dispatch :num-groups))
                       (cluster-decl     (getf dispatch :cluster-size-decl))
-                      (cluster-dims     (getf dispatch :cluster-size)))
+                      (cluster-dims     (getf dispatch :cluster-size))
+                      ;; Endeavour 156: which MMA LOWERING generated this kernel.  Recorded even
+                      ;; when defaulted, so a benchmark row can be attributed to a code path -- a
+                      ;; number you cannot attribute is not evidence.  Note this is the kernel's
+                      ;; CHOSEN lowering, not the profile's :mma-lowerings capability list, which
+                      ;; is a different thing that also appears in this file.
+                      (mma-lowering     (getf dispatch :mma-lowering)))
                   (when global-size-decl
                     (format output-stream "    :global-size ")
                     (print-without-packages global-size-decl output-stream)
@@ -689,6 +697,8 @@
                     (format output-stream "    :num-groups ")
                     (print-without-packages num-groups-decl output-stream)
                     (format output-stream "~%"))
+                  (when mma-lowering
+                    (format output-stream "    :mma-lowering ~s~%" mma-lowering))
                   ;; Endeavor 152.  BOTH are emitted on purpose:
                   ;;   :cluster-size            -- the declaration, as written
                   ;;   :effective-cluster-size  -- what codegen actually built
