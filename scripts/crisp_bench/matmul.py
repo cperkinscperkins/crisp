@@ -1023,6 +1023,14 @@ def main():
 
             # §2.1 — Top MMA Benchmarks (BFloat16 Low-Precision Tier)
             run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16.crisp", use_autobench=True)
+            # VARIANTS.  The bf16 kernel is geometrically IDENTICAL to its fp16 twin -- same
+            # 128x256 tile over 16 subgroups, same K step, same (8 16 16) shape -- so the same
+            # prefetch-distance sweep applies.  bf16 had a SYCL-TLA peer and no variant sweep;
+            # fp16 had the sweep and no peer.  Both halves are now filled in.
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw1.crisp", "Crisp_V_pfw1", use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw2.crisp", "Crisp_V_pfw2", use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw3.crisp", "Crisp_V_pfw3", use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw4.crisp", "Crisp_V_pfw4", use_autobench=True)
             run_target("sec2_top_bf16", "sycl_control_bf16.cpp", "sycl_control_bf16", "SYCL_Apples_BF16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top_bf16", "sycl_tla_peer.cpp", "sycl_tla_peer", "SYCL-TLA_BF16", sycl_tla_flags, is_sycl=True)
             run_target("sec2_top_bf16", "onemkl_bf16.cpp", "onemkl_bf16", "OneMKL_BF16", sycl_flags, is_sycl=True, is_cublas=True)
@@ -1125,6 +1133,10 @@ def main():
             run_l0_crisp("_probe_roofline", "probe_full_pfw4.crisp",   "Probe_Full_PFW4",   use_autobench=True)
 
             run_target("sec2_top_fp16", "sycl_control_fp16.cpp", "sycl_control_fp16", "SYCL_Apples_FP16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            # PEER for fp16.  A verbatim port of the bf16 peer with only the element type
+            # changed.  The fp16 Peer column was empty because this file did not exist -- not
+            # because SYCL-TLA lacks fp16 on Xe2 (it is TF32 it does not implement).
+            run_target("sec2_top_fp16", "sycl_tla_peer_fp16.cpp", "sycl_tla_peer_fp16", "SYCL-TLA_FP16", sycl_tla_flags, is_sycl=True)
             run_target("sec2_top_fp16", "onemkl_fp16.cpp", "onemkl_fp16", "OneMKL_FP16", sycl_flags, is_sycl=True, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU

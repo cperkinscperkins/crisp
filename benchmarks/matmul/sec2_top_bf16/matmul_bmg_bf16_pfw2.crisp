@@ -1,0 +1,56 @@
+;; Section 2 top MMA kernel — Intel BMG, bfloat16 — VARIANT: warp-partitioned prefetch, distance 2.
+;;
+;; A VARIANT of the sec2_top_fp16 solution, not a separate contender.  The user picks one; the
+;; report shows which won at each size and what a single fixed choice would have cost.  That is
+;; the same bargain SYCL-TLA offers (pipeline depth is a template argument) and the opposite of
+;; oneMKL, which hides selection because it SHIPS the selection.
+;;
+;; The bf16 kernel is GEOMETRICALLY IDENTICAL to its fp16 twin -- same 128x256 tile over 16
+;; subgroups, same K step 32, same (8 16 16) shape -- so the same prefetch treatment applies.
+;; The numbers below are the FP16 twin's, quoted for shape only; the bf16 sweep is what this
+;; variant exists to produce.
+;;
+;; FP16 twin, one session, against its no-prefetch kernel (endeavour 158):
+;;     N        2048     4096     8192
+;;     none    56.49    64.90    65.96
+;;     d1      70.62    91.17    29.38
+;;     d2      68.57    87.10    28.86
+;;     d3      66.96    78.87    28.51
+;;     d4      66.42    75.16    32.95
+;;
+;; SHORTER IS BETTER where it helps at all, monotonically in distance.
+;;
+;; AND IT INVERTS AT 8192 — every distance is 2.0-2.3x SLOWER than no prefetch.  Not a tail-off,
+;; a cliff, with all points verified correct.  This kernel must NOT be used above ~4096.  The
+;; obvious cause does not survive: A+B is 64 MB at 4096 and 256 MB at 8192, so BOTH already
+;; exceed the 18 MB L2 while only one collapses.  Resident workgroups (512 -> 2048) and K trip
+;; count (128 -> 256) are the better suspects.  UNMEASURED.
+;;
+;; The prefetch is WARP-PARTITIONED (endeavour 158): 2 prefetch instructions per subgroup per
+;; K-step instead of 24.  Without that keyword this same kernel measures 2.6-2.9x SLOWER, which
+;; is what the first attempt recorded and why it was nearly written off twice.
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 256))
+  (let ((A-tile (make-register-tile bfloat16 (128 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile bfloat16 (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (128 256) 0.0 :warps '(true true true true true true true true true true true true true true true true)))
+        (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 32))))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k n-k-steps)
+          (let ((prefetch-k (+ grid-k (to-ulong 2))))
+            (when (< prefetch-k n-k-steps)
+              (prefetch-tile A (grid-y prefetch-k) :size (128 32) :warp-partitioned true)
+              (prefetch-tile B (prefetch-k grid-x) :size (32 256) :warp-partitioned true))
+            (load-tile A A-tile (grid-y grid-k))
+            (load-tile B B-tile (grid-k grid-x))
+            (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))
