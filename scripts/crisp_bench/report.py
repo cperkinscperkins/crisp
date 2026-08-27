@@ -126,6 +126,41 @@ def _is_peer(name: str) -> bool:
         return False
     return any(k in name for k in ["CUTLASS", "SYCL-TLA", "CUB", "oneDPL"])
 
+# ---------------------------------------------------------------------------------------------
+# VARIANTS.  A `Crisp_V_<tag>` competitor is an alternative CONFIGURATION of its chapter's Crisp
+# kernel -- a different prefetch distance, ring depth, K step -- NOT a separate contender.  A
+# plain `Crisp_<name>` stays a contender, which is what sec3_mma_lowering's four kernels are: a
+# controlled contrast where taking a max would destroy the comparison.
+#
+# WHY THE DISTINCTION IS LOAD-BEARING.  `_best_pt` already takes max() over every Crisp-named
+# competitor at each size independently, so a chapter carrying several kernels ALREADY reports a
+# per-size envelope -- silently, with no record of which kernel produced which cell.  With
+# endeavour 158's prefetch variants that would print 91.2 at 4096 (distance 1) and 66.0 at 8192
+# (no prefetch) as one smooth curve, and say nothing about the fact that the 4096 winner is a
+# 2.2x REGRESSION at 8192.  A best-per-size number is only honest when the reader can reproduce
+# the selection, so the envelope must name its winner.
+def _variant_split(name: str):
+    """(GROUP, TAG) for a `Crisp_V_<tag>` variant; (name, None) for anything else.
+       The base kernel of a group is the plain `Crisp` competitor, whose tag is reported as
+       "base" so every envelope cell names something."""
+    if name.startswith("Crisp_V_"):
+        return "Crisp", name[len("Crisp_V_"):]
+    if name == "Crisp":
+        return "Crisp", "base"
+    return name, None
+
+
+# Run-to-run spread, measured six repeats on BMG (docs/performance-levers.md, Layer 4).  Needed
+# to call a sign flip: without a noise floor, "faster here, slower there" is not a claim, it is a
+# pair of numbers.  Re-derive when the driver or the hardware moves.
+RUN_TO_RUN_SPREAD = {1024: 0.022, 2048: 0.022, 4096: 0.031, 8192: 0.007}
+DEFAULT_SPREAD = 0.03
+
+
+def _spread(n: int) -> float:
+    return RUN_TO_RUN_SPREAD.get(n, DEFAULT_SPREAD)
+
+
 def _platform_of(gpu: str) -> str:
     return "intel" if "intel" in gpu.lower() or "bmg" in gpu.lower() else "nvidia"
 
@@ -383,10 +418,10 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             for tk in top_keys:
                 if tk in matmul_data[gpu] and "fast" in matmul_data[gpu][tk] and s in matmul_data[gpu][tk]["fast"]:
                     for comp, pt in matmul_data[gpu][tk]["fast"][s].items():
-                        cand_pts.append((comp, pt))
+                        cand_pts.append((comp, pt, tk))
 
             def _best_pt(predicate):
-                matching = [pt for comp, pt in cand_pts if predicate(comp)]
+                matching = [pt for comp, pt, _tk in cand_pts if predicate(comp)]
                 if not matching: return None
                 return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
 
@@ -394,6 +429,23 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             ctrl_pt = _best_pt(_is_control)
             peer_pt = _best_pt(_is_peer)
             ceil_pt = _best_pt(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+
+            # PROVENANCE.  This cell is a max over every Crisp competitor in SIX chapters, taken
+            # independently at each size -- so the "Crisp" column has ALWAYS been a per-size
+            # envelope over different kernels, and never said so.  Name the winner.  A number
+            # whose configuration is unstated cannot be reproduced by the reader, and a curve
+            # assembled from several kernels reads as one kernel unless it is labelled.
+            # Here the max is over CHAPTERS, so the chapter is the provenance that matters -- a
+            # cell may come from chap7_wgmma while its neighbour comes from sec2_top.  A variant
+            # tag is appended only when the chapter actually carries variants; tagging every cell
+            # `base` would be noise, not provenance.
+            c_src = None
+            if c_pt is not None:
+                for _comp, _pt, _tk in cand_pts:
+                    if _pt is c_pt and _is_crisp(_comp):
+                        _g, _v = _variant_split(_comp)
+                        c_src = _tk if _v in (None, "base") else f"{_tk}/{_v}"
+                        break
 
             c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
             c_ms = c_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if c_pt else None
@@ -404,7 +456,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             ceil_tf = ceil_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_pt else None
             ceil_ms = ceil_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ceil_pt else None
 
-            c_str = f"{c_tf:.1f} ({c_ms:.3f})" if c_tf else "—"
+            c_str = (f"{c_tf:.1f} ({c_ms:.3f})" + (f" `{c_src}`" if c_src else "")) if c_tf else "—"
             ctrl_str = f"{ctrl_tf:.1f} ({ctrl_ms:.3f})" if ctrl_tf else "—"
             if platform == "intel":
                 peer_str = "N/A*"
@@ -476,9 +528,44 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             if not sizes:
                 return
 
+            # ---- VARIANT ANALYSIS -------------------------------------------------------------
+            # Which Crisp configurations exist in this chapter, how each does at each size, which
+            # single one is the best FIXED choice, and where any of them changes sign.
+            variants = {}                       # tag -> {size: tflops}
+            for s in sizes:
+                for comp, pt in data[s].items():
+                    grp, vtag = _variant_split(comp)
+                    if grp == "Crisp" and vtag and _is_crisp(comp):
+                        v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                        if v:
+                            variants.setdefault(vtag, {})[s] = v
+
+            # BEST SINGLE FIXED CHOICE: the variant with the best geometric mean over the sizes
+            # where EVERY variant has a point, so the comparison is not decided by coverage.
+            common = [s for s in sizes if all(s in v for v in variants.values())] if variants else []
+            best_single = None
+            if len(variants) > 1 and common:
+                def _gmean(vt):
+                    p = 1.0
+                    for s in common:
+                        p *= variants[vt][s]
+                    return p ** (1.0 / len(common))
+                best_single = max(variants, key=_gmean)
+
             lines.append(f"### {gpu} \u00b7 {tag.lower()} \u00b7 `fast` *({note})*\n")
-            lines.append(f"| N | Crisp {tag} | Control<br>{ctrl_label}_{tag} | **Peer**<br>{peer_label}_{tag} | Ceiling<br>{ceil_label}_{tag} | vs Peer | vs Ceiling |")
-            lines.append("|---:|---:|---:|---:|---:|---:|---:|")
+            if best_single:
+                lines.append(
+                    f"Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's "
+                    f"pipeline depth is a template argument. So two Crisp columns, and the gap between "
+                    f"them is *what tuning is worth*. **Envelope** is the best variant at each size, "
+                    f"naming which one. **Best single** is the one fixed choice that does best across "
+                    f"all sizes (`{best_single}`) \u2014 what you get without per-size tuning. "
+                    f"{len(variants)} variants measured.\n")
+                lines.append(f"| N | Crisp {tag}<br>**envelope** | Crisp {tag}<br>best single (`{best_single}`) | Control<br>{ctrl_label}_{tag} | **Peer**<br>{peer_label}_{tag} | Ceiling<br>{ceil_label}_{tag} | vs Peer | vs Ceiling |")
+                lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|")
+            else:
+                lines.append(f"| N | Crisp {tag} | Control<br>{ctrl_label}_{tag} | **Peer**<br>{peer_label}_{tag} | Ceiling<br>{ceil_label}_{tag} | vs Peer | vs Ceiling |")
+                lines.append("|---:|---:|---:|---:|---:|---:|---:|")
 
             def _best(cand_pts, predicate):
                 matching = [pt for comp, pt in cand_pts if predicate(comp)]
@@ -514,7 +601,53 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 vs_peer = format_ratio(c_tf, _tf(peer_pt))
                 vs_ceil = format_ratio(c_tf, _tf(ceil_pt), as_pct=True)
 
-                lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ctrl_pt)} | {_cell(peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
+                if best_single:
+                    # PROVENANCE.  The envelope is a max over configurations; a number without the
+                    # configuration that produced it is not reproducible by the reader, and this
+                    # report has been burned before by cells whose provenance was unstated.
+                    # Only name a winner where one actually has a point: an empty cell tagged
+                    # `base` claims a provenance for a measurement that does not exist.
+                    _present = {vt: v[s] for vt, v in variants.items() if s in v}
+                    win = max(_present, key=_present.get) if _present else None
+                    env = f"{_cell(c_pt)} `{win}`" if win else _cell(c_pt)
+                    bs_tf = variants.get(best_single, {}).get(s)
+                    bs = f"{bs_tf:.1f}" if bs_tf else "—"
+                    lines.append(f"| {s} | {env} | {bs} | {_cell(ctrl_pt)} | {_cell(peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
+                else:
+                    lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ctrl_pt)} | {_cell(peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
+
+            # ---- SIGN FLIPS -------------------------------------------------------------------
+            # A variant that WINS at one size and LOSES at another, both beyond the run-to-run
+            # spread, is not a tuning preference -- it is a trap.  Endeavour 158's prefetch is
+            # +40% at 4096 and -55% at 8192, and a report that showed only the envelope would have
+            # presented that as a smooth curve.  Computed from stored points; costs no GPU time.
+            if variants and "base" in variants:
+                flips = []
+                for vt, pts in sorted(variants.items()):
+                    if vt == "base":
+                        continue
+                    up, down = [], []
+                    for s in sizes:
+                        if s in pts and s in variants["base"]:
+                            d = pts[s] / variants["base"][s] - 1.0
+                            if d > _spread(s):
+                                up.append((s, d))
+                            elif d < -_spread(s):
+                                down.append((s, d))
+                    if up and down:
+                        flips.append((vt, up, down))
+                if flips:
+                    lines.append("\n> **⚠ SIGN FLIPS — these variants reverse with problem size.**")
+                    lines.append("> Each wins somewhere and loses somewhere, both beyond the measured run-to-run")
+                    lines.append("> spread, so a single fixed choice is not available and the envelope above is")
+                    lines.append("> assembled from *different kernels*. Picking by one size will mislead you at another.\n")
+                    lines.append("> | variant | wins at | loses at |")
+                    lines.append("> |---|---|---|")
+                    for vt, up, down in flips:
+                        u = ", ".join(f"{s} ({d*100:+.0f}%)" for s, d in up)
+                        dn = ", ".join(f"**{s} ({d*100:+.0f}%)**" for s, d in down)
+                        lines.append(f"> | `{vt}` | {u} | {dn} |")
+                    lines.append("")
 
             ref_pt = last.get("ctrl") or last.get("peer")
             ref_dev = ref_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if ref_pt else 0.0

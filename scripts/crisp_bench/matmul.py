@@ -1041,6 +1041,20 @@ def main():
             # report was just fixed for (the CUB/CUBLAS substring collision).  Different element
             # type, different section, contenders converted to match.
             run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16.crisp", use_autobench=True)
+            # VARIANTS of the fp16 solution, not separate contenders.  The `Crisp_V_` prefix is
+            # the marker report.py reads: a `Crisp_V_<tag>` competitor is an alternative
+            # CONFIGURATION of this chapter's Crisp kernel, so the report shows the per-size
+            # envelope (with provenance) AND the best single fixed choice.  A plain `Crisp_<name>`
+            # stays a separate contender -- that is what sec3_mma_lowering's four kernels are, a
+            # controlled contrast where taking a max would destroy the comparison.
+            #
+            # Endeavour 158: prefetch distance is a real tuning parameter here, and it CHANGES
+            # SIGN with N -- +40% at 4096, -55% at 8192.  Exactly the case the envelope/single
+            # split and the sign-flip warnings exist to make visible.
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw1.crisp", "Crisp_V_pfw1", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw2.crisp", "Crisp_V_pfw2", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw3.crisp", "Crisp_V_pfw3", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw4.crisp", "Crisp_V_pfw4", use_autobench=True)
 
             # §3 Situational — MMA LOWERING (:coop-matrix vs :xe-native), Intel only.
             # Four kernels, one variable at a time.  All are 32x64 bf16 over one subgroup; the

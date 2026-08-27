@@ -769,6 +769,7 @@ MMA
 - [ ] :xe-native vs :coop-matrix ? 
 - [ ] inside out vs. outside in.
 - [ ] NVidia
+[ ] L0 hoist and bench: are we using _SHARED_ memory instead of DEVICE?
 [ ] src has duplicate var names *hardware-profile-schema* and others
 - Documentation Shortcomings
 - [ ] :operand  

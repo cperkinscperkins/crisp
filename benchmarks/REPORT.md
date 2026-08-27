@@ -4,7 +4,7 @@
 
 | device | data captured | source |
 |---|---|---|
-| Intel BMG | 2026-08-26 | Crisp `514a188` (docker) |
+| Intel BMG | 2026-08-27 | Crisp `3e8ab19` (docker) |
 | NVIDIA H100 NVL | 2026-08-22 | Crisp `209687fd` (runpod) |
 
 ---
@@ -288,13 +288,13 @@ wgmma
 
 | N | Crisp | Control<br>SYCL_Apples | **Peer**<br>SYCL-TLA | Ceiling<br>oneMKL | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.0 (0.011) | 1.5 (0.022) | N/A* | 5.2 (0.006) | — | 58% |
-| 512 | 9.6 (0.028) | 5.1 (0.052) | N/A* | 9.8 (0.027) | — | 99% |
-| 1024 | 30.9 (0.070) | 10.2 (0.211) | N/A* | 12.0 (0.179) | — | **258%** |
-| 2048 | 31.7 (0.541) | 11.3 (1.527) | N/A* | 13.8 (1.243) | — | **230%** |
-| 4096 | 27.5 (5.000) | 9.6 (14.333) | N/A* | 14.3 (9.603) | — | **192%** |
-| 8192 | 15.9 (69.111) | 7.6 (144.065) | N/A* | 14.2 (77.573) | — | 112% |
-| 16384 | 10.1 (867.832) | 4.8 (1820.566) | N/A* | 14.4 (611.618) | — | 70% |
+| 256 | 3.0 (0.011) `chap5_multistage_ring` | 1.5 (0.022) | N/A* | 5.2 (0.006) | — | 58% |
+| 512 | 9.6 (0.028) `sec2_top` | 5.1 (0.052) | N/A* | 9.8 (0.027) | — | 99% |
+| 1024 | 30.9 (0.070) `sec2_top` | 10.2 (0.211) | N/A* | 12.0 (0.179) | — | **258%** |
+| 2048 | 31.7 (0.541) `sec2_top` | 11.3 (1.527) | N/A* | 13.8 (1.243) | — | **230%** |
+| 4096 | 27.5 (5.000) `sec2_top` | 9.6 (14.333) | N/A* | 14.3 (9.603) | — | **192%** |
+| 8192 | 15.9 (69.111) `sec2_top` | 7.6 (144.065) | N/A* | 14.2 (77.573) | — | 112% |
+| 16384 | 10.1 (867.832) `sec2_top` | 4.8 (1820.566) | N/A* | 14.4 (611.618) | — | 70% |
 
 > *\*Note: SYCL-TLA does not implement TF32 DPAS on Xe2 (only BF16/FP16/FP8). See §2.1 below for the native 270+ TFLOPS BF16 suite.*
 
@@ -334,21 +334,36 @@ wgmma
 
 ### Intel BMG · fp16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
 
-| N | Crisp FP16 | Control<br>SYCL_Apples_FP16 | **Peer**<br>SYCL-TLA_FP16 | Ceiling<br>oneMKL_FP16 | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 2.9 (0.011) | 2.0 (0.017) | — | 9.8 (0.003) | — | 30% |
-| 512 | 15.3 (0.018) | 7.5 (0.036) | — | 41.0 (0.007) | — | 37% |
-| 1024 | 63.1 (0.034) | 15.3 (0.141) | — | 75.4 (0.029) | — | 84% |
-| 2048 | 57.9 (0.297) | 17.6 (0.974) | — | 87.4 (0.197) | — | 66% |
-| 4096 | 64.9 (2.118) | 17.9 (7.666) | — | 110.7 (1.241) | — | 59% |
-| 8192 | 66.1 (16.644) | 15.2 (72.100) | — | 111.7 (9.842) | — | 59% |
-| 16384 | — | 11.0 (801.185) | — | 111.1 (79.180) | — | — |
+Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`base`) — what you get without per-size tuning. 5 variants measured.
+
+| N | Crisp FP16<br>**envelope** | Crisp FP16<br>best single (`base`) | Control<br>SYCL_Apples_FP16 | **Peer**<br>SYCL-TLA_FP16 | Ceiling<br>oneMKL_FP16 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 3.1 (0.011) `pfw3` | 3.0 | 2.0 (0.017) | — | 9.8 (0.003) | — | 32% |
+| 512 | 16.4 (0.016) `pfw2` | 15.3 | 7.5 (0.036) | — | 41.0 (0.007) | — | 40% |
+| 1024 | 63.0 (0.034) `pfw1` | 62.2 | 15.3 (0.140) | — | 75.1 (0.029) | — | 84% |
+| 2048 | 70.9 (0.242) `pfw1` | 57.8 | 17.7 (0.972) | — | 87.9 (0.195) | — | 81% |
+| 4096 | 91.4 (1.503) `pfw1` | 65.2 | 17.9 (7.691) | — | 110.8 (1.241) | — | 83% |
+| 8192 | 65.9 (16.674) `base` | 65.9 | 15.2 (72.165) | — | 111.5 (9.863) | — | 59% |
+| 16384 | — | — | 11.0 (801.185) | — | 111.1 (79.180) | — | — |
+
+> **⚠ SIGN FLIPS — these variants reverse with problem size.**
+> Each wins somewhere and loses somewhere, both beyond the measured run-to-run
+> spread, so a single fixed choice is not available and the envelope above is
+> assembled from *different kernels*. Picking by one size will mislead you at another.
+
+> | variant | wins at | loses at |
+> |---|---|---|
+> | `pfw1` | 256 (+4%), 512 (+7%), 2048 (+23%), 4096 (+40%) | **8192 (-55%)** |
+> | `pfw2` | 256 (+4%), 512 (+8%), 2048 (+19%), 4096 (+33%) | **8192 (-56%)** |
+> | `pfw3` | 256 (+5%), 512 (+8%), 2048 (+16%), 4096 (+24%) | **8192 (-58%)** |
+> | `pfw4` | 256 (+5%), 512 (+7%), 2048 (+14%), 4096 (+19%) | **8192 (-54%)** |
+
 
 <details><summary><b>Compilation & Build Overhead (FP16)</b></summary>
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Control codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 856 ms | 856 ms | 0.46× |
+| **Crisp** | Crisp | 1.30 s | 1.30 s | 0.69× |
 | **SYCL_Apples_FP16** | Control | 1.88 s | 4.13 s | 1.00× |
 | **oneMKL_FP16** | Ceiling | *precompiled* | 6.52 s | — |
 
@@ -358,14 +373,14 @@ wgmma
 
 | N | Crisp | Control<br>CUDA_Apples | **Peer**<br>CUTLASS | Ceiling<br>cuBLAS | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.2 (0.010) | 2.1 (0.016) | — | 5.4 (0.006) | — | 59% |
-| 512 | 17.4 (0.015) | 3.2 (0.083) | — | 30.7 (0.009) | — | 57% |
-| 1024 | 92.4 (0.023) | 3.6 (0.603) | — | 141.3 (0.015) | — | 65% |
-| 2048 | 253.9 (0.068) | 3.7 (4.632) | — | 326.6 (0.053) | — | 78% |
-| 4096 | 295.8 (0.465) | 3.8 (36.420) | — | 386.3 (0.356) | — | 77% |
-| 8192 | 295.3 (3.724) | 3.7 (293.820) | — | 408.3 (2.693) | — | 72% |
-| 16384 | 184.0 (47.807) | 3.7 (2359.985) | — | 282.7 (31.112) | — | 65% |
-| 32768 | 145.7 (482.919) | 3.6 (19326.156) | — | 308.6 (227.998) | — | 47% |
+| 256 | 3.2 (0.010) `chap6_warp_specialization` | 2.1 (0.016) | — | 5.4 (0.006) | — | 59% |
+| 512 | 17.4 (0.015) `sec2_top` | 3.2 (0.083) | — | 30.7 (0.009) | — | 57% |
+| 1024 | 92.4 (0.023) `chap7_wgmma` | 3.6 (0.603) | — | 141.3 (0.015) | — | 65% |
+| 2048 | 253.9 (0.068) `sec2_top` | 3.7 (4.632) | — | 326.6 (0.053) | — | 78% |
+| 4096 | 295.8 (0.465) `sec2_top` | 3.8 (36.420) | — | 386.3 (0.356) | — | 77% |
+| 8192 | 295.3 (3.724) `chap7_wgmma` | 3.7 (293.820) | — | 408.3 (2.693) | — | 72% |
+| 16384 | 184.0 (47.807) `chap7_wgmma` | 3.7 (2359.985) | — | 282.7 (31.112) | — | 65% |
+| 32768 | 145.7 (482.919) `chap7_wgmma` | 3.6 (19326.156) | — | 308.6 (227.998) | — | 47% |
 
 <details><summary><b>Compilation & Build Overhead</b></summary>
 
@@ -583,3 +598,25 @@ Debug and exploratory runs are written to `benchmarks/results/scratch/`, which t
 | 2026-08-26 14:33 | matmul | sec2_top_fp16 | Crisp | `1024,2048,4096,8192` |
 | 2026-08-26 14:33 | matmul | sec2_top_bf16 | Crisp | `1024,2048,4096,8192` |
 | 2026-08-26 14:34 | matmul | sec2_top_fp16 | Crisp | `1024,2048,4096,8192` |
+| 2026-08-27 06:21 | matmul | _probe_roofline | Probe_Full | `2048,4096` |
+| 2026-08-27 06:21 | matmul | _probe_roofline | Probe_Loads | `` |
+| 2026-08-27 06:21 | matmul | _probe_roofline | Probe_Math | `` |
+| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Full | `2048,4096` |
+| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads | `` |
+| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Math | `` |
+| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads_CC | `` |
+| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads_PF2 | `` |
+| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads_PF3 | `` |
+| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads_Fixed | `` |
+| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Full | `2048,4096` |
+| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Loads | `` |
+| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Loads_PFW2 | `` |
+| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Loads_PFW3 | `` |
+| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Full_PFW2 | `2048,4096` |
+| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Full_PFW3 | `2048,4096` |
+| 2026-08-27 18:06 | matmul | _probe_roofline | Probe_Full | `2048,4096,8192` |
+| 2026-08-27 18:06 | matmul | _probe_roofline | Probe_Loads | `` |
+| 2026-08-27 18:06 | matmul | _probe_roofline | Probe_Full_PFW1 | `2048,4096,8192` |
+| 2026-08-27 18:06 | matmul | _probe_roofline | Probe_Full_PFW2 | `2048,4096,8192` |
+| 2026-08-27 18:07 | matmul | _probe_roofline | Probe_Full_PFW3 | `2048,4096,8192` |
+| 2026-08-27 18:07 | matmul | _probe_roofline | Probe_Full_PFW4 | `2048,4096,8192` |
