@@ -1,0 +1,30 @@
+;; ROOFLINE PROBE B — LOADS ONLY.  Identical to probe_full except mma-accumulate-via-tile
+;; is removed from the K loop.  Same loads, same trip count, same addressing, NO math.
+;;
+;; THIS KERNEL IS NUMERICALLY WRONG BY CONSTRUCTION.  It stores an all-zero C.  It is a
+;; DIAGNOSTIC PROBE, never a contender: it must only ever be run above VERIFY_MAX_N (so the
+;; host reference is not run) and written to benchmarks/results/scratch/.
+;;
+;; DCE HAZARD: with the mma gone, nothing reads A-tile or B-tile.  If the block reads are
+;; eliminated this kernel measures an empty loop and the whole experiment is void.  The
+;; emitted load count MUST be checked against probe_full's before any timing is believed.
+(declaim (precision fast))
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 256))
+  (let ((A-tile (make-register-tile half (128 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile half (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (128 256) 0.0 :warps '(true true true true true true true true true true true true true true true true)))
+        (K (inner-dimension A B)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x)))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

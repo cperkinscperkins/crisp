@@ -1051,6 +1051,30 @@ def main():
             run_l0_crisp("sec3_mma_lowering", "matmul_xe_bare.crisp",    "Crisp_XeNative_Bare",  use_autobench=True)
             run_l0_crisp("sec3_mma_lowering", "matmul_coop_tuned.crisp", "Crisp_Coop_Tuned",    use_autobench=True)
             run_l0_crisp("sec3_mma_lowering", "matmul_xe_tuned.crisp",   "Crisp_XeNative_Tuned", use_autobench=True)
+            # DIAGNOSTIC — ROOFLINE PROBE.  Not a chapter of the report; it has no contenders and
+            # produces no row.  Three arms of ONE kernel (the shipped sec2_top_fp16 geometry) that
+            # separate "bound by the loads" from "bound by the math":
+            #     probe_full    16 loads + 32 dpas in the K loop   (the real kernel)
+            #     probe_loads   16 loads +  0 dpas                 (math deleted)
+            #     probe_math     0 loads + 32 dpas                 (loads hoisted out of the K loop)
+            # Read T_full against T_loads and T_math -- see _probe_roofline/README.md for how each
+            # outcome is interpreted.
+            #
+            # TWO OF THE THREE ARMS ARE NUMERICALLY WRONG BY CONSTRUCTION.  That is the point of
+            # them, and it is also why this chapter is fenced:
+            #   * the directory is underscore-prefixed, so it is not a report chapter;
+            #   * _skip() means it runs ONLY when named in --chapters, never in a full sweep;
+            #   * it must be run with --scratch, so its JSON lands in results/scratch/ which the
+            #     report never reads into a canonical table;
+            #   * at N <= VERIFY_MAX_N the harness runs the host reference and DISCARDS the two
+            #     wrong arms as NOT MMA_CORRECT.  That is expected and is itself the check that
+            #     the integrity gate still works -- include 2048 in the sizes to see it fire.
+            # The measurable sizes are therefore 4096 and up, where the host reference is skipped
+            # and points are recorded with verified:false.
+            run_l0_crisp("_probe_roofline", "probe_full.crisp",  "Probe_Full",  use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_loads.crisp", "Probe_Loads", use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_math.crisp",  "Probe_Math",  use_autobench=True)
+
             run_target("sec2_top_fp16", "sycl_control_fp16.cpp", "sycl_control_fp16", "SYCL_Apples_FP16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top_fp16", "onemkl_fp16.cpp", "onemkl_fp16", "OneMKL_FP16", sycl_flags, is_sycl=True, is_cublas=True)
 

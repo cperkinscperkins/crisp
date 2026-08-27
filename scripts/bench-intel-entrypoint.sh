@@ -29,6 +29,10 @@ SIZES="${1:-256,512,1024}"
 ITERS="${2:-100}"
 PRECISION="${3:-all}"
 CHAPTERS="${4:-}"
+# Extra flags passed straight through to matmul.py.  Exists for --scratch, which diagnostic
+# chapters (e.g. _probe_roofline) REQUIRE: it routes their JSON to results/scratch/, which
+# report.py never reads into a canonical table.  Probe kernels are deliberately wrong.
+EXTRA="${5:-}"
 
 # Activate the oneAPI environment, then extend LD_LIBRARY_PATH to include
 # the WSL2 D3D shim libs so the L0 driver can actually open the GPU.
@@ -74,4 +78,4 @@ PREC_FLAG="--sweep-all"
 if [ "${PRECISION}" != "all" ]; then PREC_FLAG="--precision=${PRECISION}"; fi
 CHAP_FLAG=""
 if [ -n "${CHAPTERS}" ]; then CHAP_FLAG="--chapters=${CHAPTERS}"; fi
-python3 scripts/crisp_bench/matmul.py --platform=intel ${PREC_FLAG} ${CHAP_FLAG} --sizes="${SIZES}" --iters="${ITERS}"
+python3 scripts/crisp_bench/matmul.py --platform=intel ${PREC_FLAG} ${CHAP_FLAG} --sizes="${SIZES}" --iters="${ITERS}" ${EXTRA}

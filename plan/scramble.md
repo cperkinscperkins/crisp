@@ -762,6 +762,14 @@ MMA
 [ ] why small sizes faring poorly against CuBLAS and MKL?
 [ ] performance ratchet updated, with control for multicastno
 [/] out of core orchestration 
+[ ] benchmarking needs fixtures, don't depend on --hoist
+[ ] remove benchmarking from hoist? Or put it behind a hoist flag?
+[ ] FP16
+- [ ] compare SYCL-TLA code and output
+- [ ] :xe-native vs :coop-matrix ? 
+- [ ] inside out vs. outside in.
+- [ ] NVidia
+[ ] src has duplicate var names *hardware-profile-schema* and others
 
 
 [ ] benchmarking up to "max" for BMG and H100. 
