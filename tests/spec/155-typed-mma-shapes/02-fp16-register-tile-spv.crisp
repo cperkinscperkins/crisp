@@ -1,0 +1,75 @@
+;; Endeavour 155 rung 02 — EVERY A/B operand of an fp16 register tile must be fp16.
+;;
+;; WHY THIS RUNG EXISTS WHEN 01 ALREADY COVERS 16-BIT TILES.  It does not cover the same thing.
+;; Rung 01 asserts that a 16-bit type reached the module and that SOME cooperative matrix uses it.
+;; That assertion is satisfied by a module in which MOST operands are still float32 — and that is
+;; the module Crisp emits today.  The weak form was written to catch "the element type was
+;; discarded"; it cannot see "the element type was discarded ON SOME PATHS", which is the defect
+;; that is actually present.
+;;
+;; WHAT THE EMITTED MODULE LOOKS LIKE RIGHT NOW.  Disassembling this kernel's .spv shows every
+;; operand declared TWICE, once per component width, with no conversion ops between them:
+;;
+;;     id 360  component=32-bit  A            <-- wrong
+;;     id 363  component=16-bit  A
+;;     id 372  component=32-bit  B            <-- wrong
+;;     id 374  component=16-bit  B
+;;     id 383  component=32-bit  Accumulator  <-- correct, an fp16 MMA accumulates in fp32
+;;
+;; and the f32 operand types are referenced MORE than the f16 ones (42/22 vs 18/10 in the
+;; benchmark kernel).  So the majority of fragments still compute in the wrong precision.  On BMG
+;; this is worth ~50x: the fp16 top-chapter kernel measures 0.27 TFLOPS at N=4096 where the tf32
+;; kernel measures 16.33 and oneMKL fp16 measures 110.38.
+;;
+;; NEW VALIDATOR: validate-spv-fp16-coop, which asserts the invariant a mixed-precision MMA
+;; actually has — every A-use and B-use cooperative matrix is 16-bit, every Accumulator is fp32 —
+;; rather than "at least one of them is 16-bit somewhere".
+;;
+;; WHY fp16 AND NOT bf16 CARRIES THE 16-BIT COVERAGE.  bf16 cannot be loaded on the BMG driver at
+;; all: the Level Zero SPIR-V reader (IGC 1.6.33578) does not implement SPV_KHR_bfloat16, reports
+;; `input SPIR-V module uses unknown extension`, and then crashes.  That is a driver gap, not a
+;; Crisp defect — three independent translators accept the same module.  fp16 goes through the
+;; IDENTICAL typed path and DOES load and run, so fp16 is what makes 16-bit MMA testable end to
+;; end on Intel.  Rung 01 stays bf16 and compile-only; this rung is the one that can go to metal.
+;;
+;; THE --hardware-profile FLAG IS REQUIRED, and I initially thought it was not.  The reasoning was
+;; that :mma-shapes is only checked when a profile is active and this rung asserts a TYPE, not a
+;; shape — so the flag could be dropped and rung 01's forwarding gap (obstacle 3) sidestepped.
+;; The compiler says otherwise, and says it clearly:
+;;
+;;     load-tile into a register-tile requires a hardware profile (pass --hardware-profile):
+;;     its GRF / L1 limits drive the register-pipeline safety analysis.
+;;
+;; Which is right: a register tile's legality depends on how many registers the part HAS, and that
+;; is a property of the profile, not of the shape literal.  Recorded because it is a real constraint
+;; on every register-tile spec, not a quirk of this one.
+;;
+;; ===================================================================
+;; STATUS: RED ON PURPOSE, and beyond ci-stop.  This is a TDD rung stating a defect that is
+;; present in the compiler today.  It goes green when the f32 A/B cooperative-matrix types stop
+;; being minted.  Move ci-stop to 155-typed-mma-shapes when the whole directory passes.
+;; ===================================================================
+;;
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "AD mints no adjoint for register tiles bound INSIDE a tile-stride body (Unknown variable C-TILE_ADJ); hoisting the identical bindings to the enclosing let compiles clean. NOT a 16-bit gap -- a tf32 twin fails identically."
+;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-fp16-coop
+(declaim (precision fast))
+(def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel fp16_tile (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K (inner-dimension A B)))
+    (tile-stride C (8 16) (grid-y grid-x)
+      (let ((A-tile (make-register-tile half  (8 16)  0.0 :operand :a))
+            (B-tile (make-register-tile half  (16 16) 0.0 :operand :b))
+            (C-tile (make-register-tile float (8 16)  0.0)))
+        (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x))
+          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

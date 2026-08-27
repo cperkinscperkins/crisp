@@ -44,6 +44,16 @@ for _a in "$@"; do
     if [ "$_a" = "--keep-pod-results" ]; then KEEP_POD_RESULTS="1"; fi
 done
 set -- $(printf "%s\n" "$@" | grep -v -- "--keep-pod-results" | tr "\n" " ")
+## --scratch: forward to the suite driver so an exploratory run lands in results/scratch/, which
+## the report never reads (§2 of plan/benchmark-harness.md).  Without this the flag was NOT
+## recognised here and fell through to POSITIONAL, where it silently became the SIZES argument --
+## so `bench.py --scratch --target=pod` produced a run with sizes="--scratch" AND wrote it to the
+## canonical directory: precisely the contamination §2 exists to prevent.
+SCRATCH_ARG=""
+for _a in "$@"; do
+    if [ "$_a" = "--scratch" ]; then SCRATCH_ARG="--scratch"; fi
+done
+set -- $(printf "%s\n" "$@" | grep -v -- "--scratch" | tr "\n" " ")
 POSITIONAL=()
 for _arg in "$@"; do
     case "$_arg" in
@@ -190,6 +200,15 @@ sbcl --non-interactive --load build/build.lisp 2>&1 | tail -5
 BUILD
 echo ""
 
+# --- 4a. Provision the PEER libraries (CUTLASS / SYCL-TLA) ---
+#
+# Without these the peer contender silently takes its "headers not found" branch and the report's
+# Peer column is empty -- which removes the only contender that answers "is 77% of cuBLAS good?".
+# Idempotent: an existing checkout is reported and left alone, so re-runs cost nothing.
+echo "--- Step 4a: provision peer libraries ---"
+pod_run "cd ${WORK_DIR} && bash scripts/setup-third-party.sh 2>&1 | tail -8"
+echo ""
+
 # --- 4b. Clear the pod's results dir so the pull is precise ---
 #
 # The pod cloned the repo, so benchmarks/results/ already contains every committed result from
@@ -241,7 +260,7 @@ case "${BENCH}" in
     ## --chapters= (optional) restricts the ladder.  A fused-epilogue session does not need
     ## chap0/chap1/chap1.5/chap2 re-measured at 8192 — those are slow, known, and dominate
     ## the wall time.  Empty means the whole ladder, as before.
-    python3 scripts/crisp_bench/matmul.py --sizes=${SIZES} --iters=${ITERS} --sweep-all ${CHAPTERS_ARG}
+    python3 scripts/crisp_bench/matmul.py --sizes=${SIZES} --iters=${ITERS} --sweep-all ${CHAPTERS_ARG} ${SCRATCH_ARG}
     ;;
 esac
 RUNBENCH

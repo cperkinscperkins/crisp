@@ -77,8 +77,25 @@
 
 (defcfun ("LLVMHalfType" llvm-half-type) :pointer
          "Get a 16-bit floating-point type.")
-(defcfun ("LLVMBFloatType" llvm-bfloat-type) :pointer
-         "Get a 16-bit brain floating-point type.")
+(defcfun ("LLVMBFloatType" %llvm-bfloat-type-native) :pointer
+         "Get a 16-bit brain floating-point type -- the RAW LLVM entry point.
+          Callers want LLVM-BFLOAT-TYPE below, which is backend-aware.")
+
+(defun llvm-bfloat-type ()
+  "LLVM type for Crisp's BFLOAT16.  On SPIR-V this is i16: Intel encodes a bf16
+   cooperative matrix as raw 16-bit integers with the bfloat-ness carried by the MulAdd
+   operands mask (0x40), and emitting a real bfloat type instead requires
+   SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  On every
+   other backend this is the native bfloat.
+
+   Folded in from the overlay, where it was installed by swapping this symbol's
+   symbol-function over the defcfun above.  That shape cannot live in src -- the capture
+   would grab the function it is replacing -- so the defcfun was renamed instead and this
+   defun took the exported name.  Behaviour is unchanged."
+  (if (and (boundp 'crisp.compiler::*target-backend*)
+           (eq crisp.compiler::*target-backend* :spirv))
+      (llvm-int16-type)
+      (%llvm-bfloat-type-native)))
 (defcfun ("LLVMFloatType" llvm-float-type) :pointer
          "Get a 32-bit floating-point type.")
 (defcfun ("LLVMDoubleType" llvm-double-type) :pointer
@@ -995,12 +1012,15 @@
   (int-params :pointer) (int-param-count :unsigned-int))
 
 
+(defcfun ("LLVMGetInstructionOpcode" llvm-get-instruction-opcode) :int
+  "Opcode of an instruction value (LLVMOpcode enum; Add = 11)."
+  (inst :pointer))
 
 ;;; LLVMIsAInstruction is the standard C-API cast-check: it returns the value when it
 ;;; IS an Instruction and NULL otherwise.  Used by %ATTACH-DEBUG-LOC to skip the attach.
+
 (defcfun ("LLVMIsAInstruction" llvm-is-a-instruction) :pointer
-  "Returns VAL if it is an Instruction, or a NULL pointer if it is not.
-   The LLVM C API's checked-cast idiom; see BUG 033."
+  "The value as an Instruction, or NULL if it is not one."
   (val :pointer))
 
 
@@ -1011,3 +1031,22 @@
 (defcfun ("LLVMSetAlignment" llvm-set-alignment) :void
   (global :pointer)
   (bytes :unsigned-int))
+
+
+(defcfun ("LLVMIsAConstantInt" llvm-is-a-constant-int) :pointer
+  "The value as a ConstantInt, or NULL if it is not one."
+  (val :pointer))
+
+(defcfun ("LLVMGetOperand" llvm-get-operand) :pointer
+  "Operand N of a user (instruction/constant-expr)."
+  (val :pointer) (index :unsigned-int))
+
+(defcfun ("LLVMConstIntGetSExtValue" llvm-const-int-get-sext-value) :long-long
+  "The sign-extended value of a ConstantInt."
+  (val :pointer))
+
+;; Endeavour 156 Step 2: :xe-native refuses a non-zero fragment init rather than guessing the
+;; per-lane encoding of the initial value, and this is how it recognises the zero case.
+(defcfun ("LLVMIsNull" llvm-is-null) :boolean
+  "T if VAL is a null/zero constant."
+  (val :pointer))

@@ -108,11 +108,23 @@ def _is_crisp(name: str) -> bool:
 def _is_control(name: str) -> bool:
     return any(k in name for k in ["Apples", "CUDA_Apples", "SYCL_Apples"])
 
-def _is_peer(name: str) -> bool:
-    return any(k in name for k in ["CUTLASS", "SYCL-TLA", "CUB", "oneDPL"])
-
 def _is_ceiling(name: str) -> bool:
     return any(k in name for k in ["CUBLAS", "cuBLAS", "OneMKL", "oneMKL", "oneDNN", "CUBLASLt", "cuBLASLt"])
+
+def _is_peer(name: str) -> bool:
+    # CEILING WINS.  "CUB" (NVIDIA's CUB library) is a PREFIX OF "CUBLAS", so a plain substring
+    # test classified CUBLAS_Optimal as a peer -- and since the peer column takes the best-scoring
+    # peer, cuBLAS was printed in the CUTLASS column.  That is how the H100 table came to show
+    # Peer and Ceiling identical at every size while CUTLASS had in fact recorded 0.0 TFLOPS at
+    # every size (its harness could not find the CUTLASS headers).  A fabricated competitor row is
+    # worse than a missing one.
+    #
+    # Fixed by precedence rather than by word-boundary matching: `\bCUB\b` would correctly reject
+    # CUBLAS but would ALSO reject the "SYCL-TLA_BF16" style names the bf16 section builds, since
+    # the trailing "_" is a word character.  Anything that is a ceiling is not a peer.
+    if _is_ceiling(name):
+        return False
+    return any(k in name for k in ["CUTLASS", "SYCL-TLA", "CUB", "oneDPL"])
 
 def _platform_of(gpu: str) -> str:
     return "intel" if "intel" in gpu.lower() or "bmg" in gpu.lower() else "nvidia"
@@ -447,74 +459,93 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             _row(ceil_label, "Ceiling", ceil_pt0, is_ceil=True)
             lines.append("\n</details>\n")
 
-        # §2.1 BFloat16 Top MMA Benchmarks (if available)
-        if "sec2_top_bf16" in matmul_data[gpu] and "fast" in matmul_data[gpu]["sec2_top_bf16"]:
-            bf16_data = matmul_data[gpu]["sec2_top_bf16"]["fast"]
-            lines.append(f"### {gpu} · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*\n")
-            lines.append(f"| N | Crisp BF16 | Control<br>{ctrl_label}_BF16 | **Peer**<br>{peer_label}_BF16 | Ceiling<br>{ceil_label}_BF16 | vs Peer | vs Ceiling |")
+        # §2.1 / §2.2 — 16-BIT TOP MMA SECTIONS.
+        #
+        # Endeavour 155: bf16 and fp16 share one implementation rather than two near-identical
+        # copies.  The bf16 block this replaces had drifted from §2 in a way that mattered: its
+        # "vs Peer" / "vs Ceiling" columns were computed as format_ratio(ctrl_tf or c_tf, ...),
+        # i.e. they reported the CONTROL's ratio in a table whose first column is Crisp.  With
+        # Crisp bf16 absent on this driver that went unnoticed; copying it for fp16, where Crisp
+        # DOES have data, would have published the SYCL control's ratios as Crisp's.  Both
+        # sections now use c_tf, matching §2.
+        def _emit_16bit_top(chapter_key, tag, note):
+            if chapter_key not in matmul_data[gpu] or "fast" not in matmul_data[gpu][chapter_key]:
+                return
+            data = matmul_data[gpu][chapter_key]["fast"]
+            sizes = sorted([s for s in data.keys() if isinstance(s, int)])
+            if not sizes:
+                return
+
+            lines.append(f"### {gpu} \u00b7 {tag.lower()} \u00b7 `fast` *({note})*\n")
+            lines.append(f"| N | Crisp {tag} | Control<br>{ctrl_label}_{tag} | **Peer**<br>{peer_label}_{tag} | Ceiling<br>{ceil_label}_{tag} | vs Peer | vs Ceiling |")
             lines.append("|---:|---:|---:|---:|---:|---:|---:|")
 
-            bf16_sizes = sorted([s for s in bf16_data.keys() if isinstance(s, int)])
-            for s in bf16_sizes:
-                cand_pts = [(comp, pt) for comp, pt in bf16_data[s].items()]
-                def _best_bf(predicate):
-                    matching = [pt for comp, pt in cand_pts if predicate(comp)]
-                    if not matching: return None
-                    return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
+            def _best(cand_pts, predicate):
+                matching = [pt for comp, pt in cand_pts if predicate(comp)]
+                if not matching:
+                    return None
+                return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
 
-                c_pt = _best_bf(_is_crisp)
-                ctrl_pt = _best_bf(_is_control)
-                peer_pt = _best_bf(_is_peer)
-                ceil_pt = _best_bf(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+            def _tf(pt):
+                return pt.get("metrics", {}).get("throughput", {}).get("tflops") if pt else None
 
-                c_tf = c_pt.get("metrics", {}).get("throughput", {}).get("tflops") if c_pt else None
-                c_ms = c_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if c_pt else None
-                ctrl_tf = ctrl_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ctrl_pt else None
-                ctrl_ms = ctrl_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ctrl_pt else None
-                peer_tf = peer_pt.get("metrics", {}).get("throughput", {}).get("tflops") if peer_pt else None
-                peer_ms = peer_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if peer_pt else None
-                ceil_tf = ceil_pt.get("metrics", {}).get("throughput", {}).get("tflops") if ceil_pt else None
-                ceil_ms = ceil_pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if ceil_pt else None
+            def _ms(pt):
+                return pt.get("metrics", {}).get("runtime", {}).get("kernel_execution_ms") if pt else None
 
-                c_str = f"{c_tf:.1f} ({c_ms:.3f})" if c_tf else "—"
-                ctrl_str = f"{ctrl_tf:.1f} ({ctrl_ms:.3f})" if ctrl_tf else "—"
-                peer_str = f"{peer_tf:.1f} ({peer_ms:.3f})" if peer_tf else "—"
-                ceil_str = f"{ceil_tf:.1f} ({ceil_ms:.3f})" if ceil_tf else "—"
+            def _cell(pt):
+                tf, ms = _tf(pt), _ms(pt)
+                return f"{tf:.1f} ({ms:.3f})" if tf else "\u2014"
 
-                vs_peer = format_ratio(ctrl_tf or c_tf, peer_tf)
-                vs_ceil = format_ratio(ctrl_tf or c_tf, ceil_tf, as_pct=True)
+            last = {}
+            for s in sizes:
+                cand = list(data[s].items())
+                c_pt = _best(cand, _is_crisp)
+                ctrl_pt = _best(cand, _is_control)
+                peer_pt = _best(cand, _is_peer)
+                ceil_pt = _best(cand, lambda k: _is_ceiling(k) and "_Plus_" not in k)
+                # Keep the last size at which EACH contender actually has a point, not the last
+                # size overall: Crisp has no 16384 entry yet, and taking the final row wholesale
+                # dropped its compile row from the table below entirely.
+                for _k, _v in (("c", c_pt), ("ctrl", ctrl_pt), ("peer", peer_pt), ("ceil", ceil_pt)):
+                    if _v is not None:
+                        last[_k] = _v
 
-                lines.append(f"| {s} | {c_str} | {ctrl_str} | {peer_str} | {ceil_str} | {vs_peer} | {vs_ceil} |")
+                c_tf = _tf(c_pt)
+                vs_peer = format_ratio(c_tf, _tf(peer_pt))
+                vs_ceil = format_ratio(c_tf, _tf(ceil_pt), as_pct=True)
 
-            c_pt0 = _best_bf(_is_crisp)
-            ctrl_pt0 = _best_bf(_is_control)
-            peer_pt0 = _best_bf(_is_peer)
-            ceil_pt0 = _best_bf(lambda k: _is_ceiling(k) and "_Plus_" not in k)
+                lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ctrl_pt)} | {_cell(peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
 
-            ref_pt = ctrl_pt0 or peer_pt0
+            ref_pt = last.get("ctrl") or last.get("peer")
             ref_dev = ref_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if ref_pt else 0.0
 
             target_ir = "SPIR-V" if platform == "intel" else "PTX"
-            lines.append("\n<details><summary><b>Compilation & Build Overhead (BF16)</b></summary>\n")
+            lines.append(f"\n<details><summary><b>Compilation & Build Overhead ({tag})</b></summary>\n")
             lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Control codegen** |")
             lines.append("|---|---|---:|---:|---:|")
 
-            def _row_bf(name, role, pt, is_ceil=False):
-                if not pt: return
+            def _row16(name, role, pt, is_ceil=False):
+                if not pt:
+                    return
                 cm = pt.get("metrics", {}).get("compile_time", {})
                 d_ms = cm.get("device_compile_ms", 0.0)
                 a_ms = cm.get("all_compile_ms", 0.0)
                 if is_ceil:
-                    lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | — |")
+                    lines.append(f"| **{name}** | {role} | *precompiled* | {_fmt_ms(a_ms)} | \u2014 |")
                     return
-                if d_ms <= 0 and a_ms <= 0: return
-                ratio = f"**{d_ms / ref_dev:.1f}× slower**" if ref_dev > 0 and d_ms > ref_dev * 1.05 else ("1.00×" if ref_dev > 0 and abs(d_ms - ref_dev) < 10 else f"{d_ms / ref_dev:.2f}×" if ref_dev > 0 else "—")
+                if d_ms <= 0 and a_ms <= 0:
+                    return
+                ratio = f"**{d_ms / ref_dev:.1f}\u00d7 slower**" if ref_dev > 0 and d_ms > ref_dev * 1.05 else ("1.00\u00d7" if ref_dev > 0 and abs(d_ms - ref_dev) < 10 else f"{d_ms / ref_dev:.2f}\u00d7" if ref_dev > 0 else "\u2014")
                 lines.append(f"| **{name}** | {role} | {_fmt_ms(d_ms)} | {_fmt_ms(a_ms)} | {ratio} |")
 
-            _row_bf(f"{ctrl_label}_BF16", "Control", ctrl_pt0)
-            _row_bf(f"{peer_label}_BF16", "Peer", peer_pt0)
-            _row_bf(f"{ceil_label}_BF16", "Ceiling", ceil_pt0, is_ceil=True)
+            _row16("Crisp", "Crisp", last.get("c"))
+            _row16(f"{ctrl_label}_{tag}", "Control", last.get("ctrl"))
+            _row16(f"{peer_label}_{tag}", "Peer", last.get("peer"))
+            _row16(f"{ceil_label}_{tag}", "Ceiling", last.get("ceil"), is_ceil=True)
             lines.append("\n</details>\n")
+
+        _emit_16bit_top("sec2_top_bf16", "BF16", "Native 270+ TFLOPS Matrix Engines")
+        _emit_16bit_top("sec2_top_fp16", "FP16", "Native 270+ TFLOPS Matrix Engines")
 
     # Section 3: Situational Techniques
     lines.append("## § 3 — Situational Techniques\n")
@@ -525,6 +556,136 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
     lines.append("| 64×256 | 25.6 | −6.1% | **−7.0%** | −9.7% |")
     lines.append("| **64×128** | 21.3 | −6.1% | **+15.5%** | **+10.7%** |")
     lines.append("| 64×64 | 16.0 | +0.4% | +1.1% | +4.4% |\n")
+
+    # MMA lowering (Intel).  DATA-DRIVEN, unlike the multicast table above, which is a static
+    # paste-in of literal percentages.  Both pairs are rendered on purpose: :xe-native is faster
+    # BARE and slower TUNED, so showing only one pair would be true and misleading.
+    for gpu in gpus:
+        low = matmul_data[gpu].get("sec3_mma_lowering", {}).get("fast", {})
+        if not low:
+            continue
+        l_sizes = sorted([n for n in low.keys() if isinstance(n, int)])
+        if not l_sizes:
+            continue
+
+        def _tfl(n, comp, _low=low):
+            pt = _low.get(n, {}).get(comp)
+            if not pt:
+                return None
+            return pt.get("metrics", {}).get("throughput", {}).get("tflops")
+
+        lines.append("### MMA Lowering: `:xe-native` vs `:coop-matrix` (Intel only) \u00b7 " + gpu)
+        lines.append("")
+        lines.append("*Same kernel, same 32x64 bf16 geometry over one subgroup; only the lowering "
+                     "differs. `tuned` adds ring depth 2 and prefetch distance 2, which makes its "
+                     "`:coop-matrix` arm the shipped section 2.1 kernel.*")
+        lines.append("")
+        lines.append("Each cell reads **`:coop-matrix` TFLOPS -> `:xe-native` TFLOPS (change)**, "
+                     "where the change is `(xe_native / coop_matrix - 1)`. Higher TFLOPS is faster, "
+                     "so a positive change means `:xe-native` won at that size.")
+        lines.append("")
+        lines.append("| pairing | " + " | ".join("N=%d" % n for n in l_sizes) + " |")
+        lines.append("|---|" + "---:|" * len(l_sizes))
+        for label, coop, xe in (("bare (no ring, no prefetch)", "Crisp_Coop_Bare", "Crisp_XeNative_Bare"),
+                                ("tuned (ring 2, prefetch 2)", "Crisp_Coop_Tuned", "Crisp_XeNative_Tuned")):
+            cells = []
+            for n in l_sizes:
+                c, x = _tfl(n, coop), _tfl(n, xe)
+                if not c or not x:
+                    cells.append("\u2014")
+                    continue
+                d = (x / c - 1.0) * 100.0
+                pct = ("+" if d >= 0 else "\u2212") + ("%.1f%%" % abs(d))
+                if abs(d) >= 5.0:
+                    pct = "**" + pct + "**"
+                # Carry the absolutes so the ratio is checkable, not merely asserted.
+                cells.append("%.1f\u2192%.1f (%s)" % (c, x, pct))
+            lines.append("| " + label + " | " + " | ".join(cells) + " |")
+        lines.append("")
+        lines.append("Positive means `:xe-native` is faster. It wins bare and loses tuned: the "
+                     "lowering is better in isolation and does **not** compose with the "
+                     "register-tile ring. See `docs/topology.md`, `mma-lowering`.")
+        lines.append("")
+
+        # Declare our own gaps.  A table that quietly omits the sizes disagreeing with its caption
+        # is worse than no table: the tuned pairing's conclusion depends on the larger sizes, and a
+        # lone small-N cell says the opposite.
+        missing = []
+        for label, coop, xe in (("bare", "Crisp_Coop_Bare", "Crisp_XeNative_Bare"),
+                                ("tuned", "Crisp_Coop_Tuned", "Crisp_XeNative_Tuned")):
+            for comp in (coop, xe):
+                gone = [n for n in l_sizes if _tfl(n, comp) is None]
+                if gone:
+                    missing.append((comp, gone))
+        if missing:
+            lines.append("> **Incomplete data.** " + "; ".join(
+                "`%s` has no point at N=%s" % (c, ", ".join(str(n) for n in g)) for c, g in missing) +
+                ". The autobench sweep intermittently drops points for this contender; the "
+                "kernel itself is fine, and runs correctly at every size when invoked directly "
+                "(e.g. 45.2 TFLOPS MMA_CORRECT at N=1024 on a run where the sweep recorded "
+                "nothing). Read the affected cells as missing data, not as a result.")
+            lines.append("")
+
+    # ---- Section 1 (bf16): the SAME technique ladder in 16-bit, with tf32 -> bf16 scaling ----
+    LADDER = [
+        ("chap0_naive", "Ch 0 naive (no XMX)"),
+        ("chap1_handrolled_mma", "Ch 1 hand-rolled MMA"),
+        ("chap2_tiling", "Ch 2 tiling macro"),
+        ("chap3_async", "Ch 3 async staging"),
+        ("chap4_cheap_fetch", "Ch 4 register-resident"),
+        ("chap5_multistage_ring", "Ch 5 ring + prefetch"),
+    ]
+    for gpu in gpus:
+        gd = matmul_data.get(gpu, {})
+        have = [(k, lbl) for k, lbl in LADDER if gd.get(k + "_bf16", {}).get("fast")]
+        if not have:
+            continue
+
+        def _tf(chapter, n, _gd=gd):
+            pts = _gd.get(chapter, {}).get("fast", {}).get(n, {})
+            for comp, pt in pts.items():
+                if _is_crisp(comp):
+                    v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                    if v:
+                        return v
+            return None
+
+        l_sizes = sorted({n for k, _ in have
+                          for n in gd.get(k + "_bf16", {}).get("fast", {}).keys()
+                          if isinstance(n, int)})
+        if not l_sizes:
+            continue
+
+        lines.append("## \u00a7 1b \u2014 The Technique Ladder in 16-bit (Intel) \u00b7 " + gpu)
+        lines.append("")
+        lines.append("*The same chapters as section 1, in bfloat16. Each kernel is its tf32 twin with "
+                     "two things changed: the operand element type, and the K step 8 \u2192 16 (the "
+                     "native XMX shape for 16-bit operands is (8 16 16), not (8 16 8)). The C "
+                     "accumulator stays f32 in both.*")
+        lines.append("")
+        lines.append("Cells read **bf16 TFLOPS (\u00d7 vs the same chapter in tf32)**. The 32-bit "
+                     "baseline is **tf32 on XMX**, not fp32 on the vector engines \u2014 the BMG shape "
+                     "ladder is (8 16 8) tf32, (8 16 16) bf16, (8 16 32) int8, i.e. same M\u00d7N with "
+                     "K doubling per step. No Control/Peer/Ceiling columns: the chapter SYCL controls "
+                     "are tf32 only, so this is a Crisp-vs-Crisp ladder.")
+        lines.append("")
+        lines.append("| chapter | " + " | ".join("N=%d" % n for n in l_sizes) + " |")
+        lines.append("|---|" + "---:|" * len(l_sizes))
+        for key, label in have:
+            cells = []
+            for n in l_sizes:
+                b16 = _tf(key + "_bf16", n)
+                t32 = _tf(key, n)
+                if b16 is None:
+                    cells.append("\u2014")
+                elif t32:
+                    r = b16 / t32
+                    cells.append("%.1f (%s%.2f\u00d7%s)" % (
+                        b16, "**" if r >= 1.8 else "", r, "**" if r >= 1.8 else ""))
+                else:
+                    cells.append("%.1f (tf32 n/a)" % b16)
+            lines.append("| " + label + " | " + " | ".join(cells) + " |")
+        lines.append("")
 
     # Section 4: MMA + Activation
     lines.append("## § 4 — MMA + Activation\n")

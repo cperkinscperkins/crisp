@@ -1,0 +1,33 @@
+;; Pacing probe: 4 subgroups, workgroup tile 64x128 (32x64 per subgroup), K=32, no pacing.
+;;
+;; QUESTION: does keeping subgroups in step improve L1 reuse on this hardware?  SYCL-TLA straddles
+;; its K-loop body with barrier_arrive/barrier_wait (SPV_INTEL_split_barrier) -- that is the
+;; "L1Staged" in MainloopXeL1Staged.  It synchronises no data (its kernel has no SLM at all); it
+;; stops subgroups drifting apart in K so a line fetched by one is still warm for the other 31.
+;;
+;; A FUSED (sync-workgroup) is the expensive version of the same idea and is available today.  If
+;; pacing pays at all it should show here; if it does not, the split form will not rescue it.
+;;
+;; Per-warp register demand is ~448 -- the sweet spot the tile x K sweep found (32x32=256 too
+;; little work in flight, 640 spills off a cliff).
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 64))
+  (let ((A-tile (make-register-tile bfloat16 (64 32) 0.0 :operand :a :warps '(true true true true)))
+        (B-tile (make-register-tile bfloat16 (32 128) 0.0 :operand :b :warps '(true true true true)))
+        (C-tile (make-register-tile float (64 128) 0.0 :warps '(true true true true)))
+        (K (inner-dimension A B)))
+    (tile-stride C (64 128) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x))
+          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

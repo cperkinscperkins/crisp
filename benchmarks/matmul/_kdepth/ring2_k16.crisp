@@ -1,0 +1,43 @@
+;; K-depth probe (shipped shape): ring 2, prefetch 2, K=16.
+;; SYCL-TLA's TileShape is _C<256>,_C<256>,_C<32>.  The bare probe showed K=32 turns a DECLINING
+;; curve (50.6/47.3/45.2 at 2048/4096/8192) into a FLAT one (58.6/58.9/59.0).  This asks whether
+;; that survives the ring + prefetch the shipped kernel uses.
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K      (inner-dimension A B))
+        (n-k-steps (/ (inner-dimension A B) (to-ulong 16))))
+    (tile-stride C (32 64) (grid-y grid-x)
+      (let ((A-ring (make-register-tile-ring bfloat16 (32 16) :ring-count 2 :operand :a))
+            (B-ring (make-register-tile-ring bfloat16 (16 64) :ring-count 2 :operand :b))
+            (C-tile (make-register-tile float (32 64) 0.0)))
+      (prefetch-tile A (grid-y 0) :size (32 16))
+      (prefetch-tile B (0 (* grid-x (to-ulong 4))) :size (16 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (16 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (16 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (16 16))
+      (load-tile A (ring-get A-ring 0) (grid-y 0))
+      (load-tile B (ring-get B-ring 0) (0 grid-x))
+      (dotimes (grid-k n-k-steps)
+        (let ((next-k (+ grid-k (to-ulong 1)))
+              (prefetch-k (+ grid-k (to-ulong 2))))
+          (when (< prefetch-k n-k-steps)
+            (prefetch-tile A (grid-y prefetch-k) :size (32 16))
+            (prefetch-tile B (prefetch-k (* grid-x (to-ulong 4))) :size (16 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (16 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (16 16))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (16 16)))
+          (when (< next-k n-k-steps)
+            (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
+            (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
+          (mma-accumulate-via-tile (8 16 16) C-tile
+                                   (ring-get A-ring (mod grid-k (to-ulong 2)))
+                                   (ring-get B-ring (mod grid-k (to-ulong 2))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x))))))

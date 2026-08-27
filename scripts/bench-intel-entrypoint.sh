@@ -14,9 +14,12 @@
 # the host-side wrapper doesn't have to round-trip a multi-line bash -c
 # string — both PowerShell and Git Bash mangle that in different ways.
 #
-# Usage: bench-intel-entrypoint.sh <sizes> <iters> [precision]
+# Usage: bench-intel-entrypoint.sh <sizes> <iters> [precision] [chapters]
 #   precision: "all" (default) -> full precision sweep (--sweep-all);
 #              "fast" | "ieee"  -> a single precision pass.
+#   chapters:  comma-separated chapter filter passed to matmul.py --chapters;
+#              empty (default) runs every chapter.  Use this to refresh a couple of rows
+#              without pinning the display GPU for the whole suite.
 
 set -e
 
@@ -25,6 +28,7 @@ set -e
 SIZES="${1:-256,512,1024}"
 ITERS="${2:-100}"
 PRECISION="${3:-all}"
+CHAPTERS="${4:-}"
 
 # Activate the oneAPI environment, then extend LD_LIBRARY_PATH to include
 # the WSL2 D3D shim libs so the L0 driver can actually open the GPU.
@@ -53,10 +57,21 @@ sbcl --non-interactive --load build/build.lisp
 trap 'rm -f bin/crisp-compile bin/crisp-hoist-l0 bin/crisp-hoist-cuda 2>/dev/null' EXIT
 echo ''
 
+# Provision the PEER library (SYCL-TLA).  third_party/ lives in the bind-mounted repo, so this
+# persists on the host across container runs and costs nothing after the first.  Without it the
+# SYCL-TLA contender cannot build and the report's Peer column is empty -- and on Intel the peer
+# is the ONLY contender reaching the bf16 matrix engines at full rate, so its absence hides the
+# largest gap in the ladder.
+echo '=== Provisioning peer libraries ==='
+bash scripts/setup-third-party.sh sycl-tla 2>&1 | tail -6 ||     echo '  (peer provisioning failed — SYCL-TLA contenders will be skipped)'
+echo ''
+
 echo "=== Running matmul.py (Intel/BMG) — sizes=${SIZES} iters=${ITERS} precision=${PRECISION} ==="
 # --platform=intel: Crisp via SPIR-V/L0 (crisp-compile --hardware-profile=bmg + the L0 fixed harness),
 # SYCL_Apples + OneMKL_Optimal via icpx (the CUDA/cuBLAS targets auto-skip — no nvcc here).  JSON lands
 # in benchmarks/results/ (bind-mounted -> host), where report.py picks it up.
 PREC_FLAG="--sweep-all"
 if [ "${PRECISION}" != "all" ]; then PREC_FLAG="--precision=${PRECISION}"; fi
-python3 scripts/crisp_bench/matmul.py --platform=intel ${PREC_FLAG} --sizes="${SIZES}" --iters="${ITERS}"
+CHAP_FLAG=""
+if [ -n "${CHAPTERS}" ]; then CHAP_FLAG="--chapters=${CHAPTERS}"; fi
+python3 scripts/crisp_bench/matmul.py --platform=intel ${PREC_FLAG} ${CHAP_FLAG} --sizes="${SIZES}" --iters="${ITERS}"

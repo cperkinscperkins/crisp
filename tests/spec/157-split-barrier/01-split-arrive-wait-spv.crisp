@@ -1,0 +1,24 @@
+;; Endeavour 157 rung 01 — (sync-workgroup :arrive) / (sync-workgroup :wait) reach SPIR-V.
+;;
+;; The split barrier is an EXECUTION rendezvous: it moves no data and synchronises no memory.  It
+;; exists so work can sit between the announcement and the block, which is what makes it cheaper
+;; than the fused form as participant count grows.
+;;
+;; What this pins: both halves lower to the INTEL split-barrier ops, and SPV_INTEL_split_barrier is
+;; requested.  Emitting a fused ControlBarrier for either half would still compute the right answer
+;; and would silently cost what the feature exists to save -- so correctness cannot catch it and
+;; this validator must.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-split-barrier
+(def-type m-t (matrix float :address-space :global :align :compact))
+
+(def-kernel split_barrier (A &out C)
+  (declare #'(m-t &out m-t)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 64))
+  (tile-stride C (8 8) (gy gx)
+    (progn
+      (sync-workgroup :arrive)
+      (set! (~ C (to-int gy) (to-int gx)) (~ A (to-int gy) (to-int gx)))
+      (sync-workgroup :wait))))

@@ -4,12 +4,14 @@
 # with BMG / Arc GPU passthrough on Windows + WSL2.
 #
 # Usage:
-#   ./scripts/bench-intel.sh [sizes] [iters] [precision]
+#   ./scripts/bench-intel.sh [sizes] [iters] [precision] [chapters]
 #
 # Examples:
 #   ./scripts/bench-intel.sh                          # full sweep, default sizes, precision matrix
 #   ./scripts/bench-intel.sh 256,512,1024 100         # smaller sizes
 #   ./scripts/bench-intel.sh 256,512,1024,2048,4096,8192 100 fast    # single precision pass
+#   ./scripts/bench-intel.sh 256,512,1024,2048,4096,8192 100 fast sec2_top_bf16,sec2_top_fp16
+#                                                    # just the 16-bit top kernels + their peers
 #
 # Requirements:
 #   - Docker Desktop on Windows with WSL2 backend
@@ -52,6 +54,9 @@ export MSYS2_ARG_CONV_EXCL='*'
 SIZES="${1:-256,512,1024,2048,4096,8192}"
 ITERS="${2:-100}"
 PRECISION="${3:-all}"   # all -> full sweep; or fast | ieee for single pass
+# Empty runs every chapter.  A filter here is the difference between refreshing two rows and
+# pinning the display GPU for the entire suite -- which is why peer columns go stale.
+CHAPTERS="${4:-}"
 
 # Locate the repo root from this script's directory.  Use cygpath where
 # available to convert to Windows-form paths — with MSYS_NO_PATHCONV=1 set
@@ -70,6 +75,7 @@ echo "=== Crisp Intel Benchmark Runner (matmul) ==="
 echo "  Sizes:      ${SIZES}"
 echo "  Iters:      ${ITERS}"
 echo "  Precision:  ${PRECISION}"
+echo "  Chapters:   ${CHAPTERS:-<all>}"
 echo "  Repo:       ${REPO_ROOT}"
 echo ""
 
@@ -111,7 +117,7 @@ docker run --rm \
     -e CRISP_CACHE_DIR=/root/.cache/common-lisp \
     -w /workspace \
     "${IMAGE_TAG}" \
-    bash scripts/bench-intel-entrypoint.sh "${SIZES}" "${ITERS}" "${PRECISION}"
+    bash scripts/bench-intel-entrypoint.sh "${SIZES}" "${ITERS}" "${PRECISION}" "${CHAPTERS}"
 
 echo ""
 echo "=== Intel benchmark run complete ==="

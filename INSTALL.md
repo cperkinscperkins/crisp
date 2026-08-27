@@ -158,6 +158,47 @@ Run Tests
 
 All the E2E and error tests are organized "in order". 
 
+## Benchmark peer libraries (optional)
+
+Only needed if you intend to RUN the benchmark suite; the compiler and the test suites do not
+depend on these.
+
+Crisp's benchmark ladder compares against three contender classes: a **Control** (a hand-written
+kernel), a **Ceiling** (a closed vendor library — cuBLAS / oneMKL), and a **Peer** — a composable
+template library you write kernels with, which is the same kind of thing Crisp is:
+
+| vendor | peer | upstream |
+|---|---|---|
+| NVIDIA | CUTLASS | https://github.com/NVIDIA/cutlass |
+| Intel | SYCL-TLA | https://github.com/intel/sycl-tla |
+
+The peer is the contender that answers *"is 77% of cuBLAS good?"* — a Ceiling alone cannot,
+because it is closed, hand-tuned, and dispatches over dozens of kernels. Without a peer the
+report's Peer column is empty.
+
+```
+# provision whatever this machine can use (detected from nvcc / icpx on PATH)
+$ bash scripts/setup-third-party.sh
+
+# or name one explicitly
+$ bash scripts/setup-third-party.sh cutlass
+
+# report what is present, change nothing
+$ bash scripts/setup-third-party.sh --check
+```
+
+They land in `third_party/`, which is **gitignored** — so the checkout is per-machine and never
+committed. `scripts/setup-third-party.sh` writes `third_party/versions.txt` recording the exact
+SHA of each, which is the only record of what a given benchmark run compared against; quote it
+alongside any published peer number.
+
+Revisions are **not pinned by default** — the script clones each project's default branch. Set
+`CUTLASS_REF` / `SYCL_TLA_REF` to pin once a known-good revision is established, and do so before
+publishing a peer comparison anyone will rely on.
+
+The pod and Docker benchmark flows (`scripts/bench-on-pod.sh`, `scripts/bench-intel.sh`) call
+this script themselves, so you only need it for a local benchmark run.
+
 The file ./tests/ci-stop.txt   names a directory inside ./tests/spec
 that the E2E tests will be run up to (inclusive), but no futher.
 

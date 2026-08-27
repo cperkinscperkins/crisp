@@ -1,0 +1,53 @@
+;; Section 3 (alternatives) — MMA LOWERING: :coop-matrix vs :xe-native, Intel BMG, bfloat16.
+;;
+;; Four kernels, ONE variable at a time.  All four are 32x64, one subgroup, bfloat16, (8 16 16).
+;; The BARE pair has no register-tile ring and no prefetch.  The TUNED pair adds ring depth 2 and
+;; prefetch distance 2 -- i.e. the TUNED :coop-matrix kernel is byte-for-byte the shipped
+;; benchmarks/matmul/sec2_top_bf16 kernel.  Within each pair the ONLY difference is the lowering.
+;;
+;; WHAT THIS CHAPTER EXISTS TO SHOW, and it is not a simple win:
+;;
+;;   BARE    :xe-native is FASTER  -- +13% at N=2048, +9% at N=4096 (endeavour 156).
+;;   TUNED   :xe-native is SLOWER  -- 50.0 vs 60.4 TFLOPS at N=2048.
+;;
+;; The lowering is better in isolation and does NOT compose with the ring.  A single row comparing
+;; only the tuned kernels would say ":xe-native is worse" and a single row comparing only the bare
+;; ones would say ":xe-native is better"; both would be true and both would mislead.  That is why
+;; all four are here.
+;;
+;; :coop-matrix  SPV_KHR_cooperative_matrix -- opaque cooperative-matrix values, pointer-form loads,
+;;               CooperativeMatrixMulAddKHR.  Portable; the default on every backend.
+;; :xe-native    SubgroupMatrixMultiplyAccumulateINTEL over concrete vectors, 2D block loads, and
+;;               the VNNI-packing TRANSFORM load for the B operand (DPAS requires B packed).
+;;               Intel SPIR-V only.  42 machine instructions per dpas against :coop-matrix's 57.
+;;
+;; OPEN, and the reason the tuned pair loses: something in the :xe-native load path degrades with
+;; LIVE FRAGMENT COUNT -- a 32x128 tile collapses to 5.6 TFLOPS, and a ring multiplies fragment
+;; count the same way.  It is NOT register spill; the ISA shows zero spill, zero fill, zero scratch.
+;;
+;; See docs/topology.md `mma-lowering`, and tests/spec/156-workgroup-cooperation/.
+;;
+;; THIS FILE: lowering :coop-matrix, BARE (no ring, no prefetch).
+;;
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (mma-lowering :coop-matrix)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((A-tile (make-register-tile bfloat16 (32 16) 0.0 :operand :a))
+        (B-tile (make-register-tile bfloat16 (16 64) 0.0 :operand :b))
+        (C-tile (make-register-tile float (32 64) 0.0))
+        (K (inner-dimension A B)))
+    (tile-stride C (32 64) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x))
+          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

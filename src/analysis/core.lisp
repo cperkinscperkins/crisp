@@ -146,7 +146,10 @@
       :get-global-linear-id :get-global-linear-size
       :get-total-threads :get-total-groups)
      (list 'ulong nil))
-    ((:sync-workgroup :sync-warp :mem-fence :sync-cluster)
+    ;; 157: the split halves are ordinary VOID builtins as far as everything downstream is
+    ;; concerned -- minting them as distinct keywords keeps semantic-gpu-builtin untouched.
+    ((:sync-workgroup :sync-warp :mem-fence :sync-cluster
+      :sync-workgroup-arrive :sync-workgroup-wait)
      (list nil nil))
     ;; 110 — warp helpers (scalar uint, no dim arg)
     ((:warp-id :warp-lane :warp-count)
@@ -155,6 +158,7 @@
 
 ;;; ----- Analyzer -----
 
+;;;; Endeavour 157 Phase 2 (b) — pairing refusals as CRISP-COMPILER-ERROR.
 (defun %analyze-gpu-builtin (builtin-kw name-str expr env context location)
   "Analyzer for all GPU built-in function forms."
   (declare (ignore env context))
@@ -174,6 +178,37 @@
                                   :dimension nil
                                   :type base-ty
                                   :source-location location))
+      ;; 157: (sync-workgroup :arrive) / (sync-workgroup :wait).  A split barrier separates the
+      ;; announcement from the block so work can sit between them; it is an EXECUTION rendezvous
+      ;; and moves no data, which is why it extends sync-workgroup rather than await/signal.
+      ;; The phase becomes its own builtin keyword so semantic-gpu-builtin needs no new field.
+      ((and (eq builtin-kw :sync-workgroup)
+            (= (length args) 1)
+            (member (first args) (list :arrive :wait)))
+       ;; 157 analysis 1: one window at a time, and it must close.  Both failures HANG rather than
+       ;; miscompute, so they are refused here rather than left to the user to discover on hardware.
+       (cl:when *split-barrier-depth*
+         (cl:if (eq (first args) :arrive)
+                (cl:progn
+                  (cl:when (cl:plusp *split-barrier-depth*)
+                    (error 'crisp-compiler-error
+                      :message "(sync-workgroup :arrive) cannot nest -- a window is already open in this kernel.  There is one rendezvous per scope, not a stack of them; close the first with (sync-workgroup :wait) before opening another."
+                      :source-location location))
+                  (cl:incf *split-barrier-depth*))
+                (cl:progn
+                  (cl:when (cl:zerop *split-barrier-depth*)
+                    (error 'crisp-compiler-error
+                      :message "(sync-workgroup :wait) has no matching (sync-workgroup :arrive) -- the two halves must be paired.  A :wait with nothing to wait on blocks forever."
+                      :source-location location))
+                  (cl:decf *split-barrier-depth*))))
+       (make-semantic-gpu-builtin
+        :builtin-name (if (eq (first args) :arrive) :sync-workgroup-arrive :sync-workgroup-wait)
+        :dimension nil
+        :type nil
+        :source-location location))
+      ((and (eq builtin-kw :sync-workgroup) (= (length args) 1))
+       (error "sync-workgroup takes no argument, or one of :arrive / :wait (the split barrier's two halves), got: ~S"
+              (first args)))
       ((= (length args) 1)
        (let ((dim-arg (first args)))
          (unless acc-dim
@@ -1767,21 +1802,43 @@ in single-pass mode."
                                        :test #'string-equal))
                (cluster-size-decl (find "CLUSTER-SIZE" declarations
                                         :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                        :test #'string-equal)))
+                                        :test #'string-equal))
+               ;; 156: (mma-lowering :xe-native) -- which code-generation strategy this kernel wants
+               ;; for its matrix-engine operations.  Parsed here so an unavailable request is refused
+               ;; at analysis time, next to the other dispatch declarations.
+               (mma-lowering-decl (find "MMA-LOWERING" declarations
+                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                        :test #'string-equal))
+               (mma-lowering (%parse-mma-lowering-decl mma-lowering-decl name
+                                                       (active-hardware-profile))))
           (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
-          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl)
+          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl
+                    mma-lowering-decl)
             (let ((dispatch-plist
                     (append (when global-size-decl (list :global-size global-size-decl))
                             (when local-size-decl  (list :local-size  local-size-decl))
                             (when num-groups-decl  (list :num-groups  num-groups-decl))
                             (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
-                            (when cluster-dims      (list :cluster-size cluster-dims)))))
+                            (when cluster-dims      (list :cluster-size cluster-dims))
+                            ;; Recorded even when defaulted, so the metacrisp -- and therefore any
+                            ;; benchmark row -- can say which lowering produced a number.  A figure
+                            ;; you cannot attribute to a code path is not evidence.
+                            (when mma-lowering      (list :mma-lowering mma-lowering)))))
               (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
               (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
           (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
-      (let ((*current-kernel-cluster-dims* cluster-dims))
-        (internal-compile-function name explicit-env return-type params body declarations
-                                   location *compiler-context*)))))
+      (let ((*current-kernel-cluster-dims* cluster-dims)
+            ;; 157: a split-barrier window is per KERNEL.  Bound here so the check below sees the
+            ;; whole body, and so one kernel's unclosed window cannot leak into the next.
+            (*split-barrier-depth* 0))
+        (multiple-value-prog1
+            (internal-compile-function name explicit-env return-type params body declarations
+                                       location *compiler-context*)
+          (cl:when (cl:plusp *split-barrier-depth*)
+            (error 'crisp-compiler-error
+              :message (format nil "(sync-workgroup :arrive) in kernel ~a must be paired with (sync-workgroup :wait) before the kernel ends.  An arrival that is never awaited leaves every other thread in the workgroup blocked on it."
+                               name)
+              :source-location location)))))))
 
 
 

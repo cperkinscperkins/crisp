@@ -19,4 +19,11 @@
       (load-tile-at B B-tile ((* grid-k (to-ulong 8)) (* grid-x (to-ulong 32))))
       (sync-workgroup)
       (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
-      (sync-workgroup))))
+      (sync-workgroup)
+      ;; Endeavour 137 removed the macro's AUTO-STORE and replaced it with a warning; this kernel
+      ;; predates that and had been computing a full matmul and discarding it, which is why it
+      ;; measured MMA_WRONG at every size in both tf32 and bf16.  The compiler said so on every
+      ;; build -- "the C-tile is computed but never stored" -- but a benchmark sweep runs with
+      ;; --log-level=off and nobody reads warnings from it.  Spec 135/10 covers the warning.
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

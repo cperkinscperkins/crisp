@@ -137,7 +137,17 @@ int main(int argc, char** argv) {
     if (workspace) cudaFree(workspace);
     return correct ? 0 : 1;
 #else
+    /* FAIL LOUDLY.  This used to print the error and `return 0`, so a build without the CUTLASS
+       headers looked to the driver exactly like a successful run that happened to measure 0.0
+       TFLOPS at every size.  Combined with the CUB/CUBLAS classification bug that put cuBLAS in
+       the peer column, the published table then asserted CUTLASS had been measured and matched
+       cuBLAS exactly -- at every size, on hardware where it had never run at all.
+
+       A contender that cannot run must be a VISIBLE GAP, not a silent zero.  stderr so the
+       reason survives in the log; non-zero exit so the driver records the point as failed. */
+    fprintf(stderr, "cutlass_peer: CUTLASS headers not found at build time — this contender did "
+                    "NOT run.  Install CUTLASS and rebuild, or expect a gap in the Peer column.\n");
     printf("{\n  \"algorithm\": \"matmul\",\n  \"implementation\": \"cutlass\",\n  \"error\": \"CUTLASS headers not found\"\n}\n");
-    return 0;
+    return 2;
 #endif
 }

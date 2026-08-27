@@ -1,0 +1,25 @@
+;; K-depth x tile-width sweep: tile 32x128, K=32, no ring.
+;; The ring is excluded deliberately: at K=32 it demands 448-640 registers against BMG's 256 max
+;; and produced no result at all.  Deeper K supplies the same pipelining -- two native K-steps in
+;; one tile are two independent MMA chains -- without a second buffer.
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((A-tile (make-register-tile bfloat16 (32 32) 0.0 :operand :a))
+        (B-tile (make-register-tile bfloat16 (32 128) 0.0 :operand :b))
+        (C-tile (make-register-tile float (32 128) 0.0))
+        (K (inner-dimension A B)))
+    (tile-stride C (32 128) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x))
+          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

@@ -1,0 +1,13 @@
+;; CHECK-FAIL: "must be paired"
+;; Analysis 1 of 4: an :arrive with no :wait leaves every peer blocked on an arrival that never
+;; completes.  That hangs the GPU rather than producing a wrong answer, which is why this is a
+;; compile-time refusal and not a runtime concern.
+(def-type m-t (matrix float :address-space :global :align :compact))
+(def-kernel unpaired_arrive (A &out C)
+  (declare #'(m-t &out m-t)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 64))
+  (tile-stride C (8 8) (gy gx)
+    (progn
+      (sync-workgroup :arrive)
+      (set! (~ C (to-int gy) (to-int gx)) (~ A (to-int gy) (to-int gx))))))

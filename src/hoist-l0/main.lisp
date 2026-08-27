@@ -368,8 +368,38 @@
                       (format t "Warning: Skipping complex typedef for ~a: ~a~%" alias-name target-type)))))
         (format stream "~%")))
 
+
+
 (defun generate-cpp-helpers (stream)
   "Generate C++ helper functions"
+  ;; Endeavour 155: half / bfloat16 <-> float.  A 16-bit tensor's buffer is typed uint16_t in
+  ;; the generated C++, so BOTH the fill and the host reference were treating the raw bits as a
+  ;; small INTEGER.  See header.
+  (format stream "// Helper: 16-bit float conversions (Endeavour 155)~%")
+  (format stream "static inline float crisp_f16_to_f32(uint16_t h) {~%")
+  (format stream "    uint32_t s = (uint32_t)(h >> 15) & 1u, e = (uint32_t)(h >> 10) & 0x1Fu, m = (uint32_t)h & 0x3FFu;~%")
+  (format stream "    uint32_t out;~%")
+  (format stream "    if (e == 0) { if (m == 0) { out = s << 31; } else {~%")
+  (format stream "        e = 127 - 15 + 1; while ((m & 0x400u) == 0) { m <<= 1; e--; } m &= 0x3FFu;~%")
+  (format stream "        out = (s << 31) | (e << 23) | (m << 13); } }~%")
+  (format stream "    else if (e == 31) { out = (s << 31) | 0x7F800000u | (m << 13); }~%")
+  (format stream "    else { out = (s << 31) | ((e - 15 + 127) << 23) | (m << 13); }~%")
+  (format stream "    float f; memcpy(&f, &out, 4); return f;~%")
+  (format stream "}~%")
+  (format stream "static inline uint16_t crisp_f32_to_f16(float f) {~%")
+  (format stream "    uint32_t u; memcpy(&u, &f, 4);~%")
+  (format stream "    uint32_t s = (u >> 31) & 1u; int32_t e = (int32_t)((u >> 23) & 0xFFu) - 127 + 15;~%")
+  (format stream "    uint32_t m = u & 0x7FFFFFu;~%")
+  (format stream "    if (e <= 0) return (uint16_t)(s << 15);~%")
+  (format stream "    if (e >= 31) return (uint16_t)((s << 15) | 0x7C00u);~%")
+  (format stream "    return (uint16_t)((s << 15) | ((uint32_t)e << 10) | (m >> 13));~%")
+  (format stream "}~%")
+  (format stream "static inline float crisp_bf16_to_f32(uint16_t b) {~%")
+  (format stream "    uint32_t u = ((uint32_t)b) << 16; float f; memcpy(&f, &u, 4); return f;~%")
+  (format stream "}~%")
+  (format stream "static inline uint16_t crisp_f32_to_bf16(float f) {~%")
+  (format stream "    uint32_t u; memcpy(&u, &f, 4); return (uint16_t)(u >> 16);~%")
+  (format stream "}~%~%")
   (format stream "// Helper: Read SPIR-V binary from file~%")
   (format stream "std::vector<uint8_t> read_spirv_file(const char* filename) {~%")
   (format stream "    std::ifstream file(filename, std::ios::binary | std::ios::ate);~%")
@@ -383,9 +413,6 @@
   (format stream "    return buffer;~%")
   (format stream "}~%~%"))
 
-
-
-
 (defun %l0-emit-mma-reference (stream allocations)
   "Emit a stride-agnostic host reference C = A·B and compare against the device C."
   (destructuring-bind (m n k) *mma-test-dims*
@@ -397,9 +424,11 @@
           (format stream "~%    // Endeavor 134: MMA host reference C = A.B (stride-agnostic)~%")
           (format stream "    { int mma_ok = 1; int mma_bad = 0;~%")
           (format stream "      uint64_t chk_m = (~dULL < 64 ? ~dULL : 64); uint64_t chk_n = (~dULL < 64 ? ~dULL : 64);~%" m m n n)
-          (format stream "      float* host_c_buf = (float*)malloc(chk_m * chk_n * sizeof(float));~%")
+          ;; Endeavour 155: copy chk_m WHOLE ROWS (chk_m * c_str0 elements), not a flat
+          ;; chk_m*chk_n prefix.  See header.
+          (format stream "      float* host_c_buf = (float*)malloc(chk_m * ~a_str0 * sizeof(float));~%" cb)
           (format stream "      zeCommandListCreate(context, device, &cmdListDesc, &cmdList);~%")
-          (format stream "      zeCommandListAppendMemoryCopy(cmdList, host_c_buf, ~a_ptr, chk_m * chk_n * sizeof(float), nullptr, 0, nullptr);~%" cb)
+          (format stream "      zeCommandListAppendMemoryCopy(cmdList, host_c_buf, ~a_ptr, chk_m * ~a_str0 * sizeof(float), nullptr, 0, nullptr);~%" cb cb)
           (format stream "      zeCommandListClose(cmdList);~%")
           (format stream "      zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr);~%")
           (format stream "      zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
@@ -407,10 +436,27 @@
           (format stream "      for (uint64_t i = 0; i < chk_m; i++) for (uint64_t j = 0; j < chk_n; j++) {~%")
           (format stream "        float acc = 0.0f;~%")
           (format stream "        for (uint64_t kk = 0; kk < ~dULL; kk++)~%" k)
-          (format stream "            acc += (float)~a_ptr[i*~a_str0 + kk*~a_str1] * (float)~a_ptr[kk*~a_str0 + j*~a_str1];~%" ab ab ab bb bb bb)
+          ;; Endeavour 155: RECOMPUTE the operands rather than reading them back.
+          ;;
+          ;; The previous form dereferenced a_ptr / b_ptr from the HOST.  Those are USM
+          ;; allocations, and on the BMG/WSL driver a host dereference of one aborts outright:
+          ;;     Abort was called at 30 line in file:
+          ;;     ./level_zero/core/source/memory/cpu_page_fault_memory_manager.cpp
+          ;; so the check could never complete regardless of element type.
+          ;;
+          ;; But the harness FILLED these buffers itself, from the index, a few hundred lines
+          ;; above -- so their contents are known by construction and need not be read at all.
+          ;; The modulus comes from %l0-mma-fill-modulus, which the fill emitter also uses, so the
+          ;; two cannot drift apart.  C is still read back properly, by device->host memcpy, which
+          ;; is what is actually under test.
+          ;;
+          ;; The values 0..4 and 0..2 are exactly representable in fp16, bf16 and tf32 alike, so
+          ;; this is exact for every element type rather than only for f32.
+          (format stream "            acc += (float)((i*~a_str0 + kk*~a_str1) % ~dULL) * (float)((kk*~a_str0 + j*~a_str1) % ~dULL);~%"
+                  ab ab (%l0-mma-fill-modulus :a) bb bb (%l0-mma-fill-modulus :b))
           (when (/= *mma-scale* 1)
             (format stream "        acc = acc * ~d.0f;   // --mma-scale (MMA fired ~:*~d× per fragment)~%" *mma-scale*))
-          (format stream "        float got = host_c_buf[i*chk_n + j];~%")
+          (format stream "        float got = host_c_buf[i*~a_str0 + j*~a_str1];~%" cb cb)
           (format stream "        float d = got - acc; if (d < 0) d = -d;~%")
           (format stream "        if (d > 1e-2f * (acc < 0 ? -acc : acc) + 1e-3f) { mma_ok = 0;~%")
           (format stream "            if (mma_bad < 4) { std::cout << \"  C[\" << i << \"][\" << j << \"]=\" << got << \" ref \" << acc << std::endl; mma_bad++; } }~%")
@@ -419,8 +465,31 @@
           (format stream "      std::cout << (mma_ok ? \"MMA_CORRECT\" : \"MMA_WRONG\") << std::endl; }~%"))))))
 
 
+
+;; src/hoist-l0/main.lisp
+(defun %l0-f16-encoder (elem-type)
+  "C++ function name that converts a float TO ELEM-TYPE's 16-bit encoding, or NIL when ELEM-TYPE
+   is not a 16-bit float (in which case a plain cast is correct and is what the caller emits)."
+  (let ((n (and elem-type (symbolp elem-type) (symbol-name elem-type))))
+    (cond ((null n) nil)
+          ((string-equal n "HALF")     "crisp_f32_to_f16")
+          ((string-equal n "BFLOAT16") "crisp_f32_to_bf16")
+          (t nil))))
+
+;; src/hoist-l0/main.lisp
+(defun %l0-f16-decoder (elem-type)
+  "C++ call PREFIX that decodes ELEM-TYPE's 16-bit encoding to float, e.g. \"crisp_f16_to_f32(\",
+   or NIL when a plain (float) cast is correct.  The caller supplies the closing paren."
+  (let ((n (and elem-type (symbolp elem-type) (symbol-name elem-type))))
+    (cond ((null n) nil)
+          ((string-equal n "HALF")     "crisp_f16_to_f32(")
+          ((string-equal n "BFLOAT16") "crisp_bf16_to_f32(")
+          (t nil))))
+
 (defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases records &optional dispatch-info)
-  "Generate C++ main.  Endeavor 134: under --mma-test, appends a host-reference C=A·B check."
+  "Generate C++ main.  Endeavor 134: under --mma-test, appends a host-reference C=A·B check.
+   Endeavor 150: buffer-print cap raised 100 -> 512 so MMA-sized output tiles are printable
+   and can be checked with a HOIST-EXPECT: BUFFER expectation."
   (format stream "int main() {~%")
   (format stream "    ze_result_t result;~%")
   (format stream "    std::cout << \"Level Zero Launcher for kernel: ~a\" << std::endl;~%~%" kernel-name)
@@ -431,13 +500,14 @@
     (format stream "    // Verify Output (skipped if large)~%")
     (dolist (alloc allocations)
       (let ((name (getf alloc :name)) (ptr (getf alloc :ptr)) (size-v (getf alloc :size-var)))
-        (format stream "    if (~a <= 100) {~%" size-v)
+        (format stream "    if (~a <= 512) {~%" size-v)
         (format stream "        std::cout << \"BUFFER ~a: \";~%" name)
         (format stream "        for (size_t i = 0; i < ~a; i++) {~%" size-v)
         (format stream "            std::cout << ~a[i] << (i == ~a - 1 ? \"\" : \" \");~%" ptr size-v)
         (format stream "        }~%")
         (format stream "        std::cout << std::endl;~%")
         (format stream "    }~%")))
+    ;; Endeavour 155: was (and *mma-test-dims* (not *mma-bench-iters*)) -- see header.
     (when *mma-test-dims*
       (%l0-emit-mma-reference stream allocations))
     (format stream "    std::cout << \"Success!\" << std::endl;~%")
@@ -1476,6 +1546,14 @@
 
 
 
+(defun %l0-mma-fill-modulus (role)
+  "Modulus of the deterministic --mma-test fill for an MMA operand ROLE.  Small, coprime, and
+   exactly representable in every supported element type (fp16, bf16, tf32, f32), so the host
+   reference is exact rather than approximate.  Used by BOTH the fill emitter and the reference:
+   if these ever disagree, the check silently validates the wrong product."
+  (ecase role (:a 5) (:b 3)))
+
+
 (defun %l0-emit-tensor-arg (stream param param-name param-type param-dir context-var device-var arg-index dispatch-info)
   (let* ((rank (or (getf param :rank)
                    (let ((n3 (third param-type)))
@@ -1534,8 +1612,16 @@
           (cond
             ;; MMA test: A/B get a deterministic non-uniform fill; C is zeroed.
             ((member mma-role '(:a :b))
-             (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)(_i % ~d);~%"
-               total-elems ptr-var elem-str (if (eq mma-role :a) 5 3)))
+             ;; Endeavour 155: a 16-bit float buffer is uint16_t in C++, so a plain cast wrote
+             ;; the INTEGER 1..4 as a bit pattern -- which reads back as a SUBNORMAL near 6e-8,
+             ;; not as 1..4.  The GPU then multiplied denormal noise while the host reference
+             ;; computed with 1..4, so they could never agree.  Encode properly instead.
+             (let ((conv (%l0-f16-encoder elem-type)))
+               (if conv
+                   (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = ~a((float)(_i % ~d));~%"
+                     total-elems ptr-var conv (%l0-mma-fill-modulus mma-role))
+                   (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)(_i % ~d);~%"
+                     total-elems ptr-var elem-str (%l0-mma-fill-modulus mma-role)))))
             ((eq mma-role :c)
              (format stream "    memset(~a, 0, ~d * sizeof(~a));~%" ptr-var total-elems elem-str))
             ((and pad-with (eql pad-with 0))
@@ -1571,6 +1657,8 @@
         (values current-idx
           (list :name param-name :ptr ptr-var :size-var (format nil "~d" total-elems)
                 :direction param-dir :access (getf param :access)
+                ;; Endeavour 155: the host reference needs to know how to READ this buffer.
+                :elem-type elem-type
                 :mma-role mma-role :base param-name-cpp))))))
 
 (defun %l0-emit-struct-arg (stream param param-name param-type aliases arg-index)

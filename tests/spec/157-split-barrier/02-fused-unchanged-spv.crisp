@@ -1,0 +1,20 @@
+;; Endeavour 157 rung 02 — the FUSED (sync-workgroup) is untouched.
+;;
+;; A regression guard, not a feature test.  Adding an optional argument to a builtin that has always
+;; taken none is exactly the kind of change that quietly alters the zero-argument path, and every
+;; kernel Crisp has ever shipped uses that path.  This asserts the fused form still emits
+;; __spirv_ControlBarrier and does NOT emit either split op.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-fused-barrier-unchanged
+(def-type m-t (matrix float :address-space :global :align :compact))
+
+(def-kernel fused_barrier (A &out C)
+  (declare #'(m-t &out m-t)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 64))
+  (tile-stride C (8 8) (gy gx)
+    (progn
+      (sync-workgroup)
+      (set! (~ C (to-int gy) (to-int gx)) (~ A (to-int gy) (to-int gx)))
+      (sync-workgroup))))

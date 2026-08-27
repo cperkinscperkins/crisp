@@ -1,0 +1,14 @@
+;; CHECK-FAIL: "cannot nest"
+;; Analysis 1 of 4, second half: one window at a time.  A second :arrive before the first :wait has
+;; no coherent meaning -- there is a single rendezvous per scope, not a stack of them.
+(def-type m-t (matrix float :address-space :global :align :compact))
+(def-kernel nested_arrive (A &out C)
+  (declare #'(m-t &out m-t)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 64))
+  (tile-stride C (8 8) (gy gx)
+    (progn
+      (sync-workgroup :arrive)
+      (sync-workgroup :arrive)
+      (set! (~ C (to-int gy) (to-int gx)) (~ A (to-int gy) (to-int gx)))
+      (sync-workgroup :wait))))

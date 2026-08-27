@@ -495,6 +495,7 @@
    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).
    Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records
    the EFFECTIVE extent (warning on degrade) for every entry point on every backend.
+   Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.
 
    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
    as text during IR printing for SPIR-V."
@@ -508,7 +509,10 @@
            ;; calling convention spir_kernel (76)
            (llvm-set-function-call-conv func 76)
            ;; Endeavor 126: denormal handling reaches SPIR-V only via an execution mode.
-           (%emit-spirv-denorm-execution-mode func module))
+           (%emit-spirv-denorm-execution-mode func module)
+           ;; Endeavour 156 Phase 0: so does the subgroup size, and for the same reason --
+           ;; the function attribute does not survive the translator.
+           (%emit-spirv-subgroup-size-execution-mode func module semantic-function))
           (:ptx
            ;; Use ptx_kernel calling convention (71) so llc emits .entry
            ;; If this crashes on Windows, we will need to revisit nvvm attributes.
@@ -882,19 +886,25 @@
 
 
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
-  "Top-level function to generate LLVM IR for a given semantic function."
+  "Top-level function to generate LLVM IR for a given semantic function.
+
+   Endeavour 156: binds *mma-lowering* for the extent of this function's code generation, and
+   resets *xe-native-operand-elem* so an operand kind recorded for one kernel cannot leak into the
+   next."
   (log:warn "GENERATE-LLVM-IR: ~a Params: ~a Ret: ~a"
             (semantic-function-name semantic-function)
             (semantic-function-param-list semantic-function)
             (semantic-function-return-type semantic-function))
   (log:warn "BODY: ~a" (semantic-function-body semantic-function))
-
-  (multiple-value-bind (func di-subprogram)
-      (generate-function-prototype semantic-function module di-builder di-compile-unit location-map)
-    (when func
-          ;; Attach SPIR-V/PTX kernel metadata if this is an entry point
-          (ensure-opencl-kernel-metadata func semantic-function module)
-          (generate-function-body semantic-function func di-subprogram builder module di-builder location-map))))
+  (let ((*mma-lowering* (%kernel-mma-lowering semantic-function))
+        (*xe-native-operand-elem* nil))
+    (log:debug "generate-llvm-ir: ~a uses mma lowering ~a"
+               (semantic-function-name semantic-function) *mma-lowering*)
+    (multiple-value-bind (func di-subprogram)
+        (generate-function-prototype semantic-function module di-builder di-compile-unit location-map)
+      (when func
+            (ensure-opencl-kernel-metadata func semantic-function module)
+            (generate-function-body semantic-function func di-subprogram builder module di-builder location-map)))))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
   (:documentation "Generates LLVM IR for a single semantic node."))
@@ -1235,6 +1245,8 @@
 
 
 
+;; src/codegen.lisp  (REPLACES build-cast-if-needed -- 156: FROM-TYPE is a struct; the
+;; symbol to test is the FROM-TYPE-NAME parameter)
 (defun build-cast-if-needed (builder module from-val from-type-name to-type-name)
   "Builds LLVM cast instruction if types differ, with alias resolution.
    MODULE is required to resolve types correctly.
@@ -1296,7 +1308,21 @@
                     ((< to-size from-size)
                       (llvm-build-fp-trunc builder from-val to-llvm-type "fptrunc_cast"))
                     ((> to-size from-size)
-                      (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast"))
+                      ;; Endeavour 156: a bfloat16 reaches codegen as i16 on the SPIR-V backend
+                      ;; (endeavour 155 rewrote the type so Intel sees raw 16-bit integers), so
+                      ;; `fpext i16 ... to float` is emitted for (to-float <bfloat16>) and is not a
+                      ;; legal cast -- llvm-as rejects it.  A bf16 IS an f32 with the low 16
+                      ;; mantissa bits dropped, so widening is a SHIFT: zext to i32, shl 16,
+                      ;; bitcast to float.  Exactly the inverse of %coop-coerce-scalar's
+                      ;; f32 -> bf16 (bitcast -> lshr 16 -> trunc).
+                      (if (%bf16-as-i16-p from-val from-type-name)
+                          (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+                                 (wide (llvm-build-zext builder from-val i32 "bf16_zext"))
+                                 (up   (crisp.llvm-bindings::llvm-build-shl
+                                        builder wide (llvm-const-int i32 16 nil) "bf16_shl")))
+                            (crisp.llvm-bindings::llvm-build-bit-cast
+                             builder up (llvm-float-type) "bf16_to_f32"))
+                          (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast")))
                     (t from-val))))
                ((and (eq from-cat :float) (member to-cat '(:signed-int :unsigned-int)))
                  (if (eq to-cat :signed-int)
@@ -3408,6 +3434,7 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         |#
 
 
+;; src/codegen.lisp  (REPLACES generate-node-ir (semantic-gpu-builtin) -- 157 Phase 1)
 (defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
   "Generates LLVM IR for a GPU built-in function call.
    Endeavor 115 Phase 2: full PTX dispatch for all builtins."
@@ -3492,6 +3519,21 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (if (eq *target-backend* :ptx)
              (%ptx-barrier builder module)
              (%gen-spirv-control-barrier builder module)))
+        ;; 157: the two halves of a split workgroup barrier.  PTX is REFUSED rather than
+        ;; approximated -- NVIDIA's bar.arrive / bar.sync are not the same rendezvous, and a silent
+        ;; mis-mapping of a barrier deadlocks a GPU instead of producing a wrong number.
+        (:sync-workgroup-arrive
+         (if (eq *target-backend* :ptx)
+             (error 'crisp-compiler-error
+               :message "(sync-workgroup :arrive) is SPIR-V only.  The PTX backend has no equivalent rendezvous -- bar.arrive does not carry the same semantics -- so Crisp refuses rather than emitting a barrier that means something else.  Use the fused (sync-workgroup) on this backend."
+               :source-location nil)
+             (%gen-spirv-split-barrier builder module :arrive)))
+        (:sync-workgroup-wait
+         (if (eq *target-backend* :ptx)
+             (error 'crisp-compiler-error
+               :message "(sync-workgroup :wait) is SPIR-V only.  The PTX backend has no equivalent rendezvous -- bar.sync does not carry the same semantics -- so Crisp refuses rather than emitting a barrier that means something else.  Use the fused (sync-workgroup) on this backend."
+               :source-location nil)
+             (%gen-spirv-split-barrier builder module :wait)))
         (:sync-warp
          (if (eq *target-backend* :ptx)
              (%ptx-syncwarp builder module)
@@ -4004,6 +4046,10 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (long "l") (ulong "m")
     (char "c") (uchar "h")
     (short "s") (ushort "t")
+    ;; Endeavour 156: an async copy MOVES BYTES and never interprets them, and a bf16 is 16 bits.
+    ;; It mangles as a short for the same reason endeavour 155 gives bf16 the i16 LLVM type: the
+    ;; float-ness is carried elsewhere and is irrelevant to a memcpy.
+    (bfloat16 "s")
     (t (error "spirv async copy: unsupported element type ~S (need f/d/i/j/l/m/...)" elem-type))))
 
 (defun %gen-spirv-async-work-group-copy (builder module dst-as3 src-as1 num-i64 event-in elem-type)
@@ -4530,17 +4576,9 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 
 (defun %coop-type (elem-llvm rows cols use)
-  "Build target(\"spirv.CooperativeMatrixKHR\", ELEM-LLVM, 3, ROWS, COLS, USE) in the
-   global context (= the module's context, so the type matches)."
-  (let ((ctx (crisp.llvm-bindings::llvm-get-global-context)))
-    (cffi:with-foreign-objects ((tps :pointer 1) (ips :unsigned-int 4))
-      (setf (cffi:mem-aref tps :pointer 0) elem-llvm
-            (cffi:mem-aref ips :unsigned-int 0) 3          ; Subgroup scope
-            (cffi:mem-aref ips :unsigned-int 1) rows
-            (cffi:mem-aref ips :unsigned-int 2) cols
-            (cffi:mem-aref ips :unsigned-int 3) use)
-      (crisp.llvm-bindings::llvm-target-ext-type-in-context
-       ctx "spirv.CooperativeMatrixKHR" tps 1 ips 4))))
+  "Dispatches to %coop-type-impl on the active lowering.  Kept as a plain function with its
+   original signature so no call site changes."
+  (%coop-type-impl *mma-lowering* elem-llvm rows cols use))
 
 (defun %coop-call (builder module name ret-type param-types arg-vals)
   "Declare (once) NAME : RET-TYPE(PARAM-TYPES…) and build a call with ARG-VALS."
@@ -4564,58 +4602,85 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
   (crisp.llvm-bindings::llvm-get-pointer-address-space (crisp.llvm-bindings::llvm-type-of ptr-val)))
 
 
-(defun %coop-tensor-ptr+stride (builder tensor-val orow ocol layout)
-  "From a Crisp tensor STRUCT value, return (values element-ptr stride-i64) for the coop
-   tile whose element origin is (OROW, OCOL) — both i64 LLVM values.  Tensor layout: field0
-   = parent storage {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0]
-   (RowMajor) / strides[1] (ColMajor)."
-  (let* ((f32 (llvm-float-type))
-         (storage (llvm-build-extract-value builder tensor-val 0 "coop_storage"))
-         (base    (llvm-build-extract-value builder storage 0 "coop_base"))
-         (strides (llvm-build-extract-value builder tensor-val 2 "coop_strides"))
-         (s0 (llvm-build-extract-value builder strides 0 "coop_s0"))
-         (s1 (llvm-build-extract-value builder strides 1 "coop_s1"))
-         (off0 (llvm-build-mul builder orow s0 "coop_off0"))
-         (off1 (llvm-build-mul builder ocol s1 "coop_off1"))
-         (flat (llvm-build-add builder off0 off1 "coop_flat"))
-         (stride (if (= layout 0) s0 s1)))
-    (cffi:with-foreign-object (idx :pointer 1)
-      (setf (cffi:mem-aref idx :pointer 0) flat)
-      (values (llvm-build-gep2 builder f32 base idx 1 "coop_elem_ptr") stride))))
+(defun %coop-tensor-ptr+stride (builder tensor-val orow ocol layout &optional elem-llvm)
+  "Dispatches to %coop-tensor-ptr+stride-impl on the active lowering.  Kept as a plain function with its
+   original signature so no call site changes."
+  (%coop-tensor-ptr+stride-impl *mma-lowering* builder tensor-val orow ocol layout elem-llvm))
 
 
-(defun %coop-store (builder module ptr matrix-val stride-val elem-llvm rows cols use layout)
-  "Emit CooperativeMatrixStoreKHR(PTR, MATRIX, LAYOUT, STRIDE, 0)."
-  (let ((i32 (crisp.llvm-bindings::llvm-int32-type))
-        (i64 (crisp.llvm-bindings::llvm-int64-type))
-        (as  (%ptr-as ptr)))
-    (%coop-call builder module
-                (format nil "__spirv_CooperativeMatrixStoreKHR_~d_~d_~d_as~d" use rows cols as)
-                (crisp.llvm-bindings::llvm-void-type)
-                (list (%coop-ptr-type as) (%coop-type elem-llvm rows cols use) i32 i64 i32)
-                (list ptr matrix-val
-                      (crisp.llvm-bindings::llvm-const-int i32 layout nil)
-                      stride-val
-                      (crisp.llvm-bindings::llvm-const-int i32 0 nil)))))
+(defun %coop-store (builder module tensor-val matrix-val orow ocol elem-llvm rows cols use layout)
+  "Dispatches to %coop-store-impl on the active lowering."
+  (%coop-store-impl *mma-lowering* builder module tensor-val matrix-val orow ocol elem-llvm rows cols use layout))
 
 
-(defun %coop-load (builder module ptr stride-val elem-llvm rows cols use layout)
-  "Emit CooperativeMatrixLoadKHR(PTR, LAYOUT, STRIDE, 0) -> coop(elem,rows,cols,use).
-   STRIDE-VAL is an i64 LLVM value (leading dimension in elements)."
-  (let ((i32 (crisp.llvm-bindings::llvm-int32-type))
-        (i64 (crisp.llvm-bindings::llvm-int64-type))
-        (as  (%ptr-as ptr)))
-    (%coop-call builder module
-                (format nil "__spirv_CooperativeMatrixLoadKHR_~d_~d_~d_as~d" use rows cols as)
-                (%coop-type elem-llvm rows cols use)
-                (list (%coop-ptr-type as) i32 i64 i32)
-                (list ptr
-                      (crisp.llvm-bindings::llvm-const-int i32 layout nil)
-                      stride-val
-                      (crisp.llvm-bindings::llvm-const-int i32 0 nil)))))
+(defun %coop-load (builder module tensor-val orow ocol elem-llvm rows cols use layout)
+  "Dispatches to %coop-load-impl on the active lowering."
+  (%coop-load-impl *mma-lowering* builder module tensor-val orow ocol elem-llvm rows cols use layout))
 
 
-(defun %block-prefetch (builder module ptr stride-val rows cols)
+;;;; ============================================================================
+;;;; Endeavour 155 — THE TILE ADDRESS WAS COMPUTED IN THE WRONG ELEMENT SIZE.
+;;;;
+;;;; %coop-tensor-ptr+stride turns a Crisp tensor plus a tile origin into the pointer a
+;;;; cooperative-matrix load/store starts from.  It computed a FLAT ELEMENT INDEX correctly and
+;;;; then indexed it with a hardcoded f32:
+;;;;
+;;;;     %coop_elem_ptr = getelementptr float, ptr addrspace(1) %coop_base, i64 %coop_flat
+;;;;
+;;;; On a 16-bit tensor that scales the offset by 4 bytes instead of 2, so every tile after the
+;;;; first lands at TWICE its intended element offset.  The STRIDE operand is separate and was
+;;;; already right, which is why the first tile of every kernel read perfectly and nothing looked
+;;;; wrong until a K-loop ran more than one step.
+;;;;
+;;;; HOW IT WAS FOUND, because the arithmetic is the proof.  Filling A and B with all ones makes
+;;;; the result equal the NUMBER OF CONTRACTED TERMS, so a partial contraction is readable
+;;;; directly.  For an 8xK operand the tile at step k should start at element 16k but starts at
+;;;; 32k; a tile whose last element (base + 7*K + 15) exceeds the allocation reads past the buffer
+;;;; and contributes nothing:
+;;;;
+;;;;     K=16   bases 0                    1 of 1 in bounds   ->  16    measured 16   (correct)
+;;;;     K=32   bases 0,32                 1 of 2             ->  16    measured 16
+;;;;     K=64   bases 0,32,64,96           2 of 4             ->  32    measured 32
+;;;;     K=128  bases 0,32,...,224         4 of 8             ->  64    measured 64
+;;;;
+;;;; All four predicted values match what the GPU produced, which is what makes this the cause
+;;;; rather than a candidate.  It also explains why K=16 passed: a single step never needs a
+;;;; second base.
+;;;;
+;;;; WHY IT SURVIVED EVERY EXISTING TEST.  Every kernel in the tree until now was f32, and for f32
+;;;; the hardcoded type is the RIGHT one — the bug is exactly zero-cost at 32 bits.  It could not
+;;;; be found by any amount of f32 testing, only by running a 16-bit kernel on hardware.  That is
+;;;; the argument for rung 04 (on-metal fp16) rather than more compile-and-inspect rungs: the
+;;;; emitted TYPES were already correct here, and the types are all a .spv-reading validator can
+;;;; see.
+;;;; ============================================================================
+
+;; [superseded defun %coop-tensor-ptr+stride removed in consolidation -- a later copy in this file is the live one]
+
+
+;;;; ============================================================================
+;;;; Endeavour 155 — the 2D-BLOCK PREFETCH also described every surface as f32.
+;;;;
+;;;; %block-prefetch emitted Subgroup2DBlockPrefetchINTEL with a hardcoded ElementSize of 4 bytes
+;;;; and a MemoryPitch of leading-dim * 4.  On a 16-bit tensor both are double the truth, so the
+;;;; region handed to the driver is twice as wide as the data and runs off the end of the
+;;;; allocation.
+;;;;
+;;;; A PREFETCH IS SUPPOSED TO BE HARMLESS -- its own docstring calls it "a fire-and-forget L1
+;;;; cache hint... never changes data".  That is true of a VALID prefetch.  An invalid one is a
+;;;; memory access like any other, and the benchmark kernel (which prefetches; the simple kernel
+;;;; does not) is precisely the one that took a CONSTANT 500 ms at every problem size from 256 to
+;;;; 8192 and returned garbage -- the signature of a GPU fault and reset rather than of slow work.
+;;;; The simple fp16 kernel, same MMA path but no prefetch, ran in 3.5 MICROSECONDS.
+;;;;
+;;;; So the element type had to reach one more place.  Counting the layers this endeavour has now
+;;;; threaded it through: the analyzer (Phase 1), the coop-matrix TYPE in codegen (Phase B), the
+;;;; instruction SHAPE (Phase C), the tile ADDRESS (the getelementptr), the PREFETCH surface, and
+;;;; on the host side the fill and the reference.  Each was invisible to the layer above it.
+;;;; ============================================================================
+
+;; [superseded defun %elem-llvm-bytes removed in consolidation -- a later copy in this file is the live one]
+(defun %block-prefetch (builder module ptr stride-val rows cols &optional (elem-bytes 4))
   "Endeavor 142 (Phase B): emit Subgroup2DBlockPrefetchINTEL for an f32 ROWS x COLS block whose
    element origin is PTR (addrspace(1)), STRIDE-VAL the i64 leading dim in elements.  A fire-and-forget
    L1 cache hint — no result, never changes data (so it can be interleaved freely into the K-loop).
@@ -4628,17 +4693,18 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (i64   (crisp.llvm-bindings::llvm-int64-type))
          (as    (%ptr-as ptr))
          (v2i32 (crisp.llvm-bindings::llvm-vector-type i32 2))
-         ;; MemoryPitch is in BYTES: leading-dim-elements * sizeof(f32).
+         ;; MemoryPitch is in BYTES: leading-dim-elements * sizeof(element).
+         ;; Endeavour 155: was sizeof(f32) unconditionally.  See header.
          (pitch-bytes (crisp.llvm-bindings::llvm-build-trunc
                        builder
                        (crisp.llvm-bindings::llvm-build-mul
-                        builder stride-val (crisp.llvm-bindings::llvm-const-int i64 4 nil) "pf_pitch64")
+                        builder stride-val (crisp.llvm-bindings::llvm-const-int i64 elem-bytes nil) "pf_pitch64")
                        i32 "pf_pitch")))
     (%coop-call builder module
                 "__spirv_Subgroup2DBlockPrefetchINTEL"
                 (crisp.llvm-bindings::llvm-void-type)
                 (list i32 i32 i32 i32 (%coop-ptr-type as) i32 i32 i32 v2i32)
-                (list (crisp.llvm-bindings::llvm-const-int i32 4 nil)      ; ElementSize (bytes, f32)
+                (list (crisp.llvm-bindings::llvm-const-int i32 elem-bytes nil) ; ElementSize (bytes)
                       (crisp.llvm-bindings::llvm-const-int i32 cols nil)   ; BlockWidth  (cols)
                       (crisp.llvm-bindings::llvm-const-int i32 rows nil)   ; BlockHeight (rows)
                       (crisp.llvm-bindings::llvm-const-int i32 1 nil)      ; BlockCount
@@ -4649,12 +4715,12 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                       (crisp.llvm-bindings::llvm-const-null v2i32)))))     ; Coordinate <0,0>
 
 (defun %coop-fill (builder module init-val elem-llvm rows cols use)
-  "Construct a coop matrix filled with INIT-VAL (scalar) via __spirv_CompositeConstruct."
-  (%coop-call builder module
-              (format nil "__spirv_CompositeConstruct_~d_~d_~d" use rows cols)
-              (%coop-type elem-llvm rows cols use)
-              (list elem-llvm) (list init-val)))
+  "Dispatches to %coop-fill-impl on the active lowering.  Kept as a plain function with its
+   original signature so no call site changes."
+  (%coop-fill-impl *mma-lowering* builder module init-val elem-llvm rows cols use))
 
+;; src/codegen.lisp  (REPLACES generate-node-ir semantic-coop-op -- 156 Step 2:
+;; :load/:store hand the tensor and unfolded origins to the lowering)
 (defmethod generate-node-ir ((node semantic-coop-op) builder module var-env di-builder di-scope location-map)
   "Cooperative-matrix op: fill / load / store / prefetch / map / map2."
   (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
@@ -4664,7 +4730,9 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
           (use  (semantic-coop-op-use node))
           (layout (semantic-coop-op-layout node))
           (i64 (llvm-int64-type))
-          (f32 (llvm-float-type)))
+          (f32 (llvm-float-type))
+          ;; Endeavour 155: the matrix's REAL component type.  See header.
+          (elem-llvm (%coop-op-elem-llvm node)))
       (labels ((origin (dim-node dim)
                  (llvm-build-mul builder
                                  (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
@@ -4675,6 +4743,15 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                             :message (format nil "cooperative-matrix map: no storage found for variable ~a." name)
                             :source-location (semantic-coop-op-source-location node))))
                (map-loop (primary-ptr per-elem)
+                 ;; Endeavour 155: the map loops extract SCALAR elements into f32 allocas
+                 ;; (cm_elem / cm_prm / cm_adj below).  For a 16-bit matrix those would be the
+                 ;; wrong width, so refuse rather than miscompile.  See header for why this is a
+                 ;; refusal and not a fix.
+                 (unless (eq (%coop-node-elem node) 'float)
+                   (error 'crisp-compiler-error
+                          :message (format nil "cooperative-matrix elementwise map is only implemented for float (fp32) matrices; this one is ~a.  The map loop extracts scalar elements through f32 temporaries, which would silently truncate a ~:*~a matrix."
+                                           (%coop-node-elem node))
+                          :source-location (semantic-coop-op-source-location node)))
                  (let* ((i32 (llvm-int32-type))
                         (coop-ty (%coop-type f32 rows cols use))
                         (mat (llvm-build-load2 builder coop-ty primary-ptr "cm_map_mat"))
@@ -4704,30 +4781,32 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         (ecase kind
           (:fill
            (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
-                               f32 rows cols use)
+                               elem-llvm rows cols use)
                    nil))
           (:load
-           (multiple-value-bind (ptr stride)
-               (%coop-tensor-ptr+stride builder (gen (semantic-coop-op-tensor-node node))
-                                        (origin (semantic-coop-op-ty node) rows)
-                                        (origin (semantic-coop-op-tx node) cols) layout)
-             (values (%coop-load builder module ptr stride f32 rows cols use layout) nil)))
+           ;; 156 Step 2: the tensor and the ORIGINS go to the load, not a pointer with the
+           ;; coordinates already folded in.  A 2D block load needs the real surface (its
+           ;; MemoryWidth/Pitch are bytes with a 64-byte minimum) and selects the tile by
+           ;; Coordinate, so folding the origin into a pointer destroys what it needs.
+           (values (%coop-load builder module (gen (semantic-coop-op-tensor-node node))
+                               (origin (semantic-coop-op-ty node) rows)
+                               (origin (semantic-coop-op-tx node) cols)
+                               elem-llvm rows cols use layout)
+                   nil))
           (:store
            (let* ((mat (gen (semantic-coop-op-value-node node)))
                   (tv  (gen (semantic-coop-op-tensor-node node)))
                   (orow (origin (semantic-coop-op-ty node) rows))
                   (ocol (origin (semantic-coop-op-tx node) cols)))
-             (multiple-value-bind (ptr stride)
-                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
-               (%coop-store builder module ptr mat stride f32 rows cols use layout)
-               (values nil nil))))
+             (%coop-store builder module tv mat orow ocol elem-llvm rows cols use layout)
+             (values nil nil)))
           (:prefetch
            (let* ((tv   (gen (semantic-coop-op-tensor-node node)))
                   (orow (origin (semantic-coop-op-ty node) rows))
                   (ocol (origin (semantic-coop-op-tx node) cols)))
              (multiple-value-bind (ptr stride)
-                 (%coop-tensor-ptr+stride builder tv orow ocol layout)
-               (%block-prefetch builder module ptr stride rows cols)
+                 (%coop-tensor-ptr+stride builder tv orow ocol layout elem-llvm)
+               (%block-prefetch builder module ptr stride rows cols (%elem-llvm-bytes elem-llvm))
                (values nil nil))))
           (:map
            (let* ((tgt (ptr-of (semantic-coop-op-ty node)))
@@ -4767,3 +4846,1038 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                            (let ((res (generate-node-ir body-node builder module benv
                                                         di-builder di-scope location-map)))
                              (llvm-build-store builder res ep-a))))))))))))
+
+;;;; ============================================================================================
+;;;; Folded in from overlays/crisp-compiler-overlay.lisp on 2026-08-26.
+;;;; These were appended to the overlay in this order and are kept in it, because
+;;;; later definitions here reference earlier ones.
+;;;; ============================================================================================
+;;;; ============================================================================
+;;;; Endeavour 155 Phase B — the element type reaches CODEGEN, not just the analyzer.
+;;;;
+;;;; THE DEFECT.  Phase 1 threaded the element type through the ANALYZER, so a semantic coop-op
+;;;; node carries `(coop-matrix half 8 8 0)`.  Codegen then ignored it and passed a literal F32:
+;;;;
+;;;;     (:fill (values (%coop-fill builder module (gen ...) f32 rows cols use) nil))
+;;;;     (:load          (%coop-load builder module ptr stride f32 rows cols use layout))
+;;;;
+;;;; so the emitted module was INTERNALLY INCONSISTENT — and silently so, because opaque pointers
+;;;; mean LLVM never objects:
+;;;;
+;;;;     %"a-tile$f0" = alloca target("spirv.CooperativeMatrixKHR", half,  3, 8, 8, 0)
+;;;;     %27 = call   target("spirv.CooperativeMatrixKHR", float, 3, 8, 8, 0) @__spirv_CompositeConstruct_0_8_8(float 0.0)
+;;;;     store        target("spirv.CooperativeMatrixKHR", float, 3, 8, 8, 0) %27, ptr %"a-tile$f0"
+;;;;
+;;;; An f32 cooperative matrix stored into an f16 slot and read back as f16 — a REINTERPRET, not a
+;;;; conversion.  That is why the disassembly showed both widths for every operand and ZERO
+;;;; FConvert ops, and why the fp16 matmul measured 0.27 TFLOPS against oneMKL's 110.
+;;;;
+;;;; Note which parts were already right, because it explains why the bug was so quiet: the ALLOCA
+;;;; came from the fragment's semantic type (half, correct), and __spirv_CooperativeMatrixMulAddKHR
+;;;; derives its signature from LLVMTypeOf of the actual values (half, correct — Phase 1's %coop-mma
+;;;; fix).  Only the producers disagreed, so every individual piece looked defensible in isolation.
+;;;;
+;;;; The mangled names gave it away: `__spirv_CompositeConstruct_0_8_8` and
+;;;; `__spirv_CooperativeMatrixLoadKHR_0_8_8_as1` encode use/rows/cols and NO element type, so one
+;;;; name necessarily served every element type — the signature could not be anything but wrong for
+;;;; all but one of them.  %coop-call interns by name, so the FIRST declaration wins and the rest
+;;;; silently alias it.  The mangling is left alone here (changing it is a wider change than the
+;;;; failing rungs justify); what changes is that the type passed is now the matrix's own.
+;;;;
+;;;; THE MAP PATH IS REFUSED, NOT FIXED.  :map / :map2 extract scalar elements through f32 allocas
+;;;; (cm_elem, cm_prm, cm_adj).  Making those width-correct is a real change to a path that no
+;;;; failing rung exercises and that autodiff depends on, and this endeavour has already been
+;;;; lengthened twice by fixing things it could not test.  A compile-time refusal that names the
+;;;; limitation is the honest option — and it cannot regress anything today, since every kernel in
+;;;; the tree that uses map is float.
+;;;; ============================================================================
+
+;; [superseded defun %coop-node-elem removed in consolidation -- a later copy in this file is the live one]
+(defun %llvm-float-width (ty)
+  "Bit width of an LLVM floating-point type, or NIL if TY is not one of the four Crisp knows.
+   HALF and BFLOAT16 are both 16 bits and are DIFFERENT types — same width, not interchangeable."
+  (cond ((cffi:pointer-eq ty (llvm-half-type))   16)
+        ((cffi:pointer-eq ty (llvm-bfloat-type)) 16)
+        ((cffi:pointer-eq ty (llvm-float-type))  32)
+        ((cffi:pointer-eq ty (llvm-double-type)) 64)
+        (t nil)))
+
+;;;; ------------------------------------------------------------------------------------------
+;;;; Endeavour 155 — a PREFETCH node has no matrix, so it fell back to f32.
+;;;;
+;;;; %coop-node-elem answered the question "what is this coop-op's element type?" by reading the
+;;;; node's own `(coop-matrix ELEM rows cols use)` type, falling back to the VALUE node for a
+;;;; :store (whose own type is 'void).  A :prefetch node has NEITHER -- it names a tensor and a
+;;;; region, and produces no matrix at all -- so it fell through to FLOAT.
+;;;;
+;;;; The consequence was visible in the emitted IR of the benchmark kernel even after the address
+;;;; and prefetch-size fixes landed:
+;;;;
+;;;;     8 call void @__spirv_Subgroup2DBlockPrefetchINTEL(i32 4, i32 16, i32 16 ...
+;;;;    20 getelementptr float, ptr addrspace(1) %coop_base     <- 8 correct C stores + 12 prefetches
+;;;;    18 getelementptr half,  ptr addrspace(1) %coop_base
+;;;;
+;;;; i.e. the A/B LOADS were correct while every PREFETCH of the same tensors still described them
+;;;; as f32 -- twice as wide as the data, running off the end of the allocation.
+;;;;
+;;;; The fix is to ask the TENSOR when there is no matrix to ask.  That is the same source
+;;;; %coop-elem-of uses on the analysis side; doing it here keeps codegen from needing a separate
+;;;; notion of what a prefetch is prefetching.
+;;;; ------------------------------------------------------------------------------------------
+(defun %coop-node-elem (node)
+  "The CRISP element type of the cooperative matrix a coop-op node operates on.
+
+   Sources, in order:
+     1. the node's own `(coop-matrix ELEM rows cols use)` type   — :fill / :load
+     2. its VALUE node's type                                    — :store, whose own type is 'void
+     3. its TENSOR node's element type                           — :prefetch, which has no matrix
+   Anything unrecognised yields FLOAT, the pre-155 behaviour."
+  (flet ((coop-elem (ty)
+           (and (consp ty)
+                (symbolp (first ty))
+                (string= (symbol-name (first ty)) "COOP-MATRIX")
+                (>= (length ty) 2)
+                (second ty)))
+         (tensor-elem (ty)
+           ;; A tensor/matrix type spec carries its element type second: (tensor ELEM N ...).
+           (and (consp ty)
+                (symbolp (first ty))
+                (member (symbol-name (first ty)) '("TENSOR" "MATRIX") :test #'string=)
+                (>= (length ty) 2)
+                (symbolp (second ty))
+                (second ty))))
+    (or (coop-elem (semantic-coop-op-type node))
+        (let ((vn (semantic-coop-op-value-node node)))
+          (and vn (coop-elem (semantic-node-type vn))))
+        (let ((tn (semantic-coop-op-tensor-node node)))
+          (and tn (tensor-elem (%ts-canonicalize-tensor-type (semantic-node-type tn)))))
+        (let ((tn (semantic-coop-op-tensor-node node)))
+          (and tn (tensor-elem (semantic-node-type tn))))
+        'float)))
+
+;; tests/run-specs.lisp
+(defun %spv-int-widths (txt)
+  "Alist of (type-id-string . width) for every OpTypeInt in TXT.
+   Endeavour 155: needed because a bf16 cooperative matrix's component type is an INTEGER."
+  (cl:let ((out cl:nil))
+    (cl:dolist (toks (%spv-lines txt) (cl:nreverse out))
+      (cl:when (cl:and (cl:string= (cl:second toks) "TypeInt")
+                       (cl:>= (cl:length toks) 4))
+        (cl:let ((w (cl:ignore-errors (cl:parse-integer (cl:fourth toks)))))
+          (cl:when w (cl:push (cl:cons (cl:third toks) w) out)))))))
+
+;; tests/run-specs.lisp  (REPLACES %spv-coop-matrices -- 155 bf16)
+(defun %spv-coop-matrices (txt)
+  "List of (RESULT-ID COMPONENT-WIDTH USE KIND) for every TypeCooperativeMatrixKHR in TXT.
+
+   KIND is :FLOAT or :INT — Endeavour 155, because Intel encodes a bf16 matrix as 16-bit INTEGER
+   components with the bfloat-ness carried by the MulAdd operands mask, so width alone no longer
+   identifies the element type.  Either field may be NIL when the operand is not a scalar type or
+   not a resolvable constant; callers must treat NIL as 'unknown', never as 'fine'."
+  (cl:let ((floats (%spv-float-widths txt))
+           (ints   (%spv-int-widths txt))
+           (consts (%spv-int-constants txt))
+           (out cl:nil))
+    (cl:dolist (toks (%spv-lines txt) (cl:nreverse out))
+      (cl:when (cl:and (cl:string= (cl:second toks) "TypeCooperativeMatrixKHR")
+                       (cl:>= (cl:length toks) 8))
+        (cl:let* ((comp (cl:fourth toks))
+                  (fw (cl:cdr (cl:assoc comp floats :test #'cl:string=)))
+                  (iw (cl:cdr (cl:assoc comp ints   :test #'cl:string=))))
+          (cl:push (cl:list (cl:third toks)
+                            (cl:or fw iw)
+                            (cl:cdr (cl:assoc (cl:eighth toks) consts :test #'cl:string=))
+                            (cl:cond (fw :float) (iw :int) (cl:t cl:nil)))
+                   out))))))
+
+;; tests/run-specs.lisp  (REPLACES %validate-coop-operand-elem -- 155 bf16)
+(defun %validate-coop-operand-elem (spv-path want-width label &key require-ext int-components)
+  "Assert that EVERY A/B cooperative matrix in SPV-PATH has component width WANT-WIDTH — and, when
+   INT-COMPONENTS, that they are INTEGER components rather than float ones — and that every
+   Accumulator is 32-bit float.  LABEL names the element type for the failure text; REQUIRE-EXT,
+   when given, must appear in the module.
+
+   Endeavour 155: the INT-COMPONENTS distinction is the difference between fp16 and bf16 on Intel.
+   Both are 16 bits wide; only the KIND separates them, so checking width alone would let a bf16
+   kernel silently emit fp16 matrices and still pass.
+
+   DEGRADES TO PASS when llvm-spirv is unavailable (a CUDA-only box has no bundled bin/), matching
+   %spv-contains-opcode-p: returns NIL only when the module WAS disassembled and the property is
+   definitively absent."
+  (cl:let* ((tool (resolve-tool-executable "llvm-spirv"))
+            (txt-path (cl:format cl:nil "~a.155txt" (uiop:native-namestring spv-path)))
+            (want-kind (cl:if int-components :int :float)))
+    (cl:multiple-value-bind (o e code)
+        (uiop:run-program (cl:list (uiop:native-namestring tool) "--to-text"
+                                   (uiop:native-namestring spv-path) "-o" txt-path)
+                          :output :string :error-output :string :ignore-error-status cl:t)
+      (cl:declare (cl:ignore o e))
+      (cl:if (cl:or (cl:not (cl:zerop code)) (cl:not (probe-file txt-path)))
+          (cl:progn
+            (cl:format cl:*error-output*
+                       "  (~a: llvm-spirv unavailable or failed — SKIPPING, not failing)~%" label)
+            cl:t)
+          (cl:let ((txt (uiop:read-file-string txt-path)))
+            (cl:ignore-errors (cl:delete-file txt-path))
+            (cl:let* ((mats (%spv-coop-matrices txt))
+                      (ops  (cl:remove-if-not (cl:lambda (m) (cl:member (cl:third m) (cl:list 0 1))) mats))
+                      (accs (cl:remove-if-not (cl:lambda (m) (cl:eql (cl:third m) 2)) mats))
+                      (bad-ops (cl:remove-if (cl:lambda (m)
+                                               (cl:and (cl:eql (cl:second m) want-width)
+                                                       (cl:eq (cl:fourth m) want-kind)))
+                                             ops))
+                      (bad-acc (cl:remove-if (cl:lambda (m)
+                                               (cl:and (cl:eql (cl:second m) 32)
+                                                       (cl:eq (cl:fourth m) :float)))
+                                             accs)))
+              (cl:cond
+                ((cl:null mats)
+                 (cl:format cl:*error-output*
+                            "FAIL: no cooperative matrix in the module at all — the MMA did not lower.~%")
+                 cl:nil)
+                ((cl:null ops)
+                 (cl:format cl:*error-output*
+                            "FAIL: no A/B-use cooperative matrix — operands did not reach the MMA.~%")
+                 cl:nil)
+                (bad-ops
+                 (cl:format cl:*error-output*
+                            "FAIL: ~d of ~d A/B cooperative matrices are not ~a (~d-bit ~a).~%~
+                             Offenders (result-id, component-width, kind, use):~%"
+                            (cl:length bad-ops) (cl:length ops) label want-width
+                            (cl:string-downcase (cl:symbol-name want-kind)))
+                 (cl:dolist (m bad-ops)
+                   (cl:format cl:*error-output* "    id ~a  component=~a-bit ~a  use=~a~%"
+                              (cl:first m) (cl:or (cl:second m) "?")
+                              (cl:or (cl:fourth m) "?") (%spv-use-name (cl:third m))))
+                 cl:nil)
+                (bad-acc
+                 (cl:format cl:*error-output*
+                            "FAIL: ~d accumulator matrix/matrices are not fp32.  A ~a MMA~%~
+                             accumulates in fp32; an all-~a module is as wrong as an all-f32 one.~%"
+                            (cl:length bad-acc) label label)
+                 cl:nil)
+                ((cl:null accs)
+                 (cl:format cl:*error-output*
+                            "FAIL: no Accumulator cooperative matrix — nothing is accumulating in fp32.~%")
+                 cl:nil)
+                ((cl:and require-ext (cl:not (cl:search require-ext txt)))
+                 (cl:format cl:*error-output*
+                            "FAIL: module uses ~a but does not declare ~a — llvm-spirv would refuse it.~%"
+                            label require-ext)
+                 cl:nil)
+                (cl:t cl:t))))))))
+
+;;;; ============================================================================
+;;;; Endeavour 155 — bf16 ON INTEL, THE WAY INTEL ACTUALLY ENCODES IT.
+;;;;
+;;;; Crisp emitted bf16 as a genuine bfloat cooperative-matrix component type and requested
+;;;; SPV_KHR_bfloat16.  The BMG driver's SPIR-V reader does not implement that extension: it
+;;;; reports `unknown extension 'SPV_KHR_bfloat16'` and then dies.  The obvious readings were
+;;;; "wait for a driver" or "switch to SPV_INTEL_subgroup_matrix_multiply_accumulate".  BOTH ARE
+;;;; WRONG, and compiling Intel's own bf16 joint_matrix kernel and disassembling it shows why.
+;;;;
+;;;; WHAT INTEL EMITS.  Same extension Crisp uses, same opcode Crisp uses:
+;;;;
+;;;;    bf16:   TypeInt 25 16 0                      <- a 16-bit INTEGER, not a float type
+;;;;            TypeCooperativeMatrixKHR 27 25 ...   <- A and B use the INTEGER component
+;;;;            CooperativeMatrixMulAddKHR 22 35 30 34 23 64
+;;;;                                                      ^^ operands mask 0x40
+;;;;            extensions: SPV_KHR_cooperative_matrix ONLY
+;;;;
+;;;;    half:   TypeFloat 25 16                      <- a real f16 float type
+;;;;            CooperativeMatrixMulAddKHR ... 0     <- mask 0
+;;;;
+;;;; So bf16 is carried as raw 16-bit integers and its bfloat-ness is signalled by ONE BIT on the
+;;;; MulAdd: 0x40, MatrixAAndBBFloat16ComponentsINTEL.  No bfloat type exists in the module, so no
+;;;; SPV_KHR_bfloat16 is needed — and SPV_INTEL_bfloat16_conversion is not needed either (it
+;;;; provides SCALAR f32<->bf16 conversion ops, which an MMA does not use; Intel's own kernel does
+;;;; not declare it).
+;;;;
+;;;; This also explains why fp16 started working the moment the element type reached codegen:
+;;;; Crisp's fp16 encoding was ALREADY byte-for-byte what Intel emits — real f16 components,
+;;;; mask 0.  Only bf16 differed, and it differed by choosing the newer, more principled encoding
+;;;; that this driver does not yet read.
+;;;;
+;;;; PORTABILITY, STATED.  0x40 is an INTEL-vendored value in the KHR operands enum, and the
+;;;; module declares no INTEL extension for it — that is what Intel's own output does and it works
+;;;; here.  Whether another KHR cooperative-matrix implementation accepts it is unknown, so this
+;;;; is applied on the SPIR-V backend only, which is the Intel path.  A different vendor reaching
+;;;; the SPV backend would want this behind a hardware-profile key.
+;;;; ============================================================================
+(defun %coop-op-elem-llvm (node)
+  "The LLVM type for a coop-op node's component type (see %coop-node-elem).
+
+   Endeavour 155: BFLOAT16 lowers to a 16-BIT INTEGER, not to LLVM `bfloat`.  That is how Intel
+   encodes a bf16 cooperative matrix (see header) — the type carries no float-ness and the MulAdd
+   operands mask supplies it.  i16 is also the correct width for the tile ADDRESS arithmetic, so
+   one answer serves both uses."
+  (let ((e (%coop-node-elem node)))
+    (cond ((string= (symbol-name e) "HALF")     (llvm-half-type))
+          ((string= (symbol-name e) "BFLOAT16") (crisp.llvm-bindings::llvm-int16-type))
+          ((string= (symbol-name e) "DOUBLE")   (llvm-double-type))
+          (t                                    (llvm-float-type)))))
+
+(defun %coop-coerce-scalar (builder val want-ty name)
+  "Coerce scalar VAL to WANT-TY, if it is not already that type.
+
+   Float-to-float goes by fptrunc / fpext (Endeavour 155, fp16).
+
+   FLOAT TO i16 IS THE bf16 FILL.  A bf16 cooperative matrix has INTEGER components, so filling
+   one with a literal `0.0` means storing that float's BF16 BIT PATTERN as an i16.  bfloat16 is
+   the top half of an IEEE f32, so the encoding is a bitcast to i32, a 16-bit logical shift right,
+   and a truncate — no bfloat type is introduced anywhere, which is the entire point (see the bf16
+   header).  This truncates rather than round-to-nearest; for the 0.0 that fills every accumulator
+   and operand tile it is exact, and a rounding form would need a bfloat type or a carry chain to
+   express.
+
+   LLVM has no direct cast between two DIFFERENT 16-bit float types, so half<->bfloat16 would route
+   through f32; that path cannot arise from a literal today."
+  (let ((have (llvm-type-of val))
+        (i16  (crisp.llvm-bindings::llvm-int16-type))
+        (i32  (crisp.llvm-bindings::llvm-int32-type)))
+    (cond
+      ((cffi:pointer-eq have want-ty) val)
+      ;; f32 -> bf16 bits, carried as i16
+      ((and (cffi:pointer-eq want-ty i16) (%llvm-float-width have))
+       (let* ((as-f32 (if (cffi:pointer-eq have (llvm-float-type))
+                          val
+                          (llvm-build-fp-ext builder val (llvm-float-type) "bf_f32")))
+              (bits (crisp.llvm-bindings::llvm-build-bit-cast builder as-f32 i32 "bf_bits"))
+              (hi   (crisp.llvm-bindings::llvm-build-l-shr
+                     builder bits (crisp.llvm-bindings::llvm-const-int i32 16 nil) "bf_hi")))
+         (crisp.llvm-bindings::llvm-build-trunc builder hi i16 name)))
+      (t
+       (let ((hw (%llvm-float-width have))
+             (ww (%llvm-float-width want-ty)))
+         (cond
+           ((not (and hw ww)) val)
+           ((> hw ww) (llvm-build-fp-trunc builder val want-ty name))
+           ((< hw ww) (llvm-build-fp-ext   builder val want-ty name))
+           (t (llvm-build-fp-trunc builder
+                                   (llvm-build-fp-ext builder val (llvm-float-type)
+                                                      (format nil "~a_via_f32" name))
+                                   want-ty name))))))))
+
+(defun %elem-llvm-bytes (elem-llvm)
+  "Bytes per element for an LLVM scalar type, defaulting to 4 — which is what every hardcoded
+   constant this replaces assumed.
+
+   Endeavour 155 (bf16): must handle INTEGER types, not just floats.  Once bf16 lowered to i16,
+   the float-only lookup returned NIL and fell back to 4, so %block-prefetch again described a
+   2-byte surface as 4-byte — twice as wide as the data, off the end of the allocation.  The
+   symptom was the one already seen for fp16: a constant ~500 ms at every problem size with wrong
+   results, i.e. a GPU fault and reset, in the kernel that prefetches and not in the one that
+   does not."
+  (let ((bits (and elem-llvm
+                   (or (%llvm-float-width elem-llvm)
+                       (cond ((cffi:pointer-eq elem-llvm (crisp.llvm-bindings::llvm-int8-type))   8)
+                             ((cffi:pointer-eq elem-llvm (crisp.llvm-bindings::llvm-int16-type)) 16)
+                             ((cffi:pointer-eq elem-llvm (crisp.llvm-bindings::llvm-int32-type)) 32)
+                             ((cffi:pointer-eq elem-llvm (crisp.llvm-bindings::llvm-int64-type)) 64)
+                             (t nil))))))
+    (if bits (max 1 (floor bits 8)) 4)))
+
+(defun %llvm-const-int-value (val)
+  "If VAL is an LLVM ConstantInt, its signed value; otherwise NIL."
+  (when (and val (not (cffi:null-pointer-p val)))
+    (let ((ci (crisp.llvm-bindings::llvm-is-a-constant-int val)))
+      (unless (cffi:null-pointer-p ci)
+        (crisp.llvm-bindings::llvm-const-int-get-sext-value ci)))))
+
+(defun %llvm-instr-opcode (val)
+  "If VAL is an LLVM Instruction, its opcode as an LLVMOpcode integer; otherwise NIL.
+
+   Guarded by LLVMIsAInstruction because LLVMGetInstructionOpcode is an unchecked
+   unwrap<Instruction> -- handing it a constant or a function argument crashes the process.  That
+   exact trap is what BUG 033 turned out to be, in LLVMInstructionSetDebugLoc."
+  (when (and val (not (cffi:null-pointer-p val)))
+    (let ((i (crisp.llvm-bindings::llvm-is-a-instruction val)))
+      (unless (cffi:null-pointer-p i)
+        (crisp.llvm-bindings::llvm-get-instruction-opcode i)))))
+
+(defun %llvm-binop-with-const (val opcode)
+  "Match VAL as `<OPCODE> %x, <const>` and return (values %x const), or NIL when it does not match.
+
+   Only the SECOND operand is tested for constness: LLVM canonicalises commutative operations to put
+   the constant on the right, and both producers here -- the fragment-index add and the
+   fragment-extent multiply -- are built that way explicitly."
+  (when (eql (%llvm-instr-opcode val) opcode)
+    (let* ((op0 (crisp.llvm-bindings::llvm-get-operand val 0))
+           (op1 (crisp.llvm-bindings::llvm-get-operand val 1))
+           (c   (%llvm-const-int-value op1)))
+      (when c (values op0 c)))))
+
+;;
+;; The first cut wrote an !spirv.ExecutionMode entry, exactly as endeavour 126 does for the denorm
+;; modes, and the log confirmed it ran -- but the mode never reached the SPIR-V.  The translator
+;; drops it: ExecutionMode SubgroupSize (35) requires the SubgroupDispatch capability, which Crisp
+;; does not declare, and the translator will not invent a capability to satisfy a raw execution-mode
+;; request.  Its supported route from LLVM is the FUNCTION-LEVEL metadata that OpenCL C's
+;; __attribute__((intel_reqd_sub_group_size(N))) lowers to; the translator recognises that, emits
+;; the execution mode AND declares the capability that makes it legal.
+;;
+;; Two further traps, both of which produced a stale .spt rather than a loud failure:
+;;   - FUNC was passed to llvm-get-module-context, which takes a MODULE.  Unchecked unwrap,
+;;     same family as BUG 033.
+;;   - llvm-global-set-metadata / llvm-get-md-kind-id-in-context are NOT exported from
+;;     crisp.llvm-bindings, so unqualified references are undefined in crisp.compiler.  That
+;;     aborted the compile, left the previous .spv in place, and every check read the old file.
+;;
+;; So this is not "a different way to write the same thing" -- it is the difference between asking
+;; for a mode and asking for the FEATURE, and only the latter brings its capability with it.
+(defun %emit-spirv-subgroup-size-execution-mode (func module semantic-function)
+  "Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's
+   :simd-width, so the width Crisp ASSUMES when computing warp counts and the width IGC COMPILES
+   are the same value by contract rather than by coincidence.
+
+   Attaches !intel_reqd_sub_group_size to the kernel.  The LLVM->SPIR-V translator turns that into
+   OpExecutionMode SubgroupSize together with the SubgroupDispatch capability it requires; writing
+   the execution mode directly does NOT work, because the capability would be missing and the
+   translator silently drops the mode (observed 2026-08-24).
+
+   Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and
+   the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See
+   the Phase 0 header for why that guard is deliberately narrow."
+  (let* ((profile (active-hardware-profile))
+         (simd    (and profile (getf profile :simd-width)))
+         (kname   (semantic-function-name semantic-function))
+         (disp    (and kname (gethash kname *kernel-dispatch-declarations*)))
+         (dims    (and disp (%hp-local-size-dims (getf disp :local-size))))
+         (total   (and dims (reduce #'* dims))))
+    (cond
+      ((not (integerp simd))
+       (log:debug "subgroup-size: no :simd-width in the active profile for ~a; not pinning." kname))
+      ((not total)
+       (log:debug "subgroup-size: local-size for ~a is not compile-time known; not pinning." kname))
+      ((or (< total simd) (not (zerop (mod total simd))))
+       (log:info "subgroup-size: local-size ~a for ~a is not a whole multiple of simd-width ~a; not pinning."
+                 total kname simd))
+      (t
+       (let* ((ctx  (llvm-get-module-context module))
+              (i32  (llvm-int32-type))
+              (name "intel_reqd_sub_group_size")
+              (kind (crisp.llvm-bindings::llvm-get-md-kind-id-in-context ctx name (length name)))
+              (size-md (llvm-value-as-metadata (llvm-const-int i32 simd 0))))
+         (cffi:with-foreign-object (arr :pointer 1)
+           (setf (cffi:mem-aref arr :pointer 0) size-md)
+           (let ((node (llvm-md-node-in-context2 ctx arr 1)))
+             (crisp.llvm-bindings::llvm-global-set-metadata func kind node)))
+         (log:info "subgroup-size: pinned ~a to SubgroupSize ~a (local-size ~a = ~a subgroup~:p)."
+                   kname simd total (floor total simd)))))))
+
+(defun %kernel-mma-lowering (semantic-function)
+  "The lowering SEMANTIC-FUNCTION declared, or :coop-matrix when it declared none.
+
+   Reads the dispatch plist the analyzer populated, so the validation and the refusal have already
+   happened by the time codegen asks."
+  (let* ((name (and semantic-function (semantic-function-name semantic-function)))
+         (plist (and name (gethash name *kernel-dispatch-declarations*))))
+    (or (getf plist :mma-lowering) :coop-matrix)))
+
+;;;; ------------------------------------------------------------------------------------------
+;;;; Endeavour 155 — bf16 becomes i16 AT THE ONE PLACE COOP TYPES ARE BUILT.
+;;;;
+;;;; Changing %coop-op-elem-llvm covered the fill / load / store / address paths, but not the
+;;;; FRAGMENT ALLOCA, which reaches LLVM by a different route: resolve-type-to-llvm sees the
+;;;; semantic `(coop-matrix bfloat16 8 16 0)` and resolves the element through the type registry,
+;;;; where bfloat16 maps to LLVM `bfloat`.  The result was a module that disagreed with itself —
+;;;; i16 matrices from the fill, `bfloat` matrices in the MulAdd operands:
+;;;;
+;;;;     %27 = call target("spirv.CooperativeMatrixKHR", i16, 3, 8, 16, 0) @__spirv_CompositeConstruct_0_8_16(float 0.0)
+;;;;     ... @__spirv_CooperativeMatrixMulAddKHR(target("spirv.CooperativeMatrixKHR", bfloat, 3, 8, 16, 0) ...
+;;;;
+;;;; %coop-type is the single choke point every cooperative-matrix LLVM type passes through — the
+;;;; alloca path calls it via resolve-type-to-llvm, and codegen calls it directly.  Making the
+;;;; substitution HERE means every route agrees by construction, rather than requiring each route
+;;;; to remember.  That is the same lesson as the six element-type layers: put the decision where
+;;;; the thing is CONSTRUCTED, not at each site that consumes it.
+;;;;
+;;;; Scoped to :spirv because it is an Intel encoding (see the bf16 header); on any other backend
+;;;; a bfloat element passes through untouched.
+;;;; ------------------------------------------------------------------------------------------
+;;;; RELOCATED during the overlay consolidation: this narrative sat above the superseded
+;;;; %coop-type, which is now a one-line dispatcher.  Its subject -- where the bf16->i16
+;;;; substitution is made -- moved into %coop-type-impl below, so the explanation moved with it.
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %coop-type becomes a lowering-dispatched protocol)
+(defgeneric %coop-type-impl (lowering elem-llvm rows cols use)
+  (:documentation "The LLVM type of one MMA fragment.  :coop-matrix yields an opaque
+   CooperativeMatrixKHR type; a vector-based lowering yields a concrete vector type instead, which
+   is the main reason this is a dispatch point at all.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %coop-type-impl ((lowering (eql :coop-matrix)) elem-llvm rows cols use)
+  (declare (ignorable lowering))
+  "Build target(\"spirv.CooperativeMatrixKHR\", ELEM-LLVM, 3, ROWS, COLS, USE) in the
+   global context (= the module's context, so the type matches).
+
+   Endeavour 155: an LLVM `bfloat` element is rewritten to i16 on the SPIR-V backend, because that
+   is how Intel encodes a bf16 cooperative matrix — raw 16-bit integers, with the bfloat-ness
+   carried by the MulAdd operands mask (0x40).  Emitting a real bfloat type instead requires
+   SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement."
+  (let* ((bf (crisp.llvm-bindings::llvm-bfloat-type))
+         (elem (if (and (eq *target-backend* :spirv)
+                        elem-llvm
+                        (cffi:pointer-eq elem-llvm bf))
+                   (crisp.llvm-bindings::llvm-int16-type)
+                   elem-llvm))
+         (ctx (crisp.llvm-bindings::llvm-get-global-context)))
+    (cffi:with-foreign-objects ((tps :pointer 1) (ips :unsigned-int 4))
+      (setf (cffi:mem-aref tps :pointer 0) elem
+            (cffi:mem-aref ips :unsigned-int 0) 3          ; Subgroup scope
+            (cffi:mem-aref ips :unsigned-int 1) rows
+            (cffi:mem-aref ips :unsigned-int 2) cols
+            (cffi:mem-aref ips :unsigned-int 3) use)
+      (crisp.llvm-bindings::llvm-target-ext-type-in-context
+       ctx "spirv.CooperativeMatrixKHR" tps 1 ips 4))))
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %coop-fill becomes a lowering-dispatched protocol)
+(defgeneric %coop-fill-impl (lowering builder module init-val elem-llvm rows cols use)
+  (:documentation "Materialise a fragment with a scalar initial value.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %coop-fill-impl ((lowering (eql :coop-matrix)) builder module init-val elem-llvm rows cols use)
+  (declare (ignorable lowering))
+  "Construct a coop matrix filled with INIT-VAL (scalar) via __spirv_CompositeConstruct.
+
+   Endeavour 155: INIT-VAL is coerced to ELEM-LLVM first.  Before the element type reached
+   codegen this was vacuous — everything was f32, so the literal already matched.  Now that the
+   matrix carries the tile's real element type, the literal has to follow it."
+  (%coop-call builder module
+              (format nil "__spirv_CompositeConstruct_~d_~d_~d" use rows cols)
+              (%coop-type elem-llvm rows cols use)
+              (list elem-llvm)
+              (list (%coop-coerce-scalar builder init-val elem-llvm "coop_init"))))
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %coop-tensor-ptr+stride becomes a lowering-dispatched protocol)
+(defgeneric %coop-tensor-ptr+stride-impl (lowering builder tensor-val orow ocol layout &optional elem-llvm)
+  (:documentation "Turn a tensor plus a tile origin into (values element-ptr stride) for one
+   fragment access.  A payload-based lowering would not produce a pointer at all, which is why the
+   dispatch is here rather than inside the load.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %coop-tensor-ptr+stride-impl ((lowering (eql :coop-matrix)) builder tensor-val orow ocol layout &optional elem-llvm)
+  (declare (ignorable lowering))
+  "From a Crisp tensor STRUCT value, return (values element-ptr stride-i64) for the coop tile whose
+   element origin is (OROW, OCOL) -- both i64 LLVM values.  Tensor layout: field0 = parent storage
+   {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0] (RowMajor) / strides[1]
+   (ColMajor).  ELEM-LLVM is the tensor's element type for the GEP and defaults to f32.
+
+   Endeavour 155 Step 4: the flat offset is computed as BASE PLUS DELTA rather than from scratch.
+   Each origin arrives as (tile-base + compile-time-fragment-index) * extent, so
+
+       flat = (tb_r*ext_r)*s0 + (tb_c*ext_c)*s1   +   (fr*ext_r)*s0 + (fc*ext_c)*s1
+
+   The first bracket is identical for every fragment of the tile and collapses to one computation;
+   each multiply in the second has a compile-time constant operand, which IGC strength-reduces to
+   shifts.  Xe has no native 64-bit multiply, so the runtime-by-runtime products in the first
+   bracket are the expensive ones -- and there are now two per TILE instead of two per FRAGMENT.
+
+   When an origin does not have that shape the split degrades to (origin, 0) and this emits exactly
+   what it always did."
+  (let* ((elem (or elem-llvm (llvm-float-type)))
+         (i64 (crisp.llvm-bindings::llvm-int64-type))
+         (storage (llvm-build-extract-value builder tensor-val 0 "coop_storage"))
+         (base    (llvm-build-extract-value builder storage 0 "coop_base"))
+         (strides (llvm-build-extract-value builder tensor-val 2 "coop_strides"))
+         (s0 (llvm-build-extract-value builder strides 0 "coop_s0"))
+         (s1 (llvm-build-extract-value builder strides 1 "coop_s1"))
+         (stride (if (= layout 0) s0 s1)))
+    (multiple-value-bind (row-base row-delta) (%coop-split-origin builder orow)
+      (multiple-value-bind (col-base col-delta) (%coop-split-origin builder ocol)
+        (let* ((off0 (llvm-build-mul builder row-base s0 "coop_off0"))
+               (off1 (llvm-build-mul builder col-base s1 "coop_off1"))
+               (flat (llvm-build-add builder off0 off1 "coop_flat"))
+               ;; The deltas are compile-time element counts, so these multiply a runtime stride by
+               ;; a CONSTANT -- strength-reducible, unlike the runtime-by-runtime products above.
+               (flat (if (zerop row-delta)
+                         flat
+                         (llvm-build-add builder flat
+                                         (llvm-build-mul builder (llvm-const-int i64 row-delta nil)
+                                                         s0 "coop_dr")
+                                         "coop_flat_r")))
+               (flat (if (zerop col-delta)
+                         flat
+                         (llvm-build-add builder flat
+                                         (llvm-build-mul builder (llvm-const-int i64 col-delta nil)
+                                                         s1 "coop_dc")
+                                         "coop_flat_c"))))
+          (log:debug "coop addr: row-delta=~a col-delta=~a hoisted=~a"
+                     row-delta col-delta (or (/= row-delta 0) (/= col-delta 0)))
+          (cffi:with-foreign-object (idx :pointer 1)
+            (setf (cffi:mem-aref idx :pointer 0) flat)
+            (values (llvm-build-gep2 builder elem base idx 1 "coop_elem_ptr") stride)))))))
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %coop-mma becomes a lowering-dispatched protocol)
+(defgeneric %coop-mma-impl (lowering builder module a-val b-val c-val elem-llvm m n k)
+  (:documentation "Emit one multiply-accumulate over three fragments.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %coop-mma-impl ((lowering (eql :coop-matrix)) builder module a-val b-val c-val elem-llvm m n k)
+  (declare (ignorable lowering))
+  "Emit CooperativeMatrixMulAddKHR(A, B, C, <operands>) -> the MxN accumulator coop matrix.
+
+   Operand types come from the ACTUAL VALUES via LLVMTypeOf, so the declaration cannot drift from
+   what is passed (Endeavour 155, Phase 1).
+
+   THE OPERANDS MASK.  0 for f32/tf32 and for fp16, whose component type already says what it is.
+   0x40 (MatrixAAndBBFloat16ComponentsINTEL) when A and B are 16-bit INTEGER matrices, which is
+   how Intel represents bf16 — an integer type cannot say 'bfloat' on its own, so the bit says it.
+
+   DETECTION READS THE TYPE, IT DOES NOT REBUILD IT.  The first attempt compared A against a
+   freshly constructed (%coop-type i16 m k 0), which failed for a reason worth recording: this
+   function's M/N/K come from a caller that computes them with an UNTYPED (%spv-mma-shape) —
+   src/mma.lisp:653 — so K is the tf32 8 even when the operands are 16-bit and K is really 16.
+   Those arguments are otherwise unused here (the types come from the values), so the wrong shape
+   is harmless to codegen and was harmless to fp16; it only defeated a check that trusted it.
+   Printing the type and reading its component is exact and depends on nothing else."
+  (declare (ignorable elem-llvm m n k))
+  (let* ((a-ty (crisp.llvm-bindings::llvm-type-of a-val))
+         (b-ty (crisp.llvm-bindings::llvm-type-of b-val))
+         (c-ty (crisp.llvm-bindings::llvm-type-of c-val))
+         (i32  (crisp.llvm-bindings::llvm-int32-type))
+         (a-str (crisp.llvm-bindings::llvm-print-type-to-string a-ty))
+         (bf16-p (and (eq *target-backend* :spirv)
+                      a-str
+                      (search ", i16," a-str)))
+         (operands (if bf16-p #x40 0)))
+    (%coop-call builder module "__spirv_CooperativeMatrixMulAddKHR"
+                c-ty (list a-ty b-ty c-ty i32)
+                (list a-val b-val c-val (crisp.llvm-bindings::llvm-const-int i32 operands nil)))))
+
+;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %emit-per-frag-block-load becomes a lowering-dispatched protocol)
+(defgeneric %emit-per-frag-block-load-impl (lowering src entry coords)
+  (:documentation "Source-to-source expansion of (load-tile SRC <register-tile> COORDS)
+   into per-fragment loads.  This one is at a different altitude from the others -- it rewrites
+   Crisp forms rather than emitting LLVM -- but WHICH load form to emit is a lowering decision, so
+   it belongs to the same protocol.
+
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %emit-per-frag-block-load-impl ((lowering (eql :coop-matrix)) src entry coords)
+  (declare (ignorable lowering))
+  "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS).
+
+   Endeavour 155 Step 2b: when the tile is WARP-SLICED, each warp loads only its own rows (:a) or
+   columns (:b), at global coordinates offset by its grid position.  load-tile appears once in the
+   body, so the choice is a STATIC per-warp switch -- static so the offsets fold to literals and the
+   block-load addresses stay compile-time, which is the same reason 139 step-4 made the MMA walk
+   static."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) (operand :acc)) (cdr entry)
+    (declare (ignore n-true))
+    (let ((cl (find-package :crisp-language)))
+      (destructuring-bind (fr . fc) (%frag-mn-for-operand operand (%register-tile-elem-of (first entry)))
+        (let* ((frag-fn (ecase operand
+                          (:a (intern "LOAD-FRAGMENT-A" cl))
+                          (:b (intern "LOAD-FRAGMENT-B" cl))
+                          (:acc (error 'crisp-compiler-error
+                                  :message "load-tile into an accumulator register-tile is not supported (only :operand :a / :b tiles are load targets)."
+                                  :source-location nil))))
+               (to-int  (intern "TO-INT" cl))
+               (n-rows  (floor m fr))
+               (n-cols  (floor n fc))
+               (gy      (first coords))
+               (gx      (second coords))
+               (slice   (%warp-slice-extent entry operand))
+               (grid    *warp-grid*))
+          (flet ((one (idx row col)
+                   `(set! ,(nth idx syms)
+                          (,frag-fn ,src
+                                    ((+ (* (,to-int ,gy) ,n-rows) ,row)
+                                     (+ (* (,to-int ,gx) ,n-cols) ,col))))))
+            (if (not (and slice grid))
+                `(progn
+                   ,@(loop for ri below n-rows append
+                           (loop for ci below n-cols
+                                 for idx = (+ (* ri n-cols) ci)
+                                 collect (one idx ri ci))))
+                (let* ((progn-sym (intern "PROGN" cl))
+                       (let-sym   (intern "LET" cl))
+                       (if-sym    (intern "IF" cl))
+                       (lt-sym    (intern "<" cl))
+                       (minus-sym (intern "-" cl))
+                       (div-sym   (intern "/" cl))
+                       (times-sym (intern "*" cl))
+                       (warp-id   (intern "WARP-ID" cl))
+                       (gn        (cdr grid))
+                       (nslice    (if (eq operand :a) (car grid) (cdr grid)))
+                       (wp        (gensym "WP"))
+                       (sl        (gensym "SL")))
+                  (labels ((arm (w)
+                             `(,progn-sym
+                                ,@(if (eq operand :a)
+                                      (loop for lr below slice append
+                                            (loop for ci below n-cols
+                                                  for idx = (+ (* lr n-cols) ci)
+                                                  collect (one idx (+ (* w slice) lr) ci)))
+                                      (loop for ri below n-rows append
+                                            (loop for lc below slice
+                                                  for idx = (+ (* ri slice) lc)
+                                                  collect (one idx ri (+ (* w slice) lc)))))))
+                           (chain (w)
+                             (if (>= w (1- nslice))
+                                 (arm w)
+                                 `(,if-sym (,lt-sym ,sl ,(1+ w))
+                                           ,(arm w)
+                                           ,(chain (1+ w))))))
+                    `(,let-sym ((,wp (,minus-sym (,to-int (,warp-id)) ,first-true)))
+                       ;; 156 Phase 1: INTEGER / and - , not FLOOR/MOD.
+                       ;;
+                       ;; (intern "FLOOR" :crisp-language) resolves to CRISP.COMPILER:FLOOR, which
+                       ;; returns a FLOAT -- %emit-per-frag-store already documents that and moved
+                       ;; to / and - for its addresses.  (intern "MOD" :crisp-language) is worse:
+                       ;; MOD does not exist there at all, so the intern MINTS a fresh symbol with
+                       ;; no operator behind it.  The load switch was never updated with the store.
+                       ;;
+                       ;; It survived because single-axis slicing never exercises either one: when
+                       ;; gm=1 or gn=1 the un-sliced operand emits a bare arm with NO selector, and
+                       ;; the sliced one divides by 1, which is exact under any semantics.  A 2-D
+                       ;; grid is the first case where a selector divides by something >1 -- which
+                       ;; is exactly where MMA_WRONG starts (verified: correct at 1 and 2 warps,
+                       ;; wrong from 4; correct at every 1-D-forced shape at 4 warps).
+                       (,let-sym ((,sl ,(if (eq operand :a)
+                                            `(,div-sym ,wp ,gn)
+                                            `(,minus-sym ,wp (,times-sym (,div-sym ,wp ,gn) ,gn)))))
+                         ,(chain 0))))))))))))
+
+(defun %xe-native-subgroup-width ()
+  "The subgroup width :xe-native fragments are laid out for.  Refuses anything but 16: the whole
+   per-lane shape below assumes it, and endeavour 156 Phase 0 pins the kernel's SubgroupSize to the
+   profile's :simd-width, so a mismatch here would be a real inconsistency rather than a preference."
+  (let* ((profile (active-hardware-profile))
+         (w (or (and profile (getf profile :simd-width)) 16)))
+    (unless (= w 16)
+      (error 'crisp-compiler-error
+        :message (format nil "mma-lowering :xe-native is defined for a subgroup width of 16, but the active hardware profile declares :simd-width ~a.  The fragment layout (A <8 x i16>, B <8 x i32>, C <8 x float>) is derived from that width, so Crisp refuses rather than emitting a layout it cannot justify." w)
+        :source-location nil))
+    w))
+
+(defmethod %coop-fill-impl ((lowering (eql :xe-native)) builder module init-val elem-llvm rows cols use)
+  (declare (ignorable lowering builder module))
+  "Materialise an :xe-native fragment.
+
+   Only a ZERO init is supported, and a non-zero one is refused rather than approximated.  Splatting
+   a non-zero value would require knowing how the scalar is encoded in a lane -- bf16's top 16 bits
+   for A and B, a plain float for the accumulator -- and getting that wrong yields a kernel that
+   runs and computes garbage, which no round-trip test can catch (endeavour 145).  Every register
+   tile Crisp emits today initialises to 0.0, so this refuses nothing that exists."
+  (let ((ty (%coop-type-impl :xe-native elem-llvm rows cols use)))
+    (unless (and init-val (crisp.llvm-bindings::llvm-is-null init-val))
+      (error 'crisp-compiler-error
+        :message "mma-lowering :xe-native currently supports only a zero fragment init.  A non-zero splat needs the per-lane encoding of the initial value, and an incorrect encoding produces a kernel that runs and is silently wrong."
+        :source-location nil))
+    (crisp.llvm-bindings::llvm-const-null ty)))
+
+;;;; ============================================================================
+;;;; Endeavour 156 Step 2, part 2 — THE LOAD PATH, and the interface change it forces.
+;;;;
+;;;; %coop-load/%coop-store took a PRE-OFFSET pointer plus a stride, with %coop-tensor-ptr+stride
+;;;; folding the tile coordinates into the pointer first.  %block-prefetch gets away with describing
+;;;; the surface AS the block -- base = that pointer, MemW/H = block dims, Coord = <0,0> -- because,
+;;;; as its own docstring says, prefetch operands are "perf hints, not correctness."
+;;;;
+;;;; A LOAD has no such licence.  MemoryWidth and MemoryPitch are in BYTES with a 64-byte hardware
+;;;; minimum, and a 16-column bf16 block is 32 bytes.  The surface must be the REAL tensor, with the
+;;;; tile selected by Coordinate.  So the coordinates must survive to the load; ptr+stride destroys
+;;;; them one step too early.  The choke points now take the tensor plus unfolded origins, and
+;;;; :coop-matrix does its own ptr+stride internally -- bit-for-bit what it did before.
+;;;;
+;;;; THE B OPERAND IS THE DETAIL THAT MATTERS.  DPAS requires B VNNI-PACKED, which is a DIFFERENT
+;;;; INSTRUCTION -- Subgroup2DBlockLoadTransformINTEL, not the plain load.  SYCL-TLA uses exactly
+;;;; that split (`..._flat_transform_u16_k16` for B, plain `..._flat_u16_m8k16v1` for A).  Using the
+;;;; plain load for both would compile, run, and produce garbage -- and per endeavour 145 no
+;;;; load/store round-trip can detect a wrong fragment layout.  Only an on-metal MMA_CORRECT can.
+;;;; ============================================================================
+(defgeneric %coop-load-impl (lowering builder module tensor-val orow ocol elem-llvm rows cols use layout)
+  (:documentation "Load one MMA fragment of TENSOR-VAL whose element origin is (OROW, OCOL).
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defgeneric %coop-store-impl (lowering builder module tensor-val matrix-val orow ocol elem-llvm rows cols use layout)
+  (:documentation "Store MATRIX-VAL into TENSOR-VAL at element origin (OROW, OCOL).
+   Dispatched on the active MMA lowering; see *mma-lowering*."))
+
+(defmethod %coop-load-impl ((lowering (eql :coop-matrix)) builder module tensor-val orow ocol elem-llvm rows cols use layout)
+  (declare (ignorable lowering))
+  "Unchanged behaviour: fold the origin into a pointer, then CooperativeMatrixLoadKHR."
+  (multiple-value-bind (ptr stride-val)
+      (%coop-tensor-ptr+stride builder tensor-val orow ocol layout elem-llvm)
+    (let ((i32 (crisp.llvm-bindings::llvm-int32-type))
+        (i64 (crisp.llvm-bindings::llvm-int64-type))
+        (as  (%ptr-as ptr)))
+    (%coop-call builder module
+                (format nil "__spirv_CooperativeMatrixLoadKHR_~d_~d_~d_as~d" use rows cols as)
+                (%coop-type elem-llvm rows cols use)
+                (list (%coop-ptr-type as) i32 i64 i32)
+                (list ptr
+                      (crisp.llvm-bindings::llvm-const-int i32 layout nil)
+                      stride-val
+                      (crisp.llvm-bindings::llvm-const-int i32 0 nil))))))
+
+(defmethod %coop-store-impl ((lowering (eql :coop-matrix)) builder module tensor-val matrix-val orow ocol elem-llvm rows cols use layout)
+  (declare (ignorable lowering))
+  "Unchanged behaviour: fold the origin into a pointer, then CooperativeMatrixStoreKHR."
+  (multiple-value-bind (ptr stride-val)
+      (%coop-tensor-ptr+stride builder tensor-val orow ocol layout elem-llvm)
+    (let ((i32 (crisp.llvm-bindings::llvm-int32-type))
+        (i64 (crisp.llvm-bindings::llvm-int64-type))
+        (as  (%ptr-as ptr)))
+    (%coop-call builder module
+                (format nil "__spirv_CooperativeMatrixStoreKHR_~d_~d_~d_as~d" use rows cols as)
+                (crisp.llvm-bindings::llvm-void-type)
+                (list (%coop-ptr-type as) (%coop-type elem-llvm rows cols use) i32 i64 i32)
+                (list ptr matrix-val
+                      (crisp.llvm-bindings::llvm-const-int i32 layout nil)
+                      stride-val
+                      (crisp.llvm-bindings::llvm-const-int i32 0 nil))))))
+
+(defun %xe-surface (builder tensor-val elem-bytes)
+  "The REAL surface of TENSOR-VAL, as the 2D block instructions want it:
+   (values base-ptr memory-width-bytes memory-height-rows memory-pitch-bytes).
+
+   Tensor layout: field 0 = parent storage {ptr,i64}, field 2 = strides, field 3 = extents.
+   Width and pitch are BYTES -- that is what carries the 64-byte hardware minimum, and it is why
+   the block cannot be passed off as its own surface the way %block-prefetch does."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (i64 (crisp.llvm-bindings::llvm-int64-type))
+         (eb  (llvm-const-int i64 elem-bytes nil))
+         (storage (llvm-build-extract-value builder tensor-val 0 "xe_storage"))
+         (base    (llvm-build-extract-value builder storage 0 "xe_base"))
+         (strides (llvm-build-extract-value builder tensor-val 2 "xe_strides"))
+         (extents (llvm-build-extract-value builder tensor-val 3 "xe_extents"))
+         (s0 (llvm-build-extract-value builder strides 0 "xe_s0"))
+         (e0 (llvm-build-extract-value builder extents 0 "xe_e0"))
+         (e1 (llvm-build-extract-value builder extents 1 "xe_e1")))
+    (values base
+            (llvm-build-trunc builder (llvm-build-mul builder e1 eb "xe_w64") i32 "xe_w")
+            (llvm-build-trunc builder e0 i32 "xe_h")
+            (llvm-build-trunc builder (llvm-build-mul builder s0 eb "xe_p64") i32 "xe_p"))))
+
+(defun %xe-coord (builder orow ocol)
+  "The <2 x i32> Coordinate for a 2D block access: x = column, y = row, both in ELEMENTS."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (v2  (crisp.llvm-bindings::llvm-vector-type i32 2))
+         (x   (llvm-build-trunc builder ocol i32 "xe_cx"))
+         (y   (llvm-build-trunc builder orow i32 "xe_cy"))
+         (v0  (crisp.llvm-bindings::llvm-const-null v2))
+         (v1  (crisp.llvm-bindings::llvm-build-insert-element
+               builder v0 x (llvm-const-int i32 0 nil) "xe_c0")))
+    (crisp.llvm-bindings::llvm-build-insert-element
+     builder v1 y (llvm-const-int i32 1 nil) "xe_c1")))
+
+(defmethod %coop-load-impl ((lowering (eql :xe-native)) builder module tensor-val orow ocol elem-llvm rows cols use layout)
+  (declare (ignorable lowering layout))
+  "Load an :xe-native fragment with a 2D block load.
+
+   USE 1 (the B operand) takes the TRANSFORM variant, which is what VNNI-packs it for DPAS.  A and
+   the accumulator take the plain load.  Getting this wrong does not fail to compile -- it computes
+   garbage that no round-trip test can see."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (v2i32 (crisp.llvm-bindings::llvm-vector-type i32 2))
+         (eb  (%elem-llvm-bytes elem-llvm))
+         (vec-ty (%coop-type-impl :xe-native elem-llvm rows cols use))
+         (dst (llvm-build-alloca builder vec-ty "xe_frag_slot"))
+         (as  (%ptr-as (llvm-build-extract-value
+                        builder (llvm-build-extract-value builder tensor-val 0 "xe_st0") 0 "xe_bp")))
+         (name (if (= use 1)
+                   "__spirv_Subgroup2DBlockLoadTransformINTEL"
+                   "__spirv_Subgroup2DBlockLoadINTEL")))
+    (multiple-value-bind (base mem-w mem-h pitch) (%xe-surface builder tensor-val eb)
+      (log:debug "xe-native load: use=~a ~ax~a elem-bytes=~a via ~a" use rows cols eb name)
+      (%coop-call builder module name (crisp.llvm-bindings::llvm-void-type)
+                  (list i32 i32 i32 i32 (%coop-ptr-type as) i32 i32 i32 v2i32 (%coop-ptr-type 0))
+                  (list (llvm-const-int i32 eb nil)     ; ElementSize (bytes)
+                        (llvm-const-int i32 cols nil)   ; BlockWidth  (elements)
+                        (llvm-const-int i32 rows nil)   ; BlockHeight (rows)
+                        (llvm-const-int i32 1 nil)      ; BlockCount
+                        base mem-w mem-h pitch
+                        (%xe-coord builder orow ocol)
+                        dst)))
+    (llvm-build-load2 builder vec-ty dst "xe_frag")))
+
+(defmethod %coop-store-impl ((lowering (eql :xe-native)) builder module tensor-val matrix-val orow ocol elem-llvm rows cols use layout)
+  (declare (ignorable lowering layout))
+  "Store an :xe-native accumulator fragment with a 2D block store.  The value is spilled to an
+   alloca first because the instruction takes a SOURCE POINTER, not a value."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (v2i32 (crisp.llvm-bindings::llvm-vector-type i32 2))
+         (eb  (%elem-llvm-bytes elem-llvm))
+         (vec-ty (crisp.llvm-bindings::llvm-type-of matrix-val))
+         (src (llvm-build-alloca builder vec-ty "xe_out_slot"))
+         (as  (%ptr-as (llvm-build-extract-value
+                        builder (llvm-build-extract-value builder tensor-val 0 "xe_st1") 0 "xe_bp1"))))
+    (llvm-build-store builder matrix-val src)
+    (multiple-value-bind (base mem-w mem-h pitch) (%xe-surface builder tensor-val eb)
+      (log:debug "xe-native store: use=~a ~ax~a elem-bytes=~a" use rows cols eb)
+      (%coop-call builder module "__spirv_Subgroup2DBlockStoreINTEL"
+                  (crisp.llvm-bindings::llvm-void-type)
+                  (list i32 i32 i32 i32 (%coop-ptr-type 0) (%coop-ptr-type as) i32 i32 i32 v2i32)
+                  (list (llvm-const-int i32 eb nil)
+                        (llvm-const-int i32 cols nil)
+                        (llvm-const-int i32 rows nil)
+                        (llvm-const-int i32 1 nil)
+                        src base mem-w mem-h pitch
+                        (%xe-coord builder orow ocol))))
+    nil))
+
+(defmethod %coop-tensor-ptr+stride-impl ((lowering (eql :xe-native)) builder tensor-val orow ocol layout &optional elem-llvm)
+  (declare (ignorable lowering))
+  "Prefetch still wants a pointer, and a cache hint does not care which lowering asked for it, so
+   :xe-native reuses the :coop-matrix computation verbatim rather than duplicating it."
+  (%coop-tensor-ptr+stride-impl :coop-matrix builder tensor-val orow ocol layout elem-llvm))
+
+(defun %xe-note-operand-elem (kind)
+  "Record the operand element KIND for this kernel, refusing a disagreement.
+
+   The multiply's operand mask names A and B together, so two different 16-bit float encodings in
+   one kernel have no correct mask.  Refusing is the only honest answer."
+  (when kind
+    (cond
+      ((null *xe-native-operand-elem*) (setf *xe-native-operand-elem* kind))
+      ((eq *xe-native-operand-elem* kind) kind)
+      (t (error 'crisp-compiler-error
+           :message (format nil "mma-lowering :xe-native: this kernel mixes ~(~a~) and ~(~a~) MMA operands.  SubgroupMatrixMultiplyAccumulateINTEL takes ONE operand mask describing both A and B, so there is no correct mask for a mixture."
+                            *xe-native-operand-elem* kind)
+           :source-location nil))))
+  kind)
+
+(defmethod %coop-type-impl ((lowering (eql :xe-native)) elem-llvm rows cols use)
+  (declare (ignorable lowering))
+  "An :xe-native fragment is a CONCRETE vector, not an opaque cooperative matrix.
+
+   Each lane holds rows*cols/16 of the matrix.  USE follows the SPIR-V cooperative-matrix roles the
+   rest of Crisp already speaks: 0 = A, 1 = B, 2 = accumulator.
+
+     A   (8x16 of 16-bit)   -> 128/16 =  8            -> <8 x i16>
+     B   (16x16 of 16-bit)  -> 256/16 = 16 elements   -> packed two per i32 -> <8 x i32>
+     acc (8x16 of f32)      -> 128/16 =  8            -> <8 x float>
+
+   B is the only one whose element count and vector width differ, because the instruction wants its
+   16-bit values packed.
+
+   Building an A or B fragment also RECORDS the operand element kind, because this is the earliest
+   point at which it is known and the multiply cannot recover it later."
+  (let* ((w (%xe-native-subgroup-width))
+         (per-lane (floor (* rows cols) w)))
+    (when (zerop per-lane)
+      (error 'crisp-compiler-error
+        :message (format nil "mma-lowering :xe-native: a ~ax~a fragment does not divide across a subgroup of ~a." rows cols w)
+        :source-location nil))
+    (when (member use (list 0 1))
+      (%xe-note-operand-elem (%xe-native-elem-kind elem-llvm)))
+    (ecase use
+      (0 (crisp.llvm-bindings::llvm-vector-type (crisp.llvm-bindings::llvm-int16-type) per-lane))
+      (1 (crisp.llvm-bindings::llvm-vector-type (crisp.llvm-bindings::llvm-int32-type)
+                                                (max 1 (floor per-lane 2))))
+      (2 (crisp.llvm-bindings::llvm-vector-type (llvm-float-type) per-lane)))))
+
+(defmethod %coop-mma-impl ((lowering (eql :xe-native)) builder module a-val b-val c-val elem-llvm m n k)
+  (declare (ignorable lowering elem-llvm m n k))
+  "Emit SubgroupMatrixMultiplyAccumulateINTEL(16, A, B, C, <mask>) -> D.
+
+   K is fixed at 16 rather than taken from the K argument: that argument reaches here from an
+   UNTYPED (%spv-mma-shape) and is the tf32 8 even when the operands are 16-bit.  :xe-native accepts
+   only 16-bit elements, for which K is 16 by construction.
+
+   ELEM-LLVM is ignored because the call site passes (llvm-float-type) unconditionally -- the
+   accumulator's type, not the operands'.  The operand kind comes from *xe-native-operand-elem*,
+   recorded when the A/B fragment types were built."
+  (let* ((kind (or *xe-native-operand-elem*
+                   (error 'crisp-compiler-error
+                     :message "mma-lowering :xe-native: no A/B fragment type was built before this multiply, so the operand element kind (bf16 vs fp16) is unknown.  The operand mask distinguishes them and cannot be guessed."
+                     :source-location nil)))
+         (i32  (crisp.llvm-bindings::llvm-int32-type))
+         (c-ty (crisp.llvm-bindings::llvm-type-of c-val))
+         (a-ty (crisp.llvm-bindings::llvm-type-of a-val))
+         (b-ty (crisp.llvm-bindings::llvm-type-of b-val))
+         (operands (ecase kind
+                     (:bf16 +xe-native-operands-bf16+)
+                     (:fp16 +xe-native-operands-fp16+))))
+    (log:debug "xe-native mma: kind=~a operands=#x~x A=~a B=~a C=~a"
+               kind operands
+               (crisp.llvm-bindings::llvm-print-type-to-string a-ty)
+               (crisp.llvm-bindings::llvm-print-type-to-string b-ty)
+               (crisp.llvm-bindings::llvm-print-type-to-string c-ty))
+    (%coop-call builder module "__spirv_SubgroupMatrixMultiplyAccumulateINTEL"
+                c-ty (list i32 a-ty b-ty c-ty i32)
+                (list (llvm-const-int i32 16 nil)
+                      a-val b-val c-val
+                      (llvm-const-int i32 operands nil)))))
+
+(defun %xe-native-elem-kind (elem-llvm)
+  "Classify a fragment element type as :bf16, :fp16, or refuse.
+
+   Both reach the instruction as raw 16-bit lanes, so the vector type cannot tell them apart -- only
+   the operand mask does (0x3000 vs 0xC00), and it must be right or the kernel runs and is wrong.
+
+   WHAT ARRIVES HERE, AND WHY IT IS NOT `bfloat`.  Endeavour 155 swapped llvm-bfloat-type's
+   symbol-function on the SPIR-V backend so that a bf16 element becomes **i16** before it reaches
+   any of this: Intel encodes a bf16 cooperative matrix as raw 16-bit integers, and emitting a real
+   `bfloat` needs SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  So by
+   the time a fragment type is built, bf16 already looks like i16 and only fp16 still says `half`.
+
+   `bfloat` is still accepted, because the rewrite is backend-conditional and a non-SPIR-V path
+   would deliver the real thing.
+
+   THE ONE AMBIGUITY, recorded so it is not discovered the hard way: a genuine 16-bit INTEGER matrix
+   would also arrive as i16 and be misread as bf16.  Crisp has no int16 MMA today -- the integer
+   shapes in the BMG profile are int8 (8 16 32) -- so nothing is currently misclassified.  When
+   int16 MMA arrives, this must be given the Crisp-level element type instead of the LLVM one."
+  (let ((s (and elem-llvm (crisp.llvm-bindings::llvm-print-type-to-string elem-llvm))))
+    (cond
+      ((null s)
+       (error 'crisp-compiler-error
+         :message "mma-lowering :xe-native: the MMA operand has no element type to classify."
+         :source-location nil))
+      ((search "bfloat" s) :bf16)
+      ((search "half" s)   :fp16)
+      ;; See the docstring: on SPIR-V, bf16 has already been rewritten to i16 by endeavour 155.
+      ((string= (string-trim " " s) "i16") :bf16)
+      (t (error 'crisp-compiler-error
+           :message (format nil "mma-lowering :xe-native currently supports bfloat16 and half operands only; got element type ~a.  The instruction takes K=16 and an operand mask that names the 16-bit float encoding, neither of which Crisp can infer for this type"
+                            s)
+           :source-location nil)))))
+
+;;;; Endeavour 156 — two bf16 gaps surfaced by building the 16-bit chapter ladder.
+(defun %bf16-as-i16-p (val from-type)
+  "T when VAL is a bfloat16 that has already been rewritten to the i16 LLVM type.
+
+   Endeavour 155 swaps llvm-bfloat-type's symbol-function on the SPIR-V backend so bf16 becomes i16
+   before it reaches codegen -- Intel encodes bf16 matrices as raw 16-bit integers, and a real
+   `bfloat` needs SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  Any
+   code path that still assumes a float-typed value has to notice; this is how it notices.
+
+   Checks BOTH the Crisp type (it must really be bfloat16) and the LLVM type (it must really have
+   become i16), so a backend that keeps a native bfloat is unaffected."
+  (and from-type
+       (string-equal (string from-type) "BFLOAT16")
+       val
+       (let ((s (crisp.llvm-bindings::llvm-print-type-to-string
+                 (crisp.llvm-bindings::llvm-type-of val))))
+         (and s (string= (string-trim " " s) "i16")))))
+
+;;;; Endeavour 157 Phase 1 — split workgroup barrier: parse, analyse, lower.
+(defun %gen-spirv-split-barrier (builder module phase)
+  "Emit one half of a split workgroup barrier.
+
+   PHASE is :arrive -> __spirv_ControlBarrierArriveINTEL, or :wait -> ...WaitINTEL.  Both take the
+   same three arguments as the fused __spirv_ControlBarrier and with the same values Crisp already
+   uses for (sync-workgroup): Scope=Workgroup(2), MemScope=Workgroup(2),
+   Semantics=AcquireRelease(8)|WorkgroupMemory(256) = 264.
+
+   Splitting changes WHEN the rendezvous blocks, not what it orders -- so the memory semantics are
+   deliberately identical to the fused form.  A reader comparing the two should see one difference,
+   the opcode."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (name (ecase phase
+                 (:arrive "__spirv_ControlBarrierArriveINTEL")
+                 (:wait   "__spirv_ControlBarrierWaitINTEL"))))
+    (log:debug "split barrier: ~a" name)
+    (%coop-call builder module name (crisp.llvm-bindings::llvm-void-type)
+                (list i32 i32 i32)
+                (list (llvm-const-int i32 2 nil)
+                      (llvm-const-int i32 2 nil)
+                      (llvm-const-int i32 264 nil)))))

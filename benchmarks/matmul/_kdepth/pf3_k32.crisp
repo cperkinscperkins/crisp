@@ -1,0 +1,58 @@
+;; Peer-structure probe: K=32, ONE register buffer (no ring), prefetch running 3 ahead.
+;;
+;; SYCL-TLA's mainloop (xe_mma.hpp) holds exactly ONE register fragment -- `tArA` is
+;; partition_sg_fragment_D(...), never indexed by stage -- and gets pipelining from a prefetch that
+;; runs `Stages` iterations ahead.  Crisp's :ring-count allocates N register BUFFERS instead, buying
+;; the same overlap at double the register cost; that is why the ring blows the file at K=32
+;; (448 -> 640 registers) and why the best configuration so far has no ring at all.
+;;
+;; HARDWARE LIMIT worth recording: a 16-bit 2D prefetch block is at most 16 COLUMNS wide.  `:size
+;; (32 32)` asks for __internal_intel_sub_group_2d_block_prefetch_16b_32r32x1c, which does not exist
+;; and fails at module build, not at compile.  A's K=32 span is therefore two 16-column blocks.
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((K (inner-dimension A B))
+        (n-k-steps (/ (inner-dimension A B) (to-ulong 32))))
+    (tile-stride C (32 64) (grid-y grid-x)
+      (let ((A-tile (make-register-tile bfloat16 (32 32) 0.0 :operand :a))
+            (B-tile (make-register-tile bfloat16 (32 64) 0.0 :operand :b))
+            (C-tile (make-register-tile float (32 64) 0.0)))
+        (prefetch-tile A (grid-y (* (to-ulong 0) (to-ulong 2))) :size (32 16))
+        (prefetch-tile A (grid-y (+ (* (to-ulong 0) (to-ulong 2)) (to-ulong 1))) :size (32 16))
+        (prefetch-tile B ((to-ulong 0) (* grid-x (to-ulong 4))) :size (32 16))
+        (prefetch-tile B ((to-ulong 0) (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (32 16))
+        (prefetch-tile B ((to-ulong 0) (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (32 16))
+        (prefetch-tile B ((to-ulong 0) (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (32 16))
+        (prefetch-tile A (grid-y (* (to-ulong 1) (to-ulong 2))) :size (32 16))
+        (prefetch-tile A (grid-y (+ (* (to-ulong 1) (to-ulong 2)) (to-ulong 1))) :size (32 16))
+        (prefetch-tile B ((to-ulong 1) (* grid-x (to-ulong 4))) :size (32 16))
+        (prefetch-tile B ((to-ulong 1) (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (32 16))
+        (prefetch-tile B ((to-ulong 1) (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (32 16))
+        (prefetch-tile B ((to-ulong 1) (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (32 16))
+        (prefetch-tile A (grid-y (* (to-ulong 2) (to-ulong 2))) :size (32 16))
+        (prefetch-tile A (grid-y (+ (* (to-ulong 2) (to-ulong 2)) (to-ulong 1))) :size (32 16))
+        (prefetch-tile B ((to-ulong 2) (* grid-x (to-ulong 4))) :size (32 16))
+        (prefetch-tile B ((to-ulong 2) (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (32 16))
+        (prefetch-tile B ((to-ulong 2) (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (32 16))
+        (prefetch-tile B ((to-ulong 2) (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (32 16))
+        (dotimes (grid-k n-k-steps)
+          (let ((prefetch-k (+ grid-k (to-ulong 3))))
+            (when (< prefetch-k n-k-steps)
+              (prefetch-tile A (grid-y (* prefetch-k (to-ulong 2))) :size (32 16))
+              (prefetch-tile A (grid-y (+ (* prefetch-k (to-ulong 2)) (to-ulong 1))) :size (32 16))
+              (prefetch-tile B (prefetch-k (* grid-x (to-ulong 4))) :size (32 16))
+              (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 1))) :size (32 16))
+              (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 2))) :size (32 16))
+              (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 4)) (to-ulong 3))) :size (32 16)))
+            (load-tile A A-tile (grid-y grid-k))
+            (load-tile B B-tile (grid-k grid-x))
+            (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

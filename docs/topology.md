@@ -17,6 +17,8 @@ And for absolute maximum performance, you might want to name or provide a hardwa
 
 Note that Crisp is not auto-optimizing the kernel for you. That is an ongoing area of research. You will have to choose the optimization strategy that fits your problem domain and code it. But Crisp forms make this a straightforward endeavor. We'll use real examples of matrix multiplication and Flash Attention as we progress.
 
+> **What are the choices?**  [`performance-levers.md`](performance-levers.md) enumerates every knob that changes the speed of a tuned register-resident MMA matmul, organised by who sets it — kernel source, compiler, enqueue, and the platform underneath.  It records measured magnitudes, the levers that turn out **not** to be independent of one another, and a list of things that were tried and did not pay, so they are not re-tried blind.
+
 Hardware Profiles ✅
 -----------------
 
@@ -70,6 +72,28 @@ Unkonwn Keys: a `def-hardware-profile` sporting any key outside the ones listed 
 ```
 :mma-shapes '((16 8 16) (16 8 8) (8 8 128))
 ```
+
+### `:mma-lowerings` ✅
+
+`:mma-lowerings` names the code-generation strategies this hardware can drive its matrix engines
+with, **most-preferred first**. The first entry is the default for kernels that do not ask for one.
+
+```
+:mma-lowerings '(:coop-matrix :xe-native)
+```
+
+The key is optional. A profile without it offers `(:coop-matrix)` — the portable path every backend
+has always used — so existing profiles need no change.
+
+The lowerings Crisp knows:
+
+| name | what it is | where |
+|---|---|---|
+| `:coop-matrix` | `SPV_KHR_cooperative_matrix` — opaque cooperative-matrix values, `CooperativeMatrixMulAddKHR`, pointer-form loads. The portable path, and the default. | every backend |
+| `:xe-native` | Intel Xe: `SubgroupMatrixMultiplyAccumulateINTEL` over concrete vectors, with 2D block loads (and the VNNI-packing *transform* load for the B operand). | Intel SPIR-V only |
+
+A name outside that list is a compile error at `def-hardware-profile` time, so a typo is caught where
+it is written rather than surfacing later as a kernel that mysteriously never selects its lowering.
 
 ### Crisp predefined hardware profiles
 
@@ -949,7 +973,63 @@ Like many sync operations, using `sync-cluster` in a divergent context (`if`, `c
 
 #### sync-workgroup
 
-(sync-workgroup): Same as `barrier(CLK_LOCAL_MEM_FENCE)`.
+```lisp
+(sync-workgroup)          ; arrive + wait, ordered.  The safe default.
+
+;; --- the split form, SPIR-V only --------------------------------------------
+(sync-workgroup :arrive)  ; non-blocking: "I'm here"                    ✅ Intel
+(sync-workgroup :wait)    ; block until all threads have arrived        ✅ Intel
+```
+
+`(sync-workgroup)` is the same as `barrier(CLK_LOCAL_MEM_FENCE)`. It both announces that this thread
+has reached the point and blocks until every other thread in the workgroup has too.
+
+The **split form** separates those two, so useful work can sit between them — the thread announces,
+keeps going, and only blocks at the `:wait` if it actually outran its peers:
+
+```lisp
+(dotimes (grid-k n-k)
+  (sync-workgroup :arrive)
+  (load-tile A A-tile (grid-y grid-k))
+  (load-tile B B-tile (grid-k grid-x))
+  (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)
+  (sync-workgroup :wait))
+```
+
+**This is an execution rendezvous, not data movement.** It synchronises no memory of its own and
+signals no barrier object — `await` and `signal` are for "these bytes are now visible." A split
+barrier paces control flow, which is why it extends `sync-workgroup` rather than `await`, and why it
+reads like the [sync-cluster](#sync-cluster) split above: cluster, workgroup and warp are one scope
+ladder.
+
+The same restrictions apply as for `sync-cluster`, and for the same reason — every violation
+deadlocks rather than computing a wrong answer:
+
+- the `:arrive` MUST be paired with a `:wait`, and these CANNOT nest (one window at a time).
+- neither half may appear in a divergent context (`if` / `when` / `unless` / `cond`, or a warp
+  specialization role block).
+- `return` or otherwise exiting between `:arrive` and `:wait` is disallowed.
+- reading or writing SLM inside the window is discouraged — the barrier's memory semantics are
+  `AcquireRelease | WorkgroupMemory`, so that is exactly the ordering the split gives up.
+
+The compiler **refuses** the first two statically. The third and fourth are **not yet checked**;
+absence of an error is not proof of correctness for those two.
+
+`SPV_INTEL_split_barrier` is requested only by modules that actually use the split form, so a kernel
+that never splits does not oblige the driver to support the extension.
+
+> **PTX refuses rather than approximating.** NVIDIA's `bar.arrive` / `bar.sync` are not the same
+> rendezvous, so compiling either half for `--ir-target=ptx` is a compile error naming the backend.
+> Use the fused `(sync-workgroup)` there.
+
+> **Shipped and measured is not the same as recommended.** On Arc B580 the split form does what it
+> claims — at 16 subgroups it turns a fused barrier's 14.7% throughput loss into a 1.8% one, because
+> the stall was the expense and splitting removes the stall. But at that width the fastest kernel is
+> the one with **no barrier at all**, and at 4 subgroups, where pacing does pay, the *fused* form
+> beats the split one. There is currently no measured configuration where the split form is the right
+> choice on Intel. It is here because the scope ladder should be complete and because the mechanism
+> is now testable — not as a performance recommendation. See
+> `tests/spec/157-split-barrier/157-split-barrier.md` for the full matrix.
 
 #### sync-warp
 
@@ -1133,6 +1213,59 @@ When `--runtime-checks` is enabled, the compiler will insert a check to ensure t
 
 Matrix Multiplication ✅
 ---------------------
+
+### `mma-lowering` ✅
+
+```
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (mma-lowering :xe-native)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  ...)
+```
+
+A kernel declaration selecting which code-generation strategy to use for this kernel's matrix-engine
+operations. The hardware profile declares what is *available* (`:mma-lowerings`); the kernel declares
+what it *wants*. Omitting it takes the profile's default, which is `:coop-matrix` unless a profile
+says otherwise.
+
+**Why you would use it.** `:coop-matrix` is portable and is what every Crisp kernel has always
+emitted. `:xe-native` is Intel-only and emits the DPAS instruction directly, with 2D block loads
+instead of cooperative-matrix loads. On an Arc B580 it is measurably leaner — 42 machine
+instructions per `dpas` against 57 — and at matched geometry it measured +13% at N=2048 and +9% at
+N=4096 for bf16.
+
+**It is not automatically better.** Measured on the same hardware, `:xe-native` does *not* currently
+compose with a register-tile ring: the shipped bf16 kernel (`:coop-matrix`, ring depth 2, prefetch
+distance 2) reaches 60.4 TFLOPS at N=2048, while the same kernel with only the lowering changed
+reaches 50.0. Treat it as a parameter to measure, not an upgrade to apply.
+
+**Crisp refuses; it never falls back.** Asking for a lowering the active profile does not offer is a
+compile error naming both sides:
+
+```
+mma-lowering :XE-NATIVE is not available on the active hardware profile (kernel MATMUL).
+This profile offers: :COOP-MATRIX.  Crisp REFUSES rather than falling back to a different
+lowering, because a silent downgrade would give you a slow kernel and no way to see why.
+```
+
+An unknown *name* is reported differently from a known-but-unavailable one, because the first is a
+typo and the second is a portability decision, and they want different fixes.
+
+**The chosen lowering is recorded** in the kernel's `.metacrisp` as `:mma-lowering`, even when it was
+defaulted, so a benchmark number can be attributed to a code path.
+
+**Current limits of `:xe-native`**, each a compile-time refusal rather than a silent approximation:
+
+- bfloat16 and half operands only (the instruction's K and operand mask are not inferable for others)
+- a zero fragment initialiser only (a non-zero splat needs the per-lane encoding)
+- a subgroup width of 16 (the fragment layout is derived from it)
+- one operand element type per kernel — a kernel mixing bf16 and fp16 operands is refused, because
+  the instruction takes a single mask describing A and B together
+
+There is **no command-line flag** for this. The lowering is selected in the kernel source, or
+inherited from the profile default.
 
 ### `make-register-tile` ✅
 ```
