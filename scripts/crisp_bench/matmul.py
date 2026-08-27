@@ -1028,9 +1028,20 @@ def main():
             # prefetch-distance sweep applies.  bf16 had a SYCL-TLA peer and no variant sweep;
             # fp16 had the sweep and no peer.  Both halves are now filled in.
             run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw1.crisp", "Crisp_V_pfw1", use_autobench=True)
-            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw2.crisp", "Crisp_V_pfw2", use_autobench=True)
-            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw3.crisp", "Crisp_V_pfw3", use_autobench=True)
-            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw4.crisp", "Crisp_V_pfw4", use_autobench=True)
+            # THE fp16 WINNER, TRANSFERRED.  Peer geometry (256x256/32sg) + :xe-native + prefetch
+            # reached 106.0 TF at 8192 in fp16 -- 95% of oneMKL, best at every size, no sign
+            # flip.  The bf16 kernel is geometrically identical and the pair has tracked within
+            # 0.5% at every size, so the result is expected to transfer.  bf16 is where the
+            # SYCL-TLA peer has settled data, so this is the comparison that matters.
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_pf2.crisp",   "Crisp_V_wg256pf2",   use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_xe.crisp",    "Crisp_V_wg256xe",    use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_xepf2.crisp", "Crisp_V_wg256xepf2", use_autobench=True)
+            # superseded by the peer geometry; d1 is the best of this family:
+            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw2.crisp", "Crisp_V_pfw2", use_autobench=True)
+            # superseded by the peer geometry; d1 is the best of this family:
+            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw3.crisp", "Crisp_V_pfw3", use_autobench=True)
+            # superseded by the peer geometry; d1 is the best of this family:
+            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw4.crisp", "Crisp_V_pfw4", use_autobench=True)
             run_target("sec2_top_bf16", "sycl_control_bf16.cpp", "sycl_control_bf16", "SYCL_Apples_BF16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top_bf16", "sycl_tla_peer.cpp", "sycl_tla_peer", "SYCL-TLA_BF16", sycl_tla_flags, is_sycl=True)
             run_target("sec2_top_bf16", "onemkl_bf16.cpp", "onemkl_bf16", "OneMKL_BF16", sycl_flags, is_sycl=True, is_cublas=True)

@@ -1,0 +1,68 @@
+;; BF16 TWIN of sec2_top_fp16/matmul_bmg_fp16_wg256_xepf2.crisp.  The two kernels are geometrically
+;; IDENTICAL -- same 256x256 tile over 32 subgroups, same K step 32, same (8 16 16) shape --
+;; and the fp16/bf16 pair has tracked within 0.5% at every size measured, so the fp16 result
+;; is expected to transfer.  bf16 is also the chapter where the SYCL-TLA peer has settled
+;; data, which is why the transfer is worth measuring rather than assuming.
+;;
+;; :XE-NATIVE at the peer geometry (256x256 over 32 subgroups), with warp-partitioned prefetch d2.
+;;
+;; THE MOST PROMISING UNTESTED COMBINATION, and the levers doc has said so for two endeavours.
+;; :xe-native emits Intel's SubgroupMatrixMultiplyAccumulateINTEL with 2D block loads directly:
+;; 42 machine instructions per dpas against :coop-matrix's 57.  That attacks the INSTRUCTION
+;; STREAM, which is where the remaining gap lives -- at 8192 we are at 88.0 against a math-only
+;; ceiling near 106, so memory work is worth at most ~20% and SYCL-TLA's ~241 is more than 2x
+;; PAST that ceiling.  Only a leaner instruction stream gets there.
+;;
+;; ITS TWO KNOWN FAILURE MODES DO NOT APPLY HERE, which is why this is worth re-trying now:
+;;   * "does not compose with a register-tile ring" -- this kernel has no ring.
+;;   * "degrades with live fragment count (32x128 -> 5.6 TFLOPS, and NOT from spill)" -- our
+;;     per-subgroup tile is 32x64, which is the shape where :xe-native measured +21% BARE.
+;;
+;; RESULT — THIS IS THE FASTEST CRISP fp16 KERNEL, at every size, with no sign flip.
+;; One session, all points verified correct:
+;;
+;;     kernel                              1024   2048   4096   8192   vs oneMKL @8192
+;;     shipped 128x256/16                  62.8   57.1   64.6   66.2       59%
+;;     peer geom + prefetch (coop-matrix)  60.0   66.3   88.6   90.1       81%
+;;     peer geom + :xe-native, NO prefetch 68.8   59.9   69.4   69.6       62%
+;;     peer geom + :xe-native + prefetch   71.2   79.2  104.6  106.0       95%
+;;     oneMKL                              75.4   87.6  110.8  111.4        --
+;;
+;; NO LEVER ALONE GETS THERE.  :xe-native by itself is worth +5% at 8192.  Prefetch by itself at
+;; this geometry is worth +36%.  Together they are worth +60%.  That is the third time in this
+;; endeavour that a combination beat what either component measured alone -- the same trap that
+;; made 156 bank the geometry as a loss and round-2 bank prefetch as a loss.
+;;
+;; 106.0 at 8192 EXCEEDS the 106.2 math-only ceiling measured at 4096 on the coop-matrix geometry,
+;; so that ceiling is retired: :xe-native changed the cost of the MATH, not just memory pressure.
+;;
+;; ':xe-native does not compose' was about the RING, never about prefetch.
+;;
+;; Previously measured at the single-subgroup 32x64 geometry: +21% bare, -9.6% to -23.7% once a
+;; ring was added.  Never tried at 16 subgroups, let alone 32 with warp-partitioned prefetch.
+(declaim (precision fast))
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (mma-lowering :xe-native)
+           (local-size :set-to 512))
+  (let ((A-tile (make-register-tile bfloat16 (256 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile bfloat16 (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (256 256) 0.0 :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 32))))
+    (tile-stride C (256 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k n-k-steps)
+          (let ((prefetch-k (+ grid-k (to-ulong 2))))
+            (when (< prefetch-k n-k-steps)
+              (prefetch-tile A (grid-y prefetch-k) :size (256 32) :warp-partitioned true)
+              (prefetch-tile B (prefetch-k grid-x) :size (32 256) :warp-partitioned true))
+            (load-tile A A-tile (grid-y grid-k))
+            (load-tile B B-tile (grid-k grid-x))
+            (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

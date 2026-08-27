@@ -4,7 +4,7 @@
 
 | device | data captured | source |
 |---|---|---|
-| Intel BMG | 2026-08-27 | Crisp `dba9e20` (docker) |
+| Intel BMG | 2026-08-27 | Crisp `26ce5e9` (docker) |
 | NVIDIA H100 NVL | 2026-08-22 | Crisp `209687fd` (runpod) |
 
 ---
@@ -311,16 +311,16 @@ wgmma
 
 ### Intel BMG · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
 
-Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`base`) — what you get without per-size tuning. 5 variants measured.
+Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`wg256xepf2`) — what you get without per-size tuning. 8 variants measured.
 
-| N | Crisp BF16<br>**envelope** | Crisp BF16<br>best single (`base`) | Control<br>SYCL_Apples_BF16 | **Peer**<br>SYCL-TLA_BF16 | Ceiling<br>oneMKL_BF16 | vs Peer | vs Ceiling |
+| N | Crisp BF16<br>**envelope** | Crisp BF16<br>best single (`wg256xepf2`) | Control<br>SYCL_Apples_BF16 | **Peer**<br>SYCL-TLA_BF16 | Ceiling<br>oneMKL_BF16 | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.1 (0.011) `pfw4` | 2.9 | 2.0 (0.017) | 0.3 (0.099) | 9.8 (0.003) | **9.22×** | 32% |
-| 512 | 16.5 (0.016) `pfw1` | 15.2 | 7.5 (0.036) | 3.7 (0.072) | 41.0 (0.007) | **4.44×** | 40% |
-| 1024 | 63.0 (0.034) `pfw1` | 62.6 | 15.3 (0.141) | 26.0 (0.083) | 75.4 (0.029) | **2.42×** | 84% |
-| 2048 | 70.7 (0.243) `pfw1` | 58.1 | 17.6 (0.976) | 101.3 (0.170) | 87.9 (0.195) | 0.70× | 80% |
-| 4096 | 91.2 (1.507) `pfw1` | 64.8 | 17.9 (7.680) | 194.5 (0.707) | 105.0 (1.308) | 0.47× | 87% |
-| 8192 | 66.2 (16.607) `base` | 66.2 | 15.2 (72.116) | 234.0 (4.699) | 112.9 (9.739) | 0.28× | 59% |
+| 256 | 3.1 (0.011) `pfw4` | — | 2.0 (0.017) | 0.3 (0.099) | 9.8 (0.003) | **9.22×** | 32% |
+| 512 | 16.5 (0.016) `pfw1` | — | 7.5 (0.036) | 3.7 (0.072) | 41.0 (0.007) | **4.44×** | 40% |
+| 1024 | 72.5 (0.030) `wg256xe` | 71.2 | 15.3 (0.141) | 23.3 (0.092) | 75.1 (0.029) | **3.11×** | 96% |
+| 2048 | 78.8 (0.218) `wg256xepf2` | 78.8 | 17.6 (0.976) | 106.8 (0.161) | 86.3 (0.199) | 0.74× | 91% |
+| 4096 | 104.8 (1.311) `wg256xepf2` | 104.8 | 17.9 (7.680) | 178.6 (0.770) | 105.0 (1.308) | 0.59× | 100% |
+| 8192 | 106.7 (10.306) `wg256xepf2` | 106.7 | 15.2 (72.102) | 230.9 (4.761) | 112.9 (9.742) | 0.46× | 95% |
 | 16384 | — | — | 11.0 (801.056) | 248.2 (35.435) | 114.5 (76.830) | — | — |
 
 > **⚠ SIGN FLIPS — these variants reverse with problem size.**
@@ -330,17 +330,18 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 > | variant | wins at | loses at |
 > |---|---|---|
-> | `pfw1` | 256 (+7%), 512 (+9%), 2048 (+22%), 4096 (+41%) | **8192 (-55%)** |
-> | `pfw2` | 256 (+7%), 512 (+8%), 2048 (+18%), 4096 (+31%) | **8192 (-57%)** |
-> | `pfw3` | 256 (+7%), 512 (+8%), 2048 (+16%), 4096 (+26%) | **8192 (-58%)** |
-> | `pfw4` | 256 (+8%), 512 (+8%), 2048 (+14%), 4096 (+19%) | **8192 (-58%)** |
+> | `pfw1` | 256 (+7%), 512 (+9%), 2048 (+25%), 4096 (+40%) | **8192 (-55%)** |
+> | `pfw2` | 256 (+7%), 512 (+8%), 2048 (+21%), 4096 (+31%) | **8192 (-57%)** |
+> | `pfw3` | 256 (+7%), 512 (+8%), 2048 (+19%), 4096 (+26%) | **8192 (-58%)** |
+> | `pfw4` | 256 (+8%), 512 (+8%), 2048 (+17%), 4096 (+19%) | **8192 (-58%)** |
+> | `wg256pf2` | 2048 (+18%), 4096 (+36%), 8192 (+36%) | **1024 (-5%)** |
 
 
 <details><summary><b>Compilation & Build Overhead (BF16)</b></summary>
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Control codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 1.29 s | 1.29 s | 0.67× |
+| **Crisp** | Crisp | 976 ms | 976 ms | 0.51× |
 | **SYCL_Apples_BF16** | Control | 1.92 s | 4.24 s | 1.00× |
 | **SYCL-TLA_BF16** | Peer | 30.91 s | 65.37 s | **16.1× slower** |
 | **oneMKL_BF16** | Ceiling | *precompiled* | 7.33 s | — |
