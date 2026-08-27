@@ -1063,6 +1063,16 @@ def main():
             run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw2.crisp", "Crisp_V_pfw2", use_autobench=True)
             run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw3.crisp", "Crisp_V_pfw3", use_autobench=True)
             run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw4.crisp", "Crisp_V_pfw4", use_autobench=True)
+            # THE PEER'S GEOMETRY: 256x256 over 32 subgroups, which is what SYCL-TLA runs at
+            # EVERY size (verified: compile-time constants, zero size-dependent branching).
+            # Per-subgroup tile is already identical to ours at 32x64 and register demand is
+            # unchanged at 448/thread -- the difference is purely workgroup aggregation, and
+            # therefore arithmetic intensity: 128 flops/byte against our 85.3.
+            # Endeavour 156 banked this geometry as a loss at 34.6 vs 60.8, but that was at
+            # K=16 and before :warp-partitioned prefetch existed.
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256.crisp",     "Crisp_V_wg256",     use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf1.crisp", "Crisp_V_wg256pf1", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf2.crisp", "Crisp_V_wg256pf2", use_autobench=True)
 
             # §3 Situational — MMA LOWERING (:coop-matrix vs :xe-native), Intel only.
             # Four kernels, one variable at a time.  All are 32x64 bf16 over one subgroup; the

@@ -4,7 +4,7 @@
 
 | device | data captured | source |
 |---|---|---|
-| Intel BMG | 2026-08-27 | Crisp `f3f6109` (docker) |
+| Intel BMG | 2026-08-27 | Crisp `df29de1` (docker) |
 | NVIDIA H100 NVL | 2026-08-22 | Crisp `209687fd` (runpod) |
 
 ---
@@ -349,16 +349,16 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 ### Intel BMG · fp16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
 
-Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`base`) — what you get without per-size tuning. 5 variants measured.
+Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`wg256pf2`) — what you get without per-size tuning. 8 variants measured.
 
-| N | Crisp FP16<br>**envelope** | Crisp FP16<br>best single (`base`) | Control<br>SYCL_Apples_FP16 | **Peer**<br>SYCL-TLA_FP16 | Ceiling<br>oneMKL_FP16 | vs Peer | vs Ceiling |
+| N | Crisp FP16<br>**envelope** | Crisp FP16<br>best single (`wg256pf2`) | Control<br>SYCL_Apples_FP16 | **Peer**<br>SYCL-TLA_FP16 | Ceiling<br>oneMKL_FP16 | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.1 (0.011) `pfw1` | 2.9 | 2.0 (0.017) | 0.3 (0.100) | 10.1 (0.003) | **9.20×** | 31% |
-| 512 | 16.5 (0.016) `pfw1` | 15.1 | 7.5 (0.036) | 2.7 (0.101) | 41.0 (0.007) | **6.23×** | 40% |
-| 1024 | 63.5 (0.034) `base` | 63.5 | 15.3 (0.140) | 20.6 (0.104) | 75.4 (0.029) | **3.08×** | 84% |
-| 2048 | 70.6 (0.243) `pfw1` | 57.5 | 17.6 (0.975) | 107.9 (0.159) | 87.8 (0.196) | 0.65× | 80% |
-| 4096 | 91.7 (1.499) `pfw1` | 64.9 | 17.9 (7.699) | 169.5 (0.811) | 110.8 (1.240) | 0.54× | 83% |
-| 8192 | 66.1 (16.637) `base` | 66.1 | 15.2 (72.140) | 237.6 (4.627) | 111.5 (9.861) | 0.28× | 59% |
+| 256 | 3.1 (0.011) `pfw1` | — | 2.0 (0.017) | 0.3 (0.100) | 10.1 (0.003) | **9.20×** | 31% |
+| 512 | 16.5 (0.016) `pfw1` | — | 7.5 (0.036) | 2.7 (0.101) | 41.0 (0.007) | **6.23×** | 40% |
+| 1024 | 63.7 (0.034) `base` | 60.2 | 15.3 (0.141) | 26.1 (0.082) | 75.1 (0.029) | **2.44×** | 85% |
+| 2048 | 71.4 (0.241) `pfw1` | 67.2 | 17.7 (0.970) | 72.1 (0.238) | 87.3 (0.197) | 0.99× | 82% |
+| 4096 | 89.4 (1.537) `pfw1` | 88.7 | 17.9 (7.688) | 189.2 (0.726) | 110.7 (1.242) | 0.47× | 81% |
+| 8192 | 88.0 (12.490) `wg256pf2` | 88.0 | 15.2 (72.148) | 241.2 (4.559) | 111.6 (9.855) | 0.37× | 79% |
 | 16384 | — | — | 11.0 (801.185) | — | 111.1 (79.180) | — | — |
 
 > **⚠ SIGN FLIPS — these variants reverse with problem size.**
@@ -368,19 +368,21 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 > | variant | wins at | loses at |
 > |---|---|---|
-> | `pfw1` | 256 (+6%), 512 (+10%), 2048 (+23%), 4096 (+41%) | **8192 (-53%)** |
-> | `pfw2` | 256 (+6%), 512 (+9%), 2048 (+20%), 4096 (+32%) | **8192 (-57%)** |
-> | `pfw3` | 256 (+6%), 512 (+9%), 2048 (+17%), 4096 (+22%) | **8192 (-57%)** |
-> | `pfw4` | 256 (+6%), 512 (+8%), 2048 (+16%), 4096 (+17%) | **1024 (-3%)**, **8192 (-58%)** |
+> | `pfw1` | 256 (+6%), 512 (+10%), 2048 (+26%), 4096 (+37%) | **8192 (-44%)** |
+> | `pfw2` | 256 (+6%), 512 (+9%), 2048 (+21%), 4096 (+33%) | **8192 (-49%)** |
+> | `pfw3` | 256 (+6%), 512 (+9%), 2048 (+17%), 4096 (+25%) | **8192 (-58%)** |
+> | `pfw4` | 256 (+6%), 512 (+8%), 2048 (+16%), 4096 (+18%) | **1024 (-3%)**, **8192 (-56%)** |
+> | `wg256pf1` | 2048 (+20%), 4096 (+37%), 8192 (+33%) | **1024 (-6%)** |
+> | `wg256pf2` | 2048 (+19%), 4096 (+36%), 8192 (+36%) | **1024 (-6%)** |
 
 
 <details><summary><b>Compilation & Build Overhead (FP16)</b></summary>
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Control codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 903 ms | 903 ms | 0.48× |
+| **Crisp** | Crisp | 1.04 s | 1.04 s | 0.55× |
 | **SYCL_Apples_FP16** | Control | 1.88 s | 4.13 s | 1.00× |
-| **SYCL-TLA_FP16** | Peer | 29.29 s | 55.36 s | **15.6× slower** |
+| **SYCL-TLA_FP16** | Peer | 29.35 s | 57.74 s | **15.6× slower** |
 | **oneMKL_FP16** | Ceiling | *precompiled* | 6.52 s | — |
 
 </details>
