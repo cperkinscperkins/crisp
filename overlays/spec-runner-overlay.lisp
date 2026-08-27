@@ -410,3 +410,72 @@
 ;; tests/run-specs.lisp
 (defun validate-spv-fused-barrier-unchanged (spv-path)
   (funcall (find-symbol "VALIDATE-SPV-FUSED-BARRIER-UNCHANGED" :crisp.compiler) spv-path))
+
+;;;; ---------------------------------------------------------------------------------------------
+;;;; Endeavour 154 item 3 — scope the wgmma store validator to the forward kernel.
+;;;; Was failing the whole --differentiate pass on a property the forward kernel still satisfies.
+
+;; overlays/spec-runner-overlay.lisp
+(defun %ptx-forward-entry-text (ptx-string)
+  "The text of the FIRST non-gradient `.visible .entry` in PTX-STRING, or the whole string when no
+   entry can be located.
+
+   Under --differentiate a module carries the forward kernel AND its AD-minted twin, whose name ends
+   in `_grad`.  Any validator asserting a property of the forward kernel by searching module text
+   will otherwise see the twin's instructions too, and the twin is appended AFTER -- so every
+   `search ... :from-end t` and every `:start2` bound silently spans both.
+
+   Falling back to the whole string rather than erroring keeps a malformed or unexpected module a
+   problem for the CALLER's assertion to report, which produces a message about the property under
+   test instead of one about this helper."
+  (let ((marker ".visible .entry")
+        (starts '()))
+    (let ((i (search marker ptx-string)))
+      (loop while i do
+        (push i starts)
+        (setf i (search marker ptx-string :start2 (1+ i)))))
+    (setf starts (nreverse starts))
+    (if (null starts)
+        ptx-string
+        (loop for (start . rest) on starts
+              for end = (or (first rest) (length ptx-string))
+              ;; The entry's name runs from after the marker to the opening paren of its parameter
+              ;; list.  A `_grad` suffix identifies the AD twin.
+              for head = (subseq ptx-string start (min end (+ start 200)))
+              for name = (string-trim " " (subseq head (length marker)
+                                                  (or (position #\( head) (length head))))
+              unless (let ((n (string-downcase (string-trim " " name))))
+                       (and (>= (length n) 5) (string= "_grad" (subseq n (- (length n) 5)))))
+                return (subseq ptx-string start end)
+              finally (return ptx-string)))))
+
+;; overlays/spec-runner-overlay.lisp  (REPLACES validate-ptx-wgmma-store-direct -- forward scoping)
+(defun validate-ptx-wgmma-store-direct (file ptx-string)
+  "Endeavour 154 item 3 — assert a wgmma accumulator stored via `store-tile-at` took the
+   REGISTER-DIRECT path, not the cooperative element-loop path.
+
+   WHY THIS NEEDS ASSERTING.  `store-tile-at` had no wgmma overload before 154; a wgmma
+   accumulator handed to it fell through to the generic cooperative store, which stages through
+   memory and brackets the copy with `sync-workgroup` on both sides.  For a warpgroup-private
+   accumulator that is both wrong in shape and pointless in cost -- yet it can still produce the
+   right answer, so a metal MMA_CORRECT check alone would not notice which path ran.
+
+   The distinguishing signature is the BARRIER.  The register-direct store emits the
+   accumulator straight to global with no workgroup synchronization at all, so no `bar.sync`
+   may appear after the final `wgmma.wait_group`.  The cooperative path always emits one.
+
+   SCOPED TO THE FORWARD KERNEL.  Under --differentiate the module also carries the AD-minted
+   `_grad` twin, which legitimately uses barriers and is emitted after the forward kernel -- so an
+   unscoped search reported the twin's barriers as a forward-kernel regression.  The claim is about
+   the forward kernel, so the text examined is the forward kernel's."
+  (declare (ignore file))
+  (let* ((ptx-string (%ptx-forward-entry-text ptx-string))
+         (last-wait (search "wgmma.wait_group" ptx-string :from-end t)))
+    (cond
+      ((null last-wait)
+       (format *error-output* "FAIL: no wgmma.wait_group in the emitted PTX -- no wgmma ran, so this spec is not testing the store path it claims to.~%")
+       nil)
+      ((search "bar.sync" ptx-string :start2 last-wait)
+       (format *error-output* "FAIL: a `bar.sync` appears AFTER the last wgmma.wait_group, which is the cooperative staged-store signature.  The wgmma accumulator store must be register-direct -- store-tile-at fell through to the generic path instead of the wgmma overload.~%")
+       nil)
+      (t t))))
