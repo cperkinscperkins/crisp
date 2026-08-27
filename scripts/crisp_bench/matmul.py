@@ -1073,6 +1073,14 @@ def main():
             run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256.crisp",     "Crisp_V_wg256",     use_autobench=True)
             run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf1.crisp", "Crisp_V_wg256pf1", use_autobench=True)
             run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf2.crisp", "Crisp_V_wg256pf2", use_autobench=True)
+            # :XE-NATIVE at the peer geometry -- 42 machine instructions per dpas against 57.
+            # Attacks the INSTRUCTION STREAM, where the remaining gap to the peer lives.
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_xe.crisp",    "Crisp_V_wg256xe",    use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_xepf2.crisp", "Crisp_V_wg256xepf2", use_autobench=True)
+            # CACHE CONTROL, now covering the PREFETCH as well as the loads.  Byte-identical
+            # source to wg256_pf2; only the NAME differs, so one env setting decorates this
+            # kernel and not its twin and both are measured in the SAME session.
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf2cc.crisp", "Crisp_V_wg256pf2cc", use_autobench=True)
 
             # §3 Situational — MMA LOWERING (:coop-matrix vs :xe-native), Intel only.
             # Four kernels, one variable at a time.  All are 32x64 bf16 over one subgroup; the
@@ -1104,6 +1112,7 @@ def main():
             # The measurable sizes are therefore 4096 and up, where the host reference is skipped
             # and points are recorded with verified:false.
             run_l0_crisp("_probe_roofline", "probe_full.crisp",  "Probe_Full",  use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_wg256_math.crisp", "Probe_WG256_Math", use_autobench=True)
             run_l0_crisp("_probe_roofline", "probe_loads.crisp", "Probe_Loads", use_autobench=True)
             # ROUND-2 ARM, already answered -- re-enable to re-measure:
             # run_l0_crisp("_probe_roofline", "probe_math.crisp",  "Probe_Math",  use_autobench=True)

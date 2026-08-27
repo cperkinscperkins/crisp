@@ -232,9 +232,16 @@
         (let ((wanted (make-hash-table :test #'equal))
               (max-md 0))
           ;; Pass 1 -- pointer operands of coop-matrix LOADS, taken from the call sites.
+          ;; BOTH the coop-matrix load AND the 2D block PREFETCH.  The prefetch was omitted the
+          ;; first time round, which is the operation whose entire job is warming cache -- so the
+          ;; "cache control does nothing" result of 2026-08-27 was measured with the prefetch
+          ;; undecorated.  SYCL-TLA asks for kL1C_L3C on its prefetches as well as its loads, at
+          ;; all 26 call sites.  The pointer is the FIRST argument of the load and the FIFTH of
+          ;; the prefetch, so find it positionally rather than assuming it leads.
           (loop for l across lines do
-            (when (search "@__spirv_CooperativeMatrixLoadKHR" l)
-              (let ((p (search "(ptr addrspace(" l)))
+            (when (or (search "@__spirv_CooperativeMatrixLoadKHR" l)
+                      (search "@__spirv_Subgroup2DBlockPrefetchINTEL" l))
+              (let ((p (search "ptr addrspace(" l)))
                 (when p
                   (let ((pc (position #\% l :start p)))
                     (when pc
