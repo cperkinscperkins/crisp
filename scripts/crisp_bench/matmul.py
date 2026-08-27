@@ -1123,8 +1123,8 @@ def main():
             # The measurable sizes are therefore 4096 and up, where the host reference is skipped
             # and points are recorded with verified:false.
             run_l0_crisp("_probe_roofline", "probe_full.crisp",  "Probe_Full",  use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_wg256_math.crisp", "Probe_WG256_Math", use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_loads.crisp", "Probe_Loads", use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_wg256_xe_math.crisp", "Probe_WG256_XE_Math", use_autobench=True)
+            # run_l0_crisp("_probe_roofline", "probe_loads.crisp", "Probe_Loads", use_autobench=True)
             # ROUND-2 ARM, already answered -- re-enable to re-measure:
             # run_l0_crisp("_probe_roofline", "probe_math.crisp",  "Probe_Math",  use_autobench=True)
             # Round 2 arms.  The first probe answered "which half is the critical path" (the
