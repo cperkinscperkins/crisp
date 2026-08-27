@@ -15,6 +15,55 @@
 (in-package :crisp.compiler)
 
 
+
+;;;; ####################################################################################
+;;;; ####  BEGIN CACHE-CONTROL BLOCK — READ THIS BEFORE FOLDING ANY OF IT INTO src/  ####
+;;;; ####################################################################################
+;;;;
+;;;; Everything from here to the matching END fence is endeavour-158-adjacent probe machinery
+;;;; from 2026-08-27.  It is INERT unless CRISP_CACHE_CONTROL is set, so it is harmless where it
+;;;; sits — but it must NOT be folded into src/ wholesale, because the three pieces in it have
+;;;; three different verdicts.
+;;;;
+;;;; ---- 1. THE FEATURE IT TESTS IS DEAD. -----------------------------------------------
+;;;; Cache control was MEASURED and does nothing: -3.3% at N=4096 where the six-repeat spread is
+;;;; 3.1%, and -0.8% at 2048.  The arm was verified genuine, not inert — the container built
+;;;; probe_loads_cc.spv with 58x `CacheControlLoadINTEL 0 1` + 58x `1 1` plus the capability and
+;;;; extension, against zero in the byte-identical probe_loads.spv.  So either IGC does not
+;;;; consult a pointer decoration when lowering OpCooperativeMatrixLoadKHR, or the driver default
+;;;; already matched SYCL-TLA's kL1C_L3C.  DO NOT RE-LITIGATE THIS WITHOUT NEW INFORMATION;
+;;;; see benchmarks/matmul/_probe_roofline/README.md for the numbers.
+;;;;
+;;;; ---- 2. ONE PIECE IS PROVABLY DEAD CODE. --------------------------------------------
+;;;; %attach-cache-control-load attaches the decoration during CODEGEN, and -O3 strips every one
+;;;; of them (measured: 64 decorated GEPs in .temp.ll, 0 in .opt.ll).  It cannot work and never
+;;;; will while the opt pipeline runs.  It is retained ONLY because it documents where the
+;;;; decoration would naturally belong if LLVM ever preserved !spirv.Decorations.
+;;;; >>> DECISION NEEDED AT FOLD TIME: delete it, or keep it with this comment attached.
+;;;; Keeping unreachable code that looks reachable is its own hazard.
+;;;;
+;;;; ---- 3. ONE PIECE IS GENUINELY WORTH KEEPING. ---------------------------------------
+;;;; %inject-cache-control-decorations is the mechanism that actually works, and the finding
+;;;; behind it generalises well past cache control: **a SPIR-V decoration cannot be attached in
+;;;; codegen at all — it must be re-attached AFTER opt**, as a text pass over the .ll, in the
+;;;; same slot as inject-spir-kernel-metadata.  ANY future decoration Crisp wants to emit hits
+;;;; this wall.  That mechanism should survive even if the cache-control feature is deleted.
+;;;;
+;;;; ---- 4. THE HIGHEST-RISK ITEM IS THE compile-to-spirv COPY. --------------------------
+;;;; compile-to-spirv below is a WHOLE-FUNCTION copy of the src/compiler.lisp original with two
+;;;; small additions: one call to %inject-cache-control-decorations, and one conditional
+;;;; --spirv-ext=+SPV_INTEL_cache_controls (which is load-bearing: llvm-spirv REFUSES with
+;;;; "RequiresExtension" rather than silently dropping the decoration).  A whole-function copy
+;;;; DRIFTS: any edit to the src/ original is silently lost as long as this file loads last.
+;;;; >>> AT FOLD TIME, DIFF THIS AGAINST src/compiler.lisp's compile-to-spirv BEFORE MERGING.
+;;;;
+;;;; ---- 5. GATING. ---------------------------------------------------------------------
+;;;; CRISP_CACHE_CONTROL           l1c_l3c | l1s_l3c | l1uc_l3c | l1c_l3uc  (unset = no-op)
+;;;; CRISP_CACHE_CONTROL_KERNELS   comma-separated source stems, exact match; unset = all
+;;;; With CRISP_CACHE_CONTROL unset the emitted SPIR-V is byte-identical to before: zero
+;;;; decorations, zero capability, zero extension.  No shipped kernel is affected.
+;;;;
+;;;; ####################################################################################
 ;;;; ============================================================================
 ;;;; ROOFLINE PROBE, ARM A — SPV_INTEL_cache_controls on the coop-matrix load path.
 ;;;;
@@ -276,3 +325,264 @@
       (when (probe-file ll-opt-file) (delete-file ll-opt-file))
       (when (probe-file bc-file)     (delete-file bc-file)))
     (log:info "Generated SPIR-V: ~a" spv-file)))
+
+
+;;;; ####################################################################################
+;;;; ####  END CACHE-CONTROL BLOCK                                                   ####
+;;;; ####                                                                            ####
+;;;; ####  Summary of the four decisions the BEGIN fence spells out:                 ####
+;;;; ####    1. the FEATURE is dead (measured -3.3%, inside the 3.1% spread)          ####
+;;;; ####    2. %attach-cache-control-load is DEAD CODE (-O3 strips it) - keep/kill?  ####
+;;;; ####    3. %inject-cache-control-decorations is the WORTH-KEEPING mechanism      ####
+;;;; ####    4. compile-to-spirv is a whole-function COPY - diff before merging       ####
+;;;; ####################################################################################
+
+;;;; ============================================================================
+;;;; prefetch-tile :warp-partitioned -- distribute a prefetch footprint across subgroups.
+;;;; Endeavour 158.  Specs: tests/spec/158-prefetch-warps/.
+;;;;
+;;;; WHY.  Round-2 arm B measured prefetch at 2.6-2.9x SLOWER at the shipped 16-subgroup geometry.
+;;;; That is not a result about prefetch: prefetch-tile had no notion of warps, so EVERY one of the
+;;;; 16 subgroups issued EVERY one of the 24 prefetches -- 384 per workgroup per K-step against 256
+;;;; loads.  SYCL-TLA slices its prefetch per thread (`prefetch_a.get_slice(thread_idx)`); Crisp
+;;;; could not express that, which made the measurement uninterpretable.
+;;;;
+;;;; ONE BOOLEAN, NOT A MASK.  make-register-tile's :warps mask carries real information because
+;;;; under warp specialization some warps genuinely do not hold the tile.  A prefetch has NO
+;;;; destination, so there is nothing a warp can fail to hold; a mask there would be all-true in
+;;;; every kernel forever -- a keyword that can only be got wrong.
+;;;;
+;;;; :size IS THE FOOTPRINT, not a hardware block.  It is in the same units as the matching
+;;;; load-tile, which is what makes the two lines legible side by side:
+;;;;     (prefetch-tile A (grid-y prefetch-k) :size (128 32) :warp-partitioned true)
+;;;;     (load-tile     A A-tile (grid-y grid-k))
+;;;; The compiler tiles the footprint into legal hardware blocks and deals them out.  The user
+;;;; never writes a block index.
+;;;;
+;;;; BRANCH-FREE, DELIBERATELY.  The first prototype dispatched with a per-warp `when` chain and
+;;;; hit BUG 051: sibling `when`s each holding one prefetch-tile emit only ONE prefetch, and a
+;;;; nested `if` chain emits ZERO.  Each warp instead COMPUTES its own block index from warp-id,
+;;;; which is what the peer does anyway (get_slice is index arithmetic, not a switch), generates
+;;;; far less code, and cannot trip 051.
+;;;; ============================================================================
+
+;; src/mma.lisp
+(defun %prefetch-block-shape (elem-bytes location)
+  "The legal Subgroup2DBlockPrefetchINTEL block shape (ROWS . COLS) for an ELEM-BYTES element.
+
+   Only 2-byte elements are supported, and that is a REFUSAL rather than a guess: the legal shape
+   is element-width dependent, a 16-bit block is at most 16 COLUMNS wide, and an illegal :size
+   resolves to an IGC builtin that does not exist (e.g.
+   __internal_intel_sub_group_2d_block_prefetch_16b_32r32x1c).  That fails at MODULE BUILD, long
+   after compilation, with a message about a missing symbol rather than about the kernel -- see
+   benchmarks/matmul/_kdepth/pf1_k32.crisp.  Refusing here converts it into a compile-time error
+   that names the cause.
+
+   32x16 is the shape verified in use.  A 16x16 block would let a 128x32 footprint tile into
+   exactly 16 blocks -- one per warp, with no duplication (see %prefetch-warp-plan) -- but its
+   legality is unverified and can only be established on metal, so it is not assumed here."
+  (case elem-bytes
+    (2 (cons 32 16))
+    (t (error 'crisp-compiler-error
+         :message (format nil "prefetch-tile :warp-partitioned is implemented for 2-byte operands ~
+                               (bfloat16 / half) only, got a ~a-byte element.  The legal 2D block ~
+                               prefetch shape is element-width dependent, and an illegal one fails ~
+                               at MODULE BUILD rather than at compile time, so Crisp refuses rather ~
+                               than guessing.  Omit :warp-partitioned to keep the unpartitioned ~
+                               one-block-per-subgroup behaviour." elem-bytes)
+         :source-location location))))
+
+;; src/mma.lisp
+(defun %prefetch-warp-plan (h w br bc n-warps location)
+  "Plan the distribution of an H x W footprint over N-WARPS, in BR x BC hardware blocks.
+   Returns (values NBY NBX N-BLOCKS ROUNDS).
+
+   ROUNDS is how many prefetches each warp issues: ceiling(n-blocks / n-warps).  Warp w handles
+   block (w + j*n-warps) mod n-blocks for j below ROUNDS.
+
+   THE `mod n-blocks` IS LOAD-BEARING AND IS NOT A ROUNDING ERROR.  Irregularity is the normal
+   case, not an edge case -- in the shipped fp16 geometry the A footprint (128x32) is 8 blocks over
+   16 warps while the B footprint (32x256) is exactly 16.  Both occur in ONE kernel.  When there
+   are fewer blocks than warps the surplus warps re-prefetch a block someone else already asked
+   for.  That DUPLICATION IS DELIBERATE: a prefetch is a hint, so the cost is one instruction and a
+   second touch of an already-warm line, whereas the alternative -- letting surplus warps idle --
+   needs a branch, and a branch around a prefetch is BUG 051."
+  (unless (and (plusp h) (plusp w) (zerop (mod h br)) (zerop (mod w bc)))
+    (error 'crisp-compiler-error
+      :message (format nil "prefetch-tile :warp-partitioned: a ~ax~a footprint does not tile into ~
+                            whole ~ax~a hardware prefetch blocks.  H must be a multiple of ~a and W ~
+                            a multiple of ~a.  Rounding the footprint up would prefetch memory the ~
+                            kernel never reads; truncating it would leave part of the operand ~
+                            unwarmed and silently cost the speed the keyword exists to buy."
+                       h w br bc br bc)
+      :source-location location))
+  (let* ((nby (floor h br))
+         (nbx (floor w bc))
+         (n-blocks (* nby nbx))
+         (rounds (ceiling n-blocks n-warps)))
+    (values nby nbx n-blocks rounds)))
+
+;; src/mma.lisp  (REPLACES analyze-prefetch-tile -- adds the optional :warp-partitioned key.
+;; With the key absent the behaviour is byte-identical to before, which spec 02 pins.)
+(defun analyze-prefetch-tile (expr env context location)
+  "Endeavor 142 (Phase B): (prefetch-tile SRC (COORD-Y COORD-X) :size (H W) &key warp-partitioned)
+   -> an Intel 2D block cache prefetch (Subgroup2DBlockPrefetchINTEL).  A fire-and-forget hint with
+   NO destination -- it warms the LSC so a subsequent register block-load (load-tile -> GRF) hits
+   cache instead of stalling on global memory; it never changes results.  Intel/SPV-only +
+   hardware-profile-required.  Lowered by reusing the coop-op node with a :prefetch kind.
+
+   Endeavour 158: :warp-partitioned distributes the footprint across the workgroup's warps, each
+   warp computing its own block index from warp-id.  See the block comment above."
+  (unless (active-hardware-profile)
+    (error 'crisp-compiler-error
+      :message "prefetch-tile requires a hardware profile (pass --hardware-profile): its L1 / GRF limits drive the register-pipeline safety analysis."
+      :source-location location))
+  (unless (eq *target-backend* :spirv)
+    (error 'crisp-compiler-error
+      :message "prefetch-tile lowers to Subgroup2DBlockPrefetchINTEL, which is Intel/SPV-only — it has no PTX/NVIDIA mapping (NVIDIA's prefetch model is cp.async into SLM, a different concept)."
+      :source-location location))
+  (destructuring-bind (src coords &key size warp-partitioned) (cdr expr)
+    (unless (and (listp coords) (= (length coords) 2))
+      (error 'crisp-compiler-error
+        :message (format nil "prefetch-tile: coords must be a two-element (COORD-Y COORD-X), got ~S" coords)
+        :source-location location))
+    (unless (and (listp size) (= (length size) 2) (every #'integerp size))
+      (error 'crisp-compiler-error
+        :message (format nil "prefetch-tile: :size must be a compile-time (H W) of integers, got ~S" size)
+        :source-location location))
+    (let* ((h (first size)) (w (second size))
+           (ty (first coords)) (tx (second coords))
+           ;; `true` reads as a symbol; accept 1 as well, matching %normalize-warp-mask.
+           (partition-p (and warp-partitioned
+                             (not (eql warp-partitioned 0))
+                             (not (and (symbolp warp-partitioned)
+                                       (string-equal (symbol-name warp-partitioned) "FALSE"))))))
+      (if (not partition-p)
+          ;; ---- unpartitioned: one block, every subgroup issues it.  UNCHANGED. ----
+          (let ((tnode (analyze-expression src env context (append location '(1)))))
+            (make-semantic-coop-op
+             :type 'void :kind :prefetch
+             :tensor-node tnode
+             :rows h :cols w :use 0 :layout (%coop-layout-of tnode)
+             :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+             :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+             :source-location location))
+          ;; ---- partitioned: tile the footprint, each warp computes its own block index ----
+          (let ((n-warps (%resolve-workgroup-warp-count context)))
+            (unless n-warps
+              (error 'crisp-compiler-error
+                :message "prefetch-tile :warp-partitioned needs the workgroup's warp count (local-size / simd-width), and this kernel's local-size is not known at compile time.  Declare (local-size :set-to N).  Crisp refuses rather than falling back to an unpartitioned prefetch, because that fallback is exactly the every-subgroup-issues-everything behaviour the keyword exists to remove -- it would be a silent 16x over-issue rather than an error."
+                :source-location location))
+            (let* ((tnode (analyze-expression src env context (append location '(1))))
+                   (elem-bytes (%elem-bytes (%coop-elem-of tnode)))
+                   (shape (%prefetch-block-shape elem-bytes location))
+                   (br (car shape)) (bc (cdr shape)))
+              (multiple-value-bind (nby nbx n-blocks rounds)
+                  (%prefetch-warp-plan h w br bc n-warps location)
+                (let* ((cl        (find-package :crisp-language))
+                       (progn-sym (intern "PROGN" cl))    (let-sym    (intern "LET" cl))
+                       (plus-sym  (intern "+" cl))        (times-sym  (intern "*" cl))
+                       (div-sym   (intern "/" cl))        (rem-sym    (intern "REM" cl))
+                       (to-int-sym (intern "TO-INT" cl))  (warp-id-sym (intern "WARP-ID" cl))
+                       (pf-sym    (intern "PREFETCH-TILE" cl))
+                       (wp (gensym "WP")) (by (gensym "BY")) (bx (gensym "BX")))
+                  (log:debug "prefetch-tile :warp-partitioned: ~ax~a -> ~ax~a blocks of ~ax~a, ~a block~:p ~
+                              over ~a warps, ~a round~:p each" h w nby nbx br bc n-blocks n-warps rounds)
+                  (labels ((bi (j)
+                             ;; this warp's block index for round J: (wp + j*n-warps) mod n-blocks
+                             (let ((raw (if (zerop j) wp `(,plus-sym ,wp ,(* j n-warps)))))
+                               `(,rem-sym ,raw ,n-blocks))))
+                    (analyze-expression
+                     `(,let-sym ((,wp (,to-int-sym (,warp-id-sym)))
+                                 (,by (,to-int-sym ,ty))
+                                 (,bx (,to-int-sym ,tx)))
+                        (,progn-sym
+                         ,@(loop for j below rounds
+                                 collect `(,pf-sym ,src
+                                                   ((,plus-sym (,times-sym ,by ,nby)
+                                                               (,div-sym ,(bi j) ,nbx))
+                                                    (,plus-sym (,times-sym ,bx ,nbx)
+                                                               (,rem-sym ,(bi j) ,nbx)))
+                                                   :size (,br ,bc)))))
+                     env context location))))))))))
+
+
+;;;; ---------------------------------------------------------------------------------------------
+;;;; Endeavour 158 validators.  Same two-package delegation as 152/155/157: the body lives in
+;;;; :crisp.compiler, and tests/run-specs.lisp (or overlays/spec-runner-overlay.lisp) defines a
+;;;; same-named stub that funcalls into it, so the two can never drift.
+;;;;
+;;;; WHY A VALIDATOR AND NOT A BENCHMARK.  A 16x over-issued prefetch is still numerically CORRECT,
+;;;; so no correctness check can catch it, and a timing can only say that something is wrong, never
+;;;; what.  That is exactly why round-2 arm B measured 2.6x slower and was uninterpretable.  The
+;;;; property has to be asserted on the emitted SPIR-V.
+;;;; ---------------------------------------------------------------------------------------------
+
+;; src/mma.lisp
+(defun %spv-prefetch-shapes (txt)
+  "List of (BLOCK-WIDTH . BLOCK-HEIGHT) for every Subgroup2DBlockPrefetchINTEL in TXT, with the
+   constant IDs resolved to integers.  Operand order is
+     ElementSize BlockWidth BlockHeight BlockCount SrcBase MemWidth MemHeight MemPitch Coord
+   and %spv-lines keeps the leading word-count token, so BlockWidth is the FOURTH token and
+   BlockHeight the FIFTH.
+
+   Resolution goes through the EXISTING %spv-int-constants (src/mma.lisp), which returns an ALIST.
+   An earlier version of this file defined its own hash-table-returning %spv-int-constants and
+   silently clobbered that one, breaking validate-spv-bf16-coop / -fp16-coop with \"hash-table is
+   not of type LIST\".  Check for an existing definition before adding a helper to this overlay."
+  (cl:let ((consts (%spv-int-constants txt))
+           (out    cl:nil))
+    (cl:dolist (toks (%spv-lines txt) (cl:nreverse out))
+      (cl:when (cl:and (cl:string= (cl:second toks) "Subgroup2DBlockPrefetchINTEL")
+                       (cl:>= (cl:length toks) 5))
+        (cl:push (cl:cons (cl:cdr (cl:assoc (cl:fourth toks) consts :test #'cl:string=))
+                          (cl:cdr (cl:assoc (cl:fifth toks)  consts :test #'cl:string=)))
+                 out)))))
+
+;; src/mma.lisp
+(defun %validate-prefetch-shape-list (shapes expected-count where)
+  "Shared body for both 158 validators: SHAPES must have EXPECTED-COUNT entries and every one must
+   be the 32x16 hardware block.  WHERE names the rung for the failure message."
+  (cl:let ((ok cl:t))
+    (cl:unless (cl:= (length shapes) expected-count)
+      (format t "FAIL: ~a -- expected ~a Subgroup2DBlockPrefetchINTEL instruction~:p, found ~a.~%"
+              where expected-count (length shapes))
+      (cl:setf ok cl:nil))
+    (cl:loop for s in shapes
+             for n from 0
+             do (cl:unless (cl:and (eql (car s) 16) (eql (cdr s) 32))
+                  (format t "FAIL: ~a -- prefetch ~a has block shape ~ax~a, expected the 32x16 ~
+                             HARDWARE block.  A shape equal to the :size FOOTPRINT means the ~
+                             compiler passed the footprint straight through instead of tiling it, ~
+                             and an illegal shape fails at MODULE BUILD rather than here.~%"
+                          where n (cdr s) (car s))
+                  (cl:setf ok cl:nil)))
+    ok))
+
+;; src/mma.lisp
+(defun validate-spv-prefetch-partitioned (spv-path)
+  "Endeavour 158 rung 01 — :warp-partitioned actually distributed the footprint.
+
+   The kernel prefetches a 128x256 footprint, which is 4x16 = 64 blocks of 32x16, over 16 warps.
+   That is 4 ROUNDS, so exactly FOUR prefetch instructions must be emitted, each of the hardware
+   shape.  Partitioned: 4 static instructions x 16 warps = 64 issues, covering 64 blocks once
+   each.  Unpartitioned, the same coverage needs 64 static forms that EVERY warp runs = 1024
+   issues.  That 16x is what made round-2 arm B read 2.6x slower, and no correctness check can
+   see it."
+  (cl:let ((txt (%spv-disasm spv-path)))
+    (cl:if (cl:null txt)
+        (cl:progn (format t "  (llvm-spirv unavailable -- prefetch-partitioned check skipped)~%") cl:t)
+        (%validate-prefetch-shape-list (%spv-prefetch-shapes txt) 4 "158/01 :warp-partitioned"))))
+
+;; src/mma.lisp
+(defun validate-spv-prefetch-unpartitioned (spv-path)
+  "Endeavour 158 rung 02 — prefetch-tile WITHOUT :warp-partitioned is untouched.
+
+   A regression guard, not a feature test.  Adding a keyword to a form that has never had one is
+   exactly the change that quietly alters the path without it, and every prefetch kernel Crisp has
+   shipped (benchmarks/matmul/_kdepth/pf*.crisp, sec4_fused_relu) takes that path.  A 32x16 :size
+   must still emit exactly ONE prefetch of that shape, issued by every subgroup."
+  (cl:let ((txt (%spv-disasm spv-path)))
+    (cl:if (cl:null txt)
+        (cl:progn (format t "  (llvm-spirv unavailable -- prefetch-unpartitioned check skipped)~%") cl:t)
+        (%validate-prefetch-shape-list (%spv-prefetch-shapes txt) 1 "158/02 unpartitioned"))))

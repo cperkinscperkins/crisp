@@ -770,7 +770,9 @@ MMA
 - [ ] inside out vs. outside in.
 - [ ] NVidia
 [ ] src has duplicate var names *hardware-profile-schema* and others
-
+- Documentation Shortcomings
+- [ ] :operand  
+- [ ] :warps
 
 [ ] benchmarking up to "max" for BMG and H100. 
 [ ] need to document register-fragment, including make-register-fragment and store-fragment.

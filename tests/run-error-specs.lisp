@@ -39,9 +39,32 @@
                       (when (and start end (> end start))
                             (return (subseq line (1+ start) end)))))))))
 
+(defun read-check-fail-flags (file)
+  "Reads the first 8 lines looking for ;; CHECK-FAIL-FLAGS: <flags>, returning them as a list of
+   strings (or NIL).
+
+   WHY THIS EXISTS.  Negative specs used to compile with the DEFAULT (generic) target and nothing
+   else, which meant a backend-specific refusal could never be reached: any errors/ spec for an
+   Intel-only form hit that form's `it is Intel/SPV-only` gate first, so all of them tested the
+   same one message no matter what they were written to pin.  Endeavour 158's three
+   prefetch-tile refusals are the first to need this.  Absent the header, behaviour is exactly
+   as before."
+  (with-open-file (stream file :direction :input :if-does-not-exist :error)
+    (loop for i from 0 below 8
+          for line = (read-line stream nil nil)
+          while line do
+            (let ((pos (search ";; CHECK-FAIL-FLAGS:" line)))
+              (when pos
+                    (return (remove "" (uiop:split-string
+                                        (string-trim " "
+                                                     (subseq line (+ pos (length ";; CHECK-FAIL-FLAGS:"))))
+                                        :separator " ")
+                                    :test #'string=)))))))
+
 (defun run-error-check (file expected-error)
   (let ((bin (get-binary-path))
-        (args (list (uiop:native-namestring file) "--log-level=off")))
+        (args (append (list (uiop:native-namestring file) "--log-level=off")
+                      (read-check-fail-flags file))))
 
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)

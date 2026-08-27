@@ -1,0 +1,40 @@
+;; ROOFLINE PROBE B2-W — LOADS + WARP-DISTRIBUTED PREFETCH, distance 2.
+;;
+;; The re-run of arm B after `prefetch-tile` gained `:warps`.  The original arm measured 2.6-2.9x
+;; SLOWER, but that was not a result about prefetch: every one of the 16 subgroups issued every
+;; one of the 24 prefetches, 384 per workgroup per K-step against 256 loads.  SYCL-TLA slices its
+;; prefetch per subgroup (`prefetch_a.get_slice(thread_idx)`); Crisp could not express that.
+;;
+;; Note how much smaller the source is than probe_loads_pf2.crisp.  The hand-tiling is gone:
+;; `:size` is now the WORKGROUP footprint and the compiler tiles it into legal hardware blocks
+;; and deals them across the warps.  The coordinates are consequently in the SAME units as the
+;; matching `load-tile`, which is what makes this readable at all.
+;;   A  (128 32) -> 4x2 =  8 blocks over 16 warps
+;;   B  (32 256) -> 1x16 = 16 blocks over 16 warps
+;; so a subgroup issues ~1.5 prefetches per K-step instead of 24.
+;;
+;; THIS KERNEL IS NUMERICALLY WRONG BY CONSTRUCTION.  Diagnostic probe only -- see README.md.
+(declaim (precision fast))
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 256))
+  (let ((A-tile (make-register-tile half (128 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile half (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (128 256) 0.0 :warps '(true true true true true true true true true true true true true true true true)))
+        (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 32))))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k n-k-steps)
+          (let ((prefetch-k (+ grid-k (to-ulong 2))))
+            (when (< prefetch-k n-k-steps)
+              (prefetch-tile A (grid-y prefetch-k) :size (128 32) :warps '(true true true true true true true true true true true true true true true true))
+              (prefetch-tile B (prefetch-k grid-x) :size (32 256) :warps '(true true true true true true true true true true true true true true true true)))
+            (load-tile A A-tile (grid-y grid-k))
+            (load-tile B B-tile (grid-k grid-x))))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))
