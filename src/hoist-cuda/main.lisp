@@ -272,6 +272,17 @@
 
 
 
+;;; Endeavor 152 rung 04 (fix) — `%%` is a printf escape, not a CL format escape
+;;;
+;;; CL's FORMAT only treats `~` specially; `%` passes through verbatim.  Writing
+;;; `%%` (C printf habit) therefore emitted a LITERAL `%%` into the generated C++.
+;;; In the comment that is merely wrong-looking; in the :exact branch it produced
+;;; `(gridX %% _ccx)`, which does not compile.
+;;;
+;;; It hid because no spec in this endeavor declares :strategy :exact WITH a cluster,
+;;; so the broken branch is never generated -- and the :strided branch, which is the
+;;; one every spec exercises, has no modulus in it at all.
+;;; =====================================================================
 (defun %cuda-cluster-grid-fixup-string (dispatch-info)
   "The C++ that reconciles the computed grid with the cluster shape, or \"\" when the
    kernel has no cluster.
@@ -1078,7 +1089,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
     (format stream "    CUDA_CHECK(cuMemAlloc(&~a, sizeof(CUtensorMap)));~%" name)
     (format stream "    CUDA_CHECK(cuMemcpyHtoD(~a, &~a_host, sizeof(CUtensorMap)));~%" name name)))
 
-(defun emit-kernel-args (stream declared-sig aliases records dispatch-info)
+(defun %emit-kernel-args-base (stream declared-sig aliases records dispatch-info)
   "Emit host-side variable declarations and fill the kernelParams[] array.
    Returns a list of allocation plists for readback.
    Bug 034: resets *cuda-shared-scratch-offset* so each kernel's LOCAL tiles get
@@ -1180,6 +1191,21 @@ overrides the runtime SM-count query in the grid-size heuristic."
       (format stream "    };~%~%"))
 
     (nreverse allocations)))
+
+;; SPLIT rather than edited in place: emit-kernel-args is ~120 lines with one job to add --
+;; seed the cell offset for this kernel.  Threading that into the middle of the base would
+;; bury it; a two-line wrapper says exactly what is added and when.  Same shape as the
+;; emit-launch wrapper above.  %emit-kernel-args-base still resets
+;; *cuda-shared-scratch-offset* itself.
+(defun emit-kernel-args (stream declared-sig aliases records dispatch-info)
+  "BUG 046: seeds *cuda-shared-cell-offset* from %cuda-shared-layout so LOCAL
+   cells are laid out ABOVE the scratch tensors rather than on top of the first one."
+  ;; NOTE: no log4cl here on purpose -- the hoister is built as its own application and
+  ;; does not depend on log4cl (src/hoist-cuda/main.lisp contains zero log: calls).  The
+  ;; layout it chose is visible in the emitted .cu as a `shared offset` comment per param.
+  (setf *cuda-shared-cell-offset* (nth-value 1 (%cuda-shared-layout declared-sig aliases)))
+  (%emit-kernel-args-base stream declared-sig aliases records dispatch-info))
+
 
 
 (defun %record-field-args (stream members var-path arg-index records aliases)
@@ -1331,7 +1357,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
                 (format stream "        return;~%")))
           (format stream "      } }~%"))))))
 
-(defun emit-launch (stream dispatch-info shared-bytes &optional compute-units kernel-name out-tile)
+(defun %emit-launch-base (stream dispatch-info shared-bytes &optional compute-units kernel-name out-tile)
   "Emit cuLaunchKernel call with grid/block dims from dispatch-info.
    OUT-TILE (TM TN), when set (--mma-bench), OVERRIDES the grid with a (M/TM x N/TN) 2-D grid.
    Supports:
@@ -1532,6 +1558,97 @@ overrides the runtime SM-count query in the grid-size heuristic."
                 (or kernel-name "kernel") m n k)
         (format stream "      cuEventDestroy(_s); cuEventDestroy(_e);~%")
         (format stream "    }~%~%")))))
+
+;; ---------------------------------------------------------------------------------------------------------
+;;; Endeavor 152 rung 04 — clustered launch in the CUDA hoist
+;;;
+;;; WHAT THIS DOES *NOT* DO, and why.  It does not switch to cuLaunchKernelEx.
+;;; Crisp bakes the cluster shape into the PTX (.reqnctapercluster, emitted by
+;;; %apply-cluster-dims-attribute), so the size is COMPILE-TIME FIXED -- which is
+;;; precisely the case a plain launch handles, and the reason CUDA C++ offers
+;;; __cluster_dims__ alongside the ordinary <<<>>> syntax.  cuLaunchKernelEx with
+;;; CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION is for setting the shape DYNAMICALLY at
+;;; launch, which we deliberately do not support (there is no :derive-from).
+;;;
+;;;   *** ASSUMPTION TO VERIFY ON THE POD (rung 04). ***  If a .reqnctapercluster
+;;;   kernel in fact requires cuLaunchKernelEx, the launch fails LOUDLY with
+;;;   CUDA_ERROR_INVALID_CLUSTER_SIZE rather than silently mis-running, so this is a
+;;;   safe thing to be wrong about -- but it is an assumption, not a measurement.
+;;;
+;;; WHAT IT DOES DO: enforce grid divisibility, which IS measured.  The driver
+;;; rejects a non-divisible grid per axis with CUDA_ERROR_INVALID_CLUSTER_SIZE
+;;; (H100 PCIe, CUDA 12.4 -- see 00-verification-findings.md).  So something must
+;;; happen, and the two strategies must differ:
+;;;   :strided -- PAD up.  The tile-stride loop covers every tile, so the surplus
+;;;               blocks simply find nothing to claim and exit.
+;;;   :exact   -- ERROR.  No stride loop: padding would launch blocks with no tile,
+;;;               truncating would skip tiles.  Neither is acceptable.
+;;;
+;;; The grid fix-up is INJECTED into emit-launch's output rather than emit-launch
+;;; being copied.  emit-launch is 208 lines with one caller; transcribing it into an
+;;; overlay to add ten lines in the middle is a worse risk than a documented,
+;;; single-anchor text insertion in what is already a C++ *text generator*.  The
+;;; anchor is the sole `unsigned int gridX = ` line every strategy branch emits.
+
+;;; Endeavor 152 rung 04/11 (fix) — inject AFTER the grid is final, not after gridX
+;;;
+;;; FOUND ON METAL.  The first cut anchored on `unsigned int gridX = `, which is wrong
+;;; twice over and each way was invisible locally:
+;;;
+;;;  1. The TILE-SHAPE dispatch path declares the axes on SEPARATE lines --
+;;;         unsigned int gridX = ...;   <- anchor matched here
+;;;         unsigned int gridY = ...;   <- declared AFTER the injected block
+;;;         unsigned int gridZ = 1;
+;;;     so the emitted C++ referenced gridY/gridZ before they existed:
+;;;         error: identifier "gridY" is undefined
+;;;     The :set-to path declares all three on ONE line, which is why rung 04 passed on
+;;;     the H100 and rung 11 did not.
+;;;
+;;;  2. Even where all three existed, the injection preceded the DEVICE GRID LIMIT
+;;;     clamping, which lowers gridX toward maxGridDimX -- and a clamp applied after a
+;;;     divisibility pad can BREAK the divisibility again.  That one would not have been a
+;;;     compile error; it would have been an intermittent CUDA_ERROR_INVALID_CLUSTER_SIZE
+;;;     on large problems only.
+;;;
+;;; Both fixed by moving the anchor to `auto _crisp_launch`, the lambda every strategy
+;;; emits once, immediately after ALL grid computation and immediately before the launch
+;;; that consumes it.  Injecting BEFORE that line means the reconciliation always sees the
+;;; final values of all three axes.
+;;;
+;;; WHY LOCAL TESTING MISSED IT: there is no nvcc on the dev box, so every TEST-HOIST[CUDA]
+;;; spec SKIPs.  The broken .cu WAS generated locally and I read it -- but I checked only
+;;; that the block appeared, not that the identifiers it referenced were in scope yet.
+;;; Generating C++ and reading it is not the same as compiling it.
+;;; =====================================================================
+
+;; the wrapper: injects the cluster grid reconciliation into the base's output.
+(defun emit-launch (stream dispatch-info shared-bytes &optional compute-units kernel-name out-tile)
+  "Endeavor 152: renders %emit-launch-base to a string and injects the
+   cluster grid reconciliation immediately BEFORE the launch lambda -- i.e. after every strategy
+   has finished computing gridX/gridY/gridZ and after the device-limit clamping, so the
+   reconciliation is the last word on the grid."
+  (let* ((body (with-output-to-string (s)
+                 (%emit-launch-base s dispatch-info shared-bytes compute-units kernel-name out-tile)))
+         (fixup (%cuda-cluster-grid-fixup-string dispatch-info)))
+    (if (string= fixup "")
+        (write-string body stream)
+        ;; Anchor: the launch lambda, emitted exactly once by every path.  If it ever moves we
+        ;; must NOT silently drop the fix-up -- a clustered kernel would then launch with an
+        ;; unreconciled grid and be rejected by the driver with no explanation.
+        (let ((pos (search "auto _crisp_launch" body)))
+          (cond
+            ((null pos)
+             (warn "Endeavor 152: could not find the _crisp_launch anchor in emit-launch output for kernel ~a; cluster grid reconciliation NOT emitted."
+                   kernel-name)
+             (write-string body stream))
+            (t
+             ;; Back up to the start of that line so the injected block is not spliced into it.
+             (let ((line-start (let ((nl (position #\Newline body :end pos :from-end t)))
+                                 (if nl (1+ nl) 0))))
+               (write-string body stream :end line-start)
+               (write-string fixup stream)
+               (write-string body stream :start line-start))))))))
+
 
 ;;; -----------------------------------------------------------------------
 ;;; Readback and output printing
