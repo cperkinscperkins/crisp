@@ -270,8 +270,75 @@
 ;;; Top-level launcher generator
 ;;; -----------------------------------------------------------------------
 
+
+
+(defun %cuda-cluster-grid-fixup-string (dispatch-info)
+  "The C++ that reconciles the computed grid with the cluster shape, or \"\" when the
+   kernel has no cluster.
+
+   :strided pads the grid up (the tile-stride loop covers every tile, so surplus
+   blocks simply find nothing to claim); :exact refuses, because it has no stride loop
+   and so can neither pad (blocks with no tile) nor truncate (skipped tiles).
+
+   The driver rejects a non-divisible grid per axis with CUDA_ERROR_INVALID_CLUSTER_SIZE
+   -- measured on H100 PCIe / CUDA 12.4, see 00-verification-findings.md -- so doing
+   nothing is not an option."
+  (let* ((dims (and dispatch-info (getf dispatch-info :effective-cluster-size)))
+         (cx (or (first dims) 1))
+         (cy (or (second dims) 1))
+         (cz (or (third dims) 1)))
+    (if (or (null dims) (<= (* cx cy cz) 1))
+        ""
+        (let* ((gs (and dispatch-info (getf dispatch-info :global-size)))
+               (strategy (and (consp gs) (getf (cdr gs) :strategy)))
+               (exact-p (and strategy (symbolp strategy)
+                             (string-equal (symbol-name strategy) "EXACT")))
+               ;; BUG 049: a kernel that USES its cluster's reach cannot tolerate padding.
+               ;; Padded blocks are still cluster members -- a multicast addresses them and a
+               ;; cluster barrier waits on them -- but they claim no tile and exit, so the
+               ;; survivors wait on peers that are gone.  Treat it exactly like :exact: refuse,
+               ;; with a message that names the real constraint.
+               (reach-p (and dispatch-info (getf dispatch-info :cluster-reach)))
+               (s (make-string-output-stream)))
+          (format s "~%    // --- Endeavor 152: cluster grid reconciliation ---~%")
+          (format s "    // The driver requires gridDim % clusterDim == 0 on EVERY axis and~%")
+          (format s "    // rejects a non-divisible grid with CUDA_ERROR_INVALID_CLUSTER_SIZE.~%")
+          (format s "    { const unsigned int _ccx = ~d, _ccy = ~d, _ccz = ~d;~%" cx cy cz)
+          (if (or exact-p reach-p)
+              (progn
+                (format s "      // :strategy :exact has no stride loop -- padding would launch blocks~%")
+                (format s "      // with no tile, and truncating would silently skip tiles.~%")
+                (format s "      if ((gridX % _ccx) || (gridY % _ccy) || (gridZ % _ccz)) {~%")
+                (format s "        std::cerr << \"error: grid (\" << gridX << \",\" << gridY << \",\" << gridZ~%")
+                (format s "                  << \") is not divisible by cluster (~d,~d,~d).\"~%" cx cy cz)
+                (format s "                  << \"  ~a\"~%"
+                        (if reach-p
+                            "this kernel MULTICASTS or uses a :mode :cluster barrier, so padded blocks would be cluster members that exit before their peers' multicast lands or their barrier completes -- padding cannot be made safe here"
+                            ":strategy :exact cannot pad (blocks with no tile) or truncate"))
+                (format s "                  << \" (skipped tiles).  Use :strategy :strided, or a :tile-shape that\"~%")
+                (format s "                  << \" divides the problem evenly by the cluster shape.\" << std::endl;~%")
+                (format s "        return;~%")
+                (format s "      }~%"))
+              (progn
+                (format s "      // :strategy :strided has a tile-stride loop, so padding UP is safe:~%")
+                (format s "      // the surplus blocks find no tiles left to claim and exit.~%")
+                (format s "      unsigned int _px = ((gridX + _ccx - 1) / _ccx) * _ccx;~%")
+                (format s "      unsigned int _py = ((gridY + _ccy - 1) / _ccy) * _ccy;~%")
+                (format s "      unsigned int _pz = ((gridZ + _ccz - 1) / _ccz) * _ccz;~%")
+                (format s "      if (_px != gridX || _py != gridY || _pz != gridZ) {~%")
+                (format s "        std::cerr << \"note: grid padded (\" << gridX << \",\" << gridY << \",\" << gridZ~%")
+                (format s "                  << \") -> (\" << _px << \",\" << _py << \",\" << _pz~%")
+                (format s "                  << \") for cluster (~d,~d,~d)\" << std::endl;~%" cx cy cz)
+                (format s "      }~%")
+                (format s "      gridX = _px; gridY = _py; gridZ = _pz;~%")))
+          (format s "    }~%")
+          (get-output-stream-string s)))))
+
 (defun generate-cuda-launcher (metacrisp-path)
-  "Generate CUDA Driver API C++ launcher code from metacrisp file."
+  "Generate CUDA Driver API C++ launcher code from metacrisp file.
+   Endeavor 152: also threads :effective-cluster-size (what codegen actually built,
+   NOT what the source declared) into dispatch-info, so the launch can enforce the
+   driver's grid-divisibility requirement."
   (let* ((data     (parse-metacrisp-file metacrisp-path))
          (kernels  (metacrisp-kernels data))
          (aliases  (metacrisp-aliases data))
@@ -295,11 +362,19 @@
                (implicit-sig  (getf kernel :implicit-params))
                (dispatch-info (let ((gs (getf kernel :global-size))
                                     (ls (getf kernel :local-size))
-                                    (ng (getf kernel :num-groups)))
-                                 (when (or gs ls ng)
+                                    (ng (getf kernel :num-groups))
+                                    (cd (getf kernel :effective-cluster-size))
+                                    ;; BUG 049: does this kernel USE its cluster's reach?  If so
+                                    ;; the grid must not be padded -- padded blocks are cluster
+                                    ;; members that a multicast addresses and a cluster barrier
+                                    ;; waits on, and they exit immediately.
+                                    (cr (getf kernel :cluster-reach)))
+                                 (when (or gs ls ng cd)
                                    (append (when gs (list :global-size gs))
                                            (when ls (list :local-size  ls))
-                                           (when ng (list :num-groups  ng))))))
+                                           (when ng (list :num-groups  ng))
+                                           (when cr (list :cluster-reach cr))
+                                           (when cd (list :effective-cluster-size cd))))))
                (comparable-range-start
                  (lambda (param)
                    (let ((r (getf param :range)))
@@ -538,41 +613,82 @@ overrides the runtime SM-count query in the grid-size heuristic."
 ;;; variables, then build the array at the end.
 ;;; -----------------------------------------------------------------------
 
-(defun compute-total-shared-bytes (declared-sig aliases)
-  "Sum up all local-memory tensor byte-sizes for the sharedMemBytes launch param."
-  (let ((total 0))
+
+
+(defun %cuda-local-param-bytes (param param-type)
+  "Bytes of dynamic shared memory one LOCAL param occupies, or NIL if it occupies none.
+   Returns a second value, :tensor or :cell, naming which region it belongs to.
+
+   The element-size rule mirrors the one the emitters use, deliberately: this function
+   exists so the sizer and the emitters cannot disagree, which is only true if it computes
+   what they compute."
+  (let* ((is-tensor (tensor-type-p param-type))
+         (elem-type (if is-tensor (second param-type) (cell-base-type param-type)))
+         (elem-str  (crisp-type-to-cpp-type elem-type))
+         (elem-bytes (if (or (string-equal elem-str "double")
+                             (string-equal elem-str "int64_t")
+                             (string-equal elem-str "uint64_t"))
+                         8 4)))
+    (if is-tensor
+        (let* ((rank (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
+               (size-expr (getf param :size-expr))
+               (count (cond ((integerp size-expr) (expt size-expr rank))
+                            ((and (listp size-expr) (every (function integerp) size-expr))
+                             (reduce (function *) size-expr))
+                            ;; %cuda-scratch-dims hard-errors on anything else, so such a
+                            ;; tensor never reaches an emitter and contributes nothing.
+                            (t nil))))
+          (when count (values (* count elem-bytes) :tensor)))
+        (let ((count (if (%array-type-p (cell-base-type param-type))
+                         (%array-size (cell-base-type param-type))
+                         1)))
+          (values (* count elem-bytes) :cell)))))
+
+(defun %cuda-shared-layout (declared-sig aliases)
+  "THE single source of truth for the CUDA hoister's dynamic-shared layout.
+
+   Returns (values TENSOR-BYTES CELL-BASE TOTAL-BYTES).  Scratch tensors are packed from
+   offset 0 exactly as BUG 034 laid them out; cells follow, starting at CELL-BASE.
+
+   CELL-BASE is rounded up to 8 so a double or int64 cell lands naturally aligned even
+   when the tensors ahead of it total an odd multiple of 4.  TOTAL-BYTES includes that
+   padding -- the launch must request every byte the kernel can address, and it is exactly
+   this kind of quiet divergence between size and offsets that BUG 046 was."
+  (let ((tensor-bytes 0)
+        (cell-bytes 0))
     (dolist (param declared-sig)
-      (let* ((raw-type   (getf param :type))
-             (param-type (resolve-type-alias raw-type aliases))
+      (let* ((param-type (resolve-type-alias (getf param :type) aliases))
              (param-as   (getf param :address-space))
-             (is-local   (member param-as '(:local "LOCAL" local) :test #'string-equal)))
-        (when (and (or (tensor-type-p param-type) (cell-type-p param-type)) is-local)
-          (let* ((is-tensor (tensor-type-p param-type))
-                 (rank (if is-tensor
-                           (let ((n3 (third param-type))) (if (integerp n3) n3 1))
-                           1))
-                 (size-expr (getf param :size-expr))
-                 (elem-type (if is-tensor (second param-type) (cell-base-type param-type)))
-                 (elem-str  (crisp-type-to-cpp-type elem-type))
-                 (elem-bytes (if (or (string-equal elem-str "double")
-                                     (string-equal elem-str "int64_t")
-                                     (string-equal elem-str "uint64_t")) 8 4)))
-            ;; size-expr: scalar (square: total = size^rank) or (rows cols) list
-            ;; (non-square: total = product).  (Matches %cuda-scratch-dims below.)
-            (when (and is-tensor (or (integerp size-expr)
-                                     (and (listp size-expr) (every #'integerp size-expr))))
-              (let ((count (if (integerp size-expr)
-                               (expt size-expr rank)
-                               (reduce #'* size-expr))))
-                (incf total (* count elem-bytes))))
-            (when (and (not is-tensor) is-local)
-              (let ((count (if (%array-type-p (cell-base-type param-type))
-                               (%array-size (cell-base-type param-type))
-                               1)))
-                (incf total (* count elem-bytes))))))))
-    total))
+             (is-local   (member param-as (list :local "LOCAL" (quote local))
+                                 :test (function string-equal))))
+        (when (and is-local (or (tensor-type-p param-type) (cell-type-p param-type)))
+          (multiple-value-bind (bytes region) (%cuda-local-param-bytes param param-type)
+            (when bytes
+              (if (eq region :tensor)
+                  (incf tensor-bytes bytes)
+                  (incf cell-bytes bytes)))))))
+    (let ((cell-base (* 8 (ceiling tensor-bytes 8))))
+      (values tensor-bytes
+              cell-base
+              (if (zerop cell-bytes) tensor-bytes (+ cell-base cell-bytes))))))
+
+(defun compute-total-shared-bytes (declared-sig aliases)
+  "Sum up all local-memory tensor byte-sizes for the sharedMemBytes launch param.
+
+   BUG 046: now delegates to %cuda-shared-layout so the number requested at launch and the
+   offsets handed to the kernel are computed ONCE, by the same code."
+  (nth-value 2 (%cuda-shared-layout declared-sig aliases)))
+
+(defvar *cuda-shared-cell-offset* 0
+  "Running byte offset for LOCAL scratch CELLS, which live above the scratch tensors.
+   Set per kernel by the emit-kernel-args wrapper from %cuda-shared-layout; bumped by
+   %cuda-emit-cell-arg.  BUG 046 -- before this existed every cell sat at offset 0 and
+   silently overwrote the first tile.")
 
 (defun %cuda-emit-cell-arg (stream param param-name param-type param-dir is-local aliases arg-index)
+  "BUG 046: a LOCAL cell now draws a DISTINCT shared-memory offset from
+   *cuda-shared-cell-offset* instead of hard-coding 0 on top of the first scratch tile.
+   The GLOBAL branch is untouched."
   (declare (ignore param aliases))
   (let* ((base-type      (cell-base-type param-type))
          (is-array-cell  (%array-type-p base-type))
@@ -586,10 +702,18 @@ overrides the runtime SM-count query in the grid-size heuristic."
          (arg-names      '())
          (alloc          nil))
     (if is-local
-        ;; LOCAL MEMORY — pass 0 as ptr, bytesize, and offset
-        (progn
-          (format stream "~%    // LOCAL cell: ~a~%" param-name)
-          (format stream "    uint64_t ~a_local_ptr = 0;  // shared offset~%" param-name-cpp)
+        ;; LOCAL MEMORY — a distinct slice of the shared blob, above the scratch tensors
+        (let* ((elem-bytes (if (or (string-equal base-type-str "double")
+                                   (string-equal base-type-str "int64_t")
+                                   (string-equal base-type-str "uint64_t"))
+                               8 4))
+               (bytesize (* elem-count elem-bytes))
+               (offset   *cuda-shared-cell-offset*))
+          (setf *cuda-shared-cell-offset* (+ *cuda-shared-cell-offset* bytesize))
+          (format stream "~%    // LOCAL cell: ~a (~d bytes, shared offset ~d)~%"
+                  param-name bytesize offset)
+          (format stream "    uint64_t ~a_local_ptr = ~dULL;  // shared offset~%"
+                  param-name-cpp offset)
           (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var elem-count base-type-str)
           (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
           (push (format nil "~a_local_ptr" param-name-cpp) arg-names)
@@ -603,7 +727,6 @@ overrides the runtime SM-count query in the grid-size heuristic."
           (format stream "    CUdeviceptr ~a;~%" ptr-var)
           (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~a * sizeof(~a)));~%"
                   ptr-var size-var base-type-str)
-          ;; Host-side init buffer
           (format stream "    {~%")
           (format stream "        ~a* h = new ~a[~a];~%" base-type-str base-type-str size-var)
           (if is-array-cell
