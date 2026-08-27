@@ -160,7 +160,6 @@
          env context location)))))
 
 
-
 ;; src/mma.lisp
 (defun %spv-decide-register-mode (kernel-name profile)
   "Endeavor 144 Phase 4: pick the per-thread register allocation for KERNEL-NAME from the
@@ -213,50 +212,6 @@
          (elem  (and (consp canon) (>= (length canon) 2) (second canon))))
     (if (and elem (symbolp elem)) elem 'float)))
 
-;; src/compiler.lisp  (REPLACES the one at src/compiler.lisp:605)
-(defun compile-to-spirv (module output-path &key debug-p)
-  "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
-  (let* ((base-path (uiop:pathname-directory-pathname output-path))
-         (name (pathname-name output-path))
-         (ll-file     (merge-pathnames (format nil "~a.temp.ll" name) base-path))
-         (ll-opt-file (merge-pathnames (format nil "~a.opt.ll"  name) base-path))
-         (bc-file     (merge-pathnames (format nil "~a.temp.bc" name) base-path))
-         (spv-file output-path))
-    (%remove-dead-array-returning-functions module)
-    (llvm-set-target module "spir64-unknown-unknown")
-    (when (or (%module-uses-native-builtin-p module)
-              (%module-uses-async-copy-builtin-p module))
-      (%emit-opencl-version-metadata module))
-    (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
-           (ir-with-metadata (inject-spir-kernel-metadata ir)))
-      (with-open-file (stream ll-file :direction :output :if-exists :supersede)
-        (write-string ir-with-metadata stream)))
-    (let* ((opt-ok        (%run-opt-pipeline ll-file ll-opt-file +spv-opt-pipeline+))
-           (llvm-as-input (if opt-ok ll-opt-file ll-file)))
-      (let ((tool (resolve-tool-executable "llvm-as")))
-        (run-tool-command
-         (list tool (namestring llvm-as-input) "-o" (namestring bc-file))
-         :log-prefix "[SPIR-V] ")))
-    (let* ((tool (resolve-tool-executable "llvm-spirv"))
-           (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
-           (ext-flags (append '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
-                              (when (%module-uses-coop-matrix-p module)
-                                '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
-                              (when (%module-uses-2d-block-io-p module)
-                                '("--spirv-ext=+SPV_INTEL_2d_block_io"))
-                              ;; 155: a bf16 register tile lowers to a `bfloat` coop matrix,
-                              ;; which llvm-spirv refuses without this extension.
-                              (when (%module-uses-bfloat-p module)
-                                '("--spirv-ext=+SPV_KHR_bfloat16"))))
-           (flags (append debug-flags ext-flags)))
-      (run-tool-command
-       (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
-       :log-prefix "[SPIR-V] "))
-    (unless debug-p
-      (when (probe-file ll-file)     (delete-file ll-file))
-      (when (probe-file ll-opt-file) (delete-file ll-opt-file))
-      (when (probe-file bc-file)     (delete-file bc-file)))
-    (log:info "Generated SPIR-V: ~a" spv-file)))
 
 ;; tests/run-specs.lisp
 (defun %spv-float-ids (txt width)
@@ -427,8 +382,6 @@
 ;; [superseded defun %coop-node-elem removed in consolidation -- a later copy in this file is the live one]
 
 
-
-
 ;; src/codegen.lisp
 (defun %llvm-float-width (ty)
   "Bit width of an LLVM floating-point type, or NIL if TY is not one of the four Crisp knows.
@@ -438,19 +391,6 @@
         ((cffi:pointer-eq ty (llvm-float-type))  32)
         ((cffi:pointer-eq ty (llvm-double-type)) 64)
         (t nil)))
-
-;; src/codegen.lisp  (REPLACES %coop-fill)
-(defun %coop-fill (builder module init-val elem-llvm rows cols use)
-  "Construct a coop matrix filled with INIT-VAL (scalar) via __spirv_CompositeConstruct.
-
-   Endeavour 155: INIT-VAL is coerced to ELEM-LLVM first.  Before the element type reached
-   codegen this was vacuous — everything was f32, so the literal already matched.  Now that the
-   matrix carries the tile's real element type, the literal has to follow it."
-  (%coop-call builder module
-              (format nil "__spirv_CompositeConstruct_~d_~d_~d" use rows cols)
-              (%coop-type elem-llvm rows cols use)
-              (list elem-llvm)
-              (list (%coop-coerce-scalar builder init-val elem-llvm "coop_init"))))
 
 
 ;;;; ============================================================================
@@ -746,7 +686,6 @@
 ;; [superseded defun %emit-per-frag-accumulate removed in consolidation -- a later copy in this file is the live one]
 
 
-
 ;; src/mma.lisp  (REPLACES %explode-rewrite-body-form -- 155 Phase C)
 (defun %explode-rewrite-body-form (form tiles)
   "Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile /
@@ -892,8 +831,6 @@
 ;; [superseded defun %coop-tensor-ptr+stride removed in consolidation -- a later copy in this file is the live one]
 
 
-
-
 ;;;; ============================================================================
 ;;;; Endeavour 155 — the 2D-BLOCK PREFETCH also described every surface as f32.
 ;;;;
@@ -917,7 +854,6 @@
 
 ;; src/codegen.lisp
 ;; [superseded defun %elem-llvm-bytes removed in consolidation -- a later copy in this file is the live one]
-
 
 
 ;; src/codegen.lisp  (REPLACES %block-prefetch -- 155)
@@ -1010,144 +946,6 @@
         (let ((tn (semantic-coop-op-tensor-node node)))
           (and tn (tensor-elem (semantic-node-type tn))))
         'float)))
-
-
-;; src/codegen.lisp  (REPLACES generate-node-ir (semantic-coop-op) -- 155)
-;;
-;; Endeavour 155: the :STORE and :PREFETCH branches call %coop-tensor-ptr+stride through a shorter
-;; form than :LOAD does, so the earlier edit -- which matched on the :load call's argument layout
-;; -- reached only one of the three sites.  The emitted IR said so plainly: A/B loads indexed by
-;; `half` while every prefetch of the SAME tensor still indexed by `float`.
-;;
-;;     20 getelementptr float, ptr addrspace(1) %coop_base    <- 8 C stores (right) + 12 prefetches (wrong)
-;;     18 getelementptr half,  ptr addrspace(1) %coop_base    <- the A/B loads
-;;
-;; Passing ELEM-LLVM at all three is a no-op for :store (C really is f32) and the fix for
-;; :prefetch.  Worth noting that counting the GEPs by element type was what made this visible --
-;; the totals had to add up, and 20 was too many.
-(defmethod generate-node-ir ((node semantic-coop-op) builder module var-env di-builder di-scope location-map)
-  "Cooperative-matrix op: fill / load / store / prefetch / map / map2."
-  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
-    (let ((kind (semantic-coop-op-kind node))
-          (rows (semantic-coop-op-rows node))
-          (cols (semantic-coop-op-cols node))
-          (use  (semantic-coop-op-use node))
-          (layout (semantic-coop-op-layout node))
-          (i64 (llvm-int64-type))
-          (f32 (llvm-float-type))
-          ;; Endeavour 155: the matrix's REAL component type.  See header.
-          (elem-llvm (%coop-op-elem-llvm node)))
-      (labels ((origin (dim-node dim)
-                 (llvm-build-mul builder
-                                 (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
-                                 (llvm-const-int i64 dim nil) "coop_orig"))
-               (ptr-of (name)
-                 (or (gethash name var-env)
-                     (error 'crisp-compiler-error
-                            :message (format nil "cooperative-matrix map: no storage found for variable ~a." name)
-                            :source-location (semantic-coop-op-source-location node))))
-               (map-loop (primary-ptr per-elem)
-                 ;; Endeavour 155: the map loops extract SCALAR elements into f32 allocas
-                 ;; (cm_elem / cm_prm / cm_adj below).  For a 16-bit matrix those would be the
-                 ;; wrong width, so refuse rather than miscompile.  See header for why this is a
-                 ;; refusal and not a fix.
-                 (unless (eq (%coop-node-elem node) 'float)
-                   (error 'crisp-compiler-error
-                          :message (format nil "cooperative-matrix elementwise map is only implemented for float (fp32) matrices; this one is ~a.  The map loop extracts scalar elements through f32 temporaries, which would silently truncate a ~:*~a matrix."
-                                           (%coop-node-elem node))
-                          :source-location (semantic-coop-op-source-location node)))
-                 (let* ((i32 (llvm-int32-type))
-                        (coop-ty (%coop-type f32 rows cols use))
-                        (mat (llvm-build-load2 builder coop-ty primary-ptr "cm_map_mat"))
-                        (len (%coop-length builder module mat f32 rows cols use))
-                        (current-fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
-                        (i-alloca (llvm-build-alloca builder i32 "cm_i"))
-                        (check-block (llvm-append-basic-block current-fn "cm_check"))
-                        (body-block  (llvm-append-basic-block current-fn "cm_body"))
-                        (exit-block  (llvm-append-basic-block current-fn "cm_exit")))
-                   (llvm-build-store builder (llvm-const-int i32 0 0) i-alloca)
-                   (llvm-build-br builder check-block)
-                   (llvm-position-builder-at-end builder check-block)
-                   (let* ((i-val  (llvm-build-load2 builder i32 i-alloca "cm_i_v"))
-                          (cond-v (llvm-build-icmp builder +llvm-int-slt+ i-val len "cm_cond")))
-                     (llvm-build-cond-br builder cond-v body-block exit-block))
-                   (llvm-position-builder-at-end builder body-block)
-                   (let* ((i-val (llvm-build-load2 builder i32 i-alloca "cm_i_b"))
-                          (i-x   (llvm-build-sext builder i-val i64 "cm_i64")))
-                     (funcall per-elem i-x)
-                     (let* ((i-cur  (llvm-build-load2 builder i32 i-alloca "cm_i_c"))
-                            (i-next (llvm-build-add builder i-cur (llvm-const-int i32 1 0) "cm_i_n")))
-                       (llvm-build-store builder i-next i-alloca)))
-                   (unless (terminator-p (llvm-get-insert-block builder))
-                     (llvm-build-br builder check-block))
-                   (llvm-position-builder-at-end builder exit-block)
-                   (values nil nil))))
-        (ecase kind
-          (:fill
-           (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
-                               elem-llvm rows cols use)
-                   nil))
-          (:load
-           (multiple-value-bind (ptr stride)
-               (%coop-tensor-ptr+stride builder (gen (semantic-coop-op-tensor-node node))
-                                        (origin (semantic-coop-op-ty node) rows)
-                                        (origin (semantic-coop-op-tx node) cols) layout elem-llvm)
-             (values (%coop-load builder module ptr stride elem-llvm rows cols use layout) nil)))
-          (:store
-           (let* ((mat (gen (semantic-coop-op-value-node node)))
-                  (tv  (gen (semantic-coop-op-tensor-node node)))
-                  (orow (origin (semantic-coop-op-ty node) rows))
-                  (ocol (origin (semantic-coop-op-tx node) cols)))
-             (multiple-value-bind (ptr stride)
-                 (%coop-tensor-ptr+stride builder tv orow ocol layout elem-llvm)
-               (%coop-store builder module ptr mat stride elem-llvm rows cols use layout)
-               (values nil nil))))
-          (:prefetch
-           (let* ((tv   (gen (semantic-coop-op-tensor-node node)))
-                  (orow (origin (semantic-coop-op-ty node) rows))
-                  (ocol (origin (semantic-coop-op-tx node) cols)))
-             (multiple-value-bind (ptr stride)
-                 (%coop-tensor-ptr+stride builder tv orow ocol layout elem-llvm)
-               (%block-prefetch builder module ptr stride rows cols (%elem-llvm-bytes elem-llvm))
-               (values nil nil))))
-          (:map
-           (let* ((tgt (ptr-of (semantic-coop-op-ty node)))
-                  (temp-name (semantic-coop-op-tx node))
-                  (body-node (semantic-coop-op-tensor-node node))
-                  (t-alloca (llvm-build-alloca builder f32 "cm_elem")))
-             (map-loop tgt
-                       (lambda (i-x)
-                         (let* ((ep   (%coop-access-chain builder module tgt i-x))
-                                (elem (llvm-build-load2 builder f32 ep "cm_elem_v"))
-                                (benv (alexandria:copy-hash-table var-env)))
-                           (llvm-build-store builder elem t-alloca)
-                           (setf (gethash temp-name benv) t-alloca)
-                           (let ((res (generate-node-ir body-node builder module benv
-                                                        di-builder di-scope location-map)))
-                             (llvm-build-store builder res ep)))))))
-          (:map2
-           (let* ((adj-ptr (ptr-of (semantic-coop-op-ty node)))
-                  (prm-ptr (ptr-of (semantic-coop-op-tx node)))
-                  (temps   (semantic-coop-op-layout node))
-                  (tp-name (first temps))
-                  (ta-name (second temps))
-                  (body-node (semantic-coop-op-tensor-node node))
-                  (tp-alloca (llvm-build-alloca builder f32 "cm_prm"))
-                  (ta-alloca (llvm-build-alloca builder f32 "cm_adj")))
-             (map-loop adj-ptr
-                       (lambda (i-x)
-                         (let* ((ep-a (%coop-access-chain builder module adj-ptr i-x))
-                                (ep-p (%coop-access-chain builder module prm-ptr i-x))
-                                (v-a  (llvm-build-load2 builder f32 ep-a "cm_adj_v"))
-                                (v-p  (llvm-build-load2 builder f32 ep-p "cm_prm_v"))
-                                (benv (alexandria:copy-hash-table var-env)))
-                           (llvm-build-store builder v-p tp-alloca)
-                           (llvm-build-store builder v-a ta-alloca)
-                           (setf (gethash tp-name benv) tp-alloca)
-                           (setf (gethash ta-name benv) ta-alloca)
-                           (let ((res (generate-node-ir body-node builder module benv
-                                                        di-builder di-scope location-map)))
-                             (llvm-build-store builder res ep-a))))))))))))
 
 
 ;; tests/run-specs.lisp
@@ -1342,53 +1140,6 @@
   (%validate-coop-operand-elem spv-path 16 "bfloat16 (as i16)" :int-components cl:t))
 
 
-;;;; ------------------------------------------------------------------------------------------
-;;;; Endeavour 155 — bf16 becomes i16 AT THE ONE PLACE COOP TYPES ARE BUILT.
-;;;;
-;;;; Changing %coop-op-elem-llvm covered the fill / load / store / address paths, but not the
-;;;; FRAGMENT ALLOCA, which reaches LLVM by a different route: resolve-type-to-llvm sees the
-;;;; semantic `(coop-matrix bfloat16 8 16 0)` and resolves the element through the type registry,
-;;;; where bfloat16 maps to LLVM `bfloat`.  The result was a module that disagreed with itself —
-;;;; i16 matrices from the fill, `bfloat` matrices in the MulAdd operands:
-;;;;
-;;;;     %27 = call target("spirv.CooperativeMatrixKHR", i16, 3, 8, 16, 0) @__spirv_CompositeConstruct_0_8_16(float 0.0)
-;;;;     ... @__spirv_CooperativeMatrixMulAddKHR(target("spirv.CooperativeMatrixKHR", bfloat, 3, 8, 16, 0) ...
-;;;;
-;;;; %coop-type is the single choke point every cooperative-matrix LLVM type passes through — the
-;;;; alloca path calls it via resolve-type-to-llvm, and codegen calls it directly.  Making the
-;;;; substitution HERE means every route agrees by construction, rather than requiring each route
-;;;; to remember.  That is the same lesson as the six element-type layers: put the decision where
-;;;; the thing is CONSTRUCTED, not at each site that consumes it.
-;;;;
-;;;; Scoped to :spirv because it is an Intel encoding (see the bf16 header); on any other backend
-;;;; a bfloat element passes through untouched.
-;;;; ------------------------------------------------------------------------------------------
-
-;; src/codegen.lisp  (REPLACES %coop-type -- 155 bf16)
-(defun %coop-type (elem-llvm rows cols use)
-  "Build target(\"spirv.CooperativeMatrixKHR\", ELEM-LLVM, 3, ROWS, COLS, USE) in the
-   global context (= the module's context, so the type matches).
-
-   Endeavour 155: an LLVM `bfloat` element is rewritten to i16 on the SPIR-V backend, because that
-   is how Intel encodes a bf16 cooperative matrix — raw 16-bit integers, with the bfloat-ness
-   carried by the MulAdd operands mask (0x40).  Emitting a real bfloat type instead requires
-   SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement."
-  (let* ((bf (crisp.llvm-bindings::llvm-bfloat-type))
-         (elem (if (and (eq *target-backend* :spirv)
-                        elem-llvm
-                        (cffi:pointer-eq elem-llvm bf))
-                   (crisp.llvm-bindings::llvm-int16-type)
-                   elem-llvm))
-         (ctx (crisp.llvm-bindings::llvm-get-global-context)))
-    (cffi:with-foreign-objects ((tps :pointer 1) (ips :unsigned-int 4))
-      (setf (cffi:mem-aref tps :pointer 0) elem
-            (cffi:mem-aref ips :unsigned-int 0) 3          ; Subgroup scope
-            (cffi:mem-aref ips :unsigned-int 1) rows
-            (cffi:mem-aref ips :unsigned-int 2) cols
-            (cffi:mem-aref ips :unsigned-int 3) use)
-      (crisp.llvm-bindings::llvm-target-ext-type-in-context
-       ctx "spirv.CooperativeMatrixKHR" tps 1 ips 4))))
-
 ;; src/codegen.lisp  (REPLACES %coop-coerce-scalar -- 155 bf16)
 (defun %coop-coerce-scalar (builder val want-ty name)
   "Coerce scalar VAL to WANT-TY, if it is not already that type.
@@ -1431,37 +1182,6 @@
                                                       (format nil "~a_via_f32" name))
                                    want-ty name))))))))
 
-;; src/mma.lisp  (REPLACES %coop-mma -- 155 bf16, corrected detection)
-(defun %coop-mma (builder module a-val b-val c-val elem-llvm m n k)
-  "Emit CooperativeMatrixMulAddKHR(A, B, C, <operands>) -> the MxN accumulator coop matrix.
-
-   Operand types come from the ACTUAL VALUES via LLVMTypeOf, so the declaration cannot drift from
-   what is passed (Endeavour 155, Phase 1).
-
-   THE OPERANDS MASK.  0 for f32/tf32 and for fp16, whose component type already says what it is.
-   0x40 (MatrixAAndBBFloat16ComponentsINTEL) when A and B are 16-bit INTEGER matrices, which is
-   how Intel represents bf16 — an integer type cannot say 'bfloat' on its own, so the bit says it.
-
-   DETECTION READS THE TYPE, IT DOES NOT REBUILD IT.  The first attempt compared A against a
-   freshly constructed (%coop-type i16 m k 0), which failed for a reason worth recording: this
-   function's M/N/K come from a caller that computes them with an UNTYPED (%spv-mma-shape) —
-   src/mma.lisp:653 — so K is the tf32 8 even when the operands are 16-bit and K is really 16.
-   Those arguments are otherwise unused here (the types come from the values), so the wrong shape
-   is harmless to codegen and was harmless to fp16; it only defeated a check that trusted it.
-   Printing the type and reading its component is exact and depends on nothing else."
-  (declare (ignorable elem-llvm m n k))
-  (let* ((a-ty (crisp.llvm-bindings::llvm-type-of a-val))
-         (b-ty (crisp.llvm-bindings::llvm-type-of b-val))
-         (c-ty (crisp.llvm-bindings::llvm-type-of c-val))
-         (i32  (crisp.llvm-bindings::llvm-int32-type))
-         (a-str (crisp.llvm-bindings::llvm-print-type-to-string a-ty))
-         (bf16-p (and (eq *target-backend* :spirv)
-                      a-str
-                      (search ", i16," a-str)))
-         (operands (if bf16-p #x40 0)))
-    (%coop-call builder module "__spirv_CooperativeMatrixMulAddKHR"
-                c-ty (list a-ty b-ty c-ty i32)
-                (list a-val b-val c-val (crisp.llvm-bindings::llvm-const-int i32 operands nil)))))
 
 ;; src/codegen.lisp  (REPLACES %elem-llvm-bytes -- 155 bf16)
 (defun %elem-llvm-bytes (elem-llvm)
@@ -2058,61 +1778,6 @@
            (c   (%llvm-const-int-value op1)))
       (when c (values op0 c)))))
 
-;; src/codegen.lisp  (REPLACES %coop-tensor-ptr+stride -- 155 Step 4, derived from the LIVE 6-arg
-;; overlay copy, not from src/.  The previous append dropped ELEM-LLVM, which is the GEP's element
-;; type: defaulting it to f32 scales every 16-bit tile address by 4 instead of 2.  That is the
-;; overlay-duplicate-definition trap -- only the LAST copy is live, so an extraction must come from
-;; the overlay whenever one exists there.)
-(defun %coop-tensor-ptr+stride (builder tensor-val orow ocol layout &optional elem-llvm)
-  "From a Crisp tensor STRUCT value, return (values element-ptr stride-i64) for the coop tile whose
-   element origin is (OROW, OCOL) -- both i64 LLVM values.  Tensor layout: field0 = parent storage
-   {ptr,i64}, field2 = strides [N x i64].  Leading dim = strides[0] (RowMajor) / strides[1]
-   (ColMajor).  ELEM-LLVM is the tensor's element type for the GEP and defaults to f32.
-
-   Endeavour 155 Step 4: the flat offset is computed as BASE PLUS DELTA rather than from scratch.
-   Each origin arrives as (tile-base + compile-time-fragment-index) * extent, so
-
-       flat = (tb_r*ext_r)*s0 + (tb_c*ext_c)*s1   +   (fr*ext_r)*s0 + (fc*ext_c)*s1
-
-   The first bracket is identical for every fragment of the tile and collapses to one computation;
-   each multiply in the second has a compile-time constant operand, which IGC strength-reduces to
-   shifts.  Xe has no native 64-bit multiply, so the runtime-by-runtime products in the first
-   bracket are the expensive ones -- and there are now two per TILE instead of two per FRAGMENT.
-
-   When an origin does not have that shape the split degrades to (origin, 0) and this emits exactly
-   what it always did."
-  (let* ((elem (or elem-llvm (llvm-float-type)))
-         (i64 (crisp.llvm-bindings::llvm-int64-type))
-         (storage (llvm-build-extract-value builder tensor-val 0 "coop_storage"))
-         (base    (llvm-build-extract-value builder storage 0 "coop_base"))
-         (strides (llvm-build-extract-value builder tensor-val 2 "coop_strides"))
-         (s0 (llvm-build-extract-value builder strides 0 "coop_s0"))
-         (s1 (llvm-build-extract-value builder strides 1 "coop_s1"))
-         (stride (if (= layout 0) s0 s1)))
-    (multiple-value-bind (row-base row-delta) (%coop-split-origin builder orow)
-      (multiple-value-bind (col-base col-delta) (%coop-split-origin builder ocol)
-        (let* ((off0 (llvm-build-mul builder row-base s0 "coop_off0"))
-               (off1 (llvm-build-mul builder col-base s1 "coop_off1"))
-               (flat (llvm-build-add builder off0 off1 "coop_flat"))
-               ;; The deltas are compile-time element counts, so these multiply a runtime stride by
-               ;; a CONSTANT -- strength-reducible, unlike the runtime-by-runtime products above.
-               (flat (if (zerop row-delta)
-                         flat
-                         (llvm-build-add builder flat
-                                         (llvm-build-mul builder (llvm-const-int i64 row-delta nil)
-                                                         s0 "coop_dr")
-                                         "coop_flat_r")))
-               (flat (if (zerop col-delta)
-                         flat
-                         (llvm-build-add builder flat
-                                         (llvm-build-mul builder (llvm-const-int i64 col-delta nil)
-                                                         s1 "coop_dc")
-                                         "coop_flat_c"))))
-          (log:debug "coop addr: row-delta=~a col-delta=~a hoisted=~a"
-                     row-delta col-delta (or (/= row-delta 0) (/= col-delta 0)))
-          (cffi:with-foreign-object (idx :pointer 1)
-            (setf (cffi:mem-aref idx :pointer 0) flat)
-            (values (llvm-build-gep2 builder elem base idx 1 "coop_elem_ptr") stride)))))))
 
 ;;;; ============================================================================
 ;;;; Endeavour 156 Phase 0 — PIN THE SUBGROUP SIZE.
@@ -2340,91 +2005,6 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
 
           (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
 
-;; src/mma.lisp  (REPLACES %emit-per-frag-block-load -- 156 Phase 1: integer warp selectors)
-(defun %emit-per-frag-block-load (src entry coords)
-  "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS).
-
-   Endeavour 155 Step 2b: when the tile is WARP-SLICED, each warp loads only its own rows (:a) or
-   columns (:b), at global coordinates offset by its grid position.  load-tile appears once in the
-   body, so the choice is a STATIC per-warp switch -- static so the offsets fold to literals and the
-   block-load addresses stay compile-time, which is the same reason 139 step-4 made the MMA walk
-   static."
-  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) (operand :acc)) (cdr entry)
-    (declare (ignore n-true))
-    (let ((cl (find-package :crisp-language)))
-      (destructuring-bind (fr . fc) (%frag-mn-for-operand operand (%register-tile-elem-of (first entry)))
-        (let* ((frag-fn (ecase operand
-                          (:a (intern "LOAD-FRAGMENT-A" cl))
-                          (:b (intern "LOAD-FRAGMENT-B" cl))
-                          (:acc (error 'crisp-compiler-error
-                                  :message "load-tile into an accumulator register-tile is not supported (only :operand :a / :b tiles are load targets)."
-                                  :source-location nil))))
-               (to-int  (intern "TO-INT" cl))
-               (n-rows  (floor m fr))
-               (n-cols  (floor n fc))
-               (gy      (first coords))
-               (gx      (second coords))
-               (slice   (%warp-slice-extent entry operand))
-               (grid    *warp-grid*))
-          (flet ((one (idx row col)
-                   `(set! ,(nth idx syms)
-                          (,frag-fn ,src
-                                    ((+ (* (,to-int ,gy) ,n-rows) ,row)
-                                     (+ (* (,to-int ,gx) ,n-cols) ,col))))))
-            (if (not (and slice grid))
-                `(progn
-                   ,@(loop for ri below n-rows append
-                           (loop for ci below n-cols
-                                 for idx = (+ (* ri n-cols) ci)
-                                 collect (one idx ri ci))))
-                (let* ((progn-sym (intern "PROGN" cl))
-                       (let-sym   (intern "LET" cl))
-                       (if-sym    (intern "IF" cl))
-                       (lt-sym    (intern "<" cl))
-                       (minus-sym (intern "-" cl))
-                       (div-sym   (intern "/" cl))
-                       (times-sym (intern "*" cl))
-                       (warp-id   (intern "WARP-ID" cl))
-                       (gn        (cdr grid))
-                       (nslice    (if (eq operand :a) (car grid) (cdr grid)))
-                       (wp        (gensym "WP"))
-                       (sl        (gensym "SL")))
-                  (labels ((arm (w)
-                             `(,progn-sym
-                                ,@(if (eq operand :a)
-                                      (loop for lr below slice append
-                                            (loop for ci below n-cols
-                                                  for idx = (+ (* lr n-cols) ci)
-                                                  collect (one idx (+ (* w slice) lr) ci)))
-                                      (loop for ri below n-rows append
-                                            (loop for lc below slice
-                                                  for idx = (+ (* ri slice) lc)
-                                                  collect (one idx ri (+ (* w slice) lc)))))))
-                           (chain (w)
-                             (if (>= w (1- nslice))
-                                 (arm w)
-                                 `(,if-sym (,lt-sym ,sl ,(1+ w))
-                                           ,(arm w)
-                                           ,(chain (1+ w))))))
-                    `(,let-sym ((,wp (,minus-sym (,to-int (,warp-id)) ,first-true)))
-                       ;; 156 Phase 1: INTEGER / and - , not FLOOR/MOD.
-                       ;;
-                       ;; (intern "FLOOR" :crisp-language) resolves to CRISP.COMPILER:FLOOR, which
-                       ;; returns a FLOAT -- %emit-per-frag-store already documents that and moved
-                       ;; to / and - for its addresses.  (intern "MOD" :crisp-language) is worse:
-                       ;; MOD does not exist there at all, so the intern MINTS a fresh symbol with
-                       ;; no operator behind it.  The load switch was never updated with the store.
-                       ;;
-                       ;; It survived because single-axis slicing never exercises either one: when
-                       ;; gm=1 or gn=1 the un-sliced operand emits a bare arm with NO selector, and
-                       ;; the sliced one divides by 1, which is exact under any semantics.  A 2-D
-                       ;; grid is the first case where a selector divides by something >1 -- which
-                       ;; is exactly where MMA_WRONG starts (verified: correct at 1 and 2 warps,
-                       ;; wrong from 4; correct at every 1-D-forced shape at 4 warps).
-                       (,let-sym ((,sl ,(if (eq operand :a)
-                                            `(,div-sym ,wp ,gn)
-                                            `(,minus-sym ,wp (,times-sym (,div-sym ,wp ,gn) ,gn)))))
-                         ,(chain 0))))))))))))
 
 ;; TEMPORARY BISECTION PROBE -- not a fix.  Neuters the Step 4 split so %coop-tensor-ptr+stride
 ;; emits exactly the pre-155-Step-4 address arithmetic, to determine whether the 256x256 :warps
@@ -2754,87 +2334,6 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
                   profile-name key (length bad) bad *known-mma-lowerings*)))
        ls))))
 
-;; 156 lowering selector: REPLACES internal-def-function -- parses (mma-lowering ...)
-(defun internal-def-function (name params declarations body location)
-  "Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the
-   body analysis.  Otherwise identical to the Phase 2 definition."
-  (log:info "Analyzing function ~s" name)
-  (multiple-value-bind (explicit-env return-type)
-      (parse-function-declarations params declarations)
-    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
-           (is-entry-p (loop for d in declarations
-                             thereis (and (listp d) (symbolp (first d))
-                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
-           (is-grid-fn-p (loop for d in declarations
-                               thereis (and (listp d) (symbolp (first d))
-                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
-           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
-           (*boundary-struct-params*
-             (if is-entry-p
-                 (loop for param in explicit-env
-                       when (%boundary-struct-type-p (parameter-def-type param))
-                       collect (string-upcase (symbol-name (parameter-def-name param))))
-                 *boundary-struct-params*))
-           (*boundary-array-params*
-             (if is-entry-p
-                 (loop for param in explicit-env
-                       when (%array-type-p (parameter-def-type param))
-                       collect (string-upcase (symbol-name (parameter-def-name param))))
-                 *boundary-array-params*))
-           (*current-kernel-is-backward*
-             (and name (symbolp name)
-                  (let ((n (symbol-name name)))
-                    (and (>= (length n) 5)
-                         (string-equal "_GRAD" (subseq n (- (length n) 5)))))))
-           (cluster-dims nil))
-      (when (and is-entry-p *boundary-struct-params*)
-            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
-      (when (and is-entry-p *boundary-array-params*)
-            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
-      (when is-grid-fn-p
-        (log:info "Compiling grid function ~a (dispatch context)" name)
-        (%validate-grid-function-return-type return-type))
-      (when is-entry-p
-        (let* ((global-size-decl (find "GLOBAL-SIZE" declarations
-                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                       :test #'string-equal))
-               (local-size-decl  (find "LOCAL-SIZE" declarations
-                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                       :test #'string-equal))
-               (num-groups-decl  (find "NUM-GROUPS" declarations
-                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                       :test #'string-equal))
-               (cluster-size-decl (find "CLUSTER-SIZE" declarations
-                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                        :test #'string-equal))
-               ;; 156: (mma-lowering :xe-native) -- which code-generation strategy this kernel wants
-               ;; for its matrix-engine operations.  Parsed here so an unavailable request is refused
-               ;; at analysis time, next to the other dispatch declarations.
-               (mma-lowering-decl (find "MMA-LOWERING" declarations
-                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                        :test #'string-equal))
-               (mma-lowering (%parse-mma-lowering-decl mma-lowering-decl name
-                                                       (active-hardware-profile))))
-          (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
-          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl
-                    mma-lowering-decl)
-            (let ((dispatch-plist
-                    (append (when global-size-decl (list :global-size global-size-decl))
-                            (when local-size-decl  (list :local-size  local-size-decl))
-                            (when num-groups-decl  (list :num-groups  num-groups-decl))
-                            (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
-                            (when cluster-dims      (list :cluster-size cluster-dims))
-                            ;; Recorded even when defaulted, so the metacrisp -- and therefore any
-                            ;; benchmark row -- can say which lowering produced a number.  A figure
-                            ;; you cannot attribute to a code path is not evidence.
-                            (when mma-lowering      (list :mma-lowering mma-lowering)))))
-              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
-              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
-          (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
-      (let ((*current-kernel-cluster-dims* cluster-dims))
-        (internal-compile-function name explicit-env return-type params body declarations
-                                   location *compiler-context*)))))
-
 
 ;;;; ============================================================================
 ;;;; Endeavour 156 Step 1 — THE MMA LOWERING BECOMES A PROTOCOL.
@@ -2876,27 +2375,31 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
          (plist (and name (gethash name *kernel-dispatch-declarations*))))
     (or (getf plist :mma-lowering) :coop-matrix)))
 
-;; src/codegen.lisp
-(defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
-  "Top-level function to generate LLVM IR for a given semantic function.
 
-   Endeavour 156: binds *mma-lowering* for the extent of this function's code generation, so every
-   choke point in the lowering protocol sees the kernel's declared choice without having to be
-   handed it explicitly."
-  (log:warn "GENERATE-LLVM-IR: ~a Params: ~a Ret: ~a"
-            (semantic-function-name semantic-function)
-            (semantic-function-param-list semantic-function)
-            (semantic-function-return-type semantic-function))
-  (log:warn "BODY: ~a" (semantic-function-body semantic-function))
-  (let ((*mma-lowering* (%kernel-mma-lowering semantic-function)))
-    (log:debug "generate-llvm-ir: ~a uses mma lowering ~a"
-               (semantic-function-name semantic-function) *mma-lowering*)
-    (multiple-value-bind (func di-subprogram)
-        (generate-function-prototype semantic-function module di-builder di-compile-unit location-map)
-      (when func
-            ;; Attach SPIR-V/PTX kernel metadata if this is an entry point
-            (ensure-opencl-kernel-metadata func semantic-function module)
-            (generate-function-body semantic-function func di-subprogram builder module di-builder location-map)))))
+;;;; ------------------------------------------------------------------------------------------
+;;;; Endeavour 155 — bf16 becomes i16 AT THE ONE PLACE COOP TYPES ARE BUILT.
+;;;;
+;;;; Changing %coop-op-elem-llvm covered the fill / load / store / address paths, but not the
+;;;; FRAGMENT ALLOCA, which reaches LLVM by a different route: resolve-type-to-llvm sees the
+;;;; semantic `(coop-matrix bfloat16 8 16 0)` and resolves the element through the type registry,
+;;;; where bfloat16 maps to LLVM `bfloat`.  The result was a module that disagreed with itself —
+;;;; i16 matrices from the fill, `bfloat` matrices in the MulAdd operands:
+;;;;
+;;;;     %27 = call target("spirv.CooperativeMatrixKHR", i16, 3, 8, 16, 0) @__spirv_CompositeConstruct_0_8_16(float 0.0)
+;;;;     ... @__spirv_CooperativeMatrixMulAddKHR(target("spirv.CooperativeMatrixKHR", bfloat, 3, 8, 16, 0) ...
+;;;;
+;;;; %coop-type is the single choke point every cooperative-matrix LLVM type passes through — the
+;;;; alloca path calls it via resolve-type-to-llvm, and codegen calls it directly.  Making the
+;;;; substitution HERE means every route agrees by construction, rather than requiring each route
+;;;; to remember.  That is the same lesson as the six element-type layers: put the decision where
+;;;; the thing is CONSTRUCTED, not at each site that consumes it.
+;;;;
+;;;; Scoped to :spirv because it is an Intel encoding (see the bf16 header); on any other backend
+;;;; a bfloat element passes through untouched.
+;;;; ------------------------------------------------------------------------------------------
+;;;; RELOCATED during the overlay consolidation: this narrative sat above the superseded
+;;;; %coop-type, which is now a one-line dispatcher.  Its subject -- where the bf16->i16
+;;;; substitution is made -- moved into %coop-type-impl below, so the explanation moved with it.
 
 ;; overlays/crisp-compiler-overlay.lisp  (156 Step 1: %coop-type becomes a lowering-dispatched protocol)
 (defgeneric %coop-type-impl (lowering elem-llvm rows cols use)
@@ -3222,47 +2725,6 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
         :source-location nil))
     w))
 
-;; src/codegen.lisp
-(defun %xe-native-elem-kind (elem-llvm)
-  "Classify a fragment element type as :bf16, :fp16, or refuse.
-
-   Both reach the instruction as raw 16-bit lanes, so the vector type cannot tell them apart -- only
-   the operands mask does, and it must be right.  Anything else is refused: K would not be 16 and
-   the correct mask is not known, and guessing either produces a kernel that runs and is wrong."
-  (let ((s (and elem-llvm (crisp.llvm-bindings::llvm-print-type-to-string elem-llvm))))
-    (cond
-      ((and s (search "bfloat" s)) :bf16)
-      ((and s (search "half" s))   :fp16)
-      (t (error 'crisp-compiler-error
-           :message (format nil "mma-lowering :xe-native currently supports bfloat16 and half operands only; got element type ~a.  The instruction takes K=16 and an operand mask that names the 16-bit float encoding, neither of which Crisp can infer for this type."
-                            (or s "<unknown>"))
-           :source-location nil)))))
-
-;; src/codegen.lisp
-(defmethod %coop-type-impl ((lowering (eql :xe-native)) elem-llvm rows cols use)
-  (declare (ignorable lowering elem-llvm))
-  "An :xe-native fragment is a CONCRETE vector, not an opaque cooperative matrix.
-
-   Each lane holds rows*cols/16 of the matrix.  USE follows the SPIR-V cooperative-matrix roles that
-   the rest of Crisp already speaks: 0 = A, 1 = B, 2 = accumulator.
-
-     A   (8x16 of 16-bit)   -> 128/16 =  8 lanes-worth  -> <8 x i16>
-     B   (16x16 of 16-bit)  -> 256/16 = 16 elements     -> packed two per i32 -> <8 x i32>
-     acc (8x16 of f32)      -> 128/16 =  8              -> <8 x float>
-
-   B is the only one whose element count and vector width differ, because the instruction wants its
-   16-bit values packed."
-  (let* ((w (%xe-native-subgroup-width))
-         (per-lane (floor (* rows cols) w)))
-    (when (zerop per-lane)
-      (error 'crisp-compiler-error
-        :message (format nil "mma-lowering :xe-native: a ~ax~a fragment does not divide across a subgroup of ~a." rows cols w)
-        :source-location nil))
-    (ecase use
-      (0 (crisp.llvm-bindings::llvm-vector-type (crisp.llvm-bindings::llvm-int16-type) per-lane))
-      (1 (crisp.llvm-bindings::llvm-vector-type (crisp.llvm-bindings::llvm-int32-type)
-                                                (max 1 (floor per-lane 2))))
-      (2 (crisp.llvm-bindings::llvm-vector-type (llvm-float-type) per-lane)))))
 
 ;; src/codegen.lisp
 (defmethod %coop-fill-impl ((lowering (eql :xe-native)) builder module init-val elem-llvm rows cols use)
@@ -3281,36 +2743,6 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
         :source-location nil))
     (crisp.llvm-bindings::llvm-const-null ty)))
 
-;; src/codegen.lisp
-(defmethod %coop-mma-impl ((lowering (eql :xe-native)) builder module a-val b-val c-val elem-llvm m n k)
-  (declare (ignorable lowering m n k))
-  "Emit SubgroupMatrixMultiplyAccumulateINTEL(16, A, B, C, <mask>) -> D.
-
-   K is fixed at 16 rather than taken from the K argument, deliberately: that argument reaches here
-   from an UNTYPED (%spv-mma-shape) -- see the :coop-matrix method's note -- and is the tf32 8 even
-   when the operands are 16-bit.  :xe-native accepts only 16-bit elements (see %xe-native-elem-kind),
-   for which K is 16 by construction.
-
-   The operand mask is the only thing distinguishing bf16 from fp16 here, since both arrive as
-   <8 x i16>.  It comes from ELEM-LLVM, which still names the true element type."
-  (let* ((kind (%xe-native-elem-kind elem-llvm))
-         (i32  (crisp.llvm-bindings::llvm-int32-type))
-         (c-ty (crisp.llvm-bindings::llvm-type-of c-val))
-         (a-ty (crisp.llvm-bindings::llvm-type-of a-val))
-         (b-ty (crisp.llvm-bindings::llvm-type-of b-val))
-         (operands (ecase kind
-                     (:bf16 +xe-native-operands-bf16+)
-                     (:fp16 +xe-native-operands-fp16+))))
-    (log:debug "xe-native mma: kind=~a operands=#x~x A=~a B=~a C=~a"
-               kind operands
-               (crisp.llvm-bindings::llvm-print-type-to-string a-ty)
-               (crisp.llvm-bindings::llvm-print-type-to-string b-ty)
-               (crisp.llvm-bindings::llvm-print-type-to-string c-ty))
-    (%coop-call builder module "__spirv_SubgroupMatrixMultiplyAccumulateINTEL"
-                c-ty (list i32 a-ty b-ty c-ty i32)
-                (list (llvm-const-int i32 16 nil)
-                      a-val b-val c-val
-                      (llvm-const-int i32 operands nil)))))
 
 ;; src/mma.lisp  (156 Step 2: BMG now OFFERS :xe-native, so the declaration stops being refused.
 ;; Re-registers the same profile with one key added; :coop-matrix stays FIRST and therefore remains
@@ -3867,56 +3299,6 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
       (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
     nil))
 
-;; src/compiler.lisp  (REPLACES compile-to-spirv -- 156: request the xe-native extension)
-(defun compile-to-spirv (module output-path &key debug-p)
-  "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
-  (let* ((base-path (uiop:pathname-directory-pathname output-path))
-         (name (pathname-name output-path))
-         (ll-file     (merge-pathnames (format nil "~a.temp.ll" name) base-path))
-         (ll-opt-file (merge-pathnames (format nil "~a.opt.ll"  name) base-path))
-         (bc-file     (merge-pathnames (format nil "~a.temp.bc" name) base-path))
-         (spv-file output-path))
-    (%remove-dead-array-returning-functions module)
-    (llvm-set-target module "spir64-unknown-unknown")
-    (when (or (%module-uses-native-builtin-p module)
-              (%module-uses-async-copy-builtin-p module))
-      (%emit-opencl-version-metadata module))
-    (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
-           (ir-with-metadata (inject-spir-kernel-metadata ir)))
-      (with-open-file (stream ll-file :direction :output :if-exists :supersede)
-        (write-string ir-with-metadata stream)))
-    (let* ((opt-ok        (%run-opt-pipeline ll-file ll-opt-file +spv-opt-pipeline+))
-           (llvm-as-input (if opt-ok ll-opt-file ll-file)))
-      (let ((tool (resolve-tool-executable "llvm-as")))
-        (run-tool-command
-         (list tool (namestring llvm-as-input) "-o" (namestring bc-file))
-         :log-prefix "[SPIR-V] ")))
-    (let* ((tool (resolve-tool-executable "llvm-spirv"))
-           (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
-           (ext-flags (append '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
-                              (when (%module-uses-coop-matrix-p module)
-                                '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
-                              (when (%module-uses-2d-block-io-p module)
-                                '("--spirv-ext=+SPV_INTEL_2d_block_io"))
-                              ;; 156: :xe-native's multiply.  Requested only when the module
-                              ;; actually contains one, like every other extension here -- an
-                              ;; unconditional flag would widen what the driver must accept for
-                              ;; every kernel Crisp emits.
-                              (when (%module-uses-subgroup-mma-p module)
-                                '("--spirv-ext=+SPV_INTEL_subgroup_matrix_multiply_accumulate"))
-                              ;; 155: a bf16 register tile lowers to a `bfloat` coop matrix,
-                              ;; which llvm-spirv refuses without this extension.
-                              (when (%module-uses-bfloat-p module)
-                                '("--spirv-ext=+SPV_KHR_bfloat16"))))
-           (flags (append debug-flags ext-flags)))
-      (run-tool-command
-       (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
-       :log-prefix "[SPIR-V] "))
-    (unless debug-p
-      (when (probe-file ll-file)     (delete-file ll-file))
-      (when (probe-file ll-opt-file) (delete-file ll-opt-file))
-      (when (probe-file bc-file)     (delete-file bc-file)))
-    (log:info "Generated SPIR-V: ~a" spv-file)))
 
 ;; src/metadata.lisp  (REPLACES serialize-kernels -- 156: record the kernel's CHOSEN mma
 ;; lowering in the metacrisp, so a benchmark number can be attributed to a code path)
@@ -4042,125 +3424,6 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
                  (crisp.llvm-bindings::llvm-type-of val))))
          (and s (string= (string-trim " " s) "i16")))))
 
-;; src/codegen.lisp  (REPLACES build-cast-if-needed -- widen bf16 by shifting, not fpext)
-(defun build-cast-if-needed (builder module from-val from-type-name to-type-name)
-  "Builds LLVM cast instruction if types differ, with alias resolution.
-   MODULE is required to resolve types correctly.
-   Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;
-   treat same symbol-name as no-op cast."
-  ;; Resolve aliases first
-  (let ((from-type-name (resolve-type-alias from-type-name))
-           (to-type-name (resolve-type-alias to-type-name)))
-    ;; Fast path: identical (eq)
-    (if (equal from-type-name to-type-name)
-        (progn
-         (log:debug "build-cast-if-needed: No cast needed for ~s" from-type-name)
-         from-val)
-        ;; Cross-package same-name: CRISP.COMPILER::USHORT2 == CRISP-LANGUAGE::USHORT2
-        (if (and (symbolp from-type-name) (symbolp to-type-name)
-                 (string= (symbol-name from-type-name) (symbol-name to-type-name)))
-            (progn
-             (log:debug "build-cast-if-needed: cross-package same-name, no cast needed for ~s" from-type-name)
-             from-val)
-            (let* ((from-type (if (symbolp from-type-name) (gethash from-type-name *crisp-types*) nil))
-                   (to-type (if (symbolp to-type-name) (gethash to-type-name *crisp-types*) nil))
-                   (to-llvm-type (crisp-type-to-llvm-type to-type-name module))
-                   (from-cat (get-type-cat-safe from-type-name from-type))
-                   (to-cat (get-type-cat-safe to-type-name to-type)))
-              (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
-              (cond
-               ;; Keywords and symbols cast to int
-               ((and (or (member from-type-name '(keyword symbol quote))
-                         (and (listp from-type-name) (member (first from-type-name) '(keyword symbol quote))))
-                     (member to-cat '(:signed-int :unsigned-int)))
-                 (let ((to-size (if to-type (crisp-type-size to-type) 32)))
-                   (cond
-                    ((< to-size 32)
-                      (llvm-build-trunc builder from-val to-llvm-type "trunc_kw_cast"))
-                    ((> to-size 32)
-                      (llvm-build-sext builder from-val to-llvm-type "sext_kw_cast"))
-                    (t from-val))))
-               ((and (member from-cat '(:signed-int :unsigned-int))
-                     (eq to-cat :float))
-                 (if (eq from-cat :signed-int)
-                     (llvm-build-si-to-fp builder from-val to-llvm-type "si2fp_cast")
-                     (llvm-build-ui-to-fp builder from-val to-llvm-type "ui2fp_cast")))
-               ((and (member from-cat '(:signed-int :unsigned-int))
-                     (member to-cat '(:signed-int :unsigned-int)))
-                 (let ((from-size (crisp-type-size from-type))
-                       (to-size (crisp-type-size to-type)))
-                   (cond
-                    ((< to-size from-size)
-                      (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
-                    ((> to-size from-size)
-                      (if (eq from-cat :signed-int)
-                          (llvm-build-sext builder from-val to-llvm-type "sext_cast")
-                          (llvm-build-zext builder from-val to-llvm-type "zext_cast")))
-                    (t from-val))))
-               ((and (eq from-cat :float) (eq to-cat :float))
-                 (let ((from-size (crisp-type-size from-type))
-                       (to-size (crisp-type-size to-type)))
-                   (cond
-                    ((< to-size from-size)
-                      (llvm-build-fp-trunc builder from-val to-llvm-type "fptrunc_cast"))
-                    ((> to-size from-size)
-                      ;; Endeavour 156: a bfloat16 reaches codegen as i16 on the SPIR-V backend
-                      ;; (endeavour 155 rewrote the type so Intel sees raw 16-bit integers), so
-                      ;; `fpext i16 ... to float` is emitted for (to-float <bfloat16>) and is not a
-                      ;; legal cast -- llvm-as rejects it.  A bf16 IS an f32 with the low 16
-                      ;; mantissa bits dropped, so widening is a SHIFT: zext to i32, shl 16,
-                      ;; bitcast to float.  Exactly the inverse of %coop-coerce-scalar's
-                      ;; f32 -> bf16 (bitcast -> lshr 16 -> trunc).
-                      (if (%bf16-as-i16-p from-val from-type)
-                          (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
-                                 (wide (llvm-build-zext builder from-val i32 "bf16_zext"))
-                                 (up   (crisp.llvm-bindings::llvm-build-shl
-                                        builder wide (llvm-const-int i32 16 nil) "bf16_shl")))
-                            (crisp.llvm-bindings::llvm-build-bit-cast
-                             builder up (llvm-float-type) "bf16_to_f32"))
-                          (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast")))
-                    (t from-val))))
-               ((and (eq from-cat :float) (member to-cat '(:signed-int :unsigned-int)))
-                 (if (eq to-cat :signed-int)
-                     (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast")
-                     (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast")))
-               ((and (member from-cat '(:signed-int :unsigned-int))
-                     (eq to-cat :pointer))
-                 (let ((as (llvm-get-pointer-address-space to-llvm-type)))
-                   (if (= as 0)
-                       (llvm-build-int-to-ptr builder from-val to-llvm-type "int2ptr_cast")
-                       (let* ((generic-ptr-type (crisp-type-to-llvm-type '(c-pointer) module))
-                              (tmp-ptr (llvm-build-int-to-ptr builder from-val generic-ptr-type "int2generic")))
-                         (llvm-build-addrspace-cast builder tmp-ptr to-llvm-type "generic2as_cast")))))
-               ((and (eq from-cat :pointer) (member to-cat '(:signed-int :unsigned-int)))
-                 (llvm-build-ptr-to-int builder from-val to-llvm-type "ptr2int_cast"))
-               ((and (eq from-cat :pointer) (eq to-cat :pointer))
-                 (let ((from-as (llvm-get-pointer-address-space (llvm-type-of from-val)))
-                       (to-as (llvm-get-pointer-address-space to-llvm-type)))
-                   (if (= from-as to-as)
-                       (llvm-build-bit-cast builder from-val to-llvm-type "ptr2ptr_cast")
-                       (llvm-build-addrspace-cast builder from-val to-llvm-type "ptr2ptr_ascast"))))
-               ;; Handle casts between derived types with same base type (same memory layout)
-               ((and (symbolp from-type-name) (symbolp to-type-name))
-                 (let ((from-base (get-type-base from-type-name))
-                          (to-base (get-type-base to-type-name)))
-                   (if (eq from-base to-base)
-                       (progn
-                        (log:debug "Derived type cast: ~a -> ~a (same base ~a, no-op)"
-                                   from-type-name to-type-name from-base)
-                        from-val)
-                       (progn
-                        (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
-                        (log:error "  From Type: ~a (cat: ~a, base: ~a)" from-type from-cat from-base)
-                        (log:error "  To Type:   ~a (cat: ~a, base: ~a)" to-type to-cat to-base)
-                        (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
-                        (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name)))))
-               (t
-                (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
-                (log:error "  From Type: ~a (cat: ~a)" from-type from-cat)
-                (log:error "  To Type:   ~a (cat: ~a)" to-type to-cat)
-                (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
-                (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))))
 
 ;; src/codegen.lisp  (REPLACES %spirv-mangle-elem -- bfloat16 copies as 16 raw bits)
 (defun %spirv-mangle-elem (elem-type)
@@ -4362,57 +3625,6 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
      (list 'uint nil))
     (t (error "Unknown GPU builtin: ~a" builtin-kw))))
 
-;; src/analysis/core.lisp  (REPLACES %analyze-gpu-builtin -- 157 Phase 1)
-(defun %analyze-gpu-builtin (builtin-kw name-str expr env context location)
-  "Analyzer for all GPU built-in function forms."
-  (declare (ignore env context))
-  (unless *in-dispatch-context*
-    (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
-  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :sync-cluster))
-    ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
-    ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
-    (%warp-spec-check-sync builtin-kw name-str location))
-  (let* ((info     (%gpu-builtin-info builtin-kw))
-         (base-ty  (first info))
-         (acc-dim  (second info))
-         (args     (rest expr)))
-    (cond
-      ((null args)
-       (make-semantic-gpu-builtin :builtin-name builtin-kw
-                                  :dimension nil
-                                  :type base-ty
-                                  :source-location location))
-      ;; 157: (sync-workgroup :arrive) / (sync-workgroup :wait).  A split barrier separates the
-      ;; announcement from the block so work can sit between them; it is an EXECUTION rendezvous
-      ;; and moves no data, which is why it extends sync-workgroup rather than await/signal.
-      ;; The phase becomes its own builtin keyword so semantic-gpu-builtin needs no new field.
-      ((and (eq builtin-kw :sync-workgroup)
-            (= (length args) 1)
-            (member (first args) (list :arrive :wait)))
-       (make-semantic-gpu-builtin
-        :builtin-name (if (eq (first args) :arrive) :sync-workgroup-arrive :sync-workgroup-wait)
-        :dimension nil
-        :type nil
-        :source-location location))
-      ((and (eq builtin-kw :sync-workgroup) (= (length args) 1))
-       (error "sync-workgroup takes no argument, or one of :arrive / :wait (the split barrier's two halves), got: ~S"
-              (first args)))
-      ((= (length args) 1)
-       (let ((dim-arg (first args)))
-         (unless acc-dim
-           (error "GPU built-in '~a' does not accept a dimension argument" name-str))
-         (unless (integerp dim-arg)
-           (error "GPU built-in '~a': dimension must be a compile-time integer constant (0, 1, or 2), got: ~a"
-                  name-str dim-arg))
-         (unless (member dim-arg '(0 1 2))
-           (error "GPU built-in '~a': dimension ~a is out of valid range (must be 0, 1, or 2)"
-                  name-str dim-arg))
-         (make-semantic-gpu-builtin :builtin-name builtin-kw
-                                    :dimension dim-arg
-                                    :type 'ulong
-                                    :source-location location)))
-      (t
-       (error "GPU built-in '~a' takes 0 or 1 arguments, got ~a" name-str (length args))))))
 
 ;; src/codegen.lisp  (REPLACES generate-node-ir (semantic-gpu-builtin) -- 157 Phase 1)
 (defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
@@ -4665,157 +3877,6 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
    A counter rather than a flag so that nesting is DETECTED rather than silently tolerated: the
    second :arrive sees a non-zero depth and refuses.")
 
-;; overlays/crisp-compiler-overlay.lisp  (REPLACES %analyze-gpu-builtin -- 157 Phase 2)
-(defun %analyze-gpu-builtin (builtin-kw name-str expr env context location)
-  "Analyzer for all GPU built-in function forms."
-  (declare (ignore env context))
-  (unless *in-dispatch-context*
-    (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
-  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :sync-cluster))
-    ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
-    ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
-    (%warp-spec-check-sync builtin-kw name-str location))
-  (let* ((info     (%gpu-builtin-info builtin-kw))
-         (base-ty  (first info))
-         (acc-dim  (second info))
-         (args     (rest expr)))
-    (cond
-      ((null args)
-       (make-semantic-gpu-builtin :builtin-name builtin-kw
-                                  :dimension nil
-                                  :type base-ty
-                                  :source-location location))
-      ;; 157: (sync-workgroup :arrive) / (sync-workgroup :wait).  A split barrier separates the
-      ;; announcement from the block so work can sit between them; it is an EXECUTION rendezvous
-      ;; and moves no data, which is why it extends sync-workgroup rather than await/signal.
-      ;; The phase becomes its own builtin keyword so semantic-gpu-builtin needs no new field.
-      ((and (eq builtin-kw :sync-workgroup)
-            (= (length args) 1)
-            (member (first args) (list :arrive :wait)))
-       ;; 157 analysis 1: one window at a time, and it must close.  Both failures HANG rather than
-       ;; miscompute, so they are refused here rather than left to the user to discover on hardware.
-       (cl:when *split-barrier-depth*
-         (cl:if (eq (first args) :arrive)
-                (cl:progn
-                  (cl:when (cl:plusp *split-barrier-depth*)
-                    (error "(sync-workgroup :arrive) cannot nest -- a window is already open in this kernel.  There is one rendezvous per scope, not a stack of them; close the first with (sync-workgroup :wait) before opening another."))
-                  (cl:incf *split-barrier-depth*))
-                (cl:progn
-                  (cl:when (cl:zerop *split-barrier-depth*)
-                    (error "(sync-workgroup :wait) has no matching (sync-workgroup :arrive) -- the two halves must be paired.  A :wait with nothing to wait on blocks forever."))
-                  (cl:decf *split-barrier-depth*))))
-       (make-semantic-gpu-builtin
-        :builtin-name (if (eq (first args) :arrive) :sync-workgroup-arrive :sync-workgroup-wait)
-        :dimension nil
-        :type nil
-        :source-location location))
-      ((and (eq builtin-kw :sync-workgroup) (= (length args) 1))
-       (error "sync-workgroup takes no argument, or one of :arrive / :wait (the split barrier's two halves), got: ~S"
-              (first args)))
-      ((= (length args) 1)
-       (let ((dim-arg (first args)))
-         (unless acc-dim
-           (error "GPU built-in '~a' does not accept a dimension argument" name-str))
-         (unless (integerp dim-arg)
-           (error "GPU built-in '~a': dimension must be a compile-time integer constant (0, 1, or 2), got: ~a"
-                  name-str dim-arg))
-         (unless (member dim-arg '(0 1 2))
-           (error "GPU built-in '~a': dimension ~a is out of valid range (must be 0, 1, or 2)"
-                  name-str dim-arg))
-         (make-semantic-gpu-builtin :builtin-name builtin-kw
-                                    :dimension dim-arg
-                                    :type 'ulong
-                                    :source-location location)))
-      (t
-       (error "GPU built-in '~a' takes 0 or 1 arguments, got ~a" name-str (length args))))))
-
-;; overlays/crisp-compiler-overlay.lisp  (REPLACES internal-def-function -- 157 Phase 2)
-(defun internal-def-function (name params declarations body location)
-  "Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the
-   body analysis.  Otherwise identical to the Phase 2 definition."
-  (log:info "Analyzing function ~s" name)
-  (multiple-value-bind (explicit-env return-type)
-      (parse-function-declarations params declarations)
-    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
-           (is-entry-p (loop for d in declarations
-                             thereis (and (listp d) (symbolp (first d))
-                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
-           (is-grid-fn-p (loop for d in declarations
-                               thereis (and (listp d) (symbolp (first d))
-                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
-           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
-           (*boundary-struct-params*
-             (if is-entry-p
-                 (loop for param in explicit-env
-                       when (%boundary-struct-type-p (parameter-def-type param))
-                       collect (string-upcase (symbol-name (parameter-def-name param))))
-                 *boundary-struct-params*))
-           (*boundary-array-params*
-             (if is-entry-p
-                 (loop for param in explicit-env
-                       when (%array-type-p (parameter-def-type param))
-                       collect (string-upcase (symbol-name (parameter-def-name param))))
-                 *boundary-array-params*))
-           (*current-kernel-is-backward*
-             (and name (symbolp name)
-                  (let ((n (symbol-name name)))
-                    (and (>= (length n) 5)
-                         (string-equal "_GRAD" (subseq n (- (length n) 5)))))))
-           (cluster-dims nil))
-      (when (and is-entry-p *boundary-struct-params*)
-            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
-      (when (and is-entry-p *boundary-array-params*)
-            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
-      (when is-grid-fn-p
-        (log:info "Compiling grid function ~a (dispatch context)" name)
-        (%validate-grid-function-return-type return-type))
-      (when is-entry-p
-        (let* ((global-size-decl (find "GLOBAL-SIZE" declarations
-                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                       :test #'string-equal))
-               (local-size-decl  (find "LOCAL-SIZE" declarations
-                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                       :test #'string-equal))
-               (num-groups-decl  (find "NUM-GROUPS" declarations
-                                       :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                       :test #'string-equal))
-               (cluster-size-decl (find "CLUSTER-SIZE" declarations
-                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                        :test #'string-equal))
-               ;; 156: (mma-lowering :xe-native) -- which code-generation strategy this kernel wants
-               ;; for its matrix-engine operations.  Parsed here so an unavailable request is refused
-               ;; at analysis time, next to the other dispatch declarations.
-               (mma-lowering-decl (find "MMA-LOWERING" declarations
-                                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                                        :test #'string-equal))
-               (mma-lowering (%parse-mma-lowering-decl mma-lowering-decl name
-                                                       (active-hardware-profile))))
-          (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
-          (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl
-                    mma-lowering-decl)
-            (let ((dispatch-plist
-                    (append (when global-size-decl (list :global-size global-size-decl))
-                            (when local-size-decl  (list :local-size  local-size-decl))
-                            (when num-groups-decl  (list :num-groups  num-groups-decl))
-                            (when cluster-size-decl (list :cluster-size-decl cluster-size-decl))
-                            (when cluster-dims      (list :cluster-size cluster-dims))
-                            ;; Recorded even when defaulted, so the metacrisp -- and therefore any
-                            ;; benchmark row -- can say which lowering produced a number.  A figure
-                            ;; you cannot attribute to a code path is not evidence.
-                            (when mma-lowering      (list :mma-lowering mma-lowering)))))
-              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
-              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))
-          (%hp-check-workgroup-bounds name local-size-decl (active-hardware-profile))))
-      (let ((*current-kernel-cluster-dims* cluster-dims)
-            ;; 157: a split-barrier window is per KERNEL.  Bound here so the check below sees the
-            ;; whole body, and so one kernel's unclosed window cannot leak into the next.
-            (*split-barrier-depth* 0))
-        (multiple-value-prog1
-            (internal-compile-function name explicit-env return-type params body declarations
-                                       location *compiler-context*)
-          (cl:when (cl:plusp *split-barrier-depth*)
-            (error "(sync-workgroup :arrive) in kernel ~a must be paired with (sync-workgroup :wait) before the kernel ends.  An arrival that is never awaited leaves every other thread in the workgroup blocked on it."
-                   name)))))))
 
 ;;;; Endeavour 157 Phase 2 (b) — pairing refusals as CRISP-COMPILER-ERROR.
 
