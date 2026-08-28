@@ -1,0 +1,48 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-08-28T16:07:44.470782Z",
+    "hardware": {
+      "gpu_model": "Intel BMG",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null
+    },
+    "crisp_commit": "954b339",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "sec2_top_fp16",
+  "competitor": "Crisp_V_wg256pf1",
+  "precision": "fast",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "warmup": 2,
+        "iters": 5,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 920.992374420166,
+          "all_compile_ms": 920.992374420166
+        },
+        "runtime": {
+          "wall_time_ms": 1.93369,
+          "kernel_execution_ms": 1.54794
+        },
+        "throughput": {
+          "tflops": 88.7885,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    }
+  ],
+  "is_canonical": true
+}

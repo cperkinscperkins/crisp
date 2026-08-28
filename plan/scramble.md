@@ -771,6 +771,7 @@ MMA
 - [ ] NVidia
 [ ] L0 hoist and bench: are we using _SHARED_ memory instead of DEVICE?
 [ ] src has duplicate var names *hardware-profile-schema* and others
+[ ] the spill warning might be a little eager on Intel. Not sure about Nvidia. We should revisit
 - Documentation Shortcomings
 - [ ] :operand  
 - [ ] :warps

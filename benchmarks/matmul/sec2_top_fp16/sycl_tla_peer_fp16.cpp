@@ -195,6 +195,41 @@ int main(int argc, char const **argv) {
             kt[i] = timer.seconds() * 1e6; // microseconds
         }
 
+        // ---- CORRECTNESS, added 2026-08-27.  This harness had NONE. -------------------
+        // A = B = 1.0 above, so every element of D must equal exactly K.  Same oracle the Crisp
+        // fixture uses.  Checked AFTER the timing loop so it cannot perturb the measurement.
+        //
+        // WHY IT WAS ADDED.  This contender reported 236 TFLOPS fp16 at N=8192 while oneMKL
+        // reported 111 and Crisp 106 -- both of which verify every point.  Depending on whether
+        // the B580's fp16 XMX peak is ~116 TF (INT8/2) or ~233-270 TF, that reading is either
+        // impossible or merely excellent, and spec sheets do not settle it: on Alchemist the
+        // INT8:fp16 ratio was 4:1, not 2:1.  An unverified number cannot arbitrate, and this was
+        // the only contender in the suite without a check -- which is exactly the shape of the
+        // chap2_tiling failure, where the second-best number in a section came from a kernel that
+        // stored nothing.
+        bool tla_ok = true; double tla_max_err = 0.0; long tla_checked = 0;
+        {
+            compat::wait();
+            std::vector<ElementOutput> host_D(size_t(M) * size_t(N));
+            cutlass::device_memory::copy_to_host(host_D.data(), block_D.get(), host_D.size());
+            const double expect = double(K);
+            const double tol    = expect * 1e-3;
+            const size_t si = (M > 64 ? size_t(M) / 64 : 1), sj = (N > 64 ? size_t(N) / 64 : 1);
+            for (size_t i = 0; i < size_t(M) && tla_ok; i += si)
+                for (size_t j = 0; j < size_t(N); j += sj) {
+                    double got = double(host_D[i * size_t(N) + j]);
+                    double err = std::abs(got - expect);
+                    if (err > tla_max_err) tla_max_err = err;
+                    ++tla_checked;
+                    if (err > tol) { tla_ok = false; break; }
+                }
+        }
+        std::cerr << (tla_ok ? "MMA_CORRECT" : "MMA_WRONG")
+                  << " (peer self-check: expect " << double(K)
+                  << ", max_abs_err " << tla_max_err
+                  << ", samples " << tla_checked << ")" << std::endl;
+        // --------------------------------------------------------------------------------
+
         std::sort(kt.begin(), kt.end());
         double k_med = kt[iters / 2];
         double k_min = kt[0];
@@ -205,7 +240,13 @@ int main(int argc, char const **argv) {
 
         printf("{\n  \"algorithm\": \"matmul_top_fp16\",\n  \"implementation\": \"sycl_tla_fp16\",\n");
         printf("  \"N\": %d, \"M\": %d, \"K\": %d,\n", N, M, K);
-        printf("  \"correct\": true,\n  \"max_abs_err\": 0.0,\n");
+        // REPORT THE REAL VERDICT.  This line used to hardcode correct=true -- the harness
+        // ASSERTED a correctness it never checked.  scripts/crisp_bench/matmul.py run_sweep
+        // already DROPS any point whose harness reports correct=false, so that gate was
+        // working the whole time; it was being lied to.  That is how this contender came to
+        // report 236 TFLOPS at N=8192 while writing an all-zero output matrix.
+        printf("  \"correct\": %s,\n  \"max_abs_err\": %.6g,\n",
+               tla_ok ? "true" : "false", tla_max_err);
         printf("  \"wall_time_ms\": %.2f,\n", wall_time_ms);
         printf("  \"kernel_median_us\": %.2f,\n  \"kernel_min_us\": %.2f,\n", k_med, k_min);
         printf("  \"gflops\": %.2f\n}\n", gflops);

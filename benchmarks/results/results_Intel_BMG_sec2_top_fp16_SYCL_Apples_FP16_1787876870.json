@@ -1,0 +1,48 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-08-28T00:27:50.257145Z",
+    "hardware": {
+      "gpu_model": "Intel BMG",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null
+    },
+    "crisp_commit": "954b339",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "sec2_top_fp16",
+  "competitor": "SYCL_Apples_FP16",
+  "precision": "fast",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "warmup": 2,
+        "iters": 5,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1974.8172760009766,
+          "all_compile_ms": 4473.127365112305
+        },
+        "runtime": {
+          "wall_time_ms": 416.88,
+          "kernel_execution_ms": 7.67281
+        },
+        "throughput": {
+          "tflops": 17.912470000000003,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    }
+  ],
+  "is_canonical": true
+}
