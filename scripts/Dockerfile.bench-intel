@@ -48,6 +48,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ----------------------------------------------------------------------
 RUN ln -sf /opt/intel/oneapi/compiler/2025.3/bin/compiler/llvm-spirv /usr/bin/llvm-spirv
 
+# ocloc -- Intel's offline compiler, needed for AOT (-fsycl-targets=spir64_gen -device bmg-g21).
+# SYCL-TLA's own CMake DEFAULTS to AOT (spir64_gen); JIT (spir64) is the non-default path.  Without
+# ocloc, scripts/crisp_bench/matmul.py's `if shutil.which("ocloc")` silently fell back to JIT, so
+# the peer was built in the one configuration upstream does not test -- and said so only in a note.
+#
+# The image already shipped an ocloc under vtune/.../GTPin, but it needs LD_LIBRARY_PATH and its
+# device list ends at pvc / mtl / xe-lpg -- `ocloc ids bmg-g21` answers "Unknown acronym".  The apt
+# package is version-matched to the runtime: intel-ocloc 25.18.33578.15 against a driver reporting
+# 1.6.33578, and `ocloc ids bmg-g21` resolves to 20.1.0, exactly what sycl-ls reports for the B580.
+#
+# NOTE: this does NOT fix SYCL-TLA.  Its own unmodified example fails verification under AOT just
+# as it does under JIT, on v0.9.2 and on main.  ocloc is here because AOT is the configuration
+# upstream supports and because the fallback to JIT was silent.
+RUN apt-get update     && apt-get install -y --no-install-recommends intel-ocloc     && rm -rf /var/lib/apt/lists/*
+
 # ----------------------------------------------------------------------
 # SBCL — install from upstream binary tarball
 # ----------------------------------------------------------------------

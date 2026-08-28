@@ -24,6 +24,7 @@ The largest levers are here, and the two biggest are not independent of each oth
 | Lever | Where | Notes |
 |---|---|---|
 | **Output tile M×N** | `(tile-stride C (TM TN) ...)` | Sets work per workgroup and, with `:warps`, per subgroup. `32x32 → 32x64` was **1.25–1.72×** `[windows]`. Not free at the top: `TN 96` faults, `TN 128` runs at `0.14×`. |
+| **Workgroup tile vs per-subgroup tile** | `(tile-stride C (TM TN) ...)` together with the `:warps` length | **These are separable, and conflating them cost an endeavour.** Going `128×256 / 16 subgroups → 256×256 / 32` leaves the per-subgroup tile at **32×64 and register demand at 448/thread — unchanged**. It is pure operand sharing: arithmetic intensity 85.3 → **128 flops/byte**. So the workgroup tile can be doubled *without* touching the `TN 128` / `TM 64` wall, which is a per-subgroup limit. Worth **+36%** at 8192 with prefetch; roughly neutral without it. This is SYCL-TLA's shape, fixed at every N. |
 | **Subgroup count + distribution** | `:warps '(true true …)` on each `make-register-tile` | Length = subgroups the tile is split across; must agree with `local-size / simd-width`. A silent no-op on rings until endeavour 156 Phase 2. |
 | **K-tile extent** | A-tile is `(TM K)`, B-tile `(K TN)`, and the loop divisor `(/ K (to-ulong K-step))` | **The lever that was missed for months.** Not the same as MMA K. |
 | **MMA shape** | `(mma-accumulate-via-tile (M N K) ...)` | Must be one of the profile's `:mma-shapes`. On BMG: `(8 16 8)` tf32, `(8 16 16)` bf16/fp16, `(8 16 32)` int8 — same M×N, K doubles as operands narrow. Choosing a shape the profile lacks is a compile error, not a slowdown. |
@@ -36,12 +37,19 @@ The largest levers are here, and the two biggest are not independent of each oth
 > only ever tried at K=16, where there is not enough work in flight to pay for the participants.
 > **Never tune one without re-tuning the other.**
 
+> **And the same trap caught the workgroup tile.** Endeavour 156 measured 256×256 over 32
+> subgroups at **34.6 against 60.8** and banked it — at K=16, and before `prefetch-tile` could
+> be warp-partitioned. The geometry only pays *with* the prefetch it could not then express:
+> without prefetch it is still slightly behind (62.0 vs 65.1 @4096); with it, +36%; with
+> `:xe-native` as well, **+60%**. Endeavour 158.
+
 ### Pipelining
 
 | Lever | Where | Measured |
 |---|---|---|
 | **Ring depth** | `make-register-tile-ring … :ring-count N` | `2 → 3` **collapses** a 32×64 tile, `57 → 23` `[windows]`. At K=32 across 16 subgroups a ring does not fit at all. |
-| **Prefetch distance** | how many `prefetch-tile` K-steps ahead the loop issues | distance 3 = `1.38×` vs base, i.e. **worse** than simply widening the tile (`1.70×`); distance 4 = `0.80×`, actively harmful `[windows]`. |
+| **Prefetch distance** | how many `prefetch-tile` K-steps ahead the loop issues | **+60% at the peer geometry** (66.2 → 106.0 @8192, with `:xe-native`), and worth +36% even on `:coop-matrix`. **Shorter is better, monotonically** — d1 ≥ d2 > d3 > d4 wherever it helps. `[linux]` |
+| **Prefetch distribution** | `:warp-partitioned true` on `prefetch-tile` | **Not optional at multi-subgroup geometry.** Without it every subgroup issues every block — 384 per workgroup per K-step against 256 loads — and prefetch measures **2.6–2.9× SLOWER**. With it, 2 per subgroup. Endeavour 158. |
 | **Barrier pacing** | `(sync-workgroup)` or `(sync-workgroup :arrive/:wait)` in the K loop | Fused at 16 subgroups: **−14.7%**. Split: **−1.8%**. No barrier is fastest at that width. Pays only at 4 subgroups (+8.6%), where fused beats split. `[windows]`, endeavour 157. |
 
 > **`:ring-count` is not `Stages`.** Crisp's `:ring-count` is a count of **buffers**; SYCL-TLA's
@@ -54,7 +62,7 @@ The largest levers are here, and the two biggest are not independent of each oth
 
 | Lever | Where | Measured |
 |---|---|---|
-| **MMA lowering** | `(declare (mma-lowering :xe-native))`, else profile default | `:xe-native` (Intel `SubgroupMatrixMultiplyAccumulateINTEL` + 2D block loads + VNNI transform for B) is **+13% @2048, +9% @4096** at matched geometry, and leaner code (42 instructions/dpas vs 57) `[windows]`. But it **does not compose with the ring** (50.0 vs 60.4) and degrades with live fragment count (32×128 → 5.6 TFLOPS, and *not* from spill — the ISA shows zero). Default stays `:coop-matrix`. |
+| **MMA lowering** | `(declare (mma-lowering :xe-native))`, else profile default | **`:xe-native` + peer geometry + warp-partitioned prefetch is the fastest fp16 kernel Crisp has: 106.0 TF @8192, 95% of oneMKL, best at every size ≥1024.** Alone it is only +5% (66.2 → 69.6); the win is the COMBINATION (+60%). Its two recorded failure modes are **scope-limited, not general**: "does not compose" was about the **ring**, never prefetch; and the 32×128 collapse to 5.6 TFLOPS is a live-fragment-count effect that does not arise at a 32×64 per-subgroup tile. Emits 42 machine instructions per dpas against 57. `[linux]`, endeavour 158. |
 | **Precision** | `(declaim (precision fast))` / `--math-precision` | `fast` enables contraction and reassociation. Note `fast` **flushes denormals regardless** of `--denormal-handling=preserve`; the compiler warns. |
 
 ### Dispatch declarations
@@ -189,8 +197,8 @@ cost real hardware time.
 |---|---|
 | SLM staging of operands | **40× slower** (0.9 vs 41.9 @2048). `SPV_INTEL_2d_block_io` is a *global*-memory facility, so staging through shared local memory loses the 2D block load entirely (`load_block2d` 41 → 0). SYCL-TLA uses **no SLM**. |
 | Address hoisting | −36% emulated multiplies for **+2.9%**; on the ring kernel, identical instruction counts **17% slower**. |
+| **Cache control** (`SPV_INTEL_cache_controls`) | **DEAD, tested twice.** `CacheControlLoadINTEL` L1+L3 `Cached` — SYCL-TLA's `kL1C_L3C`, which it uses at all 26 of its call sites. Measured −3.3% @4096 (loads only) and **−1.4% @8192 with the PREFETCH decorated too, on the real kernel** (176 decorations vs 0 in a byte-identical twin, so the arm was genuine). Either IGC ignores pointer decorations on 2D-block-io, or the driver default already matches. Do not re-open without new information. |
 | Ring depth 3 | +9% at 32×32, collapses 32×64. |
-| Prefetch distance 4 | `0.80×`. |
 | Split barrier | Removes ~90% of the fused barrier's cost and still loses to no barrier. |
 | `TM 64` (64×32) | Does not run. |
 | `TN 96` | MMA_WRONG at 0.27 TFLOPS — GPU-fault signature. |
@@ -218,11 +226,29 @@ Learned the hard way, repeatedly:
 
 ## Open
 
-- **The remaining SYCL-TLA gap is a lowering gap, not a geometry gap.** At 8192 Crisp reads 66.1
-  against 239.9. Geometry is now approximately matched; the instruction stream is not. The peer uses
-  inline Xe asm DPAS with `createBlock2DAddressPayload` / `setBlockX/Y` and **never materialises a
-  64-bit address**.
-- `:xe-native` at the current 16-subgroup geometry — never tried; the most promising untested
-  combination available.
-- The 2048 cell: the shipped geometry is ~6% behind its predecessor there. A shape keeping the
-  large-N win without that cost strictly dominates.
+- **The remaining SYCL-TLA gap is a lowering gap, and it is now precisely one thing.** At 8192
+  Crisp reads **106.0** against ~237. Geometry is matched (256×256 over 32 subgroups — theirs is
+  fixed at every size, verified from their peer `.cpp`: compile-time constants, zero
+  size-dependent branching). Prefetch is in. Cache policy is dead. The coop-matrix lowering is
+  superseded. What is left is the part of their instruction stream we do not emit:
+  `createBlock2DAddressPayload` / `setBlockX/Y`, **never materialising a 64-bit address**. Spec
+  `155/04` already pins the invariant and is RED on purpose — 26 emulated i64 multiplies for 8
+  loads, and Xe has no native 64-bit multiply.
+- **The peer column is not yet trustworthy.** SYCL-TLA at N=2048 read 72.1 / 85.1 / 107.9 across
+  three sessions on an unchanged binary — a 49% spread — because the bench image has no `ocloc`
+  and builds it JIT rather than AOT. That drift is now comparable to the effects being measured.
+- The bigger *per-subgroup* tile is still blocked: `TN 128` at 0.14×, `TM 64` will not run,
+  `TN 96` faults. Note the 256×256 workgroup tile did **not** need this — per-subgroup work and
+  register demand are unchanged at 32×64 and 448 regs/thread.
+
+## The lesson this document keeps having to relearn
+
+**Three times in endeavour 158, a lever recorded here as a measured loss turned out to be a win
+once a second lever existed.** The 256×256 geometry ("34.6 vs 60.8", endeavour 156) was measured
+at K=16 without warp-partitioned prefetch. Prefetch ("2.6–2.9× slower") was measured while every
+subgroup issued every block. `:xe-native` ("does not compose") was measured against a *ring*.
+Each negative was honestly taken and correctly recorded, and each was **scoped to a configuration
+rather than to the mechanism** — which is how it went on to mislead.
+
+So when writing an entry here: say what was held fixed, not just what was measured. A result that
+does not name its configuration will eventually be read as a result about the mechanism.

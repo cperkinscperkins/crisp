@@ -1,0 +1,45 @@
+;; Section 2 fp16 — VARIANT: the PEER'S GEOMETRY.  256x256 workgroup tile over 32 subgroups.
+;;
+;; SYCL-TLA runs ONE kernel at every size, and this is its shape.  Verified from
+;; benchmarks/matmul/sec2_top_bf16/sycl_tla_peer.cpp -- these are compile-time constants with
+;; ZERO size-dependent branching, so it is what runs at 8192 as much as at 256:
+;;     using TileShape = Shape<_256, _256, _32>;                        // 256x256, K step 32
+;;     Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>                    // 8x4 = 32 subgroups
+;;     constexpr int PipelineStages = 2;                                // prefetch depth 2
+;;
+;; THE PER-SUBGROUP TILE IS ALREADY IDENTICAL TO OURS.  8x4 subgroups over 256x256 gives each
+;; subgroup 32x64 = 2048 elements; our 4x4 over 128x256 gives the same 2048.  The difference is
+;; entirely WORKGROUP aggregation: they cover twice the M extent with twice the subgroups, so
+;; each operand byte feeds twice as much math.  Arithmetic intensity 256*256/512 = 128 flops/byte
+;; against our 128*256/384 = 85.3.
+;;
+;; WHY THIS IS BEING RE-TRIED.  Endeavour 156 measured this geometry at 34.6 against 60.8 and
+;; banked it as a loss.  That measurement was taken at K=16 and BEFORE `:warp-partitioned`
+;; prefetch existed -- and the levers doc's own rule is that K depth and subgroup count are ONE
+;; lever, not two.  So the negative predates two of the three biggest levers we now have.  Same
+;; pattern as round-2 arm B: a mechanism written off before its enabling piece existed.
+;;
+;; Register demand is UNCHANGED from the shipped kernel: the per-subgroup tile is the same 32x64,
+;; so the same per-thread footprint.  local-size 512 = 32 subgroups x simd-width 16, inside the
+;; profile's 1024 max.
+(declaim (precision fast))
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 512))
+  (let ((A-tile (make-register-tile half (256 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile half (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (256 256) 0.0 :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 32))))
+    (tile-stride C (256 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k n-k-steps)
+          (load-tile A A-tile (grid-y grid-k))
+          (load-tile B B-tile (grid-k grid-x))
+          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

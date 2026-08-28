@@ -1,0 +1,85 @@
+;; CACHE-CONTROL ARM.  BYTE-IDENTICAL to matmul_bmg_fp16_wg256_pf2.crisp; only the NAME differs,
+;; so the build names it in CRISP_CACHE_CONTROL_KERNELS and its coop loads AND its 2D block
+;; PREFETCHES get CacheControlLoadINTEL {L1,L3} = Cached -- SYCL-TLA's kL1C_L3C, which it uses at
+;; all 26 of its call sites.  Crisp currently specifies NOTHING and takes an unknown driver default.
+;;
+;; The 2026-08-27 'cache control does nothing' result (-3.3%% at 4096) does NOT cover this: it
+;; decorated only the LOADS and never the prefetch, it was measured on the loads-only probe arm
+;; that we later proved gives false negatives for math-dependent mechanisms, and it was at 4096.
+;; All three are different here.
+;;
+;; Section 2 fp16 — VARIANT: the PEER'S GEOMETRY.  256x256 workgroup tile over 32 subgroups.
+;;
+;; SYCL-TLA runs ONE kernel at every size, and this is its shape.  Verified from
+;; benchmarks/matmul/sec2_top_bf16/sycl_tla_peer.cpp -- these are compile-time constants with
+;; ZERO size-dependent branching, so it is what runs at 8192 as much as at 256:
+;;     using TileShape = Shape<_256, _256, _32>;                        // 256x256, K step 32
+;;     Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>                    // 8x4 = 32 subgroups
+;;     constexpr int PipelineStages = 2;                                // prefetch depth 2
+;;
+;; THE PER-SUBGROUP TILE IS ALREADY IDENTICAL TO OURS.  8x4 subgroups over 256x256 gives each
+;; subgroup 32x64 = 2048 elements; our 4x4 over 128x256 gives the same 2048.  The difference is
+;; entirely WORKGROUP aggregation: they cover twice the M extent with twice the subgroups, so
+;; each operand byte feeds twice as much math.  Arithmetic intensity 256*256/512 = 128 flops/byte
+;; against our 128*256/384 = 85.3.
+;;
+;; WHY THIS IS BEING RE-TRIED.  Endeavour 156 measured this geometry at 34.6 against 60.8 and
+;; banked it as a loss.  That measurement was taken at K=16 and BEFORE `:warp-partitioned`
+;; prefetch existed -- and the levers doc's own rule is that K depth and subgroup count are ONE
+;; lever, not two.  So the negative predates two of the three biggest levers we now have.  Same
+;; pattern as round-2 arm B: a mechanism written off before its enabling piece existed.
+;;
+;;
+;; RESULT — THE 8192 CLIFF WAS A GEOMETRY INTERACTION, NOT A PREFETCH PROBLEM.
+;; Measured 2026-08-27, one session, every point verified correct:
+;;
+;;     kernel                        1024   2048   4096   8192
+;;     128x256/16  (shipped)         63.7   56.6   65.1   64.5
+;;     128x256/16 + prefetch d1      63.1   71.4   89.4   36.4   <- COLLAPSES
+;;     256x256/32  (peer geometry)   60.7   52.8   62.0   64.5
+;;     256x256/32 + prefetch d1      60.2   67.7   89.1   85.7   <- does NOT
+;;     256x256/32 + prefetch d2      60.2   67.2   88.7   88.0   <- does NOT
+;;
+;; Same prefetch mechanism, same distance, OPPOSITE SIGN at 8192 -- and the only difference is
+;; the workgroup tile.  At 8192 a 128x256 tile needs 2048 workgroups; a 256x256 needs 1024.  Half
+;; the resident workgroups, half the concurrent prefetch pressure.  That is the hypothesis the
+;; probe README recorded (resident workgroup count, NOT L2 capacity) and this is evidence for it.
+;;
+;; So the answer to "why does our prefetch collapse at 8192 when SYCL-TLA's does not" is: because
+;; SYCL-TLA uses this geometry and we did not.  It needed no separate investigation.
+;;
+;; 8192 goes 64.5 -> 88.0 (+36%), and 79% of oneMKL where it was 58%.  ENDEAVOUR 156'S NEGATIVE
+;; ON THIS GEOMETRY (34.6 vs 60.8) IS FULLY RETRACTED: it was measured at K=16 without
+;; :warp-partitioned prefetch, and the geometry only pays WITH the prefetch it could not express.
+;;
+;; This is now the best SINGLE fixed kernel in the fp16 chapter -- 60.2 / 67.2 / 88.7 / 88.0,
+;; against the shipped kernel's flat ~64.  It gives up ~5% at 1024-2048 to gain 36% at 8192.
+;;
+;; Register demand is UNCHANGED from the shipped kernel: the per-subgroup tile is the same 32x64,
+;; so the same per-thread footprint.  local-size 512 = 32 subgroups x simd-width 16, inside the
+;; profile's 1024 max.
+(declaim (precision fast))
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 512))
+  (let ((A-tile (make-register-tile half (256 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile half (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (256 256) 0.0 :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 32))))
+    (tile-stride C (256 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k n-k-steps)
+          (let ((prefetch-k (+ grid-k (to-ulong 2))))
+            (when (< prefetch-k n-k-steps)
+              (prefetch-tile A (grid-y prefetch-k) :size (256 32) :warp-partitioned true)
+              (prefetch-tile B (prefetch-k grid-x) :size (32 256) :warp-partitioned true))
+            (load-tile A A-tile (grid-y grid-k))
+            (load-tile B B-tile (grid-k grid-x))
+            (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

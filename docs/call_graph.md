@@ -562,6 +562,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE-IMPL (LOWERING
                                                                              (EQL
                                                                               XE-NATIVE)) BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - (%ATTACH-CACHE-CONTROL-LOAD PTR MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - (%PTR-AS PTR-VAL)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
@@ -1013,6 +1015,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%MAKE-TARGET-MACHINE-FOR-MODULE MODULE)  compiler.lisp
 - - - - - - - (%ENSURE-NVPTX-TARGET-INITIALIZED)  compiler.lisp
 - - - - - (%LL-HAS-SPIRV-ILLEGAL-INT-P LL-FILE)  compiler.lisp
+- - - - (%INJECT-CACHE-CONTROL-DECORATIONS LL-PATH)  compiler.lisp
+- - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp [See above]
+- - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
 - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp
 - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp
 - - - - (%MODULE-USES-COOP-MATRIX-P MODULE)  compiler.lisp
@@ -1020,6 +1025,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%MODULE-USES-SUBGROUP-MMA-P MODULE)  compiler.lisp
 - - - - (%MODULE-USES-SPLIT-BARRIER-P MODULE)  compiler.lisp
 - - - - (%MODULE-USES-BFLOAT-P MODULE)  compiler.lisp
+- - - - (%CACHE-CONTROL-SPEC)  codegen.lisp [See above]
 - - - (COMPILE-TO-PTX MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)  compiler.lisp
 - - - - (%PTX-FINALIZE-LIBDEVICE MODULE)  codegen.lisp
 - - - - - (%SET-NVVM-REFLECT-FTZ MODULE FTZ-P)  codegen.lisp
@@ -1937,6 +1943,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
+- - (%RESOLVE-WORKGROUP-WARP-COUNT CONTEXT)  mma.lisp [See above]
+- - (%ELEM-BYTES ELEM)  mma.lisp [See above]
+- - (%COOP-ELEM-OF TENSOR-NODE)  mma.lisp [See above]
+- - (%PREFETCH-BLOCK-SHAPE ELEM-BYTES LOCATION)  mma.lisp
+- - (%PREFETCH-WARP-PLAN H W BR BC N-WARPS LOCATION)  mma.lisp
 
 - (ANALYZE-PROGN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%STRIP-EXECUTION-CONTEXT-DECLARES BODY-FORMS)  analysis/control.lisp [See above]
@@ -2668,6 +2679,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-SPV-FUSED-BARRIER-UNCHANGED SPV-PATH)  mma.lisp
 - - (%SPV-DISASM SPV-PATH)  mma.lisp
 - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]
+
+- (VALIDATE-SPV-PREFETCH-PARTITIONED SPV-PATH)  mma.lisp
+- - (%SPV-DISASM SPV-PATH)  mma.lisp [See above]
+- - (%VALIDATE-PREFETCH-SHAPE-LIST SHAPES EXPECTED-COUNT WHERE)  mma.lisp
+- - (%SPV-PREFETCH-SHAPES TXT)  mma.lisp
+- - - (%SPV-INT-CONSTANTS TXT)  mma.lisp [See above]
+- - - (%SPV-LINES TXT)  mma.lisp [See above]
+
+- (VALIDATE-SPV-PREFETCH-UNPARTITIONED SPV-PATH)  mma.lisp
+- - (%SPV-DISASM SPV-PATH)  mma.lisp [See above]
+- - (%VALIDATE-PREFETCH-SHAPE-LIST SHAPES EXPECTED-COUNT WHERE)  mma.lisp [See above]
+- - (%SPV-PREFETCH-SHAPES TXT)  mma.lisp [See above]
 
 - (VALIDATE-SPV-SPLIT-BARRIER SPV-PATH)  mma.lisp
 - - (%SPV-DISASM SPV-PATH)  mma.lisp [See above]

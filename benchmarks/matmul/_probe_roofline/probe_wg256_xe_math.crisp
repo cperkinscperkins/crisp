@@ -1,0 +1,35 @@
+;; CEILING ARM for the WINNING kernel — :xe-native at the peer geometry, MATH ONLY.
+;; Loads hoisted out of the K loop, so every iteration reuses the k=0 operand registers.
+;;
+;; WHAT IT BOUNDS.  BlockCount, address payloads, prefetch tuning -- every load-side lever put
+;; together cannot take this kernel past this number.  The kernel measures 104.6 @4096 and 106.0
+;; @8192 today.  If this arm reads ~110, load work is finished and the remaining gap to
+;; SYCL-TLA's ~237 is somewhere else entirely.  If it reads ~180, BlockCount is worth building.
+;;
+;; The 128x256/16 coop-matrix twin of this arm read 106.2 TF at 4096 (round 1) -- and the WINNING
+;; kernel now EXCEEDS that, which is why that ceiling had to be re-measured on this lowering.
+;;
+;; NUMERICALLY WRONG BY CONSTRUCTION.  Diagnostic only; the fixture discards its points, so read
+;; the timing from the run log.
+(declaim (precision fast))
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (mma-lowering :xe-native)
+           (local-size :set-to 512))
+  (let ((A-tile (make-register-tile half (256 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile half (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (256 256) 0.0 :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 32))))
+    (tile-stride C (256 256) (grid-y grid-x)
+      (progn
+        (load-tile A A-tile (grid-y (to-ulong 0)))
+        (load-tile B B-tile ((to-ulong 0) grid-x))
+        (dotimes (grid-k n-k-steps)
+            (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

@@ -187,7 +187,25 @@
                         "LOAD-TILE" "STORE-TILE"
                         ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
                         ;; coord / dim LISTS that must stay opaque to ANF.
-                        "STORE-FRAGMENT" "MAKE-REGISTER-TILE" "MMA-ACCUMULATE-VIA-TILE")
+                        "STORE-FRAGMENT" "MAKE-REGISTER-TILE" "MMA-ACCUMULATE-VIA-TILE"
+                        ;; Endeavour 158: PREFETCH-TILE carries a coord tuple AND a :size
+                        ;; tuple, and ANF flattened BOTH into bindings, so
+                        ;;     (prefetch-tile A (grid-y grid-k) :size (32 16))
+                        ;; arrived at the backward walk as
+                        ;;     (LET ((%ANF-T-1 (GRID-Y GRID-K)) (%ANF-T-2 (32 16))) ...)
+                        ;; where %ANF-T-1 reads as a CALL to a function named GRID-Y --
+                        ;; really a tile-stride index -- reporting "Function GRID-Y is not
+                        ;; differentiable".  Endeavour 146 had ALREADY placed PREFETCH-TILE
+                        ;; on %backward-skip-fn-p as the pure scheduling hint it is; AD
+                        ;; never got to use that entry because ANF destroyed the form
+                        ;; first.  This is the third blocker 142/14's skip note predicted,
+                        ;; named there as "in ANF rather than AD".
+                        ;;
+                        ;; Safe by construction: anf-transform runs on the AD path ONLY
+                        ;; (see src/macros.lisp:982, "the forward still analyses the
+                        ;; original form"), so no shipped prefetch kernel's forward
+                        ;; lowering can be affected by this entry.
+                        "PREFETCH-TILE")
                       :test #'string=))
           (if is-nested?
               (let ((temp (anf-fresh-temp)))

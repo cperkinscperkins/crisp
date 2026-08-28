@@ -1,0 +1,38 @@
+;; Endeavour 158 rung 01 -- :warp-partitioned actually distributes.
+;;
+;; THE POINT OF THE WHOLE ENDEAVOUR, and it cannot be established by timing.  Round-2 arm B
+;; measured prefetch 2.6-2.9x slower purely because all 16 subgroups issued all 24 prefetches;
+;; a kernel that is 16x over-issued is still CORRECT, so no correctness check can catch it and
+;; a benchmark can only tell you something is wrong, never what.  This asserts the distribution
+;; in the emitted SPIR-V.
+;;
+;; Contract: a 128x256 footprint is 4x16 = 64 blocks of 32x16.  Over 16 warps that is 4 ROUNDS,
+;; so the kernel must emit exactly FOUR prefetch instructions, each of the 32x16 HARDWARE shape --
+;; not one instruction describing the 128x256 footprint, and not 64.
+;;
+;; The count is the discriminator, and it is why this rung uses a footprint needing more than one
+;; round.  Partitioned, 4 static instructions x 16 warps = 64 issues covering 64 blocks once each.
+;; Unpartitioned, the same coverage needs 64 static forms that EVERY warp runs = 1024 issues.
+;; That 16x is precisely what made round-2 arm B measure 2.6x slower, and it is invisible to any
+;; correctness check.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-prefetch-partitioned
+(declaim (precision fast))
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel prefetch_partitioned (A &out C)
+  (declare #'(a-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 256))
+  (let ((A-tile (make-register-tile half (128 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (128 256) 0.0 :warps '(true true true true true true true true true true true true true true true true)))
+        (n-k-steps (to-ulong 8)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k n-k-steps)
+          (prefetch-tile A (grid-y grid-k) :size (128 256) :warp-partitioned true)
+          (load-tile A A-tile (grid-y grid-k)))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

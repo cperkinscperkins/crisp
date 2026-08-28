@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-08-27T05:26:32.588026Z
+Generated on 2026-08-28T21:38:53.376258Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -3685,7 +3685,7 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `ENSURE-OPENCL-KERNEL-METADATA`
 - **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
 
-  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).  >    Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records  >    the EFFECTIVE extent (warning on degrade) for every entry point on every backend.  >    Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.  >   >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.
+  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).  >    Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records  >    the EFFECTIVE extent (warning on degrade) for every entry point on every backend.  >    Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.  >   >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.
 
 
 ---
@@ -3766,7 +3766,7 @@ Generated on 2026-08-27T05:26:32.588026Z
 - **Args**: `(SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
               LOCATION-MAP)`
 
-  > Top-level function to generate LLVM IR for a given semantic function.  >   >    Endeavour 156: binds *mma-lowering* for the extent of this function's code generation, and  >    resets *xe-native-operand-elem* so an operand kind recorded for one kernel cannot leak into the  >    next.
+  > Top-level function to generate LLVM IR for a given semantic function.  >   >    Endeavour 156: binds *mma-lowering* for the extent of this function's code generation, and  >    resets *xe-native-operand-elem* so an operand kind recorded for one kernel cannot leak into the  >    next.
 
 
 ---
@@ -3844,7 +3844,7 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `BUILD-CAST-IF-NEEDED`
 - **Args**: `(BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)`
 
-  > Builds LLVM cast instruction if types differ, with alias resolution.  >    MODULE is required to resolve types correctly.  >    Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;  >    treat same symbol-name as no-op cast.
+  > Builds LLVM cast instruction if types differ, with alias resolution.  >    MODULE is required to resolve types correctly.  >    Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;  >    treat same symbol-name as no-op cast.
 
 
 ---
@@ -4424,7 +4424,7 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `%COOP-TYPE`
 - **Args**: `(ELEM-LLVM ROWS COLS USE)`
 
-  > Dispatches to %coop-type-impl on the active lowering.  Kept as a plain function with its  >    original signature so no call site changes.
+  > Dispatches to %coop-type-impl on the active lowering.  Kept as a plain function with its  >    original signature so no call site changes.
 
 
 ---
@@ -4452,7 +4452,7 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `%COOP-TENSOR-PTR+STRIDE`
 - **Args**: `(BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)`
 
-  > Dispatches to %coop-tensor-ptr+stride-impl on the active lowering.  Kept as a plain function with its  >    original signature so no call site changes.
+  > Dispatches to %coop-tensor-ptr+stride-impl on the active lowering.  Kept as a plain function with its  >    original signature so no call site changes.
 
 
 ---
@@ -4475,70 +4475,70 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `%BLOCK-PREFETCH`
 - **Args**: `(BUILDER MODULE PTR STRIDE-VAL ROWS COLS &OPTIONAL (ELEM-BYTES 4))`
 
-  > Endeavor 142 (Phase B): emit Subgroup2DBlockPrefetchINTEL for an f32 ROWS x COLS block whose  >    element origin is PTR (addrspace(1)), STRIDE-VAL the i64 leading dim in elements.  A fire-and-forget  >    L1 cache hint — no result, never changes data (so it can be interleaved freely into the K-loop).  >    ABI (verified against llvm-spirv --spirv-ext=+SPV_INTEL_2d_block_io -> OpSubgroup2DBlockPrefetchINTEL):  >      void __spirv_Subgroup2DBlockPrefetchINTEL(i32 ElementSize, i32 BlockWidth, i32 BlockHeight,  >        i32 BlockCount, ptr addrspace(N) SrcBase, i32 MemWidth, i32 MemHeight, i32 MemPitch, <2 x i32> Coord)  >    The surface is described AS the block itself (origin PTR, MemW/H = block, Coord = <0,0>); the driver  >    only needs a valid region to warm — the operand values are perf hints, not correctness.
+  > Endeavor 142 (Phase B): emit Subgroup2DBlockPrefetchINTEL for an f32 ROWS x COLS block whose  >    element origin is PTR (addrspace(1)), STRIDE-VAL the i64 leading dim in elements.  A fire-and-forget  >    L1 cache hint — no result, never changes data (so it can be interleaved freely into the K-loop).  >    ABI (verified against llvm-spirv --spirv-ext=+SPV_INTEL_2d_block_io -> OpSubgroup2DBlockPrefetchINTEL):  >      void __spirv_Subgroup2DBlockPrefetchINTEL(i32 ElementSize, i32 BlockWidth, i32 BlockHeight,  >        i32 BlockCount, ptr addrspace(N) SrcBase, i32 MemWidth, i32 MemHeight, i32 MemPitch, <2 x i32> Coord)  >    The surface is described AS the block itself (origin PTR, MemW/H = block, Coord = <0,0>); the driver  >    only needs a valid region to warm — the operand values are perf hints, not correctness.
 
 
 ---
 ### DEFUN `%COOP-FILL`
 - **Args**: `(BUILDER MODULE INIT-VAL ELEM-LLVM ROWS COLS USE)`
 
-  > Dispatches to %coop-fill-impl on the active lowering.  Kept as a plain function with its  >    original signature so no call site changes.
+  > Dispatches to %coop-fill-impl on the active lowering.  Kept as a plain function with its  >    original signature so no call site changes.
 
 
 ---
 ### DEFUN `%LLVM-FLOAT-WIDTH`
 - **Args**: `(TY)`
 
-  > Bit width of an LLVM floating-point type, or NIL if TY is not one of the four Crisp knows.  >    HALF and BFLOAT16 are both 16 bits and are DIFFERENT types — same width, not interchangeable.
+  > Bit width of an LLVM floating-point type, or NIL if TY is not one of the four Crisp knows.  >    HALF and BFLOAT16 are both 16 bits and are DIFFERENT types — same width, not interchangeable.
 
 
 ---
 ### DEFUN `%COOP-NODE-ELEM`
 - **Args**: `(NODE)`
 
-  > The CRISP element type of the cooperative matrix a coop-op node operates on.  >   >    Sources, in order:  >      1. the node's own `(coop-matrix ELEM rows cols use)` type   — :fill / :load  >      2. its VALUE node's type                                    — :store, whose own type is 'void  >      3. its TENSOR node's element type                           — :prefetch, which has no matrix  >    Anything unrecognised yields FLOAT, the pre-155 behaviour.
+  > The CRISP element type of the cooperative matrix a coop-op node operates on.  >   >    Sources, in order:  >      1. the node's own `(coop-matrix ELEM rows cols use)` type   — :fill / :load  >      2. its VALUE node's type                                    — :store, whose own type is 'void  >      3. its TENSOR node's element type                           — :prefetch, which has no matrix  >    Anything unrecognised yields FLOAT, the pre-155 behaviour.
 
 
 ---
 ### DEFUN `%SPV-INT-WIDTHS`
 - **Args**: `(TXT)`
 
-  > Alist of (type-id-string . width) for every OpTypeInt in TXT.  >    Endeavour 155: needed because a bf16 cooperative matrix's component type is an INTEGER.
+  > Alist of (type-id-string . width) for every OpTypeInt in TXT.  >    Endeavour 155: needed because a bf16 cooperative matrix's component type is an INTEGER.
 
 
 ---
 ### DEFUN `%SPV-COOP-MATRICES`
 - **Args**: `(TXT)`
 
-  > List of (RESULT-ID COMPONENT-WIDTH USE KIND) for every TypeCooperativeMatrixKHR in TXT.  >   >    KIND is :FLOAT or :INT — Endeavour 155, because Intel encodes a bf16 matrix as 16-bit INTEGER  >    components with the bfloat-ness carried by the MulAdd operands mask, so width alone no longer  >    identifies the element type.  Either field may be NIL when the operand is not a scalar type or  >    not a resolvable constant; callers must treat NIL as 'unknown', never as 'fine'.
+  > List of (RESULT-ID COMPONENT-WIDTH USE KIND) for every TypeCooperativeMatrixKHR in TXT.  >   >    KIND is :FLOAT or :INT — Endeavour 155, because Intel encodes a bf16 matrix as 16-bit INTEGER  >    components with the bfloat-ness carried by the MulAdd operands mask, so width alone no longer  >    identifies the element type.  Either field may be NIL when the operand is not a scalar type or  >    not a resolvable constant; callers must treat NIL as 'unknown', never as 'fine'.
 
 
 ---
 ### DEFUN `%VALIDATE-COOP-OPERAND-ELEM`
 - **Args**: `(SPV-PATH WANT-WIDTH LABEL &KEY REQUIRE-EXT INT-COMPONENTS)`
 
-  > Assert that EVERY A/B cooperative matrix in SPV-PATH has component width WANT-WIDTH — and, when  >    INT-COMPONENTS, that they are INTEGER components rather than float ones — and that every  >    Accumulator is 32-bit float.  LABEL names the element type for the failure text; REQUIRE-EXT,  >    when given, must appear in the module.  >   >    Endeavour 155: the INT-COMPONENTS distinction is the difference between fp16 and bf16 on Intel.  >    Both are 16 bits wide; only the KIND separates them, so checking width alone would let a bf16  >    kernel silently emit fp16 matrices and still pass.  >   >    DEGRADES TO PASS when llvm-spirv is unavailable (a CUDA-only box has no bundled bin/), matching  >    %spv-contains-opcode-p: returns NIL only when the module WAS disassembled and the property is  >    definitively absent.
+  > Assert that EVERY A/B cooperative matrix in SPV-PATH has component width WANT-WIDTH — and, when  >    INT-COMPONENTS, that they are INTEGER components rather than float ones — and that every  >    Accumulator is 32-bit float.  LABEL names the element type for the failure text; REQUIRE-EXT,  >    when given, must appear in the module.  >   >    Endeavour 155: the INT-COMPONENTS distinction is the difference between fp16 and bf16 on Intel.  >    Both are 16 bits wide; only the KIND separates them, so checking width alone would let a bf16  >    kernel silently emit fp16 matrices and still pass.  >   >    DEGRADES TO PASS when llvm-spirv is unavailable (a CUDA-only box has no bundled bin/), matching  >    %spv-contains-opcode-p: returns NIL only when the module WAS disassembled and the property is  >    definitively absent.
 
 
 ---
 ### DEFUN `%COOP-OP-ELEM-LLVM`
 - **Args**: `(NODE)`
 
-  > The LLVM type for a coop-op node's component type (see %coop-node-elem).  >   >    Endeavour 155: BFLOAT16 lowers to a 16-BIT INTEGER, not to LLVM `bfloat`.  That is how Intel  >    encodes a bf16 cooperative matrix (see header) — the type carries no float-ness and the MulAdd  >    operands mask supplies it.  i16 is also the correct width for the tile ADDRESS arithmetic, so  >    one answer serves both uses.
+  > The LLVM type for a coop-op node's component type (see %coop-node-elem).  >   >    Endeavour 155: BFLOAT16 lowers to a 16-BIT INTEGER, not to LLVM `bfloat`.  That is how Intel  >    encodes a bf16 cooperative matrix (see header) — the type carries no float-ness and the MulAdd  >    operands mask supplies it.  i16 is also the correct width for the tile ADDRESS arithmetic, so  >    one answer serves both uses.
 
 
 ---
 ### DEFUN `%COOP-COERCE-SCALAR`
 - **Args**: `(BUILDER VAL WANT-TY NAME)`
 
-  > Coerce scalar VAL to WANT-TY, if it is not already that type.  >   >    Float-to-float goes by fptrunc / fpext (Endeavour 155, fp16).  >   >    FLOAT TO i16 IS THE bf16 FILL.  A bf16 cooperative matrix has INTEGER components, so filling  >    one with a literal `0.0` means storing that float's BF16 BIT PATTERN as an i16.  bfloat16 is  >    the top half of an IEEE f32, so the encoding is a bitcast to i32, a 16-bit logical shift right,  >    and a truncate — no bfloat type is introduced anywhere, which is the entire point (see the bf16  >    header).  This truncates rather than round-to-nearest; for the 0.0 that fills every accumulator  >    and operand tile it is exact, and a rounding form would need a bfloat type or a carry chain to  >    express.  >   >    LLVM has no direct cast between two DIFFERENT 16-bit float types, so half<->bfloat16 would route  >    through f32; that path cannot arise from a literal today.
+  > Coerce scalar VAL to WANT-TY, if it is not already that type.  >   >    Float-to-float goes by fptrunc / fpext (Endeavour 155, fp16).  >   >    FLOAT TO i16 IS THE bf16 FILL.  A bf16 cooperative matrix has INTEGER components, so filling  >    one with a literal `0.0` means storing that float's BF16 BIT PATTERN as an i16.  bfloat16 is  >    the top half of an IEEE f32, so the encoding is a bitcast to i32, a 16-bit logical shift right,  >    and a truncate — no bfloat type is introduced anywhere, which is the entire point (see the bf16  >    header).  This truncates rather than round-to-nearest; for the 0.0 that fills every accumulator  >    and operand tile it is exact, and a rounding form would need a bfloat type or a carry chain to  >    express.  >   >    LLVM has no direct cast between two DIFFERENT 16-bit float types, so half<->bfloat16 would route  >    through f32; that path cannot arise from a literal today.
 
 
 ---
 ### DEFUN `%ELEM-LLVM-BYTES`
 - **Args**: `(ELEM-LLVM)`
 
-  > Bytes per element for an LLVM scalar type, defaulting to 4 — which is what every hardcoded  >    constant this replaces assumed.  >   >    Endeavour 155 (bf16): must handle INTEGER types, not just floats.  Once bf16 lowered to i16,  >    the float-only lookup returned NIL and fell back to 4, so %block-prefetch again described a  >    2-byte surface as 4-byte — twice as wide as the data, off the end of the allocation.  The  >    symptom was the one already seen for fp16: a constant ~500 ms at every problem size with wrong  >    results, i.e. a GPU fault and reset, in the kernel that prefetches and not in the one that  >    does not.
+  > Bytes per element for an LLVM scalar type, defaulting to 4 — which is what every hardcoded  >    constant this replaces assumed.  >   >    Endeavour 155 (bf16): must handle INTEGER types, not just floats.  Once bf16 lowered to i16,  >    the float-only lookup returned NIL and fell back to 4, so %block-prefetch again described a  >    2-byte surface as 4-byte — twice as wide as the data, off the end of the allocation.  The  >    symptom was the one already seen for fp16: a constant ~500 ms at every problem size with wrong  >    results, i.e. a GPU fault and reset, in the kernel that prefetches and not in the one that  >    does not.
 
 
 ---
@@ -4552,28 +4552,28 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `%LLVM-INSTR-OPCODE`
 - **Args**: `(VAL)`
 
-  > If VAL is an LLVM Instruction, its opcode as an LLVMOpcode integer; otherwise NIL.  >   >    Guarded by LLVMIsAInstruction because LLVMGetInstructionOpcode is an unchecked  >    unwrap<Instruction> -- handing it a constant or a function argument crashes the process.  That  >    exact trap is what BUG 033 turned out to be, in LLVMInstructionSetDebugLoc.
+  > If VAL is an LLVM Instruction, its opcode as an LLVMOpcode integer; otherwise NIL.  >   >    Guarded by LLVMIsAInstruction because LLVMGetInstructionOpcode is an unchecked  >    unwrap<Instruction> -- handing it a constant or a function argument crashes the process.  That  >    exact trap is what BUG 033 turned out to be, in LLVMInstructionSetDebugLoc.
 
 
 ---
 ### DEFUN `%LLVM-BINOP-WITH-CONST`
 - **Args**: `(VAL OPCODE)`
 
-  > Match VAL as `<OPCODE> %x, <const>` and return (values %x const), or NIL when it does not match.  >   >    Only the SECOND operand is tested for constness: LLVM canonicalises commutative operations to put  >    the constant on the right, and both producers here -- the fragment-index add and the  >    fragment-extent multiply -- are built that way explicitly.
+  > Match VAL as `<OPCODE> %x, <const>` and return (values %x const), or NIL when it does not match.  >   >    Only the SECOND operand is tested for constness: LLVM canonicalises commutative operations to put  >    the constant on the right, and both producers here -- the fragment-index add and the  >    fragment-extent multiply -- are built that way explicitly.
 
 
 ---
 ### DEFUN `%EMIT-SPIRV-SUBGROUP-SIZE-EXECUTION-MODE`
 - **Args**: `(FUNC MODULE SEMANTIC-FUNCTION)`
 
-  > Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's  >    :simd-width, so the width Crisp ASSUMES when computing warp counts and the width IGC COMPILES  >    are the same value by contract rather than by coincidence.  >   >    Attaches !intel_reqd_sub_group_size to the kernel.  The LLVM->SPIR-V translator turns that into  >    OpExecutionMode SubgroupSize together with the SubgroupDispatch capability it requires; writing  >    the execution mode directly does NOT work, because the capability would be missing and the  >    translator silently drops the mode (observed 2026-08-24).  >   >    Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and  >    the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See  >    the Phase 0 header for why that guard is deliberately narrow.
+  > Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's  >    :simd-width, so the width Crisp ASSUMES when computing warp counts and the width IGC COMPILES  >    are the same value by contract rather than by coincidence.  >   >    Attaches !intel_reqd_sub_group_size to the kernel.  The LLVM->SPIR-V translator turns that into  >    OpExecutionMode SubgroupSize together with the SubgroupDispatch capability it requires; writing  >    the execution mode directly does NOT work, because the capability would be missing and the  >    translator silently drops the mode (observed 2026-08-24).  >   >    Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and  >    the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See  >    the Phase 0 header for why that guard is deliberately narrow.
 
 
 ---
 ### DEFUN `%KERNEL-MMA-LOWERING`
 - **Args**: `(SEMANTIC-FUNCTION)`
 
-  > The lowering SEMANTIC-FUNCTION declared, or :coop-matrix when it declared none.  >   >    Reads the dispatch plist the analyzer populated, so the validation and the refusal have already  >    happened by the time codegen asks.
+  > The lowering SEMANTIC-FUNCTION declared, or :coop-matrix when it declared none.  >   >    Reads the dispatch plist the analyzer populated, so the validation and the refusal have already  >    happened by the time codegen asks.
 
 
 ---
@@ -4599,7 +4599,7 @@ Generated on 2026-08-27T05:26:32.588026Z
 ---
 ### DEFUN `%XE-NATIVE-SUBGROUP-WIDTH`
 
-  > The subgroup width :xe-native fragments are laid out for.  Refuses anything but 16: the whole  >    per-lane shape below assumes it, and endeavour 156 Phase 0 pins the kernel's SubgroupSize to the  >    profile's :simd-width, so a mismatch here would be a real inconsistency rather than a preference.
+  > The subgroup width :xe-native fragments are laid out for.  Refuses anything but 16: the whole  >    per-lane shape below assumes it, and endeavour 156 Phase 0 pins the kernel's SubgroupSize to the  >    profile's :simd-width, so a mismatch here would be a real inconsistency rather than a preference.
 
 
 ---
@@ -4613,10 +4613,23 @@ Generated on 2026-08-27T05:26:32.588026Z
               ROWS COLS USE LAYOUT)`
 
 ---
+### DEFUN `%CACHE-CONTROL-SPEC`
+
+  > Parse CRISP_CACHE_CONTROL into a list of (CACHE-LEVEL . LOAD-CACHE-CONTROL) pairs for  >    CacheControlLoadINTEL, or NIL when unset/unrecognised (meaning: emit no decoration, which  >    is Crisp's historical behaviour of letting the driver choose).
+
+
+---
+### DEFUN `%ATTACH-CACHE-CONTROL-LOAD`
+- **Args**: `(PTR MODULE)`
+
+  > Decorate PTR with CacheControlLoadINTEL for each (level . control) in %CACHE-CONTROL-SPEC.  >   >    Emits, in LLVM IR terms, `!spirv.Decorations !{!{i32 6442, i32 LEVEL, i32 CONTROL}, ...}`  >    on the pointer-producing instruction; SPIRV-LLVM-Translator turns each inner node into an  >    OpDecorate CacheControlLoadINTEL.  6442 is the decoration's SPIR-V token.  >   >    GUARDED WITH LLVMIsAInstruction for the BUG 033 reason: LLVM's IRBuilder constant-folds, so  >    a `ptr` that came out of folding may be a Constant rather than an Instruction, and  >    LLVMSetMetadata is an unchecked unwrap<Instruction> that would corrupt or crash rather than  >    report.  A non-instruction pointer is simply left undecorated.  >   >    Returns PTR either way so it can be used inline.
+
+
+---
 ### DEFUN `%XE-SURFACE`
 - **Args**: `(BUILDER TENSOR-VAL ELEM-BYTES)`
 
-  > The REAL surface of TENSOR-VAL, as the 2D block instructions want it:  >    (values base-ptr memory-width-bytes memory-height-rows memory-pitch-bytes).  >   >    Tensor layout: field 0 = parent storage {ptr,i64}, field 2 = strides, field 3 = extents.  >    Width and pitch are BYTES -- that is what carries the 64-byte hardware minimum, and it is why  >    the block cannot be passed off as its own surface the way %block-prefetch does.
+  > The REAL surface of TENSOR-VAL, as the 2D block instructions want it:  >    (values base-ptr memory-width-bytes memory-height-rows memory-pitch-bytes).  >   >    Tensor layout: field 0 = parent storage {ptr,i64}, field 2 = strides, field 3 = extents.  >    Width and pitch are BYTES -- that is what carries the 64-byte hardware minimum, and it is why  >    the block cannot be passed off as its own surface the way %block-prefetch does.
 
 
 ---
@@ -4630,28 +4643,28 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `%XE-NOTE-OPERAND-ELEM`
 - **Args**: `(KIND)`
 
-  > Record the operand element KIND for this kernel, refusing a disagreement.  >   >    The multiply's operand mask names A and B together, so two different 16-bit float encodings in  >    one kernel have no correct mask.  Refusing is the only honest answer.
+  > Record the operand element KIND for this kernel, refusing a disagreement.  >   >    The multiply's operand mask names A and B together, so two different 16-bit float encodings in  >    one kernel have no correct mask.  Refusing is the only honest answer.
 
 
 ---
 ### DEFUN `%XE-NATIVE-ELEM-KIND`
 - **Args**: `(ELEM-LLVM)`
 
-  > Classify a fragment element type as :bf16, :fp16, or refuse.  >   >    Both reach the instruction as raw 16-bit lanes, so the vector type cannot tell them apart -- only  >    the operand mask does (0x3000 vs 0xC00), and it must be right or the kernel runs and is wrong.  >   >    WHAT ARRIVES HERE, AND WHY IT IS NOT `bfloat`.  Endeavour 155 swapped llvm-bfloat-type's  >    symbol-function on the SPIR-V backend so that a bf16 element becomes **i16** before it reaches  >    any of this: Intel encodes a bf16 cooperative matrix as raw 16-bit integers, and emitting a real  >    `bfloat` needs SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  So by  >    the time a fragment type is built, bf16 already looks like i16 and only fp16 still says `half`.  >   >    `bfloat` is still accepted, because the rewrite is backend-conditional and a non-SPIR-V path  >    would deliver the real thing.  >   >    THE ONE AMBIGUITY, recorded so it is not discovered the hard way: a genuine 16-bit INTEGER matrix  >    would also arrive as i16 and be misread as bf16.  Crisp has no int16 MMA today -- the integer  >    shapes in the BMG profile are int8 (8 16 32) -- so nothing is currently misclassified.  When  >    int16 MMA arrives, this must be given the Crisp-level element type instead of the LLVM one.
+  > Classify a fragment element type as :bf16, :fp16, or refuse.  >   >    Both reach the instruction as raw 16-bit lanes, so the vector type cannot tell them apart -- only  >    the operand mask does (0x3000 vs 0xC00), and it must be right or the kernel runs and is wrong.  >   >    WHAT ARRIVES HERE, AND WHY IT IS NOT `bfloat`.  Endeavour 155 swapped llvm-bfloat-type's  >    symbol-function on the SPIR-V backend so that a bf16 element becomes **i16** before it reaches  >    any of this: Intel encodes a bf16 cooperative matrix as raw 16-bit integers, and emitting a real  >    `bfloat` needs SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  So by  >    the time a fragment type is built, bf16 already looks like i16 and only fp16 still says `half`.  >   >    `bfloat` is still accepted, because the rewrite is backend-conditional and a non-SPIR-V path  >    would deliver the real thing.  >   >    THE ONE AMBIGUITY, recorded so it is not discovered the hard way: a genuine 16-bit INTEGER matrix  >    would also arrive as i16 and be misread as bf16.  Crisp has no int16 MMA today -- the integer  >    shapes in the BMG profile are int8 (8 16 32) -- so nothing is currently misclassified.  When  >    int16 MMA arrives, this must be given the Crisp-level element type instead of the LLVM one.
 
 
 ---
 ### DEFUN `%BF16-AS-I16-P`
 - **Args**: `(VAL FROM-TYPE)`
 
-  > T when VAL is a bfloat16 that has already been rewritten to the i16 LLVM type.  >   >    Endeavour 155 swaps llvm-bfloat-type's symbol-function on the SPIR-V backend so bf16 becomes i16  >    before it reaches codegen -- Intel encodes bf16 matrices as raw 16-bit integers, and a real  >    `bfloat` needs SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  Any  >    code path that still assumes a float-typed value has to notice; this is how it notices.  >   >    Checks BOTH the Crisp type (it must really be bfloat16) and the LLVM type (it must really have  >    become i16), so a backend that keeps a native bfloat is unaffected.
+  > T when VAL is a bfloat16 that has already been rewritten to the i16 LLVM type.  >   >    Endeavour 155 swaps llvm-bfloat-type's symbol-function on the SPIR-V backend so bf16 becomes i16  >    before it reaches codegen -- Intel encodes bf16 matrices as raw 16-bit integers, and a real  >    `bfloat` needs SPV_KHR_bfloat16, which the BMG driver's SPIR-V reader does not implement.  Any  >    code path that still assumes a float-typed value has to notice; this is how it notices.  >   >    Checks BOTH the Crisp type (it must really be bfloat16) and the LLVM type (it must really have  >    become i16), so a backend that keeps a native bfloat is unaffected.
 
 
 ---
 ### DEFUN `%GEN-SPIRV-SPLIT-BARRIER`
 - **Args**: `(BUILDER MODULE PHASE)`
 
-  > Emit one half of a split workgroup barrier.  >   >    PHASE is :arrive -> __spirv_ControlBarrierArriveINTEL, or :wait -> ...WaitINTEL.  Both take the  >    same three arguments as the fused __spirv_ControlBarrier and with the same values Crisp already  >    uses for (sync-workgroup): Scope=Workgroup(2), MemScope=Workgroup(2),  >    Semantics=AcquireRelease(8)|WorkgroupMemory(256) = 264.  >   >    Splitting changes WHEN the rendezvous blocks, not what it orders -- so the memory semantics are  >    deliberately identical to the fused form.  A reader comparing the two should see one difference,  >    the opcode.
+  > Emit one half of a split workgroup barrier.  >   >    PHASE is :arrive -> __spirv_ControlBarrierArriveINTEL, or :wait -> ...WaitINTEL.  Both take the  >    same three arguments as the fused __spirv_ControlBarrier and with the same values Crisp already  >    uses for (sync-workgroup): Scope=Workgroup(2), MemScope=Workgroup(2),  >    Semantics=AcquireRelease(8)|WorkgroupMemory(256) = 264.  >   >    Splitting changes WHEN the rendezvous blocks, not what it orders -- so the memory semantics are  >    deliberately identical to the fused form.  A reader comparing the two should see one difference,  >    the opcode.
 
 
 ---
@@ -4786,7 +4799,7 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `INJECT-SPIR-KERNEL-METADATA`
 - **Args**: `(IR-TEXT)`
 
-  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  > Returns modified IR text with metadata.  >   > Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attribute-group refs,  > !dbg, !intel_reqd_sub_group_size) instead of overwriting it -- see the comment above.
+  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  > Returns modified IR text with metadata.  >   > Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attribute-group refs,  > !dbg, !intel_reqd_sub_group_size) instead of overwriting it -- see the comment above.
 
 
 ---
@@ -4879,6 +4892,13 @@ Generated on 2026-08-27T05:26:32.588026Z
 - **Args**: `(MODULE)`
 
   > T if MODULE declares/calls any __spirv_Subgroup2DBlock* builtin (Endeavor 142 — prefetch / block  >    load / block store) — used to add --spirv-ext=+SPV_INTEL_2d_block_io only when needed.
+
+
+---
+### DEFUN `%INJECT-CACHE-CONTROL-DECORATIONS`
+- **Args**: `(LL-PATH)`
+
+  > Re-attach CacheControlLoadINTEL !spirv.Decorations to the pointer operands of every  >    __spirv_CooperativeMatrixLoadKHR call in the post-opt LLVM IR at LL-PATH, in place.  >   >    No-op when CRISP_CACHE_CONTROL is unset.  Returns the number of pointer definitions  >    decorated, so the caller can log it and a zero can be NOTICED rather than assumed away.
 
 
 ---
@@ -4997,14 +5017,14 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `%MODULE-USES-BFLOAT-P`
 - **Args**: `(MODULE)`
 
-  > Always NIL now.  >   >    Endeavour 155: Crisp no longer emits the LLVM `bfloat` TYPE at all — a bf16 cooperative matrix  >    is a 16-bit INTEGER matrix plus an operands-mask bit (see the bf16 header).  So no module needs  >    SPV_KHR_bfloat16, and requesting it is what the BMG driver refused to read.  >   >    Kept as a function rather than deleted because compile-to-spirv calls it, and because the day a  >    backend DOES want a real bfloat type this is the single place that decides.
+  > Always NIL now.  >   >    Endeavour 155: Crisp no longer emits the LLVM `bfloat` TYPE at all — a bf16 cooperative matrix  >    is a 16-bit INTEGER matrix plus an operands-mask bit (see the bf16 header).  So no module needs  >    SPV_KHR_bfloat16, and requesting it is what the BMG driver refused to read.  >   >    Kept as a function rather than deleted because compile-to-spirv calls it, and because the day a  >    backend DOES want a real bfloat type this is the single place that decides.
 
 
 ---
 ### DEFUN `VALIDATE-SPV-BF16-COOP`
 - **Args**: `(SPV-PATH)`
 
-  > Endeavour 155 — assert a bf16 register tile reached the hardware in INTEL'S bf16 ENCODING.  >   >    That encoding is: A/B cooperative matrices with 16-BIT INTEGER components, an fp32 accumulator,  >    and NO SPV_KHR_bfloat16 (there is no bfloat type in the module to require it).  Verified  >    against what Intel's own bf16 joint_matrix kernel emits.  >   >    This rung previously asserted the opposite — a 16-bit FLOAT component and a declared  >    SPV_KHR_bfloat16 — which is the encoding this driver refuses.  The change is not a relaxation:  >    it is the same per-operand strictness applied to the correct target.
+  > Endeavour 155 — assert a bf16 register tile reached the hardware in INTEL'S bf16 ENCODING.  >   >    That encoding is: A/B cooperative matrices with 16-BIT INTEGER components, an fp32 accumulator,  >    and NO SPV_KHR_bfloat16 (there is no bfloat type in the module to require it).  Verified  >    against what Intel's own bf16 joint_matrix kernel emits.  >   >    This rung previously asserted the opposite — a 16-bit FLOAT component and a declared  >    SPV_KHR_bfloat16 — which is the encoding this driver refuses.  The change is not a relaxation:  >    it is the same per-operand strictness applied to the correct target.
 
 
 ---
@@ -5018,14 +5038,14 @@ Generated on 2026-08-27T05:26:32.588026Z
 ### DEFUN `%MODULE-USES-SUBGROUP-MMA-P`
 - **Args**: `(MODULE)`
 
-  > T if MODULE calls __spirv_SubgroupMatrixMultiplyAccumulateINTEL -- i.e. some kernel in it chose  >    the :xe-native lowering.  Mirrors %module-uses-2d-block-io-p exactly, and for the same reason:  >    the extension is requested only when it is used, so a kernel on the portable path does not oblige  >    the driver to support it.
+  > T if MODULE calls __spirv_SubgroupMatrixMultiplyAccumulateINTEL -- i.e. some kernel in it chose  >    the :xe-native lowering.  Mirrors %module-uses-2d-block-io-p exactly, and for the same reason:  >    the extension is requested only when it is used, so a kernel on the portable path does not oblige  >    the driver to support it.
 
 
 ---
 ### DEFUN `%MODULE-USES-SPLIT-BARRIER-P`
 - **Args**: `(MODULE)`
 
-  > T if MODULE calls either half of the INTEL split barrier.  >   >    Mirrors %module-uses-2d-block-io-p and %module-uses-subgroup-mma-p: the extension is requested  >    only when it is used, so a kernel that never splits does not oblige the driver to support it.
+  > T if MODULE calls either half of the INTEL split barrier.  >   >    Mirrors %module-uses-2d-block-io-p and %module-uses-subgroup-mma-p: the extension is requested  >    only when it is used, so a kernel that never splits does not oblige the driver to support it.
 
 
 ---
@@ -8056,10 +8076,24 @@ Generated on 2026-08-27T05:26:32.588026Z
 
 
 ---
+### DEFUN `%PREFETCH-BLOCK-SHAPE`
+- **Args**: `(ELEM-BYTES LOCATION)`
+
+  > The legal Subgroup2DBlockPrefetchINTEL block shape (ROWS . COLS) for an ELEM-BYTES element.  >   >    Only 2-byte elements are supported, and that is a REFUSAL rather than a guess: the legal shape  >    is element-width dependent, a 16-bit block is at most 16 COLUMNS wide, and an illegal :size  >    resolves to an IGC builtin that does not exist (e.g.  >    __internal_intel_sub_group_2d_block_prefetch_16b_32r32x1c).  That fails at MODULE BUILD, long  >    after compilation, with a message about a missing symbol rather than about the kernel -- see  >    benchmarks/matmul/_kdepth/pf1_k32.crisp.  Refusing here converts it into a compile-time error  >    that names the cause.  >   >    32x16 is the shape verified in use.  A 16x16 block would let a 128x32 footprint tile into  >    exactly 16 blocks -- one per warp, with no duplication (see %prefetch-warp-plan) -- but its  >    legality is unverified and can only be established on metal, so it is not assumed here.
+
+
+---
+### DEFUN `%PREFETCH-WARP-PLAN`
+- **Args**: `(H W BR BC N-WARPS LOCATION)`
+
+  > Plan the distribution of an H x W footprint over N-WARPS, in BR x BC hardware blocks.  >    Returns (values NBY NBX N-BLOCKS ROUNDS).  >   >    ROUNDS is how many prefetches each warp issues: ceiling(n-blocks / n-warps).  Warp w handles  >    block (w + j*n-warps) mod n-blocks for j below ROUNDS.  >   >    THE `mod n-blocks` IS LOAD-BEARING AND IS NOT A ROUNDING ERROR.  Irregularity is the normal  >    case, not an edge case -- in the shipped fp16 geometry the A footprint (128x32) is 8 blocks over  >    16 warps while the B footprint (32x256) is exactly 16.  Both occur in ONE kernel.  When there  >    are fewer blocks than warps the surplus warps re-prefetch a block someone else already asked  >    for.  That DUPLICATION IS DELIBERATE: a prefetch is a hint, so the cost is one instruction and a  >    second touch of an already-warm line, whereas the alternative -- letting surplus warps idle --  >    needs a branch, and a branch around a prefetch is BUG 051.
+
+
+---
 ### DEFUN `ANALYZE-PREFETCH-TILE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavor 142 (Phase B): (prefetch-tile SRC (COORD-Y COORD-X) :size (H W)) -> an Intel L1 cache  >    prefetch (Subgroup2DBlockPrefetchINTEL).  A fire-and-forget hint with NO destination — it warms the  >    LSC so a subsequent register block-load (load-tile -> GRF) hits L1 instead of stalling on global  >    memory; it never changes results.  Intel/SPV-only + hardware-profile-required (the profile's L1 size  >    feeds the Phase-C thrash analysis).  Lowered by reusing the coop-op node with a :prefetch kind.
+  > Endeavor 142 (Phase B): (prefetch-tile SRC (COORD-Y COORD-X) :size (H W) &key warp-partitioned)  >    -> an Intel 2D block cache prefetch (Subgroup2DBlockPrefetchINTEL).  A fire-and-forget hint with  >    NO destination -- it warms the LSC so a subsequent register block-load (load-tile -> GRF) hits  >    cache instead of stalling on global memory; it never changes results.  Intel/SPV-only +  >    hardware-profile-required.  Lowered by reusing the coop-op node with a :prefetch kind.  >   >    Endeavour 158: :warp-partitioned distributes the footprint across the workgroup's warps, each  >    warp computing its own block index from warp-id.  See the block comment above.
 
 
 ---
@@ -8793,6 +8827,34 @@ Generated on 2026-08-27T05:26:32.588026Z
 - **Args**: `(SPV-PATH)`
 
   > Endeavour 157 rung 02 — assert the FUSED (sync-workgroup) is untouched.  >   >    A regression guard.  Teaching a builtin that has always taken zero arguments to accept one is  >    exactly the change that quietly alters the zero-argument path, and every kernel Crisp has ever  >    shipped uses that path.  So: a plain ControlBarrier must be present, and NEITHER split op may  >    appear -- a fused barrier that silently became a split pair would deadlock differently, not  >    compute differently.
+
+
+---
+### DEFUN `%SPV-PREFETCH-SHAPES`
+- **Args**: `(TXT)`
+
+  > List of (BLOCK-WIDTH . BLOCK-HEIGHT) for every Subgroup2DBlockPrefetchINTEL in TXT, with the  >    constant IDs resolved to integers.  Operand order is  >      ElementSize BlockWidth BlockHeight BlockCount SrcBase MemWidth MemHeight MemPitch Coord  >    and %spv-lines keeps the leading word-count token, so BlockWidth is the FOURTH token and  >    BlockHeight the FIFTH.  >   >    Resolution goes through the EXISTING %spv-int-constants (src/mma.lisp), which returns an ALIST.  >    An earlier version of this file defined its own hash-table-returning %spv-int-constants and  >    silently clobbered that one, breaking validate-spv-bf16-coop / -fp16-coop with "hash-table is  >    not of type LIST".  Check for an existing definition before adding a helper to this overlay.
+
+
+---
+### DEFUN `%VALIDATE-PREFETCH-SHAPE-LIST`
+- **Args**: `(SHAPES EXPECTED-COUNT WHERE)`
+
+  > Shared body for both 158 validators: SHAPES must have EXPECTED-COUNT entries and every one must  >    be the 32x16 hardware block.  WHERE names the rung for the failure message.
+
+
+---
+### DEFUN `VALIDATE-SPV-PREFETCH-PARTITIONED`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 158 rung 01 — :warp-partitioned actually distributed the footprint.  >   >    The kernel prefetches a 128x256 footprint, which is 4x16 = 64 blocks of 32x16, over 16 warps.  >    That is 4 ROUNDS, so exactly FOUR prefetch instructions must be emitted, each of the hardware  >    shape.  Partitioned: 4 static instructions x 16 warps = 64 issues, covering 64 blocks once  >    each.  Unpartitioned, the same coverage needs 64 static forms that EVERY warp runs = 1024  >    issues.  That 16x is what made round-2 arm B read 2.6x slower, and no correctness check can  >    see it.
+
+
+---
+### DEFUN `VALIDATE-SPV-PREFETCH-UNPARTITIONED`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 158 rung 02 — prefetch-tile WITHOUT :warp-partitioned is untouched.  >   >    A regression guard, not a feature test.  Adding a keyword to a form that has never had one is  >    exactly the change that quietly alters the path without it, and every prefetch kernel Crisp has  >    shipped (benchmarks/matmul/_kdepth/pf*.crisp, sec4_fused_relu) takes that path.  A 32x16 :size  >    must still emit exactly ONE prefetch of that shape, issued by every subgroup.
 
 
 ---

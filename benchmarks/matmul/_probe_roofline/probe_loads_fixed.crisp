@@ -1,0 +1,39 @@
+;; ROOFLINE PROBE C — LOADS AT A FIXED COORDINATE.  probe_loads with the two load-tile
+;; coordinates pinned to tile (0,0) in the K direction.  SAME loop, SAME 16 block reads per
+;; K-iteration, but the address is loop-invariant, so both the per-iteration 64-bit address
+;; arithmetic AND any cache miss disappear.
+;;
+;; This is the CEILING arm: it bounds what is available from making the loads cheaper by ANY
+;; means.  If it is barely faster than probe_loads, then neither addressing nor cache behaviour
+;; is what makes T_loads large, we are at raw block-load throughput, and the only remaining
+;; route is FEWER loads -- i.e. a bigger per-subgroup register tile.
+;;
+;; It deliberately CONFOUNDS two things (no address math, and perfect locality).  Arm A
+;; (cache control) separates the cache half, so the arms triangulate.
+;;
+;; THIS KERNEL IS NUMERICALLY WRONG BY CONSTRUCTION.  Diagnostic probe only -- see README.md.
+;;
+;; LICM HAZARD: the coordinates are now loop-invariant, so the loads could in principle be
+;; hoisted out of the K loop, which would silently turn this arm into probe_math.  The block
+;; read is an opaque external call that LLVM must assume touches memory, so it should stay --
+;; but the in-loop load count MUST be checked in the emitted SPIR-V before any timing is used.
+(declaim (precision fast))
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 256))
+  (let ((A-tile (make-register-tile half (128 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile half (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (128 256) 0.0 :warps '(true true true true true true true true true true true true true true true true)))
+        (K (inner-dimension A B)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+          (load-tile A A-tile (grid-y (to-ulong 0)))
+          (load-tile B B-tile ((to-ulong 0) grid-x)))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

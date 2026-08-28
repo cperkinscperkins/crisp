@@ -1,0 +1,45 @@
+;; ROOFLINE PROBE B3-W — LOADS + WARP-PARTITIONED PREFETCH, distance 3.
+;;
+;; The re-run of arm B now that `prefetch-tile` has `:warp-partitioned` (endeavour 158).  The
+;; original arm measured 2.6-2.9x SLOWER, but that was not a result about prefetch: every one of
+;; the 16 subgroups issued every one of the 24 prefetches -- 384 per workgroup per K-step against
+;; 256 loads.  This arm issues TWO per subgroup:
+;;   A  (128 32)  -> 4x2  =  8 blocks / 16 warps -> 1 round  (8 blocks, so 8 warps duplicate)
+;;   B  (32 256)  -> 1x16 = 16 blocks / 16 warps -> 1 round  (exact, no duplication)
+;; 2 instead of 24 per subgroup, i.e. 12x less prefetch issue for the SAME coverage.
+;;
+;; Compare the source against probe_loads_pf3.crisp, which needed 24 hand-written forms with
+;; the 16-column hardware limit applied by hand.  The coordinates here are in the same units as
+;; the matching load-tile.
+;;
+;; WHAT IT TESTS.  Round 1 showed fetch and math are ALREADY ~95% overlapped, so prefetch cannot
+;; pay by hiding loads behind math.  The only way it can pay is by raising memory-level
+;; parallelism AMONG the loads -- i.e. by making T_loads itself smaller.  Watch T_loads, not
+;; T_full.  A flat result is a real answer; what it can no longer be is an ARTEFACT of Crisp
+;; over-issuing by 16x.
+;;
+;; THIS KERNEL IS NUMERICALLY WRONG BY CONSTRUCTION.  Diagnostic probe only -- see README.md.
+(declaim (precision fast))
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 256))
+  (let ((A-tile (make-register-tile half (128 32) 0.0 :operand :a :warps '(true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile half (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile float (128 256) 0.0 :warps '(true true true true true true true true true true true true true true true true)))
+        (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 32))))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (progn
+        (dotimes (grid-k n-k-steps)
+          (let ((prefetch-k (+ grid-k (to-ulong 3))))
+            (when (< prefetch-k n-k-steps)
+              (prefetch-tile A (grid-y prefetch-k) :size (128 32) :warp-partitioned true)
+              (prefetch-tile B (prefetch-k grid-x) :size (32 256) :warp-partitioned true))
+            (load-tile A A-tile (grid-y grid-k))
+            (load-tile B B-tile (grid-k grid-x))))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))

@@ -12,6 +12,9 @@
 #   ./scripts/bench-intel.sh 256,512,1024,2048,4096,8192 100 fast    # single precision pass
 #   ./scripts/bench-intel.sh 256,512,1024,2048,4096,8192 100 fast sec2_top_bf16,sec2_top_fp16
 #                                                    # just the 16-bit top kernels + their peers
+#   ./scripts/bench-intel.sh 2048,4096,8192 100 fast _probe_roofline --scratch
+#                                                    # the roofline diagnostic; --scratch is REQUIRED
+#                                                    # (two of its three arms are deliberately wrong)
 #
 # Requirements:
 #   - Docker Desktop on Windows with WSL2 backend
@@ -57,6 +60,10 @@ PRECISION="${3:-all}"   # all -> full sweep; or fast | ieee for single pass
 # Empty runs every chapter.  A filter here is the difference between refreshing two rows and
 # pinning the display GPU for the entire suite -- which is why peer columns go stale.
 CHAPTERS="${4:-}"
+# Extra flags forwarded verbatim to matmul.py.  Needed for --scratch, which the diagnostic
+# chapters (e.g. _probe_roofline) must be run with -- it routes their JSON into
+# benchmarks/results/scratch/, which the report never reads into a canonical table.
+EXTRA="${5:-}"
 
 # Locate the repo root from this script's directory.  Use cygpath where
 # available to convert to Windows-form paths — with MSYS_NO_PATHCONV=1 set
@@ -115,9 +122,12 @@ docker run --rm \
     -v /usr/lib/wsl:/usr/lib/wsl \
     -v "${REPO_ROOT}:/workspace" \
     -e CRISP_CACHE_DIR=/root/.cache/common-lisp \
+    -e CRISP_CACHE_CONTROL \
+    -e CRISP_CACHE_CONTROL_KERNELS \
+    -e CRISP_TILE_VISIT \
     -w /workspace \
     "${IMAGE_TAG}" \
-    bash scripts/bench-intel-entrypoint.sh "${SIZES}" "${ITERS}" "${PRECISION}" "${CHAPTERS}"
+    bash scripts/bench-intel-entrypoint.sh "${SIZES}" "${ITERS}" "${PRECISION}" "${CHAPTERS}" "${EXTRA}"
 
 echo ""
 echo "=== Intel benchmark run complete ==="

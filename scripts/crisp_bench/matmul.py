@@ -1023,6 +1023,25 @@ def main():
 
             # §2.1 — Top MMA Benchmarks (BFloat16 Low-Precision Tier)
             run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16.crisp", use_autobench=True)
+            # VARIANTS.  The bf16 kernel is geometrically IDENTICAL to its fp16 twin -- same
+            # 128x256 tile over 16 subgroups, same K step, same (8 16 16) shape -- so the same
+            # prefetch-distance sweep applies.  bf16 had a SYCL-TLA peer and no variant sweep;
+            # fp16 had the sweep and no peer.  Both halves are now filled in.
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw1.crisp", "Crisp_V_pfw1", use_autobench=True)
+            # THE fp16 WINNER, TRANSFERRED.  Peer geometry (256x256/32sg) + :xe-native + prefetch
+            # reached 106.0 TF at 8192 in fp16 -- 95% of oneMKL, best at every size, no sign
+            # flip.  The bf16 kernel is geometrically identical and the pair has tracked within
+            # 0.5% at every size, so the result is expected to transfer.  bf16 is where the
+            # SYCL-TLA peer has settled data, so this is the comparison that matters.
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_pf2.crisp",   "Crisp_V_wg256pf2",   use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_xe.crisp",    "Crisp_V_wg256xe",    use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_xepf2.crisp", "Crisp_V_wg256xepf2", use_autobench=True)
+            # superseded by the peer geometry; d1 is the best of this family:
+            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw2.crisp", "Crisp_V_pfw2", use_autobench=True)
+            # superseded by the peer geometry; d1 is the best of this family:
+            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw3.crisp", "Crisp_V_pfw3", use_autobench=True)
+            # superseded by the peer geometry; d1 is the best of this family:
+            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw4.crisp", "Crisp_V_pfw4", use_autobench=True)
             run_target("sec2_top_bf16", "sycl_control_bf16.cpp", "sycl_control_bf16", "SYCL_Apples_BF16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top_bf16", "sycl_tla_peer.cpp", "sycl_tla_peer", "SYCL-TLA_BF16", sycl_tla_flags, is_sycl=True)
             run_target("sec2_top_bf16", "onemkl_bf16.cpp", "onemkl_bf16", "OneMKL_BF16", sycl_flags, is_sycl=True, is_cublas=True)
@@ -1041,6 +1060,38 @@ def main():
             # report was just fixed for (the CUB/CUBLAS substring collision).  Different element
             # type, different section, contenders converted to match.
             run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16.crisp", use_autobench=True)
+            # VARIANTS of the fp16 solution, not separate contenders.  The `Crisp_V_` prefix is
+            # the marker report.py reads: a `Crisp_V_<tag>` competitor is an alternative
+            # CONFIGURATION of this chapter's Crisp kernel, so the report shows the per-size
+            # envelope (with provenance) AND the best single fixed choice.  A plain `Crisp_<name>`
+            # stays a separate contender -- that is what sec3_mma_lowering's four kernels are, a
+            # controlled contrast where taking a max would destroy the comparison.
+            #
+            # Endeavour 158: prefetch distance is a real tuning parameter here, and it CHANGES
+            # SIGN with N -- +40% at 4096, -55% at 8192.  Exactly the case the envelope/single
+            # split and the sign-flip warnings exist to make visible.
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw1.crisp", "Crisp_V_pfw1", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw2.crisp", "Crisp_V_pfw2", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw3.crisp", "Crisp_V_pfw3", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw4.crisp", "Crisp_V_pfw4", use_autobench=True)
+            # THE PEER'S GEOMETRY: 256x256 over 32 subgroups, which is what SYCL-TLA runs at
+            # EVERY size (verified: compile-time constants, zero size-dependent branching).
+            # Per-subgroup tile is already identical to ours at 32x64 and register demand is
+            # unchanged at 448/thread -- the difference is purely workgroup aggregation, and
+            # therefore arithmetic intensity: 128 flops/byte against our 85.3.
+            # Endeavour 156 banked this geometry as a loss at 34.6 vs 60.8, but that was at
+            # K=16 and before :warp-partitioned prefetch existed.
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256.crisp",     "Crisp_V_wg256",     use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf1.crisp", "Crisp_V_wg256pf1", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf2.crisp", "Crisp_V_wg256pf2", use_autobench=True)
+            # :XE-NATIVE at the peer geometry -- 42 machine instructions per dpas against 57.
+            # Attacks the INSTRUCTION STREAM, where the remaining gap to the peer lives.
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_xe.crisp",    "Crisp_V_wg256xe",    use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_xepf2.crisp", "Crisp_V_wg256xepf2", use_autobench=True)
+            # CACHE CONTROL, now covering the PREFETCH as well as the loads.  Byte-identical
+            # source to wg256_pf2; only the NAME differs, so one env setting decorates this
+            # kernel and not its twin and both are measured in the SAME session.
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf2cc.crisp", "Crisp_V_wg256pf2cc", use_autobench=True)
 
             # §3 Situational — MMA LOWERING (:coop-matrix vs :xe-native), Intel only.
             # Four kernels, one variable at a time.  All are 32x64 bf16 over one subgroup; the
@@ -1051,7 +1102,71 @@ def main():
             run_l0_crisp("sec3_mma_lowering", "matmul_xe_bare.crisp",    "Crisp_XeNative_Bare",  use_autobench=True)
             run_l0_crisp("sec3_mma_lowering", "matmul_coop_tuned.crisp", "Crisp_Coop_Tuned",    use_autobench=True)
             run_l0_crisp("sec3_mma_lowering", "matmul_xe_tuned.crisp",   "Crisp_XeNative_Tuned", use_autobench=True)
+            # DIAGNOSTIC — ROOFLINE PROBE.  Not a chapter of the report; it has no contenders and
+            # produces no row.  Three arms of ONE kernel (the shipped sec2_top_fp16 geometry) that
+            # separate "bound by the loads" from "bound by the math":
+            #     probe_full    16 loads + 32 dpas in the K loop   (the real kernel)
+            #     probe_loads   16 loads +  0 dpas                 (math deleted)
+            #     probe_math     0 loads + 32 dpas                 (loads hoisted out of the K loop)
+            # Read T_full against T_loads and T_math -- see _probe_roofline/README.md for how each
+            # outcome is interpreted.
+            #
+            # TWO OF THE THREE ARMS ARE NUMERICALLY WRONG BY CONSTRUCTION.  That is the point of
+            # them, and it is also why this chapter is fenced:
+            #   * the directory is underscore-prefixed, so it is not a report chapter;
+            #   * _skip() means it runs ONLY when named in --chapters, never in a full sweep;
+            #   * it must be run with --scratch, so its JSON lands in results/scratch/ which the
+            #     report never reads into a canonical table;
+            #   * at N <= VERIFY_MAX_N the harness runs the host reference and DISCARDS the two
+            #     wrong arms as NOT MMA_CORRECT.  That is expected and is itself the check that
+            #     the integrity gate still works -- include 2048 in the sizes to see it fire.
+            # The measurable sizes are therefore 4096 and up, where the host reference is skipped
+            # and points are recorded with verified:false.
+            run_l0_crisp("_probe_roofline", "probe_full.crisp",  "Probe_Full",  use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_wg256_xe_math.crisp", "Probe_WG256_XE_Math", use_autobench=True)
+            # run_l0_crisp("_probe_roofline", "probe_loads.crisp", "Probe_Loads", use_autobench=True)
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_math.crisp",  "Probe_Math",  use_autobench=True)
+            # Round 2 arms.  The first probe answered "which half is the critical path" (the
+            # loads, at 95%).  These three ask WHY T_loads is large, since fetch and math turned
+            # out to be ~95% overlapped already -- so the win has to come from shrinking T_loads
+            # itself, not from overlapping it better.  All are probe_loads with ONE change.
+            #   A  cache control   CacheControlLoadINTEL {L1,L3}=Cached, SYCL-TLA's kL1C_L3C.
+            #                      Needs CRISP_CACHE_CONTROL=l1c_l3c and
+            #                      CRISP_CACHE_CONTROL_KERNELS=probe_loads_cc in the environment;
+            #                      the kernel SOURCE is byte-identical to probe_loads, so a flat
+            #                      result means IGC ignored the decoration -- itself a real answer.
+            #   B  prefetch        24 block prefetches per K-iteration, running 2 or 3 ahead.
+            #                      Tests memory-level parallelism among the loads.
+            #   C  fixed coords    loop-invariant load address: both the per-iteration 64-bit
+            #                      address arithmetic and any cache miss vanish.  The CEILING arm.
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_loads_cc.crisp",    "Probe_Loads_CC",    use_autobench=True)
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_loads_pf2.crisp",   "Probe_Loads_PF2",   use_autobench=True)
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_loads_pf3.crisp",   "Probe_Loads_PF3",   use_autobench=True)
+            # ROUND-2 ARM, already answered -- re-enable to re-measure:
+            # run_l0_crisp("_probe_roofline", "probe_loads_fixed.crisp", "Probe_Loads_Fixed", use_autobench=True)
+            # Round 3 (endeavour 158): arm B re-run with a prefetch that is actually DISTRIBUTED.
+            # The round-2 arms above issued all 24 prefetches from all 16 subgroups because
+            # prefetch-tile had no :warps notion; these issue TWO per subgroup for the same
+            # coverage.  probe_full_pfw* are numerically CORRECT (a prefetch changes no result), so
+            # unlike the loads-only arms they verify at N<=2048 and compare directly to probe_full.
+            # LOADS-ONLY MISLEADS FOR PREFETCH (round 3) -- parked:
+            # run_l0_crisp("_probe_roofline", "probe_loads_pfw2.crisp",  "Probe_Loads_PFW2",  use_autobench=True)
+            # LOADS-ONLY MISLEADS FOR PREFETCH (round 3) -- parked:
+            # run_l0_crisp("_probe_roofline", "probe_loads_pfw3.crisp",  "Probe_Loads_PFW3",  use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_full_pfw1.crisp",   "Probe_Full_PFW1",   use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_full_pfw2.crisp",   "Probe_Full_PFW2",   use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_full_pfw3.crisp",   "Probe_Full_PFW3",   use_autobench=True)
+            run_l0_crisp("_probe_roofline", "probe_full_pfw4.crisp",   "Probe_Full_PFW4",   use_autobench=True)
+
             run_target("sec2_top_fp16", "sycl_control_fp16.cpp", "sycl_control_fp16", "SYCL_Apples_FP16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
+            # PEER for fp16.  A verbatim port of the bf16 peer with only the element type
+            # changed.  The fp16 Peer column was empty because this file did not exist -- not
+            # because SYCL-TLA lacks fp16 on Xe2 (it is TF32 it does not implement).
+            run_target("sec2_top_fp16", "sycl_tla_peer_fp16.cpp", "sycl_tla_peer_fp16", "SYCL-TLA_FP16", sycl_tla_flags, is_sycl=True)
             run_target("sec2_top_fp16", "onemkl_fp16.cpp", "onemkl_fp16", "OneMKL_FP16", sycl_flags, is_sycl=True, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU
