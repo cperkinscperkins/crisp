@@ -3789,6 +3789,15 @@
        nil)
       (t t))))
 
+
+
+(defun validate-spv-prefetch-partitioned (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-PREFETCH-PARTITIONED" :crisp.compiler) spv-path))
+
+(defun validate-spv-prefetch-unpartitioned (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-PREFETCH-UNPARTITIONED" :crisp.compiler) spv-path))
+
+
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))
          (run-adversarial (member "--adversarial" (uiop:command-line-arguments) :test #'string=))

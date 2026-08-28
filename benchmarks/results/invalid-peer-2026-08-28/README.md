@@ -46,3 +46,43 @@ driver.
 The harness still builds and runs the REAL SYCL-TLA. It now reports its own verdict honestly, so
 on this machine every point is dropped and the peer column is empty. On a machine where the
 modern path works, points will record normally with no further change.
+
+---
+
+## Appendix — external suggestions, triaged 2026-08-28
+
+A second opinion (Gemini) proposed five avenues. Its core intuition — that the fault is in the
+**inline vISA / LSC 2D block** path used by the modern collective and not by the legacy one — is
+the best-supported theory we have, and the evidence below narrows it further. The specific
+mechanisms it proposed, however, are mostly ruled out:
+
+| # | suggestion | verdict |
+|---|---|---|
+| 1 | WSL2 `dxgkrnl` drops LSC descriptors; look for a GPU fault / TDR | **Mechanism not supported.** `ZE_DEBUG=4` + `NEOReadDebugKeys=1` + `PrintDebugMessages=1` report **no** device-lost, **no** memory violation, **no** page fault — the kernel runs cleanly and computes the wrong answer. A TDR would surface as `ZE_RESULT_ERROR_DEVICE_LOST`. `dmesg` is unavailable in the container; the Windows Event Viewer check is still worth 30 seconds on the host. |
+| 2 | Base-pointer / pitch alignment for 2D block transfers | **CLOSED — not the cause.** CUTLASS device allocations come back **2 MB-aligned** (`0x…e00000`, so 64/128/256B all satisfied), and A/B/D pitches are 64-byte multiples at N = 1024 / 4096 / 8192. |
+| 3 | Missing Large-GRF (256 register) flag | **CLOSED — not the cause.** Rebuilt AOT with `-device bmg-g21 -options -ze-opt-large-register-file`; builds clean, still `Disposition: Failed`. |
+| 4 | IGC / Level Zero debug env vars | **Done — useful negative.** See row 1; the run is fault-free. |
+| 5 | Native Linux live USB to separate upstream bug from WSL2 bug | **Not run — and it is the definitive test.** Requires host access; Chris's call. |
+
+### The evidence that narrows it, which the external suggestion did not have
+
+**Crisp's own kernels use `SPV_INTEL_2d_block_io` (`Subgroup2DBlockLoadINTEL`,
+`Subgroup2DBlockLoadTransformINTEL`) and `SubgroupMatrixMultiplyAccumulateINTEL` through this
+exact driver, and verify correct at every size — 108.9 TFLOPS at N=8192.**
+
+So 2D block IO and DPAS are **not** broken through WSL. What separates the two SYCL-TLA paths is
+narrower than "LSC 2D block":
+
+* modern `MainloopXeL1Staged` — **inline vISA assembly** (`asm("lsc_load_block2d…")`) plus
+  `__builtin_IB_subgroup_createBlock2DAddressPayload` / `setBlock2DAddressPayloadBlockX/Y`
+* legacy `MainloopIntelXeXMX16` — `__builtin_IB_*` builtins, no inline asm  → **works**
+* Crisp — SPIR-V instructions for the same operations                      → **works**
+
+Note also that `-DCUTLASS_SYCL_BUILTIN_ENABLE` does **not** rescue the modern path: that flag
+gates the *legacy* headers (`copy_xe_legacy.hpp`, `mma_xe_legacy.hpp`), which only the legacy
+collective consumes. Consistent with the observation that the modern example still failed with
+it set.
+
+**Best remaining hypothesis:** the WSL/IGC stack miscompiles or mishandles SYCL-TLA's inline vISA
+`lsc_load_block2d` with address payloads, silently, producing no fault. The decisive next steps
+are a minimal standalone repro of that instruction sequence, or item 5 above.
