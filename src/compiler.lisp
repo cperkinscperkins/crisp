@@ -630,6 +630,82 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
       (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
     nil))
 
+
+
+
+(defun %inject-cache-control-decorations (ll-path)
+  "Re-attach CacheControlLoadINTEL !spirv.Decorations to the pointer operands of every
+   __spirv_CooperativeMatrixLoadKHR call in the post-opt LLVM IR at LL-PATH, in place.
+
+   No-op when CRISP_CACHE_CONTROL is unset.  Returns the number of pointer definitions
+   decorated, so the caller can log it and a zero can be NOTICED rather than assumed away."
+  (let ((spec (%cache-control-spec))
+        (only (uiop:getenv "CRISP_CACHE_CONTROL_KERNELS")))
+    ;; Optional per-kernel filter, so a decorated and an undecorated arm can be measured in the
+    ;; SAME container session -- which is the rule that platform drift keeps punishing us for
+    ;; breaking.  Unset means "every kernel", matching CRISP_TILE_VISIT's behaviour.
+    (when (and spec only (plusp (length only)))
+      (let* ((fn   (file-namestring ll-path))
+             (base (subseq fn 0 (or (position #\. fn) (length fn)))))
+        ;; EXACT stem match, not a substring test: "probe_loads" is a prefix of
+        ;; "probe_loads_cc", so a substring test would decorate both arms and silently
+        ;; destroy the comparison this filter exists to make.
+        (unless (member base (uiop:split-string only :separator ",") :test (function string=))
+          (setf spec nil))))
+    (when spec
+      (let ((lines '()))
+        (with-open-file (in ll-path :direction :input)
+          (loop for l = (read-line in nil nil) while l do (push l lines)))
+        (setf lines (coerce (nreverse lines) 'vector))
+        (let ((wanted (make-hash-table :test #'equal))
+              (max-md 0))
+          ;; Pass 1 -- pointer operands of coop-matrix LOADS, taken from the call sites.
+          ;; BOTH the coop-matrix load AND the 2D block PREFETCH.  The prefetch was omitted the
+          ;; first time round, which is the operation whose entire job is warming cache -- so the
+          ;; "cache control does nothing" result of 2026-08-27 was measured with the prefetch
+          ;; undecorated.  SYCL-TLA asks for kL1C_L3C on its prefetches as well as its loads, at
+          ;; all 26 call sites.  The pointer is the FIRST argument of the load and the FIFTH of
+          ;; the prefetch, so find it positionally rather than assuming it leads.
+          (loop for l across lines do
+            (when (or (search "@__spirv_CooperativeMatrixLoadKHR" l)
+                      (search "@__spirv_Subgroup2DBlockPrefetchINTEL" l))
+              (let ((p (search "ptr addrspace(" l)))
+                (when p
+                  (let ((pc (position #\% l :start p)))
+                    (when pc
+                      (let ((end (position-if (lambda (c) (member c (list #\, #\Space #\))))
+                                              l :start pc)))
+                        (setf (gethash (subseq l pc (or end (length l))) wanted) t)))))))
+            (cl-ppcre:register-groups-bind ((#'parse-integer n))
+                ("^!(\\d+) = " l)
+              (when (> n max-md) (setf max-md n))))
+          ;; Pass 2 -- append the attachment to each pointer's DEFINING instruction.
+          (let* ((deco-id (1+ max-md))
+                 (ids (loop for i from (+ deco-id 1) repeat (length spec) collect i))
+                 (n 0))
+            (loop for i from 0 below (length lines)
+                  for l = (aref lines i) do
+              (let ((trimmed (string-left-trim " " l)))
+                (when (and (plusp (length trimmed)) (char= (aref trimmed 0) #\%)
+                           (not (search "!spirv.Decorations" l)))
+                  (let ((eq-pos (search " = " trimmed)))
+                    (when (and eq-pos (gethash (subseq trimmed 0 eq-pos) wanted))
+                      (setf (aref lines i)
+                            (format nil "~a, !spirv.Decorations !~d" l deco-id))
+                      (incf n))))))
+            ;; Pass 3 -- the metadata definitions themselves.
+            (with-open-file (out ll-path :direction :output :if-exists :supersede)
+              (loop for l across lines do (write-line l out))
+              (format out "!~d = !{~{!~d~^, ~}}~%" deco-id ids)
+              (loop for pair in spec for id in ids
+                    do (format out "!~d = !{i32 6442, i32 ~d, i32 ~d}~%"
+                               id (car pair) (cdr pair))))
+            (log:info "cache-control: re-attached ~d CacheControlLoadINTEL decoration sites after -O3 (~a)"
+                      n (uiop:getenv "CRISP_CACHE_CONTROL"))
+            (when (zerop n)
+              (log:warn "cache-control: CRISP_CACHE_CONTROL is set but NO coop-matrix load pointer was decorated -- the arm is INERT; do not read its timing as a result about cache control."))
+            n))))))
+
 (defun compile-to-spirv (module output-path &key debug-p)
   "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
@@ -649,6 +725,9 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
         (write-string ir-with-metadata stream)))
     (let* ((opt-ok        (%run-opt-pipeline ll-file ll-opt-file +spv-opt-pipeline+))
            (llvm-as-input (if opt-ok ll-opt-file ll-file)))
+      ;; ARM A: -O3 has just discarded the decorations codegen attached, so put them back on
+      ;; the FINAL address arithmetic.  Inert unless CRISP_CACHE_CONTROL is set.
+      (%inject-cache-control-decorations llvm-as-input)
       (let ((tool (resolve-tool-executable "llvm-as")))
         (run-tool-command
          (list tool (namestring llvm-as-input) "-o" (namestring bc-file))
@@ -660,18 +739,15 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
                                 '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
                               (when (%module-uses-2d-block-io-p module)
                                 '("--spirv-ext=+SPV_INTEL_2d_block_io"))
-                              ;; 156: :xe-native's multiply.  Requested only when the module
-                              ;; actually contains one, like every other extension here -- an
-                              ;; unconditional flag would widen what the driver must accept for
-                              ;; every kernel Crisp emits.
                               (when (%module-uses-subgroup-mma-p module)
                                 '("--spirv-ext=+SPV_INTEL_subgroup_matrix_multiply_accumulate"))
                               (when (%module-uses-split-barrier-p module)
                                 '("--spirv-ext=+SPV_INTEL_split_barrier"))
-                              ;; 155: a bf16 register tile lowers to a `bfloat` coop matrix,
-                              ;; which llvm-spirv refuses without this extension.
                               (when (%module-uses-bfloat-p module)
-                                '("--spirv-ext=+SPV_KHR_bfloat16"))))
+                                '("--spirv-ext=+SPV_KHR_bfloat16"))
+                              (when (and (%cache-control-spec)
+                                         (%module-uses-coop-matrix-p module))
+                                '("--spirv-ext=+SPV_INTEL_cache_controls"))))
            (flags (append debug-flags ext-flags)))
       (run-tool-command
        (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))

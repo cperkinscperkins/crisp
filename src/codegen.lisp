@@ -384,12 +384,19 @@
         when (and (llvm-type-kind-is-pointer? ty)
                   (%ptx-entry-illegal-addrspace-p
                    (llvm-get-pointer-address-space ty)))
-        do (error "PTX kernel-entry verifier: kernel '~A' expanded-param #~A is~%~
-                   a pointer in illegal addrspace ~A.  CUDA driver would~%~
-                   reject this kernel image (`.ptr .shared` / `.ptr .local`~%~
-                   are not legal on kernel entry).  This is a compiler bug —~%~
-                   %PTX-ENTRY-DEMOTE-TYPE should have caught it in~%~
-                   CREATE-LLVM-FUNCTION-TYPE."
+        ;; NOTE: the segments below are joined with CONCATENATE rather than FORMAT's
+        ;; ~<newline> continuation directive.  This file is CRLF, so a trailing `~`
+        ;; is followed by a Return, not a Newline, and FORMAT signals
+        ;; "Unknown directive (character: Return)" -- masking this very diagnostic.
+        ;; SBCL cannot catch that at compile time for ERROR (it does for FORMAT and
+        ;; LOG:WARN, whose literal control strings go through FORMATTER).
+        do (error (concatenate 'string
+                               "PTX kernel-entry verifier: kernel '~A' expanded-param #~A is~%"
+                               "a pointer in illegal addrspace ~A.  CUDA driver would~%"
+                               "reject this kernel image (`.ptr .shared` / `.ptr .local`~%"
+                               "are not legal on kernel entry).  This is a compiler bug —~%"
+                               "%PTX-ENTRY-DEMOTE-TYPE should have caught it in~%"
+                               "CREATE-LLVM-FUNCTION-TYPE.")
                   fn-name i (llvm-get-pointer-address-space ty))))
 
 (defun %ptx-entry-restore-shared-ptrs-for-implode
@@ -5041,8 +5048,7 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                  cl:nil)
                 (bad-ops
                  (cl:format cl:*error-output*
-                            "FAIL: ~d of ~d A/B cooperative matrices are not ~a (~d-bit ~a).~%~
-                             Offenders (result-id, component-width, kind, use):~%"
+                            "FAIL: ~d of ~d A/B cooperative matrices are not ~a (~d-bit ~a).~%Offenders (result-id, component-width, kind, use):~%"
                             (cl:length bad-ops) (cl:length ops) label want-width
                             (cl:string-downcase (cl:symbol-name want-kind)))
                  (cl:dolist (m bad-ops)
@@ -5052,8 +5058,7 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                  cl:nil)
                 (bad-acc
                  (cl:format cl:*error-output*
-                            "FAIL: ~d accumulator matrix/matrices are not fp32.  A ~a MMA~%~
-                             accumulates in fp32; an all-~a module is as wrong as an all-f32 one.~%"
+                            "FAIL: ~d accumulator matrix/matrices are not fp32.  A ~a MMA~%accumulates in fp32; an all-~a module is as wrong as an all-f32 one.~%"
                             (cl:length bad-acc) label label)
                  cl:nil)
                 ((cl:null accs)
@@ -5600,22 +5605,91 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
   (:documentation "Store MATRIX-VAL into TENSOR-VAL at element origin (OROW, OCOL).
    Dispatched on the active MMA lowering; see *mma-lowering*."))
 
+
+
+
+(defun %cache-control-spec ()
+  "Parse CRISP_CACHE_CONTROL into a list of (CACHE-LEVEL . LOAD-CACHE-CONTROL) pairs for
+   CacheControlLoadINTEL, or NIL when unset/unrecognised (meaning: emit no decoration, which
+   is Crisp's historical behaviour of letting the driver choose)."
+  (let ((v (uiop:getenv "CRISP_CACHE_CONTROL")))
+    (when (and v (plusp (length v)))
+      (let ((k (string-downcase (string-trim " " v))))
+        (cond ((string= k "l1c_l3c")   '((0 . 1) (1 . 1)))
+              ((string= k "l1s_l3c")   '((0 . 2) (1 . 1)))
+              ((string= k "l1uc_l3c")  '((0 . 0) (1 . 1)))
+              ((string= k "l1c_l3uc")  '((0 . 1) (1 . 0)))
+              (t (log:warn "CRISP_CACHE_CONTROL=~a not recognised; emitting no cache-control decoration.  Known: l1c_l3c l1s_l3c l1uc_l3c l1c_l3uc" v)
+                 nil))))))
+
+;; src/codegen.lisp
+(defun %attach-cache-control-load (ptr module)
+  "Decorate PTR with CacheControlLoadINTEL for each (level . control) in %CACHE-CONTROL-SPEC.
+
+   Emits, in LLVM IR terms, `!spirv.Decorations !{!{i32 6442, i32 LEVEL, i32 CONTROL}, ...}`
+   on the pointer-producing instruction; SPIRV-LLVM-Translator turns each inner node into an
+   OpDecorate CacheControlLoadINTEL.  6442 is the decoration's SPIR-V token.
+
+   GUARDED WITH LLVMIsAInstruction for the BUG 033 reason: LLVM's IRBuilder constant-folds, so
+   a `ptr` that came out of folding may be a Constant rather than an Instruction, and
+   LLVMSetMetadata is an unchecked unwrap<Instruction> that would corrupt or crash rather than
+   report.  A non-instruction pointer is simply left undecorated.
+
+   Returns PTR either way so it can be used inline."
+  (let ((spec (%cache-control-spec)))
+    (when (and spec ptr (not (cffi:null-pointer-p ptr))
+               (not (cffi:null-pointer-p (crisp.llvm-bindings::llvm-is-a-instruction ptr))))
+      (let* ((ctx  (crisp.llvm-bindings::llvm-get-module-context module))
+             (i32  (crisp.llvm-bindings::llvm-int32-type))
+             (kind "spirv.Decorations")
+             (kind-id (crisp.llvm-bindings::llvm-get-md-kind-id-in-context
+                       ctx kind (length kind)))
+             (inner
+               (mapcar
+                (lambda (pair)
+                  (cffi:with-foreign-object (ops :pointer 3)
+                    (loop for w in (list 6442 (car pair) (cdr pair))
+                          for i from 0
+                          do (setf (cffi:mem-aref ops :pointer i)
+                                   (crisp.llvm-bindings::llvm-value-as-metadata
+                                    (crisp.llvm-bindings::llvm-const-int i32 w nil))))
+                    (crisp.llvm-bindings::llvm-md-node-in-context2 ctx ops 3)))
+                spec)))
+        (cffi:with-foreign-object (outer :pointer (length inner))
+          (loop for md in inner for i from 0
+                do (setf (cffi:mem-aref outer :pointer i) md))
+          (let ((node (crisp.llvm-bindings::llvm-md-node-in-context2
+                       ctx outer (length inner))))
+            (crisp.llvm-bindings::llvm-set-metadata
+             ptr kind-id (crisp.llvm-bindings::llvm-metadata-as-value ctx node))
+            (log:debug "cache-control: decorated coop load pointer with ~a (~{~a~^ ~})"
+                       (uiop:getenv "CRISP_CACHE_CONTROL")
+                       (mapcar (lambda (p) (format nil "L~d=~d" (car p) (cdr p))) spec))))))
+    ptr))
+
+;; src/codegen.lisp  (REPLACES the :coop-matrix method of %coop-load-impl -- adds the
+;; cache-control decoration on the folded pointer; behaviour is IDENTICAL when
+;; CRISP_CACHE_CONTROL is unset, which is how every shipped kernel builds.)
 (defmethod %coop-load-impl ((lowering (eql :coop-matrix)) builder module tensor-val orow ocol elem-llvm rows cols use layout)
   (declare (ignorable lowering))
-  "Unchanged behaviour: fold the origin into a pointer, then CooperativeMatrixLoadKHR."
+  "Fold the origin into a pointer, optionally decorate it with CacheControlLoadINTEL, then
+   CooperativeMatrixLoadKHR."
   (multiple-value-bind (ptr stride-val)
       (%coop-tensor-ptr+stride builder tensor-val orow ocol layout elem-llvm)
+    (%attach-cache-control-load ptr module)
     (let ((i32 (crisp.llvm-bindings::llvm-int32-type))
-        (i64 (crisp.llvm-bindings::llvm-int64-type))
-        (as  (%ptr-as ptr)))
-    (%coop-call builder module
-                (format nil "__spirv_CooperativeMatrixLoadKHR_~d_~d_~d_as~d" use rows cols as)
-                (%coop-type elem-llvm rows cols use)
-                (list (%coop-ptr-type as) i32 i64 i32)
-                (list ptr
-                      (crisp.llvm-bindings::llvm-const-int i32 layout nil)
-                      stride-val
-                      (crisp.llvm-bindings::llvm-const-int i32 0 nil))))))
+          (i64 (crisp.llvm-bindings::llvm-int64-type))
+          (as  (%ptr-as ptr)))
+      (%coop-call builder module
+                  (format nil "__spirv_CooperativeMatrixLoadKHR_~d_~d_~d_as~d" use rows cols as)
+                  (%coop-type elem-llvm rows cols use)
+                  (list (%coop-ptr-type as) i32 i64 i32)
+                  (list ptr
+                        (crisp.llvm-bindings::llvm-const-int i32 layout nil)
+                        stride-val
+                        (crisp.llvm-bindings::llvm-const-int i32 0 nil))))))
+
+
 
 (defmethod %coop-store-impl ((lowering (eql :coop-matrix)) builder module tensor-val matrix-val orow ocol elem-llvm rows cols use layout)
   (declare (ignorable lowering))
