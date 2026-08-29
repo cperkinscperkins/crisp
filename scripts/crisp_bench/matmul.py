@@ -994,6 +994,55 @@ def main():
                        ["-O3", "-std=c++17", "-arch=sm_90a", f"-I{cutlass_inc}"])
             run_target("sec2_top", "cublas_ceiling.cu", "cublas_ceiling", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
+            # §2.1 / §2.2 — 16-BIT TOP MMA, NVIDIA (endeavour 159).
+            #
+            # THE CRISP COLUMN IS DELIBERATELY ABSENT AND MUST READ AS A GAP.  Crisp cannot emit a
+            # 16-bit MMA on PTX at all today: the sync path is hardcoded to
+            # llvm.nvvm.mma.m16n8k8.row.col.tf32 (src/mma.lisp) and the wgmma path to
+            # m64nNk8.f32.tf32.tf32 with %check-wgmma-shape pinning K=8.  The h100 profile already
+            # lists (16 8 16) in :mma-shapes, so the SHAPE is declared and nothing emits it.  These
+            # chapters therefore measure the three CONTENDERS first, which is what turns an H100
+            # rental into the target the compiler work then aims at.  A missing Crisp row here is a
+            # true statement about the compiler; a fabricated one would not be.
+            #
+            # These reuse the SAME chapter keys as the Intel 16-bit chapters, exactly as sec2_top
+            # already carries both platforms' contenders in one directory.  The report loops per
+            # GPU, so the NVIDIA rows land in their own section with CUTLASS/cuBLAS/CUDA_Apples
+            # labels and no report change is needed.
+            #
+            # THE PEER IS SWEPT AND THE CEILING IS NOT, ON PURPOSE.  cuBLAS chooses its own kernel
+            # internally and cannot be asked which; CUTLASS makes the tile a template argument, so
+            # sweeping it both measures the peer honestly and maps the shape-vs-N ladder.  That
+            # ladder is the point: the Intel fp16 chapter needed eleven Crisp variants because no
+            # one kernel fits all N, and this is how we find out whether NVIDIA is the same.
+            cutlass_16bit_configs = [
+                ("128x128x64",   ["-DCFG_TILE_M=128", "-DCFG_TILE_N=128", "-DCFG_TILE_K=64"]),
+                ("128x256x64",   ["-DCFG_TILE_M=128", "-DCFG_TILE_N=256", "-DCFG_TILE_K=64"]),
+                ("256x128x64",   ["-DCFG_TILE_M=256", "-DCFG_TILE_N=128", "-DCFG_TILE_K=64"]),
+                ("64x128x64",    ["-DCFG_TILE_M=64",  "-DCFG_TILE_N=128", "-DCFG_TILE_K=64"]),
+                # A CONTROLLED CLUSTER CONTRAST, not a shape.  Identical to 128x128x64 but for
+                # -DCFG_CLUSTER_M=2.  Endeavour 152 measured clusters as a NEGATIVE for Crisp on
+                # this part (forming a cluster of two was free; multicast cost ~5% and never paid
+                # back).  Whether CUTLASS's clusters pay where ours did not is a directly
+                # informative answer, and it is only readable against the no-cluster twin.
+                ("128x128x64c2", ["-DCFG_TILE_M=128", "-DCFG_TILE_N=128", "-DCFG_TILE_K=64",
+                                  "-DCFG_CLUSTER_M=2"]),
+            ]
+            cutlass_16bit_flags = ["-O3", "-std=c++17", "-arch=sm_90a", f"-I{cutlass_inc}"]
+
+            for _ch, _sfx, _tag in (("sec2_top_fp16", "fp16", "FP16"),
+                                    ("sec2_top_bf16", "bf16", "BF16")):
+                run_target(_ch, f"cuda_control_{_sfx}.cu", f"cuda_control_{_sfx}",
+                           f"CUDA_Apples_{_tag}", nvcc_flags)
+                for _cfg, _dflags in cutlass_16bit_configs:
+                    # CUTLASS_V_<cfg> so the peer column can name which configuration produced a
+                    # cell, the same provenance rule the Crisp variants already follow.  A
+                    # best-per-size number the reader cannot reproduce is not an honest number.
+                    run_target(_ch, f"cutlass_peer_{_sfx}.cu", f"cutlass_peer_{_sfx}_{_cfg}",
+                               f"CUTLASS_V_{_cfg}", cutlass_16bit_flags + _dflags)
+                run_target(_ch, f"cublas_ceiling_{_sfx}.cu", f"cublas_ceiling_{_sfx}",
+                           f"CUBLAS_Optimal_{_tag}", cublas_flags, is_cublas=True)
+
             # §3 Situational — CLUSTERS + TMA MULTICAST (DSMEM)
             run_target("sec3_cluster_multicast", "matmul_tile128.crisp",
                        "matmul_tile128.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,128")

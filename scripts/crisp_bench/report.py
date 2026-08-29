@@ -140,11 +140,21 @@ def _is_peer(name: str) -> bool:
 # 2.2x REGRESSION at 8192.  A best-per-size number is only honest when the reader can reproduce
 # the selection, so the envelope must name its winner.
 def _variant_split(name: str):
-    """(GROUP, TAG) for a `Crisp_V_<tag>` variant; (name, None) for anything else.
+    """(GROUP, TAG) for a `<GROUP>_V_<tag>` variant; (name, None) for anything else.
        The base kernel of a group is the plain `Crisp` competitor, whose tag is reported as
-       "base" so every envelope cell names something."""
-    if name.startswith("Crisp_V_"):
-        return "Crisp", name[len("Crisp_V_"):]
+       "base" so every envelope cell names something.
+
+       GENERALISED FROM `Crisp_V_` (endeavour 159), and the generalisation is the point.  The
+       PEER column takes exactly the same silent max() over every matching competitor that the
+       Crisp column does.  That was harmless only while each chapter carried a single peer build;
+       the swept CUTLASS 16-bit contender carries five, so the peer cell becomes an unattributed
+       envelope -- a best-per-size number the reader cannot reproduce, which is the precise
+       failure this function was written to prevent.  It was Crisp-only by accident of which
+       column happened to get variants first, not by design."""
+    marker = "_V_"
+    i = name.find(marker)
+    if i > 0:
+        return name[:i], name[i + len(marker):]
     if name == "Crisp":
         return "Crisp", "base"
     return name, None
@@ -583,12 +593,29 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 tf, ms = _tf(pt), _ms(pt)
                 return f"{tf:.1f} ({ms:.3f})" if tf else "\u2014"
 
+            # SAME SELECTION AS _best, BUT IT KEEPS THE NAME.  A column carrying several builds
+            # of one contender reports a per-size envelope whether or not anyone intended it; the
+            # only question is whether the reader is told which build won.  See _variant_split.
+            def _best_named(cand_pts, predicate):
+                matching = [(comp, pt) for comp, pt in cand_pts if predicate(comp)]
+                if not matching:
+                    return None, None
+                return max(matching,
+                           key=lambda cp: cp[1].get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
+
+            def _cell_named(comp, pt):
+                base = _cell(pt)
+                if not comp or base == "\u2014":
+                    return base
+                _, vtag = _variant_split(comp)
+                return f"{base} `{vtag}`" if vtag else base
+
             last = {}
             for s in sizes:
                 cand = list(data[s].items())
                 c_pt = _best(cand, _is_crisp)
                 ctrl_pt = _best(cand, _is_control)
-                peer_pt = _best(cand, _is_peer)
+                peer_name, peer_pt = _best_named(cand, _is_peer)
                 ceil_pt = _best(cand, lambda k: _is_ceiling(k) and "_Plus_" not in k)
                 # Keep the last size at which EACH contender actually has a point, not the last
                 # size overall: Crisp has no 16384 entry yet, and taking the final row wholesale
@@ -612,9 +639,9 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                     env = f"{_cell(c_pt)} `{win}`" if win else _cell(c_pt)
                     bs_tf = variants.get(best_single, {}).get(s)
                     bs = f"{bs_tf:.1f}" if bs_tf else "—"
-                    lines.append(f"| {s} | {env} | {bs} | {_cell(ctrl_pt)} | {_cell(peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
+                    lines.append(f"| {s} | {env} | {bs} | {_cell(ctrl_pt)} | {_cell_named(peer_name, peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
                 else:
-                    lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ctrl_pt)} | {_cell(peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
+                    lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ctrl_pt)} | {_cell_named(peer_name, peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
 
             # ---- SIGN FLIPS -------------------------------------------------------------------
             # A variant that WINS at one size and LOSES at another, both beyond the run-to-run
