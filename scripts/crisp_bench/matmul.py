@@ -990,8 +990,34 @@ def main():
             # volume that nothing ever created, so on every other machine the contender silently
             # took its "headers not found" branch.  scripts/setup-third-party.sh provisions this.
             cutlass_inc = HERE.parent.parent / "third_party" / "cutlass" / "include"
-            run_target("sec2_top", "cutlass_peer.cu", "cutlass_peer", "CUTLASS",
-                       ["-O3", "-std=c++17", "-arch=sm_90a", f"-I{cutlass_inc}"])
+            # SECOND INCLUDE PATH, AND IT IS LOAD-BEARING.  cutlass::make_cute_packed_stride lives
+            # in tools/util/include, not include/.  Without it the peers do not compile at all --
+            # which is not hypothetical: CUTLASS 3.x takes a 3-element stride (row, col, BATCH) and
+            # every peer here passed the 2-element form, so the contender had NEVER built on any
+            # machine.  Verified on an H100 NVL 2026-08-29: with both paths, all 11 peer builds
+            # succeed in ~22s each.
+            cutlass_util_inc = HERE.parent.parent / "third_party" / "cutlass" / "tools" / "util" / "include"
+            cutlass_base_flags = ["-O3", "-std=c++17", "-arch=sm_90a",
+                                  f"-I{cutlass_inc}", f"-I{cutlass_util_inc}"]
+            # THE tf32 PEER IS SWEPT TOO, and the reason is measured rather than aesthetic.  This
+            # contender had never compiled on any machine (see cutlass_peer.cu defect 1), so its
+            # single hardcoded 64x256x32 tile had never been checked against an alternative.  On
+            # first contact it read 52-57% of cuBLAS while the 16-bit peers read 76-85%.  The tile
+            # was not the cause -- the PINNED KernelTmaWarpSpecialized schedule was, and it is
+            # coupled to the tile: pinned, a 128x256x32 tile collapses to 22.9 TFLOPS @4096; on
+            # KernelScheduleAuto the same tile is the best of the set at 316.5.  Corrected, the
+            # peer reaches 74-82% of cuBLAS.  A peer that under-reports by 1.4x makes every
+            # Crisp/peer ratio flattering for no earned reason, so it is swept like the others.
+            # 64x256x32 is retained as the historical control, not because it wins.
+            cutlass_tf32_configs = [
+                ("128x256x32", ["-DCFG_TILE_M=128", "-DCFG_TILE_N=256", "-DCFG_TILE_K=32"]),
+                ("128x128x32", ["-DCFG_TILE_M=128", "-DCFG_TILE_N=128", "-DCFG_TILE_K=32"]),
+                ("256x128x32", ["-DCFG_TILE_M=256", "-DCFG_TILE_N=128", "-DCFG_TILE_K=32"]),
+                ("64x256x32",  ["-DCFG_TILE_M=64",  "-DCFG_TILE_N=256", "-DCFG_TILE_K=32"]),
+            ]
+            for _cfg, _dflags in cutlass_tf32_configs:
+                run_target("sec2_top", "cutlass_peer.cu", f"cutlass_peer_{_cfg}",
+                           f"CUTLASS_V_{_cfg}", cutlass_base_flags + _dflags)
             run_target("sec2_top", "cublas_ceiling.cu", "cublas_ceiling", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §2.1 / §2.2 — 16-BIT TOP MMA, NVIDIA (endeavour 159).
@@ -1028,7 +1054,7 @@ def main():
                 ("128x128x64c2", ["-DCFG_TILE_M=128", "-DCFG_TILE_N=128", "-DCFG_TILE_K=64",
                                   "-DCFG_CLUSTER_M=2"]),
             ]
-            cutlass_16bit_flags = ["-O3", "-std=c++17", "-arch=sm_90a", f"-I{cutlass_inc}"]
+            cutlass_16bit_flags = cutlass_base_flags
 
             for _ch, _sfx, _tag in (("sec2_top_fp16", "fp16", "FP16"),
                                     ("sec2_top_bf16", "bf16", "BF16")):

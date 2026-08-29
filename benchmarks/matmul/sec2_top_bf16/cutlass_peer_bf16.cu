@@ -78,6 +78,7 @@
 #include <cutlass/gemm/device/gemm_universal_adapter.h>
 #include <cutlass/gemm/collective/collective_builder.hpp>
 #include <cutlass/epilogue/collective/collective_builder.hpp>
+#include <cutlass/util/packed_stride.hpp>
 #define HAS_CUTLASS 1
 #else
 #define HAS_CUTLASS 0
@@ -152,11 +153,24 @@ int main(int argc, char** argv) {
     cudaMemcpy(dB, hB.data(), sizeof(ElementB) * (size_t)K * N, cudaMemcpyHostToDevice);
 
     Gemm gemm_op;
+    // CUTLASS 3.x STRIDES ARE 3-ELEMENT (row, col, BATCH).  This file previously passed the
+    // 2-element form, which is why no CUTLASS contender in this tree had ever compiled.
+    // make_cute_packed_stride derives each stride from the kernel's own StrideX tag, so the
+    // ColumnMajor B operand does not need its batch term hand-derived (the easy one to get wrong).
+    using StrideA = typename Gemm::GemmKernel::StrideA;
+    using StrideB = typename Gemm::GemmKernel::StrideB;
+    using StrideC = typename Gemm::GemmKernel::StrideC;
+    using StrideD = typename Gemm::GemmKernel::StrideD;
+    StrideA sA = cutlass::make_cute_packed_stride(StrideA{}, cute::make_shape(M, K, 1));
+    StrideB sB = cutlass::make_cute_packed_stride(StrideB{}, cute::make_shape(N, K, 1));
+    StrideC sC = cutlass::make_cute_packed_stride(StrideC{}, cute::make_shape(M, N, 1));
+    StrideD sD = cutlass::make_cute_packed_stride(StrideD{}, cute::make_shape(M, N, 1));
+
     typename Gemm::Arguments args{
         cutlass::gemm::GemmUniversalMode::kGemm,
         {M, N, K},
-        {dA, {K, cute::_1{}}, dB, {K, cute::_1{}}},
-        {{}, dC, {N, cute::_1{}}, dC, {N, cute::_1{}}}
+        {dA, sA, dB, sB},
+        {{1.0f, 0.0f}, dC, sC, dC, sD}
     };
 
     size_t workspace_size = Gemm::get_workspace_size(args);

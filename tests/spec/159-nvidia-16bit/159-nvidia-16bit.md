@@ -176,15 +176,132 @@ large N and `128x256x64` at small N are the likely ones. A dropped point with a 
 
 ---
 
+---
+
+## Phase A results — H100 NVL, 2026-08-29
+
+Measured on a RunPod **H100 NVL** (95 GB, driver 580.126.09, CUDA 12.4), warmup 10 / iters 50,
+CUDA-event timed, median of iters. **Every point below verified `correct: true` with
+`max_abs_err` exactly 0.000e+00** — the `A = B = 1 ⇒ C = K` oracle is exact in both 16-bit
+formats, as predicted.
+
+Note the SKU: this is the **NVL** part, not the PCIe part the `h100` hardware profile describes
+(`:compute-units 114`). Irrelevant to Phase A, since none of these contenders reads that profile,
+but it matters the moment Crisp kernels run here — see [[h100-profile-variant-mismatch]].
+
+### The prediction held, including its stated exception
+
+cuBLAS 16-bit ÷ cuBLAS tf32, same pod, same harness, same FLOP count:
+
+| N | tf32 | fp16 | ×  | bf16 | ×  |
+|---:|---:|---:|:-:|---:|:-:|
+| 1024 | 141.4 | 148.1 | 1.05 | 107.0 | 0.76 |
+| 2048 | 323.3 | 449.6 | 1.39 | 445.5 | 1.38 |
+| 4096 | 386.3 | 697.5 | **1.81** | 664.4 | **1.72** |
+| 8192 | 350.6 | 602.8 | 1.72 | 660.8 | 1.89 |
+| 16384 | 292.2 | 631.0 | **2.16** | 631.3 | **2.16** |
+
+**Nothing resembling 4× at any size.** The ratio climbs monotonically with N and crosses 2× only
+at 16384 — which is exactly the shape the prediction asked for, including the exception it named:
+*"points meaningfully above 2× are the memory path (halved operand bytes buying cache behaviour),
+which on Intel showed up only at the large sizes where the working set stops fitting."* The
+Intel-derived model transferred to NVIDIA intact, mechanism and size-dependence both.
+
+The 1024 row is the other end of the same story: at small N nothing is arithmetic-bound, so the
+instruction-level advantage cannot express itself, and bf16 is actually **slower than tf32**
+(0.76×) because cuBLAS picks a poor kernel there. A 16-bit format is not a free win at small N.
+
+### No one kernel fits all N — confirmed on NVIDIA, by the peer itself
+
+CUTLASS fp16, five configurations (TFLOPS):
+
+| N | 128x128x64 | 128x256x64 | 256x128x64 | 64x128x64 | 128x128x64c2 | best | spread |
+|---:|---:|---:|---:|---:|---:|:-:|:-:|
+| 1024 | 113.0 | 76.7 | 72.6 | **126.9** | 109.7 | `64x128x64` | 1.75× |
+| 2048 | 340.9 | **380.0** | 352.5 | 283.6 | 340.9 | `128x256x64` | 1.34× |
+| 4096 | 468.7 | **546.8** | 515.0 | 333.4 | 467.1 | `128x256x64` | 1.64× |
+| 8192 | 390.6 | **504.7** | 479.1 | 246.4 | 399.8 | `128x256x64` | 2.05× |
+| 16384 | — | **484.8** | — | 193.3 | — | `128x256x64` | 2.51× |
+
+**A clean sign flip.** `64x128x64` versus `128x256x64` is **+65% at 1024** and **−51% at 8192**
+(−60% at 16384) — the same kernel, opposite verdicts, far outside any run-to-run spread. The
+premise the Intel fp16 chapter established with eleven Crisp variants reproduces on NVIDIA with
+five CUTLASS builds. Choosing one fixed configuration by measuring at one N will mislead at
+another, on both vendors.
+
+bf16 tracks fp16 almost exactly (same winner at every size, within ~1%), so this is a property of
+the tile/problem geometry, not of the numeric format.
+
+### Clusters do not pay for CUTLASS either — corroborating endeavour 152
+
+`128x128x64c2` is identical to `128x128x64` but for `ClusterShape 2×1×1`, so its delta is
+attributable to clustering alone:
+
+| | 1024 | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|---:|
+| fp16 | −2.9% | +0.0% | −0.3% | +2.4% |
+| bf16 | −3.0% | −0.1% | −0.4% | +4.7% |
+
+Neutral to slightly negative except a small gain at 8192. Endeavour 152 measured cluster-of-two as
+free for Crisp (0.98–0.99×) and multicast as a consistent ~5% loss, and concluded the gap to
+cuBLAS is **not on the operand-fetch path**. CUTLASS, a far more tuned implementation, gets
+essentially nothing from clusters here either. That is independent support for 152's conclusion:
+it was not a Crisp deficiency.
+
+### The Control
+
+`cuda_control_fp16` / `_bf16` measure **3.8–4.0 TFLOPS, flat at every size**, fp16 and bf16
+indistinguishable. The caveat recorded in the header before the first run was correct:
+`cuda::memcpy_async` only takes the accelerated `cp.async` path at 4/8/16-byte granularity, and
+each thread stages a single 2-byte element, so the pipeline buys nothing. This is an honest
+Control — what a naive 16-bit port of the tf32 control actually does — and it is ~175× below the
+ceiling at 4096. A `__half2` (4-byte) staging variant would be a legitimate *second* control.
+
+### The tf32 peer was broken three ways, and the third cost 1.4×
+
+`sec2_top/cutlass_peer.cu` had **never compiled on any machine** — CUTLASS 3.x takes a 3-element
+stride (row, col, **batch**) and it passed the 2-element form. That is the concrete cause behind
+the long-standing suspicion that CUTLASS had never run; `third_party/versions.txt` recording only
+`sycl-tla` was the symptom, not the cause. Fixing it needs `cutlass::make_cute_packed_stride` and
+a **second include path** (`tools/util/include`) that no build in the tree carried.
+
+Once it ran, it read **52–57% of cuBLAS** while the 16-bit peers read 76–85%. The tile was not the
+reason. The **pinned `KernelTmaWarpSpecialized` schedule** was, and it is coupled to the tile:
+
+| tf32 TFLOPS @4096 | 64x256x32 | 128x128x32 | 128x256x32 | 256x128x32 |
+|---|---:|---:|---:|---:|
+| pinned `KernelTmaWarpSpecialized` | 219.3 | 180.8 | **22.9** | **39.8** |
+| `KernelScheduleAuto` | 208.9 | 258.7 | **316.5** | 297.2 |
+
+Under the pinned schedule a large tile does not merely fail to help — it **collapses, 6–14×** — so
+the shipped 64x256x32 looked like the best tile available, and was, *under that schedule*. On Auto
+the ranking inverts and the best config is **1.40–1.44× the shipped number** at every size from
+2048 up, bringing the tf32 peer to **74–82% of cuBLAS**, finally the same band as the 16-bit peers.
+
+This also validates, after the fact, the decision to leave the 16-bit peers on `KernelScheduleAuto`
+from the start. The header predicted a *compile* failure from a pinned schedule; the real
+penalty turned out to be silent and numerical, which is worse.
+
+`cutlass_peer.cu` has been rewritten as a structural twin of the 16-bit peers (parameterised tile,
+Auto schedule, checked statuses, config in the JSON) and `matmul.py` now sweeps it over four
+configs. Verified on the pod: all five builds succeed, all correct, default 128x256x32 reads
+317.6 TFLOPS @4096 against the old tile's 208.1.
+
+---
+
 ## Status
 
-- [x] Phase A sources authored (six files) — **not yet compiled anywhere**
+- [x] Phase A sources authored (six files)
 - [x] Driver wiring, five-config CUTLASS sweep per format
 - [x] Report peer-provenance generalisation
-- [ ] Phase A build-verified on H100
-- [ ] Phase A measured; §2.1/§2.2 NVIDIA sections populated
-- [ ] tf32 CUTLASS gap in §2 confirmed closed by the same run
-- [ ] Prediction checked: is cuBLAS fp16/tf32 ≈ 2×?
+- [x] Phase A build-verified on H100 — all 11 peer builds succeed (~22 s each) after the stride fix
+- [x] Phase A measured, 1024–16384, every point `correct: true`
+- [x] **Prediction checked and held**: cuBLAS fp16/tf32 = 1.05 → 2.16×, never 4×
+- [x] tf32 CUTLASS gap closed — and found to have been *three* defects, one worth 1.4×
+- [ ] Driver run end-to-end on the pod (`bench.py --platform=nvidia`) to confirm the wiring emits
+      result JSON and the report renders the swept peer with its config named. The binaries and
+      the numbers are verified; the *integration* is not yet exercised on hardware.
+- [ ] §2.1/§2.2 NVIDIA sections regenerated into `REPORT.md`
 - [ ] Phase B scoped from the measured shape ladder
 
 ## Open questions for Phase B
