@@ -1,0 +1,173 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-08-28T23:56:14.956615Z",
+    "hardware": {
+      "gpu_model": "Intel BMG",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null
+    },
+    "crisp_commit": "c16d1f4",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "chap4_cheap_fetch",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 256,
+        "n": 256,
+        "k": 256,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 701.6181945800781,
+          "all_compile_ms": 701.6181945800781
+        },
+        "runtime": {
+          "wall_time_ms": 0.0842282,
+          "kernel_execution_ms": 0.011544
+        },
+        "throughput": {
+          "tflops": 2.90666,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 701.6181945800781,
+          "all_compile_ms": 701.6181945800781
+        },
+        "runtime": {
+          "wall_time_ms": 0.106876,
+          "kernel_execution_ms": 0.022359999999999998
+        },
+        "throughput": {
+          "tflops": 12.0052,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 701.6181945800781,
+          "all_compile_ms": 701.6181945800781
+        },
+        "runtime": {
+          "wall_time_ms": 0.14953,
+          "kernel_execution_ms": 0.083928
+        },
+        "throughput": {
+          "tflops": 25.5872,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 2048,
+        "n": 2048,
+        "k": 2048,
+        "warmup": 2,
+        "iters": 12,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 701.6181945800781,
+          "all_compile_ms": 701.6181945800781
+        },
+        "runtime": {
+          "wall_time_ms": 1.28809,
+          "kernel_execution_ms": 1.09398
+        },
+        "throughput": {
+          "tflops": 15.7041,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "warmup": 2,
+        "iters": 5,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 701.6181945800781,
+          "all_compile_ms": 701.6181945800781
+        },
+        "runtime": {
+          "wall_time_ms": 10.6766,
+          "kernel_execution_ms": 10.3164
+        },
+        "throughput": {
+          "tflops": 13.3224,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 8192,
+        "n": 8192,
+        "k": 8192,
+        "warmup": 2,
+        "iters": 5,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 701.6181945800781,
+          "all_compile_ms": 701.6181945800781
+        },
+        "runtime": {
+          "wall_time_ms": 83.9414,
+          "kernel_execution_ms": 82.2117
+        },
+        "throughput": {
+          "tflops": 13.3742,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    }
+  ],
+  "is_canonical": true
+}

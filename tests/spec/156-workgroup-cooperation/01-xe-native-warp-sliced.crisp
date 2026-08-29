@@ -1,0 +1,64 @@
+;; Endeavour 156 — WARP-SLICED :xe-native, on metal.  A REGRESSION SPEC.
+;;
+;; WHY THIS EXISTS.  :xe-native shipped in 156 with no positive spec: its only correctness check
+;; was a benchmark fixture.  So when the warp-sliced load broke, nothing in the suite noticed, the
+;; wrong kernel was measured into benchmarks/REPORT.md, and it was found only because a compute-
+;; runtime upgrade changed the symptom.  A wrong MMA result is invisible to every compile-only
+;; pass and, per endeavour 145, to any load/store round-trip: only an on-metal MMA_CORRECT sees it.
+;;
+;; WHAT IT PINS.  The intersection that was broken, and nothing narrower:
+;;
+;;     :xe-native   AND   a 2-D warp grid   AND   a nonzero warp offset on BOTH axes
+;;
+;; Each of those alone was fine.  :xe-native over ONE subgroup was correct; :coop-matrix over the
+;; same 32-subgroup grid was correct; only the combination failed.  The failure signature was
+;; exact: warp (0,0) computed the right answer and every warp with a nonzero row OR column offset
+;; did not — an offset bug is invisible wherever the offset is zero, so a 1x1 or 1-D grid would
+;; pass while the shipped kernel was wrong.
+;;
+;; WHY 2x2 IS THE MINIMUM.  %warp-grid-dims picks the SQUAREST per-warp block, so 4 warps over a
+;; 4x4 fragment grid factor to (2 . 2): gm=2 and gn=2, both > 1.  That is the smallest geometry in
+;; which a warp exists at a nonzero row offset AND a warp exists at a nonzero column offset, which
+;; is what the bug needed.  Keep it 2-D if this is ever retuned.
+;;
+;;   C-tile 32x64 float  -> 4 x 4 fragments of 8x16   -> 2x2 per warp
+;;   A-tile 32x16 bf16   -> row-sliced   over gm=2    -> 16 rows per warp
+;;   B-tile 16x64 bf16   -> column-sliced over gn=2   -> 32 cols per warp
+;;   local-size 64 = 4 sub-groups of 16
+;;
+;; K = 32 gives TWO K-steps, so the K loop is exercised rather than a single unrolled step.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;;
+;; MMA-DIMS: 32 64 32
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+;; NO inline def-hardware-profile.  The BUILT-IN bmg profile is the point: it is what declares
+;; :mma-lowerings (:coop-matrix :xe-native) and the (8 16 16) bf16 shape, and it is what the
+;; shipped benchmark kernels run against.  A hand-rolled profile here would test a profile no
+;; kernel uses -- and would have to re-declare the very lowering list under test.
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel xe_warp_sliced (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 64)
+           (local-size  :set-to 64)           ; 4 sub-groups
+           (mma-lowering :xe-native))
+  (let ((A-tile (make-register-tile bfloat16 (32 16) 0.0 :operand :a
+                                    :warps '(true true true true)))
+        (B-tile (make-register-tile bfloat16 (16 64) 0.0 :operand :b
+                                    :warps '(true true true true)))
+        (C-tile (make-register-tile float (32 64) 0.0
+                                    :warps '(true true true true)))
+        (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 16))))
+    (dotimes (kt n-k-steps)
+      (load-tile A A-tile (0 kt))
+      (load-tile B B-tile (kt 0))
+      (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
+    (store-tile C-tile C (0 0))))

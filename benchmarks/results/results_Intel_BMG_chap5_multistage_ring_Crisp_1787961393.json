@@ -1,0 +1,173 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-08-28T23:56:28.344024Z",
+    "hardware": {
+      "gpu_model": "Intel BMG",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null
+    },
+    "crisp_commit": "c16d1f4",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "chap5_multistage_ring",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 256,
+        "n": 256,
+        "k": 256,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 702.2988796234131,
+          "all_compile_ms": 702.2988796234131
+        },
+        "runtime": {
+          "wall_time_ms": 0.102378,
+          "kernel_execution_ms": 0.009880000000000002
+        },
+        "throughput": {
+          "tflops": 3.3962,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 702.2988796234131,
+          "all_compile_ms": 702.2988796234131
+        },
+        "runtime": {
+          "wall_time_ms": 0.0902288,
+          "kernel_execution_ms": 0.026832
+        },
+        "throughput": {
+          "tflops": 10.004299999999999,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 702.2988796234131,
+          "all_compile_ms": 702.2988796234131
+        },
+        "runtime": {
+          "wall_time_ms": 0.159654,
+          "kernel_execution_ms": 0.094016
+        },
+        "throughput": {
+          "tflops": 22.8417,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 2048,
+        "n": 2048,
+        "k": 2048,
+        "warmup": 2,
+        "iters": 12,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 702.2988796234131,
+          "all_compile_ms": 702.2988796234131
+        },
+        "runtime": {
+          "wall_time_ms": 0.765805,
+          "kernel_execution_ms": 0.6263920000000001
+        },
+        "throughput": {
+          "tflops": 27.4267,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "warmup": 2,
+        "iters": 5,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 702.2988796234131,
+          "all_compile_ms": 702.2988796234131
+        },
+        "runtime": {
+          "wall_time_ms": 9.10234,
+          "kernel_execution_ms": 8.9467
+        },
+        "throughput": {
+          "tflops": 15.362,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 8192,
+        "n": 8192,
+        "k": 8192,
+        "warmup": 2,
+        "iters": 5,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 702.2988796234131,
+          "all_compile_ms": 702.2988796234131
+        },
+        "runtime": {
+          "wall_time_ms": 98.7978,
+          "kernel_execution_ms": 96.94369999999999
+        },
+        "throughput": {
+          "tflops": 11.3418,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    }
+  ],
+  "is_canonical": true
+}
