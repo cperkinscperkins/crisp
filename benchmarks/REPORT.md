@@ -341,11 +341,11 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 <details><summary><b>Compilation & Build Overhead (BF16)</b></summary>
 
-| contender | class | device codegen (SPIR-V) | total build | **vs Control codegen** |
+| contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 846 ms | 846 ms | 0.44× |
-| **SYCL_Apples_BF16** | Control | 1.92 s | 4.24 s | 1.00× |
-| **SYCL-TLA_BF16** | Peer | 30.94 s | 59.03 s | **16.1× slower** |
+| **Crisp** | Crisp | 846 ms | 846 ms | 1.00× |
+| **SYCL_Apples_BF16** | Control | 1.92 s | 4.24 s | **2.3× slower** |
+| **SYCL-TLA_BF16** | Peer | 30.94 s | 59.03 s | **36.6× slower** |
 | **oneMKL_BF16** | Ceiling | *precompiled* | 7.33 s | — |
 
 </details>
@@ -384,11 +384,11 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 <details><summary><b>Compilation & Build Overhead (FP16)</b></summary>
 
-| contender | class | device codegen (SPIR-V) | total build | **vs Control codegen** |
+| contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 802 ms | 802 ms | 0.43× |
-| **SYCL_Apples_FP16** | Control | 1.88 s | 4.13 s | 1.00× |
-| **SYCL-TLA_FP16** | Peer | 28.88 s | 57.20 s | **15.4× slower** |
+| **Crisp** | Crisp | 802 ms | 802 ms | 1.00× |
+| **SYCL_Apples_FP16** | Control | 1.88 s | 4.13 s | **2.3× slower** |
+| **SYCL-TLA_FP16** | Peer | 28.88 s | 57.20 s | **36.0× slower** |
 | **oneMKL_FP16** | Ceiling | *precompiled* | 6.52 s | — |
 
 </details>
@@ -671,3 +671,19 @@ Debug and exploratory runs are written to `benchmarks/results/scratch/`, which t
 | 2026-08-29 00:25 | matmul | _probe_roofline | Probe_Full_PFW2 | `256,512,1024,2048,4096,8192` |
 | 2026-08-29 00:25 | matmul | _probe_roofline | Probe_Full_PFW3 | `256,512,1024,2048,4096,8192` |
 | 2026-08-29 00:25 | matmul | _probe_roofline | Probe_Full_PFW4 | `256,512,1024,2048,4096,8192` |
+| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp | `256` |
+| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp_V_pfw1 | `256` |
+| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp_V_wg256pf2 | `256` |
+| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp_V_wg256xe | `256` |
+| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp_V_wg256xepf2 | `256` |
+| 2026-08-29 05:59 | matmul | sec2_top_bf16 | SYCL_Apples_BF16 | `256` |
+| 2026-08-29 06:00 | matmul | sec2_top_bf16 | SYCL-TLA_BF16 | `256` |
+| 2026-08-29 06:00 | matmul | sec2_top_bf16 | OneMKL_BF16 | `256` |
+| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp | `256` |
+| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp_V_pfw1 | `256` |
+| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp_V_wg256pf2 | `256` |
+| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp_V_wg256xe | `256` |
+| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp_V_wg256xepf2 | `256` |
+| 2026-08-29 06:03 | matmul | sec2_top_bf16 | SYCL_Apples_BF16 | `256` |
+| 2026-08-29 06:05 | matmul | sec2_top_bf16 | SYCL-TLA_BF16 | `256` |
+| 2026-08-29 06:05 | matmul | sec2_top_bf16 | OneMKL_BF16 | `256` |

@@ -550,8 +550,13 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
             configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
                            "verified": bool(out.get("verified", True))},
             metrics=BenchmarkMetrics(
+                # Driver JIT added for the same reason as the fixed-sweep path below: this total is
+                # compile-to-native.  The autobench harness is hoist-generated and does not report
+                # driver_jit_ms today, so this contributes 0 there and becomes correct for free if
+                # that harness ever does -- rather than being a second place to forget.
                 compile_time=CompileTimeMetrics(device_compile_ms=measured_c_ms or dev_c_ms,
-                                                all_compile_ms=(measured_c_ms + measured_hoist_ms) or dev_c_ms),
+                                                all_compile_ms=((measured_c_ms + measured_hoist_ms) or dev_c_ms)
+                                                                + out.get("driver_jit_ms", 0.0)),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
@@ -719,7 +724,13 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
             configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
                            "verified": bool(out.get("verified", True))},
             metrics=BenchmarkMetrics(
-                compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms, all_compile_ms=dev_c_ms),
+                # all_compile_ms is compile-to-NATIVE, so it must include the driver JIT.  It was
+                # hardcoded to dev_c_ms -- SPIR-V emission only -- which made Crisp's "total build"
+                # identical to its device codegen and silently omitted the zeModuleCreate compile
+                # the other contenders pay inside their AOT build.  bench_harness_l0.cpp now
+                # reports driver_jit_ms; .get keeps this working with older result JSONs.
+                compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms,
+                                                all_compile_ms=dev_c_ms + out.get("driver_jit_ms", 0.0)),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
