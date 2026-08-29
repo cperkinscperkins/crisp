@@ -262,6 +262,42 @@ def time_device_only_compile(compiler, flags, src_path, out_dir, is_sycl):
         return None
     return ms
 
+def _extract_json_object(text: str):
+    """Pull the last top-level {...} object out of a stream that may also carry diagnostics.
+
+    Scans for balanced braces while ignoring braces inside double-quoted strings (so a message
+    like `"note": "{unused}"` cannot end the object early).  Returns the parsed dict, or None if
+    no balanced object in the text parses.  The LAST object wins: a harness prints its result
+    after whatever it had to say first.
+    """
+    found = None
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:            esc = False
+            elif ch == "\\":   esc = True
+            elif ch == '"':    in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    try:
+                        found = json.loads(text[start:i + 1])
+                    except Exception:
+                        pass
+                    start = -1
+    return found
+
 def run_bin(path, M, N, K, warmup, iters, env_extra=None):
     env = dict(os.environ)
     if env_extra: env.update(env_extra)
@@ -279,8 +315,22 @@ def run_bin(path, M, N, K, warmup, iters, env_extra=None):
     try:
         return json.loads(out)
     except Exception:
-        print(out[-800:], file=sys.stderr)
-        return None
+        pass
+    # A harness is allowed to say something on stderr before its JSON, and run_bench_proc folds
+    # stderr INTO stdout on purpose (so a parse failure still shows the child's complaint).  Those
+    # two deliberate choices collide: strict json.loads() over the merged stream fails, run_bin
+    # returns None, and run_sweep's `if not out: continue` drops the point SILENTLY -- it never
+    # reaches the correct=false gate, so nothing says "dropped" either.
+    #
+    # That is not hypothetical.  The SYCL-TLA peer gained an MMA_CORRECT/MMA_WRONG self-check line
+    # on stderr on 2026-08-27; from that moment it could not record a point no matter how correct
+    # it was, and the empty peer column looked exactly like the runtime bug it was sitting behind.
+    # Recover the JSON object instead of requiring the whole stream to be one.
+    obj = _extract_json_object(out)
+    if obj is not None:
+        return obj
+    print(out[-800:], file=sys.stderr)
+    return None
 
 def build_harness():
     harness = HERE / "crisp" / "bench_harness.cu"
@@ -500,8 +550,13 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
             configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
                            "verified": bool(out.get("verified", True))},
             metrics=BenchmarkMetrics(
+                # Driver JIT added for the same reason as the fixed-sweep path below: this total is
+                # compile-to-native.  The autobench harness is hoist-generated and does not report
+                # driver_jit_ms today, so this contributes 0 there and becomes correct for free if
+                # that harness ever does -- rather than being a second place to forget.
                 compile_time=CompileTimeMetrics(device_compile_ms=measured_c_ms or dev_c_ms,
-                                                all_compile_ms=(measured_c_ms + measured_hoist_ms) or dev_c_ms),
+                                                all_compile_ms=((measured_c_ms + measured_hoist_ms) or dev_c_ms)
+                                                                + out.get("driver_jit_ms", 0.0)),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
@@ -669,7 +724,13 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
             configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
                            "verified": bool(out.get("verified", True))},
             metrics=BenchmarkMetrics(
-                compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms, all_compile_ms=dev_c_ms),
+                # all_compile_ms is compile-to-NATIVE, so it must include the driver JIT.  It was
+                # hardcoded to dev_c_ms -- SPIR-V emission only -- which made Crisp's "total build"
+                # identical to its device codegen and silently omitted the zeModuleCreate compile
+                # the other contenders pay inside their AOT build.  bench_harness_l0.cpp now
+                # reports driver_jit_ms; .get keeps this working with older result JSONs.
+                compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms,
+                                                all_compile_ms=dev_c_ms + out.get("driver_jit_ms", 0.0)),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
@@ -1004,14 +1065,28 @@ def main():
             # build time -- so falling back costs a slower first launch and nothing else.  The
             # device_compile_ms column for this contender is therefore not comparable to an AOT
             # run; that is the honest trade and it is visible in the report's compile table.
+            # 256-GRF IS NOT A TUNING KNOB HERE, IT IS PARITY.  Built without
+            # -ze-opt-large-register-file the peer's mainloop spills ~131 registers and reads
+            # 12.6 TFLOPS at N=4096; with it the spill goes to ZERO and it reads 81.3 -- 6.5x, on
+            # bit-identical source.  Publishing the unflagged number would understate the peer by
+            # more than six-fold, which is the same class of error as the hardcoded correct=true
+            # this contender used to report, just pointing the other way.  Crisp gets its own GRF
+            # budget from the endeavour-144 Intel GRF model and SYCL_Apples is already built with
+            # -Xs -ze-opt-large-register-file above, so matching the peer is levelling the field.
             _aot = ["-fsycl-targets=spir64_gen",
-                    "-Xsycl-target-backend=spir64_gen", "-device bmg-g21"] if shutil.which("ocloc") else []
+                    "-Xsycl-target-backend=spir64_gen",
+                    "-device bmg-g21 -options -ze-opt-large-register-file"] if shutil.which("ocloc") else []
+            # The GRF flag must survive the JIT fallback too -- it rides inside the AOT backend
+            # option string above, so without this the fallback would silently rebuild the peer in
+            # the 6.5x-slower spilling configuration, which is exactly the failure the AOT comment
+            # warns about wearing a different hat.
+            _grf = [] if _aot else ["-Xs", "-ze-opt-large-register-file"]
             if not _aot:
                 print("  (note: ocloc not found — SYCL-TLA will be built JIT rather than AOT)")
             sycl_tla_flags = sycl_flags + tla_inc + [
                 "-DCUTLASS_ENABLE_SYCL=ON", "-DSYCL_INTEL_TARGET=1",
                 "-fno-sycl-instrument-device-code",
-                *_aot,
+                *_aot, *_grf,
                 "-Xspirv-translator",
                 "-spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io,+SPV_INTEL_subgroup_matrix_multiply_accumulate"
             ]

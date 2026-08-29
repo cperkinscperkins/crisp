@@ -58,10 +58,60 @@ RUN ln -sf /opt/intel/oneapi/compiler/2025.3/bin/compiler/llvm-spirv /usr/bin/ll
 # package is version-matched to the runtime: intel-ocloc 25.18.33578.15 against a driver reporting
 # 1.6.33578, and `ocloc ids bmg-g21` resolves to 20.1.0, exactly what sycl-ls reports for the B580.
 #
-# NOTE: this does NOT fix SYCL-TLA.  Its own unmodified example fails verification under AOT just
-# as it does under JIT, on v0.9.2 and on main.  ocloc is here because AOT is the configuration
-# upstream supports and because the fallback to JIT was silent.
+# NOTE: ocloc alone does NOT fix SYCL-TLA — under this apt runtime its own unmodified example failed
+# verification on AOT and JIT alike, on v0.9.2 and on main.  ocloc is here because AOT is the
+# configuration upstream supports and because the fallback to JIT was silent.  What DID fix it is
+# the runtime/IGC upgrade in the next block; this apt install is now only the version FLOOR that
+# block replaces, kept because it also pulls the ICD wiring the newer debs expect to find.
 RUN apt-get update     && apt-get install -y --no-install-recommends intel-ocloc     && rm -rf /var/lib/apt/lists/*
+
+# ----------------------------------------------------------------------
+# Intel compute runtime + IGC — PINNED, and NEWER than any apt source carries.
+#
+# WHY THIS BLOCK EXISTS.  Until 2026-08-28 this image took its whole Intel GPU stack from
+# `repositories.intel.com/gpu/ubuntu noble`, whose newest build is 25.18.33578.  SYCL-TLA's own CI
+# runs BMG against 25.48+.  BELOW THAT FLOOR ITS MODERN COLLECTIVE IS SILENTLY MISCOMPILED:
+# MainloopXeL1Staged uses inline vISA `lsc_load_block2d` with address payloads, and on 25.18 that
+# kernel builds clean, launches clean, raises no fault, returns Success — and writes an all-zero
+# output matrix.  That is what quarantined 44 peer sweeps / 247 points; see
+# benchmarks/results/invalid-peer-2026-08-28/README.md.
+#
+# The six hypotheses in that README all varied something SYCL-TLA-side (harness, library version,
+# checkout, JIT/AOT, L0/OpenCL, build macros) and all were falsified, because the RUNTIME looked
+# verified-good: Crisp's own Subgroup2DBlockLoadINTEL + SubgroupMatrixMultiplyAccumulateINTEL
+# kernels ran correct through it at 108.9 TFLOPS.  They did, and it was broken anyway — Crisp emits
+# SPIR-V instructions, the modern collective emits inline vISA, and only the latter was affected.
+# It was never a WSL2 problem and never a SYCL-TLA bug; the host driver was current throughout.
+#
+# On 26.27 the SAME clone, config and compiler passes: upstream's 00_bmg_gemm reports
+# `Disposition: Passed`, and our own peer verifies with max_abs_err exactly 0.
+#
+# NOTE ON PROVENANCE: these versions exist ONLY as GitHub release debs — no apt source has them, so
+# this cannot be expressed as an apt pin.  IGC 2.38.2 is the revision compute-runtime 26.27.39122.11
+# names as its build pair; bump them together, never one alone.
+#
+# The new IGC installs into /usr/local/lib, which PRECEDES /lib/x86_64-linux-gnu in ld.so search
+# order, so it wins even if the old one is present — but leaving apt's libigc2 (2.11.12) installed
+# and merely shadowed is a trap for the next person who reads `apt list --installed` to find out
+# which compiler is live.  Purge it; with the new stack in, nothing depends on it.
+# ----------------------------------------------------------------------
+ARG NEO_VERSION=26.27.39122.11
+ARG IGC_VERSION=2.38.2
+ARG IGC_BUILD=22051
+ARG GMMLIB_VERSION=22.10.0
+RUN mkdir -p /tmp/neo && cd /tmp/neo \
+    && IGC_URL="https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC_VERSION}" \
+    && NEO_URL="https://github.com/intel/compute-runtime/releases/download/${NEO_VERSION}" \
+    && wget -q "${IGC_URL}/intel-igc-core-2_${IGC_VERSION}%2B${IGC_BUILD}_amd64.deb" \
+    && wget -q "${IGC_URL}/intel-igc-opencl-2_${IGC_VERSION}%2B${IGC_BUILD}_amd64.deb" \
+    && wget -q "${NEO_URL}/intel-opencl-icd_${NEO_VERSION}-0_amd64.deb" \
+    && wget -q "${NEO_URL}/libze-intel-gpu1_${NEO_VERSION}-0_amd64.deb" \
+    && wget -q "${NEO_URL}/intel-ocloc_${NEO_VERSION}-0_amd64.deb" \
+    && wget -q "${NEO_URL}/libigdgmm12_${GMMLIB_VERSION}_amd64.deb" \
+    && dpkg -i ./*.deb \
+    && apt-get purge -y libigc2 libigdfcl2 \
+    && ldconfig \
+    && cd / && rm -rf /tmp/neo
 
 # ----------------------------------------------------------------------
 # SBCL — install from upstream binary tarball

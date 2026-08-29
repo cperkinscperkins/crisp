@@ -5463,15 +5463,17 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
    Dispatched on the active MMA lowering; see *mma-lowering*."))
 
+
+
 (defmethod %emit-per-frag-block-load-impl ((lowering (eql :coop-matrix)) src entry coords)
   (declare (ignorable lowering))
   "Endeavor 142 — per-fragment expansion of (load-tile SRC <register-tile> COORDS).
 
    Endeavour 155 Step 2b: when the tile is WARP-SLICED, each warp loads only its own rows (:a) or
-   columns (:b), at global coordinates offset by its grid position.  load-tile appears once in the
-   body, so the choice is a STATIC per-warp switch -- static so the offsets fold to literals and the
-   block-load addresses stay compile-time, which is the same reason 139 step-4 made the MMA walk
-   static."
+   columns (:b), at global coordinates offset by its grid position.
+
+   The per-warp offset is RUNTIME-ADDRESSED (one arm), not a static per-warp switch.  See the
+   overlay comment above: the static form miscomputes on IGC >= 2.38 and costs 6x the loads."
   (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) (operand :acc)) (cdr entry)
     (declare (ignore n-true))
     (let ((cl (find-package :crisp-language)))
@@ -5502,52 +5504,44 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                                  collect (one idx ri ci))))
                 (let* ((progn-sym (intern "PROGN" cl))
                        (let-sym   (intern "LET" cl))
-                       (if-sym    (intern "IF" cl))
-                       (lt-sym    (intern "<" cl))
+                       (plus-sym  (intern "+" cl))
                        (minus-sym (intern "-" cl))
                        (div-sym   (intern "/" cl))
                        (times-sym (intern "*" cl))
                        (warp-id   (intern "WARP-ID" cl))
                        (gn        (cdr grid))
-                       (nslice    (if (eq operand :a) (car grid) (cdr grid)))
                        (wp        (gensym "WP"))
-                       (sl        (gensym "SL")))
-                  (labels ((arm (w)
-                             `(,progn-sym
-                                ,@(if (eq operand :a)
-                                      (loop for lr below slice append
-                                            (loop for ci below n-cols
-                                                  for idx = (+ (* lr n-cols) ci)
-                                                  collect (one idx (+ (* w slice) lr) ci)))
-                                      (loop for ri below n-rows append
-                                            (loop for lc below slice
-                                                  for idx = (+ (* ri slice) lc)
-                                                  collect (one idx ri (+ (* w slice) lc)))))))
-                           (chain (w)
-                             (if (>= w (1- nslice))
-                                 (arm w)
-                                 `(,if-sym (,lt-sym ,sl ,(1+ w))
-                                           ,(arm w)
-                                           ,(chain (1+ w))))))
-                    `(,let-sym ((,wp (,minus-sym (,to-int (,warp-id)) ,first-true)))
-                       ;; 156 Phase 1: INTEGER / and - , not FLOOR/MOD.
-                       ;;
-                       ;; (intern "FLOOR" :crisp-language) resolves to CRISP.COMPILER:FLOOR, which
-                       ;; returns a FLOAT -- %emit-per-frag-store already documents that and moved
-                       ;; to / and - for its addresses.  (intern "MOD" :crisp-language) is worse:
-                       ;; MOD does not exist there at all, so the intern MINTS a fresh symbol with
-                       ;; no operator behind it.  The load switch was never updated with the store.
-                       ;;
-                       ;; It survived because single-axis slicing never exercises either one: when
-                       ;; gm=1 or gn=1 the un-sliced operand emits a bare arm with NO selector, and
-                       ;; the sliced one divides by 1, which is exact under any semantics.  A 2-D
-                       ;; grid is the first case where a selector divides by something >1 -- which
-                       ;; is exactly where MMA_WRONG starts (verified: correct at 1 and 2 warps,
-                       ;; wrong from 4; correct at every 1-D-forced shape at 4 warps).
-                       (,let-sym ((,sl ,(if (eq operand :a)
-                                            `(,div-sym ,wp ,gn)
-                                            `(,minus-sym ,wp (,times-sym (,div-sym ,wp ,gn) ,gn)))))
-                         ,(chain 0))))))))))))
+                       (sl        (gensym "SL"))
+                       ;; The warp's slice ORIGIN in fragments: sl*slice.  Hoisted into its own
+                       ;; binding so all fragments share the multiply rather than repeating it.
+                       (org       (gensym "ORG")))
+                  `(,let-sym ((,wp (,minus-sym (,to-int (,warp-id)) ,first-true)))
+                     ;; 156 Phase 1: INTEGER / and - , not FLOOR/MOD.
+                     ;;
+                     ;; (intern "FLOOR" :crisp-language) resolves to CRISP.COMPILER:FLOOR, which
+                     ;; returns a FLOAT -- %emit-per-frag-store already documents that and moved
+                     ;; to / and - for its addresses.  (intern "MOD" :crisp-language) is worse:
+                     ;; MOD does not exist there at all, so the intern MINTS a fresh symbol with
+                     ;; no operator behind it.
+                     ;;
+                     ;; This now feeds an ADDRESS, not a comparison.  Under the old if-chain a
+                     ;; wrong selector merely picked an arm; here it displaces every load, so the
+                     ;; integer forms are load-bearing in the same way %emit-per-frag-store says
+                     ;; they are for the store.
+                     (,let-sym ((,sl ,(if (eq operand :a)
+                                          `(,div-sym ,wp ,gn)
+                                          `(,minus-sym ,wp (,times-sym (,div-sym ,wp ,gn) ,gn)))))
+                       (,let-sym ((,org (,times-sym ,sl ,slice)))
+                         (,progn-sym
+                           ,@(if (eq operand :a)
+                                 (loop for lr below slice append
+                                       (loop for ci below n-cols
+                                             for idx = (+ (* lr n-cols) ci)
+                                             collect (one idx `(,plus-sym ,org ,lr) ci)))
+                                 (loop for ri below n-rows append
+                                       (loop for lc below slice
+                                             for idx = (+ (* ri slice) lc)
+                                             collect (one idx ri `(,plus-sym ,org ,lc)))))))))))))))))
 
 (defun %xe-native-subgroup-width ()
   "The subgroup width :xe-native fragments are laid out for.  Refuses anything but 16: the whole

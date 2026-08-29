@@ -649,12 +649,18 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                         lines.append(f"> | `{vt}` | {u} | {dn} |")
                     lines.append("")
 
-            ref_pt = last.get("ctrl") or last.get("peer")
+            # BASELINE IS CRISP, as in every other compile table (§2 tf32, §4 fused ReLU, §4 fused
+            # custom).  This one used the Control, which made it the only table in the report whose
+            # ratios could not be compared with the others: Crisp appeared as a FRACTION (0.44x)
+            # rather than 1.00x, and the peer's headline number was a ratio against a contender no
+            # reader is interested in.  The claim the column exists to support is "how does a build
+            # compare to Crisp's", so Crisp is the denominator everywhere.
+            ref_pt = last.get("c")
             ref_dev = ref_pt.get("metrics", {}).get("compile_time", {}).get("device_compile_ms", 0.0) if ref_pt else 0.0
 
             target_ir = "SPIR-V" if platform == "intel" else "PTX"
             lines.append(f"\n<details><summary><b>Compilation & Build Overhead ({tag})</b></summary>\n")
-            lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Control codegen** |")
+            lines.append(f"| contender | class | device codegen ({target_ir}) | total build | **vs Crisp codegen** |")
             lines.append("|---|---|---:|---:|---:|")
 
             def _row16(name, role, pt, is_ceil=False):

@@ -189,7 +189,19 @@ int main(int argc, char **argv) {
     mdesc.pBuildFlags = build_flags.c_str();
     ze_module_handle_t module_;
     ze_module_build_log_handle_t blog = nullptr;
-    if (zeModuleCreate(ctx, device, &mdesc, &module_, &blog) != ZE_RESULT_SUCCESS) {
+    // DRIVER JIT.  zeModuleCreate with IL_SPIRV is where the SPIR-V is compiled to native ISA --
+    // it takes pBuildFlags and produces the build log, so it is the compile, not a handle alloc.
+    //
+    // WHY IT IS TIMED.  Crisp's reported build cost was the SPIR-V EMISSION only; this step was
+    // never measured and matmul.py's `out.get("driver_jit_ms", 0.0)` therefore always added zero.
+    // The published "device codegen" column compared Crisp-to-SPIR-V against contenders compiled
+    // all the way to native, which understates Crisp's number and overstates the ratio.  Emitting
+    // it makes the column mean the same thing for every contender.
+    const auto jit_t0 = std::chrono::steady_clock::now();
+    const ze_result_t mod_rc = zeModuleCreate(ctx, device, &mdesc, &module_, &blog);
+    const double driver_jit_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - jit_t0).count();
+    if (mod_rc != ZE_RESULT_SUCCESS) {
         size_t n = 0;
         zeModuleBuildLogGetString(blog, &n, nullptr);
         std::vector<char> log(n + 1, 0);
@@ -200,7 +212,12 @@ int main(int argc, char **argv) {
     ze_kernel_desc_t kdesc{ZE_STRUCTURE_TYPE_KERNEL_DESC};
     kdesc.pKernelName = kname.c_str();
     ze_kernel_handle_t kernel;
+    // Timed separately rather than folded in: some L0 implementations defer codegen out of
+    // zeModuleCreate, and a single number could not tell you whether that had happened.
+    const auto kc_t0 = std::chrono::steady_clock::now();
     ZE_OK(zeKernelCreate(module_, &kdesc, &kernel), "kernelCreate");
+    const double kernel_create_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - kc_t0).count();
 
     // ---- buffers ------------------------------------------------------------------------
     const uint64_t ea = M * K, eb = K * N, ec = M * N;
@@ -393,6 +410,10 @@ int main(int argc, char **argv) {
               << "  \"correct\": " << (verified ? "true" : "false") << ",\n"
               << "  \"max_abs_err\": " << max_abs_err << ",\n"
               << "  \"verify_samples\": " << checked << ",\n"
+              // Consumed by scripts/crisp_bench/matmul.py run_sweep, which adds it to
+              // all_compile_ms.  Before this existed the .get() default of 0.0 silently stood in.
+              << "  \"driver_jit_ms\": " << driver_jit_ms << ",\n"
+              << "  \"kernel_create_ms\": " << kernel_create_ms << ",\n"
               << "  \"wall_time_ms\": " << (wall_us / 1000.0) << ",\n"
               << "  \"wall_per_iter_us\": " << wall_us << ",\n"
               << "  \"gflops_from_wall\": "
