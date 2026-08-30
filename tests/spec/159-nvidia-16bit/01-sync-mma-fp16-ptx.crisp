@@ -1,0 +1,90 @@
+;; Endeavour 159 Phase B rung 01 — the NVIDIA sync MMA emits an fp16 instruction.
+;;
+;; THE DEFECT THIS STATES.  Crisp cannot emit a 16-bit MMA on NVIDIA at all.  Both PTX paths
+;; are hardcoded tf32: sync `%emit-nvvm-mma` pins llvm.nvvm.mma.m16n8k8.row.col.tf32
+;; (src/mma.lisp:748), and the PTX branch of analyze-make-register-fragment (src/mma.lisp:389)
+;; ecase's on OPERAND only, ignoring :elem entirely.  Its own docstring says so:
+;;
+;;     "The PTX branch is UNCHANGED: its fragment records are tf32/f32 by construction and
+;;      endeavour 155 does not touch the NVIDIA path."
+;;
+;; So endeavour 155 built the typed-shape machinery (%mma-elem-bits, %mma-shape-for-elem, the
+;; :elem keyword) and deliberately wired it to SPV only.  This rung is the NVIDIA twin of
+;; 155/02, and it is the LOWEST rung that can be: the sync m16n8k16 instruction, one warp, one
+;; output tile, nothing pipelined.
+;;
+;; THE TARGET INSTRUCTION, VERIFIED BY COMPILATION NOT BY DOCUMENTATION.  A standalone .ll probe
+;; through clang --target=nvptx64 -march=sm_90 establishes the exact NVVM intrinsic:
+;;
+;;     llvm.nvvm.mma.m16n8k16.row.col.f32.f32   operands <2 x half>   ->
+;;         mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+;;
+;; NOTE THE OPERAND TYPE, because it is the trap on this rung: fp16 takes <2 x half> while the
+;; bf16 sibling (llvm.nvvm.mma.m16n8k16.row.col.bf16) takes i32.  A single "16-bit" code path
+;; that assumes one silently fails the verifier on the other.  Worse, two plausible-looking
+;; intrinsic spellings (...f16.f32, ...bf16.f32) slip past the verifier as UNRESOLVED EXTERNAL
+;; CALLS: they emit NO instruction while still leaving an `mma.m16n8k16...` string in the PTX.
+;; The validator below therefore asserts the FULL instruction mnemonic, not a prefix.
+;;
+;; ARITY IS UNCHANGED, which is why this rung is smaller than it looks.  tf32 m16n8k8 and fp16
+;; m16n8k16 both take 4 A registers + 2 B registers + 4 f32 accumulator.  So endeavour 144's
+;; register accounting (:acc 4 :a 4 :b 2) is already correct at 16 bits, and the f32 accumulator
+;; record is reused unchanged.  Only the A/B fragment records need 16-bit twins.
+;;
+;; WHY THE ASSERTION IS TWO-SIDED.  155/02 recorded the lesson directly: a module where MOST
+;; operands were still f32 satisfied a "some operand is 16-bit somewhere" check, and that weak
+;; form is what let the defect survive.  So this validator asserts the INVARIANT -- the f16
+;; instruction is present AND no tf32 MMA remains -- rather than mere existence.
+;;
+;; --hardware-profile IS REQUIRED, and not because of the shape.  Recorded by 155/02 and it
+;; binds every register-tile spec: "load-tile into a register-tile requires a hardware profile
+;; (pass --hardware-profile): its GRF / L1 limits drive the register-pipeline safety analysis."
+;; The h100 profile already declares (16 8 16) in :mma-shapes -- the shape has been registered
+;; since endeavour 144 and nothing has ever emitted it.
+;;
+;; ===================================================================
+;; STATUS: RED ON PURPOSE.  159 sorts after ci-stop (158-prefetch-warps), so this does not
+;; break CI.  It goes green when the PTX branch honours :elem end to end.  Metal correctness is
+;; NOT claimed here -- that waits for the single batched pod trip (MMA_CORRECT via TEST-HOIST).
+;; ===================================================================
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --hardware-profile=h100] : validate-ptx-fp16-sync-mma
+
+(def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half  :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; WHY THE STAGED (SLM) PATTERN AND NOT 155/02's REGISTER-RESIDENT ONE.  This rung was first
+;; written as a direct twin of 155/02, with A and B as `make-register-tile ... :operand :a/:b`.
+;; The compiler refuses that on NVIDIA, and says exactly why:
+;;
+;;     load-tile into a register-tile lowers to Subgroup2DBlockLoadINTEL, which is Intel/SPV-only
+;;     -- it has no PTX/NVIDIA mapping in this register-pipeline model.
+;;
+;; Endeavour 142 Phase A's register-resident operand path is INTEL-ONLY.  On NVIDIA the operands
+;; stage through SLM: scratch matrices for A and B, a register tile for C only -- the shape 150/20
+;; and 135/03 already use.  So this rung mirrors 150/20's kernel with the element type and K-step
+;; swapped, which is the narrowest possible change and keeps the fp16 instruction the ONLY thing
+;; under test.
+;;
+;; K-STEP IS 16, NOT 8.  tf32 m16n8k8 walks K in steps of 8; fp16 m16n8k16 walks it in 16.  That
+;; is the whole ladder step -- K doubles, M and N do not -- and it is why the fp16 ceiling is ~2x
+;; tf32 rather than 4x (Phase A measured 1.05-2.16x on H100 NVL and the prediction held).
+
+(def-kernel fp16_sync_mma (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((A-tile (make-scratch-matrix half (16 16)))   ; SLM: M x 16 (one fp16 K-step of A)
+        (B-tile (make-scratch-matrix half (16 8)))    ; SLM: 16 x N (one fp16 K-step of B)
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))
