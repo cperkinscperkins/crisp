@@ -77,6 +77,21 @@ for r in d.get("rungs", []):
 PY
 fi
 
+# --- 3b. third-party benchmark dependencies ----------------------------------------------
+# WITHOUT THIS THE PEER COLUMN IS EMPTY.  run-on-pod.sh installs SBCL/LLVM but NOT the benchmark
+# third parties, so every CUTLASS config fails to build and writes a result file with zero data
+# points -- "CUTLASS headers not found at build time -- this contender did NOT run".  The report
+# then renders the peer as "--", which reads exactly like "we measured it and it was nothing".
+# (The contender failing LOUDLY, with an error in its JSON rather than a fabricated time, is the
+# Phase A hardening working -- but it only helps if someone reads the log.)
+say "[3b/5] third-party benchmark deps (CUTLASS)..."
+if [ -f scripts/setup-third-party.sh ]; then
+  bash scripts/setup-third-party.sh cutlass > "$OUT_DIR/third-party.log" 2>&1
+  say "      setup-third-party exit=$?  (log: $OUT_DIR/third-party.log)"
+else
+  say "      WARNING: scripts/setup-third-party.sh missing — the peer column WILL be empty"
+fi
+
 # --- 4. Phase A leftovers: the benchmark driver end to end -----------------------------------
 # Phase A's numbers and binaries were verified in August; the INTEGRATION (driver -> result JSON ->
 # report rendering the swept peer with its config named) never was.
@@ -92,7 +107,7 @@ fi
 # --- 5. Phase A leftover: regenerate the report ----------------------------------------------
 say "[5/5] Phase A leftover: regenerate REPORT.md..."
 if [ -f scripts/crisp_bench/report.py ]; then
-  python3 scripts/crisp_bench/report.py > "$OUT_DIR/report.log" 2>&1
+  python3 scripts/crisp_bench/report.py --output benchmarks/REPORT.md > "$OUT_DIR/report.log" 2>&1
   say "      report exit=$?  (log: $OUT_DIR/report.log)"
 else
   say "      SKIPPED — report.py not found at scripts/crisp_bench/report.py"
