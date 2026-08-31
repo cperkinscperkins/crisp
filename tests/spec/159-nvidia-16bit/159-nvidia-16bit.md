@@ -315,3 +315,111 @@ configs. Verified on the pod: all five builds succeed, all correct, default 128x
    touches the K rule, the descriptor/swizzle math, and the core-matrix layout the VJP reads.
 3. **Does the fragment-register accounting in the `h100` profile (endeavour 144 Phase 2) still
    hold** when operands halve in width?
+
+---
+
+# Phase B — the Crisp column: 16-bit sync MMA on NVIDIA
+
+Phase A's blocking finding was that **Crisp could not emit a 16-bit MMA on NVIDIA at all**. It can
+now, in both formats, and the local half of that is done: **E2E 1045/1045, negative 227/227, unit
+291/291, and the three 159 rungs green.**
+
+## The instructions, established by compilation rather than documentation
+
+A standalone `.ll` through `clang --target=nvptx64 -march=sm_90`, reading the emitted mnemonic:
+
+| format | NVVM intrinsic | A/B operand type | emitted |
+|---|---|---|---|
+| tf32 (was) | `llvm.nvvm.mma.m16n8k8.row.col.tf32` | `i32` | `...m16n8k8.row.col.f32.tf32.tf32.f32` |
+| fp16 | `llvm.nvvm.mma.m16n8k16.row.col.f32.f32` | **`<2 x half>`** | `...m16n8k16.row.col.f32.f16.f16.f32` |
+| bf16 | `llvm.nvvm.mma.m16n8k16.row.col.bf16` | **`i32`** (via `<2 x bfloat>` bitcast) | `...m16n8k16.row.col.f32.bf16.bf16.f32` |
+
+**fp16 and bf16 disagree on operand type**, so a single "16-bit" path assuming one fails the
+verifier on the other. Worse, two plausible spellings (`...f16.f32`, `...bf16.f32`) pass the
+verifier as **unresolved external calls** — emitting NO instruction while still leaving an
+`mma.m16n8k16...` substring in the PTX. Both validators therefore match the FULL mnemonic and
+also assert no tf32 survives (155/02's lesson: "some operand is 16-bit somewhere" is satisfied by
+a module that is mostly wrong).
+
+## What made it small
+
+**Arity is identical across all three** — 4 A registers + 2 B + 4 f32 accumulator — so endeavour
+144's register accounting was already correct at 16 bits and the f32 accumulator record is reused
+unchanged. Only the A/B fragment records needed 16-bit twins.
+
+Records declare **one field per ELEMENT** (8 for A, 4 for B), not per packed register, so
+`%map-elements-fragment-fields` is right by construction and registers stay derivable
+(`elements * width / 32`). That is the "separate the two counts" resolution: registers and
+elements coincide at 32 bits and diverge exactly 2:1 at 16, and only one was ever tracked.
+
+## 155's asymmetry, four more times
+
+Endeavour 155 built the typed-shape machinery and wired it to SPV only — its own docstring says
+"The PTX branch is UNCHANGED... endeavour 155 does not touch the NVIDIA path." The same
+SPV-fixed / PTX-untouched split then turned up in:
+
+1. `analyze-make-register-fragment` (the documented one)
+2. `analyze-load-fragment-a` / `-b`
+3. `compile-crisp-file-to-ptx` — dropped `--hardware-profile` entirely; the SPV twin carries the
+   fix with the comment "Endeavour 155: the missing argument"
+4. the `--mma-test` host harness — L0 got 16-bit fill/decode helpers, CUDA did not, and still
+   fills A/B by writing 0..4 as RAW BIT PATTERNS (fp16 denormals) and reads them back as
+   hardcoded `float`. **Its verdict for any 16-bit kernel is meaningless whichever way it comes
+   out.**
+
+**Anyone touching a 155-era mechanism should check the PTX twin first.** It has been wrong four
+times out of four.
+
+## Consequence: a CUDA matmul fixture
+
+Rather than fix (4), the endeavour builds `benchmarks/matmul/crisp/bench_harness.cu` — the NVIDIA
+twin of the L0 fixture, which already does verification AND 16-bit encodings. The generated
+harness is the thing that reported MMA_WRONG for a correct chap0_naive and let a kernel storing
+nothing post the second-best number in its section; it is not the apparatus to prove a layout with.
+
+It does one thing the L0 fixture cannot: **bind kernels whose arguments include scratch tensors.**
+On Level Zero a group-local argument needs `zeKernelSetArgumentValue(i, bytes, nullptr)`, so
+`l0_fixture_env` declares those unsupported. On CUDA a scratch tensor's "pointer" is a byte OFFSET
+into the dynamic shared block, so a plain integer binds it. That matters because the NVIDIA 16-bit
+kernels MUST stage A/B through shared memory — endeavour 142's register-resident operand path is
+Intel-only (`load-tile into a register-tile lowers to Subgroup2DBlockLoadINTEL`).
+
+Nothing about argument positions is assumed: for a staged kernel the compiler emits scratch tiles
+FIRST and in an order that is not the binding order (b-tile before a-tile), so A/B/C are at
+**18/27/36**, not 0/9/18. `cuda_fixture_env` reads every index from the metacrisp's `:range`.
+
+**A found bug, not yet fixed:** hoist-cuda sizes every element at 4 bytes, so the fp16 rung is
+launched with **1536** bytes of dynamic shared memory where **768** is correct. Shared memory per
+block governs occupancy, so that inflation would silently depress every 16-bit CUDA benchmark.
+The fixture computes its own layout at the true element width; fixture and generated-harness
+numbers therefore differ legitimately on 16-bit kernels, and the fixture's are the right ones.
+
+## What is NOT proven, and cannot be locally
+
+**The fragment layouts.** A store/load roundtrip cannot see a wrong-but-self-consistent layout —
+it roundtrips perfectly. Only an MMA against a host reference can. The local rungs prove the
+INSTRUCTION is emitted and nothing about which lane holds which element.
+
+fp16 and bf16 share that layout exactly (same shape, same element-to-register mapping; only the
+encoding differs), so they are not independent bets: if the pair ordering is wrong, both are wrong
+the same way and one fix corrects both.
+
+## Ready for hardware
+
+`scripts/159-pod-batch.sh` runs the whole session as one command; `scripts/verify-16bit-cuda.py`
+does the correctness check and emits one JSON object. Everything that can be checked without a GPU
+has been: the fixture COMPILES under `nvcc -O3 -arch=sm_90 -lcuda` in docker, and its entire
+binding path is validated by a `CRISP_MATMUL_DRYRUN` mode that resolves argument slots, scratch
+offsets and the shared total before `cuInit` — confirmed as argc 45, A/B/C at 18/27/36,
+shared_bytes 768, scratch at offsets 0 and 256.
+
+The trip also clears Phase A's two leftovers (`bench.py --platform=nvidia` end to end, and the
+REPORT regen) in the same session.
+
+## Still open after the trip
+
+- `wgmma m64nNk16` — where NVIDIA 16-bit performance actually lives (chapter 7 put wgmma at
+  67-90% of cuBLAS with sync far behind). A sync-fp16 benchmark number would be honest and
+  unimpressive; the Crisp fp16 column wants wgmma first.
+- The hoist-cuda 4-byte element sizing (the 2x shared-memory bug above).
+- Wiring the CUDA fixture into the benchmark sweep selection, mirroring L0's.

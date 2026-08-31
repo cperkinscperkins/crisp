@@ -172,6 +172,28 @@ int main(int argc, char **argv) {
     }
     std::sort(scratch.begin(), scratch.end(), [](const Scratch &a, const Scratch &b) { return a.idx < b.idx; });
 
+    // DRY RUN: resolve and print the whole configuration WITHOUT touching CUDA.  This exists so
+    // the harness can be validated on a machine with nvcc but no GPU -- every binding decision
+    // (argument slots, scratch offsets, shared total) is made before cuInit, so a dry run
+    // exercises all of it.  Debugging argument layout on a rented GPU is the expensive way.
+    if (std::getenv("CRISP_MATMUL_DRYRUN")) {
+        std::cout << "{\n"
+                  << "  \"dry_run\": true,\n"
+                  << "  \"kernel\": \"" << kname << "\",\n"
+                  << "  \"elem\": \"" << elem << "\", \"elem_bytes\": " << ebytes << ",\n"
+                  << "  \"argc\": " << argc_k << ", \"arg_a\": " << iA
+                  << ", \"arg_b\": " << iB << ", \"arg_c\": " << iC << ",\n"
+                  << "  \"shared_bytes\": " << shared_bytes << ",\n"
+                  << "  \"scratch\": [";
+        for (size_t i = 0; i < scratch.size(); ++i)
+            std::cout << (i ? ", " : "") << "{\"idx\": " << scratch[i].idx
+                      << ", \"ext0\": " << scratch[i].ext0
+                      << ", \"ext1\": " << scratch[i].ext1
+                      << ", \"off\": " << scratch[i].off << "}";
+        std::cout << "]\n}" << std::endl;
+        return 0;
+    }
+
     CU_OK(cuInit(0), "cuInit");
     CUdevice dev; CU_OK(cuDeviceGet(&dev, 0), "cuDeviceGet");
     CUcontext ctx; CU_OK(cuCtxCreate(&ctx, 0, dev), "cuCtxCreate");
