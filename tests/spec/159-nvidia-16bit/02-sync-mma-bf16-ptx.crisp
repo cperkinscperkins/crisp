@@ -1,0 +1,57 @@
+;; Endeavour 159 Phase B rung 02 — the NVIDIA sync MMA emits a bf16 instruction.
+;;
+;; THE TWIN OF RUNG 01, and deliberately a separate file rather than a flag on it: the two
+;; formats take DIFFERENT OPERAND REPRESENTATIONS at the LLVM level, which is the one thing
+;; about them that is not shared and therefore the thing worth pinning independently.
+;;
+;;     fp16  llvm.nvvm.mma.m16n8k16.row.col.f32.f32   <2 x half>  -> ...f32.f16.f16.f32
+;;     bf16  llvm.nvvm.mma.m16n8k16.row.col.bf16      i32         -> ...f32.bf16.bf16.f32
+;;
+;; Both verified by compiling a standalone .ll through clang --target=nvptx64 -march=sm_90 and
+;; reading the emitted mnemonic.  bf16 reaches i32 by building <2 x bfloat> and BITCASTING; fp16
+;; hands its vector over directly.  A single "16-bit" code path that assumes one representation
+;; fails the LLVM verifier on the other -- which is a good failure, and is why this rung exists.
+;;
+;; WHAT THIS RUNG DOES *NOT* INDEPENDENTLY TEST.  The fragment LAYOUT is identical to fp16: same
+;; m16n8k16 shape, same element-to-register mapping, same pair ordering.  Only the encoding of
+;; each element differs.  So this is not a second bet on the layout -- if rung 01's ordering is
+;; wrong, this one is wrong the same way and a single fix corrects both.  That shared risk is
+;; precisely why bf16 was written before any hardware validation rather than after.
+;;
+;; NOTE ON INTEL, for contrast: bf16 CANNOT be loaded on the BMG driver at all (IGC 1.6.33578
+;; does not implement SPV_KHR_bfloat16 -- see 155/02's header).  On NVIDIA bf16 is a first-class
+;; tensor-core input, so this is one of the few places where the NVIDIA path can go somewhere
+;; the Intel path cannot.
+;;
+;; K-STEP IS 16, as with fp16: the Hopper ladder is m16n8k8 tf32 -> m16n8k16 16-bit.  K doubles,
+;; M and N do not, which is the whole reason the 16-bit ceiling is ~2x tf32 and not 4x.
+;;
+;; ===================================================================
+;; STATUS: 159 sorts after ci-stop (158-prefetch-warps), so this does not run in the default
+;; suite.  Metal correctness is NOT claimed here -- the instruction is emitted; whether its
+;; operands are in the right lanes waits for MMA_CORRECT on hardware.
+;; ===================================================================
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --hardware-profile=h100] : validate-ptx-bf16-sync-mma
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel bf16_sync_mma (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((A-tile (make-scratch-matrix bfloat16 (16 16)))  ; SLM: M x 16 (one 16-bit K-step of A)
+        (B-tile (make-scratch-matrix bfloat16 (16 8)))   ; SLM: 16 x N
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

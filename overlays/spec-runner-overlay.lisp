@@ -97,3 +97,38 @@
     (if (probe-file out-path)
         (values out-path meta-paths)
         (values nil nil))))
+
+;; overlays/spec-runner-overlay.lisp
+;; Endeavour 159 Phase B rung 02.
+(defun validate-ptx-bf16-sync-mma (file ptx-string)
+  "Endeavour 159 Phase B — the NVIDIA sync MMA lowered at bf16.  Same two-sided invariant as
+   validate-ptx-fp16-sync-mma: the full m16n8k16 bf16 mnemonic is present AND no tf32 MMA
+   remains.
+
+   The FULL mnemonic is matched, never a prefix.  Two plausible NVVM spellings for this
+   operation (llvm.nvvm.mma.m16n8k16.row.col.bf16.f32 and ...f32.bf16) pass the LLVM verifier as
+   UNRESOLVED EXTERNAL CALLS -- they emit no instruction at all while still leaving an
+   'mma.m16n8k16...' substring in the PTX.  A prefix match would green-light a kernel that
+   computes nothing.
+
+   The negative half carries 155/02's lesson onto NVIDIA: a module in which MOST operands were
+   still f32 satisfied that endeavour's original 'some operand is 16-bit somewhere' check, and
+   that weak form is exactly what let the defect survive unnoticed."
+  (declare (ignore file))
+  (let ((want "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32"))
+    (cond
+      ((not (search want ptx-string))
+       (format *error-output* "FAIL: bf16 sync MMA absent — expected ~s~%" want)
+       (when (search "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32" ptx-string)
+         (format *error-output*
+                 "  (the tf32 instruction was emitted instead — :elem did not reach the PTX branch)~%"))
+       (when (search "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" ptx-string)
+         (format *error-output*
+                 "  (the FP16 instruction was emitted instead — the bf16/fp16 record split did not fire)~%"))
+       nil)
+      ((search "tf32" ptx-string)
+       (format *error-output*
+               "FAIL: bf16 MMA present but tf32 survives in the same module — some A/B path~%~
+                       still mints tf32 fragments (the 155/02 partial-conversion failure mode).~%")
+       nil)
+      (t t))))

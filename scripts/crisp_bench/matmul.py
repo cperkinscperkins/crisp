@@ -669,6 +669,101 @@ def l0_fixture_env(crisp_src, metacrisp):
     return env
 
 
+def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
+    """Environment for bench_harness.cu, DERIVED from what the compiler recorded.
+
+    The NVIDIA twin of l0_fixture_env, and it derives strictly more, because the CUDA fixture can
+    bind kernels the L0 one refuses.  Two things make that necessary:
+
+      * ARGUMENT POSITIONS ARE NOT FIXED.  A rank-2 tensor flattens to nine arguments, but the
+        ORDER of tensors is not source order: for a staged kernel the compiler emits the scratch
+        tiles FIRST, and among themselves in an order that is not the binding order either (the
+        fp16 rung emits b-tile before a-tile).  So A/B/C are not at 0/9/18 -- in that kernel they
+        are at 18/27/36.  Every index is read from the :range the metacrisp records per parameter.
+        The L0 fixture assumes 0/9/18 and therefore declares SLM kernels unsupported.
+
+      * SCRATCH TILES ARE ARGUMENTS ON CUDA TOO, but their "pointer" is a byte OFFSET into the
+        dynamic shared block rather than an address, so a plain integer binds them.  On Level Zero
+        the same thing needs zeKernelSetArgumentValue(i, bytes, nullptr), which is why that fixture
+        cannot do this and this one can.
+
+    Extents come from :size-expr on each implicit param; the harness assigns the shared offsets
+    itself, at the true element width (hoist-cuda sizes every element at 4 bytes, so a 16-bit
+    staged kernel is otherwise launched with twice the shared memory it needs, which costs
+    occupancy).
+    """
+    env = {"CRISP_MATMUL_PTX": str(ptx_path)}
+    try:
+        meta = Path(metacrisp).read_text(errors="replace")
+    except Exception:
+        meta = ""
+    try:
+        src = Path(crisp_src).read_text(errors="replace")
+    except Exception:
+        src = ""
+
+    ls = _sexp_after(meta, ":local-size")
+    nums = re.findall(r"\d+", ls)
+    if nums:
+        env["CRISP_MATMUL_LOCAL"] = ",".join((nums + ["1", "1"])[:3])
+
+    gs = _sexp_after(meta, ":global-size")
+    env["CRISP_MATMUL_GRID"] = "one-thread-per" if ":one-thread-per" in gs else "strided"
+    tnums = re.findall(r"\d+", _sexp_after(gs, ":tile-shape"))
+    if len(tnums) >= 2:
+        env["CRISP_MATMUL_TILE"] = f"{tnums[0]},{tnums[1]}"
+
+    m = re.search(r"matrix\s+(bfloat16|half|float)", src)
+    if m:
+        env["CRISP_MATMUL_ELEM"] = {"bfloat16": "bf16", "half": "f16", "float": "f32"}[m.group(1)]
+
+    km = re.search(r"\(def-kernel\s+([A-Za-z0-9_\-]+)", src)
+    if km:
+        env["CRISP_MATMUL_KERNEL"] = km.group(1)
+
+    # --- argument layout, read from the recorded :range values -------------------------------
+    # ANCHORED TO THE SECTIONS, not matched globally.  A single non-greedy regex over the whole
+    # metacrisp silently matched `(:name "H100" ...)` from the hardware-profile block and ran on
+    # to the first :range it found -- producing A's range under the profile's name.  It happened
+    # to yield the right numbers, which is worse than failing: the next kernel would have been
+    # bound to whatever the profile block landed on.
+    def _entries(section):
+        return [(m.group(1), int(m.group(2)), int(m.group(3)), m.group(0))
+                for m in re.finditer(
+                    r':name\s+"([^"]+)"(?:(?!:name).)*?:range\s+\((\d+)\s+(\d+)\)',
+                    section, re.S)]
+
+    ip = meta.find(":implicit-params")
+    # The declared params live under :declared-signature.  There is no :params key -- and note
+    # ":implicit-params" CONTAINS ":params" as a substring, so searching for that would silently
+    # locate the scratch section and report zero declared parameters.
+    pp = meta.find(":declared-signature")
+    declared_sec = meta[pp:ip] if (pp >= 0 and ip > pp) else (meta[pp:] if pp >= 0 else "")
+    scratch_sec  = meta[ip:] if ip >= 0 else ""
+
+    declared = _entries(declared_sec)
+    scratch  = _entries(scratch_sec)
+
+    if len(declared) >= 3:
+        env["CRISP_MATMUL_ARG_A"] = str(declared[0][1])
+        env["CRISP_MATMUL_ARG_B"] = str(declared[1][1])
+        env["CRISP_MATMUL_ARG_C"] = str(declared[2][1])
+    allr = declared + scratch
+    if allr:
+        env["CRISP_MATMUL_ARGC"] = str(max(e for _, _, e, _ in allr) + 1)
+
+    specs = []
+    for name, st, _e, _blob in scratch:
+        seg = scratch_sec[scratch_sec.find('"' + name + '"'):]
+        sm = re.search(r":size-expr\s+\((\d+)\s+(\d+)\)", seg[:400])
+        if sm:
+            specs.append(f"{st}:{sm.group(1)}:{sm.group(2)}")
+    if specs:
+        env["CRISP_MATMUL_SCRATCH"] = ",".join(specs)
+
+    return env
+
+
 def build_l0_harness(crisp_compiler):
     harness = HERE / "crisp" / "bench_harness_l0.cpp"
     if not harness.exists():
