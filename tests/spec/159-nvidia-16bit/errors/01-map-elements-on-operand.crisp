@@ -1,0 +1,55 @@
+;; CHECK-FAIL: "OPERAND"
+;;
+;; Endeavour 159 Phase B — map-elements! on an MMA A/B OPERAND fragment must be REFUSED.
+;; NEGATIVE by design, and it should stay negative forever.
+;;
+;; WHAT map-elements! IS FOR.  Endeavour 150 is the fused EPILOGUE: a unary function applied to
+;; the RESULT of the contraction, in registers, before the store.  Every one of the 16 uses in
+;; tests/spec/150-fused-epilogue targets `acc` (a single accumulator fragment) or `C-tile` (a
+;; register tile of them).  None targets an operand, and the docstring says so outright -- "the
+;; number of scalar register fields in a PTX ACCUMULATOR record type".
+;;
+;; WHY IT WAS REACHABLE ANYWAY.  The `case` under that docstring listed all THREE record types,
+;; and analyze-map-elements dispatched purely on type with no accumulator-only guard.  So an
+;; operand fragment matched, reported its field count, and lowered fieldwise -- a capability
+;; nobody designed, tested, or documented.
+;;
+;; WHY IT HAD TO BECOME AN ERROR RATHER THAN JUST WORKING.  At 32 bits the accident is benign:
+;; a tf32 A fragment really is 4 float fields, so an elementwise map over them is at least
+;; well-typed.  At 16 bits it stops being benign.  A fp16 A fragment is EIGHT halves carried in
+;; FOUR 32-bit registers, so a map that walks "fields" walks packed PAIRS and hands the user's
+;; unary function a reinterpreted bit pattern.  Silent, numeric, no diagnostic.
+;;
+;; And it would have been silent ASYMMETRICALLY: the SPV branch loops the true per-invocation
+;; component count (OpCooperativeMatrixLengthKHR) and endeavour 155 made that element type
+;; correct, so the SAME SOURCE would compute the right answer on Intel and the wrong one on
+;; NVIDIA.  That is the divergence class behind 156's MMA_WRONG and BUG 040's half dot product,
+;; and it is why the refusal is applied on BOTH backends even though Intel's lowering would
+;; have coped: a form must mean the same thing on every target, or it means nothing.
+;;
+;; This rung uses a tf32 operand deliberately -- the 32-bit case, the one that "worked".  A fp16
+;; rung would prove the refusal fires where the corruption is; this proves it fires where the
+;; corruption ISN'T, which is the stronger statement: the rule is about what map-elements! MEANS,
+;; not about a width-specific hazard that a future record layout might happen to dodge.
+;;
+;; Cf. BUG 035, also closed as a compile-time refusal rather than a feature nobody asked for.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function double-val (x)
+  (declare #'(float => float))
+  (* x 2.0))
+
+(def-kernel map_on_operand (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; exactly one warp
+  (let ((C-acc  (make-register-fragment 16 8 0.0))
+        (A-frag (load-fragment-a A (0 0)))
+        (B-frag (load-fragment-b B (0 0))))
+    ;; ILLEGAL: A-frag is an operand, not the contraction's result.  The legal shape is to
+    ;; transform A before it is read into fragments, or to fuse on C-acc after the MMA.
+    (map-elements! A-frag #'double-val)
+    (store-fragment (mma-accumulate C-acc A-frag B-frag) C (0 0))))

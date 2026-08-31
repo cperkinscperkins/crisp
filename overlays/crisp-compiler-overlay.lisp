@@ -295,3 +295,139 @@
                                       i (format nil "acc~d" i))))
                          agg)))
           (values result nil)))))
+
+;;;; ====================================================================
+;;;; Endeavour 159 Phase B — map-elements!: one number was doing two jobs.
+;;;;
+;;;; %ptx-note-register-demand wants REGISTERS/thread; %map-elements-fragment-fields wants
+;;;; scalar ELEMENTS/thread.  At 32 bits those coincide (4/4/2), so the conflation has been
+;;;; invisible and free since endeavour 150.  At 16 bits they diverge exactly 2:1 -- a fp16 A
+;;;; fragment is 8 elements in 4 registers.
+;;;;
+;;;; USER-VISIBLE CONSEQUENCE had this been left alone: analyze-map-elements dispatches on TYPE
+;;;; with no accumulator-only guard, so (map-elements! a-frag #'relu) on a 16-bit operand would
+;;;; have extracted 4 "float" fields that are really PACKED HALF PAIRS, applied the user's fn to
+;;;; the reinterpreted bit pattern, and written it back.  Silent, numeric, no error.  The SPV
+;;;; branch loops the TRUE component count, so the SAME SOURCE would have been correct on Intel
+;;;; and wrong on NVIDIA -- the cross-vendor divergence class that produced 156's MMA_WRONG and
+;;;; BUG 040's half dot product.
+;;;;
+;;;; TWO CHANGES, and the refusal is what actually closes it:
+;;;;   1. the count is now DERIVED from the record's own member list, so a new fragment record
+;;;;      (bf16 next) needs no second table entry and cannot disagree with itself;
+;;;;   2. A/B OPERANDS are refused outright.  map-elements! was designed for the accumulator
+;;;;      (endeavour 150 is the fused EPILOGUE) and every one of the 16 uses in tests/spec
+;;;;      targets `acc` or `C-tile`; operands were reachable only by accident of the old case
+;;;;      list.  With the refusal the 16-bit hazard is UNREACHABLE rather than merely handled.
+;;;;      Refused on BOTH vendors deliberately: a form must mean the same thing on each, which
+;;;;      is the lesson 155/02 paid for.  Cf. BUG 035, also closed as a refusal not a feature.
+;;;; ====================================================================
+
+;; src/analysis/control.lisp
+(defun %mma-operand-fragment-p (ty coop-dims)
+  "T when TY is an MMA *operand* (A or B) fragment rather than an accumulator.
+
+   PTX: by record name -- the fragment records are register-fragment-{a,b,acc}-<elem>-<MxN>.
+   SPV: by the cooperative matrix's Use operand, which COOP-DIMS carries as its third element
+   (0 = A, 1 = B, 2 = Accumulator); that is the authoritative encoding, so it is read rather
+   than re-derived from the type list."
+  (or (and coop-dims (member (third coop-dims) '(0 1)) t)
+      (and ty (symbolp ty)
+           (let ((n (symbol-name ty)))
+             (and (>= (length n) 20)
+                  (or (string= "REGISTER-FRAGMENT-A-" (subseq n 0 20))
+                      (string= "REGISTER-FRAGMENT-B-" (subseq n 0 20)))))
+           t)))
+
+;; src/analysis/control.lisp
+(defun %map-elements-fragment-fields (frag-type)
+  "The number of scalar ELEMENTS per invocation in a PTX fragment record type, or NIL if
+   FRAG-TYPE is not one.
+
+   Endeavour 159: DERIVED from the record's own member list instead of a hardcoded case.  The
+   fragment records declare one field per element (tf32 A 16x8 -> 4, B 8x8 -> 2, acc -> 4;
+   fp16 A 16x16 -> 8, B 16x8 -> 4), so the member count IS the element count and a new record
+   cannot fall out of sync with a second table.  REGISTERS are a different number at 16 bits
+   (elements * width / 32) and are tracked separately by %ptx-note-register-demand.
+
+   Hopper wgmma accumulators are minted as flat f32 records by %ensure-wgmma-acc-type and keep
+   their own dimension-derived count (N/2 f32 registers per thread across the warpgroup)."
+  (or (when (and frag-type (symbolp frag-type)
+                 (let ((n (symbol-name frag-type)))
+                   (and (>= (length n) 18)
+                        (string= "REGISTER-FRAGMENT-" (subseq n 0 18)))))
+        (let ((def (find-struct-definition-by-name frag-type)))
+          (and def (length (crisp-struct-definition-members def)))))
+      (when (%wgmma-acc-type-p frag-type)
+        (floor (second (gethash frag-type *wgmma-acc-dims*)) 2))))
+
+;; src/analysis/control.lisp
+(defun analyze-map-elements (expr env context location)
+  "(map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.
+
+   Endeavor 150.  TWO LOWERINGS, because the vendors represent a fragment differently:
+
+     PTX   a record of scalar fields, count known at compile time -> UNROLLED fieldwise onto
+           %construct-struct / %extract-struct-member, which already exist.
+     SPV   an opaque cooperative matrix whose per-invocation component count is a RUNTIME
+           value (OpCooperativeMatrixLengthKHR) -> a semantic-coop-op :map node that codegen
+           turns into a LOOP, rewriting each component through the variable's own alloca via
+           OpAccessChain.
+
+   Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register
+   or component holds, which is why this is portable and why layout-aware epilogues are out of
+   scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which
+   expands it to one of these per fragment.
+
+   Endeavour 159: A/B OPERAND fragments are REFUSED.  See the header above -- this was reachable
+   by accident and silently wrong at 16 bits."
+  (unless (= (length (cdr expr)) 2)
+    (error 'crisp-compiler-error
+           :message (format nil "map-elements!: expects exactly 2 arguments — (map-elements! <fragment-or-tile> #'<unary-fn>) — got ~a."
+                            (length (cdr expr)))
+           :source-location location))
+  (destructuring-bind (target fn-form) (cdr expr)
+    (%map-elements-check-unary fn-form location)
+    (let* ((node (analyze-expression target env context location))
+           (ty   (get-single-value-type node))
+           (nf   (%map-elements-fragment-fields ty))
+           (coop (%map-elements-coop-dims ty)))
+      ;; Endeavour 159 — operands are not epilogue targets.
+      (when (%mma-operand-fragment-p ty coop)
+        (error 'crisp-compiler-error
+               :message (format nil "map-elements!: ~a is an MMA A/B OPERAND fragment, not an accumulator.  A fused epilogue applies to the RESULT of the contraction; transform an operand before it is loaded into fragments instead.  (At 16 bits an operand fragment's registers hold PACKED PAIRS, so an elementwise map over them would silently compute on reinterpreted bit patterns.)"
+                               ty)
+               :source-location location))
+      (cond
+        ;; ---- NVIDIA / PTX: unrolled fieldwise rewrite ----
+        (nf
+         (analyze-expression
+          `(set! ,target
+                 (%construct-struct ,ty
+                                    ,@(loop for i below nf
+                                            collect (%map-elements-call
+                                                     fn-form
+                                                     `(%extract-struct-member ,target ,i)))))
+          env context location))
+        ;; ---- Intel / SPV: runtime-length component loop ----
+        (coop
+         (unless (symbolp target)
+           (error 'crisp-compiler-error
+                  :message (format nil "map-elements!: on SPIR-V the target must be a cooperative-matrix VARIABLE (its storage is what OpAccessChain indexes), got ~a."
+                                   target)
+                  :source-location location))
+         (destructuring-bind (rows cols use) coop
+           (let* ((temp (gensym "CMELEM"))
+                  (env2 (cons (make-parameter-def :name temp :type 'float :kind :local) env))
+                  (body-node (analyze-expression (%map-elements-call fn-form temp)
+                                                 env2 context location)))
+             (make-semantic-coop-op
+              :type 'void :kind :map
+              :ty target :tx temp :tensor-node body-node
+              :rows rows :cols cols :use use
+              :source-location location))))
+        (t
+         (error 'crisp-compiler-error
+                :message (format nil "map-elements!: unsupported target type ~a. Implemented for MMA fragments (PTX records and SPV cooperative matrices) and, via the tile explosion, whole register tiles."
+                                 ty)
+                :source-location location))))))
