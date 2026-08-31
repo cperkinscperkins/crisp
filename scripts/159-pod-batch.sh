@@ -36,7 +36,13 @@ else
 fi
 mkdir -p "$OUT_DIR"
 SUMMARY="$OUT_DIR/SUMMARY.txt"
+DONE_FILE="$OUT_DIR/DONE"
 : > "$SUMMARY"
+# The sentinel is the ONLY trustworthy completion signal.  An ssh call returning proves the
+# CONNECTION ended, not that the work did -- and when that distinction was missed, an H100 sat
+# idle for 25 minutes after finishing.  Cleared at start so a stale one from a previous run
+# cannot be mistaken for this one.
+rm -f "$DONE_FILE"
 
 say() { echo "$*" | tee -a "$SUMMARY"; }
 
@@ -47,14 +53,14 @@ say "nvcc: $(nvcc --version 2>/dev/null | tail -1)"
 say ""
 
 # --- 1. build the compiler -----------------------------------------------------------------
-say "[1/5] building the Crisp compiler..."
+say "[1/6] building the Crisp compiler..."
 sbcl --non-interactive --load ./build/build.lisp > "$OUT_DIR/build.log" 2>&1
 say "      build exit=$?  (log: $OUT_DIR/build.log)"
 
 # --- 2. the local suites, on THIS machine ---------------------------------------------------
 # Cheap, and it catches a platform difference before any of it is blamed on the GPU.  159 sits
 # past ci-stop, so the rungs are run separately with ci-stop moved and then restored.
-say "[2/5] spec suites..."
+say "[2/6] spec suites..."
 sbcl --script tests/run-specs.lisp > "$OUT_DIR/e2e.log" 2>&1
 say "      e2e:      $(grep 'Spec Summary' "$OUT_DIR/e2e.log" | tail -1)"
 say "      e2e passes in log: $(grep -c 'Spec Summary' "$OUT_DIR/e2e.log") (expect 1), crashes: $(grep -c 'unhandled condition' "$OUT_DIR/e2e.log")"
@@ -67,7 +73,7 @@ git checkout -- tests/ci-stop.txt 2>/dev/null || printf '%s' "$CI_STOP_ORIG" > t
 say "      ci-stop restored: $(cat tests/ci-stop.txt)"
 
 # --- 3. THE POINT OF THE TRIP: 16-bit MMA correctness on metal ------------------------------
-say "[3/5] 16-bit MMA on metal (fp16 + bf16), through the reviewed fixture..."
+say "[3/6] 16-bit MMA on metal (fp16 + bf16), through the reviewed fixture..."
 python3 scripts/verify-16bit-cuda.py --arch "$ARCH" --sizes "$SIZES" > "$OUT_DIR/159-verify.json" 2> "$OUT_DIR/159-verify.err"
 VERIFY_RC=$?
 say "      verify exit=$VERIFY_RC  (0 = every rung correct at every size)"
@@ -95,7 +101,7 @@ fi
 # then renders the peer as "--", which reads exactly like "we measured it and it was nothing".
 # (The contender failing LOUDLY, with an error in its JSON rather than a fabricated time, is the
 # Phase A hardening working -- but it only helps if someone reads the log.)
-say "[3b/5] third-party benchmark deps (CUTLASS)..."
+say "[3b/6] third-party benchmark deps (CUTLASS)..."
 if [ -f scripts/setup-third-party.sh ]; then
   bash scripts/setup-third-party.sh cutlass > "$OUT_DIR/third-party.log" 2>&1
   say "      setup-third-party exit=$?  (log: $OUT_DIR/third-party.log)"
@@ -106,7 +112,7 @@ fi
 # --- 4. Phase A leftovers: the benchmark driver end to end -----------------------------------
 # Phase A's numbers and binaries were verified in August; the INTEGRATION (driver -> result JSON ->
 # report rendering the swept peer with its config named) never was.
-say "[4/5] Phase A leftover: bench.py --platform=nvidia end to end..."
+say "[4/6] Phase A leftover: bench.py --platform=nvidia end to end..."
 if [ -f scripts/bench.py ]; then
   python3 scripts/bench.py --platform=nvidia $BENCH_EXTRA > "$OUT_DIR/bench.log" 2>&1
   say "      bench exit=$?  (log: $OUT_DIR/bench.log)"
@@ -116,7 +122,7 @@ else
 fi
 
 # --- 5. Phase A leftover: regenerate the report ----------------------------------------------
-say "[5/5] Phase A leftover: regenerate REPORT.md..."
+say "[5/6] Phase A leftover: regenerate REPORT.md..."
 if [ -f scripts/crisp_bench/report.py ]; then
   python3 scripts/crisp_bench/report.py --output benchmarks/REPORT.md > "$OUT_DIR/report.log" 2>&1
   say "      report exit=$?  (log: $OUT_DIR/report.log)"
@@ -140,3 +146,10 @@ fi
 say ""
 say "=== done.  Pull $OUT_DIR back and read SUMMARY.txt + 159-verify.json. ==="
 say "=== The pod can be released as soon as those two files are on the dev box. ==="
+
+# LAST ACTION, deliberately: anything that fails above leaves no sentinel, so a partial run reads
+# as unfinished rather than as success.
+printf 'finished=%s
+verify_exit=%s
+host=%s
+' "$(date -u +%FT%TZ)" "${VERIFY_RC:-unknown}" "$(hostname)" > "$DONE_FILE"
