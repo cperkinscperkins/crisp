@@ -1153,6 +1153,15 @@ def main():
 
             for _ch, _sfx, _tag in (("sec2_top_fp16", "fp16", "FP16"),
                                     ("sec2_top_bf16", "bf16", "BF16")):
+                # Endeavour 159 Phase B: the Crisp column.  Before this the NVIDIA 16-bit
+                # sections had NO Crisp kernel at all -- every `_bf16`/`_fp16` source in the tree
+                # was an Intel one (matmul_bmg_*) -- because the PTX backend could not emit a
+                # 16-bit MMA.  It can now (mma.sync.aligned.m16n8k16.row.col.f32.{f16,bf16}.*),
+                # verified against a host reference on an H100 PCIe with max_abs_err exactly 0.
+                # Tile 64,64 matches chap2_tiling, which these kernels are a minimal port of, so
+                # the 16-bit row is comparable to the tf32 row rather than a different kernel.
+                run_target(_ch, f"matmul_{_sfx}.crisp", f"matmul_{_sfx}.ptx", "Crisp",
+                           [], is_crisp=True, crisp_grid_tile="64,64")
                 run_target(_ch, f"cuda_control_{_sfx}.cu", f"cuda_control_{_sfx}",
                            f"CUDA_Apples_{_tag}", nvcc_flags)
                 for _cfg, _dflags in cutlass_16bit_configs:

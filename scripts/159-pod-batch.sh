@@ -23,6 +23,17 @@ set -uo pipefail
 OUT_DIR="${OUT_DIR:-put_temp_files_here/159-pod}"
 ARCH="${ARCH:-sm_90}"
 SIZES="${SIZES:-256,512,1024}"
+# SMOKE=1 -- prove the APPARATUS before spending the rental on the sweep.  Every contender still
+# builds and runs, but at one tiny size, so a missing dependency or an absent kernel surfaces in
+# minutes instead of after the full sweep.  The first 159 run came back with an empty Peer column
+# in every table because CUTLASS could not build; a smoke run would have said so immediately.
+SMOKE="${SMOKE:-0}"
+if [ "$SMOKE" = "1" ]; then
+  SIZES="256"
+  BENCH_EXTRA="--sizes=256"
+else
+  BENCH_EXTRA=""
+fi
 mkdir -p "$OUT_DIR"
 SUMMARY="$OUT_DIR/SUMMARY.txt"
 : > "$SUMMARY"
@@ -97,7 +108,7 @@ fi
 # report rendering the swept peer with its config named) never was.
 say "[4/5] Phase A leftover: bench.py --platform=nvidia end to end..."
 if [ -f scripts/bench.py ]; then
-  python3 scripts/bench.py --platform=nvidia > "$OUT_DIR/bench.log" 2>&1
+  python3 scripts/bench.py --platform=nvidia $BENCH_EXTRA > "$OUT_DIR/bench.log" 2>&1
   say "      bench exit=$?  (log: $OUT_DIR/bench.log)"
   say "      result JSONs written: $(find benchmarks/results -newer "$SUMMARY" -name '*.json' 2>/dev/null | wc -l)"
 else
@@ -111,6 +122,19 @@ if [ -f scripts/crisp_bench/report.py ]; then
   say "      report exit=$?  (log: $OUT_DIR/report.log)"
 else
   say "      SKIPPED — report.py not found at scripts/crisp_bench/report.py"
+fi
+
+# --- 6. AUDIT: which contenders actually produced data ---------------------------------------
+# The step that would have caught this endeavour's first run.  An empty cell in the report has
+# three indistinguishable causes -- never built, no source, or ran-and-failed-verification -- and
+# only the artifacts can tell them apart.
+say "[6/6] contender audit..."
+if [ -f scripts/audit-bench-results.py ]; then
+  python3 scripts/audit-bench-results.py --platform-substr H100 > "$OUT_DIR/audit.txt" 2>&1
+  say "      audit exit=$?  (full table: $OUT_DIR/audit.txt)"
+  grep -E "NO DATA|UNVERIFIED|not ok" "$OUT_DIR/audit.txt" | head -20 | sed 's/^/      /' | tee -a "$SUMMARY"
+else
+  say "      SKIPPED — scripts/audit-bench-results.py not found"
 fi
 
 say ""

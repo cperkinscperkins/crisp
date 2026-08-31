@@ -1,0 +1,57 @@
+;; Crisp Tiled MMA Matmul (fp16) on NVIDIA: C[M x N] = A[M x K] . B[K x N], f32 accumulate.
+;;
+;; THE FIRST NVIDIA 16-BIT BENCHMARK KERNEL.  Until endeavour 159 Phase B the PTX backend could
+;; not emit a 16-bit MMA at all -- both paths were hardcoded tf32 -- so the Crisp column in
+;; §2's fp16 and bf16 tables has always been empty, and every `_bf16` chapter kernel in this tree
+;; is an Intel one (`matmul_bmg_bf16.crisp`).  This is the NVIDIA side finally existing.
+;;
+;; DELIBERATELY A MINIMAL PORT OF chap2_tiling/matmul.crisp.  Same structure, same tile geometry,
+;; same macro; only the operand element type and the K-step differ.  That makes the fp16 row
+;; directly comparable to the tf32 row -- a difference between them is the FORMAT, not a different
+;; kernel wearing the same name.  Anything cleverer belongs in a later rung where it can be
+;; attributed.
+;;
+;; K-STEP IS 16, NOT 8.  The Hopper ladder is m16n8k8 (tf32) -> m16n8k16 (fp16/bf16): K doubles,
+;; M and N do not.  That is the whole reason the 16-bit ceiling is ~2x tf32 rather than 4x, which
+;; Phase A measured and confirmed on this part (cuBLAS fp16/tf32 = 1.05 -> 2.16x across N).
+;;
+;; OPERANDS STAGE THROUGH SHARED MEMORY, and must.  Endeavour 142's register-resident operand path
+;; (load-tile straight into a register tile) lowers to Subgroup2DBlockLoadINTEL and is Intel-only;
+;; on NVIDIA it is a compile-time refusal.  So A and B go to SLM and the MMA reads from there.
+;;
+;; THE ACCUMULATOR IS f32.  A 16-bit MMA accumulates in fp32 on both vendors -- the C tile and the
+;; C matrix stay float, and only A/B are half.  cuBLAS's own fp16 ceiling in this table is
+;; f32-accumulate for the same reason (CUBLAS_COMPUTE_16F is a different computation and breaks
+;; the C=K oracle past K=2048).
+;;
+;; PERFORMANCE EXPECTATION, stated up front so the number is not a surprise: this is the SYNC MMA.
+;; On the tf32 ladder the sync rungs sit far below chap7's wgmma, which is what gets close to
+;; cuBLAS.  wgmma is tf32-only today (%check-wgmma-shape gates K=8), so a 16-bit wgmma kernel is a
+;; later endeavour.  An honest modest number here establishes the 16-bit ladder's first rung.
+
+(def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half  :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix half  (64 16)))   ; M x K, one fp16 K-step
+        (B-tile (make-scratch-matrix half  (16 64)))   ; K x N
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      :body
+      (load-tile-at A A-tile ((* grid-y (to-ulong 64)) (* grid-k (to-ulong 16))))
+      (load-tile-at B B-tile ((* grid-k (to-ulong 16)) (* grid-x (to-ulong 64))))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      ;; WITHOUT THIS THE KERNEL COMPUTES AND DISCARDS.  The template this was ported from
+      ;; (chap2_tiling/matmul.crisp) has no store-tile, and that is the defect behind the L0
+      ;; fixture's opening example: chap2_tiling "posted the second-best tf32 number in its
+      ;; section while storing nothing at all -- the compiler warned on every build and a sweep
+      ;; run with --log-level=off never showed it."  The warning is still emitted today.
+      (store-tile C-tile C (grid-y grid-x)))))
