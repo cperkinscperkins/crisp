@@ -939,14 +939,17 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
     for s in sizes:
         S = int(s)
         w, it = scaled_counts(warmup, iters, S)
-        # DIRECT subprocess, deliberately, rather than run_bench_proc.  The fixture succeeds
-        # under a plain Popen with this exact env and argv -- verified on the pod -- but fails
-        # with "CUDA error 1 (invalid argument) at warmup launch" when spawned through
-        # run_bench_proc's reader-thread path.  The cause is not yet understood; what IS
-        # established is that the launch parameters are valid (grid [4,4,1], block [32,1,1],
-        # 4096B shared, 45 args matching the PTX) and that the same binary, env and argv work
-        # otherwise.  Using the invocation that works, and recording the anomaly, beats
-        # continuing to debug it on a rented GPU.
+        # Direct subprocess rather than run_bench_proc.  Simpler, and this harness emits one
+        # JSON object on stdout so none of run_bench_proc's early-stop machinery applies.
+        #
+        # HISTORICAL NOTE, because the first version of this comment was WRONG and a wrong
+        # theory in a comment outlives the bug: the "CUDA error 1 (invalid argument) at warmup
+        # launch" that prompted this change had NOTHING to do with run_bench_proc or reader
+        # threads.  The use_fixture branch in _run_target_inner was missing its `return`, so
+        # control fell through to the generic runner, which re-invoked this same fixture binary
+        # with only CRISP_MATMUL_PTX set -- defaulting to a 27-argument layout with A/B/C at
+        # 0/9/18 against a 45-argument staged kernel.  The doubled "$ matmul_crisp" line in the
+        # log was the visible symptom, noticed twice and set aside twice.
         env = dict(os.environ); env.update(env_ext)
         cmd = [str(harness_bin), str(S), str(S), str(S), str(w), str(it)]
         try:
