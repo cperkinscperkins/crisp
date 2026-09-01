@@ -752,12 +752,34 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
     if allr:
         env["CRISP_MATMUL_ARGC"] = str(max(e for _, _, e, _ in allr) + 1)
 
+    # --- TMA descriptors ----------------------------------------------------------------
+    # Chapters 4/5/6 take CUtensorMap descriptors as their FIRST kernel arguments.  Each is
+    # recorded in :implicit-params as :kind :tensor-map with the tensor it :describes and the
+    # :box-dims of the tile it delivers.  Without these the fixture leaves those argument slots
+    # zero and the launch is rejected.
+    tmaps = []
+    for m in re.finditer(
+            r':name\s+"([^"]+)"\s+:kind\s+:tensor-map(?:(?!:name).)*?'
+            r':describes\s+"([^"]+)"(?:(?!:name).)*?'
+            r':box-dims\s+\((\d+)\s+(\d+)\)(?:(?!:name).)*?'
+            r':range\s+\((\d+)\s+(\d+)\)',
+            scratch_sec, re.S):
+        _nm, describes, b0, b1, st, _en = m.groups()
+        tmaps.append(f"{st}:{describes}:{b0}:{b1}")
+    if tmaps:
+        env["CRISP_MATMUL_TENSORMAP"] = ",".join(tmaps)
+
     specs = []
     for name, st, _e, _blob in scratch:
         seg = scratch_sec[scratch_sec.find('"' + name + '"'):]
-        sm = re.search(r":size-expr\s+\((\d+)\s+(\d+)\)", seg[:400])
+        # RANK 2 OR 3.  A ring is rank+1 (`(tensor bfloat16 3 :local ...)`, :size-expr
+        # (slots rows cols)) and flattens to TWELVE arguments rather than nine, so a parser that
+        # only matched a 2-tuple silently bound nothing for chapters 5 and 6 -- the two rungs
+        # whose whole point is the ring.
+        sm = re.search(r":size-expr\s+\((\d+)\s+(\d+)(?:\s+(\d+))?\)", seg[:400])
         if sm:
-            specs.append(f"{st}:{sm.group(1)}:{sm.group(2)}")
+            dims = [g for g in sm.groups() if g]
+            specs.append(":".join([str(st)] + dims))
     if specs:
         env["CRISP_MATMUL_SCRATCH"] = ",".join(specs)
 
@@ -882,7 +904,28 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
            capture_output=True, text=True)
     except Exception:
         pass
-    metacrisp = next(iter(sorted(src.parent.glob(f"{src.stem}_*.metacrisp"))), None)
+    # SELECT THE METACRISP BY KERNEL NAME, not by glob.  `glob(f"{stem}_*.metacrisp")` with
+    # stem "matmul" also matches a co-located INTEL kernel's sidecar
+    # (matmul_bmg_bf16_matmul.metacrisp), and sorted() puts that one FIRST.  Every bf16 chapter
+    # directory already contains an Intel kernel, so the fixture was being handed the Intel
+    # layout: 27 arguments with A/B/C at 0/9/18, against NVIDIA kernels of 45-53 arguments.
+    # That is a launch rejected as "CUDA error 1 (invalid argument)" -- the same failure this
+    # endeavour already paid for once.
+    _kn = None
+    try:
+        _m = re.search(r"\(def-kernel\s+([A-Za-z0-9_\-]+)", Path(src).read_text(errors="replace"))
+        _kn = _m.group(1) if _m else None
+    except Exception:
+        pass
+    metacrisp = None
+    if _kn:
+        _exact = src.parent / f"{src.stem}_{_kn}.metacrisp"
+        if _exact.exists():
+            metacrisp = _exact
+    if metacrisp is None:
+        _cands = [c for c in sorted(src.parent.glob(f"{src.stem}_*.metacrisp"))
+                  if "_bmg" not in c.name]
+        metacrisp = _cands[0] if _cands else None
     if metacrisp:
         env_ext = cuda_fixture_env(src, metacrisp, ptx)
     else:

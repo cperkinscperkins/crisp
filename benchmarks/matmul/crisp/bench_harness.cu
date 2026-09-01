@@ -48,6 +48,7 @@
 //          CRISP_MATMUL_ARG_B    B's FIRST argument index                      (default 9)
 //          CRISP_MATMUL_ARG_C    C's FIRST argument index                      (default 18)
 //          CRISP_MATMUL_SCRATCH  scratch tiles, "idx:ext0:ext1[,...]"          (default "")
+//          CRISP_MATMUL_TENSORMAP  TMA descriptors, "idx:a|b:box0:box1[,...]" (default "")
 //   stdout: one JSON object -- correct / max_abs_err / kernel_median_us / gflops
 //
 // The accumulator (C) is ALWAYS f32: every 16-bit MMA here accumulates in fp32, so CRISP_MATMUL_ELEM
@@ -112,7 +113,9 @@ static float f16_to_f32(uint16_t h) {
     float f; std::memcpy(&f, &out, 4); return f;
 }
 
-struct Scratch { int idx; uint64_t ext0, ext1, off; };
+// A scratch tile is rank 2; a RING is rank 3 (slots x rows x cols) and flattens to twelve
+// kernel arguments rather than nine.  Chapters 5 and 6 are rings, so rank is not optional.
+struct Scratch { int idx; int rank; uint64_t e0, e1, e2, off; };
 
 static std::vector<std::string> split(const std::string &s, char d) {
     std::vector<std::string> out; std::string cur; std::istringstream is(s);
@@ -163,11 +166,13 @@ int main(int argc, char **argv) {
         auto f = split(tok, ':');
         if (f.size() < 3) continue;
         Scratch s{};
-        s.idx = std::atoi(f[0].c_str());
-        s.ext0 = std::stoull(f[1]);
-        s.ext1 = std::stoull(f[2]);
-        s.off = shared_bytes;
-        shared_bytes += s.ext0 * s.ext1 * ebytes;
+        s.idx  = std::atoi(f[0].c_str());
+        s.rank = (f.size() >= 4) ? 3 : 2;
+        s.e0   = std::stoull(f[1]);
+        s.e1   = std::stoull(f[2]);
+        s.e2   = (s.rank == 3) ? std::stoull(f[3]) : 1;
+        s.off  = shared_bytes;
+        shared_bytes += s.e0 * s.e1 * s.e2 * ebytes;
         scratch.push_back(s);
     }
     std::sort(scratch.begin(), scratch.end(), [](const Scratch &a, const Scratch &b) { return a.idx < b.idx; });
@@ -251,9 +256,82 @@ int main(int argc, char **argv) {
     bind_tensor(iA, dA, A.size(), M, K);
     bind_tensor(iB, dB, B.size(), K, N);
     bind_tensor(iC, dC, C.size() * sizeof(float), M, N);
+    // A scratch tensor's "ptr" is a BYTE OFFSET into the dynamic shared block, not an address.
+    auto bind_tensor3 = [&](int base, uint64_t off, uint64_t e0, uint64_t e1, uint64_t e2) {
+        if (base < 0 || base + 11 >= argc_k) return;
+        slot[base + 0]  = off;              // ptr (shared-memory byte offset)
+        slot[base + 1]  = e0 * e1 * e2 * ebytes;
+        slot[base + 2]  = 0; slot[base + 3] = 0; slot[base + 4] = 0;   // off0..2
+        slot[base + 5]  = e1 * e2;          // str0 (row-major)
+        slot[base + 6]  = e2;               // str1
+        slot[base + 7]  = 1;                // str2
+        slot[base + 8]  = e0;               // ext0 (ring slots)
+        slot[base + 9]  = e1;               // ext1
+        slot[base + 10] = e2;               // ext2
+        slot[base + 11] = e0 * e1 * e2;     // length, in ELEMENTS
+    };
     for (const auto &s : scratch) {
-        // A scratch tensor's "ptr" is a BYTE OFFSET into the dynamic shared block, not an address.
-        bind_tensor(s.idx, (CUdeviceptr)s.off, s.ext0 * s.ext1 * ebytes, s.ext0, s.ext1);
+        if (s.rank == 3) bind_tensor3(s.idx, s.off, s.e0, s.e1, s.e2);
+        else             bind_tensor(s.idx, (CUdeviceptr)s.off, s.e0 * s.e1 * ebytes, s.e0, s.e1);
+    }
+
+    // ---- CUtensorMap descriptors (TMA) ----------------------------------------------------
+    // Chapters 4/5/6 fetch through cp.async.bulk.tensor, whose first kernel arguments are not
+    // pointers but 128-byte CUtensorMap DESCRIPTORS built on the host.  Without these the fixture
+    // can only measure the two rungs that do no TMA at all.
+    //
+    // The layout convention below is taken from the generated hoister
+    // (%cuda-emit-tensor-map-encode, src/hoist-cuda/main.lisp) so both harnesses describe the
+    // same tensor the same way:
+    //   * gdim   = extents REVERSED (innermost dimension first)
+    //   * gstr   = rank-1 entries, in BYTES, of the non-innermost dims
+    //   * boxDim = tile dims reversed
+    //   * elemStrides = all 1
+    // Only the :swizzle :none path is reproduced here.  The :128b (wgmma) variant reverses those
+    // choices for a K-contiguous col-major B, and no 16-bit kernel reaches it yet -- wgmma is
+    // tf32-only (%check-wgmma-shape gates K=8), so a 16-bit swizzled descriptor cannot arise.
+    // If that changes, this must grow the col-major branch rather than silently mis-describe.
+    std::vector<CUdeviceptr> tmap_dev;
+    for (const auto &tok : split(env_or("CRISP_MATMUL_TENSORMAP", ""), ',')) {
+        auto f = split(tok, ':');
+        if (f.size() < 4) continue;
+        const int      idx  = std::atoi(f[0].c_str());
+        const std::string wh = f[1];                       // "a" or "b"
+        const uint64_t box0 = std::stoull(f[2]);
+        const uint64_t box1 = std::stoull(f[3]);
+
+        const bool isA = (wh == "a" || wh == "A");
+        CUdeviceptr base = isA ? dA : dB;
+        // Extents as this harness ALLOCATED them: A is M x K, B is K x N, both row-major.
+        const uint64_t e0 = isA ? M : K;
+        const uint64_t e1 = isA ? K : N;
+
+        CUtensorMapDataType dt;
+        if      (elem == "bf16") dt = CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
+        else if (elem == "f16")  dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT16;
+        else                     dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT32;
+
+        uint64_t gdim[2] = { e1, e0 };                 // reversed: innermost first
+        uint64_t gstr[1] = { e1 * ebytes };            // row stride of dim 0, in bytes
+        uint32_t bdim[2] = { (uint32_t)box1, (uint32_t)box0 };   // reversed
+        uint32_t estr[2] = { 1, 1 };
+
+        CUtensorMap host_map;
+        CUresult tr = cuTensorMapEncodeTiled(
+            &host_map, dt, 2, (void *)base, gdim, gstr, bdim, estr,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+            CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (tr != CUDA_SUCCESS) {
+            const char *es = nullptr; cuGetErrorString(tr, &es);
+            std::cerr << "cuTensorMapEncodeTiled failed for '" << wh << "' at arg " << idx
+                      << ": " << (es ? es : "?") << "\n";
+            return 2;
+        }
+        CUdeviceptr dmap;
+        CU_OK(cuMemAlloc(&dmap, sizeof(CUtensorMap)), "cuMemAlloc tensormap");
+        CU_OK(cuMemcpyHtoD(dmap, &host_map, sizeof(CUtensorMap)), "H2D tensormap");
+        tmap_dev.push_back(dmap);
+        if (idx >= 0 && idx < argc_k) slot[idx] = (uint64_t)dmap;
     }
 
     // ---- grid ------------------------------------------------------------------------------
@@ -285,8 +363,10 @@ int main(int argc, char **argv) {
                   << "  \"scratch\": [";
         for (size_t i = 0; i < scratch.size(); ++i)
             std::cout << (i ? ", " : "") << "{\"idx\": " << scratch[i].idx
-                      << ", \"ext0\": " << scratch[i].ext0
-                      << ", \"ext1\": " << scratch[i].ext1
+                      << ", \"rank\": " << scratch[i].rank
+                      << ", \"e0\": " << scratch[i].e0
+                      << ", \"e1\": " << scratch[i].e1
+                      << ", \"e2\": " << scratch[i].e2
                       << ", \"off\": " << scratch[i].off << "}";
         std::cout << "],\n";
         std::cout << "  \"grid\": [" << gx << ", " << gy << ", 1], "
@@ -389,6 +469,7 @@ int main(int argc, char **argv) {
               << "  \"gflops\": " << gflops << "\n"
               << "}" << std::endl;
 
+    for (CUdeviceptr t : tmap_dev) cuMemFree(t);
     cuMemFree(dA); cuMemFree(dB); cuMemFree(dC);
     cuModuleUnload(module);
     cuCtxDestroy(ctx);
