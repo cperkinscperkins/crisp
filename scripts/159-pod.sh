@@ -22,9 +22,13 @@
 #
 set -uo pipefail
 
-CMD="${1:?usage: $0 {launch|status|pull} <host> <port> [ssh-key] [SMOKE=1]}"
-HOST="${2:?host required}"
-PORT="${3:?port required}"
+# NOTE: no braces in these :? messages.  A "}" inside ${var:?msg} TERMINATES the expansion, so
+# "{launch|status|pull}" silently appended the rest of the usage line to $CMD.
+usage() { echo "usage: $0 launch|status|pull <host> <port> [ssh-key] [SMOKE=1]" >&2; exit 2; }
+[ $# -ge 3 ] || usage
+CMD="$1"
+HOST="$2"
+PORT="$3"
 KEY="${4:-$HOME/.ssh/id_ed25519}"
 SMOKE_ARG="${5:-}"
 
