@@ -1,0 +1,98 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-09-01T04:15:36.025079Z",
+    "hardware": {
+      "gpu_model": "NVIDIA H100 NVL",
+      "arch_target": "sm_90",
+      "environment": "runpod",
+      "vram_bytes": 100485038080,
+      "sm_count": null
+    },
+    "crisp_commit": "76e379d2",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "sec2_top_fp16",
+  "competitor": "CUDA_Apples_FP16",
+  "precision": "fast",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 762.2828483581543,
+          "all_compile_ms": 2214.244842529297
+        },
+        "runtime": {
+          "wall_time_ms": 596.76,
+          "kernel_execution_ms": 0.56864
+        },
+        "throughput": {
+          "tflops": 3.77653,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 2048,
+        "n": 2048,
+        "k": 2048,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 762.2828483581543,
+          "all_compile_ms": 2214.244842529297
+        },
+        "runtime": {
+          "wall_time_ms": 1672.19,
+          "kernel_execution_ms": 9.37238
+        },
+        "throughput": {
+          "tflops": 1.83303,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    },
+    {
+      "configuration": {
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "warmup": 2,
+        "iters": 12,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 762.2828483581543,
+          "all_compile_ms": 2214.244842529297
+        },
+        "runtime": {
+          "wall_time_ms": 1454.21,
+          "kernel_execution_ms": 74.80700999999999
+        },
+        "throughput": {
+          "tflops": 1.83725,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    }
+  ],
+  "is_canonical": true
+}

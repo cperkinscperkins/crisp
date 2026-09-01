@@ -1,0 +1,62 @@
+;; Crisp Warp-Specialized Matmul with Sync MMA (bf16) on NVIDIA: C[M x N] = A[M x K] . B[K x N].
+;; Section 1 Chapter 6 — the top of the NVIDIA 16-bit ladder that is REACHABLE TODAY.
+;; 1 Producer warp dedicated to TMA async loads + 2 Consumer warps executing mma.sync without
+;; memory stalls.
+;;
+;; WHY THIS RUNG MATTERS MOST.  chap7 is wgmma, and wgmma cannot be reached at 16 bits: Crisp's
+;; %check-wgmma-shape hard-errors on K != 8 (src/mma.lisp:2069) and %emit-nvvm-wgmma pins
+;; m64n{N}k8.f32.tf32.tf32 (:2173), so a 16-bit wgmma kernel does not compile.  Chapter 6 does NOT
+;; use wgmma -- it is the SYNC MMA plus warp specialization -- so it needs no compiler work at all,
+;; and it is where the sync ladder gets competitive.  Endeavour 139 measured ws2 (1 producer,
+;; 2 consumers) as the fastest Crisp kernel of its day: 2x the pipelined kernel at N=1024 and
+;; +6% at 4096, with cuBLAS still ~5x away -- that remaining gap being exactly what wgmma closes.
+;;
+;; DELIBERATELY A LINE-FOR-LINE PORT of chap6_warp_specialization/matmul.crisp.  Same 3-warp
+;; split, same 2-slot rings, same barrier arrivals, same C-tile :warps distribution.  ONLY the
+;; operand element type and the K-step differ, so a difference between this row and the tf32 row
+;; is the FORMAT and not a different kernel.
+;;
+;; K-STEP IS 16, NOT 8, and it changes the ring geometry with it: each slot stages a 64x16 A tile
+;; and a 16x64 B tile rather than 64x8 / 8x64.  The Hopper ladder is m16n8k8 (tf32) ->
+;; m16n8k16 (bf16/fp16) -- K doubles, M and N do not.  Note this HALVES the number of K
+;; iterations for a given K, so the producer issues half as many loads of twice the size: the
+;; pipelining behaviour is not identical to the tf32 rung even though the code shape is.
+;;
+;; OPERANDS STAGE THROUGH SHARED MEMORY, and must on NVIDIA -- endeavour 142's register-resident
+;; operand path is Intel-only (Subgroup2DBlockLoadINTEL), a compile-time refusal here.
+;;
+;; THE ACCUMULATOR IS f32.  A 16-bit MMA accumulates in fp32; only A and B are bf16.
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 96)
+           (local-size  :set-to 96))          ; 3 warps: 1 producer + 2 consumers
+  (let ((A-ring  (make-scratch-matrix-ring bfloat16 (64 16) :ring-count 2))  ; SLM: 2 x (M x k-step)
+        (B-ring  (make-scratch-matrix-ring bfloat16 (16 64) :ring-count 2))  ; SLM: 2 x (k-step x N)
+        (C-tile  (make-register-tile float (64 64) 0.0 :warps '(false true true)))  ; split across consumers
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 64) (grid-y grid-x)
+      (with-warp-specialization (:producer 1 :consumer 2)
+
+        ;; PRODUCER — stream A/B K-steps into the ring one stage ahead.
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot))
+              (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot)))))
+
+        ;; CONSUMER (x2) — each warp accumulates its fragment share of the C-tile, then releases.
+        (:consumer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (mma-accumulate-via-tile (16 8 16) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+              (signal (ring-get empty slot))))
+          (store-tile C-tile C (grid-y grid-x)))))))

@@ -1,0 +1,51 @@
+;; Crisp Hand-rolled MMA Matmul (bf16) on NVIDIA: C[M x N] = A[M x K] . B[K x N], f32 accumulate.
+;; Section 1, Chapter 1 — the FLOOR of the NVIDIA 16-bit ladder.
+;;
+;; WHY THIS RUNG EXISTS.  Until endeavour 159 Phase B the PTX backend could not emit a 16-bit MMA
+;; at all (both paths hardcoded tf32), so every `_bf16` chapter kernel in this tree was an Intel
+;; one -- `matmul_bmg_bf16.crisp` -- and the NVIDIA 16-bit ladder had no rungs whatsoever.  This is
+;; the first.
+;;
+;; DELIBERATELY A LINE-FOR-LINE PORT of chap1_handrolled_mma/matmul.crisp.  Same hand-rolled loop,
+;; same tile geometry, same explicit load-tile-at; ONLY the operand element type and the K-step
+;; differ.  A difference between this row and the tf32 row is therefore the FORMAT, not a different
+;; kernel wearing the same name -- which is the whole point of a ladder whose rungs are comparable.
+;;
+;; K-STEP IS 16, NOT 8.  The Hopper ladder is m16n8k8 (tf32) -> m16n8k16 (bf16/fp16): K doubles,
+;; M and N do not.  That is why the 16-bit ceiling is ~2x tf32 rather than 4x, which endeavour
+;; 159 Phase A measured and confirmed on this part.
+;;
+;; OPERANDS STAGE THROUGH SHARED MEMORY, and must on NVIDIA.  Endeavour 142's register-resident
+;; operand path (load-tile straight into a register tile) lowers to Subgroup2DBlockLoadINTEL and is
+;; Intel-only; on NVIDIA it is a compile-time refusal.
+;;
+;; THE ACCUMULATOR IS f32 -- a 16-bit MMA accumulates in fp32 on both vendors.  bf16 has no
+;; f16-accumulate analogue at all, so there is not even a tempting wrong option here.
+;;
+;; EXPECT THIS TO BE SLOW, and read it as the floor rather than as a result.  It is the sync MMA
+;; with one warp per block and no pipelining: no cp.async, no ring, no warp specialization.  Each
+;; rung above it adds exactly one technique, and chap6 (warp specialization) is where the NVIDIA
+;; sync-MMA ladder actually gets competitive -- endeavour 139 measured ws2 as the fastest Crisp
+;; kernel of its day, 2x the pipelined kernel at N=1024, all without wgmma.
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 32))
+  (tile-stride C (64 64) (grid-y grid-x)
+    (let ((A-tile (make-scratch-matrix bfloat16 (64 16)))   ; M x K, one bf16 K-step
+          (B-tile (make-scratch-matrix bfloat16 (16 64)))   ; K x N
+          (C-tile (make-register-tile float (64 64) 0.0))
+          (K      (inner-dimension A B)))
+      (dotimes (kt (/ K (to-ulong 16)))
+        (load-tile-at A A-tile ((* grid-y (to-ulong 64)) (* kt (to-ulong 16))))
+        (load-tile-at B B-tile ((* kt (to-ulong 16)) (* grid-x (to-ulong 64))))
+        (sync-workgroup)
+        (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+        (sync-workgroup))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

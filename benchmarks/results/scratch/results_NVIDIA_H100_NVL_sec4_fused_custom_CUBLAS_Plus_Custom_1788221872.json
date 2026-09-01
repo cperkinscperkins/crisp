@@ -1,0 +1,48 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-09-01T00:17:51.396990Z",
+    "hardware": {
+      "gpu_model": "NVIDIA H100 NVL",
+      "arch_target": "sm_90",
+      "environment": "runpod",
+      "vram_bytes": 100485038080,
+      "sm_count": null
+    },
+    "crisp_commit": "76e379d2",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "sec4_fused_custom",
+  "competitor": "CUBLAS_Plus_Custom",
+  "precision": "fast",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 256,
+        "n": 256,
+        "k": 256,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 485.28409004211426,
+          "all_compile_ms": 1562.3197555541992
+        },
+        "runtime": {
+          "wall_time_ms": 592.62,
+          "kernel_execution_ms": 0.01507
+        },
+        "throughput": {
+          "tflops": 2.22628,
+          "bandwidth_gbps": null
+        },
+        "verification": null
+      }
+    }
+  ],
+  "is_canonical": true
+}

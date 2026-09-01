@@ -1,0 +1,44 @@
+;; Crisp Cheap-Fetch Matmul (bf16) on NVIDIA: C[M x N] = A[M x K] . B[K x N], f32 accumulate.
+;; Section 1 Chapter 4 — one TMA barrier, no ring: the transfer is asynchronous but there is only
+;; ever one stage in flight, so the math still waits for it.  Chapter 5 adds the ring that lets a
+;; second stage land while the first is being consumed.
+;;
+;; DELIBERATELY A LINE-FOR-LINE PORT of its tf32 twin.  Only the operand element type and the
+;; K-step differ, so a difference between this row and the tf32 row is the FORMAT rather than a
+;; different kernel wearing the same name.
+;;
+;; K-STEP IS 16, NOT 8 (Hopper: m16n8k8 tf32 -> m16n8k16 bf16/fp16; K doubles, M and N do not).
+;; That HALVES the K-iteration count for a given K, so each staged transfer is twice the size and
+;; there are half as many of them -- the pipelining behaviour is not identical to the tf32 rung
+;; even though the code shape is.
+;;
+;; THE FETCH IS TMA (`:mode :block`), NOT plain cp.async -- which is why this rung is reachable at
+;; 16 bits at all.  cp.async is 4/8/16-byte granular in HARDWARE (the limit endeavour 159 Phase A
+;; measured from the other side: the CUDA control staged single 2-byte elements, never took the
+;; accelerated path, and read a flat ~3.4 TFLOPS at every size).  cp.async.bulk.tensor is
+;; descriptor-driven and its tensormap encodes bf16 directly.  Crisp refused 2-byte elements here
+;; only because of a byte table that listed 4 and 8 and nothing else; endeavour 159 widened it.
+;;
+;; THE ACCUMULATOR IS f32 -- a 16-bit MMA accumulates in fp32; only A and B are bf16.
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix bfloat16 (64 16)))
+        (B-tile (make-scratch-matrix bfloat16 (16 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :mode :block)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0)) (fill-tile C-tile 0.0))
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

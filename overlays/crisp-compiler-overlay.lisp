@@ -744,3 +744,90 @@
                                       i (format nil "acc~d" i))))
                          agg)))
           (values result nil)))))
+
+;;;; ====================================================================
+;;;; Endeavour 159 — TMA (:block) load-tile at 16-bit element widths.
+;;;;
+;;;; THE BLOCKER.  The NVIDIA 16-bit ladder stops dead at chapter 6 (warp specialization), which
+;;;; is the highest rung reachable WITHOUT wgmma -- chap6 uses the sync MMA, so it needs no new
+;;;; instruction, only its producer warp's TMA loads.  Those were refused:
+;;;;
+;;;;     load-tile :block: element type BFLOAT16 needs 4 or 8 bytes
+;;;;
+;;;; because the byte table listed only (int uint float)->4 and (long ulong double)->8.
+;;;;
+;;;; WHY WIDENING IT IS CORRECT HERE.  The number is used for ONE thing: the tx byte count on
+;;;; `mbarrier.arrive.expect_tx`, computed as (length~ TILE) * elem-bytes.  For a 2-byte element
+;;;; the correct count is simply 2 per element.  The copy itself is `cp.async.bulk.tensor`, which
+;;;; is DESCRIPTOR-driven -- the CUtensorMap carries the element type, and f16/bf16 are among the
+;;;; types it encodes.  Nothing in the bulk-tensor path is 4-byte-granular.
+;;;;
+;;;; WHY THE SIBLING SITE MUST **NOT** BE WIDENED THE SAME WAY.  `%cp-async-copy-elem`
+;;;; (src/analysis/control.lisp:1135) raises the same message for the plain `cp.async` path, and
+;;;; there the constraint is REAL HARDWARE: cp.async.ca.shared.global only accepts 4, 8 or 16
+;;;; bytes.  That is the same limit endeavour 159 Phase A measured from the other side -- the CUDA
+;;;; control staged a single 2-byte element per thread, never took the accelerated path, and read
+;;;; a flat ~3.4 TFLOPS at every size.  A 2-byte element there needs TWO elements packed into one
+;;;; 4-byte copy, which is a different change and not this one.
+;;;;
+;;;; So: identical error text, two different causes, and only one of them is a Crisp defect.
+;;;; ====================================================================
+
+;; src/analysis/control.lisp
+(defun %analyze-nvvm-tma-load-tile-at-base (expr env context location)
+  "Endeavor 137 (Chapter 1.5, Phase 2) — analyze (load-tile-at SRC TILE (ORIGIN...) :barrier BAR)
+   for a NVIDIA :block barrier into a semantic-nvvm-tma-tile-copy.  Codegen emits one bulk
+   cp.async.bulk.tensor copy issued by an elected leader, tracked by BAR's mbarrier.  We build
+   the dest/source as aref-at-base forms so codegen can reuse the aref element-address machinery
+   for the SLM tile base (addrspace 3) and the source tensor base (addrspace 1, the STAND-IN
+   tensormap pointer).  The ORIGIN coords become the TMA {x,y} tile-box operands (element units).
+
+   Endeavour 159: 16-bit element types are accepted.  ELEM-BYTES feeds only the
+   mbarrier.arrive.expect_tx byte count; the copy is descriptor-driven cp.async.bulk.tensor,
+   whose tensormap encodes f16/bf16 directly.  See the header above for why the cp.async sibling
+   site keeps its 4/8-byte restriction -- there it is a hardware limit, not a table omission."
+  (let* ((src-form     (second expr))
+         (tile-form    (third expr))
+         (origin-list  (fourth expr))
+         (key-args     (nthcdr 4 expr))
+         (barrier-form (%extract-key-arg key-args :barrier nil))
+         (cl-pkg       (find-package :crisp-language))
+         (aref-sym     (intern "~" cl-pkg))
+         (length-sym   (intern "LENGTH~" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+         (rank         (length origin-list))
+         (base-idx     (make-list rank :initial-element (list to-ulong-sym 0)))
+         (dst-aref     (list* aref-sym tile-form base-idx))
+         (src-aref     (list* aref-sym src-form base-idx))
+         (dst-node     (analyze-expression dst-aref env context (append location '(1))))
+         (src-node     (analyze-expression src-aref env context (append location '(2))))
+         (coord-nodes  (loop for o in origin-list for i from 0
+                             collect (analyze-expression o env context (append location (list 3 i)))))
+         (barrier-node (analyze-expression barrier-form env context (append location '(4))))
+         ;; tx byte count for mbarrier.arrive.expect_tx = (length~ TILE) * elem-bytes.
+         (len-node     (analyze-expression (list length-sym tile-form) env context (append location '(5))))
+         (elem-type    (semantic-node-type dst-node))
+         (elem-bytes   (case (if (listp elem-type) (first elem-type) elem-type)
+                         ((half bfloat16) 2)       ; Endeavour 159
+                         ((int uint float) 4)
+                         ((long ulong double) 8)
+                         (t (error 'crisp-compiler-error
+                              :message (format nil "load-tile :block: element type ~S needs 2, 4 or 8 bytes" elem-type)
+                              :source-location location)))))
+    ;; Endeavor 140 (warp-spec leader): tag the copy node when it is analyzed inside a
+    ;; with-warp-specialization role block, so codegen elects laneid==0 of the producer warp
+    ;; (not global tid==0) — making consumer-first warp specialization first-class and removing
+    ;; the producer-first ordering constraint.
+    (let ((node (make-semantic-nvvm-tma-tile-copy
+                 :dst-aref-node dst-node
+                 :src-aref-node src-node
+                 :coord-nodes coord-nodes
+                 :barrier-node barrier-node
+                 :tile-length-node len-node
+                 :elem-bytes elem-bytes
+                 :src-name (and (symbolp src-form) src-form)
+                 :type 'nil
+                 :source-location location)))
+      (when *in-warp-spec-block*
+        (setf (gethash node *tma-copy-ws-leader*) t))
+      node)))

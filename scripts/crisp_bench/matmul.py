@@ -832,6 +832,113 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
 
+
+def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmup, iters,
+                         precision, ftz, crisp_compiler, hw_profile):
+    """Measure a Crisp NVIDIA kernel through the REVIEWED CUDA fixture (bench_harness.cu).
+
+    The NVIDIA twin of run_l0_fixed_sweep, and it exists for the same reason: the generated
+    per-kernel harness is both the thing measured and the apparatus measuring it.  On NVIDIA it is
+    additionally 16-BIT BROKEN -- it fills A/B by writing the small integers 0..4 as RAW BIT
+    PATTERNS (fp16 denormals, effectively zero) and reads them back as hardcoded `float`, so its
+    verdict for a half/bfloat16 kernel is meaningless whichever way it comes out.  That is why the
+    first attempt at a Crisp 16-bit row produced ZERO data points while cuBLAS, the CUDA control
+    and all five CUTLASS configs produced numbers.
+
+    Deliberately opt-in (use_fixture=True at the call site) rather than the default for every Crisp
+    NVIDIA target: switching the eight tf32 chapters onto a different harness mid-endeavour would
+    silently break comparability with every historical number in the report.  The 16-bit rows have
+    no history to break.
+    """
+    meta = _apply_hw(create_metadata())
+    src = Path(kernel_src)
+    ptx = src.parent / f"{src.stem}.ptx"
+    prec_flags = [f"--math-precision={precision}",
+                  f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
+    empty = BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter,
+                           competitor=comp_name, precision=precision,
+                           denormal_handling="ftz" if ftz else "preserve", results=[])
+    if not Path(harness_bin).exists():
+        print(f"cuda-fixed: fixture binary {harness_bin} not built", file=sys.stderr)
+        return empty
+    try:
+        dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90",
+                                 f"--hardware-profile={hw_profile}", *prec_flags,
+                                 "--log-level=off", str(src)])
+    except subprocess.CalledProcessError:
+        print(f"cuda-fixed: crisp-compile failed for {src.name}", file=sys.stderr)
+        return empty
+    if not ptx.exists():
+        print(f"cuda-fixed: no ptx {ptx}", file=sys.stderr)
+        return empty
+
+    # The metacrisp carries the dispatch geometry AND the argument layout.  Generating it here is
+    # metadata only -- it does not produce the harness being replaced.  Deriving the environment
+    # from it is what lets the fixture bind a staged kernel at all: for these kernels the scratch
+    # tiles occupy the FIRST argument slots, so A/B/C sit at 18/27/36 rather than 0/9/18.
+    try:
+        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90",
+            f"--hardware-profile={hw_profile}", *prec_flags, "--log-level=off", str(src)],
+           capture_output=True, text=True)
+    except Exception:
+        pass
+    metacrisp = next(iter(sorted(src.parent.glob(f"{src.stem}_*.metacrisp"))), None)
+    if metacrisp:
+        env_ext = cuda_fixture_env(src, metacrisp, ptx)
+    else:
+        print(f"cuda-fixed: no metacrisp for {src.name}; fixture defaults will be wrong for a "
+              f"staged kernel", file=sys.stderr)
+        env_ext = {"CRISP_MATMUL_PTX": str(ptx)}
+
+    print(f"cuda-fixed: env for {comp_name}: " +
+          " ".join(f"{k}={v}" for k, v in sorted(env_ext.items())), file=sys.stderr)
+    results = []
+    for s in sizes:
+        S = int(s)
+        w, it = scaled_counts(warmup, iters, S)
+        # DIRECT subprocess, deliberately, rather than run_bench_proc.  The fixture succeeds
+        # under a plain Popen with this exact env and argv -- verified on the pod -- but fails
+        # with "CUDA error 1 (invalid argument) at warmup launch" when spawned through
+        # run_bench_proc's reader-thread path.  The cause is not yet understood; what IS
+        # established is that the launch parameters are valid (grid [4,4,1], block [32,1,1],
+        # 4096B shared, 45 args matching the PTX) and that the same binary, env and argv work
+        # otherwise.  Using the invocation that works, and recording the anomaly, beats
+        # continuing to debug it on a rented GPU.
+        env = dict(os.environ); env.update(env_ext)
+        cmd = [str(harness_bin), str(S), str(S), str(S), str(w), str(it)]
+        try:
+            cp = subprocess.run(cmd, capture_output=True, text=True, env=env,
+                                timeout=bench_timeout_for(S))
+            raw = cp.stdout
+        except subprocess.TimeoutExpired:
+            print(f"  ! {Path(harness_bin).name} {S}x{S}x{S}: timeout", file=sys.stderr)
+            continue
+        out = None
+        m = re.search(r"\{.*\}", raw, re.S)
+        if m:
+            try:
+                out = json.loads(m.group(0))
+            except Exception:
+                out = None
+        if not out:
+            tail = (cp.stdout + cp.stderr)[-400:]
+            print(f"  ! {Path(harness_bin).name} {S}x{S}x{S}: no JSON "
+                  f"(rc={cp.returncode}) {tail}", file=sys.stderr)
+            continue
+        results.append(SweepPoint(
+            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
+                           "verified": bool(out.get("verified", True))},
+            metrics=BenchmarkMetrics(
+                compile_time=CompileTimeMetrics(
+                    device_compile_ms=dev_c_ms,
+                    all_compile_ms=dev_c_ms + out.get("driver_jit_ms", 0.0)),
+                runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
+                                       kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
+                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
+    return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter,
+                          competitor=comp_name, precision=precision,
+                          denormal_handling="ftz" if ftz else "preserve", results=results)
+
 def nvcc_math_flags(prec, ftz):
     b = lambda x: "true" if x else "false"
     return [f"-ftz={b(ftz)}",
@@ -924,7 +1031,7 @@ def main():
         def _skip(chapter):
             return bool(_want) and chapter not in _want
 
-        def run_target(chapter, source_name, bin_name, comp_name, flags, is_sycl=False, is_cublas=False, is_crisp=False, crisp_grid_tile=None):
+        def run_target(chapter, source_name, bin_name, comp_name, flags, is_sycl=False, is_cublas=False, is_crisp=False, crisp_grid_tile=None, use_fixture=False):
             if _skip(chapter):
                 return
             src_path = HERE / chapter / source_name
@@ -936,7 +1043,8 @@ def main():
             bin_path = HERE / chapter / bin_name
             try:
                 return _run_target_inner(chapter, comp_name, flags, is_sycl, is_cublas,
-                                         is_crisp, crisp_grid_tile, src_path, bin_path)
+                                         is_crisp, crisp_grid_tile, src_path, bin_path,
+                                         use_fixture)
             except ContenderBuildError as e:
                 # A missing peer library (third_party/ not provisioned) used to raise
                 # CalledProcessError out of time_compile and abort the entire chapter -- AFTER
@@ -950,7 +1058,8 @@ def main():
                 return
 
         def _run_target_inner(chapter, comp_name, flags, is_sycl, is_cublas,
-                              is_crisp, crisp_grid_tile, src_path, bin_path):
+                              is_crisp, crisp_grid_tile, src_path, bin_path,
+                              use_fixture=False):
             dev_c_ms = 0.0
             all_c_ms = 0.0
 
@@ -962,7 +1071,32 @@ def main():
                               f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
                 dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *crisp_prec, "--log-level=off", str(src_path)], name=comp_name)
                 all_c_ms = dev_c_ms
-                if crisp_grid_tile:
+                if use_fixture:
+                    # PREFER THE REVIEWED FIXTURE.  The generated autobench harness is 16-bit
+                    # broken on CUDA (raw-bit-pattern fill, float readback), which is why the
+                    # first Crisp 16-bit attempt produced zero data points while every other
+                    # contender in the same section produced numbers.
+                    _hb = HERE / "crisp" / "matmul_crisp"
+                    sweep = run_cuda_fixed_sweep(chapter, src_path, comp_name, _hb, sizes,
+                                                 a.warmup, a.iters, prec, ftz, crisp_compiler,
+                                                 NVIDIA_HW_PROFILE)
+                    if not sweep.results:
+                        print(f"  NOTE: {comp_name} ({chapter}) produced no points through the "
+                              f"fixture; falling back to the generated harness.", file=sys.stderr)
+                        sweep = run_autobench_sweep(chapter, src_path, crisp_grid_tile or "64,64",
+                                                    comp_name, sizes, a.warmup, a.iters, prec, ftz,
+                                                    dev_c_ms, crisp_compiler)
+                    sweep.save(out_dir)
+                    print(f"Saved {chapter} ({comp_name}) fixture sweep to {out_dir}")
+                    # RETURN, like the autobench branch below.  Without it control falls through
+                    # to the generic runner, which re-invokes the SAME fixture binary with only
+                    # CRISP_MATMUL_PTX set -- no ARGC, no ARG_A/B/C, no SCRATCH -- so it defaults
+                    # to a 27-argument layout with A/B/C at 0/9/18 and the launch is rejected
+                    # ("CUDA error 1 (invalid argument)").  That second run then OVERWRITES the
+                    # good result this branch just saved, which is why the Crisp 16-bit rows read
+                    # as zero-point failures while every other contender was fine.
+                    return
+                elif crisp_grid_tile:
                     sweep = run_autobench_sweep(chapter, src_path, crisp_grid_tile, comp_name, sizes,
                                                 a.warmup, a.iters, prec, ftz, dev_c_ms, crisp_compiler)
                     sweep.save(out_dir)
@@ -1151,6 +1285,25 @@ def main():
             ]
             cutlass_16bit_flags = cutlass_base_flags
 
+            # ---- NVIDIA 16-bit LADDER (endeavour 159) ------------------------------------
+            # Each rung adds exactly ONE technique over the rung below, and every one is a
+            # line-for-line port of its tf32 twin with only the element type and K-step changed --
+            # so a difference between a bf16 row and its tf32 row is the FORMAT, not a different
+            # kernel.  chap6 is the top rung reachable WITHOUT wgmma: it uses the sync MMA plus
+            # warp specialization, and endeavour 139 measured that shape as the fastest Crisp
+            # kernel of its day.  chap7 (wgmma) is absent because %check-wgmma-shape hard-errors
+            # on K != 8, so a 16-bit wgmma kernel does not compile yet.
+            run_target("chap1_handrolled_mma_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap2_tiling_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap4_cheap_fetch_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap5_multistage_ring_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap6_warp_specialization_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+
             for _ch, _sfx, _tag in (("sec2_top_fp16", "fp16", "FP16"),
                                     ("sec2_top_bf16", "bf16", "BF16")):
                 # Endeavour 159 Phase B: the Crisp column.  Before this the NVIDIA 16-bit
@@ -1160,8 +1313,14 @@ def main():
                 # verified against a host reference on an H100 PCIe with max_abs_err exactly 0.
                 # Tile 64,64 matches chap2_tiling, which these kernels are a minimal port of, so
                 # the 16-bit row is comparable to the tf32 row rather than a different kernel.
-                run_target(_ch, f"matmul_{_sfx}.crisp", f"matmul_{_sfx}.ptx", "Crisp",
-                           [], is_crisp=True, crisp_grid_tile="64,64")
+                # §2 is the TOP-CONTENDERS table and must point at Crisp's BEST kernel, not its
+                # first rung.  The sync-MMA kernel that briefly lived here has moved to
+                # chap2_tiling_bf16/ where it belongs; fp16 still has its own copy until the
+                # ladder names a winner to promote.  Leaving a chapter-2-class kernel in §2 read
+                # as "this is what Crisp can do" when it was two rungs of seven.
+                if _sfx == "fp16":
+                    run_target(_ch, f"matmul_{_sfx}.crisp", f"matmul_{_sfx}.ptx", "Crisp",
+                               [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
                 run_target(_ch, f"cuda_control_{_sfx}.cu", f"cuda_control_{_sfx}",
                            f"CUDA_Apples_{_tag}", nvcc_flags)
                 for _cfg, _dflags in cutlass_16bit_configs:
