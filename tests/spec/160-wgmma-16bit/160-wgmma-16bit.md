@@ -160,3 +160,55 @@ needing no GPU. Chapters 1-6 are unaffected and remain green.
 - [x] Step 5b — measured on metal: **INCORRECT**; transpose flags eliminated
 - [ ] Step 5c — derive the correct 16-bit swizzled descriptor from `make_gmma_desc`
 - [ ] Step 6 — re-measure; promote the ladder winner into §2
+
+---
+
+# BISECTION 2026-09-01 — the probe found a DIFFERENT bug (BUG 052)
+
+Two minimal scatter-path kernels, identical but for element type and K, at N=256 on an H100 PCIe:
+
+| probe | verified | TFLOPS |
+|---|---|---:|
+| `_probe_wgmma_bf16_scatter` | **False** | 0.176 |
+| `_probe_wgmma_tf32_scatter` (control) | **False** | 0.089 |
+| same tf32 probe, compiler built at `3da5807a` (pre-160) | **False** | 0.089 |
+
+**The no-swizzle wgmma path is broken for both element types and predates this endeavour.**
+Filed as BUG 052. The pre-160 control is what makes that conclusive — without it, "pre-existing"
+would have been an assumption, and the scatter path has never been verified numerically so there
+was no prior evidence either way.
+
+## This did NOT answer the question it was built to answer
+
+The probe was designed to isolate the 16-bit wgmma lowering from chapter 7's five simultaneous
+variables (TMA, 128B swizzle, ring, warp specialization, wgmma). It instead landed on a SIXTH
+variable that was not known to exist. Because the scatter path is independently broken, the bf16
+arm's failure carries no information about the 16-bit work.
+
+**The two defects are now cleanly separated, which is the actual gain:**
+
+1. **BUG 052** — scatter wgmma wrong for tf32 and bf16 alike. Pre-existing, independent of 160.
+2. **Endeavour 160's defect** — the SWIZZLE path verifies at tf32 and fails at bf16. Untouched by
+   today's run, still open.
+
+## Where that leaves the 16-bit swizzle question
+
+Still unexplained, and the descriptor is now RULED IN rather than out: reading CUTLASS's
+`make_gmma_desc` showed Major-K B128 wants `leading_byte_offset_ = 1` and
+`stride_byte_offset_ = 8*K*bytes/16`, which for chapter 7's K-block is **64 at both widths** —
+byte-identical, exactly what Crisp already emits. So the swizzled descriptor constants appear
+correct for bf16, and the divergence must be on the **write** side (how TMA + 128B swizzle lay a
+2-byte tile into SMEM) rather than the read side.
+
+The next isolation should therefore hold the swizzle path fixed and remove the ring and warp
+specialization — chapter 7 minus the pipelining — rather than remove the swizzle, which is what
+this probe did.
+
+## Status
+
+- [x] Steps 0-4 — compiler emits 16-bit wgmma; rungs green; regression clean
+- [x] Step 5a/5b — chapter 7 written; measured INCORRECT on metal; transpose flags eliminated
+- [x] Step 5c — CUTLASS vendored; swizzled descriptor constants shown to be byte-identical
+- [x] Step 5d — scatter bisection: found BUG 052, cleared the 16-bit lowering of that failure
+- [ ] Step 5e — isolate the swizzle path at bf16 (chapter 7 minus ring + warp specialization)
+- [ ] Step 6 — re-measure; promote the ladder winner into §2

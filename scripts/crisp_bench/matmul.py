@@ -1365,6 +1365,15 @@ def main():
                        [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
             run_target("_probe_wgmma_tf32_scatter", "matmul.crisp", "matmul.ptx", "Crisp",
                        [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            # Step 5e: the OTHER bisection -- keep TMA + 128B swizzle, drop the ring and the warp
+            # split.  The scatter probes removed the swizzle and hit BUG 052, which said nothing
+            # about 16 bits; these keep it.  K-block differs between the arms because 128B swizzle
+            # requires 128 BYTES of K -- 64 bf16 elements, 32 tf32 -- so they are the same
+            # geometry, not different ones.
+            run_target("_probe_wgmma_bf16_swz", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("_probe_wgmma_tf32_swz", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
 
             for _ch, _sfx, _tag in (("sec2_top_fp16", "fp16", "FP16"),
                                     ("sec2_top_bf16", "bf16", "BF16")):

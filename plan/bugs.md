@@ -1807,3 +1807,31 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (when ...), which is the working v1 shape, and :warp-partitioned distributes
         BRANCH-FREE so the compiler never generates the sibling branches that trigger it.
         Latent defect in the pre-existing coordinate form; a user CAN hit it by hand.
+
+[ ] 052 wgmma NO-SWIZZLE (scatter) path computes the WRONG ANSWER, for tf32 AND bf16.
+        Measured 2026-09-01 on an H100 PCIe.  A minimal single-slice wgmma with plain
+        load-tile staging (no TMA, no :swizzle, no ring, one warpgroup) verifies FALSE:
+            _probe_wgmma_bf16_scatter  verified=False  0.176 TFLOPS
+            _probe_wgmma_tf32_scatter  verified=False  0.089 TFLOPS
+        CONFIRMED PRE-EXISTING, not a regression from endeavour 160: rebuilding the compiler
+        from commit 3da5807a -- before any 16-bit wgmma work -- reproduces the tf32 failure
+        identically (verified=False, 0.089).  Repro kernels:
+        benchmarks/matmul/_probe_wgmma_{bf16,tf32}_scatter/ (underscore-prefixed; not ladder
+        chapters, excluded from REPORT §1.5).
+
+        WHY IT SURVIVED THIS LONG.  The scatter path's ONLY coverage is 140/00-wgmma-forms,
+        which is COMPILE-ONLY -- it asserts the forms parse, the accumulator record mints, and
+        the PTX contains the instruction.  It never computes a number.  Every wgmma kernel that
+        has ever been checked numerically (chapters 3/4/7, sec2_top, sec3, sec4) uses
+        :swizzle :128b, so the swizzle path is the only one that has been executed against a
+        host reference.  The scatter path has been emitted, inspected, and never run.
+
+        SCOPE.  tf32 chapter 7 (swizzle) still verifies True on the same pod, so this is
+        specific to the no-swizzle descriptor path -- %wgmma-make-desc's LBO=128B (enc 8) /
+        SBO=256B (enc 16) branch, and/or the proxy-fence + barrier staging that only the
+        scatter path uses.  CAUSE IS A HYPOTHESIS: those constants describe a core-matrix
+        scatter layout that ordinary load-tile does not actually produce in SMEM.
+
+        NOT a blocker for endeavour 160, but it INVALIDATED that endeavour's bisection: the
+        probe was built to isolate the 16-bit lowering and instead landed on this.  160's real
+        defect -- swizzle path correct at tf32, wrong at bf16 -- is untouched and separate.
