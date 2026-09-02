@@ -83,3 +83,80 @@ signature change rippling through the call chain.
 - [ ] Step 4 — rung 01 green locally (instruction present, no tf32 residue)
 - [ ] Step 5 — `chap7_wgmma_bf16` kernel + MMA_CORRECT on metal (settles the descriptor)
 - [ ] Step 6 — measure; promote the ladder winner into §2
+
+---
+
+# MEASURED 2026-09-01, H100 PCIe — the descriptor hypothesis is FALSIFIED
+
+Steps 1-4 completed locally: the compiler emits 16-bit wgmma, rungs 01/02 green, `errors/01`
+still refusing tf32 at K=16, full regression **1051/1051 + 228/228 + 291/291**. `chap7_wgmma_bf16`
+compiles to `wgmma.mma_async.sync.aligned.m64n256k16.f32.bf16.bf16` in **four** k16 slices —
+structurally identical to its tf32 twin's four k8 slices, same SMEM, zero tf32 residue.
+
+**And it computes the wrong answer.**
+
+| rung (N=256, H100 PCIe) | verified | TFLOPS |
+|---|---|---:|
+| chap1 / chap2 | True | 0.137 / 0.144 |
+| chap4 / chap5 | True | 1.502 / 1.527 |
+| chap6 | True | 1.887 |
+| **chap7 (wgmma bf16)** | **FALSE** | 1.984 |
+| **chap7 (wgmma tf32, control, same pod)** | **True** | 2.830 |
+
+The control is what makes this conclusive: tf32 wgmma still verifies on the same machine at the
+same size, so the fault is in the 16-bit lowering — not the harness, not the fixture, not the
+kernel shape, and not a pre-existing wgmma problem.
+
+## What was eliminated, cheaply
+
+`transA`/`transB` were the strongest suspect: tf32 wgmma has no transpose control at all, the
+16-bit form adds two, and endeavour 160 set them to `0, 0` **without evidence** — the one value in
+the whole lowering that was chosen rather than derived. B is staged N x K (B^T), so `transB=0`
+looked like a plausible mistake.
+
+All four combinations fail:
+
+    transA=0 transB=0  ->  verified=False  1.984
+    transA=0 transB=1  ->  verified=False  1.982
+    transA=1 transB=0  ->  verified=False  1.994
+    transA=1 transB=1  ->  verified=False  1.967
+
+Throughput barely moves across the four, which is itself a signal: the flags are changing almost
+nothing about what the kernel does, consistent with operands being misread the same way regardless.
+A `*wgmma-16-trans*` probe hook was added so one build could test all four rather than four
+rebuilds on a rented GPU; it remains in the overlay, defaulting to the original `(0 0)`.
+
+## What is left, and why the original argument was insufficient
+
+`%wgmma-make-desc` — deliberately left untouched on this reasoning:
+
+> a wgmma core matrix is 8 rows x 16 bytes regardless of element type, and a tf32 k8 slice
+> (8 x 4 bytes) and a bf16 k16 slice (16 x 2 bytes) are both 32 bytes, so the LBO/SBO constants
+> describe the same geometry
+
+The byte EXTENTS do match. What that argument does not establish is that the **element-level
+arrangement inside a swizzled 128-byte chunk** matches. The 128B swizzle permutes *core matrices*,
+and a core matrix holds 4 tf32 elements per row versus 8 bf16 elements per row. If the swizzle
+interleaves at element granularity anywhere, the descriptor is describing a layout the TMA never
+wrote — which would produce exactly this: a kernel that runs at full speed and returns garbage.
+
+**Method note.** Equal byte extents were treated as equal layouts. They are not the same claim, and
+nothing local could tell them apart — every local test passes in both worlds. This is the third
+time in this endeavour pair that a plausible argument stood in for a measurement (see also
+endeavour 159's "all 484 failures are mine" and the `run_bench_proc` phantom); the difference here
+is that the hypothesis was written down as a hypothesis first, so the experiment that falsified it
+was designed before the code was.
+
+## Next
+
+Vendor CUTLASS and read `make_gmma_desc` — Crisp's own comment on `%wgmma-make-desc` already cites
+it as the source of these constants, and it is not currently in `third_party/`. That is local work
+needing no GPU. Chapters 1-6 are unaffected and remain green.
+
+## Status
+
+- [x] Steps 0-4 — instruction emitted, rungs green, regression clean
+- [x] Step 5a — `chap7_wgmma_bf16` written, compiles, four slices
+- [x] Step 5b — measured on metal: **INCORRECT**; transpose flags eliminated
+- [ ] Step 5c — derive the correct 16-bit swizzled descriptor from `make_gmma_desc`
+- [ ] Step 6 — re-measure; promote the ladder winner into §2
