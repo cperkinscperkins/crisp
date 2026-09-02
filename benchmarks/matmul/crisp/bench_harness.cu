@@ -224,7 +224,15 @@ int main(int argc, char **argv) {
     // both lossless and the reference is an exact comparison rather than a tolerance argument.
     const uint64_t nA = M * K, nB = K * N, nC = M * N;
     std::vector<uint8_t> A(nA * ebytes), B(nB * ebytes);
-    std::vector<float>   C(nC, 0.0f);
+    // Endeavour 162 follow-up: the host NEVER needs all of C.  Verification samples ~64 strided
+    // ROWS, so allocating and copying back M*N floats is pure waste that grows as N^2 -- 17 GB at
+    // N=65536, which is what actually caps the big-matrix runs (device HBM does not: A+B+C is only
+    // 34 GB there at 16-bit, inside an H100 NVL's 94 GB).  Allocate and copy the sampled rows only.
+    const uint64_t smax_rows = 64;
+    uint64_t si0 = (M + smax_rows - 1) / smax_rows; if (si0 == 0) si0 = 1;
+    std::vector<uint64_t> samp_rows;
+    for (uint64_t i = 0; i < M; i += si0) samp_rows.push_back(i);
+    std::vector<float> Crows((size_t)samp_rows.size() * (size_t)N, 0.0f);
     for (uint64_t i = 0; i < nA; ++i) {
         float v = (float)(i % 5);
         if      (elem == "f32")  ((float *)A.data())[i] = v;
@@ -241,10 +249,10 @@ int main(int argc, char **argv) {
     CUdeviceptr dA, dB, dC;
     CU_OK(cuMemAlloc(&dA, A.size()), "cuMemAlloc A");
     CU_OK(cuMemAlloc(&dB, B.size()), "cuMemAlloc B");
-    CU_OK(cuMemAlloc(&dC, C.size() * sizeof(float)), "cuMemAlloc C");
+    CU_OK(cuMemAlloc(&dC, (size_t)nC * sizeof(float)), "cuMemAlloc C");
     CU_OK(cuMemcpyHtoD(dA, A.data(), A.size()), "H2D A");
     CU_OK(cuMemcpyHtoD(dB, B.data(), B.size()), "H2D B");
-    CU_OK(cuMemcpyHtoD(dC, C.data(), C.size() * sizeof(float)), "H2D C");
+    CU_OK(cuMemsetD8(dC, 0, (size_t)nC * sizeof(float)), "zero C");
 
     // ---- kernel arguments -----------------------------------------------------------------
     // Backing store for every scalar, so &slot[i] stays valid for the whole run.
@@ -269,7 +277,7 @@ int main(int argc, char **argv) {
     // A B^T kernel indexes B[n][k]; a K x N kernel indexes B[k][n].  Same bytes, different view.
     if (b_is_nk) bind_tensor(iB, dB, B.size(), N, K);
     else         bind_tensor(iB, dB, B.size(), K, N);
-    bind_tensor(iC, dC, C.size() * sizeof(float), M, N);
+    bind_tensor(iC, dC, (size_t)nC * sizeof(float), M, N);
     // A scratch tensor's "ptr" is a BYTE OFFSET into the dynamic shared block, not an address.
     auto bind_tensor3 = [&](int base, uint64_t off, uint64_t e0, uint64_t e1, uint64_t e2) {
         if (base < 0 || base + 11 >= argc_k) return;
@@ -443,7 +451,11 @@ int main(int argc, char **argv) {
     const double min_us    = us.empty() ? 0.0 : us.front();
     const double gflops    = median_us > 0.0 ? (2.0 * (double)M * N * K) / (median_us * 1e3) : 0.0;
 
-    CU_OK(cuMemcpyDtoH(C.data(), dC, C.size() * sizeof(float)), "D2H C");
+    // Sampled ROWS only: O(64*N) instead of O(N^2).
+    for (size_t r = 0; r < samp_rows.size(); ++r)
+        CU_OK(cuMemcpyDtoH(Crows.data() + r * (size_t)N,
+                           dC + samp_rows[r] * (size_t)N * sizeof(float),
+                           (size_t)N * sizeof(float)), "D2H C row");
 
     // ---- verification --------------------------------------------------------------------
     // Strided samples across the WHOLE output, not a top-left corner: a corner is the same price
@@ -463,20 +475,21 @@ int main(int argc, char **argv) {
             return ((float *)B.data())[i];
         };
         const uint64_t smax = 64;
-        uint64_t si = (M + smax - 1) / smax; if (si == 0) si = 1;
         uint64_t sj = (N + smax - 1) / smax; if (sj == 0) sj = 1;
-        for (uint64_t i = 0; i < M && verified; i += si)
+        for (size_t ri = 0; ri < samp_rows.size() && verified; ++ri) {
+          const uint64_t i = samp_rows[ri];
             for (uint64_t j = 0; j < N; j += sj) {
                 ++checked;
                 double acc = 0.0;
                 for (uint64_t k = 0; k < K; ++k)
                     acc += (double)ga(i * K + k) * (double)gb(b_is_nk ? (j * K + k) : (k * N + j));
-                double got = (double)C[i * N + j];
+                double got = (double)Crows[ri * (size_t)N + j];
                 double err = std::fabs(got - acc);
                 double tol = 1e-3 * std::max(1.0, std::fabs(acc));
                 if (err > max_abs_err) max_abs_err = err;
                 if (err > tol) { verified = false; break; }
             }
+        }
     }
 
     std::cout << "{\n"

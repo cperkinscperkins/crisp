@@ -20,7 +20,7 @@ from pathlib import Path
 
 # Add parent dir to path so we can import harness
 sys.path.append(str(Path(__file__).resolve().parent))
-from harness import BenchmarkSweep, SweepPoint, BenchmarkMetrics, CompileTimeMetrics, RuntimeMetrics, ThroughputMetrics, create_metadata
+from harness import VerificationMetrics, BenchmarkSweep, SweepPoint, BenchmarkMetrics, CompileTimeMetrics, RuntimeMetrics, ThroughputMetrics, create_metadata
 
 HERE = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "matmul"
 import platform as _platform
@@ -338,6 +338,20 @@ def build_harness():
         sh(["nvcc", "-O3", "-arch=sm_90", *nvcc_math_flags("ieee", False),
             str(harness), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
 
+
+def _verif(out):
+    """VerificationMetrics carrying the harness's OWN numbers.
+
+    Both fixtures sample ~64x64 strided points and report max_abs_err and verify_samples.
+    Those were printed and discarded; at N>=8192 nearly every point fails verification, and
+    without the error magnitude there is no way to tell a tolerance near-miss from a genuinely
+    wrong kernel.  mode is "spot_check" because that is what the fixtures actually do."""
+    return VerificationMetrics(
+        verified=bool(out.get("verified", out.get("correct", True))),
+        mode="spot_check",
+        max_abs_err=out.get("max_abs_err"),
+        samples=out.get("verify_samples"))
+
 def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, precision: str, ftz: bool, compile_dev_ms: float, compile_all_ms: float, env_extra: dict = None) -> BenchmarkSweep:
     meta = _apply_hw(create_metadata())
     results = []
@@ -352,9 +366,14 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
             continue
 
         if not out.get("correct", True):
-            print(f"  DROPPED {competitor_name} @ {S}: harness reported correct=false "
-                  f"(max_abs_err={out.get('max_abs_err')})", file=sys.stderr)
-            continue
+            # Endeavour 162 follow-up: KEEP the point, flagged unverified, instead of dropping
+            # it.  The report already filters on `verified`, so nothing incorrect is published --
+            # but the timing and the error magnitude survive, which is what makes a large-N
+            # failure diagnosable at all.  Dropping them is why every N>=8192 point vanished
+            # with no record of HOW wrong it was.
+            print(f"  UNVERIFIED {competitor_name} @ {S}: harness reported correct=false "
+                  f"(max_abs_err={out.get('max_abs_err')}, samples={out.get('verify_samples')})",
+                  file=sys.stderr)
 
         driver_jit = out.get("driver_jit_ms", 0.0)
         final_all_compile_ms = compile_all_ms + driver_jit
@@ -365,7 +384,8 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(device_compile_ms=compile_dev_ms, all_compile_ms=final_all_compile_ms), 
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0), kernel_execution_ms=out.get("kernel_median_us", 0.0)/1000.0),
-                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0)/1000.0)
+                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0)/1000.0),
+                verification=_verif(out)
             )
         )
         results.append(point)
@@ -457,7 +477,8 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
                                                 all_compile_ms=dev_c_ms + out.get("driver_jit_ms", 0.0)),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
-                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
+                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0),
+                verification=_verif(out))))
         if _too_slow_to_grow(chapter, comp_name, S, _el): break
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
@@ -559,7 +580,8 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
                                                                 + out.get("driver_jit_ms", 0.0)),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
-                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
+                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0),
+                verification=_verif(out))))
     if measured_c_ms > 0.0:
         for p in results:
             if p.metrics.compile_time.device_compile_ms == 0.0:
@@ -874,7 +896,8 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
                                                 all_compile_ms=dev_c_ms + out.get("driver_jit_ms", 0.0)),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
-                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
+                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0),
+                verification=_verif(out))))
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
 
@@ -1004,7 +1027,8 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
                     all_compile_ms=dev_c_ms + out.get("driver_jit_ms", 0.0)),
                 runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
-                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0))))
+                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0),
+                verification=_verif(out))))
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter,
                           competitor=comp_name, precision=precision,
                           denormal_handling="ftz" if ftz else "preserve", results=results)
@@ -1377,6 +1401,21 @@ def main():
             # would measure a different kernel than chap7_wgmma and make the rows incomparable.
             run_target("chap7_wgmma_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
                        [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
+
+            # Endeavour 162 GEOMETRY VARIANTS (underscore dirs -- not ladder chapters, not §1.5).
+            # chap7_wgmma_bf16 is 64x256 on ONE warpgroup; CUTLASS's winner at 4096 is 128x256.
+            # _2wg is the direct two-warpgroup port, PREDICTED TO LOSE: the tf32 twin at
+            # 154/03 measured 0.91x at 4096, occupancy-bound at 288 threads x ~166 registers.
+            # _2wg_deep is the real hypothesis -- the tall tile has ALREADY paid occupancy down
+            # to one CTA, so ring depth 4 is free there where it would cost the 64-row kernel
+            # its second CTA.  Tile is 128,256 for both; 64,256 would measure the wrong geometry.
+            run_target("_variant_wgmma_bf16_2wg", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
+            run_target("_variant_wgmma_bf16_2wg_deep", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
+            run_target("_variant_wgmma_bf16_2wg_d3", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
+
 
             # Endeavour 160 BISECTION PROBES (underscore dirs -- not ladder chapters, not in §1.5).
             # chap7_wgmma_bf16 measured verified=FALSE while tf32 chapter 7 verified True on the
