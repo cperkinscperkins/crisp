@@ -450,6 +450,13 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                             continue
                         pt = next((d[c] for c in d if _is_crisp(c)), None)
                         if pt:
+                            # UNVERIFIED POINTS ARE NOT NUMBERS.  §1 already drops them; this
+                            # section did not, and published 208.4 TFLOPS for chapter 7 at
+                            # N=2048 -- a point whose host-reference check FAILED.  A fast wrong
+                            # kernel must never appear in a table, which is the whole reason the
+                            # verified flag exists.
+                            if not (pt.get("configuration") or {}).get("verified"):
+                                continue
                             v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
                             if v is not None:
                                 return v

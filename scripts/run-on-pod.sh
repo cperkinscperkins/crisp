@@ -215,6 +215,23 @@ ls -la bin/crisp-compile bin/crisp-hoist-l0 bin/crisp-hoist-cuda 2>/dev/null || 
 BUILD
 echo ""
 
+# --- 5.5. Third-party PEER libraries -------------------------------------------------------
+# CUTLASS is not a dependency of the compiler, so it was never installed here -- but every
+# benchmark sweep run on a pod needs it, and its absence is SILENT in the tables: the peer column
+# renders "--", which reads identically to "we measured it and it was nothing".  It has now been
+# missed on three separate rentals, each time discovered only after the sweep finished.
+# Installing it here makes it structural rather than something to remember.  It is a shallow
+# header-only clone; if it is already present the script is a no-op.
+pod_run "bash -s" <<'THIRDPARTY'
+cd /root/crisp
+if [ -d third_party/cutlass/include ]; then
+  echo "CUTLASS already present."
+else
+  bash scripts/setup-third-party.sh cutlass 2>&1 | tail -3
+fi
+THIRDPARTY
+echo ""
+
 # --- 6. Run specs ---
 step "Step 6: Run spec suite${FILTER:+  (filter: ${FILTER})}"
 # Run with CRISP_USE_SYSTEM_TOOLS so it finds llc-21 on PATH.

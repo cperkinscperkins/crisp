@@ -1413,9 +1413,12 @@ def main():
                 # chap2_tiling_bf16/ where it belongs; fp16 still has its own copy until the
                 # ladder names a winner to promote.  Leaving a chapter-2-class kernel in §2 read
                 # as "this is what Crisp can do" when it was two rungs of seven.
-                if _sfx == "fp16":
-                    run_target(_ch, f"matmul_{_sfx}.crisp", f"matmul_{_sfx}.ptx", "Crisp",
-                               [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                # §2 now carries the PROMOTED chapter-7 wgmma kernel for both formats (endeavour
+                # 160): 367.7 TFLOPS at N=4096, 67.2% of cuBLAS, against 0.5% for the sync kernel
+                # that used to sit here.  Tile 64,256 matches the kernel, as chapter 7 requires --
+                # a 64,64 tile here would measure a different kernel than the one promoted.
+                run_target(_ch, f"matmul_{_sfx}.crisp", f"matmul_{_sfx}.ptx", "Crisp",
+                           [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
                 run_target(_ch, f"cuda_control_{_sfx}.cu", f"cuda_control_{_sfx}",
                            f"CUDA_Apples_{_tag}", nvcc_flags)
                 for _cfg, _dflags in cutlass_16bit_configs:

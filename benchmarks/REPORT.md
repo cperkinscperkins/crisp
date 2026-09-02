@@ -6,7 +6,7 @@
 |---|---|---|
 | Intel BMG | 2026-08-29 | Crisp `c16d1f4` (docker) |
 | NVIDIA H100 NVL | 2026-09-01 | Crisp `34ab4dd1` (runpod) |
-| NVIDIA H100 PCIe | 2026-08-31 | Crisp `5f2c679b` (runpod) |
+| NVIDIA H100 PCIe | 2026-09-02 | Crisp `cc1ae534` (runpod) |
 
 ---
 
@@ -425,9 +425,9 @@ wgmma
 | # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** |
 |---|---|---|---|---|---|---|---|---|
 | 0 | naive loops, no XMX | 0.1 | 0.2 | 0.2 | 0.1 | 0.1 | 0.1 | — |
-| 1 | hand-rolled XMX coop-matrix | 0.2 | 0.8 | 2.4 | 2.5 | 2.2 | 1.9 | — |
-| 2 | matrix-multiply-tile-stride | 0.2 | 0.8 | 2.4 | 2.5 | 2.2 | 1.9 | — |
-| 3 | OpGroupAsyncCopy | 0.0 | 0.0 | 0.0 | 0.0 | 0.3 | 2.2 | — |
+| 1 | hand-rolled XMX coop-matrix | 0.2 | 0.8 | 2.4 | 2.5 | — | — | — |
+| 2 | matrix-multiply-tile-stride | 0.2 | 0.8 | 2.4 | 2.5 | — | — | — |
+| 3 | OpGroupAsyncCopy | 0.0 | 0.0 | 0.0 | 0.0 | — | — | — |
 | 4 | register-resident load (global→GRF) | 4.7 | 20.5 | 47.4 | 36.3 | 26.5 | 26.1 | — |
 | 5 | register ring + prefetch | 5.3 | 15.5 | 39.3 | 49.0 | 30.5 | 22.7 | — |
 | 6 | blocked — 3 known reasons | — | — | — | — | — | — | — |
@@ -459,8 +459,8 @@ hand-rolled XMX coop-matrix
 | 512 | 0.8 | **4.47×** |
 | 1024 | 2.4 | **15.73×** |
 | 2048 | 2.5 | **16.85×** |
-| 4096 | 2.2 | **14.93×** |
-| 8192 | 1.9 | **14.66×** |
+| 4096 | — | — |
+| 8192 | — | — |
 | 16384 | — | — |
 
 #### Ch 2 — What does tiling buy?
@@ -472,8 +472,8 @@ matrix-multiply-tile-stride
 | 512 | 0.8 | 1.00× |
 | 1024 | 2.4 | 1.00× |
 | 2048 | 2.5 | 1.00× |
-| 4096 | 2.2 | 1.00× |
-| 8192 | 1.9 | 1.01× |
+| 4096 | — | — |
+| 8192 | — | — |
 | 16384 | — | — |
 
 #### Ch 3 — Can the fetch overlap the math?
@@ -485,8 +485,8 @@ OpGroupAsyncCopy
 | 512 | 0.0 | 0.00× |
 | 1024 | 0.0 | 0.00× |
 | 2048 | 0.0 | 0.00× |
-| 4096 | 0.3 | 0.13× |
-| 8192 | 2.2 | 1.16× |
+| 4096 | — | — |
+| 8192 | — | — |
 | 16384 | — | — |
 
 #### Ch 4 — Can the fetch itself be cheap?
@@ -498,8 +498,8 @@ register-resident load (global→GRF)
 | 512 | 20.5 | **6466.55×** |
 | 1024 | 47.4 | **14929.07×** |
 | 2048 | 36.3 | **11464.85×** |
-| 4096 | 26.5 | **96.60×** |
-| 8192 | 26.1 | **11.86×** |
+| 4096 | 26.5 | **181.70×** |
+| 8192 | 26.1 | **202.34×** |
 | 16384 | — | — |
 
 #### Ch 5 — Can several fetches be in flight?
@@ -600,6 +600,111 @@ warp specialization
 | 4096 | 65.9 | 1.03× |
 | 8192 | — | — |
 | 16384 | — | — |
+
+</details>
+
+### NVIDIA H100 PCIe · bf16 · `fast`
+
+**Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**
+
+| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | naive loops, no tensor cores | — | — | — | — | — | — | — | — |
+| 1 | hand-rolled mma-accumulate-via-tile | — | — | 2.0 | 5.3 | 3.9 | — | — | — |
+| 2 | matrix-multiply-tile-stride | — | — | 2.2 | 3.9 | 6.0 | — | — | — |
+| 3 | cp.async | — | — | — | — | — | — | — | — |
+| 4 | TMA descriptor (CUtensorMap) | — | — | 30.6 | 55.9 | 76.3 | — | — | — |
+| 5 | SMEM ring | — | — | 27.4 | 41.3 | 56.9 | — | — | — |
+| 6 | warp specialization | — | — | 33.7 | 49.6 | 56.6 | — | — | — |
+| 7 | wgmma | 2.0 | — | 52.8 | — | 367.7 | — | — | — |
+
+**Fastest rung per size** — N=256: **ch 7** (2.0) · N=1024: **ch 7** (52.8) · N=2048: **ch 4** (55.9) · N=4096: **ch 7** (367.7)
+
+<details><summary><b>Per-chapter detail (16-bit)</b></summary>
+
+#### Ch 1 — Can we reach the tensor cores?
+hand-rolled mma-accumulate-via-tile
+
+| N | Crisp bf16 TFLOPS |
+|---:|---:|
+| 256 | — |
+| 512 | — |
+| 1024 | 2.0 |
+| 2048 | 5.3 |
+| 4096 | 3.9 |
+| 8192 | — |
+| 16384 | — |
+| 32768 | — |
+
+#### Ch 2 — What does tiling buy?
+matrix-multiply-tile-stride
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | — | — |
+| 512 | — | — |
+| 1024 | 2.2 | 1.11× |
+| 2048 | 3.9 | 0.74× |
+| 4096 | 6.0 | **1.54×** |
+| 8192 | — | — |
+| 16384 | — | — |
+| 32768 | — | — |
+
+#### Ch 4 — Can the fetch itself be cheap?
+TMA descriptor (CUtensorMap)
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | — | — |
+| 512 | — | — |
+| 1024 | 30.6 | **13.71×** |
+| 2048 | 55.9 | **14.25×** |
+| 4096 | 76.3 | **12.70×** |
+| 8192 | — | — |
+| 16384 | — | — |
+| 32768 | — | — |
+
+#### Ch 5 — Can several fetches be in flight?
+SMEM ring
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | — | — |
+| 512 | — | — |
+| 1024 | 27.4 | 0.90× |
+| 2048 | 41.3 | 0.74× |
+| 4096 | 56.9 | 0.75× |
+| 8192 | — | — |
+| 16384 | — | — |
+| 32768 | — | — |
+
+#### Ch 6 — Can the math stop waiting on bookkeeping?
+warp specialization
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | — | — |
+| 512 | — | — |
+| 1024 | 33.7 | 1.23× |
+| 2048 | 49.6 | 1.20× |
+| 4096 | 56.6 | 0.99× |
+| 8192 | — | — |
+| 16384 | — | — |
+| 32768 | — | — |
+
+#### Ch 7 — Can one instruction do more math?
+wgmma
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 2.0 | — |
+| 512 | — | — |
+| 1024 | 52.8 | **1.56×** |
+| 2048 | — | — |
+| 4096 | 367.7 | **6.50×** |
+| 8192 | — | — |
+| 16384 | — | — |
+| 32768 | — | — |
 
 </details>
 
@@ -810,9 +915,9 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 |---:|---:|---:|---:|---:|---:|---:|
 | 256 | — | 1.5 (0.023) | — | 2.4 (0.014) | — | — |
 | 512 | — | 2.9 (0.093) | — | 17.5 (0.015) | — | — |
-| 1024 | — | 3.3 (0.651) | — | 68.5 (0.031) | — | — |
-| 2048 | — | 3.4 (5.025) | — | 277.0 (0.062) | — | — |
-| 4096 | — | 3.5 (39.827) | — | 534.7 (0.257) | — | — |
+| 1024 | — | 3.3 (0.644) | — | 89.0 (0.024) | — | — |
+| 2048 | — | 3.4 (5.022) | — | 285.6 (0.060) | — | — |
+| 4096 | — | 3.5 (39.808) | — | 547.3 (0.251) | — | — |
 | 8192 | — | 3.5 (318.332) | — | 679.3 (1.619) | — | — |
 | 16384 | — | 3.4 (2555.382) | — | 666.5 (13.197) | — | — |
 | 32768 | — | — | — | 643.0 (109.434) | — | — |
@@ -899,6 +1004,19 @@ Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline
 | Ch 2 tiling macro | 0.1 (tf32 n/a) | 2.3 (tf32 n/a) | 7.3 (tf32 n/a) | 7.2 (0.83×) |
 | Ch 4 register-resident | 1.7 (1.16×) | 31.7 (1.25×) | 59.7 (0.87×) | 92.5 (1.29×) |
 | Ch 5 ring + prefetch | 1.7 (1.06×) | 29.4 (1.06×) | 41.6 (0.64×) | 64.2 (0.94×) |
+
+## § 1b — The Technique Ladder in 16-bit (Intel) · NVIDIA H100 PCIe
+
+*The same chapters as section 1, in bfloat16. Each kernel is its tf32 twin with two things changed: the operand element type, and the K step 8 → 16 (the native XMX shape for 16-bit operands is (8 16 16), not (8 16 8)). The C accumulator stays f32 in both.*
+
+Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline is **tf32 on XMX**, not fp32 on the vector engines — the BMG shape ladder is (8 16 8) tf32, (8 16 16) bf16, (8 16 32) int8, i.e. same M×N with K doubling per step. No Control/Peer/Ceiling columns: the chapter SYCL controls are tf32 only, so this is a Crisp-vs-Crisp ladder.
+
+| chapter | N=1024 | N=2048 | N=4096 |
+|---|---:|---:|---:|
+| Ch 1 hand-rolled MMA | 2.0 (1.60×) | 5.3 (1.42×) | 3.9 (1.56×) |
+| Ch 2 tiling macro | 2.2 (tf32 n/a) | 3.9 (tf32 n/a) | 6.0 (0.96×) |
+| Ch 4 register-resident | 30.6 (1.26×) | 55.9 (1.54×) | 76.3 (1.31×) |
+| Ch 5 ring + prefetch | 27.4 (1.06×) | 41.3 (1.06×) | 56.9 (1.05×) |
 
 ## § 4 — MMA + Activation
 

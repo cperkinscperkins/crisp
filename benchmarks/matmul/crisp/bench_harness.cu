@@ -157,6 +157,18 @@ int main(int argc, char **argv) {
 
     const uint64_t ebytes = (elem == "f32") ? 4 : 2;
 
+    // B's orientation, resolved BEFORE anything uses it.  It governs THREE things that must
+    // agree: the tensormap's global dims, the kernel's B tensor strides, and the host reference's
+    // B indexing.  An earlier fix changed only the first and was bit-for-bit a no-op, because the
+    // reference then disagreed with the kernel by exactly the same amount it had before.
+    // A B^T kernel (chap7_wgmma stages B as N x K so both wgmma operands are K-contiguous)
+    // indexes B[n][k]; chapters 4-6 stage K x N and index B[k][n].  Same bytes, different view.
+    bool b_is_nk = false;
+    for (const auto &tok : split(env_or("CRISP_MATMUL_TENSORMAP", ""), ',')) {
+        auto g = split(tok, ':');
+        if (g.size() >= 6 && (g[1] == "b" || g[1] == "B") && g[5] == "nk") b_is_nk = true;
+    }
+
     // Scratch tiles: "idx:ext0:ext1[,...]".  Offsets are ASSIGNED HERE, packed in ascending
     // argument order at the true element width -- see the header on why this differs from the
     // generated harness.
@@ -254,7 +266,9 @@ int main(int argc, char **argv) {
         slot[base + 8] = e0 * e1;         // length (ELEMENTS, not bytes)
     };
     bind_tensor(iA, dA, A.size(), M, K);
-    bind_tensor(iB, dB, B.size(), K, N);
+    // A B^T kernel indexes B[n][k]; a K x N kernel indexes B[k][n].  Same bytes, different view.
+    if (b_is_nk) bind_tensor(iB, dB, B.size(), N, K);
+    else         bind_tensor(iB, dB, B.size(), K, N);
     bind_tensor(iC, dC, C.size() * sizeof(float), M, N);
     // A scratch tensor's "ptr" is a BYTE OFFSET into the dynamic shared block, not an address.
     auto bind_tensor3 = [&](int base, uint64_t off, uint64_t e0, uint64_t e1, uint64_t e2) {
@@ -455,7 +469,8 @@ int main(int argc, char **argv) {
             for (uint64_t j = 0; j < N; j += sj) {
                 ++checked;
                 double acc = 0.0;
-                for (uint64_t k = 0; k < K; ++k) acc += (double)ga(i * K + k) * (double)gb(k * N + j);
+                for (uint64_t k = 0; k < K; ++k)
+                    acc += (double)ga(i * K + k) * (double)gb(b_is_nk ? (j * K + k) : (k * N + j));
                 double got = (double)C[i * N + j];
                 double err = std::fabs(got - acc);
                 double tol = 1e-3 * std::max(1.0, std::fabs(acc));
