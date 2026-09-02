@@ -1808,7 +1808,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         BRANCH-FREE so the compiler never generates the sibling branches that trigger it.
         Latent defect in the pre-existing coordinate form; a user CAN hit it by hand.
 
-[ ] 052 wgmma NO-SWIZZLE (scatter) path computes the WRONG ANSWER, for tf32 AND bf16.
+[?] 052 UNCONFIRMED — wgmma NO-SWIZZLE (scatter) path MAY compute the wrong answer (tf32 AND bf16).
         Measured 2026-09-01 on an H100 PCIe.  A minimal single-slice wgmma with plain
         load-tile staging (no TMA, no :swizzle, no ring, one warpgroup) verifies FALSE:
             _probe_wgmma_bf16_scatter  verified=False  0.176 TFLOPS
@@ -1835,3 +1835,18 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         NOT a blocker for endeavour 160, but it INVALIDATED that endeavour's bisection: the
         probe was built to isolate the 16-bit lowering and instead landed on this.  160's real
         defect -- swizzle path correct at tf32, wrong at bf16 -- is untouched and separate.
+
+        DOWNGRADED 2026-09-01, same day it was filed.  A SECOND probe pair -- keeping TMA and
+        128B swizzle, dropping only the ring and warp specialization -- ALSO failed on BOTH arms,
+        tf32 control included (bf16 2.585 / tf32 2.137 TFLOPS, both verified=False).  That makes
+        four failing arms across two bisections, including two tf32 controls exercising paths
+        that predate this work.
+        Two independent compiler paths being broken is less likely than the common factor: every
+        one of those arms was a MINIMAL KERNEL I WROTE THAT HAS NEVER VERIFIED.  A kernel that is
+        wrong is wrong at every commit -- so the pre-160 control that "confirmed" 052 shows only
+        that endeavour 160 did not CAUSE the failure, NOT that the scatter path is broken.
+        The evidence for 052 is therefore no stronger than the evidence that my probe kernels are
+        incorrect, and the honest state is unconfirmed.
+        TO RESOLVE: subtract from a kernel that VERIFIES rather than constructing a new minimal
+        one -- but note that removing the warp split from chapter 7 is not a single change either,
+        because the async-barrier :arrivals counts (empty 4, full 2) are tied to the warp roles.

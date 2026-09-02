@@ -48,7 +48,7 @@
 //          CRISP_MATMUL_ARG_B    B's FIRST argument index                      (default 9)
 //          CRISP_MATMUL_ARG_C    C's FIRST argument index                      (default 18)
 //          CRISP_MATMUL_SCRATCH  scratch tiles, "idx:ext0:ext1[,...]"          (default "")
-//          CRISP_MATMUL_TENSORMAP  TMA descriptors, "idx:a|b:box0:box1[,...]" (default "")
+//          CRISP_MATMUL_TENSORMAP  TMA descriptors, "idx:a|b:box0:box1:swz[,...]" (default "")
 //   stdout: one JSON object -- correct / max_abs_err / kernel_median_us / gflops
 //
 // The accumulator (C) is ALWAYS f32: every 16-bit MMA here accumulates in fp32, so CRISP_MATMUL_ELEM
@@ -299,6 +299,14 @@ int main(int argc, char **argv) {
         const std::string wh = f[1];                       // "a" or "b"
         const uint64_t box0 = std::stoull(f[2]);
         const uint64_t box1 = std::stoull(f[3]);
+        // 5th field: swizzle mode, from the metacrisp's :swizzle.  DEFAULTING THIS TO "none" WAS
+        // A BUG worth naming: the fixture hardcoded CU_TENSOR_MAP_SWIZZLE_NONE while the wgmma
+        // descriptor Crisp emits correctly carries swizzle=128B.  The TMA then wrote an
+        // UNSWIZZLED tile that wgmma read as swizzled -- garbage, at full speed, on every kernel
+        // measured through this fixture that uses :swizzle :128b.  It cost two pod trips and was
+        // misread as a 16-bit compiler defect, because the one kernel that passed (tf32
+        // chapter 7) went through the GENERATED harness instead, which builds tensormaps properly.
+        const std::string swz = (f.size() >= 5) ? f[4] : "none";
 
         const bool isA = (wh == "a" || wh == "A");
         CUdeviceptr base = isA ? dA : dB;
@@ -319,7 +327,11 @@ int main(int argc, char **argv) {
         CUtensorMap host_map;
         CUresult tr = cuTensorMapEncodeTiled(
             &host_map, dt, 2, (void *)base, gdim, gstr, bdim, estr,
-            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,
+            (swz == "128b" || swz == "128B") ? CU_TENSOR_MAP_SWIZZLE_128B :
+            (swz == "64b"  || swz == "64B")  ? CU_TENSOR_MAP_SWIZZLE_64B  :
+            (swz == "32b"  || swz == "32B")  ? CU_TENSOR_MAP_SWIZZLE_32B  :
+                                               CU_TENSOR_MAP_SWIZZLE_NONE,
             CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
         if (tr != CUDA_SUCCESS) {
             const char *es = nullptr; cuGetErrorString(tr, &es);

@@ -765,7 +765,10 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
             r':range\s+\((\d+)\s+(\d+)\)',
             scratch_sec, re.S):
         _nm, describes, b0, b1, st, _en = m.groups()
-        tmaps.append(f"{st}:{describes}:{b0}:{b1}")
+        # 5th field: the swizzle mode.  Omitting it made the fixture default to NONE while the
+        # wgmma descriptor said 128B -- see bench_harness.cu's note.
+        _sw = re.search(r':swizzle\s+:\|?([A-Za-z0-9]+)\|?', m.group(0))
+        tmaps.append(f"{st}:{describes}:{b0}:{b1}:{(_sw.group(1).lower() if _sw else 'none')}")
     if tmaps:
         env["CRISP_MATMUL_TENSORMAP"] = ",".join(tmaps)
 
