@@ -1354,6 +1354,18 @@ def main():
             run_target("chap7_wgmma_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
                        [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
 
+            # Endeavour 160 BISECTION PROBES (underscore dirs -- not ladder chapters, not in §1.5).
+            # chap7_wgmma_bf16 measured verified=FALSE while tf32 chapter 7 verified True on the
+            # same pod, but chapter 7 differs in FIVE ways at once (TMA, 128B swizzle, ring, warp
+            # specialization, wgmma).  These two isolate ONE: the same minimal scatter-path kernel
+            # at bf16 and at tf32, no TMA, no swizzle, no ring, one warpgroup, one k-slice.
+            # The tf32 arm is the control -- the no-swizzle wgmma path has only ever had
+            # COMPILE-ONLY coverage, so it could be carrying a defect nothing has executed.
+            run_target("_probe_wgmma_bf16_scatter", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("_probe_wgmma_tf32_scatter", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+
             for _ch, _sfx, _tag in (("sec2_top_fp16", "fp16", "FP16"),
                                     ("sec2_top_bf16", "bf16", "BF16")):
                 # Endeavour 159 Phase B: the Crisp column.  Before this the NVIDIA 16-bit
