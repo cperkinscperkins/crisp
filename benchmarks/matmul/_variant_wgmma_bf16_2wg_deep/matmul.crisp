@@ -1,0 +1,106 @@
+;; Crisp wgmma bf16, TWO consumer warpgroups on one 128x256 output tile, ring depth 4.
+;;
+;; UNDERSCORE-PREFIXED: a GEOMETRY VARIANT of chapter 7, not a new ladder rung.  It answers a
+;; question about chapter 7's tile, so it must not appear as its own chapter in REPORT.md 1.5.
+;;
+;; THE QUESTION.  On an H100 NVL, Crisp's 16-bit chapter 7 (64x256, ONE warpgroup) reaches
+;; 456.7 TFLOPS at N=4096 -- 0.85x CUTLASS and 71.3% of cuBLAS.  CUTLASS's OWN winner at that
+;; size is 128x256x64, i.e. twice the rows, and it beats CUTLASS's 64x128x64 (540.5 vs 332.9).
+;; So a 128-row tile is not intrinsically bad on this part.  Crisp has never built one at 16 bits.
+;;
+;; BUT THE tf32 TWIN ALREADY LOST, AND THE REASON TRANSFERS.  tests/spec/154-nvidia-perf/
+;; 03-wgmma-two-warpgroups measured this exact geometry at tf32 on an H100 NVL and it was SLOWER
+;; below 8192: 0.35x at 512, 0.82x at 2048, 0.91x at 4096, winning only at 8192 (1.07x).  The
+;; cause was occupancy, and the arithmetic is IDENTICAL at bf16:
+;;
+;;     64x256   160 threads x ~166 reg =  26,560   -> 2 CTAs/SM  (53,120 <= 65,536)
+;;     128x256  288 threads x ~166 reg =  47,808   -> 1 CTA /SM  (95,616 >  65,536)
+;;
+;; SMEM matches too: bf16's K-block of 64 and tf32's 32 are both 128 BYTES of K, so a slot is
+;; 8KB (A) + 32KB (B) either way.  Nothing about 16 bits relieves the register pressure.
+;;
+;; SO WHY BUILD IT.  Two reasons, and neither is optimism.  First, endeavour 159's central
+;; finding is that the 16-bit ladder does NOT rank like the tf32 one -- chapter 4 beat chapter 6
+;; at bf16, the reverse of tf32, and CUTLASS's own configs sign-flip by +-65% across sizes; so
+;; assuming the tf32 result transfers is the same error as assuming it does not.  Second, this
+;; is the CONTROL for the deep-ring variant beside it: without it, a win there could not be
+;; attributed to the pipeline rather than the tile.
+;;
+;; PREDICTED TO LOSE, and recorded as such BEFORE measuring so the prediction can be scored.
+;;
+;; A IS STAGED AS TWO 64-ROW RINGS, not one 128-row ring: a wgmma A operand is a 64-row
+;; descriptor and Crisp cannot point one at a sub-tile of a larger scratch matrix.  B -- the big
+;; operand -- is fetched ONCE and consumed by both warpgroups, which is the point of cooperating.
+;;
+;; Measured through benchmarks/matmul/crisp/bench_harness.cu, which verifies bf16 against its own
+;; host reference.  The generated --mma-test harness cannot be used for any 16-bit kernel: it
+;; writes small integers as raw bit patterns (fp16 denormals) and reads them back as float, so
+;; its verdict is meaningless (endeavour 159).
+;;
+;; ===== THIS VARIANT: RING DEPTH 4, AND IT IS FREE =====
+;;
+;; THE ASYMMETRY THAT MAKES THIS THE REAL HYPOTHESIS.  A deeper ring costs SHARED MEMORY, and
+;; shared memory is what caps CTAs per SM once registers no longer do:
+;;
+;;     64x256  (1 A-ring + 1 B-ring) = 40KB/slot.  depth 2 =  80KB -> 2 CTAs fit (160KB <= 227KB)
+;;                                                 depth 3 = 120KB -> 1 CTA   (240KB >  227KB)
+;;     128x256 (2 A-rings + 1 B-ring) = 48KB/slot. depth 2 =  96KB -> already 1 CTA, on registers
+;;                                                 depth 4 = 192KB -> STILL 1 CTA
+;;
+;; So on the 64-row kernel a deeper pipeline COSTS the second CTA.  On the 128-row kernel
+;; occupancy has ALREADY been paid down to one, so the extra stages are free.  Depth 4 sits at
+;; 192KB against the profile's 227KB :max-shared-memory-per-block.
+;;
+;; THAT IS WHAT CUTLASS DOES.  Its winning 128x256x64 also runs at low occupancy and compensates
+;; with a deep async pipeline; Crisp's tf32 twin took the occupancy hit at depth 2 and bought
+;; NOTHING with it, which is exactly why it lost.  This variant is the one that spends what the
+;; tall tile has already paid for.
+;;
+;; If A loses and B wins, the tile was never the problem -- the pipeline depth was.
+;; If both lose, the warp-specialized construction is the problem, and that is the next endeavour.
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 288))          ; 2 consumer warpgroups (8 warps) + 1 producer warp
+  (let ((A0-ring (make-scratch-matrix-ring bfloat16 (64 64)  :ring-count 4))
+        (A1-ring (make-scratch-matrix-ring bfloat16 (64 64)  :ring-count 4))
+        (B-ring  (make-scratch-matrix-ring bfloat16 (256 64) :ring-count 4))
+        (D0      (make-wgmma-accumulator float (64 256) 0.0))
+        (D1      (make-wgmma-accumulator float (64 256) 0.0))
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 8 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 3 :initial-state :waiting)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (with-warp-specialization (:consumer0 4 :consumer1 4 :producer 1)
+        (:consumer0
+          (set! D0 (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 64) D0 (ring-get A0-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at D0 C ((* grid-y (to-ulong 128)) (* grid-x (to-ulong 256)))))
+        (:consumer1
+          (set! D1 (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 64) D1 (ring-get A1-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at D1 C ((+ (* grid-y (to-ulong 128)) (to-ulong 64)) (* grid-x (to-ulong 256)))))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A0-ring slot) ((* grid-y (to-ulong 2)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile A (ring-get A1-ring slot) ((+ (* grid-y (to-ulong 2)) (to-ulong 1)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b))))))))

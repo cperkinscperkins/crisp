@@ -1378,3 +1378,71 @@
                          (%mma-scratch-tile-dims-from-bindings (second lowered)))
                     *mma-scratch-tile-dims*)))
       (analyze-let-expression lowered env context location))))
+
+;; src/hardware-profile.lisp
+;; Endeavour 162: the profile's shared-memory bound check sized 16-bit scratch at 4 bytes, so it
+;; over-reported every 16-bit kernel's footprint by 2x and REFUSED kernels that fit -- the
+;; ring-depth-4 bf16 variant was rejected at 393,216 bytes, which is 196,608 at the true width,
+;; inside the 227KB cap.
+;;
+;; This takes a CRISP TYPE SYMBOL where the hoists' %hoist-elem-type-bytes takes a C++ type
+;; STRING, so the two tables map different alphabets and are not duplicates of one another.
+;; They must nonetheless agree on the widths themselves.
+(defun %hp-scratch-elem-bytes (elem-type)
+  "Bytes per scratch element for the profile's shared-memory bound check.
+
+   64-bit -> 8, 16-bit -> 2, 8-bit -> 1, everything else -> 4.  Unknown types keep 4, the
+   historical behaviour, so a type this table has not met is bounded exactly as it always was."
+  (let ((n (string-upcase
+            (cond ((symbolp elem-type) (symbol-name elem-type))
+                  ((consp elem-type)   (symbol-name (first elem-type)))
+                  (t "")))))
+    (cond
+      ((member n '("DOUBLE" "LONG" "ULONG" "INT64" "UINT64" "F64" "I64" "U64") :test #'string=) 8)
+      ((member n '("BFLOAT16" "HALF" "FLOAT16" "F16" "BF16" "SHORT" "USHORT" "INT16" "UINT16")
+               :test #'string=) 2)
+      ((member n '("CHAR" "UCHAR" "INT8" "UINT8" "I8" "U8" "BOOL") :test #'string=) 1)
+      (t 4))))
+
+;; src/hardware-profile.lisp
+;; Endeavour 162 follow-up: SBCL DERIVED the original %hp-scratch-elem-bytes' return type as
+;; (OR (INTEGER 4 4) (INTEGER 8 8)) -- it only ever returned 4 or 8 -- and baked that assumption
+;; into its caller.  Returning 2 then tripped "The value 2 is not of type (OR (INTEGER 4 4)
+;; (INTEGER 8 8)) from the function type declaration."  Same shape as the %cuda-tensor-map-data-type
+;; case: widen the ftype, then re-append the CALLER verbatim so it recompiles without the stale
+;; derivation.  The declaim must precede the caller's redefinition.
+(declaim (ftype (function (t) (integer 1 8)) %hp-scratch-elem-bytes))
+
+;; src/hardware-profile.lisp
+(defun %hp-kernel-shared-bytes (kernel-name)
+  "Total local (shared) memory bytes a kernel reserves, summed from its implicit
+   scratch signature (matching the hoist's `(* (expt size-expr rank) elem-bytes)`).
+   Returns the byte total, or NIL if any local scratch size is not a compile-time
+   integer (then the bound can't be checked and is skipped).
+
+   Endeavour 162: re-appended UNCHANGED, purely so it recompiles against the widened
+   %hp-scratch-elem-bytes ftype (which now yields 2 for 16-bit elements)."
+  (let ((sig (first (gethash kernel-name *function-table*))))
+    (when sig
+      (let ((total 0) (known t))
+        (dolist (p (generate-implicit-signature sig nil))
+          (let ((as        (getf p :address-space))
+                (type      (getf p :type))
+                (size-expr (getf p :size-expr)))
+            (when (and as (string-equal (string as) "LOCAL"))
+              ;; size-expr is a SCALAR (vector: total = size^rank) or a LIST of dims
+              ;; (matrix/tensor: total = product).  Symbolic sizes -> can't check (skip).
+              (let* ((is-tensor (and (consp type)
+                                     (member (symbol-name (first type))
+                                             '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal)))
+                     (rank (if (and is-tensor (integerp (third type))) (third type) 1))
+                     (elem (if (consp type) (second type) type))
+                     (count (cond
+                              ((integerp size-expr) (expt size-expr rank))
+                              ((and (listp size-expr) size-expr (every #'integerp size-expr))
+                               (reduce #'* size-expr))
+                              (t nil))))
+                (if count
+                    (incf total (* count (%hp-scratch-elem-bytes elem)))
+                    (setf known nil))))))
+        (when known total)))))

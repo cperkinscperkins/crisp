@@ -104,3 +104,199 @@
     (format stream "    CUDA_CHECK(cuMemAlloc(&~a, sizeof(CUtensorMap)));~%" name)
     (format stream "    CUDA_CHECK(cuMemcpyHtoD(~a, &~a_host, sizeof(CUtensorMap)));~%" name name)))
 
+
+;;; ===================================================================
+;;; Endeavour 162 — CUDA shared-memory sizing at the true element width.
+;;;
+;;; Three functions govern the shared blob and MUST move together, because
+;;; %cuda-shared-layout computes the launch request AND the offsets from the same numbers:
+;;;   %cuda-local-param-bytes            - the sizer (launch total + tile offsets)
+;;;   %cuda-emit-local-scratch-tensor-arg - the shared-tensor emitter
+;;;   %cuda-emit-cell-arg                 - local cells, which sit above the tensors
+;;; Each is reproduced verbatim from src/hoist-cuda/main.lisp with ONE change: the inline
+;;; "8 else 4" is replaced by %hoist-elem-type-bytes.
+;;;
+;;; STILL CARRYING THE NAIVE RULE, deliberately out of scope here because neither touches
+;;; SHARED memory: %cuda-emit-global-scratch-tensor-arg (line 838) and %cuda-emit-tensor-arg
+;;; (line 926).  They over-allocate GLOBAL memory for 16-bit types, which is waste rather than
+;;; occupancy.  Recorded in the endeavour doc rather than fixed blind.
+;;; ===================================================================
+
+;; src/hoist-cuda/main.lisp  (NEW -- endeavour 162)
+;; Defined HERE, in :crisp.hoist.cuda, rather than in the shared :crisp.hoist overlay: 
+;; build/build-hoist-cuda.lisp loads ONLY overlays/hoist-cuda/, so anything appended to
+;; overlays/hoist-common/crisp-hoist-common-overlay.lisp never reaches this binary at all.
+;; When the Intel GLOBAL-scratch path is fixed too, this table should move somewhere shared
+;; AND both build-hoist-*.lisp must be taught to load that overlay -- until then a second
+;; copy would be the very duplication that caused this bug, so Intel's fix is deferred, not
+;; forked.  src/hoist-l0/main.lisp's %elem-type-bytes is the model this follows.
+(defun %hoist-elem-type-bytes (elem-str)
+  "Bytes occupied by one element of the C++ type named ELEM-STR.
+
+   The canonical width table for the CUDA hoist's sizer AND emitters, which must agree:
+   %cuda-shared-layout computes the launch request and the per-tile offsets from the same
+   numbers, and BUG 046 was exactly the divergence that results when they do not.
+   Unknown types keep the historical 4, so a type this table has not met is sized as before."
+  (cond
+    ((or (string-equal elem-str "double")
+         (string-equal elem-str "int64_t")
+         (string-equal elem-str "uint64_t")) 8)
+    ((or (string-equal elem-str "bfloat16")
+         (string-equal elem-str "half")
+         (string-equal elem-str "__half")
+         (string-equal elem-str "__nv_bfloat16")
+         (string-equal elem-str "uint16_t")
+         (string-equal elem-str "int16_t")
+         (string-equal elem-str "short")
+         (string-equal elem-str "ushort")) 2)
+    ((or (string-equal elem-str "char")
+         (string-equal elem-str "uchar")
+         (string-equal elem-str "uint8_t")
+         (string-equal elem-str "int8_t")
+         (string-equal elem-str "bool")) 1)
+    (t 4)))
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-local-param-bytes (param param-type)
+  "Bytes of dynamic shared memory one LOCAL param occupies, or NIL if it occupies none.
+   Returns a second value, :tensor or :cell, naming which region it belongs to.
+
+   The element-size rule mirrors the one the emitters use, deliberately: this function
+   exists so the sizer and the emitters cannot disagree, which is only true if it computes
+   what they compute.  Endeavour 162: both now call %hoist-elem-type-bytes, so a 16-bit
+   element is sized at 2 bytes instead of 4."
+  (let* ((is-tensor (tensor-type-p param-type))
+         (elem-type (if is-tensor (second param-type) (cell-base-type param-type)))
+         (elem-str  (crisp-type-to-cpp-type elem-type))
+         (elem-bytes (%hoist-elem-type-bytes elem-str)))
+    (if is-tensor
+        (let* ((rank (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
+               (size-expr (getf param :size-expr))
+               (count (cond ((integerp size-expr) (expt size-expr rank))
+                            ((and (listp size-expr) (every (function integerp) size-expr))
+                             (reduce (function *) size-expr))
+                            ;; %cuda-scratch-dims hard-errors on anything else, so such a
+                            ;; tensor never reaches an emitter and contributes nothing.
+                            (t nil))))
+          (when count (values (* count elem-bytes) :tensor)))
+        (let ((count (if (%array-type-p (cell-base-type param-type))
+                         (%array-size (cell-base-type param-type))
+                         1)))
+          (values (* count elem-bytes) :cell)))))
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-emit-local-scratch-tensor-arg (stream param param-name param-type arg-index)
+  "Endeavour 162: BYTESIZE and the running shared offset now use the element's TRUE width, so a
+   16-bit scratch tile occupies half what it did.  Every other line is unchanged."
+  (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
+         (size-expr   (getf param :size-expr))
+         (elem-type   (second param-type))
+         (elem-str    (crisp-type-to-cpp-type elem-type))
+         (elem-bytes  (%hoist-elem-type-bytes elem-str))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (arg-names   '())
+         (current-idx arg-index))
+    (multiple-value-bind (extents strides)
+        (%tensor-compact-extents-strides rank (%cuda-scratch-dims size-expr rank param-name))
+      (let* ((length   (reduce #'* (%cuda-scratch-dims size-expr rank param-name)))
+             (bytesize (* length elem-bytes))
+             ;; Bug 034: this tile's slice of the shared blob starts at the running
+             ;; offset; advance it past this tile for the next one.
+             (offset   *cuda-shared-scratch-offset*))
+        (setf *cuda-shared-scratch-offset* (+ *cuda-shared-scratch-offset* bytesize))
+        (format stream "~%    // LOCAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes, shared offset ~d)~%"
+                param-name rank elem-str length bytesize offset)
+        ;; Arg: ptr (distinct shared-mem byte offset - bug 034)
+        (format stream "    uint64_t ~a_ptr = ~dULL;  // shared mem offset~%" param-name-cpp offset)
+        (push (format nil "~a_ptr" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; byte-size
+        (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
+        (push (format nil "~a_byte_size" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; offsets
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+          (push (format nil "~a_off~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; strides
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+          (push (format nil "~a_str~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; extents
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+          (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; length
+        (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
+        (push (format nil "~a_length" param-name-cpp) arg-names)
+        (incf current-idx)
+        (values current-idx (nreverse arg-names))))))
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-emit-cell-arg (stream param param-name param-type param-dir is-local aliases arg-index)
+  "BUG 046: a LOCAL cell now draws a DISTINCT shared-memory offset from
+   *cuda-shared-cell-offset* instead of hard-coding 0 on top of the first scratch tile.
+   The GLOBAL branch is untouched.
+
+   Endeavour 162: the LOCAL branch's offset advance uses the element's TRUE width.  It had a
+   live divergence -- BYTESIZE advanced the offset by count*4 while the very next line handed the
+   kernel `count * sizeof(uint16_t)` = count*2.  Those agreed only for 4-byte types."
+  (declare (ignore param aliases))
+  (let* ((base-type      (cell-base-type param-type))
+         (is-array-cell  (%array-type-p base-type))
+         (base-type-str  (if is-array-cell
+                             (crisp-type-to-cpp-type (%array-element-type base-type))
+                             (crisp-type-to-cpp-type base-type)))
+         (elem-count     (if is-array-cell (%array-size base-type) 1))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (size-var       (format nil "~a_size" param-name-cpp))
+         (ptr-var        (format nil "~a_ptr"  param-name-cpp))
+         (arg-names      '())
+         (alloc          nil))
+    (if is-local
+        ;; LOCAL MEMORY — a distinct slice of the shared blob, above the scratch tensors
+        (let* ((elem-bytes (%hoist-elem-type-bytes base-type-str))
+               (bytesize (* elem-count elem-bytes))
+               (offset   *cuda-shared-cell-offset*))
+          (setf *cuda-shared-cell-offset* (+ *cuda-shared-cell-offset* bytesize))
+          (format stream "~%    // LOCAL cell: ~a (~d bytes, shared offset ~d)~%"
+                  param-name bytesize offset)
+          (format stream "    uint64_t ~a_local_ptr = ~dULL;  // shared offset~%"
+                  param-name-cpp offset)
+          (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var elem-count base-type-str)
+          (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+          (push (format nil "~a_local_ptr" param-name-cpp) arg-names)
+          (push (format nil "~a_bytes" size-var) arg-names)
+          (push (format nil "~a_offset" param-name-cpp) arg-names))
+
+        ;; GLOBAL MEMORY — cuMemAlloc + cuMemcpyHtoD
+        (progn
+          (format stream "~%    // Cell: ~a (~a)~%" param-name base-type-str)
+          (format stream "    size_t ~a = ~a;~%" size-var elem-count)
+          (format stream "    CUdeviceptr ~a;~%" ptr-var)
+          (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~a * sizeof(~a)));~%"
+                  ptr-var size-var base-type-str)
+          (format stream "    {~%")
+          (format stream "        ~a* h = new ~a[~a];~%" base-type-str base-type-str size-var)
+          (if is-array-cell
+              (format stream "        for (size_t _i = 0; _i < ~a; _i++) h[_i] = (~a)_i;~%"
+                      size-var base-type-str)
+              (format stream "        memset(h, 0, ~a * sizeof(~a));~%" size-var base-type-str))
+          (format stream "        CUDA_CHECK(cuMemcpyHtoD(~a, h, ~a * sizeof(~a)));~%"
+                  ptr-var size-var base-type-str)
+          (format stream "        delete[] h;~%")
+          (format stream "    }~%")
+          (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
+          (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+          (push (format nil "~a" ptr-var) arg-names)
+          (push (format nil "~a_bytes" size-var) arg-names)
+          (push (format nil "~a_offset" param-name-cpp) arg-names)
+          (setf alloc (list :name      param-name
+                            :ptr       ptr-var
+                            :size-var  (format nil "~a" size-var)
+                            :elem-type base-type-str
+                            :direction param-dir))))
+    (values (+ arg-index 3) (nreverse arg-names) alloc)))
