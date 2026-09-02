@@ -1084,3 +1084,34 @@
       (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.commit_group.sync.aligned;" "~{memory}")
       (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.wait_group.sync.aligned 0;" "~{memory}")
       (values cur-d nil))))
+
+;; src/mma.lisp
+;; Endeavour 160 — TEMPORARY probe hook for the 16-bit wgmma transpose flags.
+;;
+;; MEASURED 2026-09-01 on an H100 PCIe: chap7_wgmma_bf16 runs and reports 1.98 TFLOPS with
+;; verified=FALSE, while tf32 chap7 on the SAME pod at the same size verifies True.  So the
+;; 16-bit lowering is wrong, not the harness and not the kernel shape.
+;;
+;; The tf32 wgmma takes three trailing immediates and has NO transpose control; the 16-bit form
+;; adds transA/transB, which endeavour 160 set to 0,0 without evidence -- the one place in this
+;; lowering where a value was chosen rather than derived.  B is staged N x K (B^T), so 0,0 is a
+;; guess that the measurement now contradicts.
+;;
+;; This defvar exists so ONE build can test all four combinations instead of four rebuilds on a
+;; rented GPU.  It is a probe, not a design: once the correct pair is known it becomes a constant
+;; and this hook is deleted.
+(defvar *wgmma-16-trans* '(0 0)
+  "(transA transB) immediates for the 16-bit wgmma.  Probe hook -- see the comment above.")
+
+(defun %wgmma-asm-string (nacc n &optional elem)
+  "wgmma.mma_async.sync.aligned.m64n{N}k{KPS}.f32.<ab>.<ab> {$0..$nacc-1}, descA, descB, ...;
+   Accumulator is an '=f' OUTPUT plus a tied INPUT, so the two 'l' descriptors are $2*nacc and
+   $2*nacc+1.  tf32 takes three trailing immediates; the 16-bit forms take five, adding
+   transA/transB from *wgmma-16-trans* while that pair is under investigation."
+  (let* ((accs (format nil "~{$~d~^,~}" (loop for i below nacc collect i)))
+         (kps  (%wgmma-k-per-slice elem))
+         (tail (if (= kps 16)
+                   (format nil "1, 1, 1, ~d, ~d" (first *wgmma-16-trans*) (second *wgmma-16-trans*))
+                   "1, 1, 1")))
+    (format nil "wgmma.mma_async.sync.aligned.m64n~dk~d.~a {~a}, $~d, $~d, ~a;"
+            n kps (%wgmma-operand-mnemonic elem) accs (* 2 nacc) (1+ (* 2 nacc)) tail)))
