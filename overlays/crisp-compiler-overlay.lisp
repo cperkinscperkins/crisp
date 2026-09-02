@@ -831,3 +831,256 @@
       (when *in-warp-spec-block*
         (setf (gethash node *tma-copy-ws-leader*) t))
       node)))
+
+;;;; ====================================================================
+;;;; Endeavour 160 — wgmma at 16 bits.
+;;;;
+;;;; VERIFIED WITH ptxas -arch=sm_90a BEFORE ANY OF THIS WAS WRITTEN:
+;;;;   wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 {32 accs}, descA, descB, 1,1,1,0,0;
+;;;;
+;;;; TWO THINGS CHANGE, AND ONLY TWO.
+;;;;
+;;;; 1. K-PER-SLICE, not the byte stride.  A wgmma core matrix is 8 rows x 16 bytes whatever the
+;;;;    element type.  A tf32 k8 slice is 8 x 4 = 32 bytes; a bf16 k16 slice is 16 x 2 = 32 bytes.
+;;;;    %emit-nvvm-wgmma already advances the descriptor by kk*32 BYTES per slice, so the
+;;;;    hardcoded LBO/SBO constants in %wgmma-make-desc describe the same geometry and are left
+;;;;    UNTOUCHED.  Only the divisor turning a K-block into slices moves: (floor k 8) -> (floor k 16).
+;;;;
+;;;;    That is a HYPOTHESIS about a runtime value.  The descriptor is a 64-bit word ptxas never
+;;;;    validates, and CUTLASS's make_gmma_desc (the cited source for these constants) is not
+;;;;    vendored here.  Only MMA_CORRECT against a host reference settles it.
+;;;;
+;;;; 2. THE OPERAND COUNT.  tf32 takes THREE trailing immediates (scaleD, scaleA, scaleB); the
+;;;;    16-bit forms take FIVE, adding transA/transB.  Swapping only the mnemonic produces
+;;;;    something ptxas rejects -- the exact class of error that, in endeavour 159's sync MMA
+;;;;    work, slipped past the LLVM verifier as an unresolved call emitting no instruction.
+;;;;
+;;;; THE K RULE IS A FUNCTION OF ELEMENT WIDTH, not a widened set.  "K may be 8 or 16" would let a
+;;;; tf32 kernel ask for K=16, which has no instruction -- see
+;;;; tests/spec/160-wgmma-16bit/errors/01, which pins that refusal.
+;;;;
+;;;; THREADING.  %emit-nvvm-wgmma sees only an f32 accumulator type and raw SMEM pointers, so it
+;;;; cannot probe the operand type the way the sync path probes a fragment record's field 0.  The
+;;;; element type rides the per-node *wgmma-node-swizzle* entry instead, which already carried
+;;;; (swizzle k) and now carries (swizzle k elem).  No signature in the call chain changes.
+;;;; ====================================================================
+
+;; src/mma.lisp
+(defun %wgmma-k-per-slice (elem)
+  "K covered by ONE wgmma instruction at element type ELEM: 8 at 32 bits, 16 at 16 bits.
+   Both are 32 BYTES of K per slice, which is why the descriptor's kk*32 advance is unchanged."
+  (if (eql (%mma-elem-bits elem) 16) 16 8))
+
+;; src/mma.lisp
+(defun %wgmma-operand-mnemonic (elem)
+  "The .f32.<ab>.<ab> tail of the wgmma mnemonic for operand element type ELEM."
+  (let ((n (and elem (symbolp elem) (symbol-name elem))))
+    (cond ((and n (string= n "BFLOAT16")) "f32.bf16.bf16")
+          ((and n (string= n "HALF"))     "f32.f16.f16")
+          (t                              "f32.tf32.tf32"))))
+
+;; src/mma.lisp
+(defun %check-wgmma-shape (shape location &optional swizzle elem)
+  "Validate a wgmma (M N K) shape.  M fixed 64; N a multiple of 8 in [8,256].
+
+   Endeavour 160: K is a FUNCTION OF THE OPERAND ELEMENT WIDTH -- 8 at 32 bits (tf32 m64nNk8),
+   16 at 16 bits (bf16/fp16 m64nNk16).  It is deliberately NOT a widened set: allowing K in
+   {8,16} regardless of type would let a tf32 kernel request K=16, for which no instruction
+   exists, and it would either fail in ptxas or silently contract half the K it was given.
+   With :swizzle, K is the K-BLOCK and must be a positive multiple of that per-slice K."
+  (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+    (error 'crisp-compiler-error
+           :message (format nil "wgmma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." shape)
+           :source-location location))
+  (destructuring-bind (m n k) shape
+    (unless (= m 64)
+      (error 'crisp-compiler-error :message (format nil "wgmma: M must be 64 (wgmma is always m64), got ~a." m)
+             :source-location location))
+    (unless (and (>= n 8) (<= n 256) (zerop (mod n 8)))
+      (error 'crisp-compiler-error :message (format nil "wgmma: N must be a multiple of 8 in [8,256], got ~a." n)
+             :source-location location))
+    (let* ((kps (%wgmma-k-per-slice elem))
+           (what (if (= kps 16) "16-bit m64nNk16" "tf32 m64nNk8")))
+      (if swizzle
+          (unless (and (plusp k) (zerop (mod k kps)))
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma: with :swizzle, K (the K-block) must be a positive multiple of ~a for ~a operands, got ~a."
+                                    kps what k)
+                   :source-location location))
+          (unless (= k kps)
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma: K must be ~a (~a, a single k~a slice); use :swizzle :128b for a multi-slice K-block, got ~a."
+                                    kps what kps k)
+                   :source-location location))))))
+
+;; src/mma.lisp
+(defun analyze-wgmma-accumulate-via-tile (expr env context location)
+  "(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B
+   :swizzle MODE :k K)).  K rule is swizzle- AND element-aware (see %check-wgmma-shape).
+
+   Endeavour 160: the A tile's element type is resolved here and passed to the shape check, so a
+   tf32 kernel asking for K=16 is still refused while a bf16 one is accepted."
+  (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
+    (let ((elem (%coop-elem-of (analyze-expression a env context (append location '(3))))))
+      (%check-wgmma-shape shape location (getf kwargs :swizzle) elem)
+      (analyze-expression `(set! ,d (wgmma-accumulate ,d ,a ,b :swizzle ,(getf kwargs :swizzle) :k ,(third shape)))
+                          env context location))))
+
+;; src/mma.lisp
+(defun analyze-wgmma-accumulate (expr env context location)
+  "(wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 [0]) with one 0 per tile dimension
+   (rank-aware) so codegen's 3rd value is the addrspace(3) base — works for flat VECTOR tiles (scatter)
+   AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle.
+
+   Endeavour 160: the per-node *wgmma-node-swizzle* entry gains a third element, the operand
+   element type.  Codegen cannot recover it -- %emit-nvvm-wgmma receives an f32 accumulator type
+   and raw SMEM pointers, with no fragment record to probe -- so it has to be recorded here."
+  (destructuring-bind (d a b &rest kwargs) (cdr expr)
+    (let* ((d-node (analyze-expression d env context (append location '(1))))
+           (d-type (semantic-node-type d-node))
+           (swz    (getf kwargs :swizzle))
+           (a-node (analyze-expression a env context (append location '(2))))
+           (a-rank (or (%get-tensor-arity (semantic-node-type a-node)) 1))
+           (elem   (%coop-elem-of a-node))
+           (b-rank (or (%get-tensor-arity
+                        (semantic-node-type (analyze-expression b env context (append location '(3))))) 1))
+           (aref-a (if (>= a-rank 2) `(~ ,a 0 0) `(~ ,a 0)))
+           (aref-b (if (>= b-rank 2) `(~ ,b 0 0) `(~ ,b 0))))
+      (unless (%wgmma-acc-type-p d-type)
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate: D (1st arg) must be a make-wgmma-accumulator, got type ~a." d-type)
+               :source-location location))
+      (let ((node (make-semantic-mma-accumulate
+                   :type d-type
+                   :c-node d-node
+                   :a-node (analyze-expression aref-a env context (append location '(2)))
+                   :b-node (analyze-expression aref-b env context (append location '(3)))
+                   :source-location location)))
+        (setf (gethash node *wgmma-node-swizzle*)
+              (list swz (or (getf kwargs :k) (%wgmma-k-per-slice elem)) elem))
+        node))))
+
+;; src/mma.lisp
+(defun %wgmma-asm-string (nacc n &optional elem)
+  "wgmma.mma_async.sync.aligned.m64n{N}k{KPS}.f32.<ab>.<ab> {$0..$nacc-1}, descA, descB, ...;
+
+   NB on operand numbering: LLVM IR inline-asm has no '+f'; a read-write accumulator is an '=f'
+   OUTPUT ($0..$nacc-1) PLUS a matching tied INPUT ($nacc..$2*nacc-1).  The tied inputs DO occupy
+   operand slots, so the two 'l' descriptors are $2*nacc and $2*nacc+1 (not $nacc/$nacc+1).
+
+   ENDEAVOUR 160: the TRAILING IMMEDIATE COUNT DIFFERS BY TYPE.  tf32 takes three -- scaleD,
+   scaleA, scaleB.  The 16-bit forms take five, adding transA and transB (both 0 here: A is
+   row-major and B col-major, wgmma's native orientation).  Emitting three for a 16-bit mnemonic
+   assembles to nothing ptxas accepts."
+  (let* ((accs (format nil "~{$~d~^,~}" (loop for i below nacc collect i)))
+         (kps  (%wgmma-k-per-slice elem))
+         (tail (if (= kps 16) "1, 1, 1, 0, 0" "1, 1, 1")))
+    (format nil "wgmma.mma_async.sync.aligned.m64n~dk~d.~a {~a}, $~d, $~d, ~a;"
+            n kps (%wgmma-operand-mnemonic elem) accs (* 2 nacc) (1+ (* 2 nacc)) tail)))
+
+;; src/mma.lisp
+(defun %emit-wgmma-mma-only (builder module d-val a-ptr b-ptr acc-type n swizzle-p kslice-off
+                             &optional elem)
+  "Emit ONE m64nNk{8,16} wgmma.mma_async and nothing else -- no fence, no commit_group, no
+   wait_group.  Those are GROUP-level operations and belong once around the whole k-slice
+   sequence, not once per slice; see %emit-nvvm-wgmma.
+
+   N/2 accumulators in and out, two shared-memory descriptors, and KSLICE-OFF (kk*32 bytes)
+   advancing the descriptor start address.  ELEM selects the mnemonic; the 32-byte slice stride is
+   the same at both widths, which is why the descriptor build is untouched.  Returns the new D."
+  (let* ((f32 (llvm-float-type)) (i64 (llvm-int64-type))
+         (nacc (floor n 2))
+         (descA (%wgmma-make-desc builder a-ptr swizzle-p kslice-off))
+         (descB (%wgmma-make-desc builder b-ptr swizzle-p kslice-off))
+         (c-ops (loop for i below nacc collect
+                      (llvm-build-extract-value builder d-val i (format nil "wc~d" i))))
+         (asm-str     (%wgmma-asm-string nacc n elem))
+         (constraints (%wgmma-constraints nacc))
+         (ret-ty      (%wgmma-struct-of-floats module nacc))
+         (ptypes      (append (loop repeat nacc collect f32) (list i64 i64)))
+         (args        (append c-ops (list descA descB)))
+         (call        (%build-inline-asm-call builder ret-ty ptypes args asm-str constraints))
+         (agg         (llvm-get-undef (crisp-type-to-llvm-type acc-type module))))
+    (dotimes (i nacc)
+      (setf agg (llvm-build-insert-value builder agg
+                                         (llvm-build-extract-value builder call i (format nil "wo~d" i))
+                                         i (format nil "wr~d" i))))
+    agg))
+
+;; src/mma.lisp
+;; Endeavour 160: threads the operand element type from *wgmma-node-swizzle* into
+;; %emit-nvvm-wgmma.  The hash entry gained a third element, and destructuring-bind ERRORS
+;; on a longer list than its lambda list accepts -- so this method must be redefined in
+;; lockstep with the analyzer that writes the entry, not merely alongside it.
+(defmethod generate-node-ir ((node semantic-mma-accumulate)
+                             builder module var-env di-builder di-scope location-map)
+  "F-SPV / NVVM mma.sync + Endeavor 140 wgmma (dispatched by accumulator type; swizzle/k from table)."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let ((acc-type (semantic-mma-accumulate-type node)))
+      (if (%wgmma-acc-type-p acc-type)
+          (progn
+            ;; Endeavor 140 (precision): wgmma is tf32 by construction, so under a non-fast
+            ;; precision context the requested IEEE accuracy is silently NOT honored (results are
+            ;; tf32).  Warn.  *math-precision* here is the resolved effective precision at codegen
+            ;; — it already respects the full chain (force > with-precision > declaim > flag >
+            ;; default(:ieee)), the same value that stamps the fast-math flags in codegen.lisp.
+            ;; Endeavour 160: the tf32 precision warning is only true for a 32-bit operand.
+            ;; A bf16/fp16 wgmma is not silently downgrading anything -- the kernel ASKED for
+            ;; 16-bit inputs -- so firing it there would be noise that teaches the reader
+            ;; something untrue.
+            (unless (or (eq *math-precision* :fast)
+                        (eql (%mma-elem-bits (third (gethash node *wgmma-node-swizzle*))) 16))
+              (format *error-output*
+                      "WARNING: wgmma-accumulate-via-tile uses tf32 tensor cores, but math-precision is '~(~a~)' — the IEEE accuracy request is not honored (results are tf32). Use (with-precision (fast) ...), (declaim (precision fast)), or --math-precision=fast.~%"
+                      *math-precision*))
+          (destructuring-bind (&optional swizzle-mode (k 8) elem) (gethash node *wgmma-node-swizzle*)
+            (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+                  (swizzle-p (and swizzle-mode (string-equal (string swizzle-mode) "128B"))))
+              (multiple-value-bind (av al a-ptr) (gen (semantic-mma-accumulate-a-node node))
+                (declare (ignore av al))
+                (multiple-value-bind (bv bl b-ptr) (gen (semantic-mma-accumulate-b-node node))
+                  (declare (ignore bv bl))
+                  (unless (and a-ptr b-ptr)
+                    (error "wgmma: A/B (~ tile 0) did not yield an SMEM element pointer (a ~A b ~A)" a-ptr b-ptr))
+                  (%emit-nvvm-wgmma builder module c-val a-ptr b-ptr acc-type
+                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k elem))))))
+          (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+                (a-val (gen (semantic-mma-accumulate-a-node node)))
+                (b-val (gen (semantic-mma-accumulate-b-node node))))
+            (if (eq *target-backend* :spirv)
+                (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                  (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
+                (%emit-nvvm-mma builder module a-val b-val c-val)))))))
+
+;;; ===================================================================
+;;; P3a — make-register-tile (record-of-fragments) + store-tile overload.
+;;;
+;;; A register-tile is a workgroup-collective MxN accumulator: a record whose fields
+;;; are (M/16)x(N/8) accumulator fragments (register-fragment-acc-f32-16x8), row-major
+;;; (fragment idx = mi*(N/8) + nj).  Single-warp for now (one warp holds all fragments).
+;;; Minted on demand per (M N).
+;;; ===================================================================
+
+
+;; src/mma.lisp
+(defun %emit-nvvm-wgmma (builder module d-val a-ptr b-ptr acc-type n &optional swizzle-p (k 8) elem)
+  "Emit the wgmma accumulate as ONE GROUP: a fence before the first slice, K/KPS slices, then one
+   commit_group + wait_group.  See the original for why the fence/commit/wait triple is emitted
+   once per GROUP rather than once per slice (endeavour 154, worth 4-11%).
+
+   Endeavour 160: KPS -- the K covered by one instruction -- is 8 at 32 bits and 16 at 16 bits.
+   The per-slice BYTE advance stays kk*32 either way, because a tf32 k8 slice and a bf16 k16 slice
+   occupy the same 32 bytes.  That is why %wgmma-make-desc is untouched by this endeavour."
+  (let* ((kps (%wgmma-k-per-slice elem))
+         (n-slices (if swizzle-p (max 1 (floor k kps)) 1)))
+    (unless swizzle-p
+      (%gen-nvvm-fence-proxy-async-shared builder)
+      (%ptx-barrier builder module))
+    (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.fence.sync.aligned;" "~{memory}")
+    (let ((cur-d d-val))
+      (dotimes (kk n-slices)
+        (setf cur-d (%emit-wgmma-mma-only builder module cur-d a-ptr b-ptr acc-type n swizzle-p
+                                          (* kk 32) elem)))
+      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.commit_group.sync.aligned;" "~{memory}")
+      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.wait_group.sync.aligned 0;" "~{memory}")
+      (values cur-d nil))))
