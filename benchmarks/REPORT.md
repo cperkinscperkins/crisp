@@ -412,6 +412,197 @@ wgmma
 
 </details>
 
+## § 1.5 — MMA Techniques (16-bit)
+
+*Does the 32-bit ladder still rank the same way at bf16?*
+
+**Contenders: Crisp only.** The column carrying the story is **vs previous chapter**. A rung with no 16-bit kernel shows `—`.
+
+### Intel BMG · bf16 · `fast`
+
+**Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**
+
+| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** |
+|---|---|---|---|---|---|---|---|---|
+| 0 | naive loops, no XMX | 0.1 | 0.2 | 0.2 | 0.1 | 0.1 | 0.1 | — |
+| 1 | hand-rolled XMX coop-matrix | 0.2 | 0.8 | 2.4 | 2.5 | 2.2 | 1.9 | — |
+| 2 | matrix-multiply-tile-stride | 0.2 | 0.8 | 2.4 | 2.5 | 2.2 | 1.9 | — |
+| 3 | OpGroupAsyncCopy | 0.0 | 0.0 | 0.0 | 0.0 | 0.3 | 2.2 | — |
+| 4 | register-resident load (global→GRF) | 4.7 | 20.5 | 47.4 | 36.3 | 26.5 | 26.1 | — |
+| 5 | register ring + prefetch | 5.3 | 15.5 | 39.3 | 49.0 | 30.5 | 22.7 | — |
+| 6 | blocked — 3 known reasons | — | — | — | — | — | — | — |
+| 7 | GRF-bounded tile sweep | — | — | — | — | — | — | — |
+
+**Fastest rung per size** — N=256: **ch 5** (5.3) · N=512: **ch 4** (20.5) · N=1024: **ch 4** (47.4) · N=2048: **ch 5** (49.0) · N=4096: **ch 5** (30.5) · N=8192: **ch 4** (26.1)
+
+<details><summary><b>Per-chapter detail (16-bit)</b></summary>
+
+#### Ch 0 — Does it run at all?
+naive loops, no XMX
+
+| N | Crisp bf16 TFLOPS |
+|---:|---:|
+| 256 | 0.1 |
+| 512 | 0.2 |
+| 1024 | 0.2 |
+| 2048 | 0.1 |
+| 4096 | 0.1 |
+| 8192 | 0.1 |
+| 16384 | — |
+
+#### Ch 1 — Can we reach the tensor cores?
+hand-rolled XMX coop-matrix
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 0.2 | 1.48× |
+| 512 | 0.8 | **4.47×** |
+| 1024 | 2.4 | **15.73×** |
+| 2048 | 2.5 | **16.85×** |
+| 4096 | 2.2 | **14.93×** |
+| 8192 | 1.9 | **14.66×** |
+| 16384 | — | — |
+
+#### Ch 2 — What does tiling buy?
+matrix-multiply-tile-stride
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 0.2 | 1.00× |
+| 512 | 0.8 | 1.00× |
+| 1024 | 2.4 | 1.00× |
+| 2048 | 2.5 | 1.00× |
+| 4096 | 2.2 | 1.00× |
+| 8192 | 1.9 | 1.01× |
+| 16384 | — | — |
+
+#### Ch 3 — Can the fetch overlap the math?
+OpGroupAsyncCopy
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 0.0 | 0.01× |
+| 512 | 0.0 | 0.00× |
+| 1024 | 0.0 | 0.00× |
+| 2048 | 0.0 | 0.00× |
+| 4096 | 0.3 | 0.13× |
+| 8192 | 2.2 | 1.16× |
+| 16384 | — | — |
+
+#### Ch 4 — Can the fetch itself be cheap?
+register-resident load (global→GRF)
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 4.7 | **1480.75×** |
+| 512 | 20.5 | **6466.55×** |
+| 1024 | 47.4 | **14929.07×** |
+| 2048 | 36.3 | **11464.85×** |
+| 4096 | 26.5 | **96.60×** |
+| 8192 | 26.1 | **11.86×** |
+| 16384 | — | — |
+
+#### Ch 5 — Can several fetches be in flight?
+register ring + prefetch
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 5.3 | 1.13× |
+| 512 | 15.5 | 0.76× |
+| 1024 | 39.3 | 0.83× |
+| 2048 | 49.0 | 1.35× |
+| 4096 | 30.5 | 1.15× |
+| 8192 | 22.7 | 0.87× |
+| 16384 | — | — |
+
+</details>
+
+### NVIDIA H100 NVL · bf16 · `fast`
+
+**Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**
+
+| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** |
+|---|---|---|---|---|---|---|---|---|
+| 0 | naive loops, no tensor cores | — | — | — | — | — | — | — |
+| 1 | hand-rolled mma-accumulate-via-tile | 0.1 | — | 2.1 | 5.5 | 5.8 | — | — |
+| 2 | matrix-multiply-tile-stride | 0.1 | — | 2.3 | 7.3 | 7.2 | — | — |
+| 3 | cp.async | — | — | — | — | — | — | — |
+| 4 | TMA descriptor (CUtensorMap) | 1.7 | — | 31.7 | 59.7 | 92.5 | — | — |
+| 5 | SMEM ring | 1.7 | — | 29.4 | 41.6 | 64.2 | — | — |
+| 6 | warp specialization | 2.2 | — | 29.6 | 51.0 | 65.9 | — | — |
+| 7 | wgmma | — | — | — | — | — | — | — |
+
+**Fastest rung per size** — N=256: **ch 6** (2.2) · N=1024: **ch 4** (31.7) · N=2048: **ch 4** (59.7) · N=4096: **ch 4** (92.5)
+
+<details><summary><b>Per-chapter detail (16-bit)</b></summary>
+
+#### Ch 1 — Can we reach the tensor cores?
+hand-rolled mma-accumulate-via-tile
+
+| N | Crisp bf16 TFLOPS |
+|---:|---:|
+| 256 | 0.1 |
+| 512 | — |
+| 1024 | 2.1 |
+| 2048 | 5.5 |
+| 4096 | 5.8 |
+| 8192 | — |
+| 16384 | — |
+
+#### Ch 2 — What does tiling buy?
+matrix-multiply-tile-stride
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 0.1 | 1.04× |
+| 512 | — | — |
+| 1024 | 2.3 | 1.11× |
+| 2048 | 7.3 | 1.34× |
+| 4096 | 7.2 | 1.24× |
+| 8192 | — | — |
+| 16384 | — | — |
+
+#### Ch 4 — Can the fetch itself be cheap?
+TMA descriptor (CUtensorMap)
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 1.7 | **11.56×** |
+| 512 | — | — |
+| 1024 | 31.7 | **13.68×** |
+| 2048 | 59.7 | **8.17×** |
+| 4096 | 92.5 | **12.84×** |
+| 8192 | — | — |
+| 16384 | — | — |
+
+#### Ch 5 — Can several fetches be in flight?
+SMEM ring
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 1.7 | 1.01× |
+| 512 | — | — |
+| 1024 | 29.4 | 0.93× |
+| 2048 | 41.6 | 0.70× |
+| 4096 | 64.2 | 0.69× |
+| 8192 | — | — |
+| 16384 | — | — |
+
+#### Ch 6 — Can the math stop waiting on bookkeeping?
+warp specialization
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 2.2 | 1.27× |
+| 512 | — | — |
+| 1024 | 29.6 | 1.01× |
+| 2048 | 51.0 | 1.23× |
+| 4096 | 65.9 | 1.03× |
+| 8192 | — | — |
+| 16384 | — | — |
+
+</details>
+
 ## § 2 — Top MMA Benchmarks
 
 *How does Crisp actually stand?* Best mainloop against **all three contender classes**.
@@ -876,246 +1067,4 @@ Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline
 
 Debug and exploratory runs are written to `benchmarks/results/scratch/`, which the report never reads into canonical tables.
 
-| timestamp | suite | chapter | competitor | sizes |
-|---|---|---|---|---|
-| 2026-08-21 22:14 | matmul | chap0_naive | Crisp | `` |
-| 2026-08-21 22:14 | matmul | chap0_naive | SYCL_Apples | `256,512` |
-| 2026-08-21 22:14 | matmul | chap1_handrolled_mma | Crisp | `` |
-| 2026-08-21 22:14 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512` |
-| 2026-08-21 22:15 | matmul | chap0_naive | Crisp | `256,512` |
-| 2026-08-21 22:50 | matmul | chap0_naive | SYCL_Apples | `256,512` |
-| 2026-08-21 22:50 | matmul | chap1_handrolled_mma | Crisp | `` |
-| 2026-08-21 22:51 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512` |
-| 2026-08-21 22:53 | matmul | chap0_naive | Crisp | `256,512` |
-| 2026-08-21 23:28 | matmul | chap0_naive | SYCL_Apples | `256,512` |
-| 2026-08-21 23:28 | matmul | chap1_handrolled_mma | Crisp | `` |
-| 2026-08-21 23:28 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512` |
-| 2026-08-21 23:29 | matmul | chap1_handrolled_mma | Crisp | `` |
-| 2026-08-21 23:29 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512` |
-| 2026-08-21 23:30 | matmul | chap1_handrolled_mma | Crisp | `256,512` |
-| 2026-08-21 23:30 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512` |
-| 2026-08-22 00:46 | matmul | chap0_naive | Crisp | `` |
-| 2026-08-22 00:50 | matmul | chap0_naive | SYCL_Apples | `256,512` |
-| 2026-08-22 00:50 | matmul | chap1_handrolled_mma | Crisp | `256,512` |
-| 2026-08-22 00:50 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512` |
-| 2026-08-22 01:32 | matmul | chap1_handrolled_mma | Crisp | `256,512` |
-| 2026-08-22 01:32 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512` |
-| 2026-08-22 02:43 | matmul | chap0_naive | Crisp | `` |
-| 2026-08-22 02:47 | matmul | chap0_naive | SYCL_Apples | `256,512` |
-| 2026-08-22 02:47 | matmul | chap1_handrolled_mma | Crisp | `256,512` |
-| 2026-08-22 02:47 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512` |
-| 2026-08-22 02:47 | matmul | chap2_tiling | Crisp | `` |
-| 2026-08-22 02:47 | matmul | chap2_tiling | SYCL_Apples | `256,512` |
-| 2026-08-22 02:48 | matmul | chap2_tiling | OneMKL_Optimal | `256,512` |
-| 2026-08-22 02:48 | matmul | chap3_async | Crisp | `256,512` |
-| 2026-08-22 02:48 | matmul | chap3_async | SYCL_Apples | `256,512` |
-| 2026-08-22 02:48 | matmul | chap4_cheap_fetch | Crisp | `256,512` |
-| 2026-08-22 02:48 | matmul | chap4_cheap_fetch | SYCL_Apples | `256,512` |
-| 2026-08-22 02:48 | matmul | chap5_multistage_ring | Crisp | `256,512` |
-| 2026-08-22 02:48 | matmul | chap5_multistage_ring | SYCL_Apples | `256,512` |
-| 2026-08-24 01:04 | matmul | sec2_top | Crisp | `256,512,1024,2048,4096,8192` |
-| 2026-08-24 01:05 | matmul | sec2_top | SYCL_Apples | `` |
-| 2026-08-24 01:05 | matmul | sec2_top | OneMKL_Optimal | `256,512,1024,2048,4096,8192,16384` |
-| 2026-08-26 14:31 | matmul | sec2_top_bf16 | Crisp | `1024,2048,4096,8192` |
-| 2026-08-26 14:31 | matmul | sec2_top_fp16 | Crisp | `1024,2048,4096,8192` |
-| 2026-08-26 14:32 | matmul | sec2_top_bf16 | Crisp | `2048` |
-| 2026-08-26 14:33 | matmul | sec2_top_bf16 | Crisp | `1024,2048,4096,8192` |
-| 2026-08-26 14:33 | matmul | sec2_top_fp16 | Crisp | `1024,2048,4096,8192` |
-| 2026-08-26 14:33 | matmul | sec2_top_bf16 | Crisp | `1024,2048,4096,8192` |
-| 2026-08-26 14:34 | matmul | sec2_top_fp16 | Crisp | `1024,2048,4096,8192` |
-| 2026-08-27 06:21 | matmul | _probe_roofline | Probe_Full | `2048,4096` |
-| 2026-08-27 06:21 | matmul | _probe_roofline | Probe_Loads | `` |
-| 2026-08-27 06:21 | matmul | _probe_roofline | Probe_Math | `` |
-| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Full | `2048,4096` |
-| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads | `` |
-| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Math | `` |
-| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads_CC | `` |
-| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads_PF2 | `` |
-| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads_PF3 | `` |
-| 2026-08-27 07:33 | matmul | _probe_roofline | Probe_Loads_Fixed | `` |
-| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Full | `2048,4096` |
-| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Loads | `` |
-| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Loads_PFW2 | `` |
-| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Loads_PFW3 | `` |
-| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Full_PFW2 | `2048,4096` |
-| 2026-08-27 17:16 | matmul | _probe_roofline | Probe_Full_PFW3 | `2048,4096` |
-| 2026-08-27 18:06 | matmul | _probe_roofline | Probe_Full | `2048,4096,8192` |
-| 2026-08-27 18:06 | matmul | _probe_roofline | Probe_Loads | `` |
-| 2026-08-27 18:06 | matmul | _probe_roofline | Probe_Full_PFW1 | `2048,4096,8192` |
-| 2026-08-27 18:06 | matmul | _probe_roofline | Probe_Full_PFW2 | `2048,4096,8192` |
-| 2026-08-27 18:07 | matmul | _probe_roofline | Probe_Full_PFW3 | `2048,4096,8192` |
-| 2026-08-27 18:07 | matmul | _probe_roofline | Probe_Full_PFW4 | `2048,4096,8192` |
-| 2026-08-27 22:29 | matmul | _probe_roofline | Probe_Full | `4096,8192` |
-| 2026-08-27 22:29 | matmul | _probe_roofline | Probe_WG256_Math | `` |
-| 2026-08-27 22:29 | matmul | _probe_roofline | Probe_Loads | `` |
-| 2026-08-27 22:29 | matmul | _probe_roofline | Probe_Full_PFW1 | `` |
-| 2026-08-27 22:29 | matmul | _probe_roofline | Probe_Full_PFW2 | `` |
-| 2026-08-27 22:29 | matmul | _probe_roofline | Probe_Full_PFW3 | `` |
-| 2026-08-27 22:29 | matmul | _probe_roofline | Probe_Full_PFW4 | `` |
-| 2026-08-27 23:34 | matmul | _probe_roofline | Probe_Full | `4096,8192` |
-| 2026-08-27 23:34 | matmul | _probe_roofline | Probe_WG256_XE_Math | `` |
-| 2026-08-27 23:34 | matmul | _probe_roofline | Probe_Full_PFW1 | `4096,8192` |
-| 2026-08-27 23:34 | matmul | _probe_roofline | Probe_Full_PFW2 | `4096,8192` |
-| 2026-08-27 23:34 | matmul | _probe_roofline | Probe_Full_PFW3 | `4096,8192` |
-| 2026-08-27 23:35 | matmul | _probe_roofline | Probe_Full_PFW4 | `4096` |
-| 2026-08-28 22:35 | matmul | sec2_top_bf16 | Crisp | `1024` |
-| 2026-08-28 22:35 | matmul | sec2_top_bf16 | Crisp_V_pfw1 | `1024` |
-| 2026-08-28 22:35 | matmul | sec2_top_bf16 | Crisp_V_wg256pf2 | `1024` |
-| 2026-08-28 22:35 | matmul | sec2_top_bf16 | Crisp_V_wg256xe | `1024` |
-| 2026-08-28 22:35 | matmul | sec2_top_bf16 | Crisp_V_wg256xepf2 | `1024` |
-| 2026-08-28 22:35 | matmul | sec2_top_bf16 | SYCL_Apples_BF16 | `1024` |
-| 2026-08-28 22:37 | matmul | sec2_top_bf16 | SYCL-TLA_BF16 | `` |
-| 2026-08-28 22:37 | matmul | sec2_top_bf16 | OneMKL_BF16 | `1024` |
-| 2026-08-29 00:24 | matmul | _probe_roofline | Probe_Full | `256,512,1024,2048,4096,8192` |
-| 2026-08-29 00:24 | matmul | _probe_roofline | Probe_WG256_XE_Math | `` |
-| 2026-08-29 00:25 | matmul | _probe_roofline | Probe_Full_PFW1 | `256,512,1024,2048,4096,8192` |
-| 2026-08-29 00:25 | matmul | _probe_roofline | Probe_Full_PFW2 | `256,512,1024,2048,4096,8192` |
-| 2026-08-29 00:25 | matmul | _probe_roofline | Probe_Full_PFW3 | `256,512,1024,2048,4096,8192` |
-| 2026-08-29 00:25 | matmul | _probe_roofline | Probe_Full_PFW4 | `256,512,1024,2048,4096,8192` |
-| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp | `256` |
-| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp_V_pfw1 | `256` |
-| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp_V_wg256pf2 | `256` |
-| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp_V_wg256xe | `256` |
-| 2026-08-29 05:58 | matmul | sec2_top_bf16 | Crisp_V_wg256xepf2 | `256` |
-| 2026-08-29 05:59 | matmul | sec2_top_bf16 | SYCL_Apples_BF16 | `256` |
-| 2026-08-29 06:00 | matmul | sec2_top_bf16 | SYCL-TLA_BF16 | `256` |
-| 2026-08-29 06:00 | matmul | sec2_top_bf16 | OneMKL_BF16 | `256` |
-| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp | `256` |
-| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp_V_pfw1 | `256` |
-| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp_V_wg256pf2 | `256` |
-| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp_V_wg256xe | `256` |
-| 2026-08-29 06:03 | matmul | sec2_top_bf16 | Crisp_V_wg256xepf2 | `256` |
-| 2026-08-29 06:03 | matmul | sec2_top_bf16 | SYCL_Apples_BF16 | `256` |
-| 2026-08-29 06:05 | matmul | sec2_top_bf16 | SYCL-TLA_BF16 | `256` |
-| 2026-08-29 06:05 | matmul | sec2_top_bf16 | OneMKL_BF16 | `256` |
-| 2026-09-01 00:07 | matmul | chap0_naive | Crisp | `256` |
-| 2026-09-01 00:07 | matmul | chap0_naive | CUDA_Apples | `256` |
-| 2026-09-01 00:07 | matmul | chap1_handrolled_mma | Crisp | `256` |
-| 2026-09-01 00:07 | matmul | chap1_handrolled_mma | CUDA_Apples | `` |
-| 2026-09-01 00:07 | matmul | chap2_tiling | Crisp | `` |
-| 2026-09-01 00:08 | matmul | chap2_tiling | CUDA_Apples | `256` |
-| 2026-09-01 00:08 | matmul | chap3_async | Crisp | `256` |
-| 2026-09-01 00:08 | matmul | chap3_async | CUDA_Apples | `256` |
-| 2026-09-01 00:08 | matmul | chap4_cheap_fetch | Crisp | `256` |
-| 2026-09-01 00:08 | matmul | chap4_cheap_fetch | CUDA_Apples | `256` |
-| 2026-09-01 00:08 | matmul | chap5_multistage_ring | Crisp | `256` |
-| 2026-09-01 00:08 | matmul | chap5_multistage_ring | CUDA_Apples | `256` |
-| 2026-09-01 00:08 | matmul | chap6_warp_specialization | Crisp | `256` |
-| 2026-09-01 00:08 | matmul | chap7_wgmma | Crisp | `256` |
-| 2026-09-01 00:08 | matmul | sec2_top | Crisp | `256` |
-| 2026-09-01 00:08 | matmul | sec2_top | CUDA_Apples | `256` |
-| 2026-09-01 00:09 | matmul | sec2_top | CUTLASS_V_128x256x32 | `256` |
-| 2026-09-01 00:09 | matmul | sec2_top | CUTLASS_V_128x128x32 | `256` |
-| 2026-09-01 00:10 | matmul | sec2_top | CUTLASS_V_256x128x32 | `256` |
-| 2026-09-01 00:11 | matmul | sec2_top | CUTLASS_V_64x256x32 | `256` |
-| 2026-09-01 00:11 | matmul | sec2_top | CUBLAS_Optimal | `256` |
-| 2026-09-01 00:11 | matmul | sec2_top_fp16 | Crisp | `` |
-| 2026-09-01 00:11 | matmul | sec2_top_fp16 | CUDA_Apples_FP16 | `256` |
-| 2026-09-01 00:11 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 00:12 | matmul | sec2_top_fp16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 00:13 | matmul | sec2_top_fp16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 00:13 | matmul | sec2_top_fp16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 00:14 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 00:14 | matmul | sec2_top_fp16 | CUBLAS_Optimal_FP16 | `256` |
-| 2026-09-01 00:14 | matmul | sec2_top_bf16 | Crisp | `` |
-| 2026-09-01 00:14 | matmul | sec2_top_bf16 | CUDA_Apples_BF16 | `256` |
-| 2026-09-01 00:14 | matmul | sec2_top_bf16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 00:15 | matmul | sec2_top_bf16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 00:16 | matmul | sec2_top_bf16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 00:16 | matmul | sec2_top_bf16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 00:17 | matmul | sec2_top_bf16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 00:17 | matmul | sec2_top_bf16 | CUBLAS_Optimal_BF16 | `256` |
-| 2026-09-01 00:17 | matmul | sec3_cluster_multicast | Crisp | `256` |
-| 2026-09-01 00:17 | matmul | sec3_cluster_multicast | Crisp_Multicast | `256` |
-| 2026-09-01 00:17 | matmul | sec3_cluster_multicast | CUBLAS_Optimal | `256` |
-| 2026-09-01 00:17 | matmul | sec4_fused_relu | Crisp_Fused_Relu | `256` |
-| 2026-09-01 00:17 | matmul | sec4_fused_relu | CUBLASLt_Fused_Relu | `256` |
-| 2026-09-01 00:17 | matmul | sec4_fused_relu | CUBLAS_Plus_Relu | `256` |
-| 2026-09-01 00:17 | matmul | sec4_fused_custom | Crisp_Fused_Custom | `256` |
-| 2026-09-01 00:17 | matmul | sec4_fused_custom | CUBLASLt_Plus_Custom | `256` |
-| 2026-09-01 00:17 | matmul | sec4_fused_custom | CUBLAS_Plus_Custom | `256` |
-| 2026-09-01 01:22 | matmul | sec2_top_fp16 | Crisp | `256` |
-| 2026-09-01 01:22 | matmul | sec2_top_fp16 | Crisp | `` |
-| 2026-09-01 01:22 | matmul | sec2_top_fp16 | CUDA_Apples_FP16 | `256` |
-| 2026-09-01 01:23 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 01:23 | matmul | sec2_top_fp16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 01:24 | matmul | sec2_top_fp16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 01:25 | matmul | sec2_top_fp16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 01:25 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 01:25 | matmul | sec2_top_fp16 | CUBLAS_Optimal_FP16 | `256` |
-| 2026-09-01 01:25 | matmul | sec2_top_bf16 | Crisp | `` |
-| 2026-09-01 01:25 | matmul | sec2_top_bf16 | CUDA_Apples_BF16 | `256` |
-| 2026-09-01 01:26 | matmul | sec2_top_bf16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 01:27 | matmul | sec2_top_bf16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 01:27 | matmul | sec2_top_bf16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 01:28 | matmul | sec2_top_bf16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 01:28 | matmul | sec2_top_bf16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 01:28 | matmul | sec2_top_bf16 | CUBLAS_Optimal_BF16 | `256` |
-| 2026-09-01 02:10 | matmul | sec2_top_fp16 | Crisp | `` |
-| 2026-09-01 02:10 | matmul | sec2_top_fp16 | CUDA_Apples_FP16 | `256` |
-| 2026-09-01 02:10 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 02:11 | matmul | sec2_top_fp16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 02:11 | matmul | sec2_top_fp16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 02:12 | matmul | sec2_top_fp16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 02:13 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 02:13 | matmul | sec2_top_fp16 | CUBLAS_Optimal_FP16 | `256` |
-| 2026-09-01 02:13 | matmul | sec2_top_fp16 | Crisp | `256` |
-| 2026-09-01 02:13 | matmul | sec2_top_fp16 | Crisp | `` |
-| 2026-09-01 02:13 | matmul | sec2_top_fp16 | CUDA_Apples_FP16 | `256` |
-| 2026-09-01 02:14 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 02:14 | matmul | sec2_top_fp16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 02:15 | matmul | sec2_top_fp16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 02:16 | matmul | sec2_top_fp16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 02:16 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 02:16 | matmul | sec2_top_fp16 | CUBLAS_Optimal_FP16 | `256` |
-| 2026-09-01 02:17 | matmul | sec2_top_fp16 | Crisp | `256` |
-| 2026-09-01 02:17 | matmul | sec2_top_fp16 | Crisp | `` |
-| 2026-09-01 02:17 | matmul | sec2_top_fp16 | CUDA_Apples_FP16 | `256` |
-| 2026-09-01 02:18 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 02:19 | matmul | sec2_top_fp16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 02:19 | matmul | sec2_top_fp16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 02:20 | matmul | sec2_top_fp16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 02:20 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 02:20 | matmul | sec2_top_fp16 | CUBLAS_Optimal_FP16 | `256` |
-| 2026-09-01 02:23 | matmul | sec2_top_fp16 | Crisp | `256` |
-| 2026-09-01 02:23 | matmul | sec2_top_fp16 | Crisp | `` |
-| 2026-09-01 02:23 | matmul | sec2_top_fp16 | CUDA_Apples_FP16 | `256` |
-| 2026-09-01 02:24 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 02:25 | matmul | sec2_top_fp16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 02:25 | matmul | sec2_top_fp16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 02:26 | matmul | sec2_top_fp16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 02:26 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 02:26 | matmul | sec2_top_fp16 | CUBLAS_Optimal_FP16 | `256` |
-| 2026-09-01 02:26 | matmul | sec2_top_bf16 | Crisp | `` |
-| 2026-09-01 02:27 | matmul | sec2_top_bf16 | CUDA_Apples_BF16 | `256` |
-| 2026-09-01 02:27 | matmul | sec2_top_bf16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 02:28 | matmul | sec2_top_bf16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 02:28 | matmul | sec2_top_bf16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 02:29 | matmul | sec2_top_bf16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 02:30 | matmul | sec2_top_bf16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 02:30 | matmul | sec2_top_bf16 | CUBLAS_Optimal_BF16 | `256` |
-| 2026-09-01 03:23 | matmul | sec2_top_fp16 | Crisp | `256` |
-| 2026-09-01 03:23 | matmul | sec2_top_fp16 | Crisp | `` |
-| 2026-09-01 03:24 | matmul | sec2_top_fp16 | CUDA_Apples_FP16 | `256` |
-| 2026-09-01 03:24 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 03:25 | matmul | sec2_top_fp16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 03:25 | matmul | sec2_top_fp16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 03:26 | matmul | sec2_top_fp16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 03:26 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 03:27 | matmul | sec2_top_fp16 | CUBLAS_Optimal_FP16 | `256` |
-| 2026-09-01 03:27 | matmul | sec2_top_fp16 | Crisp | `` |
-| 2026-09-01 03:27 | matmul | sec2_top_fp16 | CUDA_Apples_FP16 | `256` |
-| 2026-09-01 03:28 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 03:29 | matmul | sec2_top_fp16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 03:29 | matmul | sec2_top_fp16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 03:30 | matmul | sec2_top_fp16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 03:30 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 03:30 | matmul | sec2_top_fp16 | CUBLAS_Optimal_FP16 | `256` |
-| 2026-09-01 03:32 | matmul | sec2_top_fp16 | Crisp | `256` |
-| 2026-09-01 03:33 | matmul | sec2_top_fp16 | CUDA_Apples_FP16 | `256` |
-| 2026-09-01 03:33 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64 | `256` |
-| 2026-09-01 03:34 | matmul | sec2_top_fp16 | CUTLASS_V_128x256x64 | `256` |
-| 2026-09-01 03:34 | matmul | sec2_top_fp16 | CUTLASS_V_256x128x64 | `256` |
-| 2026-09-01 03:35 | matmul | sec2_top_fp16 | CUTLASS_V_64x128x64 | `256` |
-| 2026-09-01 03:35 | matmul | sec2_top_fp16 | CUTLASS_V_128x128x64c2 | `256` |
-| 2026-09-01 03:36 | matmul | sec2_top_fp16 | CUBLAS_Optimal_FP16 | `256` |
+*No scratch runs present.*
