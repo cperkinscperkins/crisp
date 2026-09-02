@@ -1,0 +1,25 @@
+;; CHECK-FAIL: "K"
+;;
+;; Endeavour 160 — widening wgmma to 16 bits must NOT widen it for tf32.
+;; NEGATIVE by design, and it should stay negative forever.
+;;
+;; THE HAZARD.  Rungs 01/02 relax %check-wgmma-shape so a 16-bit operand may pass K=16.  The
+;; obvious way to write that relaxation -- "allow K in {8,16}" -- would also let a FLOAT (tf32)
+;; kernel ask for K=16, which the hardware has no instruction for: the tf32 wgmma is m64nNk8 and
+;; nothing else.  The kernel would then either emit a mnemonic ptxas rejects, or silently compute
+;; on half the K it was told to.
+;;
+;; So the rule under test is not "K may be 8 or 16" but "K is a FUNCTION of the operand element
+;; width" -- 8 at 32 bits, 16 at 16 bits.  This spec is the tf32 half of that rule; rung 01 is the
+;; bf16 half.  A widening that passes rung 01 and this spec is correct; one that passes rung 01
+;; alone is not.
+(declaim (precision fast))
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_tf32_k16 (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 16)))
+        (B-tile (make-scratch-matrix float (16 64)))
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    ;; ILLEGAL: tf32 wgmma is m64nNk8.  K=16 has no tf32 instruction.
+    (wgmma-accumulate-via-tile (64 64 16) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))

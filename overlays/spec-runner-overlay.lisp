@@ -132,3 +132,39 @@
                        still mints tf32 fragments (the 155/02 partial-conversion failure mode).~%")
        nil)
       (t t))))
+
+;; overlays/spec-runner-overlay.lisp
+;; Endeavour 160 rungs 01/02 — wgmma at 16 bits.
+(defun %validate-wgmma-16 (ptx-string want label)
+  "Shared body for the bf16/fp16 wgmma validators.  Two-sided, like endeavour 159's sync-MMA
+   validators and for the same reason: a module in which SOME operand reached 16 bits satisfies a
+   presence-only check while most of it still computes in the wrong precision (155/02's lesson).
+
+   The FULL mnemonic is matched.  Note the 16-bit wgmma also takes FIVE trailing immediates
+   (scaleD, scaleA, scaleB, transA, transB) where tf32 takes three -- so a lowering that swapped
+   only the mnemonic would assemble to something ptxas rejects, and a prefix match would not see
+   it.  The mnemonic is checked here; ptxas acceptance is checked by the spec runner compiling
+   the PTX."
+  (cond
+    ((not (search want ptx-string))
+     (format *error-output* "FAIL: ~a wgmma absent — expected ~s~%" label want)
+     (when (search "wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32" ptx-string)
+       (format *error-output*
+               "  (the tf32 k8 wgmma was emitted instead — the element type did not reach %wgmma-asm-string)~%"))
+     nil)
+    ((search "tf32" ptx-string)
+     (format *error-output*
+             "FAIL: ~a wgmma present but tf32 survives in the same module — some operand path~%~
+                     still lowers as tf32.~%" label)
+     nil)
+    (t t)))
+
+(defun validate-ptx-wgmma-bf16 (file ptx-string)
+  "Endeavour 160 rung 01 — the bf16 warpgroup async MMA lowered."
+  (declare (ignore file))
+  (%validate-wgmma-16 ptx-string "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16" "bf16"))
+
+(defun validate-ptx-wgmma-fp16 (file ptx-string)
+  "Endeavour 160 rung 02 — the fp16 warpgroup async MMA lowered."
+  (declare (ignore file))
+  (%validate-wgmma-16 ptx-string "wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16" "fp16"))
