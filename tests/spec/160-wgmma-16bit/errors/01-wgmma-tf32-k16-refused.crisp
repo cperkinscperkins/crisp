@@ -18,7 +18,7 @@
 (def-kernel wgmma_tf32_k16 (&out C)
   (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
   (let ((A-tile (make-scratch-matrix float (64 16)))
-        (B-tile (make-scratch-matrix float (16 64)))
+        (B-tile (make-scratch-matrix float (64 16)))
         (D (make-wgmma-accumulator float (64 64) 0.0)))
     ;; ILLEGAL: tf32 wgmma is m64nNk8.  K=16 has no tf32 instruction.
     (wgmma-accumulate-via-tile (64 64 16) D A-tile B-tile)

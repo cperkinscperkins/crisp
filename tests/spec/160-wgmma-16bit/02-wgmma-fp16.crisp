@@ -47,7 +47,7 @@
 (def-kernel wgmma_fp16 (&out C)
   (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
   (let ((A-tile (make-scratch-matrix half (64 16)))   ; M x K, one fp16 k16 slice
-        (B-tile (make-scratch-matrix half (16 64)))   ; K x N
+        (B-tile (make-scratch-matrix half (64 16)))   ; N x K (B^T) -- wgmma reads B K-major
         (D (make-wgmma-accumulator float (64 64) 0.0)))
     (wgmma-accumulate-via-tile (64 64 16) D A-tile B-tile)
     (set! (~ C 0 0) 1.0)))

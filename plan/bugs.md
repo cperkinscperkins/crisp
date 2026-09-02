@@ -1808,45 +1808,56 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         BRANCH-FREE so the compiler never generates the sibling branches that trigger it.
         Latent defect in the pre-existing coordinate form; a user CAN hit it by hand.
 
-[?] 052 UNCONFIRMED — wgmma NO-SWIZZLE (scatter) path MAY compute the wrong answer (tf32 AND bf16).
-        Measured 2026-09-01 on an H100 PCIe.  A minimal single-slice wgmma with plain
-        load-tile staging (no TMA, no :swizzle, no ring, one warpgroup) verifies FALSE:
-            _probe_wgmma_bf16_scatter  verified=False  0.176 TFLOPS
-            _probe_wgmma_tf32_scatter  verified=False  0.089 TFLOPS
-        CONFIRMED PRE-EXISTING, not a regression from endeavour 160: rebuilding the compiler
-        from commit 3da5807a -- before any 16-bit wgmma work -- reproduces the tf32 failure
-        identically (verified=False, 0.089).  Repro kernels:
-        benchmarks/matmul/_probe_wgmma_{bf16,tf32}_scatter/ (underscore-prefixed; not ladder
-        chapters, excluded from REPORT §1.5).
+[x] 052 CLOSED — NOT A BUG.  The wgmma no-swizzle (scatter) path is NOT implicated; all four
+        failing probe arms had non-compiler causes.  Resolved 2026-09-01 WITHOUT a GPU, by
+        auditing operand shapes across every wgmma kernel in the tree.
 
-        WHY IT SURVIVED THIS LONG.  The scatter path's ONLY coverage is 140/00-wgmma-forms,
-        which is COMPILE-ONLY -- it asserts the forms parse, the accumulator record mints, and
-        the PTX contains the instruction.  It never computes a number.  Every wgmma kernel that
-        has ever been checked numerically (chapters 3/4/7, sec2_top, sec3, sec4) uses
-        :swizzle :128b, so the swizzle path is the only one that has been executed against a
-        host reference.  The scatter path has been emitted, inspected, and never run.
+        WHAT THE FOUR ARMS ACTUALLY WERE.
+          * The two SCATTER arms staged a TRANSPOSED B.  wgmma with transB=0 reads its SMEM B
+            operand as (N K) -- K contiguous, i.e. B^T.  Both probes declared (K N):
+                _probe_wgmma_bf16_scatter  shape (64 64 16)  B-tile (16 64)   want (64 16)
+                _probe_wgmma_tf32_scatter  shape (64 64  8)  B-tile (16 64)   want (64  8)
+            The tf32 arm -- the "control" whose failure at commit 3da5807a made the bug look
+            pre-existing and conclusive -- is WORSE than that: its A-tile is (64 16), sized for a
+            bf16 k16 slice, against a declared K of 8.  It was copy-pasted from the bf16 probe and
+            the A-tile was never adjusted.  BOTH of its operands are malformed.  A kernel that is
+            wrong is wrong at every commit, which is exactly the trap the downgrade note called.
+          * The two SWZ arms failed on the FIXTURE, not the compiler: bench_harness.cu hardcoded
+            CU_TENSOR_MAP_SWIZZLE_NONE while the kernel descriptor declared 128B.  Fixed
+            2026-09-01; chapter 7 bf16 -- the same swizzle path -- now verifies bit-exact
+            (max_abs_err 0) at all eight sizes 512..4096 on an H100 NVL.
 
-        SCOPE.  tf32 chapter 7 (swizzle) still verifies True on the same pod, so this is
-        specific to the no-swizzle descriptor path -- %wgmma-make-desc's LBO=128B (enc 8) /
-        SBO=256B (enc 16) branch, and/or the proxy-fence + barrier staging that only the
-        scatter path uses.  CAUSE IS A HYPOTHESIS: those constants describe a core-matrix
-        scatter layout that ordinary load-tile does not actually produce in SMEM.
+        THE EVIDENCE THAT SETTLES IT.  Across all 27 wgmma-accumulate-via-tile call sites in
+        tests/spec and benchmarks/matmul, the split is perfect and has no exceptions:
+            every kernel EVER VERIFIED NUMERICALLY (chap7 tf32+bf16, sec2_top x3, sec3 x3,
+              sec4 x2, 140/03, 154/01-03, both _swz probes -- 13 of 13) has A=(M K), B=(N K);
+            every violator (12 files) is COMPILE-ONLY or a never-executed probe.
+        Nothing remains that implicates %wgmma-make-desc's no-swizzle LBO=128B/SBO=256B branch.
 
-        NOT a blocker for endeavour 160, but it INVALIDATED that endeavour's bisection: the
-        probe was built to isolate the 16-bit lowering and instead landed on this.  160's real
-        defect -- swizzle path correct at tf32, wrong at bf16 -- is untouched and separate.
+        THE ONE TRUE CLAIM IN THE ORIGINAL ENTRY SURVIVES, and is now the follow-up: the
+        scatter path has still never been executed against a host reference.  Its coverage is
+        140/00-wgmma-forms, which is compile-only.  Fixing the two probes' operand shapes and
+        running them is a ~2-minute metal check next time a pod is up.  Until then the path is
+        UNCOVERED, which is a test gap, not a defect.
 
-        DOWNGRADED 2026-09-01, same day it was filed.  A SECOND probe pair -- keeping TMA and
-        128B swizzle, dropping only the ring and warp specialization -- ALSO failed on BOTH arms,
-        tf32 control included (bf16 2.585 / tf32 2.137 TFLOPS, both verified=False).  That makes
-        four failing arms across two bisections, including two tf32 controls exercising paths
-        that predate this work.
-        Two independent compiler paths being broken is less likely than the common factor: every
-        one of those arms was a MINIMAL KERNEL I WROTE THAT HAS NEVER VERIFIED.  A kernel that is
-        wrong is wrong at every commit -- so the pre-160 control that "confirmed" 052 shows only
-        that endeavour 160 did not CAUSE the failure, NOT that the scatter path is broken.
-        The evidence for 052 is therefore no stronger than the evidence that my probe kernels are
-        incorrect, and the honest state is unconfirmed.
-        TO RESOLVE: subtract from a kernel that VERIFIES rather than constructing a new minimal
-        one -- but note that removing the warp split from chapter 7 is not a single change either,
-        because the async-barrier :arrivals counts (empty 4, full 2) are tied to the warp roles.
+[x] 053 FIXED — wgmma-accumulate-via-tile never validated its operand tile shapes, so a
+        transposed B compiled clean and computed garbage.  Endeavour 161, 2026-09-02.
+        %check-wgmma-shape validated the (M N K) triple and the element type and stopped; nothing
+        downstream looked either, because %wgmma-make-desc's LBO/SBO constants are HARDCODED and
+        the tile extents reached neither the descriptor nor the instruction.
+        THE RULE, from CUTLASS and not from inference: A is (M K), B is (N K), both K-major
+        (smem_desc<GMMA::Major::K>, ABLayout<64,8>; the tf32 SS atoms exist only in the _TN form).
+        NOTE THE TWO via-tile FORMS GENUINELY DISAGREE, which is why all twelve violators erred
+        the same way -- mma-accumulate-via-tile takes B as (Kt Nt).  The errors say so.
+        B gets TWO messages: at tf32 (K N) is not a layout the instruction can read at all; at
+        16 bits it IS legal hardware via transB=1, and Crisp merely pins transA/transB to (0 0),
+        so the refusal there is a fact about this compiler and says so.
+        ALSO in 161: %check-wgmma-shape became profile-driven, matching %check-mma-shape's
+        two-branch structure -- a new optional :wgmma-shapes profile key (WARPGROUP granularity;
+        :mma-shapes is FRAGMENT granularity and is read as such in ~18 places), else the sm_90a
+        constraints as a documented fallback.  See tests/spec/161-wgmma-shape-validation/.
+        1057/1057 E2E + 232/232 negative + 291/291 unit.  Twelve kernels corrected, none of them
+        ever numerically verified, so no measured result moved.
+        OPEN FOLLOW-UPS: infer transB from tile orientation at 16 bits; enumerate sm_90a's legal
+        wgmma shapes into the builtin h100 profile (deliberately not done -- an incomplete list
+        would refuse working benchmark kernels).

@@ -60,8 +60,8 @@
   (declare #'(a-mat b-mat &out c-mat)
            (global-size :derive-from C :strategy :strided)
            (local-size :set-to 128))          ; ONE warpgroup, 128-aligned for wgmma
-  (let ((A-tile (make-scratch-matrix float (64 16)))   ; M x K, a single k8 slice
-        (B-tile (make-scratch-matrix float (16 64)))   ; K x N
+  (let ((A-tile (make-scratch-matrix float (64 8)))   ; M x K, a single k8 slice
+        (B-tile (make-scratch-matrix float (64 8)))   ; N x K (B^T) -- wgmma reads B K-major
         (D      (make-wgmma-accumulator float (64 64) 0.0))
         (K      (inner-dimension A B)))
     (tile-stride C (64 64) (grid-y grid-x)

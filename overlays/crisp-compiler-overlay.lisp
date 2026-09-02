@@ -1115,3 +1115,266 @@
                    "1, 1, 1")))
     (format nil "wgmma.mma_async.sync.aligned.m64n~dk~d.~a {~a}, $~d, $~d, ~a;"
             n kps (%wgmma-operand-mnemonic elem) accs (* 2 nacc) (1+ (* 2 nacc)) tail)))
+
+
+;;; ===================================================================
+;;; Endeavour 161 — wgmma shape validation: operand shapes, and shapes from the profile.
+;;;
+;;; TWO DEFECTS, one endeavour, because they are the same omission at two altitudes.
+;;;
+;;; 1. wgmma-accumulate-via-tile validated its (M N K) triple and its element type and then
+;;;    STOPPED.  It never looked at the A and B tiles.  Nothing downstream looked either:
+;;;    %wgmma-make-desc takes only (builder base-ptr swizzle-p kslice-byte-off) and its LBO/SBO
+;;;    constants are HARDCODED, so the tile extents reach neither the descriptor nor the
+;;;    instruction.  To the lowering the declared dims were pure documentation, and a transposed
+;;;    operand compiled clean, ran at full speed, and computed garbage.  That is what BUG 052
+;;;    actually was -- two malformed probe kernels misfiled as a compiler bug, at the cost of a
+;;;    rented H100 and a whole bisection.
+;;;
+;;; 2. The (M N K) triple itself was checked against HARDCODED sm_90a constants, while the
+;;;    sibling fragment form %check-mma-shape has consulted the hardware profile since endeavour
+;;;    132.  wgmma was the outlier.
+;;;
+;;; THE OPERAND CONVENTIONS OF THE TWO FORMS GENUINELY DIFFER, which is why every violator in
+;;; the tree got it wrong the same way:
+;;;     mma-accumulate-via-tile   A = (Mt Kt)   B = (Kt Nt)     <- see %mma-k-steps' docstring
+;;;     wgmma-accumulate-via-tile A = (M  K )   B = (N  K )
+;;; Assuming the sibling's convention is the natural mistake, so the errors below name the
+;;; difference explicitly rather than just stating the rule.
+;;; ===================================================================
+
+;; src/hardware-profile.lisp
+;; 161: REPLACES *hardware-profile-schema* -- adds :wgmma-shapes beside :mma-shapes.
+(defparameter *hardware-profile-schema*
+  '((:simd-width                  . :pos-int)
+    (:compute-units               . :pos-int)
+    (:max-registers-per-cu        . :pos-int)
+    (:max-registers-per-thread    . :pos-int-or-modes)  ; 144 D4: scalar OR (mode ...)
+    (:max-total-threads-per-block . :pos-int)
+    (:max-concurrent-kernels      . :pos-int)
+    (:native-cache-line-size      . :pos-int)   ; bytes
+    (:max-shared-memory-per-block . :size)      ; KB/MB/GB/TB literal -> bytes
+    (:l2-cache-size               . :size)
+    (:tile-visit-strip-width      . :pos-int)   ; 144 Phase 1: measured; absent/1 => linear
+    (:max-work-group-dims         . :dims3)     ; (x y z) positive ints
+    (:mma-shapes                  . :mma-shapes)   ; FRAGMENT granularity: (M N K) triples
+    (:wgmma-shapes                . :mma-shapes)   ; 161: WARPGROUP granularity
+    (:mma-lowerings               . :lowerings))   ; 156: ordered; first is the default
+  "Endeavor 130: canonical hardware-profile keys and their value types.
+
+   Endeavour 161 added :wgmma-shapes, and it is a SEPARATE KEY rather than more entries in
+   :mma-shapes for a concrete reason.  :mma-shapes is FRAGMENT granularity -- (8 16 8) for Intel
+   XMX, (16 8 8) for NVIDIA mma.sync -- and roughly eighteen call sites read it as such,
+   including the register-tile fragment decomposition (%mma-fragment-mn) and %spv-mma-shape.
+   wgmma's (64 N K) is WARPGROUP granularity: M is 64 because a warpgroup is 128 threads, and N
+   runs to 256.  Mixing warpgroup triples into :mma-shapes would feed those dims to fragment math.
+
+   GRANULARITY IS A DIFFERENT AXIS FROM ELEMENT TYPE.  Endeavour 155 typed the ENTRIES, adding
+   the 4-list (half 8 16 16) beside the bare (8 16 8), because a triple alone cannot say what
+   element type it is a shape FOR.  A triple cannot say what LEVEL it describes either, and that
+   is what this key adds.  The entry GRAMMAR is deliberately reused unchanged -- the value type
+   is still :mma-shapes -- so %mma-shape-entry-dims and %mma-shape-for-elem apply verbatim and a
+   part may write (bfloat16 64 256 16) here exactly as it would there.
+
+   Both keys are OPTIONAL.  A profile that declares neither behaves precisely as before.
+
+   Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can drive
+   its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the portable
+   SPV_KHR_cooperative_matrix path every backend has had until now.
+
+   Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) -- a scalar
+   for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose
+   register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the
+   MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent
+   means walk linearly.  It is deliberately a measured constant rather than a derived one -- see
+   the block comment in src/hardware-profile.lisp for the two-device data that refuted the
+   derivation.")
+
+;; src/mma.lisp
+(defun %wgmma-shapes-of-profile ()
+  "The active hardware profile's :wgmma-shapes, or NIL when no profile is active or the active
+   one is silent about warpgroup shapes.
+
+   NIL IS THE COMMON CASE AND MUST STAY CHEAP.  Nine of the eleven wgmma specs in the tree
+   declare no profile at all, as does every benchmark kernel, so 'no declared wgmma shapes' is
+   the path almost every compile takes.  It means the sm_90a instruction constraints apply as a
+   documented fallback -- never that the kernel is rejected."
+  (let ((profile (active-hardware-profile)))
+    (and profile (getf profile :wgmma-shapes))))
+
+;; src/mma.lisp
+(defun %check-wgmma-shape-against-profile (shape shapes location swizzle elem)
+  "CAUSE ONE: a profile DECLARES its warpgroup shapes, so membership in that list is the rule.
+
+   The declared entries are per-slice shapes.  Without :swizzle the kernel's shape must match one
+   outright.  With :swizzle the K is a K-BLOCK spanning several slices, so (M N) must match an
+   entry and K must be a positive multiple of that entry's K -- the same relaxation the sm_90a
+   fallback makes, kept identical so a profile cannot silently change what :swizzle means."
+  (destructuring-bind (m n k) shape
+    (let ((ok (some (lambda (entry)
+                      (let ((dims (%mma-shape-entry-dims entry)))
+                        (and dims (= (length dims) 3)
+                             (= m (first dims)) (= n (second dims))
+                             (let ((ek (third dims)))
+                               (if swizzle
+                                   (and (plusp ek) (plusp k) (zerop (mod k ek)))
+                                   (= k ek))))))
+                    shapes)))
+      (unless ok
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: shape ~a is not one of the active hardware profile's :wgmma-shapes ~a." shape shapes)
+               :source-location location)))))
+
+;; src/mma.lisp
+(defun %check-wgmma-shape-against-isa (shape location swizzle elem)
+  "CAUSE TWO: nothing declares warpgroup shapes, so the sm_90a instruction constraints apply.
+
+   THE THREE MESSAGES ARE DELIBERATELY UNCHANGED at their front.  tests/spec/140-wgmma/errors/
+   01, 02 and 03 assert the substrings 'M must be 64', 'multiple of 8' and 'K'; those specs
+   predate hardware profiles and none of them declares one, so this is the branch they take.
+   The trailing sentence naming the fallback is ADDITIVE, which a substring match tolerates."
+  (destructuring-bind (m n k) shape
+    (unless (= m 64)
+      (error 'crisp-compiler-error
+             :message (format nil "wgmma: M must be 64 (wgmma is always m64), got ~a.  No active hardware profile declares :wgmma-shapes, so the sm_90a instruction constraints apply." m)
+             :source-location location))
+    (unless (and (>= n 8) (<= n 256) (zerop (mod n 8)))
+      (error 'crisp-compiler-error
+             :message (format nil "wgmma: N must be a multiple of 8 in [8,256], got ~a.  No active hardware profile declares :wgmma-shapes, so the sm_90a instruction constraints apply." n)
+             :source-location location))
+    (let* ((kps (%wgmma-k-per-slice elem))
+           (what (if (= kps 16) "16-bit m64nNk16" "tf32 m64nNk8")))
+      (if swizzle
+          (unless (and (plusp k) (zerop (mod k kps)))
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma: with :swizzle, K (the K-block) must be a positive multiple of ~a for ~a operands, got ~a." kps what k)
+                   :source-location location))
+          (unless (= k kps)
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma: K must be ~a (~a, a single k~a slice); use :swizzle :128b for a multi-slice K-block, got ~a." kps what kps k)
+                   :source-location location))))))
+
+;; src/mma.lisp
+(defun %check-wgmma-shape (shape location &optional swizzle elem)
+  "Validate a wgmma (M N K) shape, from the hardware profile when one describes this part and
+   from the sm_90a instruction constraints when none does.
+
+   Endeavour 161 gave this the two-branch structure %check-mma-shape has had for the FRAGMENT
+   form since endeavour 132.  wgmma was the last shape check still reasoning only from hardcoded
+   constants, which meant a profile could describe a part accurately and be ignored here."
+  (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+    (error 'crisp-compiler-error
+           :message (format nil "wgmma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." shape)
+           :source-location location))
+  (let ((declared (%wgmma-shapes-of-profile)))
+    (if declared
+        (%check-wgmma-shape-against-profile shape declared location swizzle elem)
+        (%check-wgmma-shape-against-isa shape location swizzle elem))))
+
+;; src/mma.lisp
+(defun %check-wgmma-operands (shape a b location elem swizzle)
+  "Refuse a wgmma whose staged A or B tile is not the shape the instruction will read.
+
+   THE RULE.  A is (M K) and B is (N K) -- both K-major.  This is not inferred from which
+   kernels happen to verify; it is what CUTLASS declares for every tf32 GMMA trait in
+   third_party/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp:
+       FrgTypeA = FrgTypeB = GMMA::smem_desc<GMMA::Major::K>
+       ALayout  = ABLayout<64, 8>      BLayout = ABLayout<64, 8>
+   and the tf32 SS atoms exist ONLY in the _TN form (16 of them, no other suffix) because tf32
+   wgmma carries no transpose immediate.
+
+   WHY B GETS TWO DIFFERENT MESSAGES.  At 16 bits the ISA genuinely offers both orientations --
+   the bf16/f16 traits are templated <GMMA::Major tnspA, GMMA::Major tnspB> where tf32's are
+   hardcoded -- so a (K N) B operand is Major::MN and is legal HARDWARE with transB=1.  Crisp
+   pins transA/transB to (0 0) via *wgmma-16-trans*, so at 16 bits the refusal is a fact about
+   THIS COMPILER, and saying 'B must be (N K)' there would be a false claim about the hardware
+   that sends the reader to fix the wrong thing.
+
+   UNRESOLVABLE EXTENTS ARE NOT AN ERROR.  %mma-operand-extent returns NIL when a tile's shape is
+   not compile-time known, and a wgmma operand is frequently (ring-get RING SLOT).  Refusing on
+   NIL would reject the working pipelined kernels -- chapter 7, sec2_top, sec3, sec4 -- so an
+   unknown extent skips silently, exactly as %mma-k-steps treats its own NIL.
+
+   K IS THE PER-SLICE K, not the K-block: under :swizzle the staged tile spans several slices, so
+   its K extent is the block and only A-vs-B agreement is checkable there."
+  (destructuring-bind (m n k) shape
+    (let ((a-r (%mma-operand-extent a nil :rows))
+          (a-c (%mma-operand-extent a nil :cols))
+          (b-r (%mma-operand-extent b nil :rows))
+          (b-c (%mma-operand-extent b nil :cols)))
+      ;; A must be (M K).  Under :swizzle the column extent is a K-block, so only M is fixed.
+      (when (and a-r (/= a-r m))
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: A tile must be (M K) = (~a ~a) for shape ~a, but it is (~a ~a).  A is staged M-rows by K-columns, the same way mma-accumulate-via-tile stages it." m k shape a-r (or a-c '?))
+               :source-location location))
+      (when (and (not swizzle) a-c (/= a-c k))
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: A tile must be (M K) = (~a ~a) for shape ~a, but it is (~a ~a)." m k shape (or a-r '?) a-c)
+               :source-location location))
+      ;; B must be (N K).  This is where the two via-tile forms disagree, so say so.
+      (when (and b-r (/= b-r n))
+        (if (= (%wgmma-k-per-slice elem) 16)
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma-accumulate-via-tile: B tile is (~a ~a), which is the Major::MN orientation.  The 16-bit wgmma CAN read that, but only with transB=1, and Crisp pins transA/transB to (0 0) in *wgmma-16-trans* -- so declare B as (N K) = (~a ~a).  NOTE: mma-accumulate-via-tile takes B as (K N); the two via-tile forms differ here." b-r (or b-c '?) n k)
+                   :source-location location)
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma-accumulate-via-tile: B tile must be (N K) = (~a ~a) for shape ~a, but it is (~a ~a).  wgmma reads its SMEM B operand K-major (CUTLASS GMMA::Major::K) and tf32 wgmma has no transpose immediate, so (K N) is not a layout this instruction can read.  NOTE: mma-accumulate-via-tile takes B as (K N); the two via-tile forms differ here." n k shape b-r (or b-c '?))
+                   :source-location location)))
+      (when (and (not swizzle) b-c (/= b-c k))
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: B tile must be (N K) = (~a ~a) for shape ~a, but it is (~a ~a)." n k shape (or b-r '?) b-c)
+               :source-location location)))))
+
+;; src/mma.lisp
+(defun analyze-wgmma-accumulate-via-tile (expr env context location)
+  "(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B
+   :swizzle MODE :k K)).  K rule is swizzle- AND element-aware (see %check-wgmma-shape).
+
+   Endeavour 160: the A tile's element type is resolved here and passed to the shape check, so a
+   tf32 kernel asking for K=16 is still refused while a bf16 one is accepted.
+
+   Endeavour 161: the OPERAND SHAPES are checked too.  Order matters -- the shape check runs
+   first, so a kernel that is wrong about both its triple and its tiles still reports the triple,
+   which is what tests/spec/140-wgmma/errors/01-03 assert."
+  (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
+    (let ((elem (%coop-elem-of (analyze-expression a env context (append location '(3)))))
+          (swz  (getf kwargs :swizzle)))
+      (%check-wgmma-shape shape location swz elem)
+      (%check-wgmma-operands shape a b location elem swz)
+      (analyze-expression `(set! ,d (wgmma-accumulate ,d ,a ,b :swizzle ,swz :k ,(third shape)))
+                          env context location))))
+
+;; src/mma.lisp
+;; 161: the SLM scratch-tile shapes must be visible during the ANALYSIS of the let body, not
+;; only during the register-tile explosion.
+;;
+;; %explode-register-tiles binds *mma-scratch-tile-dims* around its own expansion, which is
+;; where %emit-per-frag-accumulate reads it (via %mma-k-steps).  But the wgmma OPERAND check
+;; added by endeavour 161 runs in analyze-wgmma-accumulate-via-tile -- an ANALYZER, reached
+;; later, by which time the binding is gone and every extent reads back NIL.  The check then
+;; took its own "unresolvable extents are not an error" path and silently passed everything,
+;; which is exactly the failure mode it exists to prevent.
+;;
+;; Extending the binding to cover analyze-let-expression adds NO new behaviour to the explosion
+;; path: %mma-k-steps is called only from %emit-per-frag-accumulate, which already ran inside
+;; the inner binding.  The only new reader is the 161 operand check.
+;;
+;; Bindings are APPENDED to the enclosing value rather than replacing it, so nested lets
+;; accumulate and an inner tile shadows an outer one of the same name -- assoc returns the first
+;; match, and the inner list is first.
+(defun analyze-let-with-tile-explosion (expr env context location)
+  "let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),
+   then explode register-tile bindings into per-fragment mutable variables (register residency,
+   Endeavor 132), then defer to the normal let analysis.
+
+   Endeavour 161: publishes this LET's compile-time SLM scratch-tile shapes for the duration of
+   the body analysis, so operand-shape checks in the expression analyzers can see them."
+  (let ((lowered (%explode-register-tiles
+                  (%expand-matmul-tile-stride-register-forms expr location)
+                  location context)))
+    (let ((*mma-scratch-tile-dims*
+            (append (and (consp lowered)
+                         (listp (second lowered))
+                         (%mma-scratch-tile-dims-from-bindings (second lowered)))
+                    *mma-scratch-tile-dims*)))
+      (analyze-let-expression lowered env context location))))

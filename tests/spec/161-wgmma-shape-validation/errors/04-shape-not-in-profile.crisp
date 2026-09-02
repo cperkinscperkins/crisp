@@ -1,0 +1,37 @@
+;; CHECK-FAIL: ":wgmma-shapes"
+;; CHECK-FAIL-FLAGS: --hardware-profile=hopper161e
+;; Endeavour 161 - CAUSE ONE: a profile declares its warpgroup shapes and the kernel asks for a
+;; shape that is not among them.
+;;
+;; THE TWO CAUSES, kept apart deliberately.  A wgmma shape can be wrong in two unrelated ways,
+;; and one message for both would hide which:
+;;   1. THIS RUNG -- a profile IS active and DOES declare :wgmma-shapes, and (64 128 8) is not
+;;      in its list.  The hardware has been described and the kernel contradicts the
+;;      description.  The error names the profile's list, so the reader sees what WAS on offer.
+;;   2. No profile, or a profile with no :wgmma-shapes.  Then nothing describes the hardware and
+;;      the sm_90a instruction constraints apply as a documented fallback: M=64, N a multiple of
+;;      8 in [8,256], K=8 for tf32 and 16 at 16 bits.  Covered by 140/errors/01-03, whose
+;;      messages must keep matching "M must be 64", "multiple of 8" and "K must be 8" -- those
+;;      three specs predate profiles entirely and not one of them declares a profile.  Nine of
+;;      the eleven wgmma specs in the tree declare none, as does every benchmark kernel, so the
+;;      no-profile path is the COMMON one and must stay working, not become an error itself.
+;;
+;; This mirrors %check-mma-shape (src/mma.lisp), which has had exactly this two-branch structure
+;; for the FRAGMENT form since endeavour 132: profile present means membership in :mma-shapes,
+;; profile absent means the tf32 (16 8 8) default.  wgmma was the outlier that never got it.
+;;
+;; N=128 is a legal wgmma width in general -- a multiple of 8 within [8,256] -- so this kernel
+;; compiles fine with no profile at all.  It is refused HERE only because this profile says the
+;; part does not offer it, which is precisely the distinction the rung tests.
+(def-hardware-profile hopper161e
+  :simd-width 32
+  :mma-shapes ((16 8 8))
+  :wgmma-shapes ((64 64 8) (64 256 8)))
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_off_profile (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (128 8)))
+        (D (make-wgmma-accumulator float (64 128) 0.0)))
+    (wgmma-accumulate-via-tile (64 128 8) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))

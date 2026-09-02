@@ -56,6 +56,37 @@ def nverified(d):
     return v
 
 
+def classify(d):
+    """Return (chapter, competitor, points, verified) for ANY result schema in the directory.
+
+    TWO SCHEMAS LIVE HERE, and conflating them produced ten false alarms.  The matmul sweeps write
+    a nested envelope -- chapter/competitor plus a `results` list of per-size records, each with
+    metrics.throughput.tflops and configuration.verified.  The reduction benchmarks
+    (`reduction_<impl>_N<n>.json`) write something else entirely: ONE flat record per file, keyed
+    algorithm/implementation, carrying `throughput_gb_s` and a top-level `correct` flag, and no
+    `results` list at all.
+
+    Read through the matmul lens, every reduction file looks like zero data points -- which this
+    script reports as "NO DATA", the single most alarming verdict it has, and precisely the wrong
+    one: those runs completed and verified.  A schema this script cannot read is not a benchmark
+    that failed to run.
+
+    They are audited on their own terms rather than skipped, because the interesting failure is
+    still expressible: a reduction file with correct=false is exactly what this tool exists to
+    surface, and excluding the family would hide it.
+    """
+    if "results" in d:
+        return (d.get("chapter") or "?", d.get("competitor") or "?", npoints(d), nverified(d))
+    if "algorithm" in d and "implementation" in d:
+        thr = d.get("throughput_gb_s")
+        if thr is None:
+            thr = d.get("kernel_median_us")
+        pts = 1 if thr is not None else 0
+        return (d.get("algorithm") or "?", d.get("implementation") or "?",
+                pts, 1 if (pts and d.get("correct")) else 0)
+    return (d.get("chapter") or "?", d.get("competitor") or "?", npoints(d), nverified(d))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir", default=str(ROOT / "benchmarks" / "results"))
@@ -76,9 +107,7 @@ def main():
         if d is None:
             rows.append((p.name, "?", "?", 0, 0, "UNPARSEABLE"))
             continue
-        chap = d.get("chapter") or "?"
-        comp = d.get("competitor") or "?"
-        pts, ver = npoints(d), nverified(d)
+        chap, comp, pts, ver = classify(d)
         if pts == 0:
             # An error recorded inside the file is the useful distinction.
             err = ""

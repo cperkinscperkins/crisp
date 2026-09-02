@@ -1,0 +1,20 @@
+;; CHECK-FAIL: "A tile must be (M K)"
+;; Endeavour 161 - the A operand is checked too, and names itself when it is the one at fault.
+;;
+;; WHY A SEPARATE RUNG.  A and B fail differently, and one message covering both would be vague
+;; exactly where the user needs precision.  This is not a theoretical concern:
+;; _probe_wgmma_tf32_scatter -- the "control" arm whose failure made BUG 052 look pre-existing
+;; and conclusive -- had A declared (64 16) against a K of 8, sized for a bf16 k16 slice because
+;; it was copy-pasted from the bf16 probe and never adjusted.  BOTH its operands were malformed.
+;; An error naming only B would have sent the reader to the wrong half of a kernel that had two
+;; things wrong with it, which is how that arm stayed misdiagnosed as a compiler bug.
+;;
+;; Here B is correct and only A is wrong, so the message must implicate A alone.
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_a_wrong (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 16)))   ; (M 16) against K=8 - WRONG
+        (B-tile (make-scratch-matrix float (64 8)))    ; (N K) - correct
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))
