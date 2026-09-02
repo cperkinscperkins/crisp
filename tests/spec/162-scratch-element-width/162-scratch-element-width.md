@@ -558,3 +558,64 @@ at 393,216 bytes before the fix and is 192KB after. The win is 45%, and none of 
 - [ ] Re-measure the small sizes (1024/2048), where the tall tile lost on H100; the H200 picture
       may differ and §2 needs a single defensible choice across the range.
 - [ ] Re-run the H100 comparison so the two machines are directly comparable at the new geometry.
+
+---
+
+# H100 NVL comparison, 2026-09-02 — a crossover, a format split, and a bandwidth answer
+
+Same code, same commit (39bb20f), both machines.
+
+| kernel | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---:|---:|---:|---:|---:|---:|
+| **H100 NVL** | | | | | | |
+| `chap7_wgmma_bf16` (64x256, ring 2) | **97.8** | **343.4** | 432.2 | 423.5 | 302.7 | 258.3 |
+| `_2wg_deep` bf16 (128x256, ring 4) | 74.0 | 327.8 | 481.3 | 456.9 | 370.7 | 312.1 |
+| `_2wg_deep` **fp16** | 74.0 | 328.6 | **495.3** | **487.9** | **399.3** | **315.3** |
+| **H200** | | | | | | |
+| `chap7_wgmma_bf16` | -- | -- | 523.7 | 567.0 | 507.5 | 491.7 |
+| `_2wg_deep` bf16 | -- | -- | **569.3** | **686.0** | **737.1** | **731.0** |
+
+## 1. There IS a crossover, and it lands between 2048 and 4096
+
+`_2wg_deep` **loses at 1024 (74.0 vs 97.8, -24%) and 2048**, then wins everywhere from 4096 up,
+by a margin that grows to +21% at 32768. This is the tall tile's occupancy cost showing up
+exactly where 154/03 said it would, and it settles the promotion question:
+
+**`_2wg_deep` must NOT simply replace the §2 kernel.** §2 needs either a size-dependent choice
+or the honest two-column ENVELOPE presentation the Intel side already uses ("envelope" + "best
+single"). Publishing one number across the range would misrepresent both ends.
+
+## 2. fp16 and bf16 DIVERGE at this geometry -- 159's lesson holds
+
+At 64x256 the two formats matched (461.4 vs 456.7 at 4096). At 128x256 ring 4 they do not:
+fp16 leads bf16 at every size above 2048 -- +2.9% at 4096, **+6.8% at 8192**, +7.7% at 16384.
+Assuming the earlier tie carried over would have been wrong, which is precisely what endeavour
+159 warned about. **The fp16 twin should be the promoted kernel, not the bf16 one.**
+
+## 3. The bandwidth question is answered
+
+H200 is the same Hopper die and the same `sm_90a` instructions -- only the memory subsystem
+differs (141 GB HBM3e ~4.8 TB/s vs 95 GB HBM3 ~3.9 TB/s, a 1.23x ratio). The measured speedup
+is far larger than that ratio and GROWS with N:
+
+| N | H200 / H100 (`_2wg_deep` bf16) |
+|---:|---:|
+| 4096 | 1.18x |
+| 8192 | 1.50x |
+| 16384 | **1.99x** |
+| 32768 | **2.34x** |
+
+At 4096 the gap is roughly the bandwidth ratio; by 16384 it is double it. **Crisp's large-N
+16-bit performance is memory-bound, not compute-bound**, and increasingly so as the working set
+outgrows cache. That is a concrete direction for the next optimisation round -- and it means
+cuBLAS comparisons taken only at 4096 understate how much headroom remains at scale.
+
+## Status
+
+- [x] H100/H200 comparison at the new geometry, same commit both machines
+- [x] fp16 twin built and measured -- it WINS, and the formats diverge here
+- [x] Crossover located between 2048 and 4096
+- [ ] Promote as an ENVELOPE (chap7 below ~4096, `_2wg_deep` fp16 above), not a single kernel
+- [ ] Re-measure cuBLAS on H100 at these sizes for a like-for-like % (the H200 cuBLAS run
+      covered 8192+ only)
+- [ ] Large-N work is BANDWIDTH-bound: next round should target the fetch path, not the MMA

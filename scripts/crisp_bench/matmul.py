@@ -1415,6 +1415,8 @@ def main():
                        [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
             run_target("_variant_wgmma_bf16_2wg_d3", "matmul.crisp", "matmul.ptx", "Crisp",
                        [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
+            run_target("_variant_wgmma_fp16_2wg_deep", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
 
 
             # Endeavour 160 BISECTION PROBES (underscore dirs -- not ladder chapters, not in §1.5).
