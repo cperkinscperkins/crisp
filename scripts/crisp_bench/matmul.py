@@ -768,9 +768,30 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
         # 5th field: the swizzle mode.  Omitting it made the fixture default to NONE while the
         # wgmma descriptor said 128B -- see bench_harness.cu's note.
         _sw = re.search(r':swizzle\s+:\|?([A-Za-z0-9]+)\|?', m.group(0))
-        tmaps.append(f"{st}:{describes}:{b0}:{b1}:{(_sw.group(1).lower() if _sw else 'none')}")
+        tmaps.append([st, describes, int(b0), int(b1),
+                      (_sw.group(1).lower() if _sw else 'none')])
+    # ORIENTATION.  B is not always staged K x N.  chap7_wgmma stages B TRANSPOSED (N x K, "B^T")
+    # because wgmma wants both operands K-contiguous, while chapters 4-6 stage it K x N.  A
+    # fixture that assumes K x N describes the wrong global tensor to the TMA, and the kernel
+    # reads a transposed view of the right bytes.
+    #
+    # THAT BUG IS INVISIBLE AT MOST SIZES.  The harness fills B with `i % 3`, so a transposed
+    # read still agrees with the reference whenever N % 3 == 1 -- measured bit-exact at
+    # N=1024/2560/4096 and wrong at 512/768/1280/1536/2048/3072.  A matmul cannot legitimately
+    # depend on the residue of its size; that dependence is the signature of this mismatch.
+    #
+    # A is ALWAYS M x K, so A's second box dim IS the K-step.  Whichever of B's box dims equals
+    # that K-step tells us B's orientation -- principled, rather than guessing from which dim is
+    # larger.
     if tmaps:
-        env["CRISP_MATMUL_TENSORMAP"] = ",".join(tmaps)
+        _kstep = next((t[3] for t in tmaps if t[1].lower() == "a"), None)
+        specs = []
+        for st, describes, b0, b1, sw in tmaps:
+            orient = "kn"
+            if describes.lower() == "b" and _kstep is not None:
+                orient = "nk" if b1 == _kstep else "kn"
+            specs.append(f"{st}:{describes}:{b0}:{b1}:{sw}:{orient}")
+        env["CRISP_MATMUL_TENSORMAP"] = ",".join(specs)
 
     specs = []
     for name, st, _e, _blob in scratch:

@@ -307,12 +307,18 @@ int main(int argc, char **argv) {
         // misread as a 16-bit compiler defect, because the one kernel that passed (tf32
         // chapter 7) went through the GENERATED harness instead, which builds tensormaps properly.
         const std::string swz = (f.size() >= 5) ? f[4] : "none";
+        // 6th field: B's orientation.  "nk" means the kernel stages B TRANSPOSED (N x K), which
+        // chap7_wgmma does so both wgmma operands are K-contiguous; "kn" is the K x N staging
+        // chapters 4-6 use.  Assuming "kn" describes the wrong global tensor for a B^T kernel --
+        // and the fill pattern (i % 3) hides it whenever N % 3 == 1, which is why N=1024 and 4096
+        // were bit-exact while 2048 was wrong.
+        const std::string orient = (f.size() >= 6) ? f[5] : "kn";
 
         const bool isA = (wh == "a" || wh == "A");
         CUdeviceptr base = isA ? dA : dB;
         // Extents as this harness ALLOCATED them: A is M x K, B is K x N, both row-major.
-        const uint64_t e0 = isA ? M : K;
-        const uint64_t e1 = isA ? K : N;
+        const uint64_t e0 = isA ? M : (orient == "nk" ? N : K);
+        const uint64_t e1 = isA ? K : (orient == "nk" ? K : N);
 
         CUtensorMapDataType dt;
         if      (elem == "bf16") dt = CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
