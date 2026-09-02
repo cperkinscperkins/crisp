@@ -1,0 +1,72 @@
+;; Crisp wgmma Matmul (bf16) on NVIDIA — Section 1 Chapter 7, the TOP of the 16-bit ladder.
+;; 1 producer warp streams TMA; a 4-warp consumer warpgroup runs the warpgroup-async MMA.
+;;
+;; WHY THIS RUNG EXISTS.  Endeavour 159 built the NVIDIA 16-bit ladder and left chapter 7 as a row
+;; of dashes in §1.5 of the report -- the ONLY rung empty for a compiler reason rather than a
+;; missing kernel.  Crisp's wgmma path was tf32-pinned: %check-wgmma-shape hard-errored unless
+;; K was exactly 8, and %wgmma-asm-string emitted m64n{N}k8.f32.tf32.tf32 unconditionally.
+;; Endeavour 160 lifted both, and this is the kernel that uses them.
+;;
+;; WHAT IS AT STAKE.  The best Crisp bf16 kernel before this was chapter 4 at 92.5 TFLOPS =
+;; 13.9% of cuBLAS (666.2) on an H100 NVL.  At tf32, chapter 7 reaches 67-90% of cuBLAS.  wgmma
+;; is the instruction that closes that gap -- IF it closes it the same way at 16 bits, which is
+;; exactly what 159 taught us not to assume.
+;;
+;; DELIBERATELY A LINE-FOR-LINE PORT of chap7_wgmma/matmul.crisp: same 160-thread split (4
+;; consumer warps = warpgroup 0, 128-aligned for wgmma; producer = warp 4), same 2-slot rings,
+;; same barrier arrivals, same :swizzle :128b on both the TMA loads and the wgmma.  Only the
+;; operand element type and the K-block change, so a difference between this row and the tf32
+;; row is the FORMAT and not a different kernel.
+;;
+;; THE K-BLOCK IS 64, NOT 32, AND THAT KEEPS THE SMEM IDENTICAL.  wgmma walks a K-block in slices
+;; of 32 BYTES: tf32 k8 (8 x 4 bytes) or bf16 k16 (16 x 2 bytes).  The tf32 kernel used a K-block
+;; of 32 = four k8 slices = 128 bytes of K per stage.  A bf16 K-block of 64 is likewise four k16
+;; slices = 128 bytes, so:
+;;     tf32  A-ring 64 x 32 x 4 bytes = 8192 B per slot
+;;     bf16  A-ring 64 x 64 x 2 bytes = 8192 B per slot
+;; Identical shared-memory footprint, identical slice count, identical descriptor advance
+;; (kk*32 bytes).  Halving the K-block to 32 instead would have halved the slices and changed the
+;; pipelining, making the two rows incomparable for a reason that has nothing to do with format.
+;;
+;; THE ACCUMULATOR IS f32 AND UNCHANGED: N/2 = 128 f32 registers per thread for n256, exactly as
+;; the tf32 kernel.  A 16-bit wgmma accumulates in fp32.
+;;
+;; WHAT THIS KERNEL IS ACTUALLY TESTING, beyond speed.  Endeavour 160 argued -- from byte
+;; arithmetic, not from measurement -- that the wgmma SMEM descriptor is unchanged at 16 bits,
+;; and therefore left %wgmma-make-desc untouched.  That descriptor is a runtime 64-bit word which
+;; ptxas never validates, so nothing local can check it.  If the argument is wrong, this kernel
+;; compiles perfectly and computes garbage.  MMA_CORRECT here is the experiment that settles it.
+;;
+;; MMA-DIMS / MMA-SCALE are deliberately absent: this is a benchmark kernel measured through
+;; benchmarks/matmul/crisp/bench_harness.cu, which verifies against its own host reference.
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 160))          ; 4 consumer warps (warpgroup 0) + 1 producer warp
+  (let ((A-ring (make-scratch-matrix-ring bfloat16 (64 64)  :ring-count 2))   ; 2 x 64(M) x 64(K)
+        (B-ring (make-scratch-matrix-ring bfloat16 (256 64) :ring-count 2))   ; 2 x 256(N) x 64(K) B^T
+        (D      (make-wgmma-accumulator float (64 256) 0.0))
+        (K      (inner-dimension A B))
+        (empty  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 4 :initial-state :signaled))
+        (full   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 256) (grid-y grid-x)
+      (with-warp-specialization (:consumer 4 :producer 1)
+        (:consumer
+          (set! D (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 64) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile D C (grid-y grid-x)))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b))))))))

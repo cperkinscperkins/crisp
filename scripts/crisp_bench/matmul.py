@@ -1349,6 +1349,10 @@ def main():
                        [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
             run_target("chap6_warp_specialization_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
                        [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            # Endeavour 160: the top rung.  Tile is 64,256 like its tf32 twin -- a 64,64 tile here
+            # would measure a different kernel than chap7_wgmma and make the rows incomparable.
+            run_target("chap7_wgmma_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
 
             for _ch, _sfx, _tag in (("sec2_top_fp16", "fp16", "FP16"),
                                     ("sec2_top_bf16", "bf16", "BF16")):
