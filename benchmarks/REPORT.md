@@ -5,7 +5,7 @@
 | device | data captured | source |
 |---|---|---|
 | Intel BMG | 2026-08-29 | Crisp `c16d1f4` (docker) |
-| NVIDIA H100 NVL | 2026-09-01 | Crisp `34ab4dd1` (runpod) |
+| NVIDIA H100 NVL | 2026-09-02 | Crisp `16d6339a` (runpod) |
 | NVIDIA H100 PCIe | 2026-09-02 | Crisp `cc1ae534` (runpod) |
 
 ---
@@ -524,15 +524,15 @@ register ring + prefetch
 | # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** |
 |---|---|---|---|---|---|---|---|---|
 | 0 | naive loops, no tensor cores | — | — | — | — | — | — | — |
-| 1 | hand-rolled mma-accumulate-via-tile | 0.1 | — | 2.1 | 5.5 | 5.8 | — | — |
-| 2 | matrix-multiply-tile-stride | 0.1 | — | 2.3 | 7.3 | 7.2 | — | — |
+| 1 | hand-rolled mma-accumulate-via-tile | 0.1 | — | 2.1 | 5.5 | 5.9 | — | — |
+| 2 | matrix-multiply-tile-stride | 0.1 | — | 2.3 | 7.4 | 7.3 | — | — |
 | 3 | cp.async | — | — | — | — | — | — | — |
-| 4 | TMA descriptor (CUtensorMap) | 1.7 | — | 31.7 | 59.7 | 92.5 | — | — |
-| 5 | SMEM ring | 1.7 | — | 29.4 | 41.6 | 64.2 | — | — |
-| 6 | warp specialization | 2.2 | — | 29.6 | 51.0 | 65.9 | — | — |
-| 7 | wgmma | — | — | — | — | — | — | — |
+| 4 | TMA descriptor (CUtensorMap) | 1.7 | — | 31.1 | 59.7 | 93.0 | — | — |
+| 5 | SMEM ring | 1.7 | — | 29.0 | 41.6 | 64.9 | — | — |
+| 6 | warp specialization | 2.2 | — | 29.1 | 51.6 | 66.5 | — | — |
+| 7 | wgmma | — | — | 93.5 | 333.6 | 457.8 | — | — |
 
-**Fastest rung per size** — N=256: **ch 6** (2.2) · N=1024: **ch 4** (31.7) · N=2048: **ch 4** (59.7) · N=4096: **ch 4** (92.5)
+**Fastest rung per size** — N=256: **ch 6** (2.2) · N=1024: **ch 7** (93.5) · N=2048: **ch 7** (333.6) · N=4096: **ch 7** (457.8)
 
 <details><summary><b>Per-chapter detail (16-bit)</b></summary>
 
@@ -545,7 +545,7 @@ hand-rolled mma-accumulate-via-tile
 | 512 | — |
 | 1024 | 2.1 |
 | 2048 | 5.5 |
-| 4096 | 5.8 |
+| 4096 | 5.9 |
 | 8192 | — |
 | 16384 | — |
 
@@ -556,9 +556,9 @@ matrix-multiply-tile-stride
 |---:|---:|---:|
 | 256 | 0.1 | 1.04× |
 | 512 | — | — |
-| 1024 | 2.3 | 1.11× |
-| 2048 | 7.3 | 1.34× |
-| 4096 | 7.2 | 1.24× |
+| 1024 | 2.3 | 1.10× |
+| 2048 | 7.4 | 1.33× |
+| 4096 | 7.3 | 1.25× |
 | 8192 | — | — |
 | 16384 | — | — |
 
@@ -569,9 +569,9 @@ TMA descriptor (CUtensorMap)
 |---:|---:|---:|
 | 256 | 1.7 | **11.56×** |
 | 512 | — | — |
-| 1024 | 31.7 | **13.68×** |
-| 2048 | 59.7 | **8.17×** |
-| 4096 | 92.5 | **12.84×** |
+| 1024 | 31.1 | **13.43×** |
+| 2048 | 59.7 | **8.11×** |
+| 4096 | 93.0 | **12.76×** |
 | 8192 | — | — |
 | 16384 | — | — |
 
@@ -582,9 +582,9 @@ SMEM ring
 |---:|---:|---:|
 | 256 | 1.7 | 1.01× |
 | 512 | — | — |
-| 1024 | 29.4 | 0.93× |
+| 1024 | 29.0 | 0.93× |
 | 2048 | 41.6 | 0.70× |
-| 4096 | 64.2 | 0.69× |
+| 4096 | 64.9 | 0.70× |
 | 8192 | — | — |
 | 16384 | — | — |
 
@@ -595,9 +595,22 @@ warp specialization
 |---:|---:|---:|
 | 256 | 2.2 | 1.27× |
 | 512 | — | — |
-| 1024 | 29.6 | 1.01× |
-| 2048 | 51.0 | 1.23× |
-| 4096 | 65.9 | 1.03× |
+| 1024 | 29.1 | 1.00× |
+| 2048 | 51.6 | 1.24× |
+| 4096 | 66.5 | 1.02× |
+| 8192 | — | — |
+| 16384 | — | — |
+
+#### Ch 7 — Can one instruction do more math?
+wgmma
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | — | — |
+| 512 | — | — |
+| 1024 | 93.5 | **3.22×** |
+| 2048 | 333.6 | **6.47×** |
+| 4096 | 457.8 | **6.89×** |
 | 8192 | — | — |
 | 16384 | — | — |
 
@@ -849,18 +862,18 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 | N | Crisp BF16 | Control<br>CUDA_Apples_BF16 | **Peer**<br>CUTLASS_BF16 | Ceiling<br>cuBLAS_BF16 | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1024 | 2.3 (0.917) | 3.8 (0.568) | 122.5 (0.018) `64x128x64` | 108.4 (0.020) | 0.02× | 2% |
-| 2048 | 7.4 (2.322) | 4.0 (4.328) | 375.7 (0.046) `128x256x64` | 447.4 (0.038) | 0.02× | 2% |
-| 4096 | 7.3 (18.803) | 4.0 (34.179) | 538.8 (0.255) `128x256x64` | 666.2 (0.206) | 0.01× | 1% |
+| 1024 | 91.6 (0.023) | 3.8 (0.570) | 121.1 (0.018) `64x128x64` | 88.1 (0.024) | 0.76× | 104% |
+| 2048 | 333.4 (0.052) | 4.0 (4.333) | 367.7 (0.047) `128x256x64` | 404.6 (0.042) | 0.91× | 82% |
+| 4096 | 456.7 (0.301) | 4.0 (34.245) | 540.5 (0.254) `128x256x64` | 640.8 (0.214) | 0.85× | 71% |
 
 <details><summary><b>Compilation & Build Overhead (BF16)</b></summary>
 
 | contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 281 ms | 281 ms | 1.00× |
-| **CUDA_Apples_BF16** | Control | 829 ms | 2.37 s | **3.0× slower** |
-| **CUTLASS_BF16** | Peer | 11.59 s | 26.55 s | **41.3× slower** |
-| **cuBLAS_BF16** | Ceiling | *precompiled* | 1.57 s | — |
+| **Crisp** | Crisp | 546 ms | 546 ms | 1.00× |
+| **CUDA_Apples_BF16** | Control | 1.48 s | 4.12 s | **2.7× slower** |
+| **CUTLASS_BF16** | Peer | 20.92 s | 46.02 s | **38.3× slower** |
+| **cuBLAS_BF16** | Ceiling | *precompiled* | 2.71 s | — |
 
 </details>
 
@@ -870,9 +883,9 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 |---:|---:|---:|---:|---:|---:|---:|
 | 256 | 0.0 (2.803) | — | — | — | — | — |
 | 512 | 0.1 (3.023) | — | — | — | — | — |
-| 1024 | 2.3 (0.923) | 3.8 (0.563) | 126.6 (0.017) `64x128x64` | 147.2 (0.015) | 0.02× | 2% |
-| 2048 | 7.3 (2.352) | 4.0 (4.298) | 376.5 (0.046) `128x256x64` | 448.1 (0.038) | 0.02× | 2% |
-| 4096 | 7.2 (19.062) | 4.0 (33.954) | 546.5 (0.251) `128x256x64` | 708.4 (0.194) | 0.01× | 1% |
+| 1024 | 93.5 (0.023) | 3.8 (0.565) | 119.8 (0.018) `64x128x64` | 127.8 (0.017) | 0.78× | 73% |
+| 2048 | 333.2 (0.052) | 4.0 (4.301) | 370.0 (0.046) `128x256x64` | 404.3 (0.043) | 0.90× | 82% |
+| 4096 | 461.4 (0.298) | 4.0 (34.003) | 540.5 (0.254) `128x256x64` | 677.0 (0.203) | 0.85× | 68% |
 | 8192 | 3.2 (341.099) | — | — | — | — | — |
 | 16384 | 7.1 (1235.380) | — | — | — | — | — |
 
@@ -881,9 +894,9 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 | contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
 | **Crisp** | Crisp | 278 ms | 278 ms | 1.00× |
-| **CUDA_Apples_FP16** | Control | 810 ms | 2.37 s | **2.9× slower** |
-| **CUTLASS_FP16** | Peer | 11.70 s | 26.32 s | **42.1× slower** |
-| **cuBLAS_FP16** | Ceiling | *precompiled* | 1.57 s | — |
+| **CUDA_Apples_FP16** | Control | 1.37 s | 3.88 s | **4.9× slower** |
+| **CUTLASS_FP16** | Peer | 20.90 s | 46.67 s | **75.2× slower** |
+| **cuBLAS_FP16** | Ceiling | *precompiled* | 2.75 s | — |
 
 </details>
 
@@ -1000,10 +1013,10 @@ Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline
 
 | chapter | N=256 | N=1024 | N=2048 | N=4096 |
 |---|---:|---:|---:|---:|
-| Ch 1 hand-rolled MMA | 0.1 (1.57×) | 2.1 (1.59×) | 5.5 (1.48×) | 5.8 (**1.97×**) |
-| Ch 2 tiling macro | 0.1 (tf32 n/a) | 2.3 (tf32 n/a) | 7.3 (tf32 n/a) | 7.2 (0.83×) |
-| Ch 4 register-resident | 1.7 (1.16×) | 31.7 (1.25×) | 59.7 (0.87×) | 92.5 (1.29×) |
-| Ch 5 ring + prefetch | 1.7 (1.06×) | 29.4 (1.06×) | 41.6 (0.64×) | 64.2 (0.94×) |
+| Ch 1 hand-rolled MMA | 0.1 (1.57×) | 2.1 (1.60×) | 5.5 (1.50×) | 5.9 (**1.98×**) |
+| Ch 2 tiling macro | 0.1 (tf32 n/a) | 2.3 (tf32 n/a) | 7.4 (tf32 n/a) | 7.3 (0.83×) |
+| Ch 4 register-resident | 1.7 (1.16×) | 31.1 (1.22×) | 59.7 (0.87×) | 93.0 (1.30×) |
+| Ch 5 ring + prefetch | 1.7 (1.06×) | 29.0 (1.04×) | 41.6 (0.65×) | 64.9 (0.95×) |
 
 ## § 1b — The Technique Ladder in 16-bit (Intel) · NVIDIA H100 PCIe
 
