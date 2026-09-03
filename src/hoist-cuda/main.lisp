@@ -626,20 +626,45 @@ overrides the runtime SM-count query in the grid-size heuristic."
 
 
 
+
+(defun %hoist-elem-type-bytes (elem-str)
+  "Bytes occupied by one element of the C++ type named ELEM-STR.
+
+   The canonical width table for the CUDA hoist's sizer AND emitters, which must agree:
+   %cuda-shared-layout computes the launch request and the per-tile offsets from the same
+   numbers, and BUG 046 was exactly the divergence that results when they do not.
+   Unknown types keep the historical 4, so a type this table has not met is sized as before."
+  (cond
+    ((or (string-equal elem-str "double")
+         (string-equal elem-str "int64_t")
+         (string-equal elem-str "uint64_t")) 8)
+    ((or (string-equal elem-str "bfloat16")
+         (string-equal elem-str "half")
+         (string-equal elem-str "__half")
+         (string-equal elem-str "__nv_bfloat16")
+         (string-equal elem-str "uint16_t")
+         (string-equal elem-str "int16_t")
+         (string-equal elem-str "short")
+         (string-equal elem-str "ushort")) 2)
+    ((or (string-equal elem-str "char")
+         (string-equal elem-str "uchar")
+         (string-equal elem-str "uint8_t")
+         (string-equal elem-str "int8_t")
+         (string-equal elem-str "bool")) 1)
+    (t 4)))
+
 (defun %cuda-local-param-bytes (param param-type)
   "Bytes of dynamic shared memory one LOCAL param occupies, or NIL if it occupies none.
    Returns a second value, :tensor or :cell, naming which region it belongs to.
 
    The element-size rule mirrors the one the emitters use, deliberately: this function
    exists so the sizer and the emitters cannot disagree, which is only true if it computes
-   what they compute."
+   what they compute.  Endeavour 162: both now call %hoist-elem-type-bytes, so a 16-bit
+   element is sized at 2 bytes instead of 4."
   (let* ((is-tensor (tensor-type-p param-type))
          (elem-type (if is-tensor (second param-type) (cell-base-type param-type)))
          (elem-str  (crisp-type-to-cpp-type elem-type))
-         (elem-bytes (if (or (string-equal elem-str "double")
-                             (string-equal elem-str "int64_t")
-                             (string-equal elem-str "uint64_t"))
-                         8 4)))
+         (elem-bytes (%hoist-elem-type-bytes elem-str)))
     (if is-tensor
         (let* ((rank (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
                (size-expr (getf param :size-expr))
@@ -690,16 +715,24 @@ overrides the runtime SM-count query in the grid-size heuristic."
    offsets handed to the kernel are computed ONCE, by the same code."
   (nth-value 2 (%cuda-shared-layout declared-sig aliases)))
 
+
 (defvar *cuda-shared-cell-offset* 0
   "Running byte offset for LOCAL scratch CELLS, which live above the scratch tensors.
    Set per kernel by the emit-kernel-args wrapper from %cuda-shared-layout; bumped by
    %cuda-emit-cell-arg.  BUG 046 -- before this existed every cell sat at offset 0 and
    silently overwrote the first tile.")
+   
+
+
 
 (defun %cuda-emit-cell-arg (stream param param-name param-type param-dir is-local aliases arg-index)
   "BUG 046: a LOCAL cell now draws a DISTINCT shared-memory offset from
    *cuda-shared-cell-offset* instead of hard-coding 0 on top of the first scratch tile.
-   The GLOBAL branch is untouched."
+   The GLOBAL branch is untouched.
+
+   Endeavour 162: the LOCAL branch's offset advance uses the element's TRUE width.  It had a
+   live divergence -- BYTESIZE advanced the offset by count*4 while the very next line handed the
+   kernel `count * sizeof(uint16_t)` = count*2.  Those agreed only for 4-byte types."
   (declare (ignore param aliases))
   (let* ((base-type      (cell-base-type param-type))
          (is-array-cell  (%array-type-p base-type))
@@ -714,10 +747,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
          (alloc          nil))
     (if is-local
         ;; LOCAL MEMORY — a distinct slice of the shared blob, above the scratch tensors
-        (let* ((elem-bytes (if (or (string-equal base-type-str "double")
-                                   (string-equal base-type-str "int64_t")
-                                   (string-equal base-type-str "uint64_t"))
-                               8 4))
+        (let* ((elem-bytes (%hoist-elem-type-bytes base-type-str))
                (bytesize (* elem-count elem-bytes))
                (offset   *cuda-shared-cell-offset*))
           (setf *cuda-shared-cell-offset* (+ *cuda-shared-cell-offset* bytesize))
@@ -778,15 +808,15 @@ overrides the runtime SM-count query in the grid-size heuristic."
    LOCAL scratch tile in turn so multiple tiles do not alias.  Reset per kernel in
    emit-kernel-args.")
 
-;;; src/hoist-cuda/main.lisp - %cuda-emit-local-scratch-tensor-arg: distinct SLM offsets.
+
 (defun %cuda-emit-local-scratch-tensor-arg (stream param param-name param-type arg-index)
+  "Endeavour 162: BYTESIZE and the running shared offset now use the element's TRUE width, so a
+   16-bit scratch tile occupies half what it did.  Every other line is unchanged."
   (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
          (size-expr   (getf param :size-expr))
          (elem-type   (second param-type))
          (elem-str    (crisp-type-to-cpp-type elem-type))
-         (elem-bytes  (if (or (string-equal elem-str "double")
-                              (string-equal elem-str "int64_t")
-                              (string-equal elem-str "uint64_t")) 8 4))
+         (elem-bytes  (%hoist-elem-type-bytes elem-str))
          (param-name-cpp (substitute #\_ #\- param-name))
          (arg-names   '())
          (current-idx arg-index))
@@ -834,13 +864,12 @@ overrides the runtime SM-count query in the grid-size heuristic."
          (size-expr   (getf param :size-expr))
          (elem-type   (second param-type))
          (elem-str    (crisp-type-to-cpp-type elem-type))
-         (elem-bytes  (if (or (string-equal elem-str "double")
-                              (string-equal elem-str "int64_t")
-                              (string-equal elem-str "uint64_t")) 8 4))
+         (elem-bytes  (%hoist-elem-type-bytes elem-str))
          (param-name-cpp (substitute #\_ #\- param-name))
          (ptr-var     (format nil "~a_ptr" param-name-cpp))
          (arg-names   '())
          (current-idx arg-index))
+
     (multiple-value-bind (extents strides)
         (%tensor-compact-extents-strides rank (%cuda-scratch-dims size-expr rank param-name))
       (let* ((length   (reduce #'* (%cuda-scratch-dims size-expr rank param-name)))
@@ -852,35 +881,39 @@ overrides the runtime SM-count query in the grid-size heuristic."
                 ptr-var length elem-str)
         (format stream "    CUDA_CHECK(cuMemsetD8(~a, 0, ~dULL * sizeof(~a)));~%"
                 ptr-var length elem-str)
+
         ;; ptr
         (push (format nil "~a" ptr-var) arg-names)
         (incf current-idx)
+
         ;; byte-size
         (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
         (push (format nil "~a_byte_size" param-name-cpp) arg-names)
         (incf current-idx)
+
         ;; offsets
         (loop for k from 0 below rank do
           (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
           (push (format nil "~a_off~d" param-name-cpp k) arg-names)
           (incf current-idx))
+
         ;; strides
         (loop for k from 0 below rank do
           (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
           (push (format nil "~a_str~d" param-name-cpp k) arg-names)
           (incf current-idx))
+
         ;; extents
         (loop for k from 0 below rank do
           (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
           (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
           (incf current-idx))
+
         ;; length
         (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
         (push (format nil "~a_length" param-name-cpp) arg-names)
         (incf current-idx)
         (values current-idx (nreverse arg-names))))))
-
-
 
 (defun %cuda-emit-tensor-arg (stream param param-name param-type param-dir arg-index dispatch-info)
   (let* ((rank        (or (getf param :rank)
@@ -908,29 +941,32 @@ overrides the runtime SM-count query in the grid-size heuristic."
                         (strategy (getf (cdr global-decl) :strategy))
                         (derive-from (getf (cdr global-decl) :derive-from))
                         (tile-shape (getf (cdr global-decl) :tile-shape)))
+
                    (declare (ignore strategy))
                    (when (and tile-shape
                               derive-from
                               (member param-name (if (listp derive-from) derive-from (list derive-from))
                                       :test (lambda (a b) (string-equal (string a) (string b)))))
+
                      (loop for k from 0 below (min rank (length tile-shape)) do
                        (let* ((tx (nth k tile-shape))
                               (base (nth k lst))
                               (padded (* (ceiling base tx) tx)))
                          (setf (nth k lst) padded)))))
                  lst))))
+
     (multiple-value-bind (extents strides)
         (%tensor-compact-extents-strides rank extents-list)
+
       (let* ((total-elems (* (first strides) (first extents)))   ; row-major sizing FIRST
-             (elem-bytes  (if (or (string-equal elem-str "double")
-                                  (string-equal elem-str "int64_t")
-                                  (string-equal elem-str "uint64_t")) 8 4))
+             (elem-bytes  (%hoist-elem-type-bytes elem-str))
              (byte-size   (* total-elems elem-bytes)))
         ;; Endeavor 140 (wgmma B): swap to col-major (K-contiguous) strides AFTER row-major
         ;; sizing, so the buffer stays full-size while addressing becomes K-contiguous (the
         ;; wgmma descriptor reads SMEM directly).  Gated on *mma-swizzle-describes* (swizzle-fed
         ;; col-major tensors) so 137/138's row-major SMEM path is untouched.  (Swapping BEFORE
         ;; sizing was the earlier bug: total-elems = 1*ext0 undersized B's buffer -> MMA_WRONG.)
+
         (when (and (= rank 2)
                    (member param-name *mma-swizzle-describes* :test #'string-equal))
           (setf strides (list 1 (first extents))))
@@ -939,6 +975,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
         (format stream "    CUdeviceptr ~a;~%" ptr-var)
         (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~d * sizeof(~a)));~%"
                 ptr-var total-elems elem-str)
+
         ;; Init: iota, or (MMA) role-based fill.
         (format stream "    {~%")
         (format stream "        ~a* h = new ~a[~d];~%" elem-str elem-str total-elems)
@@ -956,28 +993,34 @@ overrides the runtime SM-count query in the grid-size heuristic."
                 ptr-var total-elems elem-str)
         (format stream "        delete[] h;~%")
         (format stream "    }~%")
+
         ;; ptr
         (push (format nil "~a" ptr-var) arg-names)
         (incf current-idx)
+
         ;; byte-size
         (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp byte-size)
         (push (format nil "~a_byte_size" param-name-cpp) arg-names)
         (incf current-idx)
         ;; offsets (all zero)
+
         (loop for k from 0 below rank do
           (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
           (push (format nil "~a_off~d" param-name-cpp k) arg-names)
           (incf current-idx))
+
         ;; strides
         (loop for k from 0 below rank do
           (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
           (push (format nil "~a_str~d" param-name-cpp k) arg-names)
           (incf current-idx))
+
         ;; extents
         (loop for k from 0 below rank do
           (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
           (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
           (incf current-idx))
+
         ;; length
         (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp total-elems)
         (push (format nil "~a_length" param-name-cpp) arg-names)
@@ -1031,12 +1074,19 @@ overrides the runtime SM-count query in the grid-size heuristic."
 
 
 
+
+(declaim (ftype (function (t) simple-string) %cuda-tensor-map-data-type))
+
 (defun %cuda-tensor-map-data-type (elem-type)
-  "Maps a Crisp element type to the CU_TENSOR_MAP_DATA_TYPE_* enum for cuTensorMapEncodeTiled."
+  "Maps a Crisp element type to the CU_TENSOR_MAP_DATA_TYPE_* enum for cuTensorMapEncodeTiled.
+   Endeavour 159: 16-bit operands included -- TMA is descriptor-driven and encodes f16/bf16
+   directly."
   (let ((n (string-downcase (string elem-type))))
-    (cond ((string= n "float")  "CU_TENSOR_MAP_DATA_TYPE_FLOAT32")
-          ((string= n "double") "CU_TENSOR_MAP_DATA_TYPE_FLOAT64")
-          (t (error "cuTensorMapEncodeTiled: unsupported element type ~a (need float/double)"
+    (cond ((string= n "float")    "CU_TENSOR_MAP_DATA_TYPE_FLOAT32")
+          ((string= n "double")   "CU_TENSOR_MAP_DATA_TYPE_FLOAT64")
+          ((string= n "half")     "CU_TENSOR_MAP_DATA_TYPE_FLOAT16")
+          ((string= n "bfloat16") "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16")
+          (t (error "cuTensorMapEncodeTiled: unsupported element type ~a (need float/double/half/bfloat16)"
                     elem-type)))))
 
 (defun %cuda-emit-tensor-map-encode (stream param)
@@ -1088,6 +1138,8 @@ overrides the runtime SM-count query in the grid-size heuristic."
     (format stream "        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE));~%")
     (format stream "    CUDA_CHECK(cuMemAlloc(&~a, sizeof(CUtensorMap)));~%" name)
     (format stream "    CUDA_CHECK(cuMemcpyHtoD(~a, &~a_host, sizeof(CUtensorMap)));~%" name name)))
+
+
 
 (defun %emit-kernel-args-base (stream declared-sig aliases records dispatch-info)
   "Emit host-side variable declarations and fill the kernelParams[] array.
