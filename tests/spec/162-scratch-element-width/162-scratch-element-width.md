@@ -643,3 +643,31 @@ cuBLAS comparisons taken only at 4096 understate how much headroom remains at sc
 - [ ] Re-measure cuBLAS on H100 at these sizes for a like-for-like % (the H200 cuBLAS run
       covered 8192+ only)
 - [ ] Large-N work is BANDWIDTH-bound: next round should target the fetch path, not the MMA
+
+---
+
+# run-on-pod.sh VALIDATED on an H100 NVL, 2026-09-02
+
+Ran the repaired script **unassisted, exactly as a user would** -- no hand-holding, no manual
+setup. Connect, install SBCL 2.5.5 + LLVM 21 + Quicklisp, clone, build, run the 162 specs:
+**green in about three minutes**, against roughly seventy minutes of thrashing on the previous
+pod. `RESULT: all phases green`, `Spec Summary: 3/3 Passed`.
+
+**SourceForge was reachable from THIS pod**, so the apt fallback was not exercised -- which is
+itself the point: the earlier unreachability was pod-specific egress, not an outage, so the
+fallback is the right shape (try the pinned version, degrade to apt, fail loudly if neither).
+
+## One more defect the validation exposed
+
+The live-stream heartbeat grep matched `Running Spec:|Spec Summary|Passed:|Failed:|Skipped:|
+BUFFER |FAIL`. A spec whose flag list WRAPS prints its verdict on a continuation line matching
+none of those, so the stream showed such specs **starting and never finishing** -- which reads
+exactly like a hang. That is the same signal I spent a session chasing. The full log on the pod
+had the verdicts all along; only the stream hid them.
+
+Fixed with one trailing alternative for indented `... PASS/FAIL` tails. Before: 0 verdict lines
+in the captured stream. After: 2. Verified by re-running on the same pod.
+
+**And the fix broke the script once on the way in**, which the pod caught in 40 seconds: comment
+lines went INSIDE a backslash-continued pipeline, and a `\`-continued line followed by a comment
+is a shell syntax error. Comments now sit above the pipeline, with a note saying why.

@@ -304,9 +304,14 @@ run_phase() {
     local logf="/tmp/crisp-$(echo "$label" | tr ' /,()' '_____').log"
     echo ""
     echo "=== [$(date +%H:%M:%S)] ${label} ==="
+    # NOTE on the heartbeat grep below: a spec whose flag list WRAPS prints its verdict on a
+    # continuation line matching none of the other patterns, so the stream showed such specs
+    # starting and never finishing -- which reads exactly like a hang.  The trailing
+    # alternative catches those indented '... PASS/FAIL' tails.  Comments must stay OUT of the
+    # pipeline itself: a backslash-continued line followed by a comment is a syntax error.
     stdbuf -oL -eL sbcl "$@" 2>&1 \
         | stdbuf -oL tee "$logf" \
-        | stdbuf -oL grep -E 'Running Spec:|Spec Summary|Passed:|Failed:|Skipped:|BUFFER |FAIL' \
+        | stdbuf -oL grep -E 'Running Spec:|Spec Summary|Passed:|Failed:|Skipped:|BUFFER |FAIL|^[[:space:]]+.*\.\.\.[[:space:]]+(PASS|FAIL)' \
         || true
 
     # The live stream buries the verdict among hundreds of 'Running Spec:' lines, and the
