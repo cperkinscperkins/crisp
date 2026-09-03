@@ -32,6 +32,25 @@
 ;; operands are in the right lanes waits for MMA_CORRECT on hardware.
 ;; ===================================================================
 ;;
+;; SKIP-WITH[--differentiate]: "AD mints TF32 fragments for 16-bit operands and so reads the wrong bytes -- BUG 054, a silent WRONG GRADIENT, not a precision loss."
+;;
+;; WHY THIS RUNG IS SKIPPED UNDER --differentiate, and it is a GAP CLAIM, not a shrug.
+;; The forward is correct: the module carries exactly one
+;; mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32.  The AD-generated *_grad kernel
+;; alongside it carries THREE mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 -- the
+;; backward mints TF32 fragments for a 16-bit forward.
+;;
+;; That is a CORRECTNESS bug and not a precision one, which the emitted PTX settles:
+;; there is not a single fp16->f32 conversion in the grad kernel (its only cvt
+;; instructions are integer index arithmetic), and each tf32 mma is fed directly by
+;; `ld.shared.b32` out of shared memory holding PACKED 16-BIT data.  A tf32 m16n8k8
+;; fragment expects 32-bit elements, so the backward reads the wrong bytes and the
+;; gradient is garbage rather than merely coarse.
+;;
+;; The fix is to thread the operand element type into the MMA VJP's fragment minting --
+;; the sync-path analogue of what endeavour 160 did for wgmma -- and it needs an
+;; on-metal numeric gradient check (VERIFY-AUTODIFF) to confirm, so it is its own piece
+;; of work.  Filed as BUG 054.
 ;; SKIP-DEFAULT-PASS
 ;; TEST-WITH[--ir-target=ptx --hardware-profile=h100] : validate-ptx-bf16-sync-mma
 

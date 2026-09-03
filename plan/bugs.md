@@ -1861,3 +1861,24 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         OPEN FOLLOW-UPS: infer transB from tile orientation at 16 bits; enumerate sm_90a's legal
         wgmma shapes into the builtin h100 profile (deliberately not done -- an incomplete list
         would refuse working benchmark kernels).
+
+[ ] 054 AD MINTS TF32 FRAGMENTS FOR 16-BIT OPERANDS — silent WRONG GRADIENT on the NVIDIA
+        sync-MMA path.  Found 2026-09-02 running `--filter=159 --differentiate`.
+        The forward is correct: the module carries exactly one
+        mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 (or .bf16.bf16).  The AD-generated
+        *_grad kernel beside it carries THREE mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32.
+        NOT A PRECISION ISSUE, and the emitted PTX settles it: there is NOT ONE fp16->f32
+        conversion anywhere in the grad kernel -- its only cvt instructions are integer index
+        arithmetic -- and each tf32 mma is fed directly by `ld.shared.b32` from shared memory
+        holding PACKED 16-BIT data.  A tf32 m16n8k8 fragment expects 32-bit elements, so the
+        backward READS THE WRONG BYTES.  The gradient is garbage, not coarse.
+        SCOPE: the sync-MMA VJP only.  The wgmma path got element-type dispatch in endeavour 160
+        (%wgmma-k-per-slice / %nvvm-frag-format); the sync VJP still defaults to tf32 fragments
+        regardless of operand width, which is the same omission 160 fixed one altitude up.
+        Nothing on-metal has ever exercised it: 159's rungs are PTX-validator specs, and no
+        VERIFY-AUTODIFF covers a 16-bit sync MMA.
+        LIKELY FIX: thread the operand element type into the MMA VJP's fragment minting, the
+        sync-path analogue of 160's wgmma work.  Needs an on-metal numeric gradient check to
+        confirm, so it is its own piece of work rather than a patch.
+        SPECS: tests/spec/159-nvidia-16bit/0{1,2}-sync-mma-{fp16,bf16}-ptx.crisp now carry
+        SKIP-WITH[--differentiate] naming this bug.
