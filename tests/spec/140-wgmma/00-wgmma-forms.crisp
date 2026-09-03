@@ -18,7 +18,7 @@
 (def-kernel wgmma_forms (&out C)
   (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
   (let ((A-tile (make-scratch-matrix float (64 8)))
-        (B-tile (make-scratch-matrix float (8 64)))
+        (B-tile (make-scratch-matrix float (64 8)))
         (D (make-wgmma-accumulator float (64 64) 0.0)))
     (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
     (set! (~ C 0 0) 1.0)))

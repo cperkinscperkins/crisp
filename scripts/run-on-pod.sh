@@ -49,7 +49,12 @@ FILTER="${5:-}"          # optional: substring filter -> only run matching specs
 REPO_URL="https://github.com/cperkinscperkins/crisp.git"
 WORK_DIR="/root/crisp"
 
-SSH_CMD="ssh -o StrictHostKeyChecking=accept-new -p ${PORT} -i ${SSH_KEY} root@${HOST}"
+# ServerAlive* and ConnectTimeout are LOAD-BEARING, not hygiene.  Without them a dropped pod
+# connection leaves the local ssh blocked on a dead TCP socket forever: the script looks alive,
+# the pod sits completely idle, and nothing times out.  That is exactly how two consecutive runs
+# stalled -- one at "Processing triggers for libc-bin", one at "Installing SBCL" -- with `ps` on
+# the pod showing no work in progress at all.  15s x 4 gives up after a minute instead of never.
+SSH_CMD="ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ConnectTimeout=20 -p ${PORT} -i ${SSH_KEY} root@${HOST}"
 
 # --- Helper: timestamped step banner (so a long/quiet phase is obvious) ---
 step() { echo "--- [$(date +%H:%M:%S)] $* ---"; }
@@ -113,17 +118,38 @@ if ! curl -s -o /dev/null -m 8 http://archive.ubuntu.com/ubuntu/dists/jammy/Rele
     done
 fi
 
+# Ubuntu 22.04 ships needrestart, which on some images prompts "which services should be
+# restarted?" from apt and blocks forever on a non-interactive stdin.  Pin it to automatic
+# before the first apt call.  NEEDRESTART_MODE=a is what suppresses it; a conf.d file was
+# tried first and is not worth the shell-escaping it costs inside a remote heredoc.
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+
 if $NEED_SBCL; then
     echo "Installing SBCL $SBCL_INSTALL_VERSION from official binary..."
     apt-get update -qq $APT_OPTS
     apt-get install -y -qq $APT_OPTS wget gpg-agent software-properties-common lsb-release curl bzip2
     cd /tmp
-    wget -q "https://prdownloads.sourceforge.net/sbcl/sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
-    tar xjf "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
-    cd "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux"
-    INSTALL_ROOT=/usr/local sh install.sh
-    cd /root
-    rm -rf /tmp/sbcl-${SBCL_INSTALL_VERSION}*
+    # SourceForge has been UNREACHABLE from RunPod hosts (curl reports an SSL connection
+    # timeout, not a 404 -- egress filtering rather than the mirror being down).  Bare `wget -q`
+    # hid that completely: it defaults to a 900s read timeout and 20 retries, so an unreachable
+    # host hangs for HOURS with no output, and -q suppressed even the eventual failure.  Bound it,
+    # let it speak, and check the result rather than blindly untarring.
+    SBCL_TARBALL="sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
+    rm -f "$SBCL_TARBALL"
+    wget --tries=3 --timeout=20 -nv "https://prdownloads.sourceforge.net/sbcl/${SBCL_TARBALL}" || true
+    if [ -s "$SBCL_TARBALL" ] && tar tjf "$SBCL_TARBALL" >/dev/null 2>&1; then
+        tar xjf "$SBCL_TARBALL"
+        cd "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux"
+        INSTALL_ROOT=/usr/local sh install.sh
+        cd /root
+        rm -rf /tmp/sbcl-${SBCL_INSTALL_VERSION}*
+    else
+        # apt's SBCL is older (2.1.11 on jammy) but it BUILDS CRISP -- verified on an H100 NVL
+        # and an H200.  A working older compiler beats a stalled newer one.
+        echo "SourceForge unreachable or tarball bad; falling back to apt sbcl..." >&2
+        apt-get install -y -qq $APT_OPTS sbcl || true
+    fi
+    command -v sbcl >/dev/null || { echo "FATAL: no sbcl after both install paths" >&2; exit 1; }
     echo "Installed: $(sbcl --version)"
 fi
 
@@ -215,6 +241,23 @@ ls -la bin/crisp-compile bin/crisp-hoist-l0 bin/crisp-hoist-cuda 2>/dev/null || 
 BUILD
 echo ""
 
+# --- 5.5. Third-party PEER libraries -------------------------------------------------------
+# CUTLASS is not a dependency of the compiler, so it was never installed here -- but every
+# benchmark sweep run on a pod needs it, and its absence is SILENT in the tables: the peer column
+# renders "--", which reads identically to "we measured it and it was nothing".  It has now been
+# missed on three separate rentals, each time discovered only after the sweep finished.
+# Installing it here makes it structural rather than something to remember.  It is a shallow
+# header-only clone; if it is already present the script is a no-op.
+pod_run "bash -s" <<'THIRDPARTY'
+cd /root/crisp
+if [ -d third_party/cutlass/include ]; then
+  echo "CUTLASS already present."
+else
+  bash scripts/setup-third-party.sh cutlass 2>&1 | tail -3
+fi
+THIRDPARTY
+echo ""
+
 # --- 6. Run specs ---
 step "Step 6: Run spec suite${FILTER:+  (filter: ${FILTER})}"
 # Run with CRISP_USE_SYSTEM_TOOLS so it finds llc-21 on PATH.
@@ -261,9 +304,14 @@ run_phase() {
     local logf="/tmp/crisp-$(echo "$label" | tr ' /,()' '_____').log"
     echo ""
     echo "=== [$(date +%H:%M:%S)] ${label} ==="
+    # NOTE on the heartbeat grep below: a spec whose flag list WRAPS prints its verdict on a
+    # continuation line matching none of the other patterns, so the stream showed such specs
+    # starting and never finishing -- which reads exactly like a hang.  The trailing
+    # alternative catches those indented '... PASS/FAIL' tails.  Comments must stay OUT of the
+    # pipeline itself: a backslash-continued line followed by a comment is a syntax error.
     stdbuf -oL -eL sbcl "$@" 2>&1 \
         | stdbuf -oL tee "$logf" \
-        | stdbuf -oL grep -E 'Running Spec:|Spec Summary|Passed:|Failed:|Skipped:|BUFFER |FAIL' \
+        | stdbuf -oL grep -E 'Running Spec:|Spec Summary|Passed:|Failed:|Skipped:|BUFFER |FAIL|^[[:space:]]+.*\.\.\.[[:space:]]+(PASS|FAIL)' \
         || true
 
     # The live stream buries the verdict among hundreds of 'Running Spec:' lines, and the

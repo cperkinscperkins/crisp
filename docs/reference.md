@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-08-28T21:38:53.376258Z
+Generated on 2026-09-03T14:54:45.652070Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -11,17 +11,24 @@ Generated on 2026-08-28T21:38:53.376258Z
 
 
 ---
+### DEFUN `%MMA-OPERAND-FRAGMENT-P`
+- **Args**: `(TY COOP-DIMS)`
+
+  > T when TY is an MMA *operand* (A or B) fragment rather than an accumulator.  >   >    PTX: by record name -- the fragment records are register-fragment-{a,b,acc}-<elem>-<MxN>.  >    SPV: by the cooperative matrix's Use operand, which COOP-DIMS carries as its third element  >    (0 = A, 1 = B, 2 = Accumulator); that is the authoritative encoding, so it is read rather  >    than re-derived from the type list.
+
+
+---
 ### DEFUN `%MAP-ELEMENTS-FRAGMENT-FIELDS`
 - **Args**: `(FRAG-TYPE)`
 
-  > The number of scalar register fields in a PTX accumulator record type, or NIL if FRAG-TYPE is  >    not one.  Covers the tf32 m16n8k8 fragments (acc/A 16x8 -> 4 regs, B 8x8 -> 2) and Hopper  >    wgmma accumulators (N/2 f32 registers per thread across the 128-thread warpgroup), which are  >    minted as flat f32 records by %ensure-wgmma-acc-type and so fit the fieldwise lowering as-is.
+  > The number of scalar ELEMENTS per invocation in a PTX fragment record type, or NIL if  >    FRAG-TYPE is not one.  >   >    Endeavour 159: DERIVED from the record's own member list instead of a hardcoded case.  The  >    fragment records declare one field per element (tf32 A 16x8 -> 4, B 8x8 -> 2, acc -> 4;  >    fp16 A 16x16 -> 8, B 16x8 -> 4), so the member count IS the element count and a new record  >    cannot fall out of sync with a second table.  REGISTERS are a different number at 16 bits  >    (elements * width / 32) and are tracked separately by %ptx-note-register-demand.  >   >    Hopper wgmma accumulators are minted as flat f32 records by %ensure-wgmma-acc-type and keep  >    their own dimension-derived count (N/2 f32 registers per thread across the warpgroup).
 
 
 ---
 ### DEFUN `ANALYZE-MAP-ELEMENTS`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > (map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.  >   >    Endeavor 150.  TWO LOWERINGS, because the vendors represent a fragment differently:  >   >      PTX   a record of scalar fields, count known at compile time -> UNROLLED fieldwise onto  >            %construct-struct / %extract-struct-member, which already exist.  >      SPV   an opaque cooperative matrix whose per-invocation component count is a RUNTIME  >            value (OpCooperativeMatrixLengthKHR) -> a semantic-coop-op :map node that codegen  >            turns into a LOOP, rewriting each component through the variable's own alloca via  >            OpAccessChain.  >   >    Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register  >    or component holds, which is why this is portable and why layout-aware epilogues are out of  >    scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which  >    expands it to one of these per fragment.
+  > (map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.  >   >    Endeavor 150.  TWO LOWERINGS, because the vendors represent a fragment differently:  >   >      PTX   a record of scalar fields, count known at compile time -> UNROLLED fieldwise onto  >            %construct-struct / %extract-struct-member, which already exist.  >      SPV   an opaque cooperative matrix whose per-invocation component count is a RUNTIME  >            value (OpCooperativeMatrixLengthKHR) -> a semantic-coop-op :map node that codegen  >            turns into a LOOP, rewriting each component through the variable's own alloca via  >            OpAccessChain.  >   >    Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register  >    or component holds, which is why this is portable and why layout-aware epilogues are out of  >    scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which  >    expands it to one of these per fragment.  >   >    Endeavour 159: A/B OPERAND fragments are REFUSED.  See the header above -- this was reachable  >    by accident and silently wrong at 16 bits.
 
 
 ---
@@ -274,7 +281,7 @@ Generated on 2026-08-28T21:38:53.376258Z
 ### DEFUN `%ANALYZE-NVVM-TMA-LOAD-TILE-AT-BASE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavor 137 (Chapter 1.5, Phase 2) — analyze (load-tile-at SRC TILE (ORIGIN...) :barrier BAR)  >    for a NVIDIA :block barrier into a semantic-nvvm-tma-tile-copy.  Codegen emits one bulk  >    cp.async.bulk.tensor copy issued by an elected leader, tracked by BAR's mbarrier.  We build  >    the dest/source as aref-at-base forms so codegen can reuse the aref element-address machinery  >    for the SLM tile base (addrspace 3) and the source tensor base (addrspace 1, the STAND-IN  >    tensormap pointer).  The ORIGIN coords become the TMA {x,y} tile-box operands (element units).
+  > Endeavor 137 (Chapter 1.5, Phase 2) — analyze (load-tile-at SRC TILE (ORIGIN...) :barrier BAR)  >    for a NVIDIA :block barrier into a semantic-nvvm-tma-tile-copy.  Codegen emits one bulk  >    cp.async.bulk.tensor copy issued by an elected leader, tracked by BAR's mbarrier.  We build  >    the dest/source as aref-at-base forms so codegen can reuse the aref element-address machinery  >    for the SLM tile base (addrspace 3) and the source tensor base (addrspace 1, the STAND-IN  >    tensormap pointer).  The ORIGIN coords become the TMA {x,y} tile-box operands (element units).  >   >    Endeavour 159: 16-bit element types are accepted.  ELEM-BYTES feeds only the  >    mbarrier.arrive.expect_tx byte count; the copy is descriptor-driven cp.async.bulk.tensor,  >    whose tensormap encodes f16/bf16 directly.  See the header above for why the cp.async sibling  >    site keeps its 4/8-byte restriction -- there it is a hardware limit, not a table omission.
 
 
 ---
@@ -984,7 +991,7 @@ Generated on 2026-08-28T21:38:53.376258Z
 ### DEFUN `%PARSE-MMA-LOWERING-DECL`
 - **Args**: `(DECL KERNEL-NAME PROFILE)`
 
-  > Validate a (mma-lowering <keyword>) declaration and return the chosen lowering keyword.  >   >    DECL absent -> the active profile's default (its first :mma-lowerings entry, else :coop-matrix).  >    DECL present -> that lowering, if the profile offers it; otherwise a compile-time REFUSAL.  >   >    The refusal is the point.  Silently falling back to the portable path would hand the user a slow  >    kernel with no way to tell that their request was ignored -- exactly the failure mode that hid  >    :warps-on-a-ring being a no-op through two endeavours.
+  > Validate a (mma-lowering <keyword>) declaration and return the chosen lowering keyword.  >   >    DECL absent -> the active profile's default (its first :mma-lowerings entry, else :coop-matrix).  >    DECL present -> that lowering, if the profile offers it; otherwise a compile-time REFUSAL.  >   >    The refusal is the point.  Silently falling back to the portable path would hand the user a slow  >    kernel with no way to tell that their request was ignored -- exactly the failure mode that hid  >    :warps-on-a-ring being a no-op through two endeavours.
 
 
 ---
@@ -5227,7 +5234,7 @@ Generated on 2026-08-28T21:38:53.376258Z
 
 ### DEFPARAMETER `*HARDWARE-PROFILE-SCHEMA*`
 
-  > Endeavor 130: canonical hardware-profile keys and their value types.  Every key  >    is KNOWN from Phase 0 (so profiles are typo-checked and may be complete); the  >    CONSUMERS that read each key are added phase by phase.  Unknown keys are a  >    compile error; any subset may be specified (missing keys are fine).
+  > Endeavor 130: canonical hardware-profile keys and their value types.  >   >    Endeavour 161 added :wgmma-shapes, and it is a SEPARATE KEY rather than more entries in  >    :mma-shapes for a concrete reason.  :mma-shapes is FRAGMENT granularity -- (8 16 8) for Intel  >    XMX, (16 8 8) for NVIDIA mma.sync -- and roughly eighteen call sites read it as such,  >    including the register-tile fragment decomposition (%mma-fragment-mn) and %spv-mma-shape.  >    wgmma's (64 N K) is WARPGROUP granularity: M is 64 because a warpgroup is 128 threads, and N  >    runs to 256.  Mixing warpgroup triples into :mma-shapes would feed those dims to fragment math.  >   >    GRANULARITY IS A DIFFERENT AXIS FROM ELEMENT TYPE.  Endeavour 155 typed the ENTRIES, adding  >    the 4-list (half 8 16 16) beside the bare (8 16 8), because a triple alone cannot say what  >    element type it is a shape FOR.  A triple cannot say what LEVEL it describes either, and that  >    is what this key adds.  The entry GRAMMAR is deliberately reused unchanged -- the value type  >    is still :mma-shapes -- so %mma-shape-entry-dims and %mma-shape-for-elem apply verbatim and a  >    part may write (bfloat16 64 256 16) here exactly as it would there.  >   >    Both keys are OPTIONAL.  A profile that declares neither behaves precisely as before.  >   >    Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can drive  >    its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the portable  >    SPV_KHR_cooperative_matrix path every backend has had until now.  >   >    Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) -- a scalar  >    for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose  >    register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the  >    MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent  >    means walk linearly.  It is deliberately a measured constant rather than a derived one -- see  >    the block comment in src/hardware-profile.lisp for the two-device data that refuted the  >    derivation.
 
 
 ---
@@ -5310,14 +5317,14 @@ Generated on 2026-08-28T21:38:53.376258Z
 ### DEFUN `%HP-SCRATCH-ELEM-BYTES`
 - **Args**: `(ELEM-TYPE)`
 
-  > Bytes per scratch element, matching the hoist's rule (compute-total-shared-bytes):  >    64-bit element types -> 8, everything else -> 4 (the width the launcher reserves).
+  > Bytes per scratch element for the profile's shared-memory bound check.  >   >    64-bit -> 8, 16-bit -> 2, 8-bit -> 1, everything else -> 4.  Unknown types keep 4, the  >    historical behaviour, so a type this table has not met is bounded exactly as it always was.
 
 
 ---
 ### DEFUN `%HP-KERNEL-SHARED-BYTES`
 - **Args**: `(KERNEL-NAME)`
 
-  > Total local (shared) memory bytes a kernel reserves, summed from its implicit  >    scratch signature (matching the hoist's `(* (expt size-expr rank) elem-bytes)`).  >    Returns the byte total, or NIL if any local scratch size is not a compile-time  >    integer (then the bound can't be checked and is skipped).
+  > Total local (shared) memory bytes a kernel reserves, summed from its implicit  >    scratch signature (matching the hoist's `(* (expt size-expr rank) elem-bytes)`).  >    Returns the byte total, or NIL if any local scratch size is not a compile-time  >    integer (then the bound can't be checked and is skipped).  >   >    Endeavour 162: re-appended UNCHANGED, purely so it recompiles against the widened  >    %hp-scratch-elem-bytes ftype (which now yields 2 for 16-bit elements).
 
 
 ---
@@ -5325,12 +5332,6 @@ Generated on 2026-08-28T21:38:53.376258Z
 - **Args**: `(KERNEL-NAME PROFILE)`
 
   > Endeavor 130 Phase 2: error if KERNEL-NAME's local/shared memory exceeds the  >    profile's :max-shared-memory-per-block.  Skipped if the profile omits that key or  >    the total isn't compile-time-known.
-
-
----
-### DEFPARAMETER `*HARDWARE-PROFILE-SCHEMA*`
-
-  > Endeavor 130: canonical hardware-profile keys and their value types.  >   >    Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can  >    drive its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the  >    portable SPV_KHR_cooperative_matrix path every backend has had until now.  >   >    Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) — a scalar  >    for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose  >    register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the  >    MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent  >    means walk linearly.  It is deliberately a measured constant rather than a derived one — see  >    the block comment above for the two-device data that refuted the derivation.
 
 
 ---
@@ -5607,10 +5608,17 @@ Generated on 2026-08-28T21:38:53.376258Z
 
 
 ---
+### DEFUN `%HOIST-ELEM-TYPE-BYTES`
+- **Args**: `(ELEM-STR)`
+
+  > Bytes occupied by one element of the C++ type named ELEM-STR.  >   >    The canonical width table for the CUDA hoist's sizer AND emitters, which must agree:  >    %cuda-shared-layout computes the launch request and the per-tile offsets from the same  >    numbers, and BUG 046 was exactly the divergence that results when they do not.  >    Unknown types keep the historical 4, so a type this table has not met is sized as before.
+
+
+---
 ### DEFUN `%CUDA-LOCAL-PARAM-BYTES`
 - **Args**: `(PARAM PARAM-TYPE)`
 
-  > Bytes of dynamic shared memory one LOCAL param occupies, or NIL if it occupies none.  >    Returns a second value, :tensor or :cell, naming which region it belongs to.  >   >    The element-size rule mirrors the one the emitters use, deliberately: this function  >    exists so the sizer and the emitters cannot disagree, which is only true if it computes  >    what they compute.
+  > Bytes of dynamic shared memory one LOCAL param occupies, or NIL if it occupies none.  >    Returns a second value, :tensor or :cell, naming which region it belongs to.  >   >    The element-size rule mirrors the one the emitters use, deliberately: this function  >    exists so the sizer and the emitters cannot disagree, which is only true if it computes  >    what they compute.  Endeavour 162: both now call %hoist-elem-type-bytes, so a 16-bit  >    element is sized at 2 bytes instead of 4.
 
 
 ---
@@ -5638,7 +5646,7 @@ Generated on 2026-08-28T21:38:53.376258Z
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR IS-LOCAL ALIASES
               ARG-INDEX)`
 
-  > BUG 046: a LOCAL cell now draws a DISTINCT shared-memory offset from  >    *cuda-shared-cell-offset* instead of hard-coding 0 on top of the first scratch tile.  >    The GLOBAL branch is untouched.
+  > BUG 046: a LOCAL cell now draws a DISTINCT shared-memory offset from  >    *cuda-shared-cell-offset* instead of hard-coding 0 on top of the first scratch tile.  >    The GLOBAL branch is untouched.  >   >    Endeavour 162: the LOCAL branch's offset advance uses the element's TRUE width.  It had a  >    live divergence -- BYTESIZE advanced the offset by count*4 while the very next line handed the  >    kernel `count * sizeof(uint16_t)` = count*2.  Those agreed only for 4-byte types.
 
 
 ---
@@ -5657,6 +5665,9 @@ Generated on 2026-08-28T21:38:53.376258Z
 ---
 ### DEFUN `%CUDA-EMIT-LOCAL-SCRATCH-TENSOR-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+  > Endeavour 162: BYTESIZE and the running shared offset now use the element's TRUE width, so a  >    16-bit scratch tile occupies half what it did.  Every other line is unchanged.
+
 
 ---
 ### DEFUN `%CUDA-EMIT-GLOBAL-SCRATCH-TENSOR-ARG`
@@ -5683,7 +5694,7 @@ Generated on 2026-08-28T21:38:53.376258Z
 ### DEFUN `%CUDA-TENSOR-MAP-DATA-TYPE`
 - **Args**: `(ELEM-TYPE)`
 
-  > Maps a Crisp element type to the CU_TENSOR_MAP_DATA_TYPE_* enum for cuTensorMapEncodeTiled.
+  > Maps a Crisp element type to the CU_TENSOR_MAP_DATA_TYPE_* enum for cuTensorMapEncodeTiled.  >    Endeavour 159: 16-bit operands included -- TMA is descriptor-driven and encodes f16/bf16  >    directly.
 
 
 ---
@@ -8002,9 +8013,23 @@ Generated on 2026-08-28T21:38:53.376258Z
 
 
 ---
+### DEFUN `%NVVM-FRAG-FORMAT`
+- **Args**: `(LLVM-ELEM-TYPE)`
+
+  > Which MMA operand format a fragment field's LLVM type implies: :FP16, :BF16, or :TF32.  >   >    Endeavour 159.  Kinds are read from LLVM at runtime rather than compared against a constant --  >    the bindings carry +llvm-half-type-kind+ but no bfloat equivalent, and no llvm-c header is  >    installed to take the value from.  Anything that is neither half nor bfloat is the historical  >    fp32-stored tf32 path.
+
+
+---
+### DEFUN `%NVVM-FRAG-RECORD`
+- **Args**: `(OPERAND ELEM)`
+
+  > The PTX fragment record name for OPERAND (:a or :b) at Crisp element type ELEM.  >   >    Endeavour 159.  One place decides this, so analyze-load-fragment-a and -b cannot disagree  >    about which record a given element type maps to.  A 32-bit (or unknown) element keeps the  >    historical tf32 records.
+
+
+---
 ### DEFUN `REGISTER-MMA-TYPES`
 
-  > Registers the MMA register-fragment record types.  Called from initialize-compiler  >    AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every  >    init, so a load-time registration would not survive).  >   >    tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4  >    regs.  tf32 is fp32-stored, so all fragment fields are float.  >   >    Endeavor 144 Phase 0: also registers the BUILTIN hardware profiles, which must happen  >    after initialize-compiler's clrhash of *hardware-profiles* — this is the first hook that  >    runs there.  See register-builtin-hardware-profiles for the src-patch note.
+  > Registers the MMA register-fragment record types.  Called from initialize-compiler  >    AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every  >    init, so a load-time registration would not survive).  >   >    tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4  >    regs.  tf32 is fp32-stored, so all fragment fields are float.  >   >    Endeavour 159: the 16-bit m16n8k16 twins, fp16 and bf16.  A is 16x16 = 8 elements/lane, B is  >    16x8 = 4, both ONE FIELD PER ELEMENT so the member count IS the element count that  >    %map-elements-fragment-fields reads.  REGISTERS are half that at 16 bits (two elements per  >    32-bit register) and are tracked separately by %ptx-note-register-demand.  >   >    The ACCUMULATOR is deliberately NOT twinned: every 16-bit MMA here accumulates in fp32, so  >    register-fragment-acc-f32-16x8 is reused unchanged -- the same reason %coop-elem-of does not  >    route accumulators.  >   >    Endeavor 144 Phase 0: also registers the BUILTIN hardware profiles, which must happen  >    after initialize-compiler's clrhash of *hardware-profiles* — this is the first hook that  >    runs there.  See register-builtin-hardware-profiles for the src-patch note.
 
 
 ---
@@ -8065,14 +8090,14 @@ Generated on 2026-08-28T21:38:53.376258Z
 ### DEFUN `ANALYZE-LOAD-FRAGMENT-A`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,  >    16x8, row-major); else the NVIDIA per-lane read.
+  > P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,  >    16x8, row-major); else the NVIDIA per-lane read.  >   >    Endeavour 159: the NVIDIA branch DISPATCHES ON THE OPERAND'S ELEMENT WIDTH, using the same  >    %coop-elem-of the SPV branch already used.  A 16-bit operand reads the m16n8k16 A layout  >    (8 elements/lane) instead of the m16n8k8 tf32 one (4 floats/lane); fp16 and bf16 share that  >    layout exactly and differ only in which record they fill.  >   >    PTX ISA mma.m16n8k16 A layout, 32 lanes, groupID = lane/4, tid = lane%4.  Each lane holds  >    8 elements as 4 register pairs, and the PAIR ORDER IS LOAD-BEARING -- it is the order the  >    intrinsic's 4 A operands are consumed in:  >        Ra0 = (groupID,   2*tid), (groupID,   2*tid+1)  >        Ra1 = (groupID+8, 2*tid), (groupID+8, 2*tid+1)  >        Ra2 = (groupID,   2*tid+8), (groupID,   2*tid+9)  >        Ra3 = (groupID+8, 2*tid+8), (groupID+8, 2*tid+9)  >    Note the K stride is 16 (not 8) and each lane spans TWO adjacent columns.
 
 
 ---
 ### DEFUN `ANALYZE-LOAD-FRAGMENT-B`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,  >    8x8, col-major); else the NVIDIA per-lane read.
+  > P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,  >    8x8, col-major); else the NVIDIA per-lane read.  >   >    Endeavour 159: 16-bit dispatch, mirroring load-fragment-a.  PTX ISA mma.m16n8k16 B layout  >    (16x8), 32 lanes, groupID = lane/4, tid = lane%4; each lane holds 4 elements as 2 pairs, and  >    the pair order is the intrinsic's B operand order:  >        Rb0 = (2*tid,   groupID), (2*tid+1, groupID)  >        Rb1 = (2*tid+8, groupID), (2*tid+9, groupID)  >    B is K-major here (K=16 rows, N=8 cols), so the ROW stride is what doubles, not the column.
 
 
 ---
@@ -8107,7 +8132,7 @@ Generated on 2026-08-28T21:38:53.376258Z
 ### DEFUN `%EMIT-NVVM-MMA`
 - **Args**: `(BUILDER MODULE A-VAL B-VAL C-VAL)`
 
-  > The NVIDIA tf32 m16n8k8 MMA (@llvm.nvvm.mma.m16n8k8.row.col.tf32) — copied from the  >    original src/mma.lisp semantic-mma-accumulate codegen; A-VAL/B-VAL/C-VAL are the fp32  >    fragment records.  Returns (values acc-record nil).
+  > The NVIDIA sync MMA.  Endeavour 159: dispatches on the A fragment's ELEMENT TYPE, emitting  >    the tf32 m16n8k8, fp16 m16n8k16, or bf16 m16n8k16 instruction.  Returns (values acc nil).  >   >    DETECTION is by probing the LLVM type of A's field 0 rather than by threading an :elem down:  >    the caller (generate-node-ir on semantic-mma-accumulate) passes only LLVM values, and the  >    fragment record already carries the answer.  The probe extract is REUSED as a0, so it costs  >    no dead instruction.  >   >    THE THREE PATHS DIFFER IN OPERAND REPRESENTATION, and that is the trap on this rung:  >      tf32  i32          -- each float bitcast to i32  >      fp16  <2 x half>   -- pairs packed into a vector, handed over AS a vector  >      bf16  i32          -- pairs packed into <2 x bfloat> and then BITCAST to i32  >    All three were verified by compiling a standalone .ll through clang --target=nvptx64 and  >    reading the emitted mnemonic.  Two plausible spellings (...f16.f32, ...bf16.f32) pass the  >    LLVM verifier as UNRESOLVED EXTERNAL CALLS -- they emit no instruction while still leaving an  >    'mma.m16n8k16...' substring in the PTX -- so nothing here may be checked by prefix.  >   >    Fragment records declare ONE FIELD PER ELEMENT, so all pair-packing happens HERE and only  >    here.  The pairing order follows the PTX ISA register order documented on  >    analyze-load-fragment-a/-b; those must agree, and nothing local can prove they do --  >    MMA_CORRECT on metal is what checks it.  >   >    The ACCUMULATOR is f32 in every path: a 16-bit MMA accumulates in fp32.
 
 
 ---
@@ -8454,7 +8479,7 @@ Generated on 2026-08-28T21:38:53.376258Z
 ### DEFUN `ANALYZE-LET-WITH-TILE-EXPLOSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),  >    then explode register-tile bindings into per-fragment mutable variables (register residency,  >    Endeavor 132), then defer to the normal let analysis.
+  > let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),  >    then explode register-tile bindings into per-fragment mutable variables (register residency,  >    Endeavor 132), then defer to the normal let analysis.  >   >    Endeavour 161: publishes this LET's compile-time SLM scratch-tile shapes for the duration of  >    the body analysis, so operand-shape checks in the expression analyzers can see them.
 
 
 ---
@@ -8495,10 +8520,30 @@ Generated on 2026-08-28T21:38:53.376258Z
 
 
 ---
-### DEFUN `%CHECK-WGMMA-SHAPE`
-- **Args**: `(SHAPE LOCATION &OPTIONAL SWIZZLE)`
+### DEFUN `%WGMMA-SHAPES-OF-PROFILE`
 
-  > Validate a wgmma (M N K) shape.  M fixed 64; N a multiple of 8 in [8,256].  K: with :swizzle a  >    positive multiple of 8 (the K-block = K/8 k8 slices); without :swizzle exactly 8 (a single k8 wgmma).
+  > The active hardware profile's :wgmma-shapes, or NIL when no profile is active or the active  >    one is silent about warpgroup shapes.  >   >    NIL IS THE COMMON CASE AND MUST STAY CHEAP.  Nine of the eleven wgmma specs in the tree  >    declare no profile at all, as does every benchmark kernel, so 'no declared wgmma shapes' is  >    the path almost every compile takes.  It means the sm_90a instruction constraints apply as a  >    documented fallback -- never that the kernel is rejected.
+
+
+---
+### DEFUN `%CHECK-WGMMA-SHAPE-AGAINST-PROFILE`
+- **Args**: `(SHAPE SHAPES LOCATION SWIZZLE ELEM)`
+
+  > CAUSE ONE: a profile DECLARES its warpgroup shapes, so membership in that list is the rule.  >   >    The declared entries are per-slice shapes.  Without :swizzle the kernel's shape must match one  >    outright.  With :swizzle the K is a K-BLOCK spanning several slices, so (M N) must match an  >    entry and K must be a positive multiple of that entry's K -- the same relaxation the sm_90a  >    fallback makes, kept identical so a profile cannot silently change what :swizzle means.
+
+
+---
+### DEFUN `%CHECK-WGMMA-SHAPE-AGAINST-ISA`
+- **Args**: `(SHAPE LOCATION SWIZZLE ELEM)`
+
+  > CAUSE TWO: nothing declares warpgroup shapes, so the sm_90a instruction constraints apply.  >   >    THE THREE MESSAGES ARE DELIBERATELY UNCHANGED at their front.  tests/spec/140-wgmma/errors/  >    01, 02 and 03 assert the substrings 'M must be 64', 'multiple of 8' and 'K'; those specs  >    predate hardware profiles and none of them declares one, so this is the branch they take.  >    The trailing sentence naming the fallback is ADDITIVE, which a substring match tolerates.
+
+
+---
+### DEFUN `%CHECK-WGMMA-SHAPE`
+- **Args**: `(SHAPE LOCATION &OPTIONAL SWIZZLE ELEM)`
+
+  > Validate a wgmma (M N K) shape, from the hardware profile when one describes this part and  >    from the sm_90a instruction constraints when none does.  >   >    Endeavour 161 gave this the two-branch structure %check-mma-shape has had for the FRAGMENT  >    form since endeavour 132.  wgmma was the last shape check still reasoning only from hardcoded  >    constants, which meant a profile could describe a part accurately and be ignored here.
 
 
 ---
@@ -8523,17 +8568,38 @@ Generated on 2026-08-28T21:38:53.376258Z
 
 
 ---
+### DEFUN `%WGMMA-K-PER-SLICE`
+- **Args**: `(ELEM)`
+
+  > K covered by ONE wgmma instruction at element type ELEM: 8 at 32 bits, 16 at 16 bits.  >    Both are 32 BYTES of K per slice, which is why the descriptor's kk*32 advance is unchanged.
+
+
+---
+### DEFUN `%WGMMA-OPERAND-MNEMONIC`
+- **Args**: `(ELEM)`
+
+  > The .f32.<ab>.<ab> tail of the wgmma mnemonic for operand element type ELEM.
+
+
+---
 ### DEFUN `ANALYZE-WGMMA-ACCUMULATE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > (wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 [0]) with one 0 per tile dimension  >    (rank-aware) so codegen's 3rd value is the addrspace(3) base — works for flat VECTOR tiles (scatter)  >    AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle.
+  > (wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 [0]) with one 0 per tile dimension  >    (rank-aware) so codegen's 3rd value is the addrspace(3) base — works for flat VECTOR tiles (scatter)  >    AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle.  >   >    Endeavour 160: the per-node *wgmma-node-swizzle* entry gains a third element, the operand  >    element type.  Codegen cannot recover it -- %emit-nvvm-wgmma receives an f32 accumulator type  >    and raw SMEM pointers, with no fragment record to probe -- so it has to be recorded here.
+
+
+---
+### DEFUN `%CHECK-WGMMA-OPERANDS`
+- **Args**: `(SHAPE A B LOCATION ELEM SWIZZLE)`
+
+  > Refuse a wgmma whose staged A or B tile is not the shape the instruction will read.  >   >    THE RULE.  A is (M K) and B is (N K) -- both K-major.  This is not inferred from which  >    kernels happen to verify; it is what CUTLASS declares for every tf32 GMMA trait in  >    third_party/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp:  >        FrgTypeA = FrgTypeB = GMMA::smem_desc<GMMA::Major::K>  >        ALayout  = ABLayout<64, 8>      BLayout = ABLayout<64, 8>  >    and the tf32 SS atoms exist ONLY in the _TN form (16 of them, no other suffix) because tf32  >    wgmma carries no transpose immediate.  >   >    WHY B GETS TWO DIFFERENT MESSAGES.  At 16 bits the ISA genuinely offers both orientations --  >    the bf16/f16 traits are templated <GMMA::Major tnspA, GMMA::Major tnspB> where tf32's are  >    hardcoded -- so a (K N) B operand is Major::MN and is legal HARDWARE with transB=1.  Crisp  >    pins transA/transB to (0 0) via *wgmma-16-trans*, so at 16 bits the refusal is a fact about  >    THIS COMPILER, and saying 'B must be (N K)' there would be a false claim about the hardware  >    that sends the reader to fix the wrong thing.  >   >    UNRESOLVABLE EXTENTS ARE NOT AN ERROR.  %mma-operand-extent returns NIL when a tile's shape is  >    not compile-time known, and a wgmma operand is frequently (ring-get RING SLOT).  Refusing on  >    NIL would reject the working pipelined kernels -- chapter 7, sec2_top, sec3, sec4 -- so an  >    unknown extent skips silently, exactly as %mma-k-steps treats its own NIL.  >   >    K IS THE PER-SLICE K, not the K-block: under :swizzle the staged tile spans several slices, so  >    its K extent is the block and only A-vs-B agreement is checkable there.
 
 
 ---
 ### DEFUN `ANALYZE-WGMMA-ACCUMULATE-VIA-TILE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > (wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B  >    :swizzle MODE :k K)).  K rule is swizzle-aware (see %check-wgmma-shape).
+  > (wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B  >    :swizzle MODE :k K)).  K rule is swizzle- AND element-aware (see %check-wgmma-shape).  >   >    Endeavour 160: the A tile's element type is resolved here and passed to the shape check, so a  >    tf32 kernel asking for K=16 is still refused while a bf16 one is accepted.  >   >    Endeavour 161: the OPERAND SHAPES are checked too.  Order matters -- the shape check runs  >    first, so a kernel that is wrong about both its triple and its tiles still reports the triple,  >    which is what tests/spec/140-wgmma/errors/01-03 assert.
 
 
 ---
@@ -8551,10 +8617,16 @@ Generated on 2026-08-28T21:38:53.376258Z
 
 
 ---
-### DEFUN `%WGMMA-ASM-STRING`
-- **Args**: `(NACC N)`
+### DEFVAR `*WGMMA-16-TRANS*`
 
-  > wgmma.mma_async.sync.aligned.m64nNk8.f32.tf32.tf32 {$0..$nacc-1}, descA, descB, 1,1,1;  >    NB on operand numbering: LLVM IR inline-asm has no '+f'; a read-write accumulator is an '=f'  >    OUTPUT ($0..$nacc-1) PLUS a matching tied INPUT ($nacc..$2*nacc-1).  The tied inputs DO occupy  >    operand slots, so the two 'l' descriptors are $2*nacc and $2*nacc+1 (not $nacc/$nacc+1).
+  > (transA transB) immediates for the 16-bit wgmma.  Probe hook -- see the comment above.
+
+
+---
+### DEFUN `%WGMMA-ASM-STRING`
+- **Args**: `(NACC N &OPTIONAL ELEM)`
+
+  > wgmma.mma_async.sync.aligned.m64n{N}k{KPS}.f32.<ab>.<ab> {$0..$nacc-1}, descA, descB, ...;  >    Accumulator is an '=f' OUTPUT plus a tied INPUT, so the two 'l' descriptors are $2*nacc and  >    $2*nacc+1.  tf32 takes three trailing immediates; the 16-bit forms take five, adding  >    transA/transB from *wgmma-16-trans* while that pair is under investigation.
 
 
 ---
@@ -8566,17 +8638,18 @@ Generated on 2026-08-28T21:38:53.376258Z
 
 ---
 ### DEFUN `%EMIT-WGMMA-MMA-ONLY`
-- **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF)`
+- **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF
+              &OPTIONAL ELEM)`
 
-  > Emit ONE m64nNk8 wgmma.mma_async and nothing else -- no fence, no commit_group, no  >    wait_group.  Those are GROUP-level operations and belong once around the whole k-slice  >    sequence, not once per slice; see %emit-nvvm-wgmma.  >   >    Otherwise identical to %emit-one-wgmma: N/2 accumulators in and out, two shared-memory  >    descriptors, and KSLICE-OFF (kk*32 bytes) advancing the swizzle descriptor start address.  >    Returns the new D record.
+  > Emit ONE m64nNk{8,16} wgmma.mma_async and nothing else -- no fence, no commit_group, no  >    wait_group.  Those are GROUP-level operations and belong once around the whole k-slice  >    sequence, not once per slice; see %emit-nvvm-wgmma.  >   >    N/2 accumulators in and out, two shared-memory descriptors, and KSLICE-OFF (kk*32 bytes)  >    advancing the descriptor start address.  ELEM selects the mnemonic; the 32-byte slice stride is  >    the same at both widths, which is why the descriptor build is untouched.  Returns the new D.
 
 
 ---
 ### DEFUN `%EMIT-NVVM-WGMMA`
 - **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N &OPTIONAL SWIZZLE-P
-              (K 8))`
+              (K 8) ELEM)`
 
-  > Emit the wgmma accumulate as ONE GROUP.  NO-SWIZZLE (scatter): a proxy fence + barrier  >    (generic->async proxy visibility) + ONE k8 wgmma.  128B-SWIZZLE (TMA): NO proxy fence (both  >    async proxy) + K/8 k-slice wgmmas, D accumulating across them (scaleD=1), each with the start  >    advanced kk*32 bytes.  Returns (values D nil).  >   >    ENDEAVOUR 154.  The wgmma.fence / commit_group / wait_group triple is emitted ONCE around the  >    whole k-slice sequence rather than once per slice.  The previous lowering emitted the full  >    quadruple for EVERY k8 slice, so a K-block of 32 emitted four of each -- and `wait_group 0`  >    waits for ALL outstanding groups, so each async MMA was fully awaited before the next issued.  >    The async in `mma_async` was defeated.  A fence is only required before the FIRST wgmma of a  >    sequence (it orders prior non-wgmma writes to the accumulator registers against the  >    warpgroup's async reads); back-to-back wgmmas within one group need none, and the hardware  >    honours the accumulator RAW dependency between them in issue order.  This is CUTLASS's shape.  >   >    MEASURED on an H100 NVL, interleaved arms, 3 reps, all MMA_CORRECT (two independent pods):  >      256 n64 +7.0%   512 n64 +10.3%   1024 n128 +10.8%   2048 n256 +4.3%   4096 n256 +4.5%  >    With ONE slice this is byte-identical to the previous behaviour.  >    Spec: tests/spec/154-nvidia-perf/01-wgmma-group-pipelining.crisp (validate-ptx-wgmma-group).
+  > Emit the wgmma accumulate as ONE GROUP: a fence before the first slice, K/KPS slices, then one  >    commit_group + wait_group.  See the original for why the fence/commit/wait triple is emitted  >    once per GROUP rather than once per slice (endeavour 154, worth 4-11%).  >   >    Endeavour 160: KPS -- the K covered by one instruction -- is 8 at 32 bits and 16 at 16 bits.  >    The per-slice BYTE advance stays kk*32 either way, because a tf32 k8 slice and a bf16 k16 slice  >    occupy the same 32 bytes.  That is why %wgmma-make-desc is untouched by this endeavour.
 
 
 ---

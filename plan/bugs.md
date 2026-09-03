@@ -1807,3 +1807,78 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (when ...), which is the working v1 shape, and :warp-partitioned distributes
         BRANCH-FREE so the compiler never generates the sibling branches that trigger it.
         Latent defect in the pre-existing coordinate form; a user CAN hit it by hand.
+
+[x] 052 CLOSED — NOT A BUG.  The wgmma no-swizzle (scatter) path is NOT implicated; all four
+        failing probe arms had non-compiler causes.  Resolved 2026-09-01 WITHOUT a GPU, by
+        auditing operand shapes across every wgmma kernel in the tree.
+
+        WHAT THE FOUR ARMS ACTUALLY WERE.
+          * The two SCATTER arms staged a TRANSPOSED B.  wgmma with transB=0 reads its SMEM B
+            operand as (N K) -- K contiguous, i.e. B^T.  Both probes declared (K N):
+                _probe_wgmma_bf16_scatter  shape (64 64 16)  B-tile (16 64)   want (64 16)
+                _probe_wgmma_tf32_scatter  shape (64 64  8)  B-tile (16 64)   want (64  8)
+            The tf32 arm -- the "control" whose failure at commit 3da5807a made the bug look
+            pre-existing and conclusive -- is WORSE than that: its A-tile is (64 16), sized for a
+            bf16 k16 slice, against a declared K of 8.  It was copy-pasted from the bf16 probe and
+            the A-tile was never adjusted.  BOTH of its operands are malformed.  A kernel that is
+            wrong is wrong at every commit, which is exactly the trap the downgrade note called.
+          * The two SWZ arms failed on the FIXTURE, not the compiler: bench_harness.cu hardcoded
+            CU_TENSOR_MAP_SWIZZLE_NONE while the kernel descriptor declared 128B.  Fixed
+            2026-09-01; chapter 7 bf16 -- the same swizzle path -- now verifies bit-exact
+            (max_abs_err 0) at all eight sizes 512..4096 on an H100 NVL.
+
+        THE EVIDENCE THAT SETTLES IT.  Across all 27 wgmma-accumulate-via-tile call sites in
+        tests/spec and benchmarks/matmul, the split is perfect and has no exceptions:
+            every kernel EVER VERIFIED NUMERICALLY (chap7 tf32+bf16, sec2_top x3, sec3 x3,
+              sec4 x2, 140/03, 154/01-03, both _swz probes -- 13 of 13) has A=(M K), B=(N K);
+            every violator (12 files) is COMPILE-ONLY or a never-executed probe.
+        Nothing remains that implicates %wgmma-make-desc's no-swizzle LBO=128B/SBO=256B branch.
+
+        THE ONE TRUE CLAIM IN THE ORIGINAL ENTRY SURVIVES, and is now the follow-up: the
+        scatter path has still never been executed against a host reference.  Its coverage is
+        140/00-wgmma-forms, which is compile-only.  Fixing the two probes' operand shapes and
+        running them is a ~2-minute metal check next time a pod is up.  Until then the path is
+        UNCOVERED, which is a test gap, not a defect.
+
+[x] 053 FIXED — wgmma-accumulate-via-tile never validated its operand tile shapes, so a
+        transposed B compiled clean and computed garbage.  Endeavour 161, 2026-09-02.
+        %check-wgmma-shape validated the (M N K) triple and the element type and stopped; nothing
+        downstream looked either, because %wgmma-make-desc's LBO/SBO constants are HARDCODED and
+        the tile extents reached neither the descriptor nor the instruction.
+        THE RULE, from CUTLASS and not from inference: A is (M K), B is (N K), both K-major
+        (smem_desc<GMMA::Major::K>, ABLayout<64,8>; the tf32 SS atoms exist only in the _TN form).
+        NOTE THE TWO via-tile FORMS GENUINELY DISAGREE, which is why all twelve violators erred
+        the same way -- mma-accumulate-via-tile takes B as (Kt Nt).  The errors say so.
+        B gets TWO messages: at tf32 (K N) is not a layout the instruction can read at all; at
+        16 bits it IS legal hardware via transB=1, and Crisp merely pins transA/transB to (0 0),
+        so the refusal there is a fact about this compiler and says so.
+        ALSO in 161: %check-wgmma-shape became profile-driven, matching %check-mma-shape's
+        two-branch structure -- a new optional :wgmma-shapes profile key (WARPGROUP granularity;
+        :mma-shapes is FRAGMENT granularity and is read as such in ~18 places), else the sm_90a
+        constraints as a documented fallback.  See tests/spec/161-wgmma-shape-validation/.
+        1057/1057 E2E + 232/232 negative + 291/291 unit.  Twelve kernels corrected, none of them
+        ever numerically verified, so no measured result moved.
+        OPEN FOLLOW-UPS: infer transB from tile orientation at 16 bits; enumerate sm_90a's legal
+        wgmma shapes into the builtin h100 profile (deliberately not done -- an incomplete list
+        would refuse working benchmark kernels).
+
+[ ] 054 AD MINTS TF32 FRAGMENTS FOR 16-BIT OPERANDS — silent WRONG GRADIENT on the NVIDIA
+        sync-MMA path.  Found 2026-09-02 running `--filter=159 --differentiate`.
+        The forward is correct: the module carries exactly one
+        mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 (or .bf16.bf16).  The AD-generated
+        *_grad kernel beside it carries THREE mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32.
+        NOT A PRECISION ISSUE, and the emitted PTX settles it: there is NOT ONE fp16->f32
+        conversion anywhere in the grad kernel -- its only cvt instructions are integer index
+        arithmetic -- and each tf32 mma is fed directly by `ld.shared.b32` from shared memory
+        holding PACKED 16-BIT data.  A tf32 m16n8k8 fragment expects 32-bit elements, so the
+        backward READS THE WRONG BYTES.  The gradient is garbage, not coarse.
+        SCOPE: the sync-MMA VJP only.  The wgmma path got element-type dispatch in endeavour 160
+        (%wgmma-k-per-slice / %nvvm-frag-format); the sync VJP still defaults to tf32 fragments
+        regardless of operand width, which is the same omission 160 fixed one altitude up.
+        Nothing on-metal has ever exercised it: 159's rungs are PTX-validator specs, and no
+        VERIFY-AUTODIFF covers a 16-bit sync MMA.
+        LIKELY FIX: thread the operand element type into the MMA VJP's fragment minting, the
+        sync-path analogue of 160's wgmma work.  Needs an on-metal numeric gradient check to
+        confirm, so it is its own piece of work rather than a patch.
+        SPECS: tests/spec/159-nvidia-16bit/0{1,2}-sync-mma-{fp16,bf16}-ptx.crisp now carry
+        SKIP-WITH[--differentiate] naming this bug.

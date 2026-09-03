@@ -221,7 +221,17 @@ int main(int argc, char **argv) {
 
     // ---- buffers ------------------------------------------------------------------------
     const uint64_t ea = M * K, eb = K * N, ec = M * N;
-    ze_device_mem_alloc_desc_t dmem{ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC};
+    // A SINGLE allocation past the device's maxMemAllocSize is refused with
+    // ZE_RESULT_ERROR_UNSUPPORTED_SIZE (0x78000009) -- NOT an out-of-memory condition.  At
+    // N=32768 the bf16 A operand is 32768^2 * 2 = exactly 2 GiB and every Crisp variant died at
+    // `allocA` while oneMKL and SYCL-TLA completed the same size, which is what shows the cap is
+    // per-allocation rather than total VRAM.  Level Zero's documented remedy is the relaxed
+    // limits extension: MAX_SIZE lets one allocation exceed maxMemAllocSize.  Chained onto the
+    // DEVICE desc via pNext; the host desc needs nothing.
+    ze_relaxed_allocation_limits_exp_desc_t relaxed{
+        ZE_STRUCTURE_TYPE_RELAXED_ALLOCATION_LIMITS_EXP_DESC, nullptr,
+        ZE_RELAXED_ALLOCATION_LIMITS_EXP_FLAG_MAX_SIZE};
+    ze_device_mem_alloc_desc_t dmem{ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC, &relaxed};
     ze_host_mem_alloc_desc_t hmem{ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC};
     void *A = nullptr, *B = nullptr, *C = nullptr;
     ZE_OK(zeMemAllocShared(ctx, &dmem, &hmem, ea * ab_bytes, 64, device, &A), "allocA");
@@ -362,7 +372,11 @@ int main(int argc, char **argv) {
     const double min_us    = us.empty() ? 0.0 : us.front();
     const double gflops    = median_us > 0.0 ? (2.0 * (double)M * N * K) / (median_us * 1e3) : 0.0;
 
-    // ---- verification: full host reference ----------------------------------------------
+    // ---- verification: STRIDED SPOT CHECK ------------------------------------------------
+    // (Header corrected 2026-09-02: it read "full host reference ... Checked at EVERY size,
+    //  not sampled", which the smax=64 sampling seventeen lines below has contradicted for
+    //  some time.  A comment that misdescribes its own code is worse than none: it was cited
+    //  as evidence that big-N verification was exhaustive and therefore slow.  It is neither.)
     // Checked at EVERY size, not sampled.  A fast wrong kernel must never look like a win --
     // that is exactly how a kernel storing nothing posted the second-best number in its section.
     bool verified = true;

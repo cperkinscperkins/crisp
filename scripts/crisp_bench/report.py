@@ -140,11 +140,21 @@ def _is_peer(name: str) -> bool:
 # 2.2x REGRESSION at 8192.  A best-per-size number is only honest when the reader can reproduce
 # the selection, so the envelope must name its winner.
 def _variant_split(name: str):
-    """(GROUP, TAG) for a `Crisp_V_<tag>` variant; (name, None) for anything else.
+    """(GROUP, TAG) for a `<GROUP>_V_<tag>` variant; (name, None) for anything else.
        The base kernel of a group is the plain `Crisp` competitor, whose tag is reported as
-       "base" so every envelope cell names something."""
-    if name.startswith("Crisp_V_"):
-        return "Crisp", name[len("Crisp_V_"):]
+       "base" so every envelope cell names something.
+
+       GENERALISED FROM `Crisp_V_` (endeavour 159), and the generalisation is the point.  The
+       PEER column takes exactly the same silent max() over every matching competitor that the
+       Crisp column does.  That was harmless only while each chapter carried a single peer build;
+       the swept CUTLASS 16-bit contender carries five, so the peer cell becomes an unattributed
+       envelope -- a best-per-size number the reader cannot reproduce, which is the precise
+       failure this function was written to prevent.  It was Crisp-only by accident of which
+       column happened to get variants first, not by design."""
+    marker = "_V_"
+    i = name.find(marker)
+    if i > 0:
+        return name[:i], name[i + len(marker):]
     if name == "Crisp":
         return "Crisp", "base"
     return name, None
@@ -168,11 +178,54 @@ def _run_stamp(path: Path) -> int:
     m = re.search(r"_(\d{9,})\.json$", path.name)
     return int(m.group(1)) if m else int(path.stat().st_mtime)
 
+def _run_identity(path: Path) -> str:
+    """The (device, chapter, competitor) identity of a run file -- its name minus the timestamp.
+
+    `results_NVIDIA_H100_NVL_sec2_top_fp16_Crisp_1788366636.json` and the same name at a different
+    stamp are two runs of THE SAME THING; a different competitor (`Crisp_V_wg256xe`) is not."""
+    return re.sub(r"_\d{9,}\.json$", "", path.name)
+
 def load_all_sweeps(results_dir: Path) -> List[Dict[str, Any]]:
+    """Load every sweep, keeping only the NEWEST run of each device+chapter+competitor.
+
+    WHY SUPERSESSION IS ENFORCED HERE.  `_best_pt` takes max() over every matching point, which is
+    deliberate ACROSS VARIANTS -- that is what builds the envelope.  Across TIME it is a bug: the
+    results directory accumulates the project's whole history, so a measurement of a kernel
+    generation that no longer exists gets merged with the current one and published under the same
+    name.  sec2_top_fp16 on an H100 NVL had five runs spanning pre-wgmma to today; at 1024-4096 the
+    good runs won the max() and it looked fine, but 8192 and 16384 were covered ONLY by the oldest,
+    so the report showed 3.2 and 7.1 TFLOPS for a kernel that does 466.8 at 4096.  A reader cannot
+    reproduce those numbers with any kernel in the tree, which is exactly the standard the
+    module-level comment on _best_pt sets.
+
+    Sizes the newest run did not cover now render as em-dash: 'the current kernel was not measured
+    there', which is true, rather than a number from a kernel that no longer exists.  Variants stay
+    distinct because the competitor name is part of the identity, so the envelope is unaffected."""
     sweeps = []
     if not results_dir.exists():
         return sweeps
-    for f in sorted(results_dir.glob("results_*.json"), key=_run_stamp):
+    # AN EMPTY RUN MUST NOT SUPERSEDE A GOOD ONE.  A file with zero data points is a FAILURE to
+    # measure, not a measurement -- CUTLASS silently failing to build writes exactly that, one
+    # empty file per config.  Letting those win by recency wiped a populated Peer column on the
+    # first attempt at this filter.  So supersession ranks on (has-data, stamp): the newest run
+    # THAT PRODUCED SOMETHING wins, and an all-empty identity still keeps its newest file so the
+    # audit script can report NO DATA rather than the identity vanishing.
+    def _n_points(path: Path) -> int:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+        except Exception:
+            return 0
+        return sum(1 for r in d.get("results", [])
+                   if ((r.get("metrics") or {}).get("throughput") or {}).get("tflops") is not None)
+
+    newest: Dict[str, Path] = {}
+    for f in results_dir.glob("results_*.json"):
+        k = _run_identity(f)
+        cur = newest.get(k)
+        if cur is None or (min(_n_points(f), 1), _run_stamp(f)) > (min(_n_points(cur), 1), _run_stamp(cur)):
+            newest[k] = f
+    for f in sorted(newest.values(), key=_run_stamp):
         try:
             with open(f, "r", encoding="utf-8") as fh:
                 sweeps.append(json.load(fh))
@@ -389,6 +442,122 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
 
         lines.append("</details>\n")
 
+
+    # Section 1.5: MMA Techniques at 16 bits
+    #
+    # WHY THIS IS ITS OWN SECTION AND NOT A COLUMN IN §1.  The ladder does not rank the same way
+    # at 16 bits as it does at tf32, so folding the two together would average away the finding.
+    # On an H100 NVL, bf16: chapter 4 (a single TMA barrier, no ring, no warp split) beats
+    # chapter 6 (warp specialization) by ~40% at N=4096, and chapter 5's ring is the SLOWEST of
+    # the three above N=1024.  At tf32 the order is the other way round -- endeavour 139 measured
+    # warp specialization as the fastest Crisp kernel of its day.
+    #
+    # A plausible reading is the K-step: the Hopper ladder goes m16n8k8 (tf32) -> m16n8k16
+    # (bf16/fp16), so a given K needs HALF as many iterations.  There is less to overlap, and the
+    # ring's bookkeeping stops paying for itself.  That is a hypothesis the table motivates, not
+    # one it establishes -- it would need a controlled probe.
+    #
+    # Chapters with no 16-bit kernel are rendered "—" rather than omitted, so the gaps are
+    # visible: chapter 7 is wgmma, which is tf32-only in Crisp today (%check-wgmma-shape gates
+    # K=8), and chapters 0/3 have no NVIDIA 16-bit source at all.
+    _has16 = {}
+    for gpu in gpus:
+        keys16 = [c for c in matmul_data[gpu] if c.endswith("_bf16") or c.endswith("_fp16")]
+        if keys16:
+            _has16[gpu] = keys16
+
+    if _has16:
+        lines.append("## § 1.5 — MMA Techniques (16-bit)\n")
+        lines.append("*Does the 32-bit ladder still rank the same way at bf16?*\n")
+        lines.append("**Contenders: Crisp only.** The column carrying the story is "
+                     "**vs previous chapter**. A rung with no 16-bit kernel shows `—`.\n")
+
+        for gpu in sorted(_has16.keys()):
+            platform = _platform_of(gpu)
+
+            all_sizes = set()
+            for ch in _has16[gpu]:
+                if "fast" in matmul_data[gpu].get(ch, {}):
+                    all_sizes.update(matmul_data[gpu][ch]["fast"].keys())
+            sizes = sorted([s for s in all_sizes if isinstance(s, int) and s >= 256])
+            if not sizes:
+                continue
+
+            def _tf16(tech, s):
+                """Crisp TFLOPS for TECH's 16-bit twin at size S, or None."""
+                for base in [tech["key"], *tech.get("alt_keys", [])]:
+                    for suf in ("_bf16", "_fp16"):
+                        k = base + suf
+                        d = matmul_data[gpu].get(k, {}).get("fast", {}).get(s)
+                        if not d:
+                            continue
+                        pt = next((d[c] for c in d if _is_crisp(c)), None)
+                        if pt:
+                            # UNVERIFIED POINTS ARE NOT NUMBERS.  §1 already drops them; this
+                            # section did not, and published 208.4 TFLOPS for chapter 7 at
+                            # N=2048 -- a point whose host-reference check FAILED.  A fast wrong
+                            # kernel must never appear in a table, which is the whole reason the
+                            # verified flag exists.
+                            if not (pt.get("configuration") or {}).get("verified"):
+                                continue
+                            v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                            if v is not None:
+                                return v
+                return None
+
+            present = [t for t in MMA_TECHNIQUES if any(_tf16(t, s) is not None for s in sizes)]
+            if not present:
+                continue
+
+            lines.append(f"### {gpu} · bf16 · `fast`\n")
+            lines.append("**Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**\n")
+            header = ["#", "technique"] + [f"**N={s}**" for s in sizes]
+            lines.append("| " + " | ".join(header) + " |")
+            lines.append("|" + "|".join(["---"] * len(header)) + "|")
+            for tech in MMA_TECHNIQUES:
+                tname = tech["desc_nv"] if platform == "nvidia" else tech["desc_intel"]
+                row = [str(tech["num"]), tname]
+                for s in sizes:
+                    v = _tf16(tech, s)
+                    row.append(f"{v:.1f}" if v is not None else "—")
+                lines.append("| " + " | ".join(row) + " |")
+
+            # Name the winner per size, since the ranking is the point of this section.
+            lines.append("")
+            win = []
+            for s in sizes:
+                b, bt = None, None
+                for tech in present:
+                    v = _tf16(tech, s)
+                    if v is not None and (bt is None or v > bt):
+                        b, bt = tech, v
+                if b is not None:
+                    win.append(f"N={s}: **ch {b['num']}** ({bt:.1f})")
+            if win:
+                lines.append("**Fastest rung per size** — " + " · ".join(win) + "\n")
+
+            lines.append("<details><summary><b>Per-chapter detail (16-bit)</b></summary>\n")
+            prev16 = {}
+            first = True
+            for tech in present:
+                tdesc = tech["desc_nv"] if platform == "nvidia" else tech["desc_intel"]
+                lines.append(f"#### Ch {tech['num']} — {tech['question']}")
+                lines.append(f"{tdesc}\n")
+                hdr = ["N", "Crisp bf16 TFLOPS"] + ([] if first else ["vs previous chapter"])
+                lines.append("| " + " | ".join(hdr) + " |")
+                lines.append("|" + "|".join(["---:"] * len(hdr)) + "|")
+                for s in sizes:
+                    v = _tf16(tech, s)
+                    row = [str(s), f"{v:.1f}" if v is not None else "—"]
+                    if not first:
+                        row.append(format_ratio(v, prev16.get(s)))
+                    lines.append("| " + " | ".join(row) + " |")
+                    if v is not None:
+                        prev16[s] = v
+                lines.append("")
+                first = False
+            lines.append("</details>\n")
+
     # Section 2: Top MMA Benchmarks
     lines.append("## § 2 — Top MMA Benchmarks\n")
     lines.append("*How does Crisp actually stand?* Best mainloop against **all three contender classes**.\n")
@@ -555,7 +724,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             lines.append(f"### {gpu} \u00b7 {tag.lower()} \u00b7 `fast` *({note})*\n")
             if best_single:
                 lines.append(
-                    f"Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's "
+                    f"Crisp is **outside-in**: the user picks the configuration, exactly as {peer_label}'s "
                     f"pipeline depth is a template argument. So two Crisp columns, and the gap between "
                     f"them is *what tuning is worth*. **Envelope** is the best variant at each size, "
                     f"naming which one. **Best single** is the one fixed choice that does best across "
@@ -583,12 +752,29 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 tf, ms = _tf(pt), _ms(pt)
                 return f"{tf:.1f} ({ms:.3f})" if tf else "\u2014"
 
+            # SAME SELECTION AS _best, BUT IT KEEPS THE NAME.  A column carrying several builds
+            # of one contender reports a per-size envelope whether or not anyone intended it; the
+            # only question is whether the reader is told which build won.  See _variant_split.
+            def _best_named(cand_pts, predicate):
+                matching = [(comp, pt) for comp, pt in cand_pts if predicate(comp)]
+                if not matching:
+                    return None, None
+                return max(matching,
+                           key=lambda cp: cp[1].get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
+
+            def _cell_named(comp, pt):
+                base = _cell(pt)
+                if not comp or base == "\u2014":
+                    return base
+                _, vtag = _variant_split(comp)
+                return f"{base} `{vtag}`" if vtag else base
+
             last = {}
             for s in sizes:
                 cand = list(data[s].items())
                 c_pt = _best(cand, _is_crisp)
                 ctrl_pt = _best(cand, _is_control)
-                peer_pt = _best(cand, _is_peer)
+                peer_name, peer_pt = _best_named(cand, _is_peer)
                 ceil_pt = _best(cand, lambda k: _is_ceiling(k) and "_Plus_" not in k)
                 # Keep the last size at which EACH contender actually has a point, not the last
                 # size overall: Crisp has no 16384 entry yet, and taking the final row wholesale
@@ -612,9 +798,9 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                     env = f"{_cell(c_pt)} `{win}`" if win else _cell(c_pt)
                     bs_tf = variants.get(best_single, {}).get(s)
                     bs = f"{bs_tf:.1f}" if bs_tf else "—"
-                    lines.append(f"| {s} | {env} | {bs} | {_cell(ctrl_pt)} | {_cell(peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
+                    lines.append(f"| {s} | {env} | {bs} | {_cell(ctrl_pt)} | {_cell_named(peer_name, peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
                 else:
-                    lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ctrl_pt)} | {_cell(peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
+                    lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ctrl_pt)} | {_cell_named(peer_name, peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
 
             # ---- SIGN FLIPS -------------------------------------------------------------------
             # A variant that WINS at one size and LOSES at another, both beyond the run-to-run

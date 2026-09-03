@@ -31,16 +31,42 @@
                  (t (some #'find-map f)))))
       (some #'find-map reduction-body))))
 
+
+
+
+(defun %mma-operand-fragment-p (ty coop-dims)
+  "T when TY is an MMA *operand* (A or B) fragment rather than an accumulator.
+
+   PTX: by record name -- the fragment records are register-fragment-{a,b,acc}-<elem>-<MxN>.
+   SPV: by the cooperative matrix's Use operand, which COOP-DIMS carries as its third element
+   (0 = A, 1 = B, 2 = Accumulator); that is the authoritative encoding, so it is read rather
+   than re-derived from the type list."
+  (or (and coop-dims (member (third coop-dims) '(0 1)) t)
+      (and ty (symbolp ty)
+           (let ((n (symbol-name ty)))
+             (and (>= (length n) 20)
+                  (or (string= "REGISTER-FRAGMENT-A-" (subseq n 0 20))
+                      (string= "REGISTER-FRAGMENT-B-" (subseq n 0 20)))))
+           t)))
+
 (defun %map-elements-fragment-fields (frag-type)
-  "The number of scalar register fields in a PTX accumulator record type, or NIL if FRAG-TYPE is
-   not one.  Covers the tf32 m16n8k8 fragments (acc/A 16x8 -> 4 regs, B 8x8 -> 2) and Hopper
-   wgmma accumulators (N/2 f32 registers per thread across the 128-thread warpgroup), which are
-   minted as flat f32 records by %ensure-wgmma-acc-type and so fit the fieldwise lowering as-is."
-  (or (case frag-type
-        (register-fragment-acc-f32-16x8 4)
-        (register-fragment-a-tf32-16x8  4)
-        (register-fragment-b-tf32-8x8   2)
-        (t nil))
+  "The number of scalar ELEMENTS per invocation in a PTX fragment record type, or NIL if
+   FRAG-TYPE is not one.
+
+   Endeavour 159: DERIVED from the record's own member list instead of a hardcoded case.  The
+   fragment records declare one field per element (tf32 A 16x8 -> 4, B 8x8 -> 2, acc -> 4;
+   fp16 A 16x16 -> 8, B 16x8 -> 4), so the member count IS the element count and a new record
+   cannot fall out of sync with a second table.  REGISTERS are a different number at 16 bits
+   (elements * width / 32) and are tracked separately by %ptx-note-register-demand.
+
+   Hopper wgmma accumulators are minted as flat f32 records by %ensure-wgmma-acc-type and keep
+   their own dimension-derived count (N/2 f32 registers per thread across the warpgroup)."
+  (or (when (and frag-type (symbolp frag-type)
+                 (let ((n (symbol-name frag-type)))
+                   (and (>= (length n) 18)
+                        (string= "REGISTER-FRAGMENT-" (subseq n 0 18)))))
+        (let ((def (find-struct-definition-by-name frag-type)))
+          (and def (length (crisp-struct-definition-members def)))))
       (when (%wgmma-acc-type-p frag-type)
         (floor (second (gethash frag-type *wgmma-acc-dims*)) 2))))
 
@@ -59,7 +85,10 @@
    Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register
    or component holds, which is why this is portable and why layout-aware epilogues are out of
    scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which
-   expands it to one of these per fragment."
+   expands it to one of these per fragment.
+
+   Endeavour 159: A/B OPERAND fragments are REFUSED.  See the header above -- this was reachable
+   by accident and silently wrong at 16 bits."
   (unless (= (length (cdr expr)) 2)
     (error 'crisp-compiler-error
            :message (format nil "map-elements!: expects exactly 2 arguments — (map-elements! <fragment-or-tile> #'<unary-fn>) — got ~a."
@@ -71,6 +100,12 @@
            (ty   (get-single-value-type node))
            (nf   (%map-elements-fragment-fields ty))
            (coop (%map-elements-coop-dims ty)))
+      ;; Endeavour 159 — operands are not epilogue targets.
+      (when (%mma-operand-fragment-p ty coop)
+        (error 'crisp-compiler-error
+               :message (format nil "map-elements!: ~a is an MMA A/B OPERAND fragment, not an accumulator.  A fused epilogue applies to the RESULT of the contraction; transform an operand before it is loaded into fragments instead.  (At 16 bits an operand fragment's registers hold PACKED PAIRS, so an elementwise map over them would silently compute on reinterpreted bit patterns.)"
+                               ty)
+               :source-location location))
       (cond
         ;; ---- NVIDIA / PTX: unrolled fieldwise rewrite ----
         (nf
@@ -984,13 +1019,21 @@
 ;;; captured with (fdefinition ...) at load time.  That trick cannot survive the move into
 ;;; src -- the capture would find the wrapper itself.  The original body is preserved
 ;;; verbatim as %analyze-nvvm-tma-load-tile-at-base, and the wrapper below calls it directly.
+
+
+
 (defun %analyze-nvvm-tma-load-tile-at-base (expr env context location)
   "Endeavor 137 (Chapter 1.5, Phase 2) — analyze (load-tile-at SRC TILE (ORIGIN...) :barrier BAR)
    for a NVIDIA :block barrier into a semantic-nvvm-tma-tile-copy.  Codegen emits one bulk
    cp.async.bulk.tensor copy issued by an elected leader, tracked by BAR's mbarrier.  We build
    the dest/source as aref-at-base forms so codegen can reuse the aref element-address machinery
    for the SLM tile base (addrspace 3) and the source tensor base (addrspace 1, the STAND-IN
-   tensormap pointer).  The ORIGIN coords become the TMA {x,y} tile-box operands (element units)."
+   tensormap pointer).  The ORIGIN coords become the TMA {x,y} tile-box operands (element units).
+
+   Endeavour 159: 16-bit element types are accepted.  ELEM-BYTES feeds only the
+   mbarrier.arrive.expect_tx byte count; the copy is descriptor-driven cp.async.bulk.tensor,
+   whose tensormap encodes f16/bf16 directly.  See the header above for why the cp.async sibling
+   site keeps its 4/8-byte restriction -- there it is a hardware limit, not a table omission."
   (let* ((src-form     (second expr))
          (tile-form    (third expr))
          (origin-list  (fourth expr))
@@ -1013,10 +1056,11 @@
          (len-node     (analyze-expression (list length-sym tile-form) env context (append location '(5))))
          (elem-type    (semantic-node-type dst-node))
          (elem-bytes   (case (if (listp elem-type) (first elem-type) elem-type)
+                         ((half bfloat16) 2)       ; Endeavour 159
                          ((int uint float) 4)
                          ((long ulong double) 8)
                          (t (error 'crisp-compiler-error
-                              :message (format nil "load-tile :block: element type ~S needs 4 or 8 bytes" elem-type)
+                              :message (format nil "load-tile :block: element type ~S needs 2, 4 or 8 bytes" elem-type)
                               :source-location location)))))
     ;; Endeavor 140 (warp-spec leader): tag the copy node when it is analyzed inside a
     ;; with-warp-specialization role block, so codegen elects laneid==0 of the producer warp

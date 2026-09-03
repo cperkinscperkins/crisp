@@ -1,0 +1,30 @@
+;; CHECK-FAIL: "pins transA/transB"
+;; Endeavour 161 - a transposed B at 16 bits is refused too, but for a DIFFERENT reason, and the
+;; message must say which.
+;;
+;; WHY THIS IS NOT A COPY OF errors/01.  At 16 bits the ISA genuinely offers both layouts.
+;; CUTLASS's bf16/f16 GMMA traits are templated on the orientation --
+;;     template <GMMA::Major tnspA, GMMA::Major tnspB, ...>
+;;     using FrgTypeA = GMMA::smem_desc<tnspA>;   using FrgTypeB = GMMA::smem_desc<tnspB>;
+;; -- where tf32's are hardcoded to Major::K.  That is the transA/transB pair the 16-bit
+;; mnemonic carries and tf32 does not: five trailing immediates versus three.  So a (K N) B
+;; operand is Major::MN and is perfectly legal HARDWARE -- with transB=1.
+;;
+;; Crisp does not emit transB=1.  %wgmma-asm-string takes the pair from *wgmma-16-trans*, a
+;; DEFVAR pinned to (0 0) -- a global constant, never derived from the operand.  So the refusal
+;; here is a statement about THIS COMPILER, not about the instruction, and saying "B must be
+;; (N K)" would be a false claim about the hardware.  Telling users their kernel is illegal when
+;; it is merely unsupported sends them to fix the wrong thing.
+;;
+;; Inferring transB from the tile orientation is a real and worthwhile feature -- it would make
+;; this very kernel correct as written.  It is filed separately; until it lands, this is the
+;; honest error.
+(declaim (precision fast))
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_b_transposed_16 (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix bfloat16 (64 16)))   ; (M K) - correct
+        (B-tile (make-scratch-matrix bfloat16 (16 64)))   ; (K N) - Major::MN, needs transB=1
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 16) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))

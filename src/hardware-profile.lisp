@@ -25,22 +25,52 @@
 ;;; + per-key value validation.
 ;;; ===================================================================
 
+
+   
 (defparameter *hardware-profile-schema*
   '((:simd-width                  . :pos-int)
     (:compute-units               . :pos-int)
     (:max-registers-per-cu        . :pos-int)
-    (:max-registers-per-thread    . :pos-int)
+    (:max-registers-per-thread    . :pos-int-or-modes)  ; 144 D4: scalar OR (mode ...)
     (:max-total-threads-per-block . :pos-int)
     (:max-concurrent-kernels      . :pos-int)
     (:native-cache-line-size      . :pos-int)   ; bytes
     (:max-shared-memory-per-block . :size)      ; KB/MB/GB/TB literal -> bytes
     (:l2-cache-size               . :size)
+    (:tile-visit-strip-width      . :pos-int)   ; 144 Phase 1: measured; absent/1 => linear
     (:max-work-group-dims         . :dims3)     ; (x y z) positive ints
-    (:mma-shapes                  . :mma-shapes)) ; list of (M N K) triples
-  "Endeavor 130: canonical hardware-profile keys and their value types.  Every key
-   is KNOWN from Phase 0 (so profiles are typo-checked and may be complete); the
-   CONSUMERS that read each key are added phase by phase.  Unknown keys are a
-   compile error; any subset may be specified (missing keys are fine).")
+    (:mma-shapes                  . :mma-shapes)   ; FRAGMENT granularity: (M N K) triples
+    (:wgmma-shapes                . :mma-shapes)   ; 161: WARPGROUP granularity
+    (:mma-lowerings               . :lowerings))   ; 156: ordered; first is the default
+  "Endeavor 130: canonical hardware-profile keys and their value types.
+
+   Endeavour 161 added :wgmma-shapes, and it is a SEPARATE KEY rather than more entries in
+   :mma-shapes for a concrete reason.  :mma-shapes is FRAGMENT granularity -- (8 16 8) for Intel
+   XMX, (16 8 8) for NVIDIA mma.sync -- and roughly eighteen call sites read it as such,
+   including the register-tile fragment decomposition (%mma-fragment-mn) and %spv-mma-shape.
+   wgmma's (64 N K) is WARPGROUP granularity: M is 64 because a warpgroup is 128 threads, and N
+   runs to 256.  Mixing warpgroup triples into :mma-shapes would feed those dims to fragment math.
+
+   GRANULARITY IS A DIFFERENT AXIS FROM ELEMENT TYPE.  Endeavour 155 typed the ENTRIES, adding
+   the 4-list (half 8 16 16) beside the bare (8 16 8), because a triple alone cannot say what
+   element type it is a shape FOR.  A triple cannot say what LEVEL it describes either, and that
+   is what this key adds.  The entry GRAMMAR is deliberately reused unchanged -- the value type
+   is still :mma-shapes -- so %mma-shape-entry-dims and %mma-shape-for-elem apply verbatim and a
+   part may write (bfloat16 64 256 16) here exactly as it would there.
+
+   Both keys are OPTIONAL.  A profile that declares neither behaves precisely as before.
+
+   Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can drive
+   its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the portable
+   SPV_KHR_cooperative_matrix path every backend has had until now.
+
+   Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) -- a scalar
+   for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose
+   register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the
+   MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent
+   means walk linearly.  It is deliberately a measured constant rather than a derived one -- see
+   the block comment in src/hardware-profile.lisp for the two-device data that refuted the
+   derivation.")
 
 (defun %hp-parse-size (v)
   "Parse a size value into bytes: a positive integer, or a size-literal symbol
@@ -241,21 +271,50 @@
 ;;; sums bytes like the hoist's compute-total-shared-bytes.
 ;;; ===================================================================
 
-(defun %hp-scratch-elem-bytes (elem-type)
-  "Bytes per scratch element, matching the hoist's rule (compute-total-shared-bytes):
-   64-bit element types -> 8, everything else -> 4 (the width the launcher reserves)."
-  (let ((n (cond ((symbolp elem-type) (symbol-name elem-type))
-                 ((consp elem-type)   (symbol-name (first elem-type)))
-                 (t ""))))
-    (if (member (string-upcase n) '("DOUBLE" "LONG" "ULONG" "INT64" "UINT64" "F64" "I64" "U64")
-                :test #'string=)
-        8 4)))
 
+
+;; Endeavour 162: the profile's shared-memory bound check sized 16-bit scratch at 4 bytes, so it
+;; over-reported every 16-bit kernel's footprint by 2x and REFUSED kernels that fit -- the
+;; ring-depth-4 bf16 variant was rejected at 393,216 bytes, which is 196,608 at the true width,
+;; inside the 227KB cap.
+;;
+;; This takes a CRISP TYPE SYMBOL where the hoists' %hoist-elem-type-bytes takes a C++ type
+;; STRING, so the two tables map different alphabets and are not duplicates of one another.
+;; They must nonetheless agree on the widths themselves.
+(defun %hp-scratch-elem-bytes (elem-type)
+  "Bytes per scratch element for the profile's shared-memory bound check.
+
+   64-bit -> 8, 16-bit -> 2, 8-bit -> 1, everything else -> 4.  Unknown types keep 4, the
+   historical behaviour, so a type this table has not met is bounded exactly as it always was."
+  (let ((n (string-upcase
+            (cond ((symbolp elem-type) (symbol-name elem-type))
+                  ((consp elem-type)   (symbol-name (first elem-type)))
+                  (t "")))))
+    (cond
+      ((member n '("DOUBLE" "LONG" "ULONG" "INT64" "UINT64" "F64" "I64" "U64") :test #'string=) 8)
+      ((member n '("BFLOAT16" "HALF" "FLOAT16" "F16" "BF16" "SHORT" "USHORT" "INT16" "UINT16")
+               :test #'string=) 2)
+      ((member n '("CHAR" "UCHAR" "INT8" "UINT8" "I8" "U8" "BOOL") :test #'string=) 1)
+      (t 4))))
+
+
+;; Endeavour 162 follow-up: SBCL DERIVED the original %hp-scratch-elem-bytes' return type as
+;; (OR (INTEGER 4 4) (INTEGER 8 8)) -- it only ever returned 4 or 8 -- and baked that assumption
+;; into its caller.  Returning 2 then tripped "The value 2 is not of type (OR (INTEGER 4 4)
+;; (INTEGER 8 8)) from the function type declaration."  Same shape as the %cuda-tensor-map-data-type
+;; case: widen the ftype, then re-append the CALLER verbatim so it recompiles without the stale
+;; derivation.  The declaim must precede the caller's redefinition.
+(declaim (ftype (function (t) (integer 1 8)) %hp-scratch-elem-bytes))
+
+;; src/hardware-profile.lisp
 (defun %hp-kernel-shared-bytes (kernel-name)
   "Total local (shared) memory bytes a kernel reserves, summed from its implicit
    scratch signature (matching the hoist's `(* (expt size-expr rank) elem-bytes)`).
    Returns the byte total, or NIL if any local scratch size is not a compile-time
-   integer (then the bound can't be checked and is skipped)."
+   integer (then the bound can't be checked and is skipped).
+
+   Endeavour 162: re-appended UNCHANGED, purely so it recompiles against the widened
+   %hp-scratch-elem-bytes ftype (which now yields 2 for 16-bit elements)."
   (let ((sig (first (gethash kernel-name *function-table*))))
     (when sig
       (let ((total 0) (known t))
@@ -323,32 +382,6 @@
 
 ;; src/hardware-profile.lisp
 ;; 156 lowering selector: REPLACES *hardware-profile-schema* -- adds :mma-lowerings
-(defparameter *hardware-profile-schema*
-  '((:simd-width                  . :pos-int)
-    (:compute-units               . :pos-int)
-    (:max-registers-per-cu        . :pos-int)
-    (:max-registers-per-thread    . :pos-int-or-modes)  ; 144 D4: scalar OR (mode ...)
-    (:max-total-threads-per-block . :pos-int)
-    (:max-concurrent-kernels      . :pos-int)
-    (:native-cache-line-size      . :pos-int)   ; bytes
-    (:max-shared-memory-per-block . :size)      ; KB/MB/GB/TB literal -> bytes
-    (:l2-cache-size               . :size)
-    (:tile-visit-strip-width      . :pos-int)   ; 144 Phase 1: measured; absent/1 => linear
-    (:max-work-group-dims         . :dims3)     ; (x y z) positive ints
-    (:mma-shapes                  . :mma-shapes)  ; list of (M N K) triples
-    (:mma-lowerings               . :lowerings))  ; 156: ordered; first is the default
-  "Endeavor 130: canonical hardware-profile keys and their value types.
-
-   Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can
-   drive its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the
-   portable SPV_KHR_cooperative_matrix path every backend has had until now.
-
-   Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) — a scalar
-   for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose
-   register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the
-   MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent
-   means walk linearly.  It is deliberately a measured constant rather than a derived one — see
-   the block comment above for the two-device data that refuted the derivation.")
 
 
 ;; src/hardware-profile.lisp

@@ -1,0 +1,32 @@
+;; CHECK-FAIL: "B tile must be (N K)"
+;; Endeavour 161 - a TRANSPOSED B operand must be refused at compile time (tf32).
+;;
+;; THE DEFECT THIS STATES, and what it cost.  wgmma-accumulate-via-tile validated its (M N K)
+;; triple and its element type and then STOPPED -- it never looked at the A and B tiles at all.
+;; Nothing downstream looked either: %wgmma-make-desc takes only (builder base-ptr swizzle-p
+;; kslice-byte-off) and its LBO/SBO constants are HARDCODED, so the tile extents reach neither
+;; the descriptor nor the instruction.  To the lowering the declared dims are pure documentation.
+;; The hardware then reads SMEM by the descriptor's fixed geometry and silently gets the wrong
+;; bytes: the kernel compiles clean, runs at full speed, and computes garbage.
+;;
+;; That is not hypothetical.  It is what BUG 052 actually was.  Two probe kernels built to
+;; bisect a 16-bit wgmma failure staged B as (K N); both "failed", including a tf32 CONTROL, and
+;; the pair was filed as a compiler bug in the no-swizzle descriptor path.  It was neither --
+;; the probes were malformed, and the tf32 control had BOTH operands wrong.  A rented H100 and a
+;; whole bisection went to it.  This spec is the check that would have caught it for free.
+;;
+;; THE RULE, from CUTLASS rather than from inference.  Every tf32 GMMA trait in
+;; third_party/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp declares
+;;     FrgTypeA = FrgTypeB = GMMA::smem_desc<GMMA::Major::K>
+;;     ALayout  = ABLayout<64, 8>     BLayout = ABLayout<64, 8>
+;; and the tf32 SS atoms exist ONLY in the _TN form -- 16 instances, no other suffix -- because
+;; tf32 wgmma has no transpose immediate.  So for tf32 there is exactly ONE legal operand
+;; layout, and (K N) is not it.  Contrast errors/02, where 16-bit has a genuine second option.
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_b_transposed (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 8)))    ; (M K) - correct
+        (B-tile (make-scratch-matrix float (8 64)))    ; (K N) - TRANSPOSED
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))

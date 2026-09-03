@@ -2078,9 +2078,12 @@
          nil)))))
 
 
+
 (defun compile-crisp-file-to-ptx (filepath &key (emit-metadata nil))
   "Compiles a .crisp file to .ptx and returns (values out-path meta-paths).
-   Endeavor 152: honours :emit-metadata, mirroring compile-crisp-file-to-spirv."
+   Endeavor 152: honours :emit-metadata, mirroring compile-crisp-file-to-spirv.
+   Endeavour 159: forwards *compile-hardware-profile*, likewise mirroring that twin -- without
+   it a TEST-WITH --hardware-profile= flag was parsed, bound, and then silently dropped."
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
          (out-path (make-pathname :name base-name :type "ptx" :defaults filepath))
          (meta-base-path (make-pathname :name base-name :type nil :defaults filepath))
@@ -2092,7 +2095,9 @@
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
                   (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
-                                                      :differentiate *compile-differentiate*)
+                                                      :differentiate *compile-differentiate*
+                                                      ;; Endeavour 159: the missing argument.
+                                                      :hardware-profile *compile-hardware-profile*)
                   (let ((*package* (find-package :crisp-language)))
                     (with-open-file (stream filepath)
                       (loop for form = (read stream nil :eof)
@@ -2175,6 +2180,8 @@
        nil)
       (t t))))
 
+
+
 (defun run-spec-ptx-binary (file &key (validator nil) (flags nil))
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
          (bin (get-binary-path))
@@ -2189,6 +2196,18 @@
     ;; binding, so a :block (sm_90+) test gates on the default sm_80 without this.
     (let ((af (find-if (lambda (f) (and (stringp f) (search "--ir-target-arch=" f))) flags)))
       (when af (push af args)))
+    ;; Endeavour 159/162: forward --hardware-profile too.  run-spec-spirv-binary has done this
+    ;; since endeavour 155, with a comment saying the BINARY path would otherwise "drop it, so
+    ;; --use-binary and the in-process runner would disagree about which profile is active" --
+    ;; and that is exactly what happened here, because 155 was SPV work and fixed only the SPV
+    ;; path.  159's specs are the first PTX ones to need a profile: without this, %check-mma-shape
+    ;; takes its NO-PROFILE branch and refuses the 16-bit shape with "only tf32 (16 8 8) is
+    ;; supported without a hardware profile, got (16 8 16)", so --use-binary failed two specs that
+    ;; pass in-process.  Note the pattern: this function already had --ir-target-arch bolted on by
+    ;; 137 and --metadata by 152.  Flags reach it one forgotten flag at a time.
+    (when *compile-hardware-profile*
+      (push (format nil "--hardware-profile=~a" *compile-hardware-profile*) args))
+
     ;; Endeavor 152: forward --metadata too.  A spec that wants to assert on the
     ;; .metacrisp *and* pin an arch carries both flags; dropping this one meant the
     ;; metacrisp was never written and the validator failed on a missing file.
@@ -3796,6 +3815,108 @@
 
 (defun validate-spv-prefetch-unpartitioned (spv-path)
   (funcall (find-symbol "VALIDATE-SPV-PREFETCH-UNPARTITIONED" :crisp.compiler) spv-path))
+
+
+
+(defun validate-ptx-fp16-sync-mma (file ptx-string)
+  "Endeavour 159 Phase B — the NVIDIA sync MMA lowered at fp16.  Asserts the TWO-SIDED
+   invariant, not mere existence: the full m16n8k16 f16 mnemonic is present AND no tf32 MMA
+   instruction remains.
+
+   The full mnemonic matters.  Two plausible NVVM spellings for this operation
+   (llvm.nvvm.mma.m16n8k16.row.col.f16.f32 and ...bf16.f32) pass the LLVM verifier as
+   UNRESOLVED EXTERNAL CALLS -- they emit no instruction at all, while still leaving an
+   `mma.m16n8k16...` substring in the PTX.  A prefix match would green-light a kernel that
+   computes nothing.
+
+   The negative half is 155/02's lesson carried to NVIDIA: a module in which MOST operands were
+   still f32 satisfied that endeavour's original 'some operand is 16-bit somewhere' check, and
+   that weak form is exactly what let the defect survive unnoticed."
+  (declare (ignore file))
+  (let ((want "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32"))
+    (cond
+      ((not (search want ptx-string))
+       (format *error-output* "FAIL: fp16 sync MMA absent — expected ~s~%" want)
+       (when (search "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32" ptx-string)
+         (format *error-output*
+                 "  (the tf32 instruction was emitted instead — :elem did not reach the PTX branch)~%"))
+       nil)
+      ((search "tf32" ptx-string)
+       (format *error-output*
+               "FAIL: fp16 MMA present but tf32 survives in the same module — some A/B path~%~
+                       still mints tf32 fragments (the 155/02 partial-conversion failure mode).~%")
+       nil)
+      (t t))))
+
+  
+;; Endeavour 159 Phase B rung 02.
+(defun validate-ptx-bf16-sync-mma (file ptx-string)
+  "Endeavour 159 Phase B — the NVIDIA sync MMA lowered at bf16.  Same two-sided invariant as
+   validate-ptx-fp16-sync-mma: the full m16n8k16 bf16 mnemonic is present AND no tf32 MMA
+   remains.
+
+   The FULL mnemonic is matched, never a prefix.  Two plausible NVVM spellings for this
+   operation (llvm.nvvm.mma.m16n8k16.row.col.bf16.f32 and ...f32.bf16) pass the LLVM verifier as
+   UNRESOLVED EXTERNAL CALLS -- they emit no instruction at all while still leaving an
+   'mma.m16n8k16...' substring in the PTX.  A prefix match would green-light a kernel that
+   computes nothing.
+
+   The negative half carries 155/02's lesson onto NVIDIA: a module in which MOST operands were
+   still f32 satisfied that endeavour's original 'some operand is 16-bit somewhere' check, and
+   that weak form is exactly what let the defect survive unnoticed."
+  (declare (ignore file))
+  (let ((want "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32"))
+    (cond
+      ((not (search want ptx-string))
+       (format *error-output* "FAIL: bf16 sync MMA absent — expected ~s~%" want)
+       (when (search "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32" ptx-string)
+         (format *error-output*
+                 "  (the tf32 instruction was emitted instead — :elem did not reach the PTX branch)~%"))
+       (when (search "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" ptx-string)
+         (format *error-output*
+                 "  (the FP16 instruction was emitted instead — the bf16/fp16 record split did not fire)~%"))
+       nil)
+      ((search "tf32" ptx-string)
+       (format *error-output*
+               "FAIL: bf16 MMA present but tf32 survives in the same module — some A/B path~%~
+                       still mints tf32 fragments (the 155/02 partial-conversion failure mode).~%")
+       nil)
+      (t t))))
+
+;; Endeavour 160 rungs 01/02 — wgmma at 16 bits.
+(defun %validate-wgmma-16 (ptx-string want label)
+  "Shared body for the bf16/fp16 wgmma validators.  Two-sided, like endeavour 159's sync-MMA
+   validators and for the same reason: a module in which SOME operand reached 16 bits satisfies a
+   presence-only check while most of it still computes in the wrong precision (155/02's lesson).
+
+   The FULL mnemonic is matched.  Note the 16-bit wgmma also takes FIVE trailing immediates
+   (scaleD, scaleA, scaleB, transA, transB) where tf32 takes three -- so a lowering that swapped
+   only the mnemonic would assemble to something ptxas rejects, and a prefix match would not see
+   it.  The mnemonic is checked here; ptxas acceptance is checked by the spec runner compiling
+   the PTX."
+  (cond
+    ((not (search want ptx-string))
+     (format *error-output* "FAIL: ~a wgmma absent — expected ~s~%" label want)
+     (when (search "wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32" ptx-string)
+       (format *error-output*
+               "  (the tf32 k8 wgmma was emitted instead — the element type did not reach %wgmma-asm-string)~%"))
+     nil)
+    ((search "tf32" ptx-string)
+     (format *error-output*
+             "FAIL: ~a wgmma present but tf32 survives in the same module — some operand path~%~
+                     still lowers as tf32.~%" label)
+     nil)
+    (t t)))
+
+(defun validate-ptx-wgmma-bf16 (file ptx-string)
+  "Endeavour 160 rung 01 — the bf16 warpgroup async MMA lowered."
+  (declare (ignore file))
+  (%validate-wgmma-16 ptx-string "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16" "bf16"))
+
+(defun validate-ptx-wgmma-fp16 (file ptx-string)
+  "Endeavour 160 rung 02 — the fp16 warpgroup async MMA lowered."
+  (declare (ignore file))
+  (%validate-wgmma-16 ptx-string "wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16" "fp16"))
 
 
 (defun main ()

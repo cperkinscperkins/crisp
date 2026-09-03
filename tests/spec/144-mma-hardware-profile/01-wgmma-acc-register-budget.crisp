@@ -36,7 +36,7 @@
            (global-size :set-to 128)
            (local-size :set-to 128))          ; one warpgroup
   (let ((A-tile (make-scratch-matrix float (64 8)))
-        (B-tile (make-scratch-matrix float (8 256)))
+        (B-tile (make-scratch-matrix float (256 8)))
         (D      (make-wgmma-accumulator float (64 256) 0.0)))
     (wgmma-accumulate-via-tile (64 256 8) D A-tile B-tile)
     (store-tile D C (0 0))))

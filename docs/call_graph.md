@@ -28,6 +28,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (TENSOR-TYPE-P PARAM-TYPE)  hoist-cuda/main.lisp
 - - - - - - (%CUDA-LOCAL-PARAM-BYTES PARAM PARAM-TYPE)  hoist-cuda/main.lisp
 - - - - - - - (TENSOR-TYPE-P PARAM-TYPE)  hoist-cuda/main.lisp [See above]
+- - - - - - - (%HOIST-ELEM-TYPE-BYTES ELEM-STR)  hoist-cuda/main.lisp
 - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - (%ARRAY-SIZE TYPE)  hoist-cuda/main.lisp [See above]
 - - - - - (%EMIT-KERNEL-ARGS-BASE STREAM DECLARED-SIG ALIASES RECORDS DISPATCH-INFO)  hoist-cuda/main.lisp
@@ -36,16 +37,20 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - (%ARRAY-ELEMENT-TYPE TYPE)  hoist-cuda/main.lisp [See above]
 - - - - - - - (%ARRAY-SIZE TYPE)  hoist-cuda/main.lisp [See above]
+- - - - - - - (%HOIST-ELEM-TYPE-BYTES ELEM-STR)  hoist-cuda/main.lisp [See above]
 - - - - - - (TENSOR-TYPE-P PARAM-TYPE)  hoist-cuda/main.lisp [See above]
 - - - - - - (%CUDA-EMIT-LOCAL-SCRATCH-TENSOR-ARG STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)  hoist-cuda/main.lisp
+- - - - - - - (%HOIST-ELEM-TYPE-BYTES ELEM-STR)  hoist-cuda/main.lisp [See above]
 - - - - - - - (%TENSOR-COMPACT-EXTENTS-STRIDES N EXTENTS-LIST)  hoist-cuda/main.lisp
 - - - - - - - (%CUDA-SCRATCH-DIMS SIZE-EXPR RANK PARAM-NAME)  hoist-cuda/main.lisp
 - - - - - - (%CUDA-EMIT-GLOBAL-SCRATCH-TENSOR-ARG STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)  hoist-cuda/main.lisp
+- - - - - - - (%HOIST-ELEM-TYPE-BYTES ELEM-STR)  hoist-cuda/main.lisp [See above]
 - - - - - - - (%TENSOR-COMPACT-EXTENTS-STRIDES N EXTENTS-LIST)  hoist-cuda/main.lisp [See above]
 - - - - - - - (%CUDA-SCRATCH-DIMS SIZE-EXPR RANK PARAM-NAME)  hoist-cuda/main.lisp [See above]
 - - - - - - (%CUDA-EMIT-TENSOR-ARG STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR ARG-INDEX DISPATCH-INFO)  hoist-cuda/main.lisp
 - - - - - - - (%MMA-OUT-DIR-P DIR)  hoist-cuda/main.lisp
 - - - - - - - (%TENSOR-COMPACT-EXTENTS-STRIDES N EXTENTS-LIST)  hoist-cuda/main.lisp [See above]
+- - - - - - - (%HOIST-ELEM-TYPE-BYTES ELEM-STR)  hoist-cuda/main.lisp [See above]
 - - - - - - (STRUCT-TYPE-P TYPE)  hoist-cuda/main.lisp
 - - - - - - - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp
 - - - - - - (%CUDA-EMIT-STRUCT-ARG STREAM PARAM-NAME PARAM-TYPE ALIASES ARG-INDEX)  hoist-cuda/main.lisp
@@ -596,15 +601,20 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp
+- - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp
 - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-WGMMA BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N &OPTIONAL SWIZZLE-P (K
-                                                                                                                         8))  mma.lisp
+                                                                                                                         8) ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-FENCE-PROXY-ASYNC-SHARED BUILDER)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%PTX-BARRIER BUILDER MODULE)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%EMIT-WGMMA-MMA-ONLY BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - (%EMIT-WGMMA-MMA-ONLY BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF &OPTIONAL ELEM)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - (%WGMMA-MAKE-DESC BUILDER BASE-PTR &OPTIONAL SWIZZLE-P (KSLICE-BYTE-OFF
                                                                                                   0))  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%WGMMA-ASM-STRING NACC N)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - (%WGMMA-ASM-STRING NACC N &OPTIONAL ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%WGMMA-OPERAND-MNEMONIC ELEM)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - (%WGMMA-CONSTRAINTS NACC)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - (%WGMMA-STRUCT-OF-FLOATS MODULE NACC)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
@@ -612,7 +622,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-FOR-ELEM SHAPES ELEM)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-ENTRY-TYPE ENTRY)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-ENTRY-DIMS ENTRY)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-ENTRY-DIMS ENTRY)  mma.lisp [See above]
@@ -621,7 +631,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                          (EQL XE-NATIVE)) BUILDER MODULE A-VAL B-VAL C-VAL ELEM-LLVM M N K)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - (%NVVM-FRAG-FORMAT LLVM-ELEM-TYPE)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - (%MODULE-HAS-CLUSTER-P)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-CLUSTERS-P ARCH)  types/registry.lisp [See above]
 - - - - - - - - - - - - - - - - - (%GEN-NVVM-CLUSTER-BARRIER BUILDER)  codegen.lisp [See above]
@@ -1107,7 +1120,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%EMIT-ONE-WGMMA BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF)  mma.lisp
 - - (%WGMMA-MAKE-DESC BUILDER BASE-PTR &OPTIONAL SWIZZLE-P (KSLICE-BYTE-OFF 0))  mma.lisp [See above]
 - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - (%WGMMA-ASM-STRING NACC N)  mma.lisp [See above]
+- - (%WGMMA-ASM-STRING NACC N &OPTIONAL ELEM)  mma.lisp [See above]
 - - (%WGMMA-CONSTRAINTS NACC)  mma.lisp [See above]
 - - (%WGMMA-STRUCT-OF-FLOATS MODULE NACC)  mma.lisp [See above]
 - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
@@ -1708,17 +1721,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 
 - (ANALYZE-LET-WITH-TILE-EXPLOSION EXPR ENV CONTEXT LOCATION)  mma.lisp
-- - (ANALYZE-LET-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - - (%STRIP-EXECUTION-CONTEXT-DECLARES BODY-FORMS)  analysis/control.lisp
-- - - (%CHECK-CONTEXT-DECLARATIONS DECL-SPECS LOCATION)  analysis/control.lisp
-- - - (%TO-UNIFORM-FORM-P FORM)  analysis/control.lisp
-- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
-- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
-- - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
-- - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%EXPLODE-REGISTER-TILES LET-EXPR &OPTIONAL LOCATION CONTEXT)  mma.lisp
 - - - (%MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS BINDINGS)  mma.lisp
 - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
@@ -1752,6 +1754,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%REGISTER-TILE-RING-INIT-FORM-P FORM)  mma.lisp [See above]
 - - (%EXPAND-MATMUL-TILE-STRIDE-REGISTER-FORMS LET-EXPR LOCATION)  mma.lisp
 - - - (%MMTS-REGISTER-DIMS-MAP BINDINGS)  mma.lisp [See above]
+- - (%MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS BINDINGS)  mma.lisp [See above]
+- - (ANALYZE-LET-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (%STRIP-EXECUTION-CONTEXT-DECLARES BODY-FORMS)  analysis/control.lisp
+- - - (%CHECK-CONTEXT-DECLARATIONS DECL-SPECS LOCATION)  analysis/control.lisp
+- - - (%TO-UNIFORM-FORM-P FORM)  analysis/control.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-LOAD-FRAGMENT-A EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1765,6 +1779,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp [See above]
 - - - (%COOP-REFUSE-COL-MAJOR TENSOR-NODE)  mma.lisp
 - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - (%NVVM-FRAG-RECORD OPERAND ELEM)  mma.lisp
+- - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
+- - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 
 - (ANALYZE-LOAD-FRAGMENT-ACC EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
@@ -1781,6 +1798,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
 - - (%COOP-ELEM-OF TENSOR-NODE)  mma.lisp [See above]
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
+- - (%NVVM-FRAG-RECORD OPERAND ELEM)  mma.lisp [See above]
+- - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 
 - (ANALYZE-LOAD-LOCAL-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1885,7 +1904,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%MV-ROW-MAJOR-STRIDES EXTENTS)  analysis/structs.lisp [See above]
 
 - (ANALYZE-MAKE-WGMMA-ACCUMULATOR EXPR ENV CONTEXT LOCATION)  mma.lisp
-- - (%CHECK-WGMMA-SHAPE SHAPE LOCATION &OPTIONAL SWIZZLE)  mma.lisp
+- - (%CHECK-WGMMA-SHAPE SHAPE LOCATION &OPTIONAL SWIZZLE ELEM)  mma.lisp
+- - - (%WGMMA-SHAPES-OF-PROFILE)  mma.lisp
+- - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - (%CHECK-WGMMA-SHAPE-AGAINST-PROFILE SHAPE SHAPES LOCATION SWIZZLE ELEM)  mma.lisp
+- - - - (%MMA-SHAPE-ENTRY-DIMS ENTRY)  mma.lisp [See above]
+- - - (%CHECK-WGMMA-SHAPE-AGAINST-ISA SHAPE LOCATION SWIZZLE ELEM)  mma.lisp
+- - - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
 - - (%WGMMA-ACC-FIT-CHECK M N LOCATION)  mma.lisp
 - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - - (%HP-REGISTERS-PER-THREAD-DEFAULT &OPTIONAL (PROFILE
@@ -1902,9 +1927,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (%MAP-ELEMENTS-FRAGMENT-FIELDS FRAG-TYPE)  analysis/control.lisp
+- - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
 - - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp [See above]
 - - (%MAP-ELEMENTS-COOP-DIMS TY)  mma.lisp
 - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
+- - (%MMA-OPERAND-FRAGMENT-P TY COOP-DIMS)  analysis/control.lisp
 - - (%MAP-ELEMENTS-CALL FN-FORM ARG-FORM)  mma.lisp
 - - - (%MAP-ELEMENTS-FN-NAME FN-FORM)  mma.lisp [See above]
 
@@ -2158,11 +2185,20 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [See above]
+- - (%COOP-ELEM-OF TENSOR-NODE)  mma.lisp [See above]
 - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp [See above]
+- - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
 
 - (ANALYZE-WGMMA-ACCUMULATE-VIA-TILE EXPR ENV CONTEXT LOCATION)  mma.lisp
-- - (%CHECK-WGMMA-SHAPE SHAPE LOCATION &OPTIONAL SWIZZLE)  mma.lisp [See above]
+- - (%COOP-ELEM-OF TENSOR-NODE)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%CHECK-WGMMA-SHAPE SHAPE LOCATION &OPTIONAL SWIZZLE ELEM)  mma.lisp [See above]
+- - (%CHECK-WGMMA-OPERANDS SHAPE A B LOCATION ELEM SWIZZLE)  mma.lisp
+- - - (%MMA-OPERAND-EXTENT REF TILES WHICH)  mma.lisp
+- - - - (%RESOLVE-TILE-REF REF TILES)  mma.lisp
+- - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
+- - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
+- - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
 
 - (ANALYZE-WHEN+-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-IF+-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]

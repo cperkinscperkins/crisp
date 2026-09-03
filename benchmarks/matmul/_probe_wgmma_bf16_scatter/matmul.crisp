@@ -1,0 +1,62 @@
+;; PROBE — minimal bf16 wgmma on the SCATTER path.  Not a ladder rung; a bisection.
+;;
+;; WHAT QUESTION THIS ANSWERS.  chap7_wgmma_bf16 measured verified=FALSE on an H100 PCIe while
+;; the tf32 chapter 7 verified True on the same pod at the same size.  But chapter 7 changes FIVE
+;; things at once relative to a plain kernel: TMA fetch, 128B swizzle, a 2-slot ring, warp
+;; specialization, and wgmma itself.  A single failing bit over five simultaneous changes is not
+;; a diagnosis.
+;;
+;; This kernel changes exactly ONE of them.  It is chapter 2's staging -- ordinary load-tile into
+;; plain scratch, one warpgroup, no ring, no producer/consumer split, NO TMA, NO SWIZZLE -- with
+;; the sync MMA replaced by wgmma.  So:
+;;
+;;   verified TRUE   -> the 16-bit wgmma lowering itself is sound (mnemonic, K-per-slice,
+;;                      accumulator handling, the no-swizzle descriptor).  The fault in chapter 7
+;;                      is then in the SWIZZLE/TMA staging, not in wgmma.
+;;   verified FALSE  -> the fault is in the core 16-bit wgmma path, and chapter 7's machinery was
+;;                      merely hiding it behind four other variables.
+;;
+;; EITHER ANSWER IS PROGRESS, which is the point of building it before renting again.
+;;
+;; NOTE THE DESCRIPTOR PATH DIFFERS FROM CHAPTER 7'S, deliberately.  Without :swizzle,
+;; %wgmma-make-desc emits LBO=128B (enc 8) / SBO=256B (enc 16) -- entirely different constants
+;; from the 128B-swizzle path's LBO=16B / SBO=1024B.  Reading CUTLASS's make_gmma_desc showed the
+;; SWIZZLED constants should be byte-identical at bf16 and tf32 (LBO=1, SBO=64 in uint128 units
+;; for both, given chapter 7's K-block choice), so the swizzled descriptor is probably NOT the
+;; bug.  This probe exercises the other descriptor path and so tests a different part of the
+;; claim.
+;;
+;; K IS 16 AND THERE IS NO :swizzle, so this is a single k16 slice -- the smallest possible unit
+;; of 16-bit wgmma.  %emit-nvvm-wgmma's no-swizzle branch emits the proxy fence + barrier + ONE
+;; instruction, so nothing about multi-slice advance (kk*32 bytes) is exercised either.  That is
+;; another variable removed.
+;;
+;; Measured through benchmarks/matmul/crisp/bench_harness.cu, which verifies bf16 against its own
+;; host reference.  The generated --mma-test harness CANNOT be used here: it fills A/B by writing
+;; the small integers 0..4 as raw bit patterns (fp16 denormals) and reads them back as hardcoded
+;; float, so its verdict for any 16-bit kernel is meaningless (endeavour 159).
+;;
+;; UNDERSCORE-PREFIXED so it is not mistaken for a ladder chapter and does not enter §1.5.
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 128))          ; ONE warpgroup, 128-aligned for wgmma
+  (let ((A-tile (make-scratch-matrix bfloat16 (64 16)))   ; M x K, a single k16 slice
+        (B-tile (make-scratch-matrix bfloat16 (64 16)))   ; N x K (B^T) -- wgmma reads B K-major
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (K      (inner-dimension A B)))
+    (tile-stride C (64 64) (grid-y grid-x)
+      (set! D (make-wgmma-accumulator float (64 64) 0.0))
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+        (load-tile A A-tile (grid-y grid-k))
+        (load-tile B B-tile (grid-k grid-x))
+        (sync-workgroup)
+        (wgmma-accumulate-via-tile (64 64 16) D A-tile B-tile)
+        (sync-workgroup))
+      :epilogue
+      (store-tile D C (grid-y grid-x)))))

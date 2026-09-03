@@ -1,0 +1,53 @@
+;; The fp16 twin of rung 01.  SEPARATE FILE ON PURPOSE: the two formats differ in the emitted
+;; mnemonic and nothing else here, but 159 found that fp16 and bf16 DISAGREED on operand type for
+;; the sync MMA (<2 x half> vs i32) -- a difference invisible until each was compiled.  Pinning
+;; both independently costs one file and catches that class of divergence.
+;;
+;; Endeavour 160 rung 02 — wgmma at fp16: the warpgroup async MMA must emit its 16-bit form.
+;;
+;; THE DEFECT THIS STATES.  Crisp's wgmma path is tf32-pinned in two places:
+;;   %check-wgmma-shape (src/mma.lisp:2069) hard-errors unless K is exactly 8 (or a multiple of 8
+;;     under :swizzle), and
+;;   %wgmma-asm-string  (src/mma.lisp:2173) emits m64n{N}k8.f32.tf32.tf32 unconditionally.
+;; So a 16-bit wgmma kernel does not compile at all, and §1.5 of the report shows chapter 7 as a
+;; row of dashes on both platforms -- the only rung on the 16-bit ladder that is empty for a
+;; COMPILER reason rather than a missing kernel.
+;;
+;; WHY IT MATTERS MORE THAN THE OTHER RUNGS.  Endeavour 159 measured the NVIDIA bf16 ladder: the
+;; best Crisp can do is chapter 4 at 92.5 TFLOPS = 13.9% of cuBLAS.  At tf32, chapter 7 reaches
+;; 67-90%.  wgmma is the instruction that closes that gap.
+;;
+;; THE TARGET FORM, VERIFIED WITH ptxas -arch=sm_90a BEFORE ANY COMPILER WORK:
+;;     wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 {32 accumulators}, descA, descB,
+;;                                                          1, 1, 1, 0, 0;
+;;
+;; NOTE THE OPERAND COUNT, because assuming symmetry with tf32 would get it wrong: the tf32 form
+;; takes THREE trailing immediates (scaleD, scaleA, scaleB) and the 16-bit form takes FIVE, adding
+;; transA/transB.  The mnemonic is not the only thing that changes.
+;;
+;; ACCUMULATORS ARE UNCHANGED: N/2 f32 registers (32 for n64), matching %wgmma-struct-of-floats
+;; and endeavour 144's register accounting.  A 16-bit wgmma accumulates in fp32, as everywhere.
+;;
+;; K IS 16, NOT 8 -- and the byte geometry is why this rung is expected to be small.  A wgmma core
+;; matrix is 8 rows x 16 bytes regardless of element type; a tf32 k8 slice is 8 x 4 = 32 bytes and
+;; a fp16 k16 slice is 16 x 2 = 32 bytes.  %emit-nvvm-wgmma already advances the descriptor by
+;; kk*32 BYTES per slice, so the descriptor constants should carry over untouched and only the
+;; K-per-slice changes.  THAT IS A HYPOTHESIS: the descriptor is a runtime 64-bit value that ptxas
+;; never validates, so this spec can only prove the INSTRUCTION.  The descriptor is settled by
+;; MMA_CORRECT on metal (rung 03).
+;;
+;; ===================================================================
+;; STATUS: RED until the compiler emits 16-bit wgmma.  This is the TDD statement of the defect.
+;; ===================================================================
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma-fp16
+(declaim (precision fast))
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_fp16 (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 16)))   ; M x K, one fp16 k16 slice
+        (B-tile (make-scratch-matrix half (64 16)))   ; N x K (B^T) -- wgmma reads B K-major
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 16) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))

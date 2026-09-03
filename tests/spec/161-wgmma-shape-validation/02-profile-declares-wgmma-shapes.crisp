@@ -1,0 +1,30 @@
+;; Endeavour 161 rung 02 - a profile may DECLARE its warpgroup MMA shapes, and a matching
+;; kernel compiles.
+;;
+;; WHY A NEW KEY AND NOT :mma-shapes.  :mma-shapes is FRAGMENT granularity -- (8 16 8) for Intel
+;; XMX, (16 8 8) for NVIDIA mma.sync -- and it is read as such in ~18 places, including the
+;; register-tile fragment decomposition (%mma-fragment-mn, src/mma.lisp) and %spv-mma-shape.
+;; wgmma's (64 N K) is WARPGROUP granularity: M is 64 because a warpgroup is 128 threads, and N
+;; runs to 256.  Putting those triples in :mma-shapes would feed warpgroup dims to fragment math.
+;;
+;; Granularity is a different axis from element type.  Endeavour 155 typed the ENTRIES -- adding
+;; the 4-list (half 8 16 16) beside the bare (8 16 8) -- because a triple alone cannot say what
+;; element type it is a shape FOR.  This adds the LEVEL, which a triple cannot say either.  The
+;; entry grammar is reused unchanged, so %mma-shape-entry-dims and %mma-shape-for-elem apply to
+;; :wgmma-shapes verbatim and a 16-bit part can write (bfloat16 64 256 16) here too.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90 --hardware-profile=hopper161]
+(declaim (precision fast))
+(def-hardware-profile hopper161
+  :simd-width 32
+  :mma-shapes ((16 8 8))
+  :wgmma-shapes ((64 64 8) (64 256 8)))
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wgmma_profiled (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (64 8)))
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
+    (set! (~ C 0 0) 1.0)))

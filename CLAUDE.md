@@ -285,6 +285,46 @@ And definitely don't remove logging as part of a patch to fix something. That is
 correct or professional. We wait to verify the fix before adjusting logging.
 
 
+### Token Discipline (this costs me real money)
+
+I work on Crisp evenings and weekends and I pay per token. On 2026-08-29 an hour of work
+burned $42 of overage credit. Please respect the following.
+
+The mechanism: context is re-sent on EVERY request. Stable content at the front (this file,
+MEMORY.md, the design docs) caches and is read back at ~1/10th rate -- it is cheap, it is
+worth having, do NOT try to trim it. What is expensive is CHURN: a big tool output pulled in
+mid-session rides along on every later turn, and gets re-paid IN FULL at 1.25x on any cache
+miss.
+
+So:
+
+1. **NEVER read a suite log into context.** They run to 12MB (~3M tokens). Use
+   `tail`, `grep -c`, or `scripts/extract_status.py`. Same for `.ll` / `.spv` / `.ptx` dumps
+   -- extract the lines that matter, don't cat the file.
+2. **Findings go to files, not into context.** Write analysis to `put_temp_files_here/`
+   and keep only the conclusion in the conversation.
+3. **Read narrowly.** `sed -n 'A,Bp'` a known region beats reading a 4000-line file.
+   Re-reading a file already in context is pure waste.
+4. **Don't propose `/clear` mid-endeavour.** Crisp is unusual (non-Turing-complete, A|D,
+   tile-stride, MMA lowering) and re-onboarding costs more than it saves. At a genuine
+   endeavour boundary it's fine -- the `tests/spec/NNN/*.md` doc plus memory rebuild state.
+
+### Working with the H100 (or any rented pod)
+
+The pod bills by the minute; the API bills by the request. Division of labour:
+
+- **Chris owns the pod's life** -- rents it, confirms it's up, kills it. The clock never
+  runs on my mistake.
+- **Claude owns the session** -- ONE batched script via `scripts/bench-on-pod.sh` /
+  `run-on-pod.sh`, output redirected to a file ON THE POD, then
+  `scripts/pull-runpod-results.sh` and read only the compact JSON.
+
+Do NOT poll or stream live output back. A long blocking call is ONE request no matter how
+long it runs; forty status checks are forty. Before asking for a pod, say what will be run
+and what would make it a wasted rental -- and prefer to develop and compile-verify locally
+first, since most compiler work needs no GPU at all.
+
+
 Thanks again for your help. 
 
 Chris

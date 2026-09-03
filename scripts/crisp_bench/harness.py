@@ -74,6 +74,12 @@ class VerificationMetrics:
     verified: bool = True
     mode: str = "full"  # "full", "spot_check", "inherited", "none"
     relative_error: Optional[float] = None
+    # Endeavour 162 follow-up: the harnesses COMPUTE these and print them, and the collector
+    # threw them away -- so a large-N failure could not be told from a near-miss after the
+    # fact.  Every big-matrix point that failed verification lost the one number that would
+    # have diagnosed it.  Persisted now.
+    max_abs_err: Optional[float] = None
+    samples: Optional[int] = None
 
 @dataclass
 class BenchmarkMetrics:

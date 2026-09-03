@@ -1,0 +1,51 @@
+;; PROBE — bf16 wgmma on the SWIZZLE path, with the pipelining removed.  Not a ladder rung.
+;;
+;; WHAT THIS ISOLATES.  chap7_wgmma_bf16 verifies FALSE while tf32 chapter 7 verifies True on the
+;; same pod.  Chapter 7 differs from a plain kernel in FIVE ways: TMA fetch, 128B swizzle, a
+;; 2-slot ring, warp specialization, and wgmma.  The earlier scatter probe removed the swizzle and
+;; the TMA -- and landed on BUG 052, a pre-existing defect in the no-swizzle path, which told us
+;; nothing about 16-bit.
+;;
+;; So this probe goes the OTHER way: it KEEPS the TMA and the 128B swizzle (the parts chapter 7
+;; needs and the scatter probe destroyed) and removes only the ring and the warp specialization.
+;; One warpgroup does both the load and the math, with a single barrier.
+;;
+;;   bf16 FALSE + tf32 TRUE  -> the 16-bit SWIZZLE staging is the defect.  Endeavour 160's target,
+;;                              isolated from rings, warp roles, and BUG 052.
+;;   both FALSE              -> the non-pipelined swizzle path is broken too, and chapter 7's tf32
+;;                              success depends on the ring or the warp split in some way we do
+;;                              not understand.
+;;   both TRUE               -> wgmma+TMA+swizzle is sound at both widths, and chapter 7's bf16
+;;                              failure comes from the RING or the WARP SPECIALIZATION -- i.e.
+;;                              from pipelining a 16-bit tile, not from the instruction.
+;;
+;; THE K-BLOCK IS FORCED, NOT CHOSEN.  128B swizzle requires 128 bytes in the innermost (K)
+;; dimension: 64 elements at bf16, 32 at tf32.  That is why the two arms differ in K-block -- they
+;; are the SAME 128-byte geometry, which is the point.  Each is four k-slices.
+;;
+;; Verified through benchmarks/matmul/crisp/bench_harness.cu.  The generated --mma-test harness
+;; cannot check 16-bit (it fills raw bit patterns and reads back as float -- endeavour 159).
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 128))          ; ONE warpgroup: loads AND computes
+  (let ((A-tile (make-scratch-matrix bfloat16 (64 64)))    ; M x K, 128 bytes of K
+        (B-tile (make-scratch-matrix bfloat16 (64 64)))    ; N x K (B^T), 128 bytes of K
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :mode :block)))
+    (tile-stride C (64 64) (grid-y grid-x)
+      (set! D (make-wgmma-accumulator float (64 64) 0.0))
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+        (load-tile A A-tile (grid-y grid-k) :barrier bar :swizzle :128b)
+        (load-tile B B-tile (grid-x grid-k) :barrier bar :swizzle :128b)
+        (await bar)
+        (wgmma-accumulate-via-tile (64 64 64) D A-tile B-tile :swizzle :128b)
+        (sync-workgroup))
+      :epilogue
+      (store-tile D C (grid-y grid-x)))))
