@@ -1,0 +1,50 @@
+;; Endeavour 162 rung 01 — a 16-bit scratch tile must be SIZED AT ITS TRUE WIDTH.
+;;
+;; THE DEFECT THIS PINS.  %hp-scratch-elem-bytes (profile bound check) and, in the CUDA hoist,
+;; %cuda-local-param-bytes / %cuda-emit-local-scratch-tensor-arg / %cuda-emit-cell-arg all sized
+;; every non-64-bit element at 4 bytes.  For bfloat16 and half that is WRONG BY 2x, and because
+;; the sizer and the emitters shared the same wrong rule they agreed with each other -- so the
+;; launch request and the tile offsets were consistently, silently, twice too large.
+;;
+;; Measured on chap7_wgmma_bf16 before the fix, the generated launcher said:
+;;     // LOCAL scratch tensor: b-ring (rank=3, uint16_t, 32768 elems, 131072 bytes, ...)
+;;     cuLaunchKernel(..., 163840, 0, ...)
+;; 32,768 uint16_t sized at 131,072 bytes is 4 bytes each.  At 160KB only ONE CTA fits per SM on
+;; an H100 (228KB); at the correct 80KB, two do -- and, more consequentially, ring depths 3 and 4
+;; were not REPRESENTABLE at all.  Depth 4 was refused at 393,216 bytes and is 192KB at the true
+;; width; swept on an H200 it is worth +45% at N=16384 over the shipped kernel.
+
+;; THE ARITHMETIC THIS RUNG TURNS INTO A TEST.  The profile caps shared memory at 100KB =
+;; 102,400 bytes, and the scratch tile holds 256 x 128 = 32,768 elements:
+;;
+;;     at the TRUE 16-bit width (2 bytes):   65,536 bytes  -> FITS      (this spec compiles)
+;;     at the naive 4-byte width:           131,072 bytes  -> REFUSED   (this spec fails)
+;;
+;; So a regression to "everything not 64-bit is 4 bytes" does not merely make this slower; it
+;; makes it STOP COMPILING, with the bound-check error naming the byte count.  That is the whole
+;; point: the defect it guards against was invisible for months because nothing broke -- the
+;; kernels stayed numerically correct and merely reserved twice the shared memory they used.
+;; MMA_CORRECT could never catch it, and no report number looked wrong until N grew.
+;;
+;; PAIRED WITH errors/01, which is the SAME 256x128 tile in `float`: 32,768 x 4 = 131,072 bytes,
+;; which must still be REFUSED.  Same element count, different element type, opposite outcomes --
+;; so a width regression in either direction breaks exactly one of the two.
+;;
+;; THE TILE IS DELIBERATELY UNUSED, and that is not a weakness of the test.  What the profile
+;; bound check counts -- and what the launcher actually reserves -- is the DECLARED scratch
+;; signature, not what the body reads back.  Verified directly: the same tile under a 50KB cap
+;; is refused with "uses 65536 bytes", which is 32,768 x 2, so the declaration alone exercises
+;; both the width table and the check.  Keeping the body trivial also keeps the rung about ONE
+;; thing; a read-back would drag element conversion into a spec that is not about conversion.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90 --hardware-profile=smem162]
+(declaim (precision fast))
+(def-hardware-profile smem162
+  :simd-width 32
+  :max-shared-memory-per-block 100KB)
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel bf16_scratch_fits (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((tile (make-scratch-matrix bfloat16 (256 128))))
+    (set! (~ C 0 0) 1.0)))

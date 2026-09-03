@@ -1,0 +1,37 @@
+;; COMPILE-WITH[--hardware-profile=smem162e]: FAIL "exceeding the hardware profile"
+;; SKIP-DEFAULT-PASS
+;;   The refusal REQUIRES an active profile: with none selected there is no shared-memory bound
+;;   to exceed and this kernel compiles perfectly well.  So it is a COMPILE-WITH...FAIL spec
+;;   rather than an errors/ rung -- errors/ specs must fail in the flagless Default pass, and
+;;   opting one out with SKIP-DEFAULT-PASS makes it vacuously "pass", which the runner correctly
+;;   reports as "Test passed but was expected to fail".  Same idiom as
+;;   133-mma-spv/13-col-major-operand-refused-bmg, whose refusal also needs a profile selected.
+;;
+;; THE TILE IS DELIBERATELY UNUSED, and that is not a weakness of the test.  What the profile
+;; bound check counts -- and what the launcher actually reserves -- is the DECLARED scratch
+;; signature, not what the body reads back.  Verified directly: the same tile under a 50KB cap
+;; is refused with "uses 65536 bytes", which is 32,768 x 2, so the declaration alone exercises
+;; both the width table and the check.  Keeping the body trivial also keeps the rung about ONE
+;; thing; a read-back would drag element conversion into a spec that is not about conversion.
+;; Endeavour 162 — the CONTROL: widening 16-bit must not widen everything.
+;;
+;; This is the same 256 x 128 = 32,768-element tile as rung 01, in `float` instead of bfloat16.
+;; At 4 bytes it is 131,072 bytes against a 100KB (102,400) cap, so it MUST still be refused.
+;;
+;; WHY THIS RUNG EXISTS.  Rung 01 alone is satisfied by a table that returns 2 for EVERYTHING --
+;; which would under-reserve every 32-bit kernel in the tree and corrupt their shared layouts,
+;; the failure mode BUG 046 was about (sizer and emitters disagreeing).  A test that a fix can
+;; satisfy by being wrong in the other direction is not a test of the fix.  Together the two
+;; rungs pin the RELATIONSHIP -- 16-bit is half of 32-bit -- rather than either number alone.
+;;
+;; It also guards the bound check itself: if %hp-check-shared-memory ever stops running, this
+;; rung compiles clean and says so.
+(declaim (precision fast))
+(def-hardware-profile smem162e
+  :simd-width 32
+  :max-shared-memory-per-block 100KB)
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel float_scratch_too_big (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((tile (make-scratch-matrix float (256 128))))
+    (set! (~ C 0 0) 1.0)))

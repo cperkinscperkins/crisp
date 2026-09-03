@@ -1,0 +1,29 @@
+;; Endeavour 162 rung 02 — the same, for `half`.
+;;
+;; WHY BOTH 16-BIT TYPES GET A RUNG rather than one standing for the other.  The width table lists
+;; bfloat16 and half separately (as it does short/ushort/int16/uint16), and a table is exactly the
+;; kind of code where one entry gets added and its sibling forgotten.  Endeavour 159's whole
+;; lesson is that the two 16-bit formats are not interchangeable by assumption -- there it was
+;; performance, here it is a lookup, but the discipline is the same: measure both, or in this
+;; case, TEST both.
+;;
+;; 256 x 128 = 32,768 half elements = 65,536 bytes against a 100KB cap: fits at 2, refused at 4.
+;;
+;; THE TILE IS DELIBERATELY UNUSED, and that is not a weakness of the test.  What the profile
+;; bound check counts -- and what the launcher actually reserves -- is the DECLARED scratch
+;; signature, not what the body reads back.  Verified directly: the same tile under a 50KB cap
+;; is refused with "uses 65536 bytes", which is 32,768 x 2, so the declaration alone exercises
+;; both the width table and the check.  Keeping the body trivial also keeps the rung about ONE
+;; thing; a read-back would drag element conversion into a spec that is not about conversion.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90 --hardware-profile=smem162b]
+(declaim (precision fast))
+(def-hardware-profile smem162b
+  :simd-width 32
+  :max-shared-memory-per-block 100KB)
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel fp16_scratch_fits (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((tile (make-scratch-matrix half (256 128))))
+    (set! (~ C 0 0) 1.0)))

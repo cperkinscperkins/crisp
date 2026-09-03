@@ -300,3 +300,178 @@
                             :elem-type base-type-str
                             :direction param-dir))))
     (values (+ arg-index 3) (nreverse arg-names) alloc)))
+
+;;; ===================================================================
+;;; Endeavour 162 completion — the LAST naive width sites in the CUDA hoist.
+;;;
+;;; NOT MERELY WASTE.  Both of these ALLOCATE with the C++ `sizeof(<elem>)` -- which is correct,
+;;; 2 for uint16_t -- and then hand the kernel a `byte_size` computed from the Lisp-side naive
+;;; "everything not 64-bit is 4 bytes" rule.  For a 16-bit tensor the buffer is N*2 bytes and the
+;;; kernel is told it is N*4: the two disagree INSIDE A SINGLE FUNCTION, and the number that is
+;;; wrong is the one describing a real allocation.  That is the BUG 046 disease exactly, and the
+;;; reason it has not bitten is that nothing currently derives an access bound from byte_size.
+;;;
+;;; Both bodies are reproduced VERBATIM from src/hoist-cuda/main.lisp with exactly one expression
+;;; replaced -- verified by round-tripping the substitution back and comparing to the original --
+;;; because %cuda-emit-tensor-arg is 108 lines of MMA-test logic (roles, *mma-swizzle-describes*,
+;;; the stride swap that must happen AFTER row-major sizing) where a hand transcription slip would
+;;; be far more expensive than the fix.
+;;; ===================================================================
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-emit-global-scratch-tensor-arg (stream param param-name param-type arg-index)
+  (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
+         (size-expr   (getf param :size-expr))
+         (elem-type   (second param-type))
+         (elem-str    (crisp-type-to-cpp-type elem-type))
+         (elem-bytes  (%hoist-elem-type-bytes elem-str))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (ptr-var     (format nil "~a_ptr" param-name-cpp))
+         (arg-names   '())
+         (current-idx arg-index))
+    (multiple-value-bind (extents strides)
+        (%tensor-compact-extents-strides rank (%cuda-scratch-dims size-expr rank param-name))
+      (let* ((length   (reduce #'* (%cuda-scratch-dims size-expr rank param-name)))
+             (bytesize (* length elem-bytes)))
+        (format stream "~%    // GLOBAL scratch tensor: ~a (rank=~d, ~a, ~d elems)~%"
+                param-name rank elem-str length)
+        (format stream "    CUdeviceptr ~a;~%" ptr-var)
+        (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~dULL * sizeof(~a)));~%"
+                ptr-var length elem-str)
+        (format stream "    CUDA_CHECK(cuMemsetD8(~a, 0, ~dULL * sizeof(~a)));~%"
+                ptr-var length elem-str)
+        ;; ptr
+        (push (format nil "~a" ptr-var) arg-names)
+        (incf current-idx)
+        ;; byte-size
+        (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
+        (push (format nil "~a_byte_size" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; offsets
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+          (push (format nil "~a_off~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; strides
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+          (push (format nil "~a_str~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; extents
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+          (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; length
+        (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
+        (push (format nil "~a_length" param-name-cpp) arg-names)
+        (incf current-idx)
+        (values current-idx (nreverse arg-names))))))
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-emit-tensor-arg (stream param param-name param-type param-dir arg-index dispatch-info)
+  (let* ((rank        (or (getf param :rank)
+                          (let ((n3 (third param-type))) (if (integerp n3) n3 1))))
+         (elem-type   (second param-type))
+         (elem-str    (crisp-type-to-cpp-type elem-type))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (ptr-var     (format nil "~a_ptr" param-name-cpp))
+         (arg-names   '())
+         (current-idx arg-index)
+         (alloc       nil)
+         ;; Endeavor 134: assign an MMA role (A=first input, B=second input, C=&out) and
+         ;; override the tensor extents accordingly.
+         (mma-role (when (and *mma-test-dims* (= rank 2))
+                     (if (%mma-out-dir-p param-dir)
+                         :c
+                         (prog1 (if (zerop *mma-input-counter*) :a :b)
+                           (incf *mma-input-counter*)))))
+         (extents-list
+           (if mma-role
+               (destructuring-bind (m n k) *mma-test-dims*
+                 (ecase mma-role (:a (list m k)) (:b (list k n)) (:c (list m n))))
+               (let ((lst (make-list rank :initial-element 4)))
+                 (let* ((global-decl (getf dispatch-info :global-size))
+                        (strategy (getf (cdr global-decl) :strategy))
+                        (derive-from (getf (cdr global-decl) :derive-from))
+                        (tile-shape (getf (cdr global-decl) :tile-shape)))
+                   (declare (ignore strategy))
+                   (when (and tile-shape
+                              derive-from
+                              (member param-name (if (listp derive-from) derive-from (list derive-from))
+                                      :test (lambda (a b) (string-equal (string a) (string b)))))
+                     (loop for k from 0 below (min rank (length tile-shape)) do
+                       (let* ((tx (nth k tile-shape))
+                              (base (nth k lst))
+                              (padded (* (ceiling base tx) tx)))
+                         (setf (nth k lst) padded)))))
+                 lst))))
+    (multiple-value-bind (extents strides)
+        (%tensor-compact-extents-strides rank extents-list)
+      (let* ((total-elems (* (first strides) (first extents)))   ; row-major sizing FIRST
+             (elem-bytes  (%hoist-elem-type-bytes elem-str))
+             (byte-size   (* total-elems elem-bytes)))
+        ;; Endeavor 140 (wgmma B): swap to col-major (K-contiguous) strides AFTER row-major
+        ;; sizing, so the buffer stays full-size while addressing becomes K-contiguous (the
+        ;; wgmma descriptor reads SMEM directly).  Gated on *mma-swizzle-describes* (swizzle-fed
+        ;; col-major tensors) so 137/138's row-major SMEM path is untouched.  (Swapping BEFORE
+        ;; sizing was the earlier bug: total-elems = 1*ext0 undersized B's buffer -> MMA_WRONG.)
+        (when (and (= rank 2)
+                   (member param-name *mma-swizzle-describes* :test #'string-equal))
+          (setf strides (list 1 (first extents))))
+        (format stream "~%    // Tensor: ~a (rank=~d, ~a, ~d elements)~%"
+                param-name rank elem-str total-elems)
+        (format stream "    CUdeviceptr ~a;~%" ptr-var)
+        (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~d * sizeof(~a)));~%"
+                ptr-var total-elems elem-str)
+        ;; Init: iota, or (MMA) role-based fill.
+        (format stream "    {~%")
+        (format stream "        ~a* h = new ~a[~d];~%" elem-str elem-str total-elems)
+        (cond
+          ((member mma-role '(:a :b))
+           (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = (~a)(_i % ~d);~%"
+                   total-elems elem-str (if (eq mma-role :a) 5 3)))
+          ((eq mma-role :c)
+           (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = (~a)0;~%"
+                   total-elems elem-str))
+          (t
+           (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = (~a)_i;~%"
+                   total-elems elem-str)))
+        (format stream "        CUDA_CHECK(cuMemcpyHtoD(~a, h, ~d * sizeof(~a)));~%"
+                ptr-var total-elems elem-str)
+        (format stream "        delete[] h;~%")
+        (format stream "    }~%")
+        ;; ptr
+        (push (format nil "~a" ptr-var) arg-names)
+        (incf current-idx)
+        ;; byte-size
+        (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp byte-size)
+        (push (format nil "~a_byte_size" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; offsets (all zero)
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+          (push (format nil "~a_off~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; strides
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+          (push (format nil "~a_str~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; extents
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+          (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; length
+        (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp total-elems)
+        (push (format nil "~a_length" param-name-cpp) arg-names)
+        (incf current-idx)
+        (setf alloc (list :name      param-name
+                          :ptr       ptr-var
+                          :count     total-elems
+                          :elem-type elem-str
+                          :direction param-dir
+                          :mma-role  mma-role
+                          :base      param-name-cpp))
+        (values current-idx (nreverse arg-names) alloc)))))

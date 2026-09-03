@@ -49,7 +49,12 @@ FILTER="${5:-}"          # optional: substring filter -> only run matching specs
 REPO_URL="https://github.com/cperkinscperkins/crisp.git"
 WORK_DIR="/root/crisp"
 
-SSH_CMD="ssh -o StrictHostKeyChecking=accept-new -p ${PORT} -i ${SSH_KEY} root@${HOST}"
+# ServerAlive* and ConnectTimeout are LOAD-BEARING, not hygiene.  Without them a dropped pod
+# connection leaves the local ssh blocked on a dead TCP socket forever: the script looks alive,
+# the pod sits completely idle, and nothing times out.  That is exactly how two consecutive runs
+# stalled -- one at "Processing triggers for libc-bin", one at "Installing SBCL" -- with `ps` on
+# the pod showing no work in progress at all.  15s x 4 gives up after a minute instead of never.
+SSH_CMD="ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ConnectTimeout=20 -p ${PORT} -i ${SSH_KEY} root@${HOST}"
 
 # --- Helper: timestamped step banner (so a long/quiet phase is obvious) ---
 step() { echo "--- [$(date +%H:%M:%S)] $* ---"; }
@@ -113,17 +118,38 @@ if ! curl -s -o /dev/null -m 8 http://archive.ubuntu.com/ubuntu/dists/jammy/Rele
     done
 fi
 
+# Ubuntu 22.04 ships needrestart, which on some images prompts "which services should be
+# restarted?" from apt and blocks forever on a non-interactive stdin.  Pin it to automatic
+# before the first apt call.  NEEDRESTART_MODE=a is what suppresses it; a conf.d file was
+# tried first and is not worth the shell-escaping it costs inside a remote heredoc.
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+
 if $NEED_SBCL; then
     echo "Installing SBCL $SBCL_INSTALL_VERSION from official binary..."
     apt-get update -qq $APT_OPTS
     apt-get install -y -qq $APT_OPTS wget gpg-agent software-properties-common lsb-release curl bzip2
     cd /tmp
-    wget -q "https://prdownloads.sourceforge.net/sbcl/sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
-    tar xjf "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
-    cd "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux"
-    INSTALL_ROOT=/usr/local sh install.sh
-    cd /root
-    rm -rf /tmp/sbcl-${SBCL_INSTALL_VERSION}*
+    # SourceForge has been UNREACHABLE from RunPod hosts (curl reports an SSL connection
+    # timeout, not a 404 -- egress filtering rather than the mirror being down).  Bare `wget -q`
+    # hid that completely: it defaults to a 900s read timeout and 20 retries, so an unreachable
+    # host hangs for HOURS with no output, and -q suppressed even the eventual failure.  Bound it,
+    # let it speak, and check the result rather than blindly untarring.
+    SBCL_TARBALL="sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
+    rm -f "$SBCL_TARBALL"
+    wget --tries=3 --timeout=20 -nv "https://prdownloads.sourceforge.net/sbcl/${SBCL_TARBALL}" || true
+    if [ -s "$SBCL_TARBALL" ] && tar tjf "$SBCL_TARBALL" >/dev/null 2>&1; then
+        tar xjf "$SBCL_TARBALL"
+        cd "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux"
+        INSTALL_ROOT=/usr/local sh install.sh
+        cd /root
+        rm -rf /tmp/sbcl-${SBCL_INSTALL_VERSION}*
+    else
+        # apt's SBCL is older (2.1.11 on jammy) but it BUILDS CRISP -- verified on an H100 NVL
+        # and an H200.  A working older compiler beats a stalled newer one.
+        echo "SourceForge unreachable or tarball bad; falling back to apt sbcl..." >&2
+        apt-get install -y -qq $APT_OPTS sbcl || true
+    fi
+    command -v sbcl >/dev/null || { echo "FATAL: no sbcl after both install paths" >&2; exit 1; }
     echo "Installed: $(sbcl --version)"
 fi
 

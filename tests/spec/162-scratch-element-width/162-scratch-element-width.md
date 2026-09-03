@@ -288,17 +288,41 @@ there is less work to hide behind it.
 - [ ] Deferred: the naive rule still lives in `%cuda-emit-global-scratch-tensor-arg`,
       `%cuda-emit-tensor-arg`, `%l0-emit-global-scratch-tensor-arg` (GLOBAL memory: waste, not occupancy)
 
-## Pod-setup friction worth fixing before the next rental
+## Pod-setup friction — CORRECTED 2026-09-02, and two of my four claims were WRONG
 
-`scripts/run-on-pod.sh` stalled TWICE with zero remote activity and had to be abandoned:
-* Ubuntu 22.04 **needrestart** prompts block `apt` forever at "Processing triggers for libc-bin".
-  Fix: `$nrconf{restart}='a'` in `/etc/needrestart/conf.d/` before any apt call.
-* The SBCL install uses `wget -q` on a SourceForge URL; SourceForge was **unreachable** from this
-  pod (SSL timeout) and `-q` hid it, so the `&&` chain silently skipped install. apt's SBCL
-  (2.1.11) built Crisp fine -- worth preferring, or at least falling back to.
-* Quicklisp was installed WITHOUT `(ql:add-to-init-file)`, so the build died on
-  "Package QL does not exist".
-* Only `llvm-as` was symlinked to its `-21` name; `llc` was not, so codegen failed with exit 127.
+`scripts/run-on-pod.sh` stalled twice and I listed four breakages. **Re-reading the script, two of
+them are not in it at all** -- they were defects in the hand-rolled `podsetup.sh` I wrote to
+replace it, and I attributed my own bugs to the script:
+
+| claim | verdict |
+|---|---|
+| "Quicklisp installed without `(ql:add-to-init-file)`" | **WRONG** -- line 171 calls it |
+| "Only `llvm-as` symlinked; `llc` was not" | **WRONG** -- line 141 symlinks `llc` |
+
+Left uncorrected, that doc would have sent someone to "fix" two things that were already right.
+
+**What is actually wrong, and is now fixed:**
+
+* **No SSH keepalive or connect timeout** (was line 52). This is the load-bearing one. Without
+  `ServerAliveInterval`, a dropped pod connection leaves the local `ssh` blocked on a dead socket
+  FOREVER: the script looks alive, the pod sits completely idle, nothing times out. That matches
+  both stalls exactly -- `ps` on the pod showed no work in progress either time. Now
+  `ServerAliveInterval=15 ServerAliveCountMax=4 ConnectTimeout=20`.
+* **`wget -q` on SourceForge, unbounded.** SourceForge is unreachable from RunPod hosts -- `curl`
+  reports an SSL connection timeout, not a 404, so egress filtering rather than an outage. Bare
+  `wget` defaults to a 900s read timeout and 20 retries, so it hangs for HOURS, and `-q` hid even
+  the eventual failure; the script then untarred a file that was not there. Now `--tries=3
+  --timeout=20 -nv`, the tarball is validated with `tar tjf` before use, and it **falls back to
+  apt's SBCL** (2.1.11 -- older, but it built Crisp on both an H100 NVL and an H200), with a hard
+  failure if neither path yields an `sbcl`.
+* **needrestart** can block apt on a prompt. `NEEDRESTART_MODE=a` + `DEBIAN_FRONTEND=noninteractive`
+  are now exported before the first apt call. Cheap insurance; still unproven as a cause here.
+
+**Method note.** I diagnosed the first stall as needrestart and moved on without confirming it,
+then built a replacement script whose own bugs I later folded into the indictment of the original.
+The evidence that should have stopped me was available at the time: I checked the pod with
+`ps --sort=-pcpu | head -8`, which cannot show a *blocked* process -- 0% CPU sorts last and gets
+cut. The check was structurally incapable of seeing the thing most likely to be there.
 
 ---
 
