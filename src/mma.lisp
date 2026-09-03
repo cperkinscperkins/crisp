@@ -196,6 +196,38 @@
                        kernel-name demand default-mode chosen)))
             chosen))))))
 
+
+
+
+;; src/mma.lisp
+(defun %nvvm-frag-format (llvm-elem-type)
+  "Which MMA operand format a fragment field's LLVM type implies: :FP16, :BF16, or :TF32.
+
+   Endeavour 159.  Kinds are read from LLVM at runtime rather than compared against a constant --
+   the bindings carry +llvm-half-type-kind+ but no bfloat equivalent, and no llvm-c header is
+   installed to take the value from.  Anything that is neither half nor bfloat is the historical
+   fp32-stored tf32 path."
+  (let ((k (llvm-get-type-kind llvm-elem-type)))
+    (cond ((= k (llvm-get-type-kind (llvm-half-type)))   :fp16)
+          ((= k (llvm-get-type-kind (llvm-bfloat-type))) :bf16)
+          (t :tf32))))
+
+;; src/mma.lisp
+(defun %nvvm-frag-record (operand elem)
+  "The PTX fragment record name for OPERAND (:a or :b) at Crisp element type ELEM.
+
+   Endeavour 159.  One place decides this, so analyze-load-fragment-a and -b cannot disagree
+   about which record a given element type maps to.  A 32-bit (or unknown) element keeps the
+   historical tf32 records."
+  (let ((bits (%mma-elem-bits elem))
+        (name (and elem (symbolp elem) (symbol-name elem))))
+    (if (eql bits 16)
+        (if (string= name "BFLOAT16")
+            (ecase operand (:a 'register-fragment-a-bf16-16x16) (:b 'register-fragment-b-bf16-16x8))
+            (ecase operand (:a 'register-fragment-a-f16-16x16)  (:b 'register-fragment-b-f16-16x8)))
+        (ecase operand (:a 'register-fragment-a-tf32-16x8) (:b 'register-fragment-b-tf32-8x8)))))
+
+
 (defun register-mma-types ()
   "Registers the MMA register-fragment record types.  Called from initialize-compiler
    AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every
@@ -203,6 +235,15 @@
 
    tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4
    regs.  tf32 is fp32-stored, so all fragment fields are float.
+
+   Endeavour 159: the 16-bit m16n8k16 twins, fp16 and bf16.  A is 16x16 = 8 elements/lane, B is
+   16x8 = 4, both ONE FIELD PER ELEMENT so the member count IS the element count that
+   %map-elements-fragment-fields reads.  REGISTERS are half that at 16 bits (two elements per
+   32-bit register) and are tracked separately by %ptx-note-register-demand.
+
+   The ACCUMULATOR is deliberately NOT twinned: every 16-bit MMA here accumulates in fp32, so
+   register-fragment-acc-f32-16x8 is reused unchanged -- the same reason %coop-elem-of does not
+   route accumulators.
 
    Endeavor 144 Phase 0: also registers the BUILTIN hardware profiles, which must happen
    after initialize-compiler's clrhash of *hardware-profiles* — this is the first hook that
@@ -216,9 +257,23 @@
   (register-struct-definition 'register-fragment-b-tf32-8x8
                               '((b0 float) (b1 float))
                               :record)
+  ;; Endeavour 159 — fp16 m16n8k16.
+  (register-struct-definition 'register-fragment-a-f16-16x16
+                              '((a0 half) (a1 half) (a2 half) (a3 half)
+                                (a4 half) (a5 half) (a6 half) (a7 half))
+                              :record)
+  (register-struct-definition 'register-fragment-b-f16-16x8
+                              '((b0 half) (b1 half) (b2 half) (b3 half))
+                              :record)
+  ;; Endeavour 159 — bf16 m16n8k16, same shape, different encoding.
+  (register-struct-definition 'register-fragment-a-bf16-16x16
+                              '((a0 bfloat16) (a1 bfloat16) (a2 bfloat16) (a3 bfloat16)
+                                (a4 bfloat16) (a5 bfloat16) (a6 bfloat16) (a7 bfloat16))
+                              :record)
+  (register-struct-definition 'register-fragment-b-bf16-16x8
+                              '((b0 bfloat16) (b1 bfloat16) (b2 bfloat16) (b3 bfloat16))
+                              :record)
   (register-builtin-hardware-profiles))
-
-
 
 
 ;; src/mma.lisp  (REPLACES register-builtin-hardware-profiles -- 156 Step 2: BMG offers :xe-native.
@@ -493,19 +548,27 @@
 ;;; ===================================================================
 
 
-
 (defun analyze-load-fragment-a (expr env context location)
   "P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
     (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,
-   16x8, row-major); else the NVIDIA per-lane read."
+   16x8, row-major); else the NVIDIA per-lane read.
+
+   Endeavour 159: the NVIDIA branch DISPATCHES ON THE OPERAND'S ELEMENT WIDTH, using the same
+   %coop-elem-of the SPV branch already used.  A 16-bit operand reads the m16n8k16 A layout
+   (8 elements/lane) instead of the m16n8k8 tf32 one (4 floats/lane); fp16 and bf16 share that
+   layout exactly and differ only in which record they fill.
+
+   PTX ISA mma.m16n8k16 A layout, 32 lanes, groupID = lane/4, tid = lane%4.  Each lane holds
+   8 elements as 4 register pairs, and the PAIR ORDER IS LOAD-BEARING -- it is the order the
+   intrinsic's 4 A operands are consumed in:
+       Ra0 = (groupID,   2*tid), (groupID,   2*tid+1)
+       Ra1 = (groupID+8, 2*tid), (groupID+8, 2*tid+1)
+       Ra2 = (groupID,   2*tid+8), (groupID,   2*tid+9)
+       Ra3 = (groupID+8, 2*tid+8), (groupID+8, 2*tid+9)
+   Note the K stride is 16 (not 8) and each lane spans TWO adjacent columns."
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((ty (first tile-id)) (tk (second tile-id)))
       (if (eq *target-backend* :spirv)
-          ;; A = MxK; layout from the tensor's :contiguous-term.
-          ;; 155 Phase C: the tensor is analysed FIRST, because its ELEMENT TYPE selects
-          ;; the fragment shape -- K=8 for a 32-bit operand, K=16 for a 16-bit one.  The two
-          ;; were previously nested the other way round, so the shape was fixed before anything
-          ;; knew what it was a shape OF.
           (let ((tnode (analyze-expression src env context (append location '(1)))))
             (multiple-value-bind (sm sn sk) (%spv-mma-shape (%coop-elem-of tnode))
               (declare (ignore sn))
@@ -516,29 +579,43 @@
                :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
                :tx (analyze-expression `(to-int ,tk) env context (append location '(3)))
                :source-location location)))
-          (analyze-expression
-           `(let ((lane (to-int (warp-lane))))
-              (let ((g (/ lane 4)) (tg (rem lane 4)))
-                (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 8) tg)))
-                  (%construct-struct register-fragment-a-tf32-16x8
-                    (~ ,src r c) (~ ,src (+ r 8) c) (~ ,src r (+ c 4)) (~ ,src (+ r 8) (+ c 4))))))
-           env context location)))))
+          ;; ---- NVIDIA / PTX ----
+          (let* ((probe (analyze-expression src env context (append location '(1))))
+                 (elem  (%coop-elem-of probe))
+                 (rec   (%nvvm-frag-record :a elem)))
+            (if (eql (%mma-elem-bits elem) 16)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 16) (* tg 2))))
+                        (%construct-struct ,rec
+                          (~ ,src r c)             (~ ,src r (+ c 1))
+                          (~ ,src (+ r 8) c)       (~ ,src (+ r 8) (+ c 1))
+                          (~ ,src r (+ c 8))       (~ ,src r (+ c 9))
+                          (~ ,src (+ r 8) (+ c 8)) (~ ,src (+ r 8) (+ c 9))))))
+                 env context location)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 8) tg)))
+                        (%construct-struct ,rec
+                          (~ ,src r c) (~ ,src (+ r 8) c) (~ ,src r (+ c 4)) (~ ,src (+ r 8) (+ c 4))))))
+                 env context location)))))))
 
 (defun analyze-load-fragment-b (expr env context location)
   "P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
     (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,
-   8x8, col-major); else the NVIDIA per-lane read."
+   8x8, col-major); else the NVIDIA per-lane read.
+
+   Endeavour 159: 16-bit dispatch, mirroring load-fragment-a.  PTX ISA mma.m16n8k16 B layout
+   (16x8), 32 lanes, groupID = lane/4, tid = lane%4; each lane holds 4 elements as 2 pairs, and
+   the pair order is the intrinsic's B operand order:
+       Rb0 = (2*tid,   groupID), (2*tid+1, groupID)
+       Rb1 = (2*tid+8, groupID), (2*tid+9, groupID)
+   B is K-major here (K=16 rows, N=8 cols), so the ROW stride is what doubles, not the column."
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((tk (first tile-id)) (tx (second tile-id)))
       (if (eq *target-backend* :spirv)
-          ;; B = KxN; layout from the tensor's :contiguous-term.  NOTE: Intel has no
-          ;; ColumnMajor-B coop builtin, so an Intel B operand must be declared :row-major
-          ;; (NVIDIA's canonical row.col MMA wants B :col-major — a genuine per-vendor
-          ;; storage difference, like the shape).
-          ;; 155 Phase C: the tensor is analysed FIRST, because its ELEMENT TYPE selects
-          ;; the fragment shape -- K=8 for a 32-bit operand, K=16 for a 16-bit one.  The two
-          ;; were previously nested the other way round, so the shape was fixed before anything
-          ;; knew what it was a shape OF.
           (let ((tnode (analyze-expression src env context (append location '(1)))))
             (multiple-value-bind (sm sn sk) (%spv-mma-shape (%coop-elem-of tnode))
               (declare (ignore sm))
@@ -549,14 +626,26 @@
                :ty (analyze-expression `(to-int ,tk) env context (append location '(2)))
                :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
                :source-location location)))
-          (analyze-expression
-           `(let ((lane (to-int (warp-lane))))
-              (let ((g (/ lane 4)) (tg (rem lane 4)))
-                (let ((r (+ (* ,tk 8) tg)) (c (+ (* ,tx 8) g)))
-                  (%construct-struct register-fragment-b-tf32-8x8
-                    (~ ,src r c) (~ ,src (+ r 4) c)))))
-           env context location)))))
-
+          ;; ---- NVIDIA / PTX ----
+          (let* ((probe (analyze-expression src env context (append location '(1))))
+                 (elem  (%coop-elem-of probe))
+                 (rec   (%nvvm-frag-record :b elem)))
+            (if (eql (%mma-elem-bits elem) 16)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,tk 16) (* tg 2))) (c (+ (* ,tx 8) g)))
+                        (%construct-struct ,rec
+                          (~ ,src r c)       (~ ,src (+ r 1) c)
+                          (~ ,src (+ r 8) c) (~ ,src (+ r 9) c)))))
+                 env context location)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,tk 8) tg)) (c (+ (* ,tx 8) g)))
+                        (%construct-struct ,rec
+                          (~ ,src r c) (~ ,src (+ r 4) c)))))
+                 env context location)))))))
 
 
 
@@ -727,46 +816,127 @@
      :b-node (analyze-expression b-arg env context location)
      :source-location location)))
 
+
+
 (defun %emit-nvvm-mma (builder module a-val b-val c-val)
-  "The NVIDIA tf32 m16n8k8 MMA (@llvm.nvvm.mma.m16n8k8.row.col.tf32) — copied from the
-   original src/mma.lisp semantic-mma-accumulate codegen; A-VAL/B-VAL/C-VAL are the fp32
-   fragment records.  Returns (values acc-record nil)."
+  "The NVIDIA sync MMA.  Endeavour 159: dispatches on the A fragment's ELEMENT TYPE, emitting
+   the tf32 m16n8k8, fp16 m16n8k16, or bf16 m16n8k16 instruction.  Returns (values acc nil).
+
+   DETECTION is by probing the LLVM type of A's field 0 rather than by threading an :elem down:
+   the caller (generate-node-ir on semantic-mma-accumulate) passes only LLVM values, and the
+   fragment record already carries the answer.  The probe extract is REUSED as a0, so it costs
+   no dead instruction.
+
+   THE THREE PATHS DIFFER IN OPERAND REPRESENTATION, and that is the trap on this rung:
+     tf32  i32          -- each float bitcast to i32
+     fp16  <2 x half>   -- pairs packed into a vector, handed over AS a vector
+     bf16  i32          -- pairs packed into <2 x bfloat> and then BITCAST to i32
+   All three were verified by compiling a standalone .ll through clang --target=nvptx64 and
+   reading the emitted mnemonic.  Two plausible spellings (...f16.f32, ...bf16.f32) pass the
+   LLVM verifier as UNRESOLVED EXTERNAL CALLS -- they emit no instruction while still leaving an
+   'mma.m16n8k16...' substring in the PTX -- so nothing here may be checked by prefix.
+
+   Fragment records declare ONE FIELD PER ELEMENT, so all pair-packing happens HERE and only
+   here.  The pairing order follows the PTX ISA register order documented on
+   analyze-load-fragment-a/-b; those must agree, and nothing local can prove they do --
+   MMA_CORRECT on metal is what checks it.
+
+   The ACCUMULATOR is f32 in every path: a 16-bit MMA accumulates in fp32."
   (let* ((f32 (llvm-float-type))
          (i32 (llvm-int32-type))
-         (a-ops (loop for i below 4 collect
-                      (llvm-build-bit-cast builder (llvm-build-extract-value builder a-val i (format nil "a~d" i)) i32 (format nil "a~di" i))))
-         (b-ops (loop for i below 2 collect
-                      (llvm-build-bit-cast builder (llvm-build-extract-value builder b-val i (format nil "b~d" i)) i32 (format nil "b~di" i))))
-         (c-ops (loop for i below 4 collect (llvm-build-extract-value builder c-val i (format nil "c~d" i))))
-         (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 4)))
-                   (dotimes (i 4) (setf (cffi:mem-aref elts 'llvm-type-ref i) f32))
-                   (llvm-struct-type-in-context (llvm-get-module-context module) elts 4 nil)))
-         (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 10)))
-                  (loop for i from 0 for ty in (list i32 i32 i32 i32 i32 i32 f32 f32 f32 f32)
-                        do (setf (cffi:mem-aref arr 'llvm-type-ref i) ty))
-                  (llvm-function-type ret-ty arr 10 nil)))
-         (fn-name "llvm.nvvm.mma.m16n8k8.row.col.tf32")
-         (fn (let ((existing (llvm-get-named-function module fn-name)))
-               (if (cffi:null-pointer-p existing) (llvm-add-function module fn-name fn-ty) existing)))
-         (args (append a-ops b-ops c-ops))
-         (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 10)))
-                     (loop for i from 0 for v in args do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
-                     arr))
-         (call (llvm-build-call2 builder fn-ty fn args-arr 10 "mma"))
-         (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f32-16x8 module))
-         (result (let ((agg (llvm-get-undef acc-ty)))
-                   (dotimes (i 4)
-                     (setf agg (llvm-build-insert-value builder agg
-                                (llvm-build-extract-value builder call i (format nil "d~d" i))
-                                i (format nil "acc~d" i))))
-                   agg)))
-    (values result nil)))
+         (a0  (llvm-build-extract-value builder a-val 0 "a0"))
+         (fmt (%nvvm-frag-format (llvm-type-of a0))))
+    (if (eq fmt :tf32)
+        ;; ---------------- tf32 m16n8k8 (unchanged) ----------------
+        (let* ((a-ops (cons (llvm-build-bit-cast builder a0 i32 "a0i")
+                            (loop for i from 1 below 4 collect
+                                  (llvm-build-bit-cast builder (llvm-build-extract-value builder a-val i (format nil "a~d" i)) i32 (format nil "a~di" i)))))
+               (b-ops (loop for i below 2 collect
+                            (llvm-build-bit-cast builder (llvm-build-extract-value builder b-val i (format nil "b~d" i)) i32 (format nil "b~di" i))))
+               (c-ops (loop for i below 4 collect (llvm-build-extract-value builder c-val i (format nil "c~d" i))))
+               (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+                         (dotimes (i 4) (setf (cffi:mem-aref elts 'llvm-type-ref i) f32))
+                         (llvm-struct-type-in-context (llvm-get-module-context module) elts 4 nil)))
+               (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 10)))
+                        (loop for i from 0 for ty in (list i32 i32 i32 i32 i32 i32 f32 f32 f32 f32)
+                              do (setf (cffi:mem-aref arr 'llvm-type-ref i) ty))
+                        (llvm-function-type ret-ty arr 10 nil)))
+               (fn-name "llvm.nvvm.mma.m16n8k8.row.col.tf32")
+               (fn (let ((existing (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p existing) (llvm-add-function module fn-name fn-ty) existing)))
+               (args (append a-ops b-ops c-ops))
+               (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 10)))
+                           (loop for i from 0 for v in args do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
+                           arr))
+               (call (llvm-build-call2 builder fn-ty fn args-arr 10 "mma"))
+               (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f32-16x8 module))
+               (result (let ((agg (llvm-get-undef acc-ty)))
+                         (dotimes (i 4)
+                           (setf agg (llvm-build-insert-value builder agg
+                                      (llvm-build-extract-value builder call i (format nil "d~d" i))
+                                      i (format nil "acc~d" i))))
+                         agg)))
+          (values result nil))
+        ;; ---------------- 16-bit m16n8k16 (fp16 / bf16) ----------------
+        (let* ((bf16-p  (eq fmt :bf16))
+               (elem-ty (if bf16-p (llvm-bfloat-type) (llvm-half-type)))
+               (vec-ty  (llvm-vector-type elem-ty 2))
+               ;; fp16 hands the vector straight to the intrinsic; bf16 must bitcast it to i32.
+               (op-ty   (if bf16-p i32 vec-ty))
+               (a-elems (cons a0 (loop for i from 1 below 8
+                                       collect (llvm-build-extract-value builder a-val i (format nil "a~d" i)))))
+               (b-elems (loop for i below 4
+                              collect (llvm-build-extract-value builder b-val i (format nil "b~d" i))))
+               (pack (lambda (lo hi name)
+                       ;; lane 0 is the LOWER-numbered element -- the order the ISA tables list
+                       ;; the pair in, and the order load-fragment-a/-b fills the fields in.
+                       (let ((v (llvm-get-undef vec-ty)))
+                         (setf v (llvm-build-insert-element builder v lo (llvm-const-int i32 0 nil)
+                                                            (format nil "~a_0" name)))
+                         (setf v (llvm-build-insert-element builder v hi (llvm-const-int i32 1 nil)
+                                                            (format nil "~a_1" name)))
+                         (if bf16-p
+                             (llvm-build-bit-cast builder v i32 (format nil "~a_i" name))
+                             v))))
+               (a-ops (loop for i below 4
+                            collect (funcall pack (nth (* 2 i) a-elems) (nth (1+ (* 2 i)) a-elems)
+                                             (format nil "av~d" i))))
+               (b-ops (loop for i below 2
+                            collect (funcall pack (nth (* 2 i) b-elems) (nth (1+ (* 2 i)) b-elems)
+                                             (format nil "bv~d" i))))
+               (c-ops (loop for i below 4 collect (llvm-build-extract-value builder c-val i (format nil "c~d" i))))
+               (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+                         (dotimes (i 4) (setf (cffi:mem-aref elts 'llvm-type-ref i) f32))
+                         (llvm-struct-type-in-context (llvm-get-module-context module) elts 4 nil)))
+               (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 10)))
+                        (loop for i from 0 for ty in (list op-ty op-ty op-ty op-ty op-ty op-ty f32 f32 f32 f32)
+                              do (setf (cffi:mem-aref arr 'llvm-type-ref i) ty))
+                        (llvm-function-type ret-ty arr 10 nil)))
+               (fn-name (if bf16-p
+                            "llvm.nvvm.mma.m16n8k16.row.col.bf16"
+                            "llvm.nvvm.mma.m16n8k16.row.col.f32.f32"))
+               (fn (let ((existing (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p existing) (llvm-add-function module fn-name fn-ty) existing)))
+               (args (append a-ops b-ops c-ops))
+               (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 10)))
+                           (loop for i from 0 for v in args do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
+                           arr))
+               (call (llvm-build-call2 builder fn-ty fn args-arr 10 "mma16"))
+               (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f32-16x8 module))
+               (result (let ((agg (llvm-get-undef acc-ty)))
+                         (dotimes (i 4)
+                           (setf agg (llvm-build-insert-value builder agg
+                                      (llvm-build-extract-value builder call i (format nil "d~d" i))
+                                      i (format nil "acc~d" i))))
+                         agg)))
+          (values result nil)))))
 
 
 (defun %coop-mma (builder module a-val b-val c-val elem-llvm m n k)
   "Dispatches to %coop-mma-impl on the active lowering.  Kept as a plain function with its
    original signature so no call site changes."
   (%coop-mma-impl *mma-lowering* builder module a-val b-val c-val elem-llvm m n k))
+
 
 
 (defmethod generate-node-ir ((node semantic-mma-accumulate)
@@ -781,11 +951,16 @@
             ;; tf32).  Warn.  *math-precision* here is the resolved effective precision at codegen
             ;; — it already respects the full chain (force > with-precision > declaim > flag >
             ;; default(:ieee)), the same value that stamps the fast-math flags in codegen.lisp.
-            (unless (eq *math-precision* :fast)
+            ;; Endeavour 160: the tf32 precision warning is only true for a 32-bit operand.
+            ;; A bf16/fp16 wgmma is not silently downgrading anything -- the kernel ASKED for
+            ;; 16-bit inputs -- so firing it there would be noise that teaches the reader
+            ;; something untrue.
+            (unless (or (eq *math-precision* :fast)
+                        (eql (%mma-elem-bits (third (gethash node *wgmma-node-swizzle*))) 16))
               (format *error-output*
                       "WARNING: wgmma-accumulate-via-tile uses tf32 tensor cores, but math-precision is '~(~a~)' — the IEEE accuracy request is not honored (results are tf32). Use (with-precision (fast) ...), (declaim (precision fast)), or --math-precision=fast.~%"
                       *math-precision*))
-          (destructuring-bind (&optional swizzle-mode (k 8)) (gethash node *wgmma-node-swizzle*)
+          (destructuring-bind (&optional swizzle-mode (k 8) elem) (gethash node *wgmma-node-swizzle*)
             (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
                   (swizzle-p (and swizzle-mode (string-equal (string swizzle-mode) "128B"))))
               (multiple-value-bind (av al a-ptr) (gen (semantic-mma-accumulate-a-node node))
@@ -795,7 +970,7 @@
                   (unless (and a-ptr b-ptr)
                     (error "wgmma: A/B (~ tile 0) did not yield an SMEM element pointer (a ~A b ~A)" a-ptr b-ptr))
                   (%emit-nvvm-wgmma builder module c-val a-ptr b-ptr acc-type
-                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k))))))
+                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k elem))))))
           (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
                 (a-val (gen (semantic-mma-accumulate-a-node node)))
                 (b-val (gen (semantic-mma-accumulate-b-node node))))
@@ -1931,15 +2106,24 @@
               ,@(mapcar (lambda (f) (%expand-mmts-register-in-form f reg-map location))
                         (cddr let-expr)))))))
 
+
+
 (defun analyze-let-with-tile-explosion (expr env context location)
   "let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),
    then explode register-tile bindings into per-fragment mutable variables (register residency,
-   Endeavor 132), then defer to the normal let analysis."
-  (analyze-let-expression
-   (%explode-register-tiles
-    (%expand-matmul-tile-stride-register-forms expr location)
-    location context)
-   env context location))
+   Endeavor 132), then defer to the normal let analysis.
+
+   Endeavour 161: publishes this LET's compile-time SLM scratch-tile shapes for the duration of
+   the body analysis, so operand-shape checks in the expression analyzers can see them."
+  (let ((lowered (%explode-register-tiles
+                  (%expand-matmul-tile-stride-register-forms expr location)
+                  location context)))
+    (let ((*mma-scratch-tile-dims*
+            (append (and (consp lowered)
+                         (listp (second lowered))
+                         (%mma-scratch-tile-dims-from-bindings (second lowered)))
+                    *mma-scratch-tile-dims*)))
+      (analyze-let-expression lowered env context location))))
 
 
 
@@ -2047,29 +2231,89 @@
     (setf (gethash name *wgmma-acc-dims*) (list 64 n 8))
     name))
 
-(defun %check-wgmma-shape (shape location &optional swizzle)
-  "Validate a wgmma (M N K) shape.  M fixed 64; N a multiple of 8 in [8,256].  K: with :swizzle a
-   positive multiple of 8 (the K-block = K/8 k8 slices); without :swizzle exactly 8 (a single k8 wgmma)."
+
+
+;; src/mma.lisp
+(defun %wgmma-shapes-of-profile ()
+  "The active hardware profile's :wgmma-shapes, or NIL when no profile is active or the active
+   one is silent about warpgroup shapes.
+
+   NIL IS THE COMMON CASE AND MUST STAY CHEAP.  Nine of the eleven wgmma specs in the tree
+   declare no profile at all, as does every benchmark kernel, so 'no declared wgmma shapes' is
+   the path almost every compile takes.  It means the sm_90a instruction constraints apply as a
+   documented fallback -- never that the kernel is rejected."
+  (let ((profile (active-hardware-profile)))
+    (and profile (getf profile :wgmma-shapes))))
+
+;; src/mma.lisp
+(defun %check-wgmma-shape-against-profile (shape shapes location swizzle elem)
+  "CAUSE ONE: a profile DECLARES its warpgroup shapes, so membership in that list is the rule.
+
+   The declared entries are per-slice shapes.  Without :swizzle the kernel's shape must match one
+   outright.  With :swizzle the K is a K-BLOCK spanning several slices, so (M N) must match an
+   entry and K must be a positive multiple of that entry's K -- the same relaxation the sm_90a
+   fallback makes, kept identical so a profile cannot silently change what :swizzle means."
+  (destructuring-bind (m n k) shape
+    (let ((ok (some (lambda (entry)
+                      (let ((dims (%mma-shape-entry-dims entry)))
+                        (and dims (= (length dims) 3)
+                             (= m (first dims)) (= n (second dims))
+                             (let ((ek (third dims)))
+                               (if swizzle
+                                   (and (plusp ek) (plusp k) (zerop (mod k ek)))
+                                   (= k ek))))))
+                    shapes)))
+      (unless ok
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: shape ~a is not one of the active hardware profile's :wgmma-shapes ~a." shape shapes)
+               :source-location location)))))
+
+;; src/mma.lisp
+(defun %check-wgmma-shape-against-isa (shape location swizzle elem)
+  "CAUSE TWO: nothing declares warpgroup shapes, so the sm_90a instruction constraints apply.
+
+   THE THREE MESSAGES ARE DELIBERATELY UNCHANGED at their front.  tests/spec/140-wgmma/errors/
+   01, 02 and 03 assert the substrings 'M must be 64', 'multiple of 8' and 'K'; those specs
+   predate hardware profiles and none of them declares one, so this is the branch they take.
+   The trailing sentence naming the fallback is ADDITIVE, which a substring match tolerates."
+  (destructuring-bind (m n k) shape
+    (unless (= m 64)
+      (error 'crisp-compiler-error
+             :message (format nil "wgmma: M must be 64 (wgmma is always m64), got ~a.  No active hardware profile declares :wgmma-shapes, so the sm_90a instruction constraints apply." m)
+             :source-location location))
+    (unless (and (>= n 8) (<= n 256) (zerop (mod n 8)))
+      (error 'crisp-compiler-error
+             :message (format nil "wgmma: N must be a multiple of 8 in [8,256], got ~a.  No active hardware profile declares :wgmma-shapes, so the sm_90a instruction constraints apply." n)
+             :source-location location))
+    (let* ((kps (%wgmma-k-per-slice elem))
+           (what (if (= kps 16) "16-bit m64nNk16" "tf32 m64nNk8")))
+      (if swizzle
+          (unless (and (plusp k) (zerop (mod k kps)))
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma: with :swizzle, K (the K-block) must be a positive multiple of ~a for ~a operands, got ~a." kps what k)
+                   :source-location location))
+          (unless (= k kps)
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma: K must be ~a (~a, a single k~a slice); use :swizzle :128b for a multi-slice K-block, got ~a." kps what kps k)
+                   :source-location location))))))
+
+;; src/mma.lisp
+(defun %check-wgmma-shape (shape location &optional swizzle elem)
+  "Validate a wgmma (M N K) shape, from the hardware profile when one describes this part and
+   from the sm_90a instruction constraints when none does.
+
+   Endeavour 161 gave this the two-branch structure %check-mma-shape has had for the FRAGMENT
+   form since endeavour 132.  wgmma was the last shape check still reasoning only from hardcoded
+   constants, which meant a profile could describe a part accurately and be ignored here."
   (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
     (error 'crisp-compiler-error
            :message (format nil "wgmma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." shape)
            :source-location location))
-  (destructuring-bind (m n k) shape
-    (unless (= m 64)
-      (error 'crisp-compiler-error :message (format nil "wgmma: M must be 64 (wgmma is always m64), got ~a." m)
-             :source-location location))
-    (unless (and (>= n 8) (<= n 256) (zerop (mod n 8)))
-      (error 'crisp-compiler-error :message (format nil "wgmma: N must be a multiple of 8 in [8,256], got ~a." n)
-             :source-location location))
-    (if swizzle
-        (unless (and (plusp k) (zerop (mod k 8)))
-          (error 'crisp-compiler-error
-                 :message (format nil "wgmma: with :swizzle, K (the K-block) must be a positive multiple of 8, got ~a." k)
-                 :source-location location))
-        (unless (= k 8)
-          (error 'crisp-compiler-error
-                 :message (format nil "wgmma: K must be 8 (tf32 m64nNk8, a single k8 slice); use :swizzle :128b for a multi-k8 K-block, got ~a." k)
-                 :source-location location)))))
+  (let ((declared (%wgmma-shapes-of-profile)))
+    (if declared
+        (%check-wgmma-shape-against-profile shape declared location swizzle elem)
+        (%check-wgmma-shape-against-isa shape location swizzle elem))))
+
 
 
 
@@ -2106,16 +2350,37 @@
          `(%construct-struct ,type-name ,@(loop repeat (floor n 2) collect init))
          env context location)))))
 
+
+
+(defun %wgmma-k-per-slice (elem)
+  "K covered by ONE wgmma instruction at element type ELEM: 8 at 32 bits, 16 at 16 bits.
+   Both are 32 BYTES of K per slice, which is why the descriptor's kk*32 advance is unchanged."
+  (if (eql (%mma-elem-bits elem) 16) 16 8))
+
+;; src/mma.lisp
+(defun %wgmma-operand-mnemonic (elem)
+  "The .f32.<ab>.<ab> tail of the wgmma mnemonic for operand element type ELEM."
+  (let ((n (and elem (symbolp elem) (symbol-name elem))))
+    (cond ((and n (string= n "BFLOAT16")) "f32.bf16.bf16")
+          ((and n (string= n "HALF"))     "f32.f16.f16")
+          (t                              "f32.tf32.tf32"))))
+
+
 (defun analyze-wgmma-accumulate (expr env context location)
   "(wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 [0]) with one 0 per tile dimension
    (rank-aware) so codegen's 3rd value is the addrspace(3) base — works for flat VECTOR tiles (scatter)
-   AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle."
+   AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle.
+
+   Endeavour 160: the per-node *wgmma-node-swizzle* entry gains a third element, the operand
+   element type.  Codegen cannot recover it -- %emit-nvvm-wgmma receives an f32 accumulator type
+   and raw SMEM pointers, with no fragment record to probe -- so it has to be recorded here."
   (destructuring-bind (d a b &rest kwargs) (cdr expr)
     (let* ((d-node (analyze-expression d env context (append location '(1))))
            (d-type (semantic-node-type d-node))
            (swz    (getf kwargs :swizzle))
-           (a-rank (or (%get-tensor-arity
-                        (semantic-node-type (analyze-expression a env context (append location '(2))))) 1))
+           (a-node (analyze-expression a env context (append location '(2))))
+           (a-rank (or (%get-tensor-arity (semantic-node-type a-node)) 1))
+           (elem   (%coop-elem-of a-node))
            (b-rank (or (%get-tensor-arity
                         (semantic-node-type (analyze-expression b env context (append location '(3))))) 1))
            (aref-a (if (>= a-rank 2) `(~ ,a 0 0) `(~ ,a 0)))
@@ -2130,16 +2395,81 @@
                    :a-node (analyze-expression aref-a env context (append location '(2)))
                    :b-node (analyze-expression aref-b env context (append location '(3)))
                    :source-location location)))
-        (setf (gethash node *wgmma-node-swizzle*) (list swz (or (getf kwargs :k) 8)))
+        (setf (gethash node *wgmma-node-swizzle*)
+              (list swz (or (getf kwargs :k) (%wgmma-k-per-slice elem)) elem))
         node))))
+
+;; src/mma.lisp
+(defun %check-wgmma-operands (shape a b location elem swizzle)
+  "Refuse a wgmma whose staged A or B tile is not the shape the instruction will read.
+
+   THE RULE.  A is (M K) and B is (N K) -- both K-major.  This is not inferred from which
+   kernels happen to verify; it is what CUTLASS declares for every tf32 GMMA trait in
+   third_party/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp:
+       FrgTypeA = FrgTypeB = GMMA::smem_desc<GMMA::Major::K>
+       ALayout  = ABLayout<64, 8>      BLayout = ABLayout<64, 8>
+   and the tf32 SS atoms exist ONLY in the _TN form (16 of them, no other suffix) because tf32
+   wgmma carries no transpose immediate.
+
+   WHY B GETS TWO DIFFERENT MESSAGES.  At 16 bits the ISA genuinely offers both orientations --
+   the bf16/f16 traits are templated <GMMA::Major tnspA, GMMA::Major tnspB> where tf32's are
+   hardcoded -- so a (K N) B operand is Major::MN and is legal HARDWARE with transB=1.  Crisp
+   pins transA/transB to (0 0) via *wgmma-16-trans*, so at 16 bits the refusal is a fact about
+   THIS COMPILER, and saying 'B must be (N K)' there would be a false claim about the hardware
+   that sends the reader to fix the wrong thing.
+
+   UNRESOLVABLE EXTENTS ARE NOT AN ERROR.  %mma-operand-extent returns NIL when a tile's shape is
+   not compile-time known, and a wgmma operand is frequently (ring-get RING SLOT).  Refusing on
+   NIL would reject the working pipelined kernels -- chapter 7, sec2_top, sec3, sec4 -- so an
+   unknown extent skips silently, exactly as %mma-k-steps treats its own NIL.
+
+   K IS THE PER-SLICE K, not the K-block: under :swizzle the staged tile spans several slices, so
+   its K extent is the block and only A-vs-B agreement is checkable there."
+  (destructuring-bind (m n k) shape
+    (let ((a-r (%mma-operand-extent a nil :rows))
+          (a-c (%mma-operand-extent a nil :cols))
+          (b-r (%mma-operand-extent b nil :rows))
+          (b-c (%mma-operand-extent b nil :cols)))
+      ;; A must be (M K).  Under :swizzle the column extent is a K-block, so only M is fixed.
+      (when (and a-r (/= a-r m))
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: A tile must be (M K) = (~a ~a) for shape ~a, but it is (~a ~a).  A is staged M-rows by K-columns, the same way mma-accumulate-via-tile stages it." m k shape a-r (or a-c '?))
+               :source-location location))
+      (when (and (not swizzle) a-c (/= a-c k))
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: A tile must be (M K) = (~a ~a) for shape ~a, but it is (~a ~a)." m k shape (or a-r '?) a-c)
+               :source-location location))
+      ;; B must be (N K).  This is where the two via-tile forms disagree, so say so.
+      (when (and b-r (/= b-r n))
+        (if (= (%wgmma-k-per-slice elem) 16)
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma-accumulate-via-tile: B tile is (~a ~a), which is the Major::MN orientation.  The 16-bit wgmma CAN read that, but only with transB=1, and Crisp pins transA/transB to (0 0) in *wgmma-16-trans* -- so declare B as (N K) = (~a ~a).  NOTE: mma-accumulate-via-tile takes B as (K N); the two via-tile forms differ here." b-r (or b-c '?) n k)
+                   :source-location location)
+            (error 'crisp-compiler-error
+                   :message (format nil "wgmma-accumulate-via-tile: B tile must be (N K) = (~a ~a) for shape ~a, but it is (~a ~a).  wgmma reads its SMEM B operand K-major (CUTLASS GMMA::Major::K) and tf32 wgmma has no transpose immediate, so (K N) is not a layout this instruction can read.  NOTE: mma-accumulate-via-tile takes B as (K N); the two via-tile forms differ here." n k shape b-r (or b-c '?))
+                   :source-location location)))
+      (when (and (not swizzle) b-c (/= b-c k))
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: B tile must be (N K) = (~a ~a) for shape ~a, but it is (~a ~a)." n k shape (or b-r '?) b-c)
+               :source-location location)))))
 
 (defun analyze-wgmma-accumulate-via-tile (expr env context location)
   "(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B
-   :swizzle MODE :k K)).  K rule is swizzle-aware (see %check-wgmma-shape)."
+   :swizzle MODE :k K)).  K rule is swizzle- AND element-aware (see %check-wgmma-shape).
+
+   Endeavour 160: the A tile's element type is resolved here and passed to the shape check, so a
+   tf32 kernel asking for K=16 is still refused while a bf16 one is accepted.
+
+   Endeavour 161: the OPERAND SHAPES are checked too.  Order matters -- the shape check runs
+   first, so a kernel that is wrong about both its triple and its tiles still reports the triple,
+   which is what tests/spec/140-wgmma/errors/01-03 assert."
   (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
-    (%check-wgmma-shape shape location (getf kwargs :swizzle))
-    (analyze-expression `(set! ,d (wgmma-accumulate ,d ,a ,b :swizzle ,(getf kwargs :swizzle) :k ,(third shape)))
-                        env context location)))
+    (let ((elem (%coop-elem-of (analyze-expression a env context (append location '(3)))))
+          (swz  (getf kwargs :swizzle)))
+      (%check-wgmma-shape shape location swz elem)
+      (%check-wgmma-operands shape a b location elem swz)
+      (analyze-expression `(set! ,d (wgmma-accumulate ,d ,a ,b :swizzle ,swz :k ,(third shape)))
+                          env context location))))
 
 (defun %wgmma-make-desc (builder base-ptr &optional swizzle-p (kslice-byte-off 0))
   "Build the 64-bit wgmma SMEM matrix descriptor.  NO-SWIZZLE (Step 1, scatter/core-matrix): LBO=128B
@@ -2164,14 +2494,24 @@
     (dotimes (i nacc) (setf (cffi:mem-aref elts 'llvm-type-ref i) (llvm-float-type)))
     (llvm-struct-type-in-context (llvm-get-module-context module) elts nacc nil)))
 
-(defun %wgmma-asm-string (nacc n)
-  "wgmma.mma_async.sync.aligned.m64nNk8.f32.tf32.tf32 {$0..$nacc-1}, descA, descB, 1,1,1;
-   NB on operand numbering: LLVM IR inline-asm has no '+f'; a read-write accumulator is an '=f'
-   OUTPUT ($0..$nacc-1) PLUS a matching tied INPUT ($nacc..$2*nacc-1).  The tied inputs DO occupy
-   operand slots, so the two 'l' descriptors are $2*nacc and $2*nacc+1 (not $nacc/$nacc+1)."
-  (let ((accs (format nil "~{$~d~^,~}" (loop for i below nacc collect i))))
-    (format nil "wgmma.mma_async.sync.aligned.m64n~dk8.f32.tf32.tf32 {~a}, $~d, $~d, 1, 1, 1;"
-            n accs (* 2 nacc) (1+ (* 2 nacc)))))
+
+
+(defvar *wgmma-16-trans* '(0 0)
+  "(transA transB) immediates for the 16-bit wgmma.  Probe hook -- see the comment above.")
+
+(defun %wgmma-asm-string (nacc n &optional elem)
+  "wgmma.mma_async.sync.aligned.m64n{N}k{KPS}.f32.<ab>.<ab> {$0..$nacc-1}, descA, descB, ...;
+   Accumulator is an '=f' OUTPUT plus a tied INPUT, so the two 'l' descriptors are $2*nacc and
+   $2*nacc+1.  tf32 takes three trailing immediates; the 16-bit forms take five, adding
+   transA/transB from *wgmma-16-trans* while that pair is under investigation."
+  (let* ((accs (format nil "~{$~d~^,~}" (loop for i below nacc collect i)))
+         (kps  (%wgmma-k-per-slice elem))
+         (tail (if (= kps 16)
+                   (format nil "1, 1, 1, ~d, ~d" (first *wgmma-16-trans*) (second *wgmma-16-trans*))
+                   "1, 1, 1")))
+    (format nil "wgmma.mma_async.sync.aligned.m64n~dk~d.~a {~a}, $~d, $~d, ~a;"
+            n kps (%wgmma-operand-mnemonic elem) accs (* 2 nacc) (1+ (* 2 nacc)) tail)))
+
 
 (defun %wgmma-constraints (nacc)
   "NACC '=f' outputs, NACC tied inputs (0..nacc-1), 2 'l' descriptor inputs, memory clobber."
@@ -2179,21 +2519,24 @@
         (ties (loop for i below nacc collect (format nil "~d" i))))
     (format nil "~{~a~^,~},~{~a~^,~},l,l,~~{memory}" outs ties)))
 
-(defun %emit-wgmma-mma-only (builder module d-val a-ptr b-ptr acc-type n swizzle-p kslice-off)
-  "Emit ONE m64nNk8 wgmma.mma_async and nothing else -- no fence, no commit_group, no
+
+
+(defun %emit-wgmma-mma-only (builder module d-val a-ptr b-ptr acc-type n swizzle-p kslice-off
+                             &optional elem)
+  "Emit ONE m64nNk{8,16} wgmma.mma_async and nothing else -- no fence, no commit_group, no
    wait_group.  Those are GROUP-level operations and belong once around the whole k-slice
    sequence, not once per slice; see %emit-nvvm-wgmma.
 
-   Otherwise identical to %emit-one-wgmma: N/2 accumulators in and out, two shared-memory
-   descriptors, and KSLICE-OFF (kk*32 bytes) advancing the swizzle descriptor start address.
-   Returns the new D record."
+   N/2 accumulators in and out, two shared-memory descriptors, and KSLICE-OFF (kk*32 bytes)
+   advancing the descriptor start address.  ELEM selects the mnemonic; the 32-byte slice stride is
+   the same at both widths, which is why the descriptor build is untouched.  Returns the new D."
   (let* ((f32 (llvm-float-type)) (i64 (llvm-int64-type))
          (nacc (floor n 2))
          (descA (%wgmma-make-desc builder a-ptr swizzle-p kslice-off))
          (descB (%wgmma-make-desc builder b-ptr swizzle-p kslice-off))
          (c-ops (loop for i below nacc collect
                       (llvm-build-extract-value builder d-val i (format nil "wc~d" i))))
-         (asm-str     (%wgmma-asm-string nacc n))
+         (asm-str     (%wgmma-asm-string nacc n elem))
          (constraints (%wgmma-constraints nacc))
          (ret-ty      (%wgmma-struct-of-floats module nacc))
          (ptypes      (append (loop repeat nacc collect f32) (list i64 i64)))
@@ -2206,36 +2549,24 @@
                                          i (format nil "wr~d" i))))
     agg))
 
-(defun %emit-nvvm-wgmma (builder module d-val a-ptr b-ptr acc-type n &optional swizzle-p (k 8))
-  "Emit the wgmma accumulate as ONE GROUP.  NO-SWIZZLE (scatter): a proxy fence + barrier
-   (generic->async proxy visibility) + ONE k8 wgmma.  128B-SWIZZLE (TMA): NO proxy fence (both
-   async proxy) + K/8 k-slice wgmmas, D accumulating across them (scaleD=1), each with the start
-   advanced kk*32 bytes.  Returns (values D nil).
+(defun %emit-nvvm-wgmma (builder module d-val a-ptr b-ptr acc-type n &optional swizzle-p (k 8) elem)
+  "Emit the wgmma accumulate as ONE GROUP: a fence before the first slice, K/KPS slices, then one
+   commit_group + wait_group.  See the original for why the fence/commit/wait triple is emitted
+   once per GROUP rather than once per slice (endeavour 154, worth 4-11%).
 
-   ENDEAVOUR 154.  The wgmma.fence / commit_group / wait_group triple is emitted ONCE around the
-   whole k-slice sequence rather than once per slice.  The previous lowering emitted the full
-   quadruple for EVERY k8 slice, so a K-block of 32 emitted four of each -- and `wait_group 0`
-   waits for ALL outstanding groups, so each async MMA was fully awaited before the next issued.
-   The async in `mma_async` was defeated.  A fence is only required before the FIRST wgmma of a
-   sequence (it orders prior non-wgmma writes to the accumulator registers against the
-   warpgroup's async reads); back-to-back wgmmas within one group need none, and the hardware
-   honours the accumulator RAW dependency between them in issue order.  This is CUTLASS's shape.
-
-   MEASURED on an H100 NVL, interleaved arms, 3 reps, all MMA_CORRECT (two independent pods):
-     256 n64 +7.0%   512 n64 +10.3%   1024 n128 +10.8%   2048 n256 +4.3%   4096 n256 +4.5%
-   With ONE slice this is byte-identical to the previous behaviour.
-   Spec: tests/spec/154-nvidia-perf/01-wgmma-group-pipelining.crisp (validate-ptx-wgmma-group)."
-  (let ((n-slices (if swizzle-p (max 1 (floor k 8)) 1)))
+   Endeavour 160: KPS -- the K covered by one instruction -- is 8 at 32 bits and 16 at 16 bits.
+   The per-slice BYTE advance stays kk*32 either way, because a tf32 k8 slice and a bf16 k16 slice
+   occupy the same 32 bytes.  That is why %wgmma-make-desc is untouched by this endeavour."
+  (let* ((kps (%wgmma-k-per-slice elem))
+         (n-slices (if swizzle-p (max 1 (floor k kps)) 1)))
     (unless swizzle-p
-      ;; scatter path: generic st.shared writes must be made visible to wgmma's async-proxy read.
       (%gen-nvvm-fence-proxy-async-shared builder)
       (%ptx-barrier builder module))
-    ;; ONE fence before the first MMA of the group.
     (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.fence.sync.aligned;" "~{memory}")
     (let ((cur-d d-val))
       (dotimes (kk n-slices)
-        (setf cur-d (%emit-wgmma-mma-only builder module cur-d a-ptr b-ptr acc-type n swizzle-p (* kk 32))))
-      ;; ONE commit + wait after the last.
+        (setf cur-d (%emit-wgmma-mma-only builder module cur-d a-ptr b-ptr acc-type n swizzle-p
+                                          (* kk 32) elem)))
       (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.commit_group.sync.aligned;" "~{memory}")
       (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.wait_group.sync.aligned 0;" "~{memory}")
       (values cur-d nil))))
