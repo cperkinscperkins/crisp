@@ -178,11 +178,54 @@ def _run_stamp(path: Path) -> int:
     m = re.search(r"_(\d{9,})\.json$", path.name)
     return int(m.group(1)) if m else int(path.stat().st_mtime)
 
+def _run_identity(path: Path) -> str:
+    """The (device, chapter, competitor) identity of a run file -- its name minus the timestamp.
+
+    `results_NVIDIA_H100_NVL_sec2_top_fp16_Crisp_1788366636.json` and the same name at a different
+    stamp are two runs of THE SAME THING; a different competitor (`Crisp_V_wg256xe`) is not."""
+    return re.sub(r"_\d{9,}\.json$", "", path.name)
+
 def load_all_sweeps(results_dir: Path) -> List[Dict[str, Any]]:
+    """Load every sweep, keeping only the NEWEST run of each device+chapter+competitor.
+
+    WHY SUPERSESSION IS ENFORCED HERE.  `_best_pt` takes max() over every matching point, which is
+    deliberate ACROSS VARIANTS -- that is what builds the envelope.  Across TIME it is a bug: the
+    results directory accumulates the project's whole history, so a measurement of a kernel
+    generation that no longer exists gets merged with the current one and published under the same
+    name.  sec2_top_fp16 on an H100 NVL had five runs spanning pre-wgmma to today; at 1024-4096 the
+    good runs won the max() and it looked fine, but 8192 and 16384 were covered ONLY by the oldest,
+    so the report showed 3.2 and 7.1 TFLOPS for a kernel that does 466.8 at 4096.  A reader cannot
+    reproduce those numbers with any kernel in the tree, which is exactly the standard the
+    module-level comment on _best_pt sets.
+
+    Sizes the newest run did not cover now render as em-dash: 'the current kernel was not measured
+    there', which is true, rather than a number from a kernel that no longer exists.  Variants stay
+    distinct because the competitor name is part of the identity, so the envelope is unaffected."""
     sweeps = []
     if not results_dir.exists():
         return sweeps
-    for f in sorted(results_dir.glob("results_*.json"), key=_run_stamp):
+    # AN EMPTY RUN MUST NOT SUPERSEDE A GOOD ONE.  A file with zero data points is a FAILURE to
+    # measure, not a measurement -- CUTLASS silently failing to build writes exactly that, one
+    # empty file per config.  Letting those win by recency wiped a populated Peer column on the
+    # first attempt at this filter.  So supersession ranks on (has-data, stamp): the newest run
+    # THAT PRODUCED SOMETHING wins, and an all-empty identity still keeps its newest file so the
+    # audit script can report NO DATA rather than the identity vanishing.
+    def _n_points(path: Path) -> int:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+        except Exception:
+            return 0
+        return sum(1 for r in d.get("results", [])
+                   if ((r.get("metrics") or {}).get("throughput") or {}).get("tflops") is not None)
+
+    newest: Dict[str, Path] = {}
+    for f in results_dir.glob("results_*.json"):
+        k = _run_identity(f)
+        cur = newest.get(k)
+        if cur is None or (min(_n_points(f), 1), _run_stamp(f)) > (min(_n_points(cur), 1), _run_stamp(cur)):
+            newest[k] = f
+    for f in sorted(newest.values(), key=_run_stamp):
         try:
             with open(f, "r", encoding="utf-8") as fh:
                 sweeps.append(json.load(fh))
