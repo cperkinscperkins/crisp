@@ -2180,6 +2180,8 @@
        nil)
       (t t))))
 
+
+
 (defun run-spec-ptx-binary (file &key (validator nil) (flags nil))
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
          (bin (get-binary-path))
@@ -2194,6 +2196,18 @@
     ;; binding, so a :block (sm_90+) test gates on the default sm_80 without this.
     (let ((af (find-if (lambda (f) (and (stringp f) (search "--ir-target-arch=" f))) flags)))
       (when af (push af args)))
+    ;; Endeavour 159/162: forward --hardware-profile too.  run-spec-spirv-binary has done this
+    ;; since endeavour 155, with a comment saying the BINARY path would otherwise "drop it, so
+    ;; --use-binary and the in-process runner would disagree about which profile is active" --
+    ;; and that is exactly what happened here, because 155 was SPV work and fixed only the SPV
+    ;; path.  159's specs are the first PTX ones to need a profile: without this, %check-mma-shape
+    ;; takes its NO-PROFILE branch and refuses the 16-bit shape with "only tf32 (16 8 8) is
+    ;; supported without a hardware profile, got (16 8 16)", so --use-binary failed two specs that
+    ;; pass in-process.  Note the pattern: this function already had --ir-target-arch bolted on by
+    ;; 137 and --metadata by 152.  Flags reach it one forgotten flag at a time.
+    (when *compile-hardware-profile*
+      (push (format nil "--hardware-profile=~a" *compile-hardware-profile*) args))
+
     ;; Endeavor 152: forward --metadata too.  A spec that wants to assert on the
     ;; .metacrisp *and* pin an arch carries both flags; dropping this one meant the
     ;; metacrisp was never written and the validator failed on a missing file.
