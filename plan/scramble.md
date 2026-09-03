@@ -756,31 +756,37 @@ MMA
 - [x] need primal replay
 - [ ] still some loose ends
 [x] new macro for rings (prefetch/pipeline) that handles rings
-[ ] push FURTHER - mix prefetch, SLM and warp specialization
+[x] push FURTHER - mix prefetch, SLM and warp specialization
 [x] NVidia: DEMEM and Clusters! 
 [ ] prefetch-tile probably need L1, L2, L3 targets
 [ ] why small sizes faring poorly against CuBLAS and MKL?
 [ ] performance ratchet updated, with control for multicastno
 [/] out of core orchestration 
-[ ] benchmarking needs fixtures, don't depend on --hoist
-[ ] remove benchmarking from hoist? Or put it behind a hoist flag?
-[ ] FP16
-- [ ] compare SYCL-TLA code and output
-- [ ] :xe-native vs :coop-matrix ? 
-- [ ] inside out vs. outside in.
-- [ ] NVidia
+[x] benchmarking needs fixtures, don't depend on --hoist
+[/] remove benchmarking from hoist? Or put it behind a hoist flag?
+[x] FP16
+- [x] compare SYCL-TLA code and output
+- [x] :xe-native vs :coop-matrix ? 
+- [x] inside out vs. outside in.
+- [x] NVidia
+[ ] 64-bit / DOUBLE
+- NVidia Only
+- --math-precision=ieee
+- [ ] 64 bit (NVidia) should ERROR on the ieee + ftz combination. That is 32 bit only!
 [ ] L0 hoist and bench: are we using _SHARED_ memory instead of DEVICE?
 [ ] src has duplicate var names *hardware-profile-schema* and others
 [ ] the spill warning might be a little eager on Intel. Not sure about Nvidia. We should revisit
 - Documentation Shortcomings
 - [ ] :operand  
 - [ ] :warps
+- [ ] need to document register-fragment, including make-register-fragment and store-fragment.
+- [ ] move MMA out of topology.md into main docs
+- [ ] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
 
-[ ] benchmarking up to "max" for BMG and H100. 
-[ ] need to document register-fragment, including make-register-fragment and store-fragment.
+[x] benchmarking up to "max" for BMG and H100. 
+
 [x] Intel can't do col-major (optimally)?  Need to document this. May need to think.
-[ ] move MMA out of topology.md into main docs
-[ ] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
+
 [ ] tests\spec\111-load-and-store-tile\09-load-transpose-2d.crisp  <-- has "t" insteaad of "true".  FIX
 
 [x] don't forget bug 033 ( --debug )
