@@ -1411,11 +1411,7 @@ def main():
             # its second CTA.  Tile is 128,256 for both; 64,256 would measure the wrong geometry.
             run_target("_variant_wgmma_bf16_2wg", "matmul.crisp", "matmul.ptx", "Crisp",
                        [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
-            run_target("_variant_wgmma_bf16_2wg_deep", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
             run_target("_variant_wgmma_bf16_2wg_d3", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
-            run_target("_variant_wgmma_fp16_2wg_deep", "matmul.crisp", "matmul.ptx", "Crisp",
                        [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
 
 
@@ -1460,6 +1456,16 @@ def main():
                 # a 64,64 tile here would measure a different kernel than the one promoted.
                 run_target(_ch, f"matmul_{_sfx}.crisp", f"matmul_{_sfx}.ptx", "Crisp",
                            [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
+                # Endeavour 162: the 128x256 two-warpgroup, ring-depth-4 geometry, PROMOTED here
+                # from an underscore probe.  A VARIANT and not a replacement, because the two
+                # kernels CROSS OVER: on an H100 NVL the base wins at 1024 (97.8 vs 74.0) and 2048
+                # (343.4 vs 327.8), and this one wins from 4096 up by a margin that grows to +21%
+                # at 32768; on an H200 it is 737.1 vs 507.5 at 16384.  Publishing either alone as
+                # "Crisp" would misrepresent one end of the range, so the envelope picks per size
+                # and names its winner -- the presentation the Intel sections already use.
+                # The 128,256 tile is the kernel's own geometry; 64,256 would measure something else.
+                run_target(_ch, "matmul_2wg_deep.crisp", "matmul_2wg_deep.ptx", "Crisp_V_2wg_deep",
+                           [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
                 run_target(_ch, f"cuda_control_{_sfx}.cu", f"cuda_control_{_sfx}",
                            f"CUDA_Apples_{_tag}", nvcc_flags)
                 for _cfg, _dflags in cutlass_16bit_configs:

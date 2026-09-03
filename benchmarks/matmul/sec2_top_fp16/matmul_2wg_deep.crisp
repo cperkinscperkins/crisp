@@ -1,3 +1,15 @@
+;; PROMOTED to a section 2 variant (endeavour 162).  It was `_variant_wgmma_fp16_2wg_deep`, an
+;; underscore probe excluded from the report; it now competes in sec2_top_fp16 as
+;; `Crisp_V_2wg_deep` against the 64x256 ring-2 base kernel.
+;;
+;; IT IS A VARIANT AND NOT A REPLACEMENT, because the two kernels CROSS OVER.  Measured on an
+;; H100 NVL, base vs this one: 97.8 vs 74.0 at N=1024 and 343.4 vs 327.8 at 2048 -- the tall tile
+;; LOSES at small N, paying the occupancy its 288 threads x ~166 registers cost.  From 4096 up it
+;; wins and the margin grows: 432 vs 481, 424 vs 457, 303 vs 371, 258 vs 312.  On an H200 the
+;; spread is far larger (507.5 vs 737.1 at 16384).  Publishing either kernel alone as "Crisp"
+;; would misrepresent one end of the range, which is exactly what the envelope presentation --
+;; already used on the Intel side -- exists to avoid.
+;;
 ;; FP16 TWIN of _variant_wgmma_bf16_2wg_deep -- identical in every respect but the operand
 ;; element type.  Endeavour 159's central finding is that the two 16-bit formats do NOT
 ;; track each other: cuBLAS differs by 45% between them at N=1024, and CUTLASS's own configs

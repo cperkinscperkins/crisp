@@ -724,7 +724,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             lines.append(f"### {gpu} \u00b7 {tag.lower()} \u00b7 `fast` *({note})*\n")
             if best_single:
                 lines.append(
-                    f"Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's "
+                    f"Crisp is **outside-in**: the user picks the configuration, exactly as {peer_label}'s "
                     f"pipeline depth is a template argument. So two Crisp columns, and the gap between "
                     f"them is *what tuning is worth*. **Envelope** is the best variant at each size, "
                     f"naming which one. **Best single** is the one fixed choice that does best across "

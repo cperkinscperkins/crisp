@@ -671,3 +671,53 @@ in the captured stream. After: 2. Verified by re-running on the same pod.
 **And the fix broke the script once on the way in**, which the pod caught in 40 seconds: comment
 lines went INSIDE a backslash-continued pipeline, and a `\`-continued line followed by a comment
 is a shell syntax error. Comments now sit above the pipeline, with a note saying why.
+
+---
+
+# _2wg_deep PROMOTED to a §2 variant, 2026-09-02
+
+Moved out of the underscore probe dirs into the chapters they now compete in:
+
+    _variant_wgmma_bf16_2wg_deep/matmul.crisp -> sec2_top_bf16/matmul_2wg_deep.crisp
+    _variant_wgmma_fp16_2wg_deep/matmul.crisp -> sec2_top_fp16/matmul_2wg_deep.crisp
+
+registered as **`Crisp_V_2wg_deep`** -- the same `_V_` variant mechanism the Intel sections have
+used since 159, so `report.py` builds the envelope and names its winner per size with no new
+reporting code. One insertion in the NVIDIA `sec2_top` loop covers both formats.
+
+## A VARIANT, not a replacement — because the kernels cross over
+
+| H100 NVL | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---:|---:|---:|---:|---:|---:|
+| base (64x256, ring 2) | **97.8** | **343.4** | 432.2 | 423.5 | 302.7 | 258.3 |
+| `2wg_deep` (128x256, ring 4) | 74.0 | 327.8 | **481.3** | **456.9** | **370.7** | **312.1** |
+
+The base wins below ~4096 -- the tall tile pays the occupancy its 288 threads x ~166 registers
+cost -- and loses everywhere above, by a margin that grows to +21% at 32768 and to 737.1 vs 507.5
+on an H200 at 16384. **Publishing either alone as "Crisp" would misrepresent one end of the
+range.** That is precisely what the envelope presentation exists to prevent, and it is why this
+was not a one-line swap.
+
+## Also fixed
+
+The envelope prose was hardcoded to "exactly as SYCL-TLA's pipeline depth is a template
+argument" -- correct on Intel, wrong in a NVIDIA section. It now names the platform's own peer,
+so the NVIDIA tables will cite CUTLASS.
+
+## Verified locally, no GPU
+
+Both promoted kernels compile from their new homes, each gets its OWN sidecar
+(`matmul_2wg_deep_matmul.metacrisp`) with no glob collision against the Intel siblings already in
+those directories, and both report **196,608 bytes** of shared memory -- the 192KB depth-4 figure,
+confirming the right kernel and that the element-width fix is in effect. Metacrisp resolution is
+stem-anchored (`{stem}_{kernel}.metacrisp`, falling back to `{stem}_*`), so it cannot pick up a
+sibling's file -- the failure that once made a NVIDIA run read an Intel sidecar.
+
+## §2 will populate on the NEXT NVIDIA run, and that is deliberate
+
+Existing result JSONs carry the OLD identity (chapter `_variant_wgmma_bf16_2wg_deep`, competitor
+`Crisp`), so the envelope has nothing to build from yet. **The historical files were NOT
+relabelled.** Rewriting them would assert runs that never happened under those names, and the
+supersession filter keys on exactly that filename identity, so relabelling would have to rename
+the files too -- deepening the fiction rather than recording a measurement. The numbers are in
+this document; the report will state them once a run produces them under the new identity.
