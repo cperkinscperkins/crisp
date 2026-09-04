@@ -303,3 +303,135 @@ REMAINING IN THIS ENDEAVOUR
 - **D** — `155/03`: now a raw `The value is not of type SYMBOL` on the ring path, with the
   documented divergence issue behind it.  Shares the ring theme with B, so worth doing together.
 - `152/23` — delete the mis-shaped directive on the negative arch-gate test.
+
+
+PHASE 3 — ON-METAL NUMERIC GRADIENT CHECK: BLOCKED BY A DRIVER GAP (2026-09-03)
+===============================================================================
+
+BUG 054's own note said the fix "needs an on-metal numeric gradient check to confirm".  Phase 2
+verified the backward by READING the emitted code, which proves it SELECTS the right
+instructions but not that it computes the right NUMBER.  Rung `01-fp16-mma-gradient-bmg.crisp`
+is that check: the fp16 twin of 145/09, same absolute assertion (`dA[1,0] = sum_n B[0,n] = 1.2`).
+
+It does not pass, and the reason is a DRIVER gap.  Three findings, in the order they appeared:
+
+1. **FIXED — the SPIR-V ext list never requested `SPV_EXT_shader_atomic_float16_add`.**  A
+   16-bit kernel's backward would not TRANSLATE (llvm-spirv exit 18).  The gradient SCATTER
+   accumulates into `A_GRAD` / `B_GRAD`, which carry the INPUT's element type, so any 16-bit
+   kernel under `--differentiate` emits a half-typed `atomicrmw fadd`.  New predicate
+   `%ll-uses-fp16-atomic-fadd-p`; it text-scans the emitted .ll because its siblings scan
+   FUNCTION NAMES and `atomicrmw` is an instruction, and a module walk would need four LLVM
+   bindings that do not exist.  `%inject-cache-control-decorations` already text-scans the same
+   file, so this follows local precedent.  Fires only when a half atomic fadd is present, so
+   fp32/tf32 flag lists are byte-identical.
+
+2. **FIXED — VERIFY-AUTODIFF could not read a 16-bit kernel's implicit params.**
+   `%vad-read-implicit-params`' elem-bytes table knew float/double/int/ulong/long and errored on
+   the first `half` scratch tile.  A 16-bit backward is mostly such tiles.  Same SHAPE of harness
+   gap that 145 P6 fixed when it taught the runner about 2-D matrices.
+
+3. **THE WALL — BMG's driver refuses a module that declares the extension.**
+
+       InvalidModule: Invalid SPIR-V module: input SPIR-V module uses extension
+       'SPV_EXT_shader_atomic_float16_add' which were disabled by --spirv-ext option
+
+   That is IGC's embedded SPIR-V reader at MODULE-LOAD time, not llvm-spirv — the same kernel
+   translates standalone and yields a .spv that declares the extension.  It is the exact shape
+   of the bf16 gap in 155/02's header.  **CONTROL:** the tf32 twin 145/09, whose scatter uses
+   fp32 atomics, still verifies on this same box (analytical=1.1994, numerical=1.1990).  The ONLY
+   difference is the atomic's element width.
+
+So on Intel, **fp16 covers the forward but bf16 AND fp16 both fail the backward on metal** — bf16
+at the type, fp16 at the atomic.
+
+THE OPEN DECISION
+-----------------
+
+**(a) Accumulate 16-bit gradients in fp32** — promote the `_GRAD` tensors, or the scatter.
+Removes half atomics entirely, is vendor-neutral, and is numerically BETTER: fp16 atomic
+accumulation over many contributions loses precision badly.  There is precedent — the adjoint
+minting already promotes element types "so gradients use correct FP precision".  Cost: it
+changes the AD ABI for 16-bit kernels, since the host would allocate fp32 gradient buffers.
+
+**(b) Keep half atomics and verify on NVIDIA**, which has them natively.  Correct, but costs a
+rented pod and leaves Intel unable to differentiate any 16-bit kernel on metal.
+
+**(a) is the recommendation**, and it is a design decision rather than a patch, so it is left
+open rather than taken unilaterally.
+
+STATE.  ci-stop stays at **162** and the rung is RED ON PURPOSE beyond it, with its
+VERIFY-AUTODIFF directive left ACTIVE rather than skipped — it is the assertion the rung exists
+to make, and it should start passing the moment (a) lands.  Suite after Phases 1-3:
+**1060/1060 plain, 1060/1060 --differentiate, 232/232 negative.**
+
+WHAT IS AND IS NOT PROVEN ABOUT BUG 054
+---------------------------------------
+
+PROVEN: the backward now emits 16-bit MMA with matching declares on SPV, and only
+`m16n8k16...f16.f16` / `.bf16.bf16` on PTX.  The tf32 path is byte-for-byte unchanged.
+NOT PROVEN: that a 16-bit MMA gradient equals its analytical value on hardware.  That is what
+this rung is for, and it stays open until the decision above is made.
+
+
+PHASE 4 — PATH (a) SHIPPED: 16-BIT WEIGHTS, 32-BIT GRADIENTS (2026-09-04)
+=========================================================================
+
+Approved as the industry-standard rule — PyTorch AMP keeps fp32 master gradients for fp16
+forward weights, for the same two reasons that apply here: fp16 atomic accumulation is lossy,
+and BMG's SPIR-V reader will not load a module declaring SPV_EXT_shader_atomic_float16_add.
+
+The promotion had to land at TWO altitudes; the first alone was not enough.
+
+**Part 1 — kernel-boundary `_GRAD` slots.**  `%compute-backward-kernel-params` promoted INTEGER
+tensors to float and passed ANY float tensor through, silently including half and bfloat16.  A
+narrow-float clause now sits ahead of that passthrough, mirroring the integer one; the bare
+scalar branch gets the same treatment.  Confirmed in the metacrisp: `a_grad` / `b_grad` became
+`tensor float 2` while `a` / `b` stayed `matrix half`.
+
+**Part 2 — the `_ADJ` SLM tiles.**  Part 1 alone left the SPIR-V still declaring the fp16 atomic
+extension with `AtomicFAddEXT` result type `TypeFloat 502 16`.  The remaining half atomics were
+on the OPERAND ADJOINT tiles (`a-tile_adj` / `b-tile_adj`, `tensor half 2 :local`), which
+accumulate contributions in shared memory before the scatter.  `%promote-scratch-init-for-ad`
+had the identical omission — integers only — and now promotes narrow floats too.
+
+**Why this does not undo defect C.**  An operand ADJOINT is never an MMA operand; per
+`%mma-ad-adj-init`'s own contract every consumer indexes it as MEMORY.  The tiles that ARE MMA
+operands — dC / A^T / B^T — are minted by `%mma-via-tile-backward` from the forward tile's
+element type and never pass through either promoter, so they stay 16-bit.  Verified on the
+emitted SPIR-V: `TypeFloat 16` with TWO cooperative matrices using it beside a 32-bit
+accumulator, and only `SPV_EXT_shader_atomic_float_add` declared.
+
+**THE DRIVER WALL IS GONE.**  The 16-bit backward now LOADS AND RUNS on BMG.  That was Phase 3's
+blocker and it is closed.
+
+REGRESSION.  1061/1061 plain, **1060/1061 --differentiate** (the sole failure is rung 01 below),
+232/232 negative, 291/291 unit.  The tf32 twin 145/09 still verifies on metal, which is the
+control that matters: a float element is not narrow, so every fp32/tf32 signature is unchanged.
+
+WHAT STILL BLOCKS THE NUMBER
+----------------------------
+
+One HARNESS gap: VERIFY-AUTODIFF's runner cannot WRITE an fp16 input buffer.  It sizes every
+matrix input at 4 bytes/element (`(:matrix-float (* 4 (getf desc :length)))`) and does no
+fp32->fp16 conversion, so A and B arrive as float bit patterns reinterpreted as half pairs.
+
+A SHORTCUT WAS TRIED AND REJECTED — recorded so nobody retries it.  Making the GLOBAL matrices
+`float` and letting `load-tile-at` convert into half tiles compiles cleanly and is WRONG: the
+emitted forward contains no `fptrunc` and not one `store half`, only
+`store float ... ptr addrspace(3)`.  That is **BUG 057**, a silent-wrongness bug in the FORWARD
+staging path, filed separately and NOT the same defect as 054.  It also means the shortcut
+cannot serve as a test at any point.
+
+So finishing the numeric check needs one of:
+  (i)  **extend the runner** to write fp16 input buffers — descriptor carries an element width
+       read from the metacrisp declared-signature, byte-size and buffer-write honour it, plus a
+       small IEEE fp16 encoder.  Reusable by 159 / 160 and every future 16-bit AD spec.
+  (ii) **fix BUG 057** — make load-tile-at convert on an element-width mismatch (or refuse it).
+       Fixes a real silent bug AND lets a float-boundary kernel exercise the 16-bit MMA with no
+       harness change at all.
+
+(ii) fixes a live defect as a side effect, so it is the better value; (i) is the more general
+capability.  They are not exclusive.
+
+STATE.  ci-stop is at **163**, so rung 01 is the endeavour's live TDD frontier and is RED with
+its VERIFY-AUTODIFF directive ACTIVE.  Its header records all four walls and which are down.

@@ -1,0 +1,103 @@
+;; Endeavour 163 rung 01 — NUMERIC on-metal gradient check of a 16-BIT MMA matmul.
+;;
+;; WHY THIS RUNG EXISTS.  BUG 054 was a SILENT WRONG GRADIENT: AD minted TF32 fragments for
+;; 16-bit operands, so the backward read 32-bit elements out of shared memory holding PACKED
+;; 16-bit data.  Endeavour 163 defect C fixed it, and that fix was verified by READING the
+;; emitted code — the SPV coop-matrix calls became (half 8x16)/(half 16x16)/(float 8x16) against
+;; a matching declare, and _grad.ptx carried only m16n8k16...f16.f16 with no tf32 survivor.
+;;
+;; That proves the backward SELECTS the right instructions.  It does not prove it computes the
+;; right NUMBER, and BUG 054's own note said so: "needs an on-metal numeric gradient check to
+;; confirm".  This rung is that check.
+;;
+;; ===================================================================
+;; STATUS 2026-09-04: RED, blocked on ONE remaining HARNESS gap.  Everything on the COMPILER
+;; side now works, and the sequence is worth recording because two of the three walls are down:
+;;
+;;   1. FIXED — the SPIR-V ext list never requested SPV_EXT_shader_atomic_float16_add, so a
+;;      16-bit backward would not TRANSLATE (llvm-spirv exit 18).
+;;   2. FIXED — VERIFY-AUTODIFF's %vad-read-implicit-params knew no 16-bit element type and
+;;      errored on the first `half` scratch tile.
+;;   3. FIXED by path (a) — the module used to be REFUSED BY THE DRIVER, because a 16-bit
+;;      input's _GRAD slot made the gradient scatter a half `atomicrmw fadd` and IGC will not
+;;      load a module declaring SPV_EXT_shader_atomic_float16_add.  Gradients now accumulate in
+;;      fp32 at both altitudes (_GRAD slots and _ADJ SLM tiles), so the scatter is an fp32
+;;      atomic.  **The module now LOADS AND RUNS on BMG.**
+;;   4. REMAINING — VERIFY-AUTODIFF's runner cannot WRITE an fp16 input buffer.  It sizes every
+;;      matrix input at 4 bytes/element (verify-autodiff-runner.lisp: `(:matrix-float (* 4 ...))`)
+;;      and does no fp32->fp16 conversion, so A and B reach the device as float bit patterns
+;;      reinterpreted as half pairs.
+;;
+;; A SHORTCUT WAS TRIED AND REJECTED, recorded so it is not retried: making the GLOBAL matrices
+;; `float` and letting `load-tile-at` convert into the half tiles.  It compiles, and it is
+;; WRONG — the emitted forward contains no `fptrunc` and not one `store half`, only
+;; `store float ... ptr addrspace(3)`, i.e. 4-byte floats written into a 2-byte-element SLM
+;; tile.  That is its own silent-wrongness bug, filed separately; it is not a way to test this.
+;;
+;; The kernel below is therefore the HONEST one — 16-bit end to end — and it stays red until the
+;; runner can feed it.  ci-stop is at 163, so this rung is the endeavour's live TDD frontier.
+;; ===================================================================
+;;
+;; WHAT IS 16-BIT HERE, AND WHAT IS NOT — read this before changing the types.
+;;   - The MMA OPERAND TILES and the GLOBAL matrices are `half`, so the DPAS is a 16-bit one and
+;;     the backward's staged dC / A^T / B^T are 16-bit.  That is the machinery BUG 054 broke,
+;;     and it is what this rung exercises.
+;;   - The GRADIENTS are `float`, deliberately.  See below.
+;;
+;; 16-BIT WEIGHTS, 32-BIT GRADIENTS (endeavour 163 path (a)).  A 16-bit input's _GRAD slot used
+;; to carry the input's element type, which made the gradient scatter a half-typed
+;; `atomicrmw fadd`.  Two things were wrong with that.  BMG cannot even LOAD such a module —
+;; IGC's SPIR-V reader refuses SPV_EXT_shader_atomic_float16_add, the same way it refuses
+;; SPV_KHR_bfloat16 (see 155/02) — and, independently, accumulating hundreds of contributions
+;; into fp16 loses far more precision than the forward ever does.  Gradients now accumulate in
+;; fp32 at BOTH altitudes: the kernel-boundary _GRAD slots and the _ADJ SLM tiles.  This is what
+;; PyTorch's AMP does with fp32 master gradients, and for the same reasons.
+;;
+;; THE CHECK, and it is an ABSOLUTE one.  f(A,B) = sum(A.B), so dC is all ones and
+;;     dA[m,k] = sum_n B[k,n]
+;; With B[i][j] = 0.01*(i*16+j), dA[1,0] = sum_{n=0..15} 0.01*n = 1.2.  `expect.A` pins that
+;; value, so this is not merely FD-vs-analytical agreement — which can pass with both sides
+;; wrong in the same way, and under BUG 054 both sides WOULD have been fed the same mis-typed
+;; fragments.
+;;
+;; WHY THE RAMP IS NON-UNIFORM: a uniform matrix equals its own transpose, so it could not catch
+;; a transposed operand — precisely the error the backward's staged B^T might carry.
+;;
+;; WHY h IS LARGE (0.5, not the 1e-3 default): f is EXACTLY bilinear in A, so the central
+;; difference has zero truncation error and a big step is strictly better.  It has to be big:
+;; f is ~1.6e3 here while a default-h perturbation moves it by ~1e-3, far below the resolution
+;; of the accumulation.  Values are scaled by 0.01 for the same reason.
+;;
+;; atol IS LOOSER THAN THE tf32 TWIN'S (5e-2 vs 145/09's 2e-2) because the operands are rounded
+;; to fp16 on the way into the tiles, so every ramp entry is perturbed before the math starts and
+;; dA[1,0] sums sixteen of them.  That covers input rounding, not a weaker assertion: a
+;; tf32-fragment regression misreads packed bytes and is wrong by ORDERS of magnitude — the
+;; pre-fix backward produced 16.49 against an expected 1.2 — so 5e-2 still catches BUG 054 with
+;; enormous margin.
+;;
+;; SHAPE: (8 16 16).  Kt=16 rather than the tf32 twin's 8 because a 16-bit XMX/DPAS packs two
+;; elements per 32-bit lane, so the native K doubles.  Mt=8, Nt=16.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=8x16@0:0.01 B=16x16@0:0.01 at.A=1,0 group=16 h=0.5 atol=5e-2 expect.A=1.2 output-mat=8x16
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 16)))
+
+(def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_matmul_fp16 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((A-tile (make-scratch-matrix half  (8 16)))    ; Mt x Kt — 16-bit MMA operand
+        (B-tile (make-scratch-matrix half  (16 16)))   ; Kt x Nt — 16-bit MMA operand
+        (C-tile (make-register-tile float (8 16) 0.0)))
+    (load-tile-at A A-tile (0 0))
+    (load-tile-at B B-tile (0 0))
+    (sync-workgroup)
+    (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

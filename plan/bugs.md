@@ -1931,3 +1931,116 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
           - --debug --differentiate on a 16-bit kernel dies in llvm-as with "Metadata id is
             already used" (!101 emitted twice).  Newly REACHABLE rather than newly broken -- the
             16-bit backward never compiled before -- and no CI pass combines those two flags.
+
+[ ] 055 %coop-call CACHES THE COOP-MATRIX DECLARATION BY NAME ALONE, so two different element
+        types in one module silently collide.  Found 2026-09-03 while fixing BUG 054
+        (endeavour 163 defect C); NOT fixed there, because making the operands homogeneous
+        removes today's collision but leaves the trap.
+
+        src/codegen.lisp, %coop-call:
+
+            (existing (llvm-get-named-function module name))
+            (fn (if (null-pointer-p existing)
+                    (llvm-add-function module name fnty)   ; FIRST caller wins the signature
+                    existing))                             ; later callers REUSE it
+            (llvm-build-call2 builder fnty fn args na "")  ; ...but call with THEIR OWN fnty
+
+        __spirv_CooperativeMatrixMulAddKHR is NOT type-mangled: the same name serves every
+        element type and shape.  So the first emission fixes the declaration, and any later
+        emission at a different signature produces a call whose callee type disagrees with the
+        function's.  LLVM represents that as a bitcast function pointer and llvm-spirv refuses:
+
+            FunctionPointers: Can't translate function pointer:
+              declare ... @__spirv_CooperativeMatrixMulAddKHR(half 8x16, half 16x16, float 8x16)
+
+        HOW IT WAS SEEN: with BUG 054 present, a half FORWARD and a (wrongly) float BACKWARD
+        landed in one module -- 1 matching call and 3 mismatched.  Fixing 054 made the module
+        homogeneous and the error went away, which is why this is filed rather than fixed.
+
+        WHY IT STILL MATTERS: any kernel that legitimately mixes coop-matrix element types in
+        one module hits it -- e.g. an fp16 and a bf16 MMA in the same file, or a mixed-precision
+        epilogue.  The failure mode is an llvm-spirv message that names LLVM internals and gives
+        the user nothing to act on.  Worse, it is only loud because llvm-spirv happens to check;
+        there is no guarantee a differently-shaped collision is caught at all.
+
+        LIKELY FIX (unverified, and the choice is a real one):
+          (a) cheap and safe -- when an existing declaration's type differs from the requested
+              fnty, raise a Crisp compiler error naming the two signatures.  Turns an obscure
+              backend message into a diagnostic.  Does not enable mixed modules.
+          (b) proper -- mangle the emitted name per signature (element type + shape + use), so
+              distinct coop-matrix operations get distinct declarations and mixed modules work.
+              Needs a check that llvm-spirv still recognises the mangled names as the builtin;
+              it may well not, in which case (a) is the honest answer and mixed-type modules are
+              a documented limitation rather than a bug.
+        Do (a) first regardless: it is correct under either outcome.
+
+[ ] 056 --debug --differentiate ON A 16-BIT KERNEL DIES IN llvm-as: "Metadata id is already
+        used".  Found 2026-09-03 (endeavour 163 defect C).  NEWLY REACHABLE, NOT NEWLY BROKEN --
+        before 054 was fixed the 16-bit backward never compiled far enough to reach llvm-as.
+
+        REPRO:
+            ./bin/crisp-compile.exe --ir-target=spv --hardware-profile=bmg --debug --differentiate \
+              tests/spec/155-typed-mma-shapes/02-fp16-register-tile-spv.crisp
+
+            llvm-as: ..._grad.temp.ll:3815:1: error: Metadata id is already used
+            !101 = !{!"none", !"none", ... }        ; ~99 entries
+
+        So the emitted .ll defines !101 twice.  The duplicate is a kernel-argument metadata node
+        (the all-"none" list), which points at the SPIR-V kernel metadata injection rather than
+        at DIBuilder: the debug metadata and the injected kernel metadata are numbering into the
+        same id space and overlap.  Endeavour 156 Phase 0 already touched this area, fixing
+        inject-spir-kernel-metadata DISCARDING #0/!dbg on kernels.
+
+        ISOLATION, measured rather than assumed:
+            155/02 forward + --debug                      -> exit 0
+            tf32 kernel + --debug --differentiate          -> exit 0
+            155/02 + --debug --differentiate               -> FAILS
+        So it needs a backward kernel AND the wide argument list that the 16-bit backward
+        produces.  Not a 16-bit defect as such -- most likely any backward with enough params.
+
+        NOT ON A CI PATH: ci.yml runs --debug and --differentiate as SEPARATE passes and never
+        combines them, so this does not turn CI red.  That is also why it went unnoticed.
+
+        LIKELY FIX (unverified): make the kernel-metadata injection allocate ids above the
+        highest id already present in the module instead of from a fixed base.  Confirm by
+        checking whether the two !101 definitions come from different emitters before changing
+        the numbering.
+
+[ ] 057 load-tile-at FROM A float GLOBAL INTO A half SCRATCH TILE WRITES 4-BYTE FLOATS INTO A
+        2-BYTE-ELEMENT BUFFER.  Silent: it compiles clean, runs, and produces garbage.
+        Found 2026-09-04 (endeavour 163) while trying to shortcut a 16-bit gradient check.
+
+        REPRO — a kernel with float globals and half tiles:
+
+            (def-type a-mat (matrix float :address-space :global ...))
+            (let ((A-tile (make-scratch-matrix half (8 16))) ...)
+              (load-tile-at A A-tile (0 0))
+              (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile) ...)
+
+            ./bin/crisp-compile.exe --hardware-profile=bmg --ir-target=spv <file>   -> exit 0
+
+        THE EMITTED FORWARD SETTLES IT.  Grepping the .opt.ll:
+            fptrunc  ...................  ZERO occurrences
+            store half ................  ZERO occurrences
+            store float ... ptr addrspace(3) ... TWO occurrences
+        So the staging loop writes 32-bit floats into SLM that the type system believes holds
+        16-bit elements.  Every element after the first is at the wrong offset, and the tile
+        overruns its allocation by 2x.  The coop-matrix types in the same module ARE half (23
+        mentions), so the MMA then reads packed-half lanes out of float bit patterns.
+
+        OBSERVED EFFECT (via VERIFY-AUTODIFF, which is how it surfaced): analytical=30.87 and
+        numerical=0.0 against an expected 1.2 -- the FD is exactly zero because the perturbation
+        lands in bytes the kernel never reads as a value.
+
+        NOT the same bug as 054.  054 was the AD path minting tf32 fragments for 16-bit operands
+        and is fixed; this is the FORWARD staging path ignoring an element-width mismatch between
+        a global and a scratch tile.  A forward-only kernel of this shape is equally wrong.
+
+        LIKELY FIX (unverified): either emit the fptrunc/fpext in the load-tile-at staging loop
+        when the source and destination element widths differ, or REFUSE the mismatch at compile
+        time with a diagnostic.  Refusing is the safer first move and is probably the right
+        long-term answer for a widening/narrowing that the user did not ask for -- a tile whose
+        element type differs from its source is far more often a mistake than an intent.  If
+        conversion IS wanted it should be spelled in the kernel.
+
+        Note the same question applies to store-tile in the other direction; not tested.
