@@ -1862,8 +1862,9 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         wgmma shapes into the builtin h100 profile (deliberately not done -- an incomplete list
         would refuse working benchmark kernels).
 
-[ ] 054 AD MINTS TF32 FRAGMENTS FOR 16-BIT OPERANDS — silent WRONG GRADIENT on the NVIDIA
+[x] 054 AD MINTS TF32 FRAGMENTS FOR 16-BIT OPERANDS — silent WRONG GRADIENT on the NVIDIA
         sync-MMA path.  Found 2026-09-02 running `--filter=159 --differentiate`.
+        FIXED 2026-09-03 (endeavour 163 defect C) — see the FIXED block at the end.
         The forward is correct: the module carries exactly one
         mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 (or .bf16.bf16).  The AD-generated
         *_grad kernel beside it carries THREE mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32.
@@ -1882,3 +1883,51 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         confirm, so it is its own piece of work rather than a patch.
         SPECS: tests/spec/159-nvidia-16bit/0{1,2}-sync-mma-{fp16,bf16}-ptx.crisp now carry
         SKIP-WITH[--differentiate] naming this bug.
+
+        FIXED 2026-09-03, endeavour 163 defect C.  The LIKELY FIX line above was right --
+        "thread the operand element type into the MMA VJP's fragment minting" is exactly it.
+        %mma-via-tile-backward built every backward temporary with a hardcoded FLOAT:
+
+            (float-s (intern "FLOAT" cl-pkg))
+            ((dc-slm (make-scratch-matrix FLOAT (mt nt)))     ; an MMA OPERAND
+             (at-slm (make-scratch-matrix FLOAT (kt mt)))     ; an MMA OPERAND
+             (bt-slm (make-scratch-matrix FLOAT (nt kt)))     ; an MMA OPERAND
+             (da-reg (make-register-tile  FLOAT (mt kt) 0.0)) ; accumulator -- correct
+             (db-reg (make-register-tile  FLOAT (kt nt) 0.0)))
+
+        The first three are the OPERANDS of the two backward GEMMs and must carry the forward's
+        element type.  The accumulators were already right: XMX and the tensor cores take 16-bit
+        operands and accumulate in fp32.  %mma-ad-tile-dims-map now records each tile's element
+        type as a fourth entry element -- every consumer read only SECOND and THIRD, so the
+        extension is backward compatible -- and the VJP stages its operands in it.
+
+        THE SCOPE LINE ABOVE WAS WRONG, and this is the part worth remembering.  It said "the
+        sync-MMA VJP only".  The SAME hardcoded FLOAT also broke Intel/SPV, where it presents
+        completely differently: %coop-call caches the coop-matrix declaration by NAME alone, so
+        a module holding a half FORWARD and a float BACKWARD calls one symbol at two signatures,
+        LLVM bitcasts the callee, and llvm-spirv refuses with "FunctionPointers: Can't translate
+        function pointer".  ONE cause, two faces -- PTX reads the wrong bytes silently, SPV fails
+        to compile.  It had been filed as two unrelated problems (this bug, and a supposed missing
+        SPV_KHR_bfloat16 on 155/01,02,04); adding the extension changes nothing.
+
+        VERIFIED BY READING THE EMITTED CODE, not by exit codes:
+          - SPV backward: all coop-matrix calls now (half 8x16) A / (half 16x16) B /
+            (float 8x16) accumulator, matching the single declare.  No float 8x8 remains.
+          - PTX backward: _grad.ptx carries ONLY m16n8k16.row.col.f32.f16.f16.f32
+            (and .bf16.bf16 for the bf16 rung).  No tf32 variant survives.
+
+        SAFETY PROPERTY: when the operand element IS float the emission is byte-for-byte what it
+        was, so every tf32 kernel is untouched.
+
+        FIVE SPECS UN-SKIPPED: 155/01, 155/02, 155/04, 159/01, 159/02.
+        Suite after: 1060/1060 (plain, --debug, --differentiate, and in-process both ways),
+        232/232 negative, 291/291 unit.  --single-pass is 1059/1060 on the PRE-EXISTING BUG 043,
+        verified by stashing this fix, rebuilding at HEAD and reproducing it there.
+
+        STILL OPEN, uncovered by this work and NOT fixed here:
+          - %coop-call's name-only declaration cache (src/codegen.lisp) is a latent hazard for
+            any module that legitimately mixes coop-matrix element types.  Making the operands
+            homogeneous removes today's collision but not the trap.
+          - --debug --differentiate on a 16-bit kernel dies in llvm-as with "Metadata id is
+            already used" (!101 emitted twice).  Newly REACHABLE rather than newly broken -- the
+            16-bit backward never compiled before -- and no CI pass combines those two flags.

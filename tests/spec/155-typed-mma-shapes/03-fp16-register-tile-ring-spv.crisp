@@ -30,7 +30,7 @@
 ;; ===================================================================
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "same tile-stride adjoint gap as 01/02, plus a second one: with the bindings hoisted, AD places a sync-workgroup inside the divergent (when (< next-k n-k-steps) ...) and the divergence checker refuses it -- correctly, it would deadlock."
+;; SKIP-WITH[--differentiate]: "The tile-stride adjoint gap this shared with 01/02 was FIXED by endeavour 163 defect A. What it was masking, in order: a raw `The value is not of type SYMBOL` on the ring path -- unresolved, and NOT the same failure as 01/02/04's BUG 054 -- and behind that the documented divergence issue, where AD places a sync-workgroup inside the divergent (when (< next-k n-k-steps) ...) and the checker refuses it, correctly, since it would deadlock."
 ;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-fp16-coop
 (declaim (precision fast))
 (def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))

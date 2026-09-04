@@ -878,15 +878,16 @@ DOCS
 
 AG TASKS
 ========
-[ ] expand MMA testing up to , and a little past max (64000 x 64000 ?)
+[x] expand MMA testing up to , and a little past max
 [ ] script for bundling release
-[ ] better benchmark API
+[x] better benchmark API
 [ ] benchmark reductions etc
 [ ] benchmark A|D ??
 [x] add full hardware profile to samples on readme
 [x] some sort of CTS?
 [ ] add more adversarial tests
-[ ] forward-only is still in a bunch of the tests.  remove. 
+[x] forward-only is still in a bunch of the tests.  remove. 
+[ ] "Apples" routines in benchmark not always matching Crisp algorithm.
 
 
 
@@ -985,7 +986,6 @@ QUESTIONS
 - [x] should log4CL be used ONLY for logging? Or should it be used for general compiler output 
       like error messages and warnings and the like?
 - [ ] why are the log:debug and the like not showing up in Alive REPL even if the log level is set?
-
 - [ ] commutative-op-type instead of binop-type requirement for reductions? Would require users
       to define a type constraint for their own functions.  Annoying or useful?
 
