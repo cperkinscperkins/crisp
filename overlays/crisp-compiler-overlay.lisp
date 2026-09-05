@@ -635,3 +635,171 @@ processes float inputs — integer tensor inputs contribute zero gradient."
      ((string-equal (symbol-name op) "MAKE-SCRATCH-CELL")
       `(,op ,(%promote-to-float-adjoint canonical)))
      (t init))))
+
+;;; ======================================================================
+;;; BUG 057 — load-tile-at across an ELEMENT-TYPE mismatch is now REFUSED.
+;;;
+;;; It used to compile clean and corrupt memory: staging a `float` global into a `half` scratch
+;;; tile emitted NO fptrunc and NOT ONE `store half` -- only `store float ... ptr addrspace(3)`,
+;;; i.e. 4-byte values written into a 2-byte-element SLM tile, overrunning it by 2x while every
+;;; element after the first sat at the wrong offset.  The coop-matrix types in the same module
+;;; were half, so the MMA then read packed-half lanes out of float bit patterns.  Observed via
+;;; VERIFY-AUTODIFF as analytical=30.87 / numerical=0.0 against an expected 1.2.
+;;;
+;;; REFUSED RATHER THAN CONVERTED, deliberately.  Emitting an implicit fptrunc here would bury
+;;; per-element cast instructions inside a bulk staging loop that exists to be fast -- the one
+;;; place in a GPU kernel where hidden work is least acceptable -- and it would silently change
+;;; the numerics of a load the user believes is a copy.  Crisp already prefers a compile-time
+;;; refusal to a helpful guess (see BUG 035, and 161's wgmma operand-shape refusal).  If a user
+;;; genuinely wants a narrowing stage, they can write it explicitly with workgroup-stride and a
+;;; cast, where the cost is visible in the source.
+;;;
+;;; SCOPED NARROW ON PURPOSE.  The check fires only when BOTH operands resolve to TENSOR types
+;;; through a pure env lookup (find-variable-in-env / parameter-def-type -- no re-analysis, so
+;;; no risk of duplicating a sub-expression's side effects).  A register tile, a view form like
+;;; (ring-get R i), or anything whose type does not canonicalize to a tensor is left alone: this
+;;; is a refusal being added to a green 1061-spec suite, and a false refusal is worse than a
+;;; missed one.  The register-tile path is therefore still unguarded; noted in bugs.md.
+;;; ======================================================================
+
+;; src/analysis/control.lisp
+(defun %tlc-tensor-elem-of (type-spec)
+  "The ELEMENT type of a tensor-shaped TYPE-SPEC, or NIL if it is not one.
+   Tolerant by design: anything that does not canonicalize to a (tensor ELEM ...) form answers
+   NIL, which makes the caller skip its check rather than guess."
+  (let ((canon (ignore-errors (canonicalize-type-specifier type-spec))))
+    (and (consp canon)
+         (symbolp (first canon))
+         (string-equal (symbol-name (first canon)) "TENSOR")
+         (second canon))))
+
+;; src/analysis/control.lisp
+(defun %tlc-check-elem-match (src tile env op-name location)
+  "BUG 057: refuse a tile-staging op whose SOURCE and DESTINATION element types differ.
+
+   Both operands are resolved by a pure environment lookup, so this never re-analyses a
+   sub-expression.  The check is SKIPPED unless both sides are symbols bound in ENV whose types
+   canonicalize to tensors -- see the header for why that conservatism is deliberate."
+  (when (and (symbolp src) (symbolp tile))
+    (let* ((src-pd  (find-variable-in-env src env))
+           (tile-pd (find-variable-in-env tile env)))
+      (when (and src-pd tile-pd)
+        (let ((src-elem  (%tlc-tensor-elem-of (parameter-def-type src-pd)))
+              (tile-elem (%tlc-tensor-elem-of (parameter-def-type tile-pd))))
+          (when (and src-elem tile-elem
+                     (not (eq src-elem tile-elem))
+                     (not (types-equivalent-p src-elem tile-elem)))
+            (error 'crisp-compiler-error
+              :message (format nil "~a: element type mismatch — source ~a holds ~a but tile ~a holds ~a.  A tile stage is a COPY, not a conversion: it would write ~a-sized values into a ~a-sized buffer.  Give the tile the source's element type, or stage the conversion explicitly (workgroup-stride + a cast) so its cost is visible."
+                               op-name src src-elem tile tile-elem src-elem tile-elem)
+              :source-location location)))))))
+
+;; src/analysis/control.lisp
+(defun analyze-load-tile-at-expression (expr env context location)
+  "Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
+   Rejects placement inside a thread-divergent conditional. If :barrier is provided
+   and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
+   codegen via %expand-load-tile-at-form."
+  ;; Endeavor 139: inside a warp-spec block, %warp-spec-check-block-only (after mode resolution)
+  ;; governs instead of the thread-divergent check.
+  (unless *in-warp-spec-block* (%tlc-check-not-divergent "load-tile-at" location))
+  (%tlc-check-elem-match (second expr) (third expr) env "load-tile-at" location)
+  (let* ((key-args (nthcdr 4 expr))
+         (barrier-form (%extract-key-arg key-args :barrier nil)))
+    (when (and (getf key-args :barrier) (getf key-args :transformF))
+       (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
+    ;; Endeavor 137: the barrier's :mode (looked up via its binding) picks the lowering.
+    (let ((mode (and barrier-form (async-barrier-mode-of barrier-form))))
+      (%warp-spec-check-block-only "load-tile" mode location)
+      (cond
+        ;; :block on PTX (Chapter 1.5, Phase 2) — NVIDIA TMA: one bulk descriptor-driven copy
+        ;; (cp.async.bulk.tensor...mbarrier::complete_tx::bytes) issued by an elected leader,
+        ;; tracked by the barrier's SLM mbarrier.  Arch (sm_90+) already gated at barrier parse.
+        ((and barrier-form (eq mode :block) (eq *target-backend* :ptx))
+         (%analyze-nvvm-tma-load-tile-at expr env context location))
+        ;; :block on any other target (the GENERIC compile-check pass; SPV is rejected at
+        ;; barrier parse) — fall to the sync staging so the kernel still compiles + runs
+        ;; correctly (just not block-optimized).
+        ((and barrier-form (eq mode :block))
+         (analyze-expression (%expand-load-tile-at-form expr location)
+                             env context location))
+        ((and barrier-form (eq mode :linear) (eq *target-backend* :ptx))
+         ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
+         (analyze-expression (%expand-async-load-tile-at-form expr location)
+                             env context location))
+        ((and barrier-form (eq mode :linear) (eq *target-backend* :spirv)
+              (<= (length (fourth expr)) 2))
+         ;; Endeavor 136 (Chapter 1, SPV): 1D -> one OpGroupAsyncCopy; 2D -> per-row.
+         (analyze-expression (%expand-spirv-async-load-tile-at-form expr location)
+                             env context location))
+        (t
+         (analyze-expression (%expand-load-tile-at-form expr location)
+                             env context location))))))
+
+;;; Endeavour 152: this function was an OVERLAY WRAPPER around the original definition,
+;;; captured with (fdefinition ...) at load time.  That trick cannot survive the move into
+;;; src -- the capture would find the wrapper itself.  The original body is preserved
+;;; verbatim as %analyze-nvvm-tma-load-tile-at-base, and the wrapper below calls it directly.
+
+
+
+
+;; src/analysis/control.lisp  (163 — temporary instrumentation on the BUG 057 check)
+(defun %tlc-check-elem-match (src tile env op-name location)
+  "BUG 057 refusal, instrumented.  See the header above for the contract."
+  (log:info "057-check: op=~a src=~a (sym=~a) tile=~a (sym=~a)"
+            op-name src (symbolp src) tile (symbolp tile))
+  (when (and (symbolp src) (symbolp tile))
+    (let* ((src-pd  (find-variable-in-env src env))
+           (tile-pd (find-variable-in-env tile env)))
+      (log:info "057-check: src-pd=~a tile-pd=~a" (and src-pd t) (and tile-pd t))
+      (when (and src-pd tile-pd)
+        (let ((src-ty  (parameter-def-type src-pd))
+              (tile-ty (parameter-def-type tile-pd)))
+          (log:info "057-check: src-ty=~s tile-ty=~s" src-ty tile-ty)
+          (let ((src-elem  (%tlc-tensor-elem-of src-ty))
+                (tile-elem (%tlc-tensor-elem-of tile-ty)))
+            (log:info "057-check: src-elem=~a tile-elem=~a" src-elem tile-elem)
+            (when (and src-elem tile-elem
+                       (not (eq src-elem tile-elem))
+                       (not (types-equivalent-p src-elem tile-elem)))
+              (error 'crisp-compiler-error
+                :message (format nil "~a: element type mismatch — source ~a holds ~a but tile ~a holds ~a.  A tile stage is a COPY, not a conversion: it would write ~a-sized values into a ~a-sized buffer.  Give the tile the source's element type, or stage the conversion explicitly (workgroup-stride + a cast) so its cost is visible."
+                                 op-name src src-elem tile tile-elem src-elem tile-elem)
+                :source-location location))))))))
+
+;; src/analysis/control.lisp
+;; BUG 057, final form.  The first cut used a hand-rolled canonicalize + (tensor ELEM ...) match
+;; and never fired: a KERNEL PARAM's type is not a list at all, it is the generated record name
+;; TENSOR_FLOAT_2_GLOBAL_COMPACT_LAST, while the let-bound tile's type IS a (TENSOR ...) list.
+;; get-array-element-type already handles BOTH -- it unmangles the template-struct name -- so it
+;; replaces the bespoke extractor rather than teaching a second thing the same trick.
+(defun %tlc-check-elem-match (src tile env op-name location)
+  "BUG 057: refuse a tile-staging op whose SOURCE and DESTINATION element types differ.
+
+   A tile stage is a COPY.  Staging a `float` global into a `half` tile emitted no fptrunc and
+   no `store half`, only `store float ... ptr addrspace(3)` -- 4-byte values into a
+   2-byte-element SLM tile, overrunning it 2x with every element past the first at the wrong
+   offset.  It compiled clean and corrupted memory.
+
+   Refused rather than converted: an implicit fptrunc would put per-element casts inside a bulk
+   staging loop whose entire purpose is speed, and would silently change the numerics of a load
+   the user reads as a copy.
+
+   Both types come from a pure environment lookup, so no sub-expression is re-analysed and no
+   side effect is duplicated.  Skipped whenever either side's element type cannot be determined,
+   which keeps a false refusal off kernels this was never about."
+  (when (and (symbolp src) (symbolp tile))
+    (let ((src-pd  (find-variable-in-env src env))
+          (tile-pd (find-variable-in-env tile env)))
+      (when (and src-pd tile-pd)
+        (let ((src-elem  (get-array-element-type (parameter-def-type src-pd)))
+              (tile-elem (get-array-element-type (parameter-def-type tile-pd))))
+          (log:debug "057 elem-check ~a: ~a=~a vs ~a=~a" op-name src src-elem tile tile-elem)
+          (when (and src-elem tile-elem
+                     (not (eq src-elem tile-elem))
+                     (not (ignore-errors (types-equivalent-p src-elem tile-elem))))
+            (error 'crisp-compiler-error
+              :message (format nil "~a: element type mismatch — source ~a holds ~a but tile ~a holds ~a.  A tile stage is a COPY, not a conversion: it would write ~a-sized values into a ~a-sized buffer.  Give the tile the source's element type, or stage the conversion explicitly (workgroup-stride + a cast) so its cost is visible."
+                               op-name src src-elem tile tile-elem src-elem tile-elem)
+              :source-location location)))))))

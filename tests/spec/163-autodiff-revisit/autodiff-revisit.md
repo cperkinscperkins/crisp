@@ -435,3 +435,67 @@ capability.  They are not exclusive.
 
 STATE.  ci-stop is at **163**, so rung 01 is the endeavour's live TDD frontier and is RED with
 its VERIFY-AUTODIFF directive ACTIVE.  Its header records all four walls and which are down.
+
+
+PHASE 5 — THE NUMBER, ON METAL (2026-09-04)
+============================================
+
+    PASS [l0] (A: analytical=1.2000704 numerical=1.2003174 diff=2.47e-4)   expected 1.2
+
+**Rung 01 is GREEN.**  A 16-bit MMA gradient now agrees with both its finite difference AND its
+absolute analytical value on real hardware.  That is what BUG 054's own note asked for and what
+Phase 2 could not supply: reading the emitted code proved the backward SELECTS 16-bit
+instructions, this proves it computes the right NUMBER.
+
+For scale, the pre-fix backward produced **16.49** here, and a run with mis-fed inputs produced
+**2089472.0**.  The assertion is absolute, not FD-vs-analytical agreement, so neither could have
+slipped through.
+
+TWO MORE FIXES, both on the harness side
+----------------------------------------
+
+**BUG 057 — refused, not converted.**  `%tlc-check-elem-match` runs from
+`analyze-load-tile-at-expression`, which gates every lowering (sync staging, cp.async, NVIDIA
+TMA, SPV async), so one check covers all of them.  An implicit `fptrunc` was rejected as the fix:
+it would bury per-element casts inside a bulk staging loop whose whole purpose is speed, and
+silently change the numerics of a load the user reads as a copy.  Negative rung under `errors/`,
+deliberately MMA-free — the first draft staged into an MMA and passed for the wrong reason,
+because the negative runner compiles for GENERIC with no profile and the MMA shape check fired
+first.
+
+Two implementation notes worth keeping.  The types come from a PURE env lookup rather than
+re-analysing the operands, so no side effect is duplicated.  And the first cut NEVER FIRED: a
+kernel PARAM's type is not a list, it is the generated record name
+`TENSOR_FLOAT_2_GLOBAL_COMPACT_LAST`, while a let-bound tile's type IS a list —
+`get-array-element-type` already handles both and replaced the bespoke extractor.
+
+**VERIFY-AUTODIFF can now feed 16-bit inputs.**  A host-side IEEE binary16 encoder
+(`%vad-f32->f16-bits`, round-half-to-even so the expected value does not shift depending on which
+side narrowed) plus `write-half-vector`, and a per-input element width read from the FORWARD
+`.metacrisp`.  Three things had to be right and each failed first:
+
+  - the width must be read AFTER the compiles — the metacrisp does not exist when the enclosing
+    `let*` runs, which is why it is `setf` in the `(t ...)` clause and cleared in an
+    `unwind-protect` rather than bound in the `let*`;
+  - a `let*` on that special would have bound it LEXICALLY anyway, the same compile-order trap
+    the neighbouring `(declare (special cl-user::*ad-runtime*))` exists to dodge;
+  - `%vad-make-descriptors` copies SELECTED keys out of the classifier's plist, so `:elem-bytes`
+    was silently dropped until it was named there too;
+  - and a `:declared-signature` entry's `:type` is the ALIAS SYMBOL (`A-MAT`), not the expanded
+    shape — the expansion only appears in the _grad metacrisp — so the reader resolves through
+    the file's own `(:aliases ...)` block.
+
+A METHOD NOTE.  `scripts/check-parens.lisp` reported **balance 0** on a defun the READER could
+not read: it is not string-aware, and the missing paren was masked.  A string-aware counter found
+depth 1 immediately.  When check-parens and the reader disagree, believe the reader.
+
+STATE
+-----
+
+**1062/1062 plain, 1062/1062 --differentiate, 1062/1062 --use-binary --debug, 233/233 negative,
+291/291 unit.**  ci-stop is at 163 and the whole endeavour directory is green.
+
+Files touched outside the usual overlay route: `tests/verify-autodiff-runner.lisp` and
+`tests/run-specs.lisp` were edited DIRECTLY rather than via the spec-runner overlay.  The change
+needed three lines inside a 459-line function and one inside a 158-line one; duplicating those
+into an overlay to change four lines would have been worse for review and worse to fold back.

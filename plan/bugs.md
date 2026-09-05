@@ -2006,9 +2006,10 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         checking whether the two !101 definitions come from different emitters before changing
         the numbering.
 
-[ ] 057 load-tile-at FROM A float GLOBAL INTO A half SCRATCH TILE WRITES 4-BYTE FLOATS INTO A
+[x] 057 load-tile-at FROM A float GLOBAL INTO A half SCRATCH TILE WRITES 4-BYTE FLOATS INTO A
         2-BYTE-ELEMENT BUFFER.  Silent: it compiles clean, runs, and produces garbage.
         Found 2026-09-04 (endeavour 163) while trying to shortcut a 16-bit gradient check.
+        FIXED 2026-09-04 as a compile-time REFUSAL — see the FIXED block at the end.
 
         REPRO — a kernel with float globals and half tiles:
 
@@ -2044,3 +2045,45 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         conversion IS wanted it should be spelled in the kernel.
 
         Note the same question applies to store-tile in the other direction; not tested.
+
+        057 FIXED — 2026-09-04, endeavour 163.  REFUSED AT COMPILE TIME, not converted.
+
+        %tlc-check-elem-match runs from analyze-load-tile-at-expression, which gates EVERY
+        lowering (sync staging, cp.async, NVIDIA TMA, SPV async), so one check covers them all:
+
+            load-tile-at: element type mismatch — source A holds FLOAT but tile A-TILE holds
+            HALF.  A tile stage is a COPY, not a conversion: it would write FLOAT-sized values
+            into a HALF-sized buffer.  Give the tile the source's element type, or stage the
+            conversion explicitly (workgroup-stride + a cast) so its cost is visible.
+
+        WHY REFUSE RATHER THAN EMIT AN fptrunc.  An implicit conversion would bury per-element
+        casts inside a bulk staging loop whose whole purpose is speed -- the last place in a GPU
+        kernel where hidden work is acceptable -- and would silently change the numerics of a
+        load the user reads as a copy.  Crisp already prefers a compile-time refusal to a
+        helpful guess (BUG 035; 161's wgmma operand-shape refusal).
+
+        IMPLEMENTATION NOTES worth keeping:
+          - Types come from a PURE env lookup (find-variable-in-env + parameter-def-type), NOT
+            from re-analysing the operands.  Re-analysis would duplicate any side effect the
+            real lowering performs on the same sub-expression.
+          - The first cut used a hand-rolled canonicalize + (tensor ELEM ...) match and NEVER
+            FIRED: a kernel PARAM's type is not a list, it is the generated record name
+            TENSOR_FLOAT_2_GLOBAL_COMPACT_LAST, while the let-bound tile's type IS a list.
+            get-array-element-type already handles both (it unmangles the template-struct name),
+            so it replaced the bespoke extractor.  Any future check over a param type needs the
+            same care.
+          - Scoped narrow: skipped unless BOTH sides yield an element type.  A register tile or
+            a view form is left alone.  This was a refusal added to a green 1061-spec suite, and
+            a false refusal is worse than a missed one — THE REGISTER-TILE PATH IS THEREFORE
+            STILL UNGUARDED and could carry the same bug.
+
+        NEGATIVE SPEC: tests/spec/163-autodiff-revisit/errors/01-load-tile-elem-mismatch.crisp.
+        It is deliberately MMA-FREE: the first draft staged into an MMA, and since the negative
+        runner compiles for the GENERIC target with no hardware profile,
+        "mma-accumulate-via-tile: only tf32 (16 8 8) is supported without a hardware profile"
+        fired first and the rung passed for the wrong reason.
+
+        Suite after: 1062/1062 plain, 1062/1062 --differentiate, 1062/1062 --use-binary --debug,
+        233/233 negative, 291/291 unit.  Nothing in the suite relied on a mismatch.
+
+        NOT TESTED, and the obvious next question: store-tile in the other direction.

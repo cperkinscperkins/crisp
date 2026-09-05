@@ -11,31 +11,33 @@
 ;; confirm".  This rung is that check.
 ;;
 ;; ===================================================================
-;; STATUS 2026-09-04: RED, blocked on ONE remaining HARNESS gap.  Everything on the COMPILER
-;; side now works, and the sequence is worth recording because two of the three walls are down:
+;; STATUS 2026-09-04: GREEN.  On BMG this rung reports
 ;;
-;;   1. FIXED — the SPIR-V ext list never requested SPV_EXT_shader_atomic_float16_add, so a
-;;      16-bit backward would not TRANSLATE (llvm-spirv exit 18).
-;;   2. FIXED — VERIFY-AUTODIFF's %vad-read-implicit-params knew no 16-bit element type and
-;;      errored on the first `half` scratch tile.
-;;   3. FIXED by path (a) — the module used to be REFUSED BY THE DRIVER, because a 16-bit
-;;      input's _GRAD slot made the gradient scatter a half `atomicrmw fadd` and IGC will not
-;;      load a module declaring SPV_EXT_shader_atomic_float16_add.  Gradients now accumulate in
-;;      fp32 at both altitudes (_GRAD slots and _ADJ SLM tiles), so the scatter is an fp32
-;;      atomic.  **The module now LOADS AND RUNS on BMG.**
-;;   4. REMAINING — VERIFY-AUTODIFF's runner cannot WRITE an fp16 input buffer.  It sizes every
-;;      matrix input at 4 bytes/element (verify-autodiff-runner.lisp: `(:matrix-float (* 4 ...))`)
-;;      and does no fp32->fp16 conversion, so A and B reach the device as float bit patterns
-;;      reinterpreted as half pairs.
+;;     PASS [l0] (A: analytical=1.2000704 numerical=1.2003174 diff=2.47e-4)
 ;;
-;; A SHORTCUT WAS TRIED AND REJECTED, recorded so it is not retried: making the GLOBAL matrices
-;; `float` and letting `load-tile-at` convert into the half tiles.  It compiles, and it is
-;; WRONG — the emitted forward contains no `fptrunc` and not one `store half`, only
-;; `store float ... ptr addrspace(3)`, i.e. 4-byte floats written into a 2-byte-element SLM
-;; tile.  That is its own silent-wrongness bug, filed separately; it is not a way to test this.
+;; against an expected 1.2 — the first time a 16-BIT MMA gradient has been checked against a
+;; real NUMBER on real hardware.  Four walls came down to get here, all recorded because each
+;; was invisible until the one before it was cleared:
 ;;
-;; The kernel below is therefore the HONEST one — 16-bit end to end — and it stays red until the
-;; runner can feed it.  ci-stop is at 163, so this rung is the endeavour's live TDD frontier.
+;;   1. The SPIR-V ext list never requested SPV_EXT_shader_atomic_float16_add, so a 16-bit
+;;      backward would not TRANSLATE (llvm-spirv exit 18).
+;;   2. VERIFY-AUTODIFF's %vad-read-implicit-params knew no 16-bit element type and errored on
+;;      the first `half` scratch tile.
+;;   3. The module was then REFUSED BY THE DRIVER: a 16-bit input's _GRAD slot made the
+;;      gradient scatter a half `atomicrmw fadd`, and IGC will not load a module declaring that
+;;      extension.  Fixed by endeavour 163 path (a) — gradients accumulate in fp32 at BOTH
+;;      altitudes, the _GRAD slots and the _ADJ SLM tiles.
+;;   4. The runner could not WRITE an fp16 input buffer: it sized every matrix input at 4
+;;      bytes/element and did no conversion, so A and B arrived as fp32 bit patterns
+;;      reinterpreted as half pairs (analytical=16.49, numerical=2089472 against 1.2).  Fixed
+;;      with a host-side IEEE binary16 encoder plus a per-input element width read from the
+;;      forward .metacrisp.
+;;
+;; A SHORTCUT WAS TRIED AND REJECTED — recorded so it is not retried.  Making the GLOBAL
+;; matrices `float` and letting `load-tile-at` convert into half tiles compiles cleanly and is
+;; WRONG: the emitted forward carries no `fptrunc` and not one `store half`, only
+;; `store float ... ptr addrspace(3)`.  That was BUG 057, now a compile-time REFUSAL with its
+;; own negative rung under errors/.
 ;; ===================================================================
 ;;
 ;; WHAT IS 16-BIT HERE, AND WHAT IS NOT — read this before changing the types.

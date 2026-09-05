@@ -1254,6 +1254,63 @@
                  :type "metacrisp"
                  :defaults file))
 
+(defun %vad-elem-bytes-of-type (type-spec)
+  "Bytes per element for a declared parameter TYPE-SPEC, or NIL when it is not a shaped
+   numeric type this cares about.
+
+   Reads the element symbol out of a `(matrix ELEM ...)` / `(vector ELEM ...)` /
+   `(tensor ELEM RANK ...)` form as written in the .metacrisp :declared-signature.  Only the
+   16-bit answer actually changes any behaviour; float is returned too so the caller's alist
+   is complete and self-describing rather than a list of exceptions."
+  (when (and (consp type-spec) (symbolp (first type-spec)))
+    (let ((head (symbol-name (first type-spec)))
+          (elem (second type-spec)))
+      (when (and (member head '("MATRIX" "VECTOR" "TENSOR") :test #'string-equal)
+                 (symbolp elem))
+        (cond ((member (symbol-name elem) '("HALF" "BFLOAT16") :test #'string-equal) 2)
+              ((string-equal (symbol-name elem) "FLOAT")  4)
+              ((string-equal (symbol-name elem) "DOUBLE") 8)
+              (t nil))))))
+
+(defun %vad-read-param-elem-bytes (file kernel-name)
+  "Endeavour 163: alist INPUT-NAME (string) -> element BYTES for FILE's FORWARD kernel, read
+   from its .metacrisp :declared-signature.
+
+   VERIFY-AUTODIFF used to size every matrix input at 4 bytes/element and do no conversion, so
+   a `half` operand arrived on the device as fp32 bit patterns reinterpreted as half pairs and
+   the kernel computed garbage.  This is what lets the runner write binary16 instead.
+
+   Returns NIL when the metacrisp is missing or nothing needs a non-default width, which is the
+   case for every spec written before 16-bit inputs existed — so their buffers are filled by
+   exactly the code path they always used."
+  (let ((meta-path (%vad-metacrisp-path file kernel-name :grad nil)))
+    (when (probe-file meta-path)
+      (let* ((forms (with-open-file (s meta-path :direction :input)
+                      (loop for f = (read s nil :eof)
+                            until (eq f :eof) collect f)))
+             ;; A :declared-signature entry's :type is the ALIAS SYMBOL the kernel was written
+             ;; with (A-MAT), not the expanded shape — the expansion only appears in the _grad
+             ;; metacrisp.  The same file carries an (:aliases (def-type A-MAT (matrix half ...)))
+             ;; block, so resolve through it rather than reading the wrong file.
+             (aliases (loop for form in forms
+                            when (and (consp form) (eq (first form) :aliases))
+                              append (loop for entry in (rest form)
+                                           when (and (consp entry) (>= (length entry) 3)
+                                                     (symbolp (second entry)))
+                                             collect (cons (second entry) (third entry))))))
+        (dolist (form forms)
+          (when (and (consp form) (eq (first form) :kernels))
+            (dolist (kern (rest form))
+              (when (and (eq (first kern) :name)
+                         (string-equal (second kern) kernel-name))
+                (return-from %vad-read-param-elem-bytes
+                  (loop for p in (getf kern :declared-signature)
+                        for raw = (getf p :type)
+                        for spec = (if (symbolp raw) (cdr (assoc raw aliases)) raw)
+                        for bytes = (%vad-elem-bytes-of-type spec)
+                        when (and (getf p :name) bytes)
+                          collect (cons (getf p :name) bytes)))))))))))
+
 (defun %vad-read-implicit-params (file kernel-name &key grad)
   "Reads the forward or backward kernel's metacrisp file for FILE and
    extracts its :implicit-params, returning a list of plists each
@@ -1534,6 +1591,16 @@
                         (format *error-output* "FAIL (Compile step failed)~%")
                         nil)
                        (t
+                        ;; Endeavour 163: element width per INPUT, so a 16-bit operand is
+                        ;; written to the device as binary16 instead of as fp32 bit patterns.
+                        ;; Set HERE and not in the enclosing LET* for two reasons: the
+                        ;; .metacrisp this reads does not exist until %VAD-COMPILE-SPV has run
+                        ;; just above, and a LET* on this symbol would bind it LEXICALLY for
+                        ;; the same compile-order reason the *AD-RUNTIME* note above describes.
+                        ;; Reset in the cleanup so one spec's widths cannot leak into the next.
+                        (setf cl-user::*vad-input-elem-bytes*
+                              (%vad-read-param-elem-bytes file kernel-name))
+                        (unwind-protect
                         (handler-case
                             (multiple-value-bind (pass-p results)
                                 (cl-user::verify-autodiff
@@ -1578,7 +1645,11 @@
                           (error (e)
                              (uiop:print-backtrace :condition e)
                              (format *error-output* "FAIL (Runner error: ~a)~%" e)
-                             nil)))))
+                             nil))
+                          ;; Endeavour 163: clear the per-spec input widths on the way out —
+                          ;; success or failure — so one spec's 16-bit operands can never be
+                          ;; applied to the next spec's float ones.
+                          (setf cl-user::*vad-input-elem-bytes* nil)))))
              ;; Cleanup: VERIFY-AUTODIFF produces fwd/bwd .spv files plus
              ;; the .metacrisp metadata files (since 1c.2.f.3 added
              ;; --metadata to the compile so the runner can read
