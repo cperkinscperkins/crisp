@@ -803,3 +803,54 @@ processes float inputs — integer tensor inputs contribute zero gradient."
               :message (format nil "~a: element type mismatch — source ~a holds ~a but tile ~a holds ~a.  A tile stage is a COPY, not a conversion: it would write ~a-sized values into a ~a-sized buffer.  Give the tile the source's element type, or stage the conversion explicitly (workgroup-stride + a cast) so its cost is visible."
                                op-name src src-elem tile tile-elem src-elem tile-elem)
               :source-location location)))))))
+
+;;; ======================================================================
+;;; Endeavour 163 defect B, part 1 (B2) — %ad-tile-base did not see through an ANF TEMP.
+;;;
+;;; SYMPTOM.  154/03 refused with
+;;;     cannot differentiate this tile multiply — the A operand %ANF-T-42 has no compile-time shape
+;;; even though the operand's shape is right there in the binding:
+;;;     (A1-ring (make-scratch-matrix-ring float (64 32) :ring-count 2))
+;;;
+;;; MEASURED CAUSE.  ANF hoists the view out of the wgmma call, so the operand reaching the VJP
+;;; is not `(ring-get A1-RING SLOT)` but a temp bound to it:
+;;;     (%ANF-T-42 (RING-GET A1-RING SLOT))            <- read out of the debug ANF
+;;; %ad-tile-base resolves a RING-GET FORM to its ring, and returns a SYMBOL unchanged — so the
+;;; temp resolved to itself, missed the dims map, and the VJP concluded "no compile-time shape".
+;;;
+;;; THE FIX IS ALREADY IN THE FILE, WHICH IS THE SECOND TIME THIS ENDEAVOUR.  *ad-view-alias-map*
+;;; exists for exactly this hoist and documents it in its own docstring; %ad-resolve-view-alias
+;;; reads it; %tlc-bwd-adj-name already consults it for ADJOINT naming.  Only the SHAPE/staging
+;;; resolver did not.  Same shape as defect A: the helper existed and one consumer never called
+;;; it.
+;;;
+;;; NOT a new derivative and not a ring rule — the ring's own dims were always recorded
+;;; (%mma-ad-tile-dims-map has known MAKE-SCRATCH-MATRIX-RING since 138).  This is a lookup that
+;;; failed to follow one alias.
+;;;
+;;; DOES NOT ADDRESS B1 (140/01, 140/02), which is a different cause in the same defect: there
+;;; the operand is a flat `(make-scratch-vector float 512)` and NO 2-D shape is recorded
+;;; anywhere, so there is nothing for an alias to resolve to.  That one needs the shape taken
+;;; from the tile-multiply's own (M N K) instead, and is handled separately.
+;;; ======================================================================
+
+;; src/autodiff.lisp
+(defun %ad-tile-base (op)
+  "The underlying tile SYMBOL of a tile operand: itself if a symbol, the ring if a
+   `(ring-get RING i)` view.  Shape and staging questions are asked of the base — every slot of
+   a ring has the ring's element shape — while ADJOINT questions keep the view (see
+   %tlc-bwd-adj-name), because slot i's adjoint is slot i of the adjoint ring, not the whole
+   ring.
+
+   Endeavour 163 defect B2: a SYMBOL is first resolved through *ad-view-alias-map*, because ANF
+   hoists a view into a temp — `(%ANF-T-42 (RING-GET A1-RING SLOT))` — and the operand reaching
+   the VJP is then that temp.  A symbol with no alias still answers itself, so an ordinary tile
+   is unaffected."
+  (cond
+    ((and (symbolp op) (%ad-resolve-view-alias op))
+      (%ad-tile-base (%ad-resolve-view-alias op)))
+    ((symbolp op) op)
+    ((and (consp op) (symbolp (car op))
+          (string-equal (symbol-name (car op)) "RING-GET"))
+      (%ad-tile-base (second op)))
+    (t nil)))

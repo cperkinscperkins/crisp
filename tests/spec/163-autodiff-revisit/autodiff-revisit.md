@@ -665,3 +665,58 @@ the operand adjoint with `+=` and never zeroes it.  That is safe only when the b
 once per kernel.  Any looped use of the scalar path — ring or not — has the same exposure; the
 ring merely made it visible by aliasing two stages onto one slot.  Worth a spec of its own even
 after 044 goes green.
+
+
+PHASE 8 — DEFECT B OPENED UP.  IT IS THREE LAYERS, NOT ONE. (2026-09-04)
+========================================================================
+
+B's specs all fail with the same sentence — `the A operand ... has no compile-time shape` — and
+that single message hides THREE different causes.  Measured, not assumed:
+
+**B1 — 140/01, 140/02: the shape is genuinely not recorded.**  The operand is a flat
+`(make-scratch-vector float 512)`; the kernel scatters into core-matrix order by hand and the
+(64 8) logical shape exists only in a comment.  Nothing for a lookup to find.
+**But the operation itself carries it:** `(wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)`
+gives A = Mt x Kt = 64x8 = 512 and B = Kt x Nt = 8x64 = 512, both matching the vector length.
+The fix is to take the operand shapes from the tile-multiply's own (M N K) when the binding has
+none — the MATH already states them.
+
+**B2 — 154/03: the shape IS recorded, but behind an ANF alias.**  The ring is
+`(make-scratch-matrix-ring float (64 32) :ring-count 2)`, yet ANF hoists the view so the operand
+reaching the VJP is a temp: `(%ANF-T-42 (RING-GET A1-RING SLOT))`, read out of the debug ANF.
+`%ad-tile-base` returned a symbol unchanged, so the temp resolved to itself and missed the map.
+**FIXED** — it now resolves a symbol through `*ad-view-alias-map*` first, the map that exists for
+exactly this hoist and that `%tlc-bwd-adj-name` already consulted for adjoint naming.  Same shape
+as defect A: the helper existed, one consumer never called it.  1062/1062, safe.
+
+**NECESSARY BUT NOT SUFFICIENT, and this is the part that changes the plan:**
+
+  - `%mma-via-tile-backward` does its OWN raw `(assoc a-tile dims-map)` / `(assoc a-tile src-map)`
+    at its top, bypassing `%ad-tile-base` entirely, so a correct base resolver never reaches it.
+    Diagnostic after the fix: `a-tile=%ANF-T-42 dims=NIL src=NIL`.
+  - Worse, because the operands are TEMPS rather than `ring-get` FORMS, the RING CLASSIFICATION
+    misses them too: `ringp` is NIL, so 154/03 takes the MMA path — which has no ring support —
+    instead of the ring path.
+
+THE PLAN REVISION
+-----------------
+
+Phase 7b concluded "do B first and 044 may fall out".  That does not survive contact.  Making the
+classification alias-aware would route 154/03 INTO the ring path — which is the scalar lowering,
+which is exactly where BUG 044 lives.  Routing more kernels into a broken path is not progress.
+
+**The durable fix is the same one for both: make the TILE-LEVEL VJP ring-capable**, so a ring
+operand resolves its dims through the base AND its staging through `%ad-ring-load-sites`, and
+ring kernels use `%mma-via-tile-backward` — the path that is already gradient-verified and that
+OVERWRITES the operand adjoint per stage instead of accumulating.  Then:
+
+  - B2 closes (154/03 gets shapes and staging),
+  - 044 closes (145/19 stops using the accumulating scalar fallback),
+  - and the scalar lowering's un-reset `+=` stops being on the critical path, though it remains
+    a latent bug worth its own spec.
+
+B1 stays separate and is smaller: derive operand shape from the op's (M N K).
+
+This is the thesis again.  The VJP should see A TILE MULTIPLY WITH KNOWN Mt/Nt/Kt STAGED FROM A
+GLOBAL SOURCE, and it should not care whether the staging used a ring, a prologue, or a
+warp-specialised producer.
