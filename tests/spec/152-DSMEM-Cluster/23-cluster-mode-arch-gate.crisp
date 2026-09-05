@@ -9,7 +9,6 @@
 ;; the assertion.  Mine now matches it rather than inventing a second convention.
 ;;
 ;; COMPILE-WITH[--ir-target=spv]: FAIL "not supported on Intel"
-;; SKIP-WITH[--differentiate]: "negative arch-gate test: the COMPILE-WITH FAIL is the assertion, and the Intel gate fires long before AD"
 ;;
 ;;
 ;; The `:mode` ladder's upper range is entirely NVIDIA: `:block` is already a hard compile error

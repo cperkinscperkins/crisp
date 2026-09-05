@@ -499,3 +499,169 @@ Files touched outside the usual overlay route: `tests/verify-autodiff-runner.lis
 `tests/run-specs.lisp` were edited DIRECTLY rather than via the spec-runner overlay.  The change
 needed three lines inside a 459-line function and one inside a 158-line one; duplicating those
 into an overlay to change four lines would have been worse for review and worse to fold back.
+
+
+PHASE 6 — 152/23's DIRECTIVE REMOVED (2026-09-04)
+==================================================
+
+Phase 0 called this one "not a defect — a mis-shaped directive".  Measured rather than assumed
+before removing it:
+
+| invocation | result |
+|---|---|
+| `--ir-target=spv` | FAIL "not supported on Intel" — the assertion |
+| `--ir-target=spv --differentiate` | FAIL, **same message** |
+| GENERIC, with and without `--differentiate` | compiles, exit 0 |
+
+So `--differentiate` changes NOTHING about this spec.  But the procedural answer is the weaker
+one, and it is NOT why the directive should go.  THE KERNEL GENUINELY DIFFERENTIATES.  Compiled
+for PTX (`--ir-target=ptx --hardware-profile=h100 --ir-target-arch=sm_90 --differentiate`) it
+emits a real backward:
+
+    .visible .entry cluster_mode_on_spv
+    .visible .entry cluster_mode_on_spv_grad     <- 303 instructions, one atom.global.add.f32
+
+    :declared-signature   a (in)  c (in)  c_grad (in)  a_grad (OUT)
+
+which is exactly right for `C = A`: consume the output gradient, scatter into the input's.  The
+`signal`, the `:mode :cluster` barrier and the `tile-stride` are gradient-inert SCHEDULING; the
+math is a copy, so the derivative is a copy back.  This is the endeavour's thesis in miniature.
+
+The skip note also implied a coupling that does not exist — "the Intel gate fires long before
+AD" makes the arch gate and AD sound entangled.  They are independent: the gate is a
+target-specific refusal on SPV, and AD succeeds on PTX and on GENERIC regardless.
+
+Note separately that the spec compiling on the GENERIC pass is DELIBERATE and documented in its
+own header — `%parse-async-barrier-keys` gates the mbarrier modes only on the real backends, and
+GENERIC lowers them to the sync fallback — so "it seems to compile" is not evidence of a missing
+gate.
+
+Directive removed; the rung passes both phases under `--differentiate` (Default PASS,
+Compile-With FAIL-as-expected PASS).  Suite unchanged at **1062/1062 --differentiate**.
+
+THE POST-149 SKIP LEDGER IS NOW DOWN TO TWO
+-------------------------------------------
+
+Started at 8, across four defects.  What is left:
+
+- `154-nvidia-perf/03-wgmma-two-warpgroups` — **defect B**, ring-get erases the operand's
+  compile-time shape.
+- `155-typed-mma-shapes/03-fp16-register-tile-ring-spv` — **defect D**, the ring path's raw
+  `not of type SYMBOL`.
+
+Both are ring-themed and belong to the same remaining block, alongside **BUG 044** (ring-pipelined
+MMA backward wrong on BMG), which carries no skip because it compiles and returns a wrong number.
+
+
+PHASE 7 — BUG 044 DIAGNOSED (2026-09-04).  NOT YET FIXED.
+==========================================================
+
+**It is not a scale factor, and B and 044 are NOT the same defect.**  Established first, because
+both assumptions would have sent the fix the wrong way:
+
+- 145/19 COMPILES CLEAN under `--differentiate` (exit 0), so it never reaches B's
+  `cannot differentiate this tile multiply — no compile-time shape` refusal.  B is a compile
+  refusal; 044 is a wrong number.  Two fixes.
+- The ledger guessed "about 70x ... close to but not exactly 64 or 128".  It is not a multiple at
+  all.
+
+THE ARITHMETIC, WHICH CLOSES EXACTLY
+------------------------------------
+
+K=48 with a 16-wide K-tile is 3 stages over a 2-slot ring.  Slot 0 is written TWICE (prologue
+k=0, refill k=2); slot 1 once (k=1).  With `B[i][j] = 0.01*(i*16+j)`, stage t contributes
+`0.01*(4096t + 120)` to `A_GRAD[1,0]`:
+
+| stage | slot | contribution |
+|---|---|---|
+| 0 | 0 | **1.20**  <- the correct answer |
+| 1 | 1 | 42.16 |
+| 2 | 0 | **83.12** |
+
+`1.20 + 83.12 = 84.32` — the observed analytical exactly, and the ledger's recorded
+`diff=83.12078` is precisely stage 2's contribution.  Stage 1 is ABSENT, because it is the one
+stage that does not share a slot with stage 0.  Three independent numbers, all accounted for.
+
+ROOT CAUSE, read off the emitted backward
+-----------------------------------------
+
+Two scatter sites, both reading the SAME slot adjoint, each writing it to its OWN origin:
+
+    ;; refill site   (loop:     load-tile A (ring-get A-ring slot) (0 next-k))
+    (%LOAD-TILE-AT-BWD A_GRAD (RING-GET A-RING_ADJ SLOT)         (... (* NEXT-K ...)))
+    ;; prologue site (prologue: load-tile A (ring-get A-ring i)  (0 i))
+    (%LOAD-TILE-AT-BWD A_GRAD (RING-GET A-RING_ADJ (TO-ULONG I)) (... (* I ...)))
+
+and the slot adjoint is NEVER RESET between stages:
+
+    (FILL-TILE A-RING_ADJ 0.0)          <- once, whole ring, at allocation
+    (FILL-TILE (RING-GET ...))          <- ZERO occurrences
+
+So `A-RING_ADJ[0]` holds stage 0 + stage 2, and BOTH sites dump that total at their own column.
+`A_GRAD[1,0]` gets 84.32; `A_GRAD[1,32]` gets the same 84.32.
+
+**THE GENERAL STATEMENT: a ring slot is an OVERWRITTEN buffer, and reverse mode requires an
+overwritten buffer's adjoint to be CONSUMED AND THEN RESET at the point of overwrite.  The
+current lowering consumes without resetting, so the gradient is correct only when every slot is
+written exactly once** — which is why 145/18 (ring staging, no MMA) gradient-checks exactly and
+why the forward is fine (138/07, 138/08 MMA_CORRECT).
+
+PROPOSED FIX — reuse, do not reinvent
+-------------------------------------
+
+The consume-and-reset pair already exists for scratch tiles; bugs.md records it as
+`val_adj += tile_ADJ[indices]; tile_ADJ[indices] := 0`.  The ring-slot scatter should be the same
+shape.  Because the backward runs in REVERSE, the ordering falls out correctly on its own:
+
+    refill scatter (stage 2) -> zero slot 0 -> stage 0's MMA backward re-accumulates
+      -> prologue scatter emits stage 0's share alone
+
+which yields 1.20 at column 0 and 83.12 at column 32 — the right answer at both.
+
+NOT IMPLEMENTED YET, pending agreement.  Two things to check before cutting: whether the reset
+belongs in `%load-tile-at-bwd`'s ring branch or one level up in the walk, and whether a slot read
+by MORE THAN ONE consumer in a single stage would be zeroed too early by a per-site reset.
+
+
+PHASE 7b — THE PHASE 7 FIX IS RETRACTED.  044 IS DOWNSTREAM OF B. (2026-09-04)
+==============================================================================
+
+Phase 7's diagnosis of the SYMPTOM stands — slot 0 holds stage 0 + stage 2, and both scatter
+sites dump the total at their own origin, giving 1.20 + 83.12 = 84.32.  Its proposed FIX does
+not.  Two further measurements killed it and produced a better answer.
+
+**1. Consume-and-reset cannot work.**  The backward loop is emitted as
+`(COMMON-LISP:DOTIMES (GRID-K ...))` in FORWARD order, not reversed.  So the refill's scatter at
+iteration k would have to emit stage k+2's gradient, which forward-order iteration has not
+computed yet.  No placement of a reset fixes that.  The error was still trying to make the
+derivative MIRROR the forward's pipelined schedule — the trees.
+
+**2. The real cause is a DISPATCH fallback, and its trigger is defect B.**
+
+| spec | dispatch | operand-adjoint discipline | result |
+|---|---|---|---|
+| 145/11 | `ring=NIL mma-path=T` | MMA path — **overwrites** (`store-tile da-reg a-adj`) | exact |
+| 145/19 | `ring=T mma-path=NIL` | scalar path — **accumulates** `+=`, never reset | 84.32 |
+
+From `%mma-vjp-via-tile`:
+
+    (if (and (not ringp) (%mma-vjp-mma-admissible-p mt nt kt))
+        (%mma-via-tile-backward ...)      ; overwrites — correct
+        (%mma-vjp-scalar-lowering ...))   ; accumulates — BUG 044
+
+`ringp` is the ONLY reason 145/19 takes the broken path (its shape 8x16x8 is admissible).  And
+`ringp` exists because the MMA path cannot resolve a ring operand's compile-time shape — which
+is **defect B**.
+
+**So B and 044 are connected, though not the same bug: B is the shape-resolution gap; 044 is a
+consequence of the fallback that gap forces.**  Earlier this doc concluded "two fixes, not one"
+on the evidence that 145/19 compiles while B's specs refuse.  That distinction still holds at the
+SURFACE — but the root is shared, and the ORDER matters: **do B first, then re-measure 044.**  If
+ring operands resolve their shapes they take the MMA path, which is already gradient-verified and
+overwrites per stage.
+
+**A LATENT ISSUE TO KEEP, whichever way 044 lands:** `%mma-vjp-scalar-lowering` accumulates into
+the operand adjoint with `+=` and never zeroes it.  That is safe only when the buffer is written
+once per kernel.  Any looped use of the scalar path — ring or not — has the same exposure; the
+ring merely made it visible by aliasing two stages onto one slot.  Worth a spec of its own even
+after 044 goes green.
