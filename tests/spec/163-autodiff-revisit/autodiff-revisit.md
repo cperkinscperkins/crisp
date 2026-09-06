@@ -720,3 +720,118 @@ B1 stays separate and is smaller: derive operand shape from the op's (M N K).
 This is the thesis again.  The VJP should see A TILE MULTIPLY WITH KNOWN Mt/Nt/Kt STAGED FROM A
 GLOBAL SOURCE, and it should not care whether the staging used a ring, a prologue, or a
 warp-specialised producer.
+
+
+PHASE 8b — B1 IS THE HARD ONE, NOT THE CHEAP ONE.  ORDER INVERTED. (2026-09-04)
+===============================================================================
+
+Phase 8 recommended taking B1 (140/01, 140/02) first as the cheap isolating win.  That
+recommendation was WRONG, and the measurement that killed it is one line of diagnostic:
+
+    140/01:  c-tile=D dims=(D 64 64 FLOAT) | a-tile=A-TILE dims=NIL src=NIL
+
+**B1 lacks BOTH ingredients, and the missing one is not the shape.**
+
+  - dims: the operand is a flat `(make-scratch-vector float 512)`, and — separately — the wgmma
+    tile shape `(64 64 8)` is ERASED before the VJP ever runs.  `%ad-canonicalize-wgmma`
+    (pipeline step 2) rewrites it to the profile's NATIVE sync-MMA shape and says so in its own
+    docstring: "The VJP takes Mt/Nt/Kt from the tiles' dims-map entries, never from this
+    argument."  So "derive the shape from the op's (M N K)" — Phase 8's proposal — cannot work
+    as stated; the (M N K) at that point is the native instruction shape, not the tile shape.
+  - **src: there is no staging primitive at all.**  140/01 fills its tile with a hand-written
+    scatter carrying a bespoke core-matrix index formula:
+
+        (set! (~ A-tile core) (~ A r k))
+        core = (r/8)*64 + (k/4)*32 + (r%8)*4 + (k%4)
+
+    The VJP stages its transposes FROM THE ORIGINAL GLOBAL SOURCE, which requires knowing that
+    the operand is some global matrix at some origin.  A hand-rolled scatter says only "these
+    512 floats came from somewhere in A by arbitrary arithmetic".  **Inverting that is not
+    something AD can or should do** — it is the trees in their purest form.
+
+**154/03 has exactly what 140/01 lacks.**  Its producer stages with real primitives:
+
+    (load-tile A (ring-get A0-ring slot) ((* grid-y (to-ulong 2)) grid-k)
+               :barrier (ring-get full slot) :swizzle :128b)
+
+so dims are recorded on the ring and provenance is discoverable through %ad-ring-load-sites.
+145/19 (BUG 044) likewise stages with load-tile.
+
+REVISED ORDER
+-------------
+
+1. **Ring-capable tile VJP** — closes B2 (154/03) and 044 (145/19) together.  Both have recorded
+   dims and real staging; what is missing is only that the VJP resolves neither through the
+   ring.  GUARDRAIL, agreed with Chris: **strip the ring context, do not replicate it.**  Resolve
+   dims via `%ad-tile-base` (now alias-aware), resolve provenance via `%ad-ring-load-sites`, then
+   emit the ORDINARY tile-multiply backward.  No reverse-ring logic, no mirroring of prologue /
+   double-buffering / warp-specialised producers.  If the backward should later be pipelined,
+   that is a separate optimisation over correct math, not a term in the AD generator.
+
+2. **140/01, 140/02 DEFERRED** — they need either a rewrite onto supported staging, or an
+   explicitly registered VJP that declares the operand's provenance.  149's note already called
+   this "its own endeavour"; that judgement holds and this phase confirms why.
+
+METHOD NOTE.  Phase 8's recommendation was reviewed and endorsed on the strength of a SUMMARY of
+the code rather than the code.  One diagnostic line reversed it.  Worth remembering that a
+plausible plan reviewed at the wrong altitude is still a plausible wrong plan.
+
+
+PHASE 9 — RING-CAPABLE VJP, PART 1: THE RESOLVERS SEE THROUGH ANF NOW (2026-09-04)
+==================================================================================
+
+Two fixes landed, both REUSE of machinery that already existed and was simply not consulted.
+Neither teaches AD anything about rings — the guardrail held.
+
+**9a. `%ad-tile-base` now resolves a symbol through `*ad-view-alias-map*`** before answering
+itself.  ANF hoists `(ring-get A1-RING SLOT)` into a temp, so the SHAPE question was being asked
+of `%ANF-T-42`, which is in no map.
+
+**9b. `%mma-vjp-operand-ref` canonicalises its operand through the same map on entry.**  Its ring
+branch was gated on `(consp op)` — an actual view FORM — so a temp took the non-ring branch and
+declined.  One line of canonicalisation, and the EXISTING ring branch (including `(third op)` for
+the slot index, `%ad-ring-load-sites`, `%ad-reconcile-ring-origin`) applies unchanged.
+
+MEASURED EFFECT on 154/03: its operands went from unresolvable to
+
+    a=%ANF-T-42(RING) b=%ANF-T-43(RING)
+
+so shape and provenance both resolve.  The `no compile-time shape` refusal is GONE.
+Suite 1062/1062 after both; inert for every existing spec, as intended.
+
+THE NEXT WALL, AND IT IS A DESIGN QUESTION
+------------------------------------------
+
+154/03 now fails somewhere new:
+
+    make-register-tile: a 64x256 accumulator tile needs 512 registers/thread
+    (128 fragments x 4 regs), exceeding the register budget of 255
+
+`%ad-canonicalize-wgmma` rewrites `(make-wgmma-accumulator float (64 256) 0.0)` into
+`(make-register-tile float (64 256) 0.0)`.  A wgmma accumulator is WARPGROUP-wide — 128 threads
+— while a sync-MMA register tile is per-warp, so the same shape that fits in the forward cannot
+fit in the backward's register model.  The adjoint `D0_ADJ` inherits that shape and the fit check
+refuses it at creation.
+
+**This is the thesis again, at the accumulator instead of the operand.**  The forward keeps its
+accumulator in REGISTERS because that is where the speed is.  The backward has no such need: the
+scalar lowering immediately stages dC into SLM (`dc-slm`, a make-scratch-matrix) and works
+element-wise from there.  The register tile exists only because the canonicalisation replicated
+the forward's storage choice.
+
+PROPOSAL, not yet implemented:  **an MMA accumulator's ADJOINT should be a SCRATCH MATRIX, not a
+register tile**, at least wherever the register fit check would refuse it.  Consequences:
+
+  - `store-tile c-adj dc-slm` becomes unnecessary — the adjoint IS the SLM staging buffer;
+  - `%load-register-tile-acc` (a REGISTER operation) is replaced by an ordinary tile load from
+    C_GRAD, which is simpler, not harder;
+  - blast radius is the concern: `%mma-ad-adj-init` mints accumulator adjoints as register tiles
+    for every MMA backward today, and 145's numeric checks all run through that path.  Scoping
+    the change to accumulators that DO NOT FIT (or to wgmma-derived ones) keeps the verified
+    paths byte-identical.
+
+Still pending after that, to finish the ring work: pass the caller's ALREADY-RESOLVED provenance
+into `%mma-via-tile-backward` (it currently re-derives from `src-map` and so cannot see a ring),
+and drop `ringp` from the MMA-path gate so a ring operand — now indistinguishable from a staged
+tile — uses the path that overwrites the operand adjoint instead of the one that accumulates.
+That is what closes BUG 044.

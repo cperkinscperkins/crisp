@@ -854,3 +854,66 @@ processes float inputs — integer tensor inputs contribute zero gradient."
           (string-equal (symbol-name (car op)) "RING-GET"))
       (%ad-tile-base (second op)))
     (t nil)))
+
+;;; ======================================================================
+;;; Endeavour 163 defect B, part 2 — the operand RESOLVER did not see through an ANF alias.
+;;;
+;;; %mma-vjp-operand-ref already knows how to resolve a RING operand: it looks the ring up in
+;;; %ad-ring-load-sites and reconciles the stage origin.  Its ring branch is gated on
+;;; `(consp op)` — an actual `(ring-get R i)` FORM.  But ANF hoists the view, so in a realistic
+;;; pipelined kernel the operand arriving here is a TEMP:
+;;;
+;;;     (%ANF-T-42 (RING-GET A1-RING SLOT))
+;;;
+;;; A symbol takes the non-ring branch, finds nothing, and declines — which is what made 154/03
+;;; report "no compile-time shape" even though the ring's dims and every load site were recorded.
+;;;
+;;; THE FIX IS ONE LINE OF RESOLUTION, NOT A NEW RULE.  Canonicalise the operand through
+;;; *ad-view-alias-map* on entry, so a temp bound to a view becomes that view and the EXISTING
+;;; ring branch — including `(third op)` for the slot index — applies unchanged.
+;;;
+;;; This is the "strip the ring context" guardrail, not reverse-ring logic: nothing here teaches
+;;; AD to invert a ring.  It teaches the resolver to answer the two questions it was always
+;;; asking — WHAT SHAPE and FROM WHERE — for an operand whose spelling ANF happened to change.
+;;; ======================================================================
+
+;; src/autodiff.lisp
+(defun %mma-vjp-operand-ref (op src-map dims-map inputs &optional ring-sites)
+  "Resolve an mma-accumulate-via-tile operand to (values SRC OY OX KIND).
+
+     - STAGED  : a scratch tile filled by load-tile-at.  SRC is the ORIGINAL global matrix and
+                 (OY OX) the staging origin.
+     - DIRECT  : the operand IS a global matrix (a kernel parameter read straight by the
+                 fragment loads, as in 132/04-mma-via-tile).  Origin (0 0).
+     - :RING   : a `(ring-get R i)` view.  SRC is the single global matrix every load site names;
+                 the origin is those sites' agreed components with the stage component replaced
+                 by the CONSUMING loop variable (see %ad-reconcile-ring-origin).  A pipelined
+                 ring's own load sites record OTHER stages' origins, which is exactly what made
+                 this look undifferentiable.
+
+   RING-SITES is the %ad-ring-load-sites alist, threaded from the caller because it needs
+   flat-anf.  Absent, ring operands decline, which is the previous behaviour.
+
+   Endeavour 163 defect B: OP is first canonicalised through *ad-view-alias-map*, because ANF
+   hoists a view into a temp and the operand reaching a realistic pipelined kernel's VJP is that
+   temp rather than the view.  A symbol with no alias is unchanged, so every non-ring operand
+   resolves exactly as before."
+  (let* ((op   (or (%ad-resolve-view-alias op) op))
+         (base (%ad-tile-base op)))
+    (cond
+      ((and (consp op) base)
+        (let ((sites (cdr (assoc base ring-sites))))
+          (if (null sites)
+              (values nil nil nil nil)
+              (multiple-value-bind (src origin)
+                  (%ad-reconcile-ring-origin sites (first *ad-loop-vars*) (third op))
+                (if (and src origin (= (length origin) 2))
+                    (values src (first origin) (second origin) :ring)
+                    (values nil nil nil nil))))))
+      (t
+        (let ((entry (assoc op src-map)))
+          (cond
+            (entry (values (second entry) (first (third entry)) (second (third entry)) :staged))
+            ((and (symbolp op) (member op inputs)) (values op 0 0 :direct))
+            ((assoc op dims-map) (values op 0 0 :staged))
+            (t (values nil nil nil nil))))))))
