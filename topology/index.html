@@ -1,0 +1,2186 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="for GPU kernel development.">
+      
+      
+        <meta name="author" content="Chris Perkins">
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Topology - Crisp - High Performance GPU Programming</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Nunito+Sans:300,300i,400,400i,700,700i%7CCaslon:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Nunito Sans";--md-code-font:"Caslon"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#advanced-crisp-topological-aware-compilation" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Crisp - High Performance GPU Programming" class="md-header__button md-logo" aria-label="Crisp - High Performance GPU Programming" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Crisp - High Performance GPU Programming
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Topology
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Crisp - High Performance GPU Programming" class="md-nav__button md-logo" aria-label="Crisp - High Performance GPU Programming" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Crisp - High Performance GPU Programming
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Welcome
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ideal_001/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Language Specification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+  <h1>Topology</h1>
+
+<h2 id="advanced-crisp-topological-aware-compilation">Advanced Crisp: Topological Aware Compilation<a class="headerlink" href="#advanced-crisp-topological-aware-compilation" title="Permanent link">&para;</a></h2>
+<p>As you've seen in the Crisp design documentation, it has a lot of macros and forms, more so than other languages.  Striding, reductions, async behaviors, tiling and more all have various macros and forms that help make kernel writing more straightforward.</p>
+<p>Experienced readers may look at a form like <code>loop-vector-stride</code> and think "sure, that's convenient, but I can get the global size, the vector size and set up a stride myself. It's not THAT much trouble". And that is true. But Crisp has these forms for a reason (besides ease-of-use) and that reason is that many of these forms are Topologically Aware. Which is to say, that with these forms you can write a performant kernel that can be compiled either for a single GPU, or for a cluster organized as a Torus Mesh or a Fat Tree Superpod or whatever. And we mean Performant with a capital "P", exploiting pipelining, warp specialization, tensor core MMAs and more. Crisp users can target these different systems without rewriting their kernel code or worrying about NVLink vs OpenSHMem, Unified Bus or other fabrics. </p>
+<p>Crisp also supports "out of core" orchestration, where the data is too large to fit on the GPU, but needs to be progressively enqueued and processed in chunks. </p>
+<p>To make this happen the Crisp compiler needs three things:</p>
+<ul>
+<li><code>def-topology</code> to describe the organizaion of your cluster</li>
+<li><code>def-orchestration</code>  with location and memory distribution information</li>
+<li><code>def-kernel</code> with the optimized kernel code. </li>
+</ul>
+<p>And for absolute maximum performance, you might want to name or provide a hardware profile (via <code>--hardware-profile</code> and/or <code>def-hardware-profile</code>) as well, which tell the compiler about the specific machine characteristics of a target.</p>
+<p>Note that Crisp is not auto-optimizing the kernel for you. That is an ongoing area of research. You will have to choose the optimization strategy that fits your problem domain and code it. But Crisp forms make this a straightforward endeavor. We'll use real examples of matrix multiplication and Flash Attention as we progress.</p>
+<blockquote>
+<p><strong>What are the choices?</strong>  <a href="../performance-levers/"><code>performance-levers.md</code></a> enumerates every knob that changes the speed of a tuned register-resident MMA matmul, organised by who sets it — kernel source, compiler, enqueue, and the platform underneath.  It records measured magnitudes, the levers that turn out <strong>not</strong> to be independent of one another, and a list of things that were tried and did not pay, so they are not re-tried blind.</p>
+</blockquote>
+<h2 id="hardware-profiles">Hardware Profiles ✅<a class="headerlink" href="#hardware-profiles" title="Permanent link">&para;</a></h2>
+<p><code>--ir-target</code>, when set to <code>ptx</code> or <code>spv</code> tells the compiler the IR target, which will usually be <code>ptx</code> for NVidia hardware and <code>spv</code> for Intel (and possibly others).  When compiling a kernel that is often enough, nothing more is needed.  But for some capabilties and or optimizations, the  <code>--ir-target-arch</code> flag can be used to further inform about the exact architecutre (like <code>sm_80</code> or <code>xe2</code>).  But for absolutely maximum performance optimizations, the compiler can be given specific bounds and capabilities of a targeted hardware and then it can tailor to those.  These "specific bounds and capabilities" are called a "hardware profile".</p>
+<p>Hardware profiles are recommeended, but they are always optional. </p>
+<p>The Crisp compiler already knows about some hardware profiles. Those are listed below and their name alone as a flag or <code>:profile</code> value is sufficient to leverage them. But if Crisp doesn't have the exact profile for your hardware defined already, it is easy to provide it with <code>def-hardware-profile</code>.</p>
+<p>Note that a hardware profile says nothing about that actual architecture. It may seem strange, but to the Crisp compiler these are orthogonal concerns. Note that this means that Crisp can be employed for certain types of micro-optimizations or experiments. If you know that when your kernel runs, the GPU will be already partially employed running something else, then use a custom shrunken hardware profile to optimize for the capabilities that WILL be available. This avoids the "Empty Room Fallacy" that ensnares other GPU toolchains.</p>
+<h3 id="def-hardware-profile"><code>def-hardware-profile</code>  ✅<a class="headerlink" href="#def-hardware-profile" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(def-hardware-profile &lt;name&gt; &lt;profile-proplist...&gt;)
+</code></pre></div>
+<p><code>def-hardware-profile</code> just associates a <code>&lt;name&gt;</code> with a profile property list. The <code>&lt;name&gt;</code> can then be used as the value for the <code>--hardware-profile</code> compilation flag, or used with <code>:profile</code> value in a <code>compute-unit</code> member of a <code>def-topology</code> (see below)</p>
+<div class="highlight"><pre><span></span><code>(def-hardware-profile nvidia-h100-sxm
+
+  ;; --- Compute &amp; Vector Core Mechanics ---
+  :simd-width 32  📝
+  :compute-units 132  ⚠️                     
+  :max-registers-per-cu 65536  📝            
+  :max-registers-per-thread 255  📝
+
+  ;; --- Local Memory Hierarchy ---
+  :max-shared-memory-per-block 227KB  ✅     
+  :l2-cache-size 50MB  📝
+  :native-cache-line-size 128  📝           
+
+  ;; --- Execution &amp; Work-Group Bounds ---
+  :max-work-group-dims '(1024 1024 64)  ✅
+  :max-total-threads-per-block 1024  ✅
+  :max-concurrent-kernels 128  📝
+
+  ;; matrix units
+  :mma-shapes '((16 8 16) (8 8 8)))  📝  ; list of (M N K) triples
+</code></pre></div>
+<p>Missing Keys: an incomplete <code>def-hardware-profile</code>, one without the full set of keys as illustrated above, is fine.
+However any optimizations that depend on it will simply not be taken. </p>
+<p>Unkonwn Keys: a <code>def-hardware-profile</code> sporting any key outside the ones listed above will result in a compilation error.</p>
+<h3 id="mma-shapes"><code>:mma-shapes</code> ✅<a class="headerlink" href="#mma-shapes" title="Permanent link">&para;</a></h3>
+<p><code>:mma-shapes</code> the matrix-multiply-accumulate (tensor-core / DPAS) instruction shapes the hardware natively supports, each an (M N K) triple. An MMA computes D[M×N] = A[M×K]·B[K×N] + C[M×N], so all three dimensions identify it, and the same M×N typically comes in several K variants for different operand precisions (NVIDIA m16n8k8 for tf32, m16n8k16 for fp16, m16n8k32 for int8; Intel similarly). The form is vendor-neutral, mapping to NVIDIA mma.mMnNkK and Intel joint_matrix shapes alike.</p>
+<div class="highlight"><pre><span></span><code>:mma-shapes '((16 8 16) (16 8 8) (8 8 128))
+</code></pre></div>
+<h3 id="mma-lowerings"><code>:mma-lowerings</code> ✅<a class="headerlink" href="#mma-lowerings" title="Permanent link">&para;</a></h3>
+<p><code>:mma-lowerings</code> names the code-generation strategies this hardware can drive its matrix engines
+with, <strong>most-preferred first</strong>. The first entry is the default for kernels that do not ask for one.</p>
+<div class="highlight"><pre><span></span><code>:mma-lowerings '(:coop-matrix :xe-native)
+</code></pre></div>
+<p>The key is optional. A profile without it offers <code>(:coop-matrix)</code> — the portable path every backend
+has always used — so existing profiles need no change.</p>
+<p>The lowerings Crisp knows:</p>
+<table>
+<thead>
+<tr>
+<th>name</th>
+<th>what it is</th>
+<th>where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>:coop-matrix</code></td>
+<td><code>SPV_KHR_cooperative_matrix</code> — opaque cooperative-matrix values, <code>CooperativeMatrixMulAddKHR</code>, pointer-form loads. The portable path, and the default.</td>
+<td>every backend</td>
+</tr>
+<tr>
+<td><code>:xe-native</code></td>
+<td>Intel Xe: <code>SubgroupMatrixMultiplyAccumulateINTEL</code> over concrete vectors, with 2D block loads (and the VNNI-packing <em>transform</em> load for the B operand).</td>
+<td>Intel SPIR-V only</td>
+</tr>
+</tbody>
+</table>
+<p>A name outside that list is a compile error at <code>def-hardware-profile</code> time, so a typo is caught where
+it is written rather than surfacing later as a kernel that mysteriously never selects its lowering.</p>
+<h3 id="crisp-predefined-hardware-profiles">Crisp predefined hardware profiles<a class="headerlink" href="#crisp-predefined-hardware-profiles" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>bmg</code></li>
+<li><code>h100</code></li>
+</ul>
+<h3 id="-hardware-profile"><code>--hardware-profile</code> ✅<a class="headerlink" href="#-hardware-profile" title="Permanent link">&para;</a></h3>
+<p>This compiler flag names a hardware profile to use for optimization/validation.  It can be one of the Crisp builtin hardware profiles, or can be the name of a profile in one of the .crisp files in the compiler invocation. </p>
+<p>It is an error to use this flag if a topology or orchestration is specifying a hardware profile. </p>
+<h2 id="topologies">Topologies<a class="headerlink" href="#topologies" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p><strong>⚠ DEFERRED (2026-07).</strong>  <code>def-topology</code> / <code>def-orchestration</code> and everything in this section
+(multi-device meshes, fabrics, <code>:distribution</code> / <code>:location</code>) are <strong>set aside for now</strong> — the
+intended direction for multi-GPU / cluster / out-of-core work, but not on the current path.  The
+single-GPU MMA optimization arcs (see "Matrix Multiplication Optimization") do not depend on it,
+and <code>make-async-barrier</code> no longer takes a <code>:type</code> key.  Read this section as design intent, not
+current behavior.</p>
+</blockquote>
+<p>A topology can be defined with <code>def-topology</code>. We'll go over it in a second, but it is essentially a function that returns an <code>interconnect</code>. These three examples of a typical single user workstation, a 10 node cluster of a supercomputer, and a mesh might help:</p>
+<div class="highlight"><pre><span></span><code>;; note this first topology leverages the hardware profile from above.
+(def-topology my-workstation ()
+  (let  ((main-cpu (compute-unit :id 'xeon-cpu :type :cpu-socket :memory 512GB))
+         (main-gpu (compute-unit :id 'h100-tile :type :gpu-tile :memory 64GB :arch :sm_90 :profile nvidia-h100-sxm))
+         (pcie-bus (interconnect :id 'host-bus :type :pcie :children (list main-cpu main-gpu))))
+    pcie-bus))
+
+(def-topology aurora-cluster (num-nodes)
+  (let  (;; The Leaf Nodes (The actual compute and memory)
+         (pvc-tile   (compute-unit :id 'pvc-tile :type :gpu-tile :memory 64GB :arch :pvc))
+         (xeon-cpu   (compute-unit :id 'xeon-cpu :type :cpu-socket :memory 512GB))
+
+         ;; LEVEL 1: Package Interconnect (The EMIB Bridge)
+         ;; Defines the :far distance between two tightly coupled tiles.
+         (pvc-pkg    (interconnect :type :p2p 
+                                   :children (make-nodes 2 :initial-element pvc-tile)))
+
+         ;; LEVEL 2: Intra-Node Fabric (The Xe-Link)
+         ;; Defines the :far distance across the baseboard.
+         (xe-fabric  (interconnect :type :p2p 
+                                   :children (make-nodes 6 :initial-element pvc-pkg)))
+
+         ;; LEVEL 3: The Host Bus (PCIe or CXL)
+         ;; This is where heterogeneity lives. The PCIe bus connects 
+         ;; the CPU socket AND the entire GPU fabric together.
+         ;; Defines the :host distance.
+         (host-node  (interconnect :type :pcie 
+                                   :children (list xeon-cpu xe-fabric)))
+
+         ;; LEVEL 4: The Cluster Spine (InfiniBand/Slingshot)
+         ;; Defines the :distant optical hop.
+         (spine      (interconnect :type :pgas-fabric 
+                                   :children (make-nodes num-nodes :initial-element host-node))))
+
+    ;; Return the root of the tree
+    spine))
+
+
+(def-topology my-heterogeneous-mesh (w h)
+  (let  (;; 1. Define the physical compute unit types
+         (pvc-tile   (compute-unit :type :gpu-tile :memory 64GB :arch :pvc))
+         (xeon-cpu   (compute-unit :type :cpu-socket :memory 512GB))
+
+         ;; 2. Construct the 2D device-side fabric
+         ;; The compiler emits fast 1-step pulls (:p2p), while 
+         ;; the metadata provides the logical grid for Crisp macros.
+         (main-mesh  (interconnect :type :p2p 
+                                   :dimensions (list w h) 
+                                   :wrap-around NIL
+                                   :children (make-nodes (* w h) :initial-element pvc-tile)))
+
+         ;; 3. Construct the Host Bus (PCIe / CXL) to bridge them
+         (host-bus   (interconnect :type :pcie 
+                                   :children (list xeon-cpu main-mesh))))
+
+    ;; Return the highest-level interconnect as the root
+    host-bus))
+</code></pre></div>
+<p>Note that <code>def-topology</code> is its own Domain Specific Language (DSL), and supports <code>make-nodes</code>, <code>list</code> and others forms that are NOT supported in the Crisp kernel language. It uses the same <code>let</code> form as Crisp.</p>
+<p>The <code>def-topology</code> form can take arguments, but CANNOT be templated.</p>
+<h3 id="id"><code>:id</code><a class="headerlink" href="#id" title="Permanent link">&para;</a></h3>
+<p>The id keyword is optional, but recommended. It is a symbol that will be used to refer to the node in the topology tree. In <code>def-orchestration</code> if you need to tell the compiler where data should be allocated or distributed it will have to be by id.  </p>
+<h3 id="compute-unit"><code>compute-unit</code><a class="headerlink" href="#compute-unit" title="Permanent link">&para;</a></h3>
+<p><div class="highlight"><pre><span></span><code>(compute-unit :type &lt;type&gt; :memory &lt;size&gt; :arch &lt;arch&gt;)
+</code></pre></div>
+The <code>compute-unit</code> is a leaf node in a topology tree. The <code>:type</code> keyword can be one of
+<code>:gpu-tile</code> or <code>:cpu-socket</code>. These are the only two supported types.</p>
+<p>The <code>:memory</code> keyword is the amount of memory in that compute unit. It can be specified as a number followed immediately by <code>GB</code> or <code>TB</code>.  At the moment the <code>:memory</code> key is only used if doing "out of core" orchestration, so it is optional if you are not targeting that.</p>
+<p>The <code>:arch</code> specifier indicated the target architecture. The values are the same as the ones supported by the <code>--ir-target-arch</code> flag:</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sm_80</code></td>
+<td>NVIDIA Ampere (A100)</td>
+</tr>
+<tr>
+<td><code>sm_86</code></td>
+<td>NVIDIA Ampere (RTX 3000 Series)</td>
+</tr>
+<tr>
+<td><code>sm_89</code></td>
+<td>NVIDIA Ada Lovelace (RTX 4000 Series / L40)</td>
+</tr>
+<tr>
+<td><code>sm_90</code></td>
+<td>NVIDIA Hopper (H100 / H200)</td>
+</tr>
+<tr>
+<td><code>sm_100</code></td>
+<td>NVIDIA Blackwell Datacenter (B100 / B200 / GB200)</td>
+</tr>
+<tr>
+<td><code>sm_120</code></td>
+<td>NVIDIA Blackwell Consumer (RTX 5000 Series / PRO 6000)</td>
+</tr>
+<tr>
+<td><code>gen12</code></td>
+<td>Intel Gen12</td>
+</tr>
+<tr>
+<td><code>dg2</code></td>
+<td>Intel DG2 / Alchemist</td>
+</tr>
+<tr>
+<td><code>pvc</code></td>
+<td>Intel Ponte Vecchio</td>
+</tr>
+<tr>
+<td><code>xe2</code></td>
+<td>Intel BattleMage / Lunar Lake</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>:profile</code> specifier indicates a hardware profile. It can be one of the Crisp built-in hardware profiles or any defined by <code>def-hardware-profile</code>.  </p>
+<h3 id="interconnect"><code>interconnect</code><a class="headerlink" href="#interconnect" title="Permanent link">&para;</a></h3>
+<p><div class="highlight"><pre><span></span><code>(interconnect :type &lt;type&gt; :children &lt;list-of-nodes&gt; &amp;key :dimensions &lt;list&gt; :wrap-around &lt;bool&gt;)
+</code></pre></div>
+The <code>interconnect</code> is a branch node in the topology tree. The return value of <code>def-topology</code> must be an <code>interconnect</code>. </p>
+<h4 id="type"><code>:type</code><a class="headerlink" href="#type" title="Permanent link">&para;</a></h4>
+<p>The <code>:type</code> keyword tells the Crisp compiler's backend exactly which memory visibility boundary it is crossing, dictating how asynchronous memory pulls and synchronization barriers are lowered into hardware instructions. It can be one of:</p>
+<ul>
+<li><code>:p2p</code></li>
+<li><code>:pcie</code></li>
+<li><code>:pgas-fabric</code></li>
+</ul>
+<h5 id="p2p-peer-to-peer-addressing"><code>:p2p</code> (Peer-to-Peer Addressing)<a class="headerlink" href="#p2p-peer-to-peer-addressing" title="Permanent link">&para;</a></h5>
+<p>This represents a "scale-up" boundary where multiple compute units share Unified Virtual Addressing without host operating system intervention.</p>
+<ul>
+<li><strong>Hardware Equivalents:</strong> NVIDIA NVLink, Intel Xe-Link, PCIe P2P, or on-package bridges like Intel EMIB (e.g., between tiles on a Ponte Vecchio card).</li>
+</ul>
+<h5 id="pcie-host-bus"><code>:pcie</code> (Host Bus)<a class="headerlink" href="#pcie-host-bus" title="Permanent link">&para;</a></h5>
+<p>This represents the boundary separating device memory from standard system memory.</p>
+<ul>
+<li><strong>Hardware Equivalents:</strong> The motherboard PCIe bus or CXL interconnects separating the CPU sockets from the GPU fabric.</li>
+</ul>
+<h5 id="pgas-fabric-network"><code>:pgas-fabric</code> (Network)<a class="headerlink" href="#pgas-fabric-network" title="Permanent link">&para;</a></h5>
+<p>This represents a "scale-out" boundary, connecting discrete nodes across a network where memory must be moved via Remote Direct Memory Access (RDMA) rather than local memory controllers.</p>
+<ul>
+<li><strong>Hardware Equivalents:</strong> InfiniBand, HPE Slingshot, or standard RoCE cluster spines.</li>
+</ul>
+<h4 id="children"><code>:children</code><a class="headerlink" href="#children" title="Permanent link">&para;</a></h4>
+<p>This is a list of compute-units and or interconnects that are connected by this interconnect.
+You can use <code>make-nodes</code> if the list is uniform. e.g.,  <code>(make-nodes 10 :initial-element pvc-tile)</code>.  Otherwise <code>(list thing-one thing-two)</code>.</p>
+<h4 id="algorithmic-metadata-optional">Algorithmic Metadata (Optional)<a class="headerlink" href="#algorithmic-metadata-optional" title="Permanent link">&para;</a></h4>
+<p>While the compiler only needs the <code>:type</code> to generate bare-metal hardware instructions, advanced Crisp macros (like topological shifts or stencil operations) need to know the logical shape of the network to calculate neighbor IDs. The default is branch and leaf, but for meshes and torus you can optionally supply this metadata to the interconnect:</p>
+<p><code>:dimensions</code> - A list representing the logical shape of the fabric (e.g., '(4 4) for a 16-node 2D mesh, or '(2 2 4) for a 3D topology).</p>
+<p><code>:wrap-around</code> - A boolean (T or NIL). If T, the topology acts as a Torus, meaning macros that shift data past the edge of the <code>:dimensions</code> will loop back to the other side rather than throwing an out-of-bounds error.</p>
+<p>Example of a 2D Torus Mesh:
+<div class="highlight"><pre><span></span><code>(interconnect :type :pgas-fabric 
+              :dimensions '(4 4) 
+              :wrap-around T 
+              :children my-sixteen-host-nodes)
+</code></pre></div></p>
+<h2 id="def-orchestration">def-orchestration<a class="headerlink" href="#def-orchestration" title="Permanent link">&para;</a></h2>
+<p>For topologically aware synchronization, a <code>def-orchestration</code> is required and it must be expanded so that it's allocation directives include either <code>:distribution</code> or <code>:location</code>.
+A single topology should be bound to the result of a <code>def-topology</code> function and used with the allocation directives. More than one topology would be an error.</p>
+<div class="highlight"><pre><span></span><code>(def-topology my-cluster (N)...)
+(def-kernel optimized_kernel (matrix weights &amp;out result) ...)
+
+(def-orchestration run-on-cluster (&amp;key node-count)
+  (let  ((kernel (gen-optimized_kernel))
+         (topo   (my-cluster node-count))
+
+         (mat     (allocate-tensor kernel::matrix
+                                   :topology topo
+                                   :distribution '(:block (64 64))))
+
+         (weights (allocate-tensor kernel::weights
+                                   :topology topo
+                                   :distribution :replicated))
+
+         (res     (allocate-tensor kernel::result
+                                   :topology topo
+                                   :location '(xeon-cpu (0 0)))))
+
+    (launch-kernel (kernel mat weights res))))
+
+(gen-run-on-cluster :node-count 16)
+</code></pre></div>
+<h3 id="distribution"><code>:distribution</code><a class="headerlink" href="#distribution" title="Permanent link">&para;</a></h3>
+<p>The <code>:distribution</code> keyword dictates how a tensor is logically and physically partitioned across the compute units within the specified <code>:topology</code>.</p>
+<p>Supported distribution strategies include:</p>
+<ul>
+<li>'(:block (<dims>))<code>: Partitions the tensor into contiguous chunks of the specified dimensions (e.g.,</code>'(:block (64 64))`) and distributes them across the network grid.</li>
+<li><code>:replicated</code>: Duplicates the entire tensor, placing a complete copy on every compute unit within the targeted topology.</li>
+</ul>
+<p>When combined with a custom topology, this explicit mapping gives the compiler the dependency awareness needed to automatically generate the underlying NCCL, oneCCL, or raw PGAS signaling required for distributed execution.</p>
+<h3 id="location"><code>:location</code><a class="headerlink" href="#location" title="Permanent link">&para;</a></h3>
+<p>The <code>:location</code> keyword explicitly pins the allocation of a tensor or buffer to a specific physical node within the hardware architecture.</p>
+<ul>
+<li>Topological IDs: When using a custom <code>def-topology</code>, the location targets the symbol assigned to the <code>:id</code> of a <code>compute-unit</code>. For example, <code>'(xeon-cpu)</code> or <code>'(pvc-tile)</code>.</li>
+<li>Coordinate Addressing: For multi-node fabrics or meshes, coordinates can be appended to the ID to target a specific node in the logical grid, such as <code>'(xeon-cpu (0 0))</code>.</li>
+<li>Default Locations: If you are not utilizing a custom topology (such as for local "Out of Core" orchestration on a single workstation), you can bypass IDs and simply use <code>:host</code> or <code>:device</code>.</li>
+</ul>
+<p>By declaring the exact physical residency, the compiler can evaluate the interconnect boundaries (e.g., <code>:p2p</code>, <code>:pcie</code>, or <code>:pgas-fabric</code>) between nodes. This dictates whether a topologically aware <code>make-async-barrier</code> is lowered into a local LLVM-IR address space transfer or a network-level RDMA pull.</p>
+<h3 id="what-does-this-do">What does this do?<a class="headerlink" href="#what-does-this-do" title="Permanent link">&para;</a></h3>
+<p>Once a <code>def-orchestration</code> is expanded to use a topology then the topologically aware <code>make-async-barrier</code> routine and all consumers of those barriers (<code>load-tile</code>, <code>store-tile</code>, <code>await</code> et al) are adjusted by the compiler. If the compiler sees that the data movement requires a simple address space transfer, then the LLVM-IR it lowers handles that. But if it determines that requires a transfer across the PGAS fabric, then it becomes that. Additionally, the kernel signature might be modified to accept an implicit <code>CUTensorMap</code>, if required. On the hoisting side, the python example code that is generated will demonstrate how to initialize data with NCCL/OneCCL scatter, launch kernels, initialize a <code>CUtensorMap</code> (if reuquired), move data with allreduce and gather.</p>
+<h2 id="clusters-and-distributed-shared-memory">Clusters and Distributed Shared Memory<a class="headerlink" href="#clusters-and-distributed-shared-memory" title="Permanent link">&para;</a></h2>
+<p>Workgroup clusters and Distributed Shared Memory (DSMEM) are performance features introduced by NVidia in their Hopper architecture (<code>sm_90</code> and later).  In contrast, Intel hardware uses prefetching directly to large GRF banks instead (discussed later).</p>
+<h3 id="what-a-cluster-is-and-what-it-buys-you">What a cluster is, and what it buys you<a class="headerlink" href="#what-a-cluster-is-and-what-it-buys-you" title="Permanent link">&para;</a></h3>
+<p>Ordinarily a workgroup's shared memory is private: no other workgroup can see it, and the hardware
+gives you no way to co-ordinate with a neighbour except by going all the way out to global memory.
+A <strong>cluster</strong> relaxes exactly that.  It is a small group of workgroups — two, four, or eight — that
+the hardware guarantees are resident <em>at the same time on the same GPC</em>, and which can therefore
+see one another's shared memory.  That shared window across the group is what NVidia calls
+<strong>Distributed Shared Memory</strong>.</p>
+<p>Two capabilities follow, and everything else in this section is a consequence of one of them:</p>
+<ol>
+<li><strong>A workgroup can reach a peer's shared memory</strong> — so a barrier can be released by another
+   workgroup (<a href="#mode"><code>:mode :cluster</code></a>), and a <code>sync-cluster</code> can rendezvous the whole group.</li>
+<li><strong>One fetch can serve the whole group</strong> — a single <code>load-tile</code> can pull a tile from global
+   memory <em>once</em> and have the hardware deliver it into every member's shared memory
+   (<a href="#multicast"><code>:multicast</code></a>).  In a matrix multiply, workgroups in the same cluster row want
+   byte-identical <code>B</code> tiles, so the traffic for that operand falls by the size of the group.</li>
+</ol>
+<p>The second is the reason most kernels reach for a cluster at all.</p>
+<h3 id="the-honest-part-it-is-not-free-and-it-does-not-always-pay">The honest part: it is not free, and it does not always pay<a class="headerlink" href="#the-honest-part-it-is-not-free-and-it-does-not-always-pay" title="Permanent link">&para;</a></h3>
+<p>A cluster constrains the scheduler.  Its workgroups must be co-resident on one GPC, so the more
+of them there are, the less freedom the hardware has to place them.  Measured on an H100:
+a cluster of <strong>two costs nothing</strong> (0.97–1.01× against the same kernel with no cluster), while a
+cluster of <strong>four can cost a great deal</strong> — as much as 0.58× at a problem size where the grid
+exactly fills the machine, and that penalty is paid whether or not you multicast anything.</p>
+<p>Multicast has its own applicability rule, and it is narrower than it first appears.  It pays only
+when <strong>both</strong> of these hold:</p>
+<ul>
+<li><strong>the machine is saturated</strong> — below full occupancy there is no contention for memory bandwidth
+  to relieve, so multicast is pure overhead; and</li>
+<li><strong>the kernel is fetch-limited rather than compute-limited</strong> — a well-pipelined kernel that
+  already hides its loads behind computation is not waiting on the fetch that multicast makes
+  cheaper, while multicast's bookkeeping is on the critical path regardless.</li>
+</ul>
+<p>Both conditions are easy to miss.  The same <code>:multicast true</code> that wins <strong>+15.7%</strong> on a 64×128
+tile at N=2048 <em>loses</em> <strong>7–10%</strong> on a 64×256 tile that is equally saturated but has enough
+arithmetic per byte to hide its loads.  There is a worked measurement of both sides in
+<code>benchmarks/matmul/chap4_cluster_multicast/cluster-multicast.md</code>.</p>
+<p>The practical advice: <strong>reach for a cluster of two before a cluster of four</strong>, and treat
+<code>:multicast</code> as something to measure rather than something to assume.  Crisp is built so that
+measuring it is a one-keyword change with everything else held fixed.</p>
+<h3 id="declaring-it">Declaring it<a class="headerlink" href="#declaring-it" title="Permanent link">&para;</a></h3>
+<p>If targeting modern NVidia architectures and hoping to exploit clusters and DSMEM you will want
+your kernel to declare this.</p>
+<h3 id="cluster-size">cluster-size ✅<a class="headerlink" href="#cluster-size" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(cluster-size &amp;key set-to msg)
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>(declare (cluster-size :set-to 2))       ; 2 workgroups along axis 0 (rows)
+(declare (cluster-size :set-to (2 1)))   ; identical, written explicitly
+(declare (cluster-size :set-to (2 2)))   ; a 2x2 cluster — 4 workgroups
+</code></pre></div>
+<p>A <strong>workgroup cluster</strong> is a set of workgroups that the hardware guarantees will be
+co-resident and co-scheduled, close enough to one another that they can address each
+other's local memory and participate in a shared barrier. <code>cluster-size</code> declares how
+many workgroups make up one cluster, and in what shape.</p>
+<blockquote>
+<p><strong>The value is a count of WORKGROUPS, not threads.</strong> Every sibling declaration in this
+family — <code>global-size</code>, <code>local-size</code> — is measured in threads. This one is not.
+<code>(cluster-size :set-to 2)</code> means <em>two workgroups</em>, however many threads each of those
+contains. Writing <code>(cluster-size :set-to 256)</code> is not a large cluster; it is a request
+the hardware will refuse.</p>
+</blockquote>
+<h4 id="why-you-would-declare-one">Why you would declare one<a class="headerlink" href="#why-you-would-declare-one" title="Permanent link">&para;</a></h4>
+<p>Two capabilities become available to a kernel once its workgroups are clustered:</p>
+<ol>
+<li><strong>Distributed Shared Memory (DSMEM)</strong> — a workgroup can read and write the <code>:local</code>
+   memory of its cluster peers, and <code>sync-cluster</code> becomes meaningful across more than
+   one workgroup.</li>
+<li><strong>Multicast tile loads</strong> — when several workgroups in a cluster need the <em>same</em> tile,
+   the hardware can fetch it from global memory once and deliver it into every one of
+   their local memories simultaneously. For a tiled matrix multiply this cuts the global
+   traffic for the shared operand by the cluster's extent along the axis that operand
+   does not depend on.</li>
+</ol>
+<p>The second is the reason <code>cluster-size</code> exists at all today. <code>cluster-size</code> makes multicast
+<em>possible</em>; an individual load asks for it with <a href="#multicast"><code>:multicast</code></a> on <code>load-tile</code>.
+You never write a destination mask or elect an issuing workgroup — the compiler derives
+both — but you do say which loads you expect to multicast, so that a load which cannot is
+a compile error rather than a silent doubling of bandwidth.</p>
+<h4 id="axes-follow-tile-shape">Axes follow <code>:tile-shape</code><a class="headerlink" href="#axes-follow-tile-shape" title="Permanent link">&para;</a></h4>
+<p>The axis order is the same one <code>:tile-shape</code> uses: <strong>axis 0 tracks dimension 0</strong>. For a
+row-major output tile grid that means axis 0 is rows and axis 1 is columns — the opposite
+of the CUDA <code>x = columns</code> convention. This is not a matter of taste; see the measurement
+under <a href="#tile-shape">:tile-shape</a>, where getting it backwards cost ~1.3x.</p>
+<p>So for a matrix multiply that wants its two workgroups to share the <code>B</code> operand:</p>
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="p">(</span><span class="nv">global-size</span><span class="w"> </span><span class="ss">:derive-from</span><span class="w"> </span><span class="nv">C</span><span class="w"> </span><span class="ss">:strategy</span><span class="w"> </span><span class="ss">:strided</span><span class="w"> </span><span class="ss">:tile-shape</span><span class="w"> </span><span class="p">(</span><span class="mi">64</span><span class="w"> </span><span class="mi">256</span><span class="p">))</span>
+<span class="w">         </span><span class="p">(</span><span class="nv">cluster-size</span><span class="w"> </span><span class="ss">:set-to</span><span class="w"> </span><span class="p">(</span><span class="mi">2</span><span class="w"> </span><span class="mi">1</span><span class="p">)))</span><span class="w">    </span><span class="c1">; 2 workgroups along ROWS</span>
+</code></pre></div>
+<p>Both workgroups sit at the same column position and differ only by row, so both need the
+same columns of <code>B</code> and different rows of <code>A</code>. <code>B</code> is therefore multicast and <code>A</code> is not.</p>
+<h4 id="a-2-d-cluster-multicasts-both-operands">A 2-D cluster multicasts BOTH operands<a class="headerlink" href="#a-2-d-cluster-multicasts-both-operands" title="Permanent link">&para;</a></h4>
+<p>A 1-D cluster can only ever help one operand, and the shape above shows why: it halves <code>B</code>'s
+traffic and does nothing for <code>A</code>. A matmul is symmetric in this respect --</p>
+<pre><code>C[m,n] = sum_k A[m,k] * B[k,n]
+</code></pre>
+<p><code>A</code> does not depend on <code>n</code>; <code>B</code> does not depend on <code>m</code>. So a cluster laid out over BOTH axes
+lets each operand be fetched once per group instead of once per workgroup:</p>
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="p">(</span><span class="nv">global-size</span><span class="w"> </span><span class="ss">:derive-from</span><span class="w"> </span><span class="nv">C</span><span class="w"> </span><span class="ss">:strategy</span><span class="w"> </span><span class="ss">:strided</span><span class="w"> </span><span class="ss">:tile-shape</span><span class="w"> </span><span class="p">(</span><span class="mi">64</span><span class="w"> </span><span class="mi">256</span><span class="p">))</span>
+<span class="w">         </span><span class="p">(</span><span class="nv">cluster-size</span><span class="w"> </span><span class="ss">:set-to</span><span class="w"> </span><span class="p">(</span><span class="mi">2</span><span class="w"> </span><span class="mi">2</span><span class="p">)))</span><span class="w">    </span><span class="c1">; 4 workgroups: 2 rows x 2 columns</span>
+</code></pre></div>
+<p>Every workgroup in a cluster ROW wants the same <code>A</code> tile; every workgroup in a cluster COLUMN
+wants the same <code>B</code> tile. Those are different sets of workgroups, which is exactly why the
+group is a property of the LOAD rather than of the cluster.</p>
+<p><strong>You do not declare which operand groups which way.</strong> The compiler reads each load's tile
+coordinates against the enclosing <code>tile-stride</code> variables: a coordinate list that does not
+mention an axis's variable is invariant along that axis, and the invariant axes ARE the
+multicast group. In</p>
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="nv">load-tile</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="p">(</span><span class="nv">ring-get</span><span class="w"> </span><span class="nv">A-ring</span><span class="w"> </span><span class="nv">slot</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-y</span><span class="w"> </span><span class="nv">grid-k</span><span class="p">)</span><span class="w"> </span><span class="ss">:barrier</span><span class="w"> </span><span class="o">...</span><span class="w"> </span><span class="ss">:multicast</span><span class="w"> </span><span class="nv">true</span><span class="p">)</span>
+<span class="p">(</span><span class="nv">load-tile</span><span class="w"> </span><span class="nv">B</span><span class="w"> </span><span class="p">(</span><span class="nv">ring-get</span><span class="w"> </span><span class="nv">B-ring</span><span class="w"> </span><span class="nv">slot</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-x</span><span class="w"> </span><span class="nv">grid-k</span><span class="p">)</span><span class="w"> </span><span class="ss">:barrier</span><span class="w"> </span><span class="o">...</span><span class="w"> </span><span class="ss">:multicast</span><span class="w"> </span><span class="nv">true</span><span class="p">)</span>
+</code></pre></div>
+<p><code>A</code>'s coordinates never mention <code>grid-x</code> and <code>B</code>'s never mention <code>grid-y</code>, so the two loads
+receive orthogonal groups from one rule. A load whose coordinates vary along <em>every</em> clustered
+axis has no group and is refused -- multicasting it would deliver one workgroup's tile to
+another.</p>
+<p>Cluster extents need not be equal: <code>(4 2)</code> is eight workgroups in a 4-row by 2-column
+arrangement. Eight is the largest cluster CUDA guarantees portably; larger is opt-in per
+architecture.</p>
+<p>The rank of <code>cluster-size</code> must agree with the rank of <code>:tile-shape</code>, exactly as
+<code>global-size</code> and <code>local-size</code> must agree in arity with each other. Axes beyond the
+declared rank are 1. A scalar is shorthand for a rank-1 value, following
+<code>(local-size :set-to 256)</code>.</p>
+<p><code>cluster-size</code> is permitted on a kernel with no <code>:tile-shape</code>, but there is then no tile
+grid for the compiler to reason about, so <code>:multicast</code> cannot be honoured and is refused.
+The declaration still enables DSMEM and a cluster-wide <code>sync-cluster</code>, which may be all
+you want.</p>
+<h4 id="this-declaration-does-affect-the-compiled-kernel">This declaration DOES affect the compiled kernel<a class="headerlink" href="#this-declaration-does-affect-the-compiled-kernel" title="Permanent link">&para;</a></h4>
+<p>Every other declaration in this family is advisory: it shapes the hoisting code Crisp
+generates and leaves the kernel itself untouched. <strong><code>cluster-size</code> is not advisory.</strong> It
+determines:</p>
+<ul>
+<li>whether a <code>load-tile</code> <strong>may</strong> multicast at all (an individual load still asks with
+  <a href="#multicast"><code>:multicast</code></a>; without a cluster, that request is a compile error)</li>
+<li>the multicast destination mask</li>
+<li>which workgroup in each multicast group issues the load</li>
+<li>whether the compiler emits the cluster entry and exit fences (see
+  <a href="#sync-cluster">sync-cluster</a>)</li>
+</ul>
+<p>Because the compiler needs the shape at code generation time, the cluster dimensions are
+also recorded in the generated PTX, which makes the host/kernel agreement something the
+driver enforces at launch rather than a convention the hoisting code is trusted to honor.</p>
+<p>Two things follow from this that are worth stating plainly:</p>
+<ul>
+<li><strong>There is no <code>:derive-from</code>.</strong> A shape that is baked into code generation cannot be
+  computed from a host-side runtime value.</li>
+<li><strong>A silent fallback would be a performance trap.</strong> See <em>Degradation</em> below.</li>
+</ul>
+<h4 id="limits-and-divisibility">Limits and divisibility<a class="headerlink" href="#limits-and-divisibility" title="Permanent link">&para;</a></h4>
+<p><strong>Cluster extent.</strong> The portable maximum is 8 workgroups per cluster. Larger clusters are
+supported on some parts (16 on Hopper) but require an explicit opt-in and are not portable
+across devices; Crisp treats anything above 8 as requiring that opt-in.</p>
+<blockquote>
+<p>Measured on an H100 PCIe: a cluster of 8 launches; a cluster of 16 fails with
+<code>cudaErrorInvalidClusterSize</code>; a cluster of 16 succeeds once
+<code>cudaFuncSetAttribute(k, cudaFuncAttributeNonPortableClusterSizeAllowed, 1)</code> has been set.
+Larger clusters also reduce the number of blocks that can be resident, which is the
+scheduling cost behind the guidance below.</p>
+</blockquote>
+<p>For a tiled matrix multiply, small is the point. A 2-workgroup cluster already collects the
+entire traffic reduction on the shared operand, and larger clusters constrain the scheduler
+— every workgroup in a cluster must be placed together, so a wide cluster quantizes badly
+against the machine and can cost more in scheduling than it recovers in bandwidth.</p>
+<p><strong>Divisibility.</strong> The grid dimensions must be divisible by the cluster dimensions. Under
+<code>:tile-shape</code> the grid is <code>CEIL(extent[k] / tile_shape[k])</code>, which is derived from the
+<em>problem</em>, so divisibility is not automatic. A 4096-row problem in 64-row tiles gives 64
+row-tiles and divides evenly by 2; a 320-row problem gives 5 row-tiles and does not.</p>
+<p>Crisp handles the two strategies differently, mirroring the split already described under
+<a href="#device-dispatch-limits--where-strided-and-exact-genuinely-differ">Device dispatch limits</a>:</p>
+<ul>
+<li><strong><code>:strided</code></strong> — the grid is <strong>padded</strong> up to a multiple of the cluster dimensions and
+  the fact is noted in the hoisting comments. The extra workgroups find no tiles left to
+  claim and exit; the <code>tile-stride</code> loop guarantees every tile is still covered. The cost
+  is a small amount of wasted dispatch, not correctness.</li>
+<li><strong><code>:exact</code></strong> — there is no stride loop, so a padded workgroup would have no tile and a
+  truncated grid would silently skip one. A grid that is not divisible by the cluster
+  dimensions is therefore a hard <strong>error</strong>, naming both the tile shape and the cluster
+  shape that conflict.</li>
+</ul>
+<p><strong>This is enforced by the driver, per axis, as a hard launch error</strong> — measured on an H100 PCIe
+(sm_90, CUDA 12.4) via <code>cudaLaunchKernelEx</code>:</p>
+<table>
+<thead>
+<tr>
+<th>grid</th>
+<th>cluster</th>
+<th>launch result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(4,1,1)</code></td>
+<td><code>(2,1,1)</code></td>
+<td><code>cudaSuccess</code></td>
+</tr>
+<tr>
+<td><code>(3,1,1)</code></td>
+<td><code>(2,1,1)</code></td>
+<td><strong><code>cudaErrorInvalidClusterSize</code></strong></td>
+</tr>
+<tr>
+<td><code>(4,3,1)</code></td>
+<td><code>(2,2,1)</code></td>
+<td><strong><code>cudaErrorInvalidClusterSize</code></strong> (the y axis)</td>
+</tr>
+</tbody>
+</table>
+<p>Not a warning, not a silent clamp — a non-divisible grid simply does not launch.  So the policy
+above is not a preference between two workable options: <em>something</em> has to happen, and padding
+is the only one of the two that leaves <code>:strided</code> correct.</p>
+<h4 id="degradation">Degradation<a class="headerlink" href="#degradation" title="Permanent link">&para;</a></h4>
+<p>Clusters require NVIDIA Hopper (<code>sm_90</code>) or later. On earlier NVIDIA architectures and on
+Intel there is no equivalent, and the cluster extent collapses to 1.</p>
+<p>Unlike <a href="#sync-cluster">sync-cluster</a> — where degrading to <code>sync-workgroup</code> is semantically
+exact and costs nothing — <strong>degrading <code>cluster-size</code> is not free</strong>. The kernel still
+computes the correct answer, but every multicast becomes an ordinary per-workgroup load
+and the traffic reduction that motivated the declaration is gone. Nothing about the result
+reveals this.</p>
+<p>Crisp therefore does not degrade silently: a kernel declaring <code>cluster-size</code> for a target
+without cluster support emits a diagnostic, and the effective cluster extent is recorded
+in the kernel's metadata so a test or a benchmark harness can assert on it rather than
+inferring it from a timing number.</p>
+<blockquote>
+<p><strong>A clustered <em>matmul</em> is nevertheless NVIDIA-only, and for a different reason.</strong>  The
+degrade above is not the whole story: a multicast pipeline also carries a
+<a href="#mode"><code>:mode :cluster</code></a> barrier ring, and <code>:cluster</code> — like <code>:block</code> before it — is a hard
+<strong>compile error</strong> on SPIR-V, not a degrade.  So such a kernel does not run slower on Intel;
+it does not build there.</p>
+<p>The two behaviours are deliberate and follow existing precedent.  <code>cluster-size</code> is launch
+geometry and harmless on its own, so it degrades — exactly as <code>local-size</code> does not error
+merely because a device cannot honour the value you asked for.  A <code>:cluster</code> barrier is an
+object that cannot exist on the target, so it errors — exactly as <code>:block</code> already does.</p>
+</blockquote>
+<h4 id="interaction-with-other-declarations">Interaction with other declarations<a class="headerlink" href="#interaction-with-other-declarations" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong><code>:tile-shape</code></strong> — supplies the axis vocabulary and the grid whose divisibility is
+  constrained. Required before any <code>:multicast</code> load can be honoured.</li>
+<li><strong><code>:occupancy</code></strong> — does not apply. <code>:occupancy</code> scales the occupancy-sized <code>:strided</code>
+  grid, which is only used when no <code>:tile-shape</code> is present; a cluster without a tile
+  shape performs no multicast.</li>
+<li><strong><code>local-size</code></strong> — independent. Cluster extent counts workgroups; <code>local-size</code> sizes
+  each one.</li>
+<li><strong><code>num-groups</code></strong> — a <code>:max</code> constraint must still be satisfied after the grid is padded
+  to a cluster multiple.</li>
+</ul>
+<h4 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code>;; -- matmul --
+;; 64x256 output tiles, two workgroups per cluster stacked along rows.
+;; Both workgroups in a cluster need the same 256 columns of B, so B is
+;; fetched once from global memory and multicast into both.
+(def-kernel matmul (A B &amp;out C)
+  (declare #'(a-mat b-mat &amp;out c-mat)
+           (local-size   :set-to 160)
+           (global-size  :derive-from C :strategy :strided :tile-shape (64 256))
+           (cluster-size :set-to (2 1) :msg "share the B tile across the row pair"))
+  ...)
+</code></pre></div>
+<h4 id="msg"><code>:msg</code><a class="headerlink" href="#msg" title="Permanent link">&para;</a></h4>
+<p>As with <code>global-size</code> and <code>local-size</code>, <code>:msg</code> takes a string that is emitted as a comment
+at the point where the hoisting code configures the cluster dimensions.</p>
+<h2 id="topologically-aware-async">Topologically Aware Async<a class="headerlink" href="#topologically-aware-async" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>(let ((barrier (make-async-barrier)))
+
+  (load-tile A A-tile (... grid-y grid-x) :transpose &lt;bool&gt; :identity &lt;val&gt; :barrier barrier)
+  (load-tile-at A A-tile (... y x) :transpose &lt;bool&gt; :identity &lt;val&gt; :barrier barrier)
+
+  (store-tile C-Tile C ( ... grid-y grid-x) :transpose &lt;bool&gt; :transformF &lt;func&gt; :barrier barrier) ;; illegal to use transfomF and barrier together.
+  (store-tile-at C-Tile C ( ... y x) :transpose &lt;bool&gt; :transformF &lt;func&gt; :barrier barrier) ;; illegal to use transfomF and barrier together.
+
+  (await barrier)
+
+  (signal barrier))
+
+   ;; Sometimes `make-async-barrier` is going to need a &lt;CUTensorMap&gt;. 
+   ;; 1 - Do we have enough information at compile-time to produce one without further user intervention?
+   ;;     If not, what more information do we need?
+   ;; 2 - We might have to pass that as another "side channel" argument, like we do scratch tensors. 
+   ;;     Meaning the kernel arg list has the &lt;CUTensorMap&gt; added at the beginning, but hidden from the user.
+   ;;     Like scratch tensors, it must be passed down the call chain implicitly until it reaches where it is needed. 
+</code></pre></div>
+<h3 id="make-async-barrier"><code>make-async-barrier</code> ✅<a class="headerlink" href="#make-async-barrier" title="Permanent link">&para;</a></h3>
+<p><code>(make-async-barrier) =&gt; barrier</code></p>
+<p>Allocates a data-movement barrier that synchronizes the state of the hardware DMA engine (an
+async global→local memory transfer) with the execution unit.  It is strictly for tracking that
+transfer, not for arbitrary control flow.  A <code>:barrier</code> on <code>load-tile</code> / <code>store-tile</code> links the
+transfer to this barrier; <code>await</code> blocks until the bytes have landed.</p>
+<div class="highlight"><pre><span></span><code>(make-async-barrier &amp;key mode)
+
+; examples
+(make-async-barrier)                  ; arch-automatic (see below)
+(make-async-barrier :mode :linear)    ; force the linear async copy
+</code></pre></div>
+<blockquote>
+<p><strong>Note.</strong>  An earlier design had a <code>:type</code> key (<code>:global</code> / <code>:p2p</code> / <code>:pcie</code> / <code>:pgas-fabric</code>)
+tied to <code>def-topology</code> for cross-device / fabric transfers.  <code>def-topology</code> is set aside for
+now (see the deferred section below), so <strong><code>:type</code> is gone</strong> — the only data movement this
+barrier governs is global↔local (device VRAM), which needs no key.</p>
+</blockquote>
+<h4 id="mode"><code>:mode</code><a class="headerlink" href="#mode" title="Permanent link">&para;</a></h4>
+<p><code>:mode</code> answers one question: <strong>what kind of object is this barrier, and how far does it reach?</strong>
+Omit it for the arch-automatic default; pass it explicitly to pin a specific kind (for degenerate
+cases, or when reach is part of your algorithm rather than a property of the hardware).</p>
+<p>The values form a ladder, each rung strictly more capable than the one below it:</p>
+<table>
+<thead>
+<tr>
+<th><code>:mode</code></th>
+<th>what the barrier IS</th>
+<th>how far it reaches</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>:linear</code></td>
+<td>the backend's group-async-copy handle</td>
+<td>the workgroup</td>
+</tr>
+<tr>
+<td><code>:block</code></td>
+<td>a real mbarrier object</td>
+<td>the workgroup</td>
+</tr>
+<tr>
+<td><code>:cluster</code></td>
+<td>a real mbarrier object</td>
+<td>the whole workgroup cluster</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>:linear</code> — <code>cp.async</code> on PTX, <code>OpGroupAsyncCopy</code> on SPIR-V.  A per-element / per-row
+  cooperative copy global→SLM.  <strong>Shipped</strong> and metal-verified on both backends.  Valid on
+  every supported arch.  Note the handle is not the same thing on both backends: on PTX
+  <code>commit_group</code>/<code>wait_group</code> need no object at all, so the barrier is a <em>phantom</em> and the
+  compiler emits a constant; on SPIR-V it owns a <code>target("spirv.Event")</code> slot that the async
+  copies chain through.</li>
+<li><code>:block</code> — <code>CuTensorMap</code> (TMA) on PTX.  A bulk descriptor-driven 2D copy global→SLM,
+  completing on a <strong>workgroup-local</strong> mbarrier (<code>mbarrier.arrive.expect_tx.shared::cta</code> /
+  <code>mbarrier.try_wait.parity.shared::cta</code>).  <strong>NVIDIA sm_90+ only.</strong>  On an older NVIDIA arch it
+  is a compile error (needs sm_90+); <strong>on Intel it is a compile error</strong> — Intel's fast 2D path
+  (LSC 2D block loads) loads global→<em>registers</em>, not SLM, and is <strong>not</strong> a barrier-governed
+  transfer at all (see "Optimizing Intel MMA").</li>
+<li><code>:cluster</code> 📝 — a real mbarrier that <strong>peer workgroups in the same cluster may arrive on</strong>
+  (<code>mbarrier.arrive.shared::cluster</code> against a mapped peer address).  <strong>NVIDIA sm_90+ only</strong>,
+  and only meaningful when the kernel declares a <a href="#workgroup-clusters">cluster-size</a>.</li>
+</ul>
+<h5 id="which-barriers-need-which-rung">Which barriers need which rung<a class="headerlink" href="#which-barriers-need-which-rung" title="Permanent link">&para;</a></h5>
+<p>A pipelined kernel usually has two barrier rings, and they do <strong>not</strong> want the same rung:</p>
+<ul>
+<li>The <strong>data-arrival</strong> ring (conventionally <code>full</code>) is <code>:block</code> even in a clustered kernel.
+  This surprises people, so it is worth being explicit: a multicast tile load writes into
+  several workgroups' SLM at once, but the transaction completes on <strong>each destination
+  workgroup's own</strong> mbarrier.  Every workgroup still waits on a barrier it owns, so the barrier
+  is workgroup-local and <code>:block</code> describes it exactly.</li>
+<li>The <strong>buffer-free</strong> ring (conventionally <code>empty</code>) is the one that becomes <code>:cluster</code>.  It
+  carries no transfer at all — no <code>load-tile</code> ever names it — and exists so consumers can tell
+  the producer a slot is safe to overwrite.  Once a producer is filling slots in <em>peer</em>
+  workgroups, those peers must be able to arrive on its barrier, and that is cluster reach.</li>
+</ul>
+<p>So in a clustered matmul it is the barrier governing <strong>no</strong> data movement that gains <code>:cluster</code>,
+while the barrier the multicast actually targets stays <code>:block</code>.  Both readings are literal once
+you take <code>:mode</code> to mean "kind and reach" rather than "which DMA engine".</p>
+<blockquote>
+<p><strong>On Intel, only the bottom rung exists.</strong>  <code>:block</code> and <code>:cluster</code> are both compile errors on
+SPIR-V, and <code>:mode :linear</code> <strong>rings</strong> (<code>:ring-count</code> &gt; 1) are not implemented there either.  In
+practice that means a barrier <em>ring</em> of any kind is NVIDIA-only today, and Intel's fast matmul
+path reaches its throughput without barrier-governed staging at all — via direct register
+block-load prefetch.  This is not new with <code>:cluster</code>; it is the shape the key already had.</p>
+</blockquote>
+<h4 id="the-arch-automatic-default">The arch-automatic default<a class="headerlink" href="#the-arch-automatic-default" title="Permanent link">&para;</a></h4>
+<p>With no <code>:mode</code>, the barrier picks the best global→local async copy for the elected architecture
+(<code>--ir-target-arch</code>, or the per-backend default):</p>
+<ul>
+<li><strong>NVIDIA sm_90+</strong> → <code>:block</code> (TMA / CuTensorMap).</li>
+<li><strong>NVIDIA &lt; sm_90</strong> (incl. the default <code>sm_80</code>) → <code>:linear</code> (<code>cp.async</code>).</li>
+<li><strong>Intel</strong> (any arch) → <strong>always <code>:linear</code></strong> (<code>OpGroupAsyncCopy</code>).</li>
+</ul>
+<blockquote>
+<p><strong>Arch-automatic never selects <code>:cluster</code>, even on sm_90+ with a cluster declared.</strong>  The
+automatic default picks the best mechanism <em>the hardware can realize</em> — a capability question.
+Reach is not a capability question: it is a claim about your algorithm, namely that peer
+workgroups will arrive on this barrier.  Guessing it wrong does not cost throughput, it hangs
+the kernel, which is the same reason <a href="#make-async-barrier-ring"><code>:arrivals</code></a> is never inferred.
+<code>:cluster</code> is always written explicitly.</p>
+<p><strong>Guidance for Intel.</strong>  <code>:linear</code> on Intel is a genuine async copy and useful for large /
+contiguous tiles, but it is a per-<em>row</em> <code>OpGroupAsyncCopy</code> — for the small, strided fetches a
+matmul does, it costs more than it saves.  On Intel, prefer a plain synchronous <code>load-tile</code>
+(no <code>:barrier</code>) for those, or the direct register block-load prefetch path (Intel MMA optimization).</p>
+</blockquote>
+<h3 id="load-tile"><code>load-tile</code> ✅<a class="headerlink" href="#load-tile" title="Permanent link">&para;</a></h3>
+<p><code>(load-tile src dest (... grid-y grid-x) &amp;key transpose identity barrier multicast) =&gt; nil</code></p>
+<p>Initiates a bulk memory transfer from the <code>src</code> tensor to the <code>dest</code> tensor (typically moving from Global Memory to SLM or registers).</p>
+<ul>
+<li><strong>Tile IDs (<code>grid-y</code>, <code>grid-x</code>):</strong> The target location is specified using logical Tile Identifiers, which map to the strided chunks defined by the tensor's block distribution.  On a single GPU (no topology) this means simply: <strong>the tile-ID is scaled by the <code>dest</code> tile's extent</strong> to give the element origin in <code>src</code> — coord <code>(1 1)</code> with a <code>64×64</code> <code>dest</code> reads <code>src[64:128, 64:128]</code>.  These are exactly the <code>grid-y</code>/<code>grid-x</code> bindings that <code>tile-stride</code> and <code>matrix-multiply-tile-stride</code> hand you, so <code>(load-tile A A-tile (grid-y grid-k))</code> "just works".  When you need an exact element offset instead (unaligned / ragged), use <code>load-tile-at</code>.</li>
+<li><strong><code>:transpose</code>:</strong> A boolean indicating if the hardware should transpose the data during the load (leveraging tensor core layout features).</li>
+<li><strong><code>:identity</code>:</strong> A fallback value used for out-of-bounds padding if the tile intersects the edge of the source tensor.</li>
+<li><strong><code>:barrier</code>:</strong> Links this memory transfer to a previously created <code>async-barrier</code>. The hardware DMA engine will automatically signal this barrier when the bytes physically arrive in the destination memory space.</li>
+<li><strong><code>:multicast</code>:</strong> A boolean asserting that this tile is identical across one axis of the workgroup cluster and should be fetched once for all of them. Omitting it gives an ordinary per-workgroup load. See below.</li>
+</ul>
+<h4 id="multicast"><code>:multicast</code> ✅<a class="headerlink" href="#multicast" title="Permanent link">&para;</a></h4>
+<p><code>(load-tile src dest (... grid-y grid-x) &amp;key transpose identity barrier multicast)</code></p>
+<p>In a kernel that declares a <a href="#cluster-size"><code>cluster-size</code></a>, a tile that <strong>every workgroup along
+one cluster axis needs identically</strong> can be fetched from global memory <em>once</em> and delivered into
+all of their local memories simultaneously.  <code>:multicast</code> asks for that.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">;; cluster is (2 1) — two workgroups stacked along rows (axis 0)</span>
+<span class="p">(</span><span class="nv">load-tile</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="p">(</span><span class="nv">ring-get</span><span class="w"> </span><span class="nv">A-ring</span><span class="w"> </span><span class="nv">slot</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-y</span><span class="w"> </span><span class="nv">grid-k</span><span class="p">)</span><span class="w"> </span><span class="ss">:barrier</span><span class="w"> </span><span class="p">(</span><span class="nv">ring-get</span><span class="w"> </span><span class="nv">full</span><span class="w"> </span><span class="nv">slot</span><span class="p">))</span>
+<span class="p">(</span><span class="nv">load-tile</span><span class="w"> </span><span class="nv">B</span><span class="w"> </span><span class="p">(</span><span class="nv">ring-get</span><span class="w"> </span><span class="nv">B-ring</span><span class="w"> </span><span class="nv">slot</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-x</span><span class="w"> </span><span class="nv">grid-k</span><span class="p">)</span><span class="w"> </span><span class="ss">:barrier</span><span class="w"> </span><span class="p">(</span><span class="nv">ring-get</span><span class="w"> </span><span class="nv">full</span><span class="w"> </span><span class="nv">slot</span><span class="p">)</span><span class="w"> </span><span class="ss">:multicast</span><span class="w"> </span><span class="nv">true</span><span class="p">)</span>
+</code></pre></div>
+<p><code>A</code>'s coordinates depend on <code>grid-y</code>, so the two workgroups need <em>different</em> rows of <code>A</code> — it is
+not multicast, and asking for it would be wrong rather than merely wasteful.  <code>B</code>'s coordinates
+ignore <code>grid-y</code>, so both workgroups want the same columns of <code>B</code> and one fetch serves the pair.</p>
+<h5 id="it-is-an-assertion-not-a-directive">It is an assertion, not a directive<a class="headerlink" href="#it-is-an-assertion-not-a-directive" title="Permanent link">&para;</a></h5>
+<p><code>:multicast</code> is a plain boolean.  You are <strong>not</strong> specifying an axis, a destination mask, or an
+issuing workgroup — the compiler derives all three from the tile coordinates and the declared
+cluster shape.  What you are saying is <strong>"I expect this load to multicast,"</strong> and the compiler
+either does it or refuses to compile, naming the coordinate that conflicts.</p>
+<blockquote>
+<p><strong>A note on <code>true</code>.</strong>  Crisp does not have a boolean literal yet; <code>true</code> and <code>false</code> are still
+pending (see the language-changes list).  Existing boolean keys such as <code>:transpose</code> are written
+with Common Lisp's <code>t</code> today, which is a stopgap rather than a decision — <code>t</code> and <code>T</code> are the
+<em>same symbol</em> to the reader, so it collides with the <code>T</code> that templates bind constantly.
+<code>:multicast</code> is documented with <code>true</code> because it is not implemented yet and there is no reason
+to add a second occurrence that will need migrating.</p>
+</blockquote>
+<p>That division matters in both directions:</p>
+<ul>
+<li><strong>The mask and the leader are not writable by hand in any sane way.</strong>  Exactly one workgroup per
+  multicast group issues the fetch.  For a 2-workgroup cluster that is trivially the first; for a
+  2x2 cluster the leader differs <em>per operand</em>, because <code>A</code>'s multicast groups and <code>B</code>'s partition
+  the cluster differently.  Deriving that is the compiler's job.</li>
+<li><strong>Whether a load <em>should</em> multicast is not the compiler's call to make silently.</strong>  A <code>load-tile</code>
+  that quietly declines to multicast still computes the correct answer — at exactly the bandwidth
+  you were trying to avoid paying, with nothing in the output to reveal it.  Making the intent
+  explicit turns that silent 2x into a compile error.</li>
+</ul>
+<p>This follows the same rule as <a href="#make-async-barrier-ring"><code>:arrivals</code></a>: you state a fact you know,
+the compiler checks shape rather than guessing intent.</p>
+<h5 id="why-this-is-a-key-on-load-tile-and-not-a-barrier-mode">Why this is a key on <code>load-tile</code> and not a barrier <code>:mode</code><a class="headerlink" href="#why-this-is-a-key-on-load-tile-and-not-a-barrier-mode" title="Permanent link">&para;</a></h5>
+<p>Everywhere else, a <code>load-tile</code>'s lowering is chosen by its <code>:barrier</code> — no barrier means a
+synchronous copy, and a barrier's <a href="#mode"><code>:mode</code></a> picks which asynchronous mechanism.  Multicast
+is the exception, and the example above shows why: <strong>both loads name the same barrier, and only one
+of them multicasts.</strong></p>
+<p>The barrier cannot express the difference because it is not per-operand.  It is per-<em>stage</em> — that
+is the entire meaning of <code>:arrivals 2</code>, "this slot tracks two transfers."  Multicast is a finer
+choice <em>within</em> the TMA mechanism that varies from operand to operand, so it has no barrier to
+hang on and belongs at the call site.</p>
+<h5 id="the-barrier-stays-workgroup-local">The barrier stays workgroup-local<a class="headerlink" href="#the-barrier-stays-workgroup-local" title="Permanent link">&para;</a></h5>
+<p>A multicast writes into peer workgroups' local memory, but each destination workgroup's transaction
+completes on <strong>its own</strong> mbarrier.  Every workgroup still waits on a barrier it owns, which is why
+the data-arrival ring stays <a href="#mode"><code>:mode :block</code></a> in a clustered kernel rather than becoming
+<code>:cluster</code>.  See <a href="#which-barriers-need-which-rung">Which barriers need which rung</a>.</p>
+<h5 id="errors">Errors<a class="headerlink" href="#errors" title="Permanent link">&para;</a></h5>
+<p><code>:multicast</code> is refused, with the conflicting coordinate named, when:</p>
+<ul>
+<li>the kernel declares no <code>cluster-size</code>, or the cluster extent is 1</li>
+<li>the tile's coordinates depend on <strong>every</strong> cluster axis, so no two workgroups want the same tile</li>
+<li>the target is not NVIDIA <code>sm_90+</code></li>
+</ul>
+<h3 id="load-tile-at"><code>load-tile-at</code> ✅<a class="headerlink" href="#load-tile-at" title="Permanent link">&para;</a></h3>
+<p><code>(load-tile-at src dest (... y x) &amp;key transpose identity barrier) =&gt; nil</code></p>
+<p>Functions identically to <code>load-tile</code>, but instead of using logical Tile IDs, the location is specified using exact <strong>Element Coordinates</strong> (the specific scalar index offsets, such as the top-left pixel). This is necessary for unaligned loads, halo exchanges, or ragged boundary processing.</p>
+<p>Note that, unlike <code>load-tile</code>, this does NOT accept the <code>:multicast</code> key. This is because proper resolution for multicast requires tile grid coordinates. </p>
+<h3 id="store-tile"><code>store-tile</code> ✅<a class="headerlink" href="#store-tile" title="Permanent link">&para;</a></h3>
+<p><code>(store-tile src dest (... grid-y grid-x) &amp;key transpose transformF barrier) =&gt; nil</code></p>
+<p>Initiates a bulk memory transfer from the <code>src</code> tensor (usually registers or SLM) back to the <code>dest</code> tensor (usually Global Memory), targeting a specific logical Tile ID.</p>
+<ul>
+<li><strong><code>:transformF</code>:</strong> An optional epilogue function (e.g., <code>relu</code>) applied to the data during the store operation.</li>
+<li><strong><code>:barrier</code>:</strong> If provided, delegates the write out to the async DMA engine.</li>
+<li><strong>Note:</strong> It is strictly illegal to use <code>:transformF</code> and <code>:barrier</code> simultaneously. A hardware DMA engine cannot apply arbitrary mathematical functions; it only moves raw bytes. If you need epilogue fusion, the warp must perform the math inline before storing.</li>
+</ul>
+<h3 id="store-tile-at"><code>store-tile-at</code> ✅<a class="headerlink" href="#store-tile-at" title="Permanent link">&para;</a></h3>
+<p><code>(store-tile-at src dest (... y x) &amp;key transpose transformF barrier) =&gt; nil</code></p>
+<p>Functions identically to <code>store-tile</code>, but uses exact <strong>Element Coordinates</strong> rather than logical Tile IDs to position the data in the destination tensor.</p>
+<h3 id="await"><code>await</code> ✅<a class="headerlink" href="#await" title="Permanent link">&para;</a></h3>
+<p><code>(await barrier) =&gt; nil</code></p>
+<p>Halts the execution of the calling warp or workgroup until the specified <code>barrier</code> has been fully signaled by the hardware DMA engine. This guarantees that all asynchronous bytes tracked by the barrier are visible in memory, ensuring the execution unit does not read garbage data.</p>
+<h3 id="signal"><code>signal</code><a class="headerlink" href="#signal" title="Permanent link">&para;</a></h3>
+<p><code>(signal barrier) =&gt; nil</code></p>
+<p>Manually notifies the specified <code>barrier</code>. This is predominantly used in pipelined or warp-specialized loops where the Consumer warp must explicitly tell the Producer warp's DMA engine that a specific chunk of Shared Local Memory has been fully read and is safe to be overwritten by the next memory fetch.</p>
+<h3 id="more-tile-helpers">More Tile helpers<a class="headerlink" href="#more-tile-helpers" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(position-tile tile-tensor tensor (... grid-y grid-x))
+(position-tile-at tile-tensor tensor (... y x))
+</code></pre></div>
+<p>These functions have a very similar API to the load/store tile functions above. But they do not transfer any data, instead they simply update the tile metadata. This is useful when a tile is being used a view into a larger (parent) tensor and you want to move that "window". </p>
+<h3 id="note-about-openshmem-barrier">Note about OpenSHMem Barrier<a class="headerlink" href="#note-about-openshmem-barrier" title="Permanent link">&para;</a></h3>
+<p>supporting <code>make-async-barrier</code> over OpenSHMem is tricky.</p>
+<p>OpenSHMEM / InfiniBand (The Real Threat)
+Network interface cards (NICs) do not natively understand SLM mbarrier objects. To pipeline RDMA transfers, you must abandon quiet() entirely during the inner loops and move to Fine-Grained Network Signaling.
+Modern PGAS libraries (like NVSHMEM 3.x+ and OpenSHMEM 1.5+) have explicit APIs for this:
+Instead of issuing a generic nvshmem_get, the compiler emits nvshmem_get_nbi (Non-Blocking Implicit).
+Instead of calling quiet(), you use Signal Flags.
+When (make-async-barrier) is called for a network topology, the compiler allocates an atomic integer flag in device Global Memory (not SLM).
+Here is what the compiler makes the hardware do:
+Issue: The Producer warp fires the RDMA read request, and attaches a directive telling the NIC: "When you finish writing these bytes, write the value '1' to this specific signal flag."
+Wait: When the Consumer warp calls (await b1), it does NOT call quiet(). It compiles down to a hardware polling loop (nvshmem_wait_until) that watches only b1's specific signal flag.
+Because b1 and b2 have separate, dedicated signal flags in memory, b1 can safely signal completion and allow the math to start while the network is still physically transferring b2.</p>
+<h3 id="crisp-terminology">Crisp Terminology<a class="headerlink" href="#crisp-terminology" title="Permanent link">&para;</a></h3>
+<p>"barrier" - data movement.
+"sync" - thread synchronization. collective waiting
+"semaphore"  - individual waiting.  Used primarily for interop, but useful in-kernel too.</p>
+<h3 id="sync-operations">Sync Operations<a class="headerlink" href="#sync-operations" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(sync-cluster)
+(sync-workgroup) ✅
+(sync-warp)
+
+
+(make-arrival-sync &lt;count&gt;) =&gt; sync-handle
+(sync-arrive sync-handle) =&gt; nil
+(sync-wait sync-handle) =&gt; nil
+</code></pre></div>
+<h4 id="sync-cluster">sync-cluster ✅<a class="headerlink" href="#sync-cluster" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code>(sync-cluster)          ; arrive + wait, ordered.  The safe default.
+
+;;  - OR -
+
+(sync-cluster :arrive)  ; non-blocking: "I'm here"        📝 NOT IMPLEMENTED
+(sync-cluster :wait)    ; block until all CTAs have arrived  📝 NOT IMPLEMENTED
+</code></pre></div>
+<blockquote>
+<p><strong>The split form is a design sketch, not shipped.</strong>  <code>(sync-cluster)</code> — the fused, ordered
+default — is implemented.  The <code>:arrive</code> / <code>:wait</code> split is not, and the reason is the list of
+restrictions below rather than the lowering, which would be trivial (the two halves of the same
+fence).  Honouring those restrictions means four static analyses — unpaired or nested <code>:arrive</code>,
+divergent placement, peer access inside the window, and returning before the <code>:wait</code> — and a
+cluster rendezvous is subtle enough to hang a GPU, so shipping the split form without its guards
+would be worse than not shipping it.  It will be built when a kernel needs it.</p>
+</blockquote>
+<p><code>sync-cluster</code> makes every thread in the workgroup cluster wait until they have all arrived at the same point.</p>
+<p>The default usage <code>(sync-cluster)</code> is simple and direct. It both announces that the thread is participating with other threads in the cluster and has completed any DSMEM (Distributed Shared Memory) operations and then waits for other threads to catch up.  Rather than going those two at once it is possible to split and use <code>(sync-cluster :arrive)</code> to make the announcement and then perform the actual wait <code>(sync-cluster :wait)</code> later. BUT, if you do this there are certain limitations that must be observed:
+- the <code>:arrive</code> MUST be paired with a <code>:wait</code> and these CANNOT nest. (one pair at a time).
+- <code>return</code> or otherwise exiting a routine between <code>:arrive</code> and <code>:wait</code> is disallowed.
+- reading or writing to a cluster peers SMEM between <code>:arrive</code> and <code>:wait</code> is discouraged.
+- modifying <code>:local</code> memory that was DSMEM published will likely result in a race and should be discouraged. This may not always be detectable by the compiler. Be wary of Crisp routines that modify local memory like <code>load-tile</code> and <code>load-local</code></p>
+<p>The compiler refuses the violations it can detect statically - unpaired or nested <code>:arrive</code>, divergent placement, peer access in the window, and returning before the <code>:wait</code>. It cannot detect every case of the last restriction; absence of an error is not proof of correctness.</p>
+<p>Cluster synchronization is a NVidia feature that requires the Hopper architecture (<code>sm_90</code> or later).  If <code>sync-cluster</code> is used with earlier architectures or on Intel it simply degrades to <code>sync-workgroup</code>.  Note also if a kernel is not explicitly enqueued with a cluster specified then the cluster count is 1, meaning it is functionally exactly the same as <code>sync-workgroup</code>.</p>
+<blockquote>
+<p><strong>Verified, not assumed.</strong>  The equivalence above holds only if the cluster barrier also
+rendezvouses the threads <em>within</em> a workgroup.  It does: NVIDIA's own
+<code>cooperative_groups::cluster_group::sync()</code> is implemented as <code>barrier_arrive(); barrier_wait();</code>
+with no <code>__syncthreads()</code> anywhere, and compiling it emits exactly <code>barrier.cluster.arrive;</code>
++ <code>barrier.cluster.wait;</code> — no <code>bar.sync</code>.  Since Cooperative Groups documents <code>sync()</code> as
+rendezvousing <em>all threads in the group</em>, and a cluster group's threads are all threads of all
+its workgroups, the cluster barrier must cover intra-workgroup convergence.  Crisp therefore
+emits no implicit <code>sync-workgroup</code> alongside it.  (CUDA 12.4 headers; PTX checked on sm_90a.)</p>
+<p>The same check settled the <code>:relaxed</code> question: NVIDIA's default <code>cluster.sync()</code> emits the
+<strong>non-relaxed</strong> form, which is the same default Crisp uses.</p>
+</blockquote>
+<p>Like many sync operations, using <code>sync-cluster</code> in a divergent context (<code>if</code>, <code>cond</code>, or warp specialization block) can lead to deadlocks. Crisp will emit a compilation error if it encounters this situation. </p>
+<h4 id="sync-workgroup">sync-workgroup<a class="headerlink" href="#sync-workgroup" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="nv">sync-workgroup</span><span class="p">)</span><span class="w">          </span><span class="c1">; arrive + wait, ordered.  The safe default.</span>
+
+<span class="c1">;; --- the split form, SPIR-V only --------------------------------------------</span>
+<span class="p">(</span><span class="nv">sync-workgroup</span><span class="w"> </span><span class="ss">:arrive</span><span class="p">)</span><span class="w">  </span><span class="c1">; non-blocking: "I'm here"                    ✅ Intel</span>
+<span class="p">(</span><span class="nv">sync-workgroup</span><span class="w"> </span><span class="ss">:wait</span><span class="p">)</span><span class="w">    </span><span class="c1">; block until all threads have arrived        ✅ Intel</span>
+</code></pre></div>
+<p><code>(sync-workgroup)</code> is the same as <code>barrier(CLK_LOCAL_MEM_FENCE)</code>. It both announces that this thread
+has reached the point and blocks until every other thread in the workgroup has too.</p>
+<p>The <strong>split form</strong> separates those two, so useful work can sit between them — the thread announces,
+keeps going, and only blocks at the <code>:wait</code> if it actually outran its peers:</p>
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="nb">dotimes</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-k</span><span class="w"> </span><span class="nv">n-k</span><span class="p">)</span>
+<span class="w">  </span><span class="p">(</span><span class="nv">sync-workgroup</span><span class="w"> </span><span class="ss">:arrive</span><span class="p">)</span>
+<span class="w">  </span><span class="p">(</span><span class="nv">load-tile</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="nv">A-tile</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-y</span><span class="w"> </span><span class="nv">grid-k</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="nv">load-tile</span><span class="w"> </span><span class="nv">B</span><span class="w"> </span><span class="nv">B-tile</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-k</span><span class="w"> </span><span class="nv">grid-x</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="nv">mma-accumulate-via-tile</span><span class="w"> </span><span class="p">(</span><span class="mi">8</span><span class="w"> </span><span class="mi">16</span><span class="w"> </span><span class="mi">16</span><span class="p">)</span><span class="w"> </span><span class="nv">C-tile</span><span class="w"> </span><span class="nv">A-tile</span><span class="w"> </span><span class="nv">B-tile</span><span class="p">)</span>
+<span class="w">  </span><span class="p">(</span><span class="nv">sync-workgroup</span><span class="w"> </span><span class="ss">:wait</span><span class="p">))</span>
+</code></pre></div>
+<p><strong>This is an execution rendezvous, not data movement.</strong> It synchronises no memory of its own and
+signals no barrier object — <code>await</code> and <code>signal</code> are for "these bytes are now visible." A split
+barrier paces control flow, which is why it extends <code>sync-workgroup</code> rather than <code>await</code>, and why it
+reads like the <a href="#sync-cluster">sync-cluster</a> split above: cluster, workgroup and warp are one scope
+ladder.</p>
+<p>The same restrictions apply as for <code>sync-cluster</code>, and for the same reason — every violation
+deadlocks rather than computing a wrong answer:</p>
+<ul>
+<li>the <code>:arrive</code> MUST be paired with a <code>:wait</code>, and these CANNOT nest (one window at a time).</li>
+<li>neither half may appear in a divergent context (<code>if</code> / <code>when</code> / <code>unless</code> / <code>cond</code>, or a warp
+  specialization role block).</li>
+<li><code>return</code> or otherwise exiting between <code>:arrive</code> and <code>:wait</code> is disallowed.</li>
+<li>reading or writing SLM inside the window is discouraged — the barrier's memory semantics are
+  <code>AcquireRelease | WorkgroupMemory</code>, so that is exactly the ordering the split gives up.</li>
+</ul>
+<p>The compiler <strong>refuses</strong> the first two statically. The third and fourth are <strong>not yet checked</strong>;
+absence of an error is not proof of correctness for those two.</p>
+<p><code>SPV_INTEL_split_barrier</code> is requested only by modules that actually use the split form, so a kernel
+that never splits does not oblige the driver to support the extension.</p>
+<blockquote>
+<p><strong>PTX refuses rather than approximating.</strong> NVIDIA's <code>bar.arrive</code> / <code>bar.sync</code> are not the same
+rendezvous, so compiling either half for <code>--ir-target=ptx</code> is a compile error naming the backend.
+Use the fused <code>(sync-workgroup)</code> there.</p>
+<p><strong>Shipped and measured is not the same as recommended.</strong> On Arc B580 the split form does what it
+claims — at 16 subgroups it turns a fused barrier's 14.7% throughput loss into a 1.8% one, because
+the stall was the expense and splitting removes the stall. But at that width the fastest kernel is
+the one with <strong>no barrier at all</strong>, and at 4 subgroups, where pacing does pay, the <em>fused</em> form
+beats the split one. There is currently no measured configuration where the split form is the right
+choice on Intel. It is here because the scope ladder should be complete and because the mechanism
+is now testable — not as a performance recommendation. See
+<code>tests/spec/157-split-barrier/157-split-barrier.md</code> for the full matrix.</p>
+</blockquote>
+<h4 id="sync-warp">sync-warp<a class="headerlink" href="#sync-warp" title="Permanent link">&para;</a></h4>
+<p>(sync-warp): Implemented via <code>__builtin_shflsync(0xFFFFFFFF, 0)</code>.</p>
+<h4 id="sync-on-arrival">Sync on Arrival<a class="headerlink" href="#sync-on-arrival" title="Permanent link">&para;</a></h4>
+<p>(make-arrival-sync count) : A thread-count barrier. Returns a handle used by the consumer to block until <code>count</code> threads have called (sync-arrive). Implementation uses a global atomic counter.</p>
+<p>(sync-arrive sync-handle) : non-blocking. Puts one "unit" into the sync bucket.
+(sync-wait sync-handle) : blocks until "count" units have been put into the sync bucket.</p>
+<h3 id="semaphore-operations">Semaphore Operations<a class="headerlink" href="#semaphore-operations" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(make-semaphore :address-space :global/:local :initial-value &lt;int&gt; :scope :system/:device) =&gt; sema
+(semaphore-release sema new-value)
+(semaphore-acquire sema expected-value)
+
+;; semaphore type declaration:
+(semaphore :address-space &lt;as&gt; :scope &lt;s&gt;)
+;; :scope defaults to :device.
+;; :address-space must be provided for a complete type definition (as would be required at the kernel boundary).
+</code></pre></div>
+<p>Semaphore is just a location in :global or :local address space.  Must be enqueued by the host.<br />
+Crisp will need a semaphore data type. (and a marshall- routine)</p>
+<p><code>make-semaphore</code> for :global has to do the "side channel" thing. Gets implicitly added to the kernel arglist. </p>
+<p><code>make-semaphore</code> for :local must be prepared by host, BUT can be "carved out" of kernel space since it is a known fixed size.
+Obviously, we can't do 'make-semaphore` in a loop etc.  </p>
+<h4 id="make-semaphore">make-semaphore<a class="headerlink" href="#make-semaphore" title="Permanent link">&para;</a></h4>
+<p><code>(make-semaphore &amp;key address-space initial-value (scope :device)) =&gt; sema</code></p>
+<p>For semaphores used within the same kernel call, it is only necessary to set <code>:address-space</code> to <code>:local</code>.
+If a semaphore is used between kernel calls, then the <code>:address-space</code> should be <code>:global</code>.</p>
+<p>For interoperating with Vulkan, OpenGL, or CPU-side code, the <code>:scope</code> must be set to <code>:system</code>.
+If interoperating with other kernels but in the same execution context, then the <code>:scope</code> should be <code>:device</code>.</p>
+<h3 id="semaphore-acquire">semaphore-acquire<a class="headerlink" href="#semaphore-acquire" title="Permanent link">&para;</a></h3>
+<p><code>(semaphore-acquire sema expected-value)</code></p>
+<p>Wait on the semaphore until its value equals <code>expected-value</code>.</p>
+<p>In the implementation this translates into a spin-wait loop that atomically polls the memory address using a <code>memory_order_acquire</code> fence. It will loop—inserting hardware yield/sleep instructions to save power—until the semaphore equals the expected-value. The acquire fence guarantees that your warp will not speculatively start reading memory for the next step until the lock is officially acquired.</p>
+<h3 id="semaphore-release">semaphore-release<a class="headerlink" href="#semaphore-release" title="Permanent link">&para;</a></h3>
+<p><code>(semaphore-release sema new-value)</code></p>
+<p>Change the value of the semaphore. Presumably some other party might have been waiting and will now spring to action.</p>
+<p>In the implementation this translates into an atomic write instruction coupled with a <code>memory_order_release</code> fence. The fence is the magic part. It strictly guarantees that any data your warp just calculated and stored (e.g., writing a computed tile back to Global Memory) is fully flushed and visible to the rest of the GPU before the semaphore's value actually changes.</p>
+<h2 id="rings">Rings ✅<a class="headerlink" href="#rings" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>(make-scratch-vector-ring &lt;tensorType&gt; &lt;dim&gt; :ring-count &lt;count&gt;) =&gt; ring
+(make-scratch-matrix-ring &lt;tensorType&gt; (&lt;dimensions&gt;) :ring-count &lt;count&gt;) =&gt; ring
+(make-scratch-tensor-ring &lt;tensorType&gt; (&lt;dimensions&gt;) :ring-count &lt;count&gt;) =&gt; ring
+
+(make-async-barrier-ring :ring-count &lt;count&gt; &amp;key mode arrivals) =&gt; ring
+
+
+(ring-get &lt;ring&gt; &lt;index&gt;) =&gt; &lt;object&gt;
+</code></pre></div>
+<p>For pipelining, we often need several scratch memory pads that we cycle through. Thus one can be loading while
+another is being used for read or write. And if we are performaing async loading, we'll need a matching barrier.</p>
+<p>The <code>&lt;tensorType&gt;</code> can be a type declaration or just a tensor variable.<br />
+<code>&lt;dimensions&gt;</code> is a list of integers, which must be known at compile-time. They cannot be runtime variables.
+<code>&lt;dim&gt;</code> is a compile time constant integer, used for the vector variant.</p>
+<p><code>ring-get</code> takes a ring and an index and returns the nth object in the ring.  The <code>&lt;index&gt;</code> may be a
+<strong>runtime</strong> value — the pipelining main loop indexes with <code>(mod (+ ring-idx 1) stages)</code> — which is
+exactly what makes a ring a ring.</p>
+<blockquote>
+<p><strong>How a ring is built.</strong>  A ring of N slots is ONE allocation with the ring as a <em>prepended
+dimension</em> — <code>(make-scratch-matrix-ring float (64 8) :ring-count 3)</code> is a rank-3 scratch tensor
+<code>(3 64 8)</code> whose <strong>dim 0 is the slot</strong> — and <code>ring-get</code> is an offset view into it.  So the slots
+are contiguous in SLM and a ring costs exactly <strong>one</strong> implicit kernel argument no matter how
+deep it is.  A barrier ring is the same idea: <code>N</code> mbarriers laid out contiguously, and a plain
+<code>(make-async-barrier)</code> is simply <strong>a ring of 1</strong>.</p>
+</blockquote>
+<h3 id="make-async-barrier-ring"><code>make-async-barrier-ring</code> ✅<a class="headerlink" href="#make-async-barrier-ring" title="Permanent link">&para;</a></h3>
+<p><code>(make-async-barrier-ring :ring-count &lt;count&gt; &amp;key mode arrivals) =&gt; ring</code></p>
+<ul>
+<li><strong><code>:ring-count</code></strong> — required. A positive compile-time integer: the pipeline depth (how many
+  stages are in flight at once).</li>
+<li><strong><code>:mode</code></strong> — exactly as <code>make-async-barrier</code> (<code>:linear</code> / <code>:block</code> / <code>:cluster</code>; omit for
+  arch-automatic).  Every slot in the ring shares the mode.  On <strong>SPIR-V, <code>:linear</code> rings are not
+  yet implemented</strong> (they would need per-slot <code>spirv.Event</code> chaining) — a genuine ring
+  (<code>ring-count &gt; 1</code>) with <code>:mode :linear</code> is a compile error there; a single
+  <code>(make-async-barrier :mode :linear)</code> is fine.  Since <code>:block</code> and <code>:cluster</code> are also SPIR-V
+  compile errors, <strong>a barrier ring of any mode is NVIDIA-only today</strong>.</li>
+<li><strong><code>:arrivals</code></strong> — <strong>required for every barrier ring</strong> (both modes).  How many transfers <strong>each
+  slot</strong> tracks <em>per pipeline stage</em> — i.e. how many <code>load-tile</code>s name that one slot in a single
+  stage.  The classic A+B staging is <code>2</code>.  It means the same thing to every lowering:</li>
+<li><code>:block</code> — the mbarrier's init <strong>arrival count</strong>.</li>
+<li><code>:cluster</code> — likewise the mbarrier's init arrival count, <strong>scaled by the compiler</strong> — see
+    "<code>:arrivals</code> is per-workgroup" below.</li>
+<li><code>:linear</code> — the loads-per-stage factor in the <code>cp.async.wait_group((ring-count − 1) × arrivals)</code>
+    depth (each <code>:linear</code> <code>load-tile</code> commits one group), i.e. how many groups a stage closes.
+    Cluster reach has no meaning on this rung.</li>
+</ul>
+<blockquote>
+<p><strong>Why <code>:arrivals</code> is explicit and not inferred.</strong>  A <code>:block</code> (TMA) barrier is a hardware
+mbarrier: it completes when <em>both</em> its arrival count and its expected transaction bytes are
+satisfied, so the count must be exactly right — <strong>too high and the barrier never completes (the
+kernel hangs); too low and you read a half-arrived tile.</strong>  The <code>:linear</code> <code>wait_group</code> depth is
+less catastrophic but still wrong if the count is off (no overlap, or reading too early).  For a
+<em>single</em> <code>make-async-barrier</code> the compiler infers it by counting the loads that name that
+barrier, which is correct because such a kernel has one stage in the text.  Through a <strong>ring</strong>
+that inference breaks: the prologue and the main loop <em>both</em> load the same ring, so the textual
+count (2 in the prologue + 2 in the main loop = 4) is <strong>not</strong> the per-stage count (2).  Grouping
+loads "per phase" statically is fragile, so Crisp asks you to say it — you already know the
+number: it is how many <code>load-tile</code>s you wrote against one slot.  Requiring it for <strong>both</strong> modes
+also keeps an arch-automatic ring kernel portable: the same <code>:arrivals</code> works whether the arch
+resolves to <code>:block</code> on sm_90+ or <code>:linear</code> on sm_80.</p>
+<p><strong><code>:arrivals</code> is per-workgroup, and stays that way under <code>:cluster</code>.</strong>  On a <code>:cluster</code> ring the
+barrier really does collect more arrivals than the number you wrote, because peers arrive on it
+too.  <strong>You do not write the bigger number.</strong>  <code>:arrivals</code> remains what it has always been — how
+many transfers <em>one workgroup</em> puts through <em>one slot</em> in <em>one stage</em> — and the compiler scales
+it by the declared cluster extent.</p>
+<p>This is the same division of labour the rule above describes, not an exception to it: you state
+a fact you know (what your own workgroup does per stage), the compiler computes a consequence
+from a fact it knows (how many workgroups are in the cluster).  Making you do the multiplication
+would mean that adding a single <code>cluster-size</code> line to a working kernel silently requires editing
+an unrelated barrier declaration, and forgetting it hangs the GPU.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code>;; three stages in flight; each stage stages an A-tile and a B-tile under its own barrier slot.
+(make-async-barrier-ring :ring-count 3 :mode :block  :arrivals 2)   ; NVIDIA sm_90+ (TMA mbarriers)
+(make-async-barrier-ring :ring-count 3 :mode :linear :arrivals 2)   ; sm_80+ (cp.async wait_group 4)
+
+;; a clustered pipeline: the data-arrival ring stays workgroup-local, the buffer-free ring
+;; gains cluster reach so peer workgroups can release the producer's slots.
+(make-async-barrier-ring :ring-count 3 :mode :block   :arrivals 2 :initial-state :waiting)
+(make-async-barrier-ring :ring-count 3 :mode :cluster :arrivals 4 :initial-state :signaled)
+</code></pre></div>
+<h2 id="warp-specialization">Warp Specialization ✅<a class="headerlink" href="#warp-specialization" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>(with-warp-specialization (:producer 1 :consumer 3)
+
+  (:producer 
+    ...
+  )
+
+  (:consumer
+    ...
+  ))
+</code></pre></div>
+<p>Warp specialization allows you to split a single kernel into multiple distinct behaviors that execute on different warps within the same thread block.</p>
+<p>In the example above, one warp will be dedicated to some work labelled <code>:producer</code>, and three warps will be
+performing the work labelled <code>:consumer</code>. So the overall workgroup must be sized to be 4 times <code>(get-warp-size)</code></p>
+<p><code>with-warp-specialization</code> can have as many labels as you want, so long as the workgroup is a multiple of the sum of the labels.</p>
+<p>When <code>--runtime-checks</code> is enabled, the compiler will insert a check to ensure the workgroup size is correct.</p>
+<h2 id="matrix-multiplication">Matrix Multiplication ✅<a class="headerlink" href="#matrix-multiplication" title="Permanent link">&para;</a></h2>
+<h3 id="mma-lowering"><code>mma-lowering</code> ✅<a class="headerlink" href="#mma-lowering" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(def-kernel matmul (A B &amp;out C)
+  (declare #'(a-mat b-mat &amp;out c-mat)
+           (mma-lowering :xe-native)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  ...)
+</code></pre></div>
+<p>A kernel declaration selecting which code-generation strategy to use for this kernel's matrix-engine
+operations. The hardware profile declares what is <em>available</em> (<code>:mma-lowerings</code>); the kernel declares
+what it <em>wants</em>. Omitting it takes the profile's default, which is <code>:coop-matrix</code> unless a profile
+says otherwise.</p>
+<p><strong>Why you would use it.</strong> <code>:coop-matrix</code> is portable and is what every Crisp kernel has always
+emitted. <code>:xe-native</code> is Intel-only and emits the DPAS instruction directly, with 2D block loads
+instead of cooperative-matrix loads. On an Arc B580 it is measurably leaner — 42 machine
+instructions per <code>dpas</code> against 57 — and at matched geometry it measured +13% at N=2048 and +9% at
+N=4096 for bf16.</p>
+<p><strong>It is not automatically better.</strong> Measured on the same hardware, <code>:xe-native</code> does <em>not</em> currently
+compose with a register-tile ring: the shipped bf16 kernel (<code>:coop-matrix</code>, ring depth 2, prefetch
+distance 2) reaches 60.4 TFLOPS at N=2048, while the same kernel with only the lowering changed
+reaches 50.0. Treat it as a parameter to measure, not an upgrade to apply.</p>
+<p><strong>Crisp refuses; it never falls back.</strong> Asking for a lowering the active profile does not offer is a
+compile error naming both sides:</p>
+<div class="highlight"><pre><span></span><code>mma-lowering :XE-NATIVE is not available on the active hardware profile (kernel MATMUL).
+This profile offers: :COOP-MATRIX.  Crisp REFUSES rather than falling back to a different
+lowering, because a silent downgrade would give you a slow kernel and no way to see why.
+</code></pre></div>
+<p>An unknown <em>name</em> is reported differently from a known-but-unavailable one, because the first is a
+typo and the second is a portability decision, and they want different fixes.</p>
+<p><strong>The chosen lowering is recorded</strong> in the kernel's <code>.metacrisp</code> as <code>:mma-lowering</code>, even when it was
+defaulted, so a benchmark number can be attributed to a code path.</p>
+<p><strong>Current limits of <code>:xe-native</code></strong>, each a compile-time refusal rather than a silent approximation:</p>
+<ul>
+<li>bfloat16 and half operands only (the instruction's K and operand mask are not inferable for others)</li>
+<li>a zero fragment initialiser only (a non-zero splat needs the per-lane encoding)</li>
+<li>a subgroup width of 16 (the fragment layout is derived from it)</li>
+<li>one operand element type per kernel — a kernel mixing bf16 and fp16 operands is refused, because
+  the instruction takes a single mask describing A and B together</li>
+</ul>
+<p>There is <strong>no command-line flag</strong> for this. The lowering is selected in the kernel source, or
+inherited from the profile default.</p>
+<h3 id="make-register-tile"><code>make-register-tile</code> ✅<a class="headerlink" href="#make-register-tile" title="Permanent link">&para;</a></h3>
+<p><div class="highlight"><pre><span></span><code>(make-register-tile &lt;type&gt; &lt;dimensions&gt; &lt;initial-value&gt; &amp;key warps)
+
+(make-register-tile float (128 128) 0.0)
+(make-register-tile float (64 64) 0.0 :warps '(false true true))   ; warp-specialized: tile on the 2 consumer warps
+</code></pre></div>
+<code>make-register-tile</code> reserves a space of registers and wraps their memory in a tensor.<br />
+The <code>&lt;dimensions&gt;</code> argument is a list of integers, which must be known at compile-time. They cannot be runtime variables.</p>
+<p>A register tile is extremely performant, but overuse can dramatically increase the register pressure from 
+your kernel, leading to lower overall occupancy. In most matrix multiplication operations, only the highly trafficed
+"C" tile of the result is stored in registers. The others are :local :address-space scratch matrices.</p>
+<p>A register tile is a <strong>warp-collective</strong> abstraction, not thread-local. The logical tile
+(e.g. 64×64) is distributed by the compiler across the warps of the workgroup, and within
+each warp across its lanes. Computing that distribution requires a known <strong>SIMD width</strong>.
+That width is taken from the active hardware profile's <code>:simd-width</code> if one is in play;
+otherwise it is inferred from <code>--ir-target-arch</code> (or the <code>--ir-target</code> default — e.g. 32
+for <code>sm_*</code>). If none of those pins the SIMD width, <code>make-register-tile</code> is a compile error.
+The hardware profile stays optional in general — this is simply one of the few forms that
+needs the SIMD width to be knowable. When a profile <em>is</em> supplied, its <code>:simd-width</code> and
+<code>:max-registers-per-thread</code> additionally let the compiler verify at compile time that the
+distributed fragments actually fit the physical register file.</p>
+<h4 id="warps-the-warp-participation-mask-for-warp-specialization"><code>:warps</code> — the warp participation mask (for warp specialization)<a class="headerlink" href="#warps-the-warp-participation-mask-for-warp-specialization" title="Permanent link">&para;</a></h4>
+<p>By default the tile distributes across <strong>every</strong> warp of the workgroup.  That is wrong under
+<strong>warp specialization</strong>: if only the <em>consumer</em> warps run the MMA, any fragment the compiler
+placed on a producer warp would never be computed — a wrong result.  <code>:warps</code> fixes that by
+letting you say <strong>exactly which warps hold the tile</strong>, as a flat boolean <strong>topology map</strong>,
+positional over the workgroup's warp layout:</p>
+<div class="highlight"><pre><span></span><code>(make-register-tile float (64 64) 0.0 :warps '(false true true))
+;; warp 0 holds no fragment; warps 1 and 2 split the tile.  Pairs with a
+;; (with-warp-specialization (:producer 1 :consumer 2) ...) whose producer is warp 0.
+</code></pre></div>
+<ul>
+<li><strong>Elements</strong> are <code>true</code> / <code>false</code> (or, equivalently, <code>1</code> / <code>0</code>).  The mask is deliberately
+  decoupled from <code>with-warp-specialization</code> — <code>make-register-tile</code> is declared in the outer
+  <code>let</code>, outside any role block, so it references warps <em>positionally</em>, not by role name.  It is
+  <strong>your</strong> responsibility to line the <code>true</code>s up with the warps that actually run the MMA (the
+  same discipline as <code>:arrivals</code> — the compiler checks shape, not intent).</li>
+<li><strong>Length</strong> must equal the workgroup's warp count (<code>local-size / warp-size</code>).  When <code>local-size</code>
+  is statically known this is a <strong>compile-time</strong> error; otherwise it is deferred to an
+  <code>--runtime-checks</code> assertion.</li>
+<li><strong>Even division (compile-time).</strong>  An <code>(M N K)</code> MMA fragment is <code>M×N</code>, computed collectively by
+  one whole warp, so a tile is a grid of <code>(tile-M / frag-M) × (tile-N / frag-N)</code> fragments (e.g.
+  a 64×64 tile with <code>(16 8 8)</code> = <code>4×8 = 32</code> fragments).  The number of <code>true</code> warps <strong>must evenly
+  divide</strong> that fragment count, or it is a compile error.  So a 32-fragment tile allows 1 / 2 / 4 /
+  8 / 16 / 32 consumers — <strong>not 3</strong> (this is why the warp-spec example below uses <code>:consumer 2</code>,
+  not the <code>:consumer 3</code> an earlier draft showed).</li>
+<li><strong>Occupancy note.</strong>  More <code>true</code> (consumer) warps sharing one C-tile ⇒ fewer fragments per warp
+  ⇒ fewer registers per thread ⇒ higher occupancy.  So the consumer count is the real lever
+  against the single-warp register wall (Endeavor 138's 4096 plateau) — worth sweeping.</li>
+</ul>
+<h3 id="matrix-multiply-tile-stride">matrix-multiply-tile-stride ✅<a class="headerlink" href="#matrix-multiply-tile-stride" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(matrix-multiply-tile-stride &lt;C-matrix&gt; &lt;C-matrix-tile&gt; &lt;K-inner-dim-scalar&gt; &lt;k-step&gt; (&lt;grid-bindings&gt;) ...)
+</code></pre></div>
+<p>If you have matrices <code>A</code>, <code>B</code> and <code>C</code> such that you are planning multiply them <code>(A x B = C)</code> then
+the <code>matrix-multiply-tile-stride</code> macro will help stride and walk the space correctly by a tile.
+The macro doesn't take <code>A</code> or <code>B</code> as arguments, it's not performing the multiplication itself,
+ it simply needs to know the <code>C</code> matrix, the tile matrix view into <code>C</code>, the inner dimension of the multiplication (aka <code>K</code>), and which tile dimension strides <code>K</code>.  Then it'll loop, and in each loop <code>&lt;grid-bindings&gt;</code> will
+ be set for you.  Use tihs macro in conjunction with <code>mma-accumultae-via-tile</code> to make matrix multiplication
+ easy.</p>
+<p><code>&lt;k-step&gt;</code> is the K-extent of the staging tiles. It is the dimension A-tile and B-tile share.   <code>K / &lt;k-step&gt;</code> give the loop trip count.</p>
+<p><code>&lt;grid-bindings&gt;</code> are <code>(grid-y grid-x grid-k)</code></p>
+<p>Inside the body of the macro, <code>grid-k</code> will be the fastest changing term as it loops over K. 
+This macro is very handy for producing matrix multiply kernels.  If used in conjunction with <code>mma-accumulate-via-tile</code> 
+then nearly all the boilerplate of a matrix multiply is handled.</p>
+<p><strong>The <code>:epilogue</code> (store + fusion).</strong> The macro owns the <code>grid-y</code>/<code>grid-x</code> spatial and <code>grid-k</code>
+reduction loops, but it does <strong>not</strong> store <code>C-tile</code> for you.  Split the body with an <code>:epilogue</code>
+marker: forms <strong>before</strong> it run once per K-step (the reduction); forms <strong>after</strong> it run once per
+tile, post-reduction, with <code>grid-y</code>/<code>grid-x</code> in scope and <code>C-tile</code> complete.  That is where your
+store — and any fused epilogue (ReLU, bias, scale) — go:</p>
+<div class="highlight"><pre><span></span><code>(matrix-multiply-tile-stride C C-tile K k-step (grid-y grid-x grid-k)
+  ;; per-K-step reduction body
+  (load-tile A A-tile (grid-y grid-k))
+  (load-tile B B-tile (grid-k grid-x))
+  (sync-workgroup)
+  (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+  (sync-workgroup)
+  :epilogue                               ; &lt;- once per tile, post-reduction
+  (relu C-tile)                           ; optional fused epilogue on the completed tile
+  (store-tile C-tile C (grid-y grid-x)))  ; explicit store — you own the write-back
+</code></pre></div>
+<p>The explicit <code>:epilogue</code> keeps
+the macro lean and the store honest — and it makes the progression to ring pipelining / warp
+specialization (which also store explicitly) consistent.  <strong>If a kernel never stores its <code>C-tile</code>,
+the compiler warns</strong> (a matmul that discards its result is almost always a bug).</p>
+<blockquote>
+<p><strong>Where does the activation go — <code>my-accum</code> or <code>:epilogue</code>?</strong>  <code>mma-accumulate-via-tile</code> exposes
+a per-fragment accumulator (<code>my-accum</code>, in registers) for fusion, and the macro exposes a
+per-tile <code>:epilogue</code>.  The form that does the fusing in either place is
+<a href="#map-elements----fusing-your-own-code-into-the-epilogue"><code>map-elements!</code></a>.
+Use whichever owns the <em>complete</em> reduction: if
+<code>mma-accumulate-via-tile</code> does the whole K-contraction itself, fuse on <code>my-accum</code> (finer,
+in-register).  But in this <strong>staged</strong> pattern — the macro's <code>grid-k</code> loop calls
+<code>mma-accumulate-via-tile</code> once per K-step — <code>my-accum</code> holds a <strong>partial</strong> sum each step, so the
+activation belongs in the macro's <code>:epilogue</code> (on the completed <code>C-tile</code>), <strong>not</strong> on <code>my-accum</code>.
+Fusing on <code>my-accum</code> here is a compile-time <strong>error</strong>, not merely bad practice — see the
+partial-sum warning under <code>map-elements!</code> for why even a linear function is wrong.</p>
+</blockquote>
+<p><strong>Grid semantics.</strong> <code>grid-y</code> / <code>grid-x</code> are TILE-IDs — 0-based tile coordinates over <code>C</code>'s output
+tiles (sized by <code>C-tile</code>) — which is exactly what <code>load-tile</code> / <code>store-tile</code> expect (they scale a
+tile-ID by the tile's extent).  <code>grid-k</code> is the K-step index, <code>0 .. K/&lt;k-step&gt; - 1</code>.  The macro is
+grid-strided: a workgroup owns <strong>≥ 1</strong> <code>C</code>-tile and strides across the grid, so it works whether
+you launch one workgroup per output tile (a 2-D grid = (#row-tiles, #col-tiles)) or fewer.</p>
+<p><strong>Accumulator reset.</strong> When a workgroup owns more than one <code>C</code>-tile, the register <code>C-tile</code> is reused
+across tiles, so reset it at the start of each tile's reduction with <code>fill-tile</code>:
+<code>(when (= grid-k 0) (fill-tile C-tile (identity-value)))</code>.  A one-tile-per-workgroup launch does not
+need this — <code>make-register-tile</code>'s init covers the single tile.</p>
+<p><strong>Chapter 0 (synchronous) — what ships today.</strong> The Chapter-0 body is fully synchronous: stage with
+plain <code>load-tile</code> (no <code>:barrier</code>), <code>sync-workgroup</code>, <code>mma-accumulate-via-tile</code>, <code>sync-workgroup</code>.
+<div class="highlight"><pre><span></span><code>(def-kernel matmul (A B &amp;out C)
+  (declare #'(a-mat b-mat &amp;out c-mat) (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue                               ; &lt;- once per tile, post-K-loop
+      (store-tile C-tile C (grid-y grid-x))))) ; you own the store
+</code></pre></div>
+The kernel above is the <strong>shared synchronous baseline</strong> — it ships and is metal-correct on both
+NVIDIA and Intel.  From here the optimization story <strong>splits by vendor</strong>, because the two machines
+hide memory latency in fundamentally different ways (NVIDIA stages global→SLM asynchronously and
+feeds the tensor cores from SLM; Intel's fast path loads global→<em>registers</em> directly).  So there
+is no single "three chapters" arc — there are <strong>two separate arcs</strong> over the same baseline.  See
+"Optimizing NVIDIA MMA" and "Optimizing Intel MMA" below.</p>
+<h3 id="inner-dimension">inner-dimension ✅<a class="headerlink" href="#inner-dimension" title="Permanent link">&para;</a></h3>
+<p><code>(inner-dimension A B) =&gt; ulong</code>
+Returns the size of the inner dimensions of two tensors (the dimension used for matrix multiplication).</p>
+<h3 id="outer-dimensions">outer-dimensions ✅<a class="headerlink" href="#outer-dimensions" title="Permanent link">&para;</a></h3>
+<p><code>(outer-dimensions A B) =&gt; M N</code></p>
+<h3 id="fill-tile">fill-tile ✅<a class="headerlink" href="#fill-tile" title="Permanent link">&para;</a></h3>
+<p><div class="highlight"><pre><span></span><code>(file-tile &lt;some-tensor&gt; &lt;some-value&gt;)
+</code></pre></div>
+<code>fill-tile</code> can be used with any tensor, (vectors, matrices, etc). It simply fills it with a value.
+It is a simple cooperative workgroup operation (it usually uses <code>workgroup-stride</code> under the covers) and is intended, as named, to be used on simple tiles.  For a very large tensor, use one of the other strides to implement your own.  Note: for register tiles (<code>make-register-tile</code>) it gets unrolled per fragment. Quite performant. </p>
+<h2 id="matrix-multiplication-optimization-two-vendor-arcs">Matrix Multiplication Optimization — Two Vendor Arcs<a class="headerlink" href="#matrix-multiplication-optimization-two-vendor-arcs" title="Permanent link">&para;</a></h2>
+<p>The synchronous tiled matmul above is the shared baseline (metal-correct on both vendors).
+Optimizing past it <strong>splits by machine</strong> — NVIDIA stages global→SLM asynchronously and feeds the
+tensor cores from SLM; Intel loads global→registers directly.  Two arcs, one baseline.</p>
+<h2 id="optimizing-nvidia-mma">Optimizing NVIDIA MMA<a class="headerlink" href="#optimizing-nvidia-mma" title="Permanent link">&para;</a></h2>
+<p>NVIDIA hides memory latency by staging tiles <strong>global→SLM asynchronously</strong> (tracked by an async
+barrier), then feeding the tensor cores from SLM.  Over the synchronous baseline:</p>
+<ol>
+<li><strong><code>cp.async</code> (<code>:mode :linear</code>)</strong> — async per-element copy global→SLM.  <strong>Shipped</strong>, metal-verified.</li>
+<li><strong>CuTensorMap (<code>:mode :block</code>)</strong> — bulk, descriptor-driven 2D copy global→SLM (sm_90+ / TMA).  <em>Next.</em></li>
+<li><strong>Ring pipelining</strong> — barrier + storage-handle rings so one stage loads while another computes.</li>
+<li><strong>Warp specialization</strong> — dedicated producer / consumer warps over the rings.</li>
+</ol>
+<p>The examples below build up this arc.</p>
+<h3 id="chapter-1-basic-matrix-multiply-with-async-tile-loading">Chapter 1 — Basic Matrix Multiply with async tile loading<a class="headerlink" href="#chapter-1-basic-matrix-multiply-with-async-tile-loading" title="Permanent link">&para;</a></h3>
+<p>We use basic async tile loading to hide some of the memory latency when fetching tiles.</p>
+<p>We also use the highly performant <code>mma-accumulate-via-tile</code> to perform the matrix multiply.</p>
+<div class="highlight"><pre><span></span><code>(with-template-type (T)
+  (def-type mat (matrix T :address-space :global :align :compact :contiguous-term :row-major))
+
+  (def-grid-function basic-matrix-multiply (A B &amp;out C)
+    (declare #'((mat T) (mat T) (mat T))
+               (global-size :derive-from C :strategy :strided))  
+    (let ((A-tile (make-scratch-matrix A (128 128)))
+          (B-tile (make-scratch-matrix B (128 128)))
+          (C-tile (make-register-tile T (128 128) (identity T)))
+          (K (inner-dimension A B))
+          (k-step   128)
+          (barrier (make-async-barrier))) ;; arch-automatic: :block on sm_90+, else :linear
+    (matrix-multiply-tile-stride C C-tile K k-step (grid-y grid-x grid-k)
+
+      (load-tile A A-tile (grid-y grid-k) :barrier barrier) 
+      (load-tile B B-tile (grid-k grid-x) :barrier barrier )
+      (await barrier) 
+
+        (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
+            ;; accum-op is available here; call it to fire the DPAS/MMA for THIS K-step.
+            ;; NOTE: this is the STAGED pattern — the macro's grid-k loop calls us once per
+            ;; K-step, so my-accum is a PARTIAL sum here.  Do NOT fuse activation on it; the
+            ;; activation goes in the :epilogue below, on the completed C-tile.
+            (accum-op))
+        ;; (Another barrier usually goes here before the next 'k' iteration overwrites SLM)
+        (sync-workgroup)
+      :epilogue
+        ;; K-loop done — C-tile is complete.  Fuse the epilogue on the finished tile, then store.
+        (relu C-tile)
+        (add-bias C-tile bias-tile)          ;; &lt;-- fictional operation for illustration
+        (store-tile C-tile C (grid-y grid-x))))))
+</code></pre></div>
+<h3 id="mma-accumulate-via-tile">mma-accumulate-via-tile ✅<a class="headerlink" href="#mma-accumulate-via-tile" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(mma-accumulate-via-tile (&lt;sz-expr&gt;) C-tile A-tile B-tile (&lt;accum-binding&gt;) 
+  ;; in the context of this macro, the helper `accum-op` is available.
+  ;; call it once to perform the MMA accumulation.
+  ...)
+</code></pre></div>
+<p><code>mma-accumulate-via-tile</code> walks the tile in steps of <code>&lt;sz-expr&gt;</code> — an <code>(M N K)</code> triple that must match one of the Tensor MMA units of the underlying hardware.
+The <code>&lt;sz-expr&gt;</code> you pass to <code>mma-accumulate-via-tile</code> is checked against the active profile's <code>:mma-shapes</code> (also an <code>(M N K)</code> triple). A shape the hardware doesn't list is a compile error. With no active profile, the shape is accepted unchecked.</p>
+<p>Also note the multiplicity constraints: the output tile's M and N (128x128 in the code above) must each be a multiple of the shape's M and N, and the K-loop extent (the matrices' inner dimension) must be a multiple of the shape's K.</p>
+<p>Two further compile-time constraints, both checked from information you already declare:</p>
+<ul>
+<li><strong>Operand layout (and the Intel / NVIDIA difference).</strong> The A and B matrices' <code>:contiguous-term</code>
+  (<code>:row-major</code> / <code>:col-major</code>) selects which hardware MMA variant is emitted — the canonical
+  NVIDIA form is A row-major, B <strong>column-major</strong> (<code>mma…row.col</code>). A layout the chosen instruction
+  cannot accept is a compile error; use <code>:transpose</code> on the tile load to reconcile a source that
+  is stored the other way.  <strong>Intel (SPV / DPAS) is different:</strong> there is no ColumnMajor-B
+  cooperative-matrix builtin, so on the SPV path the <strong>B operand must be declared <code>:row-major</code></strong>
+  (the hardware expects B in VNNI-packed row-major form).  This is a genuine per-vendor storage
+  requirement — the same source can't be <code>:col-major</code> B for NVIDIA and <code>:row-major</code> B for Intel —
+  so a portable kernel either declares B per target or transposes on load.  (It parallels the
+  shape difference: NVIDIA tf32 <code>(16 8 8)</code> vs Intel XMX <code>(8 16 8)</code>.)</li>
+<li><strong>Precision.</strong> The <code>(M N K)</code> triple encodes operand <em>precision</em> — the same M×N comes in
+  several K variants for different dtypes (e.g. k16 for fp16, k8 for tf32). The shape you pass
+  must match your operands' element type, or it is a compile error.</li>
+</ul>
+<p>Physical SLM <em>swizzling</em> (bank-conflict avoidance) is a separate performance optimization, not
+a correctness requirement — a plain row/col-major staging feeds the fragment loads correctly.</p>
+<p>The three chapter kernels above pass <code>(16 8 8)</code> — the <strong>tf32</strong> shape (K=8), matching tf32/<code>float</code>
+operands. The same M×N with <strong>fp16</strong> operands is <code>(16 8 16)</code>, which is the variant the expansion
+below illustrates (note its <code>mma.m16n8k16</code> intrinsic and K-step of 16).</p>
+<p>Below is an example of the triple loop that <code>mma-accumulate-via-tile</code> might expand into.
+<div class="highlight"><pre><span></span><code>(let ((accum (make-register-fragment 16 8 0.0)))   ; accumulator is M×N; K is the contraction, looped by tk
+  (dotimes (tk 128 16)
+    (dotimes (ty 128 16)
+      (dotimes (tx 128 8)
+        (let ((frag-a (load-fragment-a A-shared ty tk))      ; Lowers to ldmatrix.sync.x4
+              (frag-b (load-fragment-b B-shared tk tx)))     ; Lowers to ldmatrix.sync.x2
+          ;; Lowers directly to NVVM intrinsic: @llvm.nvvm.mma.m16n8k16.row.col
+          (setf accum (mma-accumulate accum frag-a frag-b)))))))
+</code></pre></div></p>
+<h3 id="map-elements-fusing-your-own-code-into-the-epilogue">map-elements! ✅ — fusing your own code into the epilogue<a class="headerlink" href="#map-elements-fusing-your-own-code-into-the-epilogue" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(map-elements! &lt;fragment-or-tile&gt; #'&lt;unary-fn&gt;)   =&gt; nil ; applied to every element, IN PLACE
+</code></pre></div>
+<p>Applies a <strong>unary function to every element</strong>, in place, while the data is still in registers.
+This is the mechanism for a fused epilogue — an activation, a scale, a clamp, anything
+elementwise — without a round trip through memory.</p>
+<p><strong>Status.</strong>  The <strong>fragment</strong> form (on <code>mma-accumulate-via-tile</code>'s accum binding) is implemented
+on both backends and verified on hardware.  The <strong>whole-tile</strong> form (in an <code>:epilogue</code>) and
+<code>--differentiate</code> support are in flight; see <code>tests/spec/150-fused-epilogue/</code>.</p>
+<p>The function is an ordinary Crisp <code>def-function</code>, not a compiler builtin:</p>
+<div class="highlight"><pre><span></span><code>(def-function leaky-relu (x)
+  (declare #'(float =&gt; float))
+  (if (&gt; x 0.0) x (* x 0.5)))
+
+(mma-accumulate-via-tile (16 8 8) C-tile A B (acc)
+  (accum-op)                              ; the MMA fires
+  (map-elements! acc #'leaky-relu))       ; then YOUR code, on the accumulator, in registers
+</code></pre></div>
+<p>That is the whole point: vendor libraries offer a fixed menu of epilogues (bias, relu, gelu …),
+and anything off the menu costs you a full round trip to HBM — write C, read C, write C.  Here
+the activation is just a function you wrote.  Crisp realises first-order functions by <strong>template
+monomorphization</strong>, so there is no function-pointer indirection in the emitted kernel.</p>
+<p><strong>It is the same idiom as <code>store-tile</code>'s <code>:transformF</code></strong>, at a different altitude.  Three places
+can carry a per-element transform, and which one you want depends on where the data is:</p>
+<table>
+<thead>
+<tr>
+<th>site</th>
+<th>when it runs</th>
+<th>form</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>accumulator fragment</td>
+<td>in registers, per fragment</td>
+<td><code>map-elements!</code> on the accum binding</td>
+</tr>
+<tr>
+<td>completed C-tile</td>
+<td>in registers, once per output tile</td>
+<td><code>map-elements!</code> in the <code>:epilogue</code></td>
+</tr>
+<tr>
+<td>during the write-out</td>
+<td>as each element goes to memory</td>
+<td><code>store-tile … :transformF #'f</code></td>
+</tr>
+</tbody>
+</table>
+<p>For a pure elementwise activation, <code>:transformF</code> is often the best of the three — it rides a
+store you were already doing, so it costs nothing extra.</p>
+<blockquote>
+<p><strong>⚠️ Do NOT fuse on <code>acc</code> inside a staged K-loop.</strong>  When <code>matrix-multiply-tile-stride</code>'s
+<code>grid-k</code> loop calls <code>mma-accumulate-via-tile</code> once per K-step, <code>acc</code> holds a <strong>partial sum</strong>,
+and a map applied there mutates the accumulator that later K-steps keep adding to.  With <code>p1</code>
+and <code>p2</code> the two K-steps' contributions, doubling once in the <code>:epilogue</code> gives <code>2·p1 + 2·p2</code>,
+while doubling per K-step gives <code>4·p1 + 2·p2</code>.  Note this is <strong>not</strong> a statement about
+non-linear functions — the only function that survives per-step application is the identity,
+so even a scale is wrong.  The compiler refuses it; put the map in the <code>:epilogue</code>, where the
+tile is complete.</p>
+</blockquote>
+<p><strong>Elementwise only, and that is deliberate.</strong>  A fragment is warp-collective, and which logical
+<code>(row, col)</code> a given register holds is a per-vendor layout detail.  An elementwise function does
+not care — applying <code>f</code> to each register independently is identical to applying it to the logical
+matrix — which is exactly what makes this portable.  Operations that <em>do</em> need the coordinate
+(adding a bias along N, row-wise reductions like softmax) are not expressible this way and are
+not supported.</p>
+<p><strong>What it lowers to.</strong>  The two vendors differ, and it shows up in the generated code:</p>
+<ul>
+<li><strong>NVIDIA / PTX</strong> — a fragment is a record of scalar registers whose count is known at compile
+  time, so the map is <strong>unrolled</strong> fieldwise (four applications for a tf32 <code>m16n8k8</code>
+  accumulator), directly after the <code>mma.sync</code>.</li>
+<li><strong>Intel / SPV</strong> — a fragment is an opaque cooperative matrix whose per-invocation component
+  count is a <strong>runtime</strong> value (<code>OpCooperativeMatrixLengthKHR</code>), so the map is a <strong>loop</strong> over the
+  components, each reached with <code>OpAccessChain</code>.  This is the same fact as the paragraph above:
+  the kernel never learns which logical element it holds.</li>
+</ul>
+<h3 id="fragment-primitives-the-low-level-building-blocks">Fragment primitives (the low-level building blocks)<a class="headerlink" href="#fragment-primitives-the-low-level-building-blocks" title="Permanent link">&para;</a></h3>
+<p><code>mma-accumulate-via-tile</code> composes these lower-level forms.  Most kernels never write them
+directly — reach for them only when you need a hand-rolled MMA loop the macro doesn't cover.
+A <em>fragment</em> is one hardware MMA operand's worth of data, distributed across a warp's lanes.</p>
+<div class="highlight"><pre><span></span><code>(make-register-fragment &lt;M&gt; &lt;N&gt; &lt;init&gt;)          =&gt; an M×N accumulator fragment, filled with &lt;init&gt;
+(load-fragment-a &lt;src&gt; (&lt;ty&gt; &lt;tk&gt;))              =&gt; the A operand fragment at tile (ty, tk)
+(load-fragment-b &lt;src&gt; (&lt;tk&gt; &lt;tx&gt;))              =&gt; the B operand fragment at tile (tk, tx)
+(mma-accumulate &lt;c-frag&gt; &lt;a-frag&gt; &lt;b-frag&gt;)      =&gt; a new accumulator = a-frag · b-frag + c-frag
+(store-fragment &lt;frag&gt; &lt;dest&gt; (&lt;ty&gt; &lt;tx&gt;))       =&gt; write accumulator &lt;frag&gt; to &lt;dest&gt; at tile (ty, tx)
+</code></pre></div>
+<ul>
+<li>The tile coordinates are in <strong>fragment units</strong> (a fragment is the MMA shape's M×N / M×K / K×N block),
+  not element units.</li>
+<li><code>&lt;src&gt;</code> / <code>&lt;dest&gt;</code> may be global memory or an SLM scratch tile — the per-lane layout is the same.</li>
+<li>These are <strong>warp-collective</strong>: each lane holds its slice of the fragment; the forms lower to the
+  per-lane reads/writes (and, on NVIDIA, a single <code>mma.sync</code> for <code>mma-accumulate</code>).  On the SPV
+  path they lower to <code>CooperativeMatrixLoadKHR</code> / <code>…StoreKHR</code> / the coop-matrix multiply — the
+  operand <code>:contiguous-term</code> drives the KHR MemoryLayout (so B's row-major requirement above
+  applies here too).</li>
+<li><code>make-register-tile</code> is a <em>tile</em> of these fragments (an (M/frag-M)×(N/frag-N) grid), and
+  <code>mma-accumulate-via-tile</code> walks that grid for you.</li>
+</ul>
+<h3 id="matrix-multiply-with-pipelining">Matrix Multiply with pipelining ✅<a class="headerlink" href="#matrix-multiply-with-pipelining" title="Permanent link">&para;</a></h3>
+<p>We use rings to set up a load/execute pipeline. </p>
+<div class="highlight"><pre><span></span><code>(with-template-type (T)
+  (def-type mat (matrix T :address-space :global :align :compact :contiguous-term :row-major))
+
+  (def-grid-function pipeline-matrix-multiply (A B &amp;out C)
+    (declare #'((mat T) (mat T) (mat T))
+               (global-size :derive-from C :strategy :strided)) 
+    ;; NB: the ring depth (3) is a repeated LITERAL — :ring-count needs a compile-time integer
+    ;; and Crisp has no constant form, so a `(let ((pipeline-stages 3)) … :ring-count
+    ;; pipeline-stages)` binding would NOT compile.  We keep it as a plain 3 throughout.
+    (let ((A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count 3))
+          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count 3))
+          (C-tile (make-register-tile T (128 128) (identity T)))
+          ;; :arrivals 2 — each slot tracks its stage's A-load + B-load.  REQUIRED for :block, and
+          ;; NOT inferable (the prologue and the main loop both load the ring), so you state it.
+          (barrier-ring (make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2))
+          (n-k-steps    (/ (inner-dimension A B) 128)))
+
+      ;; Outer loops for C-tile (X and Y coordinates).  tile-stride binds grid-y / grid-x as
+      ;; TILE-IDs — exactly what load-tile consumes — and a register C-tile's shape must be given
+      ;; as the compile-time (M N) size-list (the register tile SROA-explodes, so its symbol is
+      ;; gone by tile-stride time).
+      (tile-stride C (128 128) (grid-y grid-x)
+
+        ;; 1. PROLOGUE: fill the pipeline for the current C-tile.  Plain dotimes: ring-get takes a
+        ;; runtime index, so it serves both the prologue and the main loop.  (to-ulong i) — a
+        ;; dotimes counter is int, but tile-IDs / ring indices are ulong.
+        (dotimes (i 3)
+          ;; Stride along K, keeping Y and X locked to the current block.
+          (load-tile A (ring-get A-tile-ring (to-ulong i)) (grid-y (to-ulong i)) :barrier (ring-get barrier-ring (to-ulong i)))
+          (load-tile B (ring-get B-tile-ring (to-ulong i)) ((to-ulong i) grid-x) :barrier (ring-get barrier-ring (to-ulong i))))
+
+        ;; 2. MAIN K-LOOP.  The ring slot is just (mod grid-k 3) — no mutable ring-idx / set!.
+        (dotimes (grid-k n-k-steps)
+          (let ((slot (mod grid-k (to-ulong 3))))
+
+            ;; Wait for the current stage's data to arrive in SLM.
+            (await (ring-get barrier-ring slot))
+
+            ;; Execute the math from SLM into registers.
+            (let ((A-tile (ring-get A-tile-ring slot))
+                  (B-tile (ring-get B-tile-ring slot)))
+              (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
+                ;; STAGED (this loop calls us once per K-step) -&gt; my-accum is a PARTIAL sum;
+                ;; fuse activation in the epilogue below, on the completed C-tile, not here.
+                (accum-op)))
+
+            ;; Every thread must be DONE reading this slot's SLM before the prefetch below
+            ;; overwrites it — the ring wraps onto the slot we just consumed.  This sync goes
+            ;; BEFORE the prefetch (issuing it after would race the overwrite against the reads).
+            (sync-workgroup)
+
+            ;; Issue the fetch for the NEXT chunk of K (grid-k + 3) into the slot we just freed,
+            ;; so it lands while the following stage computes.  The guard is uniform (it depends
+            ;; only on the K-loop counter), but a dotimes counter reads as :unknown uniformity, so
+            ;; load-tile's internal sync-workgroup would be flagged divergent — assert it with
+            ;; to-workgroup-uniform (which must be a let initializer).
+            (let ((next-k (+ grid-k (to-ulong 3))))
+              (let ((more-k? (to-workgroup-uniform (&lt; next-k n-k-steps))))
+                (when more-k? ;; don't fetch past the end of K
+                  (load-tile A (ring-get A-tile-ring slot) (grid-y next-k) :barrier (ring-get barrier-ring slot))
+                  (load-tile B (ring-get B-tile-ring slot) (next-k grid-x) :barrier (ring-get barrier-ring slot)))))))
+
+        :epilogue
+        ;; 3. EPILOGUE: C-tile is complete — fuse activation on the finished tile, then store.
+        (relu C-Tile)                        ;; &lt;-- the RIGHT place to fuse (complete C-tile)
+        (store-tile C-Tile C (grid-y grid-x))))))
+</code></pre></div>
+<h3 id="matrix-multiply-with-pipelining-via-warp-specialization">Matrix Multiply with Pipelining via Warp Specialization ✅<a class="headerlink" href="#matrix-multiply-with-pipelining-via-warp-specialization" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(with-template-type (T)
+  (def-type mat (matrix T :address-space :global :align :compact :contiguous-term :row-major))
+
+  (def-grid-function warp-specialized-matrix-multiply (A B &amp;out C)
+    (declare #'((mat T) (mat T) (mat T))
+               (global-size :derive-from C :strategy :strided)) 
+
+    ;; ring depth 3 is a repeated LITERAL (:ring-count needs a compile-time integer — see Chapter 2).
+    (let ((A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count 3))
+          (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count 3))
+          ;; C-tile lives on the 2 CONSUMER warps only (warp 0 is the producer, holds no fragment).
+          ;; 128x128 with (16 8 8) = 8x16 = 128 fragments; 2 consumers -&gt; 64 each (evenly divides).
+          (C-tile (make-register-tile T (128 128) (identity T) :warps '(false true true)))
+          (M N (outer-dimensions A B))
+          (K (inner-dimension A B))
+          (n-k-steps (/ K 128))   ; k-step is the 128-wide staging tile; producer &amp; consumer share this count
+
+        ;; 1. The Barriers.  Both are ring depth 3; :arrivals is how many transfers land on each
+        ;; slot per stage (Chapter 2 makes it required for every barrier ring).
+        ;; empty starts 'signaled' so the Producer can immediately begin fetching; the Consumer
+        ;;   arrives it ONCE per slot (its single `signal`), so :arrivals 1.
+        (empty-barrier-ring (make-async-barrier-ring :ring-count 3 :arrivals 1 :initial-state :signaled))
+        ;; full starts 'waiting' so the Consumer doesn't read garbage; the Producer's two loads
+        ;;   (A + B) arrive it, so :arrivals 2.
+        (full-barrier-ring  (make-async-barrier-ring :ring-count 3 :arrivals 2 :initial-state :waiting)))
+
+    ;; Outer loop
+    (tile-stride C C-tile (grid-y grid-x) 
+
+      ;; Split the execution!  The compiler physically maps these to different warps.
+      ;; :consumer 2 (not 3) so the 128-fragment C-tile divides evenly across the consumers;
+      ;; the workgroup is (1 + 2) * warp-size = 3 warps.
+      (with-warp-specialization (:producer 1 :consumer 2)
+
+        ;; ==========================================
+        ;; THE PRODUCER BLOCK (Memory only)
+        ;; ==========================================
+        (:producer
+          (let ((ring-idx 0))
+            (dotimes (grid-k n-k-steps)
+
+              ;; 1. Wait for the Consumer to say this SLM slot is empty/safe.
+              (await (ring-get empty-barrier-ring ring-idx))
+
+              ;; 2. Issue the hardware fetch. 
+              ;; The hardware DMA engine will AUTOMATICALLY signal the full-barrier when the bytes arrive.
+              (load-tile A (ring-get A-tile-ring ring-idx) (grid-y grid-k) :barrier (ring-get full-barrier-ring ring-idx))
+              (load-tile B (ring-get B-tile-ring ring-idx) (grid-k grid-x) :barrier (ring-get full-barrier-ring ring-idx))
+
+              ;; 3. Move to the next ring slot
+              (set! ring-idx (mod (+ ring-idx 1) 3)))))
+
+        ;; ==========================================
+        ;; THE CONSUMER BLOCK (Math only)
+        ;; ==========================================
+        (:consumer
+          (let ((ring-idx 0))
+            (dotimes (grid-k n-k-steps)
+
+              ;; 1. Wait for the hardware DMA to say the bytes have arrived.
+              (await (ring-get full-barrier-ring ring-idx))
+
+              ;; 2. Execute the pure math
+              (let ((A-tile (ring-get A-tile-ring ring-idx))
+                    (B-tile (ring-get B-tile-ring ring-idx)))
+                (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile (my-accum)
+                  (accum-op)))
+
+              ;; 3. Manually signal to the Producer that we are done reading this slot.
+              (signal (ring-get empty-barrier-ring ring-idx))
+
+              ;; 4. Move to the next ring slot
+              (set! ring-idx (mod (+ ring-idx 1) 3)))
+
+          ;; EPILOGUE (Only the Consumer writes back to Global Memory!)
+          (add-bias C-tile bias-tile) ;; &lt;-- fictional operation for illustrative purposes
+          (relu C-tile)
+          (store-tile C-tile C  (grid-y grid-x)))))))))
+</code></pre></div>
+<h2 id="optimizing-intel-mma">Optimizing Intel MMA<a class="headerlink" href="#optimizing-intel-mma" title="Permanent link">&para;</a></h2>
+<p>Intel's fast path is <strong>not</strong> an async-copy-to-SLM story, so it does <strong>not</strong> reuse the NVIDIA arc
+(async barrier + <code>load-tile :barrier</code> + rings).  Instead it optimizes by loading tiles <strong>directly
+from global memory into registers</strong>, in the DPAS-ready layout, via <strong>LSC 2D block loads</strong>
+(<code>OpSubgroup2DBlockLoadINTEL</code> and its <code>…Transpose</code> / <code>…Transform</code> VNNI variants).  This is a
+subgroup-collective load straight into per-lane registers — there is <strong>no SLM staging and no
+barrier</strong> — so it is a <em>fragment-load</em> mechanism that fuses into the MMA, not a <code>load-tile</code>.</p>
+<p>Latency is hidden not with an async barrier but with <strong><code>OpSubgroup2DBlockPrefetchINTEL</code></strong> — a
+prefetch hint that warms the cache for the <em>next</em> tile while the current one computes; the
+subsequent block load then hits cache.</p>
+<p>Requires <strong>DG2 or newer</strong> (Gen12 lacks it).</p>
+<p>Status / open design: the spike confirms <code>__spirv_Subgroup2DBlockLoadINTEL</code> emits the real opcode
+and the Arc B580 loads through it into registers (an SLM destination is rejected at JIT — proof it
+targets registers, not SLM).  The Crisp surface for this — the fragment-load / prefetch forms and
+how they compose with <code>mma-accumulate-via-tile</code> — and whether there is anything past the initial
+block-load win, is the "Optimizing Intel MMA" arc still to be mapped out.</p>
+<h3 id="operand-layout-intel-mma-operands-must-be-row-major">Operand layout: Intel MMA operands must be <code>:row-major</code> ✅<a class="headerlink" href="#operand-layout-intel-mma-operands-must-be-row-major" title="Permanent link">&para;</a></h3>
+<p>An Intel MMA operand — the <code>A</code> and <code>B</code> matrices, and the accumulator — must be declared
+<code>:contiguous-term :row-major</code> (equivalently <code>:last</code>). A <code>:col-major</code> operand is a <strong>compile
+error</strong>, not a silent fallback:</p>
+<div class="highlight"><pre><span></span><code>Intel cooperative-matrix (MMA) operands cannot be :col-major (:contiguous-term :first).
+IGC ships no PackedA_ColumnMajor / PackedB_ColumnMajor load builtin, so such a kernel
+fails to build on the device, and a ColumnMajor accumulator computes incorrectly.
+Declare the operand :row-major, or stage an explicit transpose into scratch and feed the
+MMA from there. (NVIDIA/PTX is unaffected.)
+</code></pre></div>
+<p>This is a limitation of the <strong>hardware's builtin library</strong>, not a Crisp design choice, and it
+was measured rather than assumed. Crisp translates <code>:col-major</code> to <code>MemoryLayout =
+ColumnMajorKHR</code> on the <code>CooperativeMatrixLoadKHR</code>, which is valid SPIR-V — but on an Arc B580
+(driver 32.0.101.8864) IGC then fails the module build with:</p>
+<div class="highlight"><pre><span></span><code>undefined reference to `__builtin_spriv_OpJointMatrixLoadINTEL_
+  PackedB_ColumnMajor_SG16_8x16_i32_8_global_v8i8_pi32_i32'
+</code></pre></div>
+<p>and the same for <code>PackedA_ColumnMajor</code> on a column-major <code>A</code>. IGC simply does not ship
+ColumnMajor variants of the operand-load builtins. A column-major <strong>accumulator</strong> is a
+slightly different story — that builtin <em>does</em> exist and the module builds — but it then
+computes the wrong result on metal, so it is refused too, conservatively, until that is
+understood.</p>
+<p>Failing at compile time with a sentence is deliberate. The alternatives are worse: emitting
+the honest ColumnMajor load makes the kernel fail at <code>zeModuleCreate</code> quoting a mangled
+builtin name, and silently transposing the operand behind your back would quietly change a
+kernel's performance characteristics.</p>
+<p><strong>If you need a column-major operand</strong>, stage the transpose explicitly into scratch and feed
+the MMA from the staged tile. That keeps the cost visible and under your control — it is what
+the MMA autodiff backward does for its transposed operands.</p>
+<blockquote>
+<p><strong>This is per-vendor, like the shapes.</strong> On NVIDIA/PTX the layout is baked into the
+<code>mma.sync</code> instruction variant (<code>row.col</code>) rather than read from the tensor type, and
+<code>:col-major</code> <strong>B</strong> is the <em>canonical</em> form there. So the same source may want a different
+operand layout per backend, exactly as it wants a different <code>:mma-shapes</code> triple.</p>
+</blockquote>
+<p>Specs: <code>133-mma-spv/13-col-major-operand-refused-bmg</code>, <code>14-col-major-accum-refused-bmg</code>.
+History: <code>plan/bugs.md</code> #035 — for months Crisp <em>dropped</em> the declared layout here, so
+<code>:col-major</code> was a silent no-op and you compiled a row-major kernel without being told.
+Four shipped specs were unknowingly relying on that.</p>
+<h3 id="reusing-the-ring-meme">Reusing the "Ring" Meme<a class="headerlink" href="#reusing-the-ring-meme" title="Permanent link">&para;</a></h3>
+<p>We reuse the ring concept, but we are not building a ring of scratch-matrices (SLM) and do not need async-barriers.
+Instead, we build a ring of Register Tiles (a double-buffer). We issue a load into the "pong" register while the DPAS computes on the "ping" register, and we issue a prefetch into the cache for a tile even further in the future.</p>
+<h3 id="the-optimal-intel-pipelined-mma">The Optimal Intel Pipelined MMA<a class="headerlink" href="#the-optimal-intel-pipelined-mma" title="Permanent link">&para;</a></h3>
+<p>The goal here is to stretch the synchronous baseline to achieve the optimal LSC 2D Block Prefetch pipeline on Intel hardware.</p>
+<div class="highlight"><pre><span></span><code>(with-template-type (T)
+  (def-type mat (matrix T :address-space :global :align :compact :contiguous-term :row-major))
+
+  (def-grid-function intel-prefetch-matrix-multiply (A B &amp;out C)
+    (declare #'((mat T) (mat T) &amp;out (mat T))
+               (global-size :derive-from C :strategy :strided)) 
+
+    ;; Ping-Pong Register Double Buffering. 
+    ;; Notice: We use make-register-tile-ring, NOT scratch-matrix-ring.
+    (let ((pipeline-stages 2) 
+          (A-reg-ring (make-register-tile-ring T (128 128) :ring-count pipeline-stages))
+          (B-reg-ring (make-register-tile-ring T (128 128) :ring-count pipeline-stages))
+          (C-tile (make-register-tile T (128 128) (identity T)))
+          (M N (outer-dimensions A B))
+          (K (inner-dimension A B)))
+
+      ;; ==========================================
+      ;; THE PROLOGUE (Prime the Pump)
+      ;; ==========================================
+      ;; 1. Fire cache prefetches for k=0 and k=1
+      (prefetch-tile A (grid-y 0) :size (128 128))
+      (prefetch-tile B (0 grid-x) :size (128 128))
+      (prefetch-tile A (grid-y 1) :size (128 128))
+      (prefetch-tile B (1 grid-x) :size (128 128))
+
+      ;; 2. Issue the actual register block-loads for k=0
+      (load-tile A (ring-get A-reg-ring 0) (grid-y 0))
+      (load-tile B (ring-get B-reg-ring 0) (0 grid-x))
+
+      (tile-stride C C-tile (grid-y grid-x) 
+
+        ;; ==========================================
+        ;; THE K-LOOP PIPELINE
+        ;; ==========================================
+        (let ((ring-idx 0))
+          (do-times (grid-k K)
+            (let ((next-k (+ grid-k 1))
+                  (prefetch-k (+ grid-k 2))
+                  (next-ring-idx (mod next-k pipeline-stages)))
+
+              ;; 1. Issue prefetch for future K.
+              ;; This lowers to OpSubgroup2DBlockPrefetchINTEL (Fire and forget into L1)
+              (when (&lt; prefetch-k K)
+                (prefetch-tile A (grid-y prefetch-k) :size (128 128))
+                (prefetch-tile B (prefetch-k grid-x) :size (128 128)))
+
+              ;; 2. Issue register load for the NEXT k.
+              ;; This lowers to OpSubgroup2DBlockLoadINTEL (L1 -&gt; GRF).
+              ;; The hardware scoreboard tracks this dependency automatically.
+              (when (&lt; next-k K)
+                (load-tile A (ring-get A-reg-ring next-ring-idx) (grid-y next-k))
+                (load-tile B (ring-get B-reg-ring next-ring-idx) (next-k grid-x)))
+
+              ;; 3. Compute on the CURRENT k.
+              ;; DPAS executes against the 'ping' registers while the 'pong' registers are loading.
+              (mma-accumulate-via-tile (16 8 8) C-tile 
+                                       (ring-get A-reg-ring ring-idx) 
+                                       (ring-get B-reg-ring ring-idx))
+
+              ;; 4. Swap buffers
+              (setf ring-idx next-ring-idx))))
+
+        :epilogue
+          (relu C-tile) 
+          (store-tile C-tile C (grid-y grid-x))))))
+</code></pre></div>
+<h3 id="why-this-is-the-optimal-shape-for-intel">Why this is the optimal shape for Intel<a class="headerlink" href="#why-this-is-the-optimal-shape-for-intel" title="Permanent link">&para;</a></h3>
+<p>No Warp Specialization: You don't need a producer/consumer warp split because the LSC data port and the Math/FPU data ports operate concurrently inside the same Xe Core. A single subgroup can issue the memory instructions and the math instructions without blocking itself (until the register is actually read).
+No Barriers: Intel's dependency tracking is managed in hardware via the register scoreboard. When <code>mma-accumulate-via-tile</code> executes, if <code>ring-idx 0</code> hasn't finished loading from the L1 cache, the thread simply sleeps.
+Register Pressure is the Only Limit: On NVIDIA, your pipelining depth is usually constrained by how much SLM you can allocate per block. On Intel, your pipeline depth is constrained by the physical size of the GRF (which is why <code>pipeline-stages</code> is set to 2 here—ping-ponging a 128x128 register tile consumes a massive amount of the GRF).</p>
+<h3 id="hopper-warpgroup-mma-make-wgmma-accumulator-wgmma-accumulate-via-tile">Hopper warpgroup MMA — <code>make-wgmma-accumulator</code> ✅ + <code>wgmma-accumulate-via-tile</code> ✅<a class="headerlink" href="#hopper-warpgroup-mma-make-wgmma-accumulator-wgmma-accumulate-via-tile" title="Permanent link">&para;</a></h3>
+<p>On NVIDIA <strong>Hopper (sm_90a)</strong> the tensor-core unit is driven by <code>wgmma</code> (4th-gen <em>warpgroup</em>
+async MMA) rather than the <code>mma.sync</code> used by <code>mma-accumulate-via-tile</code>.  The difference is
+scope: one <code>wgmma</code> instruction spans a <strong>warpgroup</strong> — 4 warps / <strong>128 threads</strong> — and produces
+a <code>64×N</code> output in a single issue (an <code>m64n128k8</code> is 64×128 = 8192 results), with the accumulator
+spread across all 128 threads.  It is the instruction cuBLAS uses; on the benchmark ladder the
+Crisp wgmma matmul reaches ~⅔ of the cuBLAS tf32 ceiling, versus a few percent for the naive
+<code>mma.sync</code> chapters.</p>
+<p>Two forms mirror the <code>make-register-tile</code> / <code>mma-accumulate-via-tile</code> pair:</p>
+<div class="highlight"><pre><span></span><code>(make-wgmma-accumulator &lt;elem&gt; (64 N) &lt;init&gt;)          ; the D matrix — a warpgroup accumulator
+(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b])   ; D += A·B ; A, B are SMEM tiles
+</code></pre></div>
+<p><code>make-wgmma-accumulator</code> mints (on demand) a <code>64×N</code> warpgroup accumulator record — <code>N/2</code> flat
+<code>f32</code> registers per thread, the wgmma D thread→element mapping across the 128-thread warpgroup —
+each field initialized to <code>&lt;init&gt;</code>.  <code>&lt;elem&gt;</code> is <code>float</code> (tf32) for now.  It is a <strong>dedicated</strong>
+constructor, not a flag on <code>make-register-tile</code>, precisely because the per-thread layout is the
+warpgroup one, not the per-warp fragment layout.</p>
+<p><code>wgmma-accumulate-via-tile</code> does <code>D += A·B</code> over the whole accumulator in one shot — <strong>no fragment
+walk</strong> (contrast <code>mma-accumulate-via-tile</code>, which loops the fragment grid for you).  It is
+<strong>synchronous</strong>: the macro wraps the <code>wgmma.fence</code> / <code>commit_group</code> / <code>wait_group</code> around the
+accumulate, so one call is a complete <code>D += A·B</code>.  <code>A</code> and <code>B</code> are SMEM scratch tiles (from
+<code>make-scratch-matrix</code>, <code>load-tile</code>, or a <code>:block</code> TMA load).</p>
+<p>Shape rules — grounded in the ISA, checked at compile time:</p>
+<ul>
+<li><strong>M is fixed at 64</strong> (wgmma is always <code>m64</code>); anything else is a compile error.</li>
+<li><strong>N is a multiple of 8 in <code>[8, 256]</code></strong> (the <code>m64nNk8</code> family).</li>
+<li><strong>K depends on <code>:swizzle</code>.</strong>  Without it, <code>K</code> must be exactly <strong>8</strong> — a single <code>k8</code> slice fed
+  from a plain row/col-major SMEM tile.  With <code>:swizzle :128b</code>, <code>K</code> may be any positive multiple
+  of 8: the tile is a <strong>K-block</strong> of <code>K/8</code> slices, and the accumulate emits the 128-byte-swizzle
+  SMEM descriptor + a <code>wgmma</code> per <code>k8</code> slice.  (<code>:128b</code> swizzle also requires the innermost 32
+  tf32 elements to be 128-byte contiguous — already true for a <code>64×32</code> K-block load.)</li>
+<li><strong>local-size must be a multiple of 128</strong> — a warpgroup is 128 threads.  A single-warpgroup
+  kernel declares <code>(local-size :set-to 128)</code>; multiple warpgroups (and the producer-warp +
+  consumer-warpgroup split under <code>with-warp-specialization</code>) scale that up.</li>
+</ul>
+<div class="highlight"><pre><span></span><code>;; one warpgroup, a single k8 tf32 accumulate
+(def-kernel wgmma_min (&amp;out C)
+  (declare #'(&amp;out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (8 64)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
+    ...))
+
+;; a 32-wide K-block (4 k8 slices) over a big n256 tile, swizzled
+(wgmma-accumulate-via-tile (64 256 32) D A-tile B-tile :swizzle :128b)
+</code></pre></div>
+<p>wgmma is <strong>forward-only</strong> (no autodiff) and NVIDIA-Hopper-only; on other targets use
+<code>mma-accumulate-via-tile</code>.</p>
+<h3 id="deferred-topology-aware-orchestration-def-topology-def-orchestration">Deferred: topology-aware orchestration (<code>def-topology</code> / <code>def-orchestration</code>)<a class="headerlink" href="#deferred-topology-aware-orchestration-def-topology-def-orchestration" title="Permanent link">&para;</a></h3>
+<p>The <code>def-topology</code> / <code>def-orchestration</code> design in the earlier part of this document (multi-device
+meshes, fabrics, <code>:distribution</code> / <code>:location</code>, cross-device <code>make-async-barrier :type</code>) is <strong>set
+aside for now</strong>.  It remains the intended direction for multi-GPU / cluster / out-of-core work, but
+the single-GPU MMA optimization arcs above do not depend on it, and <code>make-async-barrier</code> no longer
+takes a <code>:type</code> key (see its updated spec).</p>
+<h2 id="out-of-core-orchestration">Out of Core Orchestration<a class="headerlink" href="#out-of-core-orchestration" title="Permanent link">&para;</a></h2>
+<p><code>def-orchestration</code> can also be used to stage "Out of Core" execution where data is too large to fit on the device and must be pipelined through the system. </p>
+<p>The kernel can be passed "chunks" of a larger Storage Handle. </p>
+<p>There are four steps to make this work:
+1. use <code>allocate-massive-tensor</code>
+2. use <code>tile-from</code> to create tiles of that massive tensor
+3. use the <code>:pipeline-stages</code> key to indicate how many chunks to pipeline.
+4. write a kernel that operates on <code>:align :strided</code> tensors. </p>
+<p>When this <code>def-orchestration</code> is output, memory copies will be initiated for each tile set and the kernel called while the next set is loading. </p>
+<p>Not every Storage Handle needs to be massive and tiled, just those you require pipelining.</p>
+<p>You are welcome to use <code>def-topology</code> to define a topology, but most Out of Core operations are just for one workstation. In this case, no topology is necessaray, simply use <code>:location :host</code> or <code>:location :device</code> .</p>
+<p>Vector Add Example
+<div class="highlight"><pre><span></span><code>(def-type stride-vec-t (vector float :align :strided :address-space :global))
+
+;; -- vector_add_chunked --
+(def-kernel vector_add_chunked (A B &amp;out C)
+  (declare #(stride-vec-t stride-vec-t &amp;out stride-vec-t)
+           (global-size :derive-from A :strategy :strided))
+    (map-stride #'+ A B C))
+
+;; -- add-interleaved --
+(def-orchestration add-interleaved ()
+  (let ((VADD_CHUNKED (gen-vector_add_chunked))
+        (A (allocate-massive-tensor VADD_CHUNKED::A :location :host))
+        (B (allocate-massive-tensor VADD_CHUNKED::B :location :host))
+        (C (allocate-massive-tensor VADD_CHUNKED::C :location :host))
+        (A-view (tile-from A '(65536) :location :device))
+        (B-view (tile-from B '(65536) :location :device))
+        (C-view (tile-from C '(65536) :location :device)))
+  (launch-kernel  
+    (VADD_CHUNKED A-view B-view C-view) :pipeline-stages 2)))
+</code></pre></div></p>
+<p>Matrix Multiplication Example
+<div class="highlight"><pre><span></span><code>(def-topology my-workstation () ...)
+(def-kernel partial_mult (A-Tile B-Tile &amp;out C-Tile) ...)
+
+(def-orchestration o-o-c-matmul ()
+(let ((KERNEL  (gen-partial_mult))
+      (topo (my-workstation))
+         (A (allocate-massive-tensor KERNEL::A-Tile :topology topo :location '(xeon-cpu)))
+         (B (allocate-massive-tensor KERNEL::B-Tile  :topology topo :location '(xeon-cpu)))
+         (C (allocate-massive-tensor KERNEL::C-Tile :topology topo :location '(xeon-cpu)))
+         (A-tile (tile-from A '(1024 1024) :topology topo :location '(pvc-tile))) 
+         (B-tile (tile-from B '(1024 1024) :topology topo :location '(pvc-tile)))
+         (C-tile (tile-from C '(1024 1024) :topology topo :location '(pvc-tile))))
+  (launch-kernel-matrix-contract A B C (KERNAL A-tile B-Ttle C-tile) :pipeline-stages 2)))
+
+The "super tile" size should be some maximally divisible even number near  (sqrt (/ GPU-VRAM (* pipeline-stages 3))).  Maybe lower GPU-VRAM to 85% to avoid register pressure, etc.
+</code></pre></div></p>
+<h3 id="allocate-massive-tensor"><code>allocate-massive-tensor</code><a class="headerlink" href="#allocate-massive-tensor" title="Permanent link">&para;</a></h3>
+<p><code>(allocate-massive-tensor &lt;VectorType&gt; &amp;key :topology &lt;topo&gt; :location &lt;loc&gt;) =&gt; massive-tensor</code></p>
+<p><code>allocate-massive-tensor</code> means that whatever tensor is being allocated is really big, presumably bigger than the VRAM on the GPU. The expectation is that any kernel will only be able to operate on part of it any one time (see <code>tile-from</code> ), never the whole. </p>
+<p><code>allocate-massive-tensor</code> does not support the <code>:shared</code> or <code>:distribution</code> keys.</p>
+<p>If you are not using a custom topology, the <code>:topology</code> key can be skipped. Just use <code>:location :host</code>.</p>
+<h3 id="tile-from"><code>tile-from</code><a class="headerlink" href="#tile-from" title="Permanent link">&para;</a></h3>
+<p><code>(tile-from massive-var &lt;SizeExpr&gt; :topology &lt;topo&gt; :location &lt;loc&gt;) =&gt; tensor</code></p>
+<p>Create a tensor view into a massive tensor. This tensor will have the same arity and type as the original, except its <code>:align</code> will be <code>:strided</code>.</p>
+<p>The <code>:location</code> arg is a location into the <code>:topology</code> value. Or just use <code>:host</code>.</p>
+<h3 id="pipeline-stages"><code>:pipeline-stages</code><a class="headerlink" href="#pipeline-stages" title="Permanent link">&para;</a></h3>
+<p>The <code>:pipeline-stages</code> key is accepted by the <code>launch-kernel</code> and <code>launch-kernel-matrix-contract</code> forms. The number of tiles used by the kernel will be multiplied by the <code>:pipeline-stages</code>. The enqueue of the kernel is interleaved with tile retrieval. </p>
+<h2 id="primitives">Primitives<a class="headerlink" href="#primitives" title="Permanent link">&para;</a></h2>
+<p>For users who want to roll their own async operations and don't want topologically aware forms.</p>
+<h3 id="raw-memory-movement">Raw Memory Movement<a class="headerlink" href="#raw-memory-movement" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(cp-async dest src size) -&gt; Lowers to cp.async or sycl::group_async_copy.
+
+(pgas-put dest src size pe) -&gt; Lowers to nvshmem_putmem / shmem_put.
+
+(pgas-get dest src size pe) -&gt; Lowers to nvshmem_getmem / shmem_get.
+
+(pgas-put-nbi dest src size pe) -&gt; Non-blocking implicit put.
+</code></pre></div>
+<h3 id="raw-synchronization">Raw Synchronization<a class="headerlink" href="#raw-synchronization" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(slm-commit) -&gt; Lowers to cp.async.commit_group.
+
+(slm-wait &lt;group-count&gt;) -&gt; Lowers to cp.async.wait_group.
+
+(pgas-quiet) -&gt; Lowers to shmem_quiet().
+</code></pre></div>
+<h3 id="fine-grained-signaling">Fine-Grained Signaling<a class="headerlink" href="#fine-grained-signaling" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>(pgas-signal dest-flag value pe) -&gt; Lowers to shmem_signal_add or nvshmem_signal_op.
+
+(pgas-wait-until flag condition value) -&gt; Lowers to shmem_wait_until.
+</code></pre></div>
+<h2 id="important-notes">IMPORTANT NOTES<a class="headerlink" href="#important-notes" title="Permanent link">&para;</a></h2>
+<p>Both global semaphores and CUTensorMap need "side channel" support. That will have to be added.  Effects metadata, hoisting, everything.</p>
+<p>More Distributions.
+For 1.0, Crisp is targeting :distribution values of :block and :replicated.  Ultimately, in some 2.0 version, we may want to expand to include:
+- :block
+- :block-cyclic
+- :halo
+- :sparse
+- :irregular</p>
+<p>Most of these should be realizable in Crisp 1.0 with macros. But for maximum performance, with a capital "P", the compiler will likely need to be involved.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "toc.integrate"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

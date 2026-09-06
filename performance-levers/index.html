@@ -1,0 +1,777 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="for GPU kernel development.">
+      
+      
+        <meta name="author" content="Chris Perkins">
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Performance Levers — the tuned-matmul surface - Crisp - High Performance GPU Programming</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Nunito+Sans:300,300i,400,400i,700,700i%7CCaslon:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Nunito Sans";--md-code-font:"Caslon"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#performance-levers-the-tuned-matmul-surface" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Crisp - High Performance GPU Programming" class="md-header__button md-logo" aria-label="Crisp - High Performance GPU Programming" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Crisp - High Performance GPU Programming
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Performance Levers — the tuned-matmul surface
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Crisp - High Performance GPU Programming" class="md-nav__button md-logo" aria-label="Crisp - High Performance GPU Programming" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Crisp - High Performance GPU Programming
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Welcome
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ideal_001/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Language Specification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="performance-levers-the-tuned-matmul-surface">Performance Levers — the tuned-matmul surface<a class="headerlink" href="#performance-levers-the-tuned-matmul-surface" title="Permanent link">&para;</a></h1>
+<p>Everything that changes the speed of a Crisp <strong>register-resident MMA matmul</strong> — the <code>sec2_top</code>
+family of benchmark kernels — organised by <em>who sets it</em>. Written after a long run of tuning where
+the recurring failure was not picking the wrong value for a lever but <strong>not knowing a lever existed</strong>,
+or believing two levers were independent when they were not.</p>
+<p><strong>Scope.</strong> Only the "top" algorithm: a <code>tile-stride</code> over the output, register tiles for A/B/C, a K
+loop, <code>mma-accumulate-via-tile</code>, <code>store-tile</code> epilogue. Not reductions, scans, sorts, or the
+SLM-staged and async chapters, which have their own tuning surfaces.</p>
+<p><strong>Every number below is measured on an Arc B580 (BMG)</strong> unless it names other hardware, and each is
+marked <code>[linux]</code> or <code>[windows]</code> — because those disagree, sometimes by more than any lever in this
+document. See <a href="#layer-4--below-us">Layer 4</a>.</p>
+<hr />
+<h2 id="layer-1-in-the-crisp-kernel">Layer 1 — In the Crisp kernel<a class="headerlink" href="#layer-1-in-the-crisp-kernel" title="Permanent link">&para;</a></h2>
+<p>The largest levers are here, and the two biggest are not independent of each other.</p>
+<h3 id="geometry">Geometry<a class="headerlink" href="#geometry" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Where</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Output tile M×N</strong></td>
+<td><code>(tile-stride C (TM TN) ...)</code></td>
+<td>Sets work per workgroup and, with <code>:warps</code>, per subgroup. <code>32x32 → 32x64</code> was <strong>1.25–1.72×</strong> <code>[windows]</code>. Not free at the top: <code>TN 96</code> faults, <code>TN 128</code> runs at <code>0.14×</code>.</td>
+</tr>
+<tr>
+<td><strong>Workgroup tile vs per-subgroup tile</strong></td>
+<td><code>(tile-stride C (TM TN) ...)</code> together with the <code>:warps</code> length</td>
+<td><strong>These are separable, and conflating them cost an endeavour.</strong> Going <code>128×256 / 16 subgroups → 256×256 / 32</code> leaves the per-subgroup tile at <strong>32×64 and register demand at 448/thread — unchanged</strong>. It is pure operand sharing: arithmetic intensity 85.3 → <strong>128 flops/byte</strong>. So the workgroup tile can be doubled <em>without</em> touching the <code>TN 128</code> / <code>TM 64</code> wall, which is a per-subgroup limit. Worth <strong>+36%</strong> at 8192 with prefetch; roughly neutral without it. This is SYCL-TLA's shape, fixed at every N.</td>
+</tr>
+<tr>
+<td><strong>Subgroup count + distribution</strong></td>
+<td><code>:warps '(true true …)</code> on each <code>make-register-tile</code></td>
+<td>Length = subgroups the tile is split across; must agree with <code>local-size / simd-width</code>. A silent no-op on rings until endeavour 156 Phase 2.</td>
+</tr>
+<tr>
+<td><strong>K-tile extent</strong></td>
+<td>A-tile is <code>(TM K)</code>, B-tile <code>(K TN)</code>, and the loop divisor <code>(/ K (to-ulong K-step))</code></td>
+<td><strong>The lever that was missed for months.</strong> Not the same as MMA K.</td>
+</tr>
+<tr>
+<td><strong>MMA shape</strong></td>
+<td><code>(mma-accumulate-via-tile (M N K) ...)</code></td>
+<td>Must be one of the profile's <code>:mma-shapes</code>. On BMG: <code>(8 16 8)</code> tf32, <code>(8 16 16)</code> bf16/fp16, <code>(8 16 32)</code> int8 — same M×N, K doubles as operands narrow. Choosing a shape the profile lacks is a compile error, not a slowdown.</td>
+</tr>
+<tr>
+<td><strong>Element type</strong></td>
+<td><code>(matrix bfloat16 …)</code> vs <code>half</code> vs <code>float</code></td>
+<td>Changes which MMA shape is native, so it <strong>forces a K-step change</strong>. bf16 and fp16 measure within ~4% of each other; the accumulator stays <code>float</code> either way.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>K-tile extent and subgroup count are one lever, not two.</strong> Each geometry has its own K optimum
+and it moves with subgroup count: <strong>64 at one subgroup, 32 at sixteen</strong>. Doubling K past the
+optimum regresses hard in both — <code>59.1 → 37.9</code> at one subgroup, <code>55.9 → 47.8</code> at sixteen
+<code>[windows]</code>. Multi-subgroup was written off as a measured loss for a whole endeavour because it was
+only ever tried at K=16, where there is not enough work in flight to pay for the participants.
+<strong>Never tune one without re-tuning the other.</strong></p>
+<p><strong>And the same trap caught the workgroup tile.</strong> Endeavour 156 measured 256×256 over 32
+subgroups at <strong>34.6 against 60.8</strong> and banked it — at K=16, and before <code>prefetch-tile</code> could
+be warp-partitioned. The geometry only pays <em>with</em> the prefetch it could not then express:
+without prefetch it is still slightly behind (62.0 vs 65.1 @4096); with it, +36%; with
+<code>:xe-native</code> as well, <strong>+60%</strong>. Endeavour 158.</p>
+</blockquote>
+<h3 id="pipelining">Pipelining<a class="headerlink" href="#pipelining" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Where</th>
+<th>Measured</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Ring depth</strong></td>
+<td><code>make-register-tile-ring … :ring-count N</code></td>
+<td><code>2 → 3</code> <strong>collapses</strong> a 32×64 tile, <code>57 → 23</code> <code>[windows]</code>. At K=32 across 16 subgroups a ring does not fit at all.</td>
+</tr>
+<tr>
+<td><strong>Prefetch distance</strong></td>
+<td>how many <code>prefetch-tile</code> K-steps ahead the loop issues</td>
+<td><strong>+60% at the peer geometry</strong> (66.2 → 106.0 @8192, with <code>:xe-native</code>), and worth +36% even on <code>:coop-matrix</code>. <strong>Shorter is better, monotonically</strong> — d1 ≥ d2 &gt; d3 &gt; d4 wherever it helps. <code>[linux]</code></td>
+</tr>
+<tr>
+<td><strong>Prefetch distribution</strong></td>
+<td><code>:warp-partitioned true</code> on <code>prefetch-tile</code></td>
+<td><strong>Not optional at multi-subgroup geometry.</strong> Without it every subgroup issues every block — 384 per workgroup per K-step against 256 loads — and prefetch measures <strong>2.6–2.9× SLOWER</strong>. With it, 2 per subgroup. Endeavour 158.</td>
+</tr>
+<tr>
+<td><strong>Barrier pacing</strong></td>
+<td><code>(sync-workgroup)</code> or <code>(sync-workgroup :arrive/:wait)</code> in the K loop</td>
+<td>Fused at 16 subgroups: <strong>−14.7%</strong>. Split: <strong>−1.8%</strong>. No barrier is fastest at that width. Pays only at 4 subgroups (+8.6%), where fused beats split. <code>[windows]</code>, endeavour 157.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong><code>:ring-count</code> is not <code>Stages</code>.</strong> Crisp's <code>:ring-count</code> is a count of <strong>buffers</strong>; SYCL-TLA's
+<code>Stages</code> is a <strong>prefetch depth over a single buffer</strong>. They are different knobs with similar names,
+and conflating them cost real time. Deeper K supplies the pipelining a ring was meant to — two
+native K-steps inside one tile are already two independent MMA chains — without a second buffer's
+register cost.</p>
+</blockquote>
+<h3 id="lowering">Lowering<a class="headerlink" href="#lowering" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Where</th>
+<th>Measured</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MMA lowering</strong></td>
+<td><code>(declare (mma-lowering :xe-native))</code>, else profile default</td>
+<td><strong><code>:xe-native</code> + peer geometry + warp-partitioned prefetch is the fastest fp16 kernel Crisp has: 106.0 TF @8192, 95% of oneMKL, best at every size ≥1024.</strong> Alone it is only +5% (66.2 → 69.6); the win is the COMBINATION (+60%). Its two recorded failure modes are <strong>scope-limited, not general</strong>: "does not compose" was about the <strong>ring</strong>, never prefetch; and the 32×128 collapse to 5.6 TFLOPS is a live-fragment-count effect that does not arise at a 32×64 per-subgroup tile. Emits 42 machine instructions per dpas against 57. <code>[linux]</code>, endeavour 158.</td>
+</tr>
+<tr>
+<td><strong>Precision</strong></td>
+<td><code>(declaim (precision fast))</code> / <code>--math-precision</code></td>
+<td><code>fast</code> enables contraction and reassociation. Note <code>fast</code> <strong>flushes denormals regardless</strong> of <code>--denormal-handling=preserve</code>; the compiler warns.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dispatch-declarations">Dispatch declarations<a class="headerlink" href="#dispatch-declarations" title="Permanent link">&para;</a></h3>
+<p><code>local-size</code> and <code>global-size</code> are declared <em>in the kernel</em>, then recorded in the <code>.metacrisp</code> for
+the host to obey. They are <strong>not</strong> four independent knobs:</p>
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="p">(</span><span class="nv">global-size</span><span class="w"> </span><span class="ss">:derive-from</span><span class="w"> </span><span class="nv">C</span><span class="w"> </span><span class="ss">:strategy</span><span class="w"> </span><span class="ss">:strided</span><span class="w"> </span><span class="ss">:tile-shape</span><span class="w"> </span><span class="p">(</span><span class="mi">128</span><span class="w"> </span><span class="mi">256</span><span class="p">))</span>
+<span class="w">         </span><span class="p">(</span><span class="nv">local-size</span><span class="w">  </span><span class="ss">:set-to</span><span class="w"> </span><span class="mi">256</span><span class="p">))</span>
+</code></pre></div>
+<ul>
+<li><strong><code>local-size</code></strong> — threads per workgroup. <code>local-size / :simd-width</code> = subgroups, which <strong>must</strong>
+  match the <code>:warps</code> list length.</li>
+<li><strong><code>:tile-shape</code></strong> — governs grid <strong>rank and shape</strong> on both backends, and is <strong>inferred from
+  <code>tile-stride</code></strong> if not given. Getting the rank wrong is expensive: a 1-D grid under an N-D
+  <code>tile-stride</code> <em>serialises an axis</em> — <strong>7.6×</strong>. Axis 0 tracks dimension 0; reversing it cost ~1.3×.</li>
+<li><strong>Number of workgroups</strong> — <em>derived</em>, <code>CEIL(extent[k] / tile_shape[k])</code>. Not separately settable.</li>
+<li><strong><code>:occupancy</code></strong> — a <strong>grid-size multiplier</strong> against max-resident-workgroups, and only when there
+  is no <code>:tile-shape</code>. The 1.0 cap was lifted; measured optimum for <code>sum_reduce</code> is <strong>2.0</strong>
+  (deliberately 2× oversubscribed), 22.6 → 5.9 µs. For an exact tile cover it does not apply, and
+  exact cover beat occupancy at every size tested.</li>
+</ul>
+<hr />
+<h2 id="layer-2-in-the-compiler">Layer 2 — In the compiler<a class="headerlink" href="#layer-2-in-the-compiler" title="Permanent link">&para;</a></h2>
+<p>This is the layer that was blank in the original list, and it contains at least one lever worth 2×.</p>
+<h3 id="flags">Flags<a class="headerlink" href="#flags" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Effect on speed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--hardware-profile=</code></td>
+<td>Selects the entire profile below. <strong>The single highest-leverage compiler flag</strong> — it decides MMA shapes, lowerings, register modes, cache assumptions, and the tile-visit swizzle.</td>
+</tr>
+<tr>
+<td><code>--math-precision=fast\|ieee</code></td>
+<td>Contraction and reassociation.</td>
+</tr>
+<tr>
+<td><code>--denormal-handling=preserve\|ftz</code></td>
+<td>Ignored under <code>fast</code> (which always flushes).</td>
+</tr>
+<tr>
+<td><code>--ir-target=spv\|ptx</code>, <code>--ir-target-arch=</code></td>
+<td>Backend and arch gating.</td>
+</tr>
+<tr>
+<td><code>--runtime-checks</code></td>
+<td>Adds bounds checks. Off by default; on, it costs.</td>
+</tr>
+<tr>
+<td><code>--debug</code></td>
+<td>Emits debug info. Perturbs codegen; do not benchmark with it.</td>
+</tr>
+<tr>
+<td><code>--differentiate</code></td>
+<td>Changes the <em>kernel set</em> (adds <code>_GRAD</code> twins) — the forward kernel should be unaffected, but the module is not the same module.</td>
+</tr>
+<tr>
+<td><code>--single-pass</code></td>
+<td>Different compile path; has had its own bugs (BUG 042, 043).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="profile-keys-that-are-levers">Profile keys that are levers<a class="headerlink" href="#profile-keys-that-are-levers" title="Permanent link">&para;</a></h3>
+<p>From <code>(:hardware-profile …)</code> in the <code>.metacrisp</code> — the record of what the compiler actually assumed:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>:mma-shapes</code></td>
+<td>The legal <code>mma-accumulate-via-tile</code> shapes.</td>
+</tr>
+<tr>
+<td><code>:mma-lowerings</code></td>
+<td>Ordered, <strong>most-preferred first</strong>; first entry is the default.</td>
+</tr>
+<tr>
+<td><code>:max-registers-per-thread</code></td>
+<td>Selectable allocations, e.g. <code>(128 256)</code> on BMG.</td>
+</tr>
+<tr>
+<td><code>:simd-width</code></td>
+<td>Subgroup size — <strong>16</strong> on BMG. Divides <code>local-size</code> into subgroups.</td>
+</tr>
+<tr>
+<td><code>:tile-visit-strip-width</code></td>
+<td>Column-strip width for the rank-2 <code>tile-stride</code> walk.</td>
+</tr>
+<tr>
+<td><code>:l2-cache-size</code>, <code>:native-cache-line-size</code>, <code>:compute-units</code></td>
+<td>Informational to the model.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="compiler-decisions-that-become-runtime-flags">Compiler <em>decisions</em> that become runtime flags<a class="headerlink" href="#compiler-decisions-that-become-runtime-flags" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Register mode selection</strong> (endeavour 144). The compiler computes register-tile bytes per thread,
+  picks from <code>:max-registers-per-thread</code>, and records <code>:selected-registers-per-thread</code>. The hoisted
+  harness turns that into <strong><code>-ze-opt-large-register-file</code></strong>. Getting this wrong was a <strong>14× measurement
+  error</strong> when the fixture was first calibrated, and a 3.1× error on a 32×64 tile.
+  <strong>It is geometry-dependent, not a general law:</strong> worth ~2× to the single-subgroup 32×32 shape, while
+  at 128×128 over 16 subgroups the <strong>default allocation beats large-GRF by 70%</strong> (32.2 → 54.9 @4096).
+  SYCL-TLA is <em>indifferent</em> to it (185 → 190 forced either way, with 3904 bytes of deliberate spill) —
+  avoiding spill is worth ~3× to <strong>our</strong> lowering and nothing to its. That is a property of our
+  codegen, not of the hardware.
+  The current shipped kernels deliberately request <strong>448 registers/thread against a 256 max</strong> and spill.</li>
+<li><strong>Subgroup-size pinning</strong> — <code>!intel_reqd_sub_group_size</code> from the profile's <code>:simd-width</code>, but
+  <strong>only when <code>local-size</code> is compile-time known and a whole multiple of it</strong>. Otherwise IGC picks,
+  and the width Crisp assumed when computing warp counts may not be the width that gets compiled.</li>
+<li><strong>Tile-visit swizzle</strong> — <code>:tile-visit-strip-width</code>, overridable with the <code>CRISP_TILE_VISIT</code>
+  environment variable for bisecting or sweeping. Was once <em>derived</em> from <code>:l2-cache-size</code>; that
+  derivation was refuted by measurement (+63% on one device, −14% on another, both supplying the key),
+  so it is now a measured per-profile constant.</li>
+<li><strong>Address arithmetic</strong> — currently recomputed per fragment. Spec <code>155/04</code> pins the invariant
+  (multiplies must be fewer than cooperative loads) and is <strong>RED on purpose</strong>: 26 i64 multiplies for
+  8 loads. Xe has no native 64-bit multiply, so each is emulated <code>mul</code>/<code>mach</code>/<code>macl</code>. Hoisting it cut
+  multiplies 36% for <strong>+2.9%</strong>, and on the ring kernel gave identical instruction counts <strong>17% slower</strong> —
+  so these kernels are <em>not</em> issue-bound, and this is a correctness-of-lowering item, not a speed win.</li>
+</ul>
+<h3 id="environment">Environment<a class="headerlink" href="#environment" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CRISP_TILE_VISIT</code></td>
+<td>Overrides the swizzle width, or <code>linear</code>. For sweeps and bisection.</td>
+</tr>
+<tr>
+<td><code>CRISP_USE_SYSTEM_TOOLS</code></td>
+<td>Use PATH <code>llc</code>/<code>opt</code>/<code>llvm-spirv</code> instead of bundled. Toolchain version differences are real.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="layer-3-at-enqueue">Layer 3 — At enqueue<a class="headerlink" href="#layer-3-at-enqueue" title="Permanent link">&para;</a></h2>
+<p><strong>These are not free choices.</strong> <code>local-size</code>, grid shape and workgroup count are <em>decided by the
+kernel</em> and recorded in the <code>.metacrisp</code>; the host's job is to <strong>reproduce what the compiler assumed</strong>.
+A mismatch is usually a correctness bug that reads as a performance result:</p>
+<ul>
+<li>A <strong>1-D group count for a 2-D local size</strong> pinned <code>grid.y</code> to 1 — at N=16 that happens to cover the
+  matrix, at N=32 half the columns are never written. <code>chap0_naive</code> read MMA_CORRECT at 16 and
+  MMA_WRONG at 32 with <strong>no MMA in the kernel at all</strong>. The kernel was always fine.</li>
+<li>Not passing the compiler's chosen register mode: <strong>14×</strong>.</li>
+</ul>
+<p>Genuinely host-side:</p>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M, N, K of the matrices</strong></td>
+<td>The strongest single determinant of which kernel wins. No shape tested is best at every size.</td>
+</tr>
+<tr>
+<td><strong>Build flags to the JIT</strong></td>
+<td><code>pBuildFlags</code> — must carry the compiler's register-mode choice.</td>
+</tr>
+<tr>
+<td><strong>Warmup and iteration counts</strong></td>
+<td>Under-warming reads low; batched re-submits of an in-flight L0 command list <strong>coalesce</strong>, which once inflated GFLOPS by exactly <code>iters</code>. MMA_CORRECT cannot catch that.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="layer-4-below-us">Layer 4 — Below us<a class="headerlink" href="#layer-4-below-us" title="Permanent link">&para;</a></h2>
+<p>Outside the algorithm, and <strong>larger than anything inside it.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Magnitude</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Host platform</strong></td>
+<td>The same unchanged bf16 kernel: <code>69.3 / 62.3 / 56.0 / 51.3</code> on Windows-native L0 vs <code>63.1 / 57.7 / 64.5 / 66.2</code> on Linux in the bench container. Windows wins small N, Linux wins large — <strong>29% apart at 8192, in opposite directions</strong>.</td>
+</tr>
+<tr>
+<td><strong>…and it reorders rankings</strong></td>
+<td><code>w64_k64</code> led a 30-candidate Windows screen at 59.1 @4096 and measures <strong>26.9 on Linux</strong>, last of six. <strong>A screen taken on one platform is not evidence about the other.</strong></td>
+</tr>
+<tr>
+<td><strong>Driver / IGC version</strong></td>
+<td>A month of driver movement once lifted <em>every</em> implementation by a similar factor — the signature of an environment change, not a compiler win.</td>
+</tr>
+</tbody>
+</table>
+<p>Run-to-run spread inside the bench container, six repeats: <strong>2.2%</strong> at 1024 and 2048, <strong>3.1%</strong> at 4096,
+<strong>0.7%</strong> at 8192. A 6% delta is signal; a 2% one is not.</p>
+<hr />
+<h2 id="measured-non-levers">Measured non-levers<a class="headerlink" href="#measured-non-levers" title="Permanent link">&para;</a></h2>
+<p>Things tried on this algorithm that did <strong>not</strong> pay. Recorded so they are not re-tried blind — each
+cost real hardware time.</p>
+<table>
+<thead>
+<tr>
+<th>Tried</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SLM staging of operands</td>
+<td><strong>40× slower</strong> (0.9 vs 41.9 @2048). <code>SPV_INTEL_2d_block_io</code> is a <em>global</em>-memory facility, so staging through shared local memory loses the 2D block load entirely (<code>load_block2d</code> 41 → 0). SYCL-TLA uses <strong>no SLM</strong>.</td>
+</tr>
+<tr>
+<td>Address hoisting</td>
+<td>−36% emulated multiplies for <strong>+2.9%</strong>; on the ring kernel, identical instruction counts <strong>17% slower</strong>.</td>
+</tr>
+<tr>
+<td><strong>Cache control</strong> (<code>SPV_INTEL_cache_controls</code>)</td>
+<td><strong>DEAD, tested twice.</strong> <code>CacheControlLoadINTEL</code> L1+L3 <code>Cached</code> — SYCL-TLA's <code>kL1C_L3C</code>, which it uses at all 26 of its call sites. Measured −3.3% @4096 (loads only) and <strong>−1.4% @8192 with the PREFETCH decorated too, on the real kernel</strong> (176 decorations vs 0 in a byte-identical twin, so the arm was genuine). Either IGC ignores pointer decorations on 2D-block-io, or the driver default already matches. Do not re-open without new information.</td>
+</tr>
+<tr>
+<td>Ring depth 3</td>
+<td>+9% at 32×32, collapses 32×64.</td>
+</tr>
+<tr>
+<td>Split barrier</td>
+<td>Removes ~90% of the fused barrier's cost and still loses to no barrier.</td>
+</tr>
+<tr>
+<td><code>TM 64</code> (64×32)</td>
+<td>Does not run.</td>
+</tr>
+<tr>
+<td><code>TN 96</code></td>
+<td>MMA_WRONG at 0.27 TFLOPS — GPU-fault signature.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="how-to-change-a-lever-honestly">How to change a lever honestly<a class="headerlink" href="#how-to-change-a-lever-honestly" title="Permanent link">&para;</a></h2>
+<p>Learned the hard way, repeatedly:</p>
+<ol>
+<li><strong>Measure both arms in one session, back to back.</strong> The same unchanged kernel has moved 15%
+   between sessions. Any old number is a different experiment.</li>
+<li><strong>Measure on the platform of record</strong> — for Intel that is Docker/Linux
+   (<code>scripts/bench-intel.sh</code>), not Windows-native, even though Crisp-only numbers <em>can</em> be taken
+   natively because the fixture needs only <code>clang++</code>.</li>
+<li><strong>Use the fixture, not a generated harness.</strong> <code>bench_harness_l0.cpp</code> is one reviewed apparatus for
+   every kernel, so a difference between rows is a difference between kernels.</li>
+<li><strong>Check <code>verified</code>.</strong> Several "wins" were kernels that skipped work — <code>chap2_tiling</code> posted the
+   second-best number in its section while storing nothing at all, because it had no <code>store-tile</code>.
+   The compiler warned on every build; a sweep runs <code>--log-level=off</code>.</li>
+<li><strong>Know the spread before believing a delta.</strong> Two byte-identical kernels once read 57.7 and 61.7
+   at N=2048 in the same run.</li>
+<li><strong>Read the <code>.metacrisp</code>.</strong> It is the compiler's own record of what it assumed — geometry, lowering,
+   register mode. If the harness and the metacrisp disagree, the measurement is of neither.</li>
+</ol>
+<h2 id="open">Open<a class="headerlink" href="#open" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>The remaining SYCL-TLA gap is a lowering gap, and it is now precisely one thing.</strong> At 8192
+  Crisp reads <strong>106.0</strong> against ~237. Geometry is matched (256×256 over 32 subgroups — theirs is
+  fixed at every size, verified from their peer <code>.cpp</code>: compile-time constants, zero
+  size-dependent branching). Prefetch is in. Cache policy is dead. The coop-matrix lowering is
+  superseded. What is left is the part of their instruction stream we do not emit:
+  <code>createBlock2DAddressPayload</code> / <code>setBlockX/Y</code>, <strong>never materialising a 64-bit address</strong>. Spec
+  <code>155/04</code> already pins the invariant and is RED on purpose — 26 emulated i64 multiplies for 8
+  loads, and Xe has no native 64-bit multiply.</li>
+<li><strong>The peer column is not yet trustworthy.</strong> SYCL-TLA at N=2048 read 72.1 / 85.1 / 107.9 across
+  three sessions on an unchanged binary — a 49% spread — because the bench image has no <code>ocloc</code>
+  and builds it JIT rather than AOT. That drift is now comparable to the effects being measured.</li>
+<li>The bigger <em>per-subgroup</em> tile is still blocked: <code>TN 128</code> at 0.14×, <code>TM 64</code> will not run,
+  <code>TN 96</code> faults. Note the 256×256 workgroup tile did <strong>not</strong> need this — per-subgroup work and
+  register demand are unchanged at 32×64 and 448 regs/thread.</li>
+</ul>
+<h2 id="the-lesson-this-document-keeps-having-to-relearn">The lesson this document keeps having to relearn<a class="headerlink" href="#the-lesson-this-document-keeps-having-to-relearn" title="Permanent link">&para;</a></h2>
+<p><strong>Three times in endeavour 158, a lever recorded here as a measured loss turned out to be a win
+once a second lever existed.</strong> The 256×256 geometry ("34.6 vs 60.8", endeavour 156) was measured
+at K=16 without warp-partitioned prefetch. Prefetch ("2.6–2.9× slower") was measured while every
+subgroup issued every block. <code>:xe-native</code> ("does not compose") was measured against a <em>ring</em>.
+Each negative was honestly taken and correctly recorded, and each was <strong>scoped to a configuration
+rather than to the mechanism</strong> — which is how it went on to mislead.</p>
+<p>So when writing an entry here: say what was held fixed, not just what was measured. A result that
+does not name its configuration will eventually be read as a result about the mechanism.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "toc.integrate"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
