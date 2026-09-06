@@ -1017,3 +1017,71 @@ WHERE THE ENDEAVOUR STANDS
 | B1 — 140/01, 140/02 | DEFERRED, correctly (no staging primitive at all) |
 
 Post-149 skip ledger: 8 at the start, **1 now** (155/03).
+
+
+PHASE 13 — DEFECT D FIXED.  THE POST-149 SKIP LEDGER IS DOWN TO ONE. (2026-09-06)
+=================================================================================
+
+D was two layers, and the backtrace named the first one exactly.
+
+**D1 — a DEAD SHAPE TEMP reached the analyzer as a call.**
+
+    0: (ANALYZE-INCOMPLETE-TYPE-ACCESSOR 32 (32 16) ...)
+       :CURRENT-COMPILING-FUNCTION FP16_RING_GRAD  :CURRENT-BINDING-NAME %ANF-T-27
+
+`The value 32 is not of type SYMBOL` was a LET binding `(%ANF-T-27 (32 16))` being read as a
+function call with 32 in head position.  ANF hoists a bare list argument because it cannot tell a
+shape from a call; `make-register-tile` is on ANF's opaque-argument list so its dims survive
+inline, but `make-register-tile-ring` is NOT — which is why this only ever bit RING kernels.
+
+`%ad-inline-literal-shape-temps` substitutes the literal at every USE and deliberately leaves the
+binding, on the reasoning its own docstring records: *"Leaving the now-dead binding is harmless:
+the backward contains only what the walk emits."*  **That stopped being true when endeavour 149's
+PRIMAL REPLAY began replaying the forward's STATEMENTS, bindings included.**  Two changes each
+correct alone, wrong together — and the note explaining why it was safe is exactly where the
+assumption was written down, which is the argument for writing such notes at all.
+
+FIXED by neutralising the dead binding's VALUE to 0 (the left-hand side still must not be
+rewritten — that produces the malformed `((32 16) (32 16))` the original comment warns about).
+
+**A REGRESSION THE SUITE CAUGHT, worth recording.**  The first cut broke
+`078/20-make-tensor-strides-hoist`, emitting `(MAKE-TENSOR V INT (QUOTE 0) :STRIDES (QUOTE 0))`.
+`'(2 2)` reads as `(QUOTE (2 2))`, which has a BINDING's exact shape — 2 elements, symbol head,
+integer-list second — so the pass had always been collecting QUOTE as a map key.  Harmless while
+the clause returned the form untouched; fatal the moment it rewrote the value.  QUOTE is now
+excluded outright.  A latent mis-collection that only a change downstream of it could expose.
+
+**D2 — the guard was never declared uniform.**  With D1 fixed, 155/03 failed on the second half
+of its own skip note: AD places a sync-workgroup inside `(when (< next-k n-k-steps) ...)` and the
+divergence checker refuses it, correctly.  The guard IS workgroup-uniform — both operands derive
+from the loop counter and a kernel-wide constant — but the checker cannot prove that, and the
+kernel never said so.  Its sibling ring spec 145/19 already binds exactly this condition through
+`to-workgroup-uniform`.  155/03 now does the same, with a comment saying why the FORWARD never
+needed it (the forward has no sync inside that branch).
+
+That is a SPEC fix, not a compiler concession: the language provides the assertion, the fact is
+true, and the sibling spec sets the precedent.  The alternative — teaching AD to hoist barriers
+out of guards while leaving the data movement inside — is defensible and strictly more general,
+but it is speculative surgery on AD's control-flow emission and was not needed here.
+
+**`SKIP-WITH[--differentiate]` REMOVED FROM 155/03.**
+
+STATE
+-----
+
+**Post-149 skip ledger: 8 at the start of this endeavour, ONE now** — `154/03`.
+
+That one is no longer blocked on anything to do with shapes, provenance, rings or types.  It
+fails on the wgmma accumulator's register budget: `%ad-canonicalize-wgmma` rewrites
+`(make-wgmma-accumulator float (64 256) 0.0)` into a per-warp `(make-register-tile float (64 256)
+0.0)`, and PRIMAL REPLAY analyses that form, so the 512-registers-per-thread fit check fires on
+the ACCUMULATOR ITSELF.  Phase 12 changed the ADJOINT's representation, which was necessary and
+is not sufficient.  The same reasoning applies one step further: the replayed accumulator does
+not need to be register-resident either.
+
+VERIFICATION: 1062/1062 --differentiate, 1062/1062 plain, 233/233 negative, 291/291 unit.
+
+One honest note: the first plain run SEGFAULTED at `157/01-split-arrive-wait-spv` (exit 139) in
+its SPV validator.  A clean re-run passed 1062/1062 and the plain pass does not run AD at all, so
+this is a flake of the documented BMG-driver kind rather than a regression — but it is recorded
+rather than quietly re-run away.

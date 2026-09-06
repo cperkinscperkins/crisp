@@ -1571,3 +1571,136 @@ processes float inputs — integer tensor inputs contribute zero gradient."
           ;; the ordinary memory-shaped %store-tile-at-bwd, which is what an SLM adjoint wants.
           ;; The two decisions MUST agree, so both ask this one predicate.
           (%mma-ad-accumulator-fits-registers-p (third init-form))))))
+
+;;; ======================================================================
+;;; Endeavour 163 defect D — A DEAD SHAPE TEMP REACHED THE ANALYZER AS A CALL.
+;;;
+;;;     The value 32 is not of type SYMBOL      (155/03)
+;;;     The value 64 is not of type SYMBOL      (154/03)
+;;;
+;;; Both are TILE DIMENSIONS, and the backtrace named the site exactly:
+;;;
+;;;     0: (ANALYZE-INCOMPLETE-TYPE-ACCESSOR 32 (32 16) ...)
+;;;        :CURRENT-COMPILING-FUNCTION FP16_RING_GRAD  :CURRENT-BINDING-NAME %ANF-T-27
+;;;
+;;; i.e. the backward contained a LET binding `(%ANF-T-27 (32 16))` and the analyzer read
+;;; `(32 16)` as a function call with 32 in head position.
+;;;
+;;; WHY THE TEMP EXISTS.  ANF hoists a bare list argument because it cannot tell a shape from a
+;;; call.  `make-register-tile` is on the ANF converter's opaque-argument list so ITS dims survive
+;;; inline, but `make-register-tile-ring` is not — which is why this only ever bit RING kernels.
+;;;
+;;; WHY IT REACHED THE BACKWARD.  %ad-inline-literal-shape-temps substitutes the literal at every
+;;; USE and deliberately leaves the binding alone, on the reasoning its own docstring records:
+;;; "Leaving the now-dead binding is harmless: the backward contains only what the walk emits."
+;;; **That stopped being true when endeavour 149's PRIMAL REPLAY began replaying the forward's
+;;; STATEMENTS, bindings included.**  A pass and a later feature each correct alone, wrong
+;;; together — and the note explaining why it was safe is exactly where the assumption was
+;;; recorded, which is the argument for writing such notes down.
+;;;
+;;; THE FIX.  Neutralise the dead binding's VALUE to 0 rather than leaving the shape list in
+;;; expression position.  The left-hand side is still not rewritten — that would produce the
+;;; malformed `((32 16) (32 16))` the original comment warns about.  The binding is dead BY
+;;; CONSTRUCTION: every occurrence of the symbol has just been replaced by the literal.
+;;;
+;;; Structurally inert for any kernel with no hoisted shape temp, which is every kernel that was
+;;; already compiling.
+;;; ======================================================================
+
+;; src/autodiff.lisp
+(defun %ad-inline-literal-shape-temps (flat-anf)
+  "Substitute every ANF temp bound to a literal list of integers with that literal.
+
+   `(%ANF-T-1 (64 64))` makes %ANF-T-1 a SHAPE, not a value -- the AD engine's shape
+   maps require literals and a backward cannot reference a forward-only temp.  A
+   binding is only inlined when its value is a non-empty list of integers, which no
+   call form can be (a call's head is a symbol).
+
+   The temp's OWN binding is left intact -- rewriting its left-hand side would produce
+   the malformed `((64 64) (64 64))`.  Leaving the now-dead binding is harmless: the
+   backward contains only what the walk emits."
+  (let ((map nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form)) (first form)
+                  (listp (second form)) (second form)
+                  (every #'integerp (second form))
+                  (not (assoc (first form) map)))
+         (push (cons (first form) (second form)) map))))
+    (if (null map)
+        flat-anf
+        (labels ((walk (f)
+                   (cond
+                     ((and f (symbolp f))
+                      (let ((e (assoc f map))) (if e (cdr e) f)))
+                     ((not (consp f)) f)
+                     ;; A temp's own binding.  Its left-hand side must NOT be rewritten --
+                     ;; that would produce the malformed `((64 64) (64 64))` -- but the VALUE
+                     ;; is neutralised to 0.  Endeavour 163 defect D: leaving the dead binding
+                     ;; intact stopped being harmless when endeavour 149's PRIMAL REPLAY began
+                     ;; replaying the forward's STATEMENTS, bindings included.  The dead
+                     ;; `(%ANF-T-27 (32 16))` then reached the analyzer, which read `(32 16)`
+                     ;; as a CALL with 32 in head position:
+                     ;;     The value 32 is not of type SYMBOL
+                     ;; The binding is dead BY CONSTRUCTION -- every occurrence of the symbol
+                     ;; has just been substituted with the literal -- so 0 is safe and keeps
+                     ;; the binding-list shape the walk expects.
+                     ((and (= (length f) 2) (symbolp (first f)) (first f)
+                           (assoc (first f) map))
+                      (list (first f) 0))
+                     (t (mapcar #'walk f)))))
+          (mapcar #'walk flat-anf)))))
+
+
+;; src/autodiff.lisp  (163 defect D — QUOTE must not be collected as a shape temp)
+(defun %ad-inline-literal-shape-temps (flat-anf)
+  "Substitute every ANF temp bound to a literal list of integers with that literal.
+
+   `(%ANF-T-1 (64 64))` makes %ANF-T-1 a SHAPE, not a value -- the AD engine's shape
+   maps require literals and a backward cannot reference a forward-only temp.  A
+   binding is only inlined when its value is a non-empty list of integers, which no
+   call form can be (a call's head is a symbol).
+
+   The temp's OWN binding is left intact -- rewriting its left-hand side would produce
+   the malformed `((64 64) (64 64))`.  Leaving the now-dead binding is harmless: the
+   backward contains only what the walk emits."
+  (let ((map nil))
+    (%mma-ad-walk-forms
+     flat-anf
+     (lambda (form)
+       (when (and (= (length form) 2) (symbolp (first form)) (first form)
+                  ;; `'(2 2)` reads as `(QUOTE (2 2))`, which has a BINDING's exact shape.
+                  ;; Collecting it made QUOTE a map key; harmless while the binding clause
+                  ;; returned the form untouched, fatal once that clause rewrites the value
+                  ;; (it produced `(MAKE-TENSOR V INT (QUOTE 0) :STRIDES (QUOTE 0))`).
+                  ;; A quoted literal is never an ANF shape temp, so exclude it outright.
+                  (not (string-equal (symbol-name (first form)) "QUOTE"))
+                  (listp (second form)) (second form)
+                  (every #'integerp (second form))
+                  (not (assoc (first form) map)))
+         (push (cons (first form) (second form)) map))))
+    (if (null map)
+        flat-anf
+        (labels ((walk (f)
+                   (cond
+                     ((and f (symbolp f))
+                      (let ((e (assoc f map))) (if e (cdr e) f)))
+                     ((not (consp f)) f)
+                     ;; A temp's own binding.  Its left-hand side must NOT be rewritten --
+                     ;; that would produce the malformed `((64 64) (64 64))` -- but the VALUE
+                     ;; is neutralised to 0.  Endeavour 163 defect D: leaving the dead binding
+                     ;; intact stopped being harmless when endeavour 149's PRIMAL REPLAY began
+                     ;; replaying the forward's STATEMENTS, bindings included.  The dead
+                     ;; `(%ANF-T-27 (32 16))` then reached the analyzer, which read `(32 16)`
+                     ;; as a CALL with 32 in head position:
+                     ;;     The value 32 is not of type SYMBOL
+                     ;; The binding is dead BY CONSTRUCTION -- every occurrence of the symbol
+                     ;; has just been substituted with the literal -- so 0 is safe and keeps
+                     ;; the binding-list shape the walk expects.
+                     ((and (= (length f) 2) (symbolp (first f)) (first f)
+                           (assoc (first f) map))
+                      (list (first f) 0))
+                     (t (mapcar #'walk f)))))
+          (mapcar #'walk flat-anf)))))
+

@@ -30,7 +30,6 @@
 ;; ===================================================================
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "The tile-stride adjoint gap this shared with 01/02 was FIXED by endeavour 163 defect A. What it was masking, in order: a raw `The value is not of type SYMBOL` on the ring path -- unresolved, and NOT the same failure as 01/02/04's BUG 054 -- and behind that the documented divergence issue, where AD places a sync-workgroup inside the divergent (when (< next-k n-k-steps) ...) and the checker refuses it, correctly, since it would deadlock."
 ;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-fp16-coop
 (declaim (precision fast))
 (def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
@@ -53,9 +52,17 @@
             ;; The slot must fold to a compile-time integer, so it is written inline as
             ;; (mod LOOPVAR ring-count); routing it through the NEXT-K binding does not fold
             ;; and the compiler says so.  NEXT-K is still fine as a COORDINATE.
-            (when (< next-k n-k-steps)
-              (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
-              (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
+            ;; The guard is bound through to-workgroup-uniform, exactly as the sibling ring
+            ;; spec 145/19 does.  It is uniform in fact -- both operands derive from the loop
+            ;; counter and a kernel-wide constant -- but the divergence checker cannot prove
+            ;; that, and the BACKWARD places a sync-workgroup inside this branch.  Without the
+            ;; assertion the checker refuses it, correctly: an unproven-uniform guard around a
+            ;; barrier is a deadlock.  The forward never needed it because the forward has no
+            ;; sync in here.
+            (let ((more-k? (to-workgroup-uniform (< next-k n-k-steps))))
+              (when more-k?
+                (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
+                (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x))))
             (mma-accumulate-via-tile (8 16 16) C-tile
                                      (ring-get A-ring (mod grid-k (to-ulong 2)))
                                      (ring-get B-ring (mod grid-k (to-ulong 2))))))
