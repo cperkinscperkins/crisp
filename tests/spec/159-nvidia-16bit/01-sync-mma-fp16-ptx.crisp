@@ -48,7 +48,6 @@
 ;; NOT claimed here -- that waits for the single batched pod trip (MMA_CORRECT via TEST-HOIST).
 ;; ===================================================================
 ;;
-;; SKIP-WITH[--differentiate]: "AD mints TF32 fragments for 16-bit operands and so reads the wrong bytes -- BUG 054, a silent WRONG GRADIENT, not a precision loss."
 ;;
 ;; WHY THIS RUNG IS SKIPPED UNDER --differentiate, and it is a GAP CLAIM, not a shrug.
 ;; The forward is correct: the module carries exactly one

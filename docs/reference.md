@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-03T14:54:45.652070Z
+Generated on 2026-09-06T22:54:14.557501Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -992,6 +992,20 @@ Generated on 2026-09-03T14:54:45.652070Z
 - **Args**: `(DECL KERNEL-NAME PROFILE)`
 
   > Validate a (mma-lowering <keyword>) declaration and return the chosen lowering keyword.  >   >    DECL absent -> the active profile's default (its first :mma-lowerings entry, else :coop-matrix).  >    DECL present -> that lowering, if the profile offers it; otherwise a compile-time REFUSAL.  >   >    The refusal is the point.  Silently falling back to the portable path would hand the user a slow  >    kernel with no way to tell that their request was ignored -- exactly the failure mode that hid  >    :warps-on-a-ring being a no-op through two endeavours.
+
+
+---
+### DEFUN `%TLC-TENSOR-ELEM-OF`
+- **Args**: `(TYPE-SPEC)`
+
+  > The ELEMENT type of a tensor-shaped TYPE-SPEC, or NIL if it is not one.  >    Tolerant by design: anything that does not canonicalize to a (tensor ELEM ...) form answers  >    NIL, which makes the caller skip its check rather than guess.
+
+
+---
+### DEFUN `%TLC-CHECK-ELEM-MATCH`
+- **Args**: `(SRC TILE ENV OP-NAME LOCATION)`
+
+  > BUG 057: refuse a tile-staging op whose SOURCE and DESTINATION element types differ.  >   >    A tile stage is a COPY.  Staging a `float` global into a `half` tile emitted no fptrunc and  >    no `store half`, only `store float ... ptr addrspace(3)` -- 4-byte values into a  >    2-byte-element SLM tile, overrunning it 2x with every element past the first at the wrong  >    offset.  It compiled clean and corrupted memory.  >   >    Refused rather than converted: an implicit fptrunc would put per-element casts inside a bulk  >    staging loop whose entire purpose is speed, and would silently change the numerics of a load  >    the user reads as a copy.  >   >    Both types come from a pure environment lookup, so no sub-expression is re-analysed and no  >    side effect is duplicated.  Skipped whenever either side's element type cannot be determined,  >    which keeps a false refusal off kernels this was never about.
 
 
 ---
@@ -2512,7 +2526,7 @@ Generated on 2026-09-03T14:54:45.652070Z
 ### DEFUN `%PROMOTE-SCRATCH-INIT-FOR-AD`
 - **Args**: `(INIT)`
 
-  > Promotes the type in a make-scratch-* form to its float adjoint equivalent.  >    E.g., (make-scratch-vector ulong 4) -> (make-scratch-vector double 4).
+  > Promotes the type in a make-scratch-* form to its float adjoint equivalent.  >    E.g., (make-scratch-vector ulong 4) -> (make-scratch-vector double 4).  >   >    Endeavour 163 path (a): a 16-BIT FLOAT element promotes to FLOAT for the same reason an  >    integer one does -- an adjoint accumulates many contributions and must not do so in fp16.  >    It is also what makes the gradient scatter an fp32 atomic, which is the only kind BMG's  >    SPIR-V reader will load.
 
 
 ---
@@ -3155,9 +3169,10 @@ Generated on 2026-09-03T14:54:45.652070Z
 
 ---
 ### DEFUN `%MMA-VIA-TILE-BACKWARD`
-- **Args**: `(FORM DIMS-MAP SRC-MAP INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)`
+- **Args**: `(FORM DIMS-MAP SRC-MAP INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG
+              &OPTIONAL A-SRC-IN AOY-IN AOX-IN B-SRC-IN BOY-IN BOX-IN)`
 
-  > Endeavor 145 P3b: the backward for  >    `(mma-accumulate-via-tile (M N K) C-TILE A-TILE B-TILE ...)`.  >   >    Emits ONE nested LET holding the backward's temporaries and the two backward GEMMs:  >   >        dC-slm (Mt x Nt) <- store-tile C-tile_ADJ      ; register accumulator -> SLM  >        AT-slm (Kt x Mt) <- transposed stage of A's global source  >        BT-slm (Nt x Kt) <- transposed stage of B's global source  >          dA-reg (Mt x Kt) : mma-accumulate-via-tile  dA-reg  dC-slm  BT-slm  >          dB-reg (Kt x Nt) : mma-accumulate-via-tile  dB-reg  AT-slm  dC-slm  >        store-tile dA-reg -> A-tile_ADJ ;  store-tile dB-reg -> B-tile_ADJ  >   >    From there the existing endeavor-111 machinery finishes the job: A-tile_ADJ / B-tile_ADJ  >    are already auto-allocated, and %load-tile-at-bwd already scatters them into A_GRAD /  >    B_GRAD.  Because the walk runs in reverse, this rule's emission lands BEFORE those  >    scatters in the generated backward — which is the order the chain rule needs.  >   >    ERRORS when a shape or a staging source is not compile-time recoverable.  It used to  >    return NIL and let the caller fall through — but the walk's fallthrough DROPS the form,  >    which hands back a silent ZERO gradient.  That is the same silent-wrong-answer class as  >    the K-step bug P3a fixed, and it actually bit: a K-LOOPED matmul emitted a backward with  >    no MMA in it at all, because the maps only scanned the top level of flat-anf and the  >    loop body is nested.  Better to refuse to compile than to quietly return zeros.
+  > Endeavor 145 P3b: the backward for  >    `(mma-accumulate-via-tile (M N K) C-TILE A-TILE B-TILE ...)`.  >   >    Emits ONE nested LET holding the backward's temporaries and the two backward GEMMs:  >   >        dC-slm (Mt x Nt) <- store-tile C-tile_ADJ      ; register accumulator -> SLM  >        AT-slm (Kt x Mt) <- transposed stage of A's global source  >        BT-slm (Nt x Kt) <- transposed stage of B's global source  >          dA-reg (Mt x Kt) : mma-accumulate-via-tile  dA-reg  dC-slm  BT-slm  >          dB-reg (Kt x Nt) : mma-accumulate-via-tile  dB-reg  AT-slm  dC-slm  >        store-tile dA-reg -> A-tile_ADJ ;  store-tile dB-reg -> B-tile_ADJ  >   >    From there the existing endeavor-111 machinery finishes the job: A-tile_ADJ / B-tile_ADJ  >    are already auto-allocated, and %load-tile-at-bwd already scatters them into A_GRAD /  >    B_GRAD.  Because the walk runs in reverse, this rule's emission lands BEFORE those  >    scatters in the generated backward — which is the order the chain rule needs.  >   >    ERRORS when a shape or a staging source is not compile-time recoverable.  It used to  >    return NIL and let the caller fall through — but the walk's fallthrough DROPS the form,  >    which hands back a silent ZERO gradient.  That is the same silent-wrong-answer class as  >    the K-step bug P3a fixed, and it actually bit: a K-LOOPED matmul emitted a backward with  >    no MMA in it at all, because the maps only scanned the top level of flat-anf and the  >    loop body is nested.  Better to refuse to compile than to quietly return zeros.  >   >    Endeavour 163 defect C (BUG 054): the three STAGED tiles are MMA OPERANDS, so they take the  >    forward operand's ELEMENT TYPE, not a hardcoded FLOAT.  The two register accumulators stay  >    FLOAT, which is correct mixed precision -- XMX and the tensor cores take 16-bit operands and  >    accumulate in fp32.  When the operand element IS float the emission is byte-for-byte what it  >    was, so every tf32 kernel is unaffected.
 
 
 ---
@@ -3185,14 +3200,14 @@ Generated on 2026-09-03T14:54:45.652070Z
 ### DEFUN `%MMA-AD-REGISTER-TILE-P`
 - **Args**: `(SYM FLAT-ANF)`
 
-  > Endeavor 145 P3b: T when SYM is bound in FLAT-ANF by a make-register-tile constructor.  >    Distinguishes a register accumulator tile from an SLM scratch tile, which the AD walk  >    must treat completely differently at a store.
+  > Endeavor 145 P3b: T when SYM is bound in FLAT-ANF by a make-register-tile constructor.  >    Distinguishes a register accumulator tile from an SLM scratch tile, which the AD walk  >    must treat completely differently at a store.  >   >    Endeavour 163 defect A: the scan now descends into nested bodies, so a tile bound inside  >    a tile-stride (or any loop / branch) body is found.  See the header above.
 
 
 ---
 ### DEFUN `%MMA-AD-REGISTER-ACCUMULATOR-TILE-P`
 - **Args**: `(SYM FLAT-ANF)`
 
-  > T when SYM is a register tile in the ACCUMULATOR role — a make-register-tile with no  >    :operand key.  >   >    Endeavor 146: the store backward needs this narrower question, not %mma-ad-register-tile-p.  >    Gap 4 split the two roles apart at the ADJOINT: an accumulator's adjoint is still a  >    register tile (it is seeded from the destination's gradient by %load-register-tile-acc and  >    staged to SLM by the VJP), while an OPERAND's adjoint is a scratch matrix, because every  >    consumer indexes it as memory and a register tile cannot be written element-wise.  >   >    Asking the broad question after that split emitted %load-register-tile-acc — a REGISTER  >    operation — against a scratch-matrix adjoint, which the analyzer then rejected with  >    `Unsupported form '%LOAD-REGISTER-TILE-ACC' found in function body`.  Operand tiles now  >    fall through to the ordinary store-tile-at backward, which is the memory-shaped edge their  >    memory-shaped adjoint wants.
+  > T when SYM is a register tile in the ACCUMULATOR role — a make-register-tile with no  >    :operand key.  >   >    Endeavor 146: the store backward needs this narrower question, not %mma-ad-register-tile-p.  >    Gap 4 split the two roles apart at the ADJOINT: an accumulator's adjoint is still a  >    register tile (it is seeded from the destination's gradient by %load-register-tile-acc and  >    staged to SLM by the VJP), while an OPERAND's adjoint is a scratch matrix, because every  >    consumer indexes it as memory and a register tile cannot be written element-wise.  >   >    Asking the broad question after that split emitted %load-register-tile-acc — a REGISTER  >    operation — against a scratch-matrix adjoint, which the analyzer then rejected with  >    `Unsupported form '%LOAD-REGISTER-TILE-ACC' found in function body`.  Operand tiles now  >    fall through to the ordinary store-tile-at backward, which is the memory-shaped edge their  >    memory-shaped adjoint wants.  >   >    Endeavour 163 defect A: the scan now descends into nested bodies, so a tile bound inside  >    a tile-stride (or any loop / branch) body is found.  See the header above.
 
 
 ---
@@ -3239,7 +3254,7 @@ Generated on 2026-09-03T14:54:45.652070Z
 ---
 ### DEFUN `%MMA-VJP-SCALAR-LOWERING`
 - **Args**: `(MT NT KT C-ADJ A-OP B-OP A-ADJ B-ADJ A-SRC AOY AOX B-SRC BOY BOX
-              PKG)`
+              PKG &OPTIONAL A-GRAD B-GRAD)`
 
   > The shape-agnostic scalar backward for a tile multiply.  Emitted as ordinary Crisp source,  >    so it lowers through the normal path on either backend and at ANY tile shape.  >   >    dC is materialised from the register accumulator into SLM once, then two collective loops  >    accumulate into the operand adjoints.  Index arithmetic is coerced with to-int because a  >    staging origin can be a ULONG extent expression while the collective's loop vars are INT.
 
@@ -3438,7 +3453,7 @@ Generated on 2026-09-03T14:54:45.652070Z
 ### DEFUN `%AD-TILE-BASE`
 - **Args**: `(OP)`
 
-  > The underlying tile SYMBOL of a tile operand: itself if a symbol, the ring if a  >    `(ring-get RING i)` view.  Shape and staging questions are asked of the base — every slot of  >    a ring has the ring's element shape — while ADJOINT questions keep the view (see  >    %tlc-bwd-adj-name), because slot i's adjoint is slot i of the adjoint ring, not the whole  >    ring.
+  > The underlying tile SYMBOL of a tile operand: itself if a symbol, the ring if a  >    `(ring-get RING i)` view.  Shape and staging questions are asked of the base — every slot of  >    a ring has the ring's element shape — while ADJOINT questions keep the view (see  >    %tlc-bwd-adj-name), because slot i's adjoint is slot i of the adjoint ring, not the whole  >    ring.  >   >    Endeavour 163 defect B2: a SYMBOL is first resolved through *ad-view-alias-map*, because ANF  >    hoists a view into a temp — `(%ANF-T-42 (RING-GET A1-RING SLOT))` — and the operand reaching  >    the VJP is then that temp.  A symbol with no alias still answers itself, so an ordinary tile  >    is unaffected.
 
 
 ---
@@ -3452,7 +3467,7 @@ Generated on 2026-09-03T14:54:45.652070Z
 ### DEFUN `%MMA-AD-TILE-DIMS-MAP`
 - **Args**: `(FLAT-ANF)`
 
-  > Alist SYM -> (ROWS COLS) for every compile-time-shaped tile bound anywhere in FLAT-ANF:  >    `(V (make-register-tile T (M N) INIT))`, `(V (make-scratch-matrix T (R C)))`, and — endeavor  >    138 — the RING constructors, whose per-slot dimensions sit in the same position.  A ring is  >    keyed by its own symbol; every slot has the ring's element shape, so a `(ring-get R i)`  >    operand resolves through %ad-tile-base.
+  > Alist SYM -> (ROWS COLS) for every compile-time-shaped tile bound anywhere in FLAT-ANF:  >    `(V (make-register-tile T (M N) INIT))`, `(V (make-scratch-matrix T (R C)))`, and — endeavor  >    138 — the RING constructors, whose per-slot dimensions sit in the same position.  A ring is  >    keyed by its own symbol; every slot has the ring's element shape, so a `(ring-get R i)`  >    operand resolves through %ad-tile-base.  >   >    Endeavour 163 defect C: each entry now carries the tile's ELEMENT TYPE as a fourth  >    element, (SYM ROWS COLS ELEM).  Every existing consumer reads only SECOND and THIRD, so  >    the extension is backward compatible; the tile-multiply VJP needs it to stage its backward  >    operands in the forward's element type instead of a hardcoded FLOAT.
 
 
 ---
@@ -3500,7 +3515,42 @@ Generated on 2026-09-03T14:54:45.652070Z
 ### DEFUN `%MMA-VJP-OPERAND-REF`
 - **Args**: `(OP SRC-MAP DIMS-MAP INPUTS &OPTIONAL RING-SITES)`
 
-  > Resolve an mma-accumulate-via-tile operand to (values SRC OY OX KIND).  >   >      - STAGED  : a scratch tile filled by load-tile-at.  SRC is the ORIGINAL global matrix and  >                  (OY OX) the staging origin.  >      - DIRECT  : the operand IS a global matrix (a kernel parameter read straight by the  >                  fragment loads, as in 132/04-mma-via-tile).  Origin (0 0).  >      - :RING   : a `(ring-get R i)` view.  SRC is the single global matrix every load site names;  >                  the origin is those sites' agreed components with the stage component replaced  >                  by the CONSUMING loop variable (see %ad-reconcile-ring-origin).  A pipelined  >                  ring's own load sites record OTHER stages' origins, which is exactly what made  >                  this look undifferentiable.  >   >    RING-SITES is the %ad-ring-load-sites alist, threaded from the caller because it needs  >    flat-anf.  Absent, ring operands decline, which is the previous behaviour.
+  > Resolve an mma-accumulate-via-tile operand to (values SRC OY OX KIND).  >   >      - STAGED  : a scratch tile filled by load-tile-at.  SRC is the ORIGINAL global matrix and  >                  (OY OX) the staging origin.  >      - DIRECT  : the operand IS a global matrix (a kernel parameter read straight by the  >                  fragment loads, as in 132/04-mma-via-tile).  Origin (0 0).  >      - :RING   : a `(ring-get R i)` view.  SRC is the single global matrix every load site names;  >                  the origin is those sites' agreed components with the stage component replaced  >                  by the CONSUMING loop variable (see %ad-reconcile-ring-origin).  A pipelined  >                  ring's own load sites record OTHER stages' origins, which is exactly what made  >                  this look undifferentiable.  >   >    RING-SITES is the %ad-ring-load-sites alist, threaded from the caller because it needs  >    flat-anf.  Absent, ring operands decline, which is the previous behaviour.  >   >    Endeavour 163 defect B: OP is first canonicalised through *ad-view-alias-map*, because ANF  >    hoists a view into a temp and the operand reaching a realistic pipelined kernel's VJP is that  >    temp rather than the view.  A symbol with no alias is unchanged, so every non-ring operand  >    resolves exactly as before.
+
+
+---
+### DEFUN `%MMA-AD-REGISTER-TILE-BINDING-EXISTS-P`
+- **Args**: `(SYM FLAT-ANF EXTRA-TEST)`
+
+  > T when SYM has a `(SYM (make-register-tile ...))` binding ANYWHERE in FLAT-ANF -- nested  >    loop and branch bodies included -- whose init form also satisfies EXTRA-TEST (NIL to  >    accept any).  >   >    Mirrors the `thereis` semantics of the flat scans it replaces: it asks whether SOME  >    binding of SYM qualifies, so a symbol bound in two roles answers exactly as before.
+
+
+---
+### DEFUN `%CRISP-NARROW-FLOAT-SCALAR-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > T if TYPE-SPEC resolves to a FLOAT-category SCALAR narrower than 32 bits -- i.e. `half` or  >    `bfloat16`, both registered as (16 :float) in the type registry.  >   >    Resolves def-type aliases first, exactly as %crisp-float-type-p does, so an alias for half  >    answers T.
+
+
+---
+### DEFUN `%CRISP-NARROW-FLOAT-TENSOR-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > T if TYPE-SPEC resolves to a tensor whose element is a 16-bit float.  Mirrors  >    %crisp-integer-tensor-type-p, which is the clause this one sits beside.
+
+
+---
+### DEFUN `%NARROW-FLOAT-TENSOR-ELEM-TO-FLOAT`
+- **Args**: `(TYPE-SPEC)`
+
+  > Replaces a 16-bit float tensor's element type with FLOAT, preserving rank, address space,  >    alignment and contiguous-term.  Returns TYPE-SPEC unchanged if it is not one.  >    The 6-tuple rebuild mirrors %integer-tensor-elem-to-float exactly.
+
+
+---
+### DEFUN `%MMA-AD-ACCUMULATOR-FITS-REGISTERS-P`
+- **Args**: `(DIMS)`
+
+  > T when an (M N) accumulator tile fits the per-thread register budget, so its ADJOINT can be a  >    register tile rather than SLM.  >   >    Mirrors %register-tile-fit-check's arithmetic — (M/16)x(N/8) fragments at 4 fp32 regs each —  >    but ANSWERS rather than signals, because this is a representation choice and not a user error.  >    Like that check it is vacuously true on :spirv, where the driver owns register residency.  >   >    A non-literal or unknown shape answers T, preserving the previous behaviour for anything this  >    cannot reason about.
 
 
 ---
@@ -5053,6 +5103,13 @@ Generated on 2026-09-03T14:54:45.652070Z
 - **Args**: `(MODULE)`
 
   > T if MODULE calls either half of the INTEL split barrier.  >   >    Mirrors %module-uses-2d-block-io-p and %module-uses-subgroup-mma-p: the extension is requested  >    only when it is used, so a kernel that never splits does not oblige the driver to support it.
+
+
+---
+### DEFUN `%LL-USES-FP16-ATOMIC-FADD-P`
+- **Args**: `(LL-PATH)`
+
+  > T when the emitted .ll text at LL-PATH contains a HALF-typed `atomicrmw fadd`, which is what  >    requires SPV_EXT_shader_atomic_float16_add.  >   >    This is the gradient-scatter shape: a backward kernel accumulates into <input>_GRAD, whose  >    element type is the INPUT's, so differentiating any 16-bit kernel emits one of these.  >   >    Deliberately narrow -- all three of `atomicrmw`, `fadd` and `half` must appear on the SAME  >    line, which is how LLVM prints the instruction.  A module with fp32 atomics only answers NIL  >    and its flag list is unchanged.
 
 
 ---

@@ -31,7 +31,7 @@
 ;; a claim that cooperating is faster.  It is a claim that cooperating WORKS.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "ring-get erases the operand's compile-time shape, so the tile-multiply VJP cannot resolve (Mt Nt Kt).  MEASURED, not assumed: the SHIPPED chap3 kernel shape fails identically under --differentiate with the same message, so this is a pre-existing gap in ALL ring-staged wgmma kernels and is not introduced here.  Same family as the blocker on 140/01 and 140/02.  Wants its own endeavour: make ring-get shape-transparent to the VJP."
+;; SKIP-WITH[--differentiate]: "The BACKWARD does not fit a Hopper SM at this kernel's tile geometry: 720896 bytes of shared memory against a :max-shared-memory-per-block of 232448.  That is not a defect -- it is the backward inheriting the FORWARD'S 128x256 two-warpgroup tiling, whose staged operands, their adjoints and the VJP transposes come to roughly 3x what an SM has.  dA = dC.B^T and dB = A^T.dC hold at ANY tile size, so the fix is to let the backward choose its own geometry -- design work, not a bug fix.  Everything BEFORE this wall is fixed: ring shape/provenance resolution, the ANF shape-temp leak, and the oversized accumulator (register tile -> SLM, both for the adjoint and for the canonicalised accumulator itself).  Grouped with 140/01 and 140/02 as wgmma AD; none has a NUMERIC check without an H100 rung pinned [CUDA]."
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma-group
 ;;
 ;; MMA-DIMS: 128 256 32

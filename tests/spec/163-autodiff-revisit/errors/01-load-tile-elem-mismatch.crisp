@@ -1,0 +1,35 @@
+;; CHECK-FAIL: "element type mismatch"
+;; BUG 057 — a tile stage across differing element types must be REFUSED, not silently
+;; reinterpreted.
+;;
+;; Before this refusal the kernel below compiled clean and corrupted memory: the emitted
+;; forward contained no `fptrunc` and not one `store half`, only
+;; `store float ... ptr addrspace(3)` — 4-byte values written into a 2-byte-element SLM
+;; tile, overrunning it 2x with every element past the first at the wrong offset.  Where an
+;; MMA consumed the tile, its cooperative matrices were half, so it read packed-half lanes
+;; out of float bit patterns.  It surfaced as a gradient of analytical=30.87 / numerical=0.0
+;; against an expected 1.2 — the finite difference was exactly zero because the perturbation
+;; landed in bytes the kernel never read as a value.
+;;
+;; REFUSED RATHER THAN CONVERTED.  An implicit fptrunc would bury per-element casts inside a
+;; bulk staging loop that exists to be fast, and would silently change the numerics of a load
+;; the user reads as a copy.  A tile whose element type differs from its source is far more
+;; often a mistake than an intent; if the narrowing IS wanted, it should be written explicitly
+;; (workgroup-stride + a cast) where its cost is visible in the source.
+;;
+;; DELIBERATELY MMA-FREE.  The first draft of this rung staged into an MMA, and the negative
+;; runner compiles for the GENERIC target with no hardware profile — so
+;; `mma-accumulate-via-tile: only tf32 (16 8 8) is supported without a hardware profile` fired
+;; first and the rung passed for the wrong reason.  The refusal under test is a property of
+;; load-tile-at alone and needs no MMA, no profile and no target, so this kernel has none.
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel elem_mismatch (A &out C)
+  (declare #'(a-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((A-tile (make-scratch-matrix half (8 16))))   ; half tile, FLOAT source — refused
+    (load-tile-at A A-tile (0 0))
+    (sync-workgroup)
+    (set! (~ C 0 0) 1.0)))

@@ -57,7 +57,6 @@
 ;; run-spec-precision-pass, which hands the validator the LLVM IR TEXT rather than the .spv
 ;; path — a different contract entirely.  The kernel sets precision in-source via
 ;; (declaim (precision fast)), so the flag is redundant here anyway.
-;; SKIP-WITH[--differentiate]: "AD mints no adjoint for register tiles bound INSIDE a tile-stride body (Unknown variable C-TILE_ADJ); hoisting the identical bindings to the enclosing let compiles clean. NOT a 16-bit gap -- a tf32 twin fails identically."
 ;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-bf16-coop
 (declaim (precision fast))
 (def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))

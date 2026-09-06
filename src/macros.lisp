@@ -621,6 +621,8 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                 collect (cond
                          ((%crisp-integer-tensor-type-p t-spec)
                            (%integer-tensor-elem-to-float t-spec))
+                         ((%crisp-narrow-float-tensor-type-p t-spec)
+                           (%narrow-float-tensor-elem-to-float t-spec))
                          ((%crisp-float-tensor-type-p t-spec)
                            (%ensure-tensor-read-write t-spec))
                          ((%crisp-integer-cell-type-p t-spec)
@@ -634,7 +636,8 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                            (list 'cell (%integer-scalar-to-float-scalar t-spec)
                                  :address-space :global))
                          ((%crisp-float-type-p t-spec)
-                           (list 'cell t-spec :address-space :global))
+                           (list 'cell (if (%crisp-narrow-float-scalar-p t-spec) 'float t-spec)
+                                 :address-space :global))
                          (t (%ensure-tensor-read-write t-spec)))))
 
          (all-grad-out-params (append rec-grad-out-params non-rec-scalar-in-grad-params))

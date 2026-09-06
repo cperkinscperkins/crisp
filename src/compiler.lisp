@@ -735,6 +735,9 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
     (let* ((tool (resolve-tool-executable "llvm-spirv"))
            (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
            (ext-flags (append '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
+                              (when (%ll-uses-fp16-atomic-fadd-p
+                                     (if (probe-file ll-opt-file) ll-opt-file ll-file))
+                                '("--spirv-ext=+SPV_EXT_shader_atomic_float16_add"))
                               (when (%module-uses-coop-matrix-p module)
                                 '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
                               (when (%module-uses-2d-block-io-p module)
@@ -1298,3 +1301,56 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
           (return-from %module-uses-split-barrier-p t)))
       (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
     nil))
+
+;;; ==================================================================
+;;; Endeavour 163 — helpers folded in from overlays/crisp-compiler-overlay.lisp
+;;; on 2026-09-06.  Appended rather than placed beside their callers; move them
+;;; if a tidier home is wanted.  Function calls are late-bound, so position only
+;;; affects compile-time style warnings, not behaviour.
+;;; ==================================================================
+
+;;; ======================================================================
+;;; Endeavour 163 — a 16-BIT kernel's BACKWARD needs SPV_EXT_shader_atomic_float16_add.
+;;;
+;;; Found while building the on-metal numeric gradient check that BUG 054's own note asked for.
+;;; The forward of an fp16 MMA kernel translates fine.  Its BACKWARD does not:
+;;;
+;;;     RequiresExtension: Feature requires the following SPIR-V extension:
+;;;      SPV_EXT_shader_atomic_float16_add            (llvm-spirv exit 18)
+;;;
+;;; because the gradient SCATTER accumulates into A_GRAD / B_GRAD, and those carry the INPUT's
+;;; element type -- half -- so the scatter is a half-typed `atomicrmw fadd`.  The ext list asked
+;;; for SPV_EXT_shader_atomic_float_add (fp32) and nothing else, so any 16-bit kernel was
+;;; untranslatable under --differentiate.  Verified by hand: adding the extension to the exact
+;;; failing invocation translates the same .bc cleanly.
+;;;
+;;; WHY A TEXT SCAN RATHER THAN A MODULE PREDICATE.  Its siblings (%module-uses-coop-matrix-p,
+;;; %module-uses-2d-block-io-p) scan FUNCTION NAMES, which cannot see this: `atomicrmw` is an
+;;; INSTRUCTION, not a named builtin call.  A module walk would need LLVMGetFirstBasicBlock /
+;;; GetFirstInstruction bindings, none of which exist yet.  %inject-cache-control-decorations
+;;; already text-scans the emitted .ll in this very function, so this follows local precedent
+;;; instead of adding four bindings for one predicate.  Swap it for a module walk if those
+;;; bindings ever land for another reason.
+;;;
+;;; SCOPED TIGHT: the clause fires only when a half-typed atomic fadd is actually present, so
+;;; every fp32 and tf32 module gets byte-identical flags.
+;;; ======================================================================
+(defun %ll-uses-fp16-atomic-fadd-p (ll-path)
+  "T when the emitted .ll text at LL-PATH contains a HALF-typed `atomicrmw fadd`, which is what
+   requires SPV_EXT_shader_atomic_float16_add.
+
+   This is the gradient-scatter shape: a backward kernel accumulates into <input>_GRAD, whose
+   element type is the INPUT's, so differentiating any 16-bit kernel emits one of these.
+
+   Deliberately narrow -- all three of `atomicrmw`, `fadd` and `half` must appear on the SAME
+   line, which is how LLVM prints the instruction.  A module with fp32 atomics only answers NIL
+   and its flag list is unchanged."
+  (and ll-path
+       (probe-file ll-path)
+       (with-open-file (s ll-path :direction :input :if-does-not-exist cl:nil)
+         (and s
+              (loop for line = (read-line s cl:nil cl:nil)
+                    while line
+                      thereis (and (search "atomicrmw" line)
+                                   (search "fadd" line)
+                                   (search "half" line)))))))

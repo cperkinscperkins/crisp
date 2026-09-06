@@ -44,6 +44,19 @@
    normally chosen per spec by the spec runner — see AD-SELECT-RUNTIME —
    rather than set by hand.")
 
+(defvar *vad-input-elem-bytes* nil
+  "Endeavour 163: alist of INPUT-NAME (string, case-insensitive) -> element BYTES, read from the
+   forward kernel's .metacrisp :declared-signature by the spec runner before each verify.
+
+   NIL, the default, means every input is 4-byte float — exactly the behaviour before 16-bit
+   inputs existed, so a spec that never mentions half is bit-for-bit unaffected.
+
+   It exists because a 16-BIT kernel's input buffer cannot be filled by the ordinary float
+   writer: the runner sized every matrix input at 4 bytes/element and did no conversion, so A
+   and B reached the device as fp32 bit patterns reinterpreted as half pairs and the kernel
+   computed garbage.  Carried as a special rather than a new VERIFY-AUTODIFF keyword so the
+   459-line VERIFY-AUTODIFF need not be rewritten to thread one more argument through.")
+
 (defvar *ad-device* nil
   "L0 device handle (ze_device_handle_t) bound by runtime-init.  NIL when
    *AD-RUNTIME* is :opencl or when no runtime is initialised.")
@@ -248,6 +261,69 @@
       (check-cl (cffi:mem-ref err :int))
       buffer)))
 
+(defun %vad-f32->f16-bits (x)
+  "Encode a single-float X as the 16 bits of an IEEE-754 binary16, returned as an (unsigned-byte 16).
+
+   Deliberately a small, naive, host-side encoder — this feeds test inputs, it is not on any hot
+   path, so clarity beats cleverness.  It handles the cases a gradient spec can actually produce:
+
+     - zero (either sign)                      -> signed zero
+     - |x| >= 65520                            -> signed infinity (65520 is the round-to-nearest
+                                                  cutoff, so 65504 still encodes finite)
+     - normals                                 -> exponent rebiased 127 -> 15, mantissa rounded
+                                                  to 10 bits, round-half-to-even
+     - subnormals / underflow                  -> scaled into the fp16 subnormal range, or signed
+                                                  zero below it
+     - NaN                                     -> a quiet NaN
+
+   Rounding is round-half-to-even, matching what the GPU would do converting the same value, so a
+   spec's expected gradient does not shift depending on which side performed the narrowing."
+  (let* ((f (cl:float x 1.0d0))
+         (sign (if (or (minusp f) (and (zerop f) (minusp (cl:float-sign (cl:float x 1.0))))) 1 0))
+         (a (abs f)))
+    (cond
+      ((sb-ext:float-nan-p (cl:float a 1.0)) (logior (ash sign 15) #x7E00))
+      ((zerop a) (ash sign 15))
+      ((>= a 65520.0d0) (logior (ash sign 15) #x7C00))
+      (t
+       (multiple-value-bind (signif expon) (cl:decode-float a)
+         ;; decode-float gives signif in [1/2,1); shift to [1,2) so EXPON is the IEEE exponent.
+         (let* ((m (* signif 2.0d0))
+                (e (1- expon)))
+           (cond
+             ;; Normal range for binary16: exponent in [-14, 15].
+             ((>= e -14)
+              (let* ((frac (round (* (- m 1.0d0) 1024.0d0)))
+                     (e2 e) (frac2 frac))
+                ;; Rounding the mantissa can carry into the exponent (frac == 1024).
+                (when (>= frac2 1024) (setf frac2 0) (incf e2))
+                (if (> e2 15)
+                    (logior (ash sign 15) #x7C00)
+                    (logior (ash sign 15) (ash (+ e2 15) 10) frac2))))
+             ;; Subnormal: value = frac/1024 * 2^-14.
+             (t
+              (let ((frac (round (* a (expt 2.0d0 24)))))   ; a / 2^-24
+                (if (zerop frac)
+                    (ash sign 15)
+                    (logior (ash sign 15) (min frac 1023))))))))))))
+
+(defun opencl-write-half-vector (queue buffer values)
+  "Writes VALUES into BUFFER as IEEE binary16, two bytes per element."
+  (let ((n (length values)))
+    (cffi:with-foreign-object (data :uint16 n)
+      (loop for v in values
+            for i from 0
+            do (setf (cffi:mem-aref data :uint16 i) (%vad-f32->f16-bits (cl:float v 1.0))))
+      (check-cl (cl-enqueue-write-buffer queue buffer 1 0 (* 2 n) data
+                                         0 (cffi:null-pointer) (cffi:null-pointer))))))
+
+(defun l0-write-half-vector (queue buffer values)
+  "Writes VALUES into the USM allocation BUFFER as IEEE binary16, two bytes per element."
+  (declare (ignore queue))
+  (loop for v in values
+        for i from 0
+        do (setf (cffi:mem-aref buffer :uint16 i) (%vad-f32->f16-bits (cl:float v 1.0)))))
+
 (defun opencl-write-float-vector (queue buffer values)
   "Writes a list of float VALUES into BUFFER (one float per element)."
   (let ((n (length values)))
@@ -410,6 +486,10 @@
              :rows rows
              :cols cols
              :length (* rows cols)
+             ;; Endeavour 163: element width of the KERNEL PARAM this input feeds, so a 16-bit
+             ;; operand is written as binary16 rather than as fp32 bit patterns.  NIL/absent
+             ;; means 4-byte float, which is every pre-163 spec.
+             :elem-bytes (cdr (assoc name *vad-input-elem-bytes* :test #'string-equal))
              ;; :perturb-i is the FLAT index; the directive gives (row col).
              :perturb-i (and at (consp at) (+ (* (first at) cols) (second at)))
              :perturb-rc at
@@ -580,6 +660,10 @@
                          :length (getf cls :length)
                          :rows (getf cls :rows)
                          :cols (getf cls :cols)
+                         ;; Endeavour 163: carry the param's element width through.  This list
+                         ;; copies SELECTED keys out of CLS rather than merging it, so a new
+                         ;; key is invisible unless it is named here.
+                         :elem-bytes (getf cls :elem-bytes)
                          :perturb-i (getf cls :perturb-i)
                          :perturb-rc (getf cls :perturb-rc)
                          :arg-width (getf cls :arg-width)
@@ -855,7 +939,7 @@
                                                      (+ (cl:float v 1.0) delta)
                                                      v))
                                    vals)))
-                         (write-float-vector queue (getf d :buffer) perturbed)))
+                         (%vad-write-input-vector queue d perturbed)))
                       (:struct-by-value
                        (let* ((fields-raw (getf d :fields))
                               (perturbed-fields
@@ -1866,6 +1950,26 @@
              (:l0     'l0-write-float-vector)
              (:cuda   'cuda-write-float-vector))
            queue buffer values))
+
+(defun write-half-vector (queue buffer values)
+  "Endeavour 163: the binary16 counterpart of WRITE-FLOAT-VECTOR, for a kernel input whose
+   declared element type is `half` or `bfloat16`.
+
+   No :cuda arm.  VERIFY-AUTODIFF only reaches CUDA when a spec pins [CUDA], and no 16-bit spec
+   does yet; a clear refusal beats a silently wrong buffer if one ever does."
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-write-half-vector)
+             (:l0     'l0-write-half-vector)
+             (:cuda   (error "VERIFY-AUTODIFF: 16-bit inputs are not implemented for the CUDA runtime yet.")))
+           queue buffer values))
+
+(defun %vad-write-input-vector (queue desc values)
+  "Writes VALUES into DESC's device buffer using the element width DESC declares.
+   Falls back to the float writer, so any descriptor without :elem-bytes behaves exactly as it
+   did before 16-bit inputs existed."
+  (if (eql (getf desc :elem-bytes) 2)
+      (write-half-vector queue (getf desc :buffer) values)
+      (write-float-vector queue (getf desc :buffer) values)))
 
 (defun read-float-vector (queue buffer n)
   (funcall (ecase *ad-runtime*

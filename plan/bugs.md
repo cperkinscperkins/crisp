@@ -1501,7 +1501,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         cosmetic -- but nothing does that today, since the hoist path does not use
         --single-pass.  One spec red in one phase.
 
-[ ] 044 - The RING-PIPELINED MMA BACKWARD computes the wrong gradient on BMG.
+[x] 044 - The RING-PIPELINED MMA BACKWARD computes the wrong gradient on BMG.
+        FIXED 2026-09-06 (endeavour 163) — see the FIXED block at the end.
 
         FOUND 2026-08-14, immediately behind the BUG 040 fix.  Split out of 040 because it is
         demonstrably NOT the same defect: fixing 040 moved neither of 044's numbers.
@@ -1862,8 +1863,9 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         wgmma shapes into the builtin h100 profile (deliberately not done -- an incomplete list
         would refuse working benchmark kernels).
 
-[ ] 054 AD MINTS TF32 FRAGMENTS FOR 16-BIT OPERANDS — silent WRONG GRADIENT on the NVIDIA
+[x] 054 AD MINTS TF32 FRAGMENTS FOR 16-BIT OPERANDS — silent WRONG GRADIENT on the NVIDIA
         sync-MMA path.  Found 2026-09-02 running `--filter=159 --differentiate`.
+        FIXED 2026-09-03 (endeavour 163 defect C) — see the FIXED block at the end.
         The forward is correct: the module carries exactly one
         mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 (or .bf16.bf16).  The AD-generated
         *_grad kernel beside it carries THREE mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32.
@@ -1882,3 +1884,253 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         confirm, so it is its own piece of work rather than a patch.
         SPECS: tests/spec/159-nvidia-16bit/0{1,2}-sync-mma-{fp16,bf16}-ptx.crisp now carry
         SKIP-WITH[--differentiate] naming this bug.
+
+        FIXED 2026-09-03, endeavour 163 defect C.  The LIKELY FIX line above was right --
+        "thread the operand element type into the MMA VJP's fragment minting" is exactly it.
+        %mma-via-tile-backward built every backward temporary with a hardcoded FLOAT:
+
+            (float-s (intern "FLOAT" cl-pkg))
+            ((dc-slm (make-scratch-matrix FLOAT (mt nt)))     ; an MMA OPERAND
+             (at-slm (make-scratch-matrix FLOAT (kt mt)))     ; an MMA OPERAND
+             (bt-slm (make-scratch-matrix FLOAT (nt kt)))     ; an MMA OPERAND
+             (da-reg (make-register-tile  FLOAT (mt kt) 0.0)) ; accumulator -- correct
+             (db-reg (make-register-tile  FLOAT (kt nt) 0.0)))
+
+        The first three are the OPERANDS of the two backward GEMMs and must carry the forward's
+        element type.  The accumulators were already right: XMX and the tensor cores take 16-bit
+        operands and accumulate in fp32.  %mma-ad-tile-dims-map now records each tile's element
+        type as a fourth entry element -- every consumer read only SECOND and THIRD, so the
+        extension is backward compatible -- and the VJP stages its operands in it.
+
+        THE SCOPE LINE ABOVE WAS WRONG, and this is the part worth remembering.  It said "the
+        sync-MMA VJP only".  The SAME hardcoded FLOAT also broke Intel/SPV, where it presents
+        completely differently: %coop-call caches the coop-matrix declaration by NAME alone, so
+        a module holding a half FORWARD and a float BACKWARD calls one symbol at two signatures,
+        LLVM bitcasts the callee, and llvm-spirv refuses with "FunctionPointers: Can't translate
+        function pointer".  ONE cause, two faces -- PTX reads the wrong bytes silently, SPV fails
+        to compile.  It had been filed as two unrelated problems (this bug, and a supposed missing
+        SPV_KHR_bfloat16 on 155/01,02,04); adding the extension changes nothing.
+
+        VERIFIED BY READING THE EMITTED CODE, not by exit codes:
+          - SPV backward: all coop-matrix calls now (half 8x16) A / (half 16x16) B /
+            (float 8x16) accumulator, matching the single declare.  No float 8x8 remains.
+          - PTX backward: _grad.ptx carries ONLY m16n8k16.row.col.f32.f16.f16.f32
+            (and .bf16.bf16 for the bf16 rung).  No tf32 variant survives.
+
+        SAFETY PROPERTY: when the operand element IS float the emission is byte-for-byte what it
+        was, so every tf32 kernel is untouched.
+
+        FIVE SPECS UN-SKIPPED: 155/01, 155/02, 155/04, 159/01, 159/02.
+        Suite after: 1060/1060 (plain, --debug, --differentiate, and in-process both ways),
+        232/232 negative, 291/291 unit.  --single-pass is 1059/1060 on the PRE-EXISTING BUG 043,
+        verified by stashing this fix, rebuilding at HEAD and reproducing it there.
+
+        STILL OPEN, uncovered by this work and NOT fixed here:
+          - %coop-call's name-only declaration cache (src/codegen.lisp) is a latent hazard for
+            any module that legitimately mixes coop-matrix element types.  Making the operands
+            homogeneous removes today's collision but not the trap.
+          - --debug --differentiate on a 16-bit kernel dies in llvm-as with "Metadata id is
+            already used" (!101 emitted twice).  Newly REACHABLE rather than newly broken -- the
+            16-bit backward never compiled before -- and no CI pass combines those two flags.
+
+[ ] 055 %coop-call CACHES THE COOP-MATRIX DECLARATION BY NAME ALONE, so two different element
+        types in one module silently collide.  Found 2026-09-03 while fixing BUG 054
+        (endeavour 163 defect C); NOT fixed there, because making the operands homogeneous
+        removes today's collision but leaves the trap.
+
+        src/codegen.lisp, %coop-call:
+
+            (existing (llvm-get-named-function module name))
+            (fn (if (null-pointer-p existing)
+                    (llvm-add-function module name fnty)   ; FIRST caller wins the signature
+                    existing))                             ; later callers REUSE it
+            (llvm-build-call2 builder fnty fn args na "")  ; ...but call with THEIR OWN fnty
+
+        __spirv_CooperativeMatrixMulAddKHR is NOT type-mangled: the same name serves every
+        element type and shape.  So the first emission fixes the declaration, and any later
+        emission at a different signature produces a call whose callee type disagrees with the
+        function's.  LLVM represents that as a bitcast function pointer and llvm-spirv refuses:
+
+            FunctionPointers: Can't translate function pointer:
+              declare ... @__spirv_CooperativeMatrixMulAddKHR(half 8x16, half 16x16, float 8x16)
+
+        HOW IT WAS SEEN: with BUG 054 present, a half FORWARD and a (wrongly) float BACKWARD
+        landed in one module -- 1 matching call and 3 mismatched.  Fixing 054 made the module
+        homogeneous and the error went away, which is why this is filed rather than fixed.
+
+        WHY IT STILL MATTERS: any kernel that legitimately mixes coop-matrix element types in
+        one module hits it -- e.g. an fp16 and a bf16 MMA in the same file, or a mixed-precision
+        epilogue.  The failure mode is an llvm-spirv message that names LLVM internals and gives
+        the user nothing to act on.  Worse, it is only loud because llvm-spirv happens to check;
+        there is no guarantee a differently-shaped collision is caught at all.
+
+        LIKELY FIX (unverified, and the choice is a real one):
+          (a) cheap and safe -- when an existing declaration's type differs from the requested
+              fnty, raise a Crisp compiler error naming the two signatures.  Turns an obscure
+              backend message into a diagnostic.  Does not enable mixed modules.
+          (b) proper -- mangle the emitted name per signature (element type + shape + use), so
+              distinct coop-matrix operations get distinct declarations and mixed modules work.
+              Needs a check that llvm-spirv still recognises the mangled names as the builtin;
+              it may well not, in which case (a) is the honest answer and mixed-type modules are
+              a documented limitation rather than a bug.
+        Do (a) first regardless: it is correct under either outcome.
+
+[ ] 056 --debug --differentiate ON A 16-BIT KERNEL DIES IN llvm-as: "Metadata id is already
+        used".  Found 2026-09-03 (endeavour 163 defect C).  NEWLY REACHABLE, NOT NEWLY BROKEN --
+        before 054 was fixed the 16-bit backward never compiled far enough to reach llvm-as.
+
+        REPRO:
+            ./bin/crisp-compile.exe --ir-target=spv --hardware-profile=bmg --debug --differentiate \
+              tests/spec/155-typed-mma-shapes/02-fp16-register-tile-spv.crisp
+
+            llvm-as: ..._grad.temp.ll:3815:1: error: Metadata id is already used
+            !101 = !{!"none", !"none", ... }        ; ~99 entries
+
+        So the emitted .ll defines !101 twice.  The duplicate is a kernel-argument metadata node
+        (the all-"none" list), which points at the SPIR-V kernel metadata injection rather than
+        at DIBuilder: the debug metadata and the injected kernel metadata are numbering into the
+        same id space and overlap.  Endeavour 156 Phase 0 already touched this area, fixing
+        inject-spir-kernel-metadata DISCARDING #0/!dbg on kernels.
+
+        ISOLATION, measured rather than assumed:
+            155/02 forward + --debug                      -> exit 0
+            tf32 kernel + --debug --differentiate          -> exit 0
+            155/02 + --debug --differentiate               -> FAILS
+        So it needs a backward kernel AND the wide argument list that the 16-bit backward
+        produces.  Not a 16-bit defect as such -- most likely any backward with enough params.
+
+        NOT ON A CI PATH: ci.yml runs --debug and --differentiate as SEPARATE passes and never
+        combines them, so this does not turn CI red.  That is also why it went unnoticed.
+
+        LIKELY FIX (unverified): make the kernel-metadata injection allocate ids above the
+        highest id already present in the module instead of from a fixed base.  Confirm by
+        checking whether the two !101 definitions come from different emitters before changing
+        the numbering.
+
+[x] 057 load-tile-at FROM A float GLOBAL INTO A half SCRATCH TILE WRITES 4-BYTE FLOATS INTO A
+        2-BYTE-ELEMENT BUFFER.  Silent: it compiles clean, runs, and produces garbage.
+        Found 2026-09-04 (endeavour 163) while trying to shortcut a 16-bit gradient check.
+        FIXED 2026-09-04 as a compile-time REFUSAL — see the FIXED block at the end.
+
+        REPRO — a kernel with float globals and half tiles:
+
+            (def-type a-mat (matrix float :address-space :global ...))
+            (let ((A-tile (make-scratch-matrix half (8 16))) ...)
+              (load-tile-at A A-tile (0 0))
+              (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile) ...)
+
+            ./bin/crisp-compile.exe --hardware-profile=bmg --ir-target=spv <file>   -> exit 0
+
+        THE EMITTED FORWARD SETTLES IT.  Grepping the .opt.ll:
+            fptrunc  ...................  ZERO occurrences
+            store half ................  ZERO occurrences
+            store float ... ptr addrspace(3) ... TWO occurrences
+        So the staging loop writes 32-bit floats into SLM that the type system believes holds
+        16-bit elements.  Every element after the first is at the wrong offset, and the tile
+        overruns its allocation by 2x.  The coop-matrix types in the same module ARE half (23
+        mentions), so the MMA then reads packed-half lanes out of float bit patterns.
+
+        OBSERVED EFFECT (via VERIFY-AUTODIFF, which is how it surfaced): analytical=30.87 and
+        numerical=0.0 against an expected 1.2 -- the FD is exactly zero because the perturbation
+        lands in bytes the kernel never reads as a value.
+
+        NOT the same bug as 054.  054 was the AD path minting tf32 fragments for 16-bit operands
+        and is fixed; this is the FORWARD staging path ignoring an element-width mismatch between
+        a global and a scratch tile.  A forward-only kernel of this shape is equally wrong.
+
+        LIKELY FIX (unverified): either emit the fptrunc/fpext in the load-tile-at staging loop
+        when the source and destination element widths differ, or REFUSE the mismatch at compile
+        time with a diagnostic.  Refusing is the safer first move and is probably the right
+        long-term answer for a widening/narrowing that the user did not ask for -- a tile whose
+        element type differs from its source is far more often a mistake than an intent.  If
+        conversion IS wanted it should be spelled in the kernel.
+
+        Note the same question applies to store-tile in the other direction; not tested.
+
+        057 FIXED — 2026-09-04, endeavour 163.  REFUSED AT COMPILE TIME, not converted.
+
+        %tlc-check-elem-match runs from analyze-load-tile-at-expression, which gates EVERY
+        lowering (sync staging, cp.async, NVIDIA TMA, SPV async), so one check covers them all:
+
+            load-tile-at: element type mismatch — source A holds FLOAT but tile A-TILE holds
+            HALF.  A tile stage is a COPY, not a conversion: it would write FLOAT-sized values
+            into a HALF-sized buffer.  Give the tile the source's element type, or stage the
+            conversion explicitly (workgroup-stride + a cast) so its cost is visible.
+
+        WHY REFUSE RATHER THAN EMIT AN fptrunc.  An implicit conversion would bury per-element
+        casts inside a bulk staging loop whose whole purpose is speed -- the last place in a GPU
+        kernel where hidden work is acceptable -- and would silently change the numerics of a
+        load the user reads as a copy.  Crisp already prefers a compile-time refusal to a
+        helpful guess (BUG 035; 161's wgmma operand-shape refusal).
+
+        IMPLEMENTATION NOTES worth keeping:
+          - Types come from a PURE env lookup (find-variable-in-env + parameter-def-type), NOT
+            from re-analysing the operands.  Re-analysis would duplicate any side effect the
+            real lowering performs on the same sub-expression.
+          - The first cut used a hand-rolled canonicalize + (tensor ELEM ...) match and NEVER
+            FIRED: a kernel PARAM's type is not a list, it is the generated record name
+            TENSOR_FLOAT_2_GLOBAL_COMPACT_LAST, while the let-bound tile's type IS a list.
+            get-array-element-type already handles both (it unmangles the template-struct name),
+            so it replaced the bespoke extractor.  Any future check over a param type needs the
+            same care.
+          - Scoped narrow: skipped unless BOTH sides yield an element type.  A register tile or
+            a view form is left alone.  This was a refusal added to a green 1061-spec suite, and
+            a false refusal is worse than a missed one — THE REGISTER-TILE PATH IS THEREFORE
+            STILL UNGUARDED and could carry the same bug.
+
+        NEGATIVE SPEC: tests/spec/163-autodiff-revisit/errors/01-load-tile-elem-mismatch.crisp.
+        It is deliberately MMA-FREE: the first draft staged into an MMA, and since the negative
+        runner compiles for the GENERIC target with no hardware profile,
+        "mma-accumulate-via-tile: only tf32 (16 8 8) is supported without a hardware profile"
+        fired first and the rung passed for the wrong reason.
+
+        Suite after: 1062/1062 plain, 1062/1062 --differentiate, 1062/1062 --use-binary --debug,
+        233/233 negative, 291/291 unit.  Nothing in the suite relied on a mismatch.
+
+        NOT TESTED, and the obvious next question: store-tile in the other direction.
+
+        044 FIXED — 2026-09-06, endeavour 163.  analytical=84.32 -> analytical=1.2.
+
+            PASS [l0] (A: analytical=1.2 numerical=1.1992188 diff=7.812977e-4)
+
+        THE NUMBER WAS NEVER A SCALE FACTOR.  The ledger's own guess above — "about 70x, close to
+        but not exactly 64 or 128" — sent this in the wrong direction for three weeks.  84.32
+        decomposes exactly as stage 0 (1.20) + stage 2 (83.12), the two stages that SHARE ring
+        slot 0, with stage 1 (42.16, the only stage on slot 1) absent.  The recorded
+        `diff=83.12078` is precisely stage 2's contribution.  Three numbers, all accounted for.
+
+        ROOT CAUSE, and it is a general rule: %mma-vjp-scalar-lowering accumulated `+=` into the
+        OPERAND ADJOINT, which is a property of the BUFFER.  A reused buffer is the wrong home for
+        a per-stage quantity.  Slot 0 therefore held stages 0 and 2 together, and BOTH of its load
+        sites scattered that total at their own origin.
+
+        TWO PLAUSIBLE FIXES MEASURED AND REJECTED, recorded so they are not retried:
+          - Route rings to the MMA path, which OVERWRITES the operand adjoint instead of
+            accumulating.  Does not reach this kernel: Mt=8 Nt=16 Kt=8 and
+            %mma-vjp-mma-admissible-p requires `kt mod lcm(sm sn) = 0` — on BMG, 8 mod 16.  145/19
+            takes the scalar lowering for a SHAPE reason and would with no ring in the kernel.
+            (The ring gate was removed anyway; it was wrong on its own terms and helps 154/03.)
+          - Consume-and-reset at the load site.  The backward reverses each loop BODY but iterates
+            the loop FORWARD, and this kernel's refill is LAST in the body, so the scatter at
+            iteration k would have to emit stage k+2's gradient — two stages before it exists.
+
+        THE FIX.  For a `:ring` operand the scalar lowering accumulates the stage's contribution in
+        a LOCAL and scatters it with atomic-add! straight into the GLOBAL gradient at the
+        CONSUMING stage's origin — which %ad-reconcile-ring-origin already resolves to the
+        consuming loop variable rather than the prefetching one.  The slot adjoint is never
+        written, the load-site scatter contributes zero, and iteration order stops mattering.
+
+        NO REVERSE-RING LOGIC.  Nothing inverts a ring, mirrors a prologue or models double
+        buffering.  Both new arguments default to NIL and NIL reproduces the previous emission
+        byte-for-byte, so every non-ring use is unchanged.
+
+        VERIFIED: 1062/1062 plain and --differentiate, 233/233 negative, 291/291 unit, and all
+        25 on-metal gradient checks in the suite still pass — including the tf32 twin
+        (1.1994476), the multi-workgroup case (4.9577) and the fp16 rung (1.2000704).  That
+        matters because this is a SHARED path: those checks are the safety net for changing it.
+
+        SKIP-WITH[--differentiate] removed from tests/spec/145-mma-autodiff/19-ring-pipelined-vjp-bmg.crisp.
+
+        LATENT AND STILL OPEN: the same `+=`-without-reset remains for a NON-ring buffer reused
+        across stages on the scalar path.  No spec covers that today; the ring merely made it
+        visible by aliasing two stages onto one slot.  Worth a rung of its own.
