@@ -1468,15 +1468,15 @@
         (incf current-idx)
         current-idx))))
 
+
+
 (defun %l0-emit-global-scratch-tensor-arg (stream param param-name param-type context-var device-var arg-index)
   (let* ((rank (let ((n3 (third param-type)))
                  (if (integerp n3) n3 1)))
          (size-expr (getf param :size-expr))
          (elem-type (second param-type))
          (elem-str (crisp-type-to-cpp-type elem-type))
-         (elem-bytes (if (or (string-equal elem-str "double")
-                             (string-equal elem-str "int64_t")
-                             (string-equal elem-str "uint64_t")) 8 4))
+         (elem-bytes (%elem-type-bytes elem-str))
          (param-name-cpp (substitute #\_ #\- param-name))
          (ptr-var (format nil "~a_ptr" param-name-cpp)))
     (unless (integerp size-expr)
