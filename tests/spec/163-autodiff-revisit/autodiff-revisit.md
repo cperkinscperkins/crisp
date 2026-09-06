@@ -835,3 +835,67 @@ into `%mma-via-tile-backward` (it currently re-derives from `src-map` and so can
 and drop `ringp` from the MMA-path gate so a ring operand — now indistinguishable from a staged
 tile — uses the path that overwrites the operand adjoint instead of the one that accumulates.
 That is what closes BUG 044.
+
+
+PHASE 10 — THE RING GATE IS GONE.  044 IS NOT A RING PROBLEM AT ALL. (2026-09-06)
+=================================================================================
+
+LANDED, and safe (1062/1062 plain and --differentiate, 233/233 negative):
+
+  - `%mma-via-tile-backward` now ACCEPTS the resolved provenance its caller had already
+    computed, instead of re-deriving it from `src-map` — which never contains ring loads, so it
+    could not see what `%mma-vjp-operand-ref` already knew.  Falls back to `src-map` when none is
+    supplied, so every existing non-ring call is byte-identical.
+  - **`ringp` is gone from the MMA-path gate.**  Admissibility is now the only question.  A ring
+    operand resolves its shape through `%ad-tile-base` and its provenance through the ring load
+    sites, so by that point it is indistinguishable from a staged tile.
+  - Tile arguments may now be VIEW FORMS, so the symbolp guards ask about the BASE and the
+    temp-naming lambda derives its prefix from the base.  Adjoint naming still keeps the VIEW.
+
+No reverse-ring logic was added.  The backward stages its transposes from the ORIGINAL GLOBAL
+SOURCE at the consuming stage's origin, exactly as for a plain scratch tile.
+
+**BUT 044 IS UNCHANGED — 84.32 — AND THE REASON MATTERS.**
+
+145/19 does not take the MMA path even with the ring gate removed, and it is not the ring that
+stops it:
+
+    Mt=8 Nt=16 Kt=8      ring=T  mma-path=NIL
+
+`%mma-vjp-mma-admissible-p` requires `kt mod lcm(sm sn) = 0`; on BMG that is `8 mod 16`, which is
+8.  **145/19 is on the scalar lowering for a legitimate SHAPE reason — Kt=8 — and would be even
+with no ring in the kernel.**  Phase 7b's "044 is downstream of B" was half right: the ring did
+route it to the scalar path, but so does its shape, so removing the ring gate cannot rescue it.
+
+WHY A RESET STILL CANNOT FIX THE SCALAR PATH HERE, now derivable exactly
+-----------------------------------------------------------------------
+
+The backward reverses each loop BODY but iterates the loop in FORWARD order.  For an ordinary
+staged tile that is fine: forward `[load][mma]` reverses to `[VJP accumulate][scatter]`, so the
+scatter emits the stage just computed.  For 145/19 the refill is LAST in the forward body:
+
+    forward   [sync][mma][sync][when more-k: load A slot (0 next-k)]
+    backward  [when more-k: scatter slot -> A_GRAD at next-k][sync][VJP accumulate][sync]
+
+so the scatter at iteration k must emit stage **k+2**'s gradient, which forward-order iteration
+has not computed.  No placement of a zeroing fixes a pairing that is off by two stages.
+
+THE FIX, DESIGNED AND NOT YET CUT
+---------------------------------
+
+**Do not route a ring operand's gradient through the slot adjoint at all.**  The scalar lowering
+already receives everything it needs: `a-src` (the global matrix) and `(aoy aox)` — and
+`%ad-reconcile-ring-origin` deliberately substitutes the CONSUMING loop variable into that
+origin, so it names the stage being differentiated rather than the stage being prefetched.
+
+So, for a `:ring` operand: accumulate the stage's dA into a FRESH per-stage scratch matrix (a
+sibling of the `dc` buffer the lowering already allocates), then scatter it with `atomic-add!`
+into `A_GRAD` at `(aoy aox)`.  The slot adjoint is then never written, the load-site scatter adds
+zero, and iteration order stops mattering entirely.
+
+This needs one extra value threaded from the caller — the GLOBAL gradient symbol,
+`(%tlc-bwd-adj-name a-src inputs outputs ...)` — because the lowering currently receives only the
+tile adjoint.  That is the same shape of change as the provenance threading above.
+
+It is also the general statement of BUG 044: **an adjoint must be accumulated somewhere that
+belongs to the STAGE, not somewhere that belongs to the BUFFER**, whenever the buffer is reused.
