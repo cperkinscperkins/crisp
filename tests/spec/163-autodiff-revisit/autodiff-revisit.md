@@ -1085,3 +1085,76 @@ One honest note: the first plain run SEGFAULTED at `157/01-split-arrive-wait-spv
 its SPV validator.  A clean re-run passed 1062/1062 and the plain pass does not run AD at all, so
 this is a flake of the documented BMG-driver kind rather than a regression — but it is recorded
 rather than quietly re-run away.
+
+
+PHASE 14 — H100 VERIFIED, AND 154/03's REAL OBSTACLE IS TILE GEOMETRY (2026-09-06)
+==================================================================================
+
+THE BRANCH IS GREEN ON REAL NVIDIA HARDWARE
+-------------------------------------------
+
+Everything in this endeavour had been validated on BMG plus local PTX COMPILE checks only, while
+defect C rewrote PTX MMA fragment types, BUG 044 changed the scalar VJP that NVIDIA kernels also
+use, and defect D changed ANF shape-temp handling.  One batched pod run settled it:
+
+    NVIDIA H100 PCIe
+      65 x Hoist[CUDA] -> validate-cuda-host-run
+      23 x Hoist[CUDA] -> validate-cuda-mma-run        <- MMA executing on metal
+       8 x validate-cuda-compile-only  + strategy-content, tensor-args, shared-mem,
+                                          hw-profile-grid, generation
+    Spec Summary: 1062/1062.  Negative: 233/233.
+
+~105 CUDA validations ON the GPU, 23 of them MMA.  The session's work is correct on NVIDIA, not
+merely compiling.  Pod released immediately after; nothing further could be verified there until
+new code exists.
+
+154/03 — PEELED TO THE BOTTOM, AND THE BOTTOM IS NOT A DEFECT
+--------------------------------------------------------------
+
+Measured, not inferred: `*break-on-signals*` at SIGNAL time (the compiler's own handler-case
+swallows the condition before an outer handler-bind can see it) names the failing function as
+**WGMMA_TWO_WG_GRAD** — the BACKWARD.  And the accumulator symbols D0/D1 appear **zero times** in
+the assembled backward; only D0_ADJ/D1_ADJ do.  The offending binding is an ANF temp:
+
+    (LET ((%ANF-T-35 0)                                      ; defect-D neutralised shape temp
+          (%ANF-T-36 (MAKE-REGISTER-TILE FLOAT (64 256) 0.0)) ; <- the refusal
+          (%ANF-T-36_ADJ (MAKE-SCRATCH-MATRIX FLOAT (64 256)))) ; Phase 12, already correct
+
+`(set! D0 (make-wgmma-accumulator ...))` has its RHS hoisted into a temp, and
+`%ad-canonicalize-wgmma` rewrote it to a PER-WARP register tile at a WARPGROUP-wide shape.
+
+FIXED, consistently with Phase 12: an oversized wgmma accumulator canonicalises to SLM, and both
+that decision and the adjoint's now ask `%mma-ad-accumulator-fits-registers-p`, so they cannot
+disagree.  1062/1062 with 69 gradient checks; scoped to accumulators that could not be built.
+
+**And that exposes the real wall:**
+
+    Kernel WGMMA_TWO_WG_GRAD: uses 720896 bytes of local/shared memory,
+    exceeding the hardware profile's :max-shared-memory-per-block (232448 bytes)
+
+704 KB against 227 KB.  **This is not a bug.**  The backward materialises the FORWARD'S TILE
+GEOMETRY in SLM — a 128x256 output tile over two warpgroups, with staged operands, their
+adjoints, and the VJP's transposes — roughly 3x what a Hopper SM has.
+
+THE THESIS, ONE LEVEL HIGHER THAN IT HAS BEEN SO FAR
+-----------------------------------------------------
+
+This endeavour has climbed the same principle four times:
+
+| | what the derivative inherited that it did not need |
+|---|---|
+| BUG 044 | the operand adjoint's STORAGE (a reused ring slot) |
+| Phase 12 | the accumulator adjoint's STORAGE (registers) |
+| Phase 14 | the replayed accumulator's STORAGE (registers) |
+| **next** | **the forward's TILE GEOMETRY** |
+
+The forward picks 128x256 over two warpgroups because that saturates a Hopper SM.  `dA = dC.B^T`
+and `dB = A^T.dC` hold at ANY tile size — the derivative could compute the same gradients in a
+much smaller working set and loop.  Nothing about the math requires the backward to tile like the
+forward.
+
+That is a genuine piece of design work — letting the backward choose its own geometry — and it is
+larger than anything else in this endeavour.  **154/03 stays skipped, with a note that now names
+the SLM budget rather than the register budget it used to blame.**  It belongs with 140/01 and
+140/02 in a wgmma-AD endeavour, and that endeavour should budget for backward tiling rather than
+treat it as a bug fix.

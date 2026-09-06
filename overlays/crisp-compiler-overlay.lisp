@@ -1704,3 +1704,59 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                      (t (mapcar #'walk f)))))
           (mapcar #'walk flat-anf)))))
 
+
+;; src/autodiff.lisp  (163 — oversized wgmma accumulator canonicalises to SLM in the backward)
+(defun %ad-canonicalize-wgmma (form)
+  "Rewrite Hopper wgmma forms to their synchronous MMA equivalents for the backward walk.
+
+     (V (make-wgmma-accumulator T (M N) INIT))
+       -> (V (make-register-tile T (M N) INIT))
+
+     (wgmma-accumulate-via-tile (WM WN WK) D A B ...)
+       -> (mma-accumulate-via-tile (NM NN NK) D A B ...)
+
+   where (NM NN NK) is %spv-mma-shape -- the active profile's NATIVE instruction shape.
+   The wgmma argument is a WARPGROUP TILE shape and is not a legal sync-MMA instruction
+   shape; substituting the native one is what makes the emitted backward compilable.
+   The VJP takes Mt/Nt/Kt from the tiles' dims-map entries, never from this argument,
+   so tile geometry and the derivative are unaffected.
+
+   Trailing keys (:swizzle and friends) are preserved; the via-tile VJP destructures
+   (SHAPE C A B &rest ignored).
+
+   Structural no-op for any kernel without wgmma."
+  (let* ((cl (find-package :crisp-language))
+         (mrt (intern "MAKE-REGISTER-TILE" cl))
+         (msm (intern "MAKE-SCRATCH-MATRIX" cl))
+         (mvt (intern "MMA-ACCUMULATE-VIA-TILE" cl)))
+    (labels ((head-is (f name)
+               (and (consp f) (symbolp (first f))
+                    (string-equal (symbol-name (first f)) name)))
+             (native-shape ()
+               (multiple-value-bind (m n k) (%spv-mma-shape) (list m n k)))
+             (walk (f)
+               (cond
+                 ((not (consp f)) f)
+                 ((head-is f "MAKE-WGMMA-ACCUMULATOR")
+                  ;; Endeavour 163: a wgmma accumulator is WARPGROUP-wide (128 threads); a
+                  ;; sync-MMA register tile is PER-WARP.  Rewriting one to the other at the SAME
+                  ;; shape asks a single thread for 512 registers against a budget of 255, and
+                  ;; the fit check refuses the BACKWARD (measured: the refusal fires while
+                  ;; compiling WGMMA_TWO_WG_GRAD, and the accumulator symbol appears ZERO times
+                  ;; in the assembled backward -- it is dead there).
+                  ;;
+                  ;; So when it does not fit, canonicalise to SLM instead.  The backward never
+                  ;; wanted it in registers: the VJP stages dC into SLM immediately, and this is
+                  ;; the same rule already applied to the ADJOINT by %mma-ad-adj-init -- both now
+                  ;; ask %mma-ad-accumulator-fits-registers-p, so the two cannot disagree.
+                  ;; make-scratch-matrix takes (ELEM DIMS) and no init, hence the shorter form.
+                  (let* ((args (mapcar #'walk (rest f)))
+                         (dims (second args)))
+                    (if (%mma-ad-accumulator-fits-registers-p dims)
+                        (cons mrt args)
+                        (list msm (first args) dims))))
+                 ((head-is f "WGMMA-ACCUMULATE-VIA-TILE")
+                  (list* mvt (native-shape) (mapcar #'walk (cddr f))))
+                 (t (mapcar #'walk f)))))
+      (walk form))))
+
