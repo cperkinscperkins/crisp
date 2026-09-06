@@ -78,28 +78,7 @@
    a tile-stride (or any loop / branch) body is found.  See the header above."
   (%mma-ad-register-tile-binding-exists-p sym flat-anf nil))
 
-;; src/autodiff.lisp
-(defun %mma-ad-register-accumulator-tile-p (sym flat-anf)
-  "T when SYM is a register tile in the ACCUMULATOR role — a make-register-tile with no
-   :operand key.
 
-   Endeavor 146: the store backward needs this narrower question, not %mma-ad-register-tile-p.
-   Gap 4 split the two roles apart at the ADJOINT: an accumulator's adjoint is still a
-   register tile (it is seeded from the destination's gradient by %load-register-tile-acc and
-   staged to SLM by the VJP), while an OPERAND's adjoint is a scratch matrix, because every
-   consumer indexes it as memory and a register tile cannot be written element-wise.
-
-   Asking the broad question after that split emitted %load-register-tile-acc — a REGISTER
-   operation — against a scratch-matrix adjoint, which the analyzer then rejected with
-   `Unsupported form '%LOAD-REGISTER-TILE-ACC' found in function body`.  Operand tiles now
-   fall through to the ordinary store-tile-at backward, which is the memory-shaped edge their
-   memory-shaped adjoint wants.
-
-   Endeavour 163 defect A: the scan now descends into nested bodies, so a tile bound inside
-   a tile-stride (or any loop / branch) body is found.  See the header above."
-  (%mma-ad-register-tile-binding-exists-p
-   sym flat-anf
-   (lambda (init-form) (not (%mma-ad-register-operand-tile-p init-form)))))
 
 ;;; ======================================================================
 ;;; Endeavour 163 defect C = BUG 054 — AD MINTED TF32 TILES FOR 16-BIT OPERANDS.
@@ -173,116 +152,6 @@
     (nreverse acc)))
 
 
-;; src/autodiff.lisp
-(defun %mma-via-tile-backward (form dims-map src-map inputs outputs local-adj-fn kernel-pkg)
-  "Endeavor 145 P3b: the backward for
-   `(mma-accumulate-via-tile (M N K) C-TILE A-TILE B-TILE ...)`.
-
-   Emits ONE nested LET holding the backward's temporaries and the two backward GEMMs:
-
-       dC-slm (Mt x Nt) <- store-tile C-tile_ADJ      ; register accumulator -> SLM
-       AT-slm (Kt x Mt) <- transposed stage of A's global source
-       BT-slm (Nt x Kt) <- transposed stage of B's global source
-         dA-reg (Mt x Kt) : mma-accumulate-via-tile  dA-reg  dC-slm  BT-slm
-         dB-reg (Kt x Nt) : mma-accumulate-via-tile  dB-reg  AT-slm  dC-slm
-       store-tile dA-reg -> A-tile_ADJ ;  store-tile dB-reg -> B-tile_ADJ
-
-   From there the existing endeavor-111 machinery finishes the job: A-tile_ADJ / B-tile_ADJ
-   are already auto-allocated, and %load-tile-at-bwd already scatters them into A_GRAD /
-   B_GRAD.  Because the walk runs in reverse, this rule's emission lands BEFORE those
-   scatters in the generated backward — which is the order the chain rule needs.
-
-   ERRORS when a shape or a staging source is not compile-time recoverable.  It used to
-   return NIL and let the caller fall through — but the walk's fallthrough DROPS the form,
-   which hands back a silent ZERO gradient.  That is the same silent-wrong-answer class as
-   the K-step bug P3a fixed, and it actually bit: a K-LOOPED matmul emitted a backward with
-   no MMA in it at all, because the maps only scanned the top level of flat-anf and the
-   loop body is nested.  Better to refuse to compile than to quietly return zeros.
-
-   Endeavour 163 defect C (BUG 054): the three STAGED tiles are MMA OPERANDS, so they take the
-   forward operand's ELEMENT TYPE, not a hardcoded FLOAT.  The two register accumulators stay
-   FLOAT, which is correct mixed precision -- XMX and the tensor cores take 16-bit operands and
-   accumulate in fp32.  When the operand element IS float the emission is byte-for-byte what it
-   was, so every tf32 kernel is unaffected."
-  (destructuring-bind (shape c-tile a-tile b-tile &rest ignored) (cdr form)
-    (declare (ignore ignored))
-    (let* ((c-dims (assoc c-tile dims-map))
-           (a-dims (assoc a-tile dims-map))
-           (a-src  (assoc a-tile src-map))
-           (b-src  (assoc b-tile src-map)))
-      (log:debug "145 P3b via-tile bwd: c-tile=~a dims=~a | a-tile=~a dims=~a src=~a | b-tile=~a src=~a"
-                 c-tile c-dims a-tile a-dims a-src b-tile b-src)
-      (unless (and c-dims a-dims a-src b-src
-                   (symbolp c-tile) (symbolp a-tile) (symbolp b-tile))
-        (error 'crisp-compiler-error
-          :message (format nil "mma-accumulate-via-tile: cannot differentiate this tile multiply — ~a.  The backward needs the accumulator tile's (Mt Nt) and the A operand's Kt as COMPILE-TIME shapes, and needs each staged operand's originating global matrix (from its load-tile-at) so it can stage the transpose.  Give the tiles literal make-register-tile / make-scratch-matrix dimensions and stage both operands with load-tile-at."
-                           (cond ((not c-dims) (format nil "the accumulator tile ~a has no compile-time (M N)" c-tile))
-                                 ((not a-dims) (format nil "the A operand ~a has no compile-time shape" a-tile))
-                                 ((not a-src)  (format nil "the A operand ~a was not staged by a load-tile-at" a-tile))
-                                 (t            (format nil "the B operand ~a was not staged by a load-tile-at" b-tile))))
-          :source-location nil))
-      (when (and c-dims a-dims a-src b-src
-                 (symbolp c-tile) (symbolp a-tile) (symbolp b-tile))
-        ;; INTERNAL INVARIANT (not a user-facing contract).  This function emits the MMA
-        ;; lowering, which requires both backward accumulators (Mt x Kt and Kt x Nt) to
-        ;; decompose into whole hardware fragments.  %vjp-mma-accumulate-via-tile has already
-        ;; checked that via %mma-vjp-mma-admissible-p before routing here, so a violation means
-        ;; the VJP dispatch is wrong, not the user's kernel.
-        ;;
-        ;; This USED to be a hard user-facing error called "the K-tile contract" — a claim that
-        ;; a kernel with Kt=8 could not be differentiated at all.  That was wrong: dA = dC.B^T
-        ;; and dB = A^T.dC hold at every shape, and only this LOWERING needs the dims to divide.
-        ;; The condition now selects the scalar lowering instead.  See the retraction section in
-        ;; tests/spec/145-mma-autodiff/mma-autodiff.md.
-        (multiple-value-bind (sm sn sk) (%spv-mma-shape)
-          (declare (ignore sk))
-          (let ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims)))
-            (unless (%mma-vjp-mma-admissible-p mt nt kt)
-              (error 'crisp-compiler-error
-                :message (format nil "INTERNAL: MMA backward lowering reached with a tile (Mt=~a Nt=~a Kt=~a) that does not decompose on shape (~a ~a) — the VJP should have selected the scalar lowering."
-                                 mt nt kt sm sn)
-                :source-location nil))))
-        (let* ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims))
-               (pkg (or kernel-pkg (symbol-package c-tile)))
-               (cl-pkg (find-package :crisp-language))
-               (nm (lambda (fmt sym) (intern (format nil fmt (symbol-name sym)) pkg)))
-               (dc-slm (funcall nm "~A_BWDC"  c-tile))
-               (at-slm (funcall nm "~A_BWT"   a-tile))
-               (bt-slm (funcall nm "~A_BWT"   b-tile))
-               (da-reg (funcall nm "~A_BWACC" a-tile))
-               (db-reg (funcall nm "~A_BWACC" b-tile))
-               (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj-fn kernel-pkg))
-               (a-adj (%tlc-bwd-adj-name a-tile inputs outputs local-adj-fn kernel-pkg))
-               (b-adj (%tlc-bwd-adj-name b-tile inputs outputs local-adj-fn kernel-pkg))
-               (let-sym  (intern "LET" cl-pkg))
-               (msm      (intern "MAKE-SCRATCH-MATRIX" cl-pkg))
-               (mrt      (intern "MAKE-REGISTER-TILE" cl-pkg))
-               (float-s  (intern "FLOAT" cl-pkg))
-               (op-elem  (or (fourth (assoc a-tile dims-map))
-                             (fourth (assoc b-tile dims-map))
-                             float-s))
-               (store-t  (intern "STORE-TILE" cl-pkg))
-               (via      (intern "MMA-ACCUMULATE-VIA-TILE" cl-pkg))
-               (sync     (intern "SYNC-WORKGROUP" cl-pkg)))
-          `(,let-sym ((,dc-slm (,msm ,op-elem (,mt ,nt)))
-                      (,at-slm (,msm ,op-elem (,kt ,mt)))
-                      (,bt-slm (,msm ,op-elem (,nt ,kt)))
-                      (,da-reg (,mrt ,float-s (,mt ,kt) 0.0))
-                      (,db-reg (,mrt ,float-s (,kt ,nt) 0.0)))
-             ;; dC: the accumulator's adjoint, register -> SLM (so it can be an MMA operand).
-             (,store-t ,c-adj ,dc-slm (0 0))
-             ;; The transposed operands, staged from the ORIGINAL global sources.
-             ,(%mma-ad-transposed-stage at-slm (second a-src) (third a-src) mt kt)
-             ,(%mma-ad-transposed-stage bt-slm (second b-src) (third b-src) kt nt)
-             (,sync)
-             ;; dA = dC . B^T      (Mt, Kt, Nt)
-             (,via ,shape ,da-reg ,dc-slm ,bt-slm)
-             ;; dB = A^T . dC      (Kt, Nt, Mt)
-             (,via ,shape ,db-reg ,at-slm ,dc-slm)
-             (,sync)
-             (,store-t ,da-reg ,a-adj (0 0))
-             (,store-t ,db-reg ,b-adj (0 0)))))))
-  )
 
 ;;; ======================================================================
 ;;; Endeavour 163 — a 16-BIT kernel's BACKWARD needs SPV_EXT_shader_atomic_float16_add.
@@ -673,26 +542,6 @@ processes float inputs — integer tensor inputs contribute zero gradient."
          (string-equal (symbol-name (first canon)) "TENSOR")
          (second canon))))
 
-;; src/analysis/control.lisp
-(defun %tlc-check-elem-match (src tile env op-name location)
-  "BUG 057: refuse a tile-staging op whose SOURCE and DESTINATION element types differ.
-
-   Both operands are resolved by a pure environment lookup, so this never re-analyses a
-   sub-expression.  The check is SKIPPED unless both sides are symbols bound in ENV whose types
-   canonicalize to tensors -- see the header for why that conservatism is deliberate."
-  (when (and (symbolp src) (symbolp tile))
-    (let* ((src-pd  (find-variable-in-env src env))
-           (tile-pd (find-variable-in-env tile env)))
-      (when (and src-pd tile-pd)
-        (let ((src-elem  (%tlc-tensor-elem-of (parameter-def-type src-pd)))
-              (tile-elem (%tlc-tensor-elem-of (parameter-def-type tile-pd))))
-          (when (and src-elem tile-elem
-                     (not (eq src-elem tile-elem))
-                     (not (types-equivalent-p src-elem tile-elem)))
-            (error 'crisp-compiler-error
-              :message (format nil "~a: element type mismatch — source ~a holds ~a but tile ~a holds ~a.  A tile stage is a COPY, not a conversion: it would write ~a-sized values into a ~a-sized buffer.  Give the tile the source's element type, or stage the conversion explicitly (workgroup-stride + a cast) so its cost is visible."
-                               op-name src src-elem tile tile-elem src-elem tile-elem)
-              :source-location location)))))))
 
 ;; src/analysis/control.lisp
 (defun analyze-load-tile-at-expression (expr env context location)
@@ -743,30 +592,6 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 
 
 
-
-;; src/analysis/control.lisp  (163 — temporary instrumentation on the BUG 057 check)
-(defun %tlc-check-elem-match (src tile env op-name location)
-  "BUG 057 refusal, instrumented.  See the header above for the contract."
-  (log:info "057-check: op=~a src=~a (sym=~a) tile=~a (sym=~a)"
-            op-name src (symbolp src) tile (symbolp tile))
-  (when (and (symbolp src) (symbolp tile))
-    (let* ((src-pd  (find-variable-in-env src env))
-           (tile-pd (find-variable-in-env tile env)))
-      (log:info "057-check: src-pd=~a tile-pd=~a" (and src-pd t) (and tile-pd t))
-      (when (and src-pd tile-pd)
-        (let ((src-ty  (parameter-def-type src-pd))
-              (tile-ty (parameter-def-type tile-pd)))
-          (log:info "057-check: src-ty=~s tile-ty=~s" src-ty tile-ty)
-          (let ((src-elem  (%tlc-tensor-elem-of src-ty))
-                (tile-elem (%tlc-tensor-elem-of tile-ty)))
-            (log:info "057-check: src-elem=~a tile-elem=~a" src-elem tile-elem)
-            (when (and src-elem tile-elem
-                       (not (eq src-elem tile-elem))
-                       (not (types-equivalent-p src-elem tile-elem)))
-              (error 'crisp-compiler-error
-                :message (format nil "~a: element type mismatch — source ~a holds ~a but tile ~a holds ~a.  A tile stage is a COPY, not a conversion: it would write ~a-sized values into a ~a-sized buffer.  Give the tile the source's element type, or stage the conversion explicitly (workgroup-stride + a cast) so its cost is visible."
-                                 op-name src src-elem tile tile-elem src-elem tile-elem)
-                :source-location location))))))))
 
 ;; src/analysis/control.lisp
 ;; BUG 057, final form.  The first cut used a hand-rolled canonicalize + (tensor ELEM ...) match
@@ -1098,96 +923,6 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 
 ;; src/compiler.lisp
 
-;; src/autodiff.lisp
-(defun %vjp-mma-accumulate-via-tile (form ctx)
-  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B [(acc) BODY...]).
-
-   Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk
-   never learns the MMA path shape requirements, so they cannot leak back out as a
-   language-level contract.
-
-   Endeavor 150: if BODY fuses an activation onto the accum binding with map-elements!, the
-   chain rule needs dP = dC * f'(P).  A prefix re-stages the operands from their GLOBAL sources,
-   recomputes P into a fresh register tile, and scales the C adjoint through the function's
-   _GRAD twin before the existing backward runs.  The forward kernel is untouched."
-  (destructuring-bind (shape c-tile a-op b-op &rest ignored) (cdr form)
-    (declare (ignore ignored))
-    (let* ((flat-anf  (getf ctx :flat-anf))
-           (inputs    (getf ctx :inputs))
-           (outputs   (getf ctx :outputs))
-           (local-adj (getf ctx :local-adj))
-           (kernel-pkg (getf ctx :kernel-pkg))
-           (dims-map (%mma-ad-tile-dims-map flat-anf))
-           (src-map  (%mma-ad-tile-source-map flat-anf))
-           (ring-sites (%ad-ring-load-sites flat-anf))
-           (c-dims   (assoc (%ad-tile-base c-tile) dims-map))
-           (a-dims   (assoc (%ad-tile-base a-op) dims-map)))
-      (when c-dims
-        (multiple-value-bind (a-src aoy aox a-kind)
-            (%mma-vjp-operand-ref a-op src-map dims-map inputs ring-sites)
-          (multiple-value-bind (b-src boy box b-kind)
-              (%mma-vjp-operand-ref b-op src-map dims-map inputs ring-sites)
-            (when (and a-src b-src)
-              (let* ((mt (second c-dims))
-                     (nt (third c-dims))
-                     (kt (if a-dims
-                             (third a-dims)
-                             (nth-value 2 (%spv-mma-shape))))
-                     (pkg (or kernel-pkg (symbol-package (or (%ad-tile-base c-tile) c-tile))))
-                     (ringp (or (eq a-kind :ring) (eq b-kind :ring)))
-                     (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj kernel-pkg))
-                     (a-adj (%tlc-bwd-adj-name a-op  inputs outputs local-adj kernel-pkg))
-                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg))
-                     (core (if (%mma-vjp-mma-admissible-p mt nt kt)
-                               ;; Endeavour 163: a RING operand no longer forces the scalar
-                               ;; fallback.  Its dims resolve through %ad-tile-base and its
-                               ;; provenance is passed in from %mma-vjp-operand-ref just above,
-                               ;; so by here it is indistinguishable from a staged tile.
-                               (%mma-via-tile-backward form dims-map src-map inputs outputs
-                                                       local-adj kernel-pkg
-                                                       a-src aoy aox b-src boy box)
-                               (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
-                                                         a-src aoy aox b-src boy box pkg))))
-                (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) ring=~a mma-path=~a"
-                           mt nt kt a-op a-kind b-op b-kind ringp
-                           (%mma-vjp-mma-admissible-p mt nt kt))
-                (multiple-value-bind (acc-sym fn-form) (%vjp-via-tile-body-map form)
-                  (if (not acc-sym)
-                      core
-                      (let* ((cl    (find-package :crisp-language))
-                             (grad  (%map-elements-grad-name fn-form pkg))
-                             (base  (symbol-name (or (%ad-tile-base c-tile) c-tile)))
-                             (p-sym  (intern (format nil "~a_PRIMAL" base) pkg))
-                             (ap-sym (intern (format nil "~a_PRIMAL_A" base) pkg))
-                             (bp-sym (intern (format nil "~a_PRIMAL_B" base) pkg))
-                             (progn-s (intern "PROGN" cl))
-                             (let-s   (intern "LET" cl))
-                             (mrt-s   (intern "MAKE-REGISTER-TILE" cl))
-                             (msm-s   (intern "MAKE-SCRATCH-MATRIX" cl))
-                             (lta-s   (intern "LOAD-TILE-AT" cl))
-                             (sync-s  (intern "SYNC-WORKGROUP" cl))
-                             (flt-s   (intern "FLOAT" cl))
-                             (via-s   (intern "MMA-ACCUMULATE-VIA-TILE" cl))
-                             (vjp-s   (intern "%MAP-ELEMENTS-VJP!" cl))
-                             (fn-s    (intern "FUNCTION" cl)))
-                        (unless grad
-                          (error 'crisp-compiler-error
-                                 :message "map-elements! in a via-tile body: the fused function must be a #'NAME form for its gradient twin to be nameable."
-                                 :source-location nil))
-                        (log:debug "VJP via-tile: fused activation ~a -> dP = dC * ~a(P, dC); re-staging P from ~a / ~a"
-                                   fn-form grad a-src b-src)
-                        `(,progn-s
-                          (,let-s ((,ap-sym (,msm-s ,flt-s (,mt ,kt)))
-                                   (,bp-sym (,msm-s ,flt-s (,kt ,nt)))
-                                   (,p-sym  (,mrt-s ,flt-s (,mt ,nt) 0.0)))
-                                  (,lta-s ,a-src ,ap-sym (,aoy ,aox))
-                                  (,lta-s ,b-src ,bp-sym (,boy ,box))
-                                  (,sync-s)
-                                  (,via-s ,shape ,p-sym ,ap-sym ,bp-sym)
-                                  (,vjp-s ,c-adj ,p-sym (,fn-s ,grad)))
-                          ,core))))))))))))
-
-(register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
 
 ;;; Ring pipelining, part 2 — comparing load-site origins MODULO the slot index.
 ;;;
@@ -1607,50 +1342,6 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 ;;; already compiling.
 ;;; ======================================================================
 
-;; src/autodiff.lisp
-(defun %ad-inline-literal-shape-temps (flat-anf)
-  "Substitute every ANF temp bound to a literal list of integers with that literal.
-
-   `(%ANF-T-1 (64 64))` makes %ANF-T-1 a SHAPE, not a value -- the AD engine's shape
-   maps require literals and a backward cannot reference a forward-only temp.  A
-   binding is only inlined when its value is a non-empty list of integers, which no
-   call form can be (a call's head is a symbol).
-
-   The temp's OWN binding is left intact -- rewriting its left-hand side would produce
-   the malformed `((64 64) (64 64))`.  Leaving the now-dead binding is harmless: the
-   backward contains only what the walk emits."
-  (let ((map nil))
-    (%mma-ad-walk-forms
-     flat-anf
-     (lambda (form)
-       (when (and (= (length form) 2) (symbolp (first form)) (first form)
-                  (listp (second form)) (second form)
-                  (every #'integerp (second form))
-                  (not (assoc (first form) map)))
-         (push (cons (first form) (second form)) map))))
-    (if (null map)
-        flat-anf
-        (labels ((walk (f)
-                   (cond
-                     ((and f (symbolp f))
-                      (let ((e (assoc f map))) (if e (cdr e) f)))
-                     ((not (consp f)) f)
-                     ;; A temp's own binding.  Its left-hand side must NOT be rewritten --
-                     ;; that would produce the malformed `((64 64) (64 64))` -- but the VALUE
-                     ;; is neutralised to 0.  Endeavour 163 defect D: leaving the dead binding
-                     ;; intact stopped being harmless when endeavour 149's PRIMAL REPLAY began
-                     ;; replaying the forward's STATEMENTS, bindings included.  The dead
-                     ;; `(%ANF-T-27 (32 16))` then reached the analyzer, which read `(32 16)`
-                     ;; as a CALL with 32 in head position:
-                     ;;     The value 32 is not of type SYMBOL
-                     ;; The binding is dead BY CONSTRUCTION -- every occurrence of the symbol
-                     ;; has just been substituted with the literal -- so 0 is safe and keeps
-                     ;; the binding-list shape the walk expects.
-                     ((and (= (length f) 2) (symbolp (first f)) (first f)
-                           (assoc (first f) map))
-                      (list (first f) 0))
-                     (t (mapcar #'walk f)))))
-          (mapcar #'walk flat-anf)))))
 
 
 ;; src/autodiff.lisp  (163 defect D — QUOTE must not be collected as a shape temp)
