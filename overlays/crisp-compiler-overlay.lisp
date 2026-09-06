@@ -1419,3 +1419,155 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 (defvar *ad-ring-slot-marker* '%ad-ring-slot
   "Placeholder standing in for a ring-get index while load-site origins are compared.")
 
+
+;;; ======================================================================
+;;; Endeavour 163 — AN OVERSIZED MMA ACCUMULATOR GETS AN SLM ADJOINT, NOT A REGISTER ONE.
+;;;
+;;; 154/03 stopped failing on shape resolution and started failing on arithmetic:
+;;;
+;;;     make-register-tile: a 64x256 accumulator tile needs 512 registers/thread
+;;;     (128 fragments x 4 regs), exceeding the register budget of 255
+;;;
+;;; %ad-canonicalize-wgmma rewrites `(make-wgmma-accumulator float (64 256) 0.0)` into a sync-MMA
+;;; `(make-register-tile float (64 256) 0.0)`.  A wgmma accumulator is WARPGROUP-wide — 128
+;;; threads — while a sync register tile is per-warp, so a shape that fits the forward cannot fit
+;;; the backward's register model.  The adjoint inherits the shape and the fit check refuses it.
+;;;
+;;; THE FORWARD KEEPS ITS ACCUMULATOR IN REGISTERS BECAUSE THAT IS WHERE THE SPEED IS.  The
+;;; backward has no such need: the VJP stages dC into SLM immediately in both lowerings.  The
+;;; register tile existed only because the canonicalisation replicated the forward's STORAGE
+;;; choice along with its math — the same replication-instead-of-abstraction that BUG 044 turned
+;;; out to be, one level up at the accumulator instead of the operand.
+;;;
+;;; TWO DECISIONS THAT MUST AGREE, so both now ask ONE predicate:
+;;;   - %mma-ad-adj-init mints the adjoint: SLM when the accumulator does not fit.
+;;;   - %mma-ad-register-accumulator-tile-p gates the walk's %load-register-tile-acc seeding.
+;;;     That is a REGISTER operation and cannot address an SLM adjoint — exactly the
+;;;     "Unsupported form '%LOAD-REGISTER-TILE-ACC'" failure endeavour 146 documented when the
+;;;     two disagreed.  Answering NIL routes the store backward to the ordinary memory-shaped
+;;;     %store-tile-at-bwd, which is what an SLM adjoint wants.
+;;;
+;;; BLAST RADIUS IS EXACTLY THE CASE THAT WAS BROKEN.  The fit check is SKIPPED on :spirv — there
+;;; the tile is opaque cooperative matrices and the driver owns residency — so every BMG spec,
+;;; including all 25 on-metal gradient checks, is byte-identical.  On PTX only an accumulator
+;;; that ALREADY could not be built is affected.
+;;; ======================================================================
+
+;; src/autodiff.lisp
+(defun %mma-ad-accumulator-fits-registers-p (dims)
+  "T when an (M N) accumulator tile fits the per-thread register budget, so its ADJOINT can be a
+   register tile rather than SLM.
+
+   Mirrors %register-tile-fit-check's arithmetic — (M/16)x(N/8) fragments at 4 fp32 regs each —
+   but ANSWERS rather than signals, because this is a representation choice and not a user error.
+   Like that check it is vacuously true on :spirv, where the driver owns register residency.
+
+   A non-literal or unknown shape answers T, preserving the previous behaviour for anything this
+   cannot reason about."
+  (or (eq *target-backend* :spirv)
+      (let ((m (first dims)) (n (second dims)))
+        (or (not (and (integerp m) (integerp n)))
+            (<= (* (floor m 16) (floor n 8) 4)
+                (or (%hp-registers-per-thread-default)
+                    *default-max-registers-per-thread*))))))
+
+;; src/autodiff.lisp
+(defun %mma-ad-adj-init (init-form)
+  "Endeavor 145 P3b: the adjoint allocator paired with a forward tile binding.
+
+   Scratch tiles keep the existing behaviour (%promote-scratch-init-for-ad, which also
+   promotes e.g. ulong -> double).
+
+   Endeavor 146 Gap 4: a register tile's adjoint depends on WHICH ROLE the tile plays.
+
+     ACCUMULATOR  (no :operand)  -> a same-shaped register tile zeroed to 0.0.
+        The C adjoint is filled by %load-register-tile-acc from C_GRAD and then staged
+        to SLM by the VJP itself, so registers are right for it.
+
+     OPERAND      (:operand :a/:b) -> a same-shaped SCRATCH MATRIX.
+        EVERY consumer of an operand adjoint indexes it as memory: the scalar lowering
+        writes it with workgroup-stride + ~, the MMA fast path uses it as a store-tile
+        DESTINATION, and %load-tile-at-bwd reads it element-wise to scatter into the
+        global gradient.  A register tile cannot be written element-wise at all —
+        %explode-register-tiles has replaced the whole-tile symbol with per-lane
+        fragment vars by then, so `(~ TILE m k)` has no TILE to resolve.  This is not
+        an AD-specific fact: the same write fails in a forward-only kernel.
+
+   145 never hit this because its specs staged operands through make-scratch-matrix +
+   load-tile-at, so operand adjoints were ALREADY scratch.  142 Phase A introduced
+   register-resident operands via the load-tile overload, and this allocator had never
+   learned about them.
+
+   NOT a new derivative: dA = dC.B^T and dB = A^T.dC are unchanged and both lowerings
+   already computed them correctly.  This decides only WHERE the result is allocated.
+
+   Element type is FLOAT in both register cases: fragments are fp32 and an adjoint
+   always starts at zero."
+  (cond
+    ((and (consp init-form) (symbolp (car init-form))
+          (string-equal (symbol-name (car init-form)) "MAKE-REGISTER-TILE"))
+     (let ((cl-pkg (find-package :crisp-language)))
+       (if (or (%mma-ad-register-operand-tile-p init-form)
+               ;; Endeavour 163: an accumulator whose shape exceeds the per-thread register
+               ;; budget gets an SLM adjoint too.  The FORWARD keeps its accumulator in
+               ;; registers because that is where the speed is; the backward has no such need --
+               ;; the VJP stages dC into SLM immediately either way.  A wgmma accumulator is the
+               ;; case that forced this: it is WARPGROUP-wide, so canonicalising it to a
+               ;; per-warp sync-MMA register tile at the SAME shape asks for 512 registers.
+               (not (%mma-ad-accumulator-fits-registers-p (third init-form))))
+           (list (intern "MAKE-SCRATCH-MATRIX" cl-pkg)
+                 (intern "FLOAT" cl-pkg)
+                 (third init-form))
+           (list (intern "MAKE-REGISTER-TILE" cl-pkg)
+                 (intern "FLOAT" cl-pkg)
+                 (third init-form)
+                 0.0))))
+    ;; Endeavor 146: RING constructors pass through UNCHANGED.
+    ;;
+    ;; %promote-scratch-init-for-ad opens with %scratch-tensor-canonical-spec, which knows
+    ;; only the four scratch TILE forms; handed a ring it yields the stub type `(TENSOR FLOAT)`
+    ;; and the caller dies with `Invalid incomplete type specifier`.  A ring adjoint needs no
+    ;; promotion in any case: it is a ring of the SAME shape, and these are float already.
+    ;;
+    ;; This was first patched locally inside %ad-ensure-ring-adj-bindings, which fixed the
+    ;; top-level-ring path and left this one — %augment-scratch-adj-bindings reaches the same
+    ;; allocator for a ring bound in a NESTED let, which is 142/14's shape.  Fixed at the
+    ;; allocator instead, so both paths are covered by one rule.
+    ((and (consp init-form) (symbolp (car init-form))
+          (member (symbol-name (car init-form))
+                  '("MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
+                    "MAKE-SCRATCH-TENSOR-RING" "MAKE-REGISTER-TILE-RING")
+                  :test #'string=))
+     init-form)
+    (t (%promote-scratch-init-for-ad init-form))))
+
+
+;; src/autodiff.lisp
+(defun %mma-ad-register-accumulator-tile-p (sym flat-anf)
+  "T when SYM is a register tile in the ACCUMULATOR role — a make-register-tile with no
+   :operand key.
+
+   Endeavor 146: the store backward needs this narrower question, not %mma-ad-register-tile-p.
+   Gap 4 split the two roles apart at the ADJOINT: an accumulator's adjoint is still a
+   register tile (it is seeded from the destination's gradient by %load-register-tile-acc and
+   staged to SLM by the VJP), while an OPERAND's adjoint is a scratch matrix, because every
+   consumer indexes it as memory and a register tile cannot be written element-wise.
+
+   Asking the broad question after that split emitted %load-register-tile-acc — a REGISTER
+   operation — against a scratch-matrix adjoint, which the analyzer then rejected with
+   `Unsupported form '%LOAD-REGISTER-TILE-ACC' found in function body`.  Operand tiles now
+   fall through to the ordinary store-tile-at backward, which is the memory-shaped edge their
+   memory-shaped adjoint wants.
+
+   Endeavour 163 defect A: the scan now descends into nested bodies, so a tile bound inside
+   a tile-stride (or any loop / branch) body is found.  See the header above."
+  (%mma-ad-register-tile-binding-exists-p
+   sym flat-anf
+   (lambda (init-form)
+     (and (not (%mma-ad-register-operand-tile-p init-form))
+          ;; Endeavour 163: an accumulator too large for the per-thread register budget gets a
+          ;; SLM adjoint (see %mma-ad-adj-init), and %load-register-tile-acc is a REGISTER
+          ;; operation that cannot address one.  Answering NIL here routes the store backward to
+          ;; the ordinary memory-shaped %store-tile-at-bwd, which is what an SLM adjoint wants.
+          ;; The two decisions MUST agree, so both ask this one predicate.
+          (%mma-ad-accumulator-fits-registers-p (third init-form))))))

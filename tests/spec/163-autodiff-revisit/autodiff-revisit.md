@@ -958,3 +958,62 @@ still open and still endorsed).  140/01 and 140/02 remain deferred, correctly.
 
 Latent and unfixed: the same `+=`-without-reset for a NON-ring buffer reused across stages on the
 scalar path.  No spec covers it; the ring made it visible.  Worth a rung of its own.
+
+
+PHASE 12 — OVERSIZED ACCUMULATORS GET AN SLM ADJOINT (2026-09-06)
+==================================================================
+
+The change Chris endorsed in Phase 9, landed and scoped.
+
+**The rule:** the FORWARD keeps its accumulator in registers because that is where the speed is.
+The BACKWARD has no such need — the VJP stages dC into SLM immediately in both lowerings.  The
+register tile existed only because `%ad-canonicalize-wgmma` replicated the forward's STORAGE
+choice along with its math, which is the same replication-instead-of-abstraction that BUG 044
+turned out to be, one level up.
+
+**Two decisions that must agree, so both now ask ONE predicate**
+(`%mma-ad-accumulator-fits-registers-p`):
+
+  - `%mma-ad-adj-init` mints the adjoint — SLM when the accumulator does not fit;
+  - `%mma-ad-register-accumulator-tile-p` gates the walk's `%load-register-tile-acc` seeding,
+    which is a REGISTER operation and cannot address an SLM adjoint.  Answering NIL routes the
+    store backward to the ordinary memory-shaped `%store-tile-at-bwd`.
+
+Endeavour 146 documented exactly what happens when those two disagree
+(`Unsupported form '%LOAD-REGISTER-TILE-ACC'`), which is why they share a predicate rather than
+each testing the condition themselves.
+
+**BLAST RADIUS IS EXACTLY THE BROKEN CASE.**  The fit arithmetic is vacuously true on `:spirv` —
+there the tile is opaque cooperative matrices and the driver owns residency — so every BMG spec
+is byte-identical, including all the on-metal gradient checks.  On PTX it can only affect an
+accumulator that ALREADY could not be built.  Verified: **1062/1062 --differentiate with 69
+gradient-check passes**, 1062/1062 plain.
+
+RESULT: 154/03 CLEARS ITS REGISTER WALL AND LANDS ON DEFECT D
+-------------------------------------------------------------
+
+    before:  make-register-tile: a 64x256 accumulator tile needs 512 registers/thread ...
+    after:   The value 64 is not of type SYMBOL
+
+and 155/03 — defect D, unchanged since Phase 0 — reports
+
+    The value 32 is not of type SYMBOL
+
+**Same error, different tile dimension.**  154/03 has now cleared every blocker of its own and
+converged on the SAME defect as 155/03.  That is a good outcome, not a stall: defect D is now one
+root with two specs behind it, and 155/03 is the smaller reproduction to work from.
+
+WHERE THE ENDEAVOUR STANDS
+--------------------------
+
+| | status |
+|---|---|
+| A — register-tile adjoint scoping | FIXED |
+| C — BUG 054, tf32 fragments for 16-bit | FIXED, numerically verified |
+| BUG 044 — ring adjoint aliasing | FIXED, numerically verified |
+| B2 — ring shape/provenance resolution | FIXED (3 reuses of existing helpers) |
+| accumulator register budget | FIXED (this phase) |
+| **D — `not of type SYMBOL` on the ring path** | **OPEN — now blocks 154/03 too** |
+| B1 — 140/01, 140/02 | DEFERRED, correctly (no staging primitive at all) |
+
+Post-149 skip ledger: 8 at the start, **1 now** (155/03).
