@@ -1311,6 +1311,9 @@
                         when (and (getf p :name) bytes)
                           collect (cons (getf p :name) bytes)))))))))))
 
+
+
+
 (defun %vad-read-implicit-params (file kernel-name &key grad)
   "Reads the forward or backward kernel's metacrisp file for FILE and
    extracts its :implicit-params, returning a list of plists each
@@ -1373,6 +1376,7 @@
                                (elem-bytes
                                  (case elem-type
                                    ((float)  4)
+                                   ((half bfloat16) 2)
                                    ((double) 8)
                                    ((int ulong long) 8)
                                    (t (error "%vad-read-implicit-params: unsupported elem-type ~A in ~A"
@@ -1395,6 +1399,7 @@
                                 :dims dims
                                 :elem-bytes elem-bytes
                                 :arg-width (1+ (- (second range) (first range)))))))))))))))
+
 
 (defun %vad-compile-spv (file &key differentiate precision denormal
                                    (target "spv") arch)
