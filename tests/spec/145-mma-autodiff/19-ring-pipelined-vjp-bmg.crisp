@@ -49,10 +49,33 @@
 ;; atol is loose for the same reason as 09: tf32's ~10-bit mantissa on both the FD and the
 ;; MMA-computed analytical gradient.
 ;;
+;; ===================================================================
+;; BUG 044 FIXED 2026-09-06 (endeavour 163).  This rung reported analytical=84.32 against an
+;; expected 1.2 for three weeks; it now reports analytical=1.2.
+;;
+;; The 84.32 decomposed exactly: stage 0's contribution (1.20) plus stage 2's (83.12) — the two
+;; stages that SHARE ring slot 0 — while stage 1 (42.16, the only stage on slot 1) was absent.
+;; The scalar VJP accumulated `+=` into the OPERAND ADJOINT, which is a property of the BUFFER,
+;; and a reused buffer is the wrong home for a per-stage quantity.  Both of that slot's load
+;; sites then scattered the accumulated total at their own origin.
+;;
+;; Two plausible fixes were measured and REJECTED before the real one:
+;;   - routing rings to the MMA path (which overwrites rather than accumulates) does not reach
+;;     this kernel: Mt=8 Nt=16 Kt=8, and the MMA path needs `kt mod lcm(8,16) = 0`.  It takes the
+;;     scalar lowering for a SHAPE reason, with or without a ring.
+;;   - a consume-and-reset at the load site cannot work: the backward reverses each loop BODY but
+;;     iterates FORWARD, and this kernel's refill is last in the body, so the scatter at
+;;     iteration k would need stage k+2's gradient — two stages before it exists.
+;;
+;; The fix stores nothing in the slot at all.  A ring operand's stage contribution accumulates in
+;; a LOCAL and is scattered with atomic-add! straight into the global gradient at the CONSUMING
+;; stage's origin.  No reverse-ring logic, no mirrored prologue: the derivative simply stops
+;; using a buffer whose lifetime the forward chose for latency reasons.
+;; ===================================================================
+;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
 ;; HOIST-HARDWARE-PROFILE: bmg
-;; SKIP-WITH[--differentiate]: "BUG 044: the ring-pipelined BACKWARD is wrong on BMG -- analytical reads 84.32 against an expected 1.2, while the finite difference reads 1.1992 (correct). BUG 040 is FIXED (2026-08-14) and was NOT what blocked this: fixing it moved neither number, because this spec's FD perturbs A[1,0], which lies entirely inside K-step 0 and so was always blind to 040's truncation. The forward is now independently proven by 138/07 and 138/08 (MMA_CORRECT on metal, slot 0 and slot 1). The expectation below is already the right one; un-skip when 044 is fixed."
 ;; VERIFY-AUTODIFF: A=8x48@0:0.01 B=48x16@0:0.01 at.A=1,0 group=16 h=0.5 atol=2e-2 expect.A=1.2 output-mat=8x16
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))

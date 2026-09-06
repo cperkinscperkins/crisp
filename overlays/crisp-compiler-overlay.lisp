@@ -1205,3 +1205,217 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 (defvar *ad-ring-slot-marker* '%ad-ring-slot
   "Placeholder standing in for a ring-get index while load-site origins are compared.")
 
+
+;;; ======================================================================
+;;; BUG 044 — AN ADJOINT MUST BELONG TO THE STAGE, NOT TO THE BUFFER.
+;;;
+;;; 145/19 reported analytical=84.32 against an expected 1.2.  Decomposed, that is stage 0's
+;;; contribution (1.20) plus stage 2's (83.12) — the two stages that SHARE ring slot 0 — while
+;;; stage 1 (42.16, the only stage on slot 1) was absent.  Every digit accounted for.
+;;;
+;;; WHY THE OBVIOUS FIXES DO NOT WORK, both established by measurement rather than argument:
+;;;
+;;;   * Routing rings to the MMA path (which OVERWRITES the operand adjoint) does not reach this
+;;;     kernel.  145/19 is Mt=8 Nt=16 Kt=8, and %mma-vjp-mma-admissible-p needs
+;;;     `kt mod lcm(sm sn) = 0` — on BMG that is 8 mod 16.  It takes the scalar lowering for a
+;;;     SHAPE reason and would do so with no ring in the kernel at all.
+;;;   * A consume-and-reset at the load site cannot work either.  The backward reverses each loop
+;;;     BODY but iterates the loop in FORWARD order, and 145/19's refill is LAST in the forward
+;;;     body, so the backward's scatter at iteration k would have to emit stage k+2's gradient —
+;;;     two stages before it exists.  No placement of a zeroing repairs a pairing off by two.
+;;;
+;;; THE ACTUAL RULE.  The scalar lowering accumulated `+=` into the OPERAND ADJOINT, which is a
+;;; property of the BUFFER.  When the buffer is reused, that is the wrong home for a per-stage
+;;; quantity.  For a ring operand the lowering now accumulates the stage's contribution in a
+;;; LOCAL and scatters it with atomic-add! straight into the GLOBAL gradient at this stage's
+;;; origin — an origin %ad-reconcile-ring-origin already resolves to the CONSUMING loop variable
+;;; rather than the prefetching one.  The slot adjoint is then never written, the load-site
+;;; scatter contributes zero, and iteration order stops mattering.
+;;;
+;;; NO REVERSE-RING LOGIC.  Nothing here inverts a ring, mirrors a prologue, or models double
+;;; buffering.  The derivative simply stops storing anything in a buffer whose lifetime the
+;;; forward chose for reasons of latency.
+;;;
+;;; STRICTLY OPT-IN: both new arguments default to NIL, and NIL reproduces the previous emission
+;;; exactly, so every non-ring use of the scalar lowering is byte-identical.
+;;; ======================================================================
+
+;; src/autodiff.lisp
+(defun %mma-vjp-scalar-lowering (mt nt kt c-adj a-op b-op a-adj b-adj
+                                 a-src aoy aox b-src boy box pkg
+                                 &optional a-grad b-grad)
+  "The shape-agnostic scalar backward for a tile multiply.  Emitted as ordinary Crisp source,
+   so it lowers through the normal path on either backend and at ANY tile shape.
+
+   dC is materialised from the register accumulator into SLM once, then two collective loops
+   accumulate into the operand adjoints.  Index arithmetic is coerced with to-int because a
+   staging origin can be a ULONG extent expression while the collective's loop vars are INT."
+  (declare (ignore a-op b-op))
+  (let* ((cl (find-package :crisp-language))
+         (let* (intern "LET" cl))      (msm  (intern "MAKE-SCRATCH-MATRIX" cl))
+         (flt  (intern "FLOAT" cl))    (st   (intern "STORE-TILE" cl))
+         (sync (intern "SYNC-WORKGROUP" cl))
+         (ws   (intern "WORKGROUP-STRIDE" cl))  (dt (intern "DOTIMES" cl))
+         (aref (intern "~" cl))        (set! (intern "SET!" cl))
+         (plus (intern "+" cl))        (mul  (intern "*" cl))
+         (ti   (intern "TO-INT" cl))
+         (dc   (intern (format nil "~A_VJPDC" (symbol-name c-adj)) pkg))
+         (aadd (intern "ATOMIC-ADD!" cl))  (letf (intern "LET" cl))
+         (acc  (intern "%VJP_ACC" cl))
+         (m (intern "%VJP_M" cl)) (n (intern "%VJP_N" cl)) (k (intern "%VJP_K" cl)))
+    (flet ((ix (base off) (list plus (list ti base) (list ti off))))
+      (list let* (list (list dc (list msm flt (list mt nt))))
+            (list st c-adj dc (list 0 0))
+            (list sync)
+            ;; dA[m,k] += sum_n dC[m,n] * B[k,n]
+            ;; A-GRAD given => the operand is a REUSED buffer (a ring slot).  Accumulate the
+            ;; stage's contribution in a LOCAL and scatter it straight into the global gradient
+            ;; at this stage's origin, so nothing is ever left in the shared slot to be picked
+            ;; up by another stage.  See BUG 044.
+            (if a-grad
+                (list ws a-adj (list m k)
+                      (list letf (list (list acc 0.0))
+                            (list dt (list n nt)
+                                  (list set! acc
+                                        (list plus acc
+                                              (list mul (list aref dc m n)
+                                                    (list aref b-src (ix boy k) (ix box n))))))
+                            (list aadd (list aref a-grad (ix aoy m) (ix aox k)) acc)))
+                (list ws a-adj (list m k)
+                      (list dt (list n nt)
+                            (list set! (list aref a-adj m k)
+                                  (list plus (list aref a-adj m k)
+                                        (list mul (list aref dc m n)
+                                              (list aref b-src (ix boy k) (ix box n)))))))) 
+            ;; dB[k,n] += sum_m A[m,k] * dC[m,n]   (same reuse rule as dA above)
+            (if b-grad
+                (list ws b-adj (list k n)
+                      (list letf (list (list acc 0.0))
+                            (list dt (list m mt)
+                                  (list set! acc
+                                        (list plus acc
+                                              (list mul (list aref a-src (ix aoy m) (ix aox k))
+                                                    (list aref dc m n)))))
+                            (list aadd (list aref b-grad (ix boy k) (ix box n)) acc)))
+                (list ws b-adj (list k n)
+                      (list dt (list m mt)
+                            (list set! (list aref b-adj k n)
+                                  (list plus (list aref b-adj k n)
+                                        (list mul (list aref a-src (ix aoy m) (ix aox k))
+                                              (list aref dc m n)))))))
+            (list sync)))))
+
+
+;; src/autodiff.lisp
+(defun %vjp-mma-accumulate-via-tile (form ctx)
+  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B [(acc) BODY...]).
+
+   Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk
+   never learns the MMA path shape requirements, so they cannot leak back out as a
+   language-level contract.
+
+   Endeavor 150: if BODY fuses an activation onto the accum binding with map-elements!, the
+   chain rule needs dP = dC * f'(P).  A prefix re-stages the operands from their GLOBAL sources,
+   recomputes P into a fresh register tile, and scales the C adjoint through the function's
+   _GRAD twin before the existing backward runs.  The forward kernel is untouched."
+  (destructuring-bind (shape c-tile a-op b-op &rest ignored) (cdr form)
+    (declare (ignore ignored))
+    (let* ((flat-anf  (getf ctx :flat-anf))
+           (inputs    (getf ctx :inputs))
+           (outputs   (getf ctx :outputs))
+           (local-adj (getf ctx :local-adj))
+           (kernel-pkg (getf ctx :kernel-pkg))
+           (dims-map (%mma-ad-tile-dims-map flat-anf))
+           (src-map  (%mma-ad-tile-source-map flat-anf))
+           (ring-sites (%ad-ring-load-sites flat-anf))
+           (c-dims   (assoc (%ad-tile-base c-tile) dims-map))
+           (a-dims   (assoc (%ad-tile-base a-op) dims-map)))
+      (when c-dims
+        (multiple-value-bind (a-src aoy aox a-kind)
+            (%mma-vjp-operand-ref a-op src-map dims-map inputs ring-sites)
+          (multiple-value-bind (b-src boy box b-kind)
+              (%mma-vjp-operand-ref b-op src-map dims-map inputs ring-sites)
+            (when (and a-src b-src)
+              (let* ((mt (second c-dims))
+                     (nt (third c-dims))
+                     (kt (if a-dims
+                             (third a-dims)
+                             (nth-value 2 (%spv-mma-shape))))
+                     (pkg (or kernel-pkg (symbol-package (or (%ad-tile-base c-tile) c-tile))))
+                     (ringp (or (eq a-kind :ring) (eq b-kind :ring)))
+                     (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj kernel-pkg))
+                     (a-adj (%tlc-bwd-adj-name a-op  inputs outputs local-adj kernel-pkg))
+                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg))
+                     (core (if (and (not ringp) (%mma-vjp-mma-admissible-p mt nt kt))
+                               (%mma-via-tile-backward form dims-map src-map inputs outputs
+                                                       local-adj kernel-pkg)
+                               (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
+                                                         a-src aoy aox b-src boy box pkg
+                                                         ;; BUG 044: a RING slot is reused across
+                                                         ;; stages, so its adjoint cannot hold a
+                                                         ;; per-stage value.  Hand the lowering
+                                                         ;; the GLOBAL gradient and let it scatter
+                                                         ;; each stage straight there.
+                                                         (when (eq a-kind :ring)
+                                                           (%tlc-bwd-adj-name a-src inputs outputs
+                                                                              local-adj kernel-pkg))
+                                                         (when (eq b-kind :ring)
+                                                           (%tlc-bwd-adj-name b-src inputs outputs
+                                                                              local-adj kernel-pkg))))))
+                (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) ring=~a mma-path=~a"
+                           mt nt kt a-op a-kind b-op b-kind ringp
+                           (%mma-vjp-mma-admissible-p mt nt kt))
+                (multiple-value-bind (acc-sym fn-form) (%vjp-via-tile-body-map form)
+                  (if (not acc-sym)
+                      core
+                      (let* ((cl    (find-package :crisp-language))
+                             (grad  (%map-elements-grad-name fn-form pkg))
+                             (base  (symbol-name (or (%ad-tile-base c-tile) c-tile)))
+                             (p-sym  (intern (format nil "~a_PRIMAL" base) pkg))
+                             (ap-sym (intern (format nil "~a_PRIMAL_A" base) pkg))
+                             (bp-sym (intern (format nil "~a_PRIMAL_B" base) pkg))
+                             (progn-s (intern "PROGN" cl))
+                             (let-s   (intern "LET" cl))
+                             (mrt-s   (intern "MAKE-REGISTER-TILE" cl))
+                             (msm-s   (intern "MAKE-SCRATCH-MATRIX" cl))
+                             (lta-s   (intern "LOAD-TILE-AT" cl))
+                             (sync-s  (intern "SYNC-WORKGROUP" cl))
+                             (flt-s   (intern "FLOAT" cl))
+                             (via-s   (intern "MMA-ACCUMULATE-VIA-TILE" cl))
+                             (vjp-s   (intern "%MAP-ELEMENTS-VJP!" cl))
+                             (fn-s    (intern "FUNCTION" cl)))
+                        (unless grad
+                          (error 'crisp-compiler-error
+                                 :message "map-elements! in a via-tile body: the fused function must be a #'NAME form for its gradient twin to be nameable."
+                                 :source-location nil))
+                        (log:debug "VJP via-tile: fused activation ~a -> dP = dC * ~a(P, dC); re-staging P from ~a / ~a"
+                                   fn-form grad a-src b-src)
+                        `(,progn-s
+                          (,let-s ((,ap-sym (,msm-s ,flt-s (,mt ,kt)))
+                                   (,bp-sym (,msm-s ,flt-s (,kt ,nt)))
+                                   (,p-sym  (,mrt-s ,flt-s (,mt ,nt) 0.0)))
+                                  (,lta-s ,a-src ,ap-sym (,aoy ,aox))
+                                  (,lta-s ,b-src ,bp-sym (,boy ,box))
+                                  (,sync-s)
+                                  (,via-s ,shape ,p-sym ,ap-sym ,bp-sym)
+                                  (,vjp-s ,c-adj ,p-sym (,fn-s ,grad)))
+                          ,core))))))))))))
+
+(register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
+
+;;; Ring pipelining, part 2 — comparing load-site origins MODULO the slot index.
+;;;
+;;; The first cut compared origins componentwise and found TWO differing components where there
+;;; should be one.  The reason is that `load-tile` is rewritten to `load-tile-at` with PIXEL
+;;; coordinates, and that rewrite embeds the tile expression itself:
+;;;
+;;;     (* (to-ulong grid-y) (~ (extents~ (ring-get A-ring (to-ulong i))) 0))   ; prologue
+;;;     (* (to-ulong grid-y) (~ (extents~ (ring-get A-ring slot))        0))   ; steady state
+;;;
+;;; so the SLOT INDEX makes every component differ, including the ones that agree
+;;; mathematically.  The slot is scheduling, exactly like the stage origin, so it is normalised
+;;; away before comparing and substituted back afterwards from the CONSUMING operand's own
+;;; index.  What remains differing is then the genuine stage coordinate, and there is one.
+(defvar *ad-ring-slot-marker* '%ad-ring-slot
+  "Placeholder standing in for a ring-get index while load-site origins are compared.")
+

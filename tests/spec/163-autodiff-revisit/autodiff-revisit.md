@@ -899,3 +899,62 @@ tile adjoint.  That is the same shape of change as the provenance threading abov
 
 It is also the general statement of BUG 044: **an adjoint must be accumulated somewhere that
 belongs to the STAGE, not somewhere that belongs to the BUFFER**, whenever the buffer is reused.
+
+
+PHASE 11 — BUG 044 FIXED.  ON A NUMBER. (2026-09-06)
+=====================================================
+
+    PASS [l0] (A: analytical=1.2 numerical=1.1992188 diff=7.812977e-4)      was 84.32
+
+**The rule, stated generally: an adjoint must be accumulated somewhere that belongs to the STAGE,
+not somewhere that belongs to the BUFFER, whenever the buffer is reused.**  The scalar VJP
+accumulated `+=` into the operand adjoint — a property of the buffer — so ring slot 0 held stages
+0 and 2 together and both of its load sites scattered that total at their own origin.
+
+For a `:ring` operand the lowering now accumulates the stage's contribution in a LOCAL and
+scatters it with `atomic-add!` straight into the GLOBAL gradient at the CONSUMING stage's origin,
+which `%ad-reconcile-ring-origin` already resolved to the consuming loop variable rather than the
+prefetching one.  The slot adjoint is never written, the load-site scatter contributes zero, and
+iteration order stops mattering.
+
+No reverse-ring logic.  Nothing inverts a ring, mirrors a prologue, or models double buffering —
+the derivative simply stops storing anything in a buffer whose lifetime the forward chose for
+latency.  Both new arguments default to NIL and NIL reproduces the previous emission
+byte-for-byte.
+
+WHAT THE MEASUREMENTS COST, AND SAVED
+-------------------------------------
+
+Three plausible fixes were proposed across Phases 7-10 and TWO were killed by measurement before
+being cut.  Worth keeping as a record of how much of this was not obvious:
+
+| proposal | killed by |
+|---|---|
+| consume-and-reset at the load site (Ph 7) | backward iterates loops FORWARD; refill is last in the body, so the scatter would need stage k+2 two stages early |
+| route rings to the overwriting MMA path (Ph 7b/10) | 145/19 is Kt=8; `kt mod lcm(8,16) != 0`, so it takes the scalar path for a SHAPE reason, ring or no ring |
+| accumulate per stage, scatter to the global gradient | **shipped** |
+
+The ledger's own framing — "about 70x, close to but not exactly 64 or 128" — was the original
+misdirection.  84.32 was never a multiple of anything; it was 1.20 + 83.12, two stages landing on
+one address.
+
+VERIFICATION, and why the sweep matters here
+--------------------------------------------
+
+This changed a SHARED path.  **1062/1062 plain and --differentiate, 233/233 negative, 291/291
+unit, and all 25 on-metal gradient checks in the suite still pass** — the tf32 twin (1.1994476),
+the multi-workgroup case (4.9577), the fp16 rung (1.2000704) among them.  Those checks were the
+reason for doing 044 BEFORE the accumulator change rather than after: with the ring path verified
+by number, they now form the safety net for the shared-path work still to come.
+
+`SKIP-WITH[--differentiate]` removed from 145/19.
+
+STATE OF THE ENDEAVOUR
+----------------------
+
+Post-149 skip ledger: started at 8, now **1** — `155/03` (defect D).  154/03 is no longer blocked
+on shape resolution but on the wgmma accumulator's register budget (Phase 9's design question,
+still open and still endorsed).  140/01 and 140/02 remain deferred, correctly.
+
+Latent and unfixed: the same `+=`-without-reset for a NON-ring buffer reused across stages on the
+scalar path.  No spec covers it; the ring made it visible.  Worth a rung of its own.

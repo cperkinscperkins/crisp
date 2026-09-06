@@ -1501,7 +1501,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         cosmetic -- but nothing does that today, since the hoist path does not use
         --single-pass.  One spec red in one phase.
 
-[ ] 044 - The RING-PIPELINED MMA BACKWARD computes the wrong gradient on BMG.
+[x] 044 - The RING-PIPELINED MMA BACKWARD computes the wrong gradient on BMG.
+        FIXED 2026-09-06 (endeavour 163) — see the FIXED block at the end.
 
         FOUND 2026-08-14, immediately behind the BUG 040 fix.  Split out of 040 because it is
         demonstrably NOT the same defect: fixing 040 moved neither of 044's numbers.
@@ -2087,3 +2088,49 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         233/233 negative, 291/291 unit.  Nothing in the suite relied on a mismatch.
 
         NOT TESTED, and the obvious next question: store-tile in the other direction.
+
+        044 FIXED — 2026-09-06, endeavour 163.  analytical=84.32 -> analytical=1.2.
+
+            PASS [l0] (A: analytical=1.2 numerical=1.1992188 diff=7.812977e-4)
+
+        THE NUMBER WAS NEVER A SCALE FACTOR.  The ledger's own guess above — "about 70x, close to
+        but not exactly 64 or 128" — sent this in the wrong direction for three weeks.  84.32
+        decomposes exactly as stage 0 (1.20) + stage 2 (83.12), the two stages that SHARE ring
+        slot 0, with stage 1 (42.16, the only stage on slot 1) absent.  The recorded
+        `diff=83.12078` is precisely stage 2's contribution.  Three numbers, all accounted for.
+
+        ROOT CAUSE, and it is a general rule: %mma-vjp-scalar-lowering accumulated `+=` into the
+        OPERAND ADJOINT, which is a property of the BUFFER.  A reused buffer is the wrong home for
+        a per-stage quantity.  Slot 0 therefore held stages 0 and 2 together, and BOTH of its load
+        sites scattered that total at their own origin.
+
+        TWO PLAUSIBLE FIXES MEASURED AND REJECTED, recorded so they are not retried:
+          - Route rings to the MMA path, which OVERWRITES the operand adjoint instead of
+            accumulating.  Does not reach this kernel: Mt=8 Nt=16 Kt=8 and
+            %mma-vjp-mma-admissible-p requires `kt mod lcm(sm sn) = 0` — on BMG, 8 mod 16.  145/19
+            takes the scalar lowering for a SHAPE reason and would with no ring in the kernel.
+            (The ring gate was removed anyway; it was wrong on its own terms and helps 154/03.)
+          - Consume-and-reset at the load site.  The backward reverses each loop BODY but iterates
+            the loop FORWARD, and this kernel's refill is LAST in the body, so the scatter at
+            iteration k would have to emit stage k+2's gradient — two stages before it exists.
+
+        THE FIX.  For a `:ring` operand the scalar lowering accumulates the stage's contribution in
+        a LOCAL and scatters it with atomic-add! straight into the GLOBAL gradient at the
+        CONSUMING stage's origin — which %ad-reconcile-ring-origin already resolves to the
+        consuming loop variable rather than the prefetching one.  The slot adjoint is never
+        written, the load-site scatter contributes zero, and iteration order stops mattering.
+
+        NO REVERSE-RING LOGIC.  Nothing inverts a ring, mirrors a prologue or models double
+        buffering.  Both new arguments default to NIL and NIL reproduces the previous emission
+        byte-for-byte, so every non-ring use is unchanged.
+
+        VERIFIED: 1062/1062 plain and --differentiate, 233/233 negative, 291/291 unit, and all
+        25 on-metal gradient checks in the suite still pass — including the tf32 twin
+        (1.1994476), the multi-workgroup case (4.9577) and the fp16 rung (1.2000704).  That
+        matters because this is a SHARED path: those checks are the safety net for changing it.
+
+        SKIP-WITH[--differentiate] removed from tests/spec/145-mma-autodiff/19-ring-pipelined-vjp-bmg.crisp.
+
+        LATENT AND STILL OPEN: the same `+=`-without-reset remains for a NON-ring buffer reused
+        across stages on the scalar path.  No spec covers that today; the ring merely made it
+        visible by aliasing two stages onto one slot.  Worth a rung of its own.
