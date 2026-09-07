@@ -312,11 +312,42 @@ learned for the Intel GRF width, and 159 for the 16-bit K.
    `(%register-tile-elem-of (first entry))` — a side-table lookup keyed by the tile's symbol —
    so the entry never needed to grow, and v2 uses the mechanism that was already there.
 
-3. Then the `load-fragment-a`/`-b` f64 branch and the `llvm.nvvm.mma.m8n8k4.row.col.f64` emitter
-   branch.  Both now have their geometry supplied and their lane layouts already decoded (finding
-   1b), so this is wiring rather than discovery.  **This is where the pod becomes worth renting**:
-   a fragment lane layout is exactly what compile-time checks cannot validate.
+3. [x] **FORWARD DONE — Crisp emits a 64-bit tensor-core MMA.**  `load-fragment-a`/`-b` fp64
+   branches (A 8x4 and B 4x8, one double per lane, CuTe `SM80_8x4`), the A/B fragment records,
+   `%nvvm-frag-format` gaining `:f64`, and `%emit-nvvm-mma-f64` emitting
+   `llvm.nvvm.mma.m8n8k4.row.col.f64`.  Spec `03-f64-mma.crisp`.  Verified by reading the PTX:
+
+   ```
+   mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64   x1
+   .extern .func calls  0     <- the SILENT failure mode for a wrong intrinsic name
+   f32 MMA              0     <- would mean a silent downgrade
+   shr.u32 %r2,%r1,2 / and.b32 %r3,%r1,3            -> lane/4 and lane%4
+   ld.global.nc.b64 x2                              -> ONE double per operand per lane
+   ```
+
+   **Four hardcodes surfaced doing this, and the BUG 058 refusal named three of them** rather
+   than letting a wrong geometry through: `%frag-mn-for-operand` (still flat 16x8 on PTX),
+   `analyze-mma-accumulate`'s result type, and the AD one below.  `analyze-mma-accumulate` was
+   not given an fp64 special case — it now takes its type FROM ITS OWN C OPERAND, which was
+   always the real rule and merely unexpressible while one accumulator record existed.
+
+   **STILL OPEN — the fp64 MMA BACKWARD.**  `--differentiate` is skipped on 03, with the
+   mechanism named in the directive rather than a vague gap claim.  `%mma-via-tile-backward`
+   stages its dC / A^T / B^T SLM matrices at `op-elem` but mints the dA / dB REGISTER tiles at
+   `float` outright (src/autodiff.lisp ~4338, `(,mrt ,float-s (,mt ,kt) 0.0)`), so an fp64
+   accumulate asks for 16x8 fragments and is refused.  **Threading `op-elem` through was tried,
+   built, and did NOT fix it** — `op-elem` is read from `dims-map`, which is populated from
+   staged operand TILES, and a kernel handing global matrices straight to
+   `mma-accumulate-via-tile` leaves it FLOAT.  The change was REVERTED rather than shipped
+   unverified: it is plausibly part of the eventual fix, but an unverified edit to the AD path
+   made while chasing a failure it did not fix does not belong in the tree.  Next step starts
+   here.
+
 4. The (8 8 4)-only shape refusal.
+5. **On-metal `MMA_CORRECT`** — the pod trigger, and the mechanical gate it depends on now
+   passes.  The lane layouts come from CuTe and agree with the tf32 path already in the tree,
+   but nothing local can prove a fragment layout: a wrong one compiles, emits the right
+   instruction, satisfies every check above and computes garbage.  Needs an H100/A100.
 
 **NOT an open question — RETRACTED.**  This doc briefly claimed that needing `(as double 2.5)` for
 a tile init was a papercut requiring a language decision.  It is not: **`2.5d` works**, and the

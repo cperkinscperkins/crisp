@@ -1135,3 +1135,458 @@
             (:a   (cons 16 8))
             (:b   (cons 16 8))
             (:acc (%acc-frag-mn elem))))))
+
+
+;;; ===================================================================
+;;; Endeavour 165 step 3 — the fp64 MMA: operand loads + the m8n8k4 emitter.
+;;;
+;;; Step 2 made the register tile fp64-shaped.  This makes it MULTIPLY.
+;;;
+;;; LANE LAYOUTS ARE FROM CuTe, NOT FROM MEMORY.  MMA_Traits<SM80_8x8x4_F64F64F64F64_TN> gives
+;;; ALayout = BLayout = SM80_8x4, i.e. A(M8,K4) at m = lane/4, k = lane%4 and B(N8,K4) at
+;;; n = lane/4, k = lane%4, one double per lane.  The tf32 path already in this file reads B at
+;;; rows tg and tg+4, column g = lane/4 -- the same family with K=8 instead of 4 -- so the two
+;;; corroborate.  That is the only check available offline: NOTHING LOCAL CAN PROVE A LANE
+;;; LAYOUT IS RIGHT.  A wrong one compiles, emits the right instruction, passes every mechanical
+;;; check and computes garbage.  MMA_CORRECT on metal is the test, and this is the step that
+;;; makes renting a pod worthwhile.
+;;;
+;;; THE INSTRUCTION NAME IS THE ONE VERIFIED SPELLING.  bin/llc.exe (LLVM 21.1.5, -mcpu=sm_90)
+;;; lowers llvm.nvvm.mma.m8n8k4.row.col.f64 to a real mma.sync; the sm_90 f64 shapes
+;;; (m16n8k4 / k8 / k16) assemble cleanly and emit an `.extern .func` CALL with NO diagnostic.
+;;; So this name must never be checked by prefix -- 159 documented the same trap for the 16-bit
+;;; spellings, where two plausible variants passed the verifier as unresolved external calls
+;;; while still leaving an "mma.m16n8k16..." substring in the PTX.
+;;;
+;;; NOTE FOR THE SRC PATCH: %nvvm-frag-format REPLACES src/mma.lisp:203; %nvvm-frag-record
+;;; REPLACES :216; register-mma-types REPLACES :230 (and supersedes the 2b-ii overlay copy);
+;;; analyze-load-fragment-a REPLACES :552; analyze-load-fragment-b REPLACES :605;
+;;; %emit-nvvm-mma-f64 is new; %emit-nvvm-mma REPLACES :821.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun %nvvm-frag-format (llvm-elem-type)
+  "Which MMA operand format a fragment field's LLVM type implies: :FP16, :BF16, :F64 or :TF32.
+
+   Endeavour 159.  Kinds are read from LLVM at runtime rather than compared against a constant --
+   the bindings carry +llvm-half-type-kind+ but no bfloat equivalent, and no llvm-c header is
+   installed to take the value from.  Anything not otherwise recognised is the historical
+   fp32-stored tf32 path.
+
+   Endeavour 165 (step 3): :F64 joins them.  A double-typed field can only be an fp64 fragment --
+   the tf32 path stores fp32 -- so the probe stays a pure function of the record's own LLVM type
+   and no :elem has to be threaded down from the caller."
+  (let ((k (llvm-get-type-kind llvm-elem-type)))
+    (cond ((= k (llvm-get-type-kind (llvm-half-type)))   :fp16)
+          ((= k (llvm-get-type-kind (llvm-bfloat-type))) :bf16)
+          ((= k (llvm-get-type-kind (llvm-double-type))) :f64)
+          (t :tf32))))
+
+;; src/mma.lisp
+(defun %nvvm-frag-record (operand elem)
+  "The PTX fragment record name for OPERAND (:a or :b) at Crisp element type ELEM.
+
+   Endeavour 159.  One place decides this, so analyze-load-fragment-a and -b cannot disagree
+   about which record a given element type maps to.  A 32-bit (or unknown) element keeps the
+   historical tf32 records.
+
+   Endeavour 165 (step 3): fp64's m8n8k4 operands, A 8x4 and B 4x8, one double per lane each."
+  (let ((bits (%mma-elem-bits elem))
+        (name (and elem (symbolp elem) (symbol-name elem))))
+    (cond
+      ((eql bits 64)
+       (ecase operand (:a 'register-fragment-a-f64-8x4) (:b 'register-fragment-b-f64-4x8)))
+      ((eql bits 16)
+       (if (string= name "BFLOAT16")
+           (ecase operand (:a 'register-fragment-a-bf16-16x16) (:b 'register-fragment-b-bf16-16x8))
+           (ecase operand (:a 'register-fragment-a-f16-16x16)  (:b 'register-fragment-b-f16-16x8))))
+      (t
+       (ecase operand (:a 'register-fragment-a-tf32-16x8) (:b 'register-fragment-b-tf32-8x8))))))
+
+;; src/mma.lisp
+(defun register-mma-types ()
+  "Registers the MMA register-fragment record types.  Called from initialize-compiler
+   AFTER register-builtins (initialize-compiler clrhash-es *crisp-structs* on every
+   init, so a load-time registration would not survive).
+
+   tf32 m16n8k8 register counts: A (16x8) -> 4 regs, B (8x8) -> 2 regs, C/D (16x8) -> 4
+   regs.  tf32 is fp32-stored, so all fragment fields are float.
+
+   Endeavour 159: the 16-bit m16n8k16 twins, fp16 and bf16.  A is 16x16 = 8 elements/lane, B is
+   16x8 = 4, both ONE FIELD PER ELEMENT so the member count IS the element count that
+   %map-elements-fragment-fields reads.  REGISTERS are half that at 16 bits (two elements per
+   32-bit register) and are tracked separately by %ptx-note-register-demand.
+
+   The ACCUMULATOR is deliberately NOT twinned: every 16-bit MMA here accumulates in fp32, so
+   register-fragment-acc-f32-16x8 is reused unchanged -- the same reason %coop-elem-of does not
+   route accumulators.
+
+   Endeavor 144 Phase 0: also registers the BUILTIN hardware profiles, which must happen
+   after initialize-compiler's clrhash of *hardware-profiles* — this is the first hook that
+   runs there.  See register-builtin-hardware-profiles for the src-patch note."
+  ;; Endeavour 165: the fp64 m8n8k4 family.  C/D is 8x8 = 64 elements over 32 lanes = 2
+  ;; doubles per lane; A is 8x4 and B is 4x8 = 32 elements each = ONE double per lane.  These
+  ;; match CUTLASS's own declarations for its single f64 tensor-op Mma (FragmentA/B =
+  ;; Array<double,1>, FragmentC = Array<double,2>), which is a second source agreeing.
+  ;; Fields are DOUBLE, not float: an fp64 MMA accumulates in fp64, unlike the 16-bit paths
+  ;; which accumulate in fp32 and therefore reuse the f32 accumulator record.
+  (register-struct-definition 'register-fragment-acc-f64-8x8
+                              '((r0 double) (r1 double))
+                              :record)
+  (register-struct-definition 'register-fragment-a-f64-8x4
+                              '((a0 double))
+                              :record)
+  (register-struct-definition 'register-fragment-b-f64-4x8
+                              '((b0 double))
+                              :record)
+  (register-struct-definition 'register-fragment-acc-f32-16x8
+                              '((r0 float) (r1 float) (r2 float) (r3 float))
+                              :record)
+  (register-struct-definition 'register-fragment-a-tf32-16x8
+                              '((a0 float) (a1 float) (a2 float) (a3 float))
+                              :record)
+  (register-struct-definition 'register-fragment-b-tf32-8x8
+                              '((b0 float) (b1 float))
+                              :record)
+  ;; Endeavour 159 — fp16 m16n8k16.
+  (register-struct-definition 'register-fragment-a-f16-16x16
+                              '((a0 half) (a1 half) (a2 half) (a3 half)
+                                (a4 half) (a5 half) (a6 half) (a7 half))
+                              :record)
+  (register-struct-definition 'register-fragment-b-f16-16x8
+                              '((b0 half) (b1 half) (b2 half) (b3 half))
+                              :record)
+  ;; Endeavour 159 — bf16 m16n8k16, same shape, different encoding.
+  (register-struct-definition 'register-fragment-a-bf16-16x16
+                              '((a0 bfloat16) (a1 bfloat16) (a2 bfloat16) (a3 bfloat16)
+                                (a4 bfloat16) (a5 bfloat16) (a6 bfloat16) (a7 bfloat16))
+                              :record)
+  (register-struct-definition 'register-fragment-b-bf16-16x8
+                              '((b0 bfloat16) (b1 bfloat16) (b2 bfloat16) (b3 bfloat16))
+                              :record)
+  (register-builtin-hardware-profiles))
+
+;; src/mma.lisp
+(defun analyze-load-fragment-a (expr env context location)
+  "P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
+    (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,
+   16x8, row-major); else the NVIDIA per-lane read.
+
+   Endeavour 159: the NVIDIA branch DISPATCHES ON THE OPERAND'S ELEMENT WIDTH, using the same
+   %coop-elem-of the SPV branch already used.  A 16-bit operand reads the m16n8k16 A layout
+   (8 elements/lane) instead of the m16n8k8 tf32 one (4 floats/lane); fp16 and bf16 share that
+   layout exactly and differ only in which record they fill.
+
+   PTX ISA mma.m16n8k16 A layout, 32 lanes, groupID = lane/4, tid = lane%4.  Each lane holds
+   8 elements as 4 register pairs, and the PAIR ORDER IS LOAD-BEARING -- it is the order the
+   intrinsic's 4 A operands are consumed in:
+       Ra0 = (groupID,   2*tid), (groupID,   2*tid+1)
+       Ra1 = (groupID+8, 2*tid), (groupID+8, 2*tid+1)
+       Ra2 = (groupID,   2*tid+8), (groupID,   2*tid+9)
+       Ra3 = (groupID+8, 2*tid+8), (groupID+8, 2*tid+9)
+   Note the K stride is 16 (not 8) and each lane spans TWO adjacent columns."
+  (destructuring-bind (src tile-id) (cdr expr)
+    (let ((ty (first tile-id)) (tk (second tile-id)))
+      (if (eq *target-backend* :spirv)
+          (let ((tnode (analyze-expression src env context (append location '(1)))))
+            (multiple-value-bind (sm sn sk) (%spv-mma-shape (%coop-elem-of tnode))
+              (declare (ignore sn))
+              (make-semantic-coop-op
+               :type (list 'coop-matrix (%coop-elem-of tnode) sm sk 0) :kind :load
+               :tensor-node tnode
+               :rows sm :cols sk :use 0 :layout (%coop-layout-of tnode)
+               :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+               :tx (analyze-expression `(to-int ,tk) env context (append location '(3)))
+               :source-location location)))
+          ;; ---- NVIDIA / PTX ----
+          (let* ((probe (analyze-expression src env context (append location '(1))))
+                 (elem  (%coop-elem-of probe))
+                 (rec   (%nvvm-frag-record :a elem)))
+            (if (eql (%mma-elem-bits elem) 64)
+                ;; fp64 m8n8k4 A (8x4): m = lane/4, k = lane%4, ONE double per lane.
+                ;; CuTe ALayout = SM80_8x4.  The tile coordinates scale by the fragment's own
+                ;; extents -- 8 rows and 4 columns -- not by the tf32 path's 16 and 8.
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,ty 8) g)) (c (+ (* ,tk 4) tg)))
+                        (%construct-struct ,rec (~ ,src r c)))))
+                 env context location)
+            (if (eql (%mma-elem-bits elem) 16)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 16) (* tg 2))))
+                        (%construct-struct ,rec
+                          (~ ,src r c)             (~ ,src r (+ c 1))
+                          (~ ,src (+ r 8) c)       (~ ,src (+ r 8) (+ c 1))
+                          (~ ,src r (+ c 8))       (~ ,src r (+ c 9))
+                          (~ ,src (+ r 8) (+ c 8)) (~ ,src (+ r 8) (+ c 9))))))
+                 env context location)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 8) tg)))
+                        (%construct-struct ,rec
+                          (~ ,src r c) (~ ,src (+ r 8) c) (~ ,src r (+ c 4)) (~ ,src (+ r 8) (+ c 4))))))
+                 env context location))))))))
+
+;; src/mma.lisp
+(defun analyze-load-fragment-b (expr env context location)
+  "P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
+    (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,
+   8x8, col-major); else the NVIDIA per-lane read.
+
+   Endeavour 159: 16-bit dispatch, mirroring load-fragment-a.  PTX ISA mma.m16n8k16 B layout
+   (16x8), 32 lanes, groupID = lane/4, tid = lane%4; each lane holds 4 elements as 2 pairs, and
+   the pair order is the intrinsic's B operand order:
+       Rb0 = (2*tid,   groupID), (2*tid+1, groupID)
+       Rb1 = (2*tid+8, groupID), (2*tid+9, groupID)
+   B is K-major here (K=16 rows, N=8 cols), so the ROW stride is what doubles, not the column."
+  (destructuring-bind (src tile-id) (cdr expr)
+    (let ((tk (first tile-id)) (tx (second tile-id)))
+      (if (eq *target-backend* :spirv)
+          (let ((tnode (analyze-expression src env context (append location '(1)))))
+            (multiple-value-bind (sm sn sk) (%spv-mma-shape (%coop-elem-of tnode))
+              (declare (ignore sm))
+              (make-semantic-coop-op
+               :type (list 'coop-matrix (%coop-elem-of tnode) sk sn 1) :kind :load
+               :tensor-node tnode
+               :rows sk :cols sn :use 1 :layout (%coop-layout-of tnode)
+               :ty (analyze-expression `(to-int ,tk) env context (append location '(2)))
+               :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+               :source-location location)))
+          ;; ---- NVIDIA / PTX ----
+          (let* ((probe (analyze-expression src env context (append location '(1))))
+                 (elem  (%coop-elem-of probe))
+                 (rec   (%nvvm-frag-record :b elem)))
+            (if (eql (%mma-elem-bits elem) 64)
+                ;; fp64 m8n8k4 B (4x8): k = lane%4, n = lane/4, ONE double per lane.
+                ;; CuTe BLayout = SM80_8x4, the same layout as A with N in M's place.  Compare
+                ;; the tf32 branch below, which reads rows tg and tg+4 at column g: same family,
+                ;; but K=4 leaves exactly one element per lane instead of two.
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,tk 4) tg)) (c (+ (* ,tx 8) g)))
+                        (%construct-struct ,rec (~ ,src r c)))))
+                 env context location)
+            (if (eql (%mma-elem-bits elem) 16)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,tk 16) (* tg 2))) (c (+ (* ,tx 8) g)))
+                        (%construct-struct ,rec
+                          (~ ,src r c)       (~ ,src (+ r 1) c)
+                          (~ ,src (+ r 8) c) (~ ,src (+ r 9) c)))))
+                 env context location)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,tk 8) tg)) (c (+ (* ,tx 8) g)))
+                        (%construct-struct ,rec
+                          (~ ,src r c) (~ ,src (+ r 4) c)))))
+                 env context location))))))))
+
+;; src/mma.lisp
+(defun %emit-nvvm-mma-f64 (builder module a-val b-val c-val)
+  "Emit the fp64 tensor-core MMA: llvm.nvvm.mma.m8n8k4.row.col.f64.
+
+   Endeavour 165 step 3.  Operands are ONE double each and the accumulator is TWO, so unlike the
+   tf32 and 16-bit paths there is no packing, no bitcast and no vector: doubles are passed as
+   doubles.  That is the whole reason this is a separate function rather than another arm of
+   %emit-nvvm-mma's operand-format cond -- it shares none of that machinery.
+
+   THE NAME IS THE ONE VERIFIED SPELLING.  On bin/llc.exe (LLVM 21.1.5, -mcpu=sm_90) this lowers
+   to `mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64`, while the sm_90 f64 shapes
+   (m16n8k4 / k8 / k16) assemble cleanly and emit an `.extern .func` CALL with no diagnostic at
+   all.  A wrong spelling here is therefore SILENT, so this must never be checked by prefix --
+   the same trap endeavour 159 documented for the 16-bit names."
+  (let* ((f64 (llvm-double-type))
+         (a0  (llvm-build-extract-value builder a-val 0 "fa0"))
+         (b0  (llvm-build-extract-value builder b-val 0 "fb0"))
+         (c-ops (loop for i below 2
+                      collect (llvm-build-extract-value builder c-val i (format nil "fc~d" i))))
+         (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 2)))
+                   (dotimes (i 2) (setf (cffi:mem-aref elts 'llvm-type-ref i) f64))
+                   (llvm-struct-type-in-context (llvm-get-module-context module) elts 2 nil)))
+         (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+                  (dotimes (i 4) (setf (cffi:mem-aref arr 'llvm-type-ref i) f64))
+                  (llvm-function-type ret-ty arr 4 nil)))
+         (fn-name "llvm.nvvm.mma.m8n8k4.row.col.f64")
+         (fn (let ((existing (llvm-get-named-function module fn-name)))
+               (if (cffi:null-pointer-p existing) (llvm-add-function module fn-name fn-ty) existing)))
+         (args (list* a0 b0 c-ops))
+         (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 4)))
+                     (loop for i from 0 for v in args
+                           do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
+                     arr))
+         (call (llvm-build-call2 builder fn-ty fn args-arr 4 "mmad"))
+         (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f64-8x8 module))
+         (result (let ((agg (llvm-get-undef acc-ty)))
+                   (dotimes (i 2)
+                     (setf agg (llvm-build-insert-value builder agg
+                                (llvm-build-extract-value builder call i (format nil "fd~d" i))
+                                i (format nil "facc~d" i))))
+                   agg)))
+    (values result nil)))
+
+;; src/mma.lisp
+(defun %emit-nvvm-mma (builder module a-val b-val c-val)
+  "The NVIDIA sync MMA.  Endeavour 159: dispatches on the A fragment's ELEMENT TYPE, emitting
+   the tf32 m16n8k8, fp16 m16n8k16, or bf16 m16n8k16 instruction.  Returns (values acc nil).
+
+   DETECTION is by probing the LLVM type of A's field 0 rather than by threading an :elem down:
+   the caller (generate-node-ir on semantic-mma-accumulate) passes only LLVM values, and the
+   fragment record already carries the answer.  The probe extract is REUSED as a0, so it costs
+   no dead instruction.
+
+   THE THREE PATHS DIFFER IN OPERAND REPRESENTATION, and that is the trap on this rung:
+     tf32  i32          -- each float bitcast to i32
+     fp16  <2 x half>   -- pairs packed into a vector, handed over AS a vector
+     bf16  i32          -- pairs packed into <2 x bfloat> and then BITCAST to i32
+   All three were verified by compiling a standalone .ll through clang --target=nvptx64 and
+   reading the emitted mnemonic.  Two plausible spellings (...f16.f32, ...bf16.f32) pass the
+   LLVM verifier as UNRESOLVED EXTERNAL CALLS -- they emit no instruction while still leaving an
+   'mma.m16n8k16...' substring in the PTX -- so nothing here may be checked by prefix.
+
+   Fragment records declare ONE FIELD PER ELEMENT, so all pair-packing happens HERE and only
+   here.  The pairing order follows the PTX ISA register order documented on
+   analyze-load-fragment-a/-b; those must agree, and nothing local can prove they do --
+   MMA_CORRECT on metal is what checks it.
+
+   The ACCUMULATOR is f32 in every path here: a 16-bit MMA accumulates in fp32.  fp64 is the
+   exception and accumulates in fp64, which is one more reason it lives in its own emitter."
+  (let* ((f32 (llvm-float-type))
+         (i32 (llvm-int32-type))
+         (a0  (llvm-build-extract-value builder a-val 0 "a0"))
+         (fmt (%nvvm-frag-format (llvm-type-of a0))))
+    (if (eq fmt :f64)
+        ;; Endeavour 165 step 3: fp64 shares none of the packing below -- one double per operand,
+        ;; two for the accumulator -- so it is its own emitter rather than another arm here.
+        (%emit-nvvm-mma-f64 builder module a-val b-val c-val)
+    (if (eq fmt :tf32)
+        ;; ---------------- tf32 m16n8k8 (unchanged) ----------------
+        (let* ((a-ops (cons (llvm-build-bit-cast builder a0 i32 "a0i")
+                            (loop for i from 1 below 4 collect
+                                  (llvm-build-bit-cast builder (llvm-build-extract-value builder a-val i (format nil "a~d" i)) i32 (format nil "a~di" i)))))
+               (b-ops (loop for i below 2 collect
+                            (llvm-build-bit-cast builder (llvm-build-extract-value builder b-val i (format nil "b~d" i)) i32 (format nil "b~di" i))))
+               (c-ops (loop for i below 4 collect (llvm-build-extract-value builder c-val i (format nil "c~d" i))))
+               (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+                         (dotimes (i 4) (setf (cffi:mem-aref elts 'llvm-type-ref i) f32))
+                         (llvm-struct-type-in-context (llvm-get-module-context module) elts 4 nil)))
+               (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 10)))
+                        (loop for i from 0 for ty in (list i32 i32 i32 i32 i32 i32 f32 f32 f32 f32)
+                              do (setf (cffi:mem-aref arr 'llvm-type-ref i) ty))
+                        (llvm-function-type ret-ty arr 10 nil)))
+               (fn-name "llvm.nvvm.mma.m16n8k8.row.col.tf32")
+               (fn (let ((existing (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p existing) (llvm-add-function module fn-name fn-ty) existing)))
+               (args (append a-ops b-ops c-ops))
+               (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 10)))
+                           (loop for i from 0 for v in args do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
+                           arr))
+               (call (llvm-build-call2 builder fn-ty fn args-arr 10 "mma"))
+               (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f32-16x8 module))
+               (result (let ((agg (llvm-get-undef acc-ty)))
+                         (dotimes (i 4)
+                           (setf agg (llvm-build-insert-value builder agg
+                                      (llvm-build-extract-value builder call i (format nil "d~d" i))
+                                      i (format nil "acc~d" i))))
+                         agg)))
+          (values result nil))
+        ;; ---------------- 16-bit m16n8k16 (fp16 / bf16) ----------------
+        (let* ((bf16-p  (eq fmt :bf16))
+               (elem-ty (if bf16-p (llvm-bfloat-type) (llvm-half-type)))
+               (vec-ty  (llvm-vector-type elem-ty 2))
+               ;; fp16 hands the vector straight to the intrinsic; bf16 must bitcast it to i32.
+               (op-ty   (if bf16-p i32 vec-ty))
+               (a-elems (cons a0 (loop for i from 1 below 8
+                                       collect (llvm-build-extract-value builder a-val i (format nil "a~d" i)))))
+               (b-elems (loop for i below 4
+                              collect (llvm-build-extract-value builder b-val i (format nil "b~d" i))))
+               (pack (lambda (lo hi name)
+                       ;; lane 0 is the LOWER-numbered element -- the order the ISA tables list
+                       ;; the pair in, and the order load-fragment-a/-b fills the fields in.
+                       (let ((v (llvm-get-undef vec-ty)))
+                         (setf v (llvm-build-insert-element builder v lo (llvm-const-int i32 0 nil)
+                                                            (format nil "~a_0" name)))
+                         (setf v (llvm-build-insert-element builder v hi (llvm-const-int i32 1 nil)
+                                                            (format nil "~a_1" name)))
+                         (if bf16-p
+                             (llvm-build-bit-cast builder v i32 (format nil "~a_i" name))
+                             v))))
+               (a-ops (loop for i below 4
+                            collect (funcall pack (nth (* 2 i) a-elems) (nth (1+ (* 2 i)) a-elems)
+                                             (format nil "av~d" i))))
+               (b-ops (loop for i below 2
+                            collect (funcall pack (nth (* 2 i) b-elems) (nth (1+ (* 2 i)) b-elems)
+                                             (format nil "bv~d" i))))
+               (c-ops (loop for i below 4 collect (llvm-build-extract-value builder c-val i (format nil "c~d" i))))
+               (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+                         (dotimes (i 4) (setf (cffi:mem-aref elts 'llvm-type-ref i) f32))
+                         (llvm-struct-type-in-context (llvm-get-module-context module) elts 4 nil)))
+               (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 10)))
+                        (loop for i from 0 for ty in (list op-ty op-ty op-ty op-ty op-ty op-ty f32 f32 f32 f32)
+                              do (setf (cffi:mem-aref arr 'llvm-type-ref i) ty))
+                        (llvm-function-type ret-ty arr 10 nil)))
+               (fn-name (if bf16-p
+                            "llvm.nvvm.mma.m16n8k16.row.col.bf16"
+                            "llvm.nvvm.mma.m16n8k16.row.col.f32.f32"))
+               (fn (let ((existing (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p existing) (llvm-add-function module fn-name fn-ty) existing)))
+               (args (append a-ops b-ops c-ops))
+               (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 10)))
+                           (loop for i from 0 for v in args do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
+                           arr))
+               (call (llvm-build-call2 builder fn-ty fn args-arr 10 "mma16"))
+               (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f32-16x8 module))
+               (result (let ((agg (llvm-get-undef acc-ty)))
+                         (dotimes (i 4)
+                           (setf agg (llvm-build-insert-value builder agg
+                                      (llvm-build-extract-value builder call i (format nil "d~d" i))
+                                      i (format nil "acc~d" i))))
+                         agg)))
+          (values result nil))))))
+
+
+;;; ===================================================================
+;;; Endeavour 165 step 3 (cont) — mma-accumulate's RESULT TYPE follows its C operand.
+;;;
+;;; analyze-mma-accumulate typed its node as register-fragment-acc-f32-16x8 outright, so an fp64
+;;; accumulate reported an f32 accumulator and the walk refused it:
+;;;   "Type mismatch! Expected REGISTER-FRAGMENT-ACC-F64-8X8 but inferred
+;;;    REGISTER-FRAGMENT-ACC-F32-16X8."
+;;; Another loud refusal finding a hardcode, which is the pattern this endeavour keeps repeating.
+;;;
+;;; The fix is not "add an fp64 case" but to state the actual rule: an MMA accumulate returns an
+;;; accumulator OF THE SAME TYPE AS ITS C OPERAND.  That was always true; it was merely
+;;; unexpressible while only one accumulator record existed.  Written that way it needs no
+;;; further edit when a third accumulator type appears.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun analyze-mma-accumulate (expr env context location)
+  "P2 / F-SPV: (mma-accumulate C A B).  Node typed as the accumulator fragment — a coop matrix on
+   :spirv, else the SAME RECORD AS C.  Codegen forks in generate-node-ir.
+
+   Endeavour 165 (step 3): the NVIDIA type was hardcoded to the fp32 record, which made an fp64
+   accumulate mistype itself.  Deriving it from C states the real rule and covers any accumulator
+   record, present or future.  The fallback keeps the historical answer when C's type cannot be
+   resolved to an accumulator record."
+  (destructuring-bind (c-arg a-arg b-arg) (cdr expr)
+    (let* ((c-node (analyze-expression c-arg env context location))
+           (c-type (get-single-value-type c-node)))
+      (make-semantic-mma-accumulate
+       :type (if (eq *target-backend* :spirv)
+                 (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                   (declare (ignore sk)) (list 'coop-matrix 'float sm sn 2))
+                 (if (and c-type (symbolp c-type)
+                          (search "REGISTER-FRAGMENT-ACC-" (symbol-name c-type)))
+                     c-type
+                     'register-fragment-acc-f32-16x8))
+       :c-node c-node
+       :a-node (analyze-expression a-arg env context location)
+       :b-node (analyze-expression b-arg env context location)
+       :source-location location))))
