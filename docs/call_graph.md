@@ -1380,6 +1380,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
 - - - - (%AD-FORM-MENTIONS-P FORM SYM)  autodiff.lisp
 - - - - - (%AD-FORM-MENTIONS-P FORM SYM)  autodiff.lisp [RECURSION]
+- - - (%AD-PRUNE-DEAD-SCRATCH FORM)  autodiff.lisp
+- - - - (%AD-DEAD-SCRATCH-SYMS FORM)  autodiff.lisp
 - - - (%AD-REPLAY-FINISH RESULT FLAT-ANF)  autodiff.lisp
 - - - - (%AD-REPLAY-FORMS-FOR-SCOPE FORMS &OPTIONAL INHERITED)  autodiff.lisp [See above]
 - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp
@@ -1495,6 +1497,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%MMA-VJP-MMA-ADMISSIBLE-P MT NT KT)  autodiff.lisp [See above]
 - - (%MMA-VIA-TILE-BACKWARD FORM DIMS-MAP SRC-MAP INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG &OPTIONAL A-SRC-IN AOY-IN AOX-IN B-SRC-IN BOY-IN BOX-IN)  autodiff.lisp [See above]
 - - (%MMA-VJP-SCALAR-LOWERING MT NT KT C-ADJ A-OP B-OP A-ADJ B-ADJ A-SRC AOY AOX B-SRC BOY BOX PKG &OPTIONAL A-GRAD B-GRAD)  autodiff.lisp
+- - - (%MMA-AD-ACCUMULATOR-FITS-REGISTERS-P DIMS)  autodiff.lisp [See above]
 - - (%VJP-VIA-TILE-BODY-MAP FORM)  autodiff.lisp
 - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
 - - (%MAP-ELEMENTS-GRAD-NAME FN-FORM PKG)  mma.lisp
