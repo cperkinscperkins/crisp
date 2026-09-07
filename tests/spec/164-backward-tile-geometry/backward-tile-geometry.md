@@ -58,14 +58,34 @@ be pipelined, that is an optimisation over correct math, not a term in the AD ge
 STEPS
 -----
 
-**0. Decide 140/01 and 140/02 — probably NOT in scope.**  They hand-scatter into a flat
-`(make-scratch-vector float 512)` with a bespoke core-matrix index formula
-(core = (r/8)*64 + (k/4)*32 + (r%8)*4 + (k%4)), so the VJP has neither a compile-time (Mt Kt) nor
-a `load-tile-at` source.  Inverting arbitrary user index arithmetic is not something AD can or
-should do.  Since 140/03 already proves wgmma differentiates, their AD coverage is REDUNDANT;
-their value is pinning the hand-scatter FORWARD layout.  Recommendation: leave their skips, which
-are honest.  Rewrite them onto 140/03-style staging only if you want them differentiable for its
-own sake.
+**0. 140/01 and 140/02 — CORRECTED 2026-09-06.  They are NOT undifferentiable.**  An earlier
+version of this step said they were out of scope because the VJP "would have to invert arbitrary
+user index arithmetic, which is not something AD can or should do."  **That was wrong, and the
+test to check it took ten seconds.**  Reverse mode never inverts an index expression — it REUSES
+it.  `(set! (~ A-tile core) (~ A r k))` has the ordinary backward
+`A_GRAD[r][k] += A-tile_ADJ[core]`, with the same `core`, computed forwards.
+
+MEASURED: the identical hand-scatter — same core-matrix formula, same thread-id derivation —
+**differentiates CLEAN on its own (exit 0)** once the wgmma is removed from the kernel.  The
+scatter is not the obstacle.
+
+The real blocker is narrower and is a MISSING STRATEGY, not a missing capability.  The wgmma VJP
+needs a compile-time 2-D `(Mt Kt)` for the operand and a `load-tile-at` provenance so it can
+re-stage the transpose; a flat `(make-scratch-vector float 512)` in core order supplies neither.
+(Redeclaring the tile 2-D does not help: the kernel indexes it flatly, `(~ A-tile core)`, so it
+fails with `Tensor A-TILE requires 2 indexs (arity 2), got 1` — the flat layout is load-bearing.)
+
+**The viable strategy, which does not exist yet:** do not materialise the operand adjoint at all.
+`dA[r][k] = sum_n dC[r,n]*B[k,n]`, and both dC and the global B are in scope — so the backward can
+replay the staging loop and accumulate straight into `A_GRAD[r][k]`, reusing the user's own
+`(r k)`.  No core-layout knowledge, no provenance lookup, because THE LOOP IS THE PROVENANCE.
+That is the same move BUG 044 shipped for rings: scatter direct to global instead of through an
+intermediate adjoint.
+
+They remain deferred — 140/03 already proves wgmma differentiates, so their AD coverage is not
+urgent — but they are deferred for WANT OF A VJP, not because the math resists.  The distinction
+matters: "AD cannot do this" is how "MMA is forward-only" became folklore in this codebase once
+already, and this note was on its way to repeating it.
 
 **1. THE NUMERIC RUNG FIRST.**  A small wgmma matmul with `VERIFY-AUTODIFF` and a `[CUDA]` pin, so
 the runtime is CUDA rather than the SPIR-V auto-select.  Use an absolute `expect.A`, not
@@ -167,7 +187,7 @@ skip for a false green.
 
 | spec | cause |
 |---|---|
-| 140/01, 140/02 | hand-scattered flat `make-scratch-vector`; no compile-time (Mt Kt), no `load-tile-at` source.  See step 0. |
+| 140/01, 140/02 | hand-scattered flat `make-scratch-vector`; the wgmma VJP has no compile-time (Mt Kt) and no `load-tile-at` source.  DEFERRED FOR WANT OF A VJP — the scatter itself differentiates clean (measured).  See step 0. |
 | 142/14-pipeline-bench | `SYNC-WORKGROUP cannot appear inside a thread-divergent conditional` — **the identical pattern 155/03 had**, with the same shape of kernel: `(when (< next-k n-k-steps) (load-tile ...))` and no `to-workgroup-uniform`.  163 fixed 155/03 by binding the guard through it.  Likely the same one-line spec fix; verify rather than assume. |
 
 **D. THE HEADLINE ITEM (1).**  154/03 — and note the trap: its `TEST-WITH` is
@@ -186,7 +206,7 @@ REVISED STEP ORDER
 2. **The numeric rung** (was step 1) — still first among the *engineering* steps, and now doubly
    motivated: group B needs an oracle before its skips can honestly come off.
 3. **Backward tile geometry** — the 154/03 item.
-4. **140/01, 140/02** — still recommended OUT of scope; see step 0 in the section above.
+4. **140/01, 140/02** — deferred, but for want of a VJP STRATEGY, not because the math resists; see the corrected step 0 above.
 
 
 PROGRESS
@@ -241,7 +261,7 @@ REMAINING MMA-RANGE LEDGER (9)
 | group | specs | status |
 |---|---|---|
 | B — compiles, UNVERIFIED | 137/03, 137/05, 138/04, 138/05, 142/12 | needs the numeric rung first |
-| C — real gaps | 140/01, 140/02 | out of scope, see step 0 above |
+| C — real gaps | 140/01, 140/02 | deferred for want of a VJP strategy — see corrected step 0 |
 | D — headline | 154/03 | the tile-geometry item |
 
 
@@ -323,7 +343,7 @@ no Intel GPU, so those defer correctly.  Worth noting because "all green" alone 
 distinguish "ran and passed" from "skipped"; the four that mattered report `PASS [cuda]`.
 
 **Group B is now fully verified on a NUMBER.**  MMA-range ledger: **17 -> 3**
-(140/01, 140/02 out of scope; 154/03 the tile-geometry item).  Still ZERO compiler changes in
+(140/01, 140/02 deferred for want of a VJP; 154/03 the tile-geometry item).  Still ZERO compiler changes in
 this endeavour.
 
 STEP 3 — FIRST CUT: DEAD SCRATCH IS NOT ALLOCATED (2026-09-06)
