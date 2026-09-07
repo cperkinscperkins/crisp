@@ -29,6 +29,22 @@
 ;; H100/A100 (consumer parts run fp64 at 1/64 rate and would be misleading).
 ;;
 ;; COMPILE-WITH[--hardware-profile=h100d --ir-target=ptx]: PASS
+;;
+;; ON-METAL (endeavour 165 step 5).  This is the ONLY check that can catch a wrong fragment
+;; LANE LAYOUT.  Everything above confirms the right INSTRUCTION is emitted; none of it can
+;; confirm which lane holds which element, and a wrong layout compiles, emits m8n8k4.f64,
+;; passes every mechanical gate and computes garbage.
+;;
+;; The harness host reference had to be taught fp64 first: it read every buffer back as float,
+;; so an fp64 kernel would have failed on the HARNESS and burned the rental saying nothing.
+;; Its tolerance is now 1e-10 relative for double (vs 1e-2 for tf32), tight enough that a path
+;; which silently computed in single precision FAILS.
+;;
+;; HOIST-HARDWARE-PROFILE: h100d
+;; HOIST-ARCH: sm_90
+;; MMA-DIMS: 8 8 4
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
 ;; SKIP-DEFAULT-PASS
 ;;
 ;; COMPILE-WITH[--hardware-profile=h100d --ir-target=ptx --differentiate]: PASS

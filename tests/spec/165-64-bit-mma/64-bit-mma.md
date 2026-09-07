@@ -365,10 +365,40 @@ learned for the Intel GRF width, and 159 for the 16-bit K.
    second theory, not after it.
 
 4. The (8 8 4)-only shape refusal.
-5. **On-metal `MMA_CORRECT`** — the pod trigger, and the mechanical gate it depends on now
-   passes.  The lane layouts come from CuTe and agree with the tf32 path already in the tree,
-   but nothing local can prove a fragment layout: a wrong one compiles, emits the right
-   instruction, satisfies every check above and computes garbage.  Needs an H100/A100.
+5. [x] **DONE — MMA_CORRECT ON AN H100 NVL (2026-09-07).**  driver 580.159.04, CUDA 12.4.
+   `tests/spec/165-64-bit-mma` runs 5/5 on the pod, including
+   `03-f64-mma (Hoist[CUDA] -> validate-cuda-mma-run) ... MMA_CORRECT`.
+   **The CuTe-decoded lane layouts are right.**  That was the one thing no local check could
+   settle, and it is now settled against a host reference on real hardware.
+
+   **THE HARNESS HAD TO BE TAUGHT fp64 FIRST, and this is the part worth remembering.**
+   `%cuda-emit-mma-reference` emitted the whole C = A.B check in float -- `new float[]`,
+   `sizeof(float)`, `float acc`, a 1e-2 relative tolerance.  Against an fp64 kernel it would have
+   read 8-byte buffers as 4-byte floats, so **MMA_WRONG would have been a statement about the
+   HARNESS, not the kernel** -- a rental burned to learn nothing.  Caught by reading the
+   generator BEFORE booking the GPU.  `:elem-type` was already on every allocation as a C++ type
+   string and `emit-readback` twenty lines below had always used it; only this reference
+   hardcoded float.  Fixed in `overlays/hoist-cuda/crisp-hoist-cuda-overlay.lisp`, with the
+   tolerance following the type: 1e-10 relative for double, tight enough that a path which
+   silently computed in single precision FAILS.
+
+   **The test is discriminating, not decorative.**  The harness fills A with `_i % 5` and B with
+   `_i % 3` -- non-uniform and coprime -- so a transposed or scrambled lane layout cannot pass by
+   coincidence.  An all-ones oracle would have passed on a wrong layout, which is the same trap
+   the section-2 benchmark oracle exists to avoid.
+
+   Two directives were needed beyond `MMA-DIMS` / `TEST-HOIST[CUDA]` / `HOIST-EXPECT`: the hoist
+   phase compiles the kernel itself and does NOT inherit `COMPILE-WITH` flags, so
+   `HOIST-HARDWARE-PROFILE: h100d` and `HOIST-ARCH: sm_90` are required or the (8 8 4) shape is
+   rejected with "only tf32 (16 8 8) is supported without a hardware profile".
+
+   Locally the rung SKIPs cleanly ("nvcc not available"), so the dev-box suite is unaffected.
+
+6. **STILL OPEN — the numeric GRADIENT check on metal.**  The fp64 backward compiles and emits
+   32 fp64 ops with zero fp32, but nothing has verified the gradient VALUES on hardware.
+   VERIFY-AUTODIFF's runtime very likely needs the same fp64 teaching the MMA reference did;
+   that is dev-box investigation, deliberately NOT done on a billing clock.  Batch it with the
+   first ladder chapter in the next rental.
 
 **NOT an open question — RETRACTED.**  This doc briefly claimed that needing `(as double 2.5)` for
 a tile init was a papercut requiring a language decision.  It is not: **`2.5d` works**, and the
