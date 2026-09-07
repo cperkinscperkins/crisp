@@ -2134,3 +2134,49 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LATENT AND STILL OPEN: the same `+=`-without-reset remains for a NON-ring buffer reused
         across stages on the scalar path.  No spec covers that today; the ring merely made it
         visible by aliasing two stages onto one slot.  Worth a rung of its own.
+
+[x] 058 FIXED — A REGISTER TILE TOO SMALL TO HOLD ONE FRAGMENT COMPILES TO AN EMPTY KERNEL.
+        A register tile is sized (floor M 16) x (floor N 8) fragments, so ANY tile with M < 16
+        or N < 8 yields ZERO fragments.  There is then nothing to fill, nothing to store and
+        nothing to multiply, the kernel legitimately optimises down to `ret;`, and the compiler
+        reports SUCCESS with exit code 0.
+
+        REPRODUCED on the dev box with a plain fp32 kernel -- no fp64, no MMA:
+            (let ((C-tile (make-register-tile float (8 8) 2.5)))
+              (store-tile C-tile C (0 0)))
+        emitted `.visible .entry ... { ret; }`.  The 16x8 control emitted a 49-line body with 4
+        st.global.  A double 8x8 tile behaved identically to the float one, which is how we know
+        the defect is about the tile SHAPE and not the element type.
+
+        THE GUARD ALREADY EXISTED AND WAS BYPASSED.  %ensure-register-tile-type (src/mma.lisp:1001)
+        errors with exactly "dims must be multiples of the 16x8 accumulator fragment".  It never
+        fired, because that function is only reached by a make-register-tile NOT bound in a let --
+        as the comment at src/mma.lisp:1103 says, a let binding is EXPLODED and
+        %explode-register-tiles handles it.  The explode path never re-checked.  So the check was
+        live only for the one form nobody writes, and dead for the form every kernel writes.
+
+        FIX: one shared predicate, %register-tile-dims-must-divide, called from BOTH paths so they
+        cannot drift apart again.  Hooked into %register-tile-fit-check rather than into
+        %explode-register-tiles, because the fit-check is already invoked exactly once per
+        register-tile binding on that path and already receives (m n location) -- a small append
+        instead of transcribing a 124-line function, which is its own class of risk.  A tile that
+        overflows the register budget and a tile that holds nothing are now refused by the same
+        function.
+
+        SCOPED TO THE NVIDIA PATH.  On PTX %frag-mn-for-operand returns a hardcoded 16x8 for every
+        operand and element type, so the geometry is unambiguous.  On SPIR-V it is derived
+        per-element from %spv-mma-shape, and the fit-check receives neither the element type nor
+        the operand role -- defaulting to :acc would false-refuse a legitimate A or B tile and
+        break shipped Intel kernels.  SPIR-V can reach the same zero-fragment state with a
+        mismatched shape; closing it there needs the elem threaded through and is left as its own
+        step rather than smuggled in behind a wrong default.  STILL OPEN for SPIR-V.
+
+        FOUND BY endeavour 165 (64-bit MMA).  fp64's only tensor-core shape is m8n8k4, whose
+        accumulator is 8x8 -- under the hardcoded fragment in BOTH dimensions -- so every fp64 MMA
+        kernel would have compiled clean and done nothing.  The defect itself is older and has
+        nothing to do with fp64.
+
+        SPECS: tests/spec/165-64-bit-mma/errors/01-tile-too-few-rows.crisp (short in M, written in
+        FLOAT so the type-independence stays on the record) and errors/02-tile-too-few-cols.crisp
+        (narrow in N -- the fragment is 16x8, not square, so a check guarding one dimension would
+        look correct against half the cases).

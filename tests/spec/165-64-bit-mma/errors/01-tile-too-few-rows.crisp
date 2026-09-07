@@ -1,0 +1,29 @@
+;; CHECK-FAIL: "must be multiples of the"
+;;
+;; Endeavour 165 — a register tile too SHORT to hold one fragment must be refused.
+;;
+;; A tile is sized (floor M 16) x (floor N 8) fragments, so M=8 gives ZERO fragments.  Before
+;; this was a refusal the kernel compiled clean and emitted `ret;` -- a silent no-op, reported as
+;; success.  Reproduced on the dev box with exactly this kernel.
+;;
+;; THE ELEMENT TYPE HERE IS FLOAT, DELIBERATELY.  The defect is about the tile SHAPE and has
+;; nothing to do with fp64; an fp32 8x8 tile and a double 8x8 tile produced identical empty
+;; kernels.  Writing this spec in float keeps that fact on the record and stops the refusal from
+;; being mistaken for an fp64 restriction.
+;;
+;; It lands on endeavour 165 because fp64's only tensor-core shape is m8n8k4, whose accumulator
+;; is 8x8 -- under the hardcoded fragment in BOTH dimensions -- so every fp64 MMA kernel would
+;; have walked straight into it.
+;;
+;; The guard already existed in %ensure-register-tile-type and never fired: a LET-bound tile,
+;; which is what every real kernel writes, goes through %explode-register-tiles instead and that
+;; path never re-checked.  Both paths now share one predicate.
+
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tile_too_few_rows (&out C)
+  (declare #'(&out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-tile (make-register-tile float (8 8) 1.0)))
+    (store-tile C-tile C (0 0))))

@@ -1,0 +1,27 @@
+;; Endeavour 165 — the fp64 REGISTER TILE.  This already worked before any 165 compiler change;
+;; the spec exists to keep it working, and to put it under --differentiate / --single-pass /
+;; --debug, which is where fp64 has never been exercised at all.
+;;
+;; Phase 0 established (put_temp_files_here/165/probe/) that a `double` register tile at a
+;; FRAGMENT-ALIGNED shape emits genuine fp64 -- 4 st.global and 13 f64 references in the kernel
+;; body -- so the element type reaches codegen correctly.  What did NOT work was any tile
+;; narrower than one 16x8 fragment; see errors/01 and errors/02.
+;;
+;; 16x8 is the tf32 accumulator fragment, NOT fp64's natural shape.  fp64's only tensor-core
+;; shape is m8n8k4, whose accumulator is 8x8, and reaching that needs the fragment geometry to
+;; become a function of the element type.  Until then this spec pins the half that works: a
+;; double tile, filled and stored, at the geometry the compiler currently has.
+;;
+;; NO MMA HERE ON PURPOSE.  `mma-accumulate-via-tile` over a double tile is still refused
+;; ("Type mismatch! Expected FLOAT but inferred DOUBLE") because the fragment records hardcode
+;; float fields.  That refusal is correct today and will be replaced by a real fp64 lowering,
+;; not by loosening the check.
+
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel f64_register_tile (&out C)
+  (declare #'(&out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile double (16 8) 2.5)))
+    (store-tile C-tile C (0 0))))

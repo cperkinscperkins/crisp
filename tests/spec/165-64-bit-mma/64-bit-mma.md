@@ -190,6 +190,88 @@ pair is still reported, labelled as not a tensor-core ratio.
   two warps."  Recorded rather than hidden — it bounds the small end of the tiling space.
 
 
+Phase 0 measured — what the compiler does with f64 MMA TODAY
+============================================================
+
+Run on the dev box, compile-only, no GPU.  Probes in `put_temp_files_here/165/probe/`.
+
+**The prediction was wrong on both counts.**  It said an f64 MMA would fall into the tf32 branch
+and silently emit f32.  It does not: `double` register tiles already work and emit genuine f64,
+and the MMA path REFUSES rather than degrading.  What the probes did find is a different and
+pre-existing defect that has nothing to do with fp64 — but which fp64 walks straight into.
+
+| probe | result today |
+|---|---|
+| `double` register tile, fragment-aligned (16x8), fill + store | **works** — 49-line body, 4 `st.global`, 13 f64 refs |
+| `double` tile + `mma-accumulate-via-tile (16 8 8)` | **refuses**: "Type mismatch! Expected FLOAT but inferred DOUBLE" |
+| `double` tile (8x8) + MMA (8 8 4), profile supplying the shape | compiles "successfully", emits an **EMPTY KERNEL** (`ret;`) |
+| **`float`** tile (8x8), fill + store, no MMA at all | **also an empty kernel** |
+
+### The silent-empty-kernel defect is about SHAPE, not element type
+
+The last two rows are the discriminating pair.  An f32 8x8 tile produces exactly the same `ret;`
+as the f64 one, so this is not an fp64 gap.
+
+`analyze-make-register-tile` (src/mma.lisp:1104) computes
+
+```lisp
+(nfrags (* (floor m 16) (floor n 8)))
+```
+
+so a tile with M < 16 or N < 8 yields **zero fragments**.  Nothing to fill, nothing to store,
+nothing to multiply — and the kernel legitimately optimises down to `ret;`.
+`%ensure-register-tile-type` (src/mma.lisp:1001) has a guard for precisely this case:
+
+```lisp
+(unless (and (zerop (mod m 16)) (zerop (mod n 8)))
+  (error "make-register-tile: dims (~a ~a) must be multiples of the 16x8 accumulator fragment."))
+```
+
+but it does not fire, because a let-bound tile does not take that path — as the comment at
+src/mma.lisp:1103 says, "a let binding is EXPLODED, and %explode-register-tiles does the
+distribution".  The explode path never re-checks.  So the guard exists and is bypassed by the
+route every real kernel uses.
+
+**This deserves a BUG number in plan/bugs.md.**  It is pre-existing, type-independent, and
+silently turns a kernel into a no-op — the same class as BUG 036 (the C-tile reset), which was
+also "quietly computes nothing/wrong for a shape nobody had tried".
+
+### Why it lands on this endeavour
+
+fp64's ONLY tensor-core shape is m8n8k4, so its natural accumulator is **8x8** — below the
+hardcoded 16x8 fragment in both dimensions.  Every fp64 MMA kernel we write will request an 8-row
+tile, and today every one of them would compile clean and do nothing.
+
+So the register tile is not merely missing an f64 branch; it is **structurally 16x8-f32**:
+`%ensure-register-tile-type` takes `(m n)` and no element type at all, and hardcodes
+`register-fragment-acc-f32-16x8` as the fragment type.  Teaching it fp64 means teaching it that
+the fragment geometry is a property of the element type — which is the same lesson endeavour 155
+learned for the Intel GRF width, and 159 for the 16-bit K.
+
+### Revised compiler-work list, in dependency order
+
+1. [x] **DONE — the silent zero-fragment case is now a refusal.**  Filed as **BUG 058**.  One
+   shared predicate `%register-tile-dims-must-divide`, called from BOTH
+   `%ensure-register-tile-type` (which already had the guard, dead) and
+   `%register-tile-fit-check` (which the explode path already calls once per tile binding), so
+   the two cannot drift apart again.  It went into the fit-check rather than
+   `%explode-register-tiles` because that function is 124 lines and transcribing it into an
+   overlay is its own class of risk, while the fit-check already receives exactly `(m n
+   location)`.  NVIDIA-only, deliberately — see BUG 058 for why SPIR-V needs the element type
+   threaded through first, and note that half is STILL OPEN.
+   Specs: `errors/01-tile-too-few-rows.crisp`, `errors/02-tile-too-few-cols.crisp`.
+2. Make the accumulator fragment geometry a function of the element type (8x8 with 2 doubles per
+   lane for fp64, vs 16x8 with 4 floats for f32), rather than the hardcoded 16x8-f32.
+3. Then the three fragment records, the `load-fragment-a`/`-b` f64 branch, and the
+   `llvm.nvvm.mma.m8n8k4.row.col.f64` emitter branch, as listed above.
+4. The (8 8 4)-only shape refusal.
+
+Note that the "Type mismatch! Expected FLOAT but inferred DOUBLE" refusal in row 2 is the
+f32-hardcoded fragment record showing through, and it is a GOOD sign: the type checker is already
+catching what the MMA path cannot yet do.  It should be replaced by a real f64 lowering, not by
+loosening the check.
+
+
 Precision and denormals — decision and reasoning
 ================================================
 
