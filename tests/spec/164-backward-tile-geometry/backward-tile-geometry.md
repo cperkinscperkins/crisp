@@ -243,3 +243,60 @@ REMAINING MMA-RANGE LEDGER (9)
 | B — compiles, UNVERIFIED | 137/03, 137/05, 138/04, 138/05, 142/12 | needs the numeric rung first |
 | C — real gaps | 140/01, 140/02 | out of scope, see step 0 above |
 | D — headline | 154/03 | the tile-geometry item |
+
+
+STEP 2 — THE NUMERIC RUNGS (2026-09-06)
+----------------------------------------
+
+**Group B was never "passing" — it was SKIPPED.**  A filtered run reporting zero failures shows
+`SKIP (Skipped due to SKIP-WITH matches active flags)` for each spec, and a skip counts toward
+the total.  Worth stating plainly because "138 and 142 pass" is true and means nothing.
+
+Of the five, only **142/12** already carried a live directive.  Removing its skip produced a
+number on BMG immediately, for free:
+
+    PASS [l0] (A: analytical=1.2 numerical=1.1953125 diff=0.0047)
+
+**137/03** already carried a `VERIFY-AUTODIFF[CUDA]` rung (`expect.A=1.0`).  A CUDA-pinned check
+degrades gracefully off-NVIDIA — `SKIP (VERIFY-AUTODIFF pinned to CUDA; not available here)` —
+while the spec still compiles and passes its PTX validator, so its skip came off too.
+
+**137/05, 138/04, 138/05** had none, so three were WRITTEN: `expect.A=0.28`, from
+`dA[m,k] = sum_n B[k,n]` with `B[i][j] = 0.01*(i*8+j)` and Nt=8.  Absolute, never
+FD-vs-analytical agreement.
+
+164/01 — THE RUNG THAT SAVED A RENTAL
+--------------------------------------
+
+All three declare a **col-major B**, and **no spec in the suite paired a col-major operand with a
+live VERIFY-AUTODIFF** — so there was no precedent for the expected value.  Reading the runner
+gave a model: it writes every matrix input as a flat ROW-MAJOR ramp and binds it as row-major,
+its only col-major awareness being for TMA descriptors.  That predicts the kernel sees the
+transpose, `B_kernel[k][n] = 0.01*(n*K+k)`, giving **19.2** at (1,0).
+
+**Tested on BMG before spending anything.  Measured 1.1994476 — i.e. 1.2, the row-major answer.
+The model was wrong by 16x.**  Had that gone into the three `[CUDA]` directives, the rental would
+have produced three failures indistinguishable from a compiler bug.
+
+164/01 now pins the contract permanently — *a col-major global staged through a scratch tile
+yields the same gradient as a row-major one* — and records what it does NOT settle: 1.2 is
+consistent both with the layout being handled correctly and with it being silently ignored.  One
+data point cannot separate those, and the rung says so rather than over-claiming.
+
+A TRAP WORTH KNOWING: PROSE BECOMES A DIRECTIVE
+-----------------------------------------------
+
+164/01 first FAILED the plain pass because a comment line reading
+`;; TEST-HOIST[CUDA] + HOIST-EXPECT: MMA_CORRECT, which compares ...` was parsed as a REAL
+directive, so the rung tried to run a CUDA hoist test it never wanted.  **The runner scans
+comments for directive names; do not spell one in prose.**  Fixed, and the file now says so.
+
+LEDGER AND STATE
+----------------
+
+MMA-range `SKIP-WITH[--differentiate]`: **17 -> 3** (140/01, 140/02, 154/03).
+**1063/1063 plain and --differentiate, 233/233 negative.  Zero compiler changes — every fix so
+far in this endeavour has been spec-level.**
+
+PENDING ON HARDWARE: four `[CUDA]` numeric checks, verifiable in ONE batched pod run —
+137/03 (`expect.A=1.0`), 137/05, 138/04, 138/05 (`expect.A=0.28`).

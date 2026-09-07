@@ -12,8 +12,25 @@
 ;;   - grid-scaled TMA box coordinates (grid-k=1 -> a non-zero, innermost-first {x,y} origin).
 ;; Result: C == A·B on the H100 (MMA_CORRECT).
 ;;
-;; SKIP-WITH[--differentiate]: "differentiates and its backward carries real gradient scatter, but TMA :block is sm_90a-only and VERIFY-AUTODIFF runs on SPV/L0 -- so the gradient VALUES cannot be checked on this machine. Un-skip after a Hopper pod run, not before"
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
+;; ENDEAVOUR 164 — NUMERIC GRADIENT CHECK, pinned to CUDA.
+;;
+;; f(A,B) = sum(A.B), so dC is all ones and dA[m,k] = sum_n B[k,n].  With B[i][j] = 0.01*(i*8+j)
+;; and Nt=8, dA[0,0] = 0.01*(0+1+...+7) = 0.28.  ABSOLUTE, not FD-vs-analytical agreement: under
+;; BUG 054 both sides were fed the same mis-typed fragments and agreed while being wrong.
+;;
+;; Shapes: 16x16 / 16x8 (2 K-steps of 8)
+;;
+;; THE COL-MAJOR B IS SAFE TO IGNORE HERE, and that was MEASURED rather than assumed.  No spec in
+;; the suite paired a col-major operand with a live VERIFY-AUTODIFF, so 164/01 was written to
+;; settle it on BMG before spending a rental: staging a col-major global through a scratch tile
+;; gives the SAME gradient as a row-major one (predicted 19.2 on a transpose model, measured
+;; 1.2).  So the ordinary row-major formula above applies.
+;;
+;; [CUDA]-pinned because this kernel is sm_90 TMA.  On a machine with no CUDA runtime the check
+;; reports "SKIP (VERIFY-AUTODIFF pinned to CUDA; not available here)" and the spec still
+;; compiles and passes its PTX validator, so this costs nothing off-NVIDIA.
+;; VERIFY-AUTODIFF[CUDA]: A=16x16@0:0.01 B=16x8@0:0.01 at.A=0,0 group=32 h=0.5 atol=2e-2 expect.A=0.28 output-mat=16x8
 ;; SKIP-DEFAULT-PASS
 ;;
 ;; MMA-DIMS: 16 8 16
