@@ -4,7 +4,6 @@
 ;; SPV backend (regardless of arch — even DG2+).  :block is NVIDIA CuTensorMap only.  The
 ;; GENERIC default pass has no backend and compiles fine (sync fallback).
 ;;
-;; SKIP-WITH[--differentiate]: "negative arch-gate test: the COMPILE-WITH FAIL is the assertion, and the Intel gate fires long before AD"
 ;; COMPILE-WITH[--ir-target=spv]: FAIL "not supported on Intel"
 
 (def-type vec-t (vector float :address-space :global :align :compact))

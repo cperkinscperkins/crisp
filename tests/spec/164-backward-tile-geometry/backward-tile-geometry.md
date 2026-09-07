@@ -22,7 +22,7 @@ It carries NO `SKIP-WITH[--differentiate]` and compiles clean under `--different
 140/02's own skip note says it plainly, and it went unread for a while:
 *"140/03 differentiates, so wgmma itself is not the obstacle."*
 
-THE ONE REAL ITEM
+THE HEADLINE ITEM
 -----------------
 
 `tests/spec/154-nvidia-perf/03-wgmma-two-warpgroups.crisp` stages its operands correctly — real
@@ -125,5 +125,121 @@ defect B2 (ring shape + provenance through ANF aliases), defect D (dead ANF shap
 the analyzer), and the oversized-accumulator rule (register tile -> SLM, for both the adjoint and
 the canonicalised accumulator).
 
-Post-149 `SKIP-WITH[--differentiate]` ledger went 8 -> 1 in 163.  The one survivor is 154/03,
-whose note now names the SLM budget described above.
+Post-149 `SKIP-WITH[--differentiate]` ledger went 8 -> 1 in 163.  **That count was scoped to
+post-149 directories only — 163's charter — and is MISLEADING for this endeavour**, which is
+about MMA backward geometry regardless of era.  The real MMA-range inventory is below.
+
+
+THE ACTUAL MMA-RANGE INVENTORY (measured 2026-09-06)
+-----------------------------------------------------
+
+**17** specs at 132+ carry `SKIP-WITH[--differentiate]`, not one.  Each was RUN under
+`--differentiate` with its own TEST-WITH flags, and again with its hardware profile where it
+declares one.  Four groups:
+
+**A. NOT AD GAPS AT ALL — the refusal IS the assertion (8).**  Same shape as 152/23, which 163
+removed: the directive explains expected behaviour instead of claiming a gap.
+
+| spec | what it actually reports |
+|---|---|
+| 132/07-fit-check-profile | `make-register-tile: a 64x64 accumulator tile needs ...` — it IS the fit-check spec |
+| 133/13, 133/14 col-major-refused | `Intel cooperative-matrix (MMA) operands cannot be :col-major` |
+| 137/01-block-arch-gate-nvidia | `:mode :block / :cluster needs sm_90+; got sm_80` |
+| 137/02-block-arch-gate-intel | `:mode :block is not supported on Intel / SPIR-V` |
+| 142/02-register-load-no-profile | requires a profile: `GRF / L1 limits drive the register-pipeline safety analysis` |
+| 142/03-register-load-on-ptx | `Subgroup2DBlockLoadINTEL, which is Intel-only` |
+| 142/13-prefetch-on-ptx | `Subgroup2DBlockPrefetchINTEL, ... Intel-only` |
+
+Each should be TESTED with the directive removed (152/23 passed once removed), then removed.
+Cheap, and it stops the ledger overstating the AD debt.
+
+**B. COMPILES CLEAN — STALE SKIPS, CORRECTNESS UNVERIFIED (5).**
+
+    137/03-tma-codegen-ptx     137/05-block-mma-matmul     138/04-pipelined-block-matmul
+    138/05-linear-ring-pipeline                            142/12-ring-kloop-metal
+
+These are the dangerous ones.  **Compiling proves nothing** — BUG 054 compiled and emitted
+plausible instructions while computing garbage, and only a NUMBER caught it.  Do not simply drop
+these skips.  Each needs a gradient check before its directive comes off, or it trades an honest
+skip for a false green.
+
+**C. REAL AD GAPS (3).**
+
+| spec | cause |
+|---|---|
+| 140/01, 140/02 | hand-scattered flat `make-scratch-vector`; no compile-time (Mt Kt), no `load-tile-at` source.  See step 0. |
+| 142/14-pipeline-bench | `SYNC-WORKGROUP cannot appear inside a thread-divergent conditional` — **the identical pattern 155/03 had**, with the same shape of kernel: `(when (< next-k n-k-steps) (load-tile ...))` and no `to-workgroup-uniform`.  163 fixed 155/03 by binding the guard through it.  Likely the same one-line spec fix; verify rather than assume. |
+
+**D. THE HEADLINE ITEM (1).**  154/03 — and note the trap: its `TEST-WITH` is
+`--ir-target=ptx --ir-target-arch=sm_90` with **NO hardware profile**, so under its own flags it
+COMPILES CLEAN.  The 720896-vs-232448 SLM refusal only appears when a profile supplies
+`:max-shared-memory-per-block`.  **Without a profile the compiler cannot see that the backward
+does not fit an SM** — a kernel that compiles and could not launch.  That is worse than a
+refusal, and it means any "does 154/03 compile?" check must pass the profile or it answers the
+wrong question.
+
+REVISED STEP ORDER
+------------------
+
+0. **Group A cleanup** — test-then-remove 8 directives that never described AD gaps.
+1. **142/14** — try 155/03's `to-workgroup-uniform` fix.  Probably the cheapest real win here.
+2. **The numeric rung** (was step 1) — still first among the *engineering* steps, and now doubly
+   motivated: group B needs an oracle before its skips can honestly come off.
+3. **Backward tile geometry** — the 154/03 item.
+4. **140/01, 140/02** — still recommended OUT of scope; see step 0 in the section above.
+
+
+PROGRESS
+========
+
+STEP 0 — GROUP A CLEARED (2026-09-06)
+--------------------------------------
+
+All **8** directives removed and TESTED, not assumed: **1062/1062 under `--differentiate`.**
+
+    132/07-fit-check-profile          133/13-col-major-operand-refused-bmg
+    133/14-col-major-accum-refused    137/01-block-arch-gate-nvidia
+    137/02-block-arch-gate-intel      142/02-register-load-no-profile
+    142/03-register-load-on-ptx       142/13-prefetch-on-ptx
+
+None described an AD gap.  Each is a gate or negative spec whose refusal IS its assertion, and
+`--differentiate` changes nothing about any of them — the same finding 163 reached for 152/23.
+The MMA-range ledger is therefore 17 -> 9 on cleanup alone, before any engineering.
+
+STEP 1 — 142/14 FIXED, AND THE `let` PLACEMENT IS LOAD-BEARING
+---------------------------------------------------------------
+
+142/14 was the predicted twin of 155/03 — `(when (< next-k n-k-steps) (load-tile ...))` with no
+`to-workgroup-uniform`, refusing with
+`SYNC-WORKGROUP cannot appear inside a thread-divergent conditional`.  Binding both guards
+through `to-workgroup-uniform` fixes it, as predicted.
+
+**But WHERE the binding goes decides whether it works, and getting that wrong produces a
+thoroughly misleading error.**  Hoisting the guards into the ENCLOSING `let*` alongside
+`next-k` / `prefetch-k` makes ANF bind the whole `when` as a VALUE:
+
+    (%ANF-T-38 (WHEN MORE-K? (LOAD-TILE-AT A (RING-GET A-RING (MOD ...
+
+whose value is the last `load-tile-at` — so `%handle-single-value-backward` sees a STATEMENT in
+value position and reports
+
+    Function LOAD-TILE-AT is not differentiable.
+
+which names the wrong thing entirely and points at no gap at all.  Measured, not inferred: the
+pre-change kernel produces NO such ANF binding (it failed on divergence instead), so the hoist
+was caused by the restructuring.  **Wrap each `when` in its OWN `let`, as 145/19 and 155/03 do.**
+
+This is the third member of a family worth naming: `Function GRID-Y is not differentiable`
+(recorded in memory), `Function PREFETCH-K ...` (endeavour 146's note inside the skip list), and
+now `Function LOAD-TILE-AT ...`.  **In every case the named function is innocent and the real
+cause is ANF placing a non-value in a value position.**  Treat that message as "something got
+hoisted", not as an AD coverage gap.
+
+REMAINING MMA-RANGE LEDGER (9)
+-------------------------------
+
+| group | specs | status |
+|---|---|---|
+| B — compiles, UNVERIFIED | 137/03, 137/05, 138/04, 138/05, 142/12 | needs the numeric rung first |
+| C — real gaps | 140/01, 140/02 | out of scope, see step 0 above |
+| D — headline | 154/03 | the tile-geometry item |

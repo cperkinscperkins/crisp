@@ -6,7 +6,6 @@
 ;; Same kernel as 00 but with a PTX target (profile present, so the error is the target, not the profile):
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=ptx]: FAIL "Intel"
 ;; SKIP-DEFAULT-PASS
-;; SKIP-WITH[--differentiate]: "negative test"
 ;; SKIP-WITH[--debug]: "negative test"
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
