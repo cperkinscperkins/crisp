@@ -1,0 +1,40 @@
+;; Crisp tiled matmul (grid-stride) — TMA (:block), fp64.  Section 1 (64-bit), Chapter 4.
+;;
+;; The fp64 twin of chap3_async/matmul_async.crisp.  `:mode :block` lowers each load-tile to the
+;; cooperative cp.async loop + cp.async.commit_group, and (await) to cp.async.wait_group(0).
+;;
+;; cp.async MOVES BYTES, so fp64 needs nothing new from it: the instruction takes 4, 8 or 16 byte
+;; chunks and a double is 8.  That is worth stating because it is the FIRST rung where fp64 might
+;; have needed a new mechanism and does not.
+;;
+;; GEOMETRY: 64x32 C-tile, Kt=16, shape (8 8 4) -- the same forced choices as chapters 1 and 2.
+;; See chap1_handrolled_mma_f64/matmul.crisp for why 64x64 is impossible at fp64 (256
+;; registers/thread, one over the architectural limit).
+;;
+;; WHY THIS RUNG IS THE INTERESTING ONE AT 64 BITS.  Section 2 measured the fp64 tensor core at
+;; only 1.20-1.53x over vector fp64, while cuBLAS sits ~1.9x above the best CUTLASS DMMA config --
+;; both DMMA, so that gap is scheduling and data movement.  fp64 also moves 2x the bytes per flop
+;; of fp32, so it goes bandwidth-bound sooner.  If the 64-bit thesis is right, the ladder's real
+;; distance starts here.
+
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix double (64 16)))
+        (B-tile (make-scratch-matrix double (16 32)))
+        (C-tile (make-register-tile double (64 32) 0.0d))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :mode :block)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0)) (fill-tile C-tile 0.0d))  ; grid-strided: reset per output tile
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)   ; async-stage A[grid-y*64:+64, grid-k*16:+16]
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)   ; async-stage B[grid-k*16:+16, grid-x*32:+32]
+      (await bar)                                         ; cp.async.wait_group(0)
+      (mma-accumulate-via-tile (8 8 4) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

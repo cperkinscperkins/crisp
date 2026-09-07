@@ -2267,3 +2267,42 @@
            (error "def-hardware-profile ~a: key ~a names unknown lowering~p ~{~s~^, ~}.  Known lowerings: ~{~s~^, ~}."
                   profile-name key (length bad) bad *known-mma-lowerings*)))
        ls))))
+
+
+;;; ===================================================================
+;;; Endeavour 165 — fill-tile builds fragments at the TILE'S element type.
+;;;
+;;; %emit-per-frag-fill emitted `(make-register-fragment 16 8 ,val :tally nil)` -- a hardcoded
+;;; geometry and NO :elem -- so the element type defaulted to FLOAT and the constructor picked
+;;; register-fragment-acc-f32-16x8.  Handed a double init that is a type error, and it is how
+;;; chapter 2 of the 64-bit ladder failed:
+;;;   STRUCT-CTOR REGISTER-FRAGMENT-ACC-F32-16X8 member R0: arg-type=DOUBLE expected=FLOAT
+;;;
+;;; This is the SIXTH place in this endeavour where the 16x8-f32 fragment was assumed rather than
+;;; asked for, and the fifth found by a loud refusal rather than by reading code.  It surfaced
+;;; only now because fill-tile on a register tile is what matrix-multiply-tile-stride uses to
+;;; RESET the accumulator per output tile (the BUG 036 fix) -- chapter 1 hand-rolls its loop and
+;;; never resets, so it never reached here.
+;;;
+;;; The reset VALUE was already correct: a register tile resets to its DECLARED INIT, so the
+;;; double `0.0d` arrived intact.  Only the fragment it was being poured into was wrong.
+;;;
+;;; NOTE FOR THE SRC PATCH: %emit-per-frag-fill REPLACES src/mma.lisp:1675.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun %emit-per-frag-fill (entry val)
+  "Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment
+   of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init).
+
+   Endeavor 144 Phase 4: tagged :tally nil.  These forms RE-INITIALIZE fragments the tile
+   already owns — a set! of an existing register, not a new allocation — so counting them
+   in the GRF demand model would inflate a tile's cost purely for having been filled."
+  (destructuring-bind (m n syms &optional n-true first-true operand) (cdr entry)
+    (declare (ignore m n n-true first-true operand))
+    ;; fill just resets every fragment this warp holds — no logical index needed.
+    `(progn
+       ,@(loop for s in syms
+               collect (let ((fmn (%frag-mn (%register-tile-elem-of (first entry)))))
+                          `(set! ,s (make-register-fragment ,(car fmn) ,(cdr fmn) ,val
+                                      :elem ,(%register-tile-elem-of (first entry)) :tally nil)))))))

@@ -1,0 +1,39 @@
+;; Crisp Tiled MMA Matmul (fp64): C[M x N] = A[M x K] . B[K x N]
+;; Section 1 (64-bit), Chapter 2: the unified matrix-multiply-tile-stride macro.
+;;
+;; The fp64 twin of chap2_tiling/matmul.crisp.  Same rung, same macro; what differs is forced by
+;; the hardware, not chosen:
+;;
+;;   shape (8 8 4)   fp64's ONLY tensor-core shape (m8n8k4).  From the h100 profile's typed
+;;                   (double 8 8 4) entry.
+;;   64x32 C-tile    an fp64 accumulator fragment is 8x8 holding 2 doubles per lane = 4 registers,
+;;                   so the tf32 chapter's 64x64 would be 64 fragments x 4 = 256 registers/thread,
+;;                   one over the architectural 255.  See chap1_handrolled_mma_f64 for the full
+;;                   reasoning; it applies unchanged to every 64-bit rung above this one.
+;;   Kt = 16         staged K per step; mma-accumulate-via-tile walks it as four m8n8k4 steps.
+;;
+;; WHY THIS RUNG MATTERS MORE AT 64 BITS THAN AT 32.  Section 2 measured the fp64 tensor core at
+;; only 1.20-1.53x over vector fp64, while cuBLAS sits ~1.9x above the best CUTLASS DMMA config --
+;; and BOTH of those are DMMA, so that larger gap is scheduling and data movement.  The 64-bit
+;; ladder's distance is therefore expected to be HERE and above, not in chapter 1.  This is the
+;; first rung that can show it.
+
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix double (64 16)))
+        (B-tile (make-scratch-matrix double (16 32)))
+        (C-tile (make-register-tile double (64 32) 0.0d))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      :body
+      (load-tile-at A A-tile ((* grid-y (to-ulong 64)) (* grid-k (to-ulong 16))))
+      (load-tile-at B B-tile ((* grid-k (to-ulong 16)) (* grid-x (to-ulong 32))))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 8 4) C-tile A-tile B-tile)
+      (sync-workgroup))))

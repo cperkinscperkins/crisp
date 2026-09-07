@@ -550,10 +550,45 @@ CUTLASS peer early, which endeavour 159 taught us to do.
 - [x] **Run it** — H100 NVL, 2026-09-07.  See "Section 2 measured".  Raw `results.jsonl` was not
       pulled before the pod was released; the per-point summary tables in that section (GFLOPS,
       correct, precision diagnosis for every contender at every size) are the surviving record.
-- [ ] The 64-bit MMA Techniques ladder, chapters 0-6 (7 is absent by hardware).  **The measured
-      numbers reshape this: the tensor core is worth only ~1.2x, while ~1.9x sits in scheduling
-      and data movement.  Weight the effort toward chapters 2-6 and treat chapter 1 as a rung to
-      pass through, not a destination.**
+- [x] **The 64-bit MMA Techniques ladder — ALL SEVEN RUNGS WRITTEN AND COMPILING (2026-09-07).**
+      Chapters 0-6; chapter 7 is **absent by hardware** (no fp64 wgmma exists in any form) and the
+      report should say so rather than leave a blank cell.
+
+      | chapter | dir | emits |
+      |---|---|---|
+      | 0 naive | `chap0_naive_f64` | 10 scalar fp64 ops, no MMA |
+      | 1 hand-rolled MMA | `chap1_handrolled_mma_f64` | `m8n8k4...f64` |
+      | 2 tiling | `chap2_tiling_f64` | + `matrix-multiply-tile-stride` |
+      | 3 async | `chap3_async_f64` | + `cp.async` at **8 bytes/elem** |
+      | 4 cheap fetch | `chap4_cheap_fetch_f64` | + TMA `cp.async.bulk.tensor` |
+      | 5 multistage ring | `chap5_multistage_ring_f64` | 6 bulk copies, 16 mbarrier ops |
+      | 6 warp specialization | `chap6_warp_specialization_f64` | 3 warps, 1P+2C, split C-tile |
+
+      Every rung verified in the emitted PTX: the fp64 MMA present, **zero fp32 arithmetic, zero
+      `.extern .func`** (the silent-wrong-intrinsic failure mode).
+
+      **cp.async follows the element type**: 8 bytes for fp64 against 4 for tf32, checked by
+      diffing the two chapter-3 kernels.  A 4-byte copy of an 8-byte element would have moved
+      half the data silently, so it was worth confirming rather than assuming.
+
+      **THE fp64 LADDER RUNS AT SMALLER TILES THAN ITS tf32 TWIN, STRUCTURALLY.**  An fp64
+      accumulator fragment is 8x8 holding 2 doubles per lane = 4 registers, so the tf32 chapters'
+      64x64 tile is 64 fragments x 4 = **256 registers/thread — one over the architectural 255**,
+      and the fit-check refuses it.  Every 64-bit rung therefore uses 64x32 with Kt=16.  fp64
+      costs 2x the registers at the same tile, which is a real reason fp64 is harder to make fast
+      rather than an incidental choice; it is stated in each kernel's header instead of appearing
+      as a magic number.
+
+      **Two things that needed no work, worth recording as much as the things that did:** TMA's
+      host-side descriptor already mapped `double` to `CU_TENSOR_MAP_DATA_TYPE_FLOAT64`
+      (endeavour 147 wrote it element-aware from the start), and the RING entry hazard flagged in
+      step 2b-i did NOT bite — ring fragments get their geometry through `%frag-mn-for-operand`.
+
+      **NOT YET MEASURED.**  These compile and emit the right instructions; no GFLOPS number
+      exists for any of them.  Benchmarking needs a pod, and the harness wiring
+      (`scripts/crisp_bench/matmul.py`, `report.py`) is still untouched — see the plan entries
+      below.  The measured expectation to test: the tensor core is worth only ~1.2x while ~1.9x
+      sits in scheduling, so the distance should be in chapters 2-6, not chapter 1.
 - [ ] TDD tests in this directory for whatever compiler work the ladder requires — see "Compiler
       work this implies".
 - [ ] The 64-bit ladder added to the report; chapter 7 marked absent-by-hardware, not blank.
