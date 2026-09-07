@@ -2068,3 +2068,202 @@
                          (loop for nj below n-frags
                                for idx = (+ (* mi n-frags) nj)
                                append (one-frag (nth idx syms) mi nj))))))))))
+
+
+;;; ===================================================================
+;;; Endeavour 165 step 4 — the h100 profile tells the truth about fp64, and the shape check
+;;; understands TYPED entries.
+;;;
+;;; THE TRAP THIS CLOSES (finding 3 in the endeavour doc).  h100's :mma-shapes was
+;;; ((16 8 8) (16 8 4) (16 8 16)) with no typed entry, so %mma-shape-for-elem fell to its width
+;;; rule -- K x element-bits is a constant fragment footprint -- and resolved `double` to
+;;; **(16 8 4)**.  That shape is real in the PTX ISA and is NOT an NVVM intrinsic in LLVM 21.1.5:
+;;; it assembles cleanly and llc emits an `.extern .func` CALL with no diagnostic.  So a benchmark
+;;; kernel run under --hardware-profile=h100 would have picked an unemittable shape SILENTLY.
+;;; The width rule is not wrong; it simply is not the constraint that binds for fp64, where the
+;;; hardware offers exactly one shape.
+;;;
+;;; %check-mma-shape also had to learn typed entries.  It tested raw `member ... :test #'equal`
+;;; against the 3-lists, so a TYPED 4-list `(double 8 8 4)` would never have matched the user's
+;;; `(8 8 4)` -- adding the entry alone would have made the profile correct and the kernel
+;;; un-compilable.  The two edits only work together, which is why they are one block.
+;;;
+;;; NOTE FOR THE SRC PATCH: %check-mma-shape REPLACES src/mma.lisp:1161;
+;;; register-builtin-hardware-profiles REPLACES src/mma.lisp:282.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun %check-mma-shape (mma-shape location)
+  "Validate the (M N K) MMA shape: an int triple, and — if a hardware profile is active —
+   a member of its :mma-shapes (the vendor's supported shape, e.g. Intel (8 16 8)); with
+   NO profile, require the tf32 NVIDIA default (16 8 8).
+
+   Endeavour 165: a profile entry may be TYPED — `(ELEM M N K)`, a 4-list — so membership is
+   tested against each entry's DIMS via %mma-shape-entry-dims rather than against the entry
+   itself.  Untyped 3-lists compare exactly as before."
+  (unless (and (listp mma-shape) (= (length mma-shape) 3) (every #'integerp mma-shape))
+    (error 'crisp-compiler-error
+           :message (format nil "mma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." mma-shape)
+           :source-location location))
+  (let* ((profile (active-hardware-profile))
+         (shapes  (and profile (getf profile :mma-shapes))))
+    (if shapes
+        (unless (find mma-shape shapes :test #'equal :key #'%mma-shape-entry-dims)
+          (error 'crisp-compiler-error
+                 :message (format nil "mma-accumulate-via-tile: shape ~a is not one of the active hardware profile's :mma-shapes ~a."
+                                  mma-shape shapes)
+                 :source-location location))
+        (unless (equal mma-shape '(16 8 8))
+          (error 'crisp-compiler-error
+                 :message (format nil "mma-accumulate-via-tile: only tf32 (16 8 8) is supported without a hardware profile, got ~a." mma-shape)
+                 :source-location location)))))
+
+
+;; src/mma.lisp
+(defun register-builtin-hardware-profiles ()
+  "Endeavor 144 Phase 0 (D2): register Crisp's predefined hardware profiles.
+
+   Called from register-mma-types, which initialize-compiler invokes AFTER it clrhash-es
+   *hardware-profiles* — so builtins survive the clear and a same-named user profile still
+   overrides them.
+
+   NOTE FOR THE SRC PATCH: this belongs as its own call in initialize-compiler next to
+   register-builtins."
+  ;; Intel Arc B580 (Battlemage / Xe2).  Device-queried 2026-07-27.
+  ;; :tile-visit-strip-width 4 — MEASURED: grouped visit order is worth +63% at 2048 here
+  ;; (linear 17.1 -> 27.9 TFLOPS), and 4 beat 2/8/16 across both sizes tested.
+  (register-hardware-profile
+   'bmg
+   '(:simd-width 16                        ; subGroupSizes reports BOTH 16 and 32
+     :compute-units 20                     ; Xe-cores (5 slices x 4 subslices)
+     :max-registers-per-thread (128 256)   ; GRF registers (32 B each) — selectable modes
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 1024)
+     :max-shared-memory-per-block 128KB
+     :l2-cache-size 18MB
+     :native-cache-line-size 64            ; Xe2 LSC line; not queryable
+     :tile-visit-strip-width 4             ; measured; see the Phase 1 revision comment
+     ;; 156 Step 2: BMG offers a second code-generation strategy.  :coop-matrix stays FIRST
+     ;; and is therefore still the default, so no existing kernel changes behaviour -- a
+     ;; kernel gets :xe-native only by asking for it with (mma-lowering :xe-native).
+     :mma-lowerings (:coop-matrix :xe-native)
+     :mma-shapes ((8 16 8) (8 16 16) (8 16 32)))) ; XMX tf32, bf16/fp16, int8
+  ;; NVIDIA H100 PCIe (Hopper).  Device-queried 2026-07-28.
+  ;; :compute-units 114 is the PCIe part (SXM is 132); this value OVERRIDES the device SM query
+  ;; in the generated CUDA launch grid, so the variant distinction is load-bearing.
+  ;; :max-shared-memory-per-block is the OPT-IN cap, not the 48KB default (chap2/chap3 exceed 48KB).
+  ;; :mma-shapes MUST include (16 8 8) — chap0/1/1.5/2 all pass that tf32 shape.
+  ;; NO :tile-visit-strip-width — MEASURED: grouped order is neutral-to-harmful here (chap2 worse
+  ;; at every width; chap3_wgmma -8.3% at W=4 degrading monotonically to -14.4% at W=16), and no
+  ;; cliff appears even at 4x L2.  Omitting the key means linear, which is what this part wants.
+  (register-hardware-profile
+   'h100
+   '(:simd-width 32
+     :compute-units 114
+     :max-registers-per-cu 65536
+     :max-registers-per-thread 255
+     :max-total-threads-per-block 1024
+     :max-work-group-dims (1024 1024 64)
+     :max-shared-memory-per-block 227KB
+     :l2-cache-size 50MB
+     :native-cache-line-size 128
+     ;; Endeavour 165: a TYPED fp64 entry, and it is load-bearing rather than tidy.  Without
+     ;; it %mma-shape-for-elem falls to the width rule -- K x element-bits is a constant
+     ;; fragment footprint -- and resolves `double` to (16 8 4).  That shape exists in the PTX
+     ;; ISA but is NOT an NVVM intrinsic in LLVM 21.1.5: it assembles and llc emits an
+     ;; `.extern .func` CALL with no diagnostic.  fp64 has exactly ONE tensor-core shape,
+     ;; m8n8k4, so it is stated outright instead of being inferred from a rule that has no way
+     ;; to know that.
+     :mma-shapes ((16 8 8) (16 8 4) (16 8 16) (double 8 8 4)))))
+
+
+;;; ===================================================================
+;;; Endeavour 165 step 4 (cont) — the profile WRITER accepts typed :mma-shapes entries.
+;;;
+;;; %mma-shape-entry-dims and %mma-shape-entry-type have understood the typed (ELEM M N K) form
+;;; since endeavour 161, and the docs describe it -- but %hp-validate-value never learned it, so
+;;; putting one in a profile failed with "expects a non-empty list of (M N K) positive-integer
+;;; triples".  Reader and writer disagreed, and the error message described the CHECK rather than
+;;; the intent, which is why it read as a syntax mistake rather than a missing feature.
+;;;
+;;; fp64 is what forced it: the part offers exactly one tensor-core shape and the width rule has
+;;; no way to infer that, so the profile has to state it, and stating it requires a typed entry.
+;;;
+;;; NOTE FOR THE SRC PATCH: %hp-mma-shape-entry-p is new (src/hardware-profile.lisp);
+;;; %hp-validate-value REPLACES src/hardware-profile.lisp:107.
+;;; ===================================================================
+
+;; src/hardware-profile.lisp
+(defun %hp-mma-shape-entry-p (x)
+  "T if X is a legal :mma-shapes entry: an untyped (M N K) triple of positive integers, or a
+   TYPED (ELEM M N K) 4-list whose first element is a symbol naming the element type.
+
+   Endeavour 165.  Mirrors what %mma-shape-entry-dims / %mma-shape-entry-type already accept on
+   the READ side; before this the writer side rejected the typed form the reader understood."
+  (or (%hp-3-pos-ints-p x)
+      (and (listp x) (= (length x) 4) (symbolp (first x)) (first x)
+           (%hp-3-pos-ints-p (cdr x)))))
+
+;; src/hardware-profile.lisp
+(defun %hp-validate-value (profile-name key type raw)
+  "Validate/normalize RAW for KEY of TYPE.  Signals a clear compile error on a
+   malformed value; returns the normalized value (sizes in bytes, lists unquoted).
+
+   Endeavor 144 (D4): :pos-int-or-modes accepts a positive integer OR a list of
+   positive integers in STRICTLY ASCENDING order (selectable register-file modes;
+   ascending so 'first' is the default mode and 'last' is the largest)."
+  (ecase type
+    (:pos-int
+     (unless (and (integerp raw) (plusp raw))
+       (error "def-hardware-profile ~a: key ~a expects a positive integer, got ~s."
+              profile-name key raw))
+     raw)
+    (:pos-int-or-modes
+     (let ((v (%hp-unquote raw)))
+       (cond
+         ((and (integerp v) (plusp v)) v)
+         ((and (listp v) v (every (lambda (e) (and (integerp e) (plusp e))) v))
+          (unless (apply #'< v)
+            (error "def-hardware-profile ~a: key ~a expects selectable modes in strictly ascending order (the first is the default allocation, the last the largest), got ~s."
+                   profile-name key raw))
+          v)
+         (t
+          (error "def-hardware-profile ~a: key ~a expects a positive integer or a list of positive integers in ascending order (selectable modes, e.g. (128 256)), got ~s."
+                 profile-name key raw)))))
+    (:size
+     (let ((bytes (%hp-parse-size raw)))
+       (unless bytes
+         (error "def-hardware-profile ~a: key ~a expects a byte count or size literal (e.g. 227KB, 50MB, 8GB), got ~s."
+                profile-name key raw))
+       bytes))
+    (:dims3
+     (let ((d (%hp-unquote raw)))
+       (unless (%hp-3-pos-ints-p d)
+         (error "def-hardware-profile ~a: key ~a expects a list of 3 positive integers, got ~s."
+                profile-name key raw))
+       d))
+    (:mma-shapes
+     (let ((shapes (%hp-unquote raw)))
+       ;; Endeavour 165: an entry may be an untyped (M N K) triple OR a TYPED (ELEM M N K)
+       ;; 4-list.  Endeavour 161 introduced typed entries for :wgmma-shapes and documented them,
+       ;; but this validator was never taught about them -- so writing one in a profile failed
+       ;; with "expects a non-empty list of (M N K) positive-integer triples", which describes
+       ;; the CHECK rather than the intent.  fp64 forced the issue: it has exactly one
+       ;; tensor-core shape and the width rule cannot infer that, so the profile has to say so.
+       (unless (and (listp shapes) shapes (every #'%hp-mma-shape-entry-p shapes))
+         (error "def-hardware-profile ~a: key ~a expects a non-empty list of (M N K) positive-integer triples, got ~s."
+                profile-name key raw))
+       shapes))
+    ;; 156: an ordered list of code-generation strategies, most-preferred first.  Validated against
+    ;; the names the COMPILER knows, so a typo is caught in the profile rather than surfacing later
+    ;; as a kernel that mysteriously will not select its lowering.
+    (:lowerings
+     (let ((ls (%hp-unquote raw)))
+       (unless (and (listp ls) ls (every #'keywordp ls))
+         (error "def-hardware-profile ~a: key ~a expects a non-empty list of lowering keywords, got ~s."
+                profile-name key raw))
+       (let ((bad (remove-if (lambda (l) (member l *known-mma-lowerings*)) ls)))
+         (when bad
+           (error "def-hardware-profile ~a: key ~a names unknown lowering~p ~{~s~^, ~}.  Known lowerings: ~{~s~^, ~}."
+                  profile-name key (length bad) bad *known-mma-lowerings*)))
+       ls))))

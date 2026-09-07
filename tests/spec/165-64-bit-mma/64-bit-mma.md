@@ -394,11 +394,42 @@ learned for the Intel GRF width, and 159 for the 16-bit K.
 
    Locally the rung SKIPs cleanly ("nvcc not available"), so the dev-box suite is unaffected.
 
-6. **STILL OPEN — the numeric GRADIENT check on metal.**  The fp64 backward compiles and emits
-   32 fp64 ops with zero fp32, but nothing has verified the gradient VALUES on hardware.
-   VERIFY-AUTODIFF's runtime very likely needs the same fp64 teaching the MMA reference did;
-   that is dev-box investigation, deliberately NOT done on a billing clock.  Batch it with the
-   first ladder chapter in the next rental.
+6. **OPEN AND DELIBERATELY DEFERRED — the fp64 ACCUMULATOR LOAD is unverified on hardware, and
+   may carry a silent lane-layout mismatch.**
+
+   **What is verified.**  `MMA_CORRECT` exercised load-A, load-B, the MMA, and STORE-tile.  Those
+   four layouts are confirmed against a host reference on an H100.
+
+   **What is not.**  `analyze-load-fragment-acc`'s fp64 branch — reading an 8x8 accumulator FROM
+   memory INTO the 32 lanes.  Spec 03 never does it: it starts C at zero via
+   make-register-fragment, and a splat puts the same value in every lane, so layout cannot
+   matter.  The only consumer of that path is the BACKWARD, seeding the C adjoint from C_GRAD.
+   Its mapping was read off CuTe's CLayout alongside the store's, and it is almost certainly
+   right — but "almost certainly" is exactly the state that MMA_CORRECT exists to end.
+
+   **Consequence if wrong:** fp64 FORWARD stays correct; fp64 GRADIENTS are silently wrong.
+   Treat fp64 AD as compile-verified only.  The backward emits 32 fp64 ops and zero fp32, so the
+   TYPES are right; the VALUES have never been checked on hardware.
+
+   **A round trip cannot close this** — load and store sharing the same wrong mapping cancel out
+   and produce a perfect identity from broken code.  See [[mma-fragment-layout-untestable-by-
+   roundtrip]].  Breaking the symmetry needs the hardware in the loop.
+
+   **THE LADDER WILL NOT CLOSE IT EITHER.**  Ladder chapters are forward-only matmuls that
+   accumulate across K in REGISTERS; they never re-load an accumulator from memory.  They will
+   hammer the A/B/store layouts and never touch this one.  Recorded because the opposite was
+   briefly assumed.
+
+   **The plan (agreed 2026-09-07): option B, deferred to the next pod rental.**  Add a forward
+   kernel whose accumulator is pre-loaded from a non-uniform matrix — `C = C0 + A.B` — so the
+   load is checked by the MMA_CORRECT machinery that already works.  The MMA fixes the C layout
+   in hardware, so a bad load lands the additions in the wrong places and the host reference
+   catches it.  Needs a modest addition to `%cuda-emit-mma-reference` (it computes `A.B` and
+   would need the extra input).  Marginal cost is one spec once a pod is up for benchmarking.
+
+   **NOT option A**: teaching `tests/verify-autodiff-runner.lisp` fp64 is surgery on 2371 lines
+   that assume 4-byte floats, under ~25 passing on-metal gradient checks, for one result.
+   Explicitly ruled out.
 
 **NOT an open question — RETRACTED.**  This doc briefly claimed that needing `(as double 2.5)` for
 a tile init was a papercut requiring a language decision.  It is not: **`2.5d` works**, and the
