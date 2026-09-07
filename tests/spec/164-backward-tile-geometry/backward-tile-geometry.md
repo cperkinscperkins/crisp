@@ -431,3 +431,49 @@ Both cuts landed EXACTLY on their predicted byte counts, which is good evidence 
 right.  Neither needed the backward re-tiling this endeavour was opened to do, and the flat
 emission still has no loop.  The remaining 95232 is the point at which re-tiling — or the
 two-part ring-adjoint elision above — actually has to be decided on its merits.
+
+STEP 3 — WHY THE RING-ADJOINT ELISION IS **NOT** RECOMMENDED
+-------------------------------------------------------------
+
+Investigated before building, and the numbers say don't.  At 327680 against a 232448 budget the
+remaining allocations are:
+
+| what | bytes | eliminating it leaves |
+|---|---|---|
+| `D0_ADJ` + `D1_ADJ` — the output gradient | 131072 | needed; not a candidate |
+| ring ADJOINTS — no-op scatter source + iteration donor | 98304 | **229376 — only 3072 under** |
+| forward RINGS — held alive by `extents~` SHAPE queries | 98304 | 229376 |
+
+**The elision would need TWO coordinated changes** (suppress the load-site scatter for a ring
+whose VJP already went direct-to-global; give the VJP loops an iteration space that is not the
+buffer being removed), and the first carries a SILENT-WRONG-ANSWER risk: inferring "this buffer is
+never written" and being wrong means quietly dropping a gradient contribution.  That is the worst
+failure class in this codebase and the one 163 spent most of its time undoing.
+
+**And the payoff is 3072 bytes of margin — 1.3%.**  Any future allocation, padding or alignment
+change tips 154/03 straight back over.  Balancing a spec on that ledge is not a fix; it is a
+future mystery.  The previous section's estimate for this same elision was already wrong once, so
+the estimate class itself has a track record here.
+
+The forward rings are a separate dead end: they survive almost entirely through
+`(~ (extents~ (ring-get R slot)) i)` — compile-time-constant SHAPE queries, not data.
+Devirtualising those is explicitly warned against by 163's normalisation-pipeline note
+("a genuine scratch ring's binding DOES survive into the backward, so its runtime extents~ must
+be preserved.  Devirtualizing those would change specs that pass for the right reason (138,
+145/18)").  That route is closed by an existing, deliberate constraint.
+
+WHAT STEP 3 ACTUALLY DELIVERED
+-------------------------------
+
+    720896  ->  458752  (dead scratch pruned)   ->  327680  (dC copy aliased)
+    55% of the backward's shared memory was WASTE.
+
+Both cuts are general compiler improvements that apply to EVERY AD kernel, not just 154/03:
+nothing dead is allocated, and dC is not copied when the adjoint is already where it needs to be.
+Both landed exactly on their predicted byte counts and neither regressed anything
+(1063/1063, 71 gradient checks).
+
+**154/03 itself remains skipped**, and its note should now say the backward is 95232 over rather
+than 488448 over.  Closing that last gap is the RE-TILING this endeavour was opened for — which
+buys real headroom instead of 1.3%, and generalises to any oversized kernel rather than to this
+one spec.  It remains a chapter, and it is now the ONLY thing left in 164.

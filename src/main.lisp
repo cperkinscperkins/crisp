@@ -9,11 +9,22 @@
 
 
 (defun print-compiler-error (c filename)
-  "Prints a formatted compiler error to *error-output*."
-  (format *error-output* "~&~%Crisp compilation failed in ~a~@[ at ~a~]:~%  ~a~&"
-    filename
-    (ignore-errors (crisp.compiler:error-source-location c))
-    c))
+  "Prints a formatted compiler error to *error-output*.
+
+   Endeavour 164: *PRINT-RIGHT-MARGIN* is widened for the whole report.  A source location is a
+   list of path indices, and the pretty printer breaks a long one across ONE LINE PER ELEMENT —
+   a 27-deep location became 27 lines, twice (the condition's own report carries a location too),
+   burying the actual message in a column of digits.
+
+   The margin, NOT *print-pretty*.  Binding *print-pretty* to NIL also switches off the printer's
+   ABBREVIATIONS, so `#'+` comes out as `(FUNCTION +)` — which changed a diagnostic's text and
+   broke 033/errors/08-illegal-function-descendant, whose CHECK-FAIL expects `#'+`.  Widening the
+   margin stops the wrapping and leaves every message character-for-character as it was."
+  (let ((*print-right-margin* 100000))
+    (format *error-output* "~&~%Crisp compilation failed in ~a~@[ at ~a~]:~%  ~a~&"
+      filename
+      (ignore-errors (crisp.compiler:error-source-location c))
+      c)))
 
 (defun initialize-debug-context (module di-builder filepath)
   "Creates and returns the top-level DICompileUnit for a file."
