@@ -36,4 +36,12 @@
       (load-tile-at B B-tile ((* grid-k (to-ulong 16)) (* grid-x (to-ulong 32))))
       (sync-workgroup)
       (mma-accumulate-via-tile (8 8 4) C-tile A-tile B-tile)
-      (sync-workgroup))))
+      (sync-workgroup)
+      :epilogue
+      ;; WITHOUT THIS THE KERNEL COMPUTES AND DISCARDS.  matrix-multiply-tile-stride does NOT
+      ;; auto-store; it warns ("the C-tile is computed but never stored") and carries on.  The
+      ;; template this was ported from -- chap2_tiling/matmul.crisp -- still has no store-tile,
+      ;; which is the known defect its bf16 twin documents: it "posted the second-best tf32
+      ;; number in its section while storing nothing at all".  This fp64 port inherited it, and
+      ;; the H100 sweep of 2026-09-07 duly reported verified=false with 0 st.global emitted.
+      (store-tile C-tile C (grid-y grid-x)))))

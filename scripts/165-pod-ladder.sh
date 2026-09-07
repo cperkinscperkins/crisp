@@ -54,12 +54,41 @@ python3 scripts/crisp_bench/matmul.py \
     --precision="$PRECISION" --warmup=2 --iters=5 --scratch \
     > "$OUT_DIR/smoke.log" 2>&1
 say "smoke exit=$?"
+# The driver writes results to JSON and only echoes progress, so ALSO inspect what it saved --
+# grepping the console log alone is what made the first gate ineffective.
+python3 - <<'PYCHK' 2>&1 | tee -a "$SUMMARY"
+import json, glob
+bad = []
+for f in glob.glob("benchmarks/results/scratch/*f64*.json"):
+    d = json.load(open(f))
+    for r in d.get("results", []):
+        if r.get("configuration", {}).get("verified") is False:
+            bad.append((d.get("chapter"), r["configuration"].get("m")))
+print("SMOKE VERIFIED-CHECK: " + ("all chapters verified"
+      if not bad else "UNVERIFIED -> " + ", ".join("%s@N=%s" % b for b in bad)))
+PYCHK
+if python3 -c "
+import json,glob,sys
+bad=[1 for f in glob.glob('benchmarks/results/scratch/*f64*.json')
+     for r in json.load(open(f)).get('results',[])
+     if r.get('configuration',{}).get('verified') is False]
+sys.exit(1 if bad else 0)"; then :; else
+  say "!!! SMOKE: a chapter reported verified=false in its saved result — stopping before the sweep."
+  exit 1
+fi
 grep -E "chap[0-9].*f64|correct|TFLOPS|GFLOPS|FAIL|ERROR" "$OUT_DIR/smoke.log" | tail -25 | tee -a "$SUMMARY"
 say ""
 
 # A chapter that reports correct=false at 256 will report correct=false at 4096 too, and much
 # more slowly.  Stop rather than pay for it.
-if grep -qiE '"correct": *false|MMA_WRONG' "$OUT_DIR/smoke.log"; then
+# THE FIELD IS `verified`, NOT `correct`.  The first version of this gate grepped for
+# '"correct": false' -- which the CUDA fixture never emits; its correctness flag is `verified`,
+# under results[].configuration.  So the gate silently never fired, and the 2026-09-07 sweep
+# published two chapters (chap2, chap6) whose numbers were invalid.  A guard that tests the wrong
+# field is worse than no guard: it buys false confidence at the price of a rental.
+# Both spellings are checked now, because the L0 fixture and the hoist harness DO say "correct"
+# / MMA_WRONG, and a gate should not be specific to whichever harness ran.
+if grep -qiE '"verified": *false|"correct": *false|MMA_WRONG' "$OUT_DIR/smoke.log"; then
   say "!!! SMOKE FOUND AN INCORRECT CHAPTER — stopping before the sweep."
   say "    Look at $OUT_DIR/smoke.log; this is a binding or a kernel bug, and the sweep would"
   say "    only reproduce it at greater cost."
