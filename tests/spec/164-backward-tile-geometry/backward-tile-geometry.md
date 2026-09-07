@@ -325,3 +325,109 @@ distinguish "ran and passed" from "skipped"; the four that mattered report `PASS
 **Group B is now fully verified on a NUMBER.**  MMA-range ledger: **17 -> 3**
 (140/01, 140/02 out of scope; 154/03 the tile-geometry item).  Still ZERO compiler changes in
 this endeavour.
+
+STEP 3 — FIRST CUT: DEAD SCRATCH IS NOT ALLOCATED (2026-09-06)
+---------------------------------------------------------------
+
+**The open question is answered: the emission is a FLAT SEQUENCE with no loop**, so re-tiling
+the backward would need a loop structure it does not produce.  But measuring first showed
+re-tiling is not where the first 262 KB is.
+
+**The SLM breakdown accounts for 720896 EXACTLY** — eight 64x256 buffers are 73% of it:
+
+| buffer | bytes | needed |
+|---|---|---|
+| `%ANF-T-26`, `%ANF-T-36` | 131072 | **DEAD** — the replayed wgmma accumulators |
+| `%ANF-T-26_ADJ`, `%ANF-T-36_ADJ` | 131072 | **DEAD** — adjoints OF the dead accumulators |
+| `D0_ADJ_VJPDC`, `D1_ADJ_VJPDC` | 131072 | copies of D0_ADJ/D1_ADJ, which are ALREADY SLM |
+| `D0_ADJ`, `D1_ADJ` | 131072 | needed |
+| rings + ring adjoints + forward rings | 196608 | needed (but see below) |
+
+Each dead symbol occurs exactly TWICE in the whole backward — its own binding and a
+`(fill-tile V 0.0)` — and nowhere else.  The tile VJP takes dC from C_GRAD and its operands from
+the global sources, so the forward's accumulator is never read.
+
+**FIXED: `%ad-prune-dead-scratch` drops a scratch binding whose symbol appears nowhere but its
+own binding and fill-tile forms.**  Conservative by construction: any read, any write, any use as
+an argument keeps it, and register tiles are left alone (SROA-exploded later, liveness not
+decidable here).  Applied after `%ad-replay-finish`, so replay has already spliced in whatever it
+needs.
+
+    720896 -> 458752 bytes.  Exactly the 262144 predicted, to the byte.
+
+1063/1063 --differentiate with **71** gradient checks passing (was 69; 142/12 and 164/01 now run).
+
+**THIS CORRECTS 163 PHASE 14.**  That phase gave an oversized accumulator an SLM adjoint instead
+of a register one — which moved these two dead buffers out of registers and into shared memory,
+turning a register-budget refusal into a shared-memory one.  Relocating dead storage was the
+wrong remedy.  The Phase 14 rule itself stands (a LIVE oversized accumulator does belong in SLM);
+it simply no longer has dead tenants to relocate.
+
+STILL OVER: 458752 vs 232448.  TWO CANDIDATES REMAIN, both measured
+-------------------------------------------------------------------
+
+1. **`_VJPDC` is a redundant copy — 131072 B.**  The scalar lowering allocates a fresh
+   `(make-scratch-matrix float (mt nt))` and does `(store-tile c-adj dc (0 0))`.  Since 163
+   Phase 12 an oversized accumulator's adjoint is ALREADY an SLM matrix, so the copy is
+   pure duplication: `dc` could simply BE `c-adj`.  Would give **327680**.
+
+2. **The ring ADJOINTS may now be dead in substance — ~96 KB.**  BUG 044's fix made a `:ring`
+   operand scatter its stage contribution DIRECTLY into the global gradient, so the slot adjoint
+   is never written; the load-site scatter then adds zero.  They are not SYNTACTICALLY dead (the
+   scatter still names them), which is why the pruner keeps them — but if that scatter is
+   provably a no-op it could be elided along with them.  Would give roughly **231680**, i.e.
+   just inside the 232448 budget.
+
+That second one is arithmetic on paper, not a measurement, and should be verified before being
+believed.  If both hold, 154/03 fits WITHOUT any backward re-tiling — and the loop structure the
+emission lacks would not be needed at all.
+
+STEP 3 — SECOND CUT: THE REDUNDANT dC COPY (2026-09-06)
+--------------------------------------------------------
+
+`%mma-vjp-scalar-lowering` allocated `<c-adj>_VJPDC` and did `(store-tile c-adj dc (0 0))` to get
+dC into SLM so it could be an MMA operand.  Since 163 Phase 12, an accumulator that does not fit
+the register budget ALREADY has an SLM adjoint — so that buffer was a byte-for-byte duplicate and
+the store copied SLM to SLM for nothing.
+
+**FIXED: `dc` now ALIASES `c-adj` when the accumulator does not fit registers.**  Safe because
+`dc` is read-only in both loops (`(~ dc m n)`); nothing writes it.  It asks the SAME predicate
+`%mma-ad-adj-init` used to choose the adjoint's representation, so the two decisions cannot drift
+apart — the failure mode 146 documented when they did.
+
+    458752 -> 327680 bytes.  Exactly the 131072 predicted, again to the byte.
+
+1063/1063 --differentiate, 71 gradient checks.  No regression.
+
+CANDIDATE 2 WAS WRONG — THE RING ADJOINTS ARE NOT DEAD
+--------------------------------------------------------
+
+The previous section guessed the ring adjoints were "dead in substance" (~96 KB) and would bring
+the total to ~231680, just inside budget.  **That was arithmetic on paper and it does not hold.**
+Measured, `A0-RING_ADJ` has FOUR occurrences:
+
+    (A0-RING_ADJ (MAKE-SCRATCH-TENSOR FLOAT 3 (2 64 32)))    ; binding
+    (FILL-TILE A0-RING_ADJ 0.0)                              ; zeroed
+    (%LOAD-TILE-AT-BWD A_GRAD (RING-GET A0-RING_ADJ SLOT) …)  ; READ by the scatter
+    (WORKGROUP-STRIDE (RING-GET A0-RING_ADJ SLOT) (%VJP_M %VJP_K) …)  ; ITERATION-SPACE DONOR
+
+It is true that BUG 044's fix means the slot adjoint is never WRITTEN — the VJP accumulates in a
+local and atomic-adds straight to the global gradient — so the scatter adds zero and is a no-op in
+EFFECT.  But it is not syntactically dead, and the buffer is additionally serving as the
+`workgroup-stride` shape donor.  Eliding it therefore needs TWO coordinated changes, not a
+pruning pass:
+
+  1. suppress the load-site scatter for a ring operand whose VJP already went direct-to-global —
+     the same "two decisions must agree" discipline as the accumulator rules;
+  2. give the VJP loops an iteration space that is not the buffer being eliminated.
+
+WHERE STEP 3 STANDS
+-------------------
+
+    720896  ->  458752  (dead scratch pruned)   ->  327680  (dC copy aliased)
+    budget 232448 — still 95232 over, a 55% reduction so far.
+
+Both cuts landed EXACTLY on their predicted byte counts, which is good evidence the SLM model is
+right.  Neither needed the backward re-tiling this endeavour was opened to do, and the flat
+emission still has no loop.  The remaining 95232 is the point at which re-tiling — or the
+two-part ring-adjoint elision above — actually has to be decided on its merits.

@@ -2440,7 +2440,7 @@
                   ;; rebuild, and %ad-replay-finish refuses.  Applied to FINAL rather than to
                   ;; RESULT so the ring-adjoint fixup has already run: replay is spliced into
                   ;; the body of the same outer LET that fixup adds bindings to.
-                  (%ad-replay-finish final flat-anf)))))))))))
+                  (%ad-prune-dead-scratch (%ad-replay-finish final flat-anf))))))))))))
 
 ;;; ----------------------------------------------------------
 ;;; %crisp-float-type-p
@@ -4638,13 +4638,27 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
          (aref (intern "~" cl))        (set! (intern "SET!" cl))
          (plus (intern "+" cl))        (mul  (intern "*" cl))
          (ti   (intern "TO-INT" cl))
-         (dc   (intern (format nil "~A_VJPDC" (symbol-name c-adj)) pkg))
+         ;; Endeavour 164: dC is staged into SLM here so it can be an MMA operand.  But since
+         ;; 163 Phase 12 an accumulator that does NOT fit the register budget already HAS an SLM
+         ;; adjoint — so for those, this staging buffer is a byte-for-byte duplicate of c-adj and
+         ;; the store below copies SLM to SLM for nothing.  Measured on 154/03: two such copies,
+         ;; 65536 B each, 131072 B of the backward's 458752.  Alias instead of copying.
+         ;;
+         ;; Safe because dc is READ-ONLY in the two loops below (`(~ dc m n)`); nothing writes it,
+         ;; so sharing storage with c-adj cannot clobber anything.  And it asks the SAME predicate
+         ;; %mma-ad-adj-init used to choose the adjoint's representation, so the two decisions
+         ;; cannot drift apart -- the failure mode 146 documented when they did.
+         (dc-aliases-c-adj (and (symbolp c-adj)
+                                (not (%mma-ad-accumulator-fits-registers-p (list mt nt)))))
+         (dc   (if dc-aliases-c-adj
+                   c-adj
+                   (intern (format nil "~A_VJPDC" (symbol-name c-adj)) pkg)))
          (aadd (intern "ATOMIC-ADD!" cl))  (letf (intern "LET" cl))
          (acc  (intern "%VJP_ACC" cl))
          (m (intern "%VJP_M" cl)) (n (intern "%VJP_N" cl)) (k (intern "%VJP_K" cl)))
     (flet ((ix (base off) (list plus (list ti base) (list ti off))))
-      (list let* (list (list dc (list msm flt (list mt nt))))
-            (list st c-adj dc (list 0 0))
+      (list let* (if dc-aliases-c-adj nil (list (list dc (list msm flt (list mt nt)))))
+            (if dc-aliases-c-adj (list sync) (list st c-adj dc (list 0 0)))
             (list sync)
             ;; dA[m,k] += sum_n dC[m,n] * B[k,n]
             ;; A-GRAD given => the operand is a REUSED buffer (a ring slot).  Accumulate the
@@ -5932,3 +5946,100 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
             (<= (* (floor m 16) (floor n 8) 4)
                 (or (%hp-registers-per-thread-default)
                     *default-max-registers-per-thread*))))))
+
+;;; ======================================================================
+;;; Endeavour 164 — DEAD SCRATCH BINDINGS ARE NOT ALLOCATED.
+;;;
+;;; MEASURED on 154/03, whose backward asked for 720896 bytes of SLM against a budget of 232448.
+;;; Enumerating the allocations accounts for that total EXACTLY, and eight 64x256 buffers are 73%
+;;; of it.  FOUR of the eight are dead:
+;;;
+;;;     (%ANF-T-36     (MAKE-SCRATCH-MATRIX FLOAT (64 256)))   <- binding
+;;;     (%ANF-T-36_ADJ (MAKE-SCRATCH-MATRIX FLOAT (64 256)))   <- binding
+;;;     (FILL-TILE %ANF-T-36 0.0) (FILL-TILE %ANF-T-36_ADJ 0.0)
+;;;
+;;; and NOTHING else in the backward mentions either symbol.  They are the forward's wgmma
+;;; accumulator, hoisted into an ANF temp by `(set! D0 (make-wgmma-accumulator ...))`, carried
+;;; into the backward, paired with an adjoint by %augment-scratch-adj-bindings — and never read,
+;;; because the tile VJP takes dC from C_GRAD and its operands from the global sources.  That is
+;;; 262144 bytes, 36% of the requirement, allocated and zeroed for nothing.
+;;;
+;;; THIS ALSO CORRECTS ENDEAVOUR 163 PHASE 14.  That phase made an oversized accumulator take an
+;;; SLM adjoint rather than a register one, which moved these two buffers OUT of registers and
+;;; INTO shared memory — turning a register-budget refusal into a shared-memory one.  Relocating
+;;; dead storage is not a fix; not allocating it is.  The Phase 14 rule stays (a live oversized
+;;; accumulator does belong in SLM), but it no longer has dead tenants to relocate.
+;;;
+;;; CONSERVATIVE BY CONSTRUCTION.  A binding is dropped only when its symbol appears NOWHERE in
+;;; the backward except its own binding and `fill-tile` forms naming it.  Any read, any write,
+;;; any use as an argument — including a `(ring-get R i)` naming R — keeps it.  Register tiles
+;;; are left alone entirely: they are SROA-exploded later and their liveness is not decidable at
+;;; this level.
+;;; ======================================================================
+
+;; src/autodiff.lisp
+(defun %ad-dead-scratch-syms (form)
+  "The scratch symbols in FORM that are bound but never used for anything but zeroing.
+
+   Counts every occurrence of each candidate symbol, then subtracts the two shapes that do not
+   constitute a USE: the binding `(V (make-scratch-... ...))` itself, and any `(fill-tile V ...)`.
+   A symbol with nothing left over is dead."
+  (let ((cands nil) (uses (make-hash-table :test #'eq)))
+    (labels ((scratch-ctor-p (f)
+               (and (consp f) (symbolp (car f))
+                    (member (symbol-name (car f))
+                            '("MAKE-SCRATCH-MATRIX" "MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-TENSOR")
+                            :test #'string=)))
+             (walk (f)
+               (when (consp f)
+                 ;; a binding (V (make-scratch-... ...))
+                 (when (and (= (length f) 2) (symbolp (first f)) (first f)
+                            (scratch-ctor-p (second f)))
+                   (pushnew (first f) cands))
+                 (dolist (sub f) (walk sub))))
+             (count-uses (f)
+               (cond
+                 ((and f (symbolp f)) (incf (gethash f uses 0)))
+                 ((not (consp f)) nil)
+                 ;; the binding itself is not a use of V
+                 ((and (= (length f) 2) (symbolp (first f)) (first f)
+                       (scratch-ctor-p (second f)))
+                  (count-uses (second f)))
+                 ;; (fill-tile V x) is not a use of V
+                 ((and (symbolp (car f)) (string-equal (symbol-name (car f)) "FILL-TILE")
+                       (symbolp (second f)))
+                  (mapc #'count-uses (cddr f)))
+                 (t (mapc #'count-uses f)))))
+      (walk form)
+      (count-uses form)
+      (remove-if (lambda (s) (plusp (gethash s uses 0))) cands))))
+
+;; src/autodiff.lisp
+(defun %ad-prune-dead-scratch (form)
+  "Remove dead scratch bindings, and the fill-tile forms that zero them, from a backward FORM.
+
+   Structural no-op when nothing is dead, which is every kernel whose backward reads everything
+   it allocates.  See the header above for why 154/03's backward allocated 262144 bytes it never
+   touched."
+  (let ((dead (%ad-dead-scratch-syms form)))
+    (if (null dead)
+        form
+        (labels ((prune (f)
+                   (cond
+                     ((not (consp f)) f)
+                     ;; drop (fill-tile DEAD ...) entirely
+                     ((and (symbolp (car f)) (string-equal (symbol-name (car f)) "FILL-TILE")
+                           (symbolp (second f)) (member (second f) dead))
+                      nil)
+                     ((and (symbolp (car f)) (string-equal (symbol-name (car f)) "LET")
+                           (listp (second f)))
+                      (list* (first f)
+                             (remove-if (lambda (b)
+                                          (and (consp b) (symbolp (first b))
+                                               (member (first b) dead)))
+                                        (second f))
+                             (remove nil (mapcar #'prune (cddr f)))))
+                     (t (remove nil (mapcar #'prune f))))))
+          (let ((pruned (prune form)))
+            (log:debug "164: pruned ~a dead scratch binding(s): ~a" (length dead) dead)
+            pruned)))))
