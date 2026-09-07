@@ -1590,3 +1590,481 @@
        :a-node (analyze-expression a-arg env context location)
        :b-node (analyze-expression b-arg env context location)
        :source-location location))))
+
+
+;;; ===================================================================
+;;; Endeavour 165 step 3 (cont) — an ADJOINT is never narrower than what it differentiates.
+;;;
+;;; %mma-ad-adj-init minted every register-tile adjoint at FLOAT, and said so:
+;;;   "Element type is FLOAT in both register cases: fragments are fp32."
+;;; That was true of every fragment in the tree when it was written.  fp64 fragments make
+;;; it false, and the failure was loud -- an fp64 forward produced
+;;;   (C-TILE_ADJ (MAKE-REGISTER-TILE FLOAT (8 8) 0.0))
+;;; sitting next to correctly-typed (A_ADJ (AS DOUBLE 0.0)) scalars, and the BUG 058
+;;; refusal rejected it because an 8x8 FLOAT tile asks for 16x8 fragments.
+;;;
+;;; FOUND BY READING THE EMITTED AST, not by reasoning.  An earlier attempt patched
+;;; %mma-via-tile-backward on the theory that the VJP minted it; the debug log showed that
+;;; function is never even reached for this kernel.  --log-level=debug prints the assembled
+;;; backward AST for exactly this purpose.
+;;;
+;;; THE FIX IS THE INVARIANT, NOT A CASE.  An adjoint is allocated at the WIDER of the
+;;; forward element type and FLOAT: 16-bit promotes to float (deliberate -- 163 path (a)
+;;; ships 16-bit weights with 32-bit gradients), float stays float, double stays double
+;;; because float would silently halve a gradient. Every pre-165 kernel is byte-identical.
+;;;
+;;; NOTE FOR THE SRC PATCH: %ad-adj-elem and %ad-adj-zero are new (src/autodiff.lisp);
+;;; %mma-ad-adj-init REPLACES src/autodiff.lisp:4379.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %ad-adj-elem (forward-elem cl-pkg)
+  "The element type for an adjoint of a value whose forward element type is FORWARD-ELEM:
+   the WIDER of FORWARD-ELEM and FLOAT.
+
+   Endeavour 165.  half / bfloat16 promote to FLOAT -- deliberate, and endeavour 163 path (a)
+   depends on it (16-bit weights, 32-bit gradients).  DOUBLE stays DOUBLE, because FLOAT there
+   would be a downgrade that silently halves the precision of a gradient.  Anything unrecognised
+   keeps FLOAT, the pre-165 answer."
+  (if (and forward-elem (symbolp forward-elem)
+           (string= (symbol-name forward-elem) "DOUBLE"))
+      (intern "DOUBLE" cl-pkg)
+      (intern "FLOAT" cl-pkg)))
+
+(defun %ad-adj-zero (forward-elem cl-pkg)
+  "The zero literal matching %ad-adj-elem's answer.  A bare 0.0 reads as FLOAT and will not
+   match a double fragment field; `d` is Crisp's double literal suffix (docs/ideal_001.md)."
+  (if (and forward-elem (symbolp forward-elem)
+           (string= (symbol-name forward-elem) "DOUBLE"))
+      (intern "0.0D" cl-pkg)
+      0.0))
+
+;; src/autodiff.lisp
+(defun %mma-ad-adj-init (init-form)
+  "Endeavor 145 P3b: the adjoint allocator paired with a forward tile binding.
+
+   Scratch tiles keep the existing behaviour (%promote-scratch-init-for-ad, which also
+   promotes e.g. ulong -> double).
+
+   Endeavor 146 Gap 4: a register tile's adjoint depends on WHICH ROLE the tile plays.
+
+     ACCUMULATOR  (no :operand)  -> a same-shaped register tile zeroed to 0.0.
+        The C adjoint is filled by %load-register-tile-acc from C_GRAD and then staged
+        to SLM by the VJP itself, so registers are right for it.
+
+     OPERAND      (:operand :a/:b) -> a same-shaped SCRATCH MATRIX.
+        EVERY consumer of an operand adjoint indexes it as memory: the scalar lowering
+        writes it with workgroup-stride + ~, the MMA fast path uses it as a store-tile
+        DESTINATION, and %load-tile-at-bwd reads it element-wise to scatter into the
+        global gradient.  A register tile cannot be written element-wise at all —
+        %explode-register-tiles has replaced the whole-tile symbol with per-lane
+        fragment vars by then, so `(~ TILE m k)` has no TILE to resolve.  This is not
+        an AD-specific fact: the same write fails in a forward-only kernel.
+
+   145 never hit this because its specs staged operands through make-scratch-matrix +
+   load-tile-at, so operand adjoints were ALREADY scratch.  142 Phase A introduced
+   register-resident operands via the load-tile overload, and this allocator had never
+   learned about them.
+
+   NOT a new derivative: dA = dC.B^T and dB = A^T.dC are unchanged and both lowerings
+   already computed them correctly.  This decides only WHERE the result is allocated.
+
+   Element type: NEVER NARROWER THAN THE VALUE IT DIFFERENTIATES, and never narrower than
+   FLOAT.  Endeavour 165 replaced a hardcoded FLOAT here, whose stated reason -- "fragments are
+   fp32" -- stopped being true when fp64 fragments arrived.  The rule is now the wider of the
+   forward element type and FLOAT:
+
+     half / bfloat16 -> FLOAT   a PROMOTION, and deliberate: endeavour 163 path (a) ships
+                                16-bit weights with 32-bit gradients.  Unchanged.
+     float           -> FLOAT   unchanged.
+     double          -> DOUBLE  FLOAT would be a DOWNGRADE, silently halving the precision of
+                                a gradient in the one endeavour that exists for precision.
+
+   Stated that way it needs no further edit for a future element type, and every pre-165
+   kernel emits byte-for-byte what it did."
+  (cond
+    ((and (consp init-form) (symbolp (car init-form))
+          (string-equal (symbol-name (car init-form)) "MAKE-REGISTER-TILE"))
+     (let ((cl-pkg (find-package :crisp-language)))
+       (if (or (%mma-ad-register-operand-tile-p init-form)
+               ;; Endeavour 163: an accumulator whose shape exceeds the per-thread register
+               ;; budget gets an SLM adjoint too.  The FORWARD keeps its accumulator in
+               ;; registers because that is where the speed is; the backward has no such need --
+               ;; the VJP stages dC into SLM immediately either way.  A wgmma accumulator is the
+               ;; case that forced this: it is WARPGROUP-wide, so canonicalising it to a
+               ;; per-warp sync-MMA register tile at the SAME shape asks for 512 registers.
+               (not (%mma-ad-accumulator-fits-registers-p (third init-form))))
+           (list (intern "MAKE-SCRATCH-MATRIX" cl-pkg)
+                 (%ad-adj-elem (second init-form) cl-pkg)
+                 (third init-form))
+           (list (intern "MAKE-REGISTER-TILE" cl-pkg)
+                 (%ad-adj-elem (second init-form) cl-pkg)
+                 (third init-form)
+                 (%ad-adj-zero (second init-form) cl-pkg)))))
+    ;; Endeavor 146: RING constructors pass through UNCHANGED.
+    ;;
+    ;; %promote-scratch-init-for-ad opens with %scratch-tensor-canonical-spec, which knows
+    ;; only the four scratch TILE forms; handed a ring it yields the stub type `(TENSOR FLOAT)`
+    ;; and the caller dies with `Invalid incomplete type specifier`.  A ring adjoint needs no
+    ;; promotion in any case: it is a ring of the SAME shape, and these are float already.
+    ;;
+    ;; This was first patched locally inside %ad-ensure-ring-adj-bindings, which fixed the
+    ;; top-level-ring path and left this one — %augment-scratch-adj-bindings reaches the same
+    ;; allocator for a ring bound in a NESTED let, which is 142/14's shape.  Fixed at the
+    ;; allocator instead, so both paths are covered by one rule.
+    ((and (consp init-form) (symbolp (car init-form))
+          (member (symbol-name (car init-form))
+                  '("MAKE-SCRATCH-VECTOR-RING" "MAKE-SCRATCH-MATRIX-RING"
+                    "MAKE-SCRATCH-TENSOR-RING" "MAKE-REGISTER-TILE-RING")
+                  :test #'string=))
+     init-form)
+    (t (%promote-scratch-init-for-ad init-form))))
+
+
+;;; ===================================================================
+;;; Endeavour 165 — the fp64 MMA BACKWARD, part 2: the SCALAR VJP lowering.
+;;;
+;;; With the adjoint tile now DOUBLE, the scalar lowering still staged it through
+;;; `(make-scratch-matrix FLOAT (mt nt))` and accumulated into a `0.0` float local, so:
+;;;   Type mismatch! Expected FLOAT but inferred DOUBLE.
+;;; That is BUG 057's family -- an element-type mismatch between a tile and the matrix it stages
+;;; through.  There it wrote 4-byte floats into a 2-byte tile; here it would truncate a double
+;;; gradient to float, which is exactly the wrong silent behaviour in the one endeavour that
+;;; exists FOR precision.
+;;;
+;;; THIS IS THE PATH THIS KERNEL ACTUALLY TAKES.  %mma-vjp-mma-admissible-p rejects the shape, so
+;;; the MMA lowering is not used -- which is why an earlier attempt to patch
+;;; %mma-via-tile-backward changed nothing: --log-level=debug showed that function is never
+;;; reached here.  Reading the emitted backward AST found in one step what reasoning about the
+;;; call graph had got wrong twice.
+;;;
+;;; ACC-ELEM IS OPTIONAL AND NIL IS THE OLD BEHAVIOUR, so every non-fp64 kernel emits what it did
+;;; before.  It is threaded from `(fourth c-dims)` at the call site -- the same dims-map lookup
+;;; the MMA lowering already performs -- rather than re-derived.
+;;;
+;;; NOTE FOR THE SRC PATCH: %mma-vjp-scalar-lowering REPLACES src/autodiff.lisp:4623;
+;;; %vjp-mma-accumulate-via-tile REPLACES src/autodiff.lisp:5484.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %mma-vjp-scalar-lowering (mt nt kt c-adj a-op b-op a-adj b-adj
+                                 a-src aoy aox b-src boy box pkg
+                                 &optional a-grad b-grad acc-elem)
+  "The shape-agnostic scalar backward for a tile multiply.  Emitted as ordinary Crisp source,
+   so it lowers through the normal path on either backend and at ANY tile shape.
+
+   dC is materialised from the register accumulator into SLM once, then two collective loops
+   accumulate into the operand adjoints.  Index arithmetic is coerced with to-int because a
+   staging origin can be a ULONG extent expression while the collective's loop vars are INT."
+  (declare (ignore a-op b-op))
+  (let* ((cl (find-package :crisp-language))
+         (let* (intern "LET" cl))      (msm  (intern "MAKE-SCRATCH-MATRIX" cl))
+         ;; Endeavour 165: the dC staging matrix and the loop accumulator follow the
+         ;; ACCUMULATOR's element type, not a hardcoded FLOAT.  ACC-ELEM nil reproduces the
+         ;; previous emission byte-for-byte, so every pre-165 kernel is unaffected; only a
+         ;; DOUBLE accumulator changes anything, and there FLOAT would truncate the gradient.
+         (flt  (%ad-adj-elem acc-elem cl))
+         (fzero (%ad-adj-zero acc-elem cl))
+         (st   (intern "STORE-TILE" cl))
+         (sync (intern "SYNC-WORKGROUP" cl))
+         (ws   (intern "WORKGROUP-STRIDE" cl))  (dt (intern "DOTIMES" cl))
+         (aref (intern "~" cl))        (set! (intern "SET!" cl))
+         (plus (intern "+" cl))        (mul  (intern "*" cl))
+         (ti   (intern "TO-INT" cl))
+         ;; Endeavour 164: dC is staged into SLM here so it can be an MMA operand.  But since
+         ;; 163 Phase 12 an accumulator that does NOT fit the register budget already HAS an SLM
+         ;; adjoint — so for those, this staging buffer is a byte-for-byte duplicate of c-adj and
+         ;; the store below copies SLM to SLM for nothing.  Measured on 154/03: two such copies,
+         ;; 65536 B each, 131072 B of the backward's 458752.  Alias instead of copying.
+         ;;
+         ;; Safe because dc is READ-ONLY in the two loops below (`(~ dc m n)`); nothing writes it,
+         ;; so sharing storage with c-adj cannot clobber anything.  And it asks the SAME predicate
+         ;; %mma-ad-adj-init used to choose the adjoint's representation, so the two decisions
+         ;; cannot drift apart -- the failure mode 146 documented when they did.
+         (dc-aliases-c-adj (and (symbolp c-adj)
+                                (not (%mma-ad-accumulator-fits-registers-p (list mt nt)))))
+         (dc   (if dc-aliases-c-adj
+                   c-adj
+                   (intern (format nil "~A_VJPDC" (symbol-name c-adj)) pkg)))
+         (aadd (intern "ATOMIC-ADD!" cl))  (letf (intern "LET" cl))
+         (acc  (intern "%VJP_ACC" cl))
+         (m (intern "%VJP_M" cl)) (n (intern "%VJP_N" cl)) (k (intern "%VJP_K" cl)))
+    (flet ((ix (base off) (list plus (list ti base) (list ti off))))
+      (list let* (if dc-aliases-c-adj nil (list (list dc (list msm flt (list mt nt)))))
+            (if dc-aliases-c-adj (list sync) (list st c-adj dc (list 0 0)))
+            (list sync)
+            ;; dA[m,k] += sum_n dC[m,n] * B[k,n]
+            ;; A-GRAD given => the operand is a REUSED buffer (a ring slot).  Accumulate the
+            ;; stage's contribution in a LOCAL and scatter it straight into the global gradient
+            ;; at this stage's origin, so nothing is ever left in the shared slot to be picked
+            ;; up by another stage.  See BUG 044.
+            (if a-grad
+                (list ws a-adj (list m k)
+                      (list letf (list (list acc fzero))
+                            (list dt (list n nt)
+                                  (list set! acc
+                                        (list plus acc
+                                              (list mul (list aref dc m n)
+                                                    (list aref b-src (ix boy k) (ix box n))))))
+                            (list aadd (list aref a-grad (ix aoy m) (ix aox k)) acc)))
+                (list ws a-adj (list m k)
+                      (list dt (list n nt)
+                            (list set! (list aref a-adj m k)
+                                  (list plus (list aref a-adj m k)
+                                        (list mul (list aref dc m n)
+                                              (list aref b-src (ix boy k) (ix box n)))))))) 
+            ;; dB[k,n] += sum_m A[m,k] * dC[m,n]   (same reuse rule as dA above)
+            (if b-grad
+                (list ws b-adj (list k n)
+                      (list letf (list (list acc fzero))
+                            (list dt (list m mt)
+                                  (list set! acc
+                                        (list plus acc
+                                              (list mul (list aref a-src (ix aoy m) (ix aox k))
+                                                    (list aref dc m n)))))
+                            (list aadd (list aref b-grad (ix boy k) (ix box n)) acc)))
+                (list ws b-adj (list k n)
+                      (list dt (list m mt)
+                            (list set! (list aref b-adj k n)
+                                  (list plus (list aref b-adj k n)
+                                        (list mul (list aref a-src (ix aoy m) (ix aox k))
+                                              (list aref dc m n)))))))
+            (list sync)))))
+
+;; src/autodiff.lisp
+(defun %vjp-mma-accumulate-via-tile (form ctx)
+  "VJP for (mma-accumulate-via-tile (M N K) C-TILE A B [(acc) BODY...]).
+
+   Picks the LOWERING here, inside the VJP, which is the whole point of the registry: the walk
+   never learns the MMA path shape requirements, so they cannot leak back out as a
+   language-level contract.
+
+   Endeavor 150: if BODY fuses an activation onto the accum binding with map-elements!, the
+   chain rule needs dP = dC * f'(P).  A prefix re-stages the operands from their GLOBAL sources,
+   recomputes P into a fresh register tile, and scales the C adjoint through the function's
+   _GRAD twin before the existing backward runs.  The forward kernel is untouched."
+  (destructuring-bind (shape c-tile a-op b-op &rest ignored) (cdr form)
+    (declare (ignore ignored))
+    (let* ((flat-anf  (getf ctx :flat-anf))
+           (inputs    (getf ctx :inputs))
+           (outputs   (getf ctx :outputs))
+           (local-adj (getf ctx :local-adj))
+           (kernel-pkg (getf ctx :kernel-pkg))
+           (dims-map (%mma-ad-tile-dims-map flat-anf))
+           (src-map  (%mma-ad-tile-source-map flat-anf))
+           (ring-sites (%ad-ring-load-sites flat-anf))
+           (c-dims   (assoc (%ad-tile-base c-tile) dims-map))
+           (a-dims   (assoc (%ad-tile-base a-op) dims-map)))
+      (when c-dims
+        (multiple-value-bind (a-src aoy aox a-kind)
+            (%mma-vjp-operand-ref a-op src-map dims-map inputs ring-sites)
+          (multiple-value-bind (b-src boy box b-kind)
+              (%mma-vjp-operand-ref b-op src-map dims-map inputs ring-sites)
+            (when (and a-src b-src)
+              (let* ((mt (second c-dims))
+                     (nt (third c-dims))
+                     (kt (if a-dims
+                             (third a-dims)
+                             (nth-value 2 (%spv-mma-shape))))
+                     (pkg (or kernel-pkg (symbol-package (or (%ad-tile-base c-tile) c-tile))))
+                     (ringp (or (eq a-kind :ring) (eq b-kind :ring)))
+                     (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj kernel-pkg))
+                     (a-adj (%tlc-bwd-adj-name a-op  inputs outputs local-adj kernel-pkg))
+                     (b-adj (%tlc-bwd-adj-name b-op  inputs outputs local-adj kernel-pkg))
+                     (core (if (and (not ringp) (%mma-vjp-mma-admissible-p mt nt kt))
+                               (%mma-via-tile-backward form dims-map src-map inputs outputs
+                                                       local-adj kernel-pkg)
+                               (%mma-vjp-scalar-lowering mt nt kt c-adj a-op b-op a-adj b-adj
+                                                         a-src aoy aox b-src boy box pkg
+                                                         ;; BUG 044: a RING slot is reused across
+                                                         ;; stages, so its adjoint cannot hold a
+                                                         ;; per-stage value.  Hand the lowering
+                                                         ;; the GLOBAL gradient and let it scatter
+                                                         ;; each stage straight there.
+                                                         (when (eq a-kind :ring)
+                                                           (%tlc-bwd-adj-name a-src inputs outputs
+                                                                              local-adj kernel-pkg))
+                                                         (when (eq b-kind :ring)
+                                                           (%tlc-bwd-adj-name b-src inputs outputs
+                                                                              local-adj kernel-pkg))
+                                                         ;; Endeavour 165: the accumulator's
+                                                         ;; element type, so the lowering can
+                                                         ;; stage a double adjoint without
+                                                         ;; truncating it to float.  Same
+                                                         ;; lookup the MMA lowering uses.
+                                                         (fourth c-dims)))))
+                (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) ring=~a mma-path=~a"
+                           mt nt kt a-op a-kind b-op b-kind ringp
+                           (%mma-vjp-mma-admissible-p mt nt kt))
+                (log:debug "165 acc-elem probe: c-tile=~a base=~a c-dims=~a fourth=~a"
+                           c-tile (%ad-tile-base c-tile) c-dims (fourth c-dims))
+                (multiple-value-bind (acc-sym fn-form) (%vjp-via-tile-body-map form)
+                  (if (not acc-sym)
+                      core
+                      (let* ((cl    (find-package :crisp-language))
+                             (grad  (%map-elements-grad-name fn-form pkg))
+                             (base  (symbol-name (or (%ad-tile-base c-tile) c-tile)))
+                             (p-sym  (intern (format nil "~a_PRIMAL" base) pkg))
+                             (ap-sym (intern (format nil "~a_PRIMAL_A" base) pkg))
+                             (bp-sym (intern (format nil "~a_PRIMAL_B" base) pkg))
+                             (progn-s (intern "PROGN" cl))
+                             (let-s   (intern "LET" cl))
+                             (mrt-s   (intern "MAKE-REGISTER-TILE" cl))
+                             (msm-s   (intern "MAKE-SCRATCH-MATRIX" cl))
+                             (lta-s   (intern "LOAD-TILE-AT" cl))
+                             (sync-s  (intern "SYNC-WORKGROUP" cl))
+                             (flt-s   (intern "FLOAT" cl))
+                             (via-s   (intern "MMA-ACCUMULATE-VIA-TILE" cl))
+                             (vjp-s   (intern "%MAP-ELEMENTS-VJP!" cl))
+                             (fn-s    (intern "FUNCTION" cl)))
+                        (unless grad
+                          (error 'crisp-compiler-error
+                                 :message "map-elements! in a via-tile body: the fused function must be a #'NAME form for its gradient twin to be nameable."
+                                 :source-location nil))
+                        (log:debug "VJP via-tile: fused activation ~a -> dP = dC * ~a(P, dC); re-staging P from ~a / ~a"
+                                   fn-form grad a-src b-src)
+                        `(,progn-s
+                          (,let-s ((,ap-sym (,msm-s ,flt-s (,mt ,kt)))
+                                   (,bp-sym (,msm-s ,flt-s (,kt ,nt)))
+                                   (,p-sym  (,mrt-s ,flt-s (,mt ,nt) 0.0)))
+                                  (,lta-s ,a-src ,ap-sym (,aoy ,aox))
+                                  (,lta-s ,b-src ,bp-sym (,boy ,box))
+                                  (,sync-s)
+                                  (,via-s ,shape ,p-sym ,ap-sym ,bp-sym)
+                                  (,vjp-s ,c-adj ,p-sym (,fn-s ,grad)))
+                          ,core))))))))))))
+
+
+;;; ===================================================================
+;;; Endeavour 165 — RE-REGISTER the via-tile VJP.  Without this the overlay above is DEAD CODE.
+;;;
+;;; src/autodiff.lisp:5578 does
+;;;     (register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
+;;; which captures the FUNCTION OBJECT at load time.  A later `defun` of the same name makes a
+;;; NEW function object; the registry still holds the old one, so late binding -- the whole
+;;; premise of the overlay workflow -- does not reach it.
+;;;
+;;; This is a general trap, not a quirk of this function: ANY overlay override of a handler that
+;;; was registered as #'NAME must re-register.  Diagnosed by putting two log:debug lines in the
+;;; same function body and seeing only the pre-existing one fire -- the overlay's copy was never
+;;; running.  Reasoning about the call graph had already produced two wrong theories by then.
+;;;
+;;; The symptom was subtle rather than loud: %mma-vjp-scalar-lowering IS overridden successfully
+;;; (it is called by NAME, so late binding works), and it simply received no ACC-ELEM from the
+;;; stale caller and defaulted to FLOAT -- i.e. half the patch was live and half was not.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile)
+
+
+;;; ===================================================================
+;;; Endeavour 165 — the fp64 MMA backward, part 3: load-fragment-acc.
+;;;
+;;; analyze-load-fragment-acc is the exact INVERSE of analyze-store-fragment and carried the same
+;;; two fp32 assumptions the store did before 2b-ii: it built register-fragment-acc-f32-16x8
+;;; outright and used the 16x8 lane mapping (rows g and g+8 over a 16-tall tile, four elements per
+;;; lane).  Against an fp64 adjoint that reads four floats where the fragment holds two doubles.
+;;;
+;;; Its own docstring says "a Load/Store pair always agrees".  They now agree BY CONSTRUCTION,
+;;; both taking m = lane/4, n = 2*(lane%4) + v from CuTe's CLayout, rather than by two people
+;;; writing the same thing twice.
+;;;
+;;; ELEM arrives as an optional 4th argument from %emit-per-frag-acc-load, mirroring how
+;;; store-fragment receives it from %emit-per-frag-store.  Default FLOAT reproduces the old
+;;; emission exactly.
+;;;
+;;; NOTE FOR THE SRC PATCH: analyze-load-fragment-acc REPLACES src/mma.lisp:2676;
+;;; %emit-per-frag-acc-load REPLACES src/mma.lisp:2852 (supersedes the 2b-i overlay copy).
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun analyze-load-fragment-acc (expr env context location)
+  "P2 (145): (load-fragment-acc SRC (TY TX)) reads a fp32 ACCUMULATOR fragment from the
+   SRC matrix at logical tile (TY TX).  The exact inverse of store-fragment.
+
+   :spirv -> CooperativeMatrixLoadKHR with Use=2 (accumulator), rows/cols from the active
+   profile's shape and layout from the source tensor's :contiguous-term — mirroring
+   analyze-store-fragment so a Load/Store pair always agrees.
+
+   else   -> the NVIDIA per-lane read at the m16n8 fp32 accumulator layout.  With
+   g = lane/4 and t = lane%4 this lane's four registers live at
+     (g, 2t) (g, 2t+1) (g+8, 2t) (g+8, 2t+1)
+   offset by the tile origin (TY*16, TX*8) — byte-for-byte the addresses store-fragment
+   writes, only feeding %construct-struct instead of set!.
+
+   The fragment is tallied against the kernel's register budget exactly as
+   make-register-fragment tallies one: a LOADED accumulator occupies the same registers
+   as a constructed one, and endeavor 144's fit-check must see both."
+  (destructuring-bind (src tile-id &optional (elem 'float)) (cdr expr)
+    (let ((ty (first tile-id)) (tx (second tile-id)))
+      (if (eq *target-backend* :spirv)
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+            (declare (ignore sk))
+            (let ((tnode (analyze-expression src env context (append location '(1)))))
+              (%spv-note-register-fragment sm sn context location)
+              (make-semantic-coop-op
+               :type (list 'coop-matrix 'float sm sn 2) :kind :load
+               :tensor-node tnode
+               :rows sm :cols sn :use 2 :layout (%coop-layout-of tnode)
+               :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
+               :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
+               :source-location location)))
+          ;; Endeavour 165: fp64 reads TWO doubles at the m8n8k4 C/D layout, over a tile 8
+          ;; rows tall rather than 16.  The SAME mapping as analyze-store-fragment's fp64
+          ;; branch -- m = lane/4, n = 2*(lane%4) + v -- because this function's own docstring
+          ;; requires a Load/Store pair to agree.  They now agree by construction: both read it
+          ;; from CuTe's CLayout, instead of two people writing the same thing twice.
+          (if (eql (%mma-elem-bits elem) 64)
+              (progn
+                ;; 2 doubles per lane = 4 32-bit registers: the same count as the f32 4x1
+                ;; accumulator, arrived at differently.
+                (%ptx-note-register-demand 4 context location)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                      (let ((row (+ (* ,ty 8) g)) (col (+ (* ,tx 8) t2)))
+                        (%construct-struct register-fragment-acc-f64-8x8
+                          (~ ,src row col)
+                          (~ ,src row (+ col 1))))))
+                 env context location))
+          (progn
+            (%ptx-note-register-demand 4 context location)
+            (analyze-expression
+             `(let ((lane (to-int (warp-lane))))
+                (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                  (let ((row (+ (* ,ty 16) g)) (col (+ (* ,tx 8) t2)))
+                    (%construct-struct register-fragment-acc-f32-16x8
+                      (~ ,src row col)
+                      (~ ,src row (+ col 1))
+                      (~ ,src (+ row 8) col)
+                      (~ ,src (+ row 8) (+ col 1))))))
+             env context location)))))))
+
+;; src/mma.lisp
+(defun %emit-per-frag-acc-load (src tile-id entry)
+  "Endeavor 145 P3b: per-fragment expansion of
+   (%load-register-tile-acc TILE SRC (TY TX)) — the exact mirror of %emit-per-frag-store,
+   reading each accumulator fragment back out of SRC with P2's load-fragment-acc instead of
+   writing it.  This is where the fragment element->lane MAPPING finally becomes
+   load-bearing: the seeded gradient is non-zero, so a wrong mapping changes the answer
+   (unlike the zero-seed of P2's own spec)."
+  (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
+    (declare (ignore operand))
+    (destructuring-bind (fm . fn) (%frag-mn (%register-tile-elem-of (first entry)))
+      (let* ((to-int-sym (intern "TO-INT" (find-package :crisp-language)))
+             (m-frags (floor m fm)) (n-frags (floor n fn))
+             (bty (list to-int-sym (first tile-id)))
+             (btx (list to-int-sym (second tile-id))))
+        (flet ((one-frag (fv mi-form nj-form)
+                 (list `(set! ,fv (load-fragment-acc ,src
+                                                     ((+ (* ,bty ,m-frags) ,mi-form)
+                                                      (+ (* ,btx ,n-frags) ,nj-form))
+                                                     ,(%register-tile-elem-of (first entry)))))))
+          (if (> n-true 1)
+              (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
+              `(progn
+                 ,@(loop for mi below m-frags append
+                         (loop for nj below n-frags
+                               for idx = (+ (* mi n-frags) nj)
+                               append (one-frag (nth idx syms) mi nj))))))))))

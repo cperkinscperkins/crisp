@@ -331,17 +331,38 @@ learned for the Intel GRF width, and 159 for the 16-bit K.
    not given an fp64 special case — it now takes its type FROM ITS OWN C OPERAND, which was
    always the real rule and merely unexpressible while one accumulator record existed.
 
-   **STILL OPEN — the fp64 MMA BACKWARD.**  `--differentiate` is skipped on 03, with the
-   mechanism named in the directive rather than a vague gap claim.  `%mma-via-tile-backward`
-   stages its dC / A^T / B^T SLM matrices at `op-elem` but mints the dA / dB REGISTER tiles at
-   `float` outright (src/autodiff.lisp ~4338, `(,mrt ,float-s (,mt ,kt) 0.0)`), so an fp64
-   accumulate asks for 16x8 fragments and is refused.  **Threading `op-elem` through was tried,
-   built, and did NOT fix it** — `op-elem` is read from `dims-map`, which is populated from
-   staged operand TILES, and a kernel handing global matrices straight to
-   `mma-accumulate-via-tile` leaves it FLOAT.  The change was REVERTED rather than shipped
-   unverified: it is plausibly part of the eventual fix, but an unverified edit to the AD path
-   made while chasing a failure it did not fix does not belong in the tree.  Next step starts
-   here.
+3b. [x] **DONE — the fp64 MMA DIFFERENTIATES.**  Spec 03 compiles under `--differentiate`; the
+   `_grad` kernel does **32 fp64 arithmetic ops and ZERO fp32**, so the whole gradient runs in
+   double.  It took **five separate fp32 assumptions**, each invisible until the one before it
+   was removed:
+
+   1. `%mma-ad-adj-init` minted every adjoint at FLOAT.  Its docstring said why — "fragments are
+      fp32" — which was true of every fragment in the tree when it was written.  Fixed as the
+      INVARIANT rather than a case: **an adjoint is allocated at the wider of the forward element
+      type and FLOAT** (`%ad-adj-elem`).  16-bit still promotes to fp32, which endeavour 163
+      path (a) depends on; double stays double, because float would silently halve a gradient.
+   2. `%mma-vjp-scalar-lowering` staged dC through `make-scratch-matrix FLOAT` and accumulated
+      into a float local — BUG 057's family, a tile/staging-matrix element mismatch.  `acc-elem`
+      is now threaded from `(fourth c-dims)`; NIL reproduces the old emission exactly.
+   3. **The VJP REGISTRY made the overlay override dead code.**  `register-vjp
+      "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile` (src/autodiff.lisp:5578) captures
+      the FUNCTION OBJECT at load time, so redefining the defun in an overlay never takes effect.
+      Must re-register.  The failure was PARTIAL and therefore nasty: the scalar lowering IS
+      called by name, so that override was live, while its caller was the stale registered copy —
+      the new callee ran with the old caller's argument list and defaulted the new parameter.
+   4. `analyze-load-fragment-acc` — the exact inverse of `store-fragment` — carried the same
+      16x8-f32 mapping the store had before 2b-ii.  Its own docstring requires a Load/Store pair
+      to agree; they now agree BY CONSTRUCTION, both reading the layout from CuTe's CLayout.
+   5. The patch helper assumed CRLF.  **`src/mma.lisp` has MIXED line endings** and this region is
+      LF, so two edits silently matched nothing.
+
+   **METHOD NOTE, worth more than the fixes.**  Two of those were found by reasoning and both
+   theories were WRONG: the first patch went to `%mma-via-tile-backward`, which
+   `--log-level=debug` then showed is never reached for this kernel (the scalar lowering is
+   chosen).  `%mma-via-tile-backward-logged` exists to print the assembled backward AST for
+   exactly this purpose, and two `log:debug` lines in one function body — only the pre-existing
+   one firing — exposed the registry problem in a single step.  Reach for the log before the
+   second theory, not after it.
 
 4. The (8 8 4)-only shape refusal.
 5. **On-metal `MMA_CORRECT`** — the pod trigger, and the mechanical gate it depends on now

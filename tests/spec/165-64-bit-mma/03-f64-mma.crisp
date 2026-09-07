@@ -31,13 +31,10 @@
 ;; COMPILE-WITH[--hardware-profile=h100d --ir-target=ptx]: PASS
 ;; SKIP-DEFAULT-PASS
 ;;
-;; SKIP-WITH[--differentiate]: "fp64 MMA backward: the VJP mints its dA/dB adjoint register
-;; tiles at FLOAT (src/autodiff.lisp ~4338, `(,mrt ,float-s (,mt ,kt) 0.0)`) while staging its
-;; SLM operands at op-elem, so an fp64 accumulate asks for 16x8 fragments and is refused.
-;; Threading op-elem through is necessary but NOT sufficient: op-elem is read from dims-map,
-;; which is populated from staged operand TILES, and a kernel handing global matrices
-;; straight to mma-accumulate-via-tile leaves it FLOAT.  Tried and reverted rather than
-;; shipped unverified -- see 64-bit-mma.md, step 3."
+;; COMPILE-WITH[--hardware-profile=h100d --ir-target=ptx --differentiate]: PASS
+;;   The fp64 MMA DIFFERENTIATES.  Getting there needed five separate fp32 assumptions
+;;   removed -- see 64-bit-mma.md.  Verified in the emitted PTX: the _grad kernel does
+;;   32 fp64 arithmetic ops and ZERO fp32, i.e. the whole gradient runs in double.
 
 (def-hardware-profile h100d :simd-width 32 :mma-shapes ((8 8 4)))
 
