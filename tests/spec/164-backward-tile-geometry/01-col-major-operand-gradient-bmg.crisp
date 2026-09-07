@@ -1,0 +1,67 @@
+;; Endeavour 164 rung 01 — THE COL-MAJOR OPERAND / AD NUMERIC CONTRACT.
+;;
+;; WHY THIS RUNG EXISTS.  Three specs waiting on a numeric gradient check — 137/05, 138/04 and
+;; 138/05 — all declare a COL-MAJOR B operand, and **not one spec in the suite pairs a col-major
+;; operand with a live VERIFY-AUTODIFF**.  So the expected value for those three cannot be
+;; derived from precedent; it has to come from a model of how the harness lays an input out.
+;; Writing that model straight into a [CUDA]-pinned directive would mean shipping an UNTESTED
+;; arithmetic assumption to a rented H100, where a failure could not be told apart from a real
+;; compiler bug.  This rung tests the model first, on BMG, for free.
+;;
+;; THE MODEL THAT WAS TESTED, AND REFUTED.  Read out of tests/verify-autodiff-runner.lisp: the
+;; runner writes every matrix input as a FLAT ROW-MAJOR ramp and binds it as "a 2-D
+;; contiguous-compact row-major float matrix", its only col-major awareness anywhere being for
+;; TMA tensor-map descriptors.  That predicted the kernel would see the TRANSPOSE of what was
+;; written, B_kernel[k][n] = 0.01*(n*K + k), giving
+;;     dA[1,0] = sum_{n=0..15} 0.01*(n*16) = 19.2
+;;
+;; MEASURED: **1.1994476** — i.e. 1.2, the ROW-MAJOR answer, byte-identical to what 145/09 gets
+;; with a row-major B at the same point.  The prediction was wrong by 16x and the model is dead.
+;;
+;; WHAT THIS RUNG THEREFORE PINS, which is the thing three other specs need: **staging a
+;; col-major global through a scratch tile yields the SAME gradient as staging a row-major one.**
+;; The col-major declaration does not perturb the numeric result in this pattern.  That is what
+;; makes it safe to derive expected values for 137/05, 138/04 and 138/05 — all of which declare a
+;; col-major B — with the ORDINARY row-major formula dA[m,k] = sum_n B[k,n].
+;;
+;; WHAT IT DOES NOT SETTLE, and this is deliberate.  1.2 is consistent with TWO different
+;; stories: the harness/staging path handling col-major correctly, OR the col-major declaration
+;; being silently IGNORED on this path.  One data point cannot separate them, and this rung does
+;; not claim to.  The FORWARD side is covered elsewhere: 137/05 and 138/04 both run a CUDA hoist
+;; test whose expectation compares the forward against a host reference on metal, so if a
+;; col-major operand were being misread, that is where it would show.  (Those directive NAMES are
+;; deliberately not spelled here — the spec runner scans comments for them, and writing one in
+;; prose made this rung try to run a CUDA hoist test it never wanted.)  Note also that the MMA operand here is B-TILE, a row-major scratch matrix; the
+;; col-major attribute only governs how B is READ from global, which is why 133/13-14's refusal
+;; of col-major MMA operands on Intel does not fire.
+;;
+;; WHY expect.A IS ABSOLUTE and not FD-vs-analytical agreement: under BUG 054 both sides were fed
+;; the same mis-typed fragments and agreed with each other while being wrong.  Only an absolute
+;; value catches that class.
+;;
+;; atol matches 145/09's 2e-2: same magnitude, same tf32 ~10-bit mantissa on both the FD and the
+;; MMA-computed analytical gradient.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=8x16@0:0.01 B=16x16@0:0.01 at.A=1,0 group=16 h=0.5 atol=2e-2 expect.A=1.2 output-mat=8x16
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel col_major_operand_grad (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((A-tile (make-scratch-matrix float (8 16)))    ; Mt x Kt
+        (B-tile (make-scratch-matrix float (16 16)))   ; Kt x Nt
+        (C-tile (make-register-tile float (8 16) 0.0)))
+    (load-tile-at A A-tile (0 0))
+    (load-tile-at B B-tile (0 0))
+    (sync-workgroup)
+    (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

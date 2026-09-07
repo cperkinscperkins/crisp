@@ -918,6 +918,7 @@ Technical Debt
 - [/] rename --binary-gpu-target flag and expand docs 
 - [x] consider renaming `local-barrier` to `workgroup-sync` ?
 - [ ] L0 hoisting doesn't interpret hardware-profile yet. Need to benchmark and see what's what
+- [ ] unknown flags, especially misspelled ones, should be a compilation error
 
 PERFORMANCE TESTING
 ===================

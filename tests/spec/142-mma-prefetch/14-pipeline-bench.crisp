@@ -2,9 +2,19 @@
 ;; This proves the compiler's auto-unrolling and static slot folding can express
 ;; the ping-pong pipeline without any new compiler forms, and achieves scale.
 ;;
+;; ENDEAVOUR 164: both guards are bound through to-workgroup-uniform in their OWN let,
+;; exactly as 145/19 and 155/03 do.  They ARE uniform in fact -- every operand derives from the
+;; loop counter and a kernel-wide constant -- but the divergence checker cannot prove it, and the
+;; BACKWARD places a sync-workgroup inside these branches; without the assertion it refuses,
+;; correctly, since an unproven-uniform guard around a barrier is a deadlock.
+;;
+;; THE let PLACEMENT IS LOAD-BEARING, and this cost a detour.  Binding the guards in the ENCLOSING
+;; let* alongside next-k / prefetch-k instead makes ANF hoist the whole `when` into a value
+;; binding -- `(%ANF-T-38 (WHEN MORE-K? (LOAD-TILE-AT ...)))` -- whose value is the last
+;; load-tile-at, and the AD checker then reports the thoroughly misleading
+;; `Function LOAD-TILE-AT is not differentiable`.  Wrap each `when` in its own let, as here.
 ;; SKIP-DEFAULT-PASS: register-tile load needs a hardware profile; no GENERIC lowering
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
-;; SKIP-WITH[--differentiate]: "NOT forward-only — the old reason said so and was the last such claim left in the suite.  Endeavour 146 cleared two real blockers behind it (the ring allocator's `Invalid incomplete type specifier: (TENSOR FLOAT)`, and prefetch-tile not being registered as the pure scheduling hint it is), and what remains is a third, in ANF rather than AD: prefetch-tile's COORDINATE TUPLE is flattened into its own binding, so `(prefetch-tile B (prefetch-k (* grid-x 2)) ...)` arrives as `(%ANF-T-58 (PREFETCH-K %ANF-T-57))` and reads as a call to a function named PREFETCH-K — which is really a let-bound row index.  Same class as the with-warp-specialization ANF defect Gap 3 fixed: anf-transform must treat that argument as opaque.  Bounded work; nothing here is about prefetch being undifferentiable."
 ;; MMA-DIMS: 1024 1024 1024
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; TEST-HOIST[L0]: validate-l0-mma-run
@@ -43,15 +53,17 @@
               (prefetch-k (+ grid-k (to-ulong 2))))
           
           ;; 1. Issue prefetch for future K.
-          (when (< prefetch-k n-k-steps)
+          (let ((more-prefetch? (to-workgroup-uniform (< prefetch-k n-k-steps))))
+           (when more-prefetch?
             (prefetch-tile A (grid-y prefetch-k) :size (32 8))
             (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (8 16))
-            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16)))
+            (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16))))
 
           ;; 2. Issue register load for the NEXT k.
-          (when (< next-k n-k-steps)
+          (let ((more-k? (to-workgroup-uniform (< next-k n-k-steps))))
+           (when more-k?
             (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
-            (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
+            (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x))))
 
           ;; 3. Compute on the CURRENT k.
           (mma-accumulate-via-tile (8 16 8) C-tile

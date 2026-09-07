@@ -17,7 +17,6 @@
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma
 ;; VERIFY-AUTODIFF[CUDA]: A=4x4@1:1 at.A=1,2 h=0.5 atol=1e-3 expect.A=1.0 output-mat=4x4 group=4
 ;;
-;; Endeavor 147: the SKIP-WITH[--differentiate] is GONE.  Its reason was
 ;; "VERIFY-AUTODIFF runs on SPV/L0 -- so the gradient VALUES cannot be checked
 ;; on this machine", and that is no longer true: the directive now has a CUDA
 ;; runtime, and it encodes the CUtensorMap descriptor this kernel's TMA path

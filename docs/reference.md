@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-06T22:54:14.557501Z
+Generated on 2026-09-07T03:46:35.368751Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -3554,6 +3554,20 @@ Generated on 2026-09-06T22:54:14.557501Z
 
 
 ---
+### DEFUN `%AD-DEAD-SCRATCH-SYMS`
+- **Args**: `(FORM)`
+
+  > The scratch symbols in FORM that are bound but never used for anything but zeroing.  >   >    Counts every occurrence of each candidate symbol, then subtracts the two shapes that do not  >    constitute a USE: the binding `(V (make-scratch-... ...))` itself, and any `(fill-tile V ...)`.  >    A symbol with nothing left over is dead.
+
+
+---
+### DEFUN `%AD-PRUNE-DEAD-SCRATCH`
+- **Args**: `(FORM)`
+
+  > Remove dead scratch bindings, and the fill-tile forms that zero them, from a backward FORM.  >   >    Structural no-op when nothing is dead, which is every kernel whose backward reads everything  >    it allocates.  See the header above for why 154/03's backward allocated 262144 bytes it never  >    touched.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
 
 ### DEFUN `%COOP-LENGTH`
@@ -7089,7 +7103,7 @@ Generated on 2026-09-06T22:54:14.557501Z
 ### DEFUN `PRINT-COMPILER-ERROR`
 - **Args**: `(C FILENAME)`
 
-  > Prints a formatted compiler error to *error-output*.
+  > Prints a formatted compiler error to *error-output*.  >   >    Endeavour 164: *PRINT-RIGHT-MARGIN* is widened for the whole report.  A source location is a  >    list of path indices, and the pretty printer breaks a long one across ONE LINE PER ELEMENT —  >    a 27-deep location became 27 lines, twice (the condition's own report carries a location too),  >    burying the actual message in a column of digits.  >   >    The margin, NOT *print-pretty*.  Binding *print-pretty* to NIL also switches off the printer's  >    ABBREVIATIONS, so `#'+` comes out as `(FUNCTION +)` — which changed a diagnostic's text and  >    broke 033/errors/08-illegal-function-descendant, whose CHECK-FAIL expects `#'+`.  Widening the  >    margin stops the wrapping and leaves every message character-for-character as it was.
 
 
 ---
