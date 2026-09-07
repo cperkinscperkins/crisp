@@ -42,7 +42,7 @@
 //          CRISP_MATMUL_LOCAL    block size "x,y,z"                            (default "32,1,1")
 //          CRISP_MATMUL_GRID     "strided" | "one-thread-per"                  (default "strided")
 //          CRISP_MATMUL_TILE     output tile "TM,TN", for GRID=strided         (default "32,64")
-//          CRISP_MATMUL_ELEM     A/B element type: "f32" | "bf16" | "f16"      (default "f32")
+//          CRISP_MATMUL_ELEM     A/B element type: "f32"|"bf16"|"f16"|"f64"    (default "f32")
 //          CRISP_MATMUL_ARGC     total kernel argument count                   (default 27)
 //          CRISP_MATMUL_ARG_A    A's FIRST argument index                      (default 0)
 //          CRISP_MATMUL_ARG_B    B's FIRST argument index                      (default 9)
@@ -51,8 +51,10 @@
 //          CRISP_MATMUL_TENSORMAP  TMA descriptors, "idx:a|b:box0:box1:swz[,...]" (default "")
 //   stdout: one JSON object -- correct / max_abs_err / kernel_median_us / gflops
 //
-// The accumulator (C) is ALWAYS f32: every 16-bit MMA here accumulates in fp32, so CRISP_MATMUL_ELEM
-// describes A and B only.  This matches the L0 fixture and the Crisp lowering.
+// The accumulator (C) is f32 for every element type EXCEPT f64.  Every 16-bit MMA here
+// accumulates in fp32 -- that is the hardware's mixed precision, not a simplification -- so for
+// f32/bf16/f16 CRISP_MATMUL_ELEM describes A and B only.  fp64 is the exception: m8n8k4 is
+// fp64-in / fp64-out, so C is 8 bytes there and `cbytes` below carries that.  Endeavour 165.
 
 #include <cuda.h>
 #include <algorithm>
@@ -155,7 +157,13 @@ int main(int argc, char **argv) {
     const int iB = std::atoi(env_or("CRISP_MATMUL_ARG_B", "9"));
     const int iC = std::atoi(env_or("CRISP_MATMUL_ARG_C", "18"));
 
-    const uint64_t ebytes = (elem == "f32") ? 4 : 2;
+    // Endeavour 165: f64 = 8.  This one value already feeds shared-memory sizing, the host
+    // A/B buffers, scratch-tile extents and the tensormap row stride, so widening it here is
+    // what makes those four correct rather than four separate edits.
+    const uint64_t ebytes = (elem == "f32") ? 4 : (elem == "f64") ? 8 : 2;
+    // C's width.  Separate from ebytes because a 16-bit MMA accumulates in fp32 -- C is wider
+    // than A/B there -- while fp64 is fp64 throughout.
+    const uint64_t cbytes = (elem == "f64") ? 8 : 4;
 
     // B's orientation, resolved BEFORE anything uses it.  It governs THREE things that must
     // agree: the tensormap's global dims, the kernel's B tensor strides, and the host reference's
@@ -232,16 +240,20 @@ int main(int argc, char **argv) {
     uint64_t si0 = (M + smax_rows - 1) / smax_rows; if (si0 == 0) si0 = 1;
     std::vector<uint64_t> samp_rows;
     for (uint64_t i = 0; i < M; i += si0) samp_rows.push_back(i);
-    std::vector<float> Crows((size_t)samp_rows.size() * (size_t)N, 0.0f);
+    // Endeavour 165: BYTES, not floats -- C is 8 bytes wide at fp64.  An accessor (gc, by the
+    // verification block) reads it at the right width, so the comparison stays one code path.
+    std::vector<unsigned char> Crows((size_t)samp_rows.size() * (size_t)N * (size_t)cbytes, 0);
     for (uint64_t i = 0; i < nA; ++i) {
         float v = (float)(i % 5);
         if      (elem == "f32")  ((float *)A.data())[i] = v;
+        else if (elem == "f64")  ((double *)A.data())[i] = (double)v;
         else if (elem == "bf16") ((uint16_t *)A.data())[i] = f32_to_bf16(v);
         else                     ((uint16_t *)A.data())[i] = f32_to_f16(v);
     }
     for (uint64_t i = 0; i < nB; ++i) {
         float v = (float)(i % 3);
         if      (elem == "f32")  ((float *)B.data())[i] = v;
+        else if (elem == "f64")  ((double *)B.data())[i] = (double)v;
         else if (elem == "bf16") ((uint16_t *)B.data())[i] = f32_to_bf16(v);
         else                     ((uint16_t *)B.data())[i] = f32_to_f16(v);
     }
@@ -249,10 +261,10 @@ int main(int argc, char **argv) {
     CUdeviceptr dA, dB, dC;
     CU_OK(cuMemAlloc(&dA, A.size()), "cuMemAlloc A");
     CU_OK(cuMemAlloc(&dB, B.size()), "cuMemAlloc B");
-    CU_OK(cuMemAlloc(&dC, (size_t)nC * sizeof(float)), "cuMemAlloc C");
+    CU_OK(cuMemAlloc(&dC, (size_t)nC * cbytes), "cuMemAlloc C");
     CU_OK(cuMemcpyHtoD(dA, A.data(), A.size()), "H2D A");
     CU_OK(cuMemcpyHtoD(dB, B.data(), B.size()), "H2D B");
-    CU_OK(cuMemsetD8(dC, 0, (size_t)nC * sizeof(float)), "zero C");
+    CU_OK(cuMemsetD8(dC, 0, (size_t)nC * cbytes), "zero C");
 
     // ---- kernel arguments -----------------------------------------------------------------
     // Backing store for every scalar, so &slot[i] stays valid for the whole run.
@@ -277,7 +289,7 @@ int main(int argc, char **argv) {
     // A B^T kernel indexes B[n][k]; a K x N kernel indexes B[k][n].  Same bytes, different view.
     if (b_is_nk) bind_tensor(iB, dB, B.size(), N, K);
     else         bind_tensor(iB, dB, B.size(), K, N);
-    bind_tensor(iC, dC, (size_t)nC * sizeof(float), M, N);
+    bind_tensor(iC, dC, (size_t)nC * cbytes, M, N);
     // A scratch tensor's "ptr" is a BYTE OFFSET into the dynamic shared block, not an address.
     auto bind_tensor3 = [&](int base, uint64_t off, uint64_t e0, uint64_t e1, uint64_t e2) {
         if (base < 0 || base + 11 >= argc_k) return;
@@ -345,6 +357,7 @@ int main(int argc, char **argv) {
         CUtensorMapDataType dt;
         if      (elem == "bf16") dt = CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
         else if (elem == "f16")  dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT16;
+        else if (elem == "f64")  dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT64;
         else                     dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT32;
 
         uint64_t gdim[2] = { e1, e0 };                 // reversed: innermost first
@@ -453,9 +466,9 @@ int main(int argc, char **argv) {
 
     // Sampled ROWS only: O(64*N) instead of O(N^2).
     for (size_t r = 0; r < samp_rows.size(); ++r)
-        CU_OK(cuMemcpyDtoH(Crows.data() + r * (size_t)N,
-                           dC + samp_rows[r] * (size_t)N * sizeof(float),
-                           (size_t)N * sizeof(float)), "D2H C row");
+        CU_OK(cuMemcpyDtoH(Crows.data() + r * (size_t)N * (size_t)cbytes,
+                           dC + samp_rows[r] * (size_t)N * cbytes,
+                           (size_t)N * cbytes), "D2H C row");
 
     // ---- verification --------------------------------------------------------------------
     // Strided samples across the WHOLE output, not a top-left corner: a corner is the same price
@@ -464,15 +477,24 @@ int main(int argc, char **argv) {
     double max_abs_err = 0.0;
     uint64_t checked = 0;
     {
-        auto ga = [&](uint64_t i) -> float {
+        // Endeavour 165: these return DOUBLE now.  For f32/16-bit that is a widening of a value
+        // that was already being cast to double at the multiply below, so those paths are
+        // unchanged; for f64 it is the only way to read the operand at all.
+        auto ga = [&](uint64_t i) -> double {
             if (elem == "bf16") return bf16_to_f32(((uint16_t *)A.data())[i]);
             if (elem == "f16")  return f16_to_f32(((uint16_t *)A.data())[i]);
+            if (elem == "f64")  return ((double *)A.data())[i];
             return ((float *)A.data())[i];
         };
-        auto gb = [&](uint64_t i) -> float {
+        auto gb = [&](uint64_t i) -> double {
             if (elem == "bf16") return bf16_to_f32(((uint16_t *)B.data())[i]);
             if (elem == "f16")  return f16_to_f32(((uint16_t *)B.data())[i]);
+            if (elem == "f64")  return ((double *)B.data())[i];
             return ((float *)B.data())[i];
+        };
+        auto gc = [&](size_t i) -> double {
+            if (elem == "f64") return ((double *)Crows.data())[i];
+            return (double)((float *)Crows.data())[i];
         };
         const uint64_t smax = 64;
         uint64_t sj = (N + smax - 1) / smax; if (sj == 0) sj = 1;
@@ -483,9 +505,13 @@ int main(int argc, char **argv) {
                 double acc = 0.0;
                 for (uint64_t k = 0; k < K; ++k)
                     acc += (double)ga(i * K + k) * (double)gb(b_is_nk ? (j * K + k) : (k * N + j));
-                double got = (double)Crows[ri * (size_t)N + j];
+                double got = gc((size_t)ri * (size_t)N + (size_t)j);
                 double err = std::fabs(got - acc);
-                double tol = 1e-3 * std::max(1.0, std::fabs(acc));
+                // Endeavour 165: the tolerance follows the type.  1e-3 relative is right for
+                // tf32 and the 16-bit rungs; at fp64 it would pass a result computed entirely in
+                // SINGLE precision, which is the one thing a 64-bit benchmark must not do.
+                double tol = (elem == "f64") ? (1e-10 * std::max(1.0, std::fabs(acc)))
+                                             : (1e-3  * std::max(1.0, std::fabs(acc)));
                 if (err > max_abs_err) max_abs_err = err;
                 if (err > tol) { verified = false; break; }
             }

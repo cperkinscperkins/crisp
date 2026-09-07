@@ -1012,6 +1012,78 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             lines.append("| " + label + " | " + " | ".join(cells) + " |")
         lines.append("")
 
+    # ---- Section 1c (fp64): the technique ladder at 64 bits (endeavour 165) ----
+    # A SEPARATE section rather than another column on section 1, and the reason is measured.
+    # The fp64 rungs run at a 64x32 register tile because 64x64 needs 256 registers/thread -- one
+    # over the architectural 255 -- so they are NOT the same kernel at a different element type
+    # the way the bf16 ladder is.  Putting them in one table would invite a like-for-like reading
+    # that the geometry does not support.
+    LADDER_F64 = [
+        ("chap0_naive_f64", "Ch 0 naive (no tensor cores)"),
+        ("chap1_handrolled_mma_f64", "Ch 1 hand-rolled MMA"),
+        ("chap2_tiling_f64", "Ch 2 tiling macro"),
+        ("chap3_async_f64", "Ch 3 async staging (cp.async)"),
+        ("chap4_cheap_fetch_f64", "Ch 4 TMA (:block)"),
+        ("chap5_multistage_ring_f64", "Ch 5 ring + prefetch"),
+        ("chap6_warp_specialization_f64", "Ch 6 warp specialization"),
+    ]
+    for gpu in gpus:
+        gd = matmul_data.get(gpu, {})
+        have64 = [(k, lbl) for k, lbl in LADDER_F64 if gd.get(k, {}).get("fast")]
+        if not have64:
+            continue
+
+        def _tf64(chapter, n, _gd=gd):
+            pts = _gd.get(chapter, {}).get("fast", {}).get(n, {})
+            for comp, pt in pts.items():
+                if _is_crisp(comp):
+                    v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                    if v:
+                        return v
+            return None
+
+        sizes64 = sorted({n for k, _ in have64
+                          for n in gd.get(k, {}).get("fast", {}).keys()
+                          if isinstance(n, int)})
+        if not sizes64:
+            continue
+
+        lines.append("## § 1c — The Technique Ladder in 64-bit · " + gpu)
+        lines.append("")
+        lines.append("*The same chapters at IEEE double. Cells read **fp64 TFLOPS**, and the "
+                     "rightmost column is each rung's ratio to the Chapter 0 vector-fp64 floor.*")
+        lines.append("")
+        lines.append("**Chapter 7 is absent by hardware, not unmeasured.** wgmma covers "
+                     "fp16/bf16/tf32/fp8/int8; there is no fp64 warpgroup MMA in any form, so "
+                     "Chapter 6 is the top of this ladder.")
+        lines.append("")
+        lines.append("**These rows are not comparable cell-for-cell with the tf32 ladder.** An fp64 "
+                     "accumulator fragment is 8×8 holding 2 doubles per lane = 4 registers, so the "
+                     "tf32 chapters' 64×64 tile would need 256 registers/thread — one over the "
+                     "architectural 255. Every 64-bit rung therefore runs at 64×32. fp64 costs 2× "
+                     "the registers at equal tile size, which is part of the 64-bit result rather "
+                     "than a tuning choice.")
+        lines.append("")
+        lines.append("*Expectation under test (from § 2): the fp64 tensor core measured only "
+                     "1.20–1.53× over vector fp64, while cuBLAS sits ~1.9× above the best CUTLASS "
+                     "DMMA config — both DMMA, so that larger gap is scheduling. If that holds, the "
+                     "distance on this ladder should be in chapters 2–6, not chapter 1.*")
+        lines.append("")
+        lines.append("| chapter | " + " | ".join("N=%d" % n for n in sizes64) + " | vs Ch 0 |")
+        lines.append("|---|" + "---:|" * len(sizes64) + "---:|")
+        for key, label in have64:
+            cells = []
+            ratios = []
+            for n in sizes64:
+                v = _tf64(key, n)
+                floor = _tf64("chap0_naive_f64", n)
+                cells.append("—" if v is None else "%.1f" % v)
+                if v is not None and floor:
+                    ratios.append(v / floor)
+            rcell = ("%.2f×" % (sum(ratios) / len(ratios))) if ratios else "—"
+            lines.append("| " + label + " | " + " | ".join(cells) + " | " + rcell + " |")
+        lines.append("")
+
     # Section 4: MMA + Activation
     lines.append("## § 4 — MMA + Activation\n")
     lines.append("*What does fusing an arbitrary activation buy?*\n")
