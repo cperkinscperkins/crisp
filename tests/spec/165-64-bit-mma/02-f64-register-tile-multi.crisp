@@ -1,0 +1,20 @@
+;; Endeavour 165 — a MULTI-FRAGMENT fp64 register tile.
+;;
+;; Sibling of 01, which is a single 8x8 fragment.  A 16x16 tile of fp64 is (16/8)x(16/8) = 2x2 =
+;; FOUR fragments, so this exercises the per-fragment WALK -- the loop that 01, holding exactly
+;; one fragment, cannot distinguish from a straight line.
+;;
+;; This is the case that would have been silently empty before BUG 058 was fixed and before the
+;; geometry became element-dependent: under the hardcoded 16x8 fragment a 16x16 double tile came
+;; out as (floor 16 16) x (floor 16 8) = 1x2 = 2 fragments of the WRONG shape, storing to the
+;; wrong addresses.  Two fragments is not zero, so the BUG 058 refusal would not have caught it;
+;; only the geometry being right does.
+
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel f64_register_tile_multi (&out C)
+  (declare #'(&out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile double (16 16) (as double 1.5))))
+    (store-tile C-tile C (0 0))))

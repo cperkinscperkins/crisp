@@ -36,6 +36,36 @@ declaration assembles cleanly and `llc` emits an external call with no diagnosti
 shape choice would surface as a link error or as garbage, far from its cause.  **The 64-bit
 ladder is pinned to m8n8k4, and anything else must be a compile-time refusal in Crisp.**
 
+### 1b. The exact fp64 fragment LANE LAYOUT, from a primary machine-readable source
+
+`third_party/cutlass/include/cute/atom/mma_traits_sm80.hpp` defines
+`MMA_Traits<SM80_8x8x4_F64F64F64F64_TN>` with explicit CuTe thread-value layouts.  Decoded
+(CuTe linearises the natural index column-major, `index = m + n*M`; thread decomposes as
+`t0 = lane % 4`, `t1 = lane / 4`):
+
+```
+ALayout = SM80_8x4     = Layout<Shape<Shape<_4,_8>,_1>, Stride<Stride<_8,_1>,_0>>
+BLayout = SM80_8x4     (same)
+CLayout = SM80_8x8_Row = Layout<Shape<Shape<_4,_8>,_2>, Stride<Stride<_16,_1>,_8>>
+```
+
+| fragment | shape | per lane | mapping |
+|---|---|---|---|
+| A | 8x4 (M,K) | 1 double | `m = lane/4`, `k = lane%4` |
+| B | 4x8 (K,N) | 1 double | `k = lane%4`, `n = lane/4` |
+| C/D | 8x8 (M,N) | 2 doubles | `m = lane/4`, `n = 2*(lane%4) + v`, v in {0,1} |
+
+This is the SAME `groupID = lane/4` family as the tf32 path already documented at
+src/mma.lisp:546, which is corroborating rather than surprising.  It matches the element counts
+CUTLASS's arch layer declares independently (`FragmentA/B = Array<double,1>`,
+`FragmentC = Array<double,2>`), so two parts of CUTLASS agree with each other.
+
+**Why this mattered enough to go and find.**  A fragment lane layout is the textbook
+wrong-but-self-consistent failure: guess it, and the kernel compiles, emits the right
+instruction, passes every mechanical check, and computes garbage that only on-metal
+verification catches.  Endeavour 159 lost a pod session to exactly that class of thing.  Taking
+it from CuTe rather than from memory removes the guess before it can cost a rental.
+
 ### 2. CUTLASS independently agrees, and hands us the fragment layout
 
 `third_party/cutlass` at the pinned `dc45f97` defines exactly one fp64 tensor-op MMA
@@ -260,11 +290,41 @@ learned for the Intel GRF width, and 159 for the 16-bit K.
    location)`.  NVIDIA-only, deliberately — see BUG 058 for why SPIR-V needs the element type
    threaded through first, and note that half is STILL OPEN.
    Specs: `errors/01-tile-too-few-rows.crisp`, `errors/02-tile-too-few-cols.crisp`.
-2. Make the accumulator fragment geometry a function of the element type (8x8 with 2 doubles per
-   lane for fp64, vs 16x8 with 4 floats for f32), rather than the hardcoded 16x8-f32.
-3. Then the three fragment records, the `load-fragment-a`/`-b` f64 branch, and the
-   `llvm.nvvm.mma.m8n8k4.row.col.f64` emitter branch, as listed above.
+2. [x] **DONE — accumulator fragment geometry is now a function of the element type.**  Done in
+   three sub-steps, each verified before the next: **2a** threaded ELEM to the tile TYPE (the
+   minted name now carries it, `*register-tile-dims*` stores `(M N ELEM)`); **2b-i** reached ELEM
+   from the five `%emit-per-frag-*` emitters; **2b-ii** flipped `%acc-frag-mn` so `double`
+   answers 8x8, added `register-fragment-acc-f64-8x8` (2 doubles) and `%frag-record-for-acc`,
+   taught `analyze-make-register-fragment` the element's own geometry, and gave
+   `analyze-store-fragment` the fp64 lane mapping.  A third geometry function,
+   `%frag-mn-for-operand`, was routed too, including fp64's 8x4 / 4x8 OPERAND geometry — unused
+   until step 3, but a function that would answer 16x8 if asked is a trap.
+   Specs: `01-f64-register-tile.crisp` (one fragment), `02-f64-register-tile-multi.crisp` (16x16
+   = four fragments, which exercises the walk).
+
+   **Method that paid off, and one that did not.**  2a and 2b-i were required to be INERT and
+   checked against a 14-file byte-identical IR baseline.  That check is a spot check and it is
+   not sufficient: 2b-i passed it and still broke 5 Intel specs, because ELEM had been added as a
+   seventh field on the tile ENTRY and a consumer in ANOTHER FILE (src/codegen.lisp:5477)
+   destructures that entry with a fixed lambda list.  The survey had been scoped to src/mma.lisp.
+   **Only the suite can support the word "inert"; the IR check is a fast filter, not a proof.**
+   The redesign was also simply better: that same codegen site already asks
+   `(%register-tile-elem-of (first entry))` — a side-table lookup keyed by the tile's symbol —
+   so the entry never needed to grow, and v2 uses the mechanism that was already there.
+
+3. Then the `load-fragment-a`/`-b` f64 branch and the `llvm.nvvm.mma.m8n8k4.row.col.f64` emitter
+   branch.  Both now have their geometry supplied and their lane layouts already decoded (finding
+   1b), so this is wiring rather than discovery.  **This is where the pod becomes worth renting**:
+   a fragment lane layout is exactly what compile-time checks cannot validate.
 4. The (8 8 4)-only shape refusal.
+
+**OPEN, needs a decision (language, not a bug):** `(make-register-tile double (8 8) 2.5)` is
+refused with "Type mismatch! Expected DOUBLE but inferred FLOAT", because a bare float literal
+reads as FLOAT.  Every fp64 kernel will therefore carry `(as double ...)` on its init.  Either
+leave it explicit, or coerce a literal init to the tile's element type.  Related to the still-open
+BUG 005 (literal suffixes).  Note the refusal is itself evidence the record is really fp64 — before
+2b-ii a tile declared `double` was built from f32 fragments and a float init matched, so spec 01's
+first form had been passing for the wrong reason.
 
 Note that the "Type mismatch! Expected FLOAT but inferred DOUBLE" refusal in row 2 is the
 f32-hardcoded fragment record showing through, and it is a GOOD sign: the type checker is already
