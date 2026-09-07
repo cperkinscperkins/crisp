@@ -300,3 +300,28 @@ far in this endeavour has been spec-level.**
 
 PENDING ON HARDWARE: four `[CUDA]` numeric checks, verifiable in ONE batched pod run —
 137/03 (`expect.A=1.0`), 137/05, 138/04, 138/05 (`expect.A=0.28`).
+
+STEP 2 VERIFIED ON AN H100 NVL (2026-09-06)
+--------------------------------------------
+
+One batched pod run.  All four `[CUDA]` gradient checks EXECUTED and passed:
+
+    137/03-tma-codegen-ptx        PASS [cuda]  analytical=1.0   numerical=1.0        diff=0.0
+    137/05-block-mma-matmul       PASS [cuda]  analytical=0.28  numerical=0.27978516
+    138/04-pipelined-block-matmul PASS [cuda]  analytical=0.28  numerical=0.28027344
+    138/05-linear-ring-pipeline   PASS [cuda]  analytical=0.28  numerical=0.28027344
+
+Suite on NVIDIA: **1063/1063 plain, 1063/1063 --differentiate, 233/233 negative.**
+
+**The three 0.28 expectations were derived, not copied**, from `dA[m,k] = sum_n B[k,n]` with
+`B[i][j] = 0.01*(i*8+j)`, and they rest on the col-major contract 164/01 established on BMG.
+They came back right, which retro-validates that whole chain: had 164/01 not been written first,
+these would have carried 19.2 and failed here for a reason that looked like a compiler defect.
+
+The 70 `SKIP (no on-metal AD runtime available)` lines are the BMG-targeted checks — the pod has
+no Intel GPU, so those defer correctly.  Worth noting because "all green" alone would not
+distinguish "ran and passed" from "skipped"; the four that mattered report `PASS [cuda]`.
+
+**Group B is now fully verified on a NUMBER.**  MMA-range ledger: **17 -> 3**
+(140/01, 140/02 out of scope; 154/03 the tile-geometry item).  Still ZERO compiler changes in
+this endeavour.
