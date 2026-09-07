@@ -67,9 +67,31 @@
 #define CFG_STAGES 4
 #endif
 
+// -DOPCLASS_SIMT SELECTS VECTOR fp64 INSTEAD OF THE TENSOR CORES, and it exists because the
+// cuBLAS A/B turned out not to answer the question it was supposed to.
+//
+// The plan was to read the fp64-tensor-core-vs-vector ratio off cuBLAS: COMPUTE_64F free to use
+// DMMA, COMPUTE_64F_PEDANTIC not.  That reasoning was imported from fp32, where PEDANTIC's job
+// IS to forbid tf32.  It does not transfer.  DMMA is bit-identical IEEE double -- it is not an
+// approximation of anything -- so a mode defined as "prescribed precision and standardized
+// arithmetic" has no numerical reason to refuse it, and the measured PEDANTIC throughput on an
+// H100 NVL (40.6 TFLOPS at N=2048) is well above what a pure vector-fp64 path should reach.
+// Whatever the two cuBLAS arms differ by, it is not established to be the tensor cores.
+//
+// CUTLASS can answer it properly, because here we choose the lowering rather than infer it.
+// OpClassTensorOp with GemmShape<8,8,4> is DMMA; OpClassSimt with GemmShape<1,1,1> is the vector
+// FMA path.  Same file, same oracle, same timing loop, same data -- one template parameter apart.
+// A ratio between two kernels whose instruction selection we can read beats a ratio between two
+// library modes whose selection we are guessing at.
+#ifdef OPCLASS_SIMT
+#define CFG_OPCLASS_NAME "simt"
+#else
+#define CFG_OPCLASS_NAME "dmma"
+#endif
+
 #define CFG_STR2(x) #x
 #define CFG_STR(x) CFG_STR2(x)
-#define CFG_NAME CFG_STR(CFG_TILE_M) "x" CFG_STR(CFG_TILE_N) "x" CFG_STR(CFG_TILE_K) \
+#define CFG_NAME CFG_OPCLASS_NAME "_" CFG_STR(CFG_TILE_M) "x" CFG_STR(CFG_TILE_N) "x" CFG_STR(CFG_TILE_K) \
                  "w" CFG_STR(CFG_WARP_M) "x" CFG_STR(CFG_WARP_N) "s" CFG_STR(CFG_STAGES)
 
 #if __has_include(<cutlass/cutlass.h>)
@@ -105,8 +127,15 @@ int main(int argc, char** argv) {
 
     using ThreadblockShape = cutlass::gemm::GemmShape<CFG_TILE_M, CFG_TILE_N, CFG_TILE_K>;
     using WarpShape        = cutlass::gemm::GemmShape<CFG_WARP_M, CFG_WARP_N, CFG_WARP_K>;
+#ifdef OPCLASS_SIMT
+    // Vector fp64: ordinary FMA, one element at a time, no tensor core involved.
+    using OpClass          = cutlass::arch::OpClassSimt;
+    using InstructionShape = cutlass::gemm::GemmShape<1, 1, 1>;
+#else
     // The ONLY fp64 tensor-core shape.  Not swept — see the header.
+    using OpClass          = cutlass::arch::OpClassTensorOp;
     using InstructionShape = cutlass::gemm::GemmShape<8, 8, 4>;
+#endif
 
     using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
         ElementC, 1, ElementAccumulator, ElementAccumulator>;
@@ -116,7 +145,7 @@ int main(int argc, char** argv) {
         ElementB, LayoutB,
         ElementC, LayoutC,
         ElementAccumulator,
-        cutlass::arch::OpClassTensorOp,
+        OpClass,
         cutlass::arch::Sm80,
         ThreadblockShape, WarpShape, InstructionShape,
         EpilogueOp,

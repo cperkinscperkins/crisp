@@ -37,6 +37,22 @@
 #
 set -uo pipefail
 
+# nvcc IS NOT ALWAYS ON PATH.  Measured, not defensive: the first smoke run of this script on a
+# RunPod H100 NVL (driver 580.126.09) failed every build with "nvcc: command not found" while
+# /usr/local/cuda/bin/nvcc was sitting right there.  The image ships CUDA without putting it on
+# the login PATH.  Finding it here costs nothing and saves a rental round trip.
+if ! command -v nvcc >/dev/null 2>&1; then
+  for cuda_dir in /usr/local/cuda/bin /usr/local/cuda-12/bin /opt/cuda/bin; do
+    if [ -x "$cuda_dir/nvcc" ]; then export PATH="$cuda_dir:$PATH"; break; fi
+  done
+  # A glob fallback for versioned installs (/usr/local/cuda-12.4/bin and friends).
+  if ! command -v nvcc >/dev/null 2>&1; then
+    for cuda_dir in /usr/local/cuda-*/bin; do
+      if [ -x "$cuda_dir/nvcc" ]; then export PATH="$cuda_dir:$PATH"; break; fi
+    done
+  fi
+fi
+
 OUT_DIR="${OUT_DIR:-put_temp_files_here/165-pod}"
 SRC_DIR="benchmarks/matmul/sec2_top_f64"
 ARCH="${ARCH:-sm_90}"
@@ -76,7 +92,13 @@ say() { echo "$*" | tee -a "$SUMMARY"; }
 say "=== endeavour 165 — §2 fp64 competitors ==="
 say "date:   $(date -u +%FT%TZ)"
 say "gpu:    $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1)"
-say "nvcc:   $(nvcc --version 2>/dev/null | tail -1)"
+# Say MISSING out loud.  The first run printed an empty "nvcc:" line and then five build
+# failures; the empty line was the cause and was the easiest thing on the page to skim past.
+if command -v nvcc >/dev/null 2>&1; then
+  say "nvcc:   $(nvcc --version 2>/dev/null | tail -1)"
+else
+  say "nvcc:   NOT FOUND — every build below will fail"
+fi
 say "sizes:  $SIZES   (warmup=$WARMUP iters=$ITERS smoke=$SMOKE)"
 say ""
 
@@ -126,6 +148,14 @@ CUTLASS_CONFIGS=(
   "128x64x16w64x32s3:-DCFG_TILE_M=128 -DCFG_TILE_N=64  -DCFG_TILE_K=16 -DCFG_WARP_M=64 -DCFG_WARP_N=32 -DCFG_STAGES=3"
   "64x128x16w32x64s3:-DCFG_TILE_M=64  -DCFG_TILE_N=128 -DCFG_TILE_K=16 -DCFG_WARP_M=32 -DCFG_WARP_N=64 -DCFG_STAGES=3"
   "32x32x16w32x32s4:-DCFG_TILE_M=32  -DCFG_TILE_N=32  -DCFG_TILE_K=16 -DCFG_WARP_M=32 -DCFG_WARP_N=32 -DCFG_STAGES=4"
+  # THE VECTOR-fp64 ARM.  OpClassSimt with InstructionShape<1,1,1> is ordinary FMA, no tensor
+  # core.  These exist because the cuBLAS 64F/64F_PEDANTIC A/B did NOT turn out to isolate the
+  # tensor cores -- see the note in cutlass_peer_f64.cu.  The DMMA-vs-vector ratio this endeavour
+  # actually needs is measured HERE, between two kernels whose lowering we choose rather than
+  # infer.  K=8, 2 stages: the classic SIMT DGEMM geometry, not the tensor-op one.
+  "simt_128x128x8w32x64s2:-DOPCLASS_SIMT -DCFG_TILE_M=128 -DCFG_TILE_N=128 -DCFG_TILE_K=8 -DCFG_WARP_M=32 -DCFG_WARP_N=64 -DCFG_WARP_K=8 -DCFG_STAGES=2"
+  "simt_64x64x8w32x32s2:-DOPCLASS_SIMT -DCFG_TILE_M=64  -DCFG_TILE_N=64  -DCFG_TILE_K=8 -DCFG_WARP_M=32 -DCFG_WARP_N=32 -DCFG_WARP_K=8 -DCFG_STAGES=2"
+  "simt_128x64x8w64x32s2:-DOPCLASS_SIMT -DCFG_TILE_M=128 -DCFG_TILE_N=64  -DCFG_TILE_K=8 -DCFG_WARP_M=64 -DCFG_WARP_N=32 -DCFG_WARP_K=8 -DCFG_STAGES=2"
 )
 say "--- building CUTLASS f64 peer configs ---"
 BUILT_CUTLASS=()
@@ -180,13 +210,38 @@ done
 # --- 4. the headline ---------------------------------------------------------------------------
 # The DMMA/vector ratio is the number this whole session was rented for, so it is computed here
 # rather than left for someone to divide by hand off a table.
-say "--- DMMA vs vector fp64 (the ladder's ceiling) ---"
+# THE REAL CEILING MEASUREMENT.  Best tensor-op CUTLASS config vs best SIMT CUTLASS config at
+# each size: two kernels from the same source, same oracle, same timing loop, differing in one
+# template parameter.  This is the number the endeavour needs; the cuBLAS pair below is reported
+# too, but it is NOT a DMMA/vector ratio (see cutlass_peer_f64.cu) and must not be read as one.
+say "--- CUTLASS tensor-core (DMMA) vs CUTLASS vector fp64 (SIMT) — the ladder's ceiling ---"
+best_gflops() { # $1 = grep pattern for label, $2 = size, $3 = optional exclude pattern
+  local lines
+  lines="$(grep "\"size\": $2," "$RESULTS" | grep "\"label\": \"$1")"
+  [ -n "${3:-}" ] && lines="$(echo "$lines" | grep -v "\"label\": \"$3")"
+  echo "$lines" | grep -o '"gflops":[^,}]*' | cut -d: -f2 | tr -d ' ' | sort -g | tail -1
+}
+for S in "${SIZE_LIST[@]}"; do
+  d="$(best_gflops "cutlass_" "$S" "cutlass_simt_")"
+  v="$(best_gflops "cutlass_simt_" "$S")"
+  if [ -n "$d" ] && [ -n "$v" ]; then
+    r="$(awk -v x="$d" -v y="$v" 'BEGIN{ if (y>0) printf "%.2f", x/y; else print "—" }')"
+    say "  N=$S  DMMA $d / SIMT $v  =  ${r}x"
+  else
+    say "  N=$S  incomplete (dmma='${d:-none}' simt='${v:-none}')"
+  fi
+done
+say ""
+
+# Reported for completeness only.  PEDANTIC is a numerical-robustness mode, not a
+# disable-the-tensor-cores switch, and for fp64 there is nothing approximate for it to refuse.
+say "--- cuBLAS 64F vs 64F_PEDANTIC (NOT a tensor-core ratio — see cutlass_peer_f64.cu) ---"
 for S in "${SIZE_LIST[@]}"; do
   a="$(grep "\"label\": \"cublas_64F\", \"size\": $S," "$RESULTS" | grep -o '"gflops":[^,}]*' | head -1 | cut -d: -f2 | tr -d ' ')"
   b="$(grep "\"label\": \"cublas_64F_PEDANTIC\", \"size\": $S," "$RESULTS" | grep -o '"gflops":[^,}]*' | head -1 | cut -d: -f2 | tr -d ' ')"
   if [ -n "$a" ] && [ -n "$b" ]; then
     r="$(awk -v x="$a" -v y="$b" 'BEGIN{ if (y>0) printf "%.2f", x/y; else print "—" }')"
-    say "  N=$S  tensor-core $a / vector $b  =  ${r}x"
+    say "  N=$S  64F $a / 64F_PEDANTIC $b  =  ${r}x"
   fi
 done
 say ""
