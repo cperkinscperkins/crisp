@@ -16,5 +16,5 @@
   (declare #'(&out c-mat)
            (global-size :set-to 32)
            (local-size  :set-to 32))          ; one warp
-  (let ((C-tile (make-register-tile double (16 16) (as double 1.5))))
+  (let ((C-tile (make-register-tile double (16 16) 1.5d)))
     (store-tile C-tile C (0 0))))

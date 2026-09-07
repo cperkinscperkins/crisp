@@ -318,13 +318,21 @@ learned for the Intel GRF width, and 159 for the 16-bit K.
    a fragment lane layout is exactly what compile-time checks cannot validate.
 4. The (8 8 4)-only shape refusal.
 
-**OPEN, needs a decision (language, not a bug):** `(make-register-tile double (8 8) 2.5)` is
-refused with "Type mismatch! Expected DOUBLE but inferred FLOAT", because a bare float literal
-reads as FLOAT.  Every fp64 kernel will therefore carry `(as double ...)` on its init.  Either
-leave it explicit, or coerce a literal init to the tile's element type.  Related to the still-open
-BUG 005 (literal suffixes).  Note the refusal is itself evidence the record is really fp64 — before
-2b-ii a tile declared `double` was built from f32 fragments and a float init matched, so spec 01's
-first form had been passing for the wrong reason.
+**NOT an open question — RETRACTED.**  This doc briefly claimed that needing `(as double 2.5)` for
+a tile init was a papercut requiring a language decision.  It is not: **`2.5d` works**, and the
+`d` suffix is documented in `docs/ideal_001.md`'s literal-suffix table (`double | 64 bit | d / D |
+2.0d`) and implemented.  The claim came from reading BUG 005's "we will probably use suffixes on
+literals" as future tense and not testing it.  Both specs use `2.5d` / `1.5d`, verified to emit
+`0x4004000000000000`.
+
+One real (and minor) trap does exist: **`2.5d0`, the Common Lisp spelling, reads as FLOAT** — the
+suffix parser matches `<number><suffix>`, so the trailing `0` defeats it.  It fails loudly with
+"Expected DOUBLE but inferred FLOAT" rather than silently, so it is a papercut for Lisp habits
+rather than a hazard.  Recorded in spec 01's header.
+
+The type refusal itself remains good evidence that the record is really fp64: before 2b-ii a tile
+declared `double` was built from f32 fragments and a plain float init matched, so spec 01's first
+form had been passing for the wrong reason.
 
 Note that the "Type mismatch! Expected FLOAT but inferred DOUBLE" refusal in row 2 is the
 f32-hardcoded fragment record showing through, and it is a GOOD sign: the type checker is already
