@@ -364,6 +364,38 @@ learned for the Intel GRF width, and 159 for the 16-bit K.
    one firing — exposed the registry problem in a single step.  Reach for the log before the
    second theory, not after it.
 
+3c. [x] **DONE — the fp64 MMA *fast-path* VJP.  Spec 03 could not reach it.**
+
+   Chris asked why none of the 165 specs do the full 64-bit MMA the ladder does, and whether that
+   mattered.  It did.  Compiling a LADDER-shaped fp64 kernel with `--differentiate` failed:
+
+   ```
+   Invalid user of intrinsic instruction!
+     call {double,double} @llvm.nvvm.mma.m8n8k4.row.col.f64(double, double, float, float)
+   Intrinsic called with incompatible signature
+   ```
+
+   `%mma-via-tile-backward` staged its SLM operands at the operand element type but minted the
+   dA/dB REGISTER tiles at FLOAT, so the accumulator operands of an fp64 MMA were fp32.
+
+   **WHY EVERY SPEC WAS GREEN ANYWAY.**  Spec 03 hands GLOBAL MATRICES to
+   `mma-accumulate-via-tile`; `%mma-vjp-mma-admissible-p` then refuses the tile-level MMA lowering
+   and the SCALAR lowering runs, so that function is never entered.  The AD suite covered the half
+   of the fp64 backward that nothing benchmarks.  Only staged operands with compile-time shapes —
+   what every ladder chapter has — take the MMA path.
+
+   **A LESSON ABOUT THE EARLIER REVERT.**  This exact hardcode was found, patched and then
+   REVERTED during step 3b because the patch did not fix spec 03.  That was the right call on the
+   evidence — but the reason it did not fix spec 03 is that spec 03 CANNOT EXERCISE IT.  "The fix
+   did not change the failing case" is not the same as "the fix was wrong", and the difference is
+   worth a second look before reverting.
+
+   Fixed with `%ad-adj-elem`'s invariant (an adjoint is never narrower than what it
+   differentiates), so 16-bit still promotes to fp32 and every pre-165 kernel is unchanged.
+   Spec: `05-f64-mma-staged-differentiates.crisp`, which logs `mma-path=T` — it genuinely enters
+   the MMA VJP, and a Kt that is not a multiple of lcm(Mn,Nn) would silently fall back to the
+   scalar path and stop testing anything.
+
 4. The (8 8 4)-only shape refusal.
 5. [x] **DONE — MMA_CORRECT ON AN H100 NVL (2026-09-07).**  driver 580.159.04, CUDA 12.4.
    `tests/spec/165-64-bit-mma` runs 5/5 on the pod, including
@@ -656,10 +688,36 @@ CUTLASS peer early, which endeavour 159 taught us to do.
         `tile-stride` is grid-strided, so a workgroup visiting a second tile carries the first
         tile's sums — BUG 036's family, which `matrix-multiply-tile-stride` was taught to handle
         and hand-rolled `tile-stride` was not (chapter 5 does it explicitly; chapter 6 did not).
-        Shipped tf32 rows: verified True to N=2048, **False from N=4096** — exactly the threshold
-        where reuse begins.  `chap6_warp_specialization_bf16` has the same missing reset and has
-        simply not been run large enough to expose it.  The fp64 twin failed from N=1024 because
-        its 64x32 tile makes more tiles for the same N.
+
+        **CORRECTED 2026-09-08 — THE SCOPE CLAIM HERE WAS WRONG.**  This entry originally read
+        "verified True to N=2048, **False from N=4096** — exactly the threshold where reuse
+        begins", presenting the defect as measured.  It was not.  On the AUTO-BENCH path (which
+        the tf32 chapters use) `verified` carries `verify` — *was verification attempted* — and
+        `VERIFY_MAX_N = 2048`, so every row above 2048 reads False meaning **NOT CHECKED**.
+        matmul.py says so in as many words: *"Report correctness as None (unknown) rather than
+        False, so a caller cannot mistake 'not checked at this size' for 'checked and wrong'."*
+        I made exactly that mistake, and the coincidence between the verification cutoff and the
+        tile-reuse threshold is what made it convincing.
+
+        **What is actually established, by an A/B on the FIXTURE path (where `verified` is a real
+        result):**
+
+        | kernel | reset needed? | evidence |
+        |---|---|---|
+        | chapter 6 **fp64** | **YES** | before: verified=False at 1024/2048/4096; after: True everywhere |
+        | chapter 6 **bf16** | no, at this geometry | without the reset: 66.64 / 65.76 at 4096 / 8192, both verified TRUE |
+        | chapter 6 **tf32** | unknown, probably not | same 64x64 tile as bf16; auto-bench never checks above 2048 |
+
+        The mechanism is real and the scope was wrong.  It bites at fp64's **64x32** tile, which
+        makes twice as many output tiles for a given N and so actually triggers grid-stride reuse;
+        at tf32/bf16's 64x64 the grid covers the output exactly and each workgroup visits ONE
+        tile, so there is nothing to carry over.  The resets added to the tf32 and bf16 kernels
+        are therefore **defensive, not corrective** — they cost nothing and close a latent hazard
+        if anyone shrinks those tiles, but they were not fixing a live wrong answer.
+
+        `chap2_tiling` is the one that was genuinely broken, and that does NOT rest on the
+        verified flag: zero `st.global`, a compiler warning on every build, and throughput
+        dropping 8.78 -> 4.85 TFLOPS once it started doing the work.
 
       **A GUARD THAT TESTED THE WRONG FIELD is what let the first sweep publish those.**  The
       smoke gate grepped the console for `"correct": false`; the CUDA fixture's flag is

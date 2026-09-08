@@ -2315,3 +2315,156 @@
                collect (let ((fmn (%frag-mn (%register-tile-elem-of (first entry)))))
                           `(set! ,s (make-register-fragment ,(car fmn) ,(cdr fmn) ,val
                                       :elem ,(%register-tile-elem-of (first entry)) :tally nil)))))))
+
+
+;;; ===================================================================
+;;; Endeavour 165 — the fp64 MMA *fast-path* VJP.  Spec 03 cannot reach this code.
+;;;
+;;; %mma-via-tile-backward staged its dC / A^T / B^T SLM matrices at the operand element type but
+;;; minted the dA / dB REGISTER tiles at FLOAT.  At fp64 that emitted
+;;;   call {double,double} @llvm.nvvm.mma.m8n8k4.row.col.f64(double, double, float, float)
+;;; which llc rejects outright ("Invalid user of intrinsic instruction / Intrinsic called with
+;;; incompatible signature").  A hard failure, not a silent one -- but only for kernels that
+;;; REACH this function.
+;;;
+;;; THE SPECS DID NOT.  Spec 03 passes global matrices straight to mma-accumulate-via-tile, so
+;;; %mma-vjp-mma-admissible-p refuses and the SCALAR lowering runs; --differentiate was green on
+;;; every 165 spec while this path stayed broken.  It took a LADDER-SHAPED kernel -- staged
+;;; operands via load-tile-at, compile-time shapes -- to expose it.  That is the gap Chris asked
+;;; about, and it was real.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %mma-via-tile-backward (form dims-map src-map inputs outputs local-adj-fn kernel-pkg
+                               &optional a-src-in aoy-in aox-in b-src-in boy-in box-in)
+  "Endeavor 145 P3b: the backward for
+   `(mma-accumulate-via-tile (M N K) C-TILE A-TILE B-TILE ...)`.
+
+   Emits ONE nested LET holding the backward's temporaries and the two backward GEMMs:
+
+       dC-slm (Mt x Nt) <- store-tile C-tile_ADJ      ; register accumulator -> SLM
+       AT-slm (Kt x Mt) <- transposed stage of A's global source
+       BT-slm (Nt x Kt) <- transposed stage of B's global source
+         dA-reg (Mt x Kt) : mma-accumulate-via-tile  dA-reg  dC-slm  BT-slm
+         dB-reg (Kt x Nt) : mma-accumulate-via-tile  dB-reg  AT-slm  dC-slm
+       store-tile dA-reg -> A-tile_ADJ ;  store-tile dB-reg -> B-tile_ADJ
+
+   From there the existing endeavor-111 machinery finishes the job: A-tile_ADJ / B-tile_ADJ
+   are already auto-allocated, and %load-tile-at-bwd already scatters them into A_GRAD /
+   B_GRAD.  Because the walk runs in reverse, this rule's emission lands BEFORE those
+   scatters in the generated backward — which is the order the chain rule needs.
+
+   ERRORS when a shape or a staging source is not compile-time recoverable.  It used to
+   return NIL and let the caller fall through — but the walk's fallthrough DROPS the form,
+   which hands back a silent ZERO gradient.  That is the same silent-wrong-answer class as
+   the K-step bug P3a fixed, and it actually bit: a K-LOOPED matmul emitted a backward with
+   no MMA in it at all, because the maps only scanned the top level of flat-anf and the
+   loop body is nested.  Better to refuse to compile than to quietly return zeros.
+
+   Endeavour 163 defect C (BUG 054): the three STAGED tiles are MMA OPERANDS, so they take the
+   forward operand's ELEMENT TYPE, not a hardcoded FLOAT.  The two register accumulators stay
+   FLOAT, which is correct mixed precision -- XMX and the tensor cores take 16-bit operands and
+   accumulate in fp32.  When the operand element IS float the emission is byte-for-byte what it
+   was, so every tf32 kernel is unaffected."
+  (destructuring-bind (shape c-tile a-tile b-tile &rest ignored) (cdr form)
+    (declare (ignore ignored))
+    (let* ((c-dims (assoc (%ad-tile-base c-tile) dims-map))
+           (a-dims (assoc (%ad-tile-base a-tile) dims-map))
+           (a-src  (if a-src-in (list a-tile a-src-in (list aoy-in aox-in))
+                       (assoc a-tile src-map)))
+           (b-src  (if b-src-in (list b-tile b-src-in (list boy-in box-in))
+                       (assoc b-tile src-map))))
+      (log:debug "145 P3b via-tile bwd: c-tile=~a dims=~a | a-tile=~a dims=~a src=~a | b-tile=~a src=~a"
+                 c-tile c-dims a-tile a-dims a-src b-tile b-src)
+      (unless (and c-dims a-dims a-src b-src
+                   (symbolp (%ad-tile-base c-tile)) (symbolp (%ad-tile-base a-tile))
+                   (symbolp (%ad-tile-base b-tile)))
+        (error 'crisp-compiler-error
+          :message (format nil "mma-accumulate-via-tile: cannot differentiate this tile multiply — ~a.  The backward needs the accumulator tile's (Mt Nt) and the A operand's Kt as COMPILE-TIME shapes, and needs each staged operand's originating global matrix (from its load-tile-at) so it can stage the transpose.  Give the tiles literal make-register-tile / make-scratch-matrix dimensions and stage both operands with load-tile-at."
+                           (cond ((not c-dims) (format nil "the accumulator tile ~a has no compile-time (M N)" c-tile))
+                                 ((not a-dims) (format nil "the A operand ~a has no compile-time shape" a-tile))
+                                 ((not a-src)  (format nil "the A operand ~a was not staged by a load-tile-at" a-tile))
+                                 (t            (format nil "the B operand ~a was not staged by a load-tile-at" b-tile))))
+          :source-location nil))
+      (when (and c-dims a-dims a-src b-src
+                 (symbolp (%ad-tile-base c-tile)) (symbolp (%ad-tile-base a-tile))
+                   (symbolp (%ad-tile-base b-tile)))
+        ;; INTERNAL INVARIANT (not a user-facing contract).  This function emits the MMA
+        ;; lowering, which requires both backward accumulators (Mt x Kt and Kt x Nt) to
+        ;; decompose into whole hardware fragments.  %vjp-mma-accumulate-via-tile has already
+        ;; checked that via %mma-vjp-mma-admissible-p before routing here, so a violation means
+        ;; the VJP dispatch is wrong, not the user's kernel.
+        ;;
+        ;; This USED to be a hard user-facing error called "the K-tile contract" — a claim that
+        ;; a kernel with Kt=8 could not be differentiated at all.  That was wrong: dA = dC.B^T
+        ;; and dB = A^T.dC hold at every shape, and only this LOWERING needs the dims to divide.
+        ;; The condition now selects the scalar lowering instead.  See the retraction section in
+        ;; tests/spec/145-mma-autodiff/mma-autodiff.md.
+        (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+          (declare (ignore sk))
+          (let ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims)))
+            (unless (%mma-vjp-mma-admissible-p mt nt kt)
+              (error 'crisp-compiler-error
+                :message (format nil "INTERNAL: MMA backward lowering reached with a tile (Mt=~a Nt=~a Kt=~a) that does not decompose on shape (~a ~a) — the VJP should have selected the scalar lowering."
+                                 mt nt kt sm sn)
+                :source-location nil))))
+        (let* ((mt (second c-dims)) (nt (third c-dims)) (kt (third a-dims))
+               (pkg (or kernel-pkg (symbol-package c-tile)))
+               (cl-pkg (find-package :crisp-language))
+               (nm (lambda (fmt sym) (intern (format nil fmt (symbol-name (%ad-tile-base sym))) pkg)))
+               (dc-slm (funcall nm "~A_BWDC"  c-tile))
+               (at-slm (funcall nm "~A_BWT"   a-tile))
+               (bt-slm (funcall nm "~A_BWT"   b-tile))
+               (da-reg (funcall nm "~A_BWACC" a-tile))
+               (db-reg (funcall nm "~A_BWACC" b-tile))
+               (c-adj (%tlc-bwd-adj-name c-tile inputs outputs local-adj-fn kernel-pkg))
+               (a-adj (%tlc-bwd-adj-name a-tile inputs outputs local-adj-fn kernel-pkg))
+               (b-adj (%tlc-bwd-adj-name b-tile inputs outputs local-adj-fn kernel-pkg))
+               (let-sym  (intern "LET" cl-pkg))
+               (msm      (intern "MAKE-SCRATCH-MATRIX" cl-pkg))
+               (mrt      (intern "MAKE-REGISTER-TILE" cl-pkg))
+               (float-s  (intern "FLOAT" cl-pkg))
+               (op-elem  (or (fourth (assoc a-tile dims-map))
+                             (fourth (assoc b-tile dims-map))
+                             float-s))
+               ;; Endeavour 165: the dA/dB REGISTER tiles follow the ACCUMULATOR's element type.
+               ;; They were minted at FLOAT outright while the SLM operands beside them already
+               ;; used op-elem, so an fp64 tile multiply emitted
+               ;;   call {double,double} @llvm.nvvm.mma.m8n8k4.row.col.f64(double, double, float, float)
+               ;; and llc rejected it: "Intrinsic called with incompatible signature".
+               ;;
+               ;; WHY THIS WAS NOT CAUGHT BY THE 165 SPECS.  Spec 03 hands GLOBAL MATRICES to
+               ;; mma-accumulate-via-tile, so %mma-vjp-mma-admissible-p refuses and the SCALAR
+               ;; lowering runs instead -- this function is never reached.  Only a ladder-shaped
+               ;; kernel (staged operands, compile-time shapes) takes the MMA path.  An earlier
+               ;; attempt at this fix was reverted precisely because it did not change spec 03;
+               ;; correct at the time, and the reason was that spec 03 cannot exercise it.
+               ;;
+               ;; The rule is %ad-adj-elem's: an adjoint is never narrower than the value it
+               ;; differentiates.  16-bit still promotes to fp32 (endeavour 163 path (a) depends
+               ;; on that), float stays float, double stays double -- so every pre-165 kernel
+               ;; emits exactly what it did.
+               (adj-elem (%ad-adj-elem (fourth c-dims) cl-pkg))
+               (adj-zero (%ad-adj-zero (fourth c-dims) cl-pkg))
+               (store-t  (intern "STORE-TILE" cl-pkg))
+               (via      (intern "MMA-ACCUMULATE-VIA-TILE" cl-pkg))
+               (sync     (intern "SYNC-WORKGROUP" cl-pkg)))
+          `(,let-sym ((,dc-slm (,msm ,op-elem (,mt ,nt)))
+                      (,at-slm (,msm ,op-elem (,kt ,mt)))
+                      (,bt-slm (,msm ,op-elem (,nt ,kt)))
+                      (,da-reg (,mrt ,adj-elem (,mt ,kt) ,adj-zero))
+                      (,db-reg (,mrt ,adj-elem (,kt ,nt) ,adj-zero)))
+             ;; dC: the accumulator's adjoint, register -> SLM (so it can be an MMA operand).
+             (,store-t ,c-adj ,dc-slm (0 0))
+             ;; The transposed operands, staged from the ORIGINAL global sources.
+             ,(%mma-ad-transposed-stage at-slm (second a-src) (third a-src) mt kt)
+             ,(%mma-ad-transposed-stage bt-slm (second b-src) (third b-src) kt nt)
+             (,sync)
+             ;; dA = dC . B^T      (Mt, Kt, Nt)
+             (,via ,shape ,da-reg ,dc-slm ,bt-slm)
+             ;; dB = A^T . dC      (Kt, Nt, Mt)
+             (,via ,shape ,db-reg ,at-slm ,dc-slm)
+             (,sync)
+             (,store-t ,da-reg ,a-adj (0 0))
+             (,store-t ,db-reg ,b-adj (0 0)))))))
+  )
