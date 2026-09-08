@@ -2167,6 +2167,15 @@
      :max-shared-memory-per-block 227KB
      :l2-cache-size 50MB
      :native-cache-line-size 128
+     ;; THE ELEMENT TYPE IS A KEYWORD, NOT AN INTERNED SYMBOL, AND THAT IS LOAD-BEARING.
+     ;; Writing it as `double` interns CRISP.COMPILER::DOUBLE, and the ACTIVE PROFILE IS
+     ;; SERIALISED INTO EVERY .metacrisp -- so a plain tf32 kernel compiled with
+     ;; --hardware-profile=h100 emitted `CRISP.COMPILER:DOUBLE` into its metadata, and
+     ;; crisp-hoist-cuda (which has no such package) died reading it with "Package
+     ;; CRISP.COMPILER does not exist".  That broke the CUDA hoist for EVERY benchmark chapter,
+     ;; including ones with no doubles anywhere.  A keyword reads in any package.
+     ;; The readers are unaffected: %mma-shape-for-elem compares SYMBOL-NAME, and
+     ;; (symbol-name :double) is "DOUBLE" either way.
      ;; Endeavour 165: a TYPED fp64 entry, and it is load-bearing rather than tidy.  Without
      ;; it %mma-shape-for-elem falls to the width rule -- K x element-bits is a constant
      ;; fragment footprint -- and resolves `double` to (16 8 4).  That shape exists in the PTX
@@ -2174,7 +2183,7 @@
      ;; `.extern .func` CALL with no diagnostic.  fp64 has exactly ONE tensor-core shape,
      ;; m8n8k4, so it is stated outright instead of being inferred from a rule that has no way
      ;; to know that.
-     :mma-shapes ((16 8 8) (16 8 4) (16 8 16) (double 8 8 4)))))
+     :mma-shapes ((16 8 8) (16 8 4) (16 8 16) (:double 8 8 4)))))
 
 
 ;;; ===================================================================
