@@ -4203,40 +4203,8 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                       (list plus (list to-int oy) (list to-int i))
                       (list plus (list to-int ox) (list to-int j)))))))
 
-;;; ======================================================================
-;;; Endeavour 163 defect B, part 3 + BUG 044 — THE RING IS STRIPPED, NOT REPLICATED.
-;;;
-;;; With the two resolvers taught to see through ANF (parts 1 and 2), a ring operand can answer
-;;; both questions the tile VJP asks: WHAT SHAPE (via %ad-tile-base -> the ring's own dims) and
-;;; FROM WHERE (via %mma-vjp-operand-ref -> %ad-ring-load-sites -> %ad-reconcile-ring-origin).
-;;; Two things then stood between it and the ordinary backward:
-;;;
-;;;   1. %mma-via-tile-backward RE-DERIVED provenance from src-map, which never contains ring
-;;;      loads, so it could not see what its own caller had already resolved.  It now accepts the
-;;;      resolved (SRC OY OX) per operand and only falls back to src-map when none is supplied —
-;;;      so every existing non-ring call is byte-identical.
-;;;   2. `ringp` gated the MMA path OFF for any ring operand, forcing the scalar lowering.
-;;;      That gate is gone: admissibility is now the only question, which is the real one.
-;;;
-;;; WHY THIS FIXES BUG 044 AND NOT MERELY B.  The scalar fallback accumulates into the operand
-;;; adjoint with `+=` and never resets it, so a ring slot reused across stages carried stage 0 +
-;;; stage 2 and both scatter sites dumped the total at their own origin (1.20 + 83.12 = 84.32).
-;;; The MMA path OVERWRITES the operand adjoint per stage (`store-tile da-reg a-adj`), so the
-;;; aliasing has nothing to accumulate into.  044 is not fixed by teaching AD to invert a ring —
-;;; it is fixed by routing rings to the path that never needed the ring in the first place.
-;;;
-;;; NO REVERSE-RING LOGIC EXISTS ANYWHERE IN THIS CHANGE.  The backward stages its transposes
-;;; from the ORIGINAL GLOBAL SOURCE at the consuming stage's origin, exactly as it does for a
-;;; plain scratch tile.  Whether the forward used a prologue, double buffering, or a
-;;; warp-specialised producer is not represented in the derivative at all.  If the backward
-;;; should later be pipelined, that is an optimisation over correct math, not a term in the AD
-;;; generator.
-;;;
-;;; The tile arguments may now be VIEW FORMS rather than symbols, so the symbolp guards ask about
-;;; the BASE, and the temp-naming lambda derives its prefix from the base — a `(ring-get R i)`
-;;; has no symbol-name.  ADJOINT naming still keeps the VIEW, per %tlc-bwd-adj-name's rule that
-;;; slot i's adjoint is slot i of the adjoint ring.
-;;; ======================================================================
+
+
 (defun %mma-via-tile-backward (form dims-map src-map inputs outputs local-adj-fn kernel-pkg
                                &optional a-src-in aoy-in aox-in b-src-in boy-in box-in)
   "Endeavor 145 P3b: the backward for
@@ -4329,14 +4297,33 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                (op-elem  (or (fourth (assoc a-tile dims-map))
                              (fourth (assoc b-tile dims-map))
                              float-s))
+               ;; Endeavour 165: the dA/dB REGISTER tiles follow the ACCUMULATOR's element type.
+               ;; They were minted at FLOAT outright while the SLM operands beside them already
+               ;; used op-elem, so an fp64 tile multiply emitted
+               ;;   call {double,double} @llvm.nvvm.mma.m8n8k4.row.col.f64(double, double, float, float)
+               ;; and llc rejected it: "Intrinsic called with incompatible signature".
+               ;;
+               ;; WHY THIS WAS NOT CAUGHT BY THE 165 SPECS.  Spec 03 hands GLOBAL MATRICES to
+               ;; mma-accumulate-via-tile, so %mma-vjp-mma-admissible-p refuses and the SCALAR
+               ;; lowering runs instead -- this function is never reached.  Only a ladder-shaped
+               ;; kernel (staged operands, compile-time shapes) takes the MMA path.  An earlier
+               ;; attempt at this fix was reverted precisely because it did not change spec 03;
+               ;; correct at the time, and the reason was that spec 03 cannot exercise it.
+               ;;
+               ;; The rule is %ad-adj-elem's: an adjoint is never narrower than the value it
+               ;; differentiates.  16-bit still promotes to fp32 (endeavour 163 path (a) depends
+               ;; on that), float stays float, double stays double -- so every pre-165 kernel
+               ;; emits exactly what it did.
+               (adj-elem (%ad-adj-elem (fourth c-dims) cl-pkg))
+               (adj-zero (%ad-adj-zero (fourth c-dims) cl-pkg))
                (store-t  (intern "STORE-TILE" cl-pkg))
                (via      (intern "MMA-ACCUMULATE-VIA-TILE" cl-pkg))
                (sync     (intern "SYNC-WORKGROUP" cl-pkg)))
           `(,let-sym ((,dc-slm (,msm ,op-elem (,mt ,nt)))
                       (,at-slm (,msm ,op-elem (,kt ,mt)))
                       (,bt-slm (,msm ,op-elem (,nt ,kt)))
-                      (,da-reg (,mrt ,float-s (,mt ,kt) 0.0))
-                      (,db-reg (,mrt ,float-s (,kt ,nt) 0.0)))
+                      (,da-reg (,mrt ,adj-elem (,mt ,kt) ,adj-zero))
+                      (,db-reg (,mrt ,adj-elem (,kt ,nt) ,adj-zero)))
              ;; dC: the accumulator's adjoint, register -> SLM (so it can be an MMA operand).
              (,store-t ,c-adj ,dc-slm (0 0))
              ;; The transposed operands, staged from the ORIGINAL global sources.
