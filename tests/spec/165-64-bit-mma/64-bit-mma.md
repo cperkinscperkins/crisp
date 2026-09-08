@@ -719,6 +719,27 @@ CUTLASS peer early, which endeavour 159 taught us to do.
         verified flag: zero `st.global`, a compiler warning on every build, and throughput
         dropping 8.78 -> 4.85 TFLOPS once it started doing the work.
 
+      **POST-FIX NUMBERS, MEASURED ON H100 NVL 2026-09-08 BUT NOT PULLED.**  The re-measure ran
+      and produced results; the JSONs were never copied off the pod before it was released, so
+      `benchmarks/results/` still holds the PRE-fix rows and **REPORT.md still publishes
+      `chap2_tiling` at 8.78-9.08 TFLOPS — the figures for a kernel that stored nothing.**  The
+      honest numbers, recorded here so the measurement is not lost outright:
+
+      | kernel | N=2048 | N=4096 | N=8192 |
+      |---|---:|---:|---:|
+      | `chap2_tiling` (tf32) | 4.84 (verified) | 4.85 | 4.75 |
+      | `chap6_warp_specialization` (tf32) | 81.01 (verified) | 81.87 | 73.72 |
+      | `chap6_warp_specialization_bf16` | 51.66 (verified) | 66.35 (verified) | 65.01 (verified) |
+
+      Rows above N=2048 on the tf32 (auto-bench) chapters are UNCHECKED, not failing — see the
+      VERIFY_MAX_N correction above.  A three-chapter, three-size sweep restores these to the
+      report; it folds naturally into the full clean run planned before the 0.9 announce rather
+      than earning its own rental.
+
+      **PROCESS NOTE:** results were pulled diligently after every fp64 sweep and not after this
+      one.  A rental's worth of measurement now exists only as text.  Pull before releasing, every
+      time.
+
       **A GUARD THAT TESTED THE WRONG FIELD is what let the first sweep publish those.**  The
       smoke gate grepped the console for `"correct": false`; the CUDA fixture's flag is
       `verified`, and it lands in the saved JSON, not the console.  So the gate never fired.  It

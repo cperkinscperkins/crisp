@@ -1670,8 +1670,8 @@
    already computed them correctly.  This decides only WHERE the result is allocated.
 
    Element type: NEVER NARROWER THAN THE VALUE IT DIFFERENTIATES, and never narrower than
-   FLOAT.  Endeavour 165 replaced a hardcoded FLOAT here, whose stated reason -- "fragments are
-   fp32" -- stopped being true when fp64 fragments arrived.  The rule is now the wider of the
+   FLOAT.  Endeavour 165 replaced a hardcoded FLOAT here, whose stated reason -- that fragments
+   are fp32 -- stopped being true when fp64 fragments arrived.  The rule is now the wider of the
    forward element type and FLOAT:
 
      half / bfloat16 -> FLOAT   a PROMOTION, and deliberate: endeavour 163 path (a) ships
