@@ -29,11 +29,16 @@ set -uo pipefail
 export PATH=/usr/local/cuda/bin:$PATH
 
 OUT_DIR="${OUT_DIR:-put_temp_files_here/165-ladder}"
-SIZES="${SIZES:-1024,2048,4096}"
+SIZES="${SIZES:-1024,2048,4096,8192}"
 SMOKE_SIZE="${SMOKE_SIZE:-256}"
 PRECISION="${PRECISION:-ieee}"
 
-CHAPTERS="chap0_naive_f64,chap1_handrolled_mma_f64,chap2_tiling_f64,chap3_async_f64,chap4_cheap_fetch_f64,chap5_multistage_ring_f64,chap6_warp_specialization_f64"
+# The ladder AND section 2 in ONE sweep.  Two reasons, both learned the hard way:
+#  * load_all_sweeps keeps the NEWEST file per run identity, so a PARTIAL re-run SUPERSEDES an
+#    earlier one instead of merging with it.  Running N=8192 on its own last time wiped chapters
+#    4-6's smaller sizes out of the report.  Every size a chapter needs must be in one sweep.
+#  * a published section 2 assembled by hand from two different runs is not one measurement.
+CHAPTERS="chap0_naive_f64,chap1_handrolled_mma_f64,chap2_tiling_f64,chap3_async_f64,chap4_cheap_fetch_f64,chap5_multistage_ring_f64,chap6_warp_specialization_f64,sec2_top_f64"
 
 mkdir -p "$OUT_DIR"
 SUMMARY="$OUT_DIR/SUMMARY.txt"
@@ -97,9 +102,13 @@ fi
 
 # --- 2. THE SWEEP -------------------------------------------------------------------------------
 say "--- ladder sweep (N=$SIZES) ---"
+# NO --scratch ON THE REAL SWEEP.  generate_report merges only benchmarks/results/ and never
+# scratch/ -- load_scratch_runs is loaded but its runs are not folded into the report data -- so a
+# --scratch sweep produces numbers the report can never display.  The SMOKE above keeps --scratch
+# precisely because it is throwaway.
 python3 scripts/crisp_bench/matmul.py \
     --chapters="$CHAPTERS" --sizes="$SIZES" \
-    --precision="$PRECISION" --scratch \
+    --precision="$PRECISION" \
     > "$OUT_DIR/sweep.log" 2>&1
 say "sweep exit=$?"
 grep -E "chap[0-9].*f64|TFLOPS|GFLOPS|correct" "$OUT_DIR/sweep.log" | tail -60 | tee -a "$SUMMARY"

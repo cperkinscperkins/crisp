@@ -5,7 +5,7 @@
 | device | data captured | source |
 |---|---|---|
 | Intel BMG | 2026-09-02 | Crisp `b255c82` (docker) |
-| NVIDIA H100 NVL | 2026-09-02 | Crisp `39bb20f` (runpod) |
+| NVIDIA H100 NVL | 2026-09-08 | Crisp `24f07bd8` (runpod) |
 | NVIDIA H100 PCIe | 2026-09-02 | Crisp `cc1ae534` (runpod) |
 | NVIDIA H200 | 2026-09-02 | Crisp `b255c82` (runpod) |
 
@@ -1158,6 +1158,40 @@ Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline
 | Ch 2 tiling macro | 2.2 (tf32 n/a) | 3.9 (tf32 n/a) | 6.0 (0.96×) |
 | Ch 4 register-resident | 30.6 (1.26×) | 55.9 (1.54×) | 76.3 (1.31×) |
 | Ch 5 ring + prefetch | 27.4 (1.06×) | 41.3 (1.06×) | 56.9 (1.05×) |
+
+## § 1c — The Technique Ladder in 64-bit · NVIDIA H100 NVL
+
+*The same chapters at IEEE double. Cells read **fp64 TFLOPS**, and the rightmost column is each rung's ratio to the Chapter 0 vector-fp64 floor.*
+
+**Chapter 7 is absent by hardware, not unmeasured.** wgmma covers fp16/bf16/tf32/fp8/int8; there is no fp64 warpgroup MMA in any form, so Chapter 6 is the top of this ladder.
+
+**These rows are not comparable cell-for-cell with the tf32 ladder.** An fp64 accumulator fragment is 8×8 holding 2 doubles per lane = 4 registers, so the tf32 chapters' 64×64 tile would need 256 registers/thread — one over the architectural 255. Every 64-bit rung therefore runs at 64×32. fp64 costs 2× the registers at equal tile size, which is part of the 64-bit result rather than a tuning choice.
+
+*Expectation under test (from § 2): the fp64 tensor core measured only 1.20–1.53× over vector fp64, while cuBLAS sits ~1.9× above the best CUTLASS DMMA config — both DMMA, so that larger gap is scheduling. If that holds, the distance on this ladder should be in chapters 2–6, not chapter 1.*
+
+| chapter | N=1024 | N=2048 | N=4096 | N=8192 | vs Ch 0 |
+|---|---:|---:|---:|---:|---:|
+| Ch 0 naive (no tensor cores) | 0.4 | 0.4 | 0.4 | 0.4 | 1.00× |
+| Ch 1 hand-rolled MMA | 2.3 | 2.6 | 3.1 | 3.3 | 6.43× |
+| Ch 2 tiling macro | 2.6 | 3.9 | 3.8 | 3.8 | 8.07× |
+| Ch 3 async staging (cp.async) | 2.4 | 3.6 | 5.4 | 6.1 | 9.88× |
+| Ch 4 TMA (:block) | 9.3 | 12.9 | 20.8 | 19.1 | 35.30× |
+| Ch 5 ring + prefetch | 10.1 | 13.8 | 22.3 | 21.5 | 38.42× |
+| Ch 6 warp specialization | 11.2 | 14.3 | 19.9 | 18.5 | 36.31× |
+
+## § 2c — Top Contenders at 64-bit · NVIDIA H100 NVL
+
+*IEEE double, TFLOPS. Crisp's cell is an **envelope**: chapters 5 and 6 cross over, so each cell names the kernel that produced it.*
+
+**`64F_PEDANTIC` is reported but is NOT a disable-tensor-cores switch.** That reading is imported from fp32, where PEDANTIC forbids tf32; it does not transfer, because DMMA is bit-identical IEEE double and PEDANTIC has no numerical reason to refuse it. The DMMA-vs-vector question is answered by the CUTLASS `OpClassTensorOp` / `OpClassSimt` pair, where the lowering is chosen rather than inferred.
+
+| contender | N=1024 | N=2048 | N=4096 | N=8192 |
+|---|---:|---:|---:|---:|
+| **Crisp** | **11.2** (warpspec) | **14.3** (warpspec) | **22.3** (ch5 ring) | **24.3** (ch5 ring) |
+| cuBLAS `64F` (**Ceiling**) | 41.6 | 54.2 | 56.9 | 41.9 |
+| cuBLAS `64F_PEDANTIC` | 38.5 | 40.6 | 41.2 | 40.6 |
+| CUTLASS DMMA (**Peer**) | 25.0 | 27.6 | 28.2 | 28.3 |
+| CUTLASS SIMT (vector fp64) | 11.4 | 22.7 | 23.2 | 22.2 |
 
 ## § 4 — MMA + Activation
 
