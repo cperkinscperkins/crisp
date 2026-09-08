@@ -420,12 +420,40 @@ learned for the Intel GRF width, and 159 for the 16-bit K.
    hammer the A/B/store layouts and never touch this one.  Recorded because the opposite was
    briefly assumed.
 
-   **The plan (agreed 2026-09-07): option B, deferred to the next pod rental.**  Add a forward
-   kernel whose accumulator is pre-loaded from a non-uniform matrix — `C = C0 + A.B` — so the
-   load is checked by the MMA_CORRECT machinery that already works.  The MMA fixes the C layout
-   in hardware, so a bad load lands the additions in the wrong places and the host reference
-   catches it.  Needs a modest addition to `%cuda-emit-mma-reference` (it computes `A.B` and
-   would need the extra input).  Marginal cost is one spec once a pod is up for benchmarking.
+   **SPEC WRITTEN — `04-f64-acc-load-roundtrip.crisp`.  Needs ONE hoist run to close.**
+
+   **The design changed, and got cheaper.**  The plan of record was option B: pre-load the
+   accumulator from a fourth non-uniform matrix, `C = C0 + A.B`, and teach
+   `%cuda-emit-mma-reference` to expect the extra input.  That works, but a ROUND TRIP is
+   strictly less machinery for the same signal — and the earlier reason for rejecting a round
+   trip does not apply here.
+
+   The objection to round trips is that a load/store pair sharing one wrong mapping CANCELS and
+   yields a perfect identity from broken code.  **That assumes neither end is independently
+   known.**  Spec 03's MMA_CORRECT already pinned the STORE against a host reference on real
+   hardware, so `store^-1` IS the hardware layout, and the kernel computes
+
+       memory --load--> fragments --store--> memory        i.e.  S(L(S(F)))
+
+   with S verified and used TWICE while L is used once.  If `L = S^-1` the output is unchanged
+   and equals `A.B`; any other mapping permutes it and the existing `C = A.B` reference catches
+   it.  **So no harness change at all** — it runs on the ordinary `TEST-HOIST[CUDA]` path, which
+   makes it the cheapest job of the endeavour: clone, build, `run-specs --filter=165-64-bit-mma`.
+
+   **Two things checked because either would make it vacuous:**
+   * *Not optimised away.*  Store->load->store to one address is exactly what LLVM forwards and
+     deletes.  The `sync-workgroup` barriers are memory fences that forbid it, and the PTX
+     confirms 4 `ld.global` — two for A/B, two for the accumulator reload.
+   * *Inputs non-uniform.*  The CUDA MMA harness fills A with `_i % 5` and B with `_i % 3`
+     (coprime), so partial sums differ lane to lane.  An all-ones oracle would pass on ANY
+     mapping.
+
+   **HONEST LIMIT ON WHAT IT PROVES.**  The store and load branches are separate code carrying
+   the same formula, both written from the same CuTe layout, so what this actually catches is a
+   DIVERGENCE BETWEEN THE TWO IMPLEMENTATIONS — a transcription slip, a wrong tile origin, one
+   value read where two are needed.  It is not an independent second opinion on the layout
+   itself.  It does not need to be: the common-mode case is already excluded by MMA_CORRECT
+   having pinned the store against hardware.
 
    **NOT option A**: teaching `tests/verify-autodiff-runner.lisp` fp64 is surgery on 2371 lines
    that assume 4-byte floats, under ~25 passing on-metal gradient checks, for one result.
