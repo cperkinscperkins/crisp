@@ -104,6 +104,33 @@
 
 
 ;; 156 lowering selector: REPLACES %hp-validate-value -- adds the :lowerings value type
+;;; ===================================================================
+;;; Endeavour 165 step 4 (cont) — the profile WRITER accepts typed :mma-shapes entries.
+;;;
+;;; %mma-shape-entry-dims and %mma-shape-entry-type have understood the typed (ELEM M N K) form
+;;; since endeavour 161, and the docs describe it -- but %hp-validate-value never learned it, so
+;;; putting one in a profile failed with "expects a non-empty list of (M N K) positive-integer
+;;; triples".  Reader and writer disagreed, and the error message described the CHECK rather than
+;;; the intent, which is why it read as a syntax mistake rather than a missing feature.
+;;;
+;;; fp64 is what forced it: the part offers exactly one tensor-core shape and the width rule has
+;;; no way to infer that, so the profile has to state it, and stating it requires a typed entry.
+;;;
+;;; NOTE FOR THE SRC PATCH: %hp-mma-shape-entry-p is new (src/hardware-profile.lisp);
+;;; %hp-validate-value REPLACES src/hardware-profile.lisp:107.
+;;; ===================================================================
+
+;; src/hardware-profile.lisp
+(defun %hp-mma-shape-entry-p (x)
+  "T if X is a legal :mma-shapes entry: an untyped (M N K) triple of positive integers, or a
+   TYPED (ELEM M N K) 4-list whose first element is a symbol naming the element type.
+
+   Endeavour 165.  Mirrors what %mma-shape-entry-dims / %mma-shape-entry-type already accept on
+   the READ side; before this the writer side rejected the typed form the reader understood."
+  (or (%hp-3-pos-ints-p x)
+      (and (listp x) (= (length x) 4) (symbolp (first x)) (first x)
+           (%hp-3-pos-ints-p (cdr x)))))
+
 (defun %hp-validate-value (profile-name key type raw)
   "Validate/normalize RAW for KEY of TYPE.  Signals a clear compile error on a
    malformed value; returns the normalized value (sizes in bytes, lists unquoted).
@@ -143,7 +170,13 @@
        d))
     (:mma-shapes
      (let ((shapes (%hp-unquote raw)))
-       (unless (and (listp shapes) shapes (every #'%hp-3-pos-ints-p shapes))
+       ;; Endeavour 165: an entry may be an untyped (M N K) triple OR a TYPED (ELEM M N K)
+       ;; 4-list.  Endeavour 161 introduced typed entries for :wgmma-shapes and documented them,
+       ;; but this validator was never taught about them -- so writing one in a profile failed
+       ;; with "expects a non-empty list of (M N K) positive-integer triples", which describes
+       ;; the CHECK rather than the intent.  fp64 forced the issue: it has exactly one
+       ;; tensor-core shape and the width rule cannot infer that, so the profile has to say so.
+       (unless (and (listp shapes) shapes (every #'%hp-mma-shape-entry-p shapes))
          (error "def-hardware-profile ~a: key ~a expects a non-empty list of (M N K) positive-integer triples, got ~s."
                 profile-name key raw))
        shapes))

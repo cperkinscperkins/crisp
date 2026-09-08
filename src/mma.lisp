@@ -200,16 +200,49 @@
 
 
 ;; src/mma.lisp
+;;; ===================================================================
+;;; Endeavour 165 step 3 — the fp64 MMA: operand loads + the m8n8k4 emitter.
+;;;
+;;; Step 2 made the register tile fp64-shaped.  This makes it MULTIPLY.
+;;;
+;;; LANE LAYOUTS ARE FROM CuTe, NOT FROM MEMORY.  MMA_Traits<SM80_8x8x4_F64F64F64F64_TN> gives
+;;; ALayout = BLayout = SM80_8x4, i.e. A(M8,K4) at m = lane/4, k = lane%4 and B(N8,K4) at
+;;; n = lane/4, k = lane%4, one double per lane.  The tf32 path already in this file reads B at
+;;; rows tg and tg+4, column g = lane/4 -- the same family with K=8 instead of 4 -- so the two
+;;; corroborate.  That is the only check available offline: NOTHING LOCAL CAN PROVE A LANE
+;;; LAYOUT IS RIGHT.  A wrong one compiles, emits the right instruction, passes every mechanical
+;;; check and computes garbage.  MMA_CORRECT on metal is the test, and this is the step that
+;;; makes renting a pod worthwhile.
+;;;
+;;; THE INSTRUCTION NAME IS THE ONE VERIFIED SPELLING.  bin/llc.exe (LLVM 21.1.5, -mcpu=sm_90)
+;;; lowers llvm.nvvm.mma.m8n8k4.row.col.f64 to a real mma.sync; the sm_90 f64 shapes
+;;; (m16n8k4 / k8 / k16) assemble cleanly and emit an `.extern .func` CALL with NO diagnostic.
+;;; So this name must never be checked by prefix -- 159 documented the same trap for the 16-bit
+;;; spellings, where two plausible variants passed the verifier as unresolved external calls
+;;; while still leaving an "mma.m16n8k16..." substring in the PTX.
+;;;
+;;; NOTE FOR THE SRC PATCH: %nvvm-frag-format REPLACES src/mma.lisp:203; %nvvm-frag-record
+;;; REPLACES :216; register-mma-types REPLACES :230 (and supersedes the 2b-ii overlay copy);
+;;; analyze-load-fragment-a REPLACES :552; analyze-load-fragment-b REPLACES :605;
+;;; %emit-nvvm-mma-f64 is new; %emit-nvvm-mma REPLACES :821.
+;;; ===================================================================
+
+;; src/mma.lisp
 (defun %nvvm-frag-format (llvm-elem-type)
-  "Which MMA operand format a fragment field's LLVM type implies: :FP16, :BF16, or :TF32.
+  "Which MMA operand format a fragment field's LLVM type implies: :FP16, :BF16, :F64 or :TF32.
 
    Endeavour 159.  Kinds are read from LLVM at runtime rather than compared against a constant --
    the bindings carry +llvm-half-type-kind+ but no bfloat equivalent, and no llvm-c header is
-   installed to take the value from.  Anything that is neither half nor bfloat is the historical
-   fp32-stored tf32 path."
+   installed to take the value from.  Anything not otherwise recognised is the historical
+   fp32-stored tf32 path.
+
+   Endeavour 165 (step 3): :F64 joins them.  A double-typed field can only be an fp64 fragment --
+   the tf32 path stores fp32 -- so the probe stays a pure function of the record's own LLVM type
+   and no :elem has to be threaded down from the caller."
   (let ((k (llvm-get-type-kind llvm-elem-type)))
     (cond ((= k (llvm-get-type-kind (llvm-half-type)))   :fp16)
           ((= k (llvm-get-type-kind (llvm-bfloat-type))) :bf16)
+          ((= k (llvm-get-type-kind (llvm-double-type))) :f64)
           (t :tf32))))
 
 ;; src/mma.lisp
@@ -218,15 +251,35 @@
 
    Endeavour 159.  One place decides this, so analyze-load-fragment-a and -b cannot disagree
    about which record a given element type maps to.  A 32-bit (or unknown) element keeps the
-   historical tf32 records."
+   historical tf32 records.
+
+   Endeavour 165 (step 3): fp64's m8n8k4 operands, A 8x4 and B 4x8, one double per lane each."
   (let ((bits (%mma-elem-bits elem))
         (name (and elem (symbolp elem) (symbol-name elem))))
-    (if (eql bits 16)
-        (if (string= name "BFLOAT16")
-            (ecase operand (:a 'register-fragment-a-bf16-16x16) (:b 'register-fragment-b-bf16-16x8))
-            (ecase operand (:a 'register-fragment-a-f16-16x16)  (:b 'register-fragment-b-f16-16x8)))
-        (ecase operand (:a 'register-fragment-a-tf32-16x8) (:b 'register-fragment-b-tf32-8x8)))))
+    (cond
+      ((eql bits 64)
+       (ecase operand (:a 'register-fragment-a-f64-8x4) (:b 'register-fragment-b-f64-4x8)))
+      ((eql bits 16)
+       (if (string= name "BFLOAT16")
+           (ecase operand (:a 'register-fragment-a-bf16-16x16) (:b 'register-fragment-b-bf16-16x8))
+           (ecase operand (:a 'register-fragment-a-f16-16x16)  (:b 'register-fragment-b-f16-16x8))))
+      (t
+       (ecase operand (:a 'register-fragment-a-tf32-16x8) (:b 'register-fragment-b-tf32-8x8))))))
 
+
+(defun %frag-record-for-acc (elem)
+  "The ACCUMULATOR fragment record for element type ELEM.
+
+   Endeavour 165 (2b-ii).  Sibling of %frag-record-for-operand, which has dispatched A and B
+   records by element type since endeavour 159; the accumulator was the one role still naming
+   register-fragment-acc-f32-16x8 outright at five sites.  One place decides this, so the tile
+   minter and the fragment constructor cannot disagree about which record an element type maps
+   to -- the same argument 159 made for the operands.
+
+   A 16-bit MMA accumulates in fp32, so half/bfloat16 keep the f32 record on purpose."
+  (if (and elem (symbolp elem) (string= (symbol-name elem) "DOUBLE"))
+      'register-fragment-acc-f64-8x8
+      'register-fragment-acc-f32-16x8))
 
 (defun register-mma-types ()
   "Registers the MMA register-fragment record types.  Called from initialize-compiler
@@ -248,6 +301,21 @@
    Endeavor 144 Phase 0: also registers the BUILTIN hardware profiles, which must happen
    after initialize-compiler's clrhash of *hardware-profiles* — this is the first hook that
    runs there.  See register-builtin-hardware-profiles for the src-patch note."
+  ;; Endeavour 165: the fp64 m8n8k4 family.  C/D is 8x8 = 64 elements over 32 lanes = 2
+  ;; doubles per lane; A is 8x4 and B is 4x8 = 32 elements each = ONE double per lane.  These
+  ;; match CUTLASS's own declarations for its single f64 tensor-op Mma (FragmentA/B =
+  ;; Array<double,1>, FragmentC = Array<double,2>), which is a second source agreeing.
+  ;; Fields are DOUBLE, not float: an fp64 MMA accumulates in fp64, unlike the 16-bit paths
+  ;; which accumulate in fp32 and therefore reuse the f32 accumulator record.
+  (register-struct-definition 'register-fragment-acc-f64-8x8
+                              '((r0 double) (r1 double))
+                              :record)
+  (register-struct-definition 'register-fragment-a-f64-8x4
+                              '((a0 double))
+                              :record)
+  (register-struct-definition 'register-fragment-b-f64-4x8
+                              '((b0 double))
+                              :record)
   (register-struct-definition 'register-fragment-acc-f32-16x8
                               '((r0 float) (r1 float) (r2 float) (r3 float))
                               :record)
@@ -326,7 +394,23 @@
      :max-shared-memory-per-block 227KB
      :l2-cache-size 50MB
      :native-cache-line-size 128
-     :mma-shapes ((16 8 8) (16 8 4) (16 8 16)))))
+     ;; THE ELEMENT TYPE IS A KEYWORD, NOT AN INTERNED SYMBOL, AND THAT IS LOAD-BEARING.
+     ;; Writing it as `double` interns CRISP.COMPILER::DOUBLE, and the ACTIVE PROFILE IS
+     ;; SERIALISED INTO EVERY .metacrisp -- so a plain tf32 kernel compiled with
+     ;; --hardware-profile=h100 emitted `CRISP.COMPILER:DOUBLE` into its metadata, and
+     ;; crisp-hoist-cuda (which has no such package) died reading it with "Package
+     ;; CRISP.COMPILER does not exist".  That broke the CUDA hoist for EVERY benchmark chapter,
+     ;; including ones with no doubles anywhere.  A keyword reads in any package.
+     ;; The readers are unaffected: %mma-shape-for-elem compares SYMBOL-NAME, and
+     ;; (symbol-name :double) is "DOUBLE" either way.
+     ;; Endeavour 165: a TYPED fp64 entry, and it is load-bearing rather than tidy.  Without
+     ;; it %mma-shape-for-elem falls to the width rule -- K x element-bits is a constant
+     ;; fragment footprint -- and resolves `double` to (16 8 4).  That shape exists in the PTX
+     ;; ISA but is NOT an NVVM intrinsic in LLVM 21.1.5: it assembles and llc emits an
+     ;; `.extern .func` CALL with no diagnostic.  fp64 has exactly ONE tensor-core shape,
+     ;; m8n8k4, so it is stated outright instead of being inferred from a rule that has no way
+     ;; to know that.
+     :mma-shapes ((16 8 8) (16 8 4) (16 8 16) (:double 8 8 4)))))
 
 
 
@@ -432,16 +516,33 @@
                :value-node (analyze-expression init env context (append location '(1)))
                :rows fr :cols fc :use use :layout 0 :source-location location)))
           (progn
-            (unless (and (eql m 16) (eql n 8))
-              (error 'crisp-compiler-error
-                     :message (format nil "make-register-fragment: only 16x8 is supported in P1 (got ~a x ~a)." m n)))
+            ;; Endeavour 165 (2b-ii): the accepted geometry is the ELEMENT TYPE's own -- 16x8
+            ;; for f32/tf32/16-bit-accumulate, 8x8 for fp64.  It was a flat 16x8 literal, which
+            ;; refused every fp64 fragment before it could be built.
+            (let ((want (%acc-frag-mn elem)))
+              (unless (or (and (eql m (car want)) (eql n (cdr want)))
+                          (member operand '(:a :b)))
+                (error 'crisp-compiler-error
+                       :message (format nil "make-register-fragment: ~a accumulator fragments are ~ax~a on this target (got ~a x ~a)." elem (car want) (cdr want) m n))))
             ;; PTX fragment register counts, matching the records minted below:
             ;; acc 16x8 f32 -> 4, A tf32 16x8 -> 4, B tf32 8x8 -> 2 (per lane, 32-bit each).
+            ;; Endeavour 165 (2b-ii): an fp64 accumulator fragment is 2 doubles per lane = 4
+            ;; 32-bit registers.  The SAME NUMBER as the f32 16x8 accumulator, but for a
+            ;; different reason -- 2 values of 8 bytes rather than 4 of 4 -- so it is computed,
+            ;; not inherited from the coincidence.
             (when tally-p
-              (%ptx-note-register-demand (ecase operand (:acc 4) (:a 4) (:b 2)) context location))
+              (%ptx-note-register-demand
+               (ecase operand
+                 (:acc (let ((want (%acc-frag-mn elem)))
+                         (/ (* (car want) (cdr want) (if (eql (%mma-elem-bits elem) 64) 2 1)) 32)))
+                 (:a 4) (:b 2))
+               context location))
             (analyze-expression
              (ecase operand
-               (:acc `(%construct-struct register-fragment-acc-f32-16x8 ,init ,init ,init ,init))
+               (:acc (let* ((rec (%frag-record-for-acc elem))
+                            (want (%acc-frag-mn elem))
+                            (nvals (/ (* (car want) (cdr want)) 32)))
+                       `(%construct-struct ,rec ,@(make-list nvals :initial-element init))))
                (:a   `(%construct-struct register-fragment-a-tf32-16x8 ,init ,init ,init ,init))
                (:b   `(%construct-struct register-fragment-b-tf32-8x8 ,init ,init)))
              env context location))))))
@@ -508,7 +609,12 @@
 (defun analyze-store-fragment (expr env context location)
   "P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR
    (accumulator, row-major); else the NVIDIA per-lane writes."
-  (destructuring-bind (frag dest tile-id) (cdr expr)
+  ;; Endeavour 165 (2b-ii): an optional 4th argument carries the ELEMENT TYPE, supplied by
+  ;; the store-tile walks (which know it) and defaulting to FLOAT for a hand-written
+  ;; store-fragment.  The alternative -- inferring it from the fragment's own type -- would mean
+  ;; analyzing FRAG once to ask, then again inside the rewritten form, and analyzing a form twice
+  ;; is not safe in general.
+  (destructuring-bind (frag dest tile-id &optional (elem 'float)) (cdr expr)
     (let ((ty (first tile-id)) (tx (second tile-id)))
       (if (eq *target-backend* :spirv)
           ;; C(accumulator) = MxN; layout from the dest tensor's :contiguous-term.
@@ -523,16 +629,30 @@
                :ty (analyze-expression `(to-int ,ty) env context (append location '(3)))
                :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
                :source-location location)))
-          (analyze-expression
-           `(let ((frag-val ,frag))
-              (let ((lane (to-int (warp-lane))))
-                (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
-                  (let ((row (+ (* ,ty 16) g)) (col (+ (* ,tx 8) t2)))
-                    (set! (~ ,dest row col)             (%extract-struct-member frag-val 0))
-                    (set! (~ ,dest row (+ col 1))       (%extract-struct-member frag-val 1))
-                    (set! (~ ,dest (+ row 8) col)       (%extract-struct-member frag-val 2))
-                    (set! (~ ,dest (+ row 8) (+ col 1)) (%extract-struct-member frag-val 3))))))
-           env context location)))))
+          (if (eql (%mma-elem-bits elem) 64)
+              ;; fp64 m8n8k4 C/D, decoded from CuTe MMA_Traits<SM80_8x8x4_F64F64F64F64_TN>:
+              ;; CLayout = Layout<Shape<Shape<_4,_8>,_2>, Stride<Stride<_16,_1>,_8>> gives
+              ;; m = lane/4 and n = 2*(lane%4) + v for v in {0,1}.  Same column scheme as the
+              ;; tf32 fragment below (two adjacent columns at 2*(lane%4)); it differs only in
+              ;; having ONE row per lane instead of the g / g+8 pair, over a tile 8 rows tall.
+              (analyze-expression
+               `(let ((frag-val ,frag))
+                  (let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                      (let ((row (+ (* ,ty 8) g)) (col (+ (* ,tx 8) t2)))
+                        (set! (~ ,dest row col)       (%extract-struct-member frag-val 0))
+                        (set! (~ ,dest row (+ col 1)) (%extract-struct-member frag-val 1))))))
+               env context location)
+              (analyze-expression
+               `(let ((frag-val ,frag))
+                  (let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                      (let ((row (+ (* ,ty 16) g)) (col (+ (* ,tx 8) t2)))
+                        (set! (~ ,dest row col)             (%extract-struct-member frag-val 0))
+                        (set! (~ ,dest row (+ col 1))       (%extract-struct-member frag-val 1))
+                        (set! (~ ,dest (+ row 8) col)       (%extract-struct-member frag-val 2))
+                        (set! (~ ,dest (+ row 8) (+ col 1)) (%extract-struct-member frag-val 3))))))
+               env context location))))))
 
 ;;; ===================================================================
 ;;; P2 — load-fragment-a / load-fragment-b analyzers.
@@ -583,6 +703,16 @@
           (let* ((probe (analyze-expression src env context (append location '(1))))
                  (elem  (%coop-elem-of probe))
                  (rec   (%nvvm-frag-record :a elem)))
+            (if (eql (%mma-elem-bits elem) 64)
+                ;; fp64 m8n8k4 A (8x4): m = lane/4, k = lane%4, ONE double per lane.
+                ;; CuTe ALayout = SM80_8x4.  The tile coordinates scale by the fragment's own
+                ;; extents -- 8 rows and 4 columns -- not by the tf32 path's 16 and 8.
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,ty 8) g)) (c (+ (* ,tk 4) tg)))
+                        (%construct-struct ,rec (~ ,src r c)))))
+                 env context location)
             (if (eql (%mma-elem-bits elem) 16)
                 (analyze-expression
                  `(let ((lane (to-int (warp-lane))))
@@ -600,7 +730,7 @@
                       (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 8) tg)))
                         (%construct-struct ,rec
                           (~ ,src r c) (~ ,src (+ r 8) c) (~ ,src r (+ c 4)) (~ ,src (+ r 8) (+ c 4))))))
-                 env context location)))))))
+                 env context location))))))))
 
 (defun analyze-load-fragment-b (expr env context location)
   "P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
@@ -630,6 +760,17 @@
           (let* ((probe (analyze-expression src env context (append location '(1))))
                  (elem  (%coop-elem-of probe))
                  (rec   (%nvvm-frag-record :b elem)))
+            (if (eql (%mma-elem-bits elem) 64)
+                ;; fp64 m8n8k4 B (4x8): k = lane%4, n = lane/4, ONE double per lane.
+                ;; CuTe BLayout = SM80_8x4, the same layout as A with N in M's place.  Compare
+                ;; the tf32 branch below, which reads rows tg and tg+4 at column g: same family,
+                ;; but K=4 leaves exactly one element per lane instead of two.
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,tk 4) tg)) (c (+ (* ,tx 8) g)))
+                        (%construct-struct ,rec (~ ,src r c)))))
+                 env context location)
             (if (eql (%mma-elem-bits elem) 16)
                 (analyze-expression
                  `(let ((lane (to-int (warp-lane))))
@@ -645,7 +786,7 @@
                       (let ((r (+ (* ,tk 8) tg)) (c (+ (* ,tx 8) g)))
                         (%construct-struct ,rec
                           (~ ,src r c) (~ ,src (+ r 4) c)))))
-                 env context location)))))))
+                 env context location))))))))
 
 
 
@@ -802,21 +943,89 @@
 
 
 
+;;; ===================================================================
+;;; Endeavour 165 step 3 (cont) — mma-accumulate's RESULT TYPE follows its C operand.
+;;;
+;;; analyze-mma-accumulate typed its node as register-fragment-acc-f32-16x8 outright, so an fp64
+;;; accumulate reported an f32 accumulator and the walk refused it:
+;;;   "Type mismatch! Expected REGISTER-FRAGMENT-ACC-F64-8X8 but inferred
+;;;    REGISTER-FRAGMENT-ACC-F32-16X8."
+;;; Another loud refusal finding a hardcode, which is the pattern this endeavour keeps repeating.
+;;;
+;;; The fix is not "add an fp64 case" but to state the actual rule: an MMA accumulate returns an
+;;; accumulator OF THE SAME TYPE AS ITS C OPERAND.  That was always true; it was merely
+;;; unexpressible while only one accumulator record existed.  Written that way it needs no
+;;; further edit when a third accumulator type appears.
+;;; ===================================================================
+
+;; src/mma.lisp
 (defun analyze-mma-accumulate (expr env context location)
-  "P2 / F-SPV: (mma-accumulate C A B).  Node typed as the accumulator fragment — a coop
-   matrix on :spirv, else the fp32 record.  Codegen forks in the generate-node-ir below."
+  "P2 / F-SPV: (mma-accumulate C A B).  Node typed as the accumulator fragment — a coop matrix on
+   :spirv, else the SAME RECORD AS C.  Codegen forks in generate-node-ir.
+
+   Endeavour 165 (step 3): the NVIDIA type was hardcoded to the fp32 record, which made an fp64
+   accumulate mistype itself.  Deriving it from C states the real rule and covers any accumulator
+   record, present or future.  The fallback keeps the historical answer when C's type cannot be
+   resolved to an accumulator record."
   (destructuring-bind (c-arg a-arg b-arg) (cdr expr)
-    (make-semantic-mma-accumulate
-     :type (if (eq *target-backend* :spirv)
-               (multiple-value-bind (sm sn sk) (%spv-mma-shape)
-                 (declare (ignore sk)) (list 'coop-matrix 'float sm sn 2))
-               'register-fragment-acc-f32-16x8)
-     :c-node (analyze-expression c-arg env context location)
-     :a-node (analyze-expression a-arg env context location)
-     :b-node (analyze-expression b-arg env context location)
-     :source-location location)))
+    (let* ((c-node (analyze-expression c-arg env context location))
+           (c-type (get-single-value-type c-node)))
+      (make-semantic-mma-accumulate
+       :type (if (eq *target-backend* :spirv)
+                 (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                   (declare (ignore sk)) (list 'coop-matrix 'float sm sn 2))
+                 (if (and c-type (symbolp c-type)
+                          (search "REGISTER-FRAGMENT-ACC-" (symbol-name c-type)))
+                     c-type
+                     'register-fragment-acc-f32-16x8))
+       :c-node c-node
+       :a-node (analyze-expression a-arg env context location)
+       :b-node (analyze-expression b-arg env context location)
+       :source-location location))))
 
 
+
+(defun %emit-nvvm-mma-f64 (builder module a-val b-val c-val)
+  "Emit the fp64 tensor-core MMA: llvm.nvvm.mma.m8n8k4.row.col.f64.
+
+   Endeavour 165 step 3.  Operands are ONE double each and the accumulator is TWO, so unlike the
+   tf32 and 16-bit paths there is no packing, no bitcast and no vector: doubles are passed as
+   doubles.  That is the whole reason this is a separate function rather than another arm of
+   %emit-nvvm-mma's operand-format cond -- it shares none of that machinery.
+
+   THE NAME IS THE ONE VERIFIED SPELLING.  On bin/llc.exe (LLVM 21.1.5, -mcpu=sm_90) this lowers
+   to `mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64`, while the sm_90 f64 shapes
+   (m16n8k4 / k8 / k16) assemble cleanly and emit an `.extern .func` CALL with no diagnostic at
+   all.  A wrong spelling here is therefore SILENT, so this must never be checked by prefix --
+   the same trap endeavour 159 documented for the 16-bit names."
+  (let* ((f64 (llvm-double-type))
+         (a0  (llvm-build-extract-value builder a-val 0 "fa0"))
+         (b0  (llvm-build-extract-value builder b-val 0 "fb0"))
+         (c-ops (loop for i below 2
+                      collect (llvm-build-extract-value builder c-val i (format nil "fc~d" i))))
+         (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 2)))
+                   (dotimes (i 2) (setf (cffi:mem-aref elts 'llvm-type-ref i) f64))
+                   (llvm-struct-type-in-context (llvm-get-module-context module) elts 2 nil)))
+         (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+                  (dotimes (i 4) (setf (cffi:mem-aref arr 'llvm-type-ref i) f64))
+                  (llvm-function-type ret-ty arr 4 nil)))
+         (fn-name "llvm.nvvm.mma.m8n8k4.row.col.f64")
+         (fn (let ((existing (llvm-get-named-function module fn-name)))
+               (if (cffi:null-pointer-p existing) (llvm-add-function module fn-name fn-ty) existing)))
+         (args (list* a0 b0 c-ops))
+         (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 4)))
+                     (loop for i from 0 for v in args
+                           do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
+                     arr))
+         (call (llvm-build-call2 builder fn-ty fn args-arr 4 "mmad"))
+         (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-f64-8x8 module))
+         (result (let ((agg (llvm-get-undef acc-ty)))
+                   (dotimes (i 2)
+                     (setf agg (llvm-build-insert-value builder agg
+                                (llvm-build-extract-value builder call i (format nil "fd~d" i))
+                                i (format nil "facc~d" i))))
+                   agg)))
+    (values result nil)))
 
 (defun %emit-nvvm-mma (builder module a-val b-val c-val)
   "The NVIDIA sync MMA.  Endeavour 159: dispatches on the A fragment's ELEMENT TYPE, emitting
@@ -841,11 +1050,16 @@
    analyze-load-fragment-a/-b; those must agree, and nothing local can prove they do --
    MMA_CORRECT on metal is what checks it.
 
-   The ACCUMULATOR is f32 in every path: a 16-bit MMA accumulates in fp32."
+   The ACCUMULATOR is f32 in every path here: a 16-bit MMA accumulates in fp32.  fp64 is the
+   exception and accumulates in fp64, which is one more reason it lives in its own emitter."
   (let* ((f32 (llvm-float-type))
          (i32 (llvm-int32-type))
          (a0  (llvm-build-extract-value builder a-val 0 "a0"))
          (fmt (%nvvm-frag-format (llvm-type-of a0))))
+    (if (eq fmt :f64)
+        ;; Endeavour 165 step 3: fp64 shares none of the packing below -- one double per operand,
+        ;; two for the accumulator -- so it is its own emitter rather than another arm here.
+        (%emit-nvvm-mma-f64 builder module a-val b-val c-val)
     (if (eq fmt :tf32)
         ;; ---------------- tf32 m16n8k8 (unchanged) ----------------
         (let* ((a-ops (cons (llvm-build-bit-cast builder a0 i32 "a0i")
@@ -929,7 +1143,7 @@
                                       (llvm-build-extract-value builder call i (format nil "d~d" i))
                                       i (format nil "acc~d" i))))
                          agg)))
-          (values result nil)))))
+          (values result nil))))))
 
 
 (defun %coop-mma (builder module a-val b-val c-val elem-llvm m n k)
@@ -991,29 +1205,213 @@
 (defvar *register-tile-dims* (make-hash-table :test 'eq)
   "Maps a minted register-tile type symbol -> (list M N); used by store-tile's walk.")
 
-(defun %register-tile-type-name (m n)
-  (intern (format nil "REGISTER-TILE-ACC-F32-~dX~d" m n) (find-package :crisp.compiler)))
+;;; ===================================================================
+;;; Endeavour 165 step 2a — thread the ELEMENT TYPE through the register-tile path.
+;;;
+;;; NO GEOMETRY CHANGES HERE.  %acc-frag-mn returns 16x8 for every element type, so the emitted
+;;; code is byte-identical to before; this step only makes the element type REACHABLE at the
+;;; sites that will need it.  Step 2b changes %acc-frag-mn alone.
+;;;
+;;; WHY IT WAS UNREACHABLE.  The store-tile walk and the MMA walk recover a tile's geometry from
+;;; *register-tile-dims* keyed by the minted TYPE NAME -- and that name was
+;;; REGISTER-TILE-ACC-F32-MxN with only (M N) in the table.  The element type existed at the
+;;; binding site and was gone by the time anything needed it.
+;;;
+;;; THE NAME IS NOW HONEST, and that is not cosmetic: a name that hardcodes F32 makes two tiles
+;;; of different element types and identical dims COLLIDE on one record.  That is BUG 055
+;;; (%coop-call caching a coop-matrix declaration by name alone) in a second location, and it is
+;;; cheaper to not create it than to fix it twice.  Verified safe to rename: the string appears
+;;; nowhere outside src/mma.lisp, and autodiff identifies register tiles from the ANF form
+;;; (make-register-tile without :operand), never from the type name.
+;;;
+;;; These four definitions were EXTRACTED VERBATIM from src/mma.lisp by
+;;; put_temp_files_here/165/patch2a.py (balanced-paren scan) and edited by exact-match
+;;; replacement, each asserted to hit exactly once.  Nothing here was retyped by hand.
+;;;
+;;; NOTE FOR THE SRC PATCH: %acc-frag-mn is new (src/mma.lisp); %register-tile-type-name
+;;; REPLACES src/mma.lisp:994; %ensure-register-tile-type REPLACES the 165 overlay copy above;
+;;; analyze-make-register-tile REPLACES src/mma.lisp:1089; analyze-store-tile-mma REPLACES
+;;; src/mma.lisp:1121; analyze-mma-accumulate-via-tile REPLACES src/mma.lisp:1182.
+;;; ===================================================================
+
+
+;; src/mma.lisp
+;;;; overlays/crisp-compiler-overlay.lisp
+;;;;
+;;;; HOT-PATCH OVERLAY for CRISP.COMPILER -- append late definitions here and the build
+;;;; picks them up after src/, so a fix can be made without editing src directly.
+;;;;
+;;;; EMPTY BY DESIGN.  Its 128 definitions were folded into src/ on 2026-08-26, and
+;;;; endeavour 163's 23 definitions were folded in on 2026-09-06 (15 replaced their src
+;;;; originals in place, 8 new helpers were appended to their target files, and a
+;;;; duplicate *ad-ring-slot-marker* identical to src/autodiff.lisp's was dropped).
+;;;;
+;;;; When you fold future contents back out, three things bite:
+;;;;   * VARIABLES belong in src/specials.lisp.  A `let` on a special compiled before its
+;;;;     defvar is seen becomes a LEXICAL binding, silently.  Overlay variables are safe
+;;;;     only because the overlay loads last; that protection disappears on the way in.
+;;;;   * A definition that REPLACES one in src must overwrite it in place, not be
+;;;;     appended -- otherwise both are live and ASDF order picks the winner.
+;;;;   * A FORMAT string using ~<newline> continuation works in an LF overlay and DIES
+;;;;     when folded into CRLF src/, and the error names the wrong place.  Both files are
+;;;;     CRLF today, so this is only a hazard if an overlay is ever written as LF.
+
+
+
+;;; ===================================================================
+;;; Endeavour 165 — a register tile that cannot hold a fragment must REFUSE, not vanish.
+;;;
+;;; THE DEFECT.  `analyze-make-register-tile` and the store/mma walks size a tile as
+;;; (floor m 16) x (floor n 8) fragments, so ANY tile with M < 16 or N < 8 yields ZERO
+;;; fragments.  There is nothing to fill, nothing to store and nothing to multiply, so the
+;;; kernel legitimately optimises down to `ret;` -- and the compiler reports success.
+;;; Demonstrated on the dev box with a plain fp32 8x8 tile (put_temp_files_here/165/probe/):
+;;; a fill + store-tile kernel emitted an empty body and exit code 0.
+;;;
+;;; `%ensure-register-tile-type` ALREADY guards exactly this and says so.  It never fires,
+;;; because a LET-bound tile -- which is what every real kernel writes -- goes through
+;;; `%explode-register-tiles` instead, and that path never re-checks.  The guard existed and
+;;; was bypassed by the only route anyone uses.
+;;;
+;;; THE FIX.  One shared predicate, called from BOTH paths, so they cannot drift apart again.
+;;; It is hooked into `%register-tile-fit-check` rather than into `%explode-register-tiles`
+;;; because the fit-check is already invoked exactly once per register-tile binding on that
+;;; path and already receives (m n location) -- a 15-line append instead of transcribing a
+;;; 124-line function, which is its own class of risk.
+;;;
+;;; SCOPED TO THE NVIDIA PATH, deliberately.  On PTX `%frag-mn-for-operand` returns a
+;;; hardcoded 16x8 for every operand and element type, so the geometry is unambiguous here.
+;;; On SPIR-V it is derived per-element from `%spv-mma-shape`, and the fit-check does not
+;;; receive the tile's element type or operand role -- guessing :acc would false-refuse a
+;;; legitimate A or B tile and break shipped kernels.  SPIR-V can hit the same zero-fragment
+;;; case with a mismatched shape; closing it there needs the elem threaded through, and is
+;;; left as its own step rather than smuggled in behind a wrong default.
+;;;
+;;; NOTE FOR THE SRC PATCH: %register-tile-dims-must-divide is new (src/mma.lisp);
+;;; %ensure-register-tile-type REPLACES src/mma.lisp:1001; %register-tile-fit-check
+;;; REPLACES src/mma.lisp:1307.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun %register-tile-dims-must-divide (m n location &optional (fr 16) (fc 8))
+  "Refuse a register tile whose dims do not cover at least one whole FR x FC fragment.
+
+   A tile of (M N) holds (floor M FR) x (floor N FC) fragments.  When either floor is zero the
+   tile holds NOTHING, and every construct that walks it -- store-tile, fill-tile,
+   mma-accumulate-via-tile -- expands to no code, so the kernel compiles clean and does nothing.
+   That is the one outcome a compiler must never produce silently, so this is an error and not a
+   warning: there is no reading of a zero-fragment tile under which the user got what they asked
+   for.
+
+   Endeavour 165.  fp64's only tensor-core shape is m8n8k4, whose accumulator is 8x8 -- under the
+   hardcoded 16x8 fragment in BOTH dimensions -- so every fp64 MMA kernel would have walked into
+   this.  The defect itself is older and has nothing to do with fp64: a plain fp32 8x8 tile
+   reproduces it exactly."
+  (unless (and (integerp m) (integerp n) (plusp m) (plusp n)
+               (zerop (mod m fr)) (zerop (mod n fc)))
+    (error 'crisp-compiler-error
+           :message (format nil "make-register-tile: dims (~a ~a) must be multiples of the ~ax~a accumulator fragment. (~a ~a) holds ~a fragments, so the tile would carry no values and every store-tile / fill-tile / mma-accumulate-via-tile over it would expand to no code at all."
+                            m n fr fc m n
+                            (* (floor m fr) (floor n fc)))
+           :source-location location)))
+
+;;; ===================================================================
+;;; Endeavour 165 step 2b-ii — FLIP the geometry: fp64 accumulator fragments are 8x8.
+;;;
+;;; 2a and 2b-i were each proved inert (14 IR files byte-identical).  This step changes emitted
+;;; code, and it changes it for `double` ONLY: every f32 / f16 / bf16 path still resolves to
+;;; 16x8 through the very same functions, so the byte-identical check must STILL hold for them.
+;;; That is the whole return on having done the two inert steps first -- when the f32 IR moves
+;;; here, it is a bug, not a judgement call.
+;;;
+;;; THE LANE MAPPING IS NOT GUESSED.  fp64 m8n8k4 C/D comes from CuTe's
+;;; MMA_Traits<SM80_8x8x4_F64F64F64F64_TN>: CLayout = Layout<Shape<Shape<_4,_8>,_2>,
+;;; Stride<Stride<_16,_1>,_8>> over ThrID = Layout<_32>, which with t0 = lane%4, t1 = lane/4 and
+;;; v in {0,1} gives m = lane/4, n = 2*(lane%4) + v.  It is the SAME column scheme the tf32 path
+;;; already uses, with one row per lane instead of the g / g+8 pair -- corroboration, not
+;;; coincidence.  A fragment lane layout is the textbook wrong-but-self-consistent failure: it
+;;; compiles, emits the right instruction, passes every mechanical check and computes garbage
+;;; that only metal catches.  Endeavour 159 lost a pod session to that class of thing, so this
+;;; one came from a machine-readable primary source in the tree rather than from memory.
+;;;
+;;; STILL NOT DONE HERE: load-fragment-a / -b for fp64 and the m8n8k4 MMA emitter itself.  An
+;;; fp64 register tile can now be built, filled and STORED; multiplying is step 3.
+;;;
+;;; NOTE FOR THE SRC PATCH: %acc-frag-mn and %frag-record-for-acc REPLACE/extend their 165
+;;; overlay copies above; register-mma-types REPLACES src/mma.lisp:230;
+;;; %ensure-register-tile-type REPLACES the 165 overlay copy; analyze-make-register-fragment
+;;; REPLACES src/mma.lisp:~410; analyze-store-fragment REPLACES src/mma.lisp:508;
+;;; %emit-per-frag-store REPLACES the 2b-i overlay copy; analyze-store-tile-mma REPLACES the 2a
+;;; overlay copy.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun %acc-frag-mn (elem)
+  "The ACCUMULATOR fragment geometry (ROWS . COLS) for element type ELEM on the current backend.
+
+   THE SINGLE SOURCE OF TRUTH.  Every geometry decision on the register-tile path -- the tile
+   minter, the fit-check, the BUG 058 refusal, the store-tile walk, the MMA walk, the warp
+   validator and the five %emit-per-frag-* emitters -- resolves here.  That is what steps 2a and
+   2b-i built; this step is the payoff, because adding fp64 is now a change to one function.
+
+   fp64: 8x8, because m8n8k4 is the ONLY fp64 tensor-core shape (LLVM 21.1.5 lowers only
+   llvm.nvvm.mma.m8n8k4.row.col.f64; CUTLASS declares exactly one f64 tensor-op Mma, at
+   GemmShape<8,8,4>).  Its accumulator is 8x8 = 64 elements over 32 lanes = 2 doubles per lane.
+
+   Everything else keeps 16x8, the tf32/16-bit accumulator: 16x8 = 128 over 32 lanes = 4 fp32
+   per lane.  16-bit operands accumulate in fp32 and so land here too, deliberately -- the same
+   reason %coop-elem-of does not route accumulators through the operand element type.
+
+   :spirv does not consult this; it derives its shape per-element from the profile via
+   %spv-mma-shape, and was never 16x8-shaped."
+  (if (and elem (symbolp elem) (string= (symbol-name elem) "DOUBLE"))
+      (cons 8 8)
+      (cons 16 8)))
+
+(defun %register-tile-type-name (m n &optional (elem 'float))
+  "The minted record name for an M x N register tile of element type ELEM.
+
+   Endeavour 165 (step 2a): the name now carries the ELEMENT TYPE.  It used to be
+   REGISTER-TILE-ACC-F32-MxN unconditionally, which was a lie the moment a double tile existed
+   and -- worse -- a COLLISION: two tiles with the same dims and different element types would
+   have shared one record.  That is not hypothetical; it is exactly BUG 055, where %coop-call
+   caches the coop-matrix declaration by name alone and two element types in one module silently
+   collide.  One instance of that bug is enough.
+
+   ELEM defaults to FLOAT so any caller not yet threading it keeps the pre-165 record."
+  (intern (format nil "REGISTER-TILE-ACC-~a-~dX~d" (symbol-name elem) m n)
+          (find-package :crisp.compiler)))
 
 (defun %register-tile-type-p (type-name)
   "T if TYPE-NAME is a minted register-tile type."
   (and (symbolp type-name) (nth-value 1 (gethash type-name *register-tile-dims*))))
 
-(defun %ensure-register-tile-type (m n)
-  "Mint (once) the register-tile-acc-f32-MxN record — (M/16)x(N/8) fragment fields —
-   and record its dims.  Returns the type symbol."
-  (unless (and (zerop (mod m 16)) (zerop (mod n 8)))
-    (error "make-register-tile: dims (~a ~a) must be multiples of the 16x8 accumulator fragment." m n))
-  (let ((name (%register-tile-type-name m n)))
-    (unless (gethash name *crisp-structs*)
-      (let ((nfrags (* (floor m 16) (floor n 8))))
-        (register-struct-definition
-         name
-         (loop for i below nfrags
-               collect (list (intern (format nil "F~d" i) (find-package :crisp.compiler))
-                             'register-fragment-acc-f32-16x8))
-         :record)))
-    (setf (gethash name *register-tile-dims*) (list m n))
-    name))
+(defun %ensure-register-tile-type (m n &optional (elem 'float))
+  "Mint (once) the register-tile record for an M x N tile of ELEM -- (M/fr)x(N/fc) fragment
+   fields -- and record its dims AND element type.  Returns the type symbol.
+
+   Endeavour 165 (2a): ELEM is threaded through, and *register-tile-dims* stores (M N ELEM),
+   because the store-tile and MMA walks recover their geometry from that table by TYPE NAME and
+   had no other way to learn the element type.
+
+   Endeavour 165 (2b-ii): the FIELD type now comes from %frag-record-for-acc rather than being
+   hardcoded to the f32 record, so a double tile is a tile of fp64 fragments.
+
+   Endeavour 165 (BUG 058): the divisibility guard delegates to %register-tile-dims-must-divide,
+   which the LET-bound path checks too, at the element's own fragment geometry."
+  (let ((fmn (%acc-frag-mn elem)))
+    (%register-tile-dims-must-divide m n nil (car fmn) (cdr fmn))
+    (let ((name (%register-tile-type-name m n elem)))
+      (unless (gethash name *crisp-structs*)
+        (let ((nfrags (* (floor m (car fmn)) (floor n (cdr fmn)))))
+          (register-struct-definition
+           name
+           (loop for i below nfrags
+                 collect (list (intern (format nil "F~d" i) (find-package :crisp.compiler))
+                               (%frag-record-for-acc elem)))
+           :record)))
+      (setf (gethash name *register-tile-dims*) (list m n elem))
+      name)))
 
 (defun %normalize-warp-mask (mask location)
   "Endeavor 139 (decision A): normalize a :warps topology mask to a list of booleans (t/nil).
@@ -1090,6 +1488,7 @@
   "P3a: (make-register-tile T (M N) INIT &key warps) -> a record-of-fragments accumulator tile,
    each fragment initialized to INIT.  Mints the tile type on demand; rewrites to
    %construct-struct of make-register-fragment fields.
+   Endeavour 165 (2a): ELEM now reaches the minted tile type and the fragment count.
    Endeavor 139 (decision A): :warps is a flat topology mask of which warps hold the tile.  For a
    single participating warp (or no mask) the tile is the full (M/16)x(N/8) fragment set on that
    warp — the current build.  Distributing across >= 2 participating warps (the occupancy lever)
@@ -1101,8 +1500,9 @@
          (kwargs   (nthcdr 3 args))
          (warps-in (getf kwargs :warps)))
     (destructuring-bind (m n) dims
-      (let* ((tile-name (%ensure-register-tile-type m n))
-             (nfrags    (* (floor m 16) (floor n 8))))
+      (let* ((tile-name (%ensure-register-tile-type m n elem))
+             (fmn       (%acc-frag-mn elem))
+             (nfrags    (* (floor m (car fmn)) (floor n (cdr fmn)))))
         (when warps-in
           ;; This (%construct-struct, non-exploded) path is only reached for a make-register-tile
           ;; NOT bound in a let — a let binding is EXPLODED, and %explode-register-tiles does the
@@ -1128,14 +1528,15 @@
          (analyze-expression (%wgmma-store-rewrite (second expr) (third expr) (fourth expr) n)
                              env context location)))
       ((%register-tile-type-p src-type)
-       (destructuring-bind (m n) (gethash src-type *register-tile-dims*)
+       (destructuring-bind (m n &optional (elem 'float)) (gethash src-type *register-tile-dims*)
          (let* ((tile    (second expr))
                 (dest    (third expr))
                 (tile-id (fourth expr))
                 (to-int-sym (intern "TO-INT" (find-package :crisp-language)))
                 (bty (list to-int-sym (first tile-id)))
                 (btx (list to-int-sym (second tile-id)))
-                (m-frags (floor m 16)) (n-frags (floor n 8)))
+                (fmn (%acc-frag-mn elem))
+                (m-frags (floor m (car fmn))) (n-frags (floor n (cdr fmn))))
            (analyze-expression
             `(let ((tv ,tile))
                (progn
@@ -1145,7 +1546,8 @@
                                       collect `(store-fragment (%extract-struct-member tv ,idx)
                                                                ,dest
                                                                ((+ (* ,bty ,m-frags) ,mi)
-                                                                (+ (* ,btx ,n-frags) ,nj)))))))
+                                                                (+ (* ,btx ,n-frags) ,nj))
+                                                               ,elem)))))
             env context location))))
       (t
        (analyze-store-tile-expression expr env context location)))))
@@ -1158,10 +1560,37 @@
 
 
 
+;;; ===================================================================
+;;; Endeavour 165 step 4 — the h100 profile tells the truth about fp64, and the shape check
+;;; understands TYPED entries.
+;;;
+;;; THE TRAP THIS CLOSES (finding 3 in the endeavour doc).  h100's :mma-shapes was
+;;; ((16 8 8) (16 8 4) (16 8 16)) with no typed entry, so %mma-shape-for-elem fell to its width
+;;; rule -- K x element-bits is a constant fragment footprint -- and resolved `double` to
+;;; **(16 8 4)**.  That shape is real in the PTX ISA and is NOT an NVVM intrinsic in LLVM 21.1.5:
+;;; it assembles cleanly and llc emits an `.extern .func` CALL with no diagnostic.  So a benchmark
+;;; kernel run under --hardware-profile=h100 would have picked an unemittable shape SILENTLY.
+;;; The width rule is not wrong; it simply is not the constraint that binds for fp64, where the
+;;; hardware offers exactly one shape.
+;;;
+;;; %check-mma-shape also had to learn typed entries.  It tested raw `member ... :test #'equal`
+;;; against the 3-lists, so a TYPED 4-list `(double 8 8 4)` would never have matched the user's
+;;; `(8 8 4)` -- adding the entry alone would have made the profile correct and the kernel
+;;; un-compilable.  The two edits only work together, which is why they are one block.
+;;;
+;;; NOTE FOR THE SRC PATCH: %check-mma-shape REPLACES src/mma.lisp:1161;
+;;; register-builtin-hardware-profiles REPLACES src/mma.lisp:282.
+;;; ===================================================================
+
+;; src/mma.lisp
 (defun %check-mma-shape (mma-shape location)
   "Validate the (M N K) MMA shape: an int triple, and — if a hardware profile is active —
    a member of its :mma-shapes (the vendor's supported shape, e.g. Intel (8 16 8)); with
-   NO profile, require the tf32 NVIDIA default (16 8 8)."
+   NO profile, require the tf32 NVIDIA default (16 8 8).
+
+   Endeavour 165: a profile entry may be TYPED — `(ELEM M N K)`, a 4-list — so membership is
+   tested against each entry's DIMS via %mma-shape-entry-dims rather than against the entry
+   itself.  Untyped 3-lists compare exactly as before."
   (unless (and (listp mma-shape) (= (length mma-shape) 3) (every #'integerp mma-shape))
     (error 'crisp-compiler-error
            :message (format nil "mma-accumulate-via-tile: shape must be an (M N K) integer triple, got ~a." mma-shape)
@@ -1169,7 +1598,7 @@
   (let* ((profile (active-hardware-profile))
          (shapes  (and profile (getf profile :mma-shapes))))
     (if shapes
-        (unless (member mma-shape shapes :test #'equal)
+        (unless (find mma-shape shapes :test #'equal :key #'%mma-shape-entry-dims)
           (error 'crisp-compiler-error
                  :message (format nil "mma-accumulate-via-tile: shape ~a is not one of the active hardware profile's :mma-shapes ~a."
                                   mma-shape shapes)
@@ -1191,8 +1620,9 @@
         (error 'crisp-compiler-error
                :message (format nil "mma-accumulate-via-tile: C-tile (2nd arg) must be a register-tile, got type ~a." c-type)
                :source-location location))
-      (destructuring-bind (tm tn) (gethash c-type *register-tile-dims*)
-        (let ((m-frags (floor tm 16)) (n-frags (floor tn 8)))
+      (destructuring-bind (tm tn &optional (elem 'float)) (gethash c-type *register-tile-dims*)
+        (let* ((fmn (%acc-frag-mn elem))
+               (m-frags (floor tm (car fmn))) (n-frags (floor tn (cdr fmn))))
           (analyze-expression
            `(set! ,c-tile
               (let ((cv ,c-tile))
@@ -1267,27 +1697,88 @@
 
 
 
-(defun %frag-mn ()
-  "Per-fragment (M . N) for register-tile decomposition: the active profile's mma-shape
-   (M N) on :spirv, else NVIDIA 16x8."
+;;; ===================================================================
+;;; Endeavour 165 step 2b-i (v2) — reach the ELEMENT TYPE from the register-tile emitters.
+;;;
+;;; STILL NO GEOMETRY CHANGE.  %acc-frag-mn answers 16x8 for every element type; 2b-ii flips it.
+;;;
+;;; WHAT v1 GOT WRONG, kept here because the correction is the interesting part.  v1 appended
+;;; ELEM as a seventh field on the tile ENTRY.  That broke src/codegen.lisp:5477 -- the load-tile
+;;; per-fragment expansion -- because the survey had been scoped to src/mma.lisp while the entry
+;;; shape is consumed across files.  Three Intel negative specs died with "too many elements ...
+;;; to satisfy lambda list (M N SYMS &OPTIONAL (N-TRUE) (FIRST-TRUE) (OPERAND))", and two Intel
+;;; on-metal specs failed with them.  A 14-file byte-identical IR check had said the change was
+;;; inert; it was inert on the files sampled and not on the suite, which is the difference
+;;; between a spot check and a proof.
+;;;
+;;; v1 was also fighting the design.  That same codegen site already asks the question properly:
+;;;     (%frag-mn-for-operand operand (%register-tile-elem-of (first entry)))
+;;; -- a side-table lookup keyed by the tile's own symbol, populated into *register-tile-elems*
+;;; by %explode-register-tiles.  The entry deliberately does not carry the element type; there is
+;;; an established way to ask.  v2 uses it, so the entry shape never changes and no consumer
+;;; anywhere needs patching.
+;;;
+;;; NOTE FOR THE SRC PATCH: %frag-mn REPLACES src/mma.lisp:1268; %emit-per-frag-accumulate
+;;; REPLACES :1403; %emit-per-frag-store REPLACES :1491; %emit-per-frag-acc-load REPLACES :2852;
+;;; %register-tile-fit-check REPLACES the 165 overlay copy above; %explode-register-tiles
+;;; REPLACES :1877.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defun %frag-mn (&optional (elem 'float))
+  "Per-fragment (M . N) for register-tile decomposition: the active profile's mma-shape (M N) on
+   :spirv, else the NVIDIA accumulator geometry for ELEM.
+
+   Endeavour 165 (2b-i): takes ELEM and defers to %acc-frag-mn on the NVIDIA path instead of
+   answering a flat 16x8 for everything.  ELEM defaults to FLOAT, so a caller that has not been
+   taught to thread it keeps the pre-165 answer -- which is what makes this step inert."
   (if (eq *target-backend* :spirv)
       (multiple-value-bind (m n k) (%spv-mma-shape) (declare (ignore k)) (cons m n))
-      (cons 16 8)))
+      (%acc-frag-mn elem)))
 
+;;; ===================================================================
+;;; Endeavour 165 step 2b-ii (cont) — the THIRD geometry function.
+;;;
+;;; %acc-frag-mn and %frag-mn were routed; %frag-mn-for-operand still answered a flat 16x8 for
+;;; every operand and element type on the NVIDIA path, so the explode path built 16x8 fragments
+;;; for a double tile and analyze-make-register-fragment correctly refused them:
+;;;   "make-register-fragment: DOUBLE accumulator fragments are 8x8 on this target (got 16 x 8)."
+;;; The refusal did its job -- this is what a loud guard buys over a silent one.
+;;;
+;;; OPERAND geometry is filled in here too rather than left at 16x8 for fp64.  A and B for
+;;; m8n8k4 are 8x4 and 4x8 (CuTe ALayout/BLayout = SM80_8x4, 1 double per lane).  Operand tiles
+;;; are not reachable for fp64 until step 3 wires load-fragment-a/-b, but a function that would
+;;; answer 16x8 if asked is a trap left lying around, and this endeavour has already paid once
+;;; for a geometry that was wrong in a place nobody was looking.
+;;; ===================================================================
+
+;; src/mma.lisp
 (defun %frag-mn-for-operand (operand &optional elem)
   "Endeavor 142 — per-fragment (rows . cols) for a register-tile of :operand (a|b|acc).  From the
-   active profile's mma-shape (sm sn sk): A = sm×sk (Use 0), B = sk×sn (Use 1), Acc = sm×sn (Use 2)
-   — matching load-fragment-a/b and make-register-fragment.  NVIDIA: 16x8 (A/B on PTX is rejected
-   earlier for the block-load path).
+   active profile's mma-shape (sm sn sk): A = sm x sk (Use 0), B = sk x sn (Use 1),
+   Acc = sm x sn (Use 2) — matching load-fragment-a/b and make-register-fragment.
 
-   Endeavour 155: ELEM selects the shape, because K depends on the element width."
+   Endeavour 155: ELEM selects the shape, because K depends on the element width.
+
+   Endeavour 165 (2b-ii): the NVIDIA branch stops answering a flat 16x8.  The accumulator defers
+   to %acc-frag-mn, the single source of truth; fp64 operands take m8n8k4's own 8x4 / 4x8, from
+   CuTe MMA_Traits<SM80_8x8x4_F64F64F64F64_TN> (ALayout = BLayout = SM80_8x4, one double per
+   lane).  Non-fp64 operands keep 16x8 exactly as before."
   (if (eq *target-backend* :spirv)
       (multiple-value-bind (sm sn sk) (%spv-mma-shape elem)
         (ecase operand
           (:a   (cons sm sk))
           (:b   (cons sk sn))
           (:acc (cons sm sn))))
-      (cons 16 8)))
+      (if (and elem (symbolp elem) (string= (symbol-name elem) "DOUBLE"))
+          (ecase operand
+            (:a   (cons 8 4))
+            (:b   (cons 4 8))
+            (:acc (%acc-frag-mn elem)))
+          (ecase operand
+            (:a   (cons 16 8))
+            (:b   (cons 16 8))
+            (:acc (%acc-frag-mn elem))))))
 
 (defun %register-tile-frag-syms (var count)
   "COUNT per-fragment variable symbols for tile VAR, interned in VAR's package with a `$F<i>`
@@ -1304,25 +1795,35 @@
 
 
 
-(defun %register-tile-fit-check (m n location)
+(defun %register-tile-fit-check (m n location &optional (elem 'float))
   "F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque
    cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is
-   separate (Phase 4).  Else: (M/16)x(N/8) accumulator fragments x 4 fp32 regs <=
+   separate (Phase 4).  Else: (M/fr)x(N/fc) accumulator fragments x regs-per-fragment <=
    :max-registers-per-thread.
 
    Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since
-   :max-registers-per-thread may be a scalar OR a list of selectable modes."
+   :max-registers-per-thread may be a scalar OR a list of selectable modes.
+
+   Endeavour 165 (BUG 058): also refuses a tile too SMALL to hold one fragment.  A tile that
+   overflows the register budget and a tile that holds nothing are the same kind of mistake and
+   are named by the same function, at compile time, rather than discovered as a spill or as an
+   empty kernel.
+
+   Endeavour 165 (2b-i): takes ELEM so both bounds use the element type's own fragment geometry.
+   Inert while %acc-frag-mn answers 16x8 for everything."
   (unless (eq *target-backend* :spirv)
-    (let* ((nfrags        (* (floor m 16) (floor n 8)))
-           (regs-per-frag 4)
-           (total-regs    (* nfrags regs-per-frag))
-           (budget        (or (%hp-registers-per-thread-default)
-                              *default-max-registers-per-thread*)))
-      (when (> total-regs budget)
-        (error 'crisp-compiler-error
-               :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs), exceeding the register budget of ~a.  Use a smaller tile shape or a hardware profile with a larger :max-registers-per-thread."
-                                m n total-regs nfrags regs-per-frag budget)
-               :source-location location)))))
+    (destructuring-bind (fr . fc) (%acc-frag-mn elem)
+      (%register-tile-dims-must-divide m n location fr fc)
+      (let* ((nfrags        (* (floor m fr) (floor n fc)))
+             (regs-per-frag 4)
+             (total-regs    (* nfrags regs-per-frag))
+             (budget        (or (%hp-registers-per-thread-default)
+                                *default-max-registers-per-thread*)))
+        (when (> total-regs budget)
+          (error 'crisp-compiler-error
+                 :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs), exceeding the register budget of ~a.  Use a smaller tile shape or a hardware profile with a larger :max-registers-per-thread."
+                                  m n total-regs nfrags regs-per-frag budget)
+                 :source-location location))))))
 
 (defun %subst-accum (form binding-sym frag-var acc-set)
   "F3: substitute a mma-accumulate-via-tile body per fragment — the accum-binding symbol
@@ -1413,7 +1914,7 @@
    controls WHEN a fragment accumulates, not how its contraction is chopped up."
   (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
     (declare (ignore operand))
-    (destructuring-bind (fm . fn) (%frag-mn)
+    (destructuring-bind (fm . fn) (%frag-mn (%register-tile-elem-of (first entry)))
       ;; Endeavour 155 Phase C: honour the shape the KERNEL asked for.
       ;;
       ;; (mma-accumulate-via-tile (8 16 16) C A B) states K=16, which is the correct native
@@ -1515,7 +2016,7 @@
    arms are few and literal addresses are preferable."
   (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
     (declare (ignore operand))
-    (destructuring-bind (fm . fn) (%frag-mn)
+    (destructuring-bind (fm . fn) (%frag-mn (%register-tile-elem-of (first entry)))
       (let* ((cl (find-package :crisp-language))
              (to-int-sym (intern "TO-INT" cl))
              (m-frags (floor m fm)) (n-frags (floor n fn))
@@ -1524,7 +2025,8 @@
         (flet ((one-frag (fv mi-form nj-form)
                  (list `(store-fragment ,fv ,dest
                                         ((+ (* ,bty ,m-frags) ,mi-form)
-                                         (+ (* ,btx ,n-frags) ,nj-form))))))
+                                         (+ (* ,btx ,n-frags) ,nj-form))
+                                        ,(%register-tile-elem-of (first entry))))))
           (let ((grid (and (> n-true 1) (%warp-grid-dims n-true m-frags n-frags))))
             (cond
               ((and grid (> n-true 1))
@@ -1666,6 +2168,28 @@
               (* rows cols (%elem-bytes elem)))))))
 
 
+;;; ===================================================================
+;;; Endeavour 165 — fill-tile builds fragments at the TILE'S element type.
+;;;
+;;; %emit-per-frag-fill emitted `(make-register-fragment 16 8 ,val :tally nil)` -- a hardcoded
+;;; geometry and NO :elem -- so the element type defaulted to FLOAT and the constructor picked
+;;; register-fragment-acc-f32-16x8.  Handed a double init that is a type error, and it is how
+;;; chapter 2 of the 64-bit ladder failed:
+;;;   STRUCT-CTOR REGISTER-FRAGMENT-ACC-F32-16X8 member R0: arg-type=DOUBLE expected=FLOAT
+;;;
+;;; This is the SIXTH place in this endeavour where the 16x8-f32 fragment was assumed rather than
+;;; asked for, and the fifth found by a loud refusal rather than by reading code.  It surfaced
+;;; only now because fill-tile on a register tile is what matrix-multiply-tile-stride uses to
+;;; RESET the accumulator per output tile (the BUG 036 fix) -- chapter 1 hand-rolls its loop and
+;;; never resets, so it never reached here.
+;;;
+;;; The reset VALUE was already correct: a register tile resets to its DECLARED INIT, so the
+;;; double `0.0d` arrived intact.  Only the fragment it was being poured into was wrong.
+;;;
+;;; NOTE FOR THE SRC PATCH: %emit-per-frag-fill REPLACES src/mma.lisp:1675.
+;;; ===================================================================
+
+;; src/mma.lisp
 (defun %emit-per-frag-fill (entry val)
   "Per-fragment expansion of (fill-tile V VAL) for a register tile: reset every fragment
    of V to a fragment-of-VAL (matching make-register-tile's own 16x8 fragment init).
@@ -1678,7 +2202,9 @@
     ;; fill just resets every fragment this warp holds — no logical index needed.
     `(progn
        ,@(loop for s in syms
-               collect `(set! ,s (make-register-fragment 16 8 ,val :tally nil))))))
+               collect (let ((fmn (%frag-mn (%register-tile-elem-of (first entry)))))
+                          `(set! ,s (make-register-fragment ,(car fmn) ,(cdr fmn) ,val
+                                      :elem ,(%register-tile-elem-of (first entry)) :tally nil)))))))
 
 ;; src/mma.lisp
 (defun %spv-kernel-register-demand (kernel-name)
@@ -1915,7 +2441,7 @@
                                  (warps-in (getf (nthcdr 4 form) :warps))
                                  (mask    (and warps-in
                                                (%normalize-warp-mask (%warp-mask-unquote warps-in) location))))
-                            (%register-tile-fit-check m n location)
+                            (%register-tile-fit-check m n location elem)
                             (multiple-value-bind (n-true first-true)
                                 (if mask
                                     ;; 155 Step 2: validate an operand tile against ITS divisor
@@ -1937,7 +2463,7 @@
                                      (syms     (%register-tile-frag-syms (first b) per-warp)))
                                 (push (list (first b) m n syms n-true first-true operand) tiles)
                                 (loop for s in syms
-                                      collect (list s `(make-register-fragment 16 8 ,init :operand ,operand :elem ,elem))))))
+                                      collect (list s `(make-register-fragment ,(car (%frag-mn-for-operand operand elem)) ,(cdr (%frag-mn-for-operand operand elem)) ,init :operand ,operand :elem ,elem))))))
                           (if (and (consp b) (= (length b) 2) (symbolp (first b))
                                    (%register-tile-ring-init-form-p (second b)))
                               (let* ((form    (second b))
@@ -1960,7 +2486,7 @@
                                   (error 'crisp-compiler-error
                                     :message (format nil "make-register-tile-ring: :ring-count must be a positive compile-time integer, got ~S." rc)
                                     :source-location location))
-                                (%register-tile-fit-check m n location)
+                                (%register-tile-fit-check m n location elem)
                                 (destructuring-bind (fr . fc) (%frag-mn-for-operand operand elem)
                                   (let ((nfrags (* (floor m fr) (floor n fc))))
                                     ;; Mirror the plain register-tile branch exactly: validate the
@@ -1987,7 +2513,7 @@
                                         (push (list (first b) :ring m n slot-syms-list operand n-true first-true) tiles)
                                         (loop for syms in slot-syms-list
                                               append (loop for s in syms
-                                                           collect (list s `(make-register-fragment 16 8 0.0 :operand ,operand :elem ,elem)))))))))
+                                                           collect (list s `(make-register-fragment ,(car (%frag-mn-for-operand operand elem)) ,(cdr (%frag-mn-for-operand operand elem)) 0.0 :operand ,operand :elem ,elem)))))))))
                               (list b))))))
           (if (null tiles)
               let-expr
@@ -2673,6 +3199,27 @@
 ;;; Specs: tests/spec/145-mma-autodiff/03-load-fragment-acc-bmg.crisp  (on-metal)
 ;;;        tests/spec/145-mma-autodiff/04-load-fragment-acc-ptx.crisp  (IR-checked)
 ;;; ===================================================================
+;;; ===================================================================
+;;; Endeavour 165 — the fp64 MMA backward, part 3: load-fragment-acc.
+;;;
+;;; analyze-load-fragment-acc is the exact INVERSE of analyze-store-fragment and carried the same
+;;; two fp32 assumptions the store did before 2b-ii: it built register-fragment-acc-f32-16x8
+;;; outright and used the 16x8 lane mapping (rows g and g+8 over a 16-tall tile, four elements per
+;;; lane).  Against an fp64 adjoint that reads four floats where the fragment holds two doubles.
+;;;
+;;; Its own docstring says "a Load/Store pair always agrees".  They now agree BY CONSTRUCTION,
+;;; both taking m = lane/4, n = 2*(lane%4) + v from CuTe's CLayout, rather than by two people
+;;; writing the same thing twice.
+;;;
+;;; ELEM arrives as an optional 4th argument from %emit-per-frag-acc-load, mirroring how
+;;; store-fragment receives it from %emit-per-frag-store.  Default FLOAT reproduces the old
+;;; emission exactly.
+;;;
+;;; NOTE FOR THE SRC PATCH: analyze-load-fragment-acc REPLACES src/mma.lisp:2676;
+;;; %emit-per-frag-acc-load REPLACES src/mma.lisp:2852 (supersedes the 2b-i overlay copy).
+;;; ===================================================================
+
+;; src/mma.lisp
 (defun analyze-load-fragment-acc (expr env context location)
   "P2 (145): (load-fragment-acc SRC (TY TX)) reads a fp32 ACCUMULATOR fragment from the
    SRC matrix at logical tile (TY TX).  The exact inverse of store-fragment.
@@ -2690,7 +3237,7 @@
    The fragment is tallied against the kernel's register budget exactly as
    make-register-fragment tallies one: a LOADED accumulator occupies the same registers
    as a constructed one, and endeavor 144's fit-check must see both."
-  (destructuring-bind (src tile-id) (cdr expr)
+  (destructuring-bind (src tile-id &optional (elem 'float)) (cdr expr)
     (let ((ty (first tile-id)) (tx (second tile-id)))
       (if (eq *target-backend* :spirv)
           (multiple-value-bind (sm sn sk) (%spv-mma-shape)
@@ -2704,6 +3251,24 @@
                :ty (analyze-expression `(to-int ,ty) env context (append location '(2)))
                :tx (analyze-expression `(to-int ,tx) env context (append location '(3)))
                :source-location location)))
+          ;; Endeavour 165: fp64 reads TWO doubles at the m8n8k4 C/D layout, over a tile 8
+          ;; rows tall rather than 16.  The SAME mapping as analyze-store-fragment's fp64
+          ;; branch -- m = lane/4, n = 2*(lane%4) + v -- because this function's own docstring
+          ;; requires a Load/Store pair to agree.  They now agree by construction: both read it
+          ;; from CuTe's CLayout, instead of two people writing the same thing twice.
+          (if (eql (%mma-elem-bits elem) 64)
+              (progn
+                ;; 2 doubles per lane = 4 32-bit registers: the same count as the f32 4x1
+                ;; accumulator, arrived at differently.
+                (%ptx-note-register-demand 4 context location)
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                      (let ((row (+ (* ,ty 8) g)) (col (+ (* ,tx 8) t2)))
+                        (%construct-struct register-fragment-acc-f64-8x8
+                          (~ ,src row col)
+                          (~ ,src row (+ col 1))))))
+                 env context location))
           (progn
             (%ptx-note-register-demand 4 context location)
             (analyze-expression
@@ -2715,7 +3280,7 @@
                       (~ ,src row (+ col 1))
                       (~ ,src (+ row 8) col)
                       (~ ,src (+ row 8) (+ col 1))))))
-             env context location))))))
+             env context location)))))))
 
 ;;; ===================================================================
 ;;; Endeavor 145 (MMA autodiff) — P3a: mma-accumulate-via-tile walks K within a tile.
@@ -2858,7 +3423,7 @@
    (unlike the zero-seed of P2's own spec)."
   (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
     (declare (ignore operand))
-    (destructuring-bind (fm . fn) (%frag-mn)
+    (destructuring-bind (fm . fn) (%frag-mn (%register-tile-elem-of (first entry)))
       (let* ((to-int-sym (intern "TO-INT" (find-package :crisp-language)))
              (m-frags (floor m fm)) (n-frags (floor n fn))
              (bty (list to-int-sym (first tile-id)))
@@ -2866,7 +3431,8 @@
         (flet ((one-frag (fv mi-form nj-form)
                  (list `(set! ,fv (load-fragment-acc ,src
                                                      ((+ (* ,bty ,m-frags) ,mi-form)
-                                                      (+ (* ,btx ,n-frags) ,nj-form)))))))
+                                                      (+ (* ,btx ,n-frags) ,nj-form))
+                                                     ,(%register-tile-elem-of (first entry)))))))
           (if (> n-true 1)
               (%emit-frag-loop-distributed syms n-frags first-true n-true #'one-frag)
               `(progn
