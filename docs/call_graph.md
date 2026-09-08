@@ -633,6 +633,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - (%NVVM-FRAG-FORMAT LLVM-ELEM-TYPE)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA-F64 BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - (%MODULE-HAS-CLUSTER-P)  codegen.lisp [See above]
@@ -1321,6 +1323,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp
 - - - - - - (%AD-VIEW-CONSTRUCTOR-P FORM)  autodiff.lisp [See above]
 - - - - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [RECURSION]
+- - - - - (%AD-ADJ-ELEM FORWARD-ELEM CL-PKG)  autodiff.lisp
+- - - - - (%AD-ADJ-ZERO FORWARD-ELEM CL-PKG)  autodiff.lisp
 - - - (%MMA-AD-TILE-DIMS-MAP FLAT-ANF)  autodiff.lisp
 - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
 - - - (%TLC-EXTRACT-TRANSPOSE-KEY KEY-ARGS)  autodiff.lisp
@@ -1336,6 +1340,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%MMA-AD-ADJ-INIT INIT-FORM)  autodiff.lisp
 - - - - - (%MMA-AD-REGISTER-OPERAND-TILE-P INIT-FORM)  autodiff.lisp [See above]
 - - - - - (%MMA-AD-ACCUMULATOR-FITS-REGISTERS-P DIMS)  autodiff.lisp [See above]
+- - - - - (%AD-ADJ-ELEM FORWARD-ELEM CL-PKG)  autodiff.lisp [See above]
+- - - - - (%AD-ADJ-ZERO FORWARD-ELEM CL-PKG)  autodiff.lisp [See above]
 - - - - - (%PROMOTE-SCRATCH-INIT-FOR-AD INIT)  autodiff.lisp
 - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp [See above]
 - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
@@ -1401,6 +1407,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%HAS-EXPLICIT-N ARGS)  autodiff.lisp
 - - (%IS-TENSOR-ALIAS SYM)  autodiff.lisp [See above]
+
+- (%HP-MMA-SHAPE-ENTRY-P X)  hardware-profile.lisp
+- - (%HP-3-POS-INTS-P X)  hardware-profile.lisp [See above]
 
 - (%HP-REGISTERS-PER-THREAD-MAX &OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp
 - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
@@ -1496,7 +1505,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
 - - (%MMA-VJP-MMA-ADMISSIBLE-P MT NT KT)  autodiff.lisp [See above]
 - - (%MMA-VIA-TILE-BACKWARD FORM DIMS-MAP SRC-MAP INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG &OPTIONAL A-SRC-IN AOY-IN AOX-IN B-SRC-IN BOY-IN BOX-IN)  autodiff.lisp [See above]
-- - (%MMA-VJP-SCALAR-LOWERING MT NT KT C-ADJ A-OP B-OP A-ADJ B-ADJ A-SRC AOY AOX B-SRC BOY BOX PKG &OPTIONAL A-GRAD B-GRAD)  autodiff.lisp
+- - (%MMA-VJP-SCALAR-LOWERING MT NT KT C-ADJ A-OP B-OP A-ADJ B-ADJ A-SRC AOY AOX B-SRC BOY BOX PKG &OPTIONAL A-GRAD B-GRAD ACC-ELEM)  autodiff.lisp
+- - - (%AD-ADJ-ELEM FORWARD-ELEM CL-PKG)  autodiff.lisp [See above]
+- - - (%AD-ADJ-ZERO FORWARD-ELEM CL-PKG)  autodiff.lisp [See above]
 - - - (%MMA-AD-ACCUMULATOR-FITS-REGISTERS-P DIMS)  autodiff.lisp [See above]
 - - (%VJP-VIA-TILE-BODY-MAP FORM)  autodiff.lisp
 - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
@@ -1761,6 +1772,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%WARP-MASK-UNQUOTE V)  mma.lisp
 - - - - (%FRAG-MN-FOR-OPERAND OPERAND &OPTIONAL ELEM)  mma.lisp
 - - - - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
+- - - - - (%ACC-FRAG-MN ELEM)  mma.lisp
 - - - - (%WARP-GRID-DIMS N-WARPS M-FRAGS N-FRAGS)  mma.lisp
 - - - (%REGISTER-TILE-ELEMS-FROM-BINDINGS BINDINGS)  mma.lisp
 - - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
@@ -1770,7 +1782,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%FRAG-MN-FOR-OPERAND OPERAND &OPTIONAL ELEM)  mma.lisp [See above]
 - - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp [See above]
 - - - (%WARP-MASK-UNQUOTE V)  mma.lisp [See above]
-- - - (%REGISTER-TILE-FIT-CHECK M N LOCATION)  mma.lisp
+- - - (%REGISTER-TILE-FIT-CHECK M N LOCATION &OPTIONAL (ELEM 'FLOAT))  mma.lisp
+- - - - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
+- - - - (%REGISTER-TILE-DIMS-MUST-DIVIDE M N LOCATION &OPTIONAL (FR 16) (FC 8))  mma.lisp
 - - - - (%HP-REGISTERS-PER-THREAD-DEFAULT &OPTIONAL (PROFILE
                                                      (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp [See above]
 - - - (%VALIDATE-WARP-MASK MASK NFRAGS N-WARPS M N LOCATION &OPTIONAL DIVISOR)  mma.lisp
@@ -1819,6 +1833,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                        'FLOAT))  mma.lisp
 - - - (%ELEM-BYTES ELEM)  mma.lisp
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
+- - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 - - (%PTX-NOTE-REGISTER-DEMAND REGS CONTEXT LOCATION)  mma.lisp
 - - - (%PTX-NOTE-REGISTER-DEMAND-KEYED REGS CONTEXT KEY)  mma.lisp
 
@@ -1900,12 +1915,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                        'FLOAT))  mma.lisp [See above]
 - - (%ELEM-COOP-TYPE ELEM)  mma.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
 - - (%PTX-NOTE-REGISTER-DEMAND REGS CONTEXT LOCATION)  mma.lisp [See above]
+- - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
+- - (%FRAG-RECORD-FOR-ACC ELEM)  mma.lisp
 
 - (ANALYZE-MAKE-REGISTER-TILE EXPR ENV CONTEXT LOCATION)  mma.lisp
-- - (%ENSURE-REGISTER-TILE-TYPE M N)  mma.lisp
-- - - (%REGISTER-TILE-TYPE-NAME M N)  mma.lisp
+- - (%ENSURE-REGISTER-TILE-TYPE M N &OPTIONAL (ELEM 'FLOAT))  mma.lisp
+- - - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
+- - - (%REGISTER-TILE-DIMS-MUST-DIVIDE M N LOCATION &OPTIONAL (FR 16) (FC 8))  mma.lisp [See above]
+- - - (%REGISTER-TILE-TYPE-NAME M N &OPTIONAL (ELEM 'FLOAT))  mma.lisp
 - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
+- - - (%FRAG-RECORD-FOR-ACC ELEM)  mma.lisp [See above]
+- - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
 - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp [See above]
 - - (%WARP-MASK-UNQUOTE V)  mma.lisp [See above]
 - - (%VALIDATE-WARP-MASK MASK NFRAGS N-WARPS M N LOCATION &OPTIONAL DIVISOR)  mma.lisp [See above]
@@ -1982,8 +2004,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                                                      0.0))  analysis/control.lisp [See above]
 
 - (ANALYZE-MMA-ACCUMULATE EXPR ENV CONTEXT LOCATION)  mma.lisp
-- - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
 
 - (ANALYZE-MMA-ACCUMULATE-VIA-TILE EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%CHECK-MMA-SHAPE MMA-SHAPE LOCATION)  mma.lisp
@@ -1991,6 +2014,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (%REGISTER-TILE-TYPE-P TYPE-NAME)  mma.lisp
+- - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
 
 - (ANALYZE-NESTED-DEF-FUNCTION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
@@ -2108,6 +2132,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
+- - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 
 - (ANALYZE-STORE-GLOBAL-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -2141,6 +2166,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%WGMMA-STORE-REWRITE TILE DEST TILE-ID N)  mma.lisp
 - - - (%WGMMA-STORE-REWRITE-ORIGIN TILE DEST ROW-ORIGIN COL-ORIGIN N)  mma.lisp [See above]
 - - (%REGISTER-TILE-TYPE-P TYPE-NAME)  mma.lisp [See above]
+- - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
 - - (ANALYZE-STORE-TILE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - - (ANALYZE-STORE-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
 
