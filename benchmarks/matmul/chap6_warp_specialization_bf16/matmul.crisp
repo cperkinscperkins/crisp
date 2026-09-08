@@ -54,6 +54,21 @@
 
         ;; CONSUMER (x2) — each warp accumulates its fragment share of the C-tile, then releases.
         (:consumer
+          ;; RESET THE ACCUMULATOR PER OUTPUT TILE.  tile-stride is grid-strided -- one workgroup
+          ;; may visit several output tiles -- and a register C-tile carries its sums across the
+          ;; visits unless cleared.  BUG 036's family: matrix-multiply-tile-stride was taught to
+          ;; reset automatically, HAND-ROLLED tile-stride was not.  Chapter 5 does this; chapter 6
+          ;; never did.
+          ;;
+          ;; MEASURED (endeavour 165, 2026-09-08): this kernel's stored results read verified=TRUE
+          ;; at N<=2048 and FALSE from N=4096 -- precisely where a workgroup begins visiting a
+          ;; second tile.  The bf16 twin has the same omission and simply had not been run large
+          ;; enough to expose it; the fp64 twin failed from N=1024 because its smaller 64x32 tile
+          ;; makes more tiles for the same N.
+          ;;
+          ;; Inside :consumer, not before the specialization: the C-tile is :warps
+          ;; '(false true true), so only the consumer warps hold fragments of it.
+          (fill-tile C-tile 0.0)
           (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
             (let ((slot (mod grid-k (to-ulong 2))))
               (await (ring-get full slot))
