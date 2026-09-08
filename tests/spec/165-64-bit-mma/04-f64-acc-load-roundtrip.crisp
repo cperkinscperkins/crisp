@@ -1,0 +1,58 @@
+;; Endeavour 165 — the fp64 ACCUMULATOR LOAD, on metal.  This closes the last gap.
+;;
+;; WHAT WAS UNVERIFIED.  MMA_CORRECT (spec 03) exercised load-A, load-B, the MMA and STORE-tile.
+;; It could not touch `load-fragment-acc` -- reading an 8x8 accumulator FROM memory INTO 32 lanes
+;; -- because spec 03 starts C at zero via make-register-fragment, and a splat puts the same value
+;; in every lane, so layout cannot matter.  The only consumer of that path is the BACKWARD, so a
+;; wrong mapping there leaves fp64 forward correct and fp64 GRADIENTS silently wrong.
+;;
+;; WHY A ROUND TRIP WORKS HERE, HAVING BEEN RULED OUT EARLIER.  The usual objection is that a
+;; load/store pair sharing one wrong mapping cancels and yields a perfect identity from broken
+;; code.  That objection assumes NEITHER end is independently known.  Here the STORE is already
+;; verified by spec 03's MMA_CORRECT, and it is used TWICE while the load is used once:
+;;
+;;     memory --load--> fragments --store--> memory
+;;
+;; With S the (verified) store and L the load, this kernel computes S(L(S(F))).  If L = S^-1 the
+;; result is S(F), i.e. C is unchanged and equals A.B.  If L is any other mapping the output is a
+;; PERMUTATION of A.B and the host reference catches it.  The asymmetry -- one verified end, used
+;; twice -- is what makes the round trip informative rather than self-cancelling.
+;;
+;; This is why no harness change was needed.  The plan of record was to pre-load the accumulator
+;; from a fourth non-uniform matrix and teach %cuda-emit-mma-reference to expect C0 + A.B; that
+;; would work, but it is strictly more machinery for the same signal.
+;;
+;; THE INPUTS MUST BE NON-UNIFORM, and they are: the CUDA MMA harness fills A with `_i % 5` and B
+;; with `_i % 3` (coprime), so the partial sums differ lane to lane and a permutation cannot hide.
+;; An all-ones oracle would pass on any mapping whatsoever.
+;;
+;; COMPILE-WITH[--hardware-profile=h100d --ir-target=ptx]: PASS
+;; SKIP-DEFAULT-PASS
+;;
+;; HOIST-HARDWARE-PROFILE: h100d
+;; HOIST-ARCH: sm_90
+;; MMA-DIMS: 8 8 4
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile h100d :simd-width 32 :mma-shapes ((8 8 4)))
+
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel f64_acc_roundtrip (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile double (8 8) 0.0d)))
+    ;; 1. the ordinary verified path: C-tile = A.B, written out with store-tile.
+    (mma-accumulate-via-tile (8 8 4) C-tile A B)
+    (store-tile C-tile C (0 0))
+    (sync-workgroup)
+    ;; 2. read it back through the UNVERIFIED accumulator load...
+    (%load-register-tile-acc C-tile C (0 0))
+    (sync-workgroup)
+    ;; 3. ...and write it out again through the verified store.  C is unchanged only if the load
+    ;;    is the store's inverse.
+    (store-tile C-tile C (0 0))))

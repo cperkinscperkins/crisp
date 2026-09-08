@@ -1,0 +1,29 @@
+;; Crisp Naive Matmul (fp64, no tensor cores): C[M x N] = A[M x K] . B[K x N]
+;; Section 1 (64-bit), Chapter 0 baseline: pure scalar element-wise loop, one thread per output.
+;;
+;; The fp64 twin of chap0_naive/matmul.crisp.  The ONLY differences are the element type and the
+;; `d` suffix on the accumulator's zero -- a bare 0.0 reads as FLOAT and would not match a double
+;; accumulator.  Everything structural is identical, so a difference between this row and the
+;; tf32 row is the FORMAT, not a different kernel.
+;;
+;; WHAT THIS CHAPTER IS FOR at 64 bits.  On an H100 the fp64 tensor core measured only
+;; 1.20-1.53x over vector fp64 (endeavour 165 section 2), against ~8-16x for the 16-bit paths.
+;; So chapter 1's win over this baseline is expected to be SMALL, and the interesting distance
+;; on the 64-bit ladder is chapters 2-6 -- data movement -- not the instruction.  This row is
+;; the anchor that shows that.
+
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat => nil)
+           (global-size :derive-from C :strategy :one-thread-per)
+           (local-size :set-to (16 16)))
+  (let ((row (to-int (get-global-id 0)))
+        (col (to-int (get-global-id 1)))
+        (K   (to-int (inner-dimension A B))))
+    (let ((acc 0.0d))
+      (dotimes (k K)
+        (set! acc (+ acc (* (~ A row k) (~ B k col)))))
+      (set! (~ C row col) acc))))

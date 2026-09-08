@@ -1,0 +1,67 @@
+;; Endeavour 165 step 3 — the fp64 MMA.  C[8x8] = A[8x4] . B[4x8] on one warp, m8n8k4.
+;;
+;; This is the first Crisp kernel that emits a 64-bit tensor-core instruction.  Manually verified
+;; in the emitted PTX (per CLAUDE.md: do not trust a validator for a new feature):
+;;
+;;   mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64   x1
+;;   .extern .func calls                                0     <- the SILENT failure mode
+;;   any f32 MMA                                        0     <- would mean a silent downgrade
+;;   mov.u32 %r1, %laneid; shr.u32 %r2,%r1,2; and.b32 %r3,%r1,3   -> lane/4 and lane%4
+;;   ld.global.nc.b64 x2                                      -> ONE double per operand per lane
+;;
+;; WHY THE INSTRUCTION NAME CANNOT BE CHECKED BY PREFIX.  On LLVM 21.1.5 the sm_90 fp64 shapes
+;; (m16n8k4 / k8 / k16) are NOT NVVM intrinsics: they assemble cleanly and llc emits an
+;; `.extern .func` CALL with no diagnostic whatsoever.  m8n8k4 is the only spelling that lowers.
+;; Endeavour 159 documented the same trap for the 16-bit names, where two plausible variants
+;; passed the verifier as unresolved external calls while still leaving an "mma.m16n8k16..."
+;; substring in the PTX.  Hence the explicit "no extern func" check above.
+;;
+;; THE SHAPE COMES FROM THE PROFILE.  (8 8 4) is fp64's ONLY tensor-core shape, and the
+;; accumulator it implies -- 8x8 -- is under the tf32 16x8 fragment in both dimensions.  That is
+;; what steps 2a/2b of this endeavour existed to make expressible.
+;;
+;; WHAT THIS SPEC CANNOT PROVE.  A fragment LANE LAYOUT is the textbook wrong-but-self-consistent
+;; failure: a wrong one compiles, emits the right instruction, passes every check above and
+;; computes garbage.  The layouts here are decoded from CuTe's
+;; MMA_Traits<SM80_8x8x4_F64F64F64F64_TN> rather than guessed, and they agree with the tf32 path
+;; already in the tree -- but only MMA_CORRECT on real hardware settles it.  See
+;; tests/spec/165-64-bit-mma/64-bit-mma.md; an on-metal rung is the next step and needs an
+;; H100/A100 (consumer parts run fp64 at 1/64 rate and would be misleading).
+;;
+;; COMPILE-WITH[--hardware-profile=h100d --ir-target=ptx]: PASS
+;;
+;; ON-METAL (endeavour 165 step 5).  This is the ONLY check that can catch a wrong fragment
+;; LANE LAYOUT.  Everything above confirms the right INSTRUCTION is emitted; none of it can
+;; confirm which lane holds which element, and a wrong layout compiles, emits m8n8k4.f64,
+;; passes every mechanical gate and computes garbage.
+;;
+;; The harness host reference had to be taught fp64 first: it read every buffer back as float,
+;; so an fp64 kernel would have failed on the HARNESS and burned the rental saying nothing.
+;; Its tolerance is now 1e-10 relative for double (vs 1e-2 for tf32), tight enough that a path
+;; which silently computed in single precision FAILS.
+;;
+;; HOIST-HARDWARE-PROFILE: h100d
+;; HOIST-ARCH: sm_90
+;; MMA-DIMS: 8 8 4
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+;; SKIP-DEFAULT-PASS
+;;
+;; COMPILE-WITH[--hardware-profile=h100d --ir-target=ptx --differentiate]: PASS
+;;   The fp64 MMA DIFFERENTIATES.  Getting there needed five separate fp32 assumptions
+;;   removed -- see 64-bit-mma.md.  Verified in the emitted PTX: the _grad kernel does
+;;   32 fp64 arithmetic ops and ZERO fp32, i.e. the whole gradient runs in double.
+
+(def-hardware-profile h100d :simd-width 32 :mma-shapes ((8 8 4)))
+
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel f64_mma (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile double (8 8) 0.0d)))
+    (mma-accumulate-via-tile (8 8 4) C-tile A B)
+    (store-tile C-tile C (0 0))))

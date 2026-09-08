@@ -1,0 +1,49 @@
+;; SECTION 2 (64-bit) — Crisp's PROMOTED kernel: chapter 5, the multistage TMA ring.
+;;
+;; Promoted from chap5_multistage_ring_f64 on the H100 NVL ladder of 2026-09-07, where it was the
+;; fastest verified rung at the sizes section 2 reports: 22.24 TFLOPS at N=4096 and 20.17 at
+;; N=8192.  This file is that kernel unchanged -- a section-2 entry must BE a ladder rung, not a
+;; retuned cousin, or the two tables stop describing the same thing.
+;;
+;; IT IS NOT THE WINNER AT EVERY SIZE.  Chapter 6 (warp specialization) beats it at N=1024
+;; (11.19 vs 10.07) and N=2048 (14.22 vs 13.74), and loses from 4096 up.  That crossover is real
+;; and is why matmul_f64_warpspec.crisp sits beside this file as a named variant rather than one
+;; of them being deleted: publishing either alone would misrepresent one end of the range.  The
+;; envelope picks per size and names its winner, which is the presentation the Intel sections
+;; already use.
+;;
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))          ; one warp / tile
+  (let ((A-ring (make-scratch-matrix-ring double (64 16) :ring-count 2))  ; SLM: 2 x (64 x k-step)
+        (B-ring (make-scratch-matrix-ring double (16 32) :ring-count 2))  ; SLM: 2 x (k-step x 32)
+        (C-tile (make-register-tile double (64 32) 0.0d))
+        (K      (inner-dimension A B))
+        (bars   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2)))
+    (tile-stride C (64 32) (grid-y grid-x)
+      ;; per-output-tile: grid-strided reuse means we must reset the register C-tile each tile.
+      (fill-tile C-tile 0.0d)
+
+      ;; 1. PROLOGUE — put both stages' transfers in flight before any math.
+      (dotimes (i 2)
+        (load-tile A (ring-get A-ring (to-ulong i)) (grid-y (to-ulong i)) :barrier (ring-get bars (to-ulong i)))
+        (load-tile B (ring-get B-ring (to-ulong i)) ((to-ulong i) grid-x) :barrier (ring-get bars (to-ulong i))))
+
+      ;; 2. MAIN K-LOOP — await stage k while stage k+1 is still landing.
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+        (let ((slot (mod grid-k (to-ulong 2))))
+          (await (ring-get bars slot))
+          (mma-accumulate-via-tile (8 8 4) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+          (sync-workgroup)                    ; every thread done reading the slot before we refill it
+          (let ((next-k (+ grid-k (to-ulong 2))))
+            (let ((more-k? (to-workgroup-uniform (< next-k (/ (to-ulong K) (to-ulong 16))))))
+              (when more-k?
+                (load-tile A (ring-get A-ring slot) (grid-y next-k) :barrier (ring-get bars slot))
+                (load-tile B (ring-get B-ring slot) (next-k grid-x) :barrier (ring-get bars slot)))))))
+
+      ;; 3. EPILOGUE — C-tile complete.
+      (store-tile C-tile C (grid-y grid-x)))))

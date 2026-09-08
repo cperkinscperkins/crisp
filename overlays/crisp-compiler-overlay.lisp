@@ -1,21 +1,21 @@
-;;;; overlays/crisp-compiler-overlay.lisp
+;;;; crisp-compiler-overlay.lisp — late-bound fixes for the CRISP.COMPILER package.
 ;;;;
-;;;; HOT-PATCH OVERLAY for CRISP.COMPILER -- append late definitions here and the build
-;;;; picks them up after src/, so a fix can be made without editing src directly.
+;;;; APPEND full replacement definitions here while developing; they are loaded after src/ and
+;;;; win by late binding.  Do NOT patch in place -- append, and note above each one which src
+;;;; file it belongs to, so it can be folded back later.
 ;;;;
-;;;; EMPTY BY DESIGN.  Its 128 definitions were folded into src/ on 2026-08-26, and
-;;;; endeavour 163's 23 definitions were folded in on 2026-09-06 (15 replaced their src
-;;;; originals in place, 8 new helpers were appended to their target files, and a
-;;;; duplicate *ad-ring-slot-marker* identical to src/autodiff.lisp's was dropped).
+;;;; TWO THINGS THAT BITE (both learned the hard way, endeavour 165):
 ;;;;
-;;;; When you fold future contents back out, three things bite:
-;;;;   * VARIABLES belong in src/specials.lisp.  A `let` on a special compiled before its
-;;;;     defvar is seen becomes a LEXICAL binding, silently.  Overlay variables are safe
-;;;;     only because the overlay loads last; that protection disappears on the way in.
-;;;;   * A definition that REPLACES one in src must overwrite it in place, not be
-;;;;     appended -- otherwise both are live and ASDF order picks the winner.
-;;;;   * A FORMAT string using ~<newline> continuation works in an LF overlay and DIES
-;;;;     when folded into CRLF src/, and the error names the wrong place.  Both files are
-;;;;     CRLF today, so this is only a hazard if an overlay is ever written as LF.
+;;;;   * A HANDLER REGISTERED BY OBJECT IS NOT LATE-BOUND.  src/autodiff.lisp does
+;;;;     (register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile), which captures
+;;;;     the function OBJECT at load time.  Redefining that defun here is DEAD CODE until you
+;;;;     also re-register.  The failure is partial and therefore nasty: a callee overridden by
+;;;;     name goes live while its caller stays stale.
+;;;;
+;;;;   * NEVER PUT A DOUBLE QUOTE INSIDE A DOCSTRING.  It closes the string early and the rest of
+;;;;     the prose becomes BODY FORMS -- the first bare word is then an unbound variable, and the
+;;;;     build emits no warning.  It fails only when the function is CALLED.  Cost: a red CI.
+;;;;
+;;;; Emptied 2026-09-08: everything folded into src/ (endeavour 165).
 
 (in-package :crisp.compiler)

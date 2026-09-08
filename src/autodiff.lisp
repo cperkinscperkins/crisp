@@ -4203,40 +4203,8 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                       (list plus (list to-int oy) (list to-int i))
                       (list plus (list to-int ox) (list to-int j)))))))
 
-;;; ======================================================================
-;;; Endeavour 163 defect B, part 3 + BUG 044 — THE RING IS STRIPPED, NOT REPLICATED.
-;;;
-;;; With the two resolvers taught to see through ANF (parts 1 and 2), a ring operand can answer
-;;; both questions the tile VJP asks: WHAT SHAPE (via %ad-tile-base -> the ring's own dims) and
-;;; FROM WHERE (via %mma-vjp-operand-ref -> %ad-ring-load-sites -> %ad-reconcile-ring-origin).
-;;; Two things then stood between it and the ordinary backward:
-;;;
-;;;   1. %mma-via-tile-backward RE-DERIVED provenance from src-map, which never contains ring
-;;;      loads, so it could not see what its own caller had already resolved.  It now accepts the
-;;;      resolved (SRC OY OX) per operand and only falls back to src-map when none is supplied —
-;;;      so every existing non-ring call is byte-identical.
-;;;   2. `ringp` gated the MMA path OFF for any ring operand, forcing the scalar lowering.
-;;;      That gate is gone: admissibility is now the only question, which is the real one.
-;;;
-;;; WHY THIS FIXES BUG 044 AND NOT MERELY B.  The scalar fallback accumulates into the operand
-;;; adjoint with `+=` and never resets it, so a ring slot reused across stages carried stage 0 +
-;;; stage 2 and both scatter sites dumped the total at their own origin (1.20 + 83.12 = 84.32).
-;;; The MMA path OVERWRITES the operand adjoint per stage (`store-tile da-reg a-adj`), so the
-;;; aliasing has nothing to accumulate into.  044 is not fixed by teaching AD to invert a ring —
-;;; it is fixed by routing rings to the path that never needed the ring in the first place.
-;;;
-;;; NO REVERSE-RING LOGIC EXISTS ANYWHERE IN THIS CHANGE.  The backward stages its transposes
-;;; from the ORIGINAL GLOBAL SOURCE at the consuming stage's origin, exactly as it does for a
-;;; plain scratch tile.  Whether the forward used a prologue, double buffering, or a
-;;; warp-specialised producer is not represented in the derivative at all.  If the backward
-;;; should later be pipelined, that is an optimisation over correct math, not a term in the AD
-;;; generator.
-;;;
-;;; The tile arguments may now be VIEW FORMS rather than symbols, so the symbolp guards ask about
-;;; the BASE, and the temp-naming lambda derives its prefix from the base — a `(ring-get R i)`
-;;; has no symbol-name.  ADJOINT naming still keeps the VIEW, per %tlc-bwd-adj-name's rule that
-;;; slot i's adjoint is slot i of the adjoint ring.
-;;; ======================================================================
+
+
 (defun %mma-via-tile-backward (form dims-map src-map inputs outputs local-adj-fn kernel-pkg
                                &optional a-src-in aoy-in aox-in b-src-in boy-in box-in)
   "Endeavor 145 P3b: the backward for
@@ -4329,14 +4297,33 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                (op-elem  (or (fourth (assoc a-tile dims-map))
                              (fourth (assoc b-tile dims-map))
                              float-s))
+               ;; Endeavour 165: the dA/dB REGISTER tiles follow the ACCUMULATOR's element type.
+               ;; They were minted at FLOAT outright while the SLM operands beside them already
+               ;; used op-elem, so an fp64 tile multiply emitted
+               ;;   call {double,double} @llvm.nvvm.mma.m8n8k4.row.col.f64(double, double, float, float)
+               ;; and llc rejected it: "Intrinsic called with incompatible signature".
+               ;;
+               ;; WHY THIS WAS NOT CAUGHT BY THE 165 SPECS.  Spec 03 hands GLOBAL MATRICES to
+               ;; mma-accumulate-via-tile, so %mma-vjp-mma-admissible-p refuses and the SCALAR
+               ;; lowering runs instead -- this function is never reached.  Only a ladder-shaped
+               ;; kernel (staged operands, compile-time shapes) takes the MMA path.  An earlier
+               ;; attempt at this fix was reverted precisely because it did not change spec 03;
+               ;; correct at the time, and the reason was that spec 03 cannot exercise it.
+               ;;
+               ;; The rule is %ad-adj-elem's: an adjoint is never narrower than the value it
+               ;; differentiates.  16-bit still promotes to fp32 (endeavour 163 path (a) depends
+               ;; on that), float stays float, double stays double -- so every pre-165 kernel
+               ;; emits exactly what it did.
+               (adj-elem (%ad-adj-elem (fourth c-dims) cl-pkg))
+               (adj-zero (%ad-adj-zero (fourth c-dims) cl-pkg))
                (store-t  (intern "STORE-TILE" cl-pkg))
                (via      (intern "MMA-ACCUMULATE-VIA-TILE" cl-pkg))
                (sync     (intern "SYNC-WORKGROUP" cl-pkg)))
           `(,let-sym ((,dc-slm (,msm ,op-elem (,mt ,nt)))
                       (,at-slm (,msm ,op-elem (,kt ,mt)))
                       (,bt-slm (,msm ,op-elem (,nt ,kt)))
-                      (,da-reg (,mrt ,float-s (,mt ,kt) 0.0))
-                      (,db-reg (,mrt ,float-s (,kt ,nt) 0.0)))
+                      (,da-reg (,mrt ,adj-elem (,mt ,kt) ,adj-zero))
+                      (,db-reg (,mrt ,adj-elem (,kt ,nt) ,adj-zero)))
              ;; dC: the accumulator's adjoint, register -> SLM (so it can be an MMA operand).
              (,store-t ,c-adj ,dc-slm (0 0))
              ;; The transposed operands, staged from the ORIGINAL global sources.
@@ -4376,6 +4363,53 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
              thereis (and (symbolp x)
                           (string-equal (symbol-name x) "OPERAND")))))
 
+;;; ===================================================================
+;;; Endeavour 165 step 3 (cont) — an ADJOINT is never narrower than what it differentiates.
+;;;
+;;; %mma-ad-adj-init minted every register-tile adjoint at FLOAT, and said so:
+;;;   "Element type is FLOAT in both register cases: fragments are fp32."
+;;; That was true of every fragment in the tree when it was written.  fp64 fragments make
+;;; it false, and the failure was loud -- an fp64 forward produced
+;;;   (C-TILE_ADJ (MAKE-REGISTER-TILE FLOAT (8 8) 0.0))
+;;; sitting next to correctly-typed (A_ADJ (AS DOUBLE 0.0)) scalars, and the BUG 058
+;;; refusal rejected it because an 8x8 FLOAT tile asks for 16x8 fragments.
+;;;
+;;; FOUND BY READING THE EMITTED AST, not by reasoning.  An earlier attempt patched
+;;; %mma-via-tile-backward on the theory that the VJP minted it; the debug log showed that
+;;; function is never even reached for this kernel.  --log-level=debug prints the assembled
+;;; backward AST for exactly this purpose.
+;;;
+;;; THE FIX IS THE INVARIANT, NOT A CASE.  An adjoint is allocated at the WIDER of the
+;;; forward element type and FLOAT: 16-bit promotes to float (deliberate -- 163 path (a)
+;;; ships 16-bit weights with 32-bit gradients), float stays float, double stays double
+;;; because float would silently halve a gradient. Every pre-165 kernel is byte-identical.
+;;;
+;;; NOTE FOR THE SRC PATCH: %ad-adj-elem and %ad-adj-zero are new (src/autodiff.lisp);
+;;; %mma-ad-adj-init REPLACES src/autodiff.lisp:4379.
+;;; ===================================================================
+
+;; src/autodiff.lisp
+(defun %ad-adj-elem (forward-elem cl-pkg)
+  "The element type for an adjoint of a value whose forward element type is FORWARD-ELEM:
+   the WIDER of FORWARD-ELEM and FLOAT.
+
+   Endeavour 165.  half / bfloat16 promote to FLOAT -- deliberate, and endeavour 163 path (a)
+   depends on it (16-bit weights, 32-bit gradients).  DOUBLE stays DOUBLE, because FLOAT there
+   would be a downgrade that silently halves the precision of a gradient.  Anything unrecognised
+   keeps FLOAT, the pre-165 answer."
+  (if (and forward-elem (symbolp forward-elem)
+           (string= (symbol-name forward-elem) "DOUBLE"))
+      (intern "DOUBLE" cl-pkg)
+      (intern "FLOAT" cl-pkg)))
+
+(defun %ad-adj-zero (forward-elem cl-pkg)
+  "The zero literal matching %ad-adj-elem's answer.  A bare 0.0 reads as FLOAT and will not
+   match a double fragment field; `d` is Crisp's double literal suffix (docs/ideal_001.md)."
+  (if (and forward-elem (symbolp forward-elem)
+           (string= (symbol-name forward-elem) "DOUBLE"))
+      (intern "0.0D" cl-pkg)
+      0.0))
+
 (defun %mma-ad-adj-init (init-form)
   "Endeavor 145 P3b: the adjoint allocator paired with a forward tile binding.
 
@@ -4405,8 +4439,19 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
    NOT a new derivative: dA = dC.B^T and dB = A^T.dC are unchanged and both lowerings
    already computed them correctly.  This decides only WHERE the result is allocated.
 
-   Element type is FLOAT in both register cases: fragments are fp32 and an adjoint
-   always starts at zero."
+   Element type: NEVER NARROWER THAN THE VALUE IT DIFFERENTIATES, and never narrower than
+   FLOAT.  Endeavour 165 replaced a hardcoded FLOAT here, whose stated reason -- that fragments
+   are fp32 -- stopped being true when fp64 fragments arrived.  The rule is now the wider of the
+   forward element type and FLOAT:
+
+     half / bfloat16 -> FLOAT   a PROMOTION, and deliberate: endeavour 163 path (a) ships
+                                16-bit weights with 32-bit gradients.  Unchanged.
+     float           -> FLOAT   unchanged.
+     double          -> DOUBLE  FLOAT would be a DOWNGRADE, silently halving the precision of
+                                a gradient in the one endeavour that exists for precision.
+
+   Stated that way it needs no further edit for a future element type, and every pre-165
+   kernel emits byte-for-byte what it did."
   (cond
     ((and (consp init-form) (symbolp (car init-form))
           (string-equal (symbol-name (car init-form)) "MAKE-REGISTER-TILE"))
@@ -4420,12 +4465,12 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                ;; per-warp sync-MMA register tile at the SAME shape asks for 512 registers.
                (not (%mma-ad-accumulator-fits-registers-p (third init-form))))
            (list (intern "MAKE-SCRATCH-MATRIX" cl-pkg)
-                 (intern "FLOAT" cl-pkg)
+                 (%ad-adj-elem (second init-form) cl-pkg)
                  (third init-form))
            (list (intern "MAKE-REGISTER-TILE" cl-pkg)
-                 (intern "FLOAT" cl-pkg)
+                 (%ad-adj-elem (second init-form) cl-pkg)
                  (third init-form)
-                 0.0))))
+                 (%ad-adj-zero (second init-form) cl-pkg)))))
     ;; Endeavor 146: RING constructors pass through UNCHANGED.
     ;;
     ;; %promote-scratch-init-for-ad opens with %scratch-tensor-canonical-spec, which knows
@@ -4620,9 +4665,35 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 ;;; STRICTLY OPT-IN: both new arguments default to NIL, and NIL reproduces the previous emission
 ;;; exactly, so every non-ring use of the scalar lowering is byte-identical.
 ;;; ======================================================================
+;;; ===================================================================
+;;; Endeavour 165 — the fp64 MMA BACKWARD, part 2: the SCALAR VJP lowering.
+;;;
+;;; With the adjoint tile now DOUBLE, the scalar lowering still staged it through
+;;; `(make-scratch-matrix FLOAT (mt nt))` and accumulated into a `0.0` float local, so:
+;;;   Type mismatch! Expected FLOAT but inferred DOUBLE.
+;;; That is BUG 057's family -- an element-type mismatch between a tile and the matrix it stages
+;;; through.  There it wrote 4-byte floats into a 2-byte tile; here it would truncate a double
+;;; gradient to float, which is exactly the wrong silent behaviour in the one endeavour that
+;;; exists FOR precision.
+;;;
+;;; THIS IS THE PATH THIS KERNEL ACTUALLY TAKES.  %mma-vjp-mma-admissible-p rejects the shape, so
+;;; the MMA lowering is not used -- which is why an earlier attempt to patch
+;;; %mma-via-tile-backward changed nothing: --log-level=debug showed that function is never
+;;; reached here.  Reading the emitted backward AST found in one step what reasoning about the
+;;; call graph had got wrong twice.
+;;;
+;;; ACC-ELEM IS OPTIONAL AND NIL IS THE OLD BEHAVIOUR, so every non-fp64 kernel emits what it did
+;;; before.  It is threaded from `(fourth c-dims)` at the call site -- the same dims-map lookup
+;;; the MMA lowering already performs -- rather than re-derived.
+;;;
+;;; NOTE FOR THE SRC PATCH: %mma-vjp-scalar-lowering REPLACES src/autodiff.lisp:4623;
+;;; %vjp-mma-accumulate-via-tile REPLACES src/autodiff.lisp:5484.
+;;; ===================================================================
+
+;; src/autodiff.lisp
 (defun %mma-vjp-scalar-lowering (mt nt kt c-adj a-op b-op a-adj b-adj
                                  a-src aoy aox b-src boy box pkg
-                                 &optional a-grad b-grad)
+                                 &optional a-grad b-grad acc-elem)
   "The shape-agnostic scalar backward for a tile multiply.  Emitted as ordinary Crisp source,
    so it lowers through the normal path on either backend and at ANY tile shape.
 
@@ -4632,7 +4703,13 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
   (declare (ignore a-op b-op))
   (let* ((cl (find-package :crisp-language))
          (let* (intern "LET" cl))      (msm  (intern "MAKE-SCRATCH-MATRIX" cl))
-         (flt  (intern "FLOAT" cl))    (st   (intern "STORE-TILE" cl))
+         ;; Endeavour 165: the dC staging matrix and the loop accumulator follow the
+         ;; ACCUMULATOR's element type, not a hardcoded FLOAT.  ACC-ELEM nil reproduces the
+         ;; previous emission byte-for-byte, so every pre-165 kernel is unaffected; only a
+         ;; DOUBLE accumulator changes anything, and there FLOAT would truncate the gradient.
+         (flt  (%ad-adj-elem acc-elem cl))
+         (fzero (%ad-adj-zero acc-elem cl))
+         (st   (intern "STORE-TILE" cl))
          (sync (intern "SYNC-WORKGROUP" cl))
          (ws   (intern "WORKGROUP-STRIDE" cl))  (dt (intern "DOTIMES" cl))
          (aref (intern "~" cl))        (set! (intern "SET!" cl))
@@ -4667,7 +4744,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
             ;; up by another stage.  See BUG 044.
             (if a-grad
                 (list ws a-adj (list m k)
-                      (list letf (list (list acc 0.0))
+                      (list letf (list (list acc fzero))
                             (list dt (list n nt)
                                   (list set! acc
                                         (list plus acc
@@ -4683,7 +4760,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
             ;; dB[k,n] += sum_m A[m,k] * dC[m,n]   (same reuse rule as dA above)
             (if b-grad
                 (list ws b-adj (list k n)
-                      (list letf (list (list acc 0.0))
+                      (list letf (list (list acc fzero))
                             (list dt (list m mt)
                                   (list set! acc
                                         (list plus acc
@@ -5535,10 +5612,18 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                                                                               local-adj kernel-pkg))
                                                          (when (eq b-kind :ring)
                                                            (%tlc-bwd-adj-name b-src inputs outputs
-                                                                              local-adj kernel-pkg))))))
+                                                                              local-adj kernel-pkg))
+                                                         ;; Endeavour 165: the accumulator's
+                                                         ;; element type, so the lowering can
+                                                         ;; stage a double adjoint without
+                                                         ;; truncating it to float.  Same
+                                                         ;; lookup the MMA lowering uses.
+                                                         (fourth c-dims)))))
                 (log:debug "VJP via-tile: Mt=~a Nt=~a Kt=~a a=~a(~a) b=~a(~a) ring=~a mma-path=~a"
                            mt nt kt a-op a-kind b-op b-kind ringp
                            (%mma-vjp-mma-admissible-p mt nt kt))
+                (log:debug "165 acc-elem probe: c-tile=~a base=~a c-dims=~a fourth=~a"
+                           c-tile (%ad-tile-base c-tile) c-dims (fourth c-dims))
                 (multiple-value-bind (acc-sym fn-form) (%vjp-via-tile-body-map form)
                   (if (not acc-sym)
                       core

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-07T03:46:35.368751Z
+Generated on 2026-09-08T04:27:27.482093Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -3190,10 +3190,24 @@ Generated on 2026-09-07T03:46:35.368751Z
 
 
 ---
+### DEFUN `%AD-ADJ-ELEM`
+- **Args**: `(FORWARD-ELEM CL-PKG)`
+
+  > The element type for an adjoint of a value whose forward element type is FORWARD-ELEM:  >    the WIDER of FORWARD-ELEM and FLOAT.  >   >    Endeavour 165.  half / bfloat16 promote to FLOAT -- deliberate, and endeavour 163 path (a)  >    depends on it (16-bit weights, 32-bit gradients).  DOUBLE stays DOUBLE, because FLOAT there  >    would be a downgrade that silently halves the precision of a gradient.  Anything unrecognised  >    keeps FLOAT, the pre-165 answer.
+
+
+---
+### DEFUN `%AD-ADJ-ZERO`
+- **Args**: `(FORWARD-ELEM CL-PKG)`
+
+  > The zero literal matching %ad-adj-elem's answer.  A bare 0.0 reads as FLOAT and will not  >    match a double fragment field; `d` is Crisp's double literal suffix (docs/ideal_001.md).
+
+
+---
 ### DEFUN `%MMA-AD-ADJ-INIT`
 - **Args**: `(INIT-FORM)`
 
-  > Endeavor 145 P3b: the adjoint allocator paired with a forward tile binding.  >   >    Scratch tiles keep the existing behaviour (%promote-scratch-init-for-ad, which also  >    promotes e.g. ulong -> double).  >   >    Endeavor 146 Gap 4: a register tile's adjoint depends on WHICH ROLE the tile plays.  >   >      ACCUMULATOR  (no :operand)  -> a same-shaped register tile zeroed to 0.0.  >         The C adjoint is filled by %load-register-tile-acc from C_GRAD and then staged  >         to SLM by the VJP itself, so registers are right for it.  >   >      OPERAND      (:operand :a/:b) -> a same-shaped SCRATCH MATRIX.  >         EVERY consumer of an operand adjoint indexes it as memory: the scalar lowering  >         writes it with workgroup-stride + ~, the MMA fast path uses it as a store-tile  >         DESTINATION, and %load-tile-at-bwd reads it element-wise to scatter into the  >         global gradient.  A register tile cannot be written element-wise at all —  >         %explode-register-tiles has replaced the whole-tile symbol with per-lane  >         fragment vars by then, so `(~ TILE m k)` has no TILE to resolve.  This is not  >         an AD-specific fact: the same write fails in a forward-only kernel.  >   >    145 never hit this because its specs staged operands through make-scratch-matrix +  >    load-tile-at, so operand adjoints were ALREADY scratch.  142 Phase A introduced  >    register-resident operands via the load-tile overload, and this allocator had never  >    learned about them.  >   >    NOT a new derivative: dA = dC.B^T and dB = A^T.dC are unchanged and both lowerings  >    already computed them correctly.  This decides only WHERE the result is allocated.  >   >    Element type is FLOAT in both register cases: fragments are fp32 and an adjoint  >    always starts at zero.
+  > Endeavor 145 P3b: the adjoint allocator paired with a forward tile binding.  >   >    Scratch tiles keep the existing behaviour (%promote-scratch-init-for-ad, which also  >    promotes e.g. ulong -> double).  >   >    Endeavor 146 Gap 4: a register tile's adjoint depends on WHICH ROLE the tile plays.  >   >      ACCUMULATOR  (no :operand)  -> a same-shaped register tile zeroed to 0.0.  >         The C adjoint is filled by %load-register-tile-acc from C_GRAD and then staged  >         to SLM by the VJP itself, so registers are right for it.  >   >      OPERAND      (:operand :a/:b) -> a same-shaped SCRATCH MATRIX.  >         EVERY consumer of an operand adjoint indexes it as memory: the scalar lowering  >         writes it with workgroup-stride + ~, the MMA fast path uses it as a store-tile  >         DESTINATION, and %load-tile-at-bwd reads it element-wise to scatter into the  >         global gradient.  A register tile cannot be written element-wise at all —  >         %explode-register-tiles has replaced the whole-tile symbol with per-lane  >         fragment vars by then, so `(~ TILE m k)` has no TILE to resolve.  This is not  >         an AD-specific fact: the same write fails in a forward-only kernel.  >   >    145 never hit this because its specs staged operands through make-scratch-matrix +  >    load-tile-at, so operand adjoints were ALREADY scratch.  142 Phase A introduced  >    register-resident operands via the load-tile overload, and this allocator had never  >    learned about them.  >   >    NOT a new derivative: dA = dC.B^T and dB = A^T.dC are unchanged and both lowerings  >    already computed them correctly.  This decides only WHERE the result is allocated.  >   >    Element type: NEVER NARROWER THAN THE VALUE IT DIFFERENTIATES, and never narrower than  >    FLOAT.  Endeavour 165 replaced a hardcoded FLOAT here, whose stated reason -- that fragments  >    are fp32 -- stopped being true when fp64 fragments arrived.  The rule is now the wider of the  >    forward element type and FLOAT:  >   >      half / bfloat16 -> FLOAT   a PROMOTION, and deliberate: endeavour 163 path (a) ships  >                                 16-bit weights with 32-bit gradients.  Unchanged.  >      float           -> FLOAT   unchanged.  >      double          -> DOUBLE  FLOAT would be a DOWNGRADE, silently halving the precision of  >                                 a gradient in the one endeavour that exists for precision.  >   >    Stated that way it needs no further edit for a future element type, and every pre-165  >    kernel emits byte-for-byte what it did.
 
 
 ---
@@ -3254,7 +3268,7 @@ Generated on 2026-09-07T03:46:35.368751Z
 ---
 ### DEFUN `%MMA-VJP-SCALAR-LOWERING`
 - **Args**: `(MT NT KT C-ADJ A-OP B-OP A-ADJ B-ADJ A-SRC AOY AOX B-SRC BOY BOX
-              PKG &OPTIONAL A-GRAD B-GRAD)`
+              PKG &OPTIONAL A-GRAD B-GRAD ACC-ELEM)`
 
   > The shape-agnostic scalar backward for a tile multiply.  Emitted as ordinary Crisp source,  >    so it lowers through the normal path on either backend and at ANY tile shape.  >   >    dC is materialised from the register accumulator into SLM once, then two collective loops  >    accumulate into the operand adjoints.  Index arithmetic is coerced with to-int because a  >    staging origin can be a ULONG extent expression while the collective's loop vars are INT.
 
@@ -5330,6 +5344,13 @@ Generated on 2026-09-07T03:46:35.368751Z
 
 
 ---
+### DEFUN `%HP-MMA-SHAPE-ENTRY-P`
+- **Args**: `(X)`
+
+  > T if X is a legal :mma-shapes entry: an untyped (M N K) triple of positive integers, or a  >    TYPED (ELEM M N K) 4-list whose first element is a symbol naming the element type.  >   >    Endeavour 165.  Mirrors what %mma-shape-entry-dims / %mma-shape-entry-type already accept on  >    the READ side; before this the writer side rejected the typed form the reader understood.
+
+
+---
 ### DEFUN `%HP-VALIDATE-VALUE`
 - **Args**: `(PROFILE-NAME KEY TYPE RAW)`
 
@@ -5858,7 +5879,7 @@ Generated on 2026-09-07T03:46:35.368751Z
 ### DEFUN `%CUDA-EMIT-MMA-REFERENCE`
 - **Args**: `(STREAM ALLOCATIONS)`
 
-  > Emit a stride-agnostic host reference C = A·B (copy A/B/C back to host, compare).
+  > Emit a stride-agnostic host reference C = A.B (copy A/B/C back to host, compare).  >   >    Endeavour 165: the reference follows the kernel's ELEMENT TYPE instead of being emitted in  >    float throughout.  Against an fp64 kernel the old form read 8-byte buffers as 4-byte floats,  >    so MMA_WRONG would have been a statement about the HARNESS, not the kernel -- and would have  >    burned a GPU rental to say nothing.  >   >    :elem-type is already on every allocation as a C++ type string; emit-readback beside this  >    function has always used it.  Only this reference hardcoded float.  >   >    THE TOLERANCE FOLLOWS THE TYPE, which is the whole point at 64 bits.  tf32 keeps 1e-2 relative  >    because tf32 carries ~10 mantissa bits.  fp64 gets 1e-10 -- tight enough that a path which  >    silently computed in single precision FAILS, the same discriminating property the endeavour's  >    benchmark oracle has.  Run at tf32's tolerance an fp64 check would pass on an fp32 result and  >    tell us nothing.  >   >    Float emission is byte-identical to before.
 
 
 ---
@@ -8087,14 +8108,21 @@ Generated on 2026-09-07T03:46:35.368751Z
 ### DEFUN `%NVVM-FRAG-FORMAT`
 - **Args**: `(LLVM-ELEM-TYPE)`
 
-  > Which MMA operand format a fragment field's LLVM type implies: :FP16, :BF16, or :TF32.  >   >    Endeavour 159.  Kinds are read from LLVM at runtime rather than compared against a constant --  >    the bindings carry +llvm-half-type-kind+ but no bfloat equivalent, and no llvm-c header is  >    installed to take the value from.  Anything that is neither half nor bfloat is the historical  >    fp32-stored tf32 path.
+  > Which MMA operand format a fragment field's LLVM type implies: :FP16, :BF16, :F64 or :TF32.  >   >    Endeavour 159.  Kinds are read from LLVM at runtime rather than compared against a constant --  >    the bindings carry +llvm-half-type-kind+ but no bfloat equivalent, and no llvm-c header is  >    installed to take the value from.  Anything not otherwise recognised is the historical  >    fp32-stored tf32 path.  >   >    Endeavour 165 (step 3): :F64 joins them.  A double-typed field can only be an fp64 fragment --  >    the tf32 path stores fp32 -- so the probe stays a pure function of the record's own LLVM type  >    and no :elem has to be threaded down from the caller.
 
 
 ---
 ### DEFUN `%NVVM-FRAG-RECORD`
 - **Args**: `(OPERAND ELEM)`
 
-  > The PTX fragment record name for OPERAND (:a or :b) at Crisp element type ELEM.  >   >    Endeavour 159.  One place decides this, so analyze-load-fragment-a and -b cannot disagree  >    about which record a given element type maps to.  A 32-bit (or unknown) element keeps the  >    historical tf32 records.
+  > The PTX fragment record name for OPERAND (:a or :b) at Crisp element type ELEM.  >   >    Endeavour 159.  One place decides this, so analyze-load-fragment-a and -b cannot disagree  >    about which record a given element type maps to.  A 32-bit (or unknown) element keeps the  >    historical tf32 records.  >   >    Endeavour 165 (step 3): fp64's m8n8k4 operands, A 8x4 and B 4x8, one double per lane each.
+
+
+---
+### DEFUN `%FRAG-RECORD-FOR-ACC`
+- **Args**: `(ELEM)`
+
+  > The ACCUMULATOR fragment record for element type ELEM.  >   >    Endeavour 165 (2b-ii).  Sibling of %frag-record-for-operand, which has dispatched A and B  >    records by element type since endeavour 159; the accumulator was the one role still naming  >    register-fragment-acc-f32-16x8 outright at five sites.  One place decides this, so the tile  >    minter and the fragment constructor cannot disagree about which record an element type maps  >    to -- the same argument 159 made for the operands.  >   >    A 16-bit MMA accumulates in fp32, so half/bfloat16 keep the f32 record on purpose.
 
 
 ---
@@ -8196,14 +8224,21 @@ Generated on 2026-09-07T03:46:35.368751Z
 ### DEFUN `ANALYZE-MMA-ACCUMULATE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2 / F-SPV: (mma-accumulate C A B).  Node typed as the accumulator fragment — a coop  >    matrix on :spirv, else the fp32 record.  Codegen forks in the generate-node-ir below.
+  > P2 / F-SPV: (mma-accumulate C A B).  Node typed as the accumulator fragment — a coop matrix on  >    :spirv, else the SAME RECORD AS C.  Codegen forks in generate-node-ir.  >   >    Endeavour 165 (step 3): the NVIDIA type was hardcoded to the fp32 record, which made an fp64  >    accumulate mistype itself.  Deriving it from C states the real rule and covers any accumulator  >    record, present or future.  The fallback keeps the historical answer when C's type cannot be  >    resolved to an accumulator record.
+
+
+---
+### DEFUN `%EMIT-NVVM-MMA-F64`
+- **Args**: `(BUILDER MODULE A-VAL B-VAL C-VAL)`
+
+  > Emit the fp64 tensor-core MMA: llvm.nvvm.mma.m8n8k4.row.col.f64.  >   >    Endeavour 165 step 3.  Operands are ONE double each and the accumulator is TWO, so unlike the  >    tf32 and 16-bit paths there is no packing, no bitcast and no vector: doubles are passed as  >    doubles.  That is the whole reason this is a separate function rather than another arm of  >    %emit-nvvm-mma's operand-format cond -- it shares none of that machinery.  >   >    THE NAME IS THE ONE VERIFIED SPELLING.  On bin/llc.exe (LLVM 21.1.5, -mcpu=sm_90) this lowers  >    to `mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64`, while the sm_90 f64 shapes  >    (m16n8k4 / k8 / k16) assemble cleanly and emit an `.extern .func` CALL with no diagnostic at  >    all.  A wrong spelling here is therefore SILENT, so this must never be checked by prefix --  >    the same trap endeavour 159 documented for the 16-bit names.
 
 
 ---
 ### DEFUN `%EMIT-NVVM-MMA`
 - **Args**: `(BUILDER MODULE A-VAL B-VAL C-VAL)`
 
-  > The NVIDIA sync MMA.  Endeavour 159: dispatches on the A fragment's ELEMENT TYPE, emitting  >    the tf32 m16n8k8, fp16 m16n8k16, or bf16 m16n8k16 instruction.  Returns (values acc nil).  >   >    DETECTION is by probing the LLVM type of A's field 0 rather than by threading an :elem down:  >    the caller (generate-node-ir on semantic-mma-accumulate) passes only LLVM values, and the  >    fragment record already carries the answer.  The probe extract is REUSED as a0, so it costs  >    no dead instruction.  >   >    THE THREE PATHS DIFFER IN OPERAND REPRESENTATION, and that is the trap on this rung:  >      tf32  i32          -- each float bitcast to i32  >      fp16  <2 x half>   -- pairs packed into a vector, handed over AS a vector  >      bf16  i32          -- pairs packed into <2 x bfloat> and then BITCAST to i32  >    All three were verified by compiling a standalone .ll through clang --target=nvptx64 and  >    reading the emitted mnemonic.  Two plausible spellings (...f16.f32, ...bf16.f32) pass the  >    LLVM verifier as UNRESOLVED EXTERNAL CALLS -- they emit no instruction while still leaving an  >    'mma.m16n8k16...' substring in the PTX -- so nothing here may be checked by prefix.  >   >    Fragment records declare ONE FIELD PER ELEMENT, so all pair-packing happens HERE and only  >    here.  The pairing order follows the PTX ISA register order documented on  >    analyze-load-fragment-a/-b; those must agree, and nothing local can prove they do --  >    MMA_CORRECT on metal is what checks it.  >   >    The ACCUMULATOR is f32 in every path: a 16-bit MMA accumulates in fp32.
+  > The NVIDIA sync MMA.  Endeavour 159: dispatches on the A fragment's ELEMENT TYPE, emitting  >    the tf32 m16n8k8, fp16 m16n8k16, or bf16 m16n8k16 instruction.  Returns (values acc nil).  >   >    DETECTION is by probing the LLVM type of A's field 0 rather than by threading an :elem down:  >    the caller (generate-node-ir on semantic-mma-accumulate) passes only LLVM values, and the  >    fragment record already carries the answer.  The probe extract is REUSED as a0, so it costs  >    no dead instruction.  >   >    THE THREE PATHS DIFFER IN OPERAND REPRESENTATION, and that is the trap on this rung:  >      tf32  i32          -- each float bitcast to i32  >      fp16  <2 x half>   -- pairs packed into a vector, handed over AS a vector  >      bf16  i32          -- pairs packed into <2 x bfloat> and then BITCAST to i32  >    All three were verified by compiling a standalone .ll through clang --target=nvptx64 and  >    reading the emitted mnemonic.  Two plausible spellings (...f16.f32, ...bf16.f32) pass the  >    LLVM verifier as UNRESOLVED EXTERNAL CALLS -- they emit no instruction while still leaving an  >    'mma.m16n8k16...' substring in the PTX -- so nothing here may be checked by prefix.  >   >    Fragment records declare ONE FIELD PER ELEMENT, so all pair-packing happens HERE and only  >    here.  The pairing order follows the PTX ISA register order documented on  >    analyze-load-fragment-a/-b; those must agree, and nothing local can prove they do --  >    MMA_CORRECT on metal is what checks it.  >   >    The ACCUMULATOR is f32 in every path here: a 16-bit MMA accumulates in fp32.  fp64 is the  >    exception and accumulates in fp64, which is one more reason it lives in its own emitter.
 
 
 ---
@@ -8220,8 +8255,25 @@ Generated on 2026-09-07T03:46:35.368751Z
 
 
 ---
+### DEFUN `%REGISTER-TILE-DIMS-MUST-DIVIDE`
+- **Args**: `(M N LOCATION &OPTIONAL (FR 16) (FC 8))`
+
+  > Refuse a register tile whose dims do not cover at least one whole FR x FC fragment.  >   >    A tile of (M N) holds (floor M FR) x (floor N FC) fragments.  When either floor is zero the  >    tile holds NOTHING, and every construct that walks it -- store-tile, fill-tile,  >    mma-accumulate-via-tile -- expands to no code, so the kernel compiles clean and does nothing.  >    That is the one outcome a compiler must never produce silently, so this is an error and not a  >    warning: there is no reading of a zero-fragment tile under which the user got what they asked  >    for.  >   >    Endeavour 165.  fp64's only tensor-core shape is m8n8k4, whose accumulator is 8x8 -- under the  >    hardcoded 16x8 fragment in BOTH dimensions -- so every fp64 MMA kernel would have walked into  >    this.  The defect itself is older and has nothing to do with fp64: a plain fp32 8x8 tile  >    reproduces it exactly.
+
+
+---
+### DEFUN `%ACC-FRAG-MN`
+- **Args**: `(ELEM)`
+
+  > The ACCUMULATOR fragment geometry (ROWS . COLS) for element type ELEM on the current backend.  >   >    THE SINGLE SOURCE OF TRUTH.  Every geometry decision on the register-tile path -- the tile  >    minter, the fit-check, the BUG 058 refusal, the store-tile walk, the MMA walk, the warp  >    validator and the five %emit-per-frag-* emitters -- resolves here.  That is what steps 2a and  >    2b-i built; this step is the payoff, because adding fp64 is now a change to one function.  >   >    fp64: 8x8, because m8n8k4 is the ONLY fp64 tensor-core shape (LLVM 21.1.5 lowers only  >    llvm.nvvm.mma.m8n8k4.row.col.f64; CUTLASS declares exactly one f64 tensor-op Mma, at  >    GemmShape<8,8,4>).  Its accumulator is 8x8 = 64 elements over 32 lanes = 2 doubles per lane.  >   >    Everything else keeps 16x8, the tf32/16-bit accumulator: 16x8 = 128 over 32 lanes = 4 fp32  >    per lane.  16-bit operands accumulate in fp32 and so land here too, deliberately -- the same  >    reason %coop-elem-of does not route accumulators through the operand element type.  >   >    :spirv does not consult this; it derives its shape per-element from the profile via  >    %spv-mma-shape, and was never 16x8-shaped.
+
+
+---
 ### DEFUN `%REGISTER-TILE-TYPE-NAME`
-- **Args**: `(M N)`
+- **Args**: `(M N &OPTIONAL (ELEM 'FLOAT))`
+
+  > The minted record name for an M x N register tile of element type ELEM.  >   >    Endeavour 165 (step 2a): the name now carries the ELEMENT TYPE.  It used to be  >    REGISTER-TILE-ACC-F32-MxN unconditionally, which was a lie the moment a double tile existed  >    and -- worse -- a COLLISION: two tiles with the same dims and different element types would  >    have shared one record.  That is not hypothetical; it is exactly BUG 055, where %coop-call  >    caches the coop-matrix declaration by name alone and two element types in one module silently  >    collide.  One instance of that bug is enough.  >   >    ELEM defaults to FLOAT so any caller not yet threading it keeps the pre-165 record.
+
 
 ---
 ### DEFUN `%REGISTER-TILE-TYPE-P`
@@ -8232,9 +8284,9 @@ Generated on 2026-09-07T03:46:35.368751Z
 
 ---
 ### DEFUN `%ENSURE-REGISTER-TILE-TYPE`
-- **Args**: `(M N)`
+- **Args**: `(M N &OPTIONAL (ELEM 'FLOAT))`
 
-  > Mint (once) the register-tile-acc-f32-MxN record — (M/16)x(N/8) fragment fields —  >    and record its dims.  Returns the type symbol.
+  > Mint (once) the register-tile record for an M x N tile of ELEM -- (M/fr)x(N/fc) fragment  >    fields -- and record its dims AND element type.  Returns the type symbol.  >   >    Endeavour 165 (2a): ELEM is threaded through, and *register-tile-dims* stores (M N ELEM),  >    because the store-tile and MMA walks recover their geometry from that table by TYPE NAME and  >    had no other way to learn the element type.  >   >    Endeavour 165 (2b-ii): the FIELD type now comes from %frag-record-for-acc rather than being  >    hardcoded to the f32 record, so a double tile is a tile of fp64 fragments.  >   >    Endeavour 165 (BUG 058): the divisibility guard delegates to %register-tile-dims-must-divide,  >    which the LET-bound path checks too, at the element's own fragment geometry.
 
 
 ---
@@ -8276,7 +8328,7 @@ Generated on 2026-09-07T03:46:35.368751Z
 ### DEFUN `ANALYZE-MAKE-REGISTER-TILE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P3a: (make-register-tile T (M N) INIT &key warps) -> a record-of-fragments accumulator tile,  >    each fragment initialized to INIT.  Mints the tile type on demand; rewrites to  >    %construct-struct of make-register-fragment fields.  >    Endeavor 139 (decision A): :warps is a flat topology mask of which warps hold the tile.  For a  >    single participating warp (or no mask) the tile is the full (M/16)x(N/8) fragment set on that  >    warp — the current build.  Distributing across >= 2 participating warps (the occupancy lever)  >    is sub-step 2.
+  > P3a: (make-register-tile T (M N) INIT &key warps) -> a record-of-fragments accumulator tile,  >    each fragment initialized to INIT.  Mints the tile type on demand; rewrites to  >    %construct-struct of make-register-fragment fields.  >    Endeavour 165 (2a): ELEM now reaches the minted tile type and the fragment count.  >    Endeavor 139 (decision A): :warps is a flat topology mask of which warps hold the tile.  For a  >    single participating warp (or no mask) the tile is the full (M/16)x(N/8) fragment set on that  >    warp — the current build.  Distributing across >= 2 participating warps (the occupancy lever)  >    is sub-step 2.
 
 
 ---
@@ -8290,7 +8342,7 @@ Generated on 2026-09-07T03:46:35.368751Z
 ### DEFUN `%CHECK-MMA-SHAPE`
 - **Args**: `(MMA-SHAPE LOCATION)`
 
-  > Validate the (M N K) MMA shape: an int triple, and — if a hardware profile is active —  >    a member of its :mma-shapes (the vendor's supported shape, e.g. Intel (8 16 8)); with  >    NO profile, require the tf32 NVIDIA default (16 8 8).
+  > Validate the (M N K) MMA shape: an int triple, and — if a hardware profile is active —  >    a member of its :mma-shapes (the vendor's supported shape, e.g. Intel (8 16 8)); with  >    NO profile, require the tf32 NVIDIA default (16 8 8).  >   >    Endeavour 165: a profile entry may be TYPED — `(ELEM M N K)`, a 4-list — so membership is  >    tested against each entry's DIMS via %mma-shape-entry-dims rather than against the entry  >    itself.  Untyped 3-lists compare exactly as before.
 
 
 ---
@@ -8330,15 +8382,16 @@ Generated on 2026-09-07T03:46:35.368751Z
 
 ---
 ### DEFUN `%FRAG-MN`
+- **Args**: `(&OPTIONAL (ELEM 'FLOAT))`
 
-  > Per-fragment (M . N) for register-tile decomposition: the active profile's mma-shape  >    (M N) on :spirv, else NVIDIA 16x8.
+  > Per-fragment (M . N) for register-tile decomposition: the active profile's mma-shape (M N) on  >    :spirv, else the NVIDIA accumulator geometry for ELEM.  >   >    Endeavour 165 (2b-i): takes ELEM and defers to %acc-frag-mn on the NVIDIA path instead of  >    answering a flat 16x8 for everything.  ELEM defaults to FLOAT, so a caller that has not been  >    taught to thread it keeps the pre-165 answer -- which is what makes this step inert.
 
 
 ---
 ### DEFUN `%FRAG-MN-FOR-OPERAND`
 - **Args**: `(OPERAND &OPTIONAL ELEM)`
 
-  > Endeavor 142 — per-fragment (rows . cols) for a register-tile of :operand (a|b|acc).  From the  >    active profile's mma-shape (sm sn sk): A = sm×sk (Use 0), B = sk×sn (Use 1), Acc = sm×sn (Use 2)  >    — matching load-fragment-a/b and make-register-fragment.  NVIDIA: 16x8 (A/B on PTX is rejected  >    earlier for the block-load path).  >   >    Endeavour 155: ELEM selects the shape, because K depends on the element width.
+  > Endeavor 142 — per-fragment (rows . cols) for a register-tile of :operand (a|b|acc).  From the  >    active profile's mma-shape (sm sn sk): A = sm x sk (Use 0), B = sk x sn (Use 1),  >    Acc = sm x sn (Use 2) — matching load-fragment-a/b and make-register-fragment.  >   >    Endeavour 155: ELEM selects the shape, because K depends on the element width.  >   >    Endeavour 165 (2b-ii): the NVIDIA branch stops answering a flat 16x8.  The accumulator defers  >    to %acc-frag-mn, the single source of truth; fp64 operands take m8n8k4's own 8x4 / 4x8, from  >    CuTe MMA_Traits<SM80_8x8x4_F64F64F64F64_TN> (ALayout = BLayout = SM80_8x4, one double per  >    lane).  Non-fp64 operands keep 16x8 exactly as before.
 
 
 ---
@@ -8356,9 +8409,9 @@ Generated on 2026-09-07T03:46:35.368751Z
 
 ---
 ### DEFUN `%REGISTER-TILE-FIT-CHECK`
-- **Args**: `(M N LOCATION)`
+- **Args**: `(M N LOCATION &OPTIONAL (ELEM 'FLOAT))`
 
-  > F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque  >    cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is  >    separate (Phase 4).  Else: (M/16)x(N/8) accumulator fragments x 4 fp32 regs <=  >    :max-registers-per-thread.  >   >    Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since  >    :max-registers-per-thread may be a scalar OR a list of selectable modes.
+  > F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque  >    cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is  >    separate (Phase 4).  Else: (M/fr)x(N/fc) accumulator fragments x regs-per-fragment <=  >    :max-registers-per-thread.  >   >    Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since  >    :max-registers-per-thread may be a scalar OR a list of selectable modes.  >   >    Endeavour 165 (BUG 058): also refuses a tile too SMALL to hold one fragment.  A tile that  >    overflows the register budget and a tile that holds nothing are the same kind of mistake and  >    are named by the same function, at compile time, rather than discovered as a spill or as an  >    empty kernel.  >   >    Endeavour 165 (2b-i): takes ELEM so both bounds use the element type's own fragment geometry.  >    Inert while %acc-frag-mn answers 16x8 for everything.
 
 
 ---

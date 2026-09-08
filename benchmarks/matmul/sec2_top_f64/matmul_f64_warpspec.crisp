@@ -1,0 +1,62 @@
+;; SECTION 2 (64-bit) — Crisp VARIANT: chapter 6, warp specialization.
+;;
+;; The small-N half of the fp64 envelope.  On the H100 NVL ladder of 2026-09-07 this beats the
+;; promoted chapter-5 ring at N=1024 (11.19 vs 10.07) and N=2048 (14.22 vs 13.74), then loses
+;; from N=4096 up (19.97 vs 22.24) and at 8192 (17.77 vs 20.17).
+;;
+;; A VARIANT AND NOT A REPLACEMENT, for the same reason the 16-bit section carries
+;; matmul_2wg_deep: the two kernels CROSS OVER, so naming either one "Crisp" across the whole
+;; range would misreport one end of it.
+;;
+;; NOTE the per-output-tile reset inside :consumer.  Hand-rolled tile-stride does not auto-reset a
+;; register accumulator (matrix-multiply-tile-stride does); without it this kernel is correct only
+;; while each workgroup visits a single output tile.  The shipped tf32 and bf16 chapter 6 kernels
+;; still lack it -- see tests/spec/165-64-bit-mma/64-bit-mma.md.
+;;
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 96)
+           (local-size  :set-to 96))          ; 3 warps: 1 producer + 2 consumers
+  (let ((A-ring  (make-scratch-matrix-ring double (64 16) :ring-count 2))  ; SLM: 2 x (M x k-step)
+        (B-ring  (make-scratch-matrix-ring double (16 32) :ring-count 2))  ; SLM: 2 x (k-step x N)
+        (C-tile  (make-register-tile double (64 32) 0.0d :warps '(false true true)))  ; split across consumers
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 32) (grid-y grid-x)
+      (with-warp-specialization (:producer 1 :consumer 2)
+
+        ;; PRODUCER — stream A/B K-steps into the ring one stage ahead.
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot))
+              (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot)))))
+
+        ;; CONSUMER (x2) — each warp accumulates its fragment share of the C-tile, then releases.
+        (:consumer
+          ;; RESET THE ACCUMULATOR PER OUTPUT TILE.  tile-stride is grid-strided: one workgroup
+          ;; may visit several output tiles, and a register C-tile carries its sums across the
+          ;; visits unless cleared.  This is BUG 036's family -- matrix-multiply-tile-stride was
+          ;; taught to reset automatically, but HAND-ROLLED tile-stride was not, so chapter 5 does
+          ;; it explicitly and chapter 6 did not.
+          ;;
+          ;; MEASURED CONSEQUENCE: chap6 verified TRUE at N<=2048 and FALSE from N=4096 in the
+          ;; shipped tf32 results -- exactly where a workgroup starts visiting a second tile.  The
+          ;; fp64 twin fails from N=1024 because its 64x32 tile makes more tiles for the same N.
+          ;; The tf32 and bf16 chapter 6 kernels STILL LACK THIS.
+          ;;
+          ;; It sits inside :consumer, not before the specialization: the C-tile is declared
+          ;; :warps '(false true true), so only the consumer warps hold fragments of it.
+          (fill-tile C-tile 0.0d)
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (mma-accumulate-via-tile (8 8 4) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+              (signal (ring-get empty slot))))
+          (store-tile C-tile C (grid-y grid-x)))))))

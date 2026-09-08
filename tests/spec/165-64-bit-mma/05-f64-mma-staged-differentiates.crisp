@@ -1,0 +1,48 @@
+;; Endeavour 165 — the fp64 MMA *fast-path* VJP.  The shape spec 03 cannot reach.
+;;
+;; WHY THIS SPEC EXISTS.  Spec 03 differentiates, and every other 165 spec differentiates, and
+;; the fp64 MMA BACKWARD was still broken -- because spec 03 hands GLOBAL MATRICES straight to
+;; mma-accumulate-via-tile.  %mma-vjp-mma-admissible-p then refuses the tile-level MMA lowering
+;; and the SCALAR lowering runs instead, so %mma-via-tile-backward is never entered.  The AD
+;; suite was green over the half of the fp64 backward that nothing benchmarks.
+;;
+;; This kernel STAGES its operands (load-tile-at into scratch matrices with compile-time shapes),
+;; which is what every ladder chapter does and what the MMA VJP requires.  It therefore takes
+;; %mma-via-tile-backward, where the dA/dB register tiles were minted at FLOAT and produced
+;;
+;;     call {double,double} @llvm.nvvm.mma.m8n8k4.row.col.f64(double, double, float, float)
+;;
+;; which llc rejects: "Invalid user of intrinsic instruction / Intrinsic called with incompatible
+;; signature".  Found 2026-09-08 by compiling a LADDER kernel with --differentiate, not by any
+;; spec.  Fixed by giving the adjoint tiles the accumulator's element type (%ad-adj-elem: an
+;; adjoint is never narrower than the value it differentiates).
+;;
+;; Kt = 16 is not arbitrary: %mma-vjp-mma-admissible-p requires Kt to be a multiple of
+;; lcm(Mn, Nn), and fp64's fragment is 8x8, so Kt must be a multiple of 8.  A Kt of 4 -- the
+;; instruction's own K -- would fall back to the scalar lowering and this spec would silently
+;; stop testing what it is for.
+;;
+;; COMPILE-WITH[--hardware-profile=h100d --ir-target=ptx]: PASS
+;; COMPILE-WITH[--hardware-profile=h100d --ir-target=ptx --differentiate]: PASS
+;;   The backward emits mma.sync.aligned.m8n8k4.row.col.f64 with ZERO fp32 arithmetic; before the
+;;   fix llc refused the module outright.
+;; SKIP-DEFAULT-PASS
+
+(def-hardware-profile h100d :simd-width 32 :mma-shapes ((8 8 4)))
+
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel f64_mma_staged (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((A-tile (make-scratch-matrix double (8 16)))
+        (B-tile (make-scratch-matrix double (16 8)))
+        (C-tile (make-register-tile double (8 8) 0.0d)))
+    (load-tile-at A A-tile ((to-ulong 0) (to-ulong 0)))
+    (load-tile-at B B-tile ((to-ulong 0) (to-ulong 0)))
+    (sync-workgroup)
+    (mma-accumulate-via-tile (8 8 4) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

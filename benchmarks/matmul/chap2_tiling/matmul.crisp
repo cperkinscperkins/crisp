@@ -20,4 +20,18 @@
       (load-tile-at B B-tile ((* grid-k (to-ulong 8)) (* grid-x (to-ulong 64))))
       (sync-workgroup)
       (mma-accumulate-via-tile (16 8 8) C-tile A-tile B-tile)
-      (sync-workgroup))))
+      (sync-workgroup)
+      :epilogue
+      ;; WITHOUT THIS THE KERNEL COMPUTES AND DISCARDS.  matrix-multiply-tile-stride does
+      ;; NOT auto-store: it warns ("the C-tile is computed but never stored") and carries
+      ;; on.  This kernel had no :epilogue, emitted ZERO st.global, and its stored results
+      ;; read verified=false at N=4096-32768 with 8.78-9.08 TFLOPS recorded beside them --
+      ;; "the second-best tf32 number in its section while storing nothing at all".
+      ;;
+      ;; The defect was found once before and fixed only in the bf16 PORT, whose comment
+      ;; records it; this template was left as it was, so every later port inherited it
+      ;; (endeavour 165 did, at fp64).  Fixed at the source 2026-09-08.
+      ;;
+      ;; EXPECT THIS NUMBER TO DROP.  The kernel now does the work it was always credited
+      ;; with; the old figure was for a kernel that skipped its stores.
+      (store-tile C-tile C (grid-y grid-x)))))

@@ -1,0 +1,35 @@
+;; Endeavour 165 — the fp64 REGISTER TILE at its NATURAL geometry, 8x8.
+;;
+;; fp64's only tensor-core shape is m8n8k4, so its accumulator fragment is 8x8: 64 elements over
+;; 32 lanes = 2 doubles per lane.  That is under the 16x8 tf32 fragment in BOTH dimensions, which
+;; is why the whole register-tile path had to learn that fragment geometry is a property of the
+;; ELEMENT TYPE (endeavour 165 steps 2a / 2b) before this spec could exist.
+;;
+;; THE INIT IS `2.5d` AND NOT `2.5`, and the suffix is load-bearing rather than noise.  A bare
+;; float literal reads as FLOAT, and the fragment fields are genuinely DOUBLE now, so the type
+;; checker refuses it -- correctly.  `d` is Crisp's documented double suffix (see the literal
+;; suffix table in docs/ideal_001.md: double -> d / D, e.g. 2.0d).  Note that `2.5d0`, the Common
+;; Lisp spelling, does NOT work here: the suffix parser matches <number><suffix>, so the trailing
+;; 0 makes it read as FLOAT and the type check refuses it.
+;;
+;; Before step 2b-ii a tile declared `double` was built from register-fragment-acc-f32-16x8, i.e.
+;; f32 fragments, and a float init matched: this spec's earlier form passed for the wrong reason.
+;; The mismatch becoming an ERROR is the evidence that the record is really fp64.
+;;
+;; VERIFIED MANUALLY in the emitted PTX (do not rely on a validator for a new feature):
+;;   mov.u32 %r1, %laneid;  shr.u32 %r2, %r1, 2;      -> m = lane/4
+;;   shl.b32 %r3, %r1, 1;   and.b32 %r4, %r3, 6;      -> n = 2*(lane%4)
+;;   st.global.b64 [...], 4612811918334230528;        -> 0x4004000000000000 = 2.5 as fp64
+;;   or.b32 %r5, %r4, 1;                              -> the second value at n+1
+;; Two 8-byte stores per lane, exactly the CuTe MMA_Traits<SM80_8x8x4_F64F64F64F64_TN> CLayout.
+;;
+;; NO MMA HERE.  load-fragment-a/-b and the m8n8k4 emitter are step 3; this pins the tile.
+
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel f64_register_tile (&out C)
+  (declare #'(&out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile double (8 8) 2.5d)))
+    (store-tile C-tile C (0 0))))

@@ -1,0 +1,69 @@
+;; Crisp tiled matmul — WARP-SPECIALIZED producer/consumer, fp64.
+;; Section 1 (64-bit), Chapter 6.  The fp64 twin of chap6_warp_specialization/matmul.crisp.
+;;
+;; 3 warps: 1 producer streaming A/B K-steps into a 2-deep ring, 2 consumers each accumulating
+;; their fragment share of the C-tile.  `empty`/`full` barrier rings carry the handshake.
+;;
+;; GEOMETRY, forced by fp64 exactly as in chapters 1-5: 64x32 register tile, Kt=16, shape (8 8 4).
+;; See chap1_handrolled_mma_f64 for why 64x64 cannot be used at fp64 (256 registers/thread, one
+;; over the architectural 255).
+;;
+;; THE :warps SPLIT STILL DIVIDES, and that is not automatic at this geometry.  An fp64
+;; accumulator fragment is 8x8, so a 64x32 tile is (64/8) x (32/8) = 8 x 4 = 32 fragments, and 32
+;; splits evenly across the 2 consumers at 16 each.  The tf32 twin's 64x64 tile at 16x8 fragments
+;; is 4 x 8 = 32 as well -- the same fragment count by coincidence, from a different tile shape
+;; and a different fragment shape.  Worth stating because a tile that does NOT divide by the
+;; participating warp count is a compile-time refusal, and at fp64 the tile shapes available are
+;; different, so the coincidence should not be relied on when this chapter is retuned.
+;;
+;; CHAPTER 7 HAS NO 64-BIT RUNG.  wgmma covers fp16/bf16/tf32/fp8/int8 and stops there; there is
+;; no fp64 warpgroup MMA in any form.  So this is the TOP of the 64-bit ladder, and the report
+;; should say "absent by hardware" rather than leaving chapter 7 blank.
+
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 96)
+           (local-size  :set-to 96))          ; 3 warps: 1 producer + 2 consumers
+  (let ((A-ring  (make-scratch-matrix-ring double (64 16) :ring-count 2))  ; SLM: 2 x (M x k-step)
+        (B-ring  (make-scratch-matrix-ring double (16 32) :ring-count 2))  ; SLM: 2 x (k-step x N)
+        (C-tile  (make-register-tile double (64 32) 0.0d :warps '(false true true)))  ; split across consumers
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 32) (grid-y grid-x)
+      (with-warp-specialization (:producer 1 :consumer 2)
+
+        ;; PRODUCER — stream A/B K-steps into the ring one stage ahead.
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot))
+              (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot)))))
+
+        ;; CONSUMER (x2) — each warp accumulates its fragment share of the C-tile, then releases.
+        (:consumer
+          ;; RESET THE ACCUMULATOR PER OUTPUT TILE.  tile-stride is grid-strided: one workgroup
+          ;; may visit several output tiles, and a register C-tile carries its sums across the
+          ;; visits unless cleared.  This is BUG 036's family -- matrix-multiply-tile-stride was
+          ;; taught to reset automatically, but HAND-ROLLED tile-stride was not, so chapter 5 does
+          ;; it explicitly and chapter 6 did not.
+          ;;
+          ;; MEASURED CONSEQUENCE: chap6 verified TRUE at N<=2048 and FALSE from N=4096 in the
+          ;; shipped tf32 results -- exactly where a workgroup starts visiting a second tile.  The
+          ;; fp64 twin fails from N=1024 because its 64x32 tile makes more tiles for the same N.
+          ;; The tf32 and bf16 chapter 6 kernels STILL LACK THIS.
+          ;;
+          ;; It sits inside :consumer, not before the specialization: the C-tile is declared
+          ;; :warps '(false true true), so only the consumer warps hold fragments of it.
+          (fill-tile C-tile 0.0d)
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (mma-accumulate-via-tile (8 8 4) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+              (signal (ring-get empty slot))))
+          (store-tile C-tile C (grid-y grid-x)))))))

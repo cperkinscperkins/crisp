@@ -1,0 +1,17 @@
+;; CHECK-FAIL: "must be multiples of the"
+;;
+;; Endeavour 165 — the OTHER dimension.  Sibling of errors/01, which is short in M; this one is
+;; narrow in N.  (16 4) gives (floor 16 16) x (floor 4 8) = 1 x 0 = zero fragments, so it fails
+;; the same way and for the same reason.
+;;
+;; Both dimensions are tested because the fragment is 16x8 -- not square -- so a check that
+;; guarded only one of them would look correct against half the cases.
+
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tile_too_few_cols (&out C)
+  (declare #'(&out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-tile (make-register-tile float (16 4) 1.0)))
+    (store-tile C-tile C (0 0))))

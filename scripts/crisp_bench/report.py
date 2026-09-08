@@ -1012,6 +1012,161 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             lines.append("| " + label + " | " + " | ".join(cells) + " |")
         lines.append("")
 
+    # ---- Section 1c (fp64): the technique ladder at 64 bits (endeavour 165) ----
+    # A SEPARATE section rather than another column on section 1, and the reason is measured.
+    # The fp64 rungs run at a 64x32 register tile because 64x64 needs 256 registers/thread -- one
+    # over the architectural 255 -- so they are NOT the same kernel at a different element type
+    # the way the bf16 ladder is.  Putting them in one table would invite a like-for-like reading
+    # that the geometry does not support.
+    LADDER_F64 = [
+        ("chap0_naive_f64", "Ch 0 naive (no tensor cores)"),
+        ("chap1_handrolled_mma_f64", "Ch 1 hand-rolled MMA"),
+        ("chap2_tiling_f64", "Ch 2 tiling macro"),
+        ("chap3_async_f64", "Ch 3 async staging (cp.async)"),
+        ("chap4_cheap_fetch_f64", "Ch 4 TMA (:block)"),
+        ("chap5_multistage_ring_f64", "Ch 5 ring + prefetch"),
+        ("chap6_warp_specialization_f64", "Ch 6 warp specialization"),
+    ]
+    for gpu in gpus:
+        gd = matmul_data.get(gpu, {})
+        # THE 64-BIT LADDER IS SWEPT AT ieee, NOT fast.  fp64 exists to be correct, so measuring
+        # it under fast math would measure something nobody would ship -- it is the one ladder
+        # where the precision flag is part of the question.  Looking only under "fast", as the
+        # other sections do, silently found nothing and skipped the whole section.
+        def _pk(key, _gd=gd):
+            d = _gd.get(key, {})
+            return d.get("ieee") or d.get("fast") or {}
+        have64 = [(k, lbl) for k, lbl in LADDER_F64 if _pk(k)]
+        if not have64:
+            continue
+
+        def _tf64(chapter, n, _gd=gd):
+            d = _gd.get(chapter, {})
+            pts = (d.get("ieee") or d.get("fast") or {}).get(n, {})
+            for comp, pt in pts.items():
+                if _is_crisp(comp):
+                    v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                    if v:
+                        return v
+            return None
+
+        sizes64 = sorted({n for k, _ in have64 for n in _pk(k).keys()
+                          if isinstance(n, int)})
+        if not sizes64:
+            continue
+
+        lines.append("## § 1c — The Technique Ladder in 64-bit · " + gpu)
+        lines.append("")
+        lines.append("*The same chapters at IEEE double. Cells read **fp64 TFLOPS**, and the "
+                     "rightmost column is each rung's ratio to the Chapter 0 vector-fp64 floor.*")
+        lines.append("")
+        lines.append("**Chapter 7 is absent by hardware, not unmeasured.** wgmma covers "
+                     "fp16/bf16/tf32/fp8/int8; there is no fp64 warpgroup MMA in any form, so "
+                     "Chapter 6 is the top of this ladder.")
+        lines.append("")
+        lines.append("**These rows are not comparable cell-for-cell with the tf32 ladder.** An fp64 "
+                     "accumulator fragment is 8×8 holding 2 doubles per lane = 4 registers, so the "
+                     "tf32 chapters' 64×64 tile would need 256 registers/thread — one over the "
+                     "architectural 255. Every 64-bit rung therefore runs at 64×32. fp64 costs 2× "
+                     "the registers at equal tile size, which is part of the 64-bit result rather "
+                     "than a tuning choice.")
+        lines.append("")
+        lines.append("*Expectation under test (from § 2): the fp64 tensor core measured only "
+                     "1.20–1.53× over vector fp64, while cuBLAS sits ~1.9× above the best CUTLASS "
+                     "DMMA config — both DMMA, so that larger gap is scheduling. If that holds, the "
+                     "distance on this ladder should be in chapters 2–6, not chapter 1.*")
+        lines.append("")
+        lines.append("| chapter | " + " | ".join("N=%d" % n for n in sizes64) + " | vs Ch 0 |")
+        lines.append("|---|" + "---:|" * len(sizes64) + "---:|")
+        for key, label in have64:
+            cells = []
+            ratios = []
+            for n in sizes64:
+                v = _tf64(key, n)
+                floor = _tf64("chap0_naive_f64", n)
+                cells.append("—" if v is None else "%.1f" % v)
+                if v is not None and floor:
+                    ratios.append(v / floor)
+            rcell = ("%.2f×" % (sum(ratios) / len(ratios))) if ratios else "—"
+            lines.append("| " + label + " | " + " | ".join(cells) + " | " + rcell + " |")
+        lines.append("")
+
+    # ---- Section 2c (fp64): top contenders at 64 bits (endeavour 165) ----
+    # THE CRISP CELL IS AN ENVELOPE, not a single kernel.  Chapter 5 (TMA ring) and chapter 6
+    # (warp specialization) CROSS OVER -- ch6 wins at N=1024/2048, ch5 from 4096 up -- so each
+    # cell names the kernel that produced it.  A best-per-size number the reader cannot reproduce
+    # is not an honest number, which is the rule the Crisp variant columns already follow.
+    for gpu in gpus:
+        gd = matmul_data.get(gpu, {}).get("sec2_top_f64", {}).get("fast", {})              or matmul_data.get(gpu, {}).get("sec2_top_f64", {}).get("ieee", {})
+        if not gd:
+            continue
+        s2sizes = sorted(n for n in gd.keys() if isinstance(n, int))
+        if not s2sizes:
+            continue
+
+        def _best_crisp(n, _gd=gd):
+            best, who = None, None
+            for comp, pt in _gd.get(n, {}).items():
+                if not _is_crisp(comp):
+                    continue
+                v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                if v and (best is None or v > best):
+                    best, who = v, comp
+            return best, who
+
+        def _named(n, prefix, _gd=gd):
+            best = None
+            for comp, pt in _gd.get(n, {}).items():
+                if not comp.startswith(prefix):
+                    continue
+                v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                if v and (best is None or v > best):
+                    best = v
+            return best
+
+        lines.append("## § 2c — Top Contenders at 64-bit · " + gpu)
+        lines.append("")
+        lines.append("*IEEE double, TFLOPS. Crisp's cell is an **envelope**: chapters 5 and 6 cross "
+                     "over, so each cell names the kernel that produced it.*")
+        lines.append("")
+        lines.append("**`64F_PEDANTIC` is reported but is NOT a disable-tensor-cores switch.** That "
+                     "reading is imported from fp32, where PEDANTIC forbids tf32; it does not "
+                     "transfer, because DMMA is bit-identical IEEE double and PEDANTIC has no "
+                     "numerical reason to refuse it. The DMMA-vs-vector question is answered by the "
+                     "CUTLASS `OpClassTensorOp` / `OpClassSimt` pair, where the lowering is chosen "
+                     "rather than inferred.")
+        lines.append("")
+        hdr = ["contender"] + ["N=%d" % n for n in s2sizes]
+        lines.append("| " + " | ".join(hdr) + " |")
+        lines.append("|---|" + "---:|" * len(s2sizes))
+
+        cells = []
+        for n in s2sizes:
+            v, who = _best_crisp(n)
+            cells.append("—" if v is None
+                         else "**%.1f** (%s)" % (v, (who or "").replace("Crisp_V_", "").replace("Crisp", "ch5 ring") or "ch5"))
+        lines.append("| **Crisp** | " + " | ".join(cells) + " |")
+
+        for label, prefix in (("cuBLAS `64F` (**Ceiling**)", "CUBLAS_Optimal_F64"),
+                              ("cuBLAS `64F_PEDANTIC`", "CUBLAS_F64_Pedantic"),
+                              ("CUTLASS DMMA (**Peer**)", "CUTLASS_V_"),
+                              ("CUTLASS SIMT (vector fp64)", "CUTLASS_V_simt")):
+            row = []
+            for n in s2sizes:
+                # the DMMA row must exclude the SIMT configs, which share the CUTLASS_V_ prefix
+                if prefix == "CUTLASS_V_":
+                    best = None
+                    for comp, pt in gd.get(n, {}).items():
+                        if comp.startswith("CUTLASS_V_") and "simt" not in comp:
+                            v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                            if v and (best is None or v > best):
+                                best = v
+                else:
+                    best = _named(n, prefix)
+                row.append("—" if best is None else "%.1f" % best)
+            lines.append("| " + label + " | " + " | ".join(row) + " |")
+        lines.append("")
+
     # Section 4: MMA + Activation
     lines.append("## § 4 — MMA + Activation\n")
     lines.append("*What does fusing an arbitrary activation buy?*\n")

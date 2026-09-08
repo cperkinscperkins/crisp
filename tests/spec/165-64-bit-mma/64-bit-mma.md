@@ -1,0 +1,760 @@
+Endeavour 165 — 64-bit (double) MMA
+===================================
+
+In this endeavor we are going to make sure that 64-bit / DOUBLE is working with MMA, and we are
+going to add it to the benchmarking.
+
+I believe this will be NVidia Only, as the only Intel hardware we have access to is BMG. If you
+know of a way to pursue this on BMG (maybe just the most basic matrix multiplication walk?, let
+me know).
+
+Unlike the other MMA, which is focused on "fast" math, this is ieee.
+- `--math-precision=ieee`
+- [ ] 64 bit (NVidia) and the `ftz` denormal request — see "Precision and denormals" below; the
+      original plan said ERROR, and the decision has since been revised to *fix the lowering and
+      warn*.  The reasoning is recorded so the change is auditable.
+
+
+Findings before writing any code
+================================
+
+Everything in this section was established on the dev box, with no GPU and no rental, and each
+item names how it was checked.  They are recorded because three of them constrain the plan.
+
+### 1. LLVM has exactly ONE fp64 tensor-core intrinsic, and the failure mode is SILENT
+
+Probed directly with our own `bin/llc.exe` (LLVM 21.1.5), `-march=nvptx64 -mcpu=sm_90`:
+
+| declared intrinsic | result |
+|---|---|
+| `llvm.nvvm.mma.m8n8k4.row.col.f64` | emits `mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64` |
+| `llvm.nvvm.mma.m16n8k4.row.col.f64` (correct 7-arg signature) | becomes an `.extern .func` CALL |
+| `m16n8k8.f64`, `m16n8k16.f64` | same — no instruction |
+
+The sm_90 fp64 MMA shapes exist in the PTX ISA but are not NVVM intrinsics in our LLVM.  A
+declaration assembles cleanly and `llc` emits an external call with no diagnostic, so a wrong
+shape choice would surface as a link error or as garbage, far from its cause.  **The 64-bit
+ladder is pinned to m8n8k4, and anything else must be a compile-time refusal in Crisp.**
+
+### 1b. The exact fp64 fragment LANE LAYOUT, from a primary machine-readable source
+
+`third_party/cutlass/include/cute/atom/mma_traits_sm80.hpp` defines
+`MMA_Traits<SM80_8x8x4_F64F64F64F64_TN>` with explicit CuTe thread-value layouts.  Decoded
+(CuTe linearises the natural index column-major, `index = m + n*M`; thread decomposes as
+`t0 = lane % 4`, `t1 = lane / 4`):
+
+```
+ALayout = SM80_8x4     = Layout<Shape<Shape<_4,_8>,_1>, Stride<Stride<_8,_1>,_0>>
+BLayout = SM80_8x4     (same)
+CLayout = SM80_8x8_Row = Layout<Shape<Shape<_4,_8>,_2>, Stride<Stride<_16,_1>,_8>>
+```
+
+| fragment | shape | per lane | mapping |
+|---|---|---|---|
+| A | 8x4 (M,K) | 1 double | `m = lane/4`, `k = lane%4` |
+| B | 4x8 (K,N) | 1 double | `k = lane%4`, `n = lane/4` |
+| C/D | 8x8 (M,N) | 2 doubles | `m = lane/4`, `n = 2*(lane%4) + v`, v in {0,1} |
+
+This is the SAME `groupID = lane/4` family as the tf32 path already documented at
+src/mma.lisp:546, which is corroborating rather than surprising.  It matches the element counts
+CUTLASS's arch layer declares independently (`FragmentA/B = Array<double,1>`,
+`FragmentC = Array<double,2>`), so two parts of CUTLASS agree with each other.
+
+**Why this mattered enough to go and find.**  A fragment lane layout is the textbook
+wrong-but-self-consistent failure: guess it, and the kernel compiles, emits the right
+instruction, passes every mechanical check, and computes garbage that only on-metal
+verification catches.  Endeavour 159 lost a pod session to exactly that class of thing.  Taking
+it from CuTe rather than from memory removes the guess before it can cost a rental.
+
+### 2. CUTLASS independently agrees, and hands us the fragment layout
+
+`third_party/cutlass` at the pinned `dc45f97` defines exactly one fp64 tensor-op MMA
+(`include/cutlass/arch/mma_sm80.h`):
+
+```
+Mma<gemm::GemmShape<8,8,4>, 32, double, RowMajor, double, ColumnMajor, double, RowMajor, ...>
+  FragmentA = Array<double,1>;   FragmentB = Array<double,1>;   FragmentC = Array<double,2>;
+```
+
+Two independent sources, same answer.  This also gives the per-lane layout the Crisp fragment
+records will need — 1 A element per lane, 1 B, 2 accumulator — and confirms row-major A /
+column-major B is what the instruction natively wants.
+
+### 3. The h100 builtin profile currently resolves `double` to an UNEMITTABLE shape
+
+`register-builtin-hardware-profiles` (src/mma.lisp:319) declares:
+
+```lisp
+:mma-shapes ((16 8 8) (16 8 4) (16 8 16))
+```
+
+`%mma-shape-for-elem` (src/mma.lisp:3147) has no typed entry to match, so it falls to the width
+rule: "K x element-bits is a constant fragment footprint", calibrated here at 8 x 32 = 256.  For
+`double` (64 bits) that gives K = 4, which selects **(16 8 4)** — exactly the shape finding 1
+says LLVM cannot lower.  The rule is not wrong; it is simply not the constraint that binds for
+fp64.  Wants a typed entry `(double (8 8 4))` plus the refusal from finding 1.
+
+### 4. Chapter 7 has no 64-bit rung at all
+
+wgmma covers fp16/bf16/tf32/fp8/int8.  There is no `wgmma.mma_async...f64` in any form, so the
+64-bit ladder is chapters 0-6 and chapter 7 is **absent by hardware**.  That should be stated in
+the report as such, not left as an empty cell — an empty cell reads as "not measured yet".
+
+Chapters 1-6 sit on `mma.sync` plus cp.async/TMA, which are dtype-agnostic byte movers, so they
+port.  TMA needs `CU_TENSOR_MAP_DATA_TYPE_FLOAT64` and box widths recomputed in bytes.
+
+### 5. Expectation to record BEFORE measuring
+
+Vendor figures for H100 put fp64 tensor core at ~2x fp64 vector (67 vs 34 TFLOPS), against the
+~8-16x that 16-bit tensor cores enjoy.  Meanwhile fp64 doubles the bytes per flop, halving
+arithmetic intensity.  Prediction, written down in advance the way endeavour 159 did it:
+
+> **The 64-bit ladder compresses at the bottom and stretches at the top.**  Chapter 1
+> (hand-rolled MMA over naive) is worth ~2x at best, while the data-movement chapters (3/4/5)
+> matter MORE relatively than they do at 16-bit, because DGEMM goes bandwidth-bound sooner.
+
+MEASURED 2026-09-07 — see "Section 2 measured" below.  The shape of the prediction held and the
+magnitude did not: the fp64 tensor core is worth **1.20-1.53x**, not ~2x.  The vendor's 2x is a
+peak-rate ratio and does not survive contact with a real GEMM.
+
+Also: m8n8k4 is a quarter of the tf32 tile per instruction, so issue rate dominates and the 64x64
+register geometry that won for tf32 is unlikely to transfer.  Budget for a geometry sweep, as
+156/162 needed.
+
+**This is an H100/A100-only measurement.**  Consumer Blackwell runs fp64 at 1/64 rate; a number
+from the RTX would be actively misleading rather than merely uninteresting.
+
+
+The oracle: why A = B = 1 is not good enough here
+=================================================
+
+Every other matmul benchmark in this tree fills A and B with 1.0 and checks `C == K`.  For this
+endeavour that oracle is worthless: 1.0 is exact in fp64, fp32, tf32 AND fp16, so a kernel that
+silently computed the whole GEMM in single precision passes with `max_abs_err` exactly 0.  The
+premise of 165 is IEEE double; an oracle that cannot tell double from float is a green light
+with no information in it.
+
+`benchmarks/matmul/sec2_top_f64/f64_oracle.h` fills A and B with **v = 1 + 2^-25** instead:
+
+* in fp32, 2^-25 is below half an ulp at 1.0, so v rounds to exactly 1.0 — a single-precision
+  path therefore computes exactly K.  tf32 and fp16 round it away even more decisively.
+* in fp64, v is exact and C = K*v^2 = K*(1 + 2^-24 + 2^-50), whose mantissa spans 51 bits and so
+  is exactly representable.  No reference GEMM is needed, on host or device.
+
+Verified on the dev box by compiling the header with g++ and running both paths for real:
+
+```
+K        path           max_rel_err    verdict   diagnosis
+16384    fp64           6.661e-16      ACCEPT    fp64
+16384    fp32-simulated 5.960e-08      REJECT    computed at SINGLE precision (fp32/tf32 signature)
+```
+
+Tolerance is 1e-10 — five orders above honest fp64 rounding, three below the fp32 signature.  The
+header also DIAGNOSES rather than merely failing: it recognises the fp32 signature and says so,
+because "incorrect" sends you looking for a harness bug while "computed at single precision"
+names what actually happened.
+
+The oracle is layout-insensitive by construction (every element of A and B is the same value), so
+the contenders may disagree about row- vs column-major without the oracle measuring the layout
+instead of the arithmetic.
+
+**A second, mechanical gate belongs alongside it**, needing no GPU: assert the emitted PTX
+contains `mma.sync.aligned.m8n8k4...f64` and no f32 MMA.  That catches the silent-fallback and
+silent-extern-call cases at compile time.
+
+
+Section 2 measured — H100 NVL, 2026-09-07
+=========================================
+
+Hardware: NVIDIA H100 NVL, driver 580.126.09, CUDA 12.4, CUTLASS `59e3a33` (note: NOT the dev-box
+pin `dc45f97` — `setup-third-party.sh` fetches fresh, so peer numbers must be quoted against
+`59e3a33`).  Sizes 1024/2048/4096/8192, warmup 20, 100 iterations, median.  **Every contender at
+every size returned `correct=true` with `precision_diagnosis: fp64`** — nothing silently ran in
+single precision, which is the one thing the new oracle exists to catch.
+
+GFLOPS, best config per family:
+
+| N | cuBLAS 64F | cuBLAS 64F_PEDANTIC | CUTLASS DMMA | CUTLASS SIMT | DMMA/SIMT |
+|---|---:|---:|---:|---:|---:|
+| 1024 | 41,812 | 38,971 | 25,003 | 20,796 | **1.20x** |
+| 2048 | 54,180 | 40,601 | 27,570 | 22,738 | **1.21x** |
+| 4096 | 52,746 | 40,689 | 28,198 | 22,356 | **1.26x** |
+| 8192 | 38,890 | 35,374 | 28,258 | 18,496 | **1.53x** |
+
+### A method correction, recorded because the first answer was wrong
+
+The plan was to read the tensor-core ratio off cuBLAS: `CUBLAS_COMPUTE_64F` free to use DMMA,
+`CUBLAS_COMPUTE_64F_PEDANTIC` not.  **That reasoning was imported from fp32, where PEDANTIC's job
+IS to forbid tf32, and it does not transfer.**  DMMA is bit-identical IEEE double — it is not an
+approximation of anything — so a mode defined as "prescribed precision and standardized
+arithmetic" has no numerical reason to refuse it.  The data agreed with the doubt: PEDANTIC held
+40.6 TFLOPS at N=2048, well above what a pure vector-fp64 path should reach.
+
+The ratio is therefore measured in CUTLASS instead, where the lowering is CHOSEN rather than
+inferred: `OpClassTensorOp` + `GemmShape<8,8,4>` against `OpClassSimt` + `GemmShape<1,1,1>`, one
+template parameter apart in the same file, same oracle, same timing loop, same data.  The cuBLAS
+pair is still reported, labelled as not a tensor-core ratio.
+
+### What the numbers mean for the ladder
+
+1. **The fp64 tensor core is worth ~1.2x at practical sizes**, not the ~2x the vendor peak-rate
+   figures imply.  So chapter 1 — hand-rolled MMA over naive — has a small ceiling, and the
+   endeavour should not be organised around it.
+2. **The larger gap is not about tensor cores at all.**  cuBLAS 64F (54.2 TFLOPS at 2048) is
+   ~1.9x the best CUTLASS DMMA config (28.3).  Both are DMMA; that gap is scheduling and data
+   movement.  **The 64-bit headroom lives almost entirely in chapters 2-6.**
+3. Revised thesis, and it is the opposite of the 16-bit story: **for fp64 the MMA instruction is
+   a minor win and the pipeline is the whole game.**
+4. At N=8192 the ratio widens to 1.53x because the SIMT arm DEGRADES (22.4 -> 18.5) while DMMA
+   holds (28.2 -> 28.3), not because DMMA improves.  Worth understanding before leaning on it.
+
+### Caveats on these numbers
+
+- The peer is LIGHTLY SWEPT: four DMMA geometries (all K=16) and three SIMT.  cuBLAS being 1.9x
+  ahead is therefore an UPPER BOUND on available scheduling headroom, not a precise figure —
+  some of it may be peer under-tuning.  Endeavour 159's lesson applies: an under-reporting peer
+  flatters everyone measured against it.
+- The DMMA/SIMT ratio is more trustworthy than the absolute numbers, because both arms are tuned
+  to a comparable (low) degree and differ in one template parameter.
+- `32x32x16w32x32s4` does not build: CUTLASS static-asserts "This tile iterator requires at least
+  two warps."  Recorded rather than hidden — it bounds the small end of the tiling space.
+
+
+Phase 0 measured — what the compiler does with f64 MMA TODAY
+============================================================
+
+Run on the dev box, compile-only, no GPU.  Probes in `put_temp_files_here/165/probe/`.
+
+**The prediction was wrong on both counts.**  It said an f64 MMA would fall into the tf32 branch
+and silently emit f32.  It does not: `double` register tiles already work and emit genuine f64,
+and the MMA path REFUSES rather than degrading.  What the probes did find is a different and
+pre-existing defect that has nothing to do with fp64 — but which fp64 walks straight into.
+
+| probe | result today |
+|---|---|
+| `double` register tile, fragment-aligned (16x8), fill + store | **works** — 49-line body, 4 `st.global`, 13 f64 refs |
+| `double` tile + `mma-accumulate-via-tile (16 8 8)` | **refuses**: "Type mismatch! Expected FLOAT but inferred DOUBLE" |
+| `double` tile (8x8) + MMA (8 8 4), profile supplying the shape | compiles "successfully", emits an **EMPTY KERNEL** (`ret;`) |
+| **`float`** tile (8x8), fill + store, no MMA at all | **also an empty kernel** |
+
+### The silent-empty-kernel defect is about SHAPE, not element type
+
+The last two rows are the discriminating pair.  An f32 8x8 tile produces exactly the same `ret;`
+as the f64 one, so this is not an fp64 gap.
+
+`analyze-make-register-tile` (src/mma.lisp:1104) computes
+
+```lisp
+(nfrags (* (floor m 16) (floor n 8)))
+```
+
+so a tile with M < 16 or N < 8 yields **zero fragments**.  Nothing to fill, nothing to store,
+nothing to multiply — and the kernel legitimately optimises down to `ret;`.
+`%ensure-register-tile-type` (src/mma.lisp:1001) has a guard for precisely this case:
+
+```lisp
+(unless (and (zerop (mod m 16)) (zerop (mod n 8)))
+  (error "make-register-tile: dims (~a ~a) must be multiples of the 16x8 accumulator fragment."))
+```
+
+but it does not fire, because a let-bound tile does not take that path — as the comment at
+src/mma.lisp:1103 says, "a let binding is EXPLODED, and %explode-register-tiles does the
+distribution".  The explode path never re-checks.  So the guard exists and is bypassed by the
+route every real kernel uses.
+
+**This deserves a BUG number in plan/bugs.md.**  It is pre-existing, type-independent, and
+silently turns a kernel into a no-op — the same class as BUG 036 (the C-tile reset), which was
+also "quietly computes nothing/wrong for a shape nobody had tried".
+
+### Why it lands on this endeavour
+
+fp64's ONLY tensor-core shape is m8n8k4, so its natural accumulator is **8x8** — below the
+hardcoded 16x8 fragment in both dimensions.  Every fp64 MMA kernel we write will request an 8-row
+tile, and today every one of them would compile clean and do nothing.
+
+So the register tile is not merely missing an f64 branch; it is **structurally 16x8-f32**:
+`%ensure-register-tile-type` takes `(m n)` and no element type at all, and hardcodes
+`register-fragment-acc-f32-16x8` as the fragment type.  Teaching it fp64 means teaching it that
+the fragment geometry is a property of the element type — which is the same lesson endeavour 155
+learned for the Intel GRF width, and 159 for the 16-bit K.
+
+### Revised compiler-work list, in dependency order
+
+1. [x] **DONE — the silent zero-fragment case is now a refusal.**  Filed as **BUG 058**.  One
+   shared predicate `%register-tile-dims-must-divide`, called from BOTH
+   `%ensure-register-tile-type` (which already had the guard, dead) and
+   `%register-tile-fit-check` (which the explode path already calls once per tile binding), so
+   the two cannot drift apart again.  It went into the fit-check rather than
+   `%explode-register-tiles` because that function is 124 lines and transcribing it into an
+   overlay is its own class of risk, while the fit-check already receives exactly `(m n
+   location)`.  NVIDIA-only, deliberately — see BUG 058 for why SPIR-V needs the element type
+   threaded through first, and note that half is STILL OPEN.
+   Specs: `errors/01-tile-too-few-rows.crisp`, `errors/02-tile-too-few-cols.crisp`.
+2. [x] **DONE — accumulator fragment geometry is now a function of the element type.**  Done in
+   three sub-steps, each verified before the next: **2a** threaded ELEM to the tile TYPE (the
+   minted name now carries it, `*register-tile-dims*` stores `(M N ELEM)`); **2b-i** reached ELEM
+   from the five `%emit-per-frag-*` emitters; **2b-ii** flipped `%acc-frag-mn` so `double`
+   answers 8x8, added `register-fragment-acc-f64-8x8` (2 doubles) and `%frag-record-for-acc`,
+   taught `analyze-make-register-fragment` the element's own geometry, and gave
+   `analyze-store-fragment` the fp64 lane mapping.  A third geometry function,
+   `%frag-mn-for-operand`, was routed too, including fp64's 8x4 / 4x8 OPERAND geometry — unused
+   until step 3, but a function that would answer 16x8 if asked is a trap.
+   Specs: `01-f64-register-tile.crisp` (one fragment), `02-f64-register-tile-multi.crisp` (16x16
+   = four fragments, which exercises the walk).
+
+   **Method that paid off, and one that did not.**  2a and 2b-i were required to be INERT and
+   checked against a 14-file byte-identical IR baseline.  That check is a spot check and it is
+   not sufficient: 2b-i passed it and still broke 5 Intel specs, because ELEM had been added as a
+   seventh field on the tile ENTRY and a consumer in ANOTHER FILE (src/codegen.lisp:5477)
+   destructures that entry with a fixed lambda list.  The survey had been scoped to src/mma.lisp.
+   **Only the suite can support the word "inert"; the IR check is a fast filter, not a proof.**
+   The redesign was also simply better: that same codegen site already asks
+   `(%register-tile-elem-of (first entry))` — a side-table lookup keyed by the tile's symbol —
+   so the entry never needed to grow, and v2 uses the mechanism that was already there.
+
+3. [x] **FORWARD DONE — Crisp emits a 64-bit tensor-core MMA.**  `load-fragment-a`/`-b` fp64
+   branches (A 8x4 and B 4x8, one double per lane, CuTe `SM80_8x4`), the A/B fragment records,
+   `%nvvm-frag-format` gaining `:f64`, and `%emit-nvvm-mma-f64` emitting
+   `llvm.nvvm.mma.m8n8k4.row.col.f64`.  Spec `03-f64-mma.crisp`.  Verified by reading the PTX:
+
+   ```
+   mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64   x1
+   .extern .func calls  0     <- the SILENT failure mode for a wrong intrinsic name
+   f32 MMA              0     <- would mean a silent downgrade
+   shr.u32 %r2,%r1,2 / and.b32 %r3,%r1,3            -> lane/4 and lane%4
+   ld.global.nc.b64 x2                              -> ONE double per operand per lane
+   ```
+
+   **Four hardcodes surfaced doing this, and the BUG 058 refusal named three of them** rather
+   than letting a wrong geometry through: `%frag-mn-for-operand` (still flat 16x8 on PTX),
+   `analyze-mma-accumulate`'s result type, and the AD one below.  `analyze-mma-accumulate` was
+   not given an fp64 special case — it now takes its type FROM ITS OWN C OPERAND, which was
+   always the real rule and merely unexpressible while one accumulator record existed.
+
+3b. [x] **DONE — the fp64 MMA DIFFERENTIATES.**  Spec 03 compiles under `--differentiate`; the
+   `_grad` kernel does **32 fp64 arithmetic ops and ZERO fp32**, so the whole gradient runs in
+   double.  It took **five separate fp32 assumptions**, each invisible until the one before it
+   was removed:
+
+   1. `%mma-ad-adj-init` minted every adjoint at FLOAT.  Its docstring said why — "fragments are
+      fp32" — which was true of every fragment in the tree when it was written.  Fixed as the
+      INVARIANT rather than a case: **an adjoint is allocated at the wider of the forward element
+      type and FLOAT** (`%ad-adj-elem`).  16-bit still promotes to fp32, which endeavour 163
+      path (a) depends on; double stays double, because float would silently halve a gradient.
+   2. `%mma-vjp-scalar-lowering` staged dC through `make-scratch-matrix FLOAT` and accumulated
+      into a float local — BUG 057's family, a tile/staging-matrix element mismatch.  `acc-elem`
+      is now threaded from `(fourth c-dims)`; NIL reproduces the old emission exactly.
+   3. **The VJP REGISTRY made the overlay override dead code.**  `register-vjp
+      "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile` (src/autodiff.lisp:5578) captures
+      the FUNCTION OBJECT at load time, so redefining the defun in an overlay never takes effect.
+      Must re-register.  The failure was PARTIAL and therefore nasty: the scalar lowering IS
+      called by name, so that override was live, while its caller was the stale registered copy —
+      the new callee ran with the old caller's argument list and defaulted the new parameter.
+   4. `analyze-load-fragment-acc` — the exact inverse of `store-fragment` — carried the same
+      16x8-f32 mapping the store had before 2b-ii.  Its own docstring requires a Load/Store pair
+      to agree; they now agree BY CONSTRUCTION, both reading the layout from CuTe's CLayout.
+   5. The patch helper assumed CRLF.  **`src/mma.lisp` has MIXED line endings** and this region is
+      LF, so two edits silently matched nothing.
+
+   **METHOD NOTE, worth more than the fixes.**  Two of those were found by reasoning and both
+   theories were WRONG: the first patch went to `%mma-via-tile-backward`, which
+   `--log-level=debug` then showed is never reached for this kernel (the scalar lowering is
+   chosen).  `%mma-via-tile-backward-logged` exists to print the assembled backward AST for
+   exactly this purpose, and two `log:debug` lines in one function body — only the pre-existing
+   one firing — exposed the registry problem in a single step.  Reach for the log before the
+   second theory, not after it.
+
+3c. [x] **DONE — the fp64 MMA *fast-path* VJP.  Spec 03 could not reach it.**
+
+   Chris asked why none of the 165 specs do the full 64-bit MMA the ladder does, and whether that
+   mattered.  It did.  Compiling a LADDER-shaped fp64 kernel with `--differentiate` failed:
+
+   ```
+   Invalid user of intrinsic instruction!
+     call {double,double} @llvm.nvvm.mma.m8n8k4.row.col.f64(double, double, float, float)
+   Intrinsic called with incompatible signature
+   ```
+
+   `%mma-via-tile-backward` staged its SLM operands at the operand element type but minted the
+   dA/dB REGISTER tiles at FLOAT, so the accumulator operands of an fp64 MMA were fp32.
+
+   **WHY EVERY SPEC WAS GREEN ANYWAY.**  Spec 03 hands GLOBAL MATRICES to
+   `mma-accumulate-via-tile`; `%mma-vjp-mma-admissible-p` then refuses the tile-level MMA lowering
+   and the SCALAR lowering runs, so that function is never entered.  The AD suite covered the half
+   of the fp64 backward that nothing benchmarks.  Only staged operands with compile-time shapes —
+   what every ladder chapter has — take the MMA path.
+
+   **A LESSON ABOUT THE EARLIER REVERT.**  This exact hardcode was found, patched and then
+   REVERTED during step 3b because the patch did not fix spec 03.  That was the right call on the
+   evidence — but the reason it did not fix spec 03 is that spec 03 CANNOT EXERCISE IT.  "The fix
+   did not change the failing case" is not the same as "the fix was wrong", and the difference is
+   worth a second look before reverting.
+
+   Fixed with `%ad-adj-elem`'s invariant (an adjoint is never narrower than what it
+   differentiates), so 16-bit still promotes to fp32 and every pre-165 kernel is unchanged.
+   Spec: `05-f64-mma-staged-differentiates.crisp`, which logs `mma-path=T` — it genuinely enters
+   the MMA VJP, and a Kt that is not a multiple of lcm(Mn,Nn) would silently fall back to the
+   scalar path and stop testing anything.
+
+4. The (8 8 4)-only shape refusal.
+5. [x] **DONE — MMA_CORRECT ON AN H100 NVL (2026-09-07).**  driver 580.159.04, CUDA 12.4.
+   `tests/spec/165-64-bit-mma` runs 5/5 on the pod, including
+   `03-f64-mma (Hoist[CUDA] -> validate-cuda-mma-run) ... MMA_CORRECT`.
+   **The CuTe-decoded lane layouts are right.**  That was the one thing no local check could
+   settle, and it is now settled against a host reference on real hardware.
+
+   **THE HARNESS HAD TO BE TAUGHT fp64 FIRST, and this is the part worth remembering.**
+   `%cuda-emit-mma-reference` emitted the whole C = A.B check in float -- `new float[]`,
+   `sizeof(float)`, `float acc`, a 1e-2 relative tolerance.  Against an fp64 kernel it would have
+   read 8-byte buffers as 4-byte floats, so **MMA_WRONG would have been a statement about the
+   HARNESS, not the kernel** -- a rental burned to learn nothing.  Caught by reading the
+   generator BEFORE booking the GPU.  `:elem-type` was already on every allocation as a C++ type
+   string and `emit-readback` twenty lines below had always used it; only this reference
+   hardcoded float.  Fixed in `overlays/hoist-cuda/crisp-hoist-cuda-overlay.lisp`, with the
+   tolerance following the type: 1e-10 relative for double, tight enough that a path which
+   silently computed in single precision FAILS.
+
+   **The test is discriminating, not decorative.**  The harness fills A with `_i % 5` and B with
+   `_i % 3` -- non-uniform and coprime -- so a transposed or scrambled lane layout cannot pass by
+   coincidence.  An all-ones oracle would have passed on a wrong layout, which is the same trap
+   the section-2 benchmark oracle exists to avoid.
+
+   Two directives were needed beyond `MMA-DIMS` / `TEST-HOIST[CUDA]` / `HOIST-EXPECT`: the hoist
+   phase compiles the kernel itself and does NOT inherit `COMPILE-WITH` flags, so
+   `HOIST-HARDWARE-PROFILE: h100d` and `HOIST-ARCH: sm_90` are required or the (8 8 4) shape is
+   rejected with "only tf32 (16 8 8) is supported without a hardware profile".
+
+   Locally the rung SKIPs cleanly ("nvcc not available"), so the dev-box suite is unaffected.
+
+6. **OPEN AND DELIBERATELY DEFERRED — the fp64 ACCUMULATOR LOAD is unverified on hardware, and
+   may carry a silent lane-layout mismatch.**
+
+   **What is verified.**  `MMA_CORRECT` exercised load-A, load-B, the MMA, and STORE-tile.  Those
+   four layouts are confirmed against a host reference on an H100.
+
+   **What is not.**  `analyze-load-fragment-acc`'s fp64 branch — reading an 8x8 accumulator FROM
+   memory INTO the 32 lanes.  Spec 03 never does it: it starts C at zero via
+   make-register-fragment, and a splat puts the same value in every lane, so layout cannot
+   matter.  The only consumer of that path is the BACKWARD, seeding the C adjoint from C_GRAD.
+   Its mapping was read off CuTe's CLayout alongside the store's, and it is almost certainly
+   right — but "almost certainly" is exactly the state that MMA_CORRECT exists to end.
+
+   **Consequence if wrong:** fp64 FORWARD stays correct; fp64 GRADIENTS are silently wrong.
+   Treat fp64 AD as compile-verified only.  The backward emits 32 fp64 ops and zero fp32, so the
+   TYPES are right; the VALUES have never been checked on hardware.
+
+   **A round trip cannot close this** — load and store sharing the same wrong mapping cancel out
+   and produce a perfect identity from broken code.  See [[mma-fragment-layout-untestable-by-
+   roundtrip]].  Breaking the symmetry needs the hardware in the loop.
+
+   **THE LADDER WILL NOT CLOSE IT EITHER.**  Ladder chapters are forward-only matmuls that
+   accumulate across K in REGISTERS; they never re-load an accumulator from memory.  They will
+   hammer the A/B/store layouts and never touch this one.  Recorded because the opposite was
+   briefly assumed.
+
+   **SPEC WRITTEN — `04-f64-acc-load-roundtrip.crisp`.  Needs ONE hoist run to close.**
+
+   **The design changed, and got cheaper.**  The plan of record was option B: pre-load the
+   accumulator from a fourth non-uniform matrix, `C = C0 + A.B`, and teach
+   `%cuda-emit-mma-reference` to expect the extra input.  That works, but a ROUND TRIP is
+   strictly less machinery for the same signal — and the earlier reason for rejecting a round
+   trip does not apply here.
+
+   The objection to round trips is that a load/store pair sharing one wrong mapping CANCELS and
+   yields a perfect identity from broken code.  **That assumes neither end is independently
+   known.**  Spec 03's MMA_CORRECT already pinned the STORE against a host reference on real
+   hardware, so `store^-1` IS the hardware layout, and the kernel computes
+
+       memory --load--> fragments --store--> memory        i.e.  S(L(S(F)))
+
+   with S verified and used TWICE while L is used once.  If `L = S^-1` the output is unchanged
+   and equals `A.B`; any other mapping permutes it and the existing `C = A.B` reference catches
+   it.  **So no harness change at all** — it runs on the ordinary `TEST-HOIST[CUDA]` path, which
+   makes it the cheapest job of the endeavour: clone, build, `run-specs --filter=165-64-bit-mma`.
+
+   **Two things checked because either would make it vacuous:**
+   * *Not optimised away.*  Store->load->store to one address is exactly what LLVM forwards and
+     deletes.  The `sync-workgroup` barriers are memory fences that forbid it, and the PTX
+     confirms 4 `ld.global` — two for A/B, two for the accumulator reload.
+   * *Inputs non-uniform.*  The CUDA MMA harness fills A with `_i % 5` and B with `_i % 3`
+     (coprime), so partial sums differ lane to lane.  An all-ones oracle would pass on ANY
+     mapping.
+
+   **HONEST LIMIT ON WHAT IT PROVES.**  The store and load branches are separate code carrying
+   the same formula, both written from the same CuTe layout, so what this actually catches is a
+   DIVERGENCE BETWEEN THE TWO IMPLEMENTATIONS — a transcription slip, a wrong tile origin, one
+   value read where two are needed.  It is not an independent second opinion on the layout
+   itself.  It does not need to be: the common-mode case is already excluded by MMA_CORRECT
+   having pinned the store against hardware.
+
+   **NOT option A**: teaching `tests/verify-autodiff-runner.lisp` fp64 is surgery on 2371 lines
+   that assume 4-byte floats, under ~25 passing on-metal gradient checks, for one result.
+   Explicitly ruled out.
+
+**NOT an open question — RETRACTED.**  This doc briefly claimed that needing `(as double 2.5)` for
+a tile init was a papercut requiring a language decision.  It is not: **`2.5d` works**, and the
+`d` suffix is documented in `docs/ideal_001.md`'s literal-suffix table (`double | 64 bit | d / D |
+2.0d`) and implemented.  The claim came from reading BUG 005's "we will probably use suffixes on
+literals" as future tense and not testing it.  Both specs use `2.5d` / `1.5d`, verified to emit
+`0x4004000000000000`.
+
+One real (and minor) trap does exist: **`2.5d0`, the Common Lisp spelling, reads as FLOAT** — the
+suffix parser matches `<number><suffix>`, so the trailing `0` defeats it.  It fails loudly with
+"Expected DOUBLE but inferred FLOAT" rather than silently, so it is a papercut for Lisp habits
+rather than a hazard.  Recorded in spec 01's header.
+
+The type refusal itself remains good evidence that the record is really fp64: before 2b-ii a tile
+declared `double` was built from f32 fragments and a plain float init matched, so spec 01's first
+form had been passing for the wrong reason.
+
+Note that the "Type mismatch! Expected FLOAT but inferred DOUBLE" refusal in row 2 is the
+f32-hardcoded fragment record showing through, and it is a GOOD sign: the type checker is already
+catching what the MMA path cannot yet do.  It should be replaced by a real f64 lowering, not by
+loosening the check.
+
+
+Precision and denormals — decision and reasoning
+================================================
+
+The original plan said 64-bit should ERROR on the ieee+ftz combination.  The scope is slightly
+different from that phrasing, and the conclusion has changed.  Recorded in full because it is the
+kind of decision that looks arbitrary a year later.
+
+**The scope.**  PTX `.ftz` is f32-only.  `ftz` is meaningless for f64 regardless of ieee vs fast;
+`ieee` is not what makes it f32-only.
+
+**The defect.**  `%stamp-denormal-attrs` (src/codegen.lisp:469-478) stamps BOTH `denormal-fp-math`
+and `denormal-fp-math-f32` to the same value, so under `--denormal-handling=ftz` the module makes
+a flush claim about f64 that the hardware will not honour and that LLVM may fold on.
+
+**Why not an error.**  Precision has a five-deep resolution chain — force > with-precision >
+declaim > flag > default — so a site-level warning like 126/20 (`20-warn-wgmma-not-fast.crisp`)
+always leaves the user an escape hatch: `(with-precision (fast) ...)` says "yes, I know".
+**Denormal handling is flag-only, and permanently so — there will never be a `(with-denormal ...)`
+or a declaim form.**  A hard error therefore means one double anywhere makes
+`--denormal-handling=ftz` unusable for the entire compilation with no way to say "yes, I know" —
+and it would be refusing a well-formed request, since on a mixed f32/f64 kernel `ftz` still means
+something real for the f32 half.
+
+**Decision.**
+1. Fix the lowering: `:ftz` stamps only `denormal-fp-math-f32`.  This is the actual defect, it is
+   independent of this endeavour, and once fixed `ftz` + f64 stops being a lie and becomes a
+   no-op.
+2. Warn, once per compilation, in 126/20's shape: `ftz` does not apply to 64-bit arithmetic; the
+   f64 operations keep IEEE denormals.
+
+Corroboration from the harness itself: `nvcc_math_flags` passes `-ftz=`, and nvcc's own `-ftz` is
+documented as single-precision only.  The toolchain already treats this axis as f32-only.
+
+
+Intel / BMG
+===========
+
+No fp64 record exists in our BMG device facts.  Xe2's XMX/DPAS has no f64 datapath, so an f64
+cooperative-matrix will be a REFUSAL rather than a slow path; the only open question is whether
+BMG advertises the `Float64` capability at all for plain (non-MMA) fp64.
+
+Cheapest resolution is a two-arm probe in the existing Docker flow: (a) a plain f64 kernel, no
+MMA, to see whether the driver accepts Float64; (b) an f64 coop-matrix, to get the refusal on
+record.  One Docker run.  Either we get a chapter-0-only Intel column or a documented "no", and
+either way the answer belongs in the BMG device-facts note.
+
+
+Compiler work this implies
+==========================
+
+All of it is overlay-appendable — `register-mma-types` is a `defun`, so the new fragment records
+need no struct patch.
+
+- Three fragment records for m8n8k4, per finding 2: A 8x4 -> 1 double/lane, B 4x8 -> 1
+  double/lane, C/D 8x8 -> 2 doubles/lane.
+- A third branch in `load-fragment-a` / `-b` for the f64 lane layout (currently tf32 4-elem vs
+  16-bit 8-elem, src/mma.lisp:557-620).
+- A third branch in the MMA emitter (src/mma.lisp:850-917) for
+  `llvm.nvvm.mma.m8n8k4.row.col.f64`.
+- Typed profile entry `(double (8 8 4))` plus a refusal for any other f64 shape (finding 3).
+- PTX register accounting: a double is two 32-bit registers, so `%ptx-note-register-demand` needs
+  the x2.  Endeavour 144 Phase 2 has the hook.
+- `CRISP_MATMUL_ELEM` (scripts/crisp_bench/matmul.py:671 and :740) has no `double` key — a
+  KeyError the moment a double kernel appears.
+- `report.py`'s section-1 `LADDER` list is hardcoded (report.py:955); a third dtype is the moment
+  to generalise it rather than paste a third copy.
+- AD should come free via the 145/163 VJP registry, and fp64 is the EASIEST precision in which to
+  do a numeric gradient check.  Worth one spec.
+
+**Phase 0, before any chapter is written** (compile-only, no GPU): write one f64
+`mma-accumulate-via-tile` kernel and see what the compiler does with it TODAY.  The expectation is
+that it falls into the tf32 branch and silently emits f32 — which, if true, is the single most
+important thing to have on record, and is the reason the mechanical PTX gate above exists.
+
+
+Plan
+====
+
+Ordering note: the competitor benchmarks come FIRST, before the ladder.  cuBLAS can answer the
+endeavour's central question outright — `CUBLAS_COMPUTE_64F` is free to use DMMA,
+`CUBLAS_COMPUTE_64F_PEDANTIC` is not, and both compute the same IEEE double result, so the ratio
+between the two arms is the ceiling of everything the ladder was going to build, measured by
+NVIDIA's own tuned code.  ~2x and the ladder is worth building as planned; ~1.3x and chapter 1 is
+a formality and the 64-bit story is data movement from top to bottom.  It also de-risks the
+CUTLASS peer early, which endeavour 159 taught us to do.
+
+- [x] **Section 2 competitors** (`benchmarks/matmul/sec2_top_f64/`):
+  - `f64_oracle.h` — the shared discriminating oracle, so the arms cannot drift.
+  - `cublas_ceiling_f64.cu` — both compute-type arms, `-DPEDANTIC` selecting the vector-fp64 one.
+  - `cutlass_peer_f64.cu` — CUTLASS **2.x** `device::Gemm` on `arch::Sm80`.  NOT a typedef swap
+    on the tf32 peer: that one is 3.x `CollectiveBuilder` on `arch::Sm90`, which is wgmma-based,
+    and there is no fp64 wgmma, so the Sm90 builder has no dispatch policy for `double`.
+  - `scripts/165-pod-sec2.sh` — the whole session as one batched command, `SMOKE=1` first.  Needs
+    only nvcc and the CUTLASS headers; no SBCL, no compiler build, so it is a cheap rental.
+- [x] **Run it** — H100 NVL, 2026-09-07.  See "Section 2 measured".  Raw `results.jsonl` was not
+      pulled before the pod was released; the per-point summary tables in that section (GFLOPS,
+      correct, precision diagnosis for every contender at every size) are the surviving record.
+- [x] **The 64-bit MMA Techniques ladder — ALL SEVEN RUNGS WRITTEN AND COMPILING (2026-09-07).**
+      Chapters 0-6; chapter 7 is **absent by hardware** (no fp64 wgmma exists in any form) and the
+      report should say so rather than leave a blank cell.
+
+      | chapter | dir | emits |
+      |---|---|---|
+      | 0 naive | `chap0_naive_f64` | 10 scalar fp64 ops, no MMA |
+      | 1 hand-rolled MMA | `chap1_handrolled_mma_f64` | `m8n8k4...f64` |
+      | 2 tiling | `chap2_tiling_f64` | + `matrix-multiply-tile-stride` |
+      | 3 async | `chap3_async_f64` | + `cp.async` at **8 bytes/elem** |
+      | 4 cheap fetch | `chap4_cheap_fetch_f64` | + TMA `cp.async.bulk.tensor` |
+      | 5 multistage ring | `chap5_multistage_ring_f64` | 6 bulk copies, 16 mbarrier ops |
+      | 6 warp specialization | `chap6_warp_specialization_f64` | 3 warps, 1P+2C, split C-tile |
+
+      Every rung verified in the emitted PTX: the fp64 MMA present, **zero fp32 arithmetic, zero
+      `.extern .func`** (the silent-wrong-intrinsic failure mode).
+
+      **cp.async follows the element type**: 8 bytes for fp64 against 4 for tf32, checked by
+      diffing the two chapter-3 kernels.  A 4-byte copy of an 8-byte element would have moved
+      half the data silently, so it was worth confirming rather than assuming.
+
+      **THE fp64 LADDER RUNS AT SMALLER TILES THAN ITS tf32 TWIN, STRUCTURALLY.**  An fp64
+      accumulator fragment is 8x8 holding 2 doubles per lane = 4 registers, so the tf32 chapters'
+      64x64 tile is 64 fragments x 4 = **256 registers/thread — one over the architectural 255**,
+      and the fit-check refuses it.  Every 64-bit rung therefore uses 64x32 with Kt=16.  fp64
+      costs 2x the registers at the same tile, which is a real reason fp64 is harder to make fast
+      rather than an incidental choice; it is stated in each kernel's header instead of appearing
+      as a magic number.
+
+      **Two things that needed no work, worth recording as much as the things that did:** TMA's
+      host-side descriptor already mapped `double` to `CU_TENSOR_MAP_DATA_TYPE_FLOAT64`
+      (endeavour 147 wrote it element-aware from the start), and the RING entry hazard flagged in
+      step 2b-i did NOT bite — ring fragments get their geometry through `%frag-mn-for-operand`.
+
+      **MEASURED — H100 NVL, IEEE, 2026-09-07.  All seven rungs verified=True.**
+
+      | chapter | N=1024 | N=2048 | N=4096 | N=8192 |
+      |---|---:|---:|---:|---:|
+      | 0 naive | 0.43 | 0.44 | 0.44 | — |
+      | 1 hand-rolled MMA | 2.26 | 2.60 | 3.13 | — |
+      | 2 tiling macro | 2.59 | 3.93 | 3.84 | — |
+      | 3 async cp.async | 2.35 | 3.58 | 5.38 | — |
+      | 4 TMA `:block` | 9.17 | 12.90 | 20.77 | 18.34 |
+      | **5 ring + prefetch** | 10.07 | 13.74 | **22.24** | **20.17** |
+      | 6 warp specialization | **11.19** | **14.22** | 19.97 | 17.77 |
+
+      **THE THESIS HELD, DECISIVELY.  Chapter 3 -> 4 is 3.9x** (5.38 -> 20.77 at N=4096): the
+      single rung where cp.async gives way to TMA is worth more than chapters 0-3 combined.
+      Chapters 0->3 move 0.44 -> 5.38; chapter 4 alone nearly quadruples that again.  Section 2
+      predicted exactly this — the fp64 tensor core buys ~1.2-1.5x tuned-vs-tuned, and the
+      data-movement rungs buy the rest of the 50x from naive to best.
+
+      **Do NOT read chapter 1 / chapter 0 (7x) as the tensor-core win.**  Chapter 0 is a NAIVE
+      one-thread-per-output kernel, not a tuned vector-fp64 GEMM.  Section 2's 1.2-1.5x was
+      CUTLASS DMMA against CUTLASS SIMT, i.e. tuned against tuned.  The two measure different
+      things and conflating them would overstate the instruction's contribution ~5x.
+
+      **Chapter 6 CROSSES OVER chapter 5**: warp specialization wins at 1024/2048, loses from
+      4096 up.  Same shape as the tf32 ladder's crossover, so section 2 should name a winner PER
+      SIZE rather than one champion.
+
+      **vs the section-2 competitors at N=4096**: Crisp 22.24 against the best CUTLASS DMMA
+      config at 28.2 (**79%**) and cuBLAS at 52.7 (**42%**).
+
+      **TWO PRE-EXISTING DEFECTS IN THE tf32/bf16 BENCHMARKS, surfaced by the fp64 port.**  Both
+      were found because the fp64 twins pushed each past its threshold, and both are still
+      unfixed in the tf32/bf16 originals — fixing those is Chris's call, but their stored results
+      carry invalid rows today:
+      * `chap2_tiling` **never stores its result** (0 `st.global`).  `matrix-multiply-tile-stride`
+        does NOT auto-store; it warns ("the C-tile is computed but never stored") and carries on.
+        Already discovered once — the bf16 port's comment records it "posted the second-best tf32
+        number in its section while storing nothing at all" — but the tf32 template was never
+        fixed, so the fp64 port inherited it.  Shipped `chap2_tiling` Crisp rows read
+        verified=False at 4096-32768 with 8.78-9.08 TFLOPS recorded beside them.
+      * `chap6_warp_specialization` **never resets the register accumulator per output tile**.
+        `tile-stride` is grid-strided, so a workgroup visiting a second tile carries the first
+        tile's sums — BUG 036's family, which `matrix-multiply-tile-stride` was taught to handle
+        and hand-rolled `tile-stride` was not (chapter 5 does it explicitly; chapter 6 did not).
+
+        **CORRECTED 2026-09-08 — THE SCOPE CLAIM HERE WAS WRONG.**  This entry originally read
+        "verified True to N=2048, **False from N=4096** — exactly the threshold where reuse
+        begins", presenting the defect as measured.  It was not.  On the AUTO-BENCH path (which
+        the tf32 chapters use) `verified` carries `verify` — *was verification attempted* — and
+        `VERIFY_MAX_N = 2048`, so every row above 2048 reads False meaning **NOT CHECKED**.
+        matmul.py says so in as many words: *"Report correctness as None (unknown) rather than
+        False, so a caller cannot mistake 'not checked at this size' for 'checked and wrong'."*
+        I made exactly that mistake, and the coincidence between the verification cutoff and the
+        tile-reuse threshold is what made it convincing.
+
+        **What is actually established, by an A/B on the FIXTURE path (where `verified` is a real
+        result):**
+
+        | kernel | reset needed? | evidence |
+        |---|---|---|
+        | chapter 6 **fp64** | **YES** | before: verified=False at 1024/2048/4096; after: True everywhere |
+        | chapter 6 **bf16** | no, at this geometry | without the reset: 66.64 / 65.76 at 4096 / 8192, both verified TRUE |
+        | chapter 6 **tf32** | unknown, probably not | same 64x64 tile as bf16; auto-bench never checks above 2048 |
+
+        The mechanism is real and the scope was wrong.  It bites at fp64's **64x32** tile, which
+        makes twice as many output tiles for a given N and so actually triggers grid-stride reuse;
+        at tf32/bf16's 64x64 the grid covers the output exactly and each workgroup visits ONE
+        tile, so there is nothing to carry over.  The resets added to the tf32 and bf16 kernels
+        are therefore **defensive, not corrective** — they cost nothing and close a latent hazard
+        if anyone shrinks those tiles, but they were not fixing a live wrong answer.
+
+        `chap2_tiling` is the one that was genuinely broken, and that does NOT rest on the
+        verified flag: zero `st.global`, a compiler warning on every build, and throughput
+        dropping 8.78 -> 4.85 TFLOPS once it started doing the work.
+
+      **POST-FIX NUMBERS, MEASURED ON H100 NVL 2026-09-08 BUT NOT PULLED.**  The re-measure ran
+      and produced results; the JSONs were never copied off the pod before it was released, so
+      `benchmarks/results/` still holds the PRE-fix rows and **REPORT.md still publishes
+      `chap2_tiling` at 8.78-9.08 TFLOPS — the figures for a kernel that stored nothing.**  The
+      honest numbers, recorded here so the measurement is not lost outright:
+
+      | kernel | N=2048 | N=4096 | N=8192 |
+      |---|---:|---:|---:|
+      | `chap2_tiling` (tf32) | 4.84 (verified) | 4.85 | 4.75 |
+      | `chap6_warp_specialization` (tf32) | 81.01 (verified) | 81.87 | 73.72 |
+      | `chap6_warp_specialization_bf16` | 51.66 (verified) | 66.35 (verified) | 65.01 (verified) |
+
+      Rows above N=2048 on the tf32 (auto-bench) chapters are UNCHECKED, not failing — see the
+      VERIFY_MAX_N correction above.  A three-chapter, three-size sweep restores these to the
+      report; it folds naturally into the full clean run planned before the 0.9 announce rather
+      than earning its own rental.
+
+      **PROCESS NOTE:** results were pulled diligently after every fp64 sweep and not after this
+      one.  A rental's worth of measurement now exists only as text.  Pull before releasing, every
+      time.
+
+      **A GUARD THAT TESTED THE WRONG FIELD is what let the first sweep publish those.**  The
+      smoke gate grepped the console for `"correct": false`; the CUDA fixture's flag is
+      `verified`, and it lands in the saved JSON, not the console.  So the gate never fired.  It
+      now inspects the saved results for `verified: false` (and both spellings, since the L0 and
+      hoist harnesses do say `correct`/`MMA_WRONG`).  A guard that tests the wrong field is worse
+      than no guard: it buys false confidence at the price of a rental.
+- [ ] TDD tests in this directory for whatever compiler work the ladder requires — see "Compiler
+      work this implies".
+- [ ] The 64-bit ladder added to the report; chapter 7 marked absent-by-hardware, not blank.
+- [ ] Section 2 for 64-bit: fastest 64-bit technique per size vs cuBLAS / CUTLASS / custom CUDA.
+      Until the ladder names a winner there is no Crisp column, and that state should be an
+      explicit "not yet measured" rather than a zero — `matmul.py` already carries scar tissue
+      about section 2 reading wrong when the promotion step misbehaves.
+
+`scripts/crisp_bench/matmul.py` and `report.py` are deliberately UNTOUCHED so far.  With no Crisp
+column yet there is nothing to promote, and reshaping section 2's logic before we know what the
+columns should be is the wrong order.  The standalone pod script gets the numbers; we wire into
+the harness once the peers are proven.

@@ -1,0 +1,46 @@
+;; Crisp Hand-rolled MMA Matmul (fp64): C[M x N] = A[M x K] . B[K x N]
+;; Section 1 (64-bit), Chapter 1: explicit load-tile-at + mma-accumulate-via-tile on the fp64
+;; tensor core, before any pipelining.
+;;
+;; THE GEOMETRY IS NOT THE tf32 CHAPTER'S, AND IT CANNOT BE.
+;;
+;;   shape (8 8 4)   fp64 has exactly ONE tensor-core shape, m8n8k4.  LLVM 21.1.5 lowers only
+;;                   llvm.nvvm.mma.m8n8k4.row.col.f64; the sm_90 fp64 shapes assemble cleanly and
+;;                   emit an `.extern .func` CALL with no diagnostic, so a "bigger" shape here
+;;                   would fail SILENTLY.  It comes from the h100 profile's typed
+;;                   (double 8 8 4) entry -- see endeavour 165 step 4.
+;;
+;;   64x32 C-tile    NOT 64x64 like the tf32 chapter.  An fp64 accumulator fragment is 8x8
+;;                   holding 2 doubles per lane = 4 32-bit registers, so a 64x64 tile is
+;;                   (64/8)x(64/8) = 64 fragments x 4 = 256 registers/thread -- one over the
+;;                   architectural 255, and the register fit-check refuses it.  64x32 is 32
+;;                   fragments = 128 registers, leaving room for the rest of the kernel.
+;;                   fp64 costs 2x the registers of fp32 at the same tile, so the whole ladder
+;;                   runs at smaller tiles than its tf32 twin.  That is a real part of why fp64
+;;                   is harder to make fast, not an incidental choice.
+;;
+;;   Kt = 16         Staged K per iteration.  mma-accumulate-via-tile walks K WITHIN the staged
+;;                   tile (endeavour 145 P3a), so 16 becomes four m8n8k4 steps.  A Kt of 4 would
+;;                   make the loop four times as long for the same work.
+
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 32))
+  (tile-stride C (64 32) (grid-y grid-x)
+    (let ((A-tile (make-scratch-matrix double (64 16)))
+          (B-tile (make-scratch-matrix double (16 32)))
+          (C-tile (make-register-tile double (64 32) 0.0d))
+          (K      (inner-dimension A B)))
+      (dotimes (kt (/ K (to-ulong 16)))
+        (load-tile-at A A-tile ((* grid-y (to-ulong 64)) (* kt (to-ulong 16))))
+        (load-tile-at B B-tile ((* kt (to-ulong 16)) (* grid-x (to-ulong 32))))
+        (sync-workgroup)
+        (mma-accumulate-via-tile (8 8 4) C-tile A-tile B-tile)
+        (sync-workgroup))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

@@ -666,9 +666,14 @@ def l0_fixture_env(crisp_src, metacrisp):
     if len(tnums) >= 2:
         env["CRISP_MATMUL_TILE"] = f"{tnums[0]},{tnums[1]}"
 
-    m = re.search(r"matrix\s+(bfloat16|half|float)", src)
+    # Endeavour 165: `double` joins the alternation.  It was absent, so an fp64 kernel left
+    # CRISP_MATMUL_ELEM unset and the fixture SILENTLY defaulted to "f32" -- 4-byte buffers,
+    # half the shared memory, an FLOAT32 tensormap, and a GFLOPS number for a run that moved
+    # half the data.  `double` is listed FIRST so it cannot be shadowed by a prefix match.
+    m = re.search(r"matrix\s+(double|bfloat16|half|float)", src)
     if m:
-        env["CRISP_MATMUL_ELEM"] = {"bfloat16": "bf16", "half": "f16", "float": "f32"}[m.group(1)]
+        env["CRISP_MATMUL_ELEM"] = {"double": "f64", "bfloat16": "bf16",
+                                    "half": "f16", "float": "f32"}[m.group(1)]
 
     m = re.search(r":selected-registers-per-thread\s+(\d+)", meta)
     if m:
@@ -735,9 +740,14 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
     if len(tnums) >= 2:
         env["CRISP_MATMUL_TILE"] = f"{tnums[0]},{tnums[1]}"
 
-    m = re.search(r"matrix\s+(bfloat16|half|float)", src)
+    # Endeavour 165: `double` joins the alternation.  It was absent, so an fp64 kernel left
+    # CRISP_MATMUL_ELEM unset and the fixture SILENTLY defaulted to "f32" -- 4-byte buffers,
+    # half the shared memory, an FLOAT32 tensormap, and a GFLOPS number for a run that moved
+    # half the data.  `double` is listed FIRST so it cannot be shadowed by a prefix match.
+    m = re.search(r"matrix\s+(double|bfloat16|half|float)", src)
     if m:
-        env["CRISP_MATMUL_ELEM"] = {"bfloat16": "bf16", "half": "f16", "float": "f32"}[m.group(1)]
+        env["CRISP_MATMUL_ELEM"] = {"double": "f64", "bfloat16": "bf16",
+                                    "half": "f16", "float": "f32"}[m.group(1)]
 
     km = re.search(r"\(def-kernel\s+([A-Za-z0-9_\-]+)", src)
     if km:
@@ -1378,6 +1388,84 @@ def main():
                                   "-DCFG_CLUSTER_M=2"]),
             ]
             cutlass_16bit_flags = cutlass_base_flags
+
+            # ---- SECTION 2, 64-bit: top contenders (endeavour 165) ------------------------
+            # Crisp's promoted kernel is chapter 5 (the multistage TMA ring), with chapter 6
+            # (warp specialization) alongside it as a NAMED VARIANT because the two CROSS OVER:
+            # ch6 wins at N=1024/2048, ch5 from 4096 up.  Publishing either alone would
+            # misrepresent one end of the range, so the envelope picks per size and says which
+            # kernel produced each cell -- the presentation the Intel sections already use.
+            #
+            # Both are the ladder rungs UNCHANGED.  A section-2 entry that is a retuned cousin of
+            # its chapter makes the two tables stop describing the same kernel, which is the
+            # failure endeavour 141 had to unpick.
+            #
+            # The competitors are registered here too so section 2 comes out of the SAME sweep as
+            # the Crisp column.  They were first measured by scripts/165-pod-sec2.sh, a standalone
+            # script written before any Crisp fp64 kernel existed; that script stays as the
+            # apparatus-proving path, but a published table should not be assembled by hand from
+            # two different runs.
+            #
+            # cuBLAS gets BOTH compute types.  64F may use the fp64 tensor cores; 64F_PEDANTIC is
+            # reported alongside it and is NOT a disable-tensor-cores switch -- that reading was
+            # imported from fp32, where PEDANTIC forbids tf32, and does not transfer, because DMMA
+            # is bit-identical IEEE double and PEDANTIC has no numerical reason to refuse it.
+            run_target("sec2_top_f64", "matmul_f64.crisp", "matmul_f64.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,32", use_fixture=True)
+            run_target("sec2_top_f64", "matmul_f64_warpspec.crisp", "matmul_f64_warpspec.ptx",
+                       "Crisp_V_warpspec", [], is_crisp=True, crisp_grid_tile="64,32",
+                       use_fixture=True)
+            run_target("sec2_top_f64", "cublas_ceiling_f64.cu", "cublas_ceiling_f64",
+                       "CUBLAS_Optimal_F64", cublas_flags, is_cublas=True)
+            run_target("sec2_top_f64", "cublas_ceiling_f64.cu", "cublas_ceiling_f64_pedantic",
+                       "CUBLAS_F64_Pedantic", cublas_flags + ["-DPEDANTIC"], is_cublas=True)
+            # The fp64 CUTLASS peer is the 2.x device API on arch::Sm80 -- there is no fp64 wgmma,
+            # so the 3.x Sm90 collective builder used by the tf32/16-bit peers has no dispatch
+            # policy for `double`.  Swept over tilings; the instruction shape is fixed at 8x8x4
+            # because that is the only fp64 tensor-core shape CUTLASS (or LLVM) can target.
+            for _cfg, _dflags in (
+                    ("64x64x16w32x32s4", ["-DCFG_TILE_M=64", "-DCFG_TILE_N=64", "-DCFG_TILE_K=16",
+                                          "-DCFG_WARP_M=32", "-DCFG_WARP_N=32", "-DCFG_STAGES=4"]),
+                    ("128x128x16w32x64s3", ["-DCFG_TILE_M=128", "-DCFG_TILE_N=128", "-DCFG_TILE_K=16",
+                                            "-DCFG_WARP_M=32", "-DCFG_WARP_N=64", "-DCFG_STAGES=3"]),
+                    ("128x64x16w64x32s3", ["-DCFG_TILE_M=128", "-DCFG_TILE_N=64", "-DCFG_TILE_K=16",
+                                           "-DCFG_WARP_M=64", "-DCFG_WARP_N=32", "-DCFG_STAGES=3"]),
+                    ("simt_128x128x8w32x64s2", ["-DOPCLASS_SIMT", "-DCFG_TILE_M=128", "-DCFG_TILE_N=128",
+                                                "-DCFG_TILE_K=8", "-DCFG_WARP_M=32", "-DCFG_WARP_N=64",
+                                                "-DCFG_WARP_K=8", "-DCFG_STAGES=2"])):
+                run_target("sec2_top_f64", "cutlass_peer_f64.cu", f"cutlass_peer_f64_{_cfg}",
+                           f"CUTLASS_V_{_cfg}", cutlass_base_flags + _dflags)
+
+            # ---- NVIDIA 64-bit LADDER (endeavour 165) ------------------------------------
+            # Chapters 0-6.  CHAPTER 7 IS ABSENT BY HARDWARE, not unmeasured: wgmma covers
+            # fp16/bf16/tf32/fp8/int8 and there is no fp64 warpgroup MMA in any form.  The report
+            # must say so rather than leave a blank cell, which reads as "not run yet".
+            #
+            # THE TILE IS 64,32 ON EVERY RUNG AND CANNOT BE 64,64.  An fp64 accumulator fragment
+            # is 8x8 holding 2 doubles per lane = 4 32-bit registers, so 64x64 is 64 fragments x 4
+            # = 256 registers/thread, one over the architectural 255, and the register fit-check
+            # refuses it.  fp64 costs 2x the registers of fp32 at the same tile.  That means these
+            # rows are NOT directly comparable to the tf32 rows at equal tile size -- the geometry
+            # differs because the hardware forces it, which is itself part of the 64-bit result.
+            #
+            # chap0 is included here and NOT in the tf32 ladder's run list because at 64 bits the
+            # naive floor is the interesting anchor: section 2 measured the fp64 tensor core at
+            # only 1.20-1.53x over vector fp64, so chapter 1's win over chapter 0 is expected to
+            # be small and the ladder's real distance should be in chapters 2-6.  Publishing the
+            # floor is what lets a reader see that.
+            for _ch, _src in (("chap0_naive_f64", "matmul.crisp"),
+                              ("chap1_handrolled_mma_f64", "matmul.crisp"),
+                              ("chap2_tiling_f64", "matmul.crisp"),
+                              ("chap3_async_f64", "matmul_async.crisp"),
+                              ("chap4_cheap_fetch_f64", "matmul.crisp"),
+                              ("chap5_multistage_ring_f64", "matmul.crisp"),
+                              ("chap6_warp_specialization_f64", "matmul.crisp")):
+                _ptx = _src.replace(".crisp", ".ptx")
+                # chap0 is one-thread-per, so its grid tile is not meaningful; the others are
+                # grid-strided at the 64x32 tile their kernels declare.
+                _tile = None if _ch == "chap0_naive_f64" else "64,32"
+                run_target(_ch, _src, _ptx, "Crisp",
+                           [], is_crisp=True, crisp_grid_tile=_tile, use_fixture=True)
 
             # ---- NVIDIA 16-bit LADDER (endeavour 159) ------------------------------------
             # Each rung adds exactly ONE technique over the rung below, and every one is a
