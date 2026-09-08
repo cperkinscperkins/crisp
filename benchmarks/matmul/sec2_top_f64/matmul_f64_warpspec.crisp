@@ -1,25 +1,18 @@
-;; Crisp tiled matmul — WARP-SPECIALIZED producer/consumer, fp64.
-;; Section 1 (64-bit), Chapter 6.  The fp64 twin of chap6_warp_specialization/matmul.crisp.
+;; SECTION 2 (64-bit) — Crisp VARIANT: chapter 6, warp specialization.
 ;;
-;; 3 warps: 1 producer streaming A/B K-steps into a 2-deep ring, 2 consumers each accumulating
-;; their fragment share of the C-tile.  `empty`/`full` barrier rings carry the handshake.
+;; The small-N half of the fp64 envelope.  On the H100 NVL ladder of 2026-09-07 this beats the
+;; promoted chapter-5 ring at N=1024 (11.19 vs 10.07) and N=2048 (14.22 vs 13.74), then loses
+;; from N=4096 up (19.97 vs 22.24) and at 8192 (17.77 vs 20.17).
 ;;
-;; GEOMETRY, forced by fp64 exactly as in chapters 1-5: 64x32 register tile, Kt=16, shape (8 8 4).
-;; See chap1_handrolled_mma_f64 for why 64x64 cannot be used at fp64 (256 registers/thread, one
-;; over the architectural 255).
+;; A VARIANT AND NOT A REPLACEMENT, for the same reason the 16-bit section carries
+;; matmul_2wg_deep: the two kernels CROSS OVER, so naming either one "Crisp" across the whole
+;; range would misreport one end of it.
 ;;
-;; THE :warps SPLIT STILL DIVIDES, and that is not automatic at this geometry.  An fp64
-;; accumulator fragment is 8x8, so a 64x32 tile is (64/8) x (32/8) = 8 x 4 = 32 fragments, and 32
-;; splits evenly across the 2 consumers at 16 each.  The tf32 twin's 64x64 tile at 16x8 fragments
-;; is 4 x 8 = 32 as well -- the same fragment count by coincidence, from a different tile shape
-;; and a different fragment shape.  Worth stating because a tile that does NOT divide by the
-;; participating warp count is a compile-time refusal, and at fp64 the tile shapes available are
-;; different, so the coincidence should not be relied on when this chapter is retuned.
+;; NOTE the per-output-tile reset inside :consumer.  Hand-rolled tile-stride does not auto-reset a
+;; register accumulator (matrix-multiply-tile-stride does); without it this kernel is correct only
+;; while each workgroup visits a single output tile.  The shipped tf32 and bf16 chapter 6 kernels
+;; still lack it -- see tests/spec/165-64-bit-mma/64-bit-mma.md.
 ;;
-;; CHAPTER 7 HAS NO 64-BIT RUNG.  wgmma covers fp16/bf16/tf32/fp8/int8 and stops there; there is
-;; no fp64 warpgroup MMA in any form.  So this is the TOP of the 64-bit ladder, and the report
-;; should say "absent by hardware" rather than leaving chapter 7 blank.
-
 (def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
 (def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))

@@ -1029,12 +1029,20 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
     ]
     for gpu in gpus:
         gd = matmul_data.get(gpu, {})
-        have64 = [(k, lbl) for k, lbl in LADDER_F64 if gd.get(k, {}).get("fast")]
+        # THE 64-BIT LADDER IS SWEPT AT ieee, NOT fast.  fp64 exists to be correct, so measuring
+        # it under fast math would measure something nobody would ship -- it is the one ladder
+        # where the precision flag is part of the question.  Looking only under "fast", as the
+        # other sections do, silently found nothing and skipped the whole section.
+        def _pk(key, _gd=gd):
+            d = _gd.get(key, {})
+            return d.get("ieee") or d.get("fast") or {}
+        have64 = [(k, lbl) for k, lbl in LADDER_F64 if _pk(k)]
         if not have64:
             continue
 
         def _tf64(chapter, n, _gd=gd):
-            pts = _gd.get(chapter, {}).get("fast", {}).get(n, {})
+            d = _gd.get(chapter, {})
+            pts = (d.get("ieee") or d.get("fast") or {}).get(n, {})
             for comp, pt in pts.items():
                 if _is_crisp(comp):
                     v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
@@ -1042,8 +1050,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                         return v
             return None
 
-        sizes64 = sorted({n for k, _ in have64
-                          for n in gd.get(k, {}).get("fast", {}).keys()
+        sizes64 = sorted({n for k, _ in have64 for n in _pk(k).keys()
                           if isinstance(n, int)})
         if not sizes64:
             continue
@@ -1082,6 +1089,82 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                     ratios.append(v / floor)
             rcell = ("%.2f×" % (sum(ratios) / len(ratios))) if ratios else "—"
             lines.append("| " + label + " | " + " | ".join(cells) + " | " + rcell + " |")
+        lines.append("")
+
+    # ---- Section 2c (fp64): top contenders at 64 bits (endeavour 165) ----
+    # THE CRISP CELL IS AN ENVELOPE, not a single kernel.  Chapter 5 (TMA ring) and chapter 6
+    # (warp specialization) CROSS OVER -- ch6 wins at N=1024/2048, ch5 from 4096 up -- so each
+    # cell names the kernel that produced it.  A best-per-size number the reader cannot reproduce
+    # is not an honest number, which is the rule the Crisp variant columns already follow.
+    for gpu in gpus:
+        gd = matmul_data.get(gpu, {}).get("sec2_top_f64", {}).get("fast", {})              or matmul_data.get(gpu, {}).get("sec2_top_f64", {}).get("ieee", {})
+        if not gd:
+            continue
+        s2sizes = sorted(n for n in gd.keys() if isinstance(n, int))
+        if not s2sizes:
+            continue
+
+        def _best_crisp(n, _gd=gd):
+            best, who = None, None
+            for comp, pt in _gd.get(n, {}).items():
+                if not _is_crisp(comp):
+                    continue
+                v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                if v and (best is None or v > best):
+                    best, who = v, comp
+            return best, who
+
+        def _named(n, prefix, _gd=gd):
+            best = None
+            for comp, pt in _gd.get(n, {}).items():
+                if not comp.startswith(prefix):
+                    continue
+                v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                if v and (best is None or v > best):
+                    best = v
+            return best
+
+        lines.append("## § 2c — Top Contenders at 64-bit · " + gpu)
+        lines.append("")
+        lines.append("*IEEE double, TFLOPS. Crisp's cell is an **envelope**: chapters 5 and 6 cross "
+                     "over, so each cell names the kernel that produced it.*")
+        lines.append("")
+        lines.append("**`64F_PEDANTIC` is reported but is NOT a disable-tensor-cores switch.** That "
+                     "reading is imported from fp32, where PEDANTIC forbids tf32; it does not "
+                     "transfer, because DMMA is bit-identical IEEE double and PEDANTIC has no "
+                     "numerical reason to refuse it. The DMMA-vs-vector question is answered by the "
+                     "CUTLASS `OpClassTensorOp` / `OpClassSimt` pair, where the lowering is chosen "
+                     "rather than inferred.")
+        lines.append("")
+        hdr = ["contender"] + ["N=%d" % n for n in s2sizes]
+        lines.append("| " + " | ".join(hdr) + " |")
+        lines.append("|---|" + "---:|" * len(s2sizes))
+
+        cells = []
+        for n in s2sizes:
+            v, who = _best_crisp(n)
+            cells.append("—" if v is None
+                         else "**%.1f** (%s)" % (v, (who or "").replace("Crisp_V_", "").replace("Crisp", "ch5 ring") or "ch5"))
+        lines.append("| **Crisp** | " + " | ".join(cells) + " |")
+
+        for label, prefix in (("cuBLAS `64F` (**Ceiling**)", "CUBLAS_Optimal_F64"),
+                              ("cuBLAS `64F_PEDANTIC`", "CUBLAS_F64_Pedantic"),
+                              ("CUTLASS DMMA (**Peer**)", "CUTLASS_V_"),
+                              ("CUTLASS SIMT (vector fp64)", "CUTLASS_V_simt")):
+            row = []
+            for n in s2sizes:
+                # the DMMA row must exclude the SIMT configs, which share the CUTLASS_V_ prefix
+                if prefix == "CUTLASS_V_":
+                    best = None
+                    for comp, pt in gd.get(n, {}).items():
+                        if comp.startswith("CUTLASS_V_") and "simt" not in comp:
+                            v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                            if v and (best is None or v > best):
+                                best = v
+                else:
+                    best = _named(n, prefix)
+                row.append("—" if best is None else "%.1f" % best)
+            lines.append("| " + label + " | " + " | ".join(row) + " |")
         lines.append("")
 
     # Section 4: MMA + Activation

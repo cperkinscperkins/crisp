@@ -1389,6 +1389,53 @@ def main():
             ]
             cutlass_16bit_flags = cutlass_base_flags
 
+            # ---- SECTION 2, 64-bit: top contenders (endeavour 165) ------------------------
+            # Crisp's promoted kernel is chapter 5 (the multistage TMA ring), with chapter 6
+            # (warp specialization) alongside it as a NAMED VARIANT because the two CROSS OVER:
+            # ch6 wins at N=1024/2048, ch5 from 4096 up.  Publishing either alone would
+            # misrepresent one end of the range, so the envelope picks per size and says which
+            # kernel produced each cell -- the presentation the Intel sections already use.
+            #
+            # Both are the ladder rungs UNCHANGED.  A section-2 entry that is a retuned cousin of
+            # its chapter makes the two tables stop describing the same kernel, which is the
+            # failure endeavour 141 had to unpick.
+            #
+            # The competitors are registered here too so section 2 comes out of the SAME sweep as
+            # the Crisp column.  They were first measured by scripts/165-pod-sec2.sh, a standalone
+            # script written before any Crisp fp64 kernel existed; that script stays as the
+            # apparatus-proving path, but a published table should not be assembled by hand from
+            # two different runs.
+            #
+            # cuBLAS gets BOTH compute types.  64F may use the fp64 tensor cores; 64F_PEDANTIC is
+            # reported alongside it and is NOT a disable-tensor-cores switch -- that reading was
+            # imported from fp32, where PEDANTIC forbids tf32, and does not transfer, because DMMA
+            # is bit-identical IEEE double and PEDANTIC has no numerical reason to refuse it.
+            run_target("sec2_top_f64", "matmul_f64.crisp", "matmul_f64.ptx", "Crisp",
+                       [], is_crisp=True, crisp_grid_tile="64,32", use_fixture=True)
+            run_target("sec2_top_f64", "matmul_f64_warpspec.crisp", "matmul_f64_warpspec.ptx",
+                       "Crisp_V_warpspec", [], is_crisp=True, crisp_grid_tile="64,32",
+                       use_fixture=True)
+            run_target("sec2_top_f64", "cublas_ceiling_f64.cu", "cublas_ceiling_f64",
+                       "CUBLAS_Optimal_F64", cublas_flags, is_cublas=True)
+            run_target("sec2_top_f64", "cublas_ceiling_f64.cu", "cublas_ceiling_f64_pedantic",
+                       "CUBLAS_F64_Pedantic", cublas_flags + ["-DPEDANTIC"], is_cublas=True)
+            # The fp64 CUTLASS peer is the 2.x device API on arch::Sm80 -- there is no fp64 wgmma,
+            # so the 3.x Sm90 collective builder used by the tf32/16-bit peers has no dispatch
+            # policy for `double`.  Swept over tilings; the instruction shape is fixed at 8x8x4
+            # because that is the only fp64 tensor-core shape CUTLASS (or LLVM) can target.
+            for _cfg, _dflags in (
+                    ("64x64x16w32x32s4", ["-DCFG_TILE_M=64", "-DCFG_TILE_N=64", "-DCFG_TILE_K=16",
+                                          "-DCFG_WARP_M=32", "-DCFG_WARP_N=32", "-DCFG_STAGES=4"]),
+                    ("128x128x16w32x64s3", ["-DCFG_TILE_M=128", "-DCFG_TILE_N=128", "-DCFG_TILE_K=16",
+                                            "-DCFG_WARP_M=32", "-DCFG_WARP_N=64", "-DCFG_STAGES=3"]),
+                    ("128x64x16w64x32s3", ["-DCFG_TILE_M=128", "-DCFG_TILE_N=64", "-DCFG_TILE_K=16",
+                                           "-DCFG_WARP_M=64", "-DCFG_WARP_N=32", "-DCFG_STAGES=3"]),
+                    ("simt_128x128x8w32x64s2", ["-DOPCLASS_SIMT", "-DCFG_TILE_M=128", "-DCFG_TILE_N=128",
+                                                "-DCFG_TILE_K=8", "-DCFG_WARP_M=32", "-DCFG_WARP_N=64",
+                                                "-DCFG_WARP_K=8", "-DCFG_STAGES=2"])):
+                run_target("sec2_top_f64", "cutlass_peer_f64.cu", f"cutlass_peer_f64_{_cfg}",
+                           f"CUTLASS_V_{_cfg}", cutlass_base_flags + _dflags)
+
             # ---- NVIDIA 64-bit LADDER (endeavour 165) ------------------------------------
             # Chapters 0-6.  CHAPTER 7 IS ABSENT BY HARDWARE, not unmeasured: wgmma covers
             # fp16/bf16/tf32/fp8/int8 and there is no fp64 warpgroup MMA in any form.  The report

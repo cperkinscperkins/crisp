@@ -584,11 +584,61 @@ CUTLASS peer early, which endeavour 159 taught us to do.
       (endeavour 147 wrote it element-aware from the start), and the RING entry hazard flagged in
       step 2b-i did NOT bite — ring fragments get their geometry through `%frag-mn-for-operand`.
 
-      **NOT YET MEASURED.**  These compile and emit the right instructions; no GFLOPS number
-      exists for any of them.  Benchmarking needs a pod, and the harness wiring
-      (`scripts/crisp_bench/matmul.py`, `report.py`) is still untouched — see the plan entries
-      below.  The measured expectation to test: the tensor core is worth only ~1.2x while ~1.9x
-      sits in scheduling, so the distance should be in chapters 2-6, not chapter 1.
+      **MEASURED — H100 NVL, IEEE, 2026-09-07.  All seven rungs verified=True.**
+
+      | chapter | N=1024 | N=2048 | N=4096 | N=8192 |
+      |---|---:|---:|---:|---:|
+      | 0 naive | 0.43 | 0.44 | 0.44 | — |
+      | 1 hand-rolled MMA | 2.26 | 2.60 | 3.13 | — |
+      | 2 tiling macro | 2.59 | 3.93 | 3.84 | — |
+      | 3 async cp.async | 2.35 | 3.58 | 5.38 | — |
+      | 4 TMA `:block` | 9.17 | 12.90 | 20.77 | 18.34 |
+      | **5 ring + prefetch** | 10.07 | 13.74 | **22.24** | **20.17** |
+      | 6 warp specialization | **11.19** | **14.22** | 19.97 | 17.77 |
+
+      **THE THESIS HELD, DECISIVELY.  Chapter 3 -> 4 is 3.9x** (5.38 -> 20.77 at N=4096): the
+      single rung where cp.async gives way to TMA is worth more than chapters 0-3 combined.
+      Chapters 0->3 move 0.44 -> 5.38; chapter 4 alone nearly quadruples that again.  Section 2
+      predicted exactly this — the fp64 tensor core buys ~1.2-1.5x tuned-vs-tuned, and the
+      data-movement rungs buy the rest of the 50x from naive to best.
+
+      **Do NOT read chapter 1 / chapter 0 (7x) as the tensor-core win.**  Chapter 0 is a NAIVE
+      one-thread-per-output kernel, not a tuned vector-fp64 GEMM.  Section 2's 1.2-1.5x was
+      CUTLASS DMMA against CUTLASS SIMT, i.e. tuned against tuned.  The two measure different
+      things and conflating them would overstate the instruction's contribution ~5x.
+
+      **Chapter 6 CROSSES OVER chapter 5**: warp specialization wins at 1024/2048, loses from
+      4096 up.  Same shape as the tf32 ladder's crossover, so section 2 should name a winner PER
+      SIZE rather than one champion.
+
+      **vs the section-2 competitors at N=4096**: Crisp 22.24 against the best CUTLASS DMMA
+      config at 28.2 (**79%**) and cuBLAS at 52.7 (**42%**).
+
+      **TWO PRE-EXISTING DEFECTS IN THE tf32/bf16 BENCHMARKS, surfaced by the fp64 port.**  Both
+      were found because the fp64 twins pushed each past its threshold, and both are still
+      unfixed in the tf32/bf16 originals — fixing those is Chris's call, but their stored results
+      carry invalid rows today:
+      * `chap2_tiling` **never stores its result** (0 `st.global`).  `matrix-multiply-tile-stride`
+        does NOT auto-store; it warns ("the C-tile is computed but never stored") and carries on.
+        Already discovered once — the bf16 port's comment records it "posted the second-best tf32
+        number in its section while storing nothing at all" — but the tf32 template was never
+        fixed, so the fp64 port inherited it.  Shipped `chap2_tiling` Crisp rows read
+        verified=False at 4096-32768 with 8.78-9.08 TFLOPS recorded beside them.
+      * `chap6_warp_specialization` **never resets the register accumulator per output tile**.
+        `tile-stride` is grid-strided, so a workgroup visiting a second tile carries the first
+        tile's sums — BUG 036's family, which `matrix-multiply-tile-stride` was taught to handle
+        and hand-rolled `tile-stride` was not (chapter 5 does it explicitly; chapter 6 did not).
+        Shipped tf32 rows: verified True to N=2048, **False from N=4096** — exactly the threshold
+        where reuse begins.  `chap6_warp_specialization_bf16` has the same missing reset and has
+        simply not been run large enough to expose it.  The fp64 twin failed from N=1024 because
+        its 64x32 tile makes more tiles for the same N.
+
+      **A GUARD THAT TESTED THE WRONG FIELD is what let the first sweep publish those.**  The
+      smoke gate grepped the console for `"correct": false`; the CUDA fixture's flag is
+      `verified`, and it lands in the saved JSON, not the console.  So the gate never fired.  It
+      now inspects the saved results for `verified: false` (and both spellings, since the L0 and
+      hoist harnesses do say `correct`/`MMA_WRONG`).  A guard that tests the wrong field is worse
+      than no guard: it buys false confidence at the price of a rental.
 - [ ] TDD tests in this directory for whatever compiler work the ladder requires — see "Compiler
       work this implies".
 - [ ] The 64-bit ladder added to the report; chapter 7 marked absent-by-hardware, not blank.
