@@ -218,6 +218,52 @@ described the launcher as allocating shared USM were corrected.
 
 `tests/ci-stop.txt` moved to `166-device-memory`.
 
+### Shake-out (2026-09-08, after the switch)
+
+Three things the spec suite does not reach, checked deliberately rather than left for the
+full benchmark run.
+
+**`--mma-bench` — the highest-risk gap, now closed.** The suite exercises it ZERO times
+(`validate-l0-mma-run` uses `--mma-test` without `--mma-bench`), yet it is live: matmul.py's
+`run_l0_autobench_sweep` calls it. It is also the one place where a staging mistake would be
+silent rather than loud — copies inside the timed loop would inflate every reported time with
+nothing to say why. Generated for `sec2_top/matmul_bmg` at 512³ and run on BMG:
+
+    BENCH 512 512 512  10082.5 GFLOPS (20 iters)  median_us=26.624  min_us=26.52
+    MMA_CORRECT
+
+`median_us=26.624` is **the same figure, to the digit**, that the fixed harness reports for
+the same kernel and size. Two independent apparatuses agreeing exactly is the evidence that
+staging is outside the measured region — if it were inside, the auto-bench number would be
+inflated relative to the fixture.
+
+**16-bit staging.** Only f32 had been run, and the 2-byte path is separate code: `ab_bytes`,
+the `f32_to_bf16`/`f32_to_f16` encoders, and the `ga`/`gb` decoders all now target the host
+mirror. Against the old shared harness, same kernels, same env:
+
+| kernel | old (shared) | new (device) | verified |
+|---|---:|---:|---|
+| `chap0_naive_bf16` | 1480.23 µs | 1481.79 µs | true, max_abs_err 0 |
+| `sec2_top_bf16` | 16.536 µs | 16.328 µs | true, max_abs_err 0 |
+
+**A false alarm worth recording.** The first 16-bit attempt failed — `verified: false`,
+`max_abs_err: 1022` — against `chap1_handrolled_mma_bf16`. Running the OLD shared harness on
+the same kernel reproduced it **identically**, which is what showed it was not the change. The
+cause: matmul.py marks that kernel `_fixture_unsupported = "scratch/SLM tensor arguments"`,
+and I had hand-set the fixture env instead of deriving it from the metacrisp through
+`l0_fixture_env`. The lesson is the one already in the harness header — derive the launch from
+what the compiler recorded, never restate it by hand — and the method is
+[[145-method-measure-dont-classify]]: the old binary was the control that settled it in one run.
+
+**CUDA generation.** `--hoist=cuda` on all three new specs: exit 0, three `.cu` files, and
+they emit `cuMemAlloc` + `cuMemcpyHtoD`/`cuMemcpyDtoH` — device memory with explicit staging,
+unchanged. That proves generation does not crash; it does not prove they RUN.
+
+**Unrelated pre-existing observation.** A hoist launcher embeds an *absolute host* path to its
+`.spv` (`const char* spv_path = "C:/Users/...";`), so a generated launcher only runs on the
+machine that produced it. Harmless today — matmul.py generates and runs on one host — but it
+is why the container run needed a path shim. Not introduced here, not fixed here.
+
 ### What is NOT done
 
 - **The published Intel benchmark numbers have not been re-run.** The harness changed, so
@@ -226,9 +272,11 @@ described the launcher as allocating shared USM were corrected.
 - **`sycl_apples` / `sycl_control` still mix `malloc_shared` and `malloc_device`** (section 2).
   Eight one-line changes, but they move published peer numbers, so they want their own pass
   with a re-run rather than a drive-by edit.
-- **The CUDA tripwire has not actually run.** Specs 01–03 carry `TEST-HOIST[CUDA]:
-  validate-cuda-host-run`, but nvcc is absent on this machine and all three SKIPped. CI or a
-  pod will be the first thing to execute them. The CUDA path itself was not modified.
+- **The CUDA tripwire has not RUN on hardware.** Generation is verified (above); execution is
+  not. nvcc is absent on this machine, so specs 01–03 SKIP their `TEST-HOIST[CUDA]` directive.
+  CI or a pod executes them first. The CUDA emitter itself was not modified, and the risk is
+  confined to whether the three new specs are well-formed for that backend — spec 03 is
+  modelled on `076/03`, which already carries the same directive and passes.
 - **`docs/reference.md` was not regenerated.** It scans `src/**` only, so the new functions —
   which live in the overlay — would not appear. Regenerating belongs with the fold into
   `src/hoist-l0/main.lisp`, not before it. `scripts/call-graph.lisp` explicitly excludes
