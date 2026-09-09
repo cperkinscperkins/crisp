@@ -2,9 +2,16 @@
 ;; TEST-HOIST[L0]: validate-l0-strategy-content
 ;; STRATEGY-EXPECT: zeKernelSetGroupSize(kernel, 16, 16, 1)
 ;; STRATEGY-EXPECT: uint64_t image_length = 256ULL;
-;; STRATEGY-EXPECT: zeMemAllocShared(context, &deviceDesc, &hostDesc,
+;; STRATEGY-EXPECT: zeMemAllocDevice(context, &deviceDesc,
 ;; STRATEGY-EXPECT: 256 * sizeof(int)
-;; STRATEGY-EXPECT: memset(image_ptr, 0, 256 * sizeof(int));
+;; STRATEGY-EXPECT: memset(image_host, 0, 256 * sizeof(int));
+
+;; Endeavour 166: these last two expectations changed with the move from shared USM to
+;; device memory.  The kernel's buffer is now `image_ptr` (device) with a host staging
+;; mirror `image_host`, and it is the MIRROR that :pad-with 0 zeroes -- the zeros reach the
+;; device through the staging copy.  The point of this spec is unchanged: that :pad-with 0
+;; on an :exact tiled dispatch actually emits a zero-fill for the padded region, so the
+;; oversubscribed tiles read zeros rather than whatever the allocator returned.
 
 (def-type image-t (tensor int 2 :address-space :global :align :compact))
 

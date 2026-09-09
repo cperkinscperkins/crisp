@@ -22,7 +22,7 @@
 ;; For the hoist launcher:
 ;;   - implicit args 0..8: ptr (local), bytesize, offset[0,1]=0,
 ;;     strides[0]=4, strides[1]=8, extents[0,1]=2, length=4
-;;   - arg 9: out-c (shared USM)
+;;   - arg 9: out-c (device allocation + host staging mirror)
 ;;
 ;; The metacrisp :implicit-params entry will have:
 ;;   :size-expr 2

@@ -1,0 +1,26 @@
+;; TEST-HOIST[L0]: validate-l0-device-memory
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER v: 42 1 2 3
+
+;; Endeavour 166.  The TENSOR path (%l0-emit-tensor-arg).
+;;
+;; Two directives on purpose, because they fail for different reasons and both must hold:
+;;
+;;   validate-l0-device-memory  -- the generated launcher allocates DEVICE memory and stages
+;;                                 it, rather than allocating shared and touching it from the
+;;                                 host.  A text check, so it runs without a GPU.
+;;   validate-l0-host-run       -- and the thing still computes the right answer on metal.
+;;                                 Without this one the first is satisfied by any launcher
+;;                                 that allocates device memory and never fills it.
+;;
+;; Same round-trip as 070/06: the harness fills v[i] = i, val is arg 0 so it becomes 42,
+;; and the kernel writes v[0] = val.  Under device memory that answer now depends on THREE
+;; things working -- the H2D staging of the iota fill, the kernel, and the D2H readback
+;; that the buffer print needs.  Under shared memory it depended on none of them.
+
+(def-type vec-t (vector long :address-space :global :align :compact))
+
+(def-kernel vec_set_idx0 (val &out v)
+    (declare #'(long vec-t => nil))
+  (set! (~ v 0) val))

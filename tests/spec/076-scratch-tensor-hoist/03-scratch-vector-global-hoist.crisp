@@ -3,7 +3,7 @@
 ;; HOIST-EXPECT: BUFFER c: 43
 ;;
 ;; Round-trip: verify that a scratch vector with :address-space :global
-;; (allocated as USM shared memory by the hoist launcher) can be written
+;; (allocated as DEVICE memory by the hoist launcher, endeavour 166) can be written
 ;; in one function and read in another through the side channel.
 ;;
 ;; Computation:
@@ -23,12 +23,13 @@
 ;; For the hoist launcher:
 ;;   - implicit args 0..5: ptr (global USM), bytesize, offset[0]=0,
 ;;     strides[0]=4, extents[0]=1, length=1
-;;   - arg 6: out-c (shared USM allocation, int)
+;;   - arg 6: out-c (device allocation + host staging mirror, int)
 ;;
 ;; The metacrisp :implicit-params entry will have:
 ;;   :size-expr 1
 ;;   :address-space :global
-;; The hoist generator allocates USM: zeMemAllocShared(ctx, ..., 1 * sizeof(int), ...)
+;; The hoist generator allocates zeMemAllocDevice(ctx, ..., 1 * sizeof(int), ...) plus a
+;; pinned host mirror, and stages the zero-init across before the launch.
 
 (def-type out-c-t (cell int :address-space :global))
 (def-type sc-int-vec-g (vector int :address-space :global :align :compact))

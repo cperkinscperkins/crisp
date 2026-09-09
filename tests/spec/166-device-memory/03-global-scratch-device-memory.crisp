@@ -1,0 +1,39 @@
+;; TEST-HOIST[L0]: validate-l0-device-memory
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 43
+
+;; Endeavour 166.  The GLOBAL SCRATCH TENSOR path (%l0-emit-global-scratch-tensor-arg) --
+;; the third and last allocation site, reached through an implicit param rather than a
+;; declared one.
+;;
+;; This one has a failure mode the other two do not.  Scratch is zero-initialised, and under
+;; shared memory that zeroing was a host-side memset on the pointer the kernel would read.
+;; Under device memory the zeroing has to either happen on the device or be staged, and if it
+;; is neither, the kernel reads whatever the allocator handed back.  Nothing about that is
+;; loud: the buffer would simply hold a wrong number.  Hence an on-metal expectation, not a
+;; text check, for the value.
+;;
+;; Structure follows 076/03: fun-C-g writes 42 into a 1-element global scratch vector,
+;; fun-D-g reads it back and adds 1.
+
+(def-type out-c-t (cell int :address-space :global))
+(def-type sc-int-vec-g (vector int :address-space :global :align :compact))
+
+(def-function fun-D-g (sv &out c)
+    (declare #'(sc-int-vec-g &out out-c-t => nil))
+  (set! (~ c) (+ (~ sv 0) 1)))
+
+(def-function fun-C-g (&out c)
+    (declare #'(&out out-c-t => nil))
+  (let ((sv (make-scratch-vector sc-int-vec-g 1)))
+    (set! (~ sv 0) 42)
+    (fun-D-g sv c)))
+
+(def-function fun-B-g (&out c)
+    (declare #'(&out out-c-t => nil))
+  (fun-C-g c))
+
+(def-kernel kernel_a (&out c)
+    (declare (type c out-c-t))
+  (fun-B-g c))

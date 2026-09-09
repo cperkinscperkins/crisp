@@ -33,6 +33,18 @@
 //          CRISP_MATMUL_ELEM    A/B element type: "f32" | "bf16" | "f16"      (default "f32")
 //   stdout: one JSON object -- verified / wall_time_ms / kernel_median_us / gflops
 //
+// MEMORY (endeavour 166).  A, B and C are DEVICE allocations with pinned-host staging
+// mirrors; the host fills the mirrors, one command list copies them across before warmup,
+// and C is copied back before verification.  It used to be shared USM, which was easier
+// and measurably worse: at N=2048 device is 1.089x shared over five reps with
+// non-overlapping ranges, and ~1.00x at 1024 and 4096.  It also made the Intel section
+// compare Crisp-on-shared against oneMKL-on-device.
+//
+// What the move is NOT is a fix for page migration.  Probed before the change: prefetching
+// the shared pages changed nothing, and a cold single launch was the same speed as the
+// fiftieth, so the operands were already resident.  The 8.9% is something else, still
+// unexplained.  Numbers and method: tests/spec/166-device-memory/166-device-memory.md.
+//
 // Kernel ABI: a rank-2 Crisp tensor flattens to NINE arguments, in order --
 //   ptr, byte_size, off0, off1, str0, str1, ext0, ext1, length
 // so A, B, C occupy argument indices 0-8, 9-17 and 18-26.
@@ -233,26 +245,32 @@ int main(int argc, char **argv) {
         ZE_RELAXED_ALLOCATION_LIMITS_EXP_FLAG_MAX_SIZE};
     ze_device_mem_alloc_desc_t dmem{ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC, &relaxed};
     ze_host_mem_alloc_desc_t hmem{ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC};
-    void *A = nullptr, *B = nullptr, *C = nullptr;
-    ZE_OK(zeMemAllocShared(ctx, &dmem, &hmem, ea * ab_bytes, 64, device, &A), "allocA");
-    ZE_OK(zeMemAllocShared(ctx, &dmem, &hmem, eb * ab_bytes, 64, device, &B), "allocB");
-    ZE_OK(zeMemAllocShared(ctx, &dmem, &hmem, ec * 4, 64, device, &C), "allocC");
+    void *A = nullptr, *B = nullptr, *C = nullptr;      // what the KERNEL sees
+    void *hA = nullptr, *hB = nullptr, *hC = nullptr;   // what the HOST fills and verifies
+    ZE_OK(zeMemAllocDevice(ctx, &dmem, ea * ab_bytes, 64, device, &A), "allocA");
+    ZE_OK(zeMemAllocDevice(ctx, &dmem, eb * ab_bytes, 64, device, &B), "allocB");
+    ZE_OK(zeMemAllocDevice(ctx, &dmem, ec * 4,        64, device, &C), "allocC");
+    // Pinned host USM rather than malloc: an unpinned staging buffer makes the driver copy
+    // through a bounce buffer of its own, so the H2D cost would stop being one thing.
+    ZE_OK(zeMemAllocHost(ctx, &hmem, ea * ab_bytes, 64, &hA), "allocHA");
+    ZE_OK(zeMemAllocHost(ctx, &hmem, eb * ab_bytes, 64, &hB), "allocHB");
+    ZE_OK(zeMemAllocHost(ctx, &hmem, ec * 4,        64, &hC), "allocHC");
 
     // Deterministic, small-integer fill: exact in bf16/f16/f32 alike, so a mismatch is a real
     // error and never a rounding artifact.
     auto seta = [&](uint64_t i, float v) {
-        if (elem == "bf16")     ((uint16_t *)A)[i] = f32_to_bf16(v);
-        else if (elem == "f16") ((uint16_t *)A)[i] = f32_to_f16(v);
-        else                    ((float *)A)[i] = v;
+        if (elem == "bf16")     ((uint16_t *)hA)[i] = f32_to_bf16(v);
+        else if (elem == "f16") ((uint16_t *)hA)[i] = f32_to_f16(v);
+        else                    ((float *)hA)[i] = v;
     };
     auto setb = [&](uint64_t i, float v) {
-        if (elem == "bf16")     ((uint16_t *)B)[i] = f32_to_bf16(v);
-        else if (elem == "f16") ((uint16_t *)B)[i] = f32_to_f16(v);
-        else                    ((float *)B)[i] = v;
+        if (elem == "bf16")     ((uint16_t *)hB)[i] = f32_to_bf16(v);
+        else if (elem == "f16") ((uint16_t *)hB)[i] = f32_to_f16(v);
+        else                    ((float *)hB)[i] = v;
     };
     for (uint64_t i = 0; i < ea; ++i) seta(i, (float)(i % 5));
     for (uint64_t i = 0; i < eb; ++i) setb(i, (float)(i % 3));
-    std::memset(C, 0, ec * 4);
+    std::memset(hC, 0, ec * 4);
 
     // ---- arguments: 9 per rank-2 tensor -------------------------------------------------
     auto bind = [&](uint32_t base, void *ptr, uint64_t r, uint64_t c, uint64_t esz) -> bool {
@@ -335,6 +353,21 @@ int main(int argc, char **argv) {
     ZE_OK(zeCommandListAppendLaunchKernel(cl_meas, kernel, &grid, ev, 0, nullptr), "appendMeas");
     ZE_OK(zeCommandListClose(cl_meas), "closeMeas");
 
+    // ---- stage host -> device ------------------------------------------------------------
+    // Its own command list, executed once, AFTER cl_warm/cl_meas are built and BEFORE the
+    // warmup loop -- so the copy can never land inside the measured region.
+    {
+        ze_command_list_handle_t cl_stage;
+        ZE_OK(zeCommandListCreate(ctx, device, &cld, &cl_stage), "clStage");
+        ZE_OK(zeCommandListAppendMemoryCopy(cl_stage, A, hA, ea * ab_bytes, nullptr, 0, nullptr), "h2dA");
+        ZE_OK(zeCommandListAppendMemoryCopy(cl_stage, B, hB, eb * ab_bytes, nullptr, 0, nullptr), "h2dB");
+        ZE_OK(zeCommandListAppendMemoryCopy(cl_stage, C, hC, ec * 4,        nullptr, 0, nullptr), "h2dC");
+        ZE_OK(zeCommandListClose(cl_stage), "closeStage");
+        ZE_OK(zeCommandQueueExecuteCommandLists(queue, 1, &cl_stage, nullptr), "execStage");
+        ZE_OK(zeCommandQueueSynchronize(queue, UINT64_MAX), "syncStage");
+        zeCommandListDestroy(cl_stage);
+    }
+
     for (int w = 0; w < warmup; ++w) {
         ZE_OK(zeCommandQueueExecuteCommandLists(queue, 1, &cl_warm, nullptr), "execWarm");
         ZE_OK(zeCommandQueueSynchronize(queue, UINT64_MAX), "syncWarm");
@@ -379,19 +412,31 @@ int main(int argc, char **argv) {
     //  as evidence that big-N verification was exhaustive and therefore slow.  It is neither.)
     // Checked at EVERY size, not sampled.  A fast wrong kernel must never look like a win --
     // that is exactly how a kernel storing nothing posted the second-best number in its section.
+    // C back to the host mirror.  A and B never come back: the verifier reads them through
+    // ga/gb, which now read the mirrors the host filled in the first place.
+    {
+        ze_command_list_handle_t cl_back;
+        ZE_OK(zeCommandListCreate(ctx, device, &cld, &cl_back), "clBack");
+        ZE_OK(zeCommandListAppendMemoryCopy(cl_back, hC, C, ec * 4, nullptr, 0, nullptr), "d2hC");
+        ZE_OK(zeCommandListClose(cl_back), "closeBack");
+        ZE_OK(zeCommandQueueExecuteCommandLists(queue, 1, &cl_back, nullptr), "execBack");
+        ZE_OK(zeCommandQueueSynchronize(queue, UINT64_MAX), "syncBack");
+        zeCommandListDestroy(cl_back);
+    }
+
     bool verified = true;
     double max_abs_err = 0.0;
     uint64_t checked = 0;
     {
         auto ga = [&](uint64_t i) -> float {
-            if (elem == "bf16") return bf16_to_f32(((uint16_t *)A)[i]);
-            if (elem == "f16")  return f16_to_f32(((uint16_t *)A)[i]);
-            return ((float *)A)[i];
+            if (elem == "bf16") return bf16_to_f32(((uint16_t *)hA)[i]);
+            if (elem == "f16")  return f16_to_f32(((uint16_t *)hA)[i]);
+            return ((float *)hA)[i];
         };
         auto gb = [&](uint64_t i) -> float {
-            if (elem == "bf16") return bf16_to_f32(((uint16_t *)B)[i]);
-            if (elem == "f16")  return f16_to_f32(((uint16_t *)B)[i]);
-            return ((float *)B)[i];
+            if (elem == "bf16") return bf16_to_f32(((uint16_t *)hB)[i]);
+            if (elem == "f16")  return f16_to_f32(((uint16_t *)hB)[i]);
+            return ((float *)hB)[i];
         };
         // ~64x64 samples STRIDED across the whole output: bounded cost, full-extent coverage.
         // A top-left corner (what the generated harness checks) is the same price and blind to
@@ -404,7 +449,7 @@ int main(int argc, char **argv) {
                 ++checked;
                 double acc = 0.0;
                 for (uint64_t k = 0; k < K; ++k) acc += (double)ga(i * K + k) * (double)gb(k * N + j);
-                double got = (double)((float *)C)[i * N + j];
+                double got = (double)((float *)hC)[i * N + j];
                 double err = std::fabs(got - acc);
                 double tol = 1e-3 * std::max(1.0, std::fabs(acc));
                 if (err > max_abs_err) max_abs_err = err;
@@ -419,6 +464,7 @@ int main(int argc, char **argv) {
               << "  \"elem\": \"" << elem << "\", \"grid_mode\": \"" << gmode << "\",\n"
               << "  \"build_flags\": \"" << build_flags << "\",\n"
               << "  \"group\": [" << local[0] << ", " << local[1] << ", " << local[2] << "],\n"
+              << "  \"mem\": \"device\",\n"
               << "  \"grid\": [" << grid.groupCountX << ", " << grid.groupCountY << ", 1],\n"
               << "  \"verified\": " << (verified ? "true" : "false") << ",\n"
               << "  \"correct\": " << (verified ? "true" : "false") << ",\n"
@@ -442,7 +488,8 @@ int main(int argc, char **argv) {
     zeCommandListDestroy(cl_warm);
     zeCommandListDestroy(cl_meas);
     zeCommandQueueDestroy(queue);
-    zeMemFree(ctx, A); zeMemFree(ctx, B); zeMemFree(ctx, C);
+    zeMemFree(ctx, A);  zeMemFree(ctx, B);  zeMemFree(ctx, C);
+    zeMemFree(ctx, hA); zeMemFree(ctx, hB); zeMemFree(ctx, hC);
     zeKernelDestroy(kernel);
     zeModuleDestroy(module_);
     zeContextDestroy(ctx);
