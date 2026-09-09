@@ -1,0 +1,17 @@
+;; TEST-HOIST[L0]: validate-l0-device-memory
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out-cell: 1
+
+;; Endeavour 166.  The CELL path (%l0-emit-cell-arg) -- a separate emission site from the
+;; tensor one, with its own fill (memset for a scalar cell, iota for an array cell) and its
+;; own allocation call.  It would otherwise be covered only by accident.
+;;
+;; in-cell is zero-initialised by the harness, so out-cell = 0 + 1 = 1.  That the answer is
+;; 1 and not garbage is the evidence that the zeroed host mirror actually reached the device.
+
+(def-type cell-int (cell int :address-space :global))
+
+(def-kernel basic_cell (in-cell &out out-cell)
+    (declare #'(cell-int &out cell-int => nil))
+  (set! (~ out-cell) (+ (~ in-cell) 1)))

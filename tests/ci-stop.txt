@@ -1,1 +1,1 @@
-165-64-bit-mma
+166-device-memory
