@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-08T04:27:27.482093Z
+Generated on 2026-09-09T04:36:26.089834Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -6085,7 +6085,7 @@ Generated on 2026-09-08T04:27:27.482093Z
 - **Args**: `(STREAM KERNEL-NAME SPV-PATH DECLARED-SIG ALIASES RECORDS
               &OPTIONAL DISPATCH-INFO)`
 
-  > Generate C++ main.  Endeavor 134: under --mma-test, appends a host-reference C=A·B check.  >    Endeavor 150: buffer-print cap raised 100 -> 512 so MMA-sized output tiles are printable  >    and can be checked with a HOIST-EXPECT: BUFFER expectation.
+  > Generate C++ main.  Endeavor 134: under --mma-test, appends a host-reference C=A·B check.  >    Endeavor 150: buffer-print cap raised 100 -> 512 so MMA-sized output tiles are printable  >    and can be checked with a HOIST-EXPECT: BUFFER expectation.  >   >    Endeavour 166: the buffer print reads the HOST MIRROR, and copies the device buffer into  >    it first.  Printing `X_ptr[i]` would now be a host dereference of device memory -- which  >    on Level Zero is not a compile error and not necessarily a crash, so getting this wrong  >    would have shown up as wrong NUMBERS in HOIST-EXPECT rather than as a failure that names  >    itself.
 
 
 ---
@@ -6247,9 +6247,40 @@ Generated on 2026-09-08T04:27:27.482093Z
 
 
 ---
+### DEFVAR `*L0-STAGING*`
+
+  > Accumulates (:dev PTR-VAR :host HOST-VAR :bytes EXPR) for every device buffer emitted  >    while generating one kernel's arguments.  GENERATE-KERNEL-ARGUMENTS-WITH-USM binds it and  >    drains it into a single host-to-device staging block.  >   >    It is a special rather than a return value because the three emitters that allocate  >    (%L0-EMIT-CELL-ARG, %L0-EMIT-TENSOR-ARG, %L0-EMIT-GLOBAL-SCRATCH-TENSOR-ARG) have three  >    different return conventions -- one returns an index, two return an index and a plist --  >    and threading a fourth value through all of them would have been a larger change than the  >    feature.
+
+
+---
+### DEFUN `%L0-EMIT-STAGED-ALLOC`
+- **Args**: `(STREAM CONTEXT-VAR DEVICE-VAR TYPE-STR PTR-VAR HOST-VAR
+              COUNT-EXPR PARAM-NAME)`
+
+  > Emit a DEVICE allocation and its pinned-host staging mirror for one kernel parameter.  >   >    COUNT-EXPR is a C++ expression for the ELEMENT count (a literal or a variable); the byte  >    size is formed as `COUNT-EXPR * sizeof(TYPE-STR)` and recorded, so the copy and the  >    allocation can never disagree about the size.  >   >    The mirror is zeMemAllocHost rather than malloc for the same reason the benchmark probe  >    used pinned memory: an unpinned source makes the driver stage the copy through a bounce  >    buffer of its own, which is a second variable nobody asked for.
+
+
+---
+### DEFUN `%L0-EMIT-H2D-STAGING`
+- **Args**: `(STREAM CONTEXT-VAR DEVICE-VAR)`
+
+  > Emit one host-to-device copy for every buffer recorded in *L0-STAGING*.  >   >    Deliberately its OWN command list and queue rather than an append to `cmdList`.  cmdList  >    is re-executed by the --mma-bench loop, so staging appended there would be re-run and  >    TIMED on every benchmark iteration -- it would show up as kernel time and nobody would see  >    why.  A launcher pays for one extra queue at startup instead.
+
+
+---
+### DEFUN `%L0-EMIT-D2H-READBACK`
+- **Args**: `(STREAM ALLOC)`
+
+  > Emit a device-to-host copy of one allocation into its staging mirror.  >   >    Only needed where the host actually reads the buffer, which is the buffer print, so this  >    is emitted INSIDE the print's `size <= 512` guard -- a launcher for a large tensor should  >    not drag the whole thing back across the bus to not print it.
+
+
+---
 ### DEFUN `%L0-EMIT-CELL-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR IS-LOCAL ALIASES
               CONTEXT-VAR DEVICE-VAR ARG-INDEX)`
+
+  > Emit the 3 kernel arguments for a cell parameter (ptr, byte-size, offset).  >   >    Endeavour 166: the GLOBAL branch now allocates device memory plus a host staging mirror.  >    The initialisation -- iota for an array cell, zero for a scalar cell -- writes the MIRROR;  >    %L0-EMIT-H2D-STAGING copies it to the device before the launch.  The LOCAL branch is  >    untouched: local memory is never host-visible in the first place.
+
 
 ---
 ### DEFUN `%L0-SCRATCH-DIMS`
@@ -6271,6 +6302,9 @@ Generated on 2026-09-08T04:27:27.482093Z
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE CONTEXT-VAR DEVICE-VAR
               ARG-INDEX)`
 
+  > Emit the 3N+3 kernel arguments for a GLOBAL scratch tensor (an implicit parameter).  >   >    Endeavour 166: device memory plus a host staging mirror.  The zero-initialisation this  >    path has always done now writes the MIRROR and is staged across, which is the part that  >    fails silently if it is forgotten -- scratch is never printed, so a launcher whose scratch  >    holds allocator garbage produces a wrong answer with nothing on stdout to say so.  That is  >    what tests/spec/166-device-memory/03 exists to catch.
+
+
 ---
 ### DEFUN `%L0-MMA-FILL-MODULUS`
 - **Args**: `(ROLE)`
@@ -6282,6 +6316,9 @@ Generated on 2026-09-08T04:27:27.482093Z
 ### DEFUN `%L0-EMIT-TENSOR-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR CONTEXT-VAR
               DEVICE-VAR ARG-INDEX DISPATCH-INFO)`
+
+  > Emit the 3N+3 kernel arguments for a declared tensor parameter.  >   >    Endeavour 166: device memory plus a host staging mirror.  Every fill this function  >    emits -- the deterministic --mma-test fill for A/B, the zero for C, the pad-with zero,  >    the plain iota -- now writes the MIRROR and is staged to the device before the launch.  >    The MMA host reference (%L0-EMIT-MMA-REFERENCE) is unaffected: it already copies C back  >    itself and recomputes A/B rather than reading them, so it works against a device pointer  >    exactly as it did against a shared one.
+
 
 ---
 ### DEFUN `%L0-EMIT-STRUCT-ARG`
@@ -6304,7 +6341,7 @@ Generated on 2026-09-08T04:27:27.482093Z
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR
               DISPATCH-INFO)`
 
-  > Generate kernel argument setup code with USM allocation for cells/tensors.  >    Handles:  >      cell                   — 3 args (ptr, byte-size, offset)  >      local scratch tensor   — 3N+3 args; ptr as nullptr local alloc (NEW)  >      tensor/vector/matrix   — 3N+3 args; USM allocation  >      def-struct             — 1 arg (aggregate by value, sizeof struct)  >      def-record             — exploded scalar args  >      (array T N)            — 1 arg, passed by value (iota-initialized T[N])  >      scalar/dvec            — 1 arg
+  > Generate kernel argument setup code with DEVICE allocation for cells/tensors.  >    Handles:  >      cell                   — 3 args (ptr, byte-size, offset)  >      local scratch tensor   — 3N+3 args; ptr as nullptr local alloc  >      tensor/vector/matrix   — 3N+3 args; device allocation + host staging mirror  >      def-struct             — 1 arg (aggregate by value, sizeof struct)  >      def-record             — exploded scalar args  >      (array T N)            — 1 arg, passed by value (iota-initialized T[N])  >      scalar/dvec            — 1 arg  >   >    Endeavour 166: binds *L0-STAGING* around the parameter walk and emits ONE host-to-device  >    staging block afterwards, rather than a copy per parameter.  One block because the copies  >    have no ordering constraint between them and a single submit is one round trip instead of  >    N; after the walk because the emitters run before any command list exists.
 
 
 ---
