@@ -45,6 +45,13 @@ class HardwareInfo:
     environment: str
     vram_bytes: Optional[int] = None
     sm_count: Optional[int] = None
+    # Which hardware profile the kernels were COMPILED against, and whether it is one validated
+    # for this device.  Recorded because a profile for the wrong part produces numbers that look
+    # exactly like real ones: `:compute-units` overrides the device SM query when sizing the
+    # launch grid, so no verifier catches it.  A result file that does not say which profile it
+    # used cannot be compared with one that does -- which is why these are stamped, not derived.
+    hardware_profile: Optional[str] = None
+    profile_matched: Optional[bool] = None
 
 @dataclass
 class RunMetadata:
@@ -174,7 +181,9 @@ def get_git_commit() -> Optional[str]:
         pass
     return None
 
-def create_metadata(gpu_model: str = "Unknown", arch_target: str = "unknown", environment: str = "local") -> RunMetadata:
+def create_metadata(gpu_model: str = "Unknown", arch_target: str = "unknown", environment: str = "local",
+                    hardware_profile: Optional[str] = None,
+                    profile_matched: Optional[bool] = None) -> RunMetadata:
     vram = query_device_vram_bytes()
     return RunMetadata(
         timestamp=datetime.utcnow().isoformat() + "Z",
@@ -182,7 +191,9 @@ def create_metadata(gpu_model: str = "Unknown", arch_target: str = "unknown", en
             gpu_model=gpu_model,
             arch_target=arch_target,
             environment=environment,
-            vram_bytes=vram
+            vram_bytes=vram,
+            hardware_profile=hardware_profile,
+            profile_matched=profile_matched
         ),
         crisp_commit=get_git_commit()
     )
