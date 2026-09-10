@@ -21,8 +21,8 @@
 ;;; Metadata Generation (.metacrisp)
 ;;; =========================================================
 
-(defvar *emit-metadata* nil
-        "If T, the compiler will generate a .metacrisp sidecar file for each orchestration/kernel.")
+;; *EMIT-METADATA* lives in src/types/registry.lisp, which crisp.asd loads 21 files EARLIER.  The
+;; duplicate defvar that stood here was a silent no-op; its (better) docstring moved to registry.
 
 ;;; Validators
 ;;; ----------

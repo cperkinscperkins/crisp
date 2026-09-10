@@ -317,8 +317,11 @@
        (t
          (%register-standard-function name env return-types declare-forms location))))))
 
-(defvar *template-registry* (make-hash-table :test 'eq)
-        "Maps template names to their generator macros.")
+;; *TEMPLATE-REGISTRY* lives in src/types/registry.lisp, which crisp.asd loads 9 files EARLIER.
+;; A second (defvar *template-registry* (make-hash-table :test 'eq) ...) stood here and was a
+;; SILENT NO-OP -- defvar only initialises an unbound symbol, so the :test 'eq never took effect
+;; and the live table has always been registry.lisp's EQL one.  Removing it changes no behaviour
+;; and stops this file documenting a default the system does not have.
 
 (defvar *kernel-declared-signatures* (make-hash-table :test 'eq)
         "Maps kernel names to their declared (high-level) parameter types, before explosion.")

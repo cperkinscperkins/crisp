@@ -774,7 +774,8 @@ MMA
 - --math-precision=ieee
 - [x] 64 bit (NVidia) should ERROR on the ieee + ftz combination. That is 32 bit only!
 [x] L0 hoist and bench: are we using _SHARED_ memory instead of DEVICE?
-[ ] src has duplicate var names *hardware-profile-schema* and others
+[x] 64 bit report?
+[x] src has duplicate var names *hardware-profile-schema* and others
 [ ] the spill warning might be a little eager on Intel. Not sure about Nvidia. We should revisit
 - Documentation Shortcomings
 - [ ] :operand  

@@ -97,7 +97,8 @@ This supports overloading templates by arity or other factors.")
 
 
 (defvar *compiled-kernels* nil "List of kernel names (symbols) compiled in the current session.")
-(defvar *emit-metadata* nil "If T, generate .metacrisp file.")
+(defvar *emit-metadata* nil
+        "If T, the compiler will generate a .metacrisp sidecar file for each orchestration/kernel.")
 
 
 ;; Type System Globals
