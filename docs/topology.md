@@ -49,7 +49,8 @@ Note that a hardware profile says nothing about that actual architecture. It may
   ;; --- Local Memory Hierarchy ---
   :max-shared-memory-per-block 227KB  ✅     
   :l2-cache-size 50MB  📝
-  :native-cache-line-size 128  📝           
+  :native-cache-line-size 128  📝    
+  :tile-visit-strip-width 16        
 
   ;; --- Execution & Work-Group Bounds ---
   :max-work-group-dims '(1024 1024 64)  ✅
@@ -57,7 +58,9 @@ Note that a hardware profile says nothing about that actual architecture. It may
   :max-concurrent-kernels 128  📝
 
   ;; matrix units
-  :mma-shapes '((16 8 16) (8 8 8)))  📝  ; list of (M N K) triples
+  :mma-shapes '((16 8 16) (8 8 8))  📝  ; list of (M N K) triples
+  :wgmma-shapes '((16 8 16) (8 8 8))
+  :mma-lowerings  '(:coop-matrix :xe-native))
 ```
 
 Missing Keys: an incomplete `def-hardware-profile`, one without the full set of keys as illustrated above, is fine.
@@ -109,7 +112,12 @@ It is an error to use this flag if a topology or orchestration is specifying a h
 
 
 
+### Probing Hardware Profile
 
+While the hardware profile is powerful, were does it come from? The majority of the values can be probed.
+Crisp has simple `query-l0.cpp` and `query-cuda.cu` that can be compiled and run and will output a `def-hardware-profile` definition for you. 
+
+See [scripts/hw-profile/README.md](scripts/hw-profile/README.md)
 
 
 

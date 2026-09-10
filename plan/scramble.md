@@ -784,6 +784,7 @@ MMA
 - [ ] move MMA out of topology.md into main docs
 - [ ] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
 - [ ] A|D of 16-bit results in a 32 bit gradient. (Like PyTorch AMP).  Document.
+- [ ] performance-levers.md <-- needs serious rework
 
 [x] benchmarking up to "max" for BMG and H100. 
 
