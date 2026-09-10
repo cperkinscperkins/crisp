@@ -52,9 +52,14 @@ export MSYS2_ARG_CONV_EXCL='*'
 # --- Parse arguments ---
 # Endeavor 143: matmul-only, driven by the unified cross-platform matmul.py (--platform=intel).
 # Square GEMM sizes (multiples of 32). Precision "all" runs the full sweep (fast / ieee+ftz / ieee).
-# (Note: Crisp on Intel BMG starts to drop off against MKL around N=6144 due to cache constraints,
-#  so the default sweep includes sizes up to 8192 to capture this crossover).
-SIZES="${1:-256,512,1024,2048,4096,8192}"
+#
+# SIZE POLICY LIVES IN matmul.py, NOT HERE.  This used to hardcode 256..8192, from a time before
+# matmul.py had size presets, with a comment justifying 8192 as "far enough to catch the cache
+# crossover".  matmul.py's `canonical` now reaches 16384 on Intel, so the hardcoded list had
+# become the NARROWER of the two: an Intel sweep launched through this wrapper silently covered
+# less than the same sweep launched directly, and the report's large-N Intel cells went empty for
+# no reason a reader could see.  Passing the preset NAME keeps one definition of "canonical".
+SIZES="${1:-canonical}"
 ITERS="${2:-100}"
 PRECISION="${3:-all}"   # all -> full sweep; or fast | ieee for single pass
 # Empty runs every chapter.  A filter here is the difference between refreshing two rows and
