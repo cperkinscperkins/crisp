@@ -1040,36 +1040,50 @@ inherited from the profile default.
 
 ### `make-register-tile` ✅
 ```
-(make-register-tile <type> <dimensions> <initial-value> &key warps operand)
+(make-register-tile <elem> (<M> <N>) <initial-value> &key operand warps)
 
-(make-register-tile float (128 128) 0.0)
-(make-register-tile float (64 64) 0.0 :warps '(false true true))   ; warp-specialized: tile on the 2 consumer warps
+(make-register-tile float (16 16) 0.0)                             ; a 16x16 accumulator
+(make-register-tile float (16 8)  0.0 :operand :a)                 ; a register-resident A operand
+(make-register-tile float (64 64) 0.0 :warps '(false true true))   ; warp-specialized: 2 consumers
 ```
-`make-register-tile` reserves a space of registers and wraps their memory in a tensor.  
-The `<dimensions>` argument is a list of integers, which must be known at compile-time. They cannot be runtime variables.
 
-A register tile is extremely performant, but overuse can dramatically increase the register pressure from 
-your kernel, leading to lower overall occupancy. In most matrix multiplication operations, only the highly trafficed
-"C" tile of the result is stored in registers. The others are :local :address-space scratch matrices.
+A register tile is a tensor whose storage is the register file.  It is the fastest tile Crisp has and
+the scarcest — registers spent here come straight off occupancy — so the usual arrangement keeps the
+heavily-written `C` accumulator in registers and leaves the operands in `:local` scratch, with
+`:operand` available when an operand is worth promoting too.
 
-A register tile is a **warp-collective** abstraction, not thread-local. The logical tile
-(e.g. 64×64) is distributed by the compiler across the warps of the workgroup, and within
-each warp across its lanes. Computing that distribution requires a known **SIMD width**.
-That width is taken from the active hardware profile's `:simd-width` if one is in play;
-otherwise it is inferred from `--ir-target-arch` (or the `--ir-target` default — e.g. 32
-for `sm_*`). If none of those pins the SIMD width, `make-register-tile` is a compile error.
-The hardware profile stays optional in general — this is simply one of the few forms that
-needs the SIMD width to be knowable. When a profile *is* supplied, its `:simd-width` and
-`:max-registers-per-thread` additionally let the compiler verify at compile time that the
-distributed fragments actually fit the physical register file.
+`(<M> <N>)` must be compile-time integers, and **multiples of the fragment shape** for the element
+type and operand.  A tile smaller than one fragment holds nothing at all — every `store-tile` /
+`fill-tile` / `mma-accumulate-via-tile` over it would expand to no code — so it is refused rather
+than compiled into an empty kernel.
+
+A register tile is **warp-collective**, not thread-local: the logical tile is distributed across the
+warps of the workgroup and, within each warp, across its lanes.  Warp size comes from the active
+hardware profile's `:simd-width`, and defaults to 32.
+
+On NVIDIA the tile is checked against the register file at compile time — fragments × 4 registers
+against the profile's `:max-registers-per-thread` (255 by default) — so a 128×128 accumulator is
+refused as 512 registers/thread rather than left to spill silently.  On SPIR-V that check is not made
+here: register residency of a cooperative matrix belongs to the driver, and the profile's GRF model
+accounts for it separately.
+
+#### `:operand` — which matrix this tile holds
+
+`:a`, `:b` or `:acc` (default `:acc`).  The MMA shape gives each operand its own fragment geometry —
+A is `M×K`, B is `K×N`, the accumulator `M×N` — and `:operand` picks which one, so an operand tile's
+fragments match what `load-fragment-a` / `load-fragment-b` produce.  `(<M> <N>)` must tile evenly
+into that shape.
+
+It also changes how a `:warps` mask distributes the tile.  An accumulator splits by the *number* of
+participating warps; an **operand** splits by the warp-grid axis its warps share — rows for `:a`,
+columns for `:b` — because warps in one grid row all read the same rows of A.
 
 #### `:warps` — the warp participation mask (for warp specialization)
 
 By default the tile distributes across **every** warp of the workgroup.  That is wrong under
-**warp specialization**: if only the *consumer* warps run the MMA, any fragment the compiler
-placed on a producer warp would never be computed — a wrong result.  `:warps` fixes that by
-letting you say **exactly which warps hold the tile**, as a flat boolean **topology map**,
-positional over the workgroup's warp layout:
+**warp specialization**: if only the *consumer* warps run the MMA, any fragment the compiler placed
+on a producer warp would never be computed — a wrong result.  `:warps` says exactly which warps hold
+the tile, as a flat boolean map, positional over the workgroup's warps:
 
 ```
 (make-register-tile float (64 64) 0.0 :warps '(false true true))
@@ -1077,23 +1091,21 @@ positional over the workgroup's warp layout:
 ;; (with-warp-specialization (:producer 1 :consumer 2) ...) whose producer is warp 0.
 ```
 
-- **Elements** are `true` / `false` (or, equivalently, `1` / `0`).  The mask is deliberately
-  decoupled from `with-warp-specialization` — `make-register-tile` is declared in the outer
-  `let`, outside any role block, so it references warps *positionally*, not by role name.  It is
-  **your** responsibility to line the `true`s up with the warps that actually run the MMA (the
-  same discipline as `:arrivals` — the compiler checks shape, not intent).
-- **Length** must equal the workgroup's warp count (`local-size / warp-size`).  When `local-size`
-  is statically known this is a **compile-time** error; otherwise it is deferred to an
+- **Elements** are `true` / `false` (or, equivalently, `1` / `0`).  The mask is positional rather
+  than by role name — the tile is declared in the outer `let`, outside any role block — so lining
+  the `true`s up with the warps that actually run the MMA is yours to get right.  The compiler
+  checks shape, not intent.
+- **Length** must equal the workgroup's warp count (`local-size / warp-size`).  When `local-size` is
+  statically known a mismatch is a **compile-time** error; otherwise it defers to an
   `--runtime-checks` assertion.
-- **Even division (compile-time).**  An `(M N K)` MMA fragment is `M×N`, computed collectively by
-  one whole warp, so a tile is a grid of `(tile-M / frag-M) × (tile-N / frag-N)` fragments (e.g.
-  a 64×64 tile with `(16 8 8)` = `4×8 = 32` fragments).  The number of `true` warps **must evenly
-  divide** that fragment count, or it is a compile error.  So a 32-fragment tile allows 1 / 2 / 4 /
-  8 / 16 / 32 consumers — **not 3** (this is why the warp-spec example below uses `:consumer 2`,
-  not the `:consumer 3` an earlier draft showed).
-- **Occupancy note.**  More `true` (consumer) warps sharing one C-tile ⇒ fewer fragments per warp
-  ⇒ fewer registers per thread ⇒ higher occupancy.  So the consumer count is the real lever
-  against the single-warp register wall (Endeavor 138's 4096 plateau) — worth sweeping.
+- **At least one** warp must be `true`, and the participating warps must be **contiguous** — a
+  non-contiguous mask is not yet supported.
+- **Even division.**  A tile is a grid of `(M / frag-M) × (N / frag-N)` fragments — a 64×64
+  accumulator over a 16×8 fragment is `4×8 = 32`.  The number of participating warps must divide
+  that count evenly, so 32 fragments admit 1 / 2 / 4 / 8 / 16 / 32 warps — **not 3**.
+- **Occupancy lever.**  More participating warps ⇒ fewer fragments each ⇒ fewer registers per
+  thread ⇒ higher occupancy.  The consumer count is the real lever against the single-warp register
+  wall, and is worth sweeping.
 
 ### matrix-multiply-tile-stride ✅
 ```
