@@ -2,12 +2,9 @@
 
 > Generated from verified test sweeps in `benchmarks/results/`.
 
-| device | data captured | source |
-|---|---|---|
-| Intel BMG | 2026-09-02 | Crisp `b255c82` (docker) |
-| NVIDIA H100 NVL | 2026-09-08 | Crisp `24f07bd8` (runpod) |
-| NVIDIA H100 PCIe | 2026-09-02 | Crisp `cc1ae534` (runpod) |
-| NVIDIA H200 | 2026-09-02 | Crisp `b255c82` (runpod) |
+| device | data captured | source | hardware profile |
+|---|---|---|---|
+| Intel(R) Graphics [0xe20b] | 2026-09-12 | Crisp `25f64059` (docker) | `bmg` (validated) |
 
 ---
 
@@ -20,7 +17,8 @@ Row variable: **N**, the square matrix dimension. Matmul cost grows as N³ while
 | small | 512, 1024 | launch overhead and occupancy dominate |
 | medium | 2048, 4096 | the machine saturates (~0.97 residency waves) |
 | large | 8192, 16384 | steady state |
-| xl | 32768, 65536 | device permitting |
+| xl | 32768, 40960 | device permitting |
+| devmax | the largest N this card holds | per-ladder: tf32/bf16/f64 differ |
 
 ## § 1 — MMA Techniques
 
@@ -28,20 +26,20 @@ Row variable: **N**, the square matrix dimension. Matmul cost grows as N³ while
 
 **Contenders: Control only.** The column carrying the story is **vs previous chapter**.
 
-### Intel BMG · tf32 · `fast`
+### Intel(R) Graphics [0xe20b] · tf32 · `fast`
 
 **Rollup — Crisp TFLOPS, every chapter × every N.**
 
-| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** |
-|---|---|---|---|---|---|---|---|---|---|
-| 0 | naive loops, no XMX | — | 0.4 | 0.2 | 0.1 | 0.1 | 0.1 | — | — |
-| 1 | hand-rolled XMX coop-matrix | 0.1 | 0.5 | 1.7 | 1.7 | 1.8 | 1.7 | — | — |
-| 2 | matrix-multiply-tile-stride | — | 0.4 | 1.4 | 1.4 | 1.5 | — | — | — |
-| 3 | OpGroupAsyncCopy | 0.1 | 0.2 | 0.8 | 0.8 | 0.7 | — | — | — |
-| 4 | register-resident load (global→GRF) | 2.9 | 12.0 | 25.6 | 15.7 | 13.3 | 13.4 | — | — |
-| 5 | register ring + prefetch | 3.4 | 10.0 | 22.8 | 27.4 | 15.4 | 11.3 | — | — |
-| 6 | blocked — 3 known reasons | — | — | — | — | — | — | — | — |
-| 7 | GRF-bounded tile sweep | — | 9.6 | 21.8 | 24.7 | 15.8 | — | — | — |
+| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** |
+|---|---|---|---|---|---|---|---|---|
+| 0 | naive loops, no XMX | 0.1 | 0.2 | 0.2 | 0.1 | 0.1 | 0.1 | — |
+| 1 | hand-rolled XMX coop-matrix | 0.1 | 0.5 | 1.7 | 1.7 | 1.9 | 1.7 | 1.6 |
+| 2 | matrix-multiply-tile-stride | 0.1 | 0.5 | 1.7 | 1.7 | 1.7 | 1.7 | 1.6 |
+| 3 | OpGroupAsyncCopy | 0.0 | 0.0 | 0.0 | 0.0 | — | — | — |
+| 4 | register-resident load (global→GRF) | 2.9 | 12.0 | 24.0 | 16.6 | 13.5 | 11.8 | 13.2 |
+| 5 | register ring + prefetch | 3.4 | 10.1 | 22.3 | 28.0 | 17.3 | 12.8 | 6.6 |
+| 6 | blocked — 3 known reasons | — | — | — | — | — | — | — |
+| 7 | GRF-bounded tile sweep | — | — | — | — | — | — | — |
 
 <details><summary><b>Per-chapter detail</b></summary>
 
@@ -50,84 +48,78 @@ naive loops, no XMX
 
 | N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control |
 |---:|---:|---:|---:|
-| 256 | — | — | — |
-| 512 | 0.4 (0.692) | 1.5 (0.183) | 0.26× |
-| 1024 | 0.2 (13.898) | 0.7 (3.169) | 0.23× |
-| 2048 | 0.1 (123.641) | 0.5 (36.960) | 0.30× |
-| 4096 | 0.1 (1105.390) | 0.3 (525.380) | 0.48× |
-| 8192 | 0.1 (15755.700) | — | — |
+| 256 | 0.1 (0.236) | 0.5 (0.074) | 0.31× |
+| 512 | 0.2 (1.749) | 0.6 (0.449) | 0.26× |
+| 1024 | 0.2 (14.032) | 0.7 (3.172) | 0.23× |
+| 2048 | 0.1 (123.801) | 0.7 (25.613) | 0.21× |
+| 4096 | 0.1 (1097.550) | 0.3 (525.815) | 0.48× |
+| 8192 | 0.1 (15643.200) | 0.3 (4055.810) | 0.26× |
 | 16384 | — | — | — |
-| 32768 | — | — | — |
 
 #### Ch 1 — Can we reach the tensor cores?
 hand-rolled XMX coop-matrix
 
 | N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 0 |
 |---:|---:|---:|---:|---:|
-| 256 | 0.1 (0.278) | 0.2 (0.201) | 0.72× | — |
-| 512 | 0.5 (0.588) | 0.5 (0.496) | 0.84× | 1.18× |
-| 1024 | 1.7 (1.294) | 1.5 (1.397) | 1.08× | **10.74×** |
-| 2048 | 1.7 (10.101) | 1.8 (9.360) | 0.93× | **12.24×** |
-| 4096 | 1.8 (75.052) | 2.0 (67.620) | 0.90× | **14.73×** |
-| 8192 | 1.7 (663.558) | 2.2 (511.393) | 0.77× | **23.74×** |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
+| 256 | 0.1 (0.278) | 0.2 (0.202) | 0.72× | 0.85× |
+| 512 | 0.5 (0.589) | 0.5 (0.497) | 0.84× | **2.97×** |
+| 1024 | 1.7 (1.297) | 1.5 (1.394) | 1.07× | **10.82×** |
+| 2048 | 1.7 (10.149) | 1.8 (9.387) | 0.92× | **12.20×** |
+| 4096 | 1.9 (73.933) | 2.0 (67.427) | 0.91× | **14.85×** |
+| 8192 | 1.7 (649.091) | 2.1 (512.207) | 0.79× | **24.10×** |
+| 16384 | 1.6 (5444.190) | — | — | — |
 
 #### Ch 2 — What does tiling buy?
 matrix-multiply-tile-stride
 
 | N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 1 |
 |---:|---:|---:|---:|---:|
-| 256 | — | 1.3 (0.026) | — | — |
-| 512 | 0.4 (0.692) | 1.5 (0.184) | 0.27× | 0.85× |
-| 1024 | 1.4 (1.587) | 1.5 (1.400) | 0.88× | 0.82× |
-| 2048 | 1.4 (12.059) | 1.5 (11.469) | 0.95× | 0.84× |
-| 4096 | 1.5 (92.395) | 1.3 (104.857) | 1.13× | 0.81× |
-| 8192 | — | 1.3 (838.490) | — | — |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
+| 256 | 0.1 (0.278) | 1.3 (0.026) | 0.09× | 1.00× |
+| 512 | 0.5 (0.589) | 1.5 (0.184) | 0.31× | 1.00× |
+| 1024 | 1.7 (1.290) | 1.5 (1.404) | 1.09× | 1.01× |
+| 2048 | 1.7 (10.136) | 1.4 (12.082) | 1.19× | 1.00× |
+| 4096 | 1.7 (78.690) | 1.3 (104.985) | 1.33× | 0.94× |
+| 8192 | 1.7 (661.082) | 1.3 (844.365) | 1.28× | 0.98× |
+| 16384 | 1.6 (5485.950) | — | — | 0.99× |
 
 #### Ch 3 — Can the fetch overlap the math?
 OpGroupAsyncCopy
 
 | N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 2 |
 |---:|---:|---:|---:|---:|
-| 256 | 0.1 (0.413) | 1.3 (0.026) | 0.06× | 0.67× |
-| 512 | 0.2 (1.090) | 1.5 (0.184) | 0.17× | 0.64× |
-| 1024 | 0.8 (2.776) | 1.5 (1.403) | 0.51× | 0.57× |
-| 2048 | 0.8 (21.353) | 1.5 (11.464) | 0.54× | 0.56× |
-| 4096 | 0.7 (186.632) | 1.3 (104.419) | 0.56× | 0.50× |
-| 8192 | — | 1.3 (844.132) | — | — |
+| 256 | 0.0 (27.010) | 1.3 (0.026) | 0.00× | 0.01× |
+| 512 | 0.0 (215.816) | 1.5 (0.184) | 0.00× | 0.00× |
+| 1024 | 0.0 (1734.450) | 1.5 (1.399) | 0.00× | 0.00× |
+| 2048 | 0.0 (14071.700) | 1.5 (11.741) | 0.00× | 0.00× |
+| 4096 | — | 1.3 (104.606) | — | — |
+| 8192 | — | 1.3 (840.523) | — | — |
 | 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
 
 #### Ch 4 — Can the fetch itself be cheap?
 register-resident load (global→GRF)
 
 | N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 3 |
 |---:|---:|---:|---:|---:|
-| 256 | 2.9 (0.012) | 3.5 (0.009) | 0.82× | **35.82×** |
-| 512 | 12.0 (0.022) | 14.3 (0.019) | 0.84× | **48.75×** |
-| 1024 | 25.6 (0.084) | 30.5 (0.071) | 0.84× | **33.08×** |
-| 2048 | 15.7 (1.094) | 21.8 (0.788) | 0.72× | **19.52×** |
-| 4096 | 13.3 (10.316) | 21.0 (6.530) | 0.63× | **18.09×** |
-| 8192 | 13.4 (82.212) | 6.6 (167.486) | **2.04×** | **8.07×** |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
+| 256 | 2.9 (0.011) | 3.5 (0.010) | 0.84× | **2361.01×** |
+| 512 | 12.0 (0.022) | 14.3 (0.019) | 0.84× | **9651.88×** |
+| 1024 | 24.0 (0.089) | 30.6 (0.070) | 0.78× | **19392.23×** |
+| 2048 | 16.6 (1.035) | 22.6 (0.761) | 0.73× | **13598.47×** |
+| 4096 | 13.5 (10.218) | 21.1 (6.522) | 0.64× | **7.70×** |
+| 8192 | 11.8 (93.357) | 6.7 (164.532) | **1.76×** | **7.08×** |
+| 16384 | 13.2 (668.724) | 6.1 (1449.499) | **2.17×** | **8.20×** |
 
 #### Ch 5 — Can several fetches be in flight?
 register ring + prefetch
 
 | N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 4 |
 |---:|---:|---:|---:|---:|
-| 256 | 3.4 (0.010) | 1.9 (0.017) | **1.75×** | 1.17× |
-| 512 | 10.0 (0.027) | 5.7 (0.047) | **1.75×** | 0.83× |
-| 1024 | 22.8 (0.094) | 11.5 (0.186) | **1.98×** | 0.89× |
-| 2048 | 27.4 (0.626) | 12.7 (1.350) | **2.15×** | **1.75×** |
-| 4096 | 15.4 (8.947) | 10.3 (13.310) | 1.49× | 1.15× |
-| 8192 | 11.3 (96.944) | 7.0 (156.531) | **1.61×** | 0.85× |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
+| 256 | 3.4 (0.010) | 1.9 (0.017) | **1.77×** | 1.17× |
+| 512 | 10.1 (0.027) | 5.7 (0.047) | **1.77×** | 0.84× |
+| 1024 | 22.3 (0.096) | 11.6 (0.186) | **1.93×** | 0.93× |
+| 2048 | 28.0 (0.613) | 12.6 (1.363) | **2.22×** | **1.69×** |
+| 4096 | 17.3 (7.962) | 10.3 (13.408) | **1.68×** | 1.28× |
+| 8192 | 12.8 (86.223) | 7.9 (138.443) | **1.61×** | 1.08× |
+| 16384 | 6.6 (1332.330) | 4.9 (1811.329) | 1.36× | 0.50× |
 
 #### Ch 6 — Can the math stop waiting on bookkeeping?
 blocked — 3 known reasons
@@ -141,7 +133,6 @@ blocked — 3 known reasons
 | 4096 | — | — | — | — |
 | 8192 | — | — | — | — |
 | 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
 
 #### Ch 7 — Can one instruction do more math?
 GRF-bounded tile sweep
@@ -149,382 +140,12 @@ GRF-bounded tile sweep
 | N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 6 |
 |---:|---:|---:|---:|---:|
 | 256 | — | — | — | — |
-| 512 | 9.6 (0.028) | 5.1 (0.052) | **1.86×** | 0.96× |
-| 1024 | 21.8 (0.099) | 10.1 (0.212) | **2.15×** | 0.95× |
-| 2048 | 24.7 (0.696) | 11.3 (1.527) | **2.19×** | 0.90× |
-| 4096 | 15.8 (8.719) | 9.6 (14.386) | **1.65×** | 1.03× |
-| 8192 | — | — | — | — |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
-
-</details>
-
-### NVIDIA H100 NVL · tf32 · `fast`
-
-**Rollup — Crisp TFLOPS, every chapter × every N.**
-
-| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** |
-|---|---|---|---|---|---|---|---|---|---|
-| 0 | naive loops, no tensor cores | 0.8 | 0.8 | 0.9 | 0.9 | 0.9 | 0.9 | 0.9 | — |
-| 1 | hand-rolled mma-accumulate-via-tile | 0.1 | 0.3 | 1.3 | 3.7 | 3.0 | 3.6 | 3.8 | — |
-| 2 | matrix-multiply-tile-stride | 0.1 | 0.3 | 1.3 | 4.8 | 8.7 | 8.8 | 9.0 | 9.1 |
-| 3 | cp.async | 0.1 | 0.6 | 2.2 | 7.8 | 8.0 | 8.0 | 8.1 | 8.2 |
-| 4 | TMA descriptor (CUtensorMap) | 1.5 | 6.4 | 25.5 | 68.7 | 71.8 | 72.5 | 58.5 | 52.0 |
-| 5 | SMEM ring | 1.6 | 7.1 | 27.7 | 64.5 | 68.4 | 67.0 | 49.7 | 48.4 |
-| 6 | warp specialization | 3.2 | 16.0 | 57.9 | 80.3 | 81.4 | 71.3 | 48.3 | 38.4 |
-| 7 | wgmma | 2.9 | 17.5 | 95.2 | 119.5 | 153.1 | 282.2 | 181.7 | 143.3 |
-
-<details><summary><b>Per-chapter detail</b></summary>
-
-#### Ch 0 — Does it run at all?
-naive loops, no tensor cores
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control |
-|---:|---:|---:|---:|
-| 256 | 0.8 (0.042) | 0.7 (0.047) | 1.12× |
-| 512 | 0.8 (0.319) | 0.8 (0.341) | 1.07× |
-| 1024 | 0.9 (2.517) | 0.8 (2.667) | 1.06× |
-| 2048 | 0.9 (19.588) | 0.8 (20.792) | 1.06× |
-| 4096 | 0.9 (156.678) | 0.8 (165.749) | 1.06× |
-| 8192 | 0.9 (1242.700) | 0.8 (1324.629) | 1.07× |
-| 16384 | 0.9 (9948.510) | 0.8 (10584.927) | 1.06× |
-| 32768 | — | — | — |
-
-#### Ch 1 — Can we reach the tensor cores?
-hand-rolled mma-accumulate-via-tile
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 0 |
-|---:|---:|---:|---:|---:|
-| 256 | 0.1 (0.376) | 2.3 (0.014) | 0.04× | 0.11× |
-| 512 | 0.3 (0.789) | 3.7 (0.073) | 0.09× | 0.40× |
-| 1024 | 1.3 (1.626) | 4.1 (0.524) | 0.32× | **1.55×** |
-| 2048 | 3.7 (4.647) | 4.3 (4.016) | 0.86× | **4.21×** |
-| 4096 | 3.0 (46.542) | 4.3 (31.916) | 0.69× | **3.37×** |
-| 8192 | 3.6 (304.179) | — | — | **4.09×** |
-| 16384 | 3.8 (2344.910) | — | — | **4.24×** |
-| 32768 | — | — | — | — |
-
-#### Ch 2 — What does tiling buy?
-matrix-multiply-tile-stride
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 1 |
-|---:|---:|---:|---:|---:|
-| 256 | 0.1 (0.377) | 2.5 (0.014) | 0.04× | 1.00× |
-| 512 | 0.3 (0.777) | 4.3 (0.062) | 0.08× | 1.02× |
-| 1024 | 1.3 (1.622) | 4.9 (0.438) | 0.27× | 1.00× |
-| 2048 | 4.8 (3.562) | 5.1 (3.336) | 0.94× | 1.30× |
-| 4096 | 8.7 (15.742) | 5.2 (26.592) | **1.69×** | **2.96×** |
-| 8192 | 8.8 (124.693) | 5.1 (214.145) | **1.72×** | **2.44×** |
-| 16384 | 9.0 (978.594) | 5.0 (1742.550) | **1.78×** | **2.40×** |
-| 32768 | 9.1 (7755.200) | 5.0 (14101.073) | **1.82×** | — |
-
-#### Ch 3 — Can the fetch overlap the math?
-cp.async
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 2 |
-|---:|---:|---:|---:|---:|
-| 256 | 0.1 (0.244) | 2.3 (0.014) | 0.06× | **1.54×** |
-| 512 | 0.6 (0.483) | 3.7 (0.073) | 0.15× | **1.61×** |
-| 1024 | 2.2 (0.968) | 4.1 (0.525) | 0.54× | **1.68×** |
-| 2048 | 7.8 (2.189) | 4.3 (4.019) | **1.84×** | **1.63×** |
-| 4096 | 8.0 (17.256) | 4.3 (31.992) | **1.85×** | 0.91× |
-| 8192 | 8.0 (137.720) | 4.3 (256.967) | **1.87×** | 0.91× |
-| 16384 | 8.1 (1086.300) | 4.2 (2071.565) | **1.91×** | 0.90× |
-| 32768 | 8.2 (8590.120) | 4.2 (16774.963) | **1.95×** | 0.90× |
-
-#### Ch 4 — Can the fetch itself be cheap?
-TMA descriptor (CUtensorMap)
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 3 |
-|---:|---:|---:|---:|---:|
-| 256 | 1.5 (0.023) | 2.3 (0.015) | 0.63× | **10.56×** |
-| 512 | 6.4 (0.042) | 3.7 (0.073) | **1.74×** | **11.49×** |
-| 1024 | 25.5 (0.084) | 4.1 (0.525) | **6.22×** | **11.47×** |
-| 2048 | 68.7 (0.250) | 4.3 (4.017) | **16.07×** | **8.76×** |
-| 4096 | 71.8 (1.914) | 4.3 (31.923) | **16.68×** | **9.02×** |
-| 8192 | 72.5 (15.171) | 4.3 (257.035) | **16.94×** | **9.08×** |
-| 16384 | 58.5 (150.285) | 4.3 (2062.372) | **13.72×** | **7.23×** |
-| 32768 | 52.0 (1354.260) | 4.2 (16746.355) | **12.37×** | **6.34×** |
-
-#### Ch 5 — Can several fetches be in flight?
-SMEM ring
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 4 |
-|---:|---:|---:|---:|---:|
-| 256 | 1.6 (0.021) | 2.1 (0.016) | 0.75× | 1.10× |
-| 512 | 7.1 (0.038) | 3.2 (0.083) | **2.19×** | 1.12× |
-| 1024 | 27.7 (0.077) | 3.6 (0.602) | **7.77×** | 1.09× |
-| 2048 | 64.5 (0.266) | 3.7 (4.629) | **17.37×** | 0.94× |
-| 4096 | 68.4 (2.010) | 3.8 (36.412) | **18.12×** | 0.95× |
-| 8192 | 67.0 (16.406) | 3.7 (295.645) | **18.02×** | 0.92× |
-| 16384 | 49.7 (176.937) | 3.7 (2363.975) | **13.36×** | 0.85× |
-| 32768 | 48.4 (1452.670) | 3.7 (19247.561) | **13.25×** | 0.93× |
-
-#### Ch 6 — Can the math stop waiting on bookkeeping?
-warp specialization
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 5 |
-|---:|---:|---:|---:|---:|
-| 256 | 3.2 (0.010) | — | — | **2.02×** |
-| 512 | 16.0 (0.017) | — | — | **2.24×** |
-| 1024 | 57.9 (0.037) | — | — | **2.09×** |
-| 2048 | 80.3 (0.214) | — | — | 1.25× |
-| 4096 | 81.4 (1.688) | — | — | 1.19× |
-| 8192 | 71.3 (15.420) | — | — | 1.06× |
-| 16384 | 48.3 (181.954) | — | — | 0.97× |
-| 32768 | 38.4 (1832.770) | — | — | 0.79× |
-
-#### Ch 7 — Can one instruction do more math?
-wgmma
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 6 |
-|---:|---:|---:|---:|---:|
-| 256 | 2.9 (0.012) | — | — | 0.89× |
-| 512 | 17.5 (0.015) | — | — | 1.10× |
-| 1024 | 95.2 (0.023) | — | — | **1.65×** |
-| 2048 | 119.5 (0.144) | — | — | 1.49× |
-| 4096 | 153.1 (0.898) | — | — | **1.88×** |
-| 8192 | 282.2 (3.896) | — | — | **3.96×** |
-| 16384 | 181.7 (48.419) | — | — | **3.76×** |
-| 32768 | 143.3 (491.067) | — | — | **3.73×** |
-
-</details>
-
-### NVIDIA H100 PCIe · tf32 · `fast`
-
-**Rollup — Crisp TFLOPS, every chapter × every N.**
-
-| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** |
-|---|---|---|---|---|---|---|---|---|---|
-| 0 | naive loops, no tensor cores | 0.5 | 0.7 | 0.7 | 0.7 | 0.7 | 0.8 | 0.8 | — |
-| 1 | hand-rolled mma-accumulate-via-tile | 0.1 | 0.3 | 1.3 | 3.7 | 2.5 | 2.7 | 2.7 | — |
-| 2 | matrix-multiply-tile-stride | — | — | — | — | 6.3 | 7.4 | 7.7 | 7.8 |
-| 3 | cp.async | 0.1 | 0.6 | 2.1 | 4.1 | 6.5 | 7.3 | 7.3 | 7.3 |
-| 4 | TMA descriptor (CUtensorMap) | 1.4 | 6.4 | 24.3 | 36.3 | 58.0 | 63.2 | 36.2 | 32.3 |
-| 5 | SMEM ring | 1.6 | 7.0 | 25.9 | 39.0 | 54.0 | 62.0 | 41.3 | 31.6 |
-| 6 | warp specialization | 3.2 | 15.9 | 49.3 | 54.2 | 71.2 | 68.0 | 32.0 | 30.6 |
-| 7 | wgmma | 2.8 | 17.4 | 93.8 | 137.7 | 226.6 | 246.2 | 186.2 | 184.8 |
-
-<details><summary><b>Per-chapter detail</b></summary>
-
-#### Ch 0 — Does it run at all?
-naive loops, no tensor cores
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control |
-|---:|---:|---:|---:|
-| 256 | 0.5 (0.064) | 0.5 (0.070) | 1.10× |
-| 512 | 0.7 (0.365) | 0.7 (0.386) | 1.06× |
-| 1024 | 0.7 (2.881) | 0.7 (3.028) | 1.05× |
-| 2048 | 0.7 (22.954) | 0.7 (24.148) | 1.05× |
-| 4096 | 0.7 (184.509) | 0.7 (193.352) | 1.05× |
-| 8192 | 0.8 (1462.850) | 0.7 (1544.864) | 1.06× |
-| 16384 | 0.8 (11670.100) | 0.7 (12450.993) | 1.07× |
-| 32768 | — | — | — |
-
-#### Ch 1 — Can we reach the tensor cores?
-hand-rolled mma-accumulate-via-tile
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 0 |
-|---:|---:|---:|---:|---:|
-| 256 | 0.1 (0.381) | — | — | 0.17× |
-| 512 | 0.3 (0.790) | — | — | 0.46× |
-| 1024 | 1.3 (1.711) | — | — | **1.68×** |
-| 2048 | 3.7 (4.585) | — | — | **5.01×** |
-| 4096 | 2.5 (54.811) | — | — | **3.37×** |
-| 8192 | 2.7 (406.379) | — | — | **3.60×** |
-| 16384 | 2.7 (3297.120) | — | — | **3.54×** |
-| 32768 | — | — | — | — |
-
-#### Ch 2 — What does tiling buy?
-matrix-multiply-tile-stride
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 1 |
-|---:|---:|---:|---:|---:|
-| 256 | — | 1.9 (0.017) | — | — |
-| 512 | — | 3.5 (0.078) | — | — |
-| 1024 | — | 4.3 (0.500) | — | — |
-| 2048 | — | 4.4 (3.904) | — | — |
-| 4096 | 6.3 (21.989) | 4.4 (31.205) | 1.42× | **2.49×** |
-| 8192 | 7.4 (148.308) | 4.4 (249.151) | **1.68×** | **2.74×** |
-| 16384 | 7.7 (1137.050) | 4.4 (1992.237) | **1.75×** | **2.90×** |
-| 32768 | 7.8 (9078.410) | 4.4 (15934.505) | **1.76×** | — |
-
-#### Ch 3 — Can the fetch overlap the math?
-cp.async
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 2 |
-|---:|---:|---:|---:|---:|
-| 256 | 0.1 (0.247) | 1.7 (0.020) | 0.08× | **1.54×** |
-| 512 | 0.6 (0.488) | 3.2 (0.084) | 0.17× | **1.62×** |
-| 1024 | 2.1 (0.999) | 3.6 (0.600) | 0.60× | **1.71×** |
-| 2048 | 4.1 (4.188) | 3.7 (4.705) | 1.12× | 1.09× |
-| 4096 | 6.5 (21.203) | 3.7 (37.559) | **1.77×** | 1.04× |
-| 8192 | 7.3 (150.634) | 3.7 (299.983) | **1.99×** | 0.98× |
-| 16384 | 7.3 (1205.240) | 3.7 (2397.468) | **1.99×** | 0.94× |
-| 32768 | 7.3 (9698.060) | — | — | 0.94× |
-
-#### Ch 4 — Can the fetch itself be cheap?
-TMA descriptor (CUtensorMap)
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 3 |
-|---:|---:|---:|---:|---:|
-| 256 | 1.4 (0.023) | 1.6 (0.020) | 0.88× | **10.66×** |
-| 512 | 6.4 (0.042) | 3.1 (0.085) | **2.03×** | **11.60×** |
-| 1024 | 24.3 (0.088) | 3.6 (0.601) | **6.81×** | **11.32×** |
-| 2048 | 36.3 (0.473) | 3.6 (4.707) | **9.96×** | **8.86×** |
-| 4096 | 58.0 (2.368) | 3.7 (37.616) | **15.88×** | **8.95×** |
-| 8192 | 63.2 (17.403) | 3.7 (300.194) | **17.25×** | **8.66×** |
-| 16384 | 36.2 (243.183) | 3.7 (2398.900) | **9.86×** | **4.96×** |
-| 32768 | 32.3 (2178.700) | 3.7 (19181.197) | **8.80×** | **4.45×** |
-
-#### Ch 5 — Can several fetches be in flight?
-SMEM ring
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 4 |
-|---:|---:|---:|---:|---:|
-| 256 | 1.6 (0.021) | 1.5 (0.023) | 1.08× | 1.09× |
-| 512 | 7.0 (0.038) | 2.8 (0.095) | **2.49×** | 1.10× |
-| 1024 | 25.9 (0.083) | 3.1 (0.686) | **8.25×** | 1.06× |
-| 2048 | 39.0 (0.441) | 3.2 (5.380) | **12.21×** | 1.07× |
-| 4096 | 54.0 (2.545) | 3.2 (42.445) | **16.68×** | 0.93× |
-| 8192 | 62.0 (17.724) | 3.2 (339.187) | **19.14×** | 0.98× |
-| 16384 | 41.3 (212.949) | 3.2 (2735.030) | **12.84×** | 1.14× |
-| 32768 | 31.6 (2228.450) | — | — | 0.98× |
-
-#### Ch 6 — Can the math stop waiting on bookkeeping?
-warp specialization
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 5 |
-|---:|---:|---:|---:|---:|
-| 256 | 3.2 (0.010) | — | — | **2.04×** |
-| 512 | 15.9 (0.017) | — | — | **2.26×** |
-| 1024 | 49.3 (0.044) | — | — | **1.91×** |
-| 2048 | 54.2 (0.317) | — | — | 1.39× |
-| 4096 | 71.2 (1.932) | — | — | 1.32× |
-| 8192 | 68.0 (16.180) | — | — | 1.10× |
-| 16384 | 32.0 (275.061) | — | — | 0.77× |
-| 32768 | 30.6 (2301.440) | — | — | 0.97× |
-
-#### Ch 7 — Can one instruction do more math?
-wgmma
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 6 |
-|---:|---:|---:|---:|---:|
-| 256 | 2.8 (0.012) | — | — | 0.88× |
-| 512 | 17.4 (0.015) | — | — | 1.09× |
-| 1024 | 93.8 (0.023) | — | — | **1.90×** |
-| 2048 | 137.7 (0.125) | — | — | **2.54×** |
-| 4096 | 226.6 (0.607) | — | — | **3.18×** |
-| 8192 | 246.2 (4.466) | — | — | **3.62×** |
-| 16384 | 186.2 (47.242) | — | — | **5.82×** |
-| 32768 | 184.8 (380.769) | — | — | **6.04×** |
-
-</details>
-
-### NVIDIA H200 · tf32 · `fast`
-
-**Rollup — Crisp TFLOPS, every chapter × every N.**
-
-| # | technique | **N=4096** | **N=8192** | **N=16384** | **N=32768** | **N=65536** |
-|---|---|---|---|---|---|---|
-| 0 | naive loops, no tensor cores | — | — | — | — | — |
-| 1 | hand-rolled mma-accumulate-via-tile | — | — | — | — | — |
-| 2 | matrix-multiply-tile-stride | — | — | — | — | — |
-| 3 | cp.async | — | — | — | — | — |
-| 4 | TMA descriptor (CUtensorMap) | — | — | — | — | — |
-| 5 | SMEM ring | — | — | — | — | — |
-| 6 | warp specialization | — | — | — | — | — |
-| 7 | wgmma | — | — | — | — | — |
-
-<details><summary><b>Per-chapter detail</b></summary>
-
-#### Ch 0 — Does it run at all?
-naive loops, no tensor cores
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control |
-|---:|---:|---:|---:|
-| 4096 | — | — | — |
-| 8192 | — | — | — |
-| 16384 | — | — | — |
-| 32768 | — | — | — |
-| 65536 | — | — | — |
-
-#### Ch 1 — Can we reach the tensor cores?
-hand-rolled mma-accumulate-via-tile
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 0 |
-|---:|---:|---:|---:|---:|
+| 512 | — | — | — | — |
+| 1024 | — | — | — | — |
+| 2048 | — | — | — | — |
 | 4096 | — | — | — | — |
 | 8192 | — | — | — | — |
 | 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
-| 65536 | — | — | — | — |
-
-#### Ch 2 — What does tiling buy?
-matrix-multiply-tile-stride
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 1 |
-|---:|---:|---:|---:|---:|
-| 4096 | — | — | — | — |
-| 8192 | — | — | — | — |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
-| 65536 | — | — | — | — |
-
-#### Ch 3 — Can the fetch overlap the math?
-cp.async
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 2 |
-|---:|---:|---:|---:|---:|
-| 4096 | — | — | — | — |
-| 8192 | — | — | — | — |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
-| 65536 | — | — | — | — |
-
-#### Ch 4 — Can the fetch itself be cheap?
-TMA descriptor (CUtensorMap)
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 3 |
-|---:|---:|---:|---:|---:|
-| 4096 | — | — | — | — |
-| 8192 | — | — | — | — |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
-| 65536 | — | — | — | — |
-
-#### Ch 5 — Can several fetches be in flight?
-SMEM ring
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 4 |
-|---:|---:|---:|---:|---:|
-| 4096 | — | — | — | — |
-| 8192 | — | — | — | — |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
-| 65536 | — | — | — | — |
-
-#### Ch 6 — Can the math stop waiting on bookkeeping?
-warp specialization
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 5 |
-|---:|---:|---:|---:|---:|
-| 4096 | — | — | — | — |
-| 8192 | — | — | — | — |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
-| 65536 | — | — | — | — |
-
-#### Ch 7 — Can one instruction do more math?
-wgmma
-
-| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 6 |
-|---:|---:|---:|---:|---:|
-| 4096 | — | — | — | — |
-| 8192 | — | — | — | — |
-| 16384 | — | — | — | — |
-| 32768 | — | — | — | — |
-| 65536 | — | — | — | — |
 
 </details>
 
@@ -534,22 +155,22 @@ wgmma
 
 **Contenders: Crisp only.** The column carrying the story is **vs previous chapter**. A rung with no 16-bit kernel shows `—`.
 
-### Intel BMG · bf16 · `fast`
+### Intel(R) Graphics [0xe20b] · bf16 · `fast`
 
 **Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**
 
-| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=32768** |
+| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** |
 |---|---|---|---|---|---|---|---|---|
-| 0 | naive loops, no XMX | 0.1 | 0.2 | 0.2 | 0.1 | 0.1 | 0.1 | — |
-| 1 | hand-rolled XMX coop-matrix | 0.2 | 0.8 | 2.4 | 2.5 | — | — | — |
-| 2 | matrix-multiply-tile-stride | 0.2 | 0.8 | 2.4 | 2.5 | — | — | — |
-| 3 | OpGroupAsyncCopy | — | — | — | — | — | — | — |
-| 4 | register-resident load (global→GRF) | 4.7 | 20.5 | 47.4 | 36.3 | 26.5 | 26.1 | — |
-| 5 | register ring + prefetch | 5.3 | 15.5 | 39.3 | 49.0 | 30.5 | 22.7 | — |
+| 0 | naive loops, no XMX | 0.1 | 0.2 | 0.1 | 0.1 | 0.1 | 0.1 | — |
+| 1 | hand-rolled XMX coop-matrix | 0.2 | 0.8 | 2.4 | 2.5 | 2.2 | 1.9 | 1.6 |
+| 2 | matrix-multiply-tile-stride | 0.2 | 0.8 | 2.4 | 2.5 | 2.2 | 1.9 | 1.6 |
+| 3 | OpGroupAsyncCopy | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | — | — |
+| 4 | register-resident load (global→GRF) | 4.7 | 20.6 | 48.1 | 38.2 | 26.7 | 26.3 | 26.9 |
+| 5 | register ring + prefetch | 5.3 | 15.7 | 39.6 | 49.7 | 31.4 | 22.1 | 15.0 |
 | 6 | blocked — 3 known reasons | — | — | — | — | — | — | — |
 | 7 | GRF-bounded tile sweep | — | — | — | — | — | — | — |
 
-**Fastest rung per size** — N=256: **ch 5** (5.3) · N=512: **ch 4** (20.5) · N=1024: **ch 4** (47.4) · N=2048: **ch 5** (49.0) · N=4096: **ch 5** (30.5) · N=8192: **ch 4** (26.1)
+**Fastest rung per size** — N=256: **ch 5** (5.3) · N=512: **ch 4** (20.6) · N=1024: **ch 4** (48.1) · N=2048: **ch 5** (49.7) · N=4096: **ch 5** (31.4) · N=8192: **ch 4** (26.3) · N=16384: **ch 4** (26.9)
 
 <details><summary><b>Per-chapter detail (16-bit)</b></summary>
 
@@ -560,11 +181,11 @@ naive loops, no XMX
 |---:|---:|
 | 256 | 0.1 |
 | 512 | 0.2 |
-| 1024 | 0.2 |
+| 1024 | 0.1 |
 | 2048 | 0.1 |
 | 4096 | 0.1 |
 | 8192 | 0.1 |
-| 32768 | — |
+| 16384 | — |
 
 #### Ch 1 — Can we reach the tensor cores?
 hand-rolled XMX coop-matrix
@@ -572,12 +193,12 @@ hand-rolled XMX coop-matrix
 | N | Crisp bf16 TFLOPS | vs previous chapter |
 |---:|---:|---:|
 | 256 | 0.2 | 1.48× |
-| 512 | 0.8 | **4.47×** |
-| 1024 | 2.4 | **15.73×** |
-| 2048 | 2.5 | **16.85×** |
-| 4096 | — | — |
-| 8192 | — | — |
-| 32768 | — | — |
+| 512 | 0.8 | **4.46×** |
+| 1024 | 2.4 | **16.19×** |
+| 2048 | 2.5 | **17.07×** |
+| 4096 | 2.2 | **15.02×** |
+| 8192 | 1.9 | **14.84×** |
+| 16384 | 1.6 | — |
 
 #### Ch 2 — What does tiling buy?
 matrix-multiply-tile-stride
@@ -588,22 +209,35 @@ matrix-multiply-tile-stride
 | 512 | 0.8 | 1.00× |
 | 1024 | 2.4 | 1.00× |
 | 2048 | 2.5 | 1.00× |
-| 4096 | — | — |
+| 4096 | 2.2 | 1.00× |
+| 8192 | 1.9 | 1.00× |
+| 16384 | 1.6 | 1.00× |
+
+#### Ch 3 — Can the fetch overlap the math?
+OpGroupAsyncCopy
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 0.0 | 0.01× |
+| 512 | 0.0 | 0.00× |
+| 1024 | 0.0 | 0.00× |
+| 2048 | 0.0 | 0.00× |
+| 4096 | 0.0 | 0.00× |
 | 8192 | — | — |
-| 32768 | — | — |
+| 16384 | — | — |
 
 #### Ch 4 — Can the fetch itself be cheap?
 register-resident load (global→GRF)
 
 | N | Crisp bf16 TFLOPS | vs previous chapter |
 |---:|---:|---:|
-| 256 | 4.7 | **21.99×** |
-| 512 | 20.5 | **25.26×** |
-| 1024 | 47.4 | **19.58×** |
-| 2048 | 36.3 | **14.73×** |
-| 4096 | 26.5 | **181.70×** |
-| 8192 | 26.1 | **202.34×** |
-| 32768 | — | — |
+| 256 | 4.7 | **1477.20×** |
+| 512 | 20.6 | **6516.11×** |
+| 1024 | 48.1 | **15170.15×** |
+| 2048 | 38.2 | **12050.38×** |
+| 4096 | 26.7 | **8623.36×** |
+| 8192 | 26.3 | **13.77×** |
+| 16384 | 26.9 | **16.79×** |
 
 #### Ch 5 — Can several fetches be in flight?
 register ring + prefetch
@@ -611,370 +245,111 @@ register ring + prefetch
 | N | Crisp bf16 TFLOPS | vs previous chapter |
 |---:|---:|---:|
 | 256 | 5.3 | 1.13× |
-| 512 | 15.5 | 0.76× |
-| 1024 | 39.3 | 0.83× |
-| 2048 | 49.0 | 1.35× |
-| 4096 | 30.5 | 1.15× |
-| 8192 | 22.7 | 0.87× |
-| 32768 | — | — |
+| 512 | 15.7 | 0.76× |
+| 1024 | 39.6 | 0.82× |
+| 2048 | 49.7 | 1.30× |
+| 4096 | 31.4 | 1.18× |
+| 8192 | 22.1 | 0.84× |
+| 16384 | 15.0 | 0.56× |
 
 </details>
 
-### NVIDIA H100 NVL · bf16 · `fast`
-
-**Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**
-
-| # | technique | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** |
-|---|---|---|---|---|---|---|---|
-| 0 | naive loops, no tensor cores | — | — | — | — | — | — |
-| 1 | hand-rolled mma-accumulate-via-tile | 2.1 | 5.5 | 5.9 | — | — | — |
-| 2 | matrix-multiply-tile-stride | 2.3 | 7.4 | 7.3 | — | — | — |
-| 3 | cp.async | — | — | — | — | — | — |
-| 4 | TMA descriptor (CUtensorMap) | 31.1 | 59.7 | 93.0 | — | — | — |
-| 5 | SMEM ring | 29.0 | 41.6 | 64.9 | — | — | — |
-| 6 | warp specialization | 29.1 | 51.6 | 66.5 | — | — | — |
-| 7 | wgmma | 97.8 | 343.4 | 432.2 | 423.5 | 302.7 | 258.3 |
-
-**Fastest rung per size** — N=1024: **ch 7** (97.8) · N=2048: **ch 7** (343.4) · N=4096: **ch 7** (432.2) · N=8192: **ch 7** (423.5) · N=16384: **ch 7** (302.7) · N=32768: **ch 7** (258.3)
-
-<details><summary><b>Per-chapter detail (16-bit)</b></summary>
-
-#### Ch 1 — Can we reach the tensor cores?
-hand-rolled mma-accumulate-via-tile
-
-| N | Crisp bf16 TFLOPS |
-|---:|---:|
-| 1024 | 2.1 |
-| 2048 | 5.5 |
-| 4096 | 5.9 |
-| 8192 | — |
-| 16384 | — |
-| 32768 | — |
-
-#### Ch 2 — What does tiling buy?
-matrix-multiply-tile-stride
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 1024 | 2.3 | 1.10× |
-| 2048 | 7.4 | 1.33× |
-| 4096 | 7.3 | 1.25× |
-| 8192 | — | — |
-| 16384 | — | — |
-| 32768 | — | — |
-
-#### Ch 4 — Can the fetch itself be cheap?
-TMA descriptor (CUtensorMap)
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 1024 | 31.1 | **13.43×** |
-| 2048 | 59.7 | **8.11×** |
-| 4096 | 93.0 | **12.76×** |
-| 8192 | — | — |
-| 16384 | — | — |
-| 32768 | — | — |
-
-#### Ch 5 — Can several fetches be in flight?
-SMEM ring
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 1024 | 29.0 | 0.93× |
-| 2048 | 41.6 | 0.70× |
-| 4096 | 64.9 | 0.70× |
-| 8192 | — | — |
-| 16384 | — | — |
-| 32768 | — | — |
-
-#### Ch 6 — Can the math stop waiting on bookkeeping?
-warp specialization
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 1024 | 29.1 | 1.00× |
-| 2048 | 51.6 | 1.24× |
-| 4096 | 66.5 | 1.02× |
-| 8192 | — | — |
-| 16384 | — | — |
-| 32768 | — | — |
-
-#### Ch 7 — Can one instruction do more math?
-wgmma
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 1024 | 97.8 | **3.37×** |
-| 2048 | 343.4 | **6.66×** |
-| 4096 | 432.2 | **6.50×** |
-| 8192 | 423.5 | — |
-| 16384 | 302.7 | — |
-| 32768 | 258.3 | — |
-
-</details>
-
-### NVIDIA H100 PCIe · bf16 · `fast`
-
-**Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**
-
-| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** |
-|---|---|---|---|---|---|---|---|---|---|
-| 0 | naive loops, no tensor cores | — | — | — | — | — | — | — | — |
-| 1 | hand-rolled mma-accumulate-via-tile | — | — | 2.0 | 5.3 | 3.9 | — | — | — |
-| 2 | matrix-multiply-tile-stride | — | — | 2.2 | 3.9 | 6.0 | — | — | — |
-| 3 | cp.async | — | — | — | — | — | — | — | — |
-| 4 | TMA descriptor (CUtensorMap) | — | — | 30.6 | 55.9 | 76.3 | — | — | — |
-| 5 | SMEM ring | — | — | 27.4 | 41.3 | 56.9 | — | — | — |
-| 6 | warp specialization | — | — | 33.7 | 49.6 | 56.6 | — | — | — |
-| 7 | wgmma | — | — | 52.8 | — | 367.7 | — | — | — |
-
-**Fastest rung per size** — N=1024: **ch 7** (52.8) · N=2048: **ch 4** (55.9) · N=4096: **ch 7** (367.7)
-
-<details><summary><b>Per-chapter detail (16-bit)</b></summary>
-
-#### Ch 1 — Can we reach the tensor cores?
-hand-rolled mma-accumulate-via-tile
-
-| N | Crisp bf16 TFLOPS |
-|---:|---:|
-| 256 | — |
-| 512 | — |
-| 1024 | 2.0 |
-| 2048 | 5.3 |
-| 4096 | 3.9 |
-| 8192 | — |
-| 16384 | — |
-| 32768 | — |
-
-#### Ch 2 — What does tiling buy?
-matrix-multiply-tile-stride
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 256 | — | — |
-| 512 | — | — |
-| 1024 | 2.2 | 1.11× |
-| 2048 | 3.9 | 0.74× |
-| 4096 | 6.0 | **1.54×** |
-| 8192 | — | — |
-| 16384 | — | — |
-| 32768 | — | — |
-
-#### Ch 4 — Can the fetch itself be cheap?
-TMA descriptor (CUtensorMap)
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 256 | — | — |
-| 512 | — | — |
-| 1024 | 30.6 | **13.71×** |
-| 2048 | 55.9 | **14.25×** |
-| 4096 | 76.3 | **12.70×** |
-| 8192 | — | — |
-| 16384 | — | — |
-| 32768 | — | — |
-
-#### Ch 5 — Can several fetches be in flight?
-SMEM ring
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 256 | — | — |
-| 512 | — | — |
-| 1024 | 27.4 | 0.90× |
-| 2048 | 41.3 | 0.74× |
-| 4096 | 56.9 | 0.75× |
-| 8192 | — | — |
-| 16384 | — | — |
-| 32768 | — | — |
-
-#### Ch 6 — Can the math stop waiting on bookkeeping?
-warp specialization
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 256 | — | — |
-| 512 | — | — |
-| 1024 | 33.7 | 1.23× |
-| 2048 | 49.6 | 1.20× |
-| 4096 | 56.6 | 0.99× |
-| 8192 | — | — |
-| 16384 | — | — |
-| 32768 | — | — |
-
-#### Ch 7 — Can one instruction do more math?
-wgmma
-
-| N | Crisp bf16 TFLOPS | vs previous chapter |
-|---:|---:|---:|
-| 256 | — | — |
-| 512 | — | — |
-| 1024 | 52.8 | **1.56×** |
-| 2048 | — | — |
-| 4096 | 367.7 | **6.50×** |
-| 8192 | — | — |
-| 16384 | — | — |
-| 32768 | — | — |
-
-</details>
-
-### NVIDIA H200 · bf16 · `fast`
-
-**Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**
-
-| # | technique | **N=4096** | **N=8192** | **N=16384** | **N=32768** | **N=65536** |
-|---|---|---|---|---|---|---|
-| 0 | naive loops, no tensor cores | — | — | — | — | — |
-| 1 | hand-rolled mma-accumulate-via-tile | — | — | — | — | — |
-| 2 | matrix-multiply-tile-stride | — | — | — | — | — |
-| 3 | cp.async | — | — | — | — | — |
-| 4 | TMA descriptor (CUtensorMap) | — | — | — | — | — |
-| 5 | SMEM ring | — | — | — | — | — |
-| 6 | warp specialization | — | — | — | — | — |
-| 7 | wgmma | 523.7 | 567.0 | 507.5 | 491.7 | — |
-
-**Fastest rung per size** — N=4096: **ch 7** (523.7) · N=8192: **ch 7** (567.0) · N=16384: **ch 7** (507.5) · N=32768: **ch 7** (491.7)
-
-<details><summary><b>Per-chapter detail (16-bit)</b></summary>
-
-#### Ch 7 — Can one instruction do more math?
-wgmma
-
-| N | Crisp bf16 TFLOPS |
-|---:|---:|
-| 4096 | 523.7 |
-| 8192 | 567.0 |
-| 16384 | 507.5 |
-| 32768 | 491.7 |
-| 65536 | — |
-
-</details>
-
-## § 1b — The Technique Ladder in 16-bit · Intel BMG
+## § 1b — The Technique Ladder in 16-bit · Intel(R) Graphics [0xe20b]
 
 *The same chapters as section 1, in bfloat16. Each kernel is its tf32 twin with two things changed: the operand element type, and the K step 8 → 16 (the native XMX shape for 16-bit operands is (8 16 16), not (8 16 8)). The C accumulator stays f32 in both.*
 
 Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline is **tf32 on XMX**, not fp32 on the vector engines — the BMG shape ladder is (8 16 8) tf32, (8 16 16) bf16, (8 16 32) int8, i.e. same M×N with K doubling per step. No Control/Peer/Ceiling columns: the chapter SYCL controls are tf32 only, so this is a Crisp-vs-Crisp ladder.
 
-| chapter | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 |
-|---|---:|---:|---:|---:|---:|---:|
-| Ch 0 naive (no XMX) | 0.1 (tf32 n/a) | 0.2 (tf32 n/a) | 0.2 (0.99×) | 0.1 (1.06×) | 0.1 (1.18×) | 0.1 (**1.85×**) |
-| Ch 1 hand-rolled MMA | 0.2 (1.76×) | 0.8 (1.78×) | 2.4 (1.45×) | 2.5 (1.45×) | 2.2 (1.19×) | 1.9 (1.14×) |
-| Ch 2 tiling macro | 0.2 (tf32 n/a) | 0.8 (tf32 n/a) | 2.4 (tf32 n/a) | 2.5 (tf32 n/a) | 2.2 (tf32 n/a) | 1.9 (tf32 n/a) |
-| Ch 3 async staging | — | — | — | — | 0.3 (0.37×) | — |
-| Ch 4 register-resident | 4.7 (1.61×) | 20.5 (1.71×) | 47.4 (**1.85×**) | 36.3 (**2.31×**) | 26.5 (**1.99×**) | 26.1 (**1.95×**) |
-| Ch 5 ring + prefetch | 5.3 (1.56×) | 15.5 (1.55×) | 39.3 (1.72×) | 49.0 (1.79×) | 30.5 (**1.98×**) | 22.7 (**2.00×**) |
-
-## § 1b — The Technique Ladder in 16-bit · NVIDIA H100 NVL
-
-*The same chapters as section 1, in bfloat16. Each kernel is its tf32 twin with two things changed: the operand element type, and the K step 8 → 16 (the native tensor-core shape for 16-bit operands is (8 16 16), not (8 16 8)). The C accumulator stays f32 in both.*
-
-Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline is **tf32 on the tensor cores**, not fp32 on the vector units. No Control/Peer/Ceiling columns: the chapter controls are tf32 only, so this is a Crisp-vs-Crisp ladder. § 1.5 above carries the full 16-bit ladder for this GPU; this table adds only the tf32 ratio.
-
-| chapter | N=1024 | N=2048 | N=4096 |
-|---|---:|---:|---:|
-| Ch 1 hand-rolled MMA | 2.1 (1.60×) | 5.5 (1.50×) | 5.9 (**1.98×**) |
-| Ch 2 tiling macro | 2.3 (tf32 n/a) | 7.4 (tf32 n/a) | 7.3 (0.83×) |
-| Ch 4 register-resident | 31.1 (1.22×) | 59.7 (0.87×) | 93.0 (1.30×) |
-| Ch 5 ring + prefetch | 29.0 (1.04×) | 41.6 (0.65×) | 64.9 (0.95×) |
-
-## § 1b — The Technique Ladder in 16-bit · NVIDIA H100 PCIe
-
-*The same chapters as section 1, in bfloat16. Each kernel is its tf32 twin with two things changed: the operand element type, and the K step 8 → 16 (the native tensor-core shape for 16-bit operands is (8 16 16), not (8 16 8)). The C accumulator stays f32 in both.*
-
-Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline is **tf32 on the tensor cores**, not fp32 on the vector units. No Control/Peer/Ceiling columns: the chapter controls are tf32 only, so this is a Crisp-vs-Crisp ladder. § 1.5 above carries the full 16-bit ladder for this GPU; this table adds only the tf32 ratio.
-
-| chapter | N=1024 | N=2048 | N=4096 |
-|---|---:|---:|---:|
-| Ch 1 hand-rolled MMA | 2.0 (1.60×) | 5.3 (1.42×) | 3.9 (1.56×) |
-| Ch 2 tiling macro | 2.2 (tf32 n/a) | 3.9 (tf32 n/a) | 6.0 (0.96×) |
-| Ch 4 register-resident | 30.6 (1.26×) | 55.9 (1.54×) | 76.3 (1.31×) |
-| Ch 5 ring + prefetch | 27.4 (1.06×) | 41.3 (1.06×) | 56.9 (1.05×) |
-
-## § 1c — The Technique Ladder in 64-bit · NVIDIA H100 NVL
-
-*The same chapters at IEEE double. Cells read **fp64 TFLOPS**, and the rightmost column is each rung's ratio to the Chapter 0 vector-fp64 floor.*
-
-**Chapter 7 is absent by hardware, not unmeasured.** wgmma covers fp16/bf16/tf32/fp8/int8; there is no fp64 warpgroup MMA in any form, so Chapter 6 is the top of this ladder.
-
-**These rows are not comparable cell-for-cell with the tf32 ladder.** An fp64 accumulator fragment is 8×8 holding 2 doubles per lane = 4 registers, so the tf32 chapters' 64×64 tile would need 256 registers/thread — one over the architectural 255. Every 64-bit rung therefore runs at 64×32. fp64 costs 2× the registers at equal tile size, which is part of the 64-bit result rather than a tuning choice.
-
-*Expectation under test (from § 2): the fp64 tensor core measured only 1.20–1.53× over vector fp64, while cuBLAS sits ~1.9× above the best CUTLASS DMMA config — both DMMA, so that larger gap is scheduling. If that holds, the distance on this ladder should be in chapters 2–6, not chapter 1.*
-
-| chapter | N=1024 | N=2048 | N=4096 | N=8192 | vs Ch 0 |
-|---|---:|---:|---:|---:|---:|
-| Ch 0 naive (no tensor cores) | 0.4 | 0.4 | 0.4 | 0.4 | 1.00× |
-| Ch 1 hand-rolled MMA | 2.3 | 2.6 | 3.1 | 3.3 | 6.43× |
-| Ch 2 tiling macro | 2.6 | 3.9 | 3.8 | 3.8 | 8.07× |
-| Ch 3 async staging (cp.async) | 2.4 | 3.6 | 5.4 | 6.1 | 9.88× |
-| Ch 4 TMA (:block) | 9.3 | 12.9 | 20.8 | 19.1 | 35.30× |
-| Ch 5 ring + prefetch | 10.1 | 13.8 | 22.3 | 21.5 | 38.42× |
-| Ch 6 warp specialization | 11.2 | 14.3 | 19.9 | 18.5 | 36.31× |
+| chapter | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Ch 0 naive (no XMX) | 0.1 (1.01×) | 0.2 (1.18×) | 0.1 (0.97×) | 0.1 (1.05×) | 0.1 (1.17×) | 0.1 (**1.84×**) | — |
+| Ch 1 hand-rolled MMA | 0.2 (1.76×) | 0.8 (1.78×) | 2.4 (1.45×) | 2.5 (1.47×) | 2.2 (1.18×) | 1.9 (1.13×) | 1.6 (0.99×) |
+| Ch 2 tiling macro | 0.2 (1.76×) | 0.8 (1.78×) | 2.4 (1.45×) | 2.5 (1.47×) | 2.2 (1.26×) | 1.9 (1.15×) | 1.6 (1.00×) |
+| Ch 3 async staging | 0.0 (**2.55×**) | 0.0 (**2.55×**) | 0.0 (**2.56×**) | 0.0 (**2.59×**) | 0.0 (tf32 n/a) | — | — |
+| Ch 4 register-resident | 4.7 (1.59×) | 20.6 (1.72×) | 48.1 (**2.00×**) | 38.2 (**2.30×**) | 26.7 (**1.99×**) | 26.3 (**2.23×**) | 26.9 (**2.04×**) |
+| Ch 5 ring + prefetch | 5.3 (1.54×) | 15.7 (1.56×) | 39.6 (1.78×) | 49.7 (1.77×) | 31.4 (**1.82×**) | 22.1 (1.74×) | 15.0 (**2.27×**) |
 
 ## § 2 — Top MMA Benchmarks
 
 *How does Crisp actually stand?* Best mainloop against **all three contender classes**.
 
-### Intel BMG · tf32 · `fast`
+### Intel(R) Graphics [0xe20b] · tf32 · `fast`
 
 | N | Crisp | Control<br>SYCL_Apples | **Peer**<br>SYCL-TLA | Ceiling<br>oneMKL | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.4 (0.010) `chap5_multistage_ring` | 1.9 (0.017) | N/A* | — | — | — |
-| 512 | 10.0 (0.027) `chap5_multistage_ring` | 5.7 (0.047) | N/A* | — | — | — |
-| 1024 | 22.8 (0.094) `chap5_multistage_ring` | 11.5 (0.186) | N/A* | — | — | — |
-| 2048 | 27.4 (0.626) `chap5_multistage_ring` | 12.7 (1.350) | N/A* | — | — | — |
-| 4096 | 15.8 (8.719) `intel_prefetch` | 10.3 (13.310) | N/A* | — | — | — |
-| 8192 | 16.4 (67.101) `sec2_top` | 8.0 (137.265) | N/A* | — | — | — |
-| 16384 | 8.6 (1028.190) `sec2_top` | 4.8 (1842.043) | N/A* | 14.4 (611.432) | — | 59% |
+| 256 | 3.4 (0.010) `chap5_multistage_ring` | 1.9 (0.017) | N/A* | 5.3 (0.006) | — | 65% |
+| 512 | 12.0 (0.022) `chap4_cheap_fetch` | 14.3 (0.019) | N/A* | 9.8 (0.027) | — | 122% |
+| 1024 | 32.2 (0.067) `sec2_top` | 11.5 (0.186) | N/A* | 12.0 (0.178) | — | **268%** |
+| 2048 | 31.1 (0.553) `sec2_top` | 12.6 (1.363) | N/A* | 13.8 (1.245) | — | **225%** |
+| 4096 | 22.6 (6.088) `sec2_top` | 10.4 (13.254) | N/A* | — | — | — |
+| 8192 | 16.4 (67.011) `sec2_top` | 8.2 (133.396) | N/A* | 14.2 (77.557) | — | 116% |
+| 16384 | 13.2 (668.724) `chap4_cheap_fetch` | 6.1 (1449.499) | N/A* | — | — | — |
 
 > *\*Note: SYCL-TLA does not implement TF32 DPAS on Xe2 (only BF16/FP16/FP8). See §2.1 below for the native 270+ TFLOPS BF16 suite.*
+
+> *Reading **vs Ceiling** at tf32: oneMKL is requested at tf32, but its best tf32 point here is 14.2 TFLOPS against 114.6 for its own bf16 path. That gap suggests oneMKL's tf32 does not run on the matrix engines on Xe2 (as SYCL-TLA's does not), so a cell above 100% is Crisp against oneMKL's tf32 path, not against the hardware limit. Unconfirmed; the bf16 table is the like-for-like ceiling comparison.*
 
 
 <details><summary><b>Compilation & Build Overhead</b></summary>
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 693 ms | 695 ms | 1.00× |
-| **SYCL_Apples** | Control | 1.70 s | 3.90 s | **2.5× slower** |
-| **oneMKL** | Ceiling | *precompiled* | 6.38 s | — |
+| **Crisp** | Crisp | 719 ms | 721 ms | 1.00× |
+| **SYCL_Apples** | Control | 1.77 s | 4.02 s | **2.5× slower** |
 
 </details>
 
-### Intel BMG · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
+### Intel(R) Graphics [0xe20b] · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
 
-| N | Crisp BF16 | Control<br>SYCL_Apples_BF16 | **Peer**<br>SYCL-TLA_BF16 | Ceiling<br>oneMKL_BF16 | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.1 (0.011) | — | — | — | — | — |
-| 512 | 16.4 (0.016) | — | — | — | — | — |
-| 1024 | 62.6 (0.034) | — | — | — | — | — |
-| 2048 | 68.5 (0.251) | — | — | — | — | — |
-| 4096 | 84.8 (1.620) | — | — | — | — | — |
-| 8192 | 28.7 (38.325) | — | — | — | — | — |
-| 32768 | 50.1 (1405.140) | 6.9 (10190.569) | 90.2 (780.034) | 98.9 (711.316) | 0.56× | 51% |
+Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`wg256xepf2`) — what you get without per-size tuning. 5 variants measured.
+
+| N | Crisp BF16<br>**envelope** | Crisp BF16<br>best single (`wg256xepf2`) | Control<br>SYCL_Apples_BF16 | **Peer**<br>SYCL-TLA_BF16 | Ceiling<br>oneMKL_BF16 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 3.5 (0.009) `pfw1` | 2.9 | 2.2 (0.015) | 0.4 (0.077) | 9.8 (0.003) | **8.18×** | 36% |
+| 512 | 18.4 (0.015) `pfw1` | 15.3 | 8.2 (0.033) | 3.4 (0.080) | 41.0 (0.007) | **5.47×** | 45% |
+| 1024 | 73.7 (0.029) `wg256xepf2` | 73.7 | 16.5 (0.130) | 23.8 (0.090) | 75.1 (0.029) | **3.10×** | 98% |
+| 2048 | 82.3 (0.209) `wg256xepf2` | 82.3 | 18.9 (0.910) | 58.3 (0.295) | 88.4 (0.194) | 1.41× | 93% |
+| 4096 | 107.5 (1.279) `wg256xepf2` | 107.5 | 18.9 (7.280) | 84.4 (1.628) | 104.9 (1.310) | 1.27× | 102% |
+| 8192 | 111.0 (9.905) `wg256xepf2` | 111.0 | 16.1 (68.445) | 90.3 (12.173) | 113.0 (9.733) | 1.23× | 98% |
+| 16384 | 112.9 (77.923) `wg256xepf2` | 112.9 | 11.2 (782.679) | 92.6 (95.031) | 114.6 (76.724) | 1.22× | 98% |
+
+> **⚠ SIGN FLIPS — these variants reverse with problem size.**
+> Each wins somewhere and loses somewhere, both beyond the measured run-to-run
+> spread, so a single fixed choice is not available and the envelope above is
+> assembled from *different kernels*. Picking by one size will mislead you at another.
+
+> | variant | wins at | loses at |
+> |---|---|---|
+> | `pfw1` | 256 (+7%), 512 (+12%), 2048 (+12%), 4096 (+29%) | **8192 (-13%)**, **16384 (-79%)** |
+> | `wg256pf2` | 2048 (+10%), 4096 (+26%), 8192 (+34%) | **256 (-22%)**, **512 (-17%)**, **16384 (-64%)** |
+> | `wg256xe` | 1024 (+12%), 2048 (+8%), 4096 (+10%), 8192 (+15%), 16384 (+12%) | **256 (-11%)**, **512 (-5%)** |
+> | `wg256xepf2` | 1024 (+13%), 2048 (+29%), 4096 (+49%), 8192 (+60%), 16384 (+63%) | **256 (-13%)**, **512 (-7%)** |
+
 
 <details><summary><b>Compilation & Build Overhead (BF16)</b></summary>
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 756 ms | 815 ms | 1.00× |
-| **SYCL_Apples_BF16** | Control | 1.77 s | 3.92 s | **2.3× slower** |
-| **SYCL-TLA_BF16** | Peer | 27.89 s | 52.05 s | **36.9× slower** |
-| **oneMKL_BF16** | Ceiling | *precompiled* | 6.63 s | — |
+| **Crisp** | Crisp | 854 ms | 855 ms | 1.00× |
+| **SYCL_Apples_BF16** | Control | 1.73 s | 3.90 s | **2.0× slower** |
+| **SYCL-TLA_BF16** | Peer | 28.13 s | 62.11 s | **33.0× slower** |
+| **oneMKL_BF16** | Ceiling | *precompiled* | 6.40 s | — |
 
 </details>
 
-### Intel BMG · fp16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
+### Intel(R) Graphics [0xe20b] · fp16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
 
 Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`wg256xepf2`) — what you get without per-size tuning. 11 variants measured.
 
 | N | Crisp FP16<br>**envelope** | Crisp FP16<br>best single (`wg256xepf2`) | Control<br>SYCL_Apples_FP16 | **Peer**<br>SYCL-TLA_FP16 | Ceiling<br>oneMKL_FP16 | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.6 (0.009) `pfw2` | 2.9 | 2.2 (0.015) | 0.5 (0.073) | 9.8 (0.003) | **7.79×** | 37% |
-| 512 | 18.7 (0.014) `pfw2` | 15.3 | 8.2 (0.033) | 2.7 (0.100) | 41.0 (0.007) | **6.97×** | 46% |
-| 1024 | 73.7 (0.029) `wg256xepf2` | 73.7 | 16.5 (0.130) | 24.6 (0.087) | 75.1 (0.029) | **3.00×** | 98% |
-| 2048 | 79.8 (0.215) `wg256xepf2` | 79.8 | 18.9 (0.908) | 51.0 (0.337) | 88.9 (0.193) | **1.57×** | 90% |
-| 4096 | 107.2 (1.282) `wg256xepf2` | 107.2 | 18.8 (7.310) | 85.9 (1.600) | 110.7 (1.242) | 1.25× | 97% |
-| 8192 | 111.0 (9.907) `wg256xepf2` | 111.0 | 16.1 (68.463) | 90.5 (12.149) | 111.4 (9.866) | 1.23× | 100% |
+| 256 | 3.6 (0.009) `pfw2` | 2.9 | 2.2 (0.015) | 0.5 (0.074) | 9.8 (0.003) | **8.01×** | 37% |
+| 512 | 19.0 (0.014) `pfw2` | 15.3 | 8.2 (0.033) | 3.3 (0.082) | 41.0 (0.007) | **5.80×** | 46% |
+| 1024 | 73.7 (0.029) `wg256xepf2` | 73.7 | 16.5 (0.130) | 23.7 (0.091) | 75.4 (0.029) | **3.12×** | 98% |
+| 2048 | 81.9 (0.210) `wg256xepf2` | 81.9 | 19.0 (0.907) | 62.9 (0.273) | 88.4 (0.194) | 1.30× | 93% |
+| 4096 | 107.5 (1.278) `wg256xepf2` | 107.5 | 18.9 (7.262) | 87.3 (1.574) | 110.9 (1.240) | 1.23× | 97% |
+| 8192 | 111.1 (9.899) `wg256xepf2` | 111.1 | 16.1 (68.463) | 91.0 (12.089) | 111.6 (9.853) | 1.22× | 100% |
+| 16384 | 77.2 (113.970) `wg256xe` | 56.6 | 11.3 (780.846) | 91.7 (95.887) | 110.9 (79.329) | 0.84× | 70% |
 
 > **⚠ SIGN FLIPS — these variants reverse with problem size.**
 > Each wins somewhere and loses somewhere, both beyond the measured run-to-run
@@ -983,218 +358,26 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 > | variant | wins at | loses at |
 > |---|---|---|
-> | `pfw1` | 256 (+7%), 512 (+14%), 2048 (+22%), 4096 (+32%) | **8192 (-13%)** |
-> | `pfw2` | 256 (+9%), 512 (+15%), 2048 (+22%), 4096 (+31%) | **8192 (-10%)** |
-> | `pfw3` | 256 (+8%), 512 (+14%), 2048 (+16%), 4096 (+27%) | **8192 (-10%)** |
-> | `pfw4` | 256 (+8%), 512 (+12%), 2048 (+17%), 4096 (+25%) | **8192 (-3%)** |
-> | `wg256pf1` | 2048 (+21%), 4096 (+30%), 8192 (+37%) | **256 (-22%)**, **512 (-17%)** |
-> | `wg256pf2` | 2048 (+19%), 4096 (+27%), 8192 (+35%) | **256 (-22%)**, **512 (-17%)** |
-> | `wg256pf2cc` | 2048 (+20%), 4096 (+27%), 8192 (+34%) | **256 (-20%)**, **512 (-17%)** |
-> | `wg256xe` | 1024 (+12%), 2048 (+12%), 4096 (+13%), 8192 (+15%) | **256 (-10%)**, **512 (-4%)** |
-> | `wg256xepf2` | 1024 (+14%), 2048 (+38%), 4096 (+53%), 8192 (+62%) | **256 (-13%)**, **512 (-6%)** |
+> | `pfw1` | 256 (+7%), 512 (+12%), 2048 (+12%), 4096 (+29%) | **8192 (-17%)**, **16384 (-80%)** |
+> | `pfw2` | 256 (+9%), 512 (+15%), 2048 (+12%), 4096 (+28%) | **8192 (-18%)**, **16384 (-80%)** |
+> | `pfw3` | 256 (+8%), 512 (+12%), 2048 (+10%), 4096 (+26%) | **8192 (-15%)**, **16384 (-81%)** |
+> | `pfw4` | 256 (+7%), 512 (+11%), 2048 (+8%), 4096 (+23%) | **8192 (-5%)**, **16384 (-81%)** |
+> | `wg256` | 1024 (+2%) | **256 (-17%)**, **512 (-15%)**, **2048 (-9%)**, **4096 (-10%)**, **8192 (-7%)**, **16384 (-8%)** |
+> | `wg256pf1` | 2048 (+10%), 4096 (+27%), 8192 (+35%) | **256 (-22%)**, **512 (-17%)**, **1024 (-2%)**, **16384 (-54%)** |
+> | `wg256pf2` | 2048 (+10%), 4096 (+25%), 8192 (+34%) | **256 (-22%)**, **512 (-17%)**, **1024 (-3%)**, **16384 (-64%)** |
+> | `wg256pf2cc` | 2048 (+9%), 4096 (+26%), 8192 (+34%) | **256 (-22%)**, **512 (-18%)**, **1024 (-3%)**, **16384 (-64%)** |
+> | `wg256xe` | 1024 (+10%), 2048 (+8%), 4096 (+9%), 8192 (+15%), 16384 (+12%) | **256 (-11%)**, **512 (-5%)** |
+> | `wg256xepf2` | 1024 (+13%), 2048 (+28%), 4096 (+49%), 8192 (+60%) | **256 (-13%)**, **512 (-7%)**, **16384 (-18%)** |
 
 
 <details><summary><b>Compilation & Build Overhead (FP16)</b></summary>
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 802 ms | 802 ms | 1.00× |
-| **SYCL_Apples_FP16** | Control | 1.80 s | 4.24 s | **2.2× slower** |
-| **SYCL-TLA_FP16** | Peer | 28.88 s | 57.20 s | **36.0× slower** |
+| **Crisp** | Crisp | 886 ms | 887 ms | 1.00× |
+| **SYCL_Apples_FP16** | Control | 1.71 s | 3.86 s | **1.9× slower** |
+| **SYCL-TLA_FP16** | Peer | 28.11 s | 53.12 s | **31.7× slower** |
 | **oneMKL_FP16** | Ceiling | *precompiled* | 6.29 s | — |
-
-</details>
-
-### NVIDIA H100 NVL · tf32 · `fast`
-
-| N | Crisp | Control<br>CUDA_Apples | **Peer**<br>CUTLASS | Ceiling<br>cuBLAS | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.2 (0.010) `chap6_warp_specialization` | 2.1 (0.016) | — | 5.4 (0.006) | — | 60% |
-| 512 | 17.6 (0.015) `sec2_top` | 3.2 (0.083) | — | 30.7 (0.009) | — | 57% |
-| 1024 | 95.2 (0.023) `chap7_wgmma` | 3.6 (0.602) | — | 141.3 (0.015) | — | 67% |
-| 2048 | 256.3 (0.067) `sec2_top` | 3.7 (4.629) | — | 326.6 (0.053) | — | 78% |
-| 4096 | 292.5 (0.470) `sec2_top` | 3.8 (36.412) | — | 386.3 (0.356) | — | 76% |
-| 8192 | 282.2 (3.896) `chap7_wgmma` | 3.7 (295.645) | — | 408.3 (2.693) | — | 69% |
-| 16384 | 181.7 (48.419) `chap7_wgmma` | 3.7 (2363.975) | — | 282.7 (31.112) | — | 64% |
-| 32768 | 143.3 (491.067) `chap7_wgmma` | 3.7 (19247.561) | — | 308.6 (227.998) | — | 46% |
-
-<details><summary><b>Compilation & Build Overhead</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp** | Crisp | 316 ms | 316 ms | 1.00× |
-| **CUDA_Apples** | Control | 741 ms | 2.01 s | **2.3× slower** |
-| **CUTLASS** | Peer | 445 ms | 1.86 s | **1.4× slower** |
-| **cuBLAS** | Ceiling | *precompiled* | 1.05 s | — |
-
-</details>
-
-### NVIDIA H100 NVL · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
-
-| N | Crisp BF16 | Control<br>CUDA_Apples_BF16 | **Peer**<br>CUTLASS_BF16 | Ceiling<br>cuBLAS_BF16 | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1024 | 91.1 (0.024) | 3.8 (0.567) | 121.1 (0.018) `64x128x64` | 97.4 (0.022) | 0.75× | 94% |
-| 2048 | 332.8 (0.052) | 4.0 (4.329) | 367.7 (0.047) `128x256x64` | 426.4 (0.040) | 0.91× | 78% |
-| 4096 | 466.4 (0.295) | 4.0 (34.193) | 540.5 (0.254) `128x256x64` | 651.9 (0.211) | 0.86× | 72% |
-
-<details><summary><b>Compilation & Build Overhead (BF16)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp** | Crisp | 433 ms | 434 ms | 1.00× |
-| **CUDA_Apples_BF16** | Control | 1.30 s | 3.20 s | **3.0× slower** |
-| **CUTLASS_BF16** | Peer | 20.92 s | 46.02 s | **48.3× slower** |
-| **cuBLAS_BF16** | Ceiling | *precompiled* | 2.78 s | — |
-
-</details>
-
-### NVIDIA H100 NVL · fp16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
-
-| N | Crisp FP16 | Control<br>CUDA_Apples_FP16 | **Peer**<br>CUTLASS_FP16 | Ceiling<br>cuBLAS_FP16 | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1024 | 91.0 (0.024) | 3.8 (0.563) | 119.8 (0.018) `64x128x64` | 120.7 (0.018) | 0.76× | 75% |
-| 2048 | 334.5 (0.051) | 4.0 (4.297) | 370.0 (0.046) `128x256x64` | 385.7 (0.045) | 0.90× | 87% |
-| 4096 | 466.8 (0.294) | 4.0 (33.940) | 540.5 (0.254) `128x256x64` | 693.5 (0.198) | 0.86× | 67% |
-
-<details><summary><b>Compilation & Build Overhead (FP16)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp** | Crisp | 610 ms | 611 ms | 1.00× |
-| **CUDA_Apples_FP16** | Control | 1.31 s | 2.95 s | **2.1× slower** |
-| **CUTLASS_FP16** | Peer | 20.90 s | 46.67 s | **34.3× slower** |
-| **cuBLAS_FP16** | Ceiling | *precompiled* | 2.66 s | — |
-
-</details>
-
-### NVIDIA H100 NVL · f64 · `ieee` *(IEEE double · DMMA tensor cores)*
-
-*IEEE double. Cells read **TFLOPS (kernel ms)**, and Crisp's envelope names the variant that produced each cell. Chapter 7 has no fp64 form: wgmma covers fp16/bf16/tf32/fp8/int8 and there is no fp64 warpgroup MMA in any form.*
-
-**`64F_PEDANTIC` is reported but is NOT a disable-tensor-cores switch.** That reading is imported from fp32, where PEDANTIC forbids tf32; it does not transfer, because DMMA is bit-identical IEEE double and PEDANTIC has no numerical reason to refuse it. The DMMA-vs-vector question is answered by the CUTLASS `OpClassTensorOp` / `OpClassSimt` pair in the reference table below, where the lowering is chosen rather than inferred.
-
-Crisp is **outside-in**: the user picks the configuration, exactly as CUTLASS's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`base`) — what you get without per-size tuning. 2 variants measured.
-
-| N | Crisp F64<br>**envelope** | Crisp F64<br>best single (`base`) | Control<br>CUDA_Apples_F64 | **Peer**<br>CUTLASS_F64 | Ceiling<br>cuBLAS_F64 | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1024 | 11.2 (0.192) `warpspec` | 10.1 | — | 25.0 (0.086) `64x64x16w32x32s4` | 41.6 (0.052) | 0.45× | 27% |
-| 2048 | 14.3 (1.203) `warpspec` | 13.8 | — | 27.6 (0.622) `128x128x16w32x64s3` | 54.2 (0.317) | 0.52× | 26% |
-| 4096 | 22.3 (6.162) `base` | 22.3 | — | 28.2 (4.868) `128x64x16w64x32s3` | 56.9 (2.417) | 0.79× | 39% |
-| 8192 | 24.3 (45.298) `base` | 24.3 | — | 28.3 (38.908) `128x128x16w32x64s3` | 41.9 (26.242) | 0.86× | 58% |
-
-**Reference builds (F64).** Not contenders: each isolates a lowering or a compute type, and is excluded from the columns above so those stay one build per class.
-
-| reference | N=1024 | N=2048 | N=4096 | N=8192 |
-|---|---:|---:|---:|---:|
-| cuBLAS `64F_PEDANTIC` (compute type, still DMMA) | 38.5 | 40.6 | 41.2 | 40.6 |
-| CUTLASS SIMT (vector fp64, no tensor cores) | 11.4 | 22.7 | 23.2 | 22.2 |
-
-
-> **⚠ SIGN FLIPS — these variants reverse with problem size.**
-> Each wins somewhere and loses somewhere, both beyond the measured run-to-run
-> spread, so a single fixed choice is not available and the envelope above is
-> assembled from *different kernels*. Picking by one size will mislead you at another.
-
-> | variant | wins at | loses at |
-> |---|---|---|
-> | `warpspec` | 1024 (+11%), 2048 (+4%) | **4096 (-10%)**, **8192 (-24%)** |
-
-
-<details><summary><b>Compilation & Build Overhead (F64)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp** | Crisp | 359 ms | 359 ms | 1.00× |
-| **CUTLASS_F64** | Peer | 1.89 s | 6.91 s | **5.3× slower** |
-| **cuBLAS_F64** | Ceiling | *precompiled* | 1.60 s | — |
-
-</details>
-
-### NVIDIA H100 PCIe · tf32 · `fast`
-
-| N | Crisp | Control<br>CUDA_Apples | **Peer**<br>CUTLASS | Ceiling<br>cuBLAS | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.2 (0.010) `chap6_warp_specialization` | 1.5 (0.023) | — | 3.5 (0.010) | — | 92% |
-| 512 | 17.4 (0.015) `sec2_top` | 2.8 (0.095) | — | 27.6 (0.010) | — | 63% |
-| 1024 | 93.8 (0.023) `chap7_wgmma` | 3.1 (0.684) | — | 107.9 (0.020) | — | 87% |
-| 2048 | 137.7 (0.125) `chap7_wgmma` | 3.2 (5.380) | — | 200.1 (0.086) | — | 69% |
-| 4096 | 227.4 (0.604) `sec2_top` | 3.2 (42.445) | — | 304.8 (0.451) | — | 75% |
-| 8192 | 246.2 (4.466) `chap7_wgmma` | 3.2 (339.187) | — | 353.7 (3.109) | — | 70% |
-| 16384 | 186.4 (47.198) `sec2_top` | 3.2 (2711.815) | — | 206.7 (42.546) | — | 90% |
-| 32768 | 185.1 (380.119) `sec2_top` | — | — | 169.8 (414.369) | — | 109% |
-
-<details><summary><b>Compilation & Build Overhead</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp** | Crisp | 690 ms | 690 ms | 1.00× |
-| **cuBLAS** | Ceiling | *precompiled* | 2.19 s | — |
-
-</details>
-
-### NVIDIA H100 PCIe · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
-
-| N | Crisp BF16 | Control<br>CUDA_Apples_BF16 | **Peer**<br>CUTLASS_BF16 | Ceiling<br>cuBLAS_BF16 | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1024 | — | 3.3 (0.644) | — | 89.0 (0.024) | — | — |
-| 2048 | — | 3.4 (5.022) | — | 285.6 (0.060) | — | — |
-| 4096 | — | 3.5 (39.808) | — | 547.3 (0.251) | — | — |
-
-<details><summary><b>Compilation & Build Overhead (BF16)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **CUDA_Apples_BF16** | Control | 1.61 s | 4.97 s | — |
-| **cuBLAS_BF16** | Ceiling | *precompiled* | 3.29 s | — |
-
-</details>
-
-### NVIDIA H100 PCIe · fp16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
-
-| N | Crisp FP16 | Control<br>CUDA_Apples_FP16 | **Peer**<br>CUTLASS_FP16 | Ceiling<br>cuBLAS_FP16 | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 256 | — | 1.5 (0.022) | — | 2.5 (0.014) | — | — |
-| 512 | — | 2.9 (0.092) | — | 17.0 (0.016) | — | — |
-| 1024 | — | 3.3 (0.647) | — | 69.5 (0.031) | — | — |
-| 2048 | — | 3.4 (5.028) | — | 270.5 (0.064) | — | — |
-| 4096 | — | 3.4 (39.901) | — | 498.4 (0.276) | — | — |
-| 8192 | — | 3.4 (319.188) | — | 678.6 (1.620) | — | — |
-| 16384 | — | 3.4 (2551.413) | — | 597.8 (14.715) | — | — |
-| 32768 | — | — | — | 434.2 (162.083) | — | — |
-
-<details><summary><b>Compilation & Build Overhead (FP16)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **CUDA_Apples_FP16** | Control | 1.57 s | 4.70 s | — |
-| **cuBLAS_FP16** | Ceiling | *precompiled* | 3.40 s | — |
-
-</details>
-
-### NVIDIA H200 · tf32 · `fast`
-
-| N | Crisp | Control<br>CUDA_Apples | **Peer**<br>CUTLASS | Ceiling<br>cuBLAS | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 512 | — | — | — | — | — | — |
-| 1024 | — | — | — | — | — | — |
-| 2048 | — | — | — | — | — | — |
-| 4096 | — | — | — | — | — | — |
-### NVIDIA H200 · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
-
-| N | Crisp BF16 | Control<br>CUDA_Apples_BF16 | **Peer**<br>CUTLASS_BF16 | Ceiling<br>cuBLAS_BF16 | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 8192 | 585.1 (1.879) | 4.5 (246.086) | — | 885.0 (1.242) | — | 66% |
-| 16384 | 507.8 (17.322) | 4.5 (1967.871) | — | 894.2 (9.837) | — | 57% |
-| 32768 | 491.0 (143.326) | 4.5 (15753.084) | — | 811.1 (86.754) | — | 61% |
-| 65536 | 496.4 (1134.070) | — | — | 817.7 (688.438) | — | 61% |
-
-<details><summary><b>Compilation & Build Overhead (BF16)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp** | Crisp | 384 ms | 385 ms | 1.00× |
-| **CUDA_Apples_BF16** | Control | 942 ms | 2.71 s | **2.5× slower** |
-| **cuBLAS_BF16** | Ceiling | *precompiled* | 1.73 s | — |
 
 </details>
 
@@ -1202,23 +385,16 @@ Crisp is **outside-in**: the user picks the configuration, exactly as CUTLASS's 
 
 *Techniques whose honest answer is "it depends."* Controlled pairs:
 
-### TMA Multicast (NVIDIA only) · H100 NVL
-| tile | AI | N=1024 | N=2048 | N=4096 |
-|---|---:|---:|---:|---:|
-| 64×256 | 25.6 | −6.1% | **−7.0%** | −9.7% |
-| **64×128** | 21.3 | −6.1% | **+15.5%** | **+10.7%** |
-| 64×64 | 16.0 | +0.4% | +1.1% | +4.4% |
-
-### MMA Lowering: `:xe-native` vs `:coop-matrix` (Intel only) · Intel BMG
+### MMA Lowering: `:xe-native` vs `:coop-matrix` (Intel only) · Intel(R) Graphics [0xe20b]
 
 *Same kernel, same 32x64 bf16 geometry over one subgroup; only the lowering differs. `tuned` adds ring depth 2 and prefetch distance 2, which makes its `:coop-matrix` arm the shipped section 2.1 kernel.*
 
 Each cell reads **`:coop-matrix` TFLOPS -> `:xe-native` TFLOPS (change)**, where the change is `(xe_native / coop_matrix - 1)`. Higher TFLOPS is faster, so a positive change means `:xe-native` won at that size.
 
-| pairing | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 |
-|---|---:|---:|---:|---:|---:|---:|
-| bare (no ring, no prefetch) | 3.7→4.6 (**+24.3%**) | 16.5→20.0 (**+20.9%**) | 56.9→55.4 (−2.7%) | 55.3→55.4 (+0.1%) | 48.0→50.4 (**+5.0%**) | 47.0→55.7 (**+18.4%**) |
-| tuned (ring 2, prefetch 2) | 3.9→5.1 (**+31.7%**) | 16.9→22.1 (**+30.8%**) | 48.7→48.5 (−0.5%) | 53.3→60.7 (**+13.8%**) | 48.4→53.0 (**+9.4%**) | 37.0→35.6 (−3.7%) |
+| pairing | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| bare (no ring, no prefetch) | 3.7→4.6 (**+24.3%**) | 16.5→19.7 (**+19.1%**) | 56.0→54.6 (−2.4%) | 54.2→59.7 (**+10.1%**) | 48.3→52.1 (**+7.7%**) | 47.8→58.5 (**+22.5%**) | 43.1→39.0 (**−9.7%**) |
+| tuned (ring 2, prefetch 2) | 3.9→5.2 (**+33.9%**) | 16.9→22.3 (**+31.9%**) | 48.9→48.2 (−1.4%) | 55.9→64.7 (**+15.7%**) | 48.8→54.0 (**+10.7%**) | 37.1→33.5 (**−9.8%**) | 26.2→21.6 (**−17.4%**) |
 
 Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowering is better in isolation and does **not** compose with the register-tile ring. See `docs/topology.md`, `mma-lowering`.
 
@@ -1231,18 +407,19 @@ Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowerin
 | cuBLASLt, oneDNN (**Ceiling**) | **No** — fixed enum / post-op set | **capability** — off-menu costs 2nd kernel + HBM round trip |
 | CUTLASS, SYCL-TLA (**Peer**) | **Yes** — monomorphised functor | **expressiveness & compile time** (~165× faster build) |
 
-### Intel BMG · tf32 · `fast`
+### Intel(R) Graphics [0xe20b] · tf32 · `fast`
 
 #### Ch 1 — Standard Epilogue (ReLU)
 
 | N | Crisp Fused | **Peer**<br>SYCL-TLA Fused | **Ceiling**<br>oneDNN Fused | Baseline+2nd Kernel<br>oneMKL + ReLU | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.2 (0.011) | N/A* | 5.4 (0.006) | 3.8 (0.009) | — | 59% |
-| 512 | 9.5 (0.028) | N/A* | 9.8 (0.027) | 8.7 (0.031) | — | 97% |
-| 1024 | 20.9 (0.103) | N/A* | 13.3 (0.161) | 11.3 (0.189) | — | **157%** |
-| 2048 | 23.7 (0.726) | N/A* | 14.1 (1.223) | 13.2 (1.300) | — | **168%** |
-| 4096 | 16.2 (8.465) | N/A* | 14.3 (9.584) | 13.9 (9.895) | — | 113% |
-| 8192 | 11.8 (92.903) | N/A* | 14.5 (76.082) | 13.9 (78.847) | — | 82% |
+| 256 | 3.2 (0.011) | N/A* | 5.5 (0.006) | 3.8 (0.009) | — | 58% |
+| 512 | 9.6 (0.028) | N/A* | 9.8 (0.027) | 8.7 (0.031) | — | 97% |
+| 1024 | 21.2 (0.102) | N/A* | 13.3 (0.161) | — | — | **159%** |
+| 2048 | 24.8 (0.693) | N/A* | 14.0 (1.223) | 13.2 (1.298) | — | **176%** |
+| 4096 | 16.2 (8.479) | N/A* | 14.3 (9.586) | 13.9 (9.895) | — | 113% |
+| 8192 | 11.7 (93.659) | N/A* | 14.5 (76.083) | 13.9 (78.842) | — | 81% |
+| 16384 | 6.9 (1272.630) | N/A* | 14.5 (608.382) | — | — | 48% |
 
 > *\*Note: SYCL-TLA only implements BF16/FP16/FP8 on Xe2.*
 
@@ -1251,8 +428,8 @@ Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowerin
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
-| **Crisp Fused** | Crisp | 787 ms | 787 ms | 1.00× |
-| **oneDNN Fused** | Ceiling | *precompiled* | 5.53 s | — |
+| **Crisp Fused** | Crisp | 772 ms | 878 ms | 1.00× |
+| **oneDNN Fused** | Ceiling | *precompiled* | 5.18 s | — |
 
 </details>
 
@@ -1262,117 +439,22 @@ Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowerin
 
 | N | Crisp Fused | **Peer**<br>SYCL-TLA Fused | Ceiling (2nd Kernel)<br>oneDNN + Custom | vs Peer | **vs Ceiling (2nd Kernel)** |
 |---:|---:|---:|---:|---:|---:|
-| 1024 | 20.7 (0.104) | N/A* | 11.4 (0.188) | — | ****182%**** |
-| 2048 | 23.8 (0.723) | N/A* | 13.2 (1.299) | — | ****180%**** |
-| 4096 | 16.2 (8.498) | N/A* | 13.9 (9.897) | — | **116%** |
-| 8192 | 11.8 (93.316) | N/A* | 14.2 (77.351) | — | **83%** |
+| 256 | 3.1 (0.011) | N/A* | 3.8 (0.009) | — | **82%** |
+| 512 | 9.5 (0.028) | N/A* | 8.7 (0.031) | — | **110%** |
+| 1024 | 20.9 (0.103) | N/A* | 11.4 (0.188) | — | **183%** |
+| 2048 | 24.7 (0.695) | N/A* | 13.2 (1.300) | — | **187%** |
+| 4096 | 16.5 (8.310) | N/A* | 13.9 (9.868) | — | **119%** |
+| 8192 | 11.7 (94.120) | N/A* | 13.9 (78.834) | — | **84%** |
+| 16384 | 6.8 (1301.110) | N/A* | 14.3 (617.174) | — | **47%** |
 
 <details><summary><b>Compilation & Build Overhead (Fused Custom)</b></summary>
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
-| **Crisp Fused** | Crisp | 738 ms | 738 ms | 1.00× |
-| **oneDNN + Custom** | Ceiling | *precompiled* | 6.48 s | — |
+| **Crisp Fused** | Crisp | 772 ms | 919 ms | 1.00× |
+| **oneDNN + Custom** | Ceiling | *precompiled* | 6.11 s | — |
 
 </details>
-
-### NVIDIA H100 NVL · tf32 · `fast`
-
-#### Ch 1 — Standard Epilogue (ReLU)
-
-| N | Crisp Fused | **Peer**<br>CUTLASS Fused | **Ceiling**<br>cuBLASLt Fused | Baseline+2nd Kernel<br>cuBLAS + ReLU | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 2.8 (0.012) | — | 3.5 (0.009) | 2.3 (0.015) | — | 80% |
-| 512 | 17.4 (0.015) | — | 22.3 (0.012) | 14.8 (0.018) | — | 78% |
-| 1024 | 92.5 (0.023) | — | 99.4 (0.022) | 72.9 (0.029) | — | 93% |
-| 2048 | 254.3 (0.068) | — | 292.9 (0.059) | 228.6 (0.075) | — | 87% |
-| 4096 | 296.2 (0.464) | — | 376.6 (0.365) | 325.2 (0.423) | — | 79% |
-| 8192 | 295.0 (3.727) | — | 406.2 (2.707) | 375.3 (2.930) | — | 73% |
-| 16384 | 183.8 (47.846) | — | 283.7 (31.005) | 274.2 (32.084) | — | 65% |
-| 32768 | 146.5 (480.205) | — | 308.3 (228.220) | 299.2 (235.156) | — | 48% |
-
-<details><summary><b>Compilation & Build Overhead (Fused ReLU)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp Fused** | Crisp | 421 ms | 421 ms | 1.00× |
-| **cuBLASLt Fused** | Ceiling | *precompiled* | 1.61 s | — |
-
-</details>
-
-#### Ch 2 — Custom Epilogue (Arbitrary User Function)
-
-> *Ceilings (oneDNN / cuBLASLt) cannot fuse arbitrary user functions — forced to pay 2nd kernel + HBM round-trip.*
-
-| N | Crisp Fused | **Peer**<br>CUTLASS Fused | Ceiling (2nd Kernel)<br>cuBLASLt + Custom | vs Peer | **vs Ceiling (2nd Kernel)** |
-|---:|---:|---:|---:|---:|---:|
-| 256 | 2.8 (0.012) | — | 2.8 (0.012) | — | **101%** |
-| 512 | 17.2 (0.016) | — | 17.9 (0.015) | — | **96%** |
-| 1024 | 91.6 (0.023) | — | 80.6 (0.027) | — | **114%** |
-| 2048 | 246.5 (0.070) | — | 227.1 (0.076) | — | **109%** |
-| 4096 | 289.9 (0.474) | — | 327.1 (0.420) | — | **89%** |
-| 8192 | 251.6 (4.369) | — | 375.4 (2.929) | — | **67%** |
-| 16384 | 182.8 (48.113) | — | 273.4 (32.172) | — | **67%** |
-| 32768 | 141.6 (496.865) | — | 305.6 (230.295) | — | **46%** |
-
-<details><summary><b>Compilation & Build Overhead (Fused Custom)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp Fused** | Crisp | 434 ms | 434 ms | 1.00× |
-| **cuBLASLt + Custom** | Ceiling | *precompiled* | 1.63 s | — |
-
-</details>
-
-### NVIDIA H100 PCIe · tf32 · `fast`
-
-#### Ch 1 — Standard Epilogue (ReLU)
-
-| N | Crisp Fused | **Peer**<br>CUTLASS Fused | **Ceiling**<br>cuBLASLt Fused | Baseline+2nd Kernel<br>cuBLAS + ReLU | vs Peer | vs Ceiling |
-|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 2.8 (0.012) | — | 2.3 (0.015) | 1.9 (0.018) | — | 121% |
-| 512 | 17.4 (0.015) | — | 16.4 (0.016) | 12.9 (0.021) | — | 106% |
-| 1024 | 93.7 (0.023) | — | 62.1 (0.035) | 51.1 (0.042) | — | **151%** |
-| 2048 | 136.6 (0.126) | — | 162.6 (0.106) | 138.2 (0.124) | — | 84% |
-| 4096 | 227.6 (0.604) | — | 291.0 (0.472) | 248.5 (0.553) | — | 78% |
-| 8192 | 244.6 (4.495) | — | 350.7 (3.135) | 319.5 (3.441) | — | 70% |
-| 16384 | 185.8 (47.338) | — | 209.2 (42.041) | 201.3 (43.706) | — | 89% |
-| 32768 | 185.3 (379.851) | — | 171.3 (410.838) | 168.1 (418.609) | — | 108% |
-
-<details><summary><b>Compilation & Build Overhead (Fused ReLU)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp Fused** | Crisp | 891 ms | 891 ms | 1.00× |
-| **cuBLASLt Fused** | Ceiling | *precompiled* | 3.13 s | — |
-
-</details>
-
-#### Ch 2 — Custom Epilogue (Arbitrary User Function)
-
-> *Ceilings (oneDNN / cuBLASLt) cannot fuse arbitrary user functions — forced to pay 2nd kernel + HBM round-trip.*
-
-| N | Crisp Fused | **Peer**<br>CUTLASS Fused | Ceiling (2nd Kernel)<br>cuBLASLt + Custom | vs Peer | **vs Ceiling (2nd Kernel)** |
-|---:|---:|---:|---:|---:|---:|
-| 256 | 2.8 (0.012) | — | 2.2 (0.015) | — | **125%** |
-| 512 | 17.2 (0.016) | — | 15.0 (0.018) | — | **115%** |
-| 1024 | 92.8 (0.023) | — | 54.1 (0.040) | — | ****171%**** |
-| 2048 | 135.1 (0.127) | — | 143.1 (0.120) | — | **94%** |
-| 4096 | 225.6 (0.609) | — | 250.0 (0.550) | — | **90%** |
-| 8192 | 245.1 (4.486) | — | 320.1 (3.435) | — | **77%** |
-| 16384 | 186.0 (47.302) | — | 202.6 (43.420) | — | **92%** |
-| 32768 | 184.4 (381.623) | — | 168.6 (417.324) | — | **109%** |
-
-<details><summary><b>Compilation & Build Overhead (Fused Custom)</b></summary>
-
-| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
-|---|---|---:|---:|---:|
-| **Crisp Fused** | Crisp | 1.01 s | 1.01 s | 1.00× |
-| **cuBLASLt + Custom** | Ceiling | *precompiled* | 3.25 s | — |
-
-</details>
-
-### NVIDIA H200 · tf32 · `fast`
 
 ## § 5 — Scaling Out
 

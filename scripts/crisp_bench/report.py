@@ -763,7 +763,10 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
         lines.append("|---:|---:|---:|---:|---:|---:|---:|")
 
         # Top chapters to draw best mainloop from
-        top_keys = ["sec2_top", "chap7_wgmma", "chap6_warp_specialization", "chap5_multistage_ring", "chap3_wgmma", "intel_prefetch"]
+        # chap4_cheap_fetch included: it is a mainloop like the others, and leaving it out made the
+        # BMG 16384 cell read 8.7 (sec2_top) while Ch 4 had measured 13.2 at the same size.  The
+        # cell names its winning chapter, so widening the pool cannot hide where a number came from.
+        top_keys = ["sec2_top", "chap7_wgmma", "chap6_warp_specialization", "chap5_multistage_ring", "chap4_cheap_fetch", "chap3_wgmma", "intel_prefetch"]
         
         # Collect all unique sizes across top keys
         all_s = set()
@@ -785,7 +788,13 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 return max(matching, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0)
 
             c_pt = _best_pt(_is_crisp)
-            ctrl_pt = _best_pt(_is_control)
+            # CONTROL IS PAIRED WITH CRISP'S WINNING CHAPTER.  A Control mirrors one kernel's
+            # algorithm; the best Control over EVERY chapter compared, e.g., Crisp's sec2_top
+            # against Ch 4's hand-written mirror, which says nothing about codegen overhead.
+            # Peer and Ceiling stay pooled: they are libraries, not mirrors of a chapter.
+            c_tk = next((tk for comp, pt, tk in cand_pts if pt is c_pt), None)
+            _ctrl = [pt for comp, pt, tk in cand_pts if tk == c_tk and _is_control(comp)]
+            ctrl_pt = max(_ctrl, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0) if _ctrl else None
             peer_pt = _best_pt(_is_peer)
             ceil_pt = _best_pt(lambda k: _is_ceiling(k) and "_Plus_" not in k)
 
@@ -831,6 +840,28 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
 
         if platform == "intel":
             lines.append("\n> *\\*Note: SYCL-TLA does not implement TF32 DPAS on Xe2 (only BF16/FP16/FP8). See §2.1 below for the native 270+ TFLOPS BF16 suite.*\n")
+            # What "vs Ceiling" measures here, stated from the data rather than asserted.  oneMKL is
+            # asked for tf32 (compute_mode::float_to_tf32) but on Xe2 its tf32 path stays flat far
+            # below its own 16-bit path -- the signature of NOT running on the matrix engines.  If
+            # so, a Crisp tf32-on-XMX cell above 100% is "what oneMKL gives you for tf32", not
+            # Crisp beating the hardware limit.  Printed only when both numbers exist.
+            def _max_ceiling(chapter):
+                best = None
+                for _s, comps in matmul_data[gpu].get(chapter, {}).get("fast", {}).items():
+                    for comp, pt in comps.items():
+                        if _is_ceiling(comp) and "_Plus_" not in comp:
+                            v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
+                            if v and (best is None or v > best):
+                                best = v
+                return best
+            mkl32, mkl16 = _max_ceiling("sec2_top"), _max_ceiling("sec2_top_bf16")
+            if mkl32 and mkl16:
+                lines.append(f"> *Reading **vs Ceiling** at tf32: oneMKL is requested at tf32, but its best "
+                             f"tf32 point here is {mkl32:.1f} TFLOPS against {mkl16:.1f} for its own bf16 path. "
+                             f"That gap suggests oneMKL's tf32 does not run on the matrix engines on Xe2 (as "
+                             f"SYCL-TLA's does not), so a cell above 100% is Crisp against oneMKL's tf32 "
+                             f"path, not against the hardware limit. Unconfirmed; the bf16 table is the "
+                             f"like-for-like ceiling comparison.*\n")
 
         # Compile time summary table
         def _fmt_ms(ms):
@@ -838,7 +869,11 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             return f"{ms/1000.0:.2f} s" if ms >= 1000 else f"{int(round(ms))} ms"
 
         c_pt0 = _best_pt(_is_crisp)
-        ctrl_pt0 = _best_pt(_is_control)
+        # Paired with Crisp's chapter, as in the table above: a build time is only comparable
+        # against the mirror of the SAME kernel.  (These are the largest size's candidates.)
+        _c_tk0 = next((tk for comp, pt, tk in cand_pts if pt is c_pt0), None) if c_pt0 else None
+        _ctrl0 = [pt for comp, pt, tk in cand_pts if tk == _c_tk0 and _is_control(comp)]
+        ctrl_pt0 = max(_ctrl0, key=lambda p: p.get("metrics", {}).get("throughput", {}).get("tflops") or 0.0) if _ctrl0 else None
         peer_pt0 = _best_pt(_is_peer)
         ceil_pt0 = _best_pt(lambda k: _is_ceiling(k) and "_Plus_" not in k)
 
@@ -1118,16 +1153,38 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
     # Section 3: Situational Techniques
     lines.append("## § 3 — Situational Techniques\n")
     lines.append("*Techniques whose honest answer is \"it depends.\"* Controlled pairs:\n")
-    lines.append("### TMA Multicast (NVIDIA only) · H100 NVL")
-    lines.append("| tile | AI | N=1024 | N=2048 | N=4096 |")
-    lines.append("|---|---:|---:|---:|---:|")
-    lines.append("| 64×256 | 25.6 | −6.1% | **−7.0%** | −9.7% |")
-    lines.append("| **64×128** | 21.3 | −6.1% | **+15.5%** | **+10.7%** |")
-    lines.append("| 64×64 | 16.0 | +0.4% | +1.1% | +4.4% |\n")
+    # TMA multicast (NVIDIA).  DATA-DRIVEN, and rendered only for a device that has results.
+    # This was a static paste-in of literal percentages headed "· H100 NVL", printed into every
+    # report whatever results/ held -- so a BMG-only report carried H100 numbers that read as
+    # current data.  A number the results directory cannot reproduce does not belong in a
+    # report generated from it.
+    for gpu in gpus:
+        mc = matmul_data[gpu].get("sec3_cluster_multicast", {}).get("fast", {})
+        mc_sizes = sorted(s for s in mc if isinstance(s, int))
+        if not mc_sizes:
+            continue
+        def _mc_tf(s, comp):
+            pt = mc.get(s, {}).get(comp)
+            return (pt or {}).get("metrics", {}).get("throughput", {}).get("tflops")
+        lines.append(f"### TMA Multicast · {gpu}\n")
+        lines.append("*Same 64×128 cluster kernel with and without TMA multicast. Cells are TFLOPS; the "
+                     "last row is `(multicast / cluster − 1)`, so positive means multicast won.*\n")
+        lines.append("| contender | " + " | ".join(f"N={s}" for s in mc_sizes) + " |")
+        lines.append("|---|" + "---:|" * len(mc_sizes))
+        for comp, label in (("Crisp", "Crisp cluster 64×128"), ("Crisp_Multicast", "Crisp + TMA multicast"),
+                            ("CUBLAS_Optimal", "cuBLAS (Ceiling)")):
+            vals = [_mc_tf(s, comp) for s in mc_sizes]
+            if any(v is not None for v in vals):
+                lines.append(f"| {label} | " + " | ".join("—" if v is None else f"{v:.1f}" for v in vals) + " |")
+        deltas = []
+        for s in mc_sizes:
+            a, b = _mc_tf(s, "Crisp"), _mc_tf(s, "Crisp_Multicast")
+            deltas.append("—" if not a or not b else f"{(b / a - 1) * 100:+.1f}%")
+        lines.append("| multicast vs cluster | " + " | ".join(deltas) + " |\n")
 
-    # MMA lowering (Intel).  DATA-DRIVEN, unlike the multicast table above, which is a static
-    # paste-in of literal percentages.  Both pairs are rendered on purpose: :xe-native is faster
-    # BARE and slower TUNED, so showing only one pair would be true and misleading.
+    # MMA lowering (Intel).  DATA-DRIVEN, like the multicast table above.  Both pairs are rendered
+    # on purpose: :xe-native is faster BARE and slower TUNED, so showing only one pair would be
+    # true and misleading.
     for gpu in gpus:
         low = matmul_data[gpu].get("sec3_mma_lowering", {}).get("fast", {})
         if not low:
@@ -1312,7 +1369,10 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 vs_cp = format_ratio(c_tf, cp_tf, as_pct=True)
                 p_cell = "N/A*" if platform == "intel" else _fmt(p_pt)
 
-                lines.append(f"| {s} | {_fmt(c_pt)} | {p_cell} | {_fmt(ceil_plus_pt)} | {vs_p} | **{vs_cp}** |")
+                # The column is bold by design, but format_ratio already bolds a ratio >= 1.5, so
+                # wrapping it again rendered `****183%****`.  Bold once.
+                vs_cp_cell = vs_cp if vs_cp.startswith("**") or vs_cp == "—" else f"**{vs_cp}**"
+                lines.append(f"| {s} | {_fmt(c_pt)} | {p_cell} | {_fmt(ceil_plus_pt)} | {vs_p} | {vs_cp_cell} |")
 
             # Ch 2 Compile table
             target_ir = "SPIR-V" if platform == "intel" else "PTX"
