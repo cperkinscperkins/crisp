@@ -49,6 +49,14 @@ export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 # crisp-compile in the Linux container finds llc / llvm-spirv / llvm-as on PATH
 # (the LLVM toolchain), NOT the repo's Windows binaries — same as run-on-pod.sh.
 export CRISP_USE_SYSTEM_TOOLS=true
+# Use the Unified Runtime's V1 Level Zero adapter for every SYCL process (oneMKL, SYCL-TLA,
+# SYCL_Apples).  The V2 adapter -- the default in this image's oneAPI 2025.3 -- loses the device
+# intermittently on BMG under WSL2: measured 2026-09-12, oneMKL tf32 at N=8192 died with
+# UR_RESULT_ERROR_DEVICE_LOST in 5 of 12 runs on V2 and 0 of 12 on V1, and oneMKL tf32/bf16,
+# SYCL-TLA bf16 and SYCL_Apples ran at identical throughput on both (within 1%).  On V2 each
+# sweep dropped a different random set of competitor points.  Crisp's own L0 harnesses do not go
+# through the SYCL runtime and are unaffected.
+export SYCL_UR_USE_LEVEL_ZERO_V2=0
 
 echo '=== Building Crisp inside container ==='
 rm -rf /root/.cache/common-lisp

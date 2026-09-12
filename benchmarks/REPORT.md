@@ -4,7 +4,7 @@
 
 | device | data captured | source | hardware profile |
 |---|---|---|---|
-| Intel(R) Graphics [0xe20b] | 2026-09-12 | Crisp `25f64059` (docker) | `bmg` (validated) |
+| Intel(R) Graphics [0xe20b] | 2026-09-12 | Crisp `8a6d2b09` (docker) | `bmg` (validated) |
 
 ---
 
@@ -279,15 +279,15 @@ Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline
 |---:|---:|---:|---:|---:|---:|---:|
 | 256 | 3.4 (0.010) `chap5_multistage_ring` | 1.9 (0.017) | N/A* | 5.3 (0.006) | — | 65% |
 | 512 | 12.0 (0.022) `chap4_cheap_fetch` | 14.3 (0.019) | N/A* | 9.8 (0.027) | — | 122% |
-| 1024 | 32.2 (0.067) `sec2_top` | 11.5 (0.186) | N/A* | 12.0 (0.178) | — | **268%** |
-| 2048 | 31.1 (0.553) `sec2_top` | 12.6 (1.363) | N/A* | 13.8 (1.245) | — | **225%** |
-| 4096 | 22.6 (6.088) `sec2_top` | 10.4 (13.254) | N/A* | — | — | — |
-| 8192 | 16.4 (67.011) `sec2_top` | 8.2 (133.396) | N/A* | 14.2 (77.557) | — | 116% |
-| 16384 | 13.2 (668.724) `chap4_cheap_fetch` | 6.1 (1449.499) | N/A* | — | — | — |
+| 1024 | 32.1 (0.067) `sec2_top` | 11.6 (0.186) | N/A* | — | — | — |
+| 2048 | 30.6 (0.561) `sec2_top` | 12.6 (1.368) | N/A* | 13.8 (1.242) | — | **222%** |
+| 4096 | 22.3 (6.161) `sec2_top` | 10.4 (13.231) | N/A* | 14.3 (9.602) | — | **156%** |
+| 8192 | 16.3 (67.252) `sec2_top` | 7.9 (139.036) | N/A* | — | — | — |
+| 16384 | 13.2 (668.724) `chap4_cheap_fetch` | 6.1 (1449.499) | N/A* | 14.4 (611.413) | — | 91% |
 
 > *\*Note: SYCL-TLA does not implement TF32 DPAS on Xe2 (only BF16/FP16/FP8). See §2.1 below for the native 270+ TFLOPS BF16 suite.*
 
-> *Reading **vs Ceiling** at tf32: oneMKL is requested at tf32, but its best tf32 point here is 14.2 TFLOPS against 114.6 for its own bf16 path. That gap suggests oneMKL's tf32 does not run on the matrix engines on Xe2 (as SYCL-TLA's does not), so a cell above 100% is Crisp against oneMKL's tf32 path, not against the hardware limit. Unconfirmed; the bf16 table is the like-for-like ceiling comparison.*
+> *Reading **vs Ceiling** at tf32: oneMKL is requested at tf32, but its best tf32 point here is 14.4 TFLOPS against 114.6 for its own bf16 path. That gap suggests oneMKL's tf32 does not run on the matrix engines on Xe2 (as SYCL-TLA's does not), so a cell above 100% is Crisp against oneMKL's tf32 path, not against the hardware limit. Unconfirmed; the bf16 table is the like-for-like ceiling comparison.*
 
 
 <details><summary><b>Compilation & Build Overhead</b></summary>
@@ -296,6 +296,7 @@ Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline
 |---|---|---:|---:|---:|
 | **Crisp** | Crisp | 719 ms | 721 ms | 1.00× |
 | **SYCL_Apples** | Control | 1.77 s | 4.02 s | **2.5× slower** |
+| **oneMKL** | Ceiling | *precompiled* | 6.72 s | — |
 
 </details>
 
@@ -343,13 +344,13 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 | N | Crisp FP16<br>**envelope** | Crisp FP16<br>best single (`wg256xepf2`) | Control<br>SYCL_Apples_FP16 | **Peer**<br>SYCL-TLA_FP16 | Ceiling<br>oneMKL_FP16 | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 3.6 (0.009) `pfw2` | 2.9 | 2.2 (0.015) | 0.5 (0.074) | 9.8 (0.003) | **8.01×** | 37% |
-| 512 | 19.0 (0.014) `pfw2` | 15.3 | 8.2 (0.033) | 3.3 (0.082) | 41.0 (0.007) | **5.80×** | 46% |
-| 1024 | 73.7 (0.029) `wg256xepf2` | 73.7 | 16.5 (0.130) | 23.7 (0.091) | 75.4 (0.029) | **3.12×** | 98% |
-| 2048 | 81.9 (0.210) `wg256xepf2` | 81.9 | 19.0 (0.907) | 62.9 (0.273) | 88.4 (0.194) | 1.30× | 93% |
-| 4096 | 107.5 (1.278) `wg256xepf2` | 107.5 | 18.9 (7.262) | 87.3 (1.574) | 110.9 (1.240) | 1.23× | 97% |
-| 8192 | 111.1 (9.899) `wg256xepf2` | 111.1 | 16.1 (68.463) | 91.0 (12.089) | 111.6 (9.853) | 1.22× | 100% |
-| 16384 | 77.2 (113.970) `wg256xe` | 56.6 | 11.3 (780.846) | 91.7 (95.887) | 110.9 (79.329) | 0.84× | 70% |
+| 256 | 3.6 (0.009) `pfw2` | 2.9 | 2.2 (0.015) | 0.5 (0.072) | 10.1 (0.003) | **7.75×** | 36% |
+| 512 | 18.8 (0.014) `pfw2` | 15.3 | 8.2 (0.033) | 2.7 (0.100) | 41.0 (0.007) | **7.04×** | 46% |
+| 1024 | 73.5 (0.029) `wg256xepf2` | 73.5 | 16.5 (0.130) | 24.6 (0.087) | 75.1 (0.029) | **2.99×** | 98% |
+| 2048 | 81.9 (0.210) `wg256xepf2` | 81.9 | 19.0 (0.905) | 54.7 (0.314) | 86.6 (0.198) | 1.50× | 95% |
+| 4096 | 107.6 (1.277) `wg256xepf2` | 107.6 | 18.9 (7.276) | 88.6 (1.551) | 110.8 (1.241) | 1.21× | 97% |
+| 8192 | 111.0 (9.902) `wg256xepf2` | 111.0 | 16.1 (68.483) | 91.2 (12.059) | 111.7 (9.846) | 1.22× | 99% |
+| 16384 | 114.1 (77.092) `wg256xepf2` | 114.1 | 11.3 (780.376) | 92.3 (95.347) | 110.1 (79.859) | 1.24× | 104% |
 
 > **⚠ SIGN FLIPS — these variants reverse with problem size.**
 > Each wins somewhere and loses somewhere, both beyond the measured run-to-run
@@ -358,26 +359,25 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 > | variant | wins at | loses at |
 > |---|---|---|
-> | `pfw1` | 256 (+7%), 512 (+12%), 2048 (+12%), 4096 (+29%) | **8192 (-17%)**, **16384 (-80%)** |
-> | `pfw2` | 256 (+9%), 512 (+15%), 2048 (+12%), 4096 (+28%) | **8192 (-18%)**, **16384 (-80%)** |
-> | `pfw3` | 256 (+8%), 512 (+12%), 2048 (+10%), 4096 (+26%) | **8192 (-15%)**, **16384 (-81%)** |
-> | `pfw4` | 256 (+7%), 512 (+11%), 2048 (+8%), 4096 (+23%) | **8192 (-5%)**, **16384 (-81%)** |
-> | `wg256` | 1024 (+2%) | **256 (-17%)**, **512 (-15%)**, **2048 (-9%)**, **4096 (-10%)**, **8192 (-7%)**, **16384 (-8%)** |
-> | `wg256pf1` | 2048 (+10%), 4096 (+27%), 8192 (+35%) | **256 (-22%)**, **512 (-17%)**, **1024 (-2%)**, **16384 (-54%)** |
-> | `wg256pf2` | 2048 (+10%), 4096 (+25%), 8192 (+34%) | **256 (-22%)**, **512 (-17%)**, **1024 (-3%)**, **16384 (-64%)** |
-> | `wg256pf2cc` | 2048 (+9%), 4096 (+26%), 8192 (+34%) | **256 (-22%)**, **512 (-18%)**, **1024 (-3%)**, **16384 (-64%)** |
-> | `wg256xe` | 1024 (+10%), 2048 (+8%), 4096 (+9%), 8192 (+15%), 16384 (+12%) | **256 (-11%)**, **512 (-5%)** |
-> | `wg256xepf2` | 1024 (+13%), 2048 (+28%), 4096 (+49%), 8192 (+60%) | **256 (-13%)**, **512 (-7%)**, **16384 (-18%)** |
+> | `pfw1` | 256 (+8%), 512 (+12%), 2048 (+11%), 4096 (+29%) | **8192 (-14%)**, **16384 (-79%)** |
+> | `pfw2` | 256 (+9%), 512 (+15%), 2048 (+11%), 4096 (+28%) | **8192 (-17%)**, **16384 (-81%)** |
+> | `pfw3` | 256 (+8%), 512 (+12%), 2048 (+10%), 4096 (+26%) | **8192 (-12%)**, **16384 (-81%)** |
+> | `pfw4` | 256 (+7%), 512 (+11%), 2048 (+7%), 4096 (+24%) | **1024 (-3%)**, **8192 (-7%)**, **16384 (-80%)** |
+> | `wg256pf1` | 2048 (+10%), 4096 (+27%), 8192 (+35%) | **256 (-22%)**, **512 (-17%)**, **16384 (-56%)** |
+> | `wg256pf2` | 2048 (+9%), 4096 (+26%), 8192 (+34%) | **256 (-22%)**, **512 (-17%)**, **1024 (-2%)**, **16384 (-64%)** |
+> | `wg256pf2cc` | 2048 (+9%), 4096 (+26%), 8192 (+34%) | **256 (-21%)**, **512 (-17%)**, **1024 (-3%)**, **16384 (-63%)** |
+> | `wg256xe` | 1024 (+9%), 2048 (+10%), 4096 (+10%), 8192 (+15%), 16384 (+12%) | **256 (-11%)**, **512 (-5%)** |
+> | `wg256xepf2` | 1024 (+12%), 2048 (+28%), 4096 (+50%), 8192 (+60%), 16384 (+65%) | **256 (-13%)**, **512 (-7%)** |
 
 
 <details><summary><b>Compilation & Build Overhead (FP16)</b></summary>
 
 | contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
-| **Crisp** | Crisp | 886 ms | 887 ms | 1.00× |
-| **SYCL_Apples_FP16** | Control | 1.71 s | 3.86 s | **1.9× slower** |
-| **SYCL-TLA_FP16** | Peer | 28.11 s | 53.12 s | **31.7× slower** |
-| **oneMKL_FP16** | Ceiling | *precompiled* | 6.29 s | — |
+| **Crisp** | Crisp | 846 ms | 847 ms | 1.00× |
+| **SYCL_Apples_FP16** | Control | 1.76 s | 3.98 s | **2.1× slower** |
+| **SYCL-TLA_FP16** | Peer | 28.15 s | 52.57 s | **33.3× slower** |
+| **oneMKL_FP16** | Ceiling | *precompiled* | 6.43 s | — |
 
 </details>
 

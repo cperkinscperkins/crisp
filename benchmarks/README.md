@@ -355,6 +355,19 @@ check — 1.4 s.  Slow large points are slow *kernels*.
   results always go to `results/scratch/`**, whatever flags were passed.  **Enforced** (`_skip` in
   `matmul.py`; `BenchmarkSweep.save` in `harness.py`).
 
+### SYCL runtime adapter (Intel)
+
+- **Every SYCL contender runs on the Unified Runtime's V1 Level Zero adapter**
+  (`SYCL_UR_USE_LEVEL_ZERO_V2=0`, set in `scripts/bench-intel-entrypoint.sh`).  **Enforced** for
+  `bench-intel.sh` runs.
+- Why: the V2 adapter, the default in the container's oneAPI 2025.3, loses the device
+  intermittently on BMG/WSL2.  Measured 2026-09-12: oneMKL tf32 at N=8192 failed with
+  `UR_RESULT_ERROR_DEVICE_LOST` in 5 of 12 runs on V2 and 0 of 12 on V1, and each sweep dropped a
+  different random set of competitor points.  oneMKL tf32/bf16, SYCL-TLA bf16 and SYCL_Apples ran
+  at identical throughput on both adapters (within 1%), so the switch changes no number.
+- Crisp's L0 harnesses do not use the SYCL runtime.  A native (non-Docker) Intel run does not get
+  this setting; export it yourself.
+
 ### Hardware profile
 
 - Every sweep compiles against a profile matched to the device, and every result records which
