@@ -283,7 +283,11 @@ its rule allows.  The harness prints the rule at the top of each pass.
 - **Above 16384, as far as device memory allows**, per ladder (see the per-width table under
   *Run the Benchmarks*).  BMG reports 11.6 GB; its 1 GiB *single-allocation* cap is lifted in the
   Crisp L0 fixture by the relaxed-allocation-limits extension, and SYCL has run bf16 at 32768 on
-  BMG.  **Partly enforced:** the VRAM clamp queries `nvidia-smi` only, so on Intel it clamps nothing.
+  BMG.  **Enforced on both vendors:** NVIDIA memory comes from `nvidia-smi`, Intel from Level Zero
+  (`scripts/hw-profile/query-l0.cpp`, built with the fixture's toolchain).  BMG: 11.6 GiB, so the
+  ceiling is N ≈ 24,900 for tf32 and ≈ 30,500 for bf16.  Caveat: inside the Docker container the
+  driver also caps a **single allocation at 1 GiB**, which the fixture lifts and the generated L0
+  harness does not — so a chap1–3 point above 16384 tf32 would fail to allocate.
 - A size can still be **declined by the pacer** (below) when it cannot finish inside its timeout.
   That is printed as a `SKIP` line with the reason, so the gap in the table is attributable.
 
@@ -317,7 +321,16 @@ Per harness, as read from the source:
 | Crisp CUDA fixture (`crisp/bench_harness.cu`) | strided 64×64 spot check | < 1 s |
 | SYCL / CUDA Apples, oneMKL, controls | A = B = 1, every element of C must equal K — one O(N²) pass | < 1 s |
 | Crisp CUDA auto-bench (`crisp-hoist-cuda --mma-bench`) | full host reference | `matmul.py` kills the child at its BENCH line above `VERIFY_MAX_N` = 2048, so the reference never runs |
-| Crisp L0 auto-bench (`crisp-hoist-l0 --mma-test`) | *not yet inspected* | fallback only (the fixture is preferred); skipped above 8192 |
+| Crisp L0 generated harness (`crisp-hoist-l0 --mma-test`) | strided 64×64 sample over the whole of C, operands recomputed from the fill | < 1 s — so it is verified at **every** size |
+
+**Which BMG kernels use the generated L0 harness.**  The reviewed fixture cannot bind SLM tensor
+arguments, so `chap1_handrolled_mma`, `chap2_tiling` and `chap3_async` — tf32 and bf16, half the
+section-1 ladder — are measured through the generated harness.  Until 2026-09-12 that harness
+checked only the top-left 64×64 corner (blind to every other tile), `matmul.py` killed it before
+the check above N=2048 (so those rungs were recorded unverified from 4096 up), a hard cap kept it
+at or below 8192, its warmup was hardcoded to 20, and `chap2_tiling`/`chap3_async` tf32 were not
+even enabled for it — `chap2_tiling` tf32 had recorded **zero** BMG points since 2026-08-22.  All
+five are fixed; the check is negative-tested (`--mma-scale=2` → `MMA_WRONG`).
 
 **Verification is not a time cost at large N on either vendor.**  Measured on BMG, `chap0_naive`
 at 8192: kernel 22.8 s per iteration, everything else — allocation, fill, copies and the spot

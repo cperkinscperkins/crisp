@@ -93,6 +93,9 @@ def _apply_hw(meta):
     # only the first has measured keys.  Unrecoverable after the fact, so it is stamped.
     meta.hardware.profile_provenance = HW.get("profile_provenance")
     meta.hardware.profile_source     = HW.get("hardware_profile_file")
+    # create_metadata only asks nvidia-smi; on Intel the sweep's own L0 query is the answer.
+    if meta.hardware.vram_bytes is None and VRAM_BYTES:
+        meta.hardware.vram_bytes = VRAM_BYTES
     return meta
 
 SIZE_SCALE_REF = 2048
@@ -151,6 +154,8 @@ _BENCH_RE      = re.compile(r'^\s*BENCH\b')
 # same pass.  No compiler change, and the harness's GFLOPS formula divides by ITERS so it stays
 # consistent with whatever we substitute.
 _COUNTS_RE = re.compile(r'const\s+int\s+WARMUP\s*=\s*\d+\s*,\s*ITERS\s*=\s*\d+\s*;')
+_L0_WARMUP_RE = re.compile(r'_w\s*<\s*\d+\s*;')
+_L0_ITERS_RE  = re.compile(r'const\s+int\s+BENCH_ITERS\s*=\s*\d+\s*;')
 
 def _rewrite_bench_counts(txt: str, n: int, base_warmup: int = 20, base_iters: int = 100,
                           counts=None) -> str:
@@ -158,6 +163,12 @@ def _rewrite_bench_counts(txt: str, n: int, base_warmup: int = 20, base_iters: i
     # sweep decided and records, instead of recomputing its own.
     w, it = counts if counts else scaled_counts(base_warmup, base_iters, n)
     new, k = _COUNTS_RE.subn(f"const int WARMUP = {w}, ITERS = {it};", txt)
+    if k == 0:
+        # The GENERATED L0 harness spells them differently: a literal warmup loop bound and a
+        # BENCH_ITERS constant.  Its warmup was hardcoded to 20 whatever the sweep asked for.
+        new, kw = _L0_WARMUP_RE.subn(f"_w < {w};", txt)
+        new, ki = _L0_ITERS_RE.subn(f"const int BENCH_ITERS = {it};", new)
+        k = kw + ki
     if k == 0:
         print(f"  (note: could not rewrite WARMUP/ITERS in the generated harness for N={n}; "
               f"it will use the baked-in 20/100)", file=sys.stderr)
@@ -707,7 +718,12 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     if c.returncode != 0:
         print("autobench-l0 build failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
     
-    verify = should_full_verify(N)
+    # VERIFY AT EVERY SIZE.  should_full_verify() exists for the CUDA generated harness, whose
+    # reference is a full O(N^3) host loop and is killed at its BENCH line above VERIFY_MAX_N.  The
+    # L0 generated harness never had that cost: it checked a 64x64 corner, and now a strided 64x64
+    # sample (overlays/hoist-l0), under a second at 16384.  Applying the CUDA rule here recorded
+    # chap1..chap3 on BMG as UNVERIFIED from 4096 up, for no saving at all.
+    verify = True
     out, status = run_bench_proc([str(exe)], verify=verify, timeout=bench_timeout_for(N))
     if status == "timeout":
         print(f"  ! autobench-l0 {N}^3 TIMED OUT after {bench_timeout_for(N):.0f}s — skipping point", file=sys.stderr)
@@ -743,8 +759,9 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
     pacer = SizePacer(chapter, comp_name, warmup, iters)
     for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
-        if S > 8192:
-            continue
+        # (A hard `if S > 8192: continue` stood here from the 2026-08-22 reorg with no stated
+        #  reason.  It kept half the BMG section-1 ladder from ever reaching 16384, which the
+        #  ground rules require.  Time is SizePacer's job now; memory is sizes_for_chapter's.)
         if pacer.announce_skip(S): break
         w, it = pacer.counts(S)
         _t0 = time.time()
@@ -1037,6 +1054,53 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
 
     return env
 
+
+def query_l0_device_memory():
+    """(total_device_memory_bytes, max_single_allocation_bytes) from Level Zero, or (None, None).
+
+    WHY.  The VRAM ceiling in sizes_for_chapter read `nvidia-smi` and nothing else, so on Intel it
+    clamped nothing.  Level Zero has the number; the project already has a program that prints it
+    (scripts/hw-profile/query-l0.cpp), so this builds and runs that rather than growing a second
+    query to drift.  Built with the SAME toolchain as the L0 fixture, so wherever the sweep can run
+    a kernel it can also ask how much memory there is.
+
+    TOTAL is the largest `mem[i] ... totalSize` the probe reports (a discrete card has one).  It is
+    printed to 0.1 GiB, which is far inside the 40% headroom.  MAX_ALLOC is `maxMemAllocSize`,
+    returned for the record: the fixture lifts that cap (relaxed allocation limits) but the
+    generated L0 harness does not.
+
+    Never raises: a sweep that cannot measure the card falls back to not clamping, as before."""
+    probe = HERE.parent.parent / "scripts" / "hw-profile" / "query-l0.cpp"
+    if not probe.exists():
+        return None, None
+    try:
+        import tempfile
+        cxx, link_pre, link_post = _resolve_cxx_and_l0_link()
+        inc = []
+        # The probe includes <ze_api.h> bare.  Linux packages put it under level_zero/.
+        for d in ("/usr/include/level_zero", "/usr/local/include/level_zero"):
+            if os.path.isdir(d):
+                inc += ["-I", d]
+        for i, tok in enumerate(link_pre):
+            if tok == "-I" and i + 1 < len(link_pre) and os.path.isdir(os.path.join(link_pre[i + 1], "level_zero")):
+                inc += ["-I", os.path.join(link_pre[i + 1], "level_zero")]
+        with tempfile.TemporaryDirectory() as td:
+            exe = Path(td) / ("query-l0" + (".exe" if _platform.system() == "Windows" else ""))
+            b = subprocess.run([cxx, "-O1", str(probe), *link_pre, *inc, "-o", str(exe), *link_post],
+                               capture_output=True, text=True, timeout=300)
+            if b.returncode != 0:
+                print("  (device memory: could not build query-l0.cpp -- VRAM ceiling disabled)\n"
+                      + (b.stderr or "")[-400:], file=sys.stderr)
+                return None, None
+            r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
+        out = r.stdout or ""
+        totals = [float(g) for g in re.findall(r"totalSize\s+([\d.]+)\s*GB", out)]
+        ma = re.search(r"maxMemAllocSize\s+(\d+)\s*bytes", out)
+        total = int(max(totals) * 1024 ** 3) if totals else None
+        return total, (int(ma.group(1)) if ma else None)
+    except Exception as exc:
+        print(f"  (device memory: L0 query failed: {exc} -- VRAM ceiling disabled)", file=sys.stderr)
+        return None, None
 
 def build_l0_harness(crisp_compiler):
     harness = HERE / "crisp" / "bench_harness_l0.cpp"
@@ -1343,7 +1407,12 @@ def main():
     # suite lives in DEVICE memory (there is no out-of-core path yet), so exceeding VRAM is an
     # allocation failure, not a slowdown -- and it is one paid for AFTER the compile.
     global VRAM_BYTES
-    VRAM_BYTES = harness.query_device_vram_bytes()
+    VRAM_BYTES = harness.query_device_vram_bytes()          # nvidia-smi
+    if not VRAM_BYTES and a.platform == "intel":
+        VRAM_BYTES, _l0_max_alloc = query_l0_device_memory()
+        if _l0_max_alloc:
+            print(f"Max single alloc:  {_l0_max_alloc / 2**30:.1f} GiB (lifted in the L0 fixture; "
+                  f"NOT in the generated L0 harness)", flush=True)
     if VRAM_BYTES:
         print(f"Device memory:     {VRAM_BYTES / 1e9:.1f} GB "
               f"(matmul ceiling {harness.MATMUL_VRAM_HEADROOM:.0%} of it: "
@@ -1539,6 +1608,19 @@ def main():
                 # fixture has not been compiled.
                 unsupported = ""
                 _mc = next(iter(sorted(src.parent.glob(f"{src.stem}_*.metacrisp"))), None)
+                if _mc is None:
+                    # DECIDE WITH METADATA, NEVER WITHOUT.  Whether the fixture can run a kernel is
+                    # read from its metacrisp; with none on disk yet (a clean checkout, a fresh
+                    # container) `unsupported` stayed "" and an SLM kernel was sent to a fixture that
+                    # cannot bind its arguments -- while the SAME sweep run a second time skipped it.
+                    # One harness choice per kernel, whatever is lying around.
+                    try:
+                        sh([crisp_compiler, "--hoist=l0", *hw_profile_flags(),
+                            f"--math-precision={prec}", f"--denormal-handling={'ftz' if ftz else 'preserve'}",
+                            "--log-level=off", str(src)], capture_output=True, text=True)
+                    except Exception:
+                        pass
+                    _mc = next(iter(sorted(src.parent.glob(f"{src.stem}_*.metacrisp"))), None)
                 if _mc:
                     unsupported = l0_fixture_env(src, _mc).get("_fixture_unsupported", "")
                 if l0_harness and not unsupported:
@@ -1555,7 +1637,15 @@ def main():
                     sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
                                                    prec, ftz, dev_c_ms, crisp_compiler)
                 else:
-                    print(f"Skipping {comp_name} ({chapter}) — L0 harness not built."); return
+                    # Say the real reason.  This used to print "L0 harness not built" even when the
+                    # harness was built and the kernel was simply one the fixture cannot run.
+                    if unsupported:
+                        print(f"  WARNING: SKIPPING {comp_name} ({chapter}) — the fixture cannot run it "
+                              f"({unsupported}) and this chapter is not enabled for the generated "
+                              f"harness (use_autobench).")
+                    else:
+                        print(f"Skipping {comp_name} ({chapter}) — L0 fixture not built.")
+                    return
             except ContenderBuildError as e:
                 # Crisp itself can fail to compile a chapter's kernel — an unsupported element
                 # type, a shape the hardware profile does not carry.  That is a result about ONE
@@ -1889,11 +1979,14 @@ def main():
             run_target("chap1_handrolled_mma", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 2 — synchronous coop-matrix tiling (matrix-multiply-tile-stride)
-            run_l0_crisp("chap2_tiling", "matmul_bmg.crisp")
+            # use_autobench: this kernel binds SLM tensor arguments, which the fixture cannot, so
+            # the generated harness is the ONLY way it runs.  Without the flag it never did --
+            # chap2_tiling tf32 recorded zero BMG points from the 2026-08-22 reorg to 2026-09-12.
+            run_l0_crisp("chap2_tiling", "matmul_bmg.crisp", use_autobench=True)
             run_target("chap2_tiling", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 3 — OpGroupAsyncCopy staging
-            run_l0_crisp("chap3_async", "matmul_bmg_async.crisp")
+            run_l0_crisp("chap3_async", "matmul_bmg_async.crisp", use_autobench=True)   # SLM args; see Ch 2
             run_target("chap3_async", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 4 — Register-resident load (global -> GRF)
