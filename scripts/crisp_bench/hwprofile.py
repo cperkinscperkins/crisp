@@ -50,6 +50,16 @@ from typing import Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------------------------
 DEVICE_PROFILE_MAP: List[Tuple[str, str]] = [
     # --- Intel ---
+    # The PCI DEVICE ID first, because the Level Zero driver does not report a marketing name.
+    # On the 2026-09-12 container (UR over Level-Zero V2, driver 1.15.39122) an Arc B580 calls
+    # itself exactly "Intel(R) Graphics [0xe20b]" -- no "Arc", no "B580", no "Battlemage" -- so
+    # every name pattern below missed it and the gate refused the machine `bmg` was written on.
+    #
+    # 0xE20B is BMG-G21.  That is NOT why it is listed: scripts/hw-profile/query-l0.cpp was run
+    # on this device and reproduced the `bmg` profile key for key (simd-width 16, 20 Xe-cores,
+    # 1024 threads, (1024 1024 1024), 128KB SLM, 18MB L2, subgroup sizes {16,32}).  The entry is
+    # a measurement, which is what this table is supposed to mean.
+    ("0xE20B",       "bmg"),      # Arc B580 (BMG-G21) as Level Zero actually reports it
     ("B580",         "bmg"),      # Arc B580 (Battlemage / Xe2) -- the profile's own device
     ("BMG",          "bmg"),
     ("Battlemage",   "bmg"),
@@ -155,6 +165,37 @@ def _detect_nvidia() -> Optional[str]:
     return None
 
 
+def _sycl_ls_device(line: str) -> Optional[str]:
+    """The DEVICE name out of one `sycl-ls` line, not the platform name.
+
+    A sycl-ls line is:
+
+        [level_zero:gpu][level_zero:0] <platform>, <device> <version> [<driver build>]
+
+    and the two halves are both "Intel(R) ...".  Matching the first `Intel(R)` up to a comma --
+    which is what this did until 2026-09-12 -- returns the PLATFORM:
+
+        "Intel oneAPI Unified Runtime over Level-Zero V2"
+
+    That is not a device, matches no profile, and made the gate refuse the very machine the
+    `bmg` profile was measured on.  The device is the field AFTER the first comma.
+
+    The trailing driver-build bracket is dropped, but a `[0xe20b]`-style DEVICE ID is KEPT: on a
+    Level Zero driver that reports no marketing name it is the only thing identifying the part,
+    and DEVICE_PROFILE_MAP matches on it.  Hence a bracket is stripped only when it looks like a
+    version (leading digit, then digits/dots/plus/underscore) -- "0xe20b" fails that on the "x".
+    """
+    m = re.match(r"\s*(?:\[[^\]]*\])+\s*(.+)$", line)
+    if not m:
+        return None
+    rest = m.group(1)
+    parts = rest.split(",", 1)
+    dev = (parts[1] if len(parts) > 1 else parts[0]).strip()
+    dev = re.sub(r"\s*\[\d[\d.+_]*\]\s*$", "", dev).strip()   # drop [1.15.39122+11]
+    dev = re.sub(r"\s+\d+(?:\.\d+)+\s*$", "", dev).strip()    # drop a trailing 20.1.0
+    return dev or None
+
+
 def _detect_intel() -> Optional[str]:
     """Intel device name, via sycl-ls then clinfo.
 
@@ -164,13 +205,19 @@ def _detect_intel() -> Optional[str]:
     """
     out = _run(["sycl-ls"])
     if out:
-        for line in out.splitlines():
-            # e.g. "[level_zero:gpu][level_zero:0] ... , Intel(R) Arc(TM) B580 Graphics 12.71.4 [...]"
-            if "gpu" not in line.lower():
-                continue
-            m = re.search(r"Intel\(R\)\s+([^,\[]+)", line)
-            if m:
-                return ("Intel " + m.group(1).strip()).strip()
+        # PREFER the level_zero backend: it is the one Crisp actually targets, and the same
+        # card is also listed under opencl with a differently-mangled name.
+        lines = out.splitlines()
+        for want_l0 in (True, False):
+            for line in lines:
+                low = line.lower()
+                if "gpu" not in low:
+                    continue
+                if want_l0 != ("level_zero" in low):
+                    continue
+                dev = _sycl_ls_device(line)
+                if dev:
+                    return dev
     out = _run(["clinfo", "--raw"])
     if out:
         for line in out.splitlines():
