@@ -279,7 +279,14 @@ def generate_report(results_dir: Path = RESULTS_DIR, scratch_dir: Path = SCRATCH
             "timestamp": meta.get("timestamp", "unknown"),
             "commit": meta.get("crisp_commit", "unknown"),
             "arch": hw.get("arch_target", "unknown"),
-            "env": hw.get("environment", "local")
+            "env": hw.get("environment", "local"),
+            # Which hardware profile these kernels were compiled against, and how much that
+            # profile was known to be right.  Surfaced in the report rather than left in the
+            # JSON because `:compute-units` mis-sizes every dispatch when the profile describes
+            # a different part -- a reader comparing two devices' rows cannot see that from the
+            # numbers, and no verifier catches it.
+            "profile": hw.get("hardware_profile"),
+            "profile_provenance": hw.get("profile_provenance"),
         }
 
         for pt in s.get("results", []):
@@ -295,10 +302,38 @@ def generate_report(results_dir: Path = RESULTS_DIR, scratch_dir: Path = SCRATCH
     lines.append("> Generated from verified test sweeps in `benchmarks/results/`.\n")
 
     # Header summary table of devices
-    lines.append("| device | data captured | source |")
-    lines.append("|---|---|---|")
+    _PROFILE_NOTE = {
+        "builtin": "validated",
+        "auto":    "queried*",
+        "file":    "supplied*",
+        "none":    "**NONE**",
+    }
+    lines.append("| device | data captured | source | hardware profile |")
+    lines.append("|---|---|---|---|")
+    _any_unvalidated = False
     for gpu, p in provenance.items():
-        lines.append(f"| {gpu} | {p['timestamp'][:10]} | Crisp `{p['commit']}` ({p['env']}) |")
+        prov = p.get("profile_provenance")
+        prof = p.get("profile")
+        if prof is None and prov is None:
+            cell = "—"                       # predates profile stamping
+        elif prof is None:
+            cell = "**NONE**"
+            _any_unvalidated = True
+        else:
+            note = _PROFILE_NOTE.get(prov, "unrecorded")
+            if note.endswith("*") or note.startswith("**"):
+                _any_unvalidated = True
+            cell = f"`{prof}` ({note})"
+        lines.append(f"| {gpu} | {p['timestamp'][:10]} | Crisp `{p['commit']}` ({p['env']}) | {cell} |")
+    if _any_unvalidated:
+        lines.append("")
+        lines.append("> \\* **queried / supplied**: the profile's QUERIED keys were read off the "
+                     "device, but its MEASURED keys (`:tile-visit-strip-width` above all) were "
+                     "never swept for this part and are absent, which selects safe defaults "
+                     "rather than tuned ones. Such a row is honest about the hardware it ran on "
+                     "and fair to compare *within* the device; it may understate Crisp against a "
+                     "row whose profile was fully tuned. A **NONE** row was compiled with no "
+                     "profile at all and is not comparable to published figures.")
     lines.append("\n---\n")
 
     # Matmul Suite
@@ -337,7 +372,11 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
     lines.append("| small | 512, 1024 | launch overhead and occupancy dominate |")
     lines.append("| medium | 2048, 4096 | the machine saturates (~0.97 residency waves) |")
     lines.append("| large | 8192, 16384 | steady state |")
-    lines.append("| xl | 32768, 65536 | device permitting |\n")
+    # 32768, 40960 -- the actual `xl` preset in matmul.py.  This row said "32768, 65536" for a
+    # while, describing sizes the harness would not run; a size table a reader cannot reproduce
+    # is the same defect as an unattributable number.
+    lines.append("| xl | 32768, 40960 | device permitting |")
+    lines.append("| devmax | the largest N this card holds | per-ladder: tf32/bf16/f64 differ |\n")
 
     # Section 1: MMA Techniques
     lines.append("## § 1 — MMA Techniques\n")

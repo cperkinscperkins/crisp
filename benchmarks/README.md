@@ -130,6 +130,34 @@ command = the whole matmul story.
 | `xl` | 32768, 40960 |
 | `canonical` | 256 … 16384, **plus 32768 on NVIDIA** (default) |
 | `all` | canonical + 40960 on NVIDIA |
+| `devmax` | the largest N this card can hold — resolved per ladder, see below |
+
+**Sizes are also bounded by device memory, per ladder.**  Every matrix in this suite lives in
+device memory (there is no out-of-core path yet), so a size that does not fit is an allocation
+failure *after* the compile has been paid for — and on the largest sizes the compile is the
+expensive part.  The harness therefore drops sizes it can prove will not fit, and says so:
+
+```
+  [chap0_naive_f64] skipping 40960: needs more than 60% of 80 GB at 24 B/element (ceiling N=46208)
+```
+
+The ceiling is **per ladder**, because one size list drives three element widths:
+
+| ladder | device bytes per element position (A+B+C) | ceiling on an 80 GB H100 |
+|---|---|---|
+| bf16 / fp16 | 8 — A, B at 2 B; C accumulates in fp32 | ~80064 |
+| tf32 / fp32 | 12 | ~65344 |
+| fp64 | 24 | ~46208 |
+
+A single fp32 answer would run the f64 ladder off the end of HBM while leaving a third of the
+card unused on the 16-bit one.  The 60% headroom (`MATMUL_VRAM_HEADROOM`) is not idle slack: the
+three matrices are the floor, and cuBLAS, CUTLASS and the fixtures all allocate on top of them.
+
+`devmax` asks for the biggest rung this card can hold, rounded down to a multiple of 4096 so the
+ladder stays legible.  It is deliberately **not** in `canonical`: a device-specific size is a
+within-device statement, and the shared rungs are what let ratios travel between pods.  When VRAM
+cannot be queried (any non-NVIDIA device today) nothing is clamped and `devmax` resolves to
+nothing, rather than guessing a ceiling.
 
 Presets and explicit sizes mix freely: `--sizes=small,8192`.  Other knobs: `--iters=N`
 (default 100), `--warmup=N` (default 20), `--chapters=a,b` to restrict, `--scratch` to write
@@ -311,6 +339,52 @@ Known profiles: bmg, h100 -- none of them describes it.
    resembles a listed one does not belong there: H100 PCIe and H100 NVL are the same die and
    differ only in SM count, and that single key is enough to mis-size every dispatch.
 
+### Generating a profile on the machine (`--auto-profile`)
+
+On a rented pod you rarely get to choose the part — RunPod has H100 PCIe one day and H100 NVL
+or H200 the next — and until 2026-09-12 a new device cost an edit, a push, a re-clone and a
+rebuild before the first kernel compiled, because the harness passed only the
+`--hardware-profile` *flag* and never a profile **source file**.  Crisp has always supported the
+cheaper route; the harness just never used it:
+
+```bash
+crisp-compile my-profile.crisp kernel.crisp --hardware-profile=my-device
+```
+
+So the sweep can now build the profile itself:
+
+```bash
+# Query this device, write benchmarks/profiles/<device>.crisp, compile everything against it
+python scripts/crisp_bench/matmul.py --sweep-all --auto-profile
+
+# ...or supply one you wrote by hand
+python scripts/crisp_bench/matmul.py --sweep-all --profile-file=benchmarks/profiles/h200.crisp
+```
+
+`--auto-profile` builds and runs [`../scripts/hw-profile/query-cuda.cu`](../scripts/hw-profile/),
+which prints a paste-ready `def-hardware-profile` **named after the device** (`h100-nvl`, `h200`)
+with every key tagged QUERIED / ARCH / MEASURED.  It looks for `nvcc` under `/usr/local/cuda/bin`
+as well as on `PATH`, because cloud images generally do not put it there.  NVIDIA only — the
+Intel probe needs Level Zero headers the benchmark container lacks, and `bmg` is already
+validated, so the case does not arise.
+
+> **A generated profile is QUERIED, not VALIDATED, and the results say so.**
+> The MEASURED tier stays absent — `:tile-visit-strip-width` above all, which is +63% on BMG and
+> −14.4% on H100 and which no query can answer.  Absent selects linear, which is safe but not
+> tuned.  Every result file records `profile_provenance` (`builtin` / `file` / `auto` / `none`)
+> and `REPORT.md` prints it in the device table with a footnote.  This distinction is the whole
+> point of the gate; automating the easy half must not quietly erase it.
+>
+> For a **Hopper** part the gap is small: `query-cuda.cu` answers the QUERIED tier and states the
+> ARCH tier correctly for sm_90, so an H200 profile is really `h100` with `:compute-units` and
+> `:l2-cache-size` corrected.  For a part on a **different architecture** it is not — `:mma-shapes`
+> and `:wgmma-shapes` become real decisions, and the generated file should be reviewed, not
+> trusted.
+
+To promote a generated profile to a validated builtin: sweep its measured keys, add them, move
+the form into `register-builtin-hardware-profiles` (`src/mma.lisp`), and add the device to
+`DEVICE_PROFILE_MAP`.
+
 ### Escape hatches
 
 ```bash
@@ -320,6 +394,7 @@ python scripts/crisp_bench/matmul.py --allow-unprofiled
 
 # Exercise the gate without the hardware (useful before renting a pod)
 python scripts/crisp_bench/matmul.py --pretend-device="NVIDIA H200"
+python scripts/crisp_bench/matmul.py --pretend-device="NVIDIA H200" --auto-profile   # and the way out
 ```
 
 Every result file records which profile it was compiled against, under

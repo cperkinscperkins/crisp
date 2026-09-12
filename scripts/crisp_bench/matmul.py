@@ -21,6 +21,7 @@ from pathlib import Path
 # Add parent dir to path so we can import harness
 sys.path.append(str(Path(__file__).resolve().parent))
 import hwprofile
+import harness
 from harness import VerificationMetrics, BenchmarkSweep, SweepPoint, BenchmarkMetrics, CompileTimeMetrics, RuntimeMetrics, ThroughputMetrics, create_metadata
 
 HERE = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "matmul"
@@ -50,13 +51,32 @@ def crisp_compiler_path():
     return str(HERE.parent.parent / "bin" / exe)
 
 def hw_profile_flags():
-    """The --hardware-profile flag, or NOTHING when the sweep is deliberately unprofiled.
+    """Everything a compile needs to select the hardware profile: the source file, then the flag.
 
-    A list rather than a string so the unprofiled case passes NO flag at all: formatting
+    Two pieces, not one, and the file is the half the harness never had.  Crisp compiles several
+    files per invocation, so a profile can be an ordinary `.crisp` file rather than something
+    built into the compiler:
+
+        crisp-compile my-profile.crisp kernel.crisp --hardware-profile=my-device
+
+    Passing only the FLAG is why a new device used to cost an edit, a push, a re-clone and a
+    rebuild before the first kernel compiled -- all on a rented pod, on the clock, and RunPod
+    rarely offers the same part twice.  With the file, a queried profile is just data.
+
+    A BUILTIN profile needs no file, so this returns exactly what it always did in that case and
+    those command lines are unchanged.
+
+    Still a list rather than a string so the unprofiled case passes NO flag at all: formatting
     `--hardware-profile=None` would be worse than the mismatch it replaces.  The gate in
-    hwprofile.py has already decided; this only spells the decision."""
+    hwprofile.py has already decided; this only spells the decision.
+
+    Order: crisp-compile accepts files and flags interleaved (verified against the binary), so
+    the file goes where the flags go and every call site stays a one-token change."""
     prof = HW.get("hardware_profile")
-    return ["--hardware-profile=%s" % prof] if prof else []
+    if not prof:
+        return []
+    src = HW.get("hardware_profile_file")
+    return ([str(src)] if src else []) + ["--hardware-profile=%s" % prof]
 
 def _apply_hw(meta):
     meta.hardware.gpu_model   = HW["gpu_model"]
@@ -67,6 +87,11 @@ def _apply_hw(meta):
     # result files, and the report cannot warn about the second.
     meta.hardware.hardware_profile = HW.get("hardware_profile")
     meta.hardware.profile_matched  = HW.get("profile_matched")
+    # ...and HOW it was obtained.  `profile_matched` alone cannot distinguish a profile that was
+    # swept on this part from one queried off it five minutes ago; both beat the wrong part, but
+    # only the first has measured keys.  Unrecoverable after the fact, so it is stamped.
+    meta.hardware.profile_provenance = HW.get("profile_provenance")
+    meta.hardware.profile_source     = HW.get("hardware_profile_file")
     return meta
 
 SIZE_SCALE_REF = 2048
@@ -206,6 +231,53 @@ SIZE_GIVEUP_SECONDS = 90.0
 # the table already says -- at 1/6th the wall time.
 XL_SIZE_THRESHOLD = 16384
 XL_BENCH_TIMEOUT  = 150.0
+
+# --------------------------------------------------------------------------------------
+# The OTHER ceiling: device memory.
+#
+# Everything above bounds how long a point may take.  None of it bounds how much memory the
+# point needs, and the two are not the same failure.  A slow point yields a gap in the table; a
+# point whose matrices do not fit yields an allocation failure AFTER the compile has been paid
+# for, and on the biggest sizes the compile is the expensive part.
+#
+# Every matrix in this suite lives in DEVICE memory -- there is no out-of-core path yet -- so
+# "does it fit" is arithmetic we can do before launching anything, from the one number nvidia-smi
+# already gives us.  What makes it more than one line is that the SAME size list drives three
+# ladders of different element width: tf32 costs 12 bytes per element position across A/B/C,
+# bf16/fp16 cost 8 (they accumulate C in fp32), and f64 costs 24.  On an 80 GB card those top
+# out around 65k, 80k and 46k respectively -- so a single fp32 answer runs the f64 ladder off the
+# end of HBM while leaving a third of the card unused on the 16-bit one.
+#
+# Intel is unaffected in practice (its canonical list stops at 16384, far under a B580's reach),
+# but the rule is written per-device rather than per-platform so it does not need revisiting when
+# a bigger Intel part arrives.
+VRAM_BYTES = None
+
+def sizes_for_chapter(chapter, sizes):
+    """SIZES resolved for CHAPTER: `devmax` expanded, and anything too big to fit dropped.
+
+    Returns a list of size strings.  When VRAM is unknown nothing is dropped and `devmax`
+    disappears -- this exists to avoid a certain OOM, not to guess at a card it could not
+    measure."""
+    eb = harness.matmul_elem_bytes(chapter)
+    out, seen = [], set()
+    for s in sizes:
+        if str(s).lower() == "devmax":
+            dm = harness.device_max_matmul_size(VRAM_BYTES, eb)
+            if dm is None:
+                continue
+            s = str(dm)
+        if str(s) not in seen:
+            seen.add(str(s))
+            out.append(str(s))
+    kept, dropped, max_n = harness.clamp_sizes_to_vram(out, VRAM_BYTES, eb)
+    if dropped:
+        # Announced, not silent: a gap in the report has to be attributable, and "it did not fit"
+        # is a different fact about the hardware than "it was too slow".
+        print(f"  [{chapter}] skipping {','.join(dropped)}: needs more than "
+              f"{harness.MATMUL_VRAM_HEADROOM:.0%} of {VRAM_BYTES / 1e9:.0f} GB at "
+              f"{eb} B/element (ceiling N={max_n})", file=sys.stderr, flush=True)
+    return kept
 
 def bench_timeout_for(n: int) -> float:
     return XL_BENCH_TIMEOUT if n > XL_SIZE_THRESHOLD else BENCH_TIMEOUT
@@ -371,7 +443,7 @@ def _verif(out):
 def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, precision: str, ftz: bool, compile_dev_ms: float, compile_all_ms: float, env_extra: dict = None) -> BenchmarkSweep:
     meta = _apply_hw(create_metadata())
     results = []
-    for s in sizes:
+    for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
         w, it = scaled_counts(warmup, iters, S)
         _t0 = time.time()
@@ -471,7 +543,7 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
     if stale.exists():
         stale.unlink()
     results = []
-    for s in sizes:
+    for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
         _t0 = time.time()
         out = run_crisp_autobench(src, grid_tile, S, S, S, crisp_compiler, prec_flags, nvcc_math)
@@ -566,7 +638,7 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
     results = []
     measured_c_ms = 0.0
     measured_hoist_ms = 0.0
-    for s in sizes:
+    for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
         if S > 8192:
             continue
@@ -903,7 +975,7 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
     else:
         print(f"l0-fixed: no metacrisp for {src.name}; using fixture defaults", file=sys.stderr)
     results = []
-    for s in sizes:
+    for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
         w, it = scaled_counts(warmup, iters, S)
         out = run_l0_bin(harness_bin, S, S, S, w, it, env_extra=env_ext)
@@ -1009,7 +1081,7 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
     print(f"cuda-fixed: env for {comp_name}: " +
           " ".join(f"{k}={v}" for k, v in sorted(env_ext.items())), file=sys.stderr)
     results = []
-    for s in sizes:
+    for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
         w, it = scaled_counts(warmup, iters, S)
         # Direct subprocess rather than run_bench_proc.  Simpler, and this harness emits one
@@ -1092,6 +1164,14 @@ def main():
     ap.add_argument("--pretend-device", default=None,
                     help="Treat this string as the detected GPU name. For testing the profile "
                          "gate without the hardware (e.g. --pretend-device='NVIDIA H200').")
+    ap.add_argument("--auto-profile", action="store_true",
+                    help="If no validated profile matches this device, build and run "
+                         "scripts/hw-profile/query-cuda.cu, write the profile it prints to "
+                         "benchmarks/profiles/, and compile every kernel against it. MEASURED "
+                         "keys stay absent; results are stamped profile_provenance=auto.")
+    ap.add_argument("--profile-file", default=None,
+                    help="Compile against the hardware profile in this .crisp file instead of a "
+                         "builtin one. Overrides --auto-profile.")
     a = ap.parse_args()
 
     global HW, SIZE_SCALE_REF
@@ -1104,31 +1184,63 @@ def main():
     # regardless.  See scripts/crisp_bench/hwprofile.py for why the compiler is the wrong place
     # for this check.
     try:
-        profile, device, matched = hwprofile.gate(
+        profile, device, matched, provenance, profile_src = hwprofile.gate(
             a.platform, crisp_compiler_path(),
-            pretend=a.pretend_device, allow_unprofiled=a.allow_unprofiled)
+            pretend=a.pretend_device, allow_unprofiled=a.allow_unprofiled,
+            auto_profile=a.auto_profile, profile_file=a.profile_file,
+            repo_root=HERE.parent.parent)
     except hwprofile.UnprofiledDevice as e:
         print(str(e))
         return 2
-    HW["gpu_model"]        = device if device and device != "unknown" else HW["gpu_model"]
-    HW["hardware_profile"] = profile
-    HW["profile_matched"]  = matched
+    HW["gpu_model"]             = device if device and device != "unknown" else HW["gpu_model"]
+    HW["hardware_profile"]      = profile
+    HW["profile_matched"]       = matched
+    HW["profile_provenance"]    = provenance
+    HW["hardware_profile_file"] = profile_src
     # flush=True so the gate's verdict reaches a pod terminal BEFORE the first subprocess
     # writes over it; ASCII only, because a cp1252 console mangles an em-dash to '?'.
     print(f"Hardware detected: {HW['gpu_model']}", flush=True)
-    if profile:
+    if profile and provenance == "builtin":
         print(f"Hardware profile:  {profile} (validated for this device)", flush=True)
+    elif profile and provenance == "auto":
+        # Say QUERIED, not "validated".  The operator is about to spend pod minutes on numbers
+        # that will carry this caveat into the report, and the one moment they can still choose
+        # otherwise is now.
+        print(f"Hardware profile:  {profile} (QUERIED off this device, not validated)", flush=True)
+        print(f"                   generated -> {profile_src}", flush=True)
+        print( "                   MEASURED keys are absent (safe defaults).  Results are "
+               "stamped provenance=auto.", flush=True)
+    elif profile and provenance == "file":
+        print(f"Hardware profile:  {profile} (from --profile-file, not validated here)", flush=True)
+        print(f"                   source -> {profile_src}", flush=True)
     else:
         print("Hardware profile:  NONE -- --allow-unprofiled was passed.  These results are "
               "NOT comparable to published Crisp figures.", flush=True)
 
     SIZE_SCALE_REF = 1024 if a.platform == "intel" else 2048
 
+    # The card's own ceiling, for the `devmax` preset below.  Queried once: every matrix in this
+    # suite lives in DEVICE memory (there is no out-of-core path yet), so exceeding VRAM is an
+    # allocation failure, not a slowdown -- and it is one paid for AFTER the compile.
+    global VRAM_BYTES
+    VRAM_BYTES = harness.query_device_vram_bytes()
+    if VRAM_BYTES:
+        print(f"Device memory:     {VRAM_BYTES / 1e9:.1f} GB "
+              f"(matmul ceiling {harness.MATMUL_VRAM_HEADROOM:.0%} of it: "
+              f"tf32 N<={harness.compute_max_matmul_n(VRAM_BYTES, 12)}, "
+              f"bf16 N<={harness.compute_max_matmul_n(VRAM_BYTES, 8)}, "
+              f"f64 N<={harness.compute_max_matmul_n(VRAM_BYTES, 24)})", flush=True)
+
     SIZE_PRESETS = {
         "small": ["256", "512", "1024"],
         "medium": ["2048", "4096"],
         "large": ["8192", "16384"],
         "xl": ["32768", "40960"],
+        # NOT a fixed size: the largest this card can actually hold, resolved per chapter because
+        # the three ladders have different element widths.  Kept out of `canonical` on purpose --
+        # a device-specific rung is a within-device statement, and the shared rungs are what make
+        # ratios travel between pods.
+        "devmax": ["devmax"],
         "canonical": ["256", "512", "1024", "2048", "4096", "8192", "16384"] if a.platform == "intel" else ["256", "512", "1024", "2048", "4096", "8192", "16384", "32768"],
         "all": ["256", "512", "1024", "2048", "4096", "8192", "16384"] if a.platform == "intel" else ["256", "512", "1024", "2048", "4096", "8192", "16384", "32768", "40960"],
     }

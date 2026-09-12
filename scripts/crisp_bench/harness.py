@@ -52,6 +52,17 @@ class HardwareInfo:
     # used cannot be compared with one that does -- which is why these are stamped, not derived.
     hardware_profile: Optional[str] = None
     profile_matched: Optional[bool] = None
+    # HOW that profile was obtained, because "matched" is not one thing.  A builtin profile has
+    # been validated against the device -- queried keys compared AND measured keys swept.  A
+    # profile generated on a pod by scripts/hw-profile/query-* has done only the first: its
+    # MEASURED keys are deliberately absent.  Both beat compiling against the wrong part, but
+    # they are not the same claim, and a reader cannot reconstruct the difference later.
+    #   "builtin" -- a profile shipped in the compiler and validated for this device
+    #   "file"    -- supplied by --profile-file
+    #   "auto"    -- generated on this machine by --auto-profile (measured keys omitted)
+    #   "none"    -- --allow-unprofiled
+    profile_provenance: Optional[str] = None
+    profile_source: Optional[str] = None
 
 @dataclass
 class RunMetadata:
@@ -157,16 +168,83 @@ def query_device_vram_bytes() -> Optional[int]:
         pass
     return None
 
-def compute_max_matmul_n(vram_bytes: Optional[int], headroom: float = 0.6) -> int:
+# Device bytes that ONE element position costs across the three matrices A, B and C, per ladder.
+#
+# This is not decoration.  The same size list drives three ladders of different element width,
+# so a single fp32 answer is wrong in both directions: it walks the f64 ladder off the end of
+# HBM while leaving a third of the card unused on the 16-bit one.  On an 80 GB H100 at the
+# headroom below, the three ladders top out around 65k / 80k / 46k respectively.
+#
+# Every benchmark matrix lives in DEVICE memory (nothing here is out-of-core), so exceeding VRAM
+# is a hard failure, not a slowdown.
+MATMUL_ELEM_BYTES_DEFAULT = 12   # tf32 / fp32: A, B, C all 4-byte
+MATMUL_ELEM_BYTES = (
+    ("_f64",  24),   # A, B, C all IEEE double
+    ("_bf16",  8),   # A, B at 2 bytes; C ACCUMULATES in fp32, so 2 + 2 + 4
+    ("_fp16",  8),
+)
+
+def matmul_elem_bytes(chapter: str) -> int:
+    """Device bytes per element position for CHAPTER's ladder, from its name suffix.
+
+    Substring rather than suffix matching, because the variant and probe directories carry the
+    width in the middle of the name (`_variant_wgmma_bf16_2wg`, `_probe_wgmma_bf16_swz`).
     """
-    Calculates the largest square matrix size N that safely fits in VRAM.
-    Assuming 3 matrices A, B, C in fp32 (3 * 4 * N^2 = 12 * N^2 bytes).
+    c = (chapter or "").lower()
+    for tag, nbytes in MATMUL_ELEM_BYTES:
+        if tag in c:
+            return nbytes
+    return MATMUL_ELEM_BYTES_DEFAULT
+
+# 0.6, and the 0.4 left behind is NOT slack for its own sake.  The three matrices are the floor,
+# not the total: cuBLAS and CUTLASS both request workspaces on top of them (split-k especially),
+# the L0 and CUDA fixtures stage their own buffers, and a pod's card is not always empty when we
+# arrive.  A too-generous headroom costs one rung at the top of the ladder; a too-tight one costs
+# the whole point with an allocation failure, after paying for the compile.
+MATMUL_VRAM_HEADROOM = 0.6
+
+def compute_max_matmul_n(vram_bytes: Optional[int],
+                         elem_bytes: int = MATMUL_ELEM_BYTES_DEFAULT,
+                         headroom: float = MATMUL_VRAM_HEADROOM,
+                         align: int = 64) -> Optional[int]:
+    """The largest square N whose A, B and C fit in VRAM at ELEM_BYTES per element position.
+
+    Returns None when VRAM is unknown, rather than a "sensible default" -- a guessed ceiling is
+    indistinguishable from a measured one at the call site, and the caller can decline to clamp
+    far more safely than it can un-clamp a wrong number.  ALIGN keeps the result a multiple of
+    the tile geometry (64 is the coarsest tile dimension the ladders use).
     """
-    if not vram_bytes:
-        return 32768  # Sensible default
-    usable_bytes = vram_bytes * headroom
-    max_n = int(math.sqrt(usable_bytes / 12.0))
-    return (max_n // 64) * 64
+    if not vram_bytes or vram_bytes <= 0 or elem_bytes <= 0:
+        return None
+    max_n = int(math.sqrt((vram_bytes * headroom) / float(elem_bytes)))
+    return (max_n // align) * align
+
+def clamp_sizes_to_vram(sizes, vram_bytes: Optional[int], elem_bytes: int,
+                        headroom: float = MATMUL_VRAM_HEADROOM):
+    """(kept_sizes, dropped_sizes, max_n) -- sizes that do not fit are dropped, not attempted.
+
+    When VRAM is unknown nothing is dropped: this exists to avoid a certain OOM, not to second-
+    guess a card it could not measure.
+    """
+    max_n = compute_max_matmul_n(vram_bytes, elem_bytes, headroom)
+    if max_n is None:
+        return list(sizes), [], None
+    kept, dropped = [], []
+    for s in sizes:
+        (kept if int(s) <= max_n else dropped).append(s)
+    return kept, dropped, max_n
+
+def device_max_matmul_size(vram_bytes: Optional[int], elem_bytes: int,
+                           headroom: float = MATMUL_VRAM_HEADROOM,
+                           legible: int = 4096) -> Optional[int]:
+    """The `devmax` rung: the biggest size this card can hold, rounded DOWN to something legible.
+
+    A ladder reading ...16384, 32768, 45056 is readable; one ending 46208 invites the question
+    of what was special about 46208.  LEGIBLE is a multiple of every tile dimension the ladders
+    use, so rounding cannot produce a size the geometry rejects.
+    """
+    max_n = compute_max_matmul_n(vram_bytes, elem_bytes, headroom, align=legible)
+    return max_n if max_n and max_n > 0 else None
 
 def should_full_verify_matmul(n: int) -> bool:
     """Per §5 of benchmark-harness.md: Full host reference verification only for N <= 2048."""
@@ -183,7 +261,9 @@ def get_git_commit() -> Optional[str]:
 
 def create_metadata(gpu_model: str = "Unknown", arch_target: str = "unknown", environment: str = "local",
                     hardware_profile: Optional[str] = None,
-                    profile_matched: Optional[bool] = None) -> RunMetadata:
+                    profile_matched: Optional[bool] = None,
+                    profile_provenance: Optional[str] = None,
+                    profile_source: Optional[str] = None) -> RunMetadata:
     vram = query_device_vram_bytes()
     return RunMetadata(
         timestamp=datetime.utcnow().isoformat() + "Z",
@@ -193,7 +273,9 @@ def create_metadata(gpu_model: str = "Unknown", arch_target: str = "unknown", en
             environment=environment,
             vram_bytes=vram,
             hardware_profile=hardware_profile,
-            profile_matched=profile_matched
+            profile_matched=profile_matched,
+            profile_provenance=profile_provenance,
+            profile_source=profile_source
         ),
         crisp_commit=get_git_commit()
     )

@@ -244,18 +244,208 @@ def _skeleton(device: str, platform: str) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------------------------
+# Generating a profile ON the machine, from the probe programs
+#
+# WHY.  The gate above refuses correctly but leaves the operator stuck on a rented pod: a
+# profile had to be compiled INTO crisp-compile, so a new device cost an edit, a push, a
+# re-clone and a rebuild before the first kernel compiled -- all on the clock, and RunPod does
+# not offer the same part twice in a row.  Crisp already supports the cheaper route
+# (`crisp-compile profile.crisp kernel.crisp --hardware-profile=NAME`); the harness simply never
+# passed a profile SOURCE file, only the flag.
+#
+# WHAT IT DOES NOT DO.  A generated profile is not a validated one, and this module refuses to
+# blur that.  `query-cuda.cu` answers the QUERIED tier and states the ARCH tier for the part it
+# knows; nothing can answer the MEASURED tier without a sweep, so those keys stay ABSENT -- the
+# probe never emits a value for `:tile-visit-strip-width`, and absent means linear, which is
+# safe.  Results are stamped `profile_provenance = "auto"` so a reader can tell a profile that
+# was swept from one that was merely queried.  That distinction is the entire reason the gate
+# exists; automating the easy half must not quietly erase it.
+# ---------------------------------------------------------------------------------------------
+
+def _blank_lisp_comments(text: str) -> str:
+    """TEXT with `;`-to-end-of-line comments replaced by SPACES, same length, same offsets.
+
+    Blanked rather than removed so every index into the result is also a valid index into the
+    original -- which is what lets the caller slice the form out of TEXT with its comments
+    intact after balancing parens over this.
+
+    Required, not defensive: the probe's own comments contain parentheses.  "a SCALAR on NVIDIA
+    (D4)" and "(M=64, N mult of 8 in [8,256])" both appear inside the emitted form, and counting
+    parens over the raw text closes the form in the middle of a comment -- truncating the
+    profile to something that still parses.
+    """
+    out = []
+    for line in text.splitlines(keepends=True):
+        in_str = False
+        cut = None
+        for i, ch in enumerate(line):
+            if ch == '"' and (i == 0 or line[i - 1] != "\\"):
+                in_str = not in_str
+            elif ch == ";" and not in_str:
+                cut = i
+                break
+        if cut is None:
+            out.append(line)
+        else:
+            tail = line[cut:]
+            keep_nl = "\n" if tail.endswith("\n") else ""
+            out.append(line[:cut] + " " * (len(tail) - len(keep_nl)) + keep_nl)
+    return "".join(out)
+
+
+def extract_profile_form(text: str) -> Optional[str]:
+    """The first complete `(def-hardware-profile ...)` s-expression in TEXT, or None.
+
+    Returned with its comments INTACT -- they carry the QUERIED/ARCH/MEASURED provenance that
+    makes the file reviewable, and a profile whose values cannot be audited is the thing this
+    whole module exists to prevent.  Only the paren-balancing scan ignores them.
+    """
+    scan = _blank_lisp_comments(text)
+    start = scan.find("(def-hardware-profile")
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(scan)):
+        if scan[i] == "(":
+            depth += 1
+        elif scan[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None            # unbalanced: truncated output, and a partial profile is worse than none
+
+
+def profile_name_of(form: str) -> Optional[str]:
+    """The profile name a `def-hardware-profile` form declares."""
+    m = re.search(r"\(def-hardware-profile\s+([^\s()]+)", form)
+    return m.group(1).strip().lower() if m else None
+
+
+def find_nvcc() -> Optional[str]:
+    """`nvcc`, looking where cloud images actually put it.
+
+    On typical RunPod/NGC images CUDA is installed but nvcc is NOT on PATH -- it lives under
+    /usr/local/cuda/bin.  A profile generator that gives up because `nvcc` is not on PATH would
+    fail on the exact machines it was written for.
+    """
+    from shutil import which
+    found = which("nvcc")
+    if found:
+        return found
+    for cand in ("/usr/local/cuda/bin/nvcc", "/opt/cuda/bin/nvcc"):
+        if os.path.exists(cand):
+            return cand
+    import glob as _glob
+    for cand in sorted(_glob.glob("/usr/local/cuda-*/bin/nvcc"), reverse=True):
+        return cand
+    return None
+
+
+def generate_profile(platform: str, repo_root: Path, out_dir: Path) -> Tuple[str, Path]:
+    """Build and run the device probe, write the profile it prints, return (name, path).
+
+    Raises RuntimeError with a message the operator can act on -- this runs on a pod where the
+    next step costs money, so "it didn't work" is not an acceptable diagnostic.
+    """
+    if platform != "nvidia":
+        raise RuntimeError(
+            "--auto-profile is implemented for NVIDIA only.\n"
+            "The Intel probe (scripts/hw-profile/query-l0.cpp) needs the Level Zero headers to\n"
+            "build, which the benchmark container does not carry, and Intel's `bmg` profile is\n"
+            "already validated -- so the case this automates does not arise there.")
+
+    probe_src = repo_root / "scripts" / "hw-profile" / "query-cuda.cu"
+    if not probe_src.exists():
+        raise RuntimeError("device probe not found: %s" % probe_src)
+
+    nvcc = find_nvcc()
+    if not nvcc:
+        raise RuntimeError(
+            "nvcc not found (checked PATH, /usr/local/cuda/bin, /opt/cuda/bin, /usr/local/cuda-*).\n"
+            "The profile is generated by compiling scripts/hw-profile/query-cuda.cu, so CUDA's\n"
+            "toolkit -- not just its driver -- has to be present.")
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        exe = Path(td) / "query-cuda"
+        b = subprocess.run([nvcc, str(probe_src), "-o", str(exe)],
+                           capture_output=True, text=True, timeout=600)
+        if b.returncode != 0:
+            raise RuntimeError("could not build the device probe:\n%s"
+                               % ((b.stderr or b.stdout or "").strip()[:2000]))
+        r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=120)
+        if r.returncode != 0 or not r.stdout.strip():
+            raise RuntimeError("the device probe did not run:\n%s"
+                               % ((r.stderr or r.stdout or "").strip()[:2000]))
+
+    form = extract_profile_form(r.stdout)
+    if not form:
+        raise RuntimeError(
+            "the device probe ran but printed no (def-hardware-profile ...) form.\n"
+            "Its raw output is above; paste the profile into a .crisp file and pass\n"
+            "--profile-file instead.")
+    name = profile_name_of(form)
+    if not name:
+        raise RuntimeError("could not read the profile name out of the probe's output.")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / ("%s.crisp" % name)
+    header = (
+        ";;;; GENERATED by scripts/crisp_bench/hwprofile.py --auto-profile.\n"
+        ";;;; Source: scripts/hw-profile/query-cuda.cu, run on this machine.\n"
+        ";;;;\n"
+        ";;;; This profile is QUERIED, not VALIDATED.  Its MEASURED keys are deliberately\n"
+        ";;;; ABSENT -- :tile-visit-strip-width above all, which is +63%% on BMG and -14.4%% on\n"
+        ";;;; H100 and which no query can answer.  Absent means linear, which is safe.\n"
+        ";;;; Results compiled against it are stamped profile_provenance=\"auto\".\n"
+        ";;;;\n"
+        ";;;; To PROMOTE it to a validated builtin: sweep the measured keys, add them here, move\n"
+        ";;;; the form into register-builtin-hardware-profiles (src/mma.lisp) and add the device\n"
+        ";;;; to DEVICE_PROFILE_MAP in this directory's hwprofile.py.\n\n")
+    path.write_text(header + form + "\n", encoding="utf-8")
+    return name, path
+
+
+def load_profile_file(path: Path) -> Tuple[str, Path]:
+    """(profile_name, path) for an operator-supplied profile file."""
+    if not path.exists():
+        raise RuntimeError("--profile-file: no such file: %s" % path)
+    form = extract_profile_form(path.read_text(encoding="utf-8", errors="replace"))
+    if not form:
+        raise RuntimeError("--profile-file: %s contains no (def-hardware-profile ...) form." % path)
+    name = profile_name_of(form)
+    if not name:
+        raise RuntimeError("--profile-file: could not read the profile name from %s." % path)
+    return name, path
+
+
 def gate(platform: str,
          crisp_compiler: str,
          pretend: Optional[str] = None,
-         allow_unprofiled: bool = False) -> Tuple[Optional[str], str, bool]:
+         allow_unprofiled: bool = False,
+         auto_profile: bool = False,
+         profile_file: Optional[str] = None,
+         repo_root: Optional[Path] = None,
+         profile_out_dir: Optional[Path] = None) -> Tuple[Optional[str], str, bool, str, Optional[str]]:
     """Decide which hardware profile this sweep may use.
 
-    Returns (profile_name, device_name, matched).  `profile_name` is None only when the caller
-    passed allow_unprofiled, in which case the sweep proceeds with NO profile and the result
-    files say so.  Raises UnprofiledDevice otherwise.
+    Returns (profile_name, device_name, matched, provenance, profile_source_path).
+
+    `matched` stays True ONLY for a builtin profile validated for this device; `provenance`
+    distinguishes the weaker cases ("file", "auto") from it and from "none".  Callers stamp
+    both, so a result file says not just WHICH profile it used but how much that profile was
+    known to be right.  Raises UnprofiledDevice when nothing can be established.
     """
     device = detect_device(platform, pretend)
     available = known_profiles(crisp_compiler)
+
+    # An explicit file wins outright: the operator has said what this machine is, and a
+    # DEVICE_PROFILE_MAP entry cannot be a precondition for benchmarking a part nobody has
+    # benchmarked yet.
+    if profile_file:
+        name, path = load_profile_file(Path(profile_file))
+        return name, (device or "unknown"), False, "file", str(path)
 
     if not device:
         msg = (
@@ -270,13 +460,31 @@ def gate(platform: str,
                "Neither `sycl-ls` nor `clinfo` reported a GPU.")
         )
         if allow_unprofiled:
-            return None, "unknown", False
+            return None, "unknown", False, "none", None
         raise UnprofiledDevice("unknown", None, available, msg)
 
     wanted = profile_for_device(device)
 
     if wanted and wanted in available:
-        return wanted, device, True
+        return wanted, device, True, "builtin", None
+
+    # No validated profile.  Before refusing, offer the route that does not need one: query the
+    # device and compile against what it says.  Opt-in (--auto-profile) rather than automatic,
+    # because it produces a WEAKER claim than a builtin and that has to be a decision somebody
+    # made, not a default that quietly happened.
+    if auto_profile:
+        root = Path(repo_root) if repo_root else Path(crisp_compiler).resolve().parent.parent
+        out_dir = Path(profile_out_dir) if profile_out_dir else (root / "benchmarks" / "profiles")
+        try:
+            name, path = generate_profile(platform, root, out_dir)
+        except Exception as exc:
+            raise UnprofiledDevice(
+                device, wanted, available,
+                "\n--auto-profile could not build a profile for %s:\n\n  %s\n\n"
+                "Nothing has been swept.  Fix the above, or pass --profile-file with a profile\n"
+                "you wrote by hand (see \"Custom Profiles\" in benchmarks/README.md).\n"
+                % (device, str(exc).replace("\n", "\n  ")))
+        return name, device, False, "auto", str(path)
 
     # Either no profile is claimed for this device, or one is claimed but the compiler does not
     # have it.  Both are the same outcome for the user and get the same message; the reason line
@@ -312,6 +520,16 @@ def gate(platform: str,
         "Then:  crisp-compile <your-profile>.crisp <kernel>.crisp --hardware-profile=%s\n"
         "       ...and add your device to DEVICE_PROFILE_MAP in scripts/crisp_bench/hwprofile.py\n"
         "\n"
+        "OR, to do all of that automatically on THIS machine (the usual answer on a rented pod):\n"
+        "\n"
+        "  --auto-profile      build and run the probe above, write the profile it prints to\n"
+        "                      benchmarks/profiles/, and compile every kernel against it.\n"
+        "                      Its MEASURED keys stay ABSENT (absent = linear = safe), so the\n"
+        "                      results are stamped profile_provenance=\"auto\": queried, not\n"
+        "                      validated.  Good enough to publish a RATIO; not the same claim\n"
+        "                      as a swept builtin.\n"
+        "  --profile-file=P    compile against the profile in P instead.\n"
+        "\n"
         "To sweep anyway with NO profile (results stamped unprofiled, NOT comparable to\n"
         "published figures):  --allow-unprofiled\n"
         "================================================================================\n"
@@ -323,5 +541,5 @@ def gate(platform: str,
     )
 
     if allow_unprofiled:
-        return None, device, False
+        return None, device, False, "none", None
     raise UnprofiledDevice(device, wanted, available, msg)
