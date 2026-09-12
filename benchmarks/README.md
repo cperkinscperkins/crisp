@@ -355,18 +355,20 @@ check — 1.4 s.  Slow large points are slow *kernels*.
   results always go to `results/scratch/`**, whatever flags were passed.  **Enforced** (`_skip` in
   `matmul.py`; `BenchmarkSweep.save` in `harness.py`).
 
-### SYCL runtime adapter (Intel)
+### Known issue: GPU resets on BMG (Intel)
 
-- **Every SYCL contender runs on the Unified Runtime's V1 Level Zero adapter**
-  (`SYCL_UR_USE_LEVEL_ZERO_V2=0`, set in `scripts/bench-intel-entrypoint.sh`).  **Enforced** for
-  `bench-intel.sh` runs.
-- Why: the V2 adapter, the default in the container's oneAPI 2025.3, loses the device
-  intermittently on BMG/WSL2.  Measured 2026-09-12: oneMKL tf32 at N=8192 failed with
-  `UR_RESULT_ERROR_DEVICE_LOST` in 5 of 12 runs on V2 and 0 of 12 on V1, and each sweep dropped a
-  different random set of competitor points.  oneMKL tf32/bf16, SYCL-TLA bf16 and SYCL_Apples ran
-  at identical throughput on both adapters (within 1%), so the switch changes no number.
-- Crisp's L0 harnesses do not use the SYCL runtime.  A native (non-Docker) Intel run does not get
-  this setting; export it yourself.
+Sweeps on the Windows/WSL2 BMG box lose some **competitor** points (oneMKL, SYCL-TLA, SYCL_Apples) to
+`UR_RESULT_ERROR_DEVICE_LOST`.  Crisp's L0 harnesses are not affected.  Measured 2026-09-12, from the
+driver's own reset reports (Windows **Application** log, WER event 1001, `LiveKernelEvent 0x141`):
+
+| reset type | cause | status |
+|---|---|---|
+| `OCL_PAGEFAULT` | the SYCL Unified Runtime's **Level Zero V2** adapter, on short jobs: oneMKL tf32 at N=8192 lost the device in 5 of 12 runs on V2, 0 of 12 on V1 (`SYCL_UR_USE_LEVEL_ZERO_V2=0`), at identical throughput | **left on V2 deliberately** — Intel is moving to V2, and the benchmarks track it |
+| `GPULOOP` / `GUC_SCHEDULER_ERROR` | long compute jobs on the GPU that also drives the display trip the Windows watchdog (default 2 s); the screen blanks | open — e.g. the chap1–3 SYCL controls at N=16384 (4–7 s per iteration) |
+
+So the Intel report has **holes in competitor columns** that are not results.  To be re-measured on a
+machine with no display attached.  Workarounds, not applied: `SYCL_UR_USE_LEVEL_ZERO_V2=0` for the first;
+raising `TdrDelay`/`TdrDdiDelay` in `HKLM\System\CurrentControlSet\Control\GraphicsDrivers` for the second.
 
 ### Hardware profile
 
