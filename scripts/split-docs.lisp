@@ -10,7 +10,15 @@
 
 (defun clean-filename (text)
   "Turns 'Higher Order Functions' into 'higher_order_functions'.
-   Replaces non-alphanumeric chars with _, collapses duplicates, and lowercases."
+   Replaces non-alphanumeric chars with _, collapses duplicates, lowercases, and TRIMS
+   leading/trailing underscores.
+
+   The trim is load-bearing.  A status marker (✅ / 📝 / ⚠️) is dropped as non-alphanumeric,
+   but the SPACE in front of it survives and becomes a trailing underscore, so
+   'Control Flow ✅' would otherwise slug as 'control_flow_' and every chapter directory
+   would end in '_'.  Leading punctuation does the same at the front:
+   '`--ir-target=<ID>`' would give '_ir_targetid_'.  Note the initial STRING-TRIM below
+   cannot catch either, because it runs before the filtering that creates them."
   (let* ((downcased (string-downcase (string-trim '(#\Space #\Tab) text)))
          ;; Keep only alphanumeric, space, _, -
          (filtered (remove-if-not (lambda (c)
@@ -19,18 +27,21 @@
                                   downcased))
          ;; Replace space and dash with underscore
          (sub-space (substitute #\_ #\Space filtered))
-         (sub-dash (substitute #\_ #\- sub-space)))
-    ;; Collapse multiple underscores
-    (with-output-to-string (s)
-      (loop for c across sub-dash
-            with last-was-underscore = nil
-            do (cond ((char= c #\_)
-                      (unless last-was-underscore
-                        (write-char c s)
-                        (setf last-was-underscore t)))
-                     (t
-                      (write-char c s)
-                      (setf last-was-underscore nil)))))))
+         (sub-dash (substitute #\_ #\- sub-space))
+         ;; Collapse multiple underscores
+         (collapsed (with-output-to-string (s)
+                      (loop for c across sub-dash
+                            with last-was-underscore = nil
+                            do (cond ((char= c #\_)
+                                      (unless last-was-underscore
+                                        (write-char c s)
+                                        (setf last-was-underscore t)))
+                                     (t
+                                      (write-char c s)
+                                      (setf last-was-underscore nil))))))
+         (trimmed (string-trim '(#\_) collapsed)))
+    ;; A heading of pure punctuation would slug to "" and yield a bare "NN_" directory.
+    (if (zerop (length trimmed)) "untitled" trimmed)))
 
 (defun header-line-p (line char)
   "Checks if a line consists (mostly) of a specific character (like = or -), used for Setext headers."
