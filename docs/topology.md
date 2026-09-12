@@ -864,26 +864,21 @@ Rings ✅
 -----
 
 ```
-(make-scratch-vector-ring <tensorType> <dim> :ring-count <count>) => ring
-(make-scratch-matrix-ring <tensorType> (<dimensions>) :ring-count <count>) => ring
-(make-scratch-tensor-ring <tensorType> (<dimensions>) :ring-count <count>) => ring
+(make-scratch-vector-ring <elem> <dim>        :ring-count <n>)                      => ring
+(make-scratch-matrix-ring <elem> (<d0> <d1>)  :ring-count <n>)                      => ring
+(make-scratch-tensor-ring <elem> (<dims>...)  :ring-count <n>)                      => ring
+(make-register-tile-ring  <elem> (<M> <N>)    :ring-count <n> &key operand warps)   => ring
+(make-async-barrier-ring  :ring-count <n> &key mode arrivals initial-state)         => ring
 
-(make-async-barrier-ring :ring-count <count> &key mode arrivals) => ring
-
-
-(ring-get <ring> <index>) => <object>
+(ring-get <ring> <index>) => <slot>
 ```
 
-For pipelining, we often need several scratch memory pads that we cycle through. Thus one can be loading while
-another is being used for read or write. And if we are performaing async loading, we'll need a matching barrier.
+For pipelining we need several pads to cycle through, so one can be filled while another is read.
+An async pipeline needs a matching ring of barriers to track the transfers in flight.
 
-The `<tensorType>` can be a type declaration or just a tensor variable.  
-`<dimensions>` is a list of integers, which must be known at compile-time. They cannot be runtime variables.
-`<dim>` is a compile time constant integer, used for the vector variant.
-
-`ring-get` takes a ring and an index and returns the nth object in the ring.  The `<index>` may be a
-**runtime** value — the pipelining main loop indexes with `(mod (+ ring-idx 1) stages)` — which is
-exactly what makes a ring a ring.
+`<elem>` is an element type (`float`, `half`, …) or a template type variable.  `:ring-count` is
+required everywhere and must be a positive compile-time integer — it becomes a dimension, and
+dimensions cannot be runtime values.  `<dims>` are likewise compile-time integers.
 
 > **How a ring is built.**  A ring of N slots is ONE allocation with the ring as a *prepended
 > dimension* — `(make-scratch-matrix-ring float (64 8) :ring-count 3)` is a rank-3 scratch tensor
@@ -892,63 +887,72 @@ exactly what makes a ring a ring.
 > deep it is.  A barrier ring is the same idea: `N` mbarriers laid out contiguously, and a plain
 > `(make-async-barrier)` is simply **a ring of 1**.
 
+### `ring-get` ✅
+
+`(ring-get <ring> <index>)` returns slot `<index>` of the ring.
+
+For a **scratch** or **barrier** ring the index may be a **runtime** value — the pipelining main
+loop indexes with `(mod (+ ring-idx 1) stages)`, which is exactly what makes a ring a ring.
+
+For a **register tile ring** it must fold to a **compile-time integer**: the GRF is not
+runtime-indexable.  A literal works, and so does `(mod <loop-var> <ring-count>)` in a loop the
+compiler unrolls by `:ring-count`.  Anything else is a compile error naming the slot.
+
+### `make-register-tile-ring` ✅
+
+```
+(make-register-tile-ring <elem> (<M> <N>) :ring-count <n> &key operand warps)
+
+(make-register-tile-ring float (16 8)  :ring-count 2 :operand :a)
+(make-register-tile-ring half  (32 16) :ring-count 2 :operand :b :warps '(false true true))
+```
+
+A ring of register-resident MMA tiles — the GRF counterpart of `make-scratch-matrix-ring`, used to
+prefetch the next K-step's operand into registers while the current one multiplies.
+
+- **`:operand`** — `:a`, `:b` or `:acc` (default `:acc`).  It selects the fragment shape from the
+  active profile's MMA shape, so `(<M> <N>)` must tile evenly into fragments of that shape.
+- **`:warps`** — the warp participation mask, exactly as on [`make-register-tile`](#make-register-tile),
+  applied per slot.
+- There is **no initial-value argument**.  Unlike `make-register-tile`, every slot's fragments
+  start at zero.
+
+Unlike a barrier ring, a register tile ring works on both backends.
+
 ### `make-async-barrier-ring` ✅
 
-`(make-async-barrier-ring :ring-count <count> &key mode arrivals) => ring`
+```
+(make-async-barrier-ring :ring-count <n> &key mode arrivals initial-state)
+```
 
-- **`:ring-count`** — required. A positive compile-time integer: the pipeline depth (how many
-  stages are in flight at once).
+- **`:ring-count`** — required.  The pipeline depth: how many stages are in flight at once.
 - **`:mode`** — exactly as `make-async-barrier` (`:linear` / `:block` / `:cluster`; omit for
-  arch-automatic).  Every slot in the ring shares the mode.  On **SPIR-V, `:linear` rings are not
-  yet implemented** (they would need per-slot `spirv.Event` chaining) — a genuine ring
-  (`ring-count > 1`) with `:mode :linear` is a compile error there; a single
-  `(make-async-barrier :mode :linear)` is fine.  Since `:block` and `:cluster` are also SPIR-V
-  compile errors, **a barrier ring of any mode is NVIDIA-only today**.
-- **`:arrivals`** — **required for every barrier ring** (both modes).  How many transfers **each
-  slot** tracks *per pipeline stage* — i.e. how many `load-tile`s name that one slot in a single
-  stage.  The classic A+B staging is `2`.  It means the same thing to every lowering:
-  - `:block` — the mbarrier's init **arrival count**.
-  - `:cluster` — likewise the mbarrier's init arrival count, **scaled by the compiler** — see
-    "`:arrivals` is per-workgroup" below.
-  - `:linear` — the loads-per-stage factor in the `cp.async.wait_group((ring-count − 1) × arrivals)`
-    depth (each `:linear` `load-tile` commits one group), i.e. how many groups a stage closes.
-    Cluster reach has no meaning on this rung.
+  arch-automatic).  Every slot in the ring shares the mode.
+- **`:arrivals`** — **required.**  How many transfers **each slot** tracks *per pipeline stage* —
+  i.e. how many `load-tile`s name that one slot in a single stage.  The classic A+B staging is `2`.
+  It is explicit rather than inferred because a ring's prologue and main loop both load the same
+  ring, so the textual tally (2 + 2) is not the per-stage count (2).  **The number must be exact:
+  too high and a `:block` barrier never completes and the kernel hangs; too low and you read a
+  half-arrived tile.**  Under `:mode :cluster` you still write the **per-workgroup** number — the
+  compiler multiplies it by the declared cluster extent.
+- **`:initial-state`** — `:waiting` or `:signaled`: the awaiter's starting phase.  Omit it for an
+  ordinary pipeline ring, whose `await` re-arms each slot as it goes.  Supplying it marks the ring
+  as a warp-specialization handshake — the data-arrival ring starts `:waiting` (block until the
+  producer fills a slot), the buffer-free ring starts `:signaled` (every slot is free at launch).
 
-> **Why `:arrivals` is explicit and not inferred.**  A `:block` (TMA) barrier is a hardware
-> mbarrier: it completes when *both* its arrival count and its expected transaction bytes are
-> satisfied, so the count must be exactly right — **too high and the barrier never completes (the
-> kernel hangs); too low and you read a half-arrived tile.**  The `:linear` `wait_group` depth is
-> less catastrophic but still wrong if the count is off (no overlap, or reading too early).  For a
-> *single* `make-async-barrier` the compiler infers it by counting the loads that name that
-> barrier, which is correct because such a kernel has one stage in the text.  Through a **ring**
-> that inference breaks: the prologue and the main loop *both* load the same ring, so the textual
-> count (2 in the prologue + 2 in the main loop = 4) is **not** the per-stage count (2).  Grouping
-> loads "per phase" statically is fragile, so Crisp asks you to say it — you already know the
-> number: it is how many `load-tile`s you wrote against one slot.  Requiring it for **both** modes
-> also keeps an arch-automatic ring kernel portable: the same `:arrivals` works whether the arch
-> resolves to `:block` on sm_90+ or `:linear` on sm_80.
-
-> **`:arrivals` is per-workgroup, and stays that way under `:cluster`.**  On a `:cluster` ring the
-> barrier really does collect more arrivals than the number you wrote, because peers arrive on it
-> too.  **You do not write the bigger number.**  `:arrivals` remains what it has always been — how
-> many transfers *one workgroup* puts through *one slot* in *one stage* — and the compiler scales
-> it by the declared cluster extent.
->
-> This is the same division of labour the rule above describes, not an exception to it: you state
-> a fact you know (what your own workgroup does per stage), the compiler computes a consequence
-> from a fact it knows (how many workgroups are in the cluster).  Making you do the multiplication
-> would mean that adding a single `cluster-size` line to a working kernel silently requires editing
-> an unrelated barrier declaration, and forgetting it hangs the GPU.
+**Barrier rings are NVIDIA-only today.**  `:block` and `:cluster` are compile errors on SPIR-V, and
+a genuine `:linear` ring (`ring-count > 1`) is not yet implemented there — it would need per-slot
+`spirv.Event` chaining.  A single `(make-async-barrier :mode :linear)` is fine on Intel, as are
+scratch and register tile rings.
 
 ```
 ;; three stages in flight; each stage stages an A-tile and a B-tile under its own barrier slot.
 (make-async-barrier-ring :ring-count 3 :mode :block  :arrivals 2)   ; NVIDIA sm_90+ (TMA mbarriers)
-(make-async-barrier-ring :ring-count 3 :mode :linear :arrivals 2)   ; sm_80+ (cp.async wait_group 4)
+(make-async-barrier-ring :ring-count 3 :mode :linear :arrivals 2)   ; sm_80+ (cp.async wait_group)
 
-;; a clustered pipeline: the data-arrival ring stays workgroup-local, the buffer-free ring
-;; gains cluster reach so peer workgroups can release the producer's slots.
-(make-async-barrier-ring :ring-count 3 :mode :block   :arrivals 2 :initial-state :waiting)
-(make-async-barrier-ring :ring-count 3 :mode :cluster :arrivals 4 :initial-state :signaled)
+;; a warp-specialized pipeline: the full/empty handshake between producer and consumer warps.
+(make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2 :initial-state :waiting)
+(make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2 :initial-state :signaled)
 ```
 
 
@@ -1036,7 +1040,7 @@ inherited from the profile default.
 
 ### `make-register-tile` ✅
 ```
-(make-register-tile <type> <dimensions> <initial-value> &key warps)
+(make-register-tile <type> <dimensions> <initial-value> &key warps operand)
 
 (make-register-tile float (128 128) 0.0)
 (make-register-tile float (64 64) 0.0 :warps '(false true true))   ; warp-specialized: tile on the 2 consumer warps
