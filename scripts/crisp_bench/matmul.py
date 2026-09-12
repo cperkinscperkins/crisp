@@ -16,6 +16,7 @@ import json
 import shutil
 import time
 import re
+import math
 from pathlib import Path
 
 # Add parent dir to path so we can import harness
@@ -128,7 +129,13 @@ def sh(cmd, **kw):
 # otherwise wedge the whole sweep with no diagnostic.  A timeout turns that into one lost point.
 # --------------------------------------------------------------------------------------
 VERIFY_MAX_N   = 2048     # full host-reference verification at or below this size
-BENCH_TIMEOUT  = 900.0    # seconds per benchmark binary, verification included
+# 300 s, not 900.  The 900 was sized for the CUDA auto-bench's O(N^3) HOST REFERENCE -- which never
+# runs above VERIFY_MAX_N anyway, because the child is killed at its BENCH line -- and was then
+# inherited by harnesses that only spot-check (< 1 s at N=16384).  Of 3,152 points recorded on
+# every device before 2026-09-12 the longest timed loop was 148 s; none exceeded 300.  What 900
+# actually bought, on BMG on 2026-09-12, was two chap0_naive points at 16384 that each waited the
+# full 15 minutes and recorded nothing.  SizePacer below now declines such points up front.
+BENCH_TIMEOUT  = 300.0    # seconds per benchmark binary, verification included
 _BENCH_RE      = re.compile(r'^\s*BENCH\b')
 
 # §3 of plan/benchmark-harness.md, for the AUTO-BENCH path specifically.
@@ -145,8 +152,11 @@ _BENCH_RE      = re.compile(r'^\s*BENCH\b')
 # consistent with whatever we substitute.
 _COUNTS_RE = re.compile(r'const\s+int\s+WARMUP\s*=\s*\d+\s*,\s*ITERS\s*=\s*\d+\s*;')
 
-def _rewrite_bench_counts(txt: str, n: int, base_warmup: int = 20, base_iters: int = 100) -> str:
-    w, it = scaled_counts(base_warmup, base_iters, n)
+def _rewrite_bench_counts(txt: str, n: int, base_warmup: int = 20, base_iters: int = 100,
+                          counts=None) -> str:
+    # COUNTS, when given, are the SizePacer's -- so the generated harness runs exactly what the
+    # sweep decided and records, instead of recomputing its own.
+    w, it = counts if counts else scaled_counts(base_warmup, base_iters, n)
     new, k = _COUNTS_RE.subn(f"const int WARMUP = {w}, ITERS = {it};", txt)
     if k == 0:
         print(f"  (note: could not rewrite WARMUP/ITERS in the generated harness for N={n}; "
@@ -205,20 +215,12 @@ def run_bench_proc(cmd, *, verify: bool, timeout: float = BENCH_TIMEOUT, cwd=Non
         return (out, "early")
     return (out, "ok" if p.returncode == 0 else "error")
 
-# §4 of plan/benchmark-harness.md, adaptively rather than as a per-chapter table.
-#
-# Matmul work grows as N^3, so ONE size doubling is 8x the work.  A point that took ~90s is
-# therefore certain to blow the 900s BENCH_TIMEOUT at the next size up.  Attempting it anyway
-# costs 900 wasted seconds and yields NOTHING -- the point is skipped either way.  Measured on
-# the H100: chap0_naive (no tensor cores) collapses to ~0.55 TFLOPS at 32768, and every naive
-# chapter x contender x precision combination burned a full timeout there.
-#
-# So: once a point is this slow, stop growing the size for THAT contender.  This removes no data
-# that would otherwise have been collected -- it only declines to wait for a known failure.  The
-# skip is announced, so a gap in the table is attributable rather than mysterious.
-SIZE_GIVEUP_SECONDS = 90.0
+# §4 of plan/benchmark-harness.md, adaptively rather than as a per-chapter table: see SizePacer.
+# (This used to be SIZE_GIVEUP_SECONDS = 90 plus `_too_slow_to_grow`, which assumed 90 s implied a
+# blown 900 s timeout at the next size -- but 90 x 8 = 720 -- and was never called by the Intel
+# L0 sweeps at all.)
 
-# ...and a SIZE-SCALED timeout, because the give-up above cannot catch a CLIFF.
+# ...and a SIZE-SCALED timeout, because no prediction can see a CLIFF coming.
 #
 # It predicts the next size from the last one assuming N^3 scaling (8x per doubling).  Measured on
 # the H100 that assumption fails exactly where it matters: chap0_naive completes 16384 in seconds
@@ -282,13 +284,105 @@ def sizes_for_chapter(chapter, sizes):
 def bench_timeout_for(n: int) -> float:
     return XL_BENCH_TIMEOUT if n > XL_SIZE_THRESHOLD else BENCH_TIMEOUT
 
-def _too_slow_to_grow(chapter, comp_name, S, elapsed):
-    if elapsed < SIZE_GIVEUP_SECONDS:
-        return False
-    nxt = bench_timeout_for(S * 2)
-    print(f"  ! {chapter} ({comp_name}) {S}^3 took {elapsed:.0f}s; larger sizes would exceed their "
-          f"{nxt:.0f}s timeout — skipping them", file=sys.stderr)
-    return True
+# --------------------------------------------------------------------------------------
+# PACING A SIZE LADDER: iteration counts from a time budget, and a skip that predicts.
+#
+# One object per (chapter, contender) walks the ladder smallest-first and carries what the last
+# point cost into the next one.  Three jobs, all driven by the same prediction -- the last
+# point's per-iteration time scaled by (N/N_prev)^3, the work growth of matmul:
+#
+#   1. COUNTS.  Above SIZE_SCALE_REF the warmup/iteration counts come from a time budget
+#      (plan/benchmark-harness.md §3): about 50 ms of warmup and 500 ms of timed loop, never
+#      fewer than PACE_ITERS_MIN iterations, and never MORE runs than the old size formula gave.
+#      A fast kernel is unaffected; a slow one stops paying for samples it does not need.
+#      Measured on BMG, chap0_naive at 8192 is 22.8 s PER ITERATION -- the old fixed floor of
+#      2 warmup + 5 iterations made that one point cost 160 s.
+#   2. SKIP.  If the predicted process time (overhead + runs x predicted iteration) exceeds the
+#      point's timeout, the size is not attempted and the reason is printed.  An attempt could
+#      only burn the timeout and record nothing.  Larger sizes are worse, so the ladder stops.
+#   3. GIVE UP.  If a point produced nothing after using most of its timeout, every larger size
+#      would too.
+#
+# At or below SIZE_SCALE_REF nothing changes: counts come from scaled_counts, as they always did.
+# --------------------------------------------------------------------------------------
+PACE_WARMUP_MS  = 50.0
+PACE_ITERS_MS   = 500.0
+PACE_ITERS_MIN  = 3       # the fewest samples a median means anything over
+PACE_SLOW_ITER_S = 1.0    # at or beyond this per iteration, ONE warmup is enough: JIT, first
+                          #   touch and cache fill are all paid inside the first launch
+
+class SizePacer:
+    """Iteration counts, predictive skip and give-up for one (chapter, contender) size ladder."""
+
+    def __init__(self, chapter, comp_name, base_warmup, base_iters):
+        self.chapter, self.comp = chapter, comp_name
+        self.base_w, self.base_it = base_warmup, base_iters
+        self.prev = None          # (N, seconds per iteration, fixed overhead seconds)
+        self.stopped = None       # reason string once the ladder must stop
+
+    def _iter_s(self, S):
+        pS, per, _ = self.prev
+        return per * (S / pS) ** 3
+
+    def counts(self, S):
+        """(warmup, iters) for size S."""
+        sw, sit = scaled_counts(self.base_w, self.base_it, S)
+        if self.prev is None or S <= SIZE_SCALE_REF:
+            return sw, sit
+        it_s = self._iter_s(S)
+        ms = max(it_s * 1000.0, 1e-3)
+        w_floor = 1 if it_s >= PACE_SLOW_ITER_S else WARMUP_MIN
+        w  = max(w_floor,        min(sw,  math.ceil(PACE_WARMUP_MS / ms)))
+        it = max(PACE_ITERS_MIN, min(sit, math.ceil(PACE_ITERS_MS  / ms)))
+        return w, it
+
+    def skip_reason(self, S):
+        """Why size S (and everything above it) will not be attempted, or None."""
+        if self.stopped:
+            return self.stopped
+        if self.prev is None:
+            return None
+        w, it = self.counts(S)
+        pS, per, over = self.prev
+        it_s = self._iter_s(S)
+        pred = over + (w + it) * it_s
+        lim = bench_timeout_for(S)
+        if pred > lim:
+            return (f"predicted {pred:.0f}s ({w}+{it} runs x {it_s:.1f}s/iter, from "
+                    f"{per:.2f}s/iter at N={pS}) exceeds the {lim:.0f}s timeout")
+        return None
+
+    def record(self, S, elapsed_s, w, it, kernel_ms=None):
+        """Remember what a completed point cost.  KERNEL_MS is the harness's own per-iteration
+        median when it reports one; otherwise the whole process time is spread over the runs."""
+        runs = max(1, w + it)
+        per = (kernel_ms / 1000.0) if kernel_ms and kernel_ms > 0 else elapsed_s / runs
+        self.prev = (S, per, max(0.0, elapsed_s - runs * per))
+
+    def failed(self, S, elapsed_s):
+        """A point produced nothing.  If it used most of its timeout, stop the ladder."""
+        lim = bench_timeout_for(S)
+        if elapsed_s >= 0.9 * lim:
+            self.stopped = (f"N={S} ran {elapsed_s:.0f}s against its {lim:.0f}s timeout and "
+                            f"produced nothing")
+
+    def announce_skip(self, S):
+        why = self.skip_reason(S)
+        if why:
+            print(f"  SKIP {self.chapter} ({self.comp}) N>={S}: {why}", file=sys.stderr, flush=True)
+        return bool(why)
+
+def matmul_precision_ok(chapter, prec, ftz):
+    """GROUND RULE (benchmarks/README.md, Harness Ground Rules): matmul runs at ONE precision per
+    ladder.  16- and 32-bit run only at `fast`; 64-bit runs only at `ieee` with denormals
+    preserved.  The ieee+FTZ pass exists for scalar suites (reductions) and runs no matmul.
+
+    Enforced here rather than by the caller, so `--sweep-all` stays the one universal call: the
+    reduction suite needs all three passes, and matmul simply declines the ones it does not use.
+    """
+    if harness.matmul_elem_bytes(chapter) == 24:          # the _f64 ladder
+        return prec == "ieee" and not ftz
+    return prec == "fast"
 
 class ContenderBuildError(Exception):
     """A contender failed to COMPILE.  Distinct from a crash at run time, and -- importantly --
@@ -443,15 +537,18 @@ def _verif(out):
 def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, warmup: int, iters: int, precision: str, ftz: bool, compile_dev_ms: float, compile_all_ms: float, env_extra: dict = None) -> BenchmarkSweep:
     meta = _apply_hw(create_metadata())
     results = []
+    pacer = SizePacer(chapter, competitor_name, warmup, iters)
     for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
-        w, it = scaled_counts(warmup, iters, S)
+        if pacer.announce_skip(S): break
+        w, it = pacer.counts(S)
         _t0 = time.time()
         out = run_bin(exe_path, S, S, S, w, it, env_extra)
         _el = time.time() - _t0
         if not out:
-            if _too_slow_to_grow(chapter, competitor_name, S, _el): break
+            pacer.failed(S, _el)
             continue
+        pacer.record(S, _el, w, it, out.get("kernel_median_us", 0.0) / 1000.0)
 
         if not out.get("correct", True):
             # Endeavour 162 follow-up: KEEP the point, flagged unverified, instead of dropping
@@ -477,7 +574,6 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
             )
         )
         results.append(point)
-        if _too_slow_to_grow(chapter, competitor_name, S, _el): break
 
     return BenchmarkSweep(
         run_metadata=meta,
@@ -494,7 +590,7 @@ def _hoist_cuda_bin(crisp_compiler):
     return str(p.parent / ("crisp-hoist-cuda" + (".exe" if p.suffix == ".exe" else "")))
 
 def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, crisp_compiler: str,
-                        prec_flags=(), nvcc_math=()):
+                        prec_flags=(), nvcc_math=(), counts=None):
     chap_dir = src_path.parent
     base = src_path.stem
     ptx = chap_dir / f"{base}.ptx"
@@ -510,7 +606,7 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
         print(f"autobench: no bench .cu {cu}", file=sys.stderr); return None
     txt = cu.read_text()
     txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.ptx"', '"' + str(ptx).replace("\\", "/") + '"', txt)
-    txt = _rewrite_bench_counts(txt, N)
+    txt = _rewrite_bench_counts(txt, N, counts=counts)
     cu.write_text(txt)
     exe = chap_dir / f"{base}_bench"
     c = sh(["nvcc", "-O3", "-arch=sm_90a", "-Xcompiler", "-fopenmp", *nvcc_math, str(cu), "-o", str(exe), "-lcuda"], capture_output=True, text=True)
@@ -543,14 +639,19 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
     if stale.exists():
         stale.unlink()
     results = []
+    pacer = SizePacer(chapter, comp_name, warmup, iters)
     for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
+        if pacer.announce_skip(S): break
+        w, it = pacer.counts(S)
         _t0 = time.time()
-        out = run_crisp_autobench(src, grid_tile, S, S, S, crisp_compiler, prec_flags, nvcc_math)
+        out = run_crisp_autobench(src, grid_tile, S, S, S, crisp_compiler, prec_flags, nvcc_math,
+                                  counts=(w, it))
         _el = time.time() - _t0
         if not out:
-            if _too_slow_to_grow(chapter, comp_name, S, _el): break
+            pacer.failed(S, _el)
             continue
+        pacer.record(S, _el, w, it, out.get("kernel_median_us", 0.0) / 1000.0)
         # correct is None when the size is above VERIFY_MAX_N and the host reference was
         # deliberately not run (§5).  Only a MEASURED failure discards the point; "not checked"
         # must not be read as "wrong", or every large size would silently vanish from the report.
@@ -558,7 +659,9 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
             print(f"  ! {chapter} ({comp_name}) {S}^3: NOT MMA_CORRECT — skipping point", file=sys.stderr)
             continue
         results.append(SweepPoint(
-            configuration={"m": S, "n": S, "k": S, "warmup": warmup, "iters": iters,
+            # The counts that actually RAN.  This recorded the base 20/100 while the generated
+            # harness ran its size-scaled counts, so every auto-bench point misreported them.
+            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
                            "verified": bool(out.get("verified", True))},
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms,
@@ -567,7 +670,6 @@ def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, 
                                        kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
                 throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0),
                 verification=_verif(out))))
-        if _too_slow_to_grow(chapter, comp_name, S, _el): break
     return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
                           precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
 
@@ -596,7 +698,7 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     
     txt = cpp.read_text()
     txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.spv"', '"' + str(spv).replace("\\", "/") + '"', txt)
-    txt = _rewrite_bench_counts(txt, N)
+    txt = _rewrite_bench_counts(txt, N, counts=(warmup, iters))
     cpp.write_text(txt)
     
     exe = chap_dir / f"{base}_bench_l0"
@@ -638,14 +740,20 @@ def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
     results = []
     measured_c_ms = 0.0
     measured_hoist_ms = 0.0
+    pacer = SizePacer(chapter, comp_name, warmup, iters)
     for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
         if S > 8192:
             continue
-        w, it = scaled_counts(warmup, iters, S)
+        if pacer.announce_skip(S): break
+        w, it = pacer.counts(S)
+        _t0 = time.time()
         out = run_l0_autobench(src, S, S, S, w, it, crisp_compiler, prec_flags, [])
+        _el = time.time() - _t0
         if not out:
+            pacer.failed(S, _el)
             continue
+        pacer.record(S, _el, w, it, out.get("kernel_median_us", 0.0) / 1000.0)
         if out.get("compile_ms", 0.0) > 0.0:
             measured_c_ms = out["compile_ms"]
             measured_hoist_ms = out.get("hoist_ms", 0.0)
@@ -975,12 +1083,18 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
     else:
         print(f"l0-fixed: no metacrisp for {src.name}; using fixture defaults", file=sys.stderr)
     results = []
+    pacer = SizePacer(chapter, comp_name, warmup, iters)
     for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
-        w, it = scaled_counts(warmup, iters, S)
+        if pacer.announce_skip(S): break
+        w, it = pacer.counts(S)
+        _t0 = time.time()
         out = run_l0_bin(harness_bin, S, S, S, w, it, env_extra=env_ext)
+        _el = time.time() - _t0
         if not out:
+            pacer.failed(S, _el)
             continue
+        pacer.record(S, _el, w, it, out.get("kernel_median_us", 0.0) / 1000.0)
         results.append(SweepPoint(
             configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
                            "verified": bool(out.get("verified", True))},
@@ -1081,9 +1195,12 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
     print(f"cuda-fixed: env for {comp_name}: " +
           " ".join(f"{k}={v}" for k, v in sorted(env_ext.items())), file=sys.stderr)
     results = []
+    pacer = SizePacer(chapter, comp_name, warmup, iters)
     for s in sizes_for_chapter(chapter, sizes):
         S = int(s)
-        w, it = scaled_counts(warmup, iters, S)
+        if pacer.announce_skip(S): break
+        w, it = pacer.counts(S)
+        _t0 = time.time()
         # Direct subprocess rather than run_bench_proc.  Simpler, and this harness emits one
         # JSON object on stdout so none of run_bench_proc's early-stop machinery applies.
         #
@@ -1103,6 +1220,7 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
             raw = cp.stdout
         except subprocess.TimeoutExpired:
             print(f"  ! {Path(harness_bin).name} {S}x{S}x{S}: timeout", file=sys.stderr)
+            pacer.failed(S, time.time() - _t0)
             continue
         out = None
         m = re.search(r"\{.*\}", raw, re.S)
@@ -1115,7 +1233,9 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
             tail = (cp.stdout + cp.stderr)[-400:]
             print(f"  ! {Path(harness_bin).name} {S}x{S}x{S}: no JSON "
                   f"(rc={cp.returncode}) {tail}", file=sys.stderr)
+            pacer.failed(S, time.time() - _t0)
             continue
+        pacer.record(S, time.time() - _t0, w, it, out.get("kernel_median_us", 0.0) / 1000.0)
         results.append(SweepPoint(
             configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
                            "verified": bool(out.get("verified", True))},
@@ -1289,7 +1409,21 @@ def main():
 
         _want = set(x.strip() for x in a.chapters.split(",") if x.strip())
         def _skip(chapter):
-            return bool(_want) and chapter not in _want
+            # 1. --chapters, when given, is an exact allow-list.
+            if _want and chapter not in _want:
+                return True
+            # 2. FENCED directories (`_probe_*`, `_variant_*`, `_iso`, `_kdepth`) are diagnostics,
+            #    some numerically wrong by construction.  They run ONLY when named in --chapters,
+            #    never in a full sweep -- and BenchmarkSweep.save sends their results to scratch.
+            if chapter.startswith("_") and chapter not in _want:
+                return True
+            # 3. ONE precision per matmul ladder (see matmul_precision_ok).
+            return not matmul_precision_ok(chapter, prec, ftz)
+
+        print("  precision rule: " + (
+            "16/32-bit matmul runs at fast; 64-bit does not" if prec == "fast" else
+            "only the 64-bit matmul ladder runs at ieee+preserve" if not ftz else
+            "no matmul runs at ieee+FTZ (that pass is for scalar suites)"), flush=True)
 
         def run_target(chapter, source_name, bin_name, comp_name, flags, is_sycl=False, is_cublas=False, is_crisp=False, crisp_grid_tile=None, use_fixture=False):
             if _skip(chapter):
@@ -1345,8 +1479,8 @@ def main():
                         sweep = run_autobench_sweep(chapter, src_path, crisp_grid_tile or "64,64",
                                                     comp_name, sizes, a.warmup, a.iters, prec, ftz,
                                                     dev_c_ms, crisp_compiler)
-                    sweep.save(out_dir)
-                    print(f"Saved {chapter} ({comp_name}) fixture sweep to {out_dir}")
+                    _saved = sweep.save(out_dir)
+                    print(f"Saved {chapter} ({comp_name}) fixture sweep to {_saved.parent}")
                     # RETURN, like the autobench branch below.  Without it control falls through
                     # to the generic runner, which re-invokes the SAME fixture binary with only
                     # CRISP_MATMUL_PTX set -- no ARGC, no ARG_A/B/C, no SCRATCH -- so it defaults
@@ -1358,8 +1492,8 @@ def main():
                 elif crisp_grid_tile:
                     sweep = run_autobench_sweep(chapter, src_path, crisp_grid_tile, comp_name, sizes,
                                                 a.warmup, a.iters, prec, ftz, dev_c_ms, crisp_compiler)
-                    sweep.save(out_dir)
-                    print(f"Saved {chapter} ({comp_name}) auto-bench sweep to {out_dir}")
+                    _saved = sweep.save(out_dir)
+                    print(f"Saved {chapter} ({comp_name}) auto-bench sweep to {_saved.parent}")
                     return
                 exe_path = str(HERE / "crisp" / "matmul_crisp")
                 env_ext = {"CRISP_MATMUL_PTX": str(bin_path)}
@@ -1382,8 +1516,8 @@ def main():
                 env_ext = None
                 
             sweep = run_sweep(chapter, exe_path, comp_name, sizes, a.warmup, a.iters, prec, ftz, dev_c_ms, all_c_ms, env_ext)
-            sweep.save(out_dir)
-            print(f"Saved {chapter} ({comp_name}) sweep to {out_dir}")
+            _saved = sweep.save(out_dir)
+            print(f"Saved {chapter} ({comp_name}) sweep to {_saved.parent}")
 
         def run_l0_crisp(chapter, source_name, comp_name="Crisp", use_autobench=False):
             if _skip(chapter):
@@ -1432,8 +1566,8 @@ def main():
                     print("    | " + line)
                 return
                 
-            sweep.save(out_dir)
-            print(f"Saved {chapter} ({comp_name}) L0 sweep to {out_dir}")
+            _saved = sweep.save(out_dir)
+            print(f"Saved {chapter} ({comp_name}) L0 sweep to {_saved.parent}")
 
         if a.platform == "nvidia":
             # §1 Ch 0 — Naive loops, no tensor cores (fp32)

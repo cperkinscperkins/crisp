@@ -113,12 +113,12 @@ python scripts/crisp_bench/matmul.py --sweep-all
 ```
 `matmul.py` is the unified cross-platform driver. It determines what to build and run depending on the `--platform` argument.
 
-For each precision it sweeps **every chapter** — the tf32 ladder chap0..chap7, its `_bf16`
-twin, and the `_f64` ladder chap0..chap6, plus every `sec2_*`/`sec3_*`/`sec4_*` group —
-× **every competitor** (Crisp, CUDA_Apples, SYCL_Apples, CUTLASS, CUBLAS_Optimal,
-OneMKL_Optimal) × **every size**, dropping all the JSONs into `results/`.  Any target whose
-source or compiler is missing (e.g. SYCL/OneMKL without `icpx`) is quietly skipped.  So one
-command = the whole matmul story.
+It sweeps **every chapter** — the tf32 ladder chap0..chap7, its `_bf16` twin, and the `_f64`
+ladder chap0..chap6, plus every `sec2_*`/`sec3_*`/`sec4_*` group — × **every competitor** × **every
+size**, dropping the JSONs into `results/`, **at the one precision each ladder's rule allows** (16/32-bit
+at `fast`, 64-bit at `ieee`; the `ieee`+FTZ pass runs no matmul).  Fenced `_` directories are left
+out unless named in `--chapters`.  Any target whose source or compiler is missing (e.g. SYCL/OneMKL
+without `icpx`) is skipped with a message.  See [Harness Ground Rules](#harness-ground-rules).
 
 **Sizes are named presets, not a literal default.**  `--sizes` defaults to `canonical`:
 
@@ -246,6 +246,107 @@ python scripts/cull-old-benchmarks.py --dry-run
 python scripts/cull-old-benchmarks.py
 ```
 
+## Harness Ground Rules
+
+These are **requirements**, and `scripts/crisp_bench/matmul.py` enforces them unless a row says
+otherwise.  Status as of 2026-09-12.  The plain call is the right call:
+
+```bash
+./scripts/bench-intel.sh                       # Intel
+python scripts/crisp_bench/matmul.py --sweep-all --auto-profile   # NVIDIA pod
+```
+
+Flag names: `matmul.py` takes `--precision=fast|ieee` and `--ftz` (or `--sweep-all` for all three
+passes), and translates them into the compiler's own `--math-precision=fast|ieee` and
+`--denormal-handling=preserve|ftz`.
+
+### Precision — one precision per matmul ladder
+
+`--sweep-all` is the one universal call: it runs three passes, and each suite takes only the passes
+its rule allows.  The harness prints the rule at the top of each pass.
+
+| suite | element width | runs at | status |
+|---|---|---|---|
+| matmul | 16-bit (bf16 / fp16) | `fast` only | **Enforced** (`matmul_precision_ok`) |
+| matmul | 32-bit (tf32 / fp32) | `fast` only | **Enforced** |
+| matmul | 64-bit (fp64 — NVIDIA only; BMG has no fp64 MMA) | `ieee` + preserve only | **Enforced** |
+| matmul | — | `ieee` + FTZ | runs **nothing** — that pass exists for scalar suites |
+| reduction | — | `fast`, `ieee`, `ieee` + FTZ | **NOT IMPLEMENTED.** `benchmarks/reduction/run.py` passes no precision or denormal flags at all. |
+
+`report.py` reads the same rule back: `fast` for 16/32-bit, `ieee` (falling back to `fast`) for fp64.
+
+### Sizes
+
+- **The matmul ladder runs to 16384 on every device, BMG included, §1 included.**  Behaviour
+  changes at those sizes, which is the reason to measure them.  (Until 2026-09-11 `bench-intel.sh`
+  stopped at 8192.)
+- **Above 16384, as far as device memory allows**, per ladder (see the per-width table under
+  *Run the Benchmarks*).  BMG reports 11.6 GB; its 1 GiB *single-allocation* cap is lifted in the
+  Crisp L0 fixture by the relaxed-allocation-limits extension, and SYCL has run bf16 at 32768 on
+  BMG.  **Partly enforced:** the VRAM clamp queries `nvidia-smi` only, so on Intel it clamps nothing.
+- A size can still be **declined by the pacer** (below) when it cannot finish inside its timeout.
+  That is printed as a `SKIP` line with the reason, so the gap in the table is attributable.
+
+### Iteration counts — fewer at larger sizes
+
+Every (chapter, contender) walks its size ladder smallest first, and each point's measured
+per-iteration time predicts the next one's (× (N/N_prev)³, matmul's work growth).
+
+| size | warmup + iterations |
+|---|---|
+| ≤ 1024 on Intel, ≤ 2048 on NVIDIA | the requested counts (default 20 + 100) |
+| above that | scaled down by (ref/N)³ — floor 2 + 5 — **and further** to a time budget of about 50 ms of warmup and 500 ms of timed loop (plan/benchmark-harness.md §3) |
+| iteration predicted ≥ 1 s | floor **1 + 3**: JIT, first touch and cache fill are all paid inside the first launch, and a median of 3 is enough when each sample takes seconds |
+
+A fast kernel is unaffected until its iterations get slow; a slow one stops paying for samples it
+does not need.  The counts that actually ran are recorded in each result point
+(`configuration.warmup` / `configuration.iters`).  **Enforced** in every sweep function
+(`SizePacer`).
+
+Measured example, BMG `chap0_naive` (no tensor cores): 22.8 s per iteration at 8192 — the old fixed
+2 + 5 made that one point cost ~160 s; it is now 1 + 3, ~92 s.
+
+### Verification
+
+Correctness is checked at **every** size, and is **never** a full O(N³) host reference at large N.
+Per harness, as read from the source:
+
+| harness | check | cost at N=16384 |
+|---|---|---|
+| Crisp L0 fixture (`crisp/bench_harness_l0.cpp`) | strided 64×64 spot check, stops at first failure | < 1 s |
+| Crisp CUDA fixture (`crisp/bench_harness.cu`) | strided 64×64 spot check | < 1 s |
+| SYCL / CUDA Apples, oneMKL, controls | A = B = 1, every element of C must equal K — one O(N²) pass | < 1 s |
+| Crisp CUDA auto-bench (`crisp-hoist-cuda --mma-bench`) | full host reference | `matmul.py` kills the child at its BENCH line above `VERIFY_MAX_N` = 2048, so the reference never runs |
+| Crisp L0 auto-bench (`crisp-hoist-l0 --mma-test`) | *not yet inspected* | fallback only (the fixture is preferred); skipped above 8192 |
+
+**Verification is not a time cost at large N on either vendor.**  Measured on BMG, `chap0_naive`
+at 8192: kernel 22.8 s per iteration, everything else — allocation, fill, copies and the spot
+check — 1.4 s.  Slow large points are slow *kernels*.
+
+### Time limits
+
+- **No benchmark process may run longer than 5 minutes** (`BENCH_TIMEOUT = 300`), and above
+  N = 16384, 150 s.  Of 3,152 points recorded on every device before 2026-09-12 the longest timed
+  loop was 148 s and none exceeded 300 s.  **Enforced.**  (It was 900 s, sized for the CUDA
+  auto-bench's host reference, and on 2026-09-12 cost two `chap0_naive` points at 16384 fifteen
+  minutes each for nothing.)
+- **A point predicted to exceed its timeout is not attempted**, and neither is any larger size for
+  that contender.  A point that fails after using most of its timeout stops the ladder the same
+  way.  **Enforced** (`SizePacer`).  On BMG this declines `chap0_naive` at 16384 up front:
+  predicted ~730 s from the measured 8192 point.
+
+### Fenced chapters
+
+- `_`-prefixed directories (`_probe_*`, `_variant_*`, `_iso`, `_kdepth`) are diagnostics, some
+  numerically wrong by construction.  **They run only when named in `--chapters`**, and **their
+  results always go to `results/scratch/`**, whatever flags were passed.  **Enforced** (`_skip` in
+  `matmul.py`; `BenchmarkSweep.save` in `harness.py`).
+
+### Hardware profile
+
+- Every sweep compiles against a profile matched to the device, and every result records which
+  profile and how it was obtained.  **Enforced** — see [Hardware Profiles](#hardware-profiles).
+
 ## Precision and FTZ (Flush-To-Zero)
 
 `--sweep-all` runs three math configurations:
@@ -277,9 +378,8 @@ Two independent reasons the other cells are not results:
   and reuse that PTX across every size and precision, so the advanced chapters report the *same*
   Crisp throughput in all three columns.  Three passes there produce one number, thrice.
 
-So `--sweep-all` is harmless but largely redundant for matmul; `--precision=fast` plus a
-`--precision=ieee` pass for the 64-bit ladder is the honest minimum.  `--sweep-all` does cover
-both, which is why the pod script uses it.
+So matmul runs at exactly one precision per ladder, and `matmul.py` enforces it — see
+[Harness Ground Rules](#harness-ground-rules).
 
 ## Hardware Profiles
 

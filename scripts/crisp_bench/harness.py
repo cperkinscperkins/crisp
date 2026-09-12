@@ -129,7 +129,11 @@ class BenchmarkSweep:
         if base_dir is None:
             base_dir = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "results"
         
-        if force_scratch or not self.is_canonical:
+        # A FENCED chapter (leading underscore: _probe_*, _variant_*, _iso, _kdepth) is a
+        # diagnostic, some of them numerically wrong by construction, so it can never write a
+        # canonical result -- whatever flag the caller did or did not pass.  `is_canonical` existed
+        # for this and nothing ever set it, so fenced results went to results/ for months.
+        if force_scratch or not self.is_canonical or str(self.chapter).startswith("_"):
             target_dir = base_dir / "scratch"
         else:
             target_dir = base_dir
