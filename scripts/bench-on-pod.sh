@@ -73,7 +73,14 @@ PORT="${2:?Usage: $0 <host> <port> [branch] [ssh-key] [sizes] [iters] [occupancy
 BRANCH="${3:-main}"
 SSH_KEY="${4:-$HOME/.ssh/id_ed25519}"
 ## Per-benchmark default sizes (reduction: element counts; matmul: square dims, multiples of 64).
-if [ "$BENCH" = "matmul" ]; then DEFAULT_SIZES="256,512,1024"; else DEFAULT_SIZES="1K,100K,1M"; fi
+##
+## MATMUL DEFERS TO matmul.py's PRESET, and that is a fix rather than a tidy-up.  This defaulted
+## to "256,512,1024" -- i.e. the `small` preset -- so a pod invocation that omitted the sizes
+## argument swept only three small sizes on rented hardware and produced a report whose entire
+## large-N story was missing.  Nothing said so; the run looked successful.  `canonical` is
+## resolved inside matmul.py (256..16384, plus 32768 on NVIDIA), so the definition lives in one
+## place and the pod gets the same sweep a local run would.
+if [ "$BENCH" = "matmul" ]; then DEFAULT_SIZES="canonical"; else DEFAULT_SIZES="1K,100K,1M"; fi
 SIZES="${5:-$DEFAULT_SIZES}"
 ITERS="${6:-100}"
 ## crisp-tree occupancy (reduction only): when empty, run.py reads :occupancy from the .crisp

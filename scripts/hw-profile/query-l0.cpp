@@ -9,14 +9,32 @@
 //   clang++ query.cpp -I C:/Users/cperk/Documents/level-zero/include \
 //           C:/Windows/System32/ze_loader.dll -static -o query.exe
 //
+// EVERY EMITTED KEY IS TAGGED WITH ITS PROVENANCE — QUERIED / ARCH / MEASURED — because a
+// hardware value without a provenance is how endeavor 144 twice adopted a plausible-looking
+// assumption that turned out to be wrong.  The tiers are not cosmetic:
+//
+//   QUERIED    this program read it off the device.  Trust it.
+//   ARCH       an ISA fact, not a device property.  Look it up for YOUR part; the emitted
+//              value is Xe2's and is a starting point, not an answer.
+//   MEASURED   only a sweep can answer it.  OMIT rather than guess — :tile-visit-strip-width 4
+//              is +63% on BMG at N=2048 and -14% on H100, so a wrong guess costs more than the
+//              omission, and absent means the safe linear behaviour.
+//
 // Keys L0 does NOT expose, and where the value has to come from instead:
 //   :native-cache-line-size    — not in the L0 API.  Xe2 LSC cache line is 64B.
 //   :max-registers-per-thread  — GRF size is not queryable.  Xe2: 128 regs x 32B
-//                                (default) or 256 (large-GRF mode).
+//                                (default) or 256 (large-GRF mode).  Emitted as an ascending
+//                                LIST because the register file is a JIT-time choice; a scalar
+//                                silently forfeits large-GRF, worth 1.55-2.01x on BMG.
 //   :max-registers-per-cu      — likewise not queryable; derive as GRF-per-thread x
 //                                numThreadsPerEU x numEUsPerSubslice if we want it.
-//   :mma-shapes                — an ISA fact, not a device property.  BMG tf32 XMX is
-//                                (8 16 8), already established by the working kernel.
+//   :mma-shapes                — an ISA fact, not a device property.  ALL supported element
+//                                widths must be listed: %check-mma-shape is a hard compile
+//                                error on an unlisted shape, so emitting only the tf32 triple
+//                                (8 16 8) refuses every bf16 / fp16 / int8 MMA kernel.
+//   :mma-lowerings             — a capability claim this program cannot verify, so it emits
+//                                only the portable :coop-matrix and names :xe-native (Xe2+).
+//   :tile-visit-strip-width    — MEASURED.  Named but never emitted; see above.
 
 #include <ze_api.h>
 #include <cstdio>
@@ -95,17 +113,23 @@ int main() {
             std::printf("   (subgroup = SIMD width choices)\n");
 
             std::printf("\n  -- caches (feeds :l2-cache-size) --\n");
+            // Tracked so :l2-cache-size can be EMITTED rather than left as a
+            // "<from cache[] above>" placeholder the reader has to resolve by hand.
+            unsigned long long largestCacheBytes = 0;
             uint32_t cacheCount = 0;
             if (zeDeviceGetCacheProperties(dev, &cacheCount, nullptr) == ZE_RESULT_SUCCESS
                 && cacheCount > 0) {
                 std::vector<ze_device_cache_properties_t> caches(cacheCount);
                 for (auto& c : caches) c.stype = ZE_STRUCTURE_TYPE_DEVICE_CACHE_PROPERTIES;
                 if (zeDeviceGetCacheProperties(dev, &cacheCount, caches.data()) == ZE_RESULT_SUCCESS) {
-                    for (uint32_t c = 0; c < cacheCount; ++c)
+                    for (uint32_t c = 0; c < cacheCount; ++c) {
                         std::printf("  cache[%u] size %llu bytes (%.1f MB)  scope=%s\n", c,
                                     (unsigned long long)caches[c].cacheSize,
                                     caches[c].cacheSize / (1024.0 * 1024.0),
                                     cache_scope(caches[c].flags));
+                        if ((unsigned long long)caches[c].cacheSize > largestCacheBytes)
+                            largestCacheBytes = (unsigned long long)caches[c].cacheSize;
+                    }
                 }
             } else {
                 std::printf("  (no cache properties reported)\n");
@@ -144,20 +168,58 @@ int main() {
             }
 
             // ---- the paste-ready profile ----
-            std::printf("\n  -- proposed def-hardware-profile (queried values only) --\n");
+            //
+            // THE THREE TIERS ARE LABELLED, AND THAT IS THE POINT.  A profile key is either
+            // QUERIED (this program knows it), ARCHITECTURAL (an ISA fact -- look it up), or
+            // MEASURED (only a sweep can answer it).  Endeavor 144 twice adopted a
+            // plausible-looking hardware assumption that was wrong, so a value's PROVENANCE is
+            // part of the value.  Guessing on the MEASURED tier is actively harmful: strip
+            // width 4 is +63% on BMG at N=2048 and -14% on H100, so a wrong guess costs more
+            // than the omission does.  Absent MEASURED keys fall back to safe behaviour.
+            std::printf("\n  -- proposed def-hardware-profile --\n");
+            std::printf("  ;; QUERIED = from this device.  ARCH = ISA fact, look it up.\n");
+            std::printf("  ;; MEASURED = sweep it or omit it; a guess can be worse than nothing.\n");
             std::printf("(def-hardware-profile <name>\n");
-            std::printf("  :simd-width %u\n",
+            std::printf("  :simd-width %u                       ; QUERIED\n",
                         comp.numSubGroupSizes > 0 ? comp.subGroupSizes[0] : props.physicalEUSimdWidth);
-            std::printf("  :compute-units %u                    ; Xe-cores; see Phase 6 mapping decision\n",
+            std::printf("  :compute-units %u                    ; QUERIED (Xe-cores)\n",
                         props.numSlices * props.numSubslicesPerSlice);
-            std::printf("  :max-total-threads-per-block %u\n", comp.maxTotalGroupSize);
-            std::printf("  :max-work-group-dims '(%u %u %u)\n",
+            std::printf("  :max-total-threads-per-block %u     ; QUERIED\n", comp.maxTotalGroupSize);
+            std::printf("  :max-work-group-dims '(%u %u %u)  ; QUERIED\n",
                         comp.maxGroupSizeX, comp.maxGroupSizeY, comp.maxGroupSizeZ);
-            std::printf("  :max-shared-memory-per-block %uKB\n", comp.maxSharedLocalMemory / 1024);
-            std::printf("  ; :l2-cache-size <from cache[] above>\n");
-            std::printf("  ; :native-cache-line-size 64        ; not queryable; Xe2 LSC line\n");
-            std::printf("  ; :max-registers-per-thread <GRF>   ; not queryable; see Phase 4\n");
-            std::printf("  :mma-shapes '((8 16 8)))            ; ISA fact, not a device property\n\n");
+            std::printf("  :max-shared-memory-per-block %uKB    ; QUERIED\n",
+                        comp.maxSharedLocalMemory / 1024);
+            if (largestCacheBytes > 0)
+                std::printf("  :l2-cache-size %lluMB                 ; QUERIED (largest cache reported)\n",
+                            largestCacheBytes / (1024ULL * 1024ULL));
+            else
+                std::printf("  ; :l2-cache-size <MB>               ; no cache properties reported\n");
+            std::printf("  :native-cache-line-size 64           ; ARCH: Xe2 LSC line is 64B; CHECK for your part\n");
+            // :max-registers-per-thread IS A LIST ON INTEL, and getting that wrong is the most
+            // expensive easy mistake here.  The GRF file is a JIT-time choice, so the key takes
+            // ascending SELECTABLE MODES; collapsing it to a scalar silently forfeits large-GRF,
+            // which measured 1.55-2.01x on BMG.  Not queryable through L0 at all.
+            std::printf("  :max-registers-per-thread '(128 256) ; ARCH: Xe2 GRF modes (32B each).\n");
+            std::printf("                                       ;   A LIST, not a scalar -- ascending selectable\n");
+            std::printf("                                       ;   modes.  A scalar forfeits large-GRF (worth\n");
+            std::printf("                                       ;   1.55-2.01x on BMG).  CHECK for your part.\n");
+            // :mma-shapes must carry EVERY element width the part supports: %check-mma-shape is a
+            // hard compile error on a shape the profile does not list, so shipping only the tf32
+            // triple refuses every bf16 / fp16 / int8 MMA kernel.
+            std::printf("  :mma-shapes '((8 16 8)               ; ARCH: tf32 XMX\n");
+            std::printf("                (8 16 16)              ;   bf16 / fp16 -- OMITTING THIS REFUSES\n");
+            std::printf("                (8 16 32))             ;   int8         every 16-bit MMA kernel\n");
+            // :mma-lowerings is a CAPABILITY CLAIM this program cannot verify, so it emits only the
+            // portable path and names the alternative rather than asserting it.
+            std::printf("  :mma-lowerings '(:coop-matrix)        ; ARCH: portable path, valid everywhere.\n");
+            std::printf("                                       ;   Xe2/BMG also offers :xe-native -- add it\n");
+            std::printf("                                       ;   ONLY if your part supports DPAS + Block2D.\n");
+            std::printf("  ; :tile-visit-strip-width <N>        ; MEASURED -- OMIT IT unless you have swept it.\n");
+            std::printf("  ;                                    ;   Absent => linear, which is safe.\n");
+            std::printf("  ; :max-registers-per-cu <N>          ; not queryable; derive as GRF/thread x\n");
+            std::printf("  ;                                    ;   numThreadsPerEU x numEUsPerSubslice\n");
+            std::printf("  ; :wgmma-shapes                      ; N/A on Intel (no warpgroup MMA)\n");
+            std::printf("  )\n\n");
         }
     }
     return 0;

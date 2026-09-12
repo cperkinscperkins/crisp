@@ -20,6 +20,7 @@ from pathlib import Path
 
 # Add parent dir to path so we can import harness
 sys.path.append(str(Path(__file__).resolve().parent))
+import hwprofile
 from harness import VerificationMetrics, BenchmarkSweep, SweepPoint, BenchmarkMetrics, CompileTimeMetrics, RuntimeMetrics, ThroughputMetrics, create_metadata
 
 HERE = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "matmul"
@@ -36,21 +37,36 @@ HW_BY_PLATFORM = {
     "intel":  {"gpu_model": "Intel BMG",   "arch_target": "bmg",   "environment": "docker"},
 }
 
-def _detect_gpu_model(fallback):
-    try:
-        p = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                           capture_output=True, text=True, timeout=20)
-        name = (p.stdout or "").strip().splitlines()[0].strip()
-        if name:
-            return name
-    except Exception:
-        pass
-    return fallback
+# GPU detection lives in hwprofile.detect_device(): it covers Intel as well as
+# NVIDIA and honours --pretend-device, and a second detector here would drift.
+
+def crisp_compiler_path():
+    """Path to bin/crisp-compile[.exe].
+
+    Split out of main() because the hardware-profile gate needs it BEFORE the sweep
+    starts -- it asks the compiler which profiles exist rather than keeping a second
+    list here to drift."""
+    exe = "crisp-compile.exe" if sys.platform.startswith("win") else "crisp-compile"
+    return str(HERE.parent.parent / "bin" / exe)
+
+def hw_profile_flags():
+    """The --hardware-profile flag, or NOTHING when the sweep is deliberately unprofiled.
+
+    A list rather than a string so the unprofiled case passes NO flag at all: formatting
+    `--hardware-profile=None` would be worse than the mismatch it replaces.  The gate in
+    hwprofile.py has already decided; this only spells the decision."""
+    prof = HW.get("hardware_profile")
+    return ["--hardware-profile=%s" % prof] if prof else []
 
 def _apply_hw(meta):
     meta.hardware.gpu_model   = HW["gpu_model"]
     meta.hardware.arch_target = HW["arch_target"]
     meta.hardware.environment = HW["environment"]
+    # Stamp WHICH profile these numbers were compiled against.  Without it a sweep from a
+    # correctly-profiled machine and one from a mismatched machine produce indistinguishable
+    # result files, and the report cannot warn about the second.
+    meta.hardware.hardware_profile = HW.get("hardware_profile")
+    meta.hardware.profile_matched  = HW.get("profile_matched")
     return meta
 
 SIZE_SCALE_REF = 2048
@@ -412,8 +428,8 @@ def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, 
     ptx = chap_dir / f"{base}.ptx"
     metacrisp = chap_dir / f"{base}_matmul.metacrisp"
     if not (ptx.exists() and metacrisp.exists()):
-        sh([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)], check=True)
-        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)], check=True)
+        sh([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", *hw_profile_flags(), *prec_flags, "--log-level=off", str(src_path)], check=True)
+        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90", *hw_profile_flags(), *prec_flags, "--log-level=off", str(src_path)], check=True)
     if not metacrisp.exists():
         print(f"autobench: no metacrisp {metacrisp}", file=sys.stderr); return None
     sh([_hoist_cuda_bin(crisp_compiler), f"--mma-bench={M},{N},{K}", f"--grid-tile={grid_tile}", str(metacrisp)])
@@ -496,8 +512,8 @@ def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters:
     compile_ms = 0.0
     hoist_ms = 0.0
     if not (spv.exists() and metacrisp.exists()):
-        compile_ms = time_compile([crisp_compiler, "--ir-target=spv", f"--hardware-profile={INTEL_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)], name=src_path.stem)
-        hoist_ms = time_compile([crisp_compiler, "--hoist=l0", f"--hardware-profile={INTEL_HW_PROFILE}", *prec_flags, "--log-level=off", str(src_path)])
+        compile_ms = time_compile([crisp_compiler, "--ir-target=spv", *hw_profile_flags(), *prec_flags, "--log-level=off", str(src_path)], name=src_path.stem)
+        hoist_ms = time_compile([crisp_compiler, "--hoist=l0", *hw_profile_flags(), *prec_flags, "--log-level=off", str(src_path)])
     if not metacrisp.exists():
         print(f"autobench-l0: no metacrisp {metacrisp}", file=sys.stderr); return None
     
@@ -864,7 +880,7 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
                            competitor=comp_name, precision=precision,
                            denormal_handling="ftz" if ftz else "preserve", results=[])
     try:
-        dev_c_ms = time_compile([crisp_compiler, "--ir-target=spv", f"--hardware-profile={INTEL_HW_PROFILE}",
+        dev_c_ms = time_compile([crisp_compiler, "--ir-target=spv", *hw_profile_flags(),
                                  *prec_flags, "--log-level=off", str(src)])
     except subprocess.CalledProcessError:
         print(f"l0-fixed: crisp-compile failed for {src.name}", file=sys.stderr); return empty
@@ -874,7 +890,7 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
     # Generate it (metadata only -- this does not produce the harness we are replacing) and derive
     # the fixture's environment from it, so nothing about the launch is restated by hand.
     try:
-        sh([crisp_compiler, "--hoist=l0", f"--hardware-profile={INTEL_HW_PROFILE}",
+        sh([crisp_compiler, "--hoist=l0", *hw_profile_flags(),
             *prec_flags, "--log-level=off", str(src)], capture_output=True, text=True)
     except Exception:
         pass
@@ -913,7 +929,7 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
 
 
 def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmup, iters,
-                         precision, ftz, crisp_compiler, hw_profile):
+                         precision, ftz, crisp_compiler):
     """Measure a Crisp NVIDIA kernel through the REVIEWED CUDA fixture (bench_harness.cu).
 
     The NVIDIA twin of run_l0_fixed_sweep, and it exists for the same reason: the generated
@@ -942,7 +958,7 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
         return empty
     try:
         dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90",
-                                 f"--hardware-profile={hw_profile}", *prec_flags,
+                                 *hw_profile_flags(), *prec_flags,
                                  "--log-level=off", str(src)])
     except subprocess.CalledProcessError:
         print(f"cuda-fixed: crisp-compile failed for {src.name}", file=sys.stderr)
@@ -957,7 +973,7 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
     # tiles occupy the FIRST argument slots, so A/B/C sit at 18/27/36 rather than 0/9/18.
     try:
         sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90",
-            f"--hardware-profile={hw_profile}", *prec_flags, "--log-level=off", str(src)],
+            *hw_profile_flags(), *prec_flags, "--log-level=off", str(src)],
            capture_output=True, text=True)
     except Exception:
         pass
@@ -1069,13 +1085,43 @@ def main():
                     help="Comma-separated chapter dirs to run (default: all).")
     ap.add_argument("--platform", choices=["nvidia", "intel"], default="nvidia",
                     help="nvidia (default) or intel.")
+    ap.add_argument("--allow-unprofiled", action="store_true",
+                    help="Sweep even though no validated hardware profile matches this device. "
+                         "Results are stamped unprofiled and are NOT comparable to published "
+                         "figures.")
+    ap.add_argument("--pretend-device", default=None,
+                    help="Treat this string as the detected GPU name. For testing the profile "
+                         "gate without the hardware (e.g. --pretend-device='NVIDIA H200').")
     a = ap.parse_args()
 
     global HW, SIZE_SCALE_REF
     HW = dict(HW_BY_PLATFORM[a.platform])
-    if a.platform == "nvidia":
-        HW["gpu_model"] = _detect_gpu_model(HW["gpu_model"])
-        print(f"Hardware detected: {HW['gpu_model']}")
+
+    # ---- THE HARDWARE-PROFILE GATE --------------------------------------------------------
+    # Runs BEFORE any compile, deliberately: on a rented pod the alternative is discovering the
+    # mismatch after paying for a full sweep, and the harness already had the device name in
+    # hand (it stamps gpu_model into every result file) while compiling against `h100`
+    # regardless.  See scripts/crisp_bench/hwprofile.py for why the compiler is the wrong place
+    # for this check.
+    try:
+        profile, device, matched = hwprofile.gate(
+            a.platform, crisp_compiler_path(),
+            pretend=a.pretend_device, allow_unprofiled=a.allow_unprofiled)
+    except hwprofile.UnprofiledDevice as e:
+        print(str(e))
+        return 2
+    HW["gpu_model"]        = device if device and device != "unknown" else HW["gpu_model"]
+    HW["hardware_profile"] = profile
+    HW["profile_matched"]  = matched
+    # flush=True so the gate's verdict reaches a pod terminal BEFORE the first subprocess
+    # writes over it; ASCII only, because a cp1252 console mangles an em-dash to '?'.
+    print(f"Hardware detected: {HW['gpu_model']}", flush=True)
+    if profile:
+        print(f"Hardware profile:  {profile} (validated for this device)", flush=True)
+    else:
+        print("Hardware profile:  NONE -- --allow-unprofiled was passed.  These results are "
+              "NOT comparable to published Crisp figures.", flush=True)
+
     SIZE_SCALE_REF = 1024 if a.platform == "intel" else 2048
 
     SIZE_PRESETS = {
@@ -1109,9 +1155,7 @@ def main():
             ("ieee", False)
         ]
 
-    repo_root = HERE.parent.parent
-    exe_name = "crisp-compile.exe" if sys.platform.startswith("win") else "crisp-compile"
-    crisp_compiler = str(repo_root / "bin" / exe_name)
+    crisp_compiler = crisp_compiler_path()
 
     l0_harness = None
     if a.platform == "nvidia":
@@ -1173,7 +1217,7 @@ def main():
                     return
                 crisp_prec = [f"--math-precision={prec}",
                               f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
-                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", f"--hardware-profile={NVIDIA_HW_PROFILE}", *crisp_prec, "--log-level=off", str(src_path)], name=comp_name)
+                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", *hw_profile_flags(), *crisp_prec, "--log-level=off", str(src_path)], name=comp_name)
                 all_c_ms = dev_c_ms
                 if use_fixture:
                     # PREFER THE REVIEWED FIXTURE.  The generated autobench harness is 16-bit
@@ -1182,8 +1226,7 @@ def main():
                     # contender in the same section produced numbers.
                     _hb = HERE / "crisp" / "matmul_crisp"
                     sweep = run_cuda_fixed_sweep(chapter, src_path, comp_name, _hb, sizes,
-                                                 a.warmup, a.iters, prec, ftz, crisp_compiler,
-                                                 NVIDIA_HW_PROFILE)
+                                                 a.warmup, a.iters, prec, ftz, crisp_compiler)
                     if not sweep.results:
                         print(f"  NOTE: {comp_name} ({chapter}) produced no points through the "
                               f"fixture; falling back to the generated harness.", file=sys.stderr)
@@ -1840,4 +1883,4 @@ def main():
                        "OneDNN_Plus_Custom", sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

@@ -410,8 +410,8 @@
 ;; Multi-Pass Orchestration
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defvar *implicit-arg-map* (make-hash-table)
-        "Map of function-name -> list of implicit argument requirements.")
+;; *IMPLICIT-ARG-MAP* lives in src/types/registry.lisp, which crisp.asd loads 11 files EARLIER.
+;; The duplicate defvar that stood here was a silent no-op.
 
 (defvar *async-barrier-modes* (make-hash-table)
         "Endeavor 137: map of async-barrier binding SYMBOL -> resolved :mode (:linear/:block).
@@ -690,8 +690,8 @@
 (defvar *scanning-function-name* nil
         "The name of the function currently being scanned in Pass 1.")
 
-(defvar *scratch-cell-counter* 0
-        "Monotonic counter for disambiguating scratch cells.")
+;; *SCRATCH-CELL-COUNTER* is already defvar'd earlier in THIS file, with a fuller docstring that
+;; records the reset-between-passes contract.  The duplicate that stood here was a silent no-op.
 
 (defvar *scan-callees* nil)
 (defvar *scan-is-originator* nil)

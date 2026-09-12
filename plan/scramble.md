@@ -773,16 +773,20 @@ MMA
 - NVidia Only
 - --math-precision=ieee
 - [x] 64 bit (NVidia) should ERROR on the ieee + ftz combination. That is 32 bit only!
-[ ] L0 hoist and bench: are we using _SHARED_ memory instead of DEVICE?
-[ ] src has duplicate var names *hardware-profile-schema* and others
+[x] L0 hoist and bench: are we using _SHARED_ memory instead of DEVICE?
+[x] 64 bit report?
+[x] src has duplicate var names *hardware-profile-schema* and others
 [ ] the spill warning might be a little eager on Intel. Not sure about Nvidia. We should revisit
 - Documentation Shortcomings
-- [ ] :operand  
-- [ ] :warps
-- [ ] need to document register-fragment, including make-register-fragment and store-fragment.
-- [ ] move MMA out of topology.md into main docs
-- [ ] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
+- [x] :operand  
+- [x] :warps
+- [x] make-register-tile-ring
+- [x] need to document register-fragment, including make-register-fragment and store-fragment.
+- [x] move MMA out of topology.md into main docs
+- [x] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
 - [ ] A|D of 16-bit results in a 32 bit gradient. (Like PyTorch AMP).  Document.
+- [x] sync-workgroup is labelled as supported on Intel, but no note for NVidia.
+- [x] performance-levers.md <-- needs serious rework
 
 [x] benchmarking up to "max" for BMG and H100. 
 

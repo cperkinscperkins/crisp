@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-09T04:36:26.089834Z
+Generated on 2026-09-12T05:22:00.094916Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1106,12 +1106,6 @@ Generated on 2026-09-09T04:36:26.089834Z
 
 
 ---
-### DEFVAR `*IMPLICIT-ARG-MAP*`
-
-  > Map of function-name -> list of implicit argument requirements.
-
-
----
 ### DEFVAR `*ASYNC-BARRIER-MODES*`
 
   > Endeavor 137: map of async-barrier binding SYMBOL -> resolved :mode (:linear/:block).  >          make-async-barrier records its let-binding name here (via  >          compiler-context-current-binding-name); load-tile/await look the barrier variable  >          up to pick the lowering (cp.async/OpGroupAsyncCopy vs TMA/LSC 2D block). Rebound  >          per module for clean state.
@@ -1255,12 +1249,6 @@ Generated on 2026-09-09T04:36:26.089834Z
 ### DEFVAR `*SCANNING-FUNCTION-NAME*`
 
   > The name of the function currently being scanned in Pass 1.
-
-
----
-### DEFVAR `*SCRATCH-CELL-COUNTER*`
-
-  > Monotonic counter for disambiguating scratch cells.
 
 
 ---
@@ -5231,12 +5219,6 @@ Generated on 2026-09-09T04:36:26.089834Z
 - **Args**: `(FORM LOCATION)`
 
 ---
-### DEFVAR `*TEMPLATE-REGISTRY*`
-
-  > Maps template names to their generator macros.
-
-
----
 ### DEFVAR `*KERNEL-DECLARED-SIGNATURES*`
 
   > Maps kernel names to their declared (high-level) parameter types, before explosion.
@@ -7939,12 +7921,6 @@ Generated on 2026-09-09T04:36:26.089834Z
 
 
 ---
-### DEFVAR `*EMIT-METADATA*`
-
-  > If T, the compiler will generate a .metacrisp sidecar file for each orchestration/kernel.
-
-
----
 ### DEFUN `VALIDATE-METADATA-DEF-TYPE`
 - **Args**: `(METADATA-PATH TYPE-NAME TARGET-TYPE)`
 
@@ -10172,7 +10148,7 @@ Generated on 2026-09-09T04:36:26.089834Z
 ---
 ### DEFVAR `*EMIT-METADATA*`
 
-  > If T, generate .metacrisp file.
+  > If T, the compiler will generate a .metacrisp sidecar file for each orchestration/kernel.
 
 
 ---

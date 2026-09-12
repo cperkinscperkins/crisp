@@ -1,254 +1,191 @@
-# Performance Levers — the tuned-matmul surface
+# Performance Levers: MMA Matmul
 
-Everything that changes the speed of a Crisp **register-resident MMA matmul** — the `sec2_top`
-family of benchmark kernels — organised by *who sets it*. Written after a long run of tuning where
-the recurring failure was not picking the wrong value for a lever but **not knowing a lever existed**,
-or believing two levers were independent when they were not.
+This document defines the tuning surface for Crisp **MMA matmul** kernels. It covers algorithms
+using a `tile-stride` over the output, tiles for A/B/C, a K loop, an MMA accumulate, and a
+`store-tile` epilogue.
 
-**Scope.** Only the "top" algorithm: a `tile-stride` over the output, register tiles for A/B/C, a K
-loop, `mma-accumulate-via-tile`, `store-tile` epilogue. Not reductions, scans, sorts, or the
-SLM-staged and async chapters, which have their own tuning surfaces.
+**You have already chosen the algorithm.** This is the list of knobs for making that algorithm
+go faster on a given part — not a guide to picking a different one.
 
-**Every number below is measured on an Arc B580 (BMG)** unless it names other hardware, and each is
-marked `[linux]` or `[windows]` — because those disagree, sometimes by more than any lever in this
-document. See [Layer 4](#layer-4--below-us).
+### Read the vendor column
+
+The two backends do not have the same tuning surface, and the difference is not cosmetic:
+
+|  | Intel (Xe2 / BMG) | NVIDIA (Hopper) |
+| --- | --- | --- |
+| Where operands live | **registers** (`make-register-tile-ring`) | **shared memory** (`make-scratch-matrix-ring`) |
+| What the ring costs | register budget → spilling | SMEM budget → resident blocks |
+| Register file | selectable modes `(128 256)` | fixed 255/thread |
+| MMA altitude | one: per-subgroup fragments | **two**: fragment *or* warpgroup (wgmma) |
+| Getting operands in | `prefetch-tile` | `cp.async` (`:linear`) or TMA (`:block`) |
+
+Sections marked **[Intel]** or **[NVIDIA]** apply to one backend only. Everything else is shared.
 
 ---
 
-## Layer 1 — In the Crisp kernel
+## 1. Kernel-Level Levers (Layer 1)
 
-The largest levers are here, and the two biggest are not independent of each other.
+These are the primary directives set within the Crisp kernel. Many of these levers are highly coupled; tuning one usually requires re-tuning its pair.
 
 ### Geometry
 
-| Lever | Where | Notes |
-|---|---|---|
-| **Output tile M×N** | `(tile-stride C (TM TN) ...)` | Sets work per workgroup and, with `:warps`, per subgroup. `32x32 → 32x64` was **1.25–1.72×** `[windows]`. Not free at the top: `TN 96` faults, `TN 128` runs at `0.14×`. |
-| **Workgroup tile vs per-subgroup tile** | `(tile-stride C (TM TN) ...)` together with the `:warps` length | **These are separable, and conflating them cost an endeavour.** Going `128×256 / 16 subgroups → 256×256 / 32` leaves the per-subgroup tile at **32×64 and register demand at 448/thread — unchanged**. It is pure operand sharing: arithmetic intensity 85.3 → **128 flops/byte**. So the workgroup tile can be doubled *without* touching the `TN 128` / `TM 64` wall, which is a per-subgroup limit. Worth **+36%** at 8192 with prefetch; roughly neutral without it. This is SYCL-TLA's shape, fixed at every N. |
-| **Subgroup count + distribution** | `:warps '(true true …)` on each `make-register-tile` | Length = subgroups the tile is split across; must agree with `local-size / simd-width`. A silent no-op on rings until endeavour 156 Phase 2. |
-| **K-tile extent** | A-tile is `(TM K)`, B-tile `(K TN)`, and the loop divisor `(/ K (to-ulong K-step))` | **The lever that was missed for months.** Not the same as MMA K. |
-| **MMA shape** | `(mma-accumulate-via-tile (M N K) ...)` | Must be one of the profile's `:mma-shapes`. On BMG: `(8 16 8)` tf32, `(8 16 16)` bf16/fp16, `(8 16 32)` int8 — same M×N, K doubles as operands narrow. Choosing a shape the profile lacks is a compile error, not a slowdown. |
-| **Element type** | `(matrix bfloat16 …)` vs `half` vs `float` | Changes which MMA shape is native, so it **forces a K-step change**. bf16 and fp16 measure within ~4% of each other; the accumulator stays `float` either way. |
+Matrix geometry balances register pressure against arithmetic intensity.
 
-> **K-tile extent and subgroup count are one lever, not two.** Each geometry has its own K optimum
-> and it moves with subgroup count: **64 at one subgroup, 32 at sixteen**. Doubling K past the
-> optimum regresses hard in both — `59.1 → 37.9` at one subgroup, `55.9 → 47.8` at sixteen
-> `[windows]`. Multi-subgroup was written off as a measured loss for a whole endeavour because it was
-> only ever tried at K=16, where there is not enough work in flight to pay for the participants.
-> **Never tune one without re-tuning the other.**
+| Lever | Location | Heuristics & Constraints |
+| --- | --- | --- |
+| **Per-Subgroup Tile ($TM \times TN$)** | `(tile-stride C (TM TN) ...)` | Drives per-thread register demand. **[Intel]** typical safe maximum is `32x64`; beyond it (`TN > 64`, `TM > 32`) risks register exhaustion or driver faults. **[NVIDIA]** fragment path runs `64x64`; the wgmma path is fixed at `64xN`. |
+| **Workgroup Tile ($M \times N$)** | `(tile-stride C ...)` + `:warps` | Scales data reuse (arithmetic intensity). **Decoupled from subgroup tile:** you can scale the workgroup tile up (e.g., to `256x256`) by adding subgroups without increasing per-thread register pressure. |
+| **Subgroup Count** | `:warps '(true true …)` on `make-register-tile` | List length equals subgroups. Must agree with `local-size / simd-width`. |
+| **K-Tile Extent** | A/B tile inner dim, and K-loop divisor | Sets work in flight per loop iteration. Typically 32 or 64. |
+| **MMA Shape** | `(mma-accumulate-via-tile (M N K) ...)` | Must match a shape in the profile's `:mma-shapes`, or it is a **hard compile error**. Narrower element types double K: **[Intel]** `8x16x8` tf32 → `8x16x16` bf16/fp16 → `8x16x32` int8; **[NVIDIA]** `16x8x8` tf32 → `16x8x16` fp16/bf16. fp64 has exactly one shape, `8x8x4`. |
 
-> **And the same trap caught the workgroup tile.** Endeavour 156 measured 256×256 over 32
-> subgroups at **34.6 against 60.8** and banked it — at K=16, and before `prefetch-tile` could
-> be warp-partitioned. The geometry only pays *with* the prefetch it could not then express:
-> without prefetch it is still slightly behind (62.0 vs 65.1 @4096); with it, +36%; with
-> `:xe-native` as well, **+60%**. Endeavour 158.
+> **Coupling Rule: Subgroup Count vs. K-Tile Extent**
+> K-extent optimum moves inversely with subgroup count. A single subgroup might prefer K=64, while 16 subgroups require smaller steps (e.g., K=32) to prevent register spilling while keeping all participants fed. Never tune one without re-evaluating the other.
 
-### Pipelining
+### [Intel] Pipelining & Memory Access
 
-| Lever | Where | Measured |
-|---|---|---|
-| **Ring depth** | `make-register-tile-ring … :ring-count N` | `2 → 3` **collapses** a 32×64 tile, `57 → 23` `[windows]`. At K=32 across 16 subgroups a ring does not fit at all. |
-| **Prefetch distance** | how many `prefetch-tile` K-steps ahead the loop issues | **+60% at the peer geometry** (66.2 → 106.0 @8192, with `:xe-native`), and worth +36% even on `:coop-matrix`. **Shorter is better, monotonically** — d1 ≥ d2 > d3 > d4 wherever it helps. `[linux]` |
-| **Prefetch distribution** | `:warp-partitioned true` on `prefetch-tile` | **Not optional at multi-subgroup geometry.** Without it every subgroup issues every block — 384 per workgroup per K-step against 256 loads — and prefetch measures **2.6–2.9× SLOWER**. With it, 2 per subgroup. Endeavour 158. |
-| **Barrier pacing** | `(sync-workgroup)` or `(sync-workgroup :arrive/:wait)` in the K loop | Fused at 16 subgroups: **−14.7%**. Split: **−1.8%**. No barrier is fastest at that width. Pays only at 4 subgroups (+8.6%), where fused beats split. `[windows]`, endeavour 157. |
+NVIDIA's equivalents are in the async-staging section below; `prefetch-tile` and
+`make-register-tile-ring` are Xe2 facilities.
 
-> **`:ring-count` is not `Stages`.** Crisp's `:ring-count` is a count of **buffers**; SYCL-TLA's
-> `Stages` is a **prefetch depth over a single buffer**. They are different knobs with similar names,
-> and conflating them cost real time. Deeper K supplies the pipelining a ring was meant to — two
-> native K-steps inside one tile are already two independent MMA chains — without a second buffer's
-> register cost.
+| Lever | Location | Mechanism & Constraints |
+| --- | --- | --- |
+| **Prefetch Distance** | K-steps ahead the loop issues `prefetch-tile` | Generally, shorter is better monotonically ($d1 \ge d2 > d3$). Highly effective when combined with large workgroup tiles and `:xe-native`. |
+| **Prefetch Distribution** | `:warp-partitioned true` on `prefetch-tile` | **Mandatory at multi-subgroup geometry.** Without this, every subgroup issues every block, multiplying loads and severely degrading throughput. |
+| **Ring Depth** | `:ring-count N` on `make-register-tile-ring` | Count of register *buffers*, not logical pipeline stages. Deep rings (e.g., depth 3) on large per-subgroup tiles cause catastrophic spilling. |
+| **Barrier Pacing** | `(sync-workgroup)` in the K loop | Fused vs. split vs. no barrier. At wide subgroup counts (e.g., 16), omitting the barrier is typically fastest. |
 
-### Lowering
+### [NVIDIA] Warpgroup MMA (wgmma)
 
-| Lever | Where | Measured |
-|---|---|---|
-| **MMA lowering** | `(declare (mma-lowering :xe-native))`, else profile default | **`:xe-native` + peer geometry + warp-partitioned prefetch is the fastest fp16 kernel Crisp has: 106.0 TF @8192, 95% of oneMKL, best at every size ≥1024.** Alone it is only +5% (66.2 → 69.6); the win is the COMBINATION (+60%). Its two recorded failure modes are **scope-limited, not general**: "does not compose" was about the **ring**, never prefetch; and the 32×128 collapse to 5.6 TFLOPS is a live-fragment-count effect that does not arise at a 32×64 per-subgroup tile. Emits 42 machine instructions per dpas against 57. `[linux]`, endeavour 158. |
-| **Precision** | `(declaim (precision fast))` / `--math-precision` | `fast` enables contraction and reassociation. Note `fast` **flushes denormals regardless** of `--denormal-handling=preserve`; the compiler warns. |
+Hopper offers a **second MMA altitude**, and it is the single largest lever on the NVIDIA side —
+it is the instruction cuBLAS itself uses. A fragment-level kernel and a warpgroup-level kernel
+are different algorithms wearing the same shape.
 
-### Dispatch declarations
+| Lever | Location | Mechanism & Constraints |
+| --- | --- | --- |
+| **Altitude** | `wgmma-accumulate-via-tile` + `make-wgmma-accumulator` vs `mma-accumulate-via-tile` + `make-register-tile` | Warpgroup MMA issues one instruction across **128 threads (4 warps)**. The accumulator is a warpgroup object, not a per-thread register tile. |
+| **wgmma Shape** | `(wgmma-accumulate-via-tile (M N K) D A B)` | **M is always 64** — that is what a warpgroup is. `N` must be a multiple of 8 in `[8, 256]`. `K` is 8 for tf32, 16 for fp16/bf16. Checked against the profile's `:wgmma-shapes` when it declares them, otherwise against the sm_90a rules. |
+| **N width** | the `N` in the shape and the accumulator | The arithmetic-intensity knob. Wide `N` (256) buys reuse at large problem sizes; it costs registers, so it trades against ring depth. |
+| **Hopper-only** | `--ir-target-arch=sm_90` | Request plain `sm_90`; Crisp emits `.target sm_90a` for you (see below). wgmma and TMA do not exist on earlier architectures, so a wgmma kernel is not portable down. Shapes are validated at compile time, so an illegal one is an error rather than a silent fallback. |
 
-`local-size` and `global-size` are declared *in the kernel*, then recorded in the `.metacrisp` for
-the host to obey. They are **not** four independent knobs:
+> **`sm_90` in, `sm_90a` out — and you never type the `a`.**
+> Hopper's *architecture-specific* instructions — `wgmma.mma_async` and TMA's
+> `cp.async.bulk.tensor` — are **not** in plain `sm_90`. NVIDIA gates them behind the `a`
+> target variant precisely because they are not forward-compatible: `sm_90a` PTX is not
+> guaranteed to JIT onto a future architecture, so it cannot live in the portable target.
+> PTX that contains wgmma but declares `.target sm_90` is rejected at `cuModuleLoad`.
+>
+> Crisp handles this: a bare `sm_90` request is upgraded to `sm_90a` when the PTX target
+> string is built, so `--ir-target-arch=sm_90` produces `.target sm_90a`. That is why
+> `sm_90a` is **not** a Crisp architecture you can select — it is an output, not an input —
+> while appearing all over the source comments as the rule source for shape validation. An
+> explicit `sm_90a` or `sm_90f` passes through unchanged if you do write one.
+>
+> The one place the suffix is yours to supply is a **separate host or reference compile**
+> sitting next to such a kernel, which may need `nvcc -arch=sm_90a` of its own.
 
-```lisp
-(declare (global-size :derive-from C :strategy :strided :tile-shape (128 256))
-         (local-size  :set-to 256))
-```
+> **There is no fp64 wgmma.** Warpgroup MMA covers fp16/bf16/tf32/fp8/int8 only, so a double-precision
+> kernel tops out at the fragment path. This is a hardware fact, not a Crisp gap.
 
-- **`local-size`** — threads per workgroup. `local-size / :simd-width` = subgroups, which **must**
-  match the `:warps` list length.
-- **`:tile-shape`** — governs grid **rank and shape** on both backends, and is **inferred from
-  `tile-stride`** if not given. Getting the rank wrong is expensive: a 1-D grid under an N-D
-  `tile-stride` *serialises an axis* — **7.6×**. Axis 0 tracks dimension 0; reversing it cost ~1.3×.
-- **Number of workgroups** — *derived*, `CEIL(extent[k] / tile_shape[k])`. Not separately settable.
-- **`:occupancy`** — a **grid-size multiplier** against max-resident-workgroups, and only when there
-  is no `:tile-shape`. The 1.0 cap was lifted; measured optimum for `sum_reduce` is **2.0**
-  (deliberately 2× oversubscribed), 22.6 → 5.9 µs. For an exact tile cover it does not apply, and
-  exact cover beat occupancy at every size tested.
+### [NVIDIA] Warp Specialization
 
----
+Splitting a workgroup into **producer** warps (which fetch) and **consumer** warps (which do math)
+lets the fetch run ahead without the consumers stalling on it.
 
-## Layer 2 — In the compiler
+| Lever | Location | Mechanism & Constraints |
+| --- | --- | --- |
+| **Producer / consumer split** | `(with-warp-specialization (:producer P :consumer C) ...)` | **Two consumers is the usual sweet spot.** More consumers is not monotonically better — adding a second *pair* has been measured to regress. |
+| **`local-size` must agree** | `(local-size :set-to (* 32 (+ P C)))` | `96` = 1 producer + 2 consumers. `160` = 1 producer + one full 4-warp warpgroup for wgmma. Getting this wrong is a launch failure, not a slowdown. |
+| **Producer gets no C tile** | `:warps '(false true true)` on `make-register-tile` | The `false` slot is the producer. Omitting it distributes the accumulator across a warp that never does math, wasting its share of the tile. |
+| **Where the accumulator is built** | inside `:consumer`, not before the block | A `:warps`-distributed tile constructed outside the specialization does not belong to the consumers. |
 
-This is the layer that was blank in the original list, and it contains at least one lever worth 2×.
+### [NVIDIA] Async Staging: cp.async vs TMA
 
-### Flags
+| Lever | Location | Mechanism & Constraints |
+| --- | --- | --- |
+| **Copy engine** | `:mode` on `make-async-barrier` / `make-async-barrier-ring` | `:linear` = `cp.async` (per-element, no descriptor). `:block` = **TMA** via a `CUtensorMap` descriptor — the hardware copy engine, and the faster path for 2-D tiles. |
+| **Barrier arrivals** | `:arrivals N` | How many participants the barrier waits for. Must match the number of warps that actually signal, which changes when you re-tune the producer/consumer split. |
+| **Ring phase seeding** | `:initial-state :signaled` / `:waiting` | An `empty` ring starts `:signaled` (buffers are free); a `full` ring starts `:waiting`. Swapping these deadlocks rather than slows down. |
+| **SMEM Ring Depth** | `:ring-count N` on `make-scratch-matrix-ring` | **[NVIDIA] this spends shared memory, not registers** — the opposite resource from Intel. Deeper rings buy overlap until SMEM caps resident blocks per SM, at which point occupancy falls and the pipelining stops paying. |
 
-| Flag | Effect on speed |
-|---|---|
-| `--hardware-profile=` | Selects the entire profile below. **The single highest-leverage compiler flag** — it decides MMA shapes, lowerings, register modes, cache assumptions, and the tile-visit swizzle. |
-| `--math-precision=fast\|ieee` | Contraction and reassociation. |
-| `--denormal-handling=preserve\|ftz` | Ignored under `fast` (which always flushes). |
-| `--ir-target=spv\|ptx`, `--ir-target-arch=` | Backend and arch gating. |
-| `--runtime-checks` | Adds bounds checks. Off by default; on, it costs. |
-| `--debug` | Emits debug info. Perturbs codegen; do not benchmark with it. |
-| `--differentiate` | Changes the *kernel set* (adds `_GRAD` twins) — the forward kernel should be unaffected, but the module is not the same module. |
-| `--single-pass` | Different compile path; has had its own bugs (BUG 042, 043). |
+### Lowering & Math
 
-### Profile keys that are levers
+| Lever | Location | Impact |
+| --- | --- | --- |
+| **MMA Lowering** **[Intel]** | `(declare (mma-lowering :xe-native))` | Selects DPAS + 2-D block loads instead of the portable `:coop-matrix` path. Yields peak FP16 throughput when combined with peer geometry and warp-partitioned prefetch; less effective in isolation. Only offered by profiles whose `:mma-lowerings` lists it. NVIDIA has no lowering choice — the altitude choice (fragment vs wgmma) is the equivalent knob. |
+| **Precision** | `(declaim (precision fast))` | Enables contraction and reassociation. **Note:** `fast` flushes denormals unconditionally, ignoring `--denormal-handling=preserve`. |
 
-From `(:hardware-profile …)` in the `.metacrisp` — the record of what the compiler actually assumed:
+### Dispatch Declarations
 
-| Key | Role |
-|---|---|
-| `:mma-shapes` | The legal `mma-accumulate-via-tile` shapes. |
-| `:mma-lowerings` | Ordered, **most-preferred first**; first entry is the default. |
-| `:max-registers-per-thread` | Selectable allocations, e.g. `(128 256)` on BMG. |
-| `:simd-width` | Subgroup size — **16** on BMG. Divides `local-size` into subgroups. |
-| `:tile-visit-strip-width` | Column-strip width for the rank-2 `tile-stride` walk. |
-| `:l2-cache-size`, `:native-cache-line-size`, `:compute-units` | Informational to the model. |
+Grid sizes are decided *in the kernel* and emitted to the `.metacrisp` file.
 
-### Compiler *decisions* that become runtime flags
-
-- **Register mode selection** (endeavour 144). The compiler computes register-tile bytes per thread,
-  picks from `:max-registers-per-thread`, and records `:selected-registers-per-thread`. The hoisted
-  harness turns that into **`-ze-opt-large-register-file`**. Getting this wrong was a **14× measurement
-  error** when the fixture was first calibrated, and a 3.1× error on a 32×64 tile.
-  **It is geometry-dependent, not a general law:** worth ~2× to the single-subgroup 32×32 shape, while
-  at 128×128 over 16 subgroups the **default allocation beats large-GRF by 70%** (32.2 → 54.9 @4096).
-  SYCL-TLA is *indifferent* to it (185 → 190 forced either way, with 3904 bytes of deliberate spill) —
-  avoiding spill is worth ~3× to **our** lowering and nothing to its. That is a property of our
-  codegen, not of the hardware.
-  The current shipped kernels deliberately request **448 registers/thread against a 256 max** and spill.
-- **Subgroup-size pinning** — `!intel_reqd_sub_group_size` from the profile's `:simd-width`, but
-  **only when `local-size` is compile-time known and a whole multiple of it**. Otherwise IGC picks,
-  and the width Crisp assumed when computing warp counts may not be the width that gets compiled.
-- **Tile-visit swizzle** — `:tile-visit-strip-width`, overridable with the `CRISP_TILE_VISIT`
-  environment variable for bisecting or sweeping. Was once *derived* from `:l2-cache-size`; that
-  derivation was refuted by measurement (+63% on one device, −14% on another, both supplying the key),
-  so it is now a measured per-profile constant.
-- **Address arithmetic** — currently recomputed per fragment. Spec `155/04` pins the invariant
-  (multiplies must be fewer than cooperative loads) and is **RED on purpose**: 26 i64 multiplies for
-  8 loads. Xe has no native 64-bit multiply, so each is emulated `mul`/`mach`/`macl`. Hoisting it cut
-  multiplies 36% for **+2.9%**, and on the ring kernel gave identical instruction counts **17% slower** —
-  so these kernels are *not* issue-bound, and this is a correctness-of-lowering item, not a speed win.
-
-### Environment
-
-| Variable | Effect |
-|---|---|
-| `CRISP_TILE_VISIT` | Overrides the swizzle width, or `linear`. For sweeps and bisection. |
-| `CRISP_USE_SYSTEM_TOOLS` | Use PATH `llc`/`opt`/`llvm-spirv` instead of bundled. Toolchain version differences are real. |
+* **`local-size`**: Threads per workgroup. Divided by `:simd-width`, this must match the length of your `:warps` list.
+* **`:tile-shape`**: Defines the grid rank and shape (inferred from `tile-stride` if omitted). **Trap:** Using a 1-D grid under an N-D `tile-stride` will serialize an axis and destroy performance.
+* **`:occupancy`**: A grid-size multiplier against max-resident-workgroups. Only applies when there is no exact `:tile-shape`.
 
 ---
 
-## Layer 3 — At enqueue
+## 2. Compiler & Environment (Layer 2)
 
-**These are not free choices.** `local-size`, grid shape and workgroup count are *decided by the
-kernel* and recorded in the `.metacrisp`; the host's job is to **reproduce what the compiler assumed**.
-A mismatch is usually a correctness bug that reads as a performance result:
+### High-Impact Compiler Flags
 
-- A **1-D group count for a 2-D local size** pinned `grid.y` to 1 — at N=16 that happens to cover the
-  matrix, at N=32 half the columns are never written. `chap0_naive` read MMA_CORRECT at 16 and
-  MMA_WRONG at 32 with **no MMA in the kernel at all**. The kernel was always fine.
-- Not passing the compiler's chosen register mode: **14×**.
+* **`--hardware-profile=`**: The most critical flag. Dictates MMA shapes, lowerings, register budgets, and tile-visit swizzles.
+* **`--math-precision=fast|ieee`**: Toggles contraction/reassociation.
+* **`--differentiate`**: Generates `_GRAD` twins; creates an entirely different module footprint.
 
-Genuinely host-side:
+### Key Profile Directives (`.metacrisp`)
 
-| Lever | Notes |
-|---|---|
-| **M, N, K of the matrices** | The strongest single determinant of which kernel wins. No shape tested is best at every size. |
-| **Build flags to the JIT** | `pBuildFlags` — must carry the compiler's register-mode choice. |
-| **Warmup and iteration counts** | Under-warming reads low; batched re-submits of an in-flight L0 command list **coalesce**, which once inflated GFLOPS by exactly `iters`. MMA_CORRECT cannot catch that. |
+* **Register Mode Selection [Intel]:** The compiler calculates register bytes per thread and selects from `:max-registers-per-thread`. For large tiles, forcing large-GRF (`-ze-opt-large-register-file`) can be crucial, but for distributed subgroups, the standard allocation often wins. **[NVIDIA] there is no equivalent** — the register file is a fixed 255/thread, so a tile that does not fit spills and the only remedy is smaller geometry or more warps.
+* **Tile-Visit Swizzle:** Controlled by `:tile-visit-strip-width` (overrideable via `CRISP_TILE_VISIT` for sweeps). A measured constant per profile, **not derivable from L2 size** — it has been measured as a large win on one part and a monotonic loss on another. Absent means linear, which is the safe default. **[NVIDIA] measured harmful on H100; leave it out.**
+* **Occupancy reporting [NVIDIA]:** When the profile supplies `:max-registers-per-cu`, the compiler reports blocks-per-SM as limited by registers, and warns at one block — the case where there is no second block to hide memory latency behind. Treat that warning as "your tile is too big or too concentrated", answerable by a smaller accumulator or a wider `:warps` spread.
+* **Shared-memory cap [NVIDIA]:** `:max-shared-memory-per-block` must be the **opt-in** figure (~227KB), not the 48KB default. SMEM rings deeper than a couple of stages exceed 48KB immediately.
+* **`:compute-units` is load-bearing:** it *overrides* the device SM query when the launch grid is sized. A profile naming the wrong variant (H100 PCIe's 114 vs a 132-SM part) under-dispatches every kernel, silently.
 
 ---
 
-## Layer 4 — Below us
+## 3. Host Enqueue Rules (Layer 3)
 
-Outside the algorithm, and **larger than anything inside it.**
+The host's primary job is to **reproduce what the compiler assumed**. Disagreements between the host launch params and the `.metacrisp` usually result in silent correctness bugs that masquerade as performance shifts.
 
-| Lever | Magnitude |
-|---|---|
-| **Host platform** | The same unchanged bf16 kernel: `69.3 / 62.3 / 56.0 / 51.3` on Windows-native L0 vs `63.1 / 57.7 / 64.5 / 66.2` on Linux in the bench container. Windows wins small N, Linux wins large — **29% apart at 8192, in opposite directions**. |
-| **…and it reorders rankings** | `w64_k64` led a 30-candidate Windows screen at 59.1 @4096 and measures **26.9 on Linux**, last of six. **A screen taken on one platform is not evidence about the other.** |
-| **Driver / IGC version** | A month of driver movement once lifted *every* implementation by a similar factor — the signature of an environment change, not a compiler win. |
-
-Run-to-run spread inside the bench container, six repeats: **2.2%** at 1024 and 2048, **3.1%** at 4096,
-**0.7%** at 8192. A 6% delta is signal; a 2% one is not.
+* **Grid and Local Size:** Do not override the kernel's derived 2-D local sizes with 1-D groups on the host.
+* **JIT Build Flags [Intel]:** The host must pass the compiler's chosen register mode to the JIT (`pBuildFlags`).
+* **Dynamic SMEM opt-in [NVIDIA]:** A kernel asking for more than 48KB of shared memory needs `cuFuncSetAttribute(CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, …)` before launch. Without it the launch fails outright; the generated hoist reads the requirement from the `.metacrisp` and emits the call.
+* **TMA descriptors [NVIDIA]:** A `:block`-mode copy needs its `CUtensorMap` built on the host with the same extents and element type the kernel assumed. A descriptor that disagrees is a correctness bug, not a slow path.
+* **Warmup/Iters:** Under-warming reads low. Conversely, batching too many re-submits of an in-flight L0 command list can artificially inflate GFLOPS due to coalescing **[Intel]** — the CUDA path does not coalesce this way.
 
 ---
 
-## Measured non-levers
+## 4. Platform & Driver Variance (Layer 4)
 
-Things tried on this algorithm that did **not** pay. Recorded so they are not re-tried blind — each
-cost real hardware time.
-
-| Tried | Result |
-|---|---|
-| SLM staging of operands | **40× slower** (0.9 vs 41.9 @2048). `SPV_INTEL_2d_block_io` is a *global*-memory facility, so staging through shared local memory loses the 2D block load entirely (`load_block2d` 41 → 0). SYCL-TLA uses **no SLM**. |
-| Address hoisting | −36% emulated multiplies for **+2.9%**; on the ring kernel, identical instruction counts **17% slower**. |
-| **Cache control** (`SPV_INTEL_cache_controls`) | **DEAD, tested twice.** `CacheControlLoadINTEL` L1+L3 `Cached` — SYCL-TLA's `kL1C_L3C`, which it uses at all 26 of its call sites. Measured −3.3% @4096 (loads only) and **−1.4% @8192 with the PREFETCH decorated too, on the real kernel** (176 decorations vs 0 in a byte-identical twin, so the arm was genuine). Either IGC ignores pointer decorations on 2D-block-io, or the driver default already matches. Do not re-open without new information. |
-| Ring depth 3 | +9% at 32×32, collapses 32×64. |
-| Split barrier | Removes ~90% of the fused barrier's cost and still loses to no barrier. |
-| `TM 64` (64×32) | Does not run. |
-| `TN 96` | MMA_WRONG at 0.27 TFLOPS — GPU-fault signature. |
+* **Platform Disparities [Intel]:** Windows-native L0 and Linux/Docker L0 can disagree significantly (up to 30% deltas at large $N$, often reordering kernel rankings entirely). **A screen taken on one platform is not evidence for the other.**
+* **Part Variance [NVIDIA]:** SM count differs across parts of the same architecture (H100 PCIe 114, SXM/NVL/H200 132). Because `:compute-units` sizes the grid, a number from one variant does not transfer to another even at identical clocks.
+* **Signal vs. Noise:** Run-to-run variance on a stable container is typically 1-3%. Treat deltas under 5% as noise unless proven otherwise.
 
 ---
 
-## How to change a lever honestly
+## 5. Known Anti-Patterns (What Not to Do)
 
-Learned the hard way, repeatedly:
+Do not waste time retrying these approaches for this specific algorithm class; they are measured dead ends.
 
-1. **Measure both arms in one session, back to back.** The same unchanged kernel has moved 15%
-   between sessions. Any old number is a different experiment.
-2. **Measure on the platform of record** — for Intel that is Docker/Linux
-   (`scripts/bench-intel.sh`), not Windows-native, even though Crisp-only numbers *can* be taken
-   natively because the fixture needs only `clang++`.
-3. **Use the fixture, not a generated harness.** `bench_harness_l0.cpp` is one reviewed apparatus for
-   every kernel, so a difference between rows is a difference between kernels.
-4. **Check `verified`.** Several "wins" were kernels that skipped work — `chap2_tiling` posted the
-   second-best number in its section while storing nothing at all, because it had no `store-tile`.
-   The compiler warned on every build; a sweep runs `--log-level=off`.
-5. **Know the spread before believing a delta.** Two byte-identical kernels once read 57.7 and 61.7
-   at N=2048 in the same run.
-6. **Read the `.metacrisp`.** It is the compiler's own record of what it assumed — geometry, lowering,
-   register mode. If the harness and the metacrisp disagree, the measurement is of neither.
+**[Intel]**
 
-## Open
+1. **SLM Staging of Operands:** `SPV_INTEL_2d_block_io` is a global-memory facility. Staging through SLM drops the 2D block load entirely, resulting in catastrophic throughput loss on Xe2.
+2. **Cache Control Directives:** Manually applying `SPV_INTEL_cache_controls` (e.g., L1/L3 caching) has proven ineffective or slightly regressive. The driver default for 2D block IO already matches or ignores these pointer decorations.
+3. **Deep Rings on Large Tiles:** Ring depth $\ge 3$ on `32x64` subgroup tiles guarantees register collapse.
+4. **More subgroups as a throughput lever:** scaling the workgroup tile across many subgroups does *not* beat a single well-tuned subgroup on this part. It is a correctness-preserving geometry change, not a speedup.
 
-- **The remaining SYCL-TLA gap is a lowering gap, and it is now precisely one thing.** At 8192
-  Crisp reads **106.0** against ~237. Geometry is matched (256×256 over 32 subgroups — theirs is
-  fixed at every size, verified from their peer `.cpp`: compile-time constants, zero
-  size-dependent branching). Prefetch is in. Cache policy is dead. The coop-matrix lowering is
-  superseded. What is left is the part of their instruction stream we do not emit:
-  `createBlock2DAddressPayload` / `setBlockX/Y`, **never materialising a 64-bit address**. Spec
-  `155/04` already pins the invariant and is RED on purpose — 26 emulated i64 multiplies for 8
-  loads, and Xe has no native 64-bit multiply.
-- **The peer column is not yet trustworthy.** SYCL-TLA at N=2048 read 72.1 / 85.1 / 107.9 across
-  three sessions on an unchanged binary — a 49% spread — because the bench image has no `ocloc`
-  and builds it JIT rather than AOT. That drift is now comparable to the effects being measured.
-- The bigger *per-subgroup* tile is still blocked: `TN 128` at 0.14×, `TM 64` will not run,
-  `TN 96` faults. Note the 256×256 workgroup tile did **not** need this — per-subgroup work and
-  register demand are unchanged at 32×64 and 448 regs/thread.
+**[NVIDIA]**
 
-## The lesson this document keeps having to relearn
+5. **Clusters and TMA multicast:** forming a cluster is cheap, but multicasting operands across it has measured *slower* than the plain TMA ring. The operand-fetch path is not the bottleneck it appears to be.
+6. **`:tile-visit-strip-width` on Hopper:** a loss at every width tried, degrading monotonically as the strip widens. Wide output tiles already span most of the matrix, so the swizzle has nothing left to exploit. Omit the key.
+7. **Adding consumer warps past two:** the second producer/consumer *pair* has measured a regression. Two consumers is the sweet spot; more warps split the accumulator further without adding useful overlap.
+8. **Assuming deeper SMEM rings keep paying:** past the point where shared memory caps resident blocks per SM, extra depth buys overlap and loses occupancy, and the trade turns negative at large problem sizes.
 
-**Three times in endeavour 158, a lever recorded here as a measured loss turned out to be a win
-once a second lever existed.** The 256×256 geometry ("34.6 vs 60.8", endeavour 156) was measured
-at K=16 without warp-partitioned prefetch. Prefetch ("2.6–2.9× slower") was measured while every
-subgroup issued every block. `:xe-native` ("does not compose") was measured against a *ring*.
-Each negative was honestly taken and correctly recorded, and each was **scoped to a configuration
-rather than to the mechanism** — which is how it went on to mislead.
+---
 
-So when writing an entry here: say what was held fixed, not just what was measured. A result that
-does not name its configuration will eventually be read as a result about the mechanism.
+## Benchmarking Discipline
+
+1. **Measure A/B in one session.** Driver and environment drift is real. An old number is a different experiment.
+2. **Use the platform of record.** For Intel, standard benchmarking occurs in Docker/Linux (`scripts/bench-intel.sh`). For NVIDIA it is a rented pod (`scripts/bench-on-pod.sh`).
+3. **Match the profile to the part.** The benchmark harness refuses to sweep on hardware with no validated hardware profile, because a profile for the wrong variant produces wrong numbers rather than slow ones. See `benchmarks/README.md`.
+4. **Check `verified` output.** A kernel that skips a `store-tile` step will look incredibly fast. Ensure the math is actually executing.
+5. **Trust the `.metacrisp`.** If the host harness and the `.metacrisp` disagree on geometry, lowering, or register mode, the benchmark is invalid.

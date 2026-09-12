@@ -38,6 +38,10 @@
 (load "tests/test-runtime-checks.lisp")
 (load "tests/test-def-kernel.lisp")
 (load "tests/test-storage-handles.lisp")
+;; Endeavor 144's hw-profile probes are standalone C++/CUDA and cannot run on CI (one needs a
+;; Level Zero device, the other CUDA), so this checks the one thing checkable without hardware:
+;; that the profile KEYS they print match *hardware-profile-schema* and cover the built-ins.
+(load "tests/test-hw-profile-probes.lisp")
 (load "tests/spec/049-auto-diff-record-at-kernel-boundary/record-ad-transforms.unit.lisp")
 (load "tests/spec/052-differentiate-sub-functions/sub-func-ad.unit.lisp")
 ;; Endeavor 147: the VERIFY-AUTODIFF backend pin and runtime-selection policy.
