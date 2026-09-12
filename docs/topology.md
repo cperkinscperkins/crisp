@@ -1,30 +1,48 @@
 Advanced Crisp: Topological Aware Compilation
 ------------------------------------------------
 
-As you've seen in the Crisp design documentation, it has a lot of macros and forms, more so than other languages.  Striding, reductions, async behaviors, tiling and more all have various macros and forms that help make kernel writing more straightforward.
+As you've seen in the Crisp design documentation, Crisp has a lot of macros and forms — more than
+most languages.  Striding, reductions, async behaviours, tiling and matrix multiply all have forms
+that make kernel writing more straightforward.
 
-Experienced readers may look at a form like `loop-vector-stride` and think "sure, that's convenient, but I can get the global size, the vector size and set up a stride myself. It's not THAT much trouble". And that is true. But Crisp has these forms for a reason (besides ease-of-use) and that reason is that many of these forms are Topologically Aware. Which is to say, that with these forms you can write a performant kernel that can be compiled either for a single GPU, or for a cluster organized as a Torus Mesh or a Fat Tree Superpod or whatever. And we mean Performant with a capital "P", exploiting pipelining, warp specialization, tensor core MMAs and more. Crisp users can target these different systems without rewriting their kernel code or worrying about NVLink vs OpenSHMem, Unified Bus or other fabrics. 
+Experienced readers may look at a form like `loop-vector-stride` and think "sure, that's
+convenient, but I can get the global size, the vector size and set up a stride myself."  True.  But
+these forms exist for a reason beyond ease of use: they carry enough structure for the compiler to
+reshape what they lower to.  The same `tile-stride` loop becomes a synchronous copy, a `cp.async`
+pipeline, a TMA descriptor transfer, or a warp-specialized producer/consumer handshake, depending
+on the barriers you hand it and the hardware you aim at — without rewriting the kernel.  And
+Performant with a capital P: pipelining, warp specialization, and tensor-core MMA all reachable
+from the same source.
 
-Crisp also supports "out of core" orchestration, where the data is too large to fit on the GPU, but needs to be progressively enqueued and processed in chunks. 
+This document covers the machinery for that: **hardware profiles**, the **async tile** forms and
+their barriers, **synchronization**, **rings**, and the **matrix-multiply / MMA** forms, including
+the two vendor optimization arcs (NVIDIA async staging into SLM, Intel block-load prefetch into
+registers).  For absolute maximum performance you will also want to name or provide a hardware
+profile (via `--hardware-profile` and/or `def-hardware-profile`), which tells the compiler the
+specific machine characteristics of a target.
 
-To make this happen the Crisp compiler needs three things:
+Note that Crisp is not auto-optimizing the kernel for you.  That is an ongoing area of research.
+You choose the optimization strategy that fits your problem and write it; Crisp forms make that
+straightforward.  We use real matrix multiplication kernels throughout.
 
-- `def-topology` to describe the organizaion of your cluster
-- `def-orchestration`  with location and memory distribution information
-- `def-kernel` with the optimized kernel code. 
+> **Cluster-scale topologies are deferred.**  An earlier design took this document further — a
+> `def-topology` describing a torus mesh or fat-tree superpod, a `def-orchestration` placing data
+> across it, and "out of core" processing for data too large to fit on one GPU.  That work is set
+> aside; see [Deferred: topology-aware orchestration](#deferred-topology-aware-orchestration-def-topology--def-orchestration)
+> at the end.  Everything before it ships today on a single GPU.
 
-And for absolute maximum performance, you might want to name or provide a hardware profile (via `--hardware-profile` and/or `def-hardware-profile`) as well, which tell the compiler about the specific machine characteristics of a target.
-
-Note that Crisp is not auto-optimizing the kernel for you. That is an ongoing area of research. You will have to choose the optimization strategy that fits your problem domain and code it. But Crisp forms make this a straightforward endeavor. We'll use real examples of matrix multiplication and Flash Attention as we progress.
-
-> **What are the choices?**  [`performance-levers.md`](performance-levers.md) enumerates every knob that changes the speed of a tuned register-resident MMA matmul, organised by who sets it — kernel source, compiler, enqueue, and the platform underneath.  It records measured magnitudes, the levers that turn out **not** to be independent of one another, and a list of things that were tried and did not pay, so they are not re-tried blind.
+> **What are the choices?**  [`performance-levers.md`](performance-levers.md) enumerates every knob
+> that changes the speed of a tuned register-resident MMA matmul, organised by who sets it — kernel
+> source, compiler, enqueue, and the platform underneath.  It records measured magnitudes, the
+> levers that turn out **not** to be independent of one another, and a list of things that were
+> tried and did not pay, so they are not re-tried blind.
 
 Hardware Profiles ✅
 -----------------
 
 `--ir-target`, when set to `ptx` or `spv` tells the compiler the IR target, which will usually be `ptx` for NVidia hardware and `spv` for Intel (and possibly others).  When compiling a kernel that is often enough, nothing more is needed.  But for some capabilties and or optimizations, the  `--ir-target-arch` flag can be used to further inform about the exact architecutre (like `sm_80` or `xe2`).  But for absolutely maximum performance optimizations, the compiler can be given specific bounds and capabilities of a targeted hardware and then it can tailor to those.  These "specific bounds and capabilities" are called a "hardware profile".
 
-Hardware profiles are recommeended, but they are always optional. 
+Hardware profiles are recommended, but they are always optional. 
 
 The Crisp compiler already knows about some hardware profiles. Those are listed below and their name alone as a flag or `:profile` value is sufficient to leverage them. But if Crisp doesn't have the exact profile for your hardware defined already, it is easy to provide it with `def-hardware-profile`.
 
@@ -39,26 +57,26 @@ Note that a hardware profile says nothing about that actual architecture. It may
 
 ```
 (def-hardware-profile nvidia-h100-sxm
-   
+
   ;; --- Compute & Vector Core Mechanics ---
-  :simd-width 32  📝
-  :compute-units 132  ⚠️                     
-  :max-registers-per-cu 65536  📝            
-  :max-registers-per-thread 255  📝
+  :simd-width 32
+  :compute-units 132
+  :max-registers-per-cu 65536
+  :max-registers-per-thread 255
 
   ;; --- Local Memory Hierarchy ---
-  :max-shared-memory-per-block 227KB  ✅     
-  :l2-cache-size 50MB  📝
-  :native-cache-line-size 128  📝    
-  :tile-visit-strip-width 16        
+  :max-shared-memory-per-block 227KB
+  :l2-cache-size 50MB
+  :native-cache-line-size 128
+  :tile-visit-strip-width 16
 
   ;; --- Execution & Work-Group Bounds ---
-  :max-work-group-dims '(1024 1024 64)  ✅
-  :max-total-threads-per-block 1024  ✅
-  :max-concurrent-kernels 128  📝
+  :max-work-group-dims '(1024 1024 64)
+  :max-total-threads-per-block 1024
+  :max-concurrent-kernels 128
 
   ;; matrix units
-  :mma-shapes '((16 8 16) (8 8 8))  📝  ; list of (M N K) triples
+  :mma-shapes '((16 8 16) (8 8 8))  ; list of (M N K) triples
   :wgmma-shapes '((16 8 16) (8 8 8))
   :mma-lowerings  '(:coop-matrix :xe-native))
 ```
@@ -66,7 +84,7 @@ Note that a hardware profile says nothing about that actual architecture. It may
 Missing Keys: an incomplete `def-hardware-profile`, one without the full set of keys as illustrated above, is fine.
 However any optimizations that depend on it will simply not be taken. 
 
-Unkonwn Keys: a `def-hardware-profile` sporting any key outside the ones listed above will result in a compilation error.
+Unknown Keys: a `def-hardware-profile` sporting any key outside the ones listed above will result in a compilation error.
 
 ### `:mma-shapes` ✅
 
@@ -111,14 +129,12 @@ This compiler flag names a hardware profile to use for optimization/validation. 
 It is an error to use this flag if a topology or orchestration is specifying a hardware profile. 
 
 
+### Probing Hardware Profile ✅
 
-### Probing Hardware Profile
-
-While the hardware profile is powerful, were does it come from? The majority of the values can be probed on the actual GPU hardware.
+While the hardware profile is powerful, where does it come from? The majority of the values can be probed on the actual GPU hardware.
 Crisp has simple `query-l0.cpp` and `query-cuda.cu` that can be compiled and run and will output a `def-hardware-profile` definition for you. 
 
 See [scripts/hw-profile/README.md](scripts/hw-profile/README.md)
-
 
 
 Topologies
@@ -426,8 +442,6 @@ Unlike `global-size` or `local-size`, `cluster-size` is **not advisory**. It alt
 ```
 
 
-
-
 Topologically Aware Async
 -------------------------
 
@@ -443,13 +457,6 @@ Topologically Aware Async
   (await barrier)
 
   (signal barrier))
-
-   ;; Sometimes `make-async-barrier` is going to need a <CUTensorMap>. 
-   ;; 1 - Do we have enough information at compile-time to produce one without further user intervention?
-   ;;     If not, what more information do we need?
-   ;; 2 - We might have to pass that as another "side channel" argument, like we do scratch tensors. 
-   ;;     Meaning the kernel arg list has the <CUTensorMap> added at the beginning, but hidden from the user.
-   ;;     Like scratch tensors, it must be passed down the call chain implicitly until it reaches where it is needed. 
 
 ```
 
@@ -469,11 +476,6 @@ transfer to this barrier; `await` blocks until the bytes have landed.
 (make-async-barrier)                  ; arch-automatic (see below)
 (make-async-barrier :mode :linear)    ; force the linear async copy
 ```
-
-> **Note.**  An earlier design had a `:type` key (`:global` / `:p2p` / `:pcie` / `:pgas-fabric`)
-> tied to `def-topology` for cross-device / fabric transfers.  `def-topology` is set aside for
-> now (see the deferred section below), so **`:type` is gone** — the only data movement this
-> barrier governs is global↔local (device VRAM), which needs no key.
 
 #### `:mode`
 
@@ -501,34 +503,29 @@ The values form a ladder, each rung strictly more capable than the one below it:
   is a compile error (needs sm_90+); **on Intel it is a compile error** — Intel's fast 2D path
   (LSC 2D block loads) loads global→*registers*, not SLM, and is **not** a barrier-governed
   transfer at all (see "Optimizing Intel MMA").
-- `:cluster` 📝 — a real mbarrier that **peer workgroups in the same cluster may arrive on**
+- `:cluster` ✅ — a real mbarrier that **peer workgroups in the same cluster may arrive on**
   (`mbarrier.arrive.shared::cluster` against a mapped peer address).  **NVIDIA sm_90+ only**,
-  and only meaningful when the kernel declares a [cluster-size](#workgroup-clusters).
+  and only meaningful when the kernel declares a [cluster-size](#cluster-size).
 
 ##### Which barriers need which rung
 
 A pipelined kernel usually has two barrier rings, and they do **not** want the same rung:
 
-- The **data-arrival** ring (conventionally `full`) is `:block` even in a clustered kernel.
-  This surprises people, so it is worth being explicit: a multicast tile load writes into
-  several workgroups' SLM at once, but the transaction completes on **each destination
-  workgroup's own** mbarrier.  Every workgroup still waits on a barrier it owns, so the barrier
-  is workgroup-local and `:block` describes it exactly.
-- The **buffer-free** ring (conventionally `empty`) is the one that becomes `:cluster`.  It
-  carries no transfer at all — no `load-tile` ever names it — and exists so consumers can tell
-  the producer a slot is safe to overwrite.  Once a producer is filling slots in *peer*
-  workgroups, those peers must be able to arrive on its barrier, and that is cluster reach.
+- The **data-arrival** ring (conventionally `full`) stays `:block` even in a clustered kernel.  A
+  multicast load writes into several workgroups' SLM at once, but each transaction completes on
+  the **destination workgroup's own** mbarrier, so the barrier is workgroup-local.
+- The **buffer-free** ring (conventionally `empty`) is the one that becomes `:cluster`.  It carries
+  no transfer at all — no `load-tile` ever names it — and exists so consumers can tell the producer
+  a slot is safe to overwrite.  Once a producer fills slots in *peer* workgroups, those peers must
+  be able to arrive on its barrier, and that is cluster reach.
 
 So in a clustered matmul it is the barrier governing **no** data movement that gains `:cluster`,
-while the barrier the multicast actually targets stays `:block`.  Both readings are literal once
-you take `:mode` to mean "kind and reach" rather than "which DMA engine".
-
+while the barrier the multicast actually targets stays `:block`.
 
 > **On Intel, only the bottom rung exists.**  `:block` and `:cluster` are both compile errors on
-> SPIR-V, and `:mode :linear` **rings** (`:ring-count` > 1) are not implemented there either.  In
-> practice that means a barrier *ring* of any kind is NVIDIA-only today, and Intel's fast matmul
-> path reaches its throughput without barrier-governed staging at all — via direct register
-> block-load prefetch.  This is not new with `:cluster`; it is the shape the key already had.
+> SPIR-V, and `:mode :linear` **rings** are not implemented there either — see [Rings](#rings).
+> Intel's fast matmul path reaches its throughput without barrier-governed staging at all, via
+> direct register block-load prefetch.
 
 #### The arch-automatic default
 
@@ -539,11 +536,9 @@ With no `:mode`, the barrier picks the best global→local async copy for the el
 - **NVIDIA < sm_90** (incl. the default `sm_80`) → `:linear` (`cp.async`).
 - **Intel** (any arch) → **always `:linear`** (`OpGroupAsyncCopy`).
 
-> **Arch-automatic never selects `:cluster`, even on sm_90+ with a cluster declared.**  The
-> automatic default picks the best mechanism *the hardware can realize* — a capability question.
-> Reach is not a capability question: it is a claim about your algorithm, namely that peer
-> workgroups will arrive on this barrier.  Guessing it wrong does not cost throughput, it hangs
-> the kernel, which is the same reason [`:arrivals`](#make-async-barrier-ring) is never inferred.
+> **Arch-automatic never selects `:cluster`, even on sm_90+ with a cluster declared.**  The default
+> picks the best mechanism the hardware can realize — a capability question.  Reach is not: it is a
+> claim about your algorithm, and guessing it wrong hangs the kernel rather than costing throughput.
 > `:cluster` is always written explicitly.
 
 > **Guidance for Intel.**  `:linear` on Intel is a genuine async copy and useful for large /
@@ -667,37 +662,20 @@ Functions identically to `store-tile`, but uses exact **Element Coordinates** ra
 
 Halts the execution of the calling warp or workgroup until the specified `barrier` has been fully signaled by the hardware DMA engine. This guarantees that all asynchronous bytes tracked by the barrier are visible in memory, ensuring the execution unit does not read garbage data.
 
-### `signal`
+### `signal` ✅
 
 `(signal barrier) => nil`
 
 Manually notifies the specified `barrier`. This is predominantly used in pipelined or warp-specialized loops where the Consumer warp must explicitly tell the Producer warp's DMA engine that a specific chunk of Shared Local Memory has been fully read and is safe to be overwritten by the next memory fetch.
 
 
-### More Tile helpers
+### More Tile helpers ✅
 ```
 (position-tile tile-tensor tensor (... grid-y grid-x))
 (position-tile-at tile-tensor tensor (... y x))
 ```
 
 These functions have a very similar API to the load/store tile functions above. But they do not transfer any data, instead they simply update the tile metadata. This is useful when a tile is being used a view into a larger (parent) tensor and you want to move that "window". 
-
-
-
-### Note about OpenSHMem Barrier
-
-supporting `make-async-barrier` over OpenSHMem is tricky.
-
-OpenSHMEM / InfiniBand (The Real Threat)
-Network interface cards (NICs) do not natively understand SLM mbarrier objects. To pipeline RDMA transfers, you must abandon quiet() entirely during the inner loops and move to Fine-Grained Network Signaling.
-Modern PGAS libraries (like NVSHMEM 3.x+ and OpenSHMEM 1.5+) have explicit APIs for this:
-Instead of issuing a generic nvshmem_get, the compiler emits nvshmem_get_nbi (Non-Blocking Implicit).
-Instead of calling quiet(), you use Signal Flags.
-When (make-async-barrier) is called for a network topology, the compiler allocates an atomic integer flag in device Global Memory (not SLM).
-Here is what the compiler makes the hardware do:
-Issue: The Producer warp fires the RDMA read request, and attaches a directive telling the NIC: "When you finish writing these bytes, write the value '1' to this specific signal flag."
-Wait: When the Consumer warp calls (await b1), it does NOT call quiet(). It compiles down to a hardware polling loop (nvshmem_wait_until) that watches only b1's specific signal flag.
-Because b1 and b2 have separate, dedicated signal flags in memory, b1 can safely signal completion and allow the math to start while the network is still physically transferring b2.
 
 
 ### Crisp Terminology
@@ -737,15 +715,10 @@ Because b1 and b2 have separate, dedicated signal flags in memory, b1 can safely
 
 #### Split-Phase Execution (Design Sketch) 📝
 
-The split `:arrive` / `:wait` form allows threads to announce their arrival and do independent work before blocking. It is currently **not shipped**, pending the static analysis required to enforce its strict safety rules.
-
-When implemented, the compiler will enforce the following restrictions:
-
-- An `:arrive` must be exactly paired with a `:wait`. They cannot nest.
-- You cannot `return` or exit the routine between the two phases.
-- Reading or writing to a cluster peer's shared memory within the window is unsafe.
-- Modifying your own published `:local` memory within the window (e.g., via `load-tile` or `load-local`) risks a race condition and is highly discouraged, as the compiler cannot statically catch every violation.
-
+A split `(sync-cluster :arrive)` / `(sync-cluster :wait)` is **not shipped**, pending the static
+analysis to enforce its safety rules.  Those rules are the ones documented for the shipped split
+[`sync-workgroup`](#sync-workgroup) below, plus one more: a cluster peer's shared memory may not
+be read or written inside the window.
 
 #### sync-workgroup ✅
 
@@ -800,8 +773,14 @@ that never splits does not oblige the driver to support the extension.
 
 #### sync-warp ✅
 
-(sync-warp): Implemented via `__builtin_shflsync(0xFFFFFFFF, 0)`.
+`(sync-warp) => nil`
 
+Synchronizes the threads of a single warp / subgroup — a convergence point narrower than
+`sync-workgroup`, for ordering within one warp without paying a workgroup-wide rendezvous.
+It lowers to `bar.warp.sync` on PTX and to a Subgroup-scope `OpControlBarrier` on SPIR-V.
+
+There is no split `:arrive` / `:wait` form: a warp executes in lockstep, so there is no window
+between arriving and waiting in which to put work.
 
 #### Sync on Arrival ✅
 
@@ -855,9 +834,6 @@ In the implementation this translates into a spin-wait loop that atomically poll
 Change the value of the semaphore. Presumably some other party might have been waiting and will now spring to action.
 
 In the implementation this translates into an atomic write instruction coupled with a `memory_order_release` fence. The fence is the magic part. It strictly guarantees that any data your warp just calculated and stored (e.g., writing a computed tile back to Global Memory) is fully flushed and visible to the rest of the GPU before the semaphore's value actually changes.
-
-
-
 
 
 Rings ✅
@@ -960,7 +936,7 @@ Warp Specialization ✅
 -------------------
 
 ```
-(with-warp-specialization (:producer 1 :consumer 3)
+(with-warp-specialization (:producer 1 :consumer 2)
   
   (:producer 
     ...
@@ -971,16 +947,34 @@ Warp Specialization ✅
   ))
 ```
 
-Warp specialization allows you to split a single kernel into multiple distinct behaviors that execute on different warps within the same thread block.
+Warp specialization splits one kernel into distinct behaviours that run on different warps of the
+same workgroup — typically a **producer** warp that does nothing but fetch tiles, and **consumer**
+warps that do nothing but compute on them.
 
-In the example above, one warp will be dedicated to some work labelled `:producer`, and three warps will be
-performing the work labelled `:consumer`. So the overall workgroup must be sized to be 4 times `(get-warp-size)`
+In the example above one warp runs the `:producer` body and two run the `:consumer` body, so the
+workgroup must be sized to 3 × `(get-warp-size)`.  You may declare as many roles as you like, so
+long as the workgroup is a multiple of their sum.  With `--runtime-checks` the compiler inserts a
+check that the workgroup size actually matches.
 
-`with-warp-specialization` can have as many labels as you want, so long as the workgroup is a multiple of the sum of the labels.
+**The roles talk to each other through barrier rings, not through a shared barrier.**  The
+producer fills a slot and the consumer signals it free again, which is what
+[`:initial-state`](#make-async-barrier-ring) on a barrier ring is for: the data-arrival ring
+starts `:waiting` (block until a slot is filled) and the buffer-free ring starts `:signaled`
+(every slot free at launch).
 
-When `--runtime-checks` is enabled, the compiler will insert a check to ensure the workgroup size is correct.
+**`sync-workgroup` inside a role block is a compile error.**  It is a workgroup collective and
+only one role reaches it, so it deadlocks rather than computing a wrong answer.  Synchronize
+through `await` / `signal` on the rings instead; `sync-warp` is fine for intra-warp ordering.
 
+**A register tile shared by the consumers needs a `:warps` mask** naming exactly the consumer
+warps — see [`:warps`](#warps--the-warp-participation-mask-for-warp-specialization).  Without
+it the tile distributes across *every* warp, including the producer, whose fragments are then
+never computed.
 
+**Two consumers is the measured sweet spot.**  On an H100, 1 producer + 2 consumers is the
+fastest Crisp matmul at the sizes benchmarked (2× the plain pipeline at N=1024, +6% at N=4096);
+four consumers regresses.  More consumers sharing one C-tile means fewer registers per thread and
+higher occupancy, but the split has its own cost — measure it.
 
 Matrix Multiplication ✅
 ---------------------
@@ -1113,14 +1107,11 @@ the tile, as a flat boolean map, positional over the workgroup's warps:
 
 ```
 
-If you have matrices `A`, `B` and `C` such that you are planning multiply them `(A x B = C)` then
-the `matrix-multiply-tile-stride` macro will help stride and walk the space correctly by a tile.
-The macro doesn't take `A` or `B` as arguments, it's not performing the multiplication itself,
- it simply needs to know the `C` matrix, the tile matrix view into `C`, the inner dimension of the multiplication (aka `K`), and which tile dimension strides `K`.  Then it'll loop, and in each loop `<grid-bindings>` will
- be set for you.  Use tihs macro in conjunction with `mma-accumultae-via-tile` to make matrix multiplication
- easy.
-
-
+Given `A`, `B` and `C` with `A x B = C`, this macro strides and walks the output space one tile at
+a time.  It does not perform the multiplication and so does not take `A` or `B`: it needs the `C`
+matrix, the tile view into `C`, the inner dimension `K`, and the tile dimension that strides `K`.
+Each iteration binds `<grid-bindings>` for you.  Use this macro together with
+`mma-accumulate-via-tile` and nearly all the boilerplate of a matrix multiply is handled.
 
 `<k-step>` is the K-extent of the staging tiles. It is the dimension A-tile and B-tile share.   `K / <k-step>` give the loop trip count.
  
@@ -1158,7 +1149,7 @@ the compiler warns** (a matmul that discards its result is almost always a bug).
 > **Where does the activation go — `my-accum` or `:epilogue`?**  `mma-accumulate-via-tile` exposes
 > a per-fragment accumulator (`my-accum`, in registers) for fusion, and the macro exposes a
 > per-tile `:epilogue`.  The form that does the fusing in either place is
-> [`map-elements!`](#map-elements----fusing-your-own-code-into-the-epilogue).
+> `map-elements!`.
 > Use whichever owns the *complete* reduction: if
 > `mma-accumulate-via-tile` does the whole K-contraction itself, fuse on `my-accum` (finer,
 > in-register).  But in this **staged** pattern — the macro's `grid-k` loop calls
@@ -1173,10 +1164,10 @@ tile-ID by the tile's extent).  `grid-k` is the K-step index, `0 .. K/<k-step> -
 grid-strided: a workgroup owns **≥ 1** `C`-tile and strides across the grid, so it works whether
 you launch one workgroup per output tile (a 2-D grid = (#row-tiles, #col-tiles)) or fewer.
 
-**Accumulator reset.** When a workgroup owns more than one `C`-tile, the register `C-tile` is reused
-across tiles, so reset it at the start of each tile's reduction with `fill-tile`:
-`(when (= grid-k 0) (fill-tile C-tile (identity-value)))`.  A one-tile-per-workgroup launch does not
-need this — `make-register-tile`'s init covers the single tile.
+**Accumulator reset.** The macro resets `C-tile` at the start of each output tile's reduction, so
+a workgroup that owns more than one tile does not carry the previous tile's partial sums into the
+next.  A register tile resets to the init it was declared with; a scratch tile, which has no
+declared init, resets to `0.0`.  You do not write the reset yourself.
 
 **Chapter 0 (synchronous) — what ships today.** The Chapter-0 body is fully synchronous: stage with
 plain `load-tile` (no `:barrier`), `sync-workgroup`, `mma-accumulate-via-tile`, `sync-workgroup`.
@@ -1197,12 +1188,7 @@ plain `load-tile` (no `:barrier`), `sync-workgroup`, `mma-accumulate-via-tile`, 
       (store-tile C-tile C (grid-y grid-x))))) ; you own the store
 ```
 The kernel above is the **shared synchronous baseline** — it ships and is metal-correct on both
-NVIDIA and Intel.  From here the optimization story **splits by vendor**, because the two machines
-hide memory latency in fundamentally different ways (NVIDIA stages global→SLM asynchronously and
-feeds the tensor cores from SLM; Intel's fast path loads global→*registers* directly).  So there
-is no single "three chapters" arc — there are **two separate arcs** over the same baseline.  See
-"Optimizing NVIDIA MMA" and "Optimizing Intel MMA" below.
-
+NVIDIA and Intel.  Optimizing past it splits by vendor; the two arcs follow below.
 
 ### inner-dimension ✅
 `(inner-dimension A B) => ulong`
@@ -1211,9 +1197,14 @@ Returns the size of the inner dimensions of two tensors (the dimension used for 
 ### outer-dimensions ✅
 `(outer-dimensions A B) => M N`
 
+Companion to `inner-dimension`: returns the two **non**-contracted extents of a matrix multiply —
+`M` is `A`'s row extent and `N` is `B`'s column extent.  It returns two values, so bind it with a
+multi-value `let`: `(let ((M N (outer-dimensions A B))) ...)`.  Like `inner-dimension` it is a
+gradient-inert shape query, so it costs nothing under `--differentiate`.
+
 ### fill-tile ✅
 ```
-(file-tile <some-tensor> <some-value>)
+(fill-tile <some-tensor> <some-value>)
 ```
 `fill-tile` can be used with any tensor, (vectors, matrices, etc). It simply fills it with a value.
 It is a simple cooperative workgroup operation (it usually uses `workgroup-stride` under the covers) and is intended, as named, to be used on simple tiles.  For a very large tensor, use one of the other strides to implement your own.  Note: for register tiles (`make-register-tile`) it gets unrolled per fragment. Quite performant. 
@@ -1232,10 +1223,14 @@ Optimizing NVIDIA MMA
 NVIDIA hides memory latency by staging tiles **global→SLM asynchronously** (tracked by an async
 barrier), then feeding the tensor cores from SLM.  Over the synchronous baseline:
 
-1. **`cp.async` (`:mode :linear`)** — async per-element copy global→SLM.  **Shipped**, metal-verified.
-2. **CuTensorMap (`:mode :block`)** — bulk, descriptor-driven 2D copy global→SLM (sm_90+ / TMA).  *Next.*
+1. **`cp.async` (`:mode :linear`)** — async per-element copy global→SLM.
+2. **CuTensorMap (`:mode :block`)** — bulk, descriptor-driven 2D copy global→SLM (sm_90+ / TMA).
 3. **Ring pipelining** — barrier + storage-handle rings so one stage loads while another computes.
 4. **Warp specialization** — dedicated producer / consumer warps over the rings.
+5. **Warpgroup MMA (`wgmma`)** — Hopper's asynchronous warpgroup-wide MMA, the instruction cuBLAS
+   itself uses.
+
+All five ship and are metal-verified on an H100.
 
 The examples below build up this arc.
 
@@ -1254,7 +1249,7 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
                (global-size :derive-from C :strategy :strided))  
     (let ((A-tile (make-scratch-matrix A (128 128)))
           (B-tile (make-scratch-matrix B (128 128)))
-          (C-tile (make-register-tile T (128 128) (identity T)))
+          (C-tile (make-register-tile T (128 128) 0.0))
           (K (inner-dimension A B))
           (k-step   128)
           (barrier (make-async-barrier))) ;; arch-automatic: :block on sm_90+, else :linear
@@ -1280,7 +1275,6 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
 ```
 
 
-
 ### mma-accumulate-via-tile ✅
 ```
 (mma-accumulate-via-tile (<sz-expr>) C-tile A-tile B-tile (<accum-binding>) 
@@ -1292,20 +1286,16 @@ We also use the highly performant `mma-accumulate-via-tile` to perform the matri
 `mma-accumulate-via-tile` walks the tile in steps of `<sz-expr>` — an `(M N K)` triple that must match one of the Tensor MMA units of the underlying hardware.
 The `<sz-expr>` you pass to `mma-accumulate-via-tile` is checked against the active profile's `:mma-shapes` (also an `(M N K)` triple). A shape the hardware doesn't list is a compile error. With no active profile, the shape is accepted unchecked.
 
-Also note the multiplicity constraints: the output tile's M and N (128x128 in the code above) must each be a multiple of the shape's M and N, and the K-loop extent (the matrices' inner dimension) must be a multiple of the shape's K.
+Also note the multiplicity constraints: the output tile's M and N must each be a multiple of the shape's M and N, and the K-loop extent (the matrices' inner dimension) must be a multiple of the shape's K.
 
 Two further compile-time constraints, both checked from information you already declare:
 
-- **Operand layout (and the Intel / NVIDIA difference).** The A and B matrices' `:contiguous-term`
-  (`:row-major` / `:col-major`) selects which hardware MMA variant is emitted — the canonical
-  NVIDIA form is A row-major, B **column-major** (`mma…row.col`). A layout the chosen instruction
-  cannot accept is a compile error; use `:transpose` on the tile load to reconcile a source that
-  is stored the other way.  **Intel (SPV / DPAS) is different:** there is no ColumnMajor-B
-  cooperative-matrix builtin, so on the SPV path the **B operand must be declared `:row-major`**
-  (the hardware expects B in VNNI-packed row-major form).  This is a genuine per-vendor storage
-  requirement — the same source can't be `:col-major` B for NVIDIA and `:row-major` B for Intel —
-  so a portable kernel either declares B per target or transposes on load.  (It parallels the
-  shape difference: NVIDIA tf32 `(16 8 8)` vs Intel XMX `(8 16 8)`.)
+- **Operand layout.** The A and B matrices' `:contiguous-term` (`:row-major` / `:col-major`)
+  selects which hardware MMA variant is emitted, and a layout the chosen instruction cannot accept
+  is a compile error.  The canonical NVIDIA form is A row-major, B **column-major**
+  (`mma…row.col`); Intel requires **every** operand `:row-major`.  Use `:transpose` on the tile
+  load to reconcile a source stored the other way.  The Intel rule and its workaround have their
+  own section below.
 - **Precision.** The `(M N K)` triple encodes operand *precision* — the same M×N comes in
   several K variants for different dtypes (e.g. k16 for fp16, k8 for tf32). The shape you pass
   must match your operands' element type, or it is a compile error.
@@ -1313,21 +1303,13 @@ Two further compile-time constraints, both checked from information you already 
 Physical SLM *swizzling* (bank-conflict avoidance) is a separate performance optimization, not
 a correctness requirement — a plain row/col-major staging feeds the fragment loads correctly.
 
-The three chapter kernels above pass `(16 8 8)` — the **tf32** shape (K=8), matching tf32/`float`
+The baseline kernel above passes `(16 8 8)` — the **tf32** shape (K=8), matching tf32/`float`
 operands. The same M×N with **fp16** operands is `(16 8 16)`, which is the variant the expansion
 below illustrates (note its `mma.m16n8k16` intrinsic and K-step of 16).
 
-Below is an example of the triple loop that `mma-accumulate-via-tile` might expand into.
-```
-(let ((accum (make-register-fragment 16 8 0.0)))   ; accumulator is M×N; K is the contraction, looped by tk
-  (dotimes (tk 128 16)
-    (dotimes (ty 128 16)
-      (dotimes (tx 128 8)
-        (let ((frag-a (load-fragment-a A-shared ty tk))      ; Lowers to ldmatrix.sync.x4
-              (frag-b (load-fragment-b B-shared tk tx)))     ; Lowers to ldmatrix.sync.x2
-          ;; Lowers directly to NVVM intrinsic: @llvm.nvvm.mma.m16n8k16.row.col
-          (setf accum (mma-accumulate accum frag-a frag-b)))))))
-```
+The forms this macro composes — `make-register-fragment`, `load-fragment-a` / `-b`,
+`mma-accumulate` and `store-fragment` — are documented under **Fragment primitives** below, for
+the rare kernel that needs to hand-roll the loop.
 
 ### map-elements! ✅ — fusing your own code into the epilogue
 
@@ -1439,7 +1421,7 @@ We use rings to set up a load/execute pipeline.
     ;; pipeline-stages)` binding would NOT compile.  We keep it as a plain 3 throughout.
     (let ((A-tile-ring (make-scratch-matrix-ring A (128 128) :ring-count 3))
           (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count 3))
-          (C-tile (make-register-tile T (128 128) (identity T)))
+          (C-tile (make-register-tile T (128 128) 0.0))
           ;; :arrivals 2 — each slot tracks its stage's A-load + B-load.  REQUIRED for :block, and
           ;; NOT inferable (the prologue and the main loop both load the ring), so you state it.
           (barrier-ring (make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2))
@@ -1511,7 +1493,7 @@ We use rings to set up a load/execute pipeline.
           (B-tile-ring (make-scratch-matrix-ring B (128 128) :ring-count 3))
           ;; C-tile lives on the 2 CONSUMER warps only (warp 0 is the producer, holds no fragment).
           ;; 128x128 with (16 8 8) = 8x16 = 128 fragments; 2 consumers -> 64 each (evenly divides).
-          (C-tile (make-register-tile T (128 128) (identity T) :warps '(false true true)))
+          (C-tile (make-register-tile T (128 128) 0.0 :warps '(false true true)))
           (M N (outer-dimensions A B))
           (K (inner-dimension A B))
           (n-k-steps (/ K 128))   ; k-step is the 128-wide staging tile; producer & consumer share this count
@@ -1597,13 +1579,6 @@ subsequent block load then hits cache.
 
 Requires **DG2 or newer** (Gen12 lacks it).
 
-Status / open design: the spike confirms `__spirv_Subgroup2DBlockLoadINTEL` emits the real opcode
-and the Arc B580 loads through it into registers (an SLM destination is rejected at JIT — proof it
-targets registers, not SLM).  The Crisp surface for this — the fragment-load / prefetch forms and
-how they compose with `mma-accumulate-via-tile` — and whether there is anything past the initial
-block-load win, is the "Optimizing Intel MMA" arc still to be mapped out.
-
-
 ### Operand layout: Intel MMA operands must be `:row-major` ✅
 
 An Intel MMA operand — the `A` and `B` matrices, and the accumulator — must be declared
@@ -1634,11 +1609,6 @@ slightly different story — that builtin *does* exist and the module builds —
 computes the wrong result on metal, so it is refused too, conservatively, until that is
 understood.
 
-Failing at compile time with a sentence is deliberate. The alternatives are worse: emitting
-the honest ColumnMajor load makes the kernel fail at `zeModuleCreate` quoting a mangled
-builtin name, and silently transposing the operand behind your back would quietly change a
-kernel's performance characteristics.
-
 **If you need a column-major operand**, stage the transpose explicitly into scratch and feed
 the MMA from the staged tile. That keeps the cost visible and under your control — it is what
 the MMA autodiff backward does for its transposed operands.
@@ -1649,9 +1619,6 @@ the MMA autodiff backward does for its transposed operands.
 > operand layout per backend, exactly as it wants a different `:mma-shapes` triple.
 
 Specs: `133-mma-spv/13-col-major-operand-refused-bmg`, `14-col-major-accum-refused-bmg`.
-History: `plan/bugs.md` #035 — for months Crisp *dropped* the declared layout here, so
-`:col-major` was a silent no-op and you compiled a row-major kernel without being told.
-Four shipped specs were unknowingly relying on that.
 
 ### Reusing the "Ring" Meme
 
@@ -1660,82 +1627,79 @@ Instead, we build a ring of Register Tiles (a double-buffer). We issue a load in
 
 ### The Optimal Intel Pipelined MMA
 
-The goal here is to stretch the synchronous baseline to achieve the optimal LSC 2D Block Prefetch pipeline on Intel hardware.
+This is the shipped kernel from `tests/spec/142-mma-prefetch/14-pipeline-bench.crisp`, which runs
+MMA_CORRECT on an Arc B580.  It stretches the synchronous baseline into an LSC 2D block-prefetch
+pipeline: a register-tile ring double-buffers the operands while prefetches run two K-steps ahead.
 
-```
-(with-template-type (T)
-  (def-type mat (matrix T :address-space :global :align :compact :contiguous-term :row-major))
+```lisp
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
 
-  (def-grid-function intel-prefetch-matrix-multiply (A B &out C)
-    (declare #'((mat T) (mat T) &out (mat T))
-               (global-size :derive-from C :strategy :strided)) 
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 
-    ;; Ping-Pong Register Double Buffering. 
-    ;; Notice: We use make-register-tile-ring, NOT scratch-matrix-ring.
-    (let ((pipeline-stages 2) 
-          (A-reg-ring (make-register-tile-ring T (128 128) :ring-count pipeline-stages))
-          (B-reg-ring (make-register-tile-ring T (128 128) :ring-count pipeline-stages))
-          (C-tile (make-register-tile T (128 128) (identity T)))
-          (M N (outer-dimensions A B))
-          (K (inner-dimension A B)))
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))                       ; Intel MMA wants a subgroup of 16
+  (let ((n-k-steps (/ (inner-dimension A B) (to-ulong 8))))
 
-      ;; ==========================================
-      ;; THE PROLOGUE (Prime the Pump)
-      ;; ==========================================
-      ;; 1. Fire cache prefetches for k=0 and k=1
-      (prefetch-tile A (grid-y 0) :size (128 128))
-      (prefetch-tile B (0 grid-x) :size (128 128))
-      (prefetch-tile A (grid-y 1) :size (128 128))
-      (prefetch-tile B (1 grid-x) :size (128 128))
+    (tile-stride C (32 32) (grid-y grid-x)
+      ;; Ping-pong REGISTER double buffering — make-register-tile-ring, not a scratch ring.
+      ;; Operand tiles are M x K and K x N, so A and B have different shapes.
+      (let ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
+            (B-ring (make-register-tile-ring float (8 32) :ring-count 2 :operand :b))
+            (C-tile (make-register-tile float (32 32) 0.0)))
 
-      ;; 2. Issue the actual register block-loads for k=0
-      (load-tile A (ring-get A-reg-ring 0) (grid-y 0))
-      (load-tile B (ring-get B-reg-ring 0) (0 grid-x))
+        ;; --- prologue: prime the pump for k=0 and k=1 ---
+        (prefetch-tile A (grid-y 0) :size (32 8))
+        (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (8 16))
+        (prefetch-tile A (grid-y 1) :size (32 8))
+        (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (8 16))
+        (load-tile A (ring-get A-ring 0) (grid-y 0))
+        (load-tile B (ring-get B-ring 0) (0 grid-x))
 
-      (tile-stride C C-tile (grid-y grid-x) 
-        
-        ;; ==========================================
-        ;; THE K-LOOP PIPELINE
-        ;; ==========================================
-        (let ((ring-idx 0))
-          (do-times (grid-k K)
-            (let ((next-k (+ grid-k 1))
-                  (prefetch-k (+ grid-k 2))
-                  (next-ring-idx (mod next-k pipeline-stages)))
+        (dotimes (grid-k n-k-steps)
+          (let ((next-k     (+ grid-k (to-ulong 1)))
+                (prefetch-k (+ grid-k (to-ulong 2))))
 
-              ;; 1. Issue prefetch for future K.
-              ;; This lowers to OpSubgroup2DBlockPrefetchINTEL (Fire and forget into L1)
-              (when (< prefetch-k K)
-                (prefetch-tile A (grid-y prefetch-k) :size (128 128))
-                (prefetch-tile B (prefetch-k grid-x) :size (128 128)))
+            ;; 1. prefetch a future K — lowers to OpSubgroup2DBlockPrefetchINTEL (into L1).
+            ;;    The guard is asserted uniform: a barrier lands inside it in the backward pass.
+            (let ((more-prefetch? (to-workgroup-uniform (< prefetch-k n-k-steps))))
+              (when more-prefetch?
+                (prefetch-tile A (grid-y prefetch-k) :size (32 8))
+                (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (8 16))))
 
-              ;; 2. Issue register load for the NEXT k.
-              ;; This lowers to OpSubgroup2DBlockLoadINTEL (L1 -> GRF).
-              ;; The hardware scoreboard tracks this dependency automatically.
-              (when (< next-k K)
-                (load-tile A (ring-get A-reg-ring next-ring-idx) (grid-y next-k))
-                (load-tile B (ring-get B-reg-ring next-ring-idx) (next-k grid-x)))
+            ;; 2. register load for the NEXT k — OpSubgroup2DBlockLoadINTEL (L1 -> GRF).
+            (let ((more-k? (to-workgroup-uniform (< next-k n-k-steps))))
+              (when more-k?
+                (load-tile A (ring-get A-ring (mod next-k (to-ulong 2))) (grid-y next-k))
+                (load-tile B (ring-get B-ring (mod next-k (to-ulong 2))) (next-k grid-x))))
 
-              ;; 3. Compute on the CURRENT k.
-              ;; DPAS executes against the 'ping' registers while the 'pong' registers are loading.
-              (mma-accumulate-via-tile (16 8 8) C-tile 
-                                       (ring-get A-reg-ring ring-idx) 
-                                       (ring-get B-reg-ring ring-idx))
-              
-              ;; 4. Swap buffers
-              (setf ring-idx next-ring-idx))))
-
+            ;; 3. DPAS on the CURRENT k while the other slot is still loading.
+            (mma-accumulate-via-tile (8 16 8) C-tile
+                                     (ring-get A-ring (mod grid-k (to-ulong 2)))
+                                     (ring-get B-ring (mod grid-k (to-ulong 2))))))
         :epilogue
-          (relu C-tile) 
-          (store-tile C-tile C (grid-y grid-x))))))
+        (store-tile C-tile C (grid-y grid-x))))))
 ```
+
+Three things in there are load-bearing and easy to get wrong:
+
+- **The slot index is `(mod grid-k 2)`, not a mutable counter.**  A register-ring slot must fold
+  to a compile-time integer — the GRF is not runtime-indexable — and `(mod <loop-var>
+  <ring-count>)` folds when the compiler unrolls the loop.  A `setf`-updated `ring-idx` does not.
+- **The MMA shape is `(8 16 8)`**, Intel XMX, not NVIDIA tf32 `(16 8 8)`.  It must match the
+  profile's `:mma-shapes`.
+- **Each guard gets its own `let` binding through `to-workgroup-uniform`.**  Bound in the
+  enclosing `let*` instead, ANF hoists the whole `when` into a value binding and the AD checker
+  reports a thoroughly misleading "`LOAD-TILE-AT` is not differentiable".
 
 ### Why this is the optimal shape for Intel
 
 No Warp Specialization: You don't need a producer/consumer warp split because the LSC data port and the Math/FPU data ports operate concurrently inside the same Xe Core. A single subgroup can issue the memory instructions and the math instructions without blocking itself (until the register is actually read).
 No Barriers: Intel's dependency tracking is managed in hardware via the register scoreboard. When `mma-accumulate-via-tile` executes, if `ring-idx 0` hasn't finished loading from the L1 cache, the thread simply sleeps.
 Register Pressure is the Only Limit: On NVIDIA, your pipelining depth is usually constrained by how much SLM you can allocate per block. On Intel, your pipeline depth is constrained by the physical size of the GRF (which is why `pipeline-stages` is set to 2 here—ping-ponging a 128x128 register tile consumes a massive amount of the GRF).
-
 
 
 ### Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile` ✅
@@ -1895,7 +1859,6 @@ The `:location` arg is a location into the `:topology` value. Or just use `:host
 The `:pipeline-stages` key is accepted by the `launch-kernel` and `launch-kernel-matrix-contract` forms. The number of tiles used by the kernel will be multiplied by the `:pipeline-stages`. The enqueue of the kernel is interleaved with tile retrieval. 
 
 
-
 Primitives
 -----------
 
@@ -1930,8 +1893,6 @@ For users who want to roll their own async operations and don't want topological
 
 (pgas-wait-until flag condition value) -> Lowers to shmem_wait_until.
 ```
-
-
 
 
 IMPORTANT NOTES
