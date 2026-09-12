@@ -114,7 +114,7 @@ It is an error to use this flag if a topology or orchestration is specifying a h
 
 ### Probing Hardware Profile
 
-While the hardware profile is powerful, were does it come from? The majority of the values can be probed.
+While the hardware profile is powerful, were does it come from? The majority of the values can be probed on the actual GPU hardware.
 Crisp has simple `query-l0.cpp` and `query-cuda.cu` that can be compiled and run and will output a `def-hardware-profile` definition for you. 
 
 See [scripts/hw-profile/README.md](scripts/hw-profile/README.md)
@@ -347,282 +347,67 @@ By declaring the exact physical residency, the compiler can evaluate the interco
 
 Once a `def-orchestration` is expanded to use a topology then the topologically aware `make-async-barrier` routine and all consumers of those barriers (`load-tile`, `store-tile`, `await` et al) are adjusted by the compiler. If the compiler sees that the data movement requires a simple address space transfer, then the LLVM-IR it lowers handles that. But if it determines that requires a transfer across the PGAS fabric, then it becomes that. Additionally, the kernel signature might be modified to accept an implicit `CUTensorMap`, if required. On the hoisting side, the python example code that is generated will demonstrate how to initialize data with NCCL/OneCCL scatter, launch kernels, initialize a `CUtensorMap` (if reuquired), move data with allreduce and gather.
 
-
 Clusters and Distributed Shared Memory
 --------------------------------------
 
-Workgroup clusters and Distributed Shared Memory (DSMEM) are performance features introduced by NVidia in their Hopper architecture (`sm_90` and later).  In contrast, Intel hardware uses prefetching directly to large GRF banks instead (discussed later).
+Workgroup clusters (NVIDIA Hopper `sm_90` and later) guarantee that a set of workgroups are co-resident on the same GPC. This enables **Distributed Shared Memory (DSMEM)** and **multicast tile loads**, allowing a single `load-tile` to populate the shared memory of multiple workgroups.
 
-### What a cluster is, and what it buys you
+*Note: Larger clusters constrain the hardware scheduler. A cluster of 2 has minimal overhead, while 4 or 8 can incur significant scheduling penalties unless the kernel is strictly fetch-limited.*
 
-Ordinarily a workgroup's shared memory is private: no other workgroup can see it, and the hardware
-gives you no way to co-ordinate with a neighbour except by going all the way out to global memory.
-A **cluster** relaxes exactly that.  It is a small group of workgroups — two, four, or eight — that
-the hardware guarantees are resident *at the same time on the same GPC*, and which can therefore
-see one another's shared memory.  That shared window across the group is what NVidia calls
-**Distributed Shared Memory**.
+#### `cluster-size` ✅
 
-Two capabilities follow, and everything else in this section is a consequence of one of them:
-
-1. **A workgroup can reach a peer's shared memory** — so a barrier can be released by another
-   workgroup ([`:mode :cluster`](#mode)), and a `sync-cluster` can rendezvous the whole group.
-2. **One fetch can serve the whole group** — a single `load-tile` can pull a tile from global
-   memory *once* and have the hardware deliver it into every member's shared memory
-   ([`:multicast`](#multicast)).  In a matrix multiply, workgroups in the same cluster row want
-   byte-identical `B` tiles, so the traffic for that operand falls by the size of the group.
-
-The second is the reason most kernels reach for a cluster at all.
-
-### The honest part: it is not free, and it does not always pay
-
-A cluster constrains the scheduler.  Its workgroups must be co-resident on one GPC, so the more
-of them there are, the less freedom the hardware has to place them.  Measured on an H100:
-a cluster of **two costs nothing** (0.97–1.01× against the same kernel with no cluster), while a
-cluster of **four can cost a great deal** — as much as 0.58× at a problem size where the grid
-exactly fills the machine, and that penalty is paid whether or not you multicast anything.
-
-Multicast has its own applicability rule, and it is narrower than it first appears.  It pays only
-when **both** of these hold:
-
-* **the machine is saturated** — below full occupancy there is no contention for memory bandwidth
-  to relieve, so multicast is pure overhead; and
-* **the kernel is fetch-limited rather than compute-limited** — a well-pipelined kernel that
-  already hides its loads behind computation is not waiting on the fetch that multicast makes
-  cheaper, while multicast's bookkeeping is on the critical path regardless.
-
-Both conditions are easy to miss.  The same `:multicast true` that wins **+15.7%** on a 64×128
-tile at N=2048 *loses* **7–10%** on a 64×256 tile that is equally saturated but has enough
-arithmetic per byte to hide its loads.  There is a worked measurement of both sides in
-`benchmarks/matmul/chap4_cluster_multicast/cluster-multicast.md`.
-
-The practical advice: **reach for a cluster of two before a cluster of four**, and treat
-`:multicast` as something to measure rather than something to assume.  Crisp is built so that
-measuring it is a one-keyword change with everything else held fixed.
-
-### Declaring it
-
-If targeting modern NVidia architectures and hoping to exploit clusters and DSMEM you will want
-your kernel to declare this.
-
-### cluster-size ✅
-
-```
+```lisp
 (cluster-size &key set-to msg)
-```
 
 ```
-(declare (cluster-size :set-to 2))       ; 2 workgroups along axis 0 (rows)
+
+Declares how many **workgroups** (not threads) make up a cluster, and in what shape.
+
+```lisp
+(declare (cluster-size :set-to 2))       ; 2 workgroups along axis 0
 (declare (cluster-size :set-to (2 1)))   ; identical, written explicitly
 (declare (cluster-size :set-to (2 2)))   ; a 2x2 cluster — 4 workgroups
+
 ```
 
-A **workgroup cluster** is a set of workgroups that the hardware guarantees will be
-co-resident and co-scheduled, close enough to one another that they can address each
-other's local memory and participate in a shared barrier. `cluster-size` declares how
-many workgroups make up one cluster, and in what shape.
+#### Semantics and Multicasting
 
-> **The value is a count of WORKGROUPS, not threads.** Every sibling declaration in this
-> family — `global-size`, `local-size` — is measured in threads. This one is not.
-> `(cluster-size :set-to 2)` means *two workgroups*, however many threads each of those
-> contains. Writing `(cluster-size :set-to 256)` is not a large cluster; it is a request
-> the hardware will refuse.
+While `cluster-size` makes multicasting physically possible, **individual loads must explicitly opt-in using the `:multicast true` flag on `load-tile`.** Without a declared cluster, requesting `:multicast` is a compile error.
 
-#### Why you would declare one
+* **Axes follow `:tile-shape`:** Axis 0 tracks dimension 0. For a row-major output tile, axis 0 is rows, axis 1 is columns.
+* **Automatic Multicast Inference:** You do not manually specify which operand clusters in which direction. The compiler derives the multicast group by reading each load's tile coordinates against the clustered axes. If a load's coordinates do not vary along a clustered axis, that load is multicast across that axis.
+* **Rank Agreement:** The rank of `cluster-size` must match `:tile-shape`.
 
-Two capabilities become available to a kernel once its workgroups are clustered:
-
-1. **Distributed Shared Memory (DSMEM)** — a workgroup can read and write the `:local`
-   memory of its cluster peers, and `sync-cluster` becomes meaningful across more than
-   one workgroup.
-2. **Multicast tile loads** — when several workgroups in a cluster need the *same* tile,
-   the hardware can fetch it from global memory once and deliver it into every one of
-   their local memories simultaneously. For a tiled matrix multiply this cuts the global
-   traffic for the shared operand by the cluster's extent along the axis that operand
-   does not depend on.
-
-The second is the reason `cluster-size` exists at all today. `cluster-size` makes multicast
-*possible*; an individual load asks for it with [`:multicast`](#multicast) on `load-tile`.
-You never write a destination mask or elect an issuing workgroup — the compiler derives
-both — but you do say which loads you expect to multicast, so that a load which cannot is
-a compile error rather than a silent doubling of bandwidth.
-
-#### Axes follow `:tile-shape`
-
-The axis order is the same one `:tile-shape` uses: **axis 0 tracks dimension 0**. For a
-row-major output tile grid that means axis 0 is rows and axis 1 is columns — the opposite
-of the CUDA `x = columns` convention. This is not a matter of taste; see the measurement
-under [:tile-shape](#tile-shape), where getting it backwards cost ~1.3x.
-
-So for a matrix multiply that wants its two workgroups to share the `B` operand:
+**Example:**
 
 ```lisp
 (declare (global-size :derive-from C :strategy :strided :tile-shape (64 256))
          (cluster-size :set-to (2 1)))    ; 2 workgroups along ROWS
-```
 
-Both workgroups sit at the same column position and differ only by row, so both need the
-same columns of `B` and different rows of `A`. `B` is therefore multicast and `A` is not.
-
-#### A 2-D cluster multicasts BOTH operands
-
-A 1-D cluster can only ever help one operand, and the shape above shows why: it halves `B`'s
-traffic and does nothing for `A`. A matmul is symmetric in this respect --
-
-    C[m,n] = sum_k A[m,k] * B[k,n]
-
-`A` does not depend on `n`; `B` does not depend on `m`. So a cluster laid out over BOTH axes
-lets each operand be fetched once per group instead of once per workgroup:
-
-```lisp
-(declare (global-size :derive-from C :strategy :strided :tile-shape (64 256))
-         (cluster-size :set-to (2 2)))    ; 4 workgroups: 2 rows x 2 columns
-```
-
-Every workgroup in a cluster ROW wants the same `A` tile; every workgroup in a cluster COLUMN
-wants the same `B` tile. Those are different sets of workgroups, which is exactly why the
-group is a property of the LOAD rather than of the cluster.
-
-**You do not declare which operand groups which way.** The compiler reads each load's tile
-coordinates against the enclosing `tile-stride` variables: a coordinate list that does not
-mention an axis's variable is invariant along that axis, and the invariant axes ARE the
-multicast group. In
-
-```lisp
-(load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier ... :multicast true)
+;; In the kernel body:
+(load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier ... )
 (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier ... :multicast true)
-```
-
-`A`'s coordinates never mention `grid-x` and `B`'s never mention `grid-y`, so the two loads
-receive orthogonal groups from one rule. A load whose coordinates vary along *every* clustered
-axis has no group and is refused -- multicasting it would deliver one workgroup's tile to
-another.
-
-Cluster extents need not be equal: `(4 2)` is eight workgroups in a 4-row by 2-column
-arrangement. Eight is the largest cluster CUDA guarantees portably; larger is opt-in per
-architecture.
-
-The rank of `cluster-size` must agree with the rank of `:tile-shape`, exactly as
-`global-size` and `local-size` must agree in arity with each other. Axes beyond the
-declared rank are 1. A scalar is shorthand for a rank-1 value, following
-`(local-size :set-to 256)`.
-
-`cluster-size` is permitted on a kernel with no `:tile-shape`, but there is then no tile
-grid for the compiler to reason about, so `:multicast` cannot be honoured and is refused.
-The declaration still enables DSMEM and a cluster-wide `sync-cluster`, which may be all
-you want.
-
-#### This declaration DOES affect the compiled kernel
-
-Every other declaration in this family is advisory: it shapes the hoisting code Crisp
-generates and leaves the kernel itself untouched. **`cluster-size` is not advisory.** It
-determines:
-
-- whether a `load-tile` **may** multicast at all (an individual load still asks with
-  [`:multicast`](#multicast); without a cluster, that request is a compile error)
-- the multicast destination mask
-- which workgroup in each multicast group issues the load
-- whether the compiler emits the cluster entry and exit fences (see
-  [sync-cluster](#sync-cluster))
-
-Because the compiler needs the shape at code generation time, the cluster dimensions are
-also recorded in the generated PTX, which makes the host/kernel agreement something the
-driver enforces at launch rather than a convention the hoisting code is trusted to honor.
-
-Two things follow from this that are worth stating plainly:
-
-- **There is no `:derive-from`.** A shape that is baked into code generation cannot be
-  computed from a host-side runtime value.
-- **A silent fallback would be a performance trap.** See *Degradation* below.
-
-#### Limits and divisibility
-
-**Cluster extent.** The portable maximum is 8 workgroups per cluster. Larger clusters are
-supported on some parts (16 on Hopper) but require an explicit opt-in and are not portable
-across devices; Crisp treats anything above 8 as requiring that opt-in.
-
-> Measured on an H100 PCIe: a cluster of 8 launches; a cluster of 16 fails with
-> `cudaErrorInvalidClusterSize`; a cluster of 16 succeeds once
-> `cudaFuncSetAttribute(k, cudaFuncAttributeNonPortableClusterSizeAllowed, 1)` has been set.
-> Larger clusters also reduce the number of blocks that can be resident, which is the
-> scheduling cost behind the guidance below.
-
-For a tiled matrix multiply, small is the point. A 2-workgroup cluster already collects the
-entire traffic reduction on the shared operand, and larger clusters constrain the scheduler
-— every workgroup in a cluster must be placed together, so a wide cluster quantizes badly
-against the machine and can cost more in scheduling than it recovers in bandwidth.
-
-**Divisibility.** The grid dimensions must be divisible by the cluster dimensions. Under
-`:tile-shape` the grid is `CEIL(extent[k] / tile_shape[k])`, which is derived from the
-*problem*, so divisibility is not automatic. A 4096-row problem in 64-row tiles gives 64
-row-tiles and divides evenly by 2; a 320-row problem gives 5 row-tiles and does not.
-
-Crisp handles the two strategies differently, mirroring the split already described under
-[Device dispatch limits](#device-dispatch-limits--where-strided-and-exact-genuinely-differ):
-
-- **`:strided`** — the grid is **padded** up to a multiple of the cluster dimensions and
-  the fact is noted in the hoisting comments. The extra workgroups find no tiles left to
-  claim and exit; the `tile-stride` loop guarantees every tile is still covered. The cost
-  is a small amount of wasted dispatch, not correctness.
-- **`:exact`** — there is no stride loop, so a padded workgroup would have no tile and a
-  truncated grid would silently skip one. A grid that is not divisible by the cluster
-  dimensions is therefore a hard **error**, naming both the tile shape and the cluster
-  shape that conflict.
-
-**This is enforced by the driver, per axis, as a hard launch error** — measured on an H100 PCIe
-(sm_90, CUDA 12.4) via `cudaLaunchKernelEx`:
-
-| grid | cluster | launch result |
-|---|---|---|
-| `(4,1,1)` | `(2,1,1)` | `cudaSuccess` |
-| `(3,1,1)` | `(2,1,1)` | **`cudaErrorInvalidClusterSize`** |
-| `(4,3,1)` | `(2,2,1)` | **`cudaErrorInvalidClusterSize`** (the y axis) |
-
-Not a warning, not a silent clamp — a non-divisible grid simply does not launch.  So the policy
-above is not a preference between two workable options: *something* has to happen, and padding
-is the only one of the two that leaves `:strided` correct.
-
-#### Degradation
-
-Clusters require NVIDIA Hopper (`sm_90`) or later. On earlier NVIDIA architectures and on
-Intel there is no equivalent, and the cluster extent collapses to 1.
-
-Unlike [sync-cluster](#sync-cluster) — where degrading to `sync-workgroup` is semantically
-exact and costs nothing — **degrading `cluster-size` is not free**. The kernel still
-computes the correct answer, but every multicast becomes an ordinary per-workgroup load
-and the traffic reduction that motivated the declaration is gone. Nothing about the result
-reveals this.
-
-Crisp therefore does not degrade silently: a kernel declaring `cluster-size` for a target
-without cluster support emits a diagnostic, and the effective cluster extent is recorded
-in the kernel's metadata so a test or a benchmark harness can assert on it rather than
-inferring it from a timing number.
-
-> **A clustered *matmul* is nevertheless NVIDIA-only, and for a different reason.**  The
-> degrade above is not the whole story: a multicast pipeline also carries a
-> [`:mode :cluster`](#mode) barrier ring, and `:cluster` — like `:block` before it — is a hard
-> **compile error** on SPIR-V, not a degrade.  So such a kernel does not run slower on Intel;
-> it does not build there.
->
-> The two behaviours are deliberate and follow existing precedent.  `cluster-size` is launch
-> geometry and harmless on its own, so it degrades — exactly as `local-size` does not error
-> merely because a device cannot honour the value you asked for.  A `:cluster` barrier is an
-> object that cannot exist on the target, so it errors — exactly as `:block` already does.
-
-#### Interaction with other declarations
-
-- **`:tile-shape`** — supplies the axis vocabulary and the grid whose divisibility is
-  constrained. Required before any `:multicast` load can be honoured.
-- **`:occupancy`** — does not apply. `:occupancy` scales the occupancy-sized `:strided`
-  grid, which is only used when no `:tile-shape` is present; a cluster without a tile
-  shape performs no multicast.
-- **`local-size`** — independent. Cluster extent counts workgroups; `local-size` sizes
-  each one.
-- **`num-groups`** — a `:max` constraint must still be satisfied after the grid is padded
-  to a cluster multiple.
-
-#### Example
 
 ```
+
+Because the cluster spans rows (axis 0), both workgroups compute the same columns. The `B` operand (dependent only on `grid-x`) is invariant across the cluster and is safely multicast. `A` varies across the cluster, so requesting `:multicast true` on it would be rejected by the compiler.
+
+#### Constraints and Fallbacks
+
+Unlike `global-size` or `local-size`, `cluster-size` is **not advisory**. It alters PTX code generation, multicast masks, and cluster entry/exit fences.
+
+* **No Runtime Derivation:** Because it dictates code generation, `:derive-from` is not permitted.
+* **Maximum Size:** The portable CUDA limit is **8 workgroups**. Larger shapes (e.g., 16) require device-specific opt-ins and will fail portably.
+* **Grid Divisibility:** The grid dimensions must be cleanly divisible by the cluster dimensions. The driver enforces this as a hard launch error. Crisp handles this based on your global strategy:
+* **`:strided`**: The compiler safely pads the grid to a cluster multiple. Excess workgroups exit early.
+* **`:exact`**: No stride loop exists. Indivisible grids throw a hard compile error naming the conflict.
+
+
+* **Target Degradation:** On Intel or pre-Hopper NVIDIA hardware, the cluster extent drops to `1`. Multicast loads silently degrade to standard per-workgroup loads. Crisp emits a diagnostic when this occurs. *(Note: While `cluster-size` degrades gracefully, relying on a `:mode :cluster` barrier is a compile error on SPIR-V).*
+
+#### Full Example
+
+```lisp
 ;; -- matmul --
 ;; 64x256 output tiles, two workgroups per cluster stacked along rows.
 ;; Both workgroups in a cluster need the same 256 columns of B, so B is
@@ -632,13 +417,15 @@ inferring it from a timing number.
            (local-size   :set-to 160)
            (global-size  :derive-from C :strategy :strided :tile-shape (64 256))
            (cluster-size :set-to (2 1) :msg "share the B tile across the row pair"))
+  
+  ...
+  ;; B is multicast across the 2-workgroup cluster
+  (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier b-bar :multicast true)
   ...)
+
 ```
 
-#### `:msg`
 
-As with `global-size` and `local-size`, `:msg` takes a string that is emitted as a comment
-at the point where the hoisting code configures the cluster dimensions.
 
 
 Topologically Aware Async
@@ -919,70 +706,51 @@ Because b1 and b2 have separate, dedicated signal flags in memory, b1 can safely
 "sync" - thread synchronization. collective waiting
 "semaphore"  - individual waiting.  Used primarily for interop, but useful in-kernel too.
 
-### Sync Operations
+### Sync Operations ✅
 ```
 (sync-cluster)
-(sync-workgroup) ✅
+(sync-workgroup)
 (sync-warp)
 
 
-(make-arrival-sync <count>) => sync-handle
+(make-arrival-sync <count>) => sync-handle 
 (sync-arrive sync-handle) => nil
 (sync-wait sync-handle) => nil
 ```
 
 #### sync-cluster ✅
 
+```lisp
+(sync-cluster)          ; arrive + wait, ordered. The safe default. ✅
+
+;;  - OR - (📝 NOT IMPLEMENTED YET)
+(sync-cluster :arrive)  ; non-blocking: "I'm here"
+(sync-cluster :wait)    ; block until all CTAs have arrived
+
 ```
-(sync-cluster)          ; arrive + wait, ordered.  The safe default.
 
-;;  - OR -
+`sync-cluster` acts as a global barrier for the entire workgroup cluster. It blocks until every thread in every workgroup within the cluster has arrived, ensuring all Distributed Shared Memory (DSMEM) operations are complete and visible.
 
-(sync-cluster :arrive)  ; non-blocking: "I'm here"        📝 NOT IMPLEMENTED
-(sync-cluster :wait)    ; block until all CTAs have arrived  📝 NOT IMPLEMENTED
-```
+* **Intra-workgroup included:** `sync-cluster` intrinsically synchronizes threads *within* the workgroup as well. You do not need to issue a separate `sync-workgroup`.
+* **Divergence:** Placing `sync-cluster` inside a divergent control flow (`if`, `cond`, or warp specialization) guarantees a deadlock. Crisp detects this statically and will throw a compile error.
+* **Target Degradation:** On Intel hardware, pre-Hopper NVIDIA hardware, or if the kernel does not declare a `cluster-size` (effective cluster size of 1), this operation gracefully degrades to a standard `sync-workgroup`.
 
-> **The split form is a design sketch, not shipped.**  `(sync-cluster)` — the fused, ordered
-> default — is implemented.  The `:arrive` / `:wait` split is not, and the reason is the list of
-> restrictions below rather than the lowering, which would be trivial (the two halves of the same
-> fence).  Honouring those restrictions means four static analyses — unpaired or nested `:arrive`,
-> divergent placement, peer access inside the window, and returning before the `:wait` — and a
-> cluster rendezvous is subtle enough to hang a GPU, so shipping the split form without its guards
-> would be worse than not shipping it.  It will be built when a kernel needs it.
+#### Split-Phase Execution (Design Sketch) 📝
 
-`sync-cluster` makes every thread in the workgroup cluster wait until they have all arrived at the same point.
+The split `:arrive` / `:wait` form allows threads to announce their arrival and do independent work before blocking. It is currently **not shipped**, pending the static analysis required to enforce its strict safety rules.
 
-The default usage `(sync-cluster)` is simple and direct. It both announces that the thread is participating with other threads in the cluster and has completed any DSMEM (Distributed Shared Memory) operations and then waits for other threads to catch up.  Rather than going those two at once it is possible to split and use `(sync-cluster :arrive)` to make the announcement and then perform the actual wait `(sync-cluster :wait)` later. BUT, if you do this there are certain limitations that must be observed:
-- the `:arrive` MUST be paired with a `:wait` and these CANNOT nest. (one pair at a time).
-- `return` or otherwise exiting a routine between `:arrive` and `:wait` is disallowed.
-- reading or writing to a cluster peers SMEM between `:arrive` and `:wait` is discouraged.
-- modifying `:local` memory that was DSMEM published will likely result in a race and should be discouraged. This may not always be detectable by the compiler. Be wary of Crisp routines that modify local memory like `load-tile` and `load-local`
+When implemented, the compiler will enforce the following restrictions:
 
-The compiler refuses the violations it can detect statically - unpaired or nested `:arrive`, divergent placement, peer access in the window, and returning before the `:wait`. It cannot detect every case of the last restriction; absence of an error is not proof of correctness.
-
-Cluster synchronization is a NVidia feature that requires the Hopper architecture (`sm_90` or later).  If `sync-cluster` is used with earlier architectures or on Intel it simply degrades to `sync-workgroup`.  Note also if a kernel is not explicitly enqueued with a cluster specified then the cluster count is 1, meaning it is functionally exactly the same as `sync-workgroup`.
-
-> **Verified, not assumed.**  The equivalence above holds only if the cluster barrier also
-> rendezvouses the threads *within* a workgroup.  It does: NVIDIA's own
-> `cooperative_groups::cluster_group::sync()` is implemented as `barrier_arrive(); barrier_wait();`
-> with no `__syncthreads()` anywhere, and compiling it emits exactly `barrier.cluster.arrive;`
-> + `barrier.cluster.wait;` — no `bar.sync`.  Since Cooperative Groups documents `sync()` as
-> rendezvousing *all threads in the group*, and a cluster group's threads are all threads of all
-> its workgroups, the cluster barrier must cover intra-workgroup convergence.  Crisp therefore
-> emits no implicit `sync-workgroup` alongside it.  (CUDA 12.4 headers; PTX checked on sm_90a.)
->
-> The same check settled the `:relaxed` question: NVIDIA's default `cluster.sync()` emits the
-> **non-relaxed** form, which is the same default Crisp uses.
-
-Like many sync operations, using `sync-cluster` in a divergent context (`if`, `cond`, or warp specialization block) can lead to deadlocks. Crisp will emit a compilation error if it encounters this situation. 
+- An `:arrive` must be exactly paired with a `:wait`. They cannot nest.
+- You cannot `return` or exit the routine between the two phases.
+- Reading or writing to a cluster peer's shared memory within the window is unsafe.
+- Modifying your own published `:local` memory within the window (e.g., via `load-tile` or `load-local`) risks a race condition and is highly discouraged, as the compiler cannot statically catch every violation.
 
 
-
-
-#### sync-workgroup
+#### sync-workgroup ✅
 
 ```lisp
-(sync-workgroup)          ; arrive + wait, ordered.  The safe default.
+(sync-workgroup)          ; arrive + wait, ordered.  The safe default.  ✅ All
 
 ;; --- the split form, SPIR-V only --------------------------------------------
 (sync-workgroup :arrive)  ; non-blocking: "I'm here"                    ✅ Intel
@@ -1026,25 +794,16 @@ absence of an error is not proof of correctness for those two.
 `SPV_INTEL_split_barrier` is requested only by modules that actually use the split form, so a kernel
 that never splits does not oblige the driver to support the extension.
 
-> **PTX refuses rather than approximating.** NVIDIA's `bar.arrive` / `bar.sync` are not the same
-> rendezvous, so compiling either half for `--ir-target=ptx` is a compile error naming the backend.
+> **PTX refuses rather than approximating.** NVIDIA has it but requires a participant count Crisp cannot currently guarantee, so compiling either half for `--ir-target=ptx` is a compile error naming the backend.
 > Use the fused `(sync-workgroup)` there.
 
-> **Shipped and measured is not the same as recommended.** On Arc B580 the split form does what it
-> claims — at 16 subgroups it turns a fused barrier's 14.7% throughput loss into a 1.8% one, because
-> the stall was the expense and splitting removes the stall. But at that width the fastest kernel is
-> the one with **no barrier at all**, and at 4 subgroups, where pacing does pay, the *fused* form
-> beats the split one. There is currently no measured configuration where the split form is the right
-> choice on Intel. It is here because the scope ladder should be complete and because the mechanism
-> is now testable — not as a performance recommendation. See
-> `tests/spec/157-split-barrier/157-split-barrier.md` for the full matrix.
 
-#### sync-warp
+#### sync-warp ✅
 
 (sync-warp): Implemented via `__builtin_shflsync(0xFFFFFFFF, 0)`.
 
 
-#### Sync on Arrival
+#### Sync on Arrival ✅
 
 (make-arrival-sync count) : A thread-count barrier. Returns a handle used by the consumer to block until `count` threads have called (sync-arrive). Implementation uses a global atomic counter.
 
@@ -1052,7 +811,7 @@ that never splits does not oblige the driver to support the extension.
 (sync-wait sync-handle) : blocks until "count" units have been put into the sync bucket.
 
 
-### Semaphore Operations
+### Semaphore Operations 📝
 ```
 (make-semaphore :address-space :global/:local :initial-value <int> :scope :system/:device) => sema
 (semaphore-release sema new-value)

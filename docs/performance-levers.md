@@ -65,7 +65,23 @@ are different algorithms wearing the same shape.
 | **Altitude** | `wgmma-accumulate-via-tile` + `make-wgmma-accumulator` vs `mma-accumulate-via-tile` + `make-register-tile` | Warpgroup MMA issues one instruction across **128 threads (4 warps)**. The accumulator is a warpgroup object, not a per-thread register tile. |
 | **wgmma Shape** | `(wgmma-accumulate-via-tile (M N K) D A B)` | **M is always 64** — that is what a warpgroup is. `N` must be a multiple of 8 in `[8, 256]`. `K` is 8 for tf32, 16 for fp16/bf16. Checked against the profile's `:wgmma-shapes` when it declares them, otherwise against the sm_90a rules. |
 | **N width** | the `N` in the shape and the accumulator | The arithmetic-intensity knob. Wide `N` (256) buys reuse at large problem sizes; it costs registers, so it trades against ring depth. |
-| **Hopper-only** | `--ir-target-arch=sm_90` | wgmma and TMA are Hopper-class features; they do not exist on earlier architectures, so a wgmma kernel is not portable down. The shapes are validated at compile time, so an illegal one is an error rather than a silent fallback. Note that a *reference* or host compile placed alongside such a kernel may itself need `nvcc -arch=sm_90a`. |
+| **Hopper-only** | `--ir-target-arch=sm_90` | Request plain `sm_90`; Crisp emits `.target sm_90a` for you (see below). wgmma and TMA do not exist on earlier architectures, so a wgmma kernel is not portable down. Shapes are validated at compile time, so an illegal one is an error rather than a silent fallback. |
+
+> **`sm_90` in, `sm_90a` out — and you never type the `a`.**
+> Hopper's *architecture-specific* instructions — `wgmma.mma_async` and TMA's
+> `cp.async.bulk.tensor` — are **not** in plain `sm_90`. NVIDIA gates them behind the `a`
+> target variant precisely because they are not forward-compatible: `sm_90a` PTX is not
+> guaranteed to JIT onto a future architecture, so it cannot live in the portable target.
+> PTX that contains wgmma but declares `.target sm_90` is rejected at `cuModuleLoad`.
+>
+> Crisp handles this: a bare `sm_90` request is upgraded to `sm_90a` when the PTX target
+> string is built, so `--ir-target-arch=sm_90` produces `.target sm_90a`. That is why
+> `sm_90a` is **not** a Crisp architecture you can select — it is an output, not an input —
+> while appearing all over the source comments as the rule source for shape validation. An
+> explicit `sm_90a` or `sm_90f` passes through unchanged if you do write one.
+>
+> The one place the suffix is yours to supply is a **separate host or reference compile**
+> sitting next to such a kernel, which may need `nvcc -arch=sm_90a` of its own.
 
 > **There is no fp64 wgmma.** Warpgroup MMA covers fp16/bf16/tf32/fp8/int8 only, so a double-precision
 > kernel tops out at the fragment path. This is a hardware fact, not a Crisp gap.
