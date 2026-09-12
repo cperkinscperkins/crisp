@@ -10889,6 +10889,41 @@ For a forward kernel with scalar inputs and outputs:
 - Outgoing adjoints (A_grad, B_grad): The computed input gradients,
   populated via the chain rule.
 
+##### Promoted adjoint types ✅
+
+An adjoint does not always carry its primal’s type.  Where it differs, the adjoint is
+**promoted** — it holds a wider float than the value it is the gradient of:
+
+| primal element | adjoint element | why |
+| :--- | :--- | :--- |
+| `half`, `bfloat16` | `float` | 16-bit weights, 32-bit gradients (see below) |
+| `long`, `ulong` | `double` | an integer has no gradient of its own type |
+| smaller integers | `float` | likewise |
+| `float`, `double` | unchanged | already wide enough |
+
+**16-bit weights, 32-bit gradients.**  When a kernel’s inputs are `half` or `bfloat16`, its
+backward kernel’s gradient values are `float`.  This is the industry-standard arrangement —
+PyTorch’s AMP keeps fp32 master gradients for fp16 forward weights — and Crisp applies it at
+both altitudes where an adjoint lives: the kernel-boundary `<param>_GRAD` slots the host
+allocates, and the operand adjoint tiles in shared memory that accumulate contributions before
+the gradient scatter.
+
+Either of two reasons would be sufficient on its own:
+
+- **Precision.**  A gradient element accumulates one contribution per `(m, n)` pair.  fp16
+  carries roughly three decimal digits, so summing hundreds of terms into it loses far more
+  than the forward pass ever does.
+- **The scatter must be an fp32 atomic.**  A half-typed `atomicrmw fadd` obliges the module to
+  declare `SPV_EXT_shader_atomic_float16_add`, and IGC’s SPIR-V reader refuses to *load* a
+  module that declares it — so on Intel the kernel does not run at all.
+
+> **ABI consequence.**  A 16-bit kernel’s backward writes **fp32** gradient buffers, so a host
+> allocating them must size for **4 bytes per element**, not 2.  That is the intended
+> consequence of the rule, not an implementation detail.
+
+`float` and tf32 kernels are unaffected — a 32-bit float is not narrow, so their backward
+signatures are byte-for-byte what they have always been.
+
 ##### Records at the kernel boundary
 
 A record parameter is destructured into one `&out` grad-cell per leaf field.
@@ -12196,6 +12231,30 @@ gradient-inert shape query, so it costs nothing under `--differentiate`.
 ```
 `fill-tile` can be used with any tensor, (vectors, matrices, etc). It simply fills it with a value.
 It is a simple cooperative workgroup operation (it usually uses `workgroup-stride` under the covers) and is intended, as named, to be used on simple tiles.  For a very large tensor, use one of the other strides to implement your own.  Note: for register tiles (`make-register-tile`) it gets unrolled per fragment. Quite performant. 
+
+
+### Autodiff ✅
+
+The MMA forms differentiate.  `--differentiate` walks a tile-level matrix multiply and emits a
+backward kernel like any other, and because the VJP selects its own lowering the rule holds at
+every altitude these forms are written at — from `matrix-multiply-tile-stride` down to a
+hand-rolled fragment loop.  The exception is Hopper’s `wgmma-accumulate-via-tile`, which is
+forward-only.
+
+**For `half` / `bfloat16` operands, the backward kernel’s gradient values are `float`.**  The
+general rule and its ABI consequence — a host must size 16-bit gradient buffers at 4 bytes per
+element — are under
+[Promoted adjoint types](#promoted-adjoint-types) in the Auto Differentiation section.
+
+**The backward still issues 16-bit MMA.**  That promotion covers adjoint *storage*, not the
+matrix multiply.  The operands the backward feeds to the tensor cores — `dC`, `Aᵀ`, `Bᵀ` — take
+their element type from the forward tile, so they stay 16-bit and the backward keeps the same
+tensor-core path, the same shapes, and the same lowering the forward used.  A 16-bit kernel does
+not quietly become an fp32 kernel when you differentiate it.
+
+Verified on metal: `tests/spec/163-autodiff-revisit/01-fp16-mma-gradient-bmg.crisp` checks a
+16-bit MMA gradient against a real number on an Arc B580 — analytical 1.2000704 against an
+expected 1.2.
 
 
 ## Matrix Multiplication Optimization — Two Vendor Arcs

@@ -778,12 +778,12 @@ MMA
 [x] src has duplicate var names *hardware-profile-schema* and others
 [ ] the spill warning might be a little eager on Intel. Not sure about Nvidia. We should revisit
 - Documentation Shortcomings
-- [ ] :operand  
-- [ ] :warps
+- [x] :operand  
+- [x] :warps
 - [x] make-register-tile-ring
-- [ ] need to document register-fragment, including make-register-fragment and store-fragment.
-- [ ] move MMA out of topology.md into main docs
-- [ ] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
+- [x] need to document register-fragment, including make-register-fragment and store-fragment.
+- [x] move MMA out of topology.md into main docs
+- [x] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
 - [ ] A|D of 16-bit results in a 32 bit gradient. (Like PyTorch AMP).  Document.
 - [x] sync-workgroup is labelled as supported on Intel, but no note for NVidia.
 - [x] performance-levers.md <-- needs serious rework
