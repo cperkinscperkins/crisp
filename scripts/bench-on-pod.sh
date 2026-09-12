@@ -267,7 +267,10 @@ case "${BENCH}" in
     ## --chapters= (optional) restricts the ladder.  A fused-epilogue session does not need
     ## chap0/chap1/chap1.5/chap2 re-measured at 8192 — those are slow, known, and dominate
     ## the wall time.  Empty means the whole ladder, as before.
-    python3 scripts/crisp_bench/matmul.py --sizes=${SIZES} --iters=${ITERS} --sweep-all ${CHAPTERS_ARG} ${SCRATCH_ARG}
+    ## --auto-profile: RunPod rarely offers the same part twice (PCIe / NVL / SXM / H200).  A device with a
+    ## validated builtin profile still uses it; any other part gets a profile QUERIED on the pod by
+    ## scripts/hw-profile/query-cuda.cu instead of the sweep refusing on its first line.
+    python3 scripts/crisp_bench/matmul.py --sizes=${SIZES} --iters=${ITERS} --sweep-all --auto-profile ${CHAPTERS_ARG} ${SCRATCH_ARG}
     ;;
 esac
 RUNBENCH
