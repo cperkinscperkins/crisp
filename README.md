@@ -74,46 +74,47 @@ The first is a MMA kernel that is optimized for Intel hardware. For matrices aro
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
            (global-size :derive-from C :strategy :strided)
-           (local-size :set-to 16))
-  (let ((K      (inner-dimension A B))
-        (n-k-steps (/ (inner-dimension A B) 8ul)))
+           (local-size :set-to 16))                       ; Intel MMA wants a subgroup of 16
+  (let ((n-k-steps (/ (inner-dimension A B) (to-ulong 8))))
 
     (tile-stride C (32 32) (grid-y grid-x)
+      ;; Ping-pong REGISTER double buffering — make-register-tile-ring, not a scratch ring.
+      ;; Operand tiles are M x K and K x N, so A and B have different shapes.
       (let ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
             (B-ring (make-register-tile-ring float (8 32) :ring-count 2 :operand :b))
             (C-tile (make-register-tile float (32 32) 0.0)))
-      
-      ;; Prologue
-      (prefetch-tile A (grid-y 0) :size (32 8))
-      (prefetch-tile B (0 (* grid-x 2ul)) :size (8 16))
-      (prefetch-tile B (0 (+ (* grid-x 2ul) 1ul)) :size (8 16))
-      (prefetch-tile A (grid-y 1) :size (32 8))
-      (prefetch-tile B (1 (* grid-x 2ul)) :size (8 16))
-      (prefetch-tile B (1 (+ (* grid-x 2ul) 1ul)) :size (8 16))
-      (load-tile A (ring-get A-ring 0) (grid-y 0))
-      (load-tile B (ring-get B-ring 0) (0 grid-x))
 
-      (dotimes (grid-k n-k-steps)
-        (let ((next-k (+ grid-k 1ul))
-              (prefetch-k (+ grid-k 2ul)))
-          
-          ;; 1. Issue prefetch for future K.
-          (when (< prefetch-k n-k-steps)
-            (prefetch-tile A (grid-y prefetch-k) :size (32 8))
-            (prefetch-tile B (prefetch-k (* grid-x 2ul)) :size (8 16))
-            (prefetch-tile B (prefetch-k (+ (* grid-x 2ul) 1ul)) :size (8 16)))
+        ;; --- prologue: prime the pump for k=0 and k=1 ---
+        (prefetch-tile A (grid-y 0) :size (32 8))
+        (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (8 16))
+        (prefetch-tile A (grid-y 1) :size (32 8))
+        (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (8 16))
+        (load-tile A (ring-get A-ring 0) (grid-y 0))
+        (load-tile B (ring-get B-ring 0) (0 grid-x))
 
-          ;; 2. Issue register load for the NEXT k.
-          (when (< next-k n-k-steps)
-            (load-tile A (ring-get A-ring (mod (+ grid-k 1ul) 2ul)) (grid-y next-k))
-            (load-tile B (ring-get B-ring (mod (+ grid-k 1ul) 2ul)) (next-k grid-x)))
+        (dotimes (grid-k n-k-steps)
+          (let ((next-k     (+ grid-k (to-ulong 1)))
+                (prefetch-k (+ grid-k (to-ulong 2))))
 
-          ;; 3. Compute on the CURRENT k.
-          (mma-accumulate-via-tile (8 16 8) C-tile
-                                   (ring-get A-ring (mod grid-k 2ul))
-                                   (ring-get B-ring (mod grid-k 2ul))))))
-      :epilogue
-      (store-tile C-tile C (grid-y grid-x))))))
+            ;; 1. prefetch a future K — lowers to OpSubgroup2DBlockPrefetchINTEL (into L1).
+            ;;    The guard is asserted uniform: a barrier lands inside it in the backward pass.
+            (let ((more-prefetch? (to-workgroup-uniform (< prefetch-k n-k-steps))))
+              (when more-prefetch?
+                (prefetch-tile A (grid-y prefetch-k) :size (32 8))
+                (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (8 16))))
+
+            ;; 2. register load for the NEXT k — OpSubgroup2DBlockLoadINTEL (L1 -> GRF).
+            (let ((more-k? (to-workgroup-uniform (< next-k n-k-steps))))
+              (when more-k?
+                (load-tile A (ring-get A-ring (mod next-k (to-ulong 2))) (grid-y next-k))
+                (load-tile B (ring-get B-ring (mod next-k (to-ulong 2))) (next-k grid-x))))
+
+            ;; 3. DPAS on the CURRENT k while the other slot is still loading.
+            (mma-accumulate-via-tile (8 16 8) C-tile
+                                     (ring-get A-ring (mod grid-k (to-ulong 2)))
+                                     (ring-get B-ring (mod grid-k (to-ulong 2))))))
+        :epilogue
+        (store-tile C-tile C (grid-y grid-x))))))
 
 ```
 
