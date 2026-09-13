@@ -1204,10 +1204,12 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
     first attempt at a Crisp 16-bit row produced ZERO data points while cuBLAS, the CUDA control
     and all five CUTLASS configs produced numbers.
 
-    Deliberately opt-in (use_fixture=True at the call site) rather than the default for every Crisp
-    NVIDIA target: switching the eight tf32 chapters onto a different harness mid-endeavour would
-    silently break comparability with every historical number in the report.  The 16-bit rows have
-    no history to break.
+    Every Crisp NVIDIA target uses it (use_fixture=True at each call site).  The tf32 chapters stayed on
+    the generated harness for a while, to keep comparability with historical numbers; that history
+    was reset on 2026-09-12 (results cleared and re-accreted), and on 2026-09-13 the fill + verify
+    work moved every harness onto one convention, so all of them moved here.  The generated harness
+    remains only as the automatic fallback for a kernel the fixture cannot run.  NOTE for cross-
+    device reading: the H100 SXM tf32 Crisp rows of 2026-09-13 were measured on the generated harness.
     """
     meta = _apply_hw(create_metadata())
     src = Path(kernel_src)
@@ -1556,9 +1558,12 @@ def main():
                     _hb = HERE / "crisp" / "matmul_crisp"
                     sweep = run_cuda_fixed_sweep(chapter, src_path, comp_name, _hb, sizes,
                                                  a.warmup, a.iters, prec, ftz, crisp_compiler)
-                    if not sweep.results:
+                    # Fall back when there is no VERIFIED point, not merely no point: a kernel the
+                    # fixture cannot bind correctly records unverified points, and those are dropped
+                    # by the report -- which would silently lose the row instead of falling back.
+                    if not any(pt.configuration.get("verified") for pt in sweep.results):
                         print(f"  NOTE: {comp_name} ({chapter}) produced no points through the "
-                              f"fixture; falling back to the generated harness.", file=sys.stderr)
+                              f"fixture (or none verified); falling back to the generated harness.", file=sys.stderr)
                         sweep = run_autobench_sweep(chapter, src_path, crisp_grid_tile or "64,64",
                                                     comp_name, sizes, a.warmup, a.iters, prec, ftz,
                                                     dev_c_ms, crisp_compiler)
@@ -1675,41 +1680,41 @@ def main():
 
         if a.platform == "nvidia":
             # §1 Ch 0 — Naive loops, no tensor cores (fp32)
-            run_target("chap0_naive", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="16,16")
+            run_target("chap0_naive", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="16,16", use_fixture=True)
             run_target("chap0_naive", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap0_naive", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 1 — Hand-rolled mma-accumulate-via-tile (tf32)
-            run_target("chap1_handrolled_mma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap1_handrolled_mma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
             run_target("chap1_handrolled_mma", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap1_handrolled_mma", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 2 — matrix-multiply-tile-stride macro (tiling)
-            run_target("chap2_tiling", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap2_tiling", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
             run_target("chap2_tiling", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap2_tiling", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 3 — cp.async linear pipelining
-            run_target("chap3_async", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap3_async", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
             run_target("chap3_async", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap3_async", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 4 — TMA descriptor (CUtensorMap)
-            run_target("chap4_cheap_fetch", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap4_cheap_fetch", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
             run_target("chap4_cheap_fetch", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
 
             # §1 Ch 5 — SMEM ring (multi-stage pipeline)
-            run_target("chap5_multistage_ring", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap5_multistage_ring", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
             run_target("chap5_multistage_ring", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
 
             # §1 Ch 6 — Warp specialization with sync MMA
-            run_target("chap6_warp_specialization", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64")
+            run_target("chap6_warp_specialization", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
 
             # §1 Ch 7 — WGMMA + Warp Specialization (Hopper warpgroup MMA)
-            run_target("chap7_wgmma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
+            run_target("chap7_wgmma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
 
             # §2 — Top MMA Benchmarks (All 4 contender classes)
-            run_target("sec2_top", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256")
+            run_target("sec2_top", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
             run_target("sec2_top", "cuda_control.cu", "cuda_control", "CUDA_Apples", nvcc_flags)
             # CUTLASS include is REPO-RELATIVE, matching how SYCL-TLA is located below.  It used
             # to be the absolute "-I/workspace/cutlass/include" -- a path specific to one RunPod
@@ -1960,16 +1965,16 @@ def main():
 
             # §3 Situational — CLUSTERS + TMA MULTICAST (DSMEM)
             run_target("sec3_cluster_multicast", "matmul_tile128.crisp",
-                       "matmul_tile128.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,128")
+                       "matmul_tile128.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,128", use_fixture=True)
             run_target("sec3_cluster_multicast", "matmul_tile128_multicast.crisp",
                        "matmul_tile128_multicast.ptx", "Crisp_Multicast", [], is_crisp=True,
-                       crisp_grid_tile="64,128")
+                       crisp_grid_tile="64,128", use_fixture=True)
             run_target("sec3_cluster_multicast", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU
             run_target("sec4_fused_relu", "matmul_wgmma_ws_relu.crisp", "matmul_wgmma_ws_relu.ptx",
-                       "Crisp_Fused_Relu", [], is_crisp=True, crisp_grid_tile="64,256")
+                       "Crisp_Fused_Relu", [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
             run_target("sec4_fused_relu", "cublaslt_relu.cu", "cublaslt_relu",
                        "CUBLASLt_Fused_Relu", cublas_flags + ["-lcublasLt"], is_cublas=True)
             run_target("sec4_fused_relu", "cublas_optimal.cu", "cublas_optimal",
@@ -1977,7 +1982,7 @@ def main():
 
             # §4 Activation Ch 2 — Fused Custom
             run_target("sec4_fused_custom", "matmul_wgmma_ws_custom.crisp", "matmul_wgmma_ws_custom.ptx",
-                       "Crisp_Fused_Custom", [], is_crisp=True, crisp_grid_tile="64,256")
+                       "Crisp_Fused_Custom", [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
             run_target("sec4_fused_custom", "cublaslt_optimal.cu", "cublaslt_optimal",
                        "CUBLASLt_Plus_Custom", cublas_flags + ["-lcublasLt"], is_cublas=True)
             run_target("sec4_fused_custom", "cublas_optimal.cu", "cublas_optimal",

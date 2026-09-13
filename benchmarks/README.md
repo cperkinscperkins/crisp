@@ -310,31 +310,44 @@ does not need.  The counts that actually ran are recorded in each result point
 Measured example, BMG `chap0_naive` (no tensor cores): 22.8 s per iteration at 8192 — the old fixed
 2 + 5 made that one point cost ~160 s; it is now 1 + 3, ~92 s.
 
-### Verification
+### Fill and verification — one convention, every harness
 
-Correctness is checked at **every** size, and is **never** a full O(N³) host reference at large N.
-Per harness, as read from the source:
+Every matmul harness — Crisp fixtures, controls, CUTLASS / SYCL-TLA peers, cuBLAS / cuBLASLt / oneMKL /
+oneDNN ceilings, on both vendors — fills and verifies the same way (2026-09-13; code in
+`benchmarks/matmul/common/`):
 
-| harness | check | cost at N=16384 |
+- **Fill:** `A[flat] = flat % 5`, `B[flat] = flat % 3`, written **on the device**. Values 0..4 are exact in
+  f32, f16 and bf16; 16-bit operands are written as host-encoded bit patterns (see BUG 059 for why the
+  device never converts a float there). **fp64 keeps its precision oracle:** operands are scaled by
+  `1 + 2^-25`, which single precision cannot represent, so a library computing in fp32 is still caught.
+- **Verify:** a strided ~64 × 64 sample over the whole of C, expected values **recomputed from the
+  formula** through each harness's own strides (cuBLAS/cuBLASLt are column-major; the controls and
+  CUTLASS stage B column-major; SYCL and the L0 fixture are row-major). Only the sampled rows or columns
+  of C are read back. Tolerance 1e-3 relative, 1e-10 at fp64. Section 4 applies its activation to the
+  expected value. **Enforced** in every harness.
+
+| runtime | implementation | used by |
 |---|---|---|
-| Crisp L0 fixture (`crisp/bench_harness_l0.cpp`) | strided 64×64 spot check, stops at first failure | < 1 s |
-| Crisp CUDA fixture (`crisp/bench_harness.cu`) | strided 64×64 spot check | < 1 s |
-| SYCL / CUDA Apples, oneMKL, controls | A = B = 1, every element of C must equal K — one O(N²) pass | < 1 s |
-| Crisp CUDA auto-bench (`crisp-hoist-cuda --mma-bench`) | full host reference | `matmul.py` kills the child at its BENCH line above `VERIFY_MAX_N` = 2048, so the reference never runs |
-| Crisp L0 generated harness (`crisp-hoist-l0 --mma-test`) | strided 64×64 sample over the whole of C, operands recomputed from the fill | < 1 s — so it is verified at **every** size |
+| Level Zero | `common/fill.crisp` (a Crisp kernel) | the Crisp L0 fixture |
+| SYCL | `common/fill_sycl.hpp` | oneMKL, oneDNN, SYCL-TLA, SYCL controls |
+| CUDA | `common/fill_cuda.cuh` | cuBLAS, cuBLASLt, CUTLASS, CUDA controls, the Crisp CUDA fixture |
+| (all) | `common/fill_verify.h` | the convention and the sampler |
 
-**Which BMG kernels use the generated L0 harness.**  The reviewed fixture cannot bind SLM tensor
-arguments, so `chap1_handrolled_mma`, `chap2_tiling` and `chap3_async` — tf32 and bf16, half the
-section-1 ladder — are measured through the generated harness.  Until 2026-09-12 that harness
-checked only the top-left 64×64 corner (blind to every other tile), `matmul.py` killed it before
-the check above N=2048 (so those rungs were recorded unverified from 4096 up), a hard cap kept it
-at or below 8192, its warmup was hardcoded to 20, and `chap2_tiling`/`chap3_async` tf32 were not
-even enabled for it — `chap2_tiling` tf32 had recorded **zero** BMG points since 2026-08-22.  All
-five are fixed; the check is negative-tested (`--mma-scale=2` → `MMA_WRONG`).
+**Why.** The harnesses had drifted into two conventions, both filling on the CPU. Measured on an H100 at
+N = 77824, the CPU fill took 201 s of a 219 s setup — longer than the timeout, before the GPU did any work.
+The competitor convention (A = B = 1, check every cell equals K) was also the weaker check: a kernel that
+reads the wrong row or tile still sums to K. Moving to the index fill exposed, on first run:
 
-**Verification is not a time cost at large N on either vendor.**  Measured on BMG, `chap0_naive`
-at 8192: kernel 22.8 s per iteration, everything else — allocation, fill, copies and the spot
-check — 1.4 s.  Slow large points are slow *kernels*.
+- the **16-bit SYCL controls** (`sec2_top_bf16` / `sec2_top_fp16`) compute a wrong result at every size
+  except 2048 — their Control cells had been timing an incorrect kernel;
+- the **§4 SYCL-TLA fused peers** printed a hardcoded `correct: true` and never checked anything;
+- the **tf32 cuBLAS ceiling** (and its §3 copy) zeroed A and B and never checked C.
+
+**Crisp NVIDIA targets all use the CUDA fixture** (`crisp/bench_harness.cu`), tf32 included. The
+generated `crisp-hoist-cuda` harness remains only as an automatic fallback when the fixture produces no
+verified point. The H100 SXM tf32 Crisp rows of 2026-09-13 predate this and came from the generated
+harness. On Intel, `chap1`–`chap3` still use the generated L0 harness (the fixture cannot bind SLM
+arguments); it verifies with a strided sample but still fills on the CPU, which is small at BMG's sizes.
 
 ### Time limits
 

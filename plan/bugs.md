@@ -2180,3 +2180,63 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FLOAT so the type-independence stays on the record) and errors/02-tile-too-few-cols.crisp
         (narrow in N -- the fragment is 16x8, not square, so a check guarding one dimension would
         look correct against half the cases).
+
+[ ] 059 set! OF A float VALUE INTO A half / bfloat16 TENSOR ELEMENT STORES A 4-BYTE FLOAT INTO A
+        2-BYTE ELEMENT.  Silent: no compile error, no warning, and the kernel runs and writes garbage.
+        Found 2026-09-13 while writing benchmarks/matmul/common/fill.crisp (the device-side operand
+        fill for the L0 benchmark fixture).  Same class as BUG 057, on a different path: 057 was
+        load-tile-at into a half TILE; this is a plain set! into a half/bfloat16 TENSOR element.
+
+        REPRO (put_temp_files_here/fill/fill_try.crisp at the time):
+
+            (def-type fill-bf16 (matrix bfloat16 :address-space :global :align :compact
+                                 :contiguous-term :row-major))
+            (def-kernel fill_bf16 (&out X ncols modulus)
+              (declare #'(&out fill-bf16 ulong ulong => nil)
+                       (global-size :derive-from X :strategy :one-thread-per)
+                       (local-size :set-to (16 16)))
+              (let ((row (to-ulong (get-global-id 0)))
+                    (col (to-ulong (get-global-id 1))))
+                (set! (~ X row col) (to-float (rem (+ (* row ncols) col) modulus)))))
+
+            ./bin/crisp-compile.exe --ir-target=spv --math-precision=fast --denormal-handling=ftz <file>
+                -> exit 0, no diagnostic.   The identical kernel over `half` behaves the same.
+
+        OBSERVED (these are measurements):
+          * On metal (BMG, 2026-09-13): the benchmark fixture's verifier reported max_abs_err 339-344
+            for bf16 and f16 operands filled this way; the f32 kernel of the same shape verified with
+            error 0.  Filling the same buffers with raw uint16 bit patterns (fill_u16) verified exactly,
+            so the multiply and the verifier are not at fault.
+          * The optimized IR (`--debug`, fill_try.opt.ll), for fill_f16 AND fill_bf16:
+                %ui2fp_cast = uitofp i64 %11 to float
+                %t_byte_off = shl i64 %iop_tmp30, 1          <- element stride 2 bytes: correct
+                %t_ptr_i8   = getelementptr inbounds i8, ptr addrspace(1) %0, i64 %t_byte_off
+                store float %ui2fp_cast, ptr addrspace(1) %t_ptr_i8, align 4   <- 4-byte write
+            fptrunc to half: ZERO occurrences.  No bf16 encoding (bitcast / lshr 16 / trunc) either.
+            fill_f32 is identical except `shl 2`, which is why only the 16-bit kernels are wrong.
+          * So each store overwrites the NEXT element's two bytes, and the last element of the buffer
+            writes 2 bytes past its end.
+          * `(to-half x)` in the kernel body is refused: "Unsupported form 'TO-HALF' found in function
+            body."  So there is no spelled-out way to request the narrowing either.
+          * Incidental, may be harmless: `rem` over ulong operands emitted `srem`, a SIGNED remainder.
+            Correct for values below 2^63; worth a look alongside this.
+
+        EXPECTATION (Chris, 2026-09-13): Crisp requires an explicit `as`/`to` where data can be lost,
+        and float -> half / bfloat16 is a narrowing that can lose data.  So an implicit store like this
+        should be a COMPILE ERROR, not a silent 4-byte write.  Two defects, then:
+          1. the narrowing rule is not enforced on a set! into a tensor element (compiles silently);
+          2. codegen stores the value at its SOURCE width instead of the element's width.
+
+        HYPOTHESIS (not verified -- see "bug reports' causes are hypotheses"): the tensor-element set!
+        path stores the RHS LLVM value as-is and only uses the element type to scale the byte offset,
+        with no coercion step (compare %coop-coerce-scalar, which does fptrunc for half and the
+        bitcast/lshr/trunc encoding for bf16 on the coop-matrix path).  If so, every narrowing store
+        into a tensor element is affected -- double->float included -- not only the 16-bit types.
+        The double->float case has NOT been checked.
+
+        WORKAROUND IN USE: benchmarks/matmul/common/fill.crisp fills 16-bit operands with fill_u16,
+        a (matrix ushort ...) kernel writing host-encoded bit patterns, so no float is ever stored into
+        a 16-bit element.  Remove it once this is fixed, and use the fixed path as the regression check.
+
+        LIKELY SPEC HOMES: a negative spec refusing the implicit narrowing store (tests/spec/.../errors),
+        plus a positive spec that the explicit form stores a correct half / bf16 value on metal.

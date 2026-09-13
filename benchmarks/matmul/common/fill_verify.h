@@ -36,9 +36,18 @@ constexpr uint32_t FILL_MOD_B = 3;
 inline double fill_a(uint64_t flat) { return (double)(flat % FILL_MOD_A); }
 inline double fill_b(uint64_t flat) { return (double)(flat % FILL_MOD_B); }
 
+// fp64 KEEPS ITS PRECISION ORACLE.  The fp64 contenders used to fill with v = 1 + 2^-25 (see
+// sec2_top_f64/f64_oracle.h): a value single precision cannot represent, so a library that quietly
+// computes in fp32/tf32 is caught -- plain small integers would be exact in fp32 and hide it.  So an
+// fp64 operand is filled with (flat % mod) * v, the expected product carries v^2, and the check runs at
+// the oracle's relative tolerance.  Addressing coverage AND precision detection, one fill.
+constexpr double FILL_F64_SCALE = 1.0 + 1.0 / 33554432.0;     // 1 + 2^-25, exactly
+constexpr double FILL_F64_RTOL  = 1e-10;
+constexpr double FILL_RTOL      = 1e-3;                        // f32 / tf32 / f16 / bf16
+
 // 16-bit operands are filled as RAW 16-bit PATTERNS, not by converting a float on the device.
 // Storing a float into a half/bfloat16 tensor element in a Crisp kernel produced wrong values on
-// 2026-09-13 (both widths; f32 was correct) -- so the host encodes the five fill values once and
+// 2026-09-13 (both widths; f32 was correct; plan/bugs.md BUG 059) -- so the host encodes the five fill values once and
 // every runtime's device fill just writes the chosen pattern.  The values 0..4 are exact in both.
 //   bf16: the top 16 bits of the IEEE f32.        f16: IEEE 754 binary16.
 inline uint16_t pattern16_bf16(float v) {
@@ -68,6 +77,7 @@ struct VerifyResult {
     bool     verified    = true;
     double   max_abs_err = 0.0;
     uint64_t checked     = 0;
+    double   max_rel_err = 0.0;     // relative to the expected value at the worst cell
 };
 
 // Copy `count` elements of C starting at storage index `first` into `out` as doubles.  The harness
@@ -80,7 +90,8 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
                                    Strides a, Strides b, Strides c,
                                    const ReadSpan &read_span,
                                    double scale = 1.0, uint64_t smax = 64,
-                                   const std::function<double(double)> &post = {}) {
+                                   const std::function<double(double)> &post = {},
+                                   double rtol = FILL_RTOL) {
     VerifyResult r;
     if (M == 0 || N == 0) return r;
     const uint64_t si = std::max<uint64_t>(1, (M + smax - 1) / smax);
@@ -98,8 +109,10 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
         ++r.checked;
         const double want = expected(i, j);
         const double err  = std::fabs(got - want);
+        const double rel  = err / std::max(1e-300, std::fabs(want));
         if (err > r.max_abs_err) r.max_abs_err = err;
-        if (err > 1e-3 * std::max(1.0, std::fabs(want))) r.verified = false;
+        if (rel > r.max_rel_err) r.max_rel_err = rel;
+        if (err > rtol * std::max(1.0, std::fabs(want))) r.verified = false;
     };
 
     std::vector<double> span;

@@ -10,7 +10,8 @@
 ;;;; The values 0..4 are exact in f32, f16 and bf16, so verification is an exact comparison.
 ;;;;
 ;;;; 16-BIT OPERANDS ARE FILLED AS RAW PATTERNS.  Storing a float into a half/bfloat16 tensor element
-;;;; produced wrong values (2026-09-13, both widths; f32 correct), and `to-half` is not accepted in a
+;;;; produced wrong values (2026-09-13, both widths; f32 correct -- plan/bugs.md BUG 059: a 4-byte
+;;;; float is stored into the 2-byte element), and `to-half` is not accepted in a
 ;;;; kernel body.  So fill_u16 writes one of five host-encoded 16-bit patterns (fill_patterns16 in
 ;;;; fill_verify.h) and never converts a float on the device.  One kernel serves f16 and bf16.
 ;;;;

@@ -73,6 +73,7 @@
 
 #if __has_include(<cutlass/cutlass.h>)
 #include <cuda_runtime.h>
+#include "../common/fill_cuda.cuh"
 #include <cutlass/cutlass.h>
 #include <cutlass/numeric_types.h>
 #include <cutlass/gemm/device/gemm_universal_adapter.h>
@@ -140,17 +141,14 @@ int main(int argc, char** argv) {
 
     using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
 
-    std::vector<ElementA> hA((size_t)M * K, ElementA(1.0f));
-    std::vector<ElementB> hB((size_t)K * N, ElementB(1.0f));
-    std::vector<ElementC> hC((size_t)M * N, ElementC(0.0f));
 
     ElementA *dA; ElementB *dB; ElementC *dC;
     cudaMalloc(&dA, sizeof(ElementA) * (size_t)M * K);
     cudaMalloc(&dB, sizeof(ElementB) * (size_t)K * N);
     cudaMalloc(&dC, sizeof(ElementC) * (size_t)M * N);
 
-    cudaMemcpy(dA, hA.data(), sizeof(ElementA) * (size_t)M * K, cudaMemcpyHostToDevice);
-    cudaMemcpy(dB, hB.data(), sizeof(ElementB) * (size_t)K * N, cudaMemcpyHostToDevice);
+    crisp_bench::cuda_fill_encoded(dA, (uint64_t)M * K, crisp_bench::FILL_MOD_A, "bf16");
+    crisp_bench::cuda_fill_encoded(dB, (uint64_t)K * N, crisp_bench::FILL_MOD_B, "bf16");
 
     Gemm gemm_op;
     // CUTLASS 3.x STRIDES ARE 3-ELEMENT (row, col, BATCH).  This file previously passed the
@@ -212,10 +210,9 @@ int main(int argc, char** argv) {
         cudaEventElapsedTime(&kt[i], s, e);
     }
 
-    cudaMemcpy(hC.data(), dC, sizeof(ElementC) * (size_t)M * N, cudaMemcpyDeviceToHost);
-    double expected = (double)K, maxerr = 0.0;
-    for (size_t i = 0; i < hC.size(); i++) maxerr = std::max(maxerr, (double)std::fabs(hC[i] - expected));
-    bool correct = maxerr < expected * 1e-3;
+    const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(dC, "f32", (uint64_t)M, (uint64_t)N, (uint64_t)K, crisp_bench::rm(K), crisp_bench::cm(K), crisp_bench::rm(N));
+    double maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     std::sort(kt.begin(), kt.end());
     double k_med = kt[iters / 2] * 1000.0;

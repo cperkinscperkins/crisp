@@ -57,6 +57,7 @@
 // fp64-in / fp64-out, so C is 8 bytes there and `cbytes` below carries that.  Endeavour 165.
 
 #include <cuda.h>
+#include "../common/fill_cuda.cuh"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -88,32 +89,6 @@ static const char *env_or(const char *k, const char *d) {
 // --- 16-bit encodings.  bf16 is the top half of an f32; f16 is IEEE half. -----------------
 // Byte-identical in behaviour to bench_harness_l0.cpp's copies, deliberately: if the two harnesses
 // encoded fill values differently, an Intel row and an NVIDIA row would not be the same experiment.
-static uint16_t f32_to_bf16(float f) {
-    uint32_t b; std::memcpy(&b, &f, 4);
-    return (uint16_t)(b >> 16);            // truncate; the fill values are exact in bf16
-}
-static float bf16_to_f32(uint16_t h) {
-    uint32_t u = ((uint32_t)h) << 16; float f; std::memcpy(&f, &u, 4); return f;
-}
-static uint16_t f32_to_f16(float f) {
-    uint32_t u; std::memcpy(&u, &f, 4);
-    uint32_t s = (u >> 31) & 1u; int32_t e = (int32_t)((u >> 23) & 0xFFu) - 127 + 15;
-    uint32_t m = u & 0x7FFFFFu;
-    if (e <= 0)  return (uint16_t)(s << 15);
-    if (e >= 31) return (uint16_t)((s << 15) | 0x7C00u);
-    return (uint16_t)((s << 15) | ((uint32_t)e << 10) | (m >> 13));
-}
-static float f16_to_f32(uint16_t h) {
-    uint32_t s = (uint32_t)(h >> 15) & 1u, e = (uint32_t)(h >> 10) & 0x1Fu, m = (uint32_t)h & 0x3FFu;
-    uint32_t out;
-    if (e == 0) {
-        if (m == 0) { out = s << 31; }
-        else { e = 127 - 15 + 1; while ((m & 0x400u) == 0) { m <<= 1; e--; } m &= 0x3FFu;
-               out = (s << 31) | (e << 23) | (m << 13); }
-    } else if (e == 31) { out = (s << 31) | 0x7F800000u | (m << 13); }
-    else { out = (s << 31) | ((e - 15 + 127) << 23) | (m << 13); }
-    float f; std::memcpy(&f, &out, 4); return f;
-}
 
 // A scratch tile is rank 2; a RING is rank 3 (slots x rows x cols) and flattens to twelve
 // kernel arguments rather than nine.  Chapters 5 and 6 are rings, so rank is not optional.
@@ -199,7 +174,11 @@ int main(int argc, char **argv) {
 
     CU_OK(cuInit(0), "cuInit");
     CUdevice dev; CU_OK(cuDeviceGet(&dev, 0), "cuDeviceGet");
-    CUcontext ctx; CU_OK(cuCtxCreate(&ctx, 0, dev), "cuCtxCreate");
+    // PRIMARY context, not a private cuCtxCreate one.  The operand fill runs through the runtime API
+    // (common/fill_cuda.cuh), which always uses the primary context; memory allocated in a private
+    // context would be unreachable from it.  Nothing in the timed region depends on which it is.
+    CUcontext ctx; CU_OK(cuDevicePrimaryCtxRetain(&ctx, dev), "cuDevicePrimaryCtxRetain");
+    CU_OK(cuCtxSetCurrent(ctx), "cuCtxSetCurrent");
 
     std::string ptx_text;
     {
@@ -231,39 +210,20 @@ int main(int argc, char **argv) {
     // Same fill as the L0 fixture: small exact integers, so bf16 truncation and f16 rounding are
     // both lossless and the reference is an exact comparison rather than a tolerance argument.
     const uint64_t nA = M * K, nB = K * N, nC = M * N;
-    std::vector<uint8_t> A(nA * ebytes), B(nB * ebytes);
-    // Endeavour 162 follow-up: the host NEVER needs all of C.  Verification samples ~64 strided
-    // ROWS, so allocating and copying back M*N floats is pure waste that grows as N^2 -- 17 GB at
-    // N=65536, which is what actually caps the big-matrix runs (device HBM does not: A+B+C is only
-    // 34 GB there at 16-bit, inside an H100 NVL's 94 GB).  Allocate and copy the sampled rows only.
-    const uint64_t smax_rows = 64;
-    uint64_t si0 = (M + smax_rows - 1) / smax_rows; if (si0 == 0) si0 = 1;
-    std::vector<uint64_t> samp_rows;
-    for (uint64_t i = 0; i < M; i += si0) samp_rows.push_back(i);
-    // Endeavour 165: BYTES, not floats -- C is 8 bytes wide at fp64.  An accessor (gc, by the
-    // verification block) reads it at the right width, so the comparison stays one code path.
-    std::vector<unsigned char> Crows((size_t)samp_rows.size() * (size_t)N * (size_t)cbytes, 0);
-    for (uint64_t i = 0; i < nA; ++i) {
-        float v = (float)(i % 5);
-        if      (elem == "f32")  ((float *)A.data())[i] = v;
-        else if (elem == "f64")  ((double *)A.data())[i] = (double)v;
-        else if (elem == "bf16") ((uint16_t *)A.data())[i] = f32_to_bf16(v);
-        else                     ((uint16_t *)A.data())[i] = f32_to_f16(v);
-    }
-    for (uint64_t i = 0; i < nB; ++i) {
-        float v = (float)(i % 3);
-        if      (elem == "f32")  ((float *)B.data())[i] = v;
-        else if (elem == "f64")  ((double *)B.data())[i] = (double)v;
-        else if (elem == "bf16") ((uint16_t *)B.data())[i] = f32_to_bf16(v);
-        else                     ((uint16_t *)B.data())[i] = f32_to_f16(v);
-    }
-
+    const size_t bytesA = (size_t)(nA * ebytes), bytesB = (size_t)(nB * ebytes);
+    // DEVICE FILL (common/fill_cuda.cuh).  This harness used to fill A and B on the CPU and copy them
+    // across: measured 2026-09-13 on an H100 at N=77824, that CPU fill took 201 s of a 219 s setup --
+    // longer than the whole timeout, before the GPU did any work.  No host copies of A, B or C remain;
+    // verification recomputes the operands from the formula and reads back only sampled spans of C.
     CUdeviceptr dA, dB, dC;
-    CU_OK(cuMemAlloc(&dA, A.size()), "cuMemAlloc A");
-    CU_OK(cuMemAlloc(&dB, B.size()), "cuMemAlloc B");
+    CU_OK(cuMemAlloc(&dA, bytesA), "cuMemAlloc A");
+    CU_OK(cuMemAlloc(&dB, bytesB), "cuMemAlloc B");
     CU_OK(cuMemAlloc(&dC, (size_t)nC * cbytes), "cuMemAlloc C");
-    CU_OK(cuMemcpyHtoD(dA, A.data(), A.size()), "H2D A");
-    CU_OK(cuMemcpyHtoD(dB, B.data(), B.size()), "H2D B");
+    const auto fill_t0 = std::chrono::steady_clock::now();
+    crisp_bench::cuda_fill_encoded((void *)dA, nA, crisp_bench::FILL_MOD_A, elem.c_str());
+    crisp_bench::cuda_fill_encoded((void *)dB, nB, crisp_bench::FILL_MOD_B, elem.c_str());
+    const double fill_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - fill_t0).count();
     CU_OK(cuMemsetD8(dC, 0, (size_t)nC * cbytes), "zero C");
 
     // ---- kernel arguments -----------------------------------------------------------------
@@ -285,10 +245,10 @@ int main(int argc, char **argv) {
         slot[base + 7] = e1;              // ext1
         slot[base + 8] = e0 * e1;         // length (ELEMENTS, not bytes)
     };
-    bind_tensor(iA, dA, A.size(), M, K);
+    bind_tensor(iA, dA, bytesA, M, K);
     // A B^T kernel indexes B[n][k]; a K x N kernel indexes B[k][n].  Same bytes, different view.
-    if (b_is_nk) bind_tensor(iB, dB, B.size(), N, K);
-    else         bind_tensor(iB, dB, B.size(), K, N);
+    if (b_is_nk) bind_tensor(iB, dB, bytesB, N, K);
+    else         bind_tensor(iB, dB, bytesB, K, N);
     bind_tensor(iC, dC, (size_t)nC * cbytes, M, N);
     // A scratch tensor's "ptr" is a BYTE OFFSET into the dynamic shared block, not an address.
     auto bind_tensor3 = [&](int base, uint64_t off, uint64_t e0, uint64_t e1, uint64_t e2) {
@@ -465,58 +425,19 @@ int main(int argc, char **argv) {
     const double gflops    = median_us > 0.0 ? (2.0 * (double)M * N * K) / (median_us * 1e3) : 0.0;
 
     // Sampled ROWS only: O(64*N) instead of O(N^2).
-    for (size_t r = 0; r < samp_rows.size(); ++r)
-        CU_OK(cuMemcpyDtoH(Crows.data() + r * (size_t)N * (size_t)cbytes,
-                           dC + samp_rows[r] * (size_t)N * cbytes,
-                           (size_t)N * cbytes), "D2H C row");
 
     // ---- verification --------------------------------------------------------------------
     // Strided samples across the WHOLE output, not a top-left corner: a corner is the same price
     // and blind to every tile it does not reach.  A fast wrong kernel must never look like a win.
-    bool verified = true;
-    double max_abs_err = 0.0;
-    uint64_t checked = 0;
-    {
-        // Endeavour 165: these return DOUBLE now.  For f32/16-bit that is a widening of a value
-        // that was already being cast to double at the multiply below, so those paths are
-        // unchanged; for f64 it is the only way to read the operand at all.
-        auto ga = [&](uint64_t i) -> double {
-            if (elem == "bf16") return bf16_to_f32(((uint16_t *)A.data())[i]);
-            if (elem == "f16")  return f16_to_f32(((uint16_t *)A.data())[i]);
-            if (elem == "f64")  return ((double *)A.data())[i];
-            return ((float *)A.data())[i];
-        };
-        auto gb = [&](uint64_t i) -> double {
-            if (elem == "bf16") return bf16_to_f32(((uint16_t *)B.data())[i]);
-            if (elem == "f16")  return f16_to_f32(((uint16_t *)B.data())[i]);
-            if (elem == "f64")  return ((double *)B.data())[i];
-            return ((float *)B.data())[i];
-        };
-        auto gc = [&](size_t i) -> double {
-            if (elem == "f64") return ((double *)Crows.data())[i];
-            return (double)((float *)Crows.data())[i];
-        };
-        const uint64_t smax = 64;
-        uint64_t sj = (N + smax - 1) / smax; if (sj == 0) sj = 1;
-        for (size_t ri = 0; ri < samp_rows.size() && verified; ++ri) {
-          const uint64_t i = samp_rows[ri];
-            for (uint64_t j = 0; j < N; j += sj) {
-                ++checked;
-                double acc = 0.0;
-                for (uint64_t k = 0; k < K; ++k)
-                    acc += (double)ga(i * K + k) * (double)gb(b_is_nk ? (j * K + k) : (k * N + j));
-                double got = gc((size_t)ri * (size_t)N + (size_t)j);
-                double err = std::fabs(got - acc);
-                // Endeavour 165: the tolerance follows the type.  1e-3 relative is right for
-                // tf32 and the 16-bit rungs; at fp64 it would pass a result computed entirely in
-                // SINGLE precision, which is the one thing a 64-bit benchmark must not do.
-                double tol = (elem == "f64") ? (1e-10 * std::max(1.0, std::fabs(acc)))
-                                             : (1e-3  * std::max(1.0, std::fabs(acc)));
-                if (err > max_abs_err) max_abs_err = err;
-                if (err > tol) { verified = false; break; }
-            }
-        }
-    }
+    // Shared strided verifier (common/fill_verify.h via fill_cuda.cuh).  A is row-major M x K; B is
+    // K x N either row-major or column-major as the kernel stages it (b_is_nk); C is row-major.  At
+    // fp64 the fill carries the precision oracle and the check runs at 1e-10 relative, as before.
+    const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(
+        (void *)dC, elem == "f64" ? "f64" : "f32", M, N, K,
+        crisp_bench::rm(K), b_is_nk ? crisp_bench::cm(K) : crisp_bench::rm(N), crisp_bench::rm(N));
+    const bool verified = vr.verified;
+    const double max_abs_err = vr.max_abs_err;
+    const uint64_t checked = vr.checked;
 
     std::cout << "{\n"
               << "  \"implementation\": \"crisp_cuda_fixture\",\n"
@@ -530,6 +451,8 @@ int main(int argc, char **argv) {
               << "  \"correct\": " << (verified ? "true" : "false") << ",\n"
               << "  \"max_abs_err\": " << max_abs_err << ",\n"
               << "  \"verify_samples\": " << checked << ",\n"
+              << "  \"fill\": \"device (common/fill_cuda.cuh)\",\n"
+              << "  \"fill_ms\": " << fill_ms << ",\n"
               << "  \"driver_jit_ms\": " << driver_jit_ms << ",\n"
               << "  \"kernel_create_ms\": " << kernel_create_ms << ",\n"
               << "  \"wall_time_ms\": " << (wall_us / 1000.0) << ",\n"
@@ -544,6 +467,6 @@ int main(int argc, char **argv) {
     for (CUdeviceptr t : tmap_dev) cuMemFree(t);
     cuMemFree(dA); cuMemFree(dB); cuMemFree(dC);
     cuModuleUnload(module);
-    cuCtxDestroy(ctx);
+    cuDevicePrimaryCtxRelease(dev);
     return verified ? 0 : 3;
 }

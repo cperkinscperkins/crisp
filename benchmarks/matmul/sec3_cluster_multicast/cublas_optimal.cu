@@ -3,6 +3,7 @@
 // nvcc -arch=sm_90a cublas_bench.cu -lcublas -o cublas_bench
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
+#include "../common/fill_cuda.cuh"
 #include <cstdio>
 #include <cstdlib>
 
@@ -15,8 +16,10 @@ int main(int argc, char** argv) {
   cudaMalloc(&dA, (size_t)M * K * sizeof(float));
   cudaMalloc(&dB, (size_t)K * N * sizeof(float));
   cudaMalloc(&dC, (size_t)M * N * sizeof(float));
-  cudaMemset(dA, 0, (size_t)M * K * sizeof(float));
-  cudaMemset(dB, 0, (size_t)K * N * sizeof(float));
+  // Shared fill (common/fill_cuda.cuh).  This used to zero A and B and never check C, so its
+  // "correct" was only ever the harness default -- a Ceiling number with no verification behind it.
+  crisp_bench::cuda_fill_encoded(dA, (uint64_t)M * K, crisp_bench::FILL_MOD_A, "f32");
+  crisp_bench::cuda_fill_encoded(dB, (uint64_t)K * N, crisp_bench::FILL_MOD_B, "f32");
 
   cublasHandle_t h;
   cublasCreate(&h);
@@ -49,14 +52,22 @@ int main(int argc, char** argv) {
   float ms = 0.0f; cudaEventElapsedTime(&ms, s, e);
 
   float iter_ms = ms / iters;
+
+  // cuBLAS is column-major: A(i,k) at k*M + i, B(k,j) at j*K + k, C(i,j) at j*M + i.
+  const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(
+      dC, "f32", (uint64_t)M, (uint64_t)N, (uint64_t)K,
+      crisp_bench::cm(M), crisp_bench::cm(K), crisp_bench::cm(M));
   double gflops = (2.0 * M * N * K) / (iter_ms * 1e-3) / 1e9;
 
   printf("{\n  \"algorithm\": \"matmul\",\n  \"implementation\": \"cublas\",\n");
   printf("  \"M\": %d, \"N\": %d, \"K\": %d,\n", M,N,K);
+  printf("  \"correct\": %s,\n  \"verified\": %s,\n  \"max_abs_err\": %.3e,\n  \"verify_samples\": %llu,\n",
+         vr.verified ? "true" : "false", vr.verified ? "true" : "false", vr.max_abs_err,
+         (unsigned long long)vr.checked);
   printf("  \"kernel_median_us\": %.2f,\n", iter_ms * 1000.0);
   printf("  \"gflops\": %.2f\n}\n", gflops);
 
   cublasDestroy(h);
   cudaFree(dA); cudaFree(dB); cudaFree(dC);
-  return 0;
+  return vr.verified ? 0 : 1;
 }
