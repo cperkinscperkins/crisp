@@ -1,0 +1,51 @@
+;;;; benchmarks/matmul/common/fill.crisp -- the matmul operand fill, as a GPU kernel.
+;;;;
+;;;; WHY THIS EXISTS.  Every matmul harness used to fill its operands on the CPU and copy them to the
+;;;; device.  Measured 2026-09-13 on an H100 (CUDA fixture, bf16): at N=77824 the CPU fill of A and B
+;;;; took 201 s of a 219 s setup -- longer than the whole 150 s timeout, before the GPU did any work.
+;;;; A write-only per-element kernel is trivially parallel and removes the host buffers and the copies.
+;;;;
+;;;; ONE CONVENTION, shared by every harness (benchmarks/matmul/common/fill_verify.h):
+;;;;     A[flat] = flat % 5        B[flat] = flat % 3        flat = row * ncols + col  (row-major)
+;;;; The values 0..4 are exact in f32, f16 and bf16, so verification is an exact comparison.
+;;;;
+;;;; 16-BIT OPERANDS ARE FILLED AS RAW PATTERNS.  Storing a float into a half/bfloat16 tensor element
+;;;; produced wrong values (2026-09-13, both widths; f32 correct -- plan/bugs.md BUG 059: a 4-byte
+;;;; float is stored into the 2-byte element), and `to-half` is not accepted in a
+;;;; kernel body.  So fill_u16 writes one of five host-encoded 16-bit patterns (fill_patterns16 in
+;;;; fill_verify.h) and never converts a float on the device.  One kernel serves f16 and bf16.
+;;;;
+;;;; This file is the Level Zero implementation (the Crisp L0 fixture has no other way to run a small
+;;;; kernel).  CUDA and SYCL harnesses implement the same formula in their own runtime headers.
+;;;;
+;;;; ABI: arg 0..8 = X (rank-2 tensor: ptr, bytes, off0, off1, str0, str1, ext0, ext1, len),
+;;;; arg 9 = nrows, arg 10 = ncols, arg 11 = modulus; fill_u16 adds args 12..16 = patterns for 0..4.  Launch with a 16x16 group size and a
+;;;; ceil(nrows/16) x ceil(ncols/16) group count; the bound check makes any leftover threads no-ops.
+
+(def-type fill-f32  (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+(def-type fill-u16  (matrix ushort   :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel fill_f32 (&out X nrows ncols modulus)
+  (declare #'(&out fill-f32 ulong ulong ulong => nil)
+           (global-size :derive-from X :strategy :one-thread-per)
+           (local-size :set-to (16 16)))
+  (let ((row (to-ulong (get-global-id 0)))
+        (col (to-ulong (get-global-id 1))))
+    (when (< row nrows)
+      (when (< col ncols)
+        (set! (~ X row col) (to-float (rem (+ (* row ncols) col) modulus)))))))
+
+(def-kernel fill_u16 (&out X nrows ncols modulus p0 p1 p2 p3 p4)
+  (declare #'(&out fill-u16 ulong ulong ulong ushort ushort ushort ushort ushort => nil)
+           (global-size :derive-from X :strategy :one-thread-per)
+           (local-size :set-to (16 16)))
+  (let ((row (to-ulong (get-global-id 0)))
+        (col (to-ulong (get-global-id 1))))
+    (when (< row nrows)
+      (when (< col ncols)
+        (let ((r (rem (+ (* row ncols) col) modulus)))
+          (set! (~ X row col)
+                (if (= r (to-ulong 0)) p0
+                    (if (= r (to-ulong 1)) p1
+                        (if (= r (to-ulong 2)) p2
+                            (if (= r (to-ulong 3)) p3 p4))))))))))

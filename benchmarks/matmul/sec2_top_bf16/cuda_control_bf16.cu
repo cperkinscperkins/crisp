@@ -19,6 +19,7 @@
  * this file's value is that it is the tf32 control with one variable moved.
  */
 #include <cuda_runtime.h>
+#include "../common/fill_cuda.cuh"
 #include <cuda_bf16.h>
 #include <cuda/pipeline>
 #include <cstdio>
@@ -105,14 +106,12 @@ int main(int argc, char** argv) {
     int M = argc>1?atoi(argv[1]):256, N = argc>2?atoi(argv[2]):256, K = argc>3?atoi(argv[3]):256;
     int warmup = argc>4?atoi(argv[4]):20, iters = argc>5?atoi(argv[5]):100;
 
-    std::vector<elem_t> hA((size_t)M*K, elem_t(1.0f)), hB((size_t)K*N, elem_t(1.0f));
-    std::vector<float>  hC((size_t)M*N, 0.0f);
     elem_t *dA,*dB; float *dC;
-    CK(cudaMalloc(&dA,hA.size()*sizeof(elem_t)));
-    CK(cudaMalloc(&dB,hB.size()*sizeof(elem_t)));
-    CK(cudaMalloc(&dC,hC.size()*sizeof(float)));
-    CK(cudaMemcpy(dA,hA.data(),hA.size()*sizeof(elem_t),cudaMemcpyHostToDevice));
-    CK(cudaMemcpy(dB,hB.data(),hB.size()*sizeof(elem_t),cudaMemcpyHostToDevice));
+    CK(cudaMalloc(&dA,((size_t)M * K)*sizeof(elem_t)));
+    CK(cudaMalloc(&dB,((size_t)K * N)*sizeof(elem_t)));
+    CK(cudaMalloc(&dC,((size_t)M * N)*sizeof(float)));
+    crisp_bench::cuda_fill_encoded(dA, (uint64_t)M * K, crisp_bench::FILL_MOD_A, "bf16");
+    crisp_bench::cuda_fill_encoded(dB, (uint64_t)K * N, crisp_bench::FILL_MOD_B, "bf16");
 
     dim3 block(TS,TS), grid((N+TS-1)/TS, (M+TS-1)/TS);
     auto launch = [&](){ matmul_tiled_pipelined_16<<<grid,block>>>(dA,dB,dC,M,N,K); };
@@ -125,10 +124,9 @@ int main(int argc, char** argv) {
     for(int i=0;i<iters;i++){ cudaEventRecord(s); launch(); cudaEventRecord(e); cudaEventSynchronize(e);
         cudaEventElapsedTime(&kt[i],s,e); }
 
-    CK(cudaMemcpy(hC.data(),dC,hC.size()*sizeof(float),cudaMemcpyDeviceToHost));
-    double expected=(double)K, maxerr=0.0;
-    for(size_t i=0;i<hC.size();i++) maxerr=std::max(maxerr,(double)fabs(hC[i]-expected));
-    bool correct = maxerr < expected*1e-3;
+    const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(dC, "f32", (uint64_t)M, (uint64_t)N, (uint64_t)K, crisp_bench::rm(K), crisp_bench::cm(K), crisp_bench::rm(N));
+    double maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     std::sort(kt.begin(),kt.end());
     float k_med=kt[iters/2], k_min=kt[0];

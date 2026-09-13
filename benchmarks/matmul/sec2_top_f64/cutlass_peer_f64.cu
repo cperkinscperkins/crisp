@@ -96,6 +96,7 @@
 
 #if __has_include(<cutlass/cutlass.h>)
 #include <cuda_runtime.h>
+#include "../common/fill_cuda.cuh"
 #include <cutlass/cutlass.h>
 #include <cutlass/numeric_types.h>
 #include <cutlass/layout/matrix.h>
@@ -152,17 +153,13 @@ int main(int argc, char** argv) {
         cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>,
         CFG_STAGES>;
 
-    const double v = crisp_f64_oracle_value();
-    std::vector<ElementA> hA((size_t)M * K, v);
-    std::vector<ElementB> hB((size_t)K * N, v);
-    std::vector<ElementC> hC((size_t)M * N, 0.0);
 
     ElementA *dA; ElementB *dB; ElementC *dC;
     cudaMalloc(&dA, sizeof(ElementA) * (size_t)M * K);
     cudaMalloc(&dB, sizeof(ElementB) * (size_t)K * N);
     cudaMalloc(&dC, sizeof(ElementC) * (size_t)M * N);
-    cudaMemcpy(dA, hA.data(), sizeof(ElementA) * (size_t)M * K, cudaMemcpyHostToDevice);
-    cudaMemcpy(dB, hB.data(), sizeof(ElementB) * (size_t)K * N, cudaMemcpyHostToDevice);
+    crisp_bench::cuda_fill_encoded(dA, (uint64_t)M * K, crisp_bench::FILL_MOD_A, "f64");
+    crisp_bench::cuda_fill_encoded(dB, (uint64_t)K * N, crisp_bench::FILL_MOD_B, "f64");
 
     // Leading dimensions follow from the layouts above: row-major A is K wide, column-major B is
     // K tall, row-major C is N wide.
@@ -217,9 +214,11 @@ int main(int argc, char** argv) {
         cudaEventElapsedTime(&kt[i], s, e);
     }
 
-    cudaMemcpy(hC.data(), dC, sizeof(ElementC) * (size_t)M * N, cudaMemcpyDeviceToHost);
-    double maxerr = 0.0, maxrel = 0.0;
-    bool correct = crisp_f64_oracle_check(hC.data(), hC.size(), K, &maxerr, &maxrel);
+    // Shared fill + strided check, still the fp64 oracle: operands carry 1 + 2^-25 and the check
+    // runs at its 1e-10 relative tolerance (common/fill_verify.h), so fp32 is still caught.
+    const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(dC, "f64", (uint64_t)M, (uint64_t)N, (uint64_t)K, crisp_bench::rm(K), crisp_bench::cm(K), crisp_bench::rm(N));
+    double maxerr = vr.max_abs_err, maxrel = vr.max_rel_err;
+    bool correct = vr.verified;
     const char* diagnosis = crisp_f64_oracle_diagnose(maxrel);
     if (!correct)
         fprintf(stderr, "cutlass_peer_f64 [%s]: ORACLE FAILED at M=%d N=%d K=%d — %s "

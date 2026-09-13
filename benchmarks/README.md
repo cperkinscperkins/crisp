@@ -113,12 +113,12 @@ python scripts/crisp_bench/matmul.py --sweep-all
 ```
 `matmul.py` is the unified cross-platform driver. It determines what to build and run depending on the `--platform` argument.
 
-For each precision it sweeps **every chapter** — the tf32 ladder chap0..chap7, its `_bf16`
-twin, and the `_f64` ladder chap0..chap6, plus every `sec2_*`/`sec3_*`/`sec4_*` group —
-× **every competitor** (Crisp, CUDA_Apples, SYCL_Apples, CUTLASS, CUBLAS_Optimal,
-OneMKL_Optimal) × **every size**, dropping all the JSONs into `results/`.  Any target whose
-source or compiler is missing (e.g. SYCL/OneMKL without `icpx`) is quietly skipped.  So one
-command = the whole matmul story.
+It sweeps **every chapter** — the tf32 ladder chap0..chap7, its `_bf16` twin, and the `_f64`
+ladder chap0..chap6, plus every `sec2_*`/`sec3_*`/`sec4_*` group — × **every competitor** × **every
+size**, dropping the JSONs into `results/`, **at the one precision each ladder's rule allows** (16/32-bit
+at `fast`, 64-bit at `ieee`; the `ieee`+FTZ pass runs no matmul).  Fenced `_` directories are left
+out unless named in `--chapters`.  Any target whose source or compiler is missing (e.g. SYCL/OneMKL
+without `icpx`) is skipped with a message.  See [Harness Ground Rules](#harness-ground-rules).
 
 **Sizes are named presets, not a literal default.**  `--sizes` defaults to `canonical`:
 
@@ -130,6 +130,34 @@ command = the whole matmul story.
 | `xl` | 32768, 40960 |
 | `canonical` | 256 … 16384, **plus 32768 on NVIDIA** (default) |
 | `all` | canonical + 40960 on NVIDIA |
+| `devmax` | the largest N this card can hold — resolved per ladder, see below |
+
+**Sizes are also bounded by device memory, per ladder.**  Every matrix in this suite lives in
+device memory (there is no out-of-core path yet), so a size that does not fit is an allocation
+failure *after* the compile has been paid for — and on the largest sizes the compile is the
+expensive part.  The harness therefore drops sizes it can prove will not fit, and says so:
+
+```
+  [chap0_naive_f64] skipping 40960: needs more than 60% of 80 GB at 24 B/element (ceiling N=46208)
+```
+
+The ceiling is **per ladder**, because one size list drives three element widths:
+
+| ladder | device bytes per element position (A+B+C) | ceiling on an 80 GB H100 |
+|---|---|---|
+| bf16 / fp16 | 8 — A, B at 2 B; C accumulates in fp32 | ~80064 |
+| tf32 / fp32 | 12 | ~65344 |
+| fp64 | 24 | ~46208 |
+
+A single fp32 answer would run the f64 ladder off the end of HBM while leaving a third of the
+card unused on the 16-bit one.  The 60% headroom (`MATMUL_VRAM_HEADROOM`) is not idle slack: the
+three matrices are the floor, and cuBLAS, CUTLASS and the fixtures all allocate on top of them.
+
+`devmax` asks for the biggest rung this card can hold, rounded down to a multiple of 4096 so the
+ladder stays legible.  It is deliberately **not** in `canonical`: a device-specific size is a
+within-device statement, and the shared rungs are what let ratios travel between pods.  When VRAM
+cannot be queried (any non-NVIDIA device today) nothing is clamped and `devmax` resolves to
+nothing, rather than guessing a ceiling.
 
 Presets and explicit sizes mix freely: `--sizes=small,8192`.  Other knobs: `--iters=N`
 (default 100), `--warmup=N` (default 20), `--chapters=a,b` to restrict, `--scratch` to write
@@ -218,6 +246,148 @@ python scripts/cull-old-benchmarks.py --dry-run
 python scripts/cull-old-benchmarks.py
 ```
 
+## Harness Ground Rules
+
+These are **requirements**, and `scripts/crisp_bench/matmul.py` enforces them unless a row says
+otherwise.  Status as of 2026-09-12.  The plain call is the right call:
+
+```bash
+./scripts/bench-intel.sh                       # Intel
+python scripts/crisp_bench/matmul.py --sweep-all --auto-profile   # NVIDIA pod
+```
+
+Flag names: `matmul.py` takes `--precision=fast|ieee` and `--ftz` (or `--sweep-all` for all three
+passes), and translates them into the compiler's own `--math-precision=fast|ieee` and
+`--denormal-handling=preserve|ftz`.
+
+### Precision — one precision per matmul ladder
+
+`--sweep-all` is the one universal call: it runs three passes, and each suite takes only the passes
+its rule allows.  The harness prints the rule at the top of each pass.
+
+| suite | element width | runs at | status |
+|---|---|---|---|
+| matmul | 16-bit (bf16 / fp16) | `fast` only | **Enforced** (`matmul_precision_ok`) |
+| matmul | 32-bit (tf32 / fp32) | `fast` only | **Enforced** |
+| matmul | 64-bit (fp64 — NVIDIA only; BMG has no fp64 MMA) | `ieee` + preserve only | **Enforced** |
+| matmul | — | `ieee` + FTZ | runs **nothing** — that pass exists for scalar suites |
+| reduction | — | `fast`, `ieee`, `ieee` + FTZ | **NOT IMPLEMENTED.** `benchmarks/reduction/run.py` passes no precision or denormal flags at all. |
+
+`report.py` reads the same rule back: `fast` for 16/32-bit, `ieee` (falling back to `fast`) for fp64.
+
+### Sizes
+
+- **The matmul ladder runs to 16384 on every device, BMG included, §1 included.**  Behaviour
+  changes at those sizes, which is the reason to measure them.  (Until 2026-09-11 `bench-intel.sh`
+  stopped at 8192.)
+- **Above 16384, as far as device memory allows**, per ladder (see the per-width table under
+  *Run the Benchmarks*).  BMG reports 11.6 GB; its 1 GiB *single-allocation* cap is lifted in the
+  Crisp L0 fixture by the relaxed-allocation-limits extension, and SYCL has run bf16 at 32768 on
+  BMG.  **Enforced on both vendors:** NVIDIA memory comes from `nvidia-smi`, Intel from Level Zero
+  (`scripts/hw-profile/query-l0.cpp`, built with the fixture's toolchain).  BMG: 11.6 GiB, so the
+  ceiling is N ≈ 24,900 for tf32 and ≈ 30,500 for bf16.  Caveat: inside the Docker container the
+  driver also caps a **single allocation at 1 GiB**, which the fixture lifts and the generated L0
+  harness does not — so a chap1–3 point above 16384 tf32 would fail to allocate.
+- A size can still be **declined by the pacer** (below) when it cannot finish inside its timeout.
+  That is printed as a `SKIP` line with the reason, so the gap in the table is attributable.
+
+### Iteration counts — fewer at larger sizes
+
+Every (chapter, contender) walks its size ladder smallest first, and each point's measured
+per-iteration time predicts the next one's (× (N/N_prev)³, matmul's work growth).
+
+| size | warmup + iterations |
+|---|---|
+| ≤ 1024 on Intel, ≤ 2048 on NVIDIA | the requested counts (default 20 + 100) |
+| above that | scaled down by (ref/N)³ — floor 2 + 5 — **and further** to a time budget of about 50 ms of warmup and 500 ms of timed loop (plan/benchmark-harness.md §3) |
+| iteration predicted ≥ 1 s | floor **1 + 3**: JIT, first touch and cache fill are all paid inside the first launch, and a median of 3 is enough when each sample takes seconds |
+
+A fast kernel is unaffected until its iterations get slow; a slow one stops paying for samples it
+does not need.  The counts that actually ran are recorded in each result point
+(`configuration.warmup` / `configuration.iters`).  **Enforced** in every sweep function
+(`SizePacer`).
+
+Measured example, BMG `chap0_naive` (no tensor cores): 22.8 s per iteration at 8192 — the old fixed
+2 + 5 made that one point cost ~160 s; it is now 1 + 3, ~92 s.
+
+### Fill and verification — one convention, every harness
+
+Every matmul harness — Crisp fixtures, controls, CUTLASS / SYCL-TLA peers, cuBLAS / cuBLASLt / oneMKL /
+oneDNN ceilings, on both vendors — fills and verifies the same way (2026-09-13; code in
+`benchmarks/matmul/common/`):
+
+- **Fill:** `A[flat] = flat % 5`, `B[flat] = flat % 3`, written **on the device**. Values 0..4 are exact in
+  f32, f16 and bf16; 16-bit operands are written as host-encoded bit patterns (see BUG 059 for why the
+  device never converts a float there). **fp64 keeps its precision oracle:** operands are scaled by
+  `1 + 2^-25`, which single precision cannot represent, so a library computing in fp32 is still caught.
+- **Verify:** a strided ~64 × 64 sample over the whole of C, expected values **recomputed from the
+  formula** through each harness's own strides (cuBLAS/cuBLASLt are column-major; the controls and
+  CUTLASS stage B column-major; SYCL and the L0 fixture are row-major). Only the sampled rows or columns
+  of C are read back. Tolerance 1e-3 relative, 1e-10 at fp64. Section 4 applies its activation to the
+  expected value. **Enforced** in every harness.
+
+| runtime | implementation | used by |
+|---|---|---|
+| Level Zero | `common/fill.crisp` (a Crisp kernel) | the Crisp L0 fixture |
+| SYCL | `common/fill_sycl.hpp` | oneMKL, oneDNN, SYCL-TLA, SYCL controls |
+| CUDA | `common/fill_cuda.cuh` | cuBLAS, cuBLASLt, CUTLASS, CUDA controls, the Crisp CUDA fixture |
+| (all) | `common/fill_verify.h` | the convention and the sampler |
+
+**Why.** The harnesses had drifted into two conventions, both filling on the CPU. Measured on an H100 at
+N = 77824, the CPU fill took 201 s of a 219 s setup — longer than the timeout, before the GPU did any work.
+The competitor convention (A = B = 1, check every cell equals K) was also the weaker check: a kernel that
+reads the wrong row or tile still sums to K. Moving to the index fill exposed, on first run:
+
+- the **16-bit SYCL controls** (`sec2_top_bf16` / `sec2_top_fp16`) compute a wrong result at every size
+  except 2048 — their Control cells had been timing an incorrect kernel;
+- the **§4 SYCL-TLA fused peers** printed a hardcoded `correct: true` and never checked anything;
+- the **tf32 cuBLAS ceiling** (and its §3 copy) zeroed A and B and never checked C.
+
+**Crisp NVIDIA targets all use the CUDA fixture** (`crisp/bench_harness.cu`), tf32 included. The
+generated `crisp-hoist-cuda` harness remains only as an automatic fallback when the fixture produces no
+verified point. The H100 SXM tf32 Crisp rows of 2026-09-13 predate this and came from the generated
+harness. On Intel, `chap1`–`chap3` still use the generated L0 harness (the fixture cannot bind SLM
+arguments); it verifies with a strided sample but still fills on the CPU, which is small at BMG's sizes.
+
+### Time limits
+
+- **No benchmark process may run longer than 5 minutes** (`BENCH_TIMEOUT = 300`), and above
+  N = 16384, 150 s.  Of 3,152 points recorded on every device before 2026-09-12 the longest timed
+  loop was 148 s and none exceeded 300 s.  **Enforced.**  (It was 900 s, sized for the CUDA
+  auto-bench's host reference, and on 2026-09-12 cost two `chap0_naive` points at 16384 fifteen
+  minutes each for nothing.)
+- **A point predicted to exceed its timeout is not attempted**, and neither is any larger size for
+  that contender.  A point that fails after using most of its timeout stops the ladder the same
+  way.  **Enforced** (`SizePacer`).  On BMG this declines `chap0_naive` at 16384 up front:
+  predicted ~730 s from the measured 8192 point.
+
+### Fenced chapters
+
+- `_`-prefixed directories (`_probe_*`, `_variant_*`, `_iso`, `_kdepth`) are diagnostics, some
+  numerically wrong by construction.  **They run only when named in `--chapters`**, and **their
+  results always go to `results/scratch/`**, whatever flags were passed.  **Enforced** (`_skip` in
+  `matmul.py`; `BenchmarkSweep.save` in `harness.py`).
+
+### Known issue: GPU resets on BMG (Intel)
+
+Sweeps on the Windows/WSL2 BMG box lose some **competitor** points (oneMKL, SYCL-TLA, SYCL_Apples) to
+`UR_RESULT_ERROR_DEVICE_LOST`.  Crisp's L0 harnesses are not affected.  Measured 2026-09-12, from the
+driver's own reset reports (Windows **Application** log, WER event 1001, `LiveKernelEvent 0x141`):
+
+| reset type | cause | status |
+|---|---|---|
+| `OCL_PAGEFAULT` | the SYCL Unified Runtime's **Level Zero V2** adapter, on short jobs: oneMKL tf32 at N=8192 lost the device in 5 of 12 runs on V2, 0 of 12 on V1 (`SYCL_UR_USE_LEVEL_ZERO_V2=0`), at identical throughput | **left on V2 deliberately** — Intel is moving to V2, and the benchmarks track it |
+| `GPULOOP` / `GUC_SCHEDULER_ERROR` | long compute jobs on the GPU that also drives the display trip the Windows watchdog (default 2 s); the screen blanks | open — e.g. the chap1–3 SYCL controls at N=16384 (4–7 s per iteration) |
+
+So the Intel report has **holes in competitor columns** that are not results.  To be re-measured on a
+machine with no display attached.  Workarounds, not applied: `SYCL_UR_USE_LEVEL_ZERO_V2=0` for the first;
+raising `TdrDelay`/`TdrDdiDelay` in `HKLM\System\CurrentControlSet\Control\GraphicsDrivers` for the second.
+
+### Hardware profile
+
+- Every sweep compiles against a profile matched to the device, and every result records which
+  profile and how it was obtained.  **Enforced** — see [Hardware Profiles](#hardware-profiles).
+
 ## Precision and FTZ (Flush-To-Zero)
 
 `--sweep-all` runs three math configurations:
@@ -249,9 +419,8 @@ Two independent reasons the other cells are not results:
   and reuse that PTX across every size and precision, so the advanced chapters report the *same*
   Crisp throughput in all three columns.  Three passes there produce one number, thrice.
 
-So `--sweep-all` is harmless but largely redundant for matmul; `--precision=fast` plus a
-`--precision=ieee` pass for the 64-bit ladder is the honest minimum.  `--sweep-all` does cover
-both, which is why the pod script uses it.
+So matmul runs at exactly one precision per ladder, and `matmul.py` enforces it — see
+[Harness Ground Rules](#harness-ground-rules).
 
 ## Hardware Profiles
 
@@ -311,6 +480,52 @@ Known profiles: bmg, h100 -- none of them describes it.
    resembles a listed one does not belong there: H100 PCIe and H100 NVL are the same die and
    differ only in SM count, and that single key is enough to mis-size every dispatch.
 
+### Generating a profile on the machine (`--auto-profile`)
+
+On a rented pod you rarely get to choose the part — RunPod has H100 PCIe one day and H100 NVL
+or H200 the next — and until 2026-09-12 a new device cost an edit, a push, a re-clone and a
+rebuild before the first kernel compiled, because the harness passed only the
+`--hardware-profile` *flag* and never a profile **source file**.  Crisp has always supported the
+cheaper route; the harness just never used it:
+
+```bash
+crisp-compile my-profile.crisp kernel.crisp --hardware-profile=my-device
+```
+
+So the sweep can now build the profile itself:
+
+```bash
+# Query this device, write benchmarks/profiles/<device>.crisp, compile everything against it
+python scripts/crisp_bench/matmul.py --sweep-all --auto-profile
+
+# ...or supply one you wrote by hand
+python scripts/crisp_bench/matmul.py --sweep-all --profile-file=benchmarks/profiles/h200.crisp
+```
+
+`--auto-profile` builds and runs [`../scripts/hw-profile/query-cuda.cu`](../scripts/hw-profile/),
+which prints a paste-ready `def-hardware-profile` **named after the device** (`h100-nvl`, `h200`)
+with every key tagged QUERIED / ARCH / MEASURED.  It looks for `nvcc` under `/usr/local/cuda/bin`
+as well as on `PATH`, because cloud images generally do not put it there.  NVIDIA only — the
+Intel probe needs Level Zero headers the benchmark container lacks, and `bmg` is already
+validated, so the case does not arise.
+
+> **A generated profile is QUERIED, not VALIDATED, and the results say so.**
+> The MEASURED tier stays absent — `:tile-visit-strip-width` above all, which is +63% on BMG and
+> −14.4% on H100 and which no query can answer.  Absent selects linear, which is safe but not
+> tuned.  Every result file records `profile_provenance` (`builtin` / `file` / `auto` / `none`)
+> and `REPORT.md` prints it in the device table with a footnote.  This distinction is the whole
+> point of the gate; automating the easy half must not quietly erase it.
+>
+> For a **Hopper** part the gap is small: `query-cuda.cu` answers the QUERIED tier and states the
+> ARCH tier correctly for sm_90, so an H200 profile is really `h100` with `:compute-units` and
+> `:l2-cache-size` corrected.  For a part on a **different architecture** it is not — `:mma-shapes`
+> and `:wgmma-shapes` become real decisions, and the generated file should be reviewed, not
+> trusted.
+
+To promote a generated profile to a validated builtin: sweep its measured keys, add them, move
+the form into `register-builtin-hardware-profiles` (`src/mma.lisp`), and add the device to
+`DEVICE_PROFILE_MAP`.
+
 ### Escape hatches
 
 ```bash
@@ -320,6 +535,7 @@ python scripts/crisp_bench/matmul.py --allow-unprofiled
 
 # Exercise the gate without the hardware (useful before renting a pod)
 python scripts/crisp_bench/matmul.py --pretend-device="NVIDIA H200"
+python scripts/crisp_bench/matmul.py --pretend-device="NVIDIA H200" --auto-profile   # and the way out
 ```
 
 Every result file records which profile it was compiled against, under

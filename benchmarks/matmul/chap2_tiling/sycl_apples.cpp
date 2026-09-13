@@ -7,6 +7,7 @@
  * Run:   ./sycl_apples [M] [N] [K] [warmup] [iters]
  */
 #include <sycl/sycl.hpp>
+#include "../common/fill_sycl.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -30,8 +31,8 @@ int main(int argc, char** argv) {
     float* A = sycl::malloc_shared<float>((size_t)M * K, q);
     float* B = sycl::malloc_shared<float>((size_t)K * N, q);
     float* C = sycl::malloc_shared<float>((size_t)M * N, q);
-    for (size_t i = 0; i < (size_t)M * K; i++) A[i] = 1.0f;
-    for (size_t i = 0; i < (size_t)K * N; i++) B[i] = 1.0f;
+    crisp_bench::sycl_fill(q, A, (size_t)M * K, crisp_bench::FILL_MOD_A);
+    crisp_bench::sycl_fill(q, B, (size_t)K * N, crisp_bench::FILL_MOD_B);
 
     const int GM = ((M + TS - 1) / TS) * TS;
     const int GN = ((N + TS - 1) / TS) * TS;
@@ -71,10 +72,9 @@ int main(int argc, char** argv) {
         kt[i] = (double)(t1 - t0) / 1000.0;   // ns -> us
     }
 
-    double expected = (double)K, maxerr = 0.0;
-    for (size_t i = 0; i < (size_t)M * N; i++)
-        maxerr = std::max(maxerr, (double)std::fabs(C[i] - expected));
-    bool correct = maxerr < expected * 1e-3;
+    const crisp_bench::VerifyResult vr = crisp_bench::sycl_verify(q, C, (uint64_t)M, (uint64_t)N, (uint64_t)K);
+    double maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     std::sort(kt.begin(), kt.end());
     double k_med = kt[iters / 2], k_min = kt[0];

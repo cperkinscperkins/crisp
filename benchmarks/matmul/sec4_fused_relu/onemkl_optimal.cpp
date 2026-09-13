@@ -26,6 +26,7 @@
  * Run:   ./onemkl_optimal [M] [N] [K] [warmup] [iters]
  */
 #include <sycl/sycl.hpp>
+#include "../common/fill_sycl.hpp"
 #include <oneapi/mkl.hpp>
 #include <algorithm>
 #include <cmath>
@@ -48,13 +49,10 @@ int main(int argc, char** argv) {
     float* B = sycl::malloc_device<float>((size_t)K * N, q);
     float* C = sycl::malloc_device<float>((size_t)M * N, q);
 
-    std::vector<float> h_A((size_t)M * K, 1.0f);
-    std::vector<float> h_B((size_t)K * N, 1.0f);
-    std::vector<float> h_C((size_t)M * N, 0.0f);
 
-    q.memcpy(A, h_A.data(), (size_t)M * K * sizeof(float)).wait();
-    q.memcpy(B, h_B.data(), (size_t)K * N * sizeof(float)).wait();
-    q.memcpy(C, h_C.data(), (size_t)M * N * sizeof(float)).wait();
+    crisp_bench::sycl_fill(q, A, (size_t)M * K, crisp_bench::FILL_MOD_A);
+    crisp_bench::sycl_fill(q, B, (size_t)K * N, crisp_bench::FILL_MOD_B);
+    crisp_bench::sycl_zero(q, C, (size_t)M * N);
 
 #ifdef FAST_MATH
     auto comp_mode = oneapi::mkl::blas::compute_mode::float_to_tf32;
@@ -108,11 +106,9 @@ int main(int argc, char** argv) {
         gt[i] = (double)(g1 - g0) / 1000.0;
     }
 
-    q.memcpy(h_C.data(), C, (size_t)M * N * sizeof(float)).wait();
-    double expected = (double)K, maxerr = 0.0;      // A=B=1 => C == K, and relu(K) == K
-    for (size_t i = 0; i < total; i++)
-        maxerr = std::max(maxerr, (double)std::fabs(h_C[i] - expected));
-    bool correct = maxerr < expected * 1e-3;
+    const crisp_bench::VerifyResult vr = crisp_bench::sycl_verify(q, C, (uint64_t)M, (uint64_t)N, (uint64_t)K, [](double x) { return x > 0.0 ? x : 0.0; });
+    double maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     std::sort(kt.begin(), kt.end());
     std::sort(gt.begin(), gt.end());

@@ -18,6 +18,7 @@
 // nvcc -O3 -arch=sm_90 cublas_ceiling_fp16.cu -lcublas -o cublas_ceiling_fp16
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
+#include "../common/fill_cuda.cuh"
 #include <cuda_fp16.h>
 #include <algorithm>
 #include <chrono>
@@ -42,16 +43,13 @@ int main(int argc, char** argv) {
   // to zero and checks NOTHING; a ceiling that never verifies can be mis-specified into a
   // different (faster) computation and read as a legitimate number, which is the failure this
   // benchmark tree has been burned by twice.  Verified ceilings only.
-  std::vector<__half> hA((size_t)M * K, __float2half(1.0f));
-  std::vector<__half> hB((size_t)K * N, __float2half(1.0f));
-  std::vector<float>  hC((size_t)M * N, 0.0f);
 
   __half *dA, *dB; float *dC;
-  CK(cudaMalloc(&dA, hA.size() * sizeof(__half)));
-  CK(cudaMalloc(&dB, hB.size() * sizeof(__half)));
-  CK(cudaMalloc(&dC, hC.size() * sizeof(float)));
-  CK(cudaMemcpy(dA, hA.data(), hA.size() * sizeof(__half), cudaMemcpyHostToDevice));
-  CK(cudaMemcpy(dB, hB.data(), hB.size() * sizeof(__half), cudaMemcpyHostToDevice));
+  CK(cudaMalloc(&dA, ((size_t)M * K) * sizeof(__half)));
+  CK(cudaMalloc(&dB, ((size_t)K * N) * sizeof(__half)));
+  CK(cudaMalloc(&dC, ((size_t)M * N) * sizeof(float)));
+  crisp_bench::cuda_fill_encoded(dA, (uint64_t)M * K, crisp_bench::FILL_MOD_A, "f16");
+  crisp_bench::cuda_fill_encoded(dB, (uint64_t)K * N, crisp_bench::FILL_MOD_B, "f16");
 
   cublasHandle_t h;
   cublasCreate(&h);
@@ -74,10 +72,9 @@ int main(int argc, char** argv) {
     cudaEventElapsedTime(&kt[i], s, e);
   }
 
-  CK(cudaMemcpy(hC.data(), dC, hC.size() * sizeof(float), cudaMemcpyDeviceToHost));
-  double expected = (double)K, maxerr = 0.0;
-  for (size_t i = 0; i < hC.size(); i++) maxerr = std::max(maxerr, (double)std::fabs(hC[i] - expected));
-  bool correct = maxerr < expected * 1e-3;
+  const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(dC, "f32", (uint64_t)M, (uint64_t)N, (uint64_t)K, crisp_bench::cm(M), crisp_bench::cm(K), crisp_bench::cm(M));
+  double maxerr = vr.max_abs_err;
+  bool correct = vr.verified;
 
   std::sort(kt.begin(), kt.end());
   double k_med = kt[iters / 2] * 1000.0, k_min = kt[0] * 1000.0;

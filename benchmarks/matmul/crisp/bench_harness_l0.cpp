@@ -31,14 +31,17 @@
 //          CRISP_MATMUL_GRID    "strided" | "one-thread-per"                  (default "strided")
 //          CRISP_MATMUL_TILE    output tile "TM,TN", for GRID=strided         (default "32,64")
 //          CRISP_MATMUL_ELEM    A/B element type: "f32" | "bf16" | "f16"      (default "f32")
+//          CRISP_FILL_SPV       common/fill.crisp compiled to SPIR-V          (required)
 //   stdout: one JSON object -- verified / wall_time_ms / kernel_median_us / gflops
 //
-// MEMORY (endeavour 166).  A, B and C are DEVICE allocations with pinned-host staging
-// mirrors; the host fills the mirrors, one command list copies them across before warmup,
-// and C is copied back before verification.  It used to be shared USM, which was easier
-// and measurably worse: at N=2048 device is 1.089x shared over five reps with
-// non-overlapping ranges, and ~1.00x at 1024 and 4096.  It also made the Intel section
-// compare Crisp-on-shared against oneMKL-on-device.
+// MEMORY (endeavour 166; fill moved to the device 2026-09-13).  A, B and C are DEVICE allocations.
+// A and B are filled ON THE DEVICE by common/fill.crisp and C is zeroed there, so nothing is staged
+// from the host: at N=77824 the CPU fill this replaced took 201 s of a 219 s setup (measured on an
+// H100 through the CUDA fixture).  Verification reads back only the sampled spans of C and
+// recomputes A and B from the fill formula (common/fill_verify.h).  Device memory rather than shared
+// USM, as before: at N=2048 device is 1.089x shared over five reps with non-overlapping ranges, and
+// ~1.00x at 1024 and 4096, and shared made the Intel section compare Crisp-on-shared against
+// oneMKL-on-device.
 //
 // What the move is NOT is a fix for page migration.  Probed before the change: prefetching
 // the shared pages changed nothing, and a cold single launch was the same speed as the
@@ -60,6 +63,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include "../common/fill_verify.h"
 #include <string>
 #include <vector>
 #include <chrono>
@@ -91,42 +95,6 @@ static std::vector<uint32_t> parse_csv(const std::string &s, size_t want, uint32
     return out;
 }
 
-// --- 16-bit encodings.  bf16 is the top half of an f32; f16 is IEEE half. -----------------
-static uint16_t f32_to_bf16(float f) {
-    uint32_t b;
-    std::memcpy(&b, &f, 4);
-    return (uint16_t)(b >> 16);            // truncate; the fill values are exact in bf16
-}
-static float bf16_to_f32(uint16_t h) {
-    uint32_t b = (uint32_t)h << 16;
-    float f;
-    std::memcpy(&f, &b, 4);
-    return f;
-}
-static uint16_t f32_to_f16(float f) {
-    uint32_t x;
-    std::memcpy(&x, &f, 4);
-    uint32_t sign = (x >> 16) & 0x8000u;
-    int32_t exp = (int32_t)((x >> 23) & 0xFF) - 127 + 15;
-    uint32_t man = x & 0x7FFFFFu;
-    if (exp <= 0) return (uint16_t)sign;
-    if (exp >= 31) return (uint16_t)(sign | 0x7C00u);
-    return (uint16_t)(sign | ((uint32_t)exp << 10) | (man >> 13));
-}
-static float f16_to_f32(uint16_t h) {
-    uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
-    uint32_t exp = (h >> 10) & 0x1F;
-    uint32_t man = h & 0x3FFu;
-    if (exp == 0) { if (!man) { float f; uint32_t b = sign; std::memcpy(&f, &b, 4); return f; }
-                    exp = 1; while (!(man & 0x400u)) { man <<= 1; exp--; } man &= 0x3FFu; }
-    else if (exp == 31) { uint32_t b = sign | 0x7F800000u | (man << 13); float f;
-                          std::memcpy(&f, &b, 4); return f; }
-    uint32_t b = sign | ((exp - 15 + 127) << 23) | (man << 13);
-    float f;
-    std::memcpy(&f, &b, 4);
-    return f;
-}
-
 int main(int argc, char **argv) {
     if (argc < 6) {
         std::cerr << "usage: " << argv[0] << " M N K warmup iters\n";
@@ -141,6 +109,10 @@ int main(int argc, char **argv) {
     const std::string spv_path = env_or("CRISP_MATMUL_SPV", "");
     if (spv_path.empty()) { std::cerr << "CRISP_MATMUL_SPV not set\n"; return 1; }
     const std::string kname = env_or("CRISP_MATMUL_KERNEL", "matmul");
+    // The operand fill runs ON THE DEVICE, through benchmarks/matmul/common/fill.crisp compiled to
+    // SPIR-V.  Required, not optional: a silent host fallback is how the harnesses drifted apart.
+    const std::string fill_spv_path = env_or("CRISP_FILL_SPV", "");
+    if (fill_spv_path.empty()) { std::cerr << "CRISP_FILL_SPV not set (compile benchmarks/matmul/common/fill.crisp)\n"; return 1; }
     const std::string elem  = env_or("CRISP_MATMUL_ELEM", "f32");
     const std::string gmode = env_or("CRISP_MATMUL_GRID", "strided");
     const auto local = parse_csv(env_or("CRISP_MATMUL_LOCAL", "16,1,1"), 3, 1);
@@ -231,6 +203,36 @@ int main(int argc, char **argv) {
     const double kernel_create_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - kc_t0).count();
 
+    // ---- fill kernel (common/fill.crisp) --------------------------------------------------
+    std::vector<uint8_t> fill_spv;
+    {
+        FILE *fp = std::fopen(fill_spv_path.c_str(), "rb");
+        if (!fp) { std::cerr << "cannot open " << fill_spv_path << "\n"; return 1; }
+        std::fseek(fp, 0, SEEK_END); long sz = std::ftell(fp); std::fseek(fp, 0, SEEK_SET);
+        fill_spv.resize((size_t)sz);
+        if (std::fread(fill_spv.data(), 1, (size_t)sz, fp) != (size_t)sz) { std::fclose(fp); return 1; }
+        std::fclose(fp);
+    }
+    ze_module_desc_t fmdesc{ZE_STRUCTURE_TYPE_MODULE_DESC};
+    fmdesc.format = ZE_MODULE_FORMAT_IL_SPIRV;
+    fmdesc.inputSize = fill_spv.size();
+    fmdesc.pInputModule = fill_spv.data();
+    fmdesc.pBuildFlags = "";
+    ze_module_handle_t fill_module;
+    ze_module_build_log_handle_t fblog = nullptr;
+    if (zeModuleCreate(ctx, device, &fmdesc, &fill_module, &fblog) != ZE_RESULT_SUCCESS) {
+        size_t n = 0; zeModuleBuildLogGetString(fblog, &n, nullptr);
+        std::vector<char> log(n + 1, 0); zeModuleBuildLogGetString(fblog, &n, log.data());
+        std::cerr << "fill module build failed:\n" << log.data() << "\n"; return 2;
+    }
+    // f32 operands: fill_f32.  16-bit operands (f16, bf16): fill_u16, writing host-encoded bit patterns
+    // (see fill_patterns16 in common/fill_verify.h for why the device never converts a float here).
+    const std::string fill_kname = ab16 ? "fill_u16" : "fill_f32";
+    ze_kernel_desc_t fkdesc{ZE_STRUCTURE_TYPE_KERNEL_DESC};
+    fkdesc.pKernelName = fill_kname.c_str();
+    ze_kernel_handle_t fill_kernel;
+    ZE_OK(zeKernelCreate(fill_module, &fkdesc, &fill_kernel), "fillKernelCreate");
+
     // ---- buffers ------------------------------------------------------------------------
     const uint64_t ea = M * K, eb = K * N, ec = M * N;
     // A SINGLE allocation past the device's maxMemAllocSize is refused with
@@ -244,33 +246,14 @@ int main(int argc, char **argv) {
         ZE_STRUCTURE_TYPE_RELAXED_ALLOCATION_LIMITS_EXP_DESC, nullptr,
         ZE_RELAXED_ALLOCATION_LIMITS_EXP_FLAG_MAX_SIZE};
     ze_device_mem_alloc_desc_t dmem{ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC, &relaxed};
-    ze_host_mem_alloc_desc_t hmem{ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC};
     void *A = nullptr, *B = nullptr, *C = nullptr;      // what the KERNEL sees
-    void *hA = nullptr, *hB = nullptr, *hC = nullptr;   // what the HOST fills and verifies
     ZE_OK(zeMemAllocDevice(ctx, &dmem, ea * ab_bytes, 64, device, &A), "allocA");
     ZE_OK(zeMemAllocDevice(ctx, &dmem, eb * ab_bytes, 64, device, &B), "allocB");
     ZE_OK(zeMemAllocDevice(ctx, &dmem, ec * 4,        64, device, &C), "allocC");
-    // Pinned host USM rather than malloc: an unpinned staging buffer makes the driver copy
-    // through a bounce buffer of its own, so the H2D cost would stop being one thing.
-    ZE_OK(zeMemAllocHost(ctx, &hmem, ea * ab_bytes, 64, &hA), "allocHA");
-    ZE_OK(zeMemAllocHost(ctx, &hmem, eb * ab_bytes, 64, &hB), "allocHB");
-    ZE_OK(zeMemAllocHost(ctx, &hmem, ec * 4,        64, &hC), "allocHC");
-
-    // Deterministic, small-integer fill: exact in bf16/f16/f32 alike, so a mismatch is a real
-    // error and never a rounding artifact.
-    auto seta = [&](uint64_t i, float v) {
-        if (elem == "bf16")     ((uint16_t *)hA)[i] = f32_to_bf16(v);
-        else if (elem == "f16") ((uint16_t *)hA)[i] = f32_to_f16(v);
-        else                    ((float *)hA)[i] = v;
-    };
-    auto setb = [&](uint64_t i, float v) {
-        if (elem == "bf16")     ((uint16_t *)hB)[i] = f32_to_bf16(v);
-        else if (elem == "f16") ((uint16_t *)hB)[i] = f32_to_f16(v);
-        else                    ((float *)hB)[i] = v;
-    };
-    for (uint64_t i = 0; i < ea; ++i) seta(i, (float)(i % 5));
-    for (uint64_t i = 0; i < eb; ++i) setb(i, (float)(i % 3));
-    std::memset(hC, 0, ec * 4);
+    // No host mirrors of A, B or C any more: the operands are filled on the device
+    // (common/fill.crisp), and verification recomputes them from the formula and reads back only
+    // sampled spans of C (common/fill_verify.h).  Measured 2026-09-13 on an H100: the CPU fill
+    // this replaces took 201 s of a 219 s setup at N=77824.
 
     // ---- arguments: 9 per rank-2 tensor -------------------------------------------------
     auto bind = [&](uint32_t base, void *ptr, uint64_t r, uint64_t c, uint64_t esz) -> bool {
@@ -353,15 +336,62 @@ int main(int argc, char **argv) {
     ZE_OK(zeCommandListAppendLaunchKernel(cl_meas, kernel, &grid, ev, 0, nullptr), "appendMeas");
     ZE_OK(zeCommandListClose(cl_meas), "closeMeas");
 
-    // ---- stage host -> device ------------------------------------------------------------
+    // ---- device fill of A and B (common/fill.crisp) -----------------------------------------
+    // One list per operand, executed and synchronised before the next: the kernel's arguments are
+    // re-set between them, and nothing about the fill can land in the measured region.
+    const auto fill_t0 = std::chrono::steady_clock::now();
+    auto device_fill = [&](void *ptr, uint64_t rows, uint64_t cols, uint64_t modulus) -> bool {
+        uint64_t byte_size = rows * cols * ab_bytes, off0 = 0, off1 = 0, str0 = cols, str1 = 1,
+                 ext0 = rows, ext1 = cols, len = rows * cols;
+        struct { uint32_t idx; size_t sz; const void *p; } as[] = {
+            {0, sizeof(void *), &ptr},    {1, sizeof(uint64_t), &byte_size},
+            {2, sizeof(uint64_t), &off0}, {3, sizeof(uint64_t), &off1},
+            {4, sizeof(uint64_t), &str0}, {5, sizeof(uint64_t), &str1},
+            {6, sizeof(uint64_t), &ext0}, {7, sizeof(uint64_t), &ext1},
+            {8, sizeof(uint64_t), &len},
+            {9, sizeof(uint64_t), &rows}, {10, sizeof(uint64_t), &cols}, {11, sizeof(uint64_t), &modulus},
+        };
+        for (auto &a : as)
+            if (zeKernelSetArgumentValue(fill_kernel, a.idx, a.sz, a.p) != ZE_RESULT_SUCCESS) {
+                std::cerr << "fill setArg " << a.idx << " failed\n"; return false;
+            }
+        if (ab16) {                                   // fill_u16: args 12..16 = patterns for 0..4
+            uint16_t pat[5];
+            crisp_bench::fill_patterns16(elem.c_str(), pat);
+            for (uint32_t v = 0; v < 5; ++v)
+                if (zeKernelSetArgumentValue(fill_kernel, 12 + v, sizeof(uint16_t), &pat[v]) != ZE_RESULT_SUCCESS) {
+                    std::cerr << "fill setArg pattern " << v << " failed\n"; return false;
+                }
+        }
+        // Each step named on failure: a bare "fill failed" cost a debugging round the first time.
+        auto step = [](ze_result_t rc, const char *what) {
+            if (rc != ZE_RESULT_SUCCESS) std::cerr << "device fill: " << what << " failed: 0x" << std::hex << rc << std::dec << std::endl;
+            return rc == ZE_RESULT_SUCCESS;
+        };
+        if (!step(zeKernelSetGroupSize(fill_kernel, 16, 16, 1), "setGroupSize")) return false;
+        ze_group_count_t fg{(uint32_t)((rows + 15) / 16), (uint32_t)((cols + 15) / 16), 1};
+        ze_command_list_handle_t cl_fill;
+        if (!step(zeCommandListCreate(ctx, device, &cld, &cl_fill), "listCreate")) return false;
+        bool ok = step(zeCommandListAppendLaunchKernel(cl_fill, fill_kernel, &fg, nullptr, 0, nullptr), "appendLaunch")
+               && step(zeCommandListClose(cl_fill), "listClose")
+               && step(zeCommandQueueExecuteCommandLists(queue, 1, &cl_fill, nullptr), "execute")
+               && step(zeCommandQueueSynchronize(queue, UINT64_MAX), "synchronize");
+        zeCommandListDestroy(cl_fill);
+        return ok;
+    };
+    if (!device_fill(A, M, K, crisp_bench::FILL_MOD_A)) { std::cerr << "device fill A failed\n"; return 2; }
+    if (!device_fill(B, K, N, crisp_bench::FILL_MOD_B)) { std::cerr << "device fill B failed\n"; return 2; }
+    const double fill_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - fill_t0).count();
+
+    // ---- stage: zero C on the device --------------------------------------------------------
     // Its own command list, executed once, AFTER cl_warm/cl_meas are built and BEFORE the
     // warmup loop -- so the copy can never land inside the measured region.
     {
         ze_command_list_handle_t cl_stage;
         ZE_OK(zeCommandListCreate(ctx, device, &cld, &cl_stage), "clStage");
-        ZE_OK(zeCommandListAppendMemoryCopy(cl_stage, A, hA, ea * ab_bytes, nullptr, 0, nullptr), "h2dA");
-        ZE_OK(zeCommandListAppendMemoryCopy(cl_stage, B, hB, eb * ab_bytes, nullptr, 0, nullptr), "h2dB");
-        ZE_OK(zeCommandListAppendMemoryCopy(cl_stage, C, hC, ec * 4,        nullptr, 0, nullptr), "h2dC");
+        const float zero_f = 0.0f;
+        ZE_OK(zeCommandListAppendMemoryFill(cl_stage, C, &zero_f, sizeof(float), ec * 4, nullptr, 0, nullptr), "zeroC");
         ZE_OK(zeCommandListClose(cl_stage), "closeStage");
         ZE_OK(zeCommandQueueExecuteCommandLists(queue, 1, &cl_stage, nullptr), "execStage");
         ZE_OK(zeCommandQueueSynchronize(queue, UINT64_MAX), "syncStage");
@@ -410,52 +440,35 @@ int main(int argc, char **argv) {
     //  not sampled", which the smax=64 sampling seventeen lines below has contradicted for
     //  some time.  A comment that misdescribes its own code is worse than none: it was cited
     //  as evidence that big-N verification was exhaustive and therefore slow.  It is neither.)
-    // Checked at EVERY size, not sampled.  A fast wrong kernel must never look like a win --
-    // that is exactly how a kernel storing nothing posted the second-best number in its section.
-    // C back to the host mirror.  A and B never come back: the verifier reads them through
-    // ga/gb, which now read the mirrors the host filled in the first place.
-    {
+    // A fast wrong kernel must never look like a win -- that is exactly how a kernel storing nothing
+    // posted the second-best number in its section.  Checked at EVERY size, through the shared
+    // strided sampler in common/fill_verify.h.
+    const auto verify_t0 = std::chrono::steady_clock::now();
+    crisp_bench::ReadSpan read_c = [&](uint64_t first, uint64_t count, std::vector<double> &out) {
+        // Not ZE_OK: that macro RETURNS from the enclosing function, which inside this lambda would
+        // skip filling `out` and let the verifier index an empty span.  A failed readback is fatal.
+        auto must = [](ze_result_t rc, const char *what) {
+            if (rc != ZE_RESULT_SUCCESS) { std::cerr << what << " failed: 0x" << std::hex << rc << std::endl; std::exit(2); }
+        };
+        std::vector<float> buf((size_t)count);
         ze_command_list_handle_t cl_back;
-        ZE_OK(zeCommandListCreate(ctx, device, &cld, &cl_back), "clBack");
-        ZE_OK(zeCommandListAppendMemoryCopy(cl_back, hC, C, ec * 4, nullptr, 0, nullptr), "d2hC");
-        ZE_OK(zeCommandListClose(cl_back), "closeBack");
-        ZE_OK(zeCommandQueueExecuteCommandLists(queue, 1, &cl_back, nullptr), "execBack");
-        ZE_OK(zeCommandQueueSynchronize(queue, UINT64_MAX), "syncBack");
+        must(zeCommandListCreate(ctx, device, &cld, &cl_back), "clBack");
+        must(zeCommandListAppendMemoryCopy(cl_back, buf.data(), (char *)C + first * sizeof(float),
+                                           count * sizeof(float), nullptr, 0, nullptr), "d2hSpan");
+        must(zeCommandListClose(cl_back), "closeBack");
+        must(zeCommandQueueExecuteCommandLists(queue, 1, &cl_back, nullptr), "execBack");
+        must(zeCommandQueueSynchronize(queue, UINT64_MAX), "syncBack");
         zeCommandListDestroy(cl_back);
-    }
-
-    bool verified = true;
-    double max_abs_err = 0.0;
-    uint64_t checked = 0;
-    {
-        auto ga = [&](uint64_t i) -> float {
-            if (elem == "bf16") return bf16_to_f32(((uint16_t *)hA)[i]);
-            if (elem == "f16")  return f16_to_f32(((uint16_t *)hA)[i]);
-            return ((float *)hA)[i];
-        };
-        auto gb = [&](uint64_t i) -> float {
-            if (elem == "bf16") return bf16_to_f32(((uint16_t *)hB)[i]);
-            if (elem == "f16")  return f16_to_f32(((uint16_t *)hB)[i]);
-            return ((float *)hB)[i];
-        };
-        // ~64x64 samples STRIDED across the whole output: bounded cost, full-extent coverage.
-        // A top-left corner (what the generated harness checks) is the same price and blind to
-        // every tile it does not reach.
-        const uint64_t smax = 64;
-        const uint64_t si = (M + smax - 1) / smax ? (M + smax - 1) / smax : 1;
-        const uint64_t sj = (N + smax - 1) / smax ? (N + smax - 1) / smax : 1;
-        for (uint64_t i = 0; i < M && verified; i += si)
-            for (uint64_t j = 0; j < N; j += sj) {
-                ++checked;
-                double acc = 0.0;
-                for (uint64_t k = 0; k < K; ++k) acc += (double)ga(i * K + k) * (double)gb(k * N + j);
-                double got = (double)((float *)hC)[i * N + j];
-                double err = std::fabs(got - acc);
-                double tol = 1e-3 * std::max(1.0, std::fabs(acc));
-                if (err > max_abs_err) max_abs_err = err;
-                if (err > tol) { verified = false; break; }
-            }
-    }
+        out.assign(buf.begin(), buf.end());
+    };
+    // A is M x K, B is K x N, C is M x N, all row-major as bound above.
+    const crisp_bench::VerifyResult vr = crisp_bench::verify_sampled(
+        M, N, K, {K, 1}, {N, 1}, {N, 1}, read_c);
+    const bool verified = vr.verified;
+    const double max_abs_err = vr.max_abs_err;
+    const uint64_t checked = vr.checked;
+    const double verify_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - verify_t0).count();
 
     std::cout << "{\n"
               << "  \"implementation\": \"crisp_l0_fixture\",\n"
@@ -480,6 +493,9 @@ int main(int argc, char **argv) {
               << (wall_us > 0.0 ? (2.0*(double)M*N*K)/(wall_us*1e3) : 0.0) << ",\n"
               << "  \"kernel_median_us\": " << median_us << ",\n"
               << "  \"kernel_min_us\": " << min_us << ",\n"
+              << "  \"fill\": \"device (common/fill.crisp)\",\n"
+              << "  \"fill_ms\": " << fill_ms << ",\n"
+              << "  \"verify_ms\": " << verify_ms << ",\n"
               << "  \"gflops\": " << gflops << "\n"
               << "}\n";
 
@@ -489,7 +505,8 @@ int main(int argc, char **argv) {
     zeCommandListDestroy(cl_meas);
     zeCommandQueueDestroy(queue);
     zeMemFree(ctx, A);  zeMemFree(ctx, B);  zeMemFree(ctx, C);
-    zeMemFree(ctx, hA); zeMemFree(ctx, hB); zeMemFree(ctx, hC);
+    zeKernelDestroy(fill_kernel);
+    zeModuleDestroy(fill_module);
     zeKernelDestroy(kernel);
     zeModuleDestroy(module_);
     zeContextDestroy(ctx);

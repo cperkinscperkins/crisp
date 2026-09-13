@@ -26,6 +26,7 @@
  */
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
+#include "../common/fill_cuda.cuh"
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -48,11 +49,10 @@ int main(int argc, char** argv) {
     int warmup = argc>4?atoi(argv[4]):20, iters = argc>5?atoi(argv[5]):100;
 
     const size_t total = (size_t)M * N;
-    std::vector<float> hA((size_t)M*K,1.0f), hB((size_t)K*N,1.0f), hC(total,0.0f);
     float *dA,*dB,*dC;
-    CK(cudaMalloc(&dA,hA.size()*4)); CK(cudaMalloc(&dB,hB.size()*4)); CK(cudaMalloc(&dC,total*4));
-    CK(cudaMemcpy(dA,hA.data(),hA.size()*4,cudaMemcpyHostToDevice));
-    CK(cudaMemcpy(dB,hB.data(),hB.size()*4,cudaMemcpyHostToDevice));
+    CK(cudaMalloc(&dA,((size_t)M * K)*4)); CK(cudaMalloc(&dB,((size_t)K * N)*4)); CK(cudaMalloc(&dC,total*4));
+    crisp_bench::cuda_fill_encoded(dA, (uint64_t)M * K, crisp_bench::FILL_MOD_A, "f32");
+    crisp_bench::cuda_fill_encoded(dB, (uint64_t)K * N, crisp_bench::FILL_MOD_B, "f32");
 
     cublasHandle_t h; cublasCreate(&h);
     float alpha = 1.0f, beta = 0.0f;
@@ -89,10 +89,9 @@ int main(int argc, char** argv) {
         cudaEventElapsedTime(&gt[i], s, mid);   // GEMM alone
     }
 
-    CK(cudaMemcpy(hC.data(),dC,total*4,cudaMemcpyDeviceToHost));
-    double expected=(double)K, maxerr=0.0;
-    for(size_t i=0;i<total;i++) maxerr=std::max(maxerr,(double)fabs(hC[i]-expected));
-    bool correct = maxerr < expected*1e-3;
+    const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(dC, "f32", (uint64_t)M, (uint64_t)N, (uint64_t)K, crisp_bench::cm(M), crisp_bench::cm(K), crisp_bench::cm(M), [](double x) { return x > 0.0 ? x : 0.0; });
+    double maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     std::sort(kt.begin(),kt.end());
     std::sort(gt.begin(),gt.end());

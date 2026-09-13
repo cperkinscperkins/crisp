@@ -10,6 +10,7 @@
  * Build: icpx -fsycl -O3 -Xs "-ze-opt-large-register-file" sycl_control_bf16.cpp -o sycl_control_bf16
  */
 #include <sycl/sycl.hpp>
+#include "../common/fill_sycl.hpp"
 #include <sycl/ext/oneapi/matrix/matrix.hpp>
 #include <sycl/ext/oneapi/experimental/prefetch.hpp>
 #include <algorithm>
@@ -38,13 +39,10 @@ int main(int argc, char** argv) {
     bfloat16* B = sycl::malloc_device<bfloat16>((size_t)K * N, q);
     float* C = sycl::malloc_device<float>((size_t)M * N, q);
 
-    std::vector<bfloat16> h_A((size_t)M * K, bfloat16(1.0f));
-    std::vector<bfloat16> h_B((size_t)K * N, bfloat16(1.0f));
-    std::vector<float> h_C((size_t)M * N, 0.0f);
 
-    q.memcpy(A, h_A.data(), (size_t)M * K * sizeof(bfloat16)).wait();
-    q.memcpy(B, h_B.data(), (size_t)K * N * sizeof(bfloat16)).wait();
-    q.memcpy(C, h_C.data(), (size_t)M * N * sizeof(float)).wait();
+    crisp_bench::sycl_fill(q, A, (size_t)M * K, crisp_bench::FILL_MOD_A);
+    crisp_bench::sycl_fill(q, B, (size_t)K * N, crisp_bench::FILL_MOD_B);
+    crisp_bench::sycl_zero(q, C, (size_t)M * N);
 
     int n_tiles_m = M / 32;
     int n_tiles_n = N / 32;
@@ -144,14 +142,11 @@ int main(int argc, char** argv) {
     double k_min = kt[0];
     double gflops = (2.0 * M * N * K) / (k_med / 1e6) / 1e9;
 
-    q.memcpy(h_C.data(), C, (size_t)M * N * sizeof(float)).wait();
 
     double maxerr = 0.0;
-    double expected = (double)K;
-    for (size_t i = 0; i < (size_t)M * N; i++) {
-        maxerr = std::max(maxerr, std::fabs((double)h_C[i] - expected));
-    }
-    bool correct = maxerr < (expected * 1e-2);
+    const crisp_bench::VerifyResult vr = crisp_bench::sycl_verify(q, C, (uint64_t)M, (uint64_t)N, (uint64_t)K);
+    maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     auto wall_end = std::chrono::high_resolution_clock::now();
     double wall_time_ms = std::chrono::duration<double, std::milli>(wall_end - wall_start).count();

@@ -6,6 +6,7 @@
  * Run:     ./cuda_apples [M] [N] [K] [warmup] [iters]
  */
 #include <cuda_runtime.h>
+#include "../common/fill_cuda.cuh"
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -34,11 +35,10 @@ int main(int argc, char** argv) {
     int M = argc>1?atoi(argv[1]):256, N = argc>2?atoi(argv[2]):256, K = argc>3?atoi(argv[3]):256;
     int warmup = argc>4?atoi(argv[4]):20, iters = argc>5?atoi(argv[5]):100;
 
-    std::vector<float> hA((size_t)M*K,1.0f), hB((size_t)K*N,1.0f), hC((size_t)M*N,0.0f);
     float *dA,*dB,*dC;
-    CK(cudaMalloc(&dA,hA.size()*4)); CK(cudaMalloc(&dB,hB.size()*4)); CK(cudaMalloc(&dC,hC.size()*4));
-    CK(cudaMemcpy(dA,hA.data(),hA.size()*4,cudaMemcpyHostToDevice));
-    CK(cudaMemcpy(dB,hB.data(),hB.size()*4,cudaMemcpyHostToDevice));
+    CK(cudaMalloc(&dA,((size_t)M * K)*4)); CK(cudaMalloc(&dB,((size_t)K * N)*4)); CK(cudaMalloc(&dC,((size_t)M * N)*4));
+    crisp_bench::cuda_fill_encoded(dA, (uint64_t)M * K, crisp_bench::FILL_MOD_A, "f32");
+    crisp_bench::cuda_fill_encoded(dB, (uint64_t)K * N, crisp_bench::FILL_MOD_B, "f32");
 
     dim3 block(16, 16), grid((N+15)/16, (M+15)/16);
     auto launch = [&](){ matmul_naive<<<grid,block>>>(dA,dB,dC,M,N,K); };
@@ -51,10 +51,9 @@ int main(int argc, char** argv) {
     for(int i=0;i<iters;i++){ cudaEventRecord(s); launch(); cudaEventRecord(e); cudaEventSynchronize(e);
         cudaEventElapsedTime(&kt[i],s,e); }
 
-    CK(cudaMemcpy(hC.data(),dC,hC.size()*4,cudaMemcpyDeviceToHost));
-    double expected=(double)K, maxerr=0.0;
-    for(size_t i=0;i<hC.size();i++) maxerr=std::max(maxerr,(double)fabs(hC[i]-expected));
-    bool correct = maxerr < expected*1e-3;
+    const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(dC, "f32", (uint64_t)M, (uint64_t)N, (uint64_t)K, crisp_bench::rm(K), crisp_bench::cm(K), crisp_bench::rm(N));
+    double maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     std::sort(kt.begin(),kt.end());
     float k_med=kt[iters/2], k_min=kt[0];

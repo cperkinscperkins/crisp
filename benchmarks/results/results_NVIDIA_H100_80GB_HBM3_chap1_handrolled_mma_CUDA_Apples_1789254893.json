@@ -1,0 +1,26 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-09-12T23:14:15.430476Z",
+    "hardware": {
+      "gpu_model": "NVIDIA H100 80GB HBM3",
+      "arch_target": "sm_90",
+      "environment": "runpod",
+      "vram_bytes": 85520809984,
+      "sm_count": null,
+      "hardware_profile": "h100-80gb-hbm3",
+      "profile_matched": false,
+      "profile_provenance": "auto",
+      "profile_source": "/root/crisp/benchmarks/profiles/h100-80gb-hbm3.crisp"
+    },
+    "crisp_commit": "cc116e8c",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "chap1_handrolled_mma",
+  "competitor": "CUDA_Apples",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [],
+  "is_canonical": true
+}

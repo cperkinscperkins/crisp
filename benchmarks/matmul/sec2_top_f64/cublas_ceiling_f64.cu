@@ -32,6 +32,7 @@
 // nvcc -O3 -arch=sm_90 -DPEDANTIC cublas_ceiling_f64.cu -lcublas -o cublas_ceiling_f64_pedantic
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
+#include "../common/fill_cuda.cuh"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -66,17 +67,13 @@ int main(int argc, char** argv) {
   int warmup = argc > 4 ? atoi(argv[4]) : 20;
   int iters  = argc > 5 ? atoi(argv[5]) : 100;
 
-  const double v = crisp_f64_oracle_value();
-  std::vector<double> hA((size_t)M * K, v);
-  std::vector<double> hB((size_t)K * N, v);
-  std::vector<double> hC((size_t)M * N, 0.0);
 
   double *dA, *dB, *dC;
-  CK(cudaMalloc(&dA, hA.size() * sizeof(double)));
-  CK(cudaMalloc(&dB, hB.size() * sizeof(double)));
-  CK(cudaMalloc(&dC, hC.size() * sizeof(double)));
-  CK(cudaMemcpy(dA, hA.data(), hA.size() * sizeof(double), cudaMemcpyHostToDevice));
-  CK(cudaMemcpy(dB, hB.data(), hB.size() * sizeof(double), cudaMemcpyHostToDevice));
+  CK(cudaMalloc(&dA, ((size_t)M * K) * sizeof(double)));
+  CK(cudaMalloc(&dB, ((size_t)K * N) * sizeof(double)));
+  CK(cudaMalloc(&dC, ((size_t)M * N) * sizeof(double)));
+  crisp_bench::cuda_fill_encoded(dA, (uint64_t)M * K, crisp_bench::FILL_MOD_A, "f64");
+  crisp_bench::cuda_fill_encoded(dB, (uint64_t)K * N, crisp_bench::FILL_MOD_B, "f64");
 
   cublasHandle_t h;
   CKB(cublasCreate(&h));
@@ -112,9 +109,11 @@ int main(int argc, char** argv) {
     cudaEventElapsedTime(&kt[i], s, e);
   }
 
-  CK(cudaMemcpy(hC.data(), dC, hC.size() * sizeof(double), cudaMemcpyDeviceToHost));
-  double maxerr = 0.0, maxrel = 0.0;
-  bool correct = crisp_f64_oracle_check(hC.data(), hC.size(), K, &maxerr, &maxrel);
+  // Shared fill + strided check, still the fp64 oracle: operands carry 1 + 2^-25 and the check
+  // runs at its 1e-10 relative tolerance (common/fill_verify.h), so fp32 is still caught.
+  const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(dC, "f64", (uint64_t)M, (uint64_t)N, (uint64_t)K, crisp_bench::cm(M), crisp_bench::cm(K), crisp_bench::cm(M));
+  double maxerr = vr.max_abs_err, maxrel = vr.max_rel_err;
+  bool correct = vr.verified;
   const char* diagnosis = crisp_f64_oracle_diagnose(maxrel);
   if (!correct)
     fprintf(stderr, "cublas_ceiling_f64 [%s]: ORACLE FAILED at M=%d N=%d K=%d — %s "
