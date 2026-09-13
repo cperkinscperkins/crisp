@@ -265,6 +265,7 @@ XL_BENCH_TIMEOUT  = 150.0
 # but the rule is written per-device rather than per-platform so it does not need revisiting when
 # a bigger Intel part arrives.
 VRAM_BYTES = None
+L0_FILL_SPV = None        # common/fill.crisp compiled to SPIR-V; set by build_l0_harness
 
 def sizes_for_chapter(chapter, sizes):
     """SIZES resolved for CHAPTER: `devmax` expanded, and anything too big to fit dropped.
@@ -1111,6 +1112,19 @@ def build_l0_harness(crisp_compiler):
     c = sh([cxx, "-O3", str(harness), *link_pre, "-o", str(binexe), *link_post], capture_output=True, text=True)
     if c.returncode != 0:
         print("L0 harness build failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
+    # The fixture fills its operands ON THE DEVICE with common/fill.crisp (it refuses to run without
+    # it).  Compiled once per sweep, by the same crisp-compile the kernels use -- no profile flags,
+    # because a write-only per-element kernel does not depend on the hardware profile.
+    global L0_FILL_SPV
+    fill_src = HERE / "common" / "fill.crisp"
+    try:
+        sh([crisp_compiler, "--ir-target=spv", "--math-precision=fast", "--denormal-handling=ftz",
+            "--log-level=off", str(fill_src)], check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print("fill kernel (common/fill.crisp) failed to compile:\n" + (e.stderr or e.stdout or "")[-1200:],
+              file=sys.stderr)
+        return None
+    L0_FILL_SPV = str(fill_src.with_suffix(".spv"))
     return str(binexe)
 
 def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmup, iters,
@@ -1139,7 +1153,7 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
     except Exception:
         pass
     metacrisp = next(iter(sorted(src.parent.glob(f"{src.stem}_*.metacrisp"))), None)
-    env_ext = {"CRISP_MATMUL_SPV": str(spv)}
+    env_ext = {"CRISP_MATMUL_SPV": str(spv), "CRISP_FILL_SPV": str(L0_FILL_SPV or "")}
     if metacrisp:
         _e = l0_fixture_env(src, metacrisp)
         _e.pop("_fixture_unsupported", None)   # an internal flag, not an env var
