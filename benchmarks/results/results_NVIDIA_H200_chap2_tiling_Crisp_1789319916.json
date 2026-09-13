@@ -1,0 +1,275 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-09-13T17:17:29.032291Z",
+    "hardware": {
+      "gpu_model": "NVIDIA H200",
+      "arch_target": "sm_90",
+      "environment": "runpod",
+      "vram_bytes": 150754820096,
+      "sm_count": null,
+      "hardware_profile": "h200",
+      "profile_matched": false,
+      "profile_provenance": "auto",
+      "profile_source": "/root/crisp/benchmarks/profiles/h200.crisp"
+    },
+    "crisp_commit": "66a7911d",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "chap2_tiling",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "m": 256,
+        "n": 256,
+        "k": 256,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 270.69091796875,
+          "all_compile_ms": 394.29491796875
+        },
+        "runtime": {
+          "wall_time_ms": 0.339517,
+          "kernel_execution_ms": 0.33923000000000003
+        },
+        "throughput": {
+          "tflops": 0.0989135,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0,
+          "samples": 4096
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 270.69091796875,
+          "all_compile_ms": 270.98580896875
+        },
+        "runtime": {
+          "wall_time_ms": 0.706961,
+          "kernel_execution_ms": 0.706623
+        },
+        "throughput": {
+          "tflops": 0.379885,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0,
+          "samples": 4096
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 270.69091796875,
+          "all_compile_ms": 270.98648396875
+        },
+        "runtime": {
+          "wall_time_ms": 1.44654,
+          "kernel_execution_ms": 1.44634
+        },
+        "throughput": {
+          "tflops": 1.48477,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0,
+          "samples": 4096
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 2048,
+        "n": 2048,
+        "k": 2048,
+        "warmup": 20,
+        "iters": 100,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 270.69091796875,
+          "all_compile_ms": 270.97605496875
+        },
+        "runtime": {
+          "wall_time_ms": 3.18632,
+          "kernel_execution_ms": 3.18371
+        },
+        "throughput": {
+          "tflops": 5.39618,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0,
+          "samples": 4096
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "warmup": 2,
+        "iters": 12,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 270.69091796875,
+          "all_compile_ms": 270.98004996875
+        },
+        "runtime": {
+          "wall_time_ms": 25.2928,
+          "kernel_execution_ms": 25.3266
+        },
+        "throughput": {
+          "tflops": 5.42667,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0,
+          "samples": 4096
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 8192,
+        "n": 8192,
+        "k": 8192,
+        "warmup": 2,
+        "iters": 3,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 270.69091796875,
+          "all_compile_ms": 270.98467796875
+        },
+        "runtime": {
+          "wall_time_ms": 203.768,
+          "kernel_execution_ms": 203.683
+        },
+        "throughput": {
+          "tflops": 5.398149999999999,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0,
+          "samples": 4096
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 16384,
+        "n": 16384,
+        "k": 16384,
+        "warmup": 1,
+        "iters": 3,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 270.69091796875,
+          "all_compile_ms": 270.98214896875
+        },
+        "runtime": {
+          "wall_time_ms": 1641.43,
+          "kernel_execution_ms": 1642.06
+        },
+        "throughput": {
+          "tflops": 5.35676,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0,
+          "samples": 4096
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 32768,
+        "n": 32768,
+        "k": 32768,
+        "warmup": 1,
+        "iters": 3,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 270.69091796875,
+          "all_compile_ms": 270.98137396875
+        },
+        "runtime": {
+          "wall_time_ms": 13591.7,
+          "kernel_execution_ms": 13594.8
+        },
+        "throughput": {
+          "tflops": 5.176159999999999,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0,
+          "samples": 4096
+        }
+      }
+    }
+  ],
+  "is_canonical": true
+}

@@ -1,0 +1,26 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-09-13T17:17:19.749178Z",
+    "hardware": {
+      "gpu_model": "NVIDIA H200",
+      "arch_target": "sm_90",
+      "environment": "runpod",
+      "vram_bytes": 150754820096,
+      "sm_count": null,
+      "hardware_profile": "h200",
+      "profile_matched": false,
+      "profile_provenance": "auto",
+      "profile_source": "/root/crisp/benchmarks/profiles/h200.crisp"
+    },
+    "crisp_commit": "66a7911d",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "chap1_handrolled_mma",
+  "competitor": "CUDA_Apples",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [],
+  "is_canonical": true
+}
