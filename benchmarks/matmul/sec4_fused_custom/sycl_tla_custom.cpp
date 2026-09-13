@@ -28,6 +28,7 @@
 
 #include "cutlass/util/device_memory.h"
 #include "cutlass/util/packed_stride.hpp"
+#include "../common/fill_sycl.hpp"
 
 using namespace cute;
 
@@ -147,13 +148,14 @@ int main(int argc, char const **argv) {
         cutlass::device_memory::allocation<ElementOutput> block_C(M * N);
         cutlass::device_memory::allocation<ElementOutput> block_D(M * N);
 
-        std::vector<ElementInputA> host_A(M * K, ElementInputA(1.0f));
-        std::vector<ElementInputB> host_B(K * N, ElementInputB(1.0f));
-        std::vector<ElementOutput> host_C(M * N, 0.0f);
-
-        cutlass::device_memory::copy_to_device(block_A.get(), host_A.data(), host_A.size());
-        cutlass::device_memory::copy_to_device(block_B.get(), host_B.data(), host_B.size());
-        cutlass::device_memory::copy_to_device(block_C.get(), host_C.data(), host_C.size());
+        // Shared fill (common/fill_sycl.hpp): operands written ON THE DEVICE through SYCL-TLA's own
+        // queue, in the bf16 encoding of ElementInputA/B.  A wrong encoding fails verification.
+        {
+            sycl::queue fq = compat::get_default_queue();
+            crisp_bench::sycl_fill_encoded(fq, block_A.get(), size_t(M) * K, crisp_bench::FILL_MOD_A, "bf16");
+            crisp_bench::sycl_fill_encoded(fq, block_B.get(), size_t(K) * N, crisp_bench::FILL_MOD_B, "bf16");
+            crisp_bench::sycl_zero(fq, block_C.get(), size_t(M) * N);
+        }
 
         cutlass::KernelHardwareInfo hw_info;
 
@@ -198,17 +200,25 @@ int main(int argc, char const **argv) {
         double k_min = kt[0];
         double gflops = (2.0 * M * N * K) / (k_med / 1e6) / 1e9;
 
+        compat::wait();
+        sycl::queue vq = compat::get_default_queue();
+        const crisp_bench::VerifyResult vr = crisp_bench::sycl_verify(vq, block_D.get(), (uint64_t)M, (uint64_t)N, (uint64_t)K, [](double x) { return x > 0.5 ? x : x * x * 0.01; });
+        double maxerr = vr.max_abs_err;
+        bool correct = vr.verified;
+
         auto wall_end = std::chrono::high_resolution_clock::now();
         double wall_time_ms = std::chrono::duration<double, std::milli>(wall_end - wall_start).count();
 
         printf("{\n  \"algorithm\": \"matmul_custom\",\n  \"implementation\": \"sycl_tla_custom\",\n");
         printf("  \"N\": %d, \"M\": %d, \"K\": %d,\n", N, M, K);
-        printf("  \"correct\": true,\n  \"max_abs_err\": 0.0,\n");
+        // REAL verdict.  This printed a hardcoded correct=true / max_abs_err=0.0 -- the output was
+        // never checked, so a wrong Peer point could not be told from a right one.
+        printf("  \"correct\": %s,\n  \"max_abs_err\": %.6g,\n", correct ? "true" : "false", maxerr);
         printf("  \"wall_time_ms\": %.2f,\n", wall_time_ms);
         printf("  \"kernel_median_us\": %.2f,\n  \"kernel_min_us\": %.2f,\n", k_med, k_min);
         printf("  \"gflops\": %.2f\n}\n", gflops);
 
-        return 0;
+        return correct ? 0 : 1;
     } catch (const std::exception& e) {
         std::cerr << "SYCL-TLA Custom exception: " << e.what() << std::endl;
         return 1;

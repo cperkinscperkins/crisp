@@ -79,7 +79,8 @@ using ReadSpan = std::function<void(uint64_t first, uint64_t count, std::vector<
 inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
                                    Strides a, Strides b, Strides c,
                                    const ReadSpan &read_span,
-                                   double scale = 1.0, uint64_t smax = 64) {
+                                   double scale = 1.0, uint64_t smax = 64,
+                                   const std::function<double(double)> &post = {}) {
     VerifyResult r;
     if (M == 0 || N == 0) return r;
     const uint64_t si = std::max<uint64_t>(1, (M + smax - 1) / smax);
@@ -89,7 +90,9 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
         double acc = 0.0;
         for (uint64_t k = 0; k < K; ++k)
             acc += fill_a(i * a.s0 + k * a.s1) * fill_b(k * b.s0 + j * b.s1);
-        return scale * acc;
+        // POST is the section-4 activation applied after the multiply (ReLU, or the custom quadratic
+        // tail).  Empty for a plain matmul.
+        return post ? post(scale * acc) : scale * acc;
     };
     auto check = [&](uint64_t i, uint64_t j, double got) {
         ++r.checked;

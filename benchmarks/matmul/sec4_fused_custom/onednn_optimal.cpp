@@ -23,6 +23,7 @@
  * Build: icpx -fsycl -O3 ... onednn_optimal.cpp -ldnnl -o onednn_optimal
  */
 #include <sycl/sycl.hpp>
+#include "../common/fill_sycl.hpp"
 #include <oneapi/dnnl/dnnl.hpp>
 #include <oneapi/dnnl/dnnl_sycl.hpp>
 #include <algorithm>
@@ -48,10 +49,9 @@ int main(int argc, char** argv) {
     float* A = sycl::malloc_device<float>((size_t)M * K, q);
     float* B = sycl::malloc_device<float>((size_t)K * N, q);
     float* C = sycl::malloc_device<float>((size_t)M * N, q);
-    std::vector<float> h_A((size_t)M * K, 1.0f), h_B((size_t)K * N, 1.0f), h_C((size_t)M * N, 0.0f);
-    q.memcpy(A, h_A.data(), h_A.size() * 4).wait();
-    q.memcpy(B, h_B.data(), h_B.size() * 4).wait();
-    q.memcpy(C, h_C.data(), h_C.size() * 4).wait();
+    crisp_bench::sycl_fill(q, A, (size_t)M * K, crisp_bench::FILL_MOD_A);
+    crisp_bench::sycl_fill(q, B, (size_t)K * N, crisp_bench::FILL_MOD_B);
+    crisp_bench::sycl_zero(q, C, (size_t)M * N);
 
     engine eng = sycl_interop::make_engine(q.get_device(), q.get_context());
     stream  strm = sycl_interop::make_stream(eng, q);
@@ -109,11 +109,9 @@ int main(int argc, char** argv) {
         gt[i] = (double)(g1 - g0) / 1000.0;   // matmul alone
     }
 
-    q.memcpy(h_C.data(), C, h_C.size() * 4).wait();
-    double expected = (double)K, maxerr = 0.0;      // A=B=1 => C == K, and the activation is identity above 0.5
-    for (size_t i = 0; i < h_C.size(); i++)
-        maxerr = std::max(maxerr, (double)std::fabs(h_C[i] - expected));
-    bool correct = maxerr < expected * 1e-3;
+    const crisp_bench::VerifyResult vr = crisp_bench::sycl_verify(q, C, (uint64_t)M, (uint64_t)N, (uint64_t)K, [](double x) { return x > 0.5 ? x : x * x * 0.01; });
+    double maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     std::sort(kt.begin(), kt.end());
     std::sort(gt.begin(), gt.end());

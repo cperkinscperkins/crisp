@@ -26,6 +26,7 @@
 
 #include "cutlass/util/device_memory.h"
 #include "cutlass/util/packed_stride.hpp"
+#include "../common/fill_sycl.hpp"
 
 using namespace cute;
 
@@ -116,13 +117,14 @@ int main(int argc, char const **argv) {
         cutlass::device_memory::allocation<ElementOutput> block_C(M * N);
         cutlass::device_memory::allocation<ElementOutput> block_D(M * N);
 
-        std::vector<ElementInputA> host_A(M * K, ElementInputA(1.0f));
-        std::vector<ElementInputB> host_B(K * N, ElementInputB(1.0f));
-        std::vector<ElementOutput> host_C(M * N, 0.0f);
-
-        cutlass::device_memory::copy_to_device(block_A.get(), host_A.data(), host_A.size());
-        cutlass::device_memory::copy_to_device(block_B.get(), host_B.data(), host_B.size());
-        cutlass::device_memory::copy_to_device(block_C.get(), host_C.data(), host_C.size());
+        // Shared fill (common/fill_sycl.hpp): operands written ON THE DEVICE through SYCL-TLA's own
+        // queue, in the f32 encoding of ElementInputA/B.  A wrong encoding fails verification.
+        {
+            sycl::queue fq = compat::get_default_queue();
+            crisp_bench::sycl_fill_encoded(fq, block_A.get(), size_t(M) * K, crisp_bench::FILL_MOD_A, "f32");
+            crisp_bench::sycl_fill_encoded(fq, block_B.get(), size_t(K) * N, crisp_bench::FILL_MOD_B, "f32");
+            crisp_bench::sycl_zero(fq, block_C.get(), size_t(M) * N);
+        }
 
         cutlass::KernelHardwareInfo hw_info;
 
@@ -167,15 +169,11 @@ int main(int argc, char const **argv) {
         double k_min = kt[0];
         double gflops = (2.0 * M * N * K) / (k_med / 1e6) / 1e9;
 
-        std::vector<ElementOutput> host_D(M * N, 0.0f);
-        cutlass::device_memory::copy_to_host(host_D.data(), block_D.get(), host_D.size());
-
-        double maxerr = 0.0;
-        double expected = (double)K;
-        for (size_t i = 0; i < (size_t)M * N; i++) {
-            maxerr = std::max(maxerr, std::fabs((double)host_D[i] - expected));
-        }
-        bool correct = maxerr < (expected * 1e-2);
+        compat::wait();
+        sycl::queue vq = compat::get_default_queue();
+        const crisp_bench::VerifyResult vr = crisp_bench::sycl_verify(vq, block_D.get(), (uint64_t)M, (uint64_t)N, (uint64_t)K);
+        double maxerr = vr.max_abs_err;
+        bool correct = vr.verified;
 
         auto wall_end = std::chrono::high_resolution_clock::now();
         double wall_time_ms = std::chrono::duration<double, std::milli>(wall_end - wall_start).count();

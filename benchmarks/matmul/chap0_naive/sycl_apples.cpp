@@ -6,6 +6,7 @@
  * Run:     ./sycl_apples [M] [N] [K] [warmup] [iters]
  */
 #include <sycl/sycl.hpp>
+#include "../common/fill_sycl.hpp"
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -23,16 +24,13 @@ int main(int argc, char** argv) {
 
     sycl::queue q{sycl::default_selector_v, sycl::property::queue::enable_profiling()};
 
-    std::vector<float> hA(M * K, 1.0f);
-    std::vector<float> hB(K * N, 1.0f);
-    std::vector<float> hC(M * N, 0.0f);
 
     float *dA = sycl::malloc_device<float>(M * K, q);
     float *dB = sycl::malloc_device<float>(K * N, q);
     float *dC = sycl::malloc_device<float>(M * N, q);
 
-    q.memcpy(dA, hA.data(), sizeof(float) * M * K).wait();
-    q.memcpy(dB, hB.data(), sizeof(float) * K * N).wait();
+    crisp_bench::sycl_fill(q, dA, (size_t)M * K, crisp_bench::FILL_MOD_A);
+    crisp_bench::sycl_fill(q, dB, (size_t)K * N, crisp_bench::FILL_MOD_B);
 
     auto launch = [&]() {
         return q.submit([&](sycl::handler& h) {
@@ -61,11 +59,10 @@ int main(int argc, char** argv) {
         times_ms.push_back((end - start) / 1e6);
     }
 
-    q.memcpy(hC.data(), dC, sizeof(float) * M * N).wait();
 
-    double expected = (double)K, maxerr = 0.0;
-    for (size_t i = 0; i < hC.size(); i++) maxerr = std::max(maxerr, (double)std::fabs(hC[i] - expected));
-    bool correct = maxerr < expected * 1e-3;
+    const crisp_bench::VerifyResult vr = crisp_bench::sycl_verify(q, dC, (uint64_t)M, (uint64_t)N, (uint64_t)K);
+    double maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     std::sort(times_ms.begin(), times_ms.end());
     double k_med = times_ms[iters / 2];

@@ -15,6 +15,7 @@
  * Run:   ./sycl_apples [size] [warmup] [iters]
  */
 #include <sycl/sycl.hpp>
+#include "../common/fill_sycl.hpp"
 #include <sycl/ext/oneapi/matrix/matrix.hpp>
 #include <sycl/ext/oneapi/experimental/prefetch.hpp>
 #include <algorithm>
@@ -42,9 +43,9 @@ int main(int argc, char** argv) {
     float* A = sycl::malloc_shared<float>((size_t)M * K, q);
     float* B = sycl::malloc_shared<float>((size_t)K * N, q);
     float* C = sycl::malloc_shared<float>((size_t)M * N, q);
-    for (size_t i = 0; i < (size_t)M * K; i++) A[i] = 1.0f;
-    for (size_t i = 0; i < (size_t)K * N; i++) B[i] = 1.0f;
-    for (size_t i = 0; i < (size_t)M * N; i++) C[i] = 0.0f;
+    crisp_bench::sycl_fill(q, A, (size_t)M * K, crisp_bench::FILL_MOD_A);
+    crisp_bench::sycl_fill(q, B, (size_t)K * N, crisp_bench::FILL_MOD_B);
+    crisp_bench::sycl_zero(q, C, (size_t)M * N);
 
     auto launch = [&]() {
         return q.submit([&](sycl::handler& h) {
@@ -136,10 +137,9 @@ int main(int argc, char** argv) {
         kt[i] = (double)(t1 - t0) / 1000.0;   // ns -> us
     }
 
-    double expected = (double)K, maxerr = 0.0;
-    for (size_t i = 0; i < (size_t)M * N; i++)
-        maxerr = std::max(maxerr, (double)std::fabs(C[i] - expected));
-    bool correct = maxerr < expected * 1e-3;
+    const crisp_bench::VerifyResult vr = crisp_bench::sycl_verify(q, C, (uint64_t)M, (uint64_t)N, (uint64_t)K);
+    double maxerr = vr.max_abs_err;
+    bool correct = vr.verified;
 
     std::sort(kt.begin(), kt.end());
     double k_med = kt[iters / 2], k_min = kt[0];
@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
     sycl::free(B, q);
     sycl::free(C, q);
     fflush(stdout);
-    fprintf(stderr, "DEBUG 256: correct=%d, maxerr=%g, expected=%g\n", correct, maxerr, expected);
+    fprintf(stderr, "DEBUG 256: correct=%d, maxerr=%g, samples=%g\n", correct, maxerr, (double)vr.checked);
     return correct ? 0 : 1;
     } catch (std::exception const& e) {
         fprintf(stderr, "SYCL EXCEPTION: %s\n", e.what());

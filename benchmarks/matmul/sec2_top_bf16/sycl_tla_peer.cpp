@@ -26,6 +26,7 @@
 
 #include "cutlass/util/device_memory.h"
 #include "cutlass/util/packed_stride.hpp"
+#include "../common/fill_sycl.hpp"
 
 using namespace cute;
 
@@ -116,13 +117,14 @@ int main(int argc, char const **argv) {
         cutlass::device_memory::allocation<ElementOutput> block_C(M * N);
         cutlass::device_memory::allocation<ElementOutput> block_D(M * N);
 
-        std::vector<ElementInputA> host_A(M * K, ElementInputA(1.0f));
-        std::vector<ElementInputB> host_B(K * N, ElementInputB(1.0f));
-        std::vector<ElementOutput> host_C(M * N, 0.0f);
-
-        cutlass::device_memory::copy_to_device(block_A.get(), host_A.data(), host_A.size());
-        cutlass::device_memory::copy_to_device(block_B.get(), host_B.data(), host_B.size());
-        cutlass::device_memory::copy_to_device(block_C.get(), host_C.data(), host_C.size());
+        // Shared fill (common/fill_sycl.hpp): operands written ON THE DEVICE through SYCL-TLA's own
+        // queue, in the bf16 encoding of ElementInputA/B.  A wrong encoding fails verification.
+        {
+            sycl::queue fq = compat::get_default_queue();
+            crisp_bench::sycl_fill_encoded(fq, block_A.get(), size_t(M) * K, crisp_bench::FILL_MOD_A, "bf16");
+            crisp_bench::sycl_fill_encoded(fq, block_B.get(), size_t(K) * N, crisp_bench::FILL_MOD_B, "bf16");
+            crisp_bench::sycl_zero(fq, block_C.get(), size_t(M) * N);
+        }
 
         cutlass::KernelHardwareInfo hw_info;
 
@@ -174,25 +176,12 @@ int main(int argc, char const **argv) {
         // the only contender in the suite without a check -- which is exactly the shape of the
         // chap2_tiling failure, where the second-best number in a section came from a kernel that
         // stored nothing.
-        bool tla_ok = true; double tla_max_err = 0.0; long tla_checked = 0;
-        {
-            compat::wait();
-            std::vector<ElementOutput> host_D(size_t(M) * size_t(N));
-            cutlass::device_memory::copy_to_host(host_D.data(), block_D.get(), host_D.size());
-            const double expect = double(K);
-            const double tol    = expect * 1e-3;
-            const size_t si = (M > 64 ? size_t(M) / 64 : 1), sj = (N > 64 ? size_t(N) / 64 : 1);
-            for (size_t i = 0; i < size_t(M) && tla_ok; i += si)
-                for (size_t j = 0; j < size_t(N); j += sj) {
-                    double got = double(host_D[i * size_t(N) + j]);
-                    double err = std::abs(got - expect);
-                    if (err > tla_max_err) tla_max_err = err;
-                    ++tla_checked;
-                    if (err > tol) { tla_ok = false; break; }
-                }
-        }
+        compat::wait();
+        sycl::queue vq = compat::get_default_queue();
+        const crisp_bench::VerifyResult vr = crisp_bench::sycl_verify(vq, block_D.get(), (uint64_t)M, (uint64_t)N, (uint64_t)K);
+        bool tla_ok = vr.verified; double tla_max_err = vr.max_abs_err; long tla_checked = (long)vr.checked;
         std::cerr << (tla_ok ? "MMA_CORRECT" : "MMA_WRONG")
-                  << " (peer self-check: expect " << double(K)
+                  << " (peer self-check: shared strided formula, N=" << N
                   << ", max_abs_err " << tla_max_err
                   << ", samples " << tla_checked << ")" << std::endl;
         // --------------------------------------------------------------------------------
