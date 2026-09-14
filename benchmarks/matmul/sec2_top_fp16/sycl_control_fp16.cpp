@@ -75,7 +75,9 @@ int main(int argc, char** argv) {
 
                     using tC_t = joint_matrix<sycl::sub_group, float, use::accumulator, 8, 16>;
                     using tA_t = joint_matrix<sycl::sub_group, fp16_t, use::a, 8, 16, layout::row_major>;
-                    using tB_t = joint_matrix<sycl::sub_group, fp16_t, use::b, 16, 16, layout::ext_intel_packed>;
+                    // B memory is plain row-major (no VNNI transform), so B must be row_major too.
+                    // ext_intel_packed here read a scrambled B: wrong matmul under the 2026-09-13 fill.
+                    using tB_t = joint_matrix<sycl::sub_group, fp16_t, use::b, 16, 16, layout::row_major>;
 
                     tC_t c[4][2];
                     for (int r = 0; r < 4; ++r)
