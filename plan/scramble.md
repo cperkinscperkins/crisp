@@ -834,7 +834,7 @@ benchmarking
 - [ ] some of the Crisp Apples tests aren't actually apples-to-apples for what Crisp is doing. Fix.
 - [x] 16-bit SYCL controls are computing the wrong matmul.  
 - [x] chap1_handrolled_mma/cuda_apples.cu crashes with illegal memory access. everywhere.
-- [ ] BMG Chapter 3 (OpGroupAsyncCopy) is reporting 0.0
+- [x] BMG Chapter 3 (OpGroupAsyncCopy) is reporting 0.0
 
 
 
