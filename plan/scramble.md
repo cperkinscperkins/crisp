@@ -832,10 +832,6 @@ benchmarking
 - [x] ALWAYS use explicit math flag for everything. Crisp (--math-precision), nvcc (-f(no-)fast-math), icpx (-f(no-)fast-math).   for ieee and fast.  NEVER ASSUME. Document. Same for denormal handling
 - [ ] reductions?
 - [ ] some of the Crisp Apples tests aren't actually apples-to-apples for what Crisp is doing. Fix.
-- [ ] 16-bit SYCL controls are computing the wrong matmul.  
-- [ ] chap1_handrolled_mma/cuda_apples.cu crashes with illegal memory access. everywhere.
-- [ ] BMG Chapter 3 (OpGroupAsyncCopy) is reporting 0.0
-
 
 
 

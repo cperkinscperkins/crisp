@@ -3,7 +3,7 @@
  * Section 1 Chapter 1 Control baseline for NVIDIA.
  * Exact 1-to-1 mirror of Crisp's chap1_handrolled_mma:
  *   - 1 warp (32 threads) per 64x64 output tile
- *   - Explicit SMEM staging (64x8 As row-major, 8x64 Bs col-major) via element-wise loads
+ *   - Explicit SMEM staging (64x8 As, 8x64 Bs) via element-wise loads
  *   - Barrier synchronization around SMEM reads/writes (__syncthreads)
  *   - wmma::load_matrix_sync from SMEM -> wmma::mma_sync -> wmma::store_matrix_sync to C
  *
@@ -28,7 +28,7 @@ using namespace nvcuda;
 // 1 warp (32 threads) computes one 64x64 tile (4x4 fragments of 16x16x8)
 __global__ void matmul_wmma_smem(const float* A, const float* B, float* C, int M, int N, int K) {
     __shared__ float As[64][8];
-    __shared__ float Bs[64][8];  // Bs[col][row]: col-major 8x64, leading dim 8 (matches b's col_major)
+    __shared__ float Bs[8][64];
 
     int tile_r = blockIdx.y * 64;
     int tile_c = blockIdx.x * 64;
@@ -54,8 +54,8 @@ __global__ void matmul_wmma_smem(const float* A, const float* B, float* C, int M
         #pragma unroll
         for (int i = 0; i < 16; i++) {
             int idx = lid + i * 32; // 0..511
-            int c_sub = idx / 8, r = idx % 8;
-            Bs[c_sub][r] =(k + r < K && tile_c + c_sub < N) ? B[(tile_c + c_sub) * K + (k + r)] : 0.0f; // B is col-major
+            int r = idx / 64, c_sub = idx % 64;
+            Bs[r][c_sub] = (k + r < K && tile_c + c_sub < N) ? B[(tile_c + c_sub) * K + (k + r)] : 0.0f; // B is col-major
         }
 
         // 2. Barrier: ensure SMEM is fully written
@@ -71,7 +71,7 @@ __global__ void matmul_wmma_smem(const float* A, const float* B, float* C, int M
         wmma::fragment<wmma::matrix_b, 16, 16, 8, wmma::precision::tf32, wmma::col_major> b[4];
         #pragma unroll
         for (int col = 0; col < 4; col++) {
-            wmma::load_matrix_sync(b[col], &Bs[col * 16][0], 8);
+            wmma::load_matrix_sync(b[col], &Bs[0][col * 16], 64);
         }
 
         #pragma unroll
@@ -90,9 +90,7 @@ __global__ void matmul_wmma_smem(const float* A, const float* B, float* C, int M
     for (int r = 0; r < 4; r++) {
         #pragma unroll
         for (int col = 0; col < 4; col++) {
-            // Full 16x16 store only: M and N must be multiples of 64, else edge fragments are skipped (verify fails, no overrun).
-            if (tile_r + (r + 1) * 16 <= M && tile_c + (col + 1) * 16 <= N)
-            wmma::store_matrix_sync(C +(tile_r + r * 16) * N + (tile_c + col * 16), c[r][col], N, wmma::mem_row_major);
+            wmma::store_matrix_sync(C + (tile_r + r * 16) * N + (tile_c + col * 16), c[r][col], N, wmma::mem_row_major);
         }
     }
 }
