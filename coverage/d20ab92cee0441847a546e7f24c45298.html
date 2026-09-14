@@ -1,0 +1,51 @@
+<html><head><style type='text/css'>
+*.state-0 { background-color: #eeeeee }
+*.state-1 { background-color: #aaffaa }
+*.state-5 { background-color: #44dd44 }
+*.state-2 { background-color: #ffaaaa }
+*.state-10 { background-color: #ee6666 }
+*.state-15 { color: #aaaaaa; background-color: #eeeeee }
+*.state-9,*.state-6 { background-color: #ffffaa }
+div.key { margin: 20px; width: 200px }
+div.source { width: 88ex; background-color: #eeeeee; padding-left: 5px;
+             /* border-style: solid none none none; border-width: 1px;
+             border-color: #dddddd */ }
+
+*.line-number { color: #666666; float: left; width: 6ex; text-align: right; margin-right: 1ex; }
+
+table.summary tr.head-row { background-color: #aaaaff }
+table.summary tr td.text-cell { text-align: left }
+table.summary tr td.main-head { text-align: center }
+table.summary tr td { text-align: right }
+table.summary tr.even { background-color: #eeeeff }
+table.summary tr.subheading { background-color: #aaaaff}
+table.summary tr.subheading td { text-align: left; font-weight: bold; padding-left: 5ex; }
+</style></head><body><h3>Coverage report: /home/runner/work/crisp/crisp/overlays/crisp-compiler-overlay.lisp <br />
+</h3>
+<table class='summary'><tr class='head-row'><td width='80px'>Kind</td><td width='80px'>Covered</td><td width='80px'>All</td><td width='80px'>%</td><tr class='odd'><td>expression</td><td>0</td><td>1</td><td>  0.0</td></tr>
+<tr class='even'><td>branch</td><td>0</td><td>0</td><td>nil  </td></tr>
+</table><div class='key'><b>Key</b><br />
+<div class='state-0'>Not instrumented</div><div class='state-15'>Conditionalized out</div><div class='state-1'>Executed</div><div class='state-2'>Not executed</div><div>&#160;</div><div class='state-5'>Both branches taken</div><div class='state-6'>One branch taken</div><div class='state-10''>Neither branch taken</div></div><nobr><div><code>
+</code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>1</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;crisp&#45;compiler&#45;overlay&#46;lisp&#160;&#8212;&#160;late&#45;bound&#160;fixes&#160;for&#160;the&#160;CRISP&#46;COMPILER&#160;package&#46;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>2</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>3</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;APPEND&#160;full&#160;replacement&#160;definitions&#160;here&#160;while&#160;developing&#59;&#160;they&#160;are&#160;loaded&#160;after&#160;src&#47;&#160;and&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>4</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;win&#160;by&#160;late&#160;binding&#46;&#160;&#160;Do&#160;NOT&#160;patch&#160;in&#160;place&#160;&#45;&#45;&#160;append&#44;&#160;and&#160;note&#160;above&#160;each&#160;one&#160;which&#160;src&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>5</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;file&#160;it&#160;belongs&#160;to&#44;&#160;so&#160;it&#160;can&#160;be&#160;folded&#160;back&#160;later&#46;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>6</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>7</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;TWO&#160;THINGS&#160;THAT&#160;BITE&#160;&#40;both&#160;learned&#160;the&#160;hard&#160;way&#44;&#160;endeavour&#160;165&#41;&#58;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>8</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>9</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;&#160;&#160;&#42;&#160;A&#160;HANDLER&#160;REGISTERED&#160;BY&#160;OBJECT&#160;IS&#160;NOT&#160;LATE&#45;BOUND&#46;&#160;&#160;src&#47;autodiff&#46;lisp&#160;does&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>10</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;&#160;&#160;&#160;&#160;&#40;register&#45;vjp&#160;&#34;MMA&#45;ACCUMULATE&#45;VIA&#45;TILE&#34;&#160;&#35;&#39;&#37;vjp&#45;mma&#45;accumulate&#45;via&#45;tile&#41;&#44;&#160;which&#160;captures&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>11</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;&#160;&#160;&#160;&#160;the&#160;function&#160;OBJECT&#160;at&#160;load&#160;time&#46;&#160;&#160;Redefining&#160;that&#160;defun&#160;here&#160;is&#160;DEAD&#160;CODE&#160;until&#160;you&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>12</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;&#160;&#160;&#160;&#160;also&#160;re&#45;register&#46;&#160;&#160;The&#160;failure&#160;is&#160;partial&#160;and&#160;therefore&#160;nasty&#58;&#160;a&#160;callee&#160;overridden&#160;by&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>13</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;&#160;&#160;&#160;&#160;name&#160;goes&#160;live&#160;while&#160;its&#160;caller&#160;stays&#160;stale&#46;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>14</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>15</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;&#160;&#160;&#42;&#160;NEVER&#160;PUT&#160;A&#160;DOUBLE&#160;QUOTE&#160;INSIDE&#160;A&#160;DOCSTRING&#46;&#160;&#160;It&#160;closes&#160;the&#160;string&#160;early&#160;and&#160;the&#160;rest&#160;of&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>16</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;&#160;&#160;&#160;&#160;the&#160;prose&#160;becomes&#160;BODY&#160;FORMS&#160;&#45;&#45;&#160;the&#160;first&#160;bare&#160;word&#160;is&#160;then&#160;an&#160;unbound&#160;variable&#44;&#160;and&#160;the&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>17</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;&#160;&#160;&#160;&#160;build&#160;emits&#160;no&#160;warning&#46;&#160;&#160;It&#160;fails&#160;only&#160;when&#160;the&#160;function&#160;is&#160;CALLED&#46;&#160;&#160;Cost&#58;&#160;a&#160;red&#160;CI&#46;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>18</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>19</code></div><code>&#160;<span class='state-0'>&#59;&#59;&#59;&#59;&#160;Emptied&#160;2026&#45;09&#45;08&#58;&#160;everything&#160;folded&#160;into&#160;src&#47;&#160;&#40;endeavour&#160;165&#41;&#46;&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>20</code></div><code>&#160;<span class='state-0'>&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>21</code></div><code>&#160;<span class='state-2'>&#40;in&#45;package&#160;&#58;crisp&#46;compiler&#41;</span><span class='state-0'>&#13;</span></code></div></nobr>
+<nobr><div class='source'><div class='line-number'><code>22</code></div><code>&#160;<span class='state-0'>&#0;&#0;</code></div></body></html>
