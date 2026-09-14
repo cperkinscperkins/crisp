@@ -784,7 +784,7 @@ MMA
 - [x] need to document register-fragment, including make-register-fragment and store-fragment.
 - [x] move MMA out of topology.md into main docs
 - [x] topology.md: says "arch automatic" async is always :linear right now.  But I think that's no longer true?  CONFIRM AND REMOVE NOTE
-- [ ] A|D of 16-bit results in a 32 bit gradient. (Like PyTorch AMP).  Document.
+- [ t] A|D of 16-bit results in a 32 bit gradient. (Like PyTorch AMP).  Document.
 - [x] sync-workgroup is labelled as supported on Intel, but no note for NVidia.
 - [x] performance-levers.md <-- needs serious rework
 
@@ -832,6 +832,10 @@ benchmarking
 - [x] ALWAYS use explicit math flag for everything. Crisp (--math-precision), nvcc (-f(no-)fast-math), icpx (-f(no-)fast-math).   for ieee and fast.  NEVER ASSUME. Document. Same for denormal handling
 - [ ] reductions?
 - [ ] some of the Crisp Apples tests aren't actually apples-to-apples for what Crisp is doing. Fix.
+- [ ] 16-bit SYCL controls are computing the wrong matmul.  
+- [x] chap1_handrolled_mma/cuda_apples.cu crashes with illegal memory access. everywhere.
+- [ ] BMG Chapter 3 (OpGroupAsyncCopy) is reporting 0.0
+
 
 
 
