@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-16-abs-diff-add-char-widen-int
+;;
+;; Endeavour 170: op-abs-diff-add, the doc example: |a-b| of two chars added into an int.
+;; |a-b| is computed at 8 bits (unsigned), ZERO-extended to int, then added.
+
+(def-type c-c (cell char :address-space :global))
+(def-type i-c (cell int :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(c-c c-c i-c &out i-c))
+  (set! (~ res) (op-abs-diff-add (~ a) (~ b) (~ c))))

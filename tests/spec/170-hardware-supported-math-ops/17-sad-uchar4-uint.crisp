@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-17-sad-uchar4-uint
+;; SKIP-WITH[--differentiate]: "op-sad has no backward rule yet, and device-vector adjoints are BUG 061"
+;;
+;; Endeavour 170: op-sad on uchar4 operands (A5) with a uint accumulator: per-lane umax - umin on
+;; <4 x i8>, zero-extended to <4 x i32>, then the four lanes summed into c.
+
+(def-type v-c (cell uchar4 :address-space :global))
+(def-type u-c (cell uint :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(v-c v-c u-c &out u-c))
+  (set! (~ res) (op-sad (~ a) (~ b) (~ c))))

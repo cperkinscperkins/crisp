@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-fma: accumulator c (INT) must be the same family as a and b (FLOAT)"
+;;
+
+;; Endeavour 170 (A3): no mixing floats and ints in one op-fma; cast explicitly first.
+
+(def-function bad (a b c)
+  (declare #'(float float int => int))
+  (op-fma a b c))

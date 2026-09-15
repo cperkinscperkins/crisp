@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: a=1.5 b=2.0 c=0.25 atol=1e-2 expect.a=2.0 expect.b=1.5 expect.c=1.0
+;;
+;; Endeavour 170 AD ON-METAL: op-fma's backward is da = b*g, db = a*g, dc = g.
+;; At a=1.5, b=2.0: da = 2.0, db = 1.5, dc = 1.0. The WIDENED backward (half multipliers, float
+;; accumulator) cannot be fed by VERIFY-AUTODIFF, which takes float cells only; its backward IR was checked
+;; by hand (the half adjoints are promoted to float, da = fpext(b)*g) -- see the endeavour doc.
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(f-c f-c f-c &out f-c))
+  (set! (~ res) (op-fma (~ a) (~ b) (~ c))))

@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-fma: a and b must have the same type; got HALF and FLOAT"
+;;
+
+;; Endeavour 170 (A3): a and b must be exactly the same type; promote one explicitly.
+
+(def-function bad (a b c)
+  (declare #'(half float float => float))
+  (op-fma a b c))

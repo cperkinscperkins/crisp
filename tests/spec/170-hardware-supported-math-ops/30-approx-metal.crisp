@@ -1,0 +1,32 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER rsq: 0.5
+;; HOIST-EXPECT: BUFFER rcp: 0.12
+;; HOIST-EXPECT: BUFFER lg: 3
+;; HOIST-EXPECT: BUFFER ex: 8
+;; HOIST-EXPECT: BUFFER sn: 0.47
+;; HOIST-EXPECT: BUFFER cs: 0.87
+;; HOIST-EXPECT: BUFFER sn2: 0.47
+;; HOIST-EXPECT: BUFFER cs2: 0.87
+;;
+;; Endeavour 170 ON-METAL: every *-approx op against a tolerance (the expectations are prefixes).
+;; rsqrt(4) = 0.5, 1/8 = 0.125, log2(8) = 3, 2^3 = 8, sin(0.5) = 0.4794, cos(0.5) = 0.8776, and
+;; op-sincos-approx(0.5) must agree with the separate sin / cos.
+;; L0 only: on PTX op-log2-approx needs libdevice (FFI-LINK), which would make this spec CUDA-host-only.
+;; x = gid + 1 = 1.0 at runtime keeps the constant folder away from the operands.
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel approx_metal (&out rsq rcp lg ex sn cs sn2 cs2)
+  (declare #'(&out f-c f-c f-c f-c f-c f-c f-c f-c => nil)
+           (global-size :set-to 1))
+  (let ((x (to-float (+ (get-global-id 0) 1ul))))
+    (set! (~ rsq) (op-rsqrt-approx (* x 4.0)))
+    (set! (~ rcp) (op-rcp-approx (* x 8.0)))
+    (set! (~ lg) (op-log2-approx (* x 8.0)))
+    (set! (~ ex) (op-exp2-approx (* x 3.0)))
+    (set! (~ sn) (op-sin-approx (* x 0.5)))
+    (set! (~ cs) (op-cos-approx (* x 0.5)))
+    (let ((s c (op-sincos-approx (* x 0.5))))
+      (set! (~ sn2) s)
+      (set! (~ cs2) c))))

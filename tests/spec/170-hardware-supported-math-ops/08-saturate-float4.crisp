@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-08-saturate-float4
+;; SKIP-WITH[--differentiate]: "BUG 061: AD mints a scalar float adjoint for a device-vector value"
+;;
+;; Endeavour 170: op-saturate on float4 -- one lane-wise maxnum/minnum pair on <4 x float>
+;; with splat 0.0 / 1.0 constants.
+
+(def-type v-c (cell float4 :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(v-c &out v-c))
+  (set! (~ res) (op-saturate (~ x))))

@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-19-min3-max3-int
+;;
+;; Endeavour 170: op-min3 / op-max3 on integers: smin/smax for int, umin/umax for uint.
+
+(def-type i-c (cell int :address-space :global))
+(def-type u-c (cell uint :address-space :global))
+
+(def-kernel k (a b c ua ub uc &out lo hi ulo uhi)
+  (declare #'(i-c i-c i-c u-c u-c u-c &out i-c i-c u-c u-c))
+  (set! (~ lo) (op-min3 (~ a) (~ b) (~ c)))
+  (set! (~ hi) (op-max3 (~ a) (~ b) (~ c)))
+  (set! (~ ulo) (op-min3 (~ ua) (~ ub) (~ uc)))
+  (set! (~ uhi) (op-max3 (~ ua) (~ ub) (~ uc))))

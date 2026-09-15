@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-22-log2-approx
+;;
+;; Endeavour 170: op-log2-approx takes the fast-precision log2 route with the afn flag, even
+;; under ieee (generic target: llvm.log2 + afn; SPV f32: native_log2; PTX: libdevice __nv_fast_log2f).
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(f-c &out f-c))
+  (set! (~ res) (op-log2-approx (~ x))))

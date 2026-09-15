@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee --differentiate] : validate-hw-33-imad-sat-ad
+;;
+;; Endeavour 170 AD: op-imad-sat's gradient is op-imad's where the result did not clamp, and zero
+;; where it did (decision D8). The backward recomputes the saturated result and masks with
+;; (%hw-sat-interior r): 1.0 when INT_MIN < r < INT_MAX. Checked in the backward IR (integer operands).
+
+(def-type i-c (cell int :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(i-c i-c i-c &out i-c))
+  (set! (~ res) (op-imad-sat (~ a) (~ b) (~ c))))

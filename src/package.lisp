@@ -198,6 +198,11 @@
    ;; tan/asin/acos/atan are cl-inherited; these three must be interned here so
    ;; :crisp-language can import them and the analyzer keys match the source form).
    #:log2 #:pow #:atan2
+   ;; Endeavour 170: hardware-supported math ops
+   #:op-fma #:op-saturate #:op-imad #:op-imad-sat
+   #:op-abs-diff #:op-abs-diff-add #:op-sad #:op-min3 #:op-max3
+   #:op-rsqrt-approx #:op-rcp-approx #:op-log2-approx #:op-exp2-approx
+   #:op-sin-approx #:op-cos-approx #:op-sincos-approx
    #:compile-toplevel-form
    #:compile-module
    #:generate-location-map
@@ -532,6 +537,11 @@
                 #:sin #:cos
                 ;; Endeavor 128: transcendentals
                 #:exp #:log #:log2 #:tan #:asin #:acos #:atan #:pow #:atan2
+                ;; Endeavour 170: hardware-supported math ops
+                #:op-fma #:op-saturate #:op-imad #:op-imad-sat
+                #:op-abs-diff #:op-abs-diff-add #:op-sad #:op-min3 #:op-max3
+                #:op-rsqrt-approx #:op-rcp-approx #:op-log2-approx #:op-exp2-approx
+                #:op-sin-approx #:op-cos-approx #:op-sincos-approx
 
                 ;; NEW: Unified Let from Compiler
                 #:let
@@ -584,6 +594,11 @@
    #:sin #:cos
    ;; Endeavor 128: transcendentals
    #:exp #:log #:log2 #:tan #:asin #:acos #:atan #:pow #:atan2
+   ;; Endeavour 170: hardware-supported math ops
+   #:op-fma #:op-saturate #:op-imad #:op-imad-sat
+   #:op-abs-diff #:op-abs-diff-add #:op-sad #:op-min3 #:op-max3
+   #:op-rsqrt-approx #:op-rcp-approx #:op-log2-approx #:op-exp2-approx
+   #:op-sin-approx #:op-cos-approx #:op-sincos-approx
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
    #:if+ #:when+ #:unless+ #:else #:dotimes+

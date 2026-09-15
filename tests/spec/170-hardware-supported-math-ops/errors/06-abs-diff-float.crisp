@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-abs-diff: operands must be integer"
+;;
+
+;; Endeavour 170: op-abs-diff is defined for integer types only.
+
+(def-function bad (a b)
+  (declare #'(float float => float))
+  (op-abs-diff a b))

@@ -1,0 +1,10 @@
+;;
+;; CHECK-FAIL: "op-imad-sat: 64-bit multipliers (LONG) are not supported"
+;;
+
+;; Endeavour 170 (decision D11): the exact intermediate product of two 64-bit multipliers needs
+;; 128 bits, which neither SPIR-V nor PTX offers portably, so op-imad-sat refuses them.
+
+(def-function bad (a b c)
+  (declare #'(long long long => long))
+  (op-imad-sat a b c))

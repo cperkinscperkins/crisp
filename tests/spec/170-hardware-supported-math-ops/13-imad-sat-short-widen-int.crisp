@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-13-imad-sat-short-widen-int
+;;
+;; Endeavour 170: op-imad-sat widened, short multipliers into an int accumulator. short*short is
+;; exact in 32 bits, so ONE 32-bit saturating add is already the exact clamp -- no extra clamp.
+
+(def-type s-c (cell short :address-space :global))
+(def-type i-c (cell int :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(s-c s-c i-c &out i-c))
+  (set! (~ res) (op-imad-sat (~ a) (~ b) (~ c))))

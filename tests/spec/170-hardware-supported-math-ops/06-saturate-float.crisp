@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-06-saturate-float
+;;
+;; Endeavour 170: op-saturate on float clamps to [0,1] as minnum(maxnum(x, 0.0), 1.0).
+;; maxnum returns the non-NaN operand, so NaN saturates to 0.0 (decision D6).
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(f-c &out f-c))
+  (set! (~ res) (op-saturate (~ x))))

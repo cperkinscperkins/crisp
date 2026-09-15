@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-min3: all three operands must have the same type"
+;;
+
+;; Endeavour 170: op-min3 / op-max3 take three operands of one type.
+
+(def-function bad (a b c)
+  (declare #'(float float double => float))
+  (op-min3 a b c))

@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-20-rsqrt-approx
+;;
+;; Endeavour 170: op-rsqrt-approx = 1.0 / sqrt(x) with the afn flag on BOTH instructions, even
+;; under ieee (the op grants approximation). On PTX llc fuses this into rsqrt.approx.f32.
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(f-c &out f-c))
+  (set! (~ res) (op-rsqrt-approx (~ x))))

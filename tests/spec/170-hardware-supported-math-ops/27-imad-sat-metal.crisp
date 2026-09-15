@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER hi: 2147483647
+;; HOIST-EXPECT: BUFFER lo: -2147483648
+;; HOIST-EXPECT: BUFFER back: 1073741824
+;; HOIST-EXPECT: BUFFER small: 17
+;;
+;; Endeavour 170 ON-METAL: op-imad-sat clamps the EXACT a*b+c once (reading (a), A2).
+;; hi:    65536 * 65536 + 0            = 2^32        -> clamps to INT_MAX
+;; lo:   -65536 * 65536 + 0            = -2^32       -> clamps to INT_MIN
+;; back:  65536 * 49152 + INT_MIN      = 1073741824  -> in range, NOT clamped. This is the case that
+;;        separates the readings: saturating the product first (reading b) would give INT_MAX + INT_MIN = -1.
+;; small: 3 * 4 + 5                    = 17
+;; x = gid + 1 = 1 at runtime keeps the constant folder away from the operands.
+
+(def-type i-c (cell int :address-space :global))
+
+(def-kernel imad_sat_metal (&out hi lo back small)
+  (declare #'(&out i-c i-c i-c i-c => nil)
+           (global-size :set-to 1))
+  (let ((x (to-int (+ (get-global-id 0) 1ul))))
+    (set! (~ hi) (op-imad-sat (* x 65536) 65536 0))
+    (set! (~ lo) (op-imad-sat (* x -65536) 65536 0))
+    (set! (~ back) (op-imad-sat (* x 65536) 49152 -2147483648))
+    (set! (~ small) (op-imad-sat (* x 3) 4 5))))

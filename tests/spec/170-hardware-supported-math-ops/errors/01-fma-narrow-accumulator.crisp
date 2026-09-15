@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-fma: accumulator c (HALF) is narrower than a and b (FLOAT)"
+;;
+
+;; Endeavour 170 (A3): the accumulator must be at least as wide as the multipliers.
+
+(def-function bad (a b c)
+  (declare #'(float float half => half))
+  (op-fma a b c))

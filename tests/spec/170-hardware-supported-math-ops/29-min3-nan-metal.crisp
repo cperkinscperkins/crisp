@@ -1,0 +1,25 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER lo: 2
+;; HOIST-EXPECT: BUFFER hi: 5
+;; HOIST-EXPECT: BUFFER sat-nan: 0
+;; HOIST-EXPECT: BUFFER sat-big: 1
+;;
+;; Endeavour 170 ON-METAL: NaN handling (minnum semantics, the answer in the Q&A).
+;; lo:  op-min3 of (NaN, 2, 3) = 2 -- a NaN operand yields the other value.
+;; hi:  op-max3 of (1, NaN, 5) = 5.
+;; sat-nan: op-saturate of NaN = 0 (maxnum(NaN, 0) = 0, decision D6). sat-big: op-saturate of 7 = 1.
+;; The NaN is made at runtime as (x - x) / (x - x) with x = gid + 1.
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel min3_nan_metal (&out lo hi sat-nan sat-big)
+  (declare #'(&out f-c f-c f-c f-c => nil)
+           (global-size :set-to 1))
+  (let* ((x (to-float (+ (get-global-id 0) 1ul)))
+         (nan (/ (- x x) (- x x))))
+    (set! (~ lo) (op-min3 nan (* x 2.0) (* x 3.0)))
+    (set! (~ hi) (op-max3 x nan (* x 5.0)))
+    (set! (~ sat-nan) (op-saturate nan))
+    (set! (~ sat-big) (op-saturate (* x 7.0)))))

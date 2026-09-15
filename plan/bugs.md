@@ -2273,3 +2273,77 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         LIKELY SPEC HOMES: float2/float4 add/sub/mul/div in 054-device-vectors, checked by hand for
         fadd/fsub/fmul/fdiv.  Endeavour 170 specs 05 (fma-float4) and 08 (saturate-float4) depend on it.
+
+        060 FIXED -- 2026-09-14, endeavour 170 (in overlays/crisp-compiler-overlay.lisp, pending fold
+        into src/codegen.lisp).  HYPOTHESIS CONFIRMED: src/types/registry.lisp registers each device
+        vector with :category :device-vector and IGNORES the element category it is handed (`_cat`).
+        RED showed all four ops (add/sub/mul/sdiv) wrong on float4, double2 AND half3.
+        FIX: %arith-category returns the ELEMENT category for a device vector (element found by
+        stripping the lane count from the type name); def-binary-op-codegen dispatches on it, and its
+        four expansions are re-run.  Non-float types take the integer instruction exactly as before.
+        VERIFIED BY HAND: fmul/fadd/fsub/fdiv on <4 x float>, <2 x double>, <3 x half>; llvm-as accepts
+        the module; `fast` flags stamp the vector ops under fast precision; a float4 cell kernel now
+        compiles to SPV (FMul/FAdd) and PTX.  Suites: unit 341/341, negative 235/235, E2E 1074/1079
+        (the 5 failures are the unimplemented endeavour 170 op-fma specs).
+        SPEC: tests/spec/054-device-vectors/29-float-vec-arithmetic.crisp.
+        FOLLOW-UP (not verified): integer division always emits sdiv, even for unsigned types; see 059's
+        `srem` note.  A candidate bug; not yet filed.
+
+[ ] 061 AUTODIFF OF DEVICE-VECTOR (float4 etc.) VALUES FAILS: THE ADJOINT IS MINTED AS A SCALAR float.
+        Found 2026-09-15 in endeavour 170 (spec 05-fma-float4 under --differentiate).  Pre-existing and
+        independent of the new ops.
+
+        REPRO (put_temp_files_here/170-probe/05-fma-float4.crisp at the time; no endeavour-170 op in it):
+
+            (def-type in-c  (cell float4 :address-space :global))
+            (def-type out-c (cell float4 :address-space :global))
+            (def-kernel k (a b c &out res)
+              (declare #'(in-c in-c in-c &out out-c))
+              (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))
+
+            ./bin/crisp-compile.exe --ir-target=llvmir --differentiate <file>
+                -> exit 1: "Type mismatch for operator '+'. Cannot operate on FLOAT and FLOAT4."
+
+        OBSERVED: the same message for (op-fma a b c) on float4.  The scalar-float and half->float widened
+        kernels differentiate correctly (170/01-04; the half adjoints are promoted to float).
+        HYPOTHESIS (not verified): the adjoint initializer picks the promoted SCALAR adjoint type from the
+        element category and never builds the vector type, so `(+ x_adj term)` mixes float and float4.
+        (Vector-typed adjoints are also why BUG 060 hid: no differentiable spec exercised float vectors;
+        the 054 specs are forward-only.)
+        SPECS WAITING ON IT: 170/05 (SKIP-WITH[--differentiate] citing this bug).
+
+[ ] 062 UNSIGNED INTEGER DIVISION (AND rem) EMITS A SIGNED DIVIDE.  `(/ a b)` on uint emits `sdiv i32`;
+        `(rem a b)` on ulong lowers through `sdiv i64`.  Wrong answers for any operand >= 2^(bits-1): e.g.
+        (/ 4000000000 2) on uint reads the dividend as -294967296.  Found 2026-09-15 (endeavour 170 night
+        run), following the note in 059 (`srem` on ulong) and the 060 follow-up.  NOT FIXED -- it touches
+        shared scalar arithmetic and needs its own suite run.
+
+        REPRO (put_temp_files_here/170-probe/udiv.crisp):
+            (def-function udiv (a b) (declare #'(uint uint => uint)) (/ a b))
+            (def-function urem (a b) (declare #'(ulong ulong => ulong)) (rem a b))
+            ./bin/crisp-compile.exe --ir-target=llvmir <file>
+                ->  %iop_tmp = sdiv i32 %a1, %b2
+                    %iop_tmp = sdiv i64 %mod-x2114, %mod-y2125
+
+        CAUSE (read, not a guess): src/codegen.lisp `(def-binary-op-codegen semantic-div llvm-build-sdiv
+        llvm-build-fdiv ...)` -- the macro has one integer instruction per op, and the comment above it
+        says "Div logic might need special handling for signed/unsigned later".  The rem lowering
+        evidently builds on the same division.
+        LIKELY FIX: pick llvm-build-udiv when %arith-category (added for 060) is :unsigned-int; check how
+        rem/mod are lowered.  LIKELY SPEC HOME: a HOIST-EXPECT on metal with a uint dividend >= 2^31.
+
+[ ] 063 A MULTI-VALUE BINDING FROM ANYTHING BUT A REGISTERED FUNCTION GETS A SILENT ZERO GRADIENT.
+        Found 2026-09-15 in endeavour 170.  generate-backward-walk's process-form handles a binding
+        (V0 V1 ... EXPR) only when (car EXPR) is in *differentiable-functions*; otherwise the clause's
+        `when` returns NIL and NOTHING is emitted -- no error, no warning.
+
+        OBSERVED (verified): (let ((s c (op-sincos-approx (~ x)))) (set! (~ res) (+ s c))) compiled with
+        --differentiate: the backward accumulated s_adj and c_adj and never propagated to x_adj, so the
+        kernel's x gradient was 0.  Endeavour 170 now splits op-sincos-approx bindings before the walk
+        (decision D19), so THAT case is fixed and metal-verified (170/38).
+        SCOPE (hypothesis, not checked): any other builtin that produces multiple values in a let (e.g. the
+        two-value floor/truncate/round forms, if they flow a float) would hit the same silent zero.
+        LIKELY FIX: make the clause's fall-through an error ("no backward rule for multi-value producer X")
+        instead of NIL, then give each real producer a rule.  (Note the 038 comment just above it: a void
+        statement is shaped exactly like a binding after ANF, so the error must not fire on statements the
+        earlier clauses already handle.)

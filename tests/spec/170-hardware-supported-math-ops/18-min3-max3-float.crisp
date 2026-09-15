@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-18-min3-max3-float
+;;
+;; Endeavour 170: op-min3 / op-max3 on float: nested minnum / maxnum (IEEE 754-2008: a NaN operand
+;; yields the other value).
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (a b c &out lo hi)
+  (declare #'(f-c f-c f-c &out f-c f-c))
+  (set! (~ lo) (op-min3 (~ a) (~ b) (~ c)))
+  (set! (~ hi) (op-max3 (~ a) (~ b) (~ c))))

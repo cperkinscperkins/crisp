@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-sad: a and b must be integer device vectors (e.g. uchar4); got UCHAR"
+;;
+
+;; Endeavour 170 (A5): op-sad operands are packed hardware vectors, not scalars.
+
+(def-function bad (a b c)
+  (declare #'(uchar uchar uint => uint))
+  (op-sad a b c))

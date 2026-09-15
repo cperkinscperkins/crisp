@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER d: 255
+;; HOIST-EXPECT: BUFFER s: 620
+;;
+;; Endeavour 170 ON-METAL: signed extremes and packed-vector SAD.
+;; d: op-abs-diff of chars -128 and 127 = 255, which only fits because the result is uchar (A4).
+;; s: op-sad of uchar4 (10 200 0 255) and (0 100 255 0) into uint 0 = 10 + 100 + 255 + 255 = 620;
+;;    every lane difference but the first needs the unsigned 8-bit range, and the sum needs the uint.
+;; d is reported through to-uint (a zero-extend) because the L0 host harness prints a uchar buffer as a raw
+;; byte, which the runner cannot decode. The zext still proves the 8-bit result was unsigned 0xFF.
+;; x = gid = 0 at runtime keeps the constant folder away from the operands.
+
+
+(def-type u-c (cell uint :address-space :global))
+
+(def-kernel absdiff_sad_metal (&out d s)
+  (declare #'(&out u-c u-c => nil)
+           (global-size :set-to 1))
+  (let* ((x (to-char (get-global-id 0)))
+         (xu (to-uchar (get-global-id 0))))
+    (set! (~ d) (to-uint (op-abs-diff (+ x -128c) (+ x 127c))))
+    (set! (~ s) (op-sad ##((+ xu 10uc) 200uc 0uc 255uc)
+                        ##(xu 100uc 255uc 0uc)
+                        (to-uint (get-global-id 0))))))

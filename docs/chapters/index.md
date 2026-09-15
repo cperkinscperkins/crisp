@@ -183,7 +183,7 @@
 - [Floating Point and Integer Operations ✅](27_math_operations_arithmetic/04_floating_point_and_integer_operations.md)
 - [Integer Only Operations 📝](27_math_operations_arithmetic/05_integer_only_operations.md)
 - [Integer Division ✅](27_math_operations_arithmetic/06_integer_division.md)
-- [Hardware Supported Math Operations 📝](27_math_operations_arithmetic/07_hardware_supported_math_operations.md)
+- [Hardware Supported Math Operations ✅](27_math_operations_arithmetic/07_hardware_supported_math_operations.md)
 
 ## Quantized Integers 📝
 - [Quantized Integer Types 📝](28_quantized_integers/01_quantized_integer_types.md)

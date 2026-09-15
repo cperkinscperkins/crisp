@@ -413,3 +413,120 @@ Risks / open
   `register-ops-analyzers`, a standalone `def-expression-analyzer` in the overlay is wiped; then the
   whole function must be redefined.  Verify.
 - -O3: confirm opt does not unfuse `llvm.fma` (check the optimized IR / .spt / .ptx, not just .ll).
+
+
+Decisions (made autonomously, 2026-09-14 night -- REVIEW THESE)
+===============================================================
+Chris went to bed with "make a choice and record it". Each entry: the choice, and why.
+
+D1. Package exports + node struct live in the OVERLAY for now (not the src patches in
+    put_temp_files_here/170-patches.md). A NEW defstruct is safe to overlay; only redefining an existing
+    one is not. The patch file remains the intended final form when folding.
+D2. ONE generic semantic node for every endeavour-170 op, instead of 16 structs:
+    `(defstruct semantic-hw-op op type args source-location)`. One clause per node dispatcher, one
+    codegen method that dispatches on OP. (Supersedes `semantic-fma` in 170-patches.md.)
+D3. Dispatchers (semantic-node-type, semantic-node-source-location, calculate-uniformity-state,
+    %uni-analyze, register-ops-analyzers, and the AD entry points) are extended by WRAPPING: the overlay
+    captures the original function object and defines a new one that handles hw-ops and delegates the
+    rest. When folding into src, each wrapper becomes one ordinary clause.
+D4. A3 signedness (was OPEN): imad / imad-sat need the accumulator to have the SAME signedness as a/b.
+    abs-diff-add / sad: |a-b| is unsigned, so c may be unsigned (width >= element) or signed (strictly
+    wider). Violations are compile errors.
+D5. Integer lowering uses LLVM intrinsics, because there is no LLVMBuildSelect binding and intrinsics
+    translate cleanly (probed): abs-diff = umax/smax(a,b) - umin/smin(a,b) (wrapping sub is exact
+    because the true value always fits the unsigned result); min3/max3 = nested smin/umin/minnum.
+
+Backend probes for intrinsics (hand .ll, put_temp_files_here/170-probe/)
+-------------------------------------------------------------------------
+SPV (llvm-spirv): minnum/maxnum -> OpenCL.std fmin/fmax (vector stays one call); sadd.sat/uadd.sat ->
+s_add_sat/u_add_sat; smin/umax lower without an ExtInst (inline); exp2 -> exp2; sqrt -> sqrt.
+
+PTX (llc -mcpu=sm_89) -- the .approx instructions are REAL and need NO libdevice:
+| IR | f32 | f16 | f64 |
+|---|---|---|---|
+| `call afn|fast @llvm.sin/cos` | sin.approx.f32 / cos.approx.f32 | via f32 (cvt) | LLVM ERROR Cannot select -> needs libdevice |
+| `fdiv afn 1.0, (call afn @llvm.sqrt)` | rsqrt.approx.f32 | (not probed; rcp shows cvt path) | sqrt.rn + rcp.rn (exact) |
+| `fdiv afn 1.0, x` | rcp.approx.f32 | rcp.approx via cvt | rcp.rn.f64 (exact) |
+| `call @llvm.exp2` (even no flags) | ex2.approx.f32 | ex2.approx.f16 | no libcall -> needs libdevice |
+| `call afn|fast @llvm.log2` | no libcall -> needs libdevice | | |
+| no flags `@llvm.sin` | LLVM ERROR Cannot select | | |
+Also: `afn` alone is enough; `fast` is not required. Plain `fdiv 1.0, x` is rcp.rn (exact).
+Other PTX: minnum/maxnum -> min.f32/max.f32, smin -> min.s32, fma -> fma.rn.*.
+
+D1 (REVISED). The package exports could NOT live in the overlay: when the build re-evaluates
+    src/package.lisp's defpackage, SBCL raises a package-variance WARNING ("also exports") and the build
+    fails. So src/package.lisp WAS PATCHED directly (the three lists from 170-patches.md, all 16 op
+    symbols). The node struct is still in the overlay (a NEW defstruct is safe there).
+D3 (NOTE). Wrappers capture the original in a DEFVAR via FDEFINITION. The first attempt,
+    `(let ((original #'f)) (defun f ...))`, overflowed the stack: SBCL folds (funcall original) into a
+    direct call to the global F, i.e. the wrapper itself.
+D6. NaN: op-saturate(NaN) = 0.0 (minnum(maxnum(x,0),1); maxnum returns the number). op-min3/max3 use
+    minnum/maxnum (the Q&A answer). Metal-verified on BMG (29).
+D7. op-saturate backward: g where the clamp is the identity (0 <= x <= 1, endpoints INCLUDED -- computed
+    as (= (op-saturate x) x)), 0 where it clamps.
+D8. op-imad-sat backward: op-imad's rule times a mask that is 1 where the recomputed saturated result is
+    STRICTLY inside c's range (so a result exactly at INT_MAX counts as clamped). The mask is an internal
+    op, (%hw-sat-interior r), because Crisp has no typed min/max literals for an arbitrary int type.
+D9. op-abs-diff(-add) backward: sign(a-b) with sign(0) = 0, built as to-float(a>b) - to-float(a<b).
+    (There was no existing abs backward rule to copy.)
+D10. op-min3/max3 backward: the gradient goes to the selected operand; ties go to the FIRST operand
+    (a, then b). Built from (= x r) / (!= x r) comparisons against the recomputed result.
+D11. op-imad-sat refuses 64-bit multipliers (long/ulong): the exact product needs i128, which neither
+    SPIR-V nor PTX offers portably. Lowering: W = max(2*width(a), width(c)) <= 64; exact product in W;
+    add.sat in W; clamp to c + trunc only when W > width(c). Negative spec errors/09.
+D12. The *-approx ops are SCALAR-only for now (negative spec errors/12). Half/bfloat16 x on the
+    library-routed ops (log2, sin, cos on SPV) is fpext'd to float, computed, and fptrunc'd back.
+D13. op-sad accumulator must be strictly wider than the element type (both signednesses); the sum
+    wraps in c like op-imad otherwise. |a-b| lanes are zero-extended and summed via extractelement
+    (not llvm.vector.reduce.add, to keep to forms both translators accept).
+D14. *-approx lowering: PTX f32 sin/cos = llvm intrinsic + afn (native sin/cos.approx); rsqrt =
+    afn(1/afn sqrt) (native rsqrt.approx); rcp = afn fdiv (native rcp.approx); exp2 = llvm.exp2 + afn
+    (native ex2.approx; PTX f64 calls libdevice __nv_exp2); log2 = the 128 fast-precision route
+    (SPV native_log2, PTX __nv_fast_log2f -> needs libdevice). SPV: the translator itself turns afn
+    sqrt/exp2 into native_sqrt/native_exp2. Everything gets afn (all flags under fast).
+D15. The doc's claim "(min a b c) is mapped to op-min3 automatically" is FALSE -- Crisp has no min/max
+    analyzer. The ideal_001 text now says to use op-min3/op-max3; adding a 3-arg min/max was out of scope.
+D16. Integer-op AD cannot be metal-verified (VERIFY-AUTODIFF feeds float cells only, and float->int is
+    AD-inert), so 32-34 validate the BACKWARD IR (promoted sitofp operand in the chain-rule fmul; mask /
+    sign comparisons). To let a TEST-WITH validator see the backward, run-spec-precision-pass (spec-runner
+    overlay) now honors --differentiate in its flags.
+D17. The L0 host harness prints a uchar BUFFER as a raw byte, which the runner cannot decode (it crashed
+    the output copy in 28). 28 reports the op-abs-diff result through (to-uint ...), a zext, which still
+    proves the 8-bit result was unsigned 0xFF. Harness not changed.
+D18. CUDA hoist lines were added to the metal specs 26-29 (they SKIP here: nvcc not available). 30 is
+    L0-only because op-log2-approx on PTX needs libdevice (FFI-LINK). NOT verified on NVIDIA.
+
+
+Status (2026-09-15 night run)
+=============================
+IMPLEMENTED (overlay + src/package.lisp): all 16 ops, analyzer + type rules, codegen for generic/SPV/PTX,
+AD for all scalar ops except op-sad and op-sincos-approx. BUG 060 fixed. BUG 061 and 062 filed.
+
+Specs (37 + 12 negative), all passing locally:
+- 01-25 forward, IR checked by validators AND by hand (all 16 ops compiled to .ll -> llvm-as OK, SPV, PTX).
+- 26-30 on metal (Intel BMG, Level Zero): fused fma (with an unfused CONTROL that prints 0 -- the spec
+  discriminates), imad-sat exact clamp incl. the reading-(a)-vs-(b) case, abs-diff/sad extremes, NaN
+  handling, all approx ops against tolerance.
+- 31, 35, 36, 37 VERIFY-AUTODIFF on BMG: fma, min3/max3 routing, all six approx derivatives, saturate.
+- 32-34 integer AD via backward-IR validators (D16).
+- errors/01-12.
+Planned-list mapping: plan 31-36 became 31-37 (37-saturate-ad added); errors 09-12 added.
+
+GAPS (recorded, SKIP-WITH cites them)
+- Device-vector AD: BUG 061 (05, 08, 17).
+- op-sad backward rule (17) -- blocked on vector adjoints anyway.
+- op-sincos-approx backward (25) -- multi-value AD.
+- *-approx on vectors (D12).
+- Widened-fma AD is hand-checked, not metal-verified (VERIFY-AUTODIFF: float cells only).
+- NVIDIA on-metal not run (no nvcc here); the PTX .ptx output was inspected by hand instead.
+- `(map-stride #'op-fma ...)` (ideal_001 ~5968) was not exercised.
+
+D19. op-sincos-approx AD. Found: a multi-value binding (S C (op-sincos-approx X)) reaches
+    generate-backward-walk's multi-value clause, which differentiates only REGISTERED functions, so the
+    gradient was SILENTLY ZERO (s_adj/c_adj accumulated, x_adj never did). Fix (overlay part 3): wrap
+    generate-backward-walk to split each such binding -- at any depth -- into (S (op-sin-approx X)) and
+    (C (op-cos-approx X)) before the walk. Metal-verified by 38-sincos-ad (analytical -0.08127, FD
+    -0.08118). The skip on 25 was removed. NOTE for the future: ANY non-registered multi-value producer
+    in that clause gets a silent zero gradient -- worth an error in the clause's else branch.
+
+Status update: op-sincos-approx is now differentiable; GAPS list item removed. Specs now 01-38 + errors/01-12.
