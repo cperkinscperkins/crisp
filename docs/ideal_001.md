@@ -8889,6 +8889,8 @@ only one rounding operation.  It is available for all floating point types
  ( `half`, `bfloat16`, `float`, `double` ) as well as their hardware vector variants
  ( `float2`, `float4` etc).
 
+ Importantly, note that the `c` accumulator term can be a different (larger) type than `a` and `b`.  To have `op-fma` perform widening, use a larger type for the accumulator.  example `(op-fma 40.1h 30.2h 0.0f) => float`
+
 Note that the Crisp compiler outputs LLVM-IR, and if using `:fast` precisions, then the
 LLVM-IR should be automatically optimized 
 if addition followed by multiplication is detected ... except when it isn't. 
@@ -8906,12 +8908,13 @@ including the hardware vector variants.
 
 Similar to `op-fma` but for integer types (signed and unsigned).
 
+ Importantly, note that the `c` accumulator term can be a different type than `a` and `b`.  To have `op-fma` perform widening, use a larger type for the accumulator.  example `(op-imad 40s 30s 1i) => int`
+
 #### `op-imad-sat`  Integer Multiply-Add with Saturation 📝
 
 `(op-imad-sat a b c) =>  SATURATE(   ((a * b) + c)   )`
 
-Similar to `op-imad`, this operation not only performs the add and multiply, but also clamps the result so there
-is no integer overflow.
+Similar to `op-imad`, this operation not only performs the add and multiply, but also clamps the result so there is no integer overflow.  Supports the same "widening" with the type of `c` as `op-imad`
 
 #### `op-abs-diff` Absolute Value of Difference 📝
 
@@ -8995,6 +8998,25 @@ normalizing vectors, or Monte Carlo simulations—but not enough for scientific 
 - Input: `x` (radians, floating point)
 - Output: Returns two values: $\approx \sin(x)$ and $\approx \cos(x)$.
 - Use: Calculating both sine and cosine for the same angle (e.g., rotation matrices). This often compiles to a single hardware instruction.
+
+
+
+#### `op-abs-diff-add` Absolute Difference and Add 📝
+
+```
+(op-abs-diff-add a b c) => ( | a - b | ) + c
+```
+
+Computes the absolute value of the difference between `a` and `b`, and adds it to the accumulator `c`. Available for integer types (signed and unsigned). Avoids multiple conditional checks and branches.
+Like `op-fma` and `op-imad`, this operation supports accumulator-based overloading to prevent integer overflow. The precision of the result is dictated by the type of the accumulator `c`. For example, calculating the difference of two 8-bit integers (`a`, `b`) and adding it to a 32-bit integer (`c`) will safely widen the intermediate result and return a 32-bit integer.
+
+#### `op-sad` Sum of Absolute Differences 📝
+```
+(op-sad a b c) => (Σ | a_i - b_i |) + c
+```
+
+A hardware-accelerated operation heavily optimized for computer vision, image processing, and video encoding. While similar to `op-abs-diff-add`, `op-sad` is typically used when `a` and `b` are packed data types (such as four 8-bit integers packed into a single 32-bit register). It computes the absolute difference for each corresponding byte pair, sums all those differences together, and adds the total to the accumulator `c`.
+Because summing multiple 8-bit differences easily overflows an 8-bit bucket, this operation practically mandates widening. The accumulator `c` dictates the output type, which is usually a 32-bit integer to safely hold the summed differences.
 
 ## Quantized Integers 📝
 

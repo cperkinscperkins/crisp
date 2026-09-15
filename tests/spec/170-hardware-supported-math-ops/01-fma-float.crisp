@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-fma-f32
+;; TEST-WITH[--force-math-precision=fast] : validate-fma-f32
+;;
+;; Endeavour 170: op-fma, float, non-widened.
+;; (op-fma a b c) => (a*b)+c with ONE rounding. The user asked for the hardware op, so the
+;; IR must call @llvm.fma.f32 (guaranteed fused) -- never @llvm.fmuladd (merely permitted) --
+;; and it must do so in EVERY precision context, ieee included.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (op-fma (~ a) (~ b) (~ c))))

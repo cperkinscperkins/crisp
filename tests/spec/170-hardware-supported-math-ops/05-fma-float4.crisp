@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-fma-v4f32
+;;
+;; Endeavour 170: op-fma on a hardware vector (float4), non-widened.
+;; Lane-wise fused multiply-add: one @llvm.fma.v4f32 call on <4 x float>, not four scalar calls.
+
+(def-type in-c  (cell float4 :address-space :global))
+(def-type out-c (cell float4 :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (op-fma (~ a) (~ b) (~ c))))
