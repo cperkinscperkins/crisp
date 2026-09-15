@@ -2240,3 +2240,36 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         LIKELY SPEC HOMES: a negative spec refusing the implicit narrowing store (tests/spec/.../errors),
         plus a positive spec that the explicit form stores a correct half / bf16 value on metal.
+
+[ ] 060 ARITHMETIC ON FLOATING-POINT HARDWARE VECTORS (float4 etc.) EMITS INTEGER INSTRUCTIONS.
+        `(* a b)` on float4 emits `mul <4 x float>`, `(+ ...)` emits `add <4 x float>`: invalid IR.
+        crisp-compile --ir-target=llvmir exits 0 anyway; --ir-target=spv fails.  Found 2026-09-14
+        writing endeavour 170 (op-fma on float4).  OLD: the dispatch dates to 2025-12-19; the only
+        device-vector arithmetic spec (054-device-vectors/11-arithmetic) uses ushort2, so integer
+        vectors have been fine and float vectors were never exercised.
+
+        REPRO (put_temp_files_here/170-probe/05-fma-float4.crisp at the time):
+
+            (def-type in-c  (cell float4 :address-space :global))
+            (def-type out-c (cell float4 :address-space :global))
+            (def-kernel k (a b c &out res)
+              (declare #'(in-c in-c in-c &out out-c))
+              (set! (~ res) (+ (* (~ a) (~ b)) (~ c))))
+
+        OBSERVED (fresh build, 2026-09-14):
+          * --ir-target=llvmir -> exit 0.  The kernel body contains
+                %iop_tmp   = mul <4 x float> %val, %val32
+                %iop_tmp40 = add <4 x float> %iop_tmp, %val39
+          * bin/llvm-as.exe on that .ll: "error: invalid operand type for instruction" at the mul.
+          * --ir-target=spv -> exit 1.
+          * The same kernel over half cells emits correct `fmul half` / `fadd half`.
+
+        HYPOTHESIS (not verified): def-binary-op-codegen (src/codegen.lisp ~1528) picks the float
+        instruction only when (crisp-type-category result-type) is :float; a float4 presumably carries a
+        vector category, so it falls to the int instruction.  If so, sub and div are affected too
+        (div would emit sdiv), and any other dispatch keyed on :float the same way (unary ops,
+        comparisons, casts) is worth checking.  Also worth asking why the invalid module was not caught
+        by a verifier before writing the .ll.
+
+        LIKELY SPEC HOMES: float2/float4 add/sub/mul/div in 054-device-vectors, checked by hand for
+        fadd/fsub/fmul/fdiv.  Endeavour 170 specs 05 (fma-float4) and 08 (saturate-float4) depend on it.

@@ -80,3 +80,26 @@
   "Endeavour 170: op-fma on float4 lowers to ONE lane-wise @llvm.fma.v4f32 on <4 x float>."
   (declare (ignore file))
   (%validate-fma-ir ir-string "@llvm.fma.v4f32("))
+
+;;;; ---------------------------------------------------------------------------------------------
+;;;; BUG 060 (endeavour 170) -- float device-vector arithmetic must use the FP instructions.
+;;;; ---------------------------------------------------------------------------------------------
+
+(defun validate-float-dvec-arithmetic (file ir-string)
+  "BUG 060: for each float device-vector LLVM type used by 054/29 (<4 x float>, <2 x double>,
+   <3 x half>) the IR must contain fadd/fsub/fmul/fdiv on that type, and NO integer
+   add/sub/mul/sdiv/udiv on it (those are invalid IR on a float vector)."
+  (declare (ignore file))
+  (let ((ir (string-downcase ir-string))
+        (ok t))
+    (dolist (vty '("<4 x float>" "<2 x double>" "<3 x half>"))
+      (dolist (fop '("fadd" "fsub" "fmul" "fdiv"))
+        (unless (search (format nil " ~a ~a " fop vty) ir)
+          (format t "FAIL: missing `~a ~a`~%" fop vty)
+          (setf ok nil)))
+      (dolist (iop '("add" "sub" "mul" "sdiv" "udiv"))
+        (when (search (format nil "= ~a ~a " iop vty) ir)
+          (format t "FAIL: integer `~a ~a` emitted on a float vector (invalid IR)~%" iop vty)
+          (setf ok nil))))
+    (when ok (format t "PASS (FP instructions on float/double/half device vectors)~%"))
+    ok))

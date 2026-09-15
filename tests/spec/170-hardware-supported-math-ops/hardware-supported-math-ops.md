@@ -363,3 +363,53 @@ Negative (`errors/`)
 - 08-sad-scalar-operands
 
 
+
+
+op-fma: Trace + Implementation Plan (PROPOSED, 2026-09-14)
+===========================================================
+
+Backend probes (hand-written .ll, put_temp_files_here/170-probe/)
+-----------------------------------------------------------------
+- SPV: `llvm.fma.f32` / `.f64` / `.v4f32` / `.f16` -> `ExtInst OpenCL.std fma` (vector stays one call).
+  `.bf16` needs `--spirv-ext=+SPV_KHR_bfloat16` (compiler.lisp:750 already passes it; BMG driver does
+  NOT implement that extension -- codegen.lisp:5079 -- so bf16 is compile-only on Intel).
+- PTX: `llc -march=nvptx64` lowers `llvm.fma.*` to NATIVE instructions: `fma.rn.f32`, `fma.rn.f64`,
+  `fma.rn.f16`, `fma.rn.bf16`; `<4 x float>` scalarizes to four `fma.rn.f32`. No libdevice needed
+  (unlike the 128 transcendentals, where a bare `llvm.sin` crashes llc).
+- So op-fma needs NO target routing: emit `llvm.fma.<suffix>` everywhere.
+
+How endeavour 128 wired a math op (the template)
+------------------------------------------------
+| Layer | Where | op-fma needs |
+|---|---|---|
+| Export | package.lisp:200, 534, 586 | `op-fma` in all three -- PATCH (Chris) |
+| Node | semantic.lisp:154 `(defstruct semantic-atan2 type left-arg right-arg source-location)` | `(defstruct semantic-fma type a b c source-location)` -- PATCH (struct) |
+| Analyzer | analysis/ops.lisp `def-binary-math-analyzer`; registered in `register-ops-analyzers` (ops.lisp:497) | `analyze-fma-expression` (A3 rules, result = c's type); registration -- OVERLAY |
+| Node dispatch | analysis/core.lisp:2225 `semantic-node-type`, :2305 source-location, :1918 `calculate-uniformity-state` | a `semantic-fma` clause in each -- OVERLAY (whole-fn) |
+| Uniformity | analysis/core.lisp:1215 `%uni-analyze` contagion list | add "OP-FMA" -- OVERLAY |
+| Codegen | codegen.lisp:1582 `def-binary-math-codegen` + `%math-call-name` | own `generate-node-ir` method: fpext a,b to c's type (`build-cast-if-needed`), call `llvm.fma.<sfx>`. No `%math-call-name`. -- OVERLAY |
+| AD rule | autodiff.lisp:401 `%handle-math-and-trig-backward` | clause: `da += b*g`, `db += a*g`, `dc += g` -- OVERLAY (whole-fn) |
+| AD dispatch | autodiff.lisp:699 in `%handle-single-value-backward` | add `op-fma` to the member list -- OVERLAY (whole-fn) |
+| Activeness | autodiff.lisp:3538 `%active-scalar-vars` | "OP-FMA" joins the POW/ATAN2 union clause -- OVERLAY (whole-fn) |
+
+Decisions to confirm
+--------------------
+1. No fast-math flags on the fma call (it is precision-independent; `%apply-precision-fmf` not applied).
+2. Intrinsic suffix from c's type: half->f16, bfloat16->bf16, float->f32, double->f64, floatN->vNf32,
+   doubleN->vNf64 (small helper).
+3. A3 analyzer checks, each with its own error message for errors/01-03:
+   a,b same type; family match (float scalar, or float device-vector with matching lane count);
+   width(c) >= width(a).
+
+Risks / open
+------------
+- BUG 060: spec 05's FORWARD never emits fmul (fma is one call), so it can pass. But its BACKWARD
+  emits `(* b g)` on float4 -> integer `mul` -> invalid IR. So 05's --differentiate pass depends on
+  060. Fix 060 inside this endeavour, or SKIP-WITH[--differentiate] citing 060?
+- Widened backward: `da = b*g` where b is half and g is float. Need to see what adjoint type a half
+  param gets (endeavour 163: 16-bit weights / 32-bit grads) and that no narrowing store (BUG 059 class)
+  appears. Check the backward IR by hand.
+- Registration: if `initialize-compiler` rebuilds `*expression-analyzers*` via
+  `register-ops-analyzers`, a standalone `def-expression-analyzer` in the overlay is wiped; then the
+  whole function must be redefined.  Verify.
+- -O3: confirm opt does not unfuse `llvm.fma` (check the optimized IR / .spt / .ptx, not just .ll).
