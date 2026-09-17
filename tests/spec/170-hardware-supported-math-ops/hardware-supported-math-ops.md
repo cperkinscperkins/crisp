@@ -530,3 +530,26 @@ D19. op-sincos-approx AD. Found: a multi-value binding (S C (op-sincos-approx X)
     in that clause gets a silent zero gradient -- worth an error in the clause's else branch.
 
 Status update: op-sincos-approx is now differentiable; GAPS list item removed. Specs now 01-38 + errors/01-12.
+
+D20 (Chris, 2026-09-16, asked during the H100 session). The *-approx BACKWARD rules evaluate their
+    derivatives with the APPROX ops, not the exact functions: d sin -> op-cos-approx, d rsqrt ->
+    -0.5*rsqrt(x)/x, d rcp -> -rcp(x)^2, d exp2 -> ln2*exp2(x). d log2 stays 1/(x ln2) (plain division).
+    The derivative RULE is unchanged (A6 still holds -- d sin IS cos); only its evaluation is approximate,
+    matching the forward the user asked for.
+    WHY: on PTX the exact cos / pow ARE libdevice symbols, so AD of an approx-trig kernel would not
+    compile unless the user linked libdevice.10.bc. Found by the H100 run: 42-sincos-ad-cuda failed with
+    "backward compile failed (exit 1) -- __nv_sinf is unresolved" while every other spec passed.
+    COST: none measurable. H100 42: analytical -0.08126831 vs FD -0.08130073 (3.2e-5), which is BETTER
+    than the exact-derivative version measured on BMG (8.7e-5); the finite-difference step dominates.
+    41-approx-ad-cuda's FFI-LINK was dropped -- neither of its kernels calls libdevice now.
+
+H100 RUN (2026-09-16, RunPod, branch harware-supported-math-ops)
+===============================================================
+Full suite, all phases green after D20: specs 1129/1129, --differentiate 1129/1129, negative 247/247.
+- On metal (CUDA host runs): 26 fused fma (res=1), 27 imad-sat exact clamp (incl. back=1073741824),
+  28 abs-diff/sad (255, 620), 29 NaN (lo=2, hi=5, sat-nan=0), 43 approx + libdevice log2 (0.5, 0.125,
+  3, 8, 0.479425, 0.877583).
+- NaN: PTX min.f32 / max.f32 DO follow minnum (the prediction that they might not was wrong).
+- CUDA VERIFY-AUTODIFF: 39 fma, 40 min3/max3, 41 approx, 42 sincos -- all within 1.5e-4 of the FD.
+- No NVIDIA regressions from BUG 060's codegen change or the backward-walk wrapper (the MMA / TMA /
+  ring-pipeline CUDA AD specs all still pass).

@@ -183,5 +183,10 @@ are not supported yet). Integer operands get promoted adjoints, as for any integ
 - `op-saturate`: `g` where the clamp is the identity (0 ≤ x ≤ 1), zero where it clamps.
 - `op-abs-diff`, `op-abs-diff-add`: `da = sign(a-b)·g`, `db = -sign(a-b)·g` (sign(0) = 0), plus `dc = g`.
 - `op-min3`, `op-max3`: the gradient goes to the selected operand; on a tie, to the first one.
-- `*-approx`: the derivative of the EXACT function. For `op-sincos-approx`, `dx = cos(x)·ds - sin(x)·dc`.
+- `*-approx`: the derivative of the exact function, *evaluated with the approximate ops* — `d sin(x) = cos(x)`
+  is computed as `op-cos-approx`, `d rsqrt(x) = -0.5·rsqrt(x)/x`, and so on. The rule is the ordinary
+  calculus; only its evaluation is approximate, matching the forward you asked for. (This also keeps the
+  backward free of library calls: on PTX the exact `cos` and `pow` are libdevice symbols, so an
+  exactly-evaluated gradient would force you to link `libdevice.10.bc`.) For `op-sincos-approx`,
+  `dx = cos(x)·ds - sin(x)·dc`.
 
