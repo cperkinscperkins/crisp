@@ -885,3 +885,59 @@
      op-sincos-approx multi-value bindings are split into sin / cos bindings first."
     (apply *hw-original-generate-backward-walk*
            (%hw-split-sincos-bindings flat-anf) inputs outputs input-types output-types keys)))
+
+;;; ---------------------------------------------------------------------------------------------
+;;; Endeavour 170, part 4 (decision D20, Chris 2026-09-16): the *-approx backward rules now evaluate
+;;; the derivative with the APPROX ops instead of the exact functions. The derivative RULE is
+;;; unchanged (d sin = cos); only its evaluation is approximate, matching the forward the user asked
+;;; for. This removes a libdevice dependency on PTX: exact `cos` / `pow` are libdevice symbols there,
+;;; so AD of an approx-trig kernel failed to compile without libdevice.10.bc linked
+;;; (H100 run, 2026-09-16: 42-sincos-ad-cuda "backward compile failed", __nv_sinf unresolved).
+;;; op-log2-approx keeps 1/(x ln2) -- plain division needs no library either way.
+;;; ---------------------------------------------------------------------------------------------
+
+;; src/autodiff.lisp  (REPLACES the part-2 %hw-op-backward)
+(defun %hw-op-backward (v expr emit-fn local-adj-fn)
+  "Backward rules for the endeavour-170 hardware math ops (v := EXPR). Each operand's adjoint
+   accumulates d(op)/d(operand) * v_adj. Integer operands get promoted adjoints like any integer
+   input. Kinks and ties use the conventions recorded in the endeavour doc (D7-D10); the *-approx
+   derivatives are evaluated with the approx ops themselves (D20). Returns T."
+  (let ((op (%hw-op-form-op expr))
+        (args (cdr expr))
+        (g (funcall local-adj-fn v)))
+    (flet ((acc (x term)
+             (when (and x (symbolp x))
+               (funcall emit-fn `(set! ,(funcall local-adj-fn x) (+ ,(funcall local-adj-fn x) ,term))))))
+      (log:debug "%hw-op-backward: ~a := ~a" v expr)
+      (destructuring-bind (a &optional b c) args
+        (ecase op
+          ((op-fma op-imad)
+           (acc a `(* ,b ,g)) (acc b `(* ,a ,g)) (acc c g))
+          (op-imad-sat
+           (let ((mask `(%hw-sat-interior (op-imad-sat ,a ,b ,c))))
+             (acc a `(* (* ,b ,g) ,mask)) (acc b `(* (* ,a ,g) ,mask)) (acc c `(* ,g ,mask))))
+          (op-saturate
+           ;; gradient 1 wherever the clamp is the identity (0 <= x <= 1, endpoints included), else 0
+           (acc a `(* ,g (to-float (= (op-saturate ,a) ,a)))))
+          ((op-abs-diff op-abs-diff-add)
+           (let ((sign `(- (to-float (> ,a ,b)) (to-float (< ,a ,b)))))
+             (acc a `(* ,sign ,g)) (acc b `(* (* -1.0 ,sign) ,g))
+             (when (eq op 'op-abs-diff-add) (acc c g))))
+          ((op-min3 op-max3)
+           (let ((r `(,op ,a ,b ,c)))
+             (acc a `(* (to-float (= ,a ,r)) ,g))
+             (acc b `(* (to-float (* (= ,b ,r) (!= ,a ,r))) ,g))
+             (acc c `(* (to-float (* (= ,c ,r) (* (!= ,a ,r) (!= ,b ,r)))) ,g))))
+          ;; d/dx x^-1/2 = -0.5 * x^-3/2 = -0.5 * rsqrt(x) / x
+          (op-rsqrt-approx (acc a `(* (* -0.5 (/ (op-rsqrt-approx ,a) ,a)) ,g)))
+          ;; d/dx 1/x = -(1/x)^2
+          (op-rcp-approx (acc a `(* (* -1.0 (* (op-rcp-approx ,a) (op-rcp-approx ,a))) ,g)))
+          ;; d/dx log2(x) = 1/(x ln2) -- division only, no library call on any target
+          (op-log2-approx (acc a `(* (/ 1.4426950408889634 ,a) ,g)))
+          ;; d/dx 2^x = ln2 * 2^x
+          (op-exp2-approx (acc a `(* (* 0.6931471805599453 (op-exp2-approx ,a)) ,g)))
+          (op-sin-approx (acc a `(* (op-cos-approx ,a) ,g)))
+          (op-cos-approx (acc a `(* (* -1.0 (op-sin-approx ,a)) ,g)))
+          ((op-sad op-sincos-approx %hw-sat-interior)
+           (error "~(~a~): no backward rule yet (endeavour 170 gap -- see the endeavour doc)." op)))))
+    t))

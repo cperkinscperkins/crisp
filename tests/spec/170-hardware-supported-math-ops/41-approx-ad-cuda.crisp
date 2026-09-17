@@ -1,12 +1,13 @@
 ;; TEST-EXPECT: PASS
 ;; VERIFY-AUTODIFF[CUDA]: x=4.0 y=2.0 w=1.0 u=0.5 atol=5e-2 expect.x=-0.0625 expect.y=-0.25 expect.w=1.3862944 expect.u=0.39815702
-;; FFI-LINK: $CUDA_HOME/nvvm/libdevice/libdevice.10.bc
 ;;
 ;; Endeavour 170 AD ON-METAL, NVIDIA: the CUDA twin of 36-approx-ad, minus log2 (whose PTX lowering is
-;; the libdevice __nv_fast_log2f call; libdevice is linked here anyway for the backward's pow/log).
-;; On PTX the forward uses the NATIVE approx instructions (rsqrt.approx, rcp.approx, ex2.approx,
-;; sin.approx, cos.approx), so this is the real question the pod answers: does the EXACT derivative
-;; still gradient-check against a finite difference taken through APPROXIMATE forward values?
+;; the libdevice __nv_fast_log2f call; this spec links NO libdevice, which is the point).
+;; On PTX both kernels are native: the forward uses rsqrt.approx / rcp.approx / ex2.approx /
+;; sin.approx / cos.approx, and since decision D20 the BACKWARD evaluates its derivatives with the
+;; approx ops too (op-cos-approx for d sin, -0.5*rsqrt(x)/x for d rsqrt, ...) rather than the exact
+;; cos / pow, which ARE libdevice symbols on PTX. So the question the pod answers is: does the
+;; derivative rule still gradient-check when both the forward AND the derivative are approximate?
 ;; atol is looser than the SPIR-V twin (5e-2) for exactly that reason.
 
 (def-type f-c (cell float :address-space :global))
