@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: a=1.0 b=3.0 c=2.0 atol=1e-2 expect.a=1.0 expect.b=2.0 expect.c=0.0
+;;
+;; Endeavour 170 AD ON-METAL: min3 / max3 route the gradient to the SELECTED operand (ties go to the
+;; first operand, decision D10). res = min3(a,b,c) + 2*max3(a,b,c) with a=1, b=3, c=2:
+;; a is the min (da = 1), b is the max (db = 2), c is neither (dc = 0).
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(f-c f-c f-c &out f-c))
+  (set! (~ res) (+ (op-min3 (~ a) (~ b) (~ c))
+                   (* 2.0 (op-max3 (~ a) (~ b) (~ c))))))

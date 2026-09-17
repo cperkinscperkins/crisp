@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-saturate: operand must be floating point"
+;;
+
+;; Endeavour 170: op-saturate clamps floating point values to [0,1]; integers are refused.
+
+(def-function bad (x)
+  (declare #'(int => int))
+  (op-saturate x))

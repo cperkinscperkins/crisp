@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-11-imad-short-widen-int
+;;
+;; Endeavour 170: op-imad widening, the doc example (op-imad 40s 30s 1i) => int.
+;; a and b are SIGN-extended to int before the multiply, so the product cannot wrap at 16 bits.
+
+(def-type s-c (cell short :address-space :global))
+(def-type i-c (cell int :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(s-c s-c i-c &out i-c))
+  (set! (~ res) (op-imad (~ a) (~ b) (~ c))))

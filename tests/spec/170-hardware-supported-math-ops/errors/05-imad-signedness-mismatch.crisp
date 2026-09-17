@@ -1,0 +1,10 @@
+;;
+;; CHECK-FAIL: "op-imad: accumulator c (UINT) must have the same signedness as a and b (SHORT)"
+;;
+
+;; Endeavour 170 (decision D4): op-imad / op-imad-sat require the accumulator to have the same
+;; signedness as the multipliers.
+
+(def-function bad (a b c)
+  (declare #'(short short uint => uint))
+  (op-imad a b c))

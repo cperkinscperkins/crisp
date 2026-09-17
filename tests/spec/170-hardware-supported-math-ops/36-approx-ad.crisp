@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=4.0 y=2.0 z=8.0 w=1.0 u=0.5 atol=1e-2 expect.x=-0.0625 expect.y=-0.25 expect.z=0.18033688 expect.w=1.3862944 expect.u=0.39815702
+;;
+;; Endeavour 170 AD ON-METAL: the *-approx ops differentiate with the EXACT function's derivative (A6).
+;; d rsqrt(x)/dx at 4 = -0.5 * 4^-1.5 = -0.0625;  d (1/y)/dy at 2 = -0.25;
+;; d log2(z)/dz at 8 = 1/(8 ln 2) = 0.180337;  d 2^w/dw at 1 = 2 ln 2 = 1.386294;
+;; d (sin u + cos u)/du at 0.5 = cos 0.5 - sin 0.5 = 0.398157.
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (x y z w u &out res)
+  (declare #'(f-c f-c f-c f-c f-c &out f-c))
+  (set! (~ res) (+ (op-rsqrt-approx (~ x))
+                   (+ (op-rcp-approx (~ y))
+                      (+ (op-log2-approx (~ z))
+                         (+ (op-exp2-approx (~ w))
+                            (+ (op-sin-approx (~ u)) (op-cos-approx (~ u)))))))))

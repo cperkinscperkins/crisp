@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=0.5 atol=1e-2 expect.x=-0.08126
+;;
+;; Endeavour 170 AD ON-METAL: op-sincos-approx through the multi-value let. The backward walk sees the
+;; binding split into sin / cos bindings, so dx = cos(x)*s_adj - sin(x)*c_adj.
+;; res = s + 2c at x = 0.5: d/dx = cos(0.5) - 2 sin(0.5) = 0.877583 - 0.958851 = -0.081268.
+;; (Before the split, the gradient was SILENTLY ZERO -- see decision D19 in the endeavour doc.)
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(f-c &out f-c))
+  (let ((s c (op-sincos-approx (~ x))))
+    (set! (~ res) (+ s (* 2.0 c)))))

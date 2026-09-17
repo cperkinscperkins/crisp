@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-12-imad-sat-int
+;;
+;; Endeavour 170: op-imad-sat, int, non-widened. Reading (a) of the doc (A2): the EXACT a*b+c,
+;; clamped once to int. The product is computed in 64 bits, added with a 64-bit saturating add,
+;; then clamped to [INT_MIN, INT_MAX] and truncated.
+
+(def-type i-c (cell int :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(i-c i-c i-c &out i-c))
+  (set! (~ res) (op-imad-sat (~ a) (~ b) (~ c))))

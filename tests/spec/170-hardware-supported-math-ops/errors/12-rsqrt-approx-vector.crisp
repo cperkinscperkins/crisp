@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-rsqrt-approx: operand must be a floating point scalar"
+;;
+
+;; Endeavour 170 (decision D12): the *-approx ops are scalar-only for now.
+
+(def-function bad (x)
+  (declare #'(float4 => float4))
+  (op-rsqrt-approx x))

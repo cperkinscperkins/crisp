@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-12T05:22:00.094916Z
+Generated on 2026-09-17T04:19:16.034130Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1076,7 +1076,7 @@ Generated on 2026-09-12T05:22:00.094916Z
 ### DEFUN `%GPU-BUILTIN-INFO`
 - **Args**: `(BUILTIN-KW)`
 
-  > Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.  >    BASE-RETURN-TYPE: return type when called with no args (nil = void).  >    ACCEPTS-DIM-P: T if the builtin accepts a scalar dimension arg 0/1/2.
+  > Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.  >    BASE-RETURN-TYPE: return type when called with no args (nil = void).  >    ACCEPTS-DIM-P: T if the builtin accepts a scalar dimension arg 0/1/2.
 
 
 ---
@@ -1491,7 +1491,7 @@ Generated on 2026-09-12T05:22:00.094916Z
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the  >    body analysis.  Otherwise identical to the Phase 2 definition.
+  > Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the  >    body analysis.  Otherwise identical to the Phase 2 definition.
 
 
 ---
@@ -1801,6 +1801,62 @@ Generated on 2026-09-12T05:22:00.094916Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes (rem x y).  Currently identical to mod — both match C % / LLVM  >    srem.  Split semantics later if needed.
+
+
+---
+### DEFUN `%HW-TYPE-PARTS`
+- **Args**: `(TYPE-NAME)`
+
+  > Decompose TYPE-NAME for the endeavour-170 type rules. Returns  >    (values ELEMENT-CATEGORY ELEMENT-BITS LANES BASE-NAME): LANES is NIL for a scalar, the lane count  >    for a device vector; BASE-NAME is the element type's name string ("HALF", "BFLOAT16", ...).  >    Returns NIL for anything that is not a known scalar or device vector.
+
+
+---
+### DEFUN `%HW-TYPE-NAMED`
+- **Args**: `(BASE-NAME LANES)`
+
+  > The registered type symbol for element BASE-NAME with LANES lanes (NIL = scalar), or NIL.
+
+
+---
+### DEFUN `%HW-UNSIGNED-COUNTERPART`
+- **Args**: `(TYPE-NAME)`
+
+  > Unsigned type with the same width and lane count as integer TYPE-NAME (char4 -> uchar4).  >    An unsigned TYPE-NAME is returned as-is.
+
+
+---
+### DEFUN `%HW-FAIL`
+- **Args**: `(LOCATION FMT &REST ARGS)`
+
+  > Signal the endeavour-170 type error: a crisp-type-error whose message is FMT applied to ARGS.
+
+
+---
+### DEFUN `%HW-CHECK-MULTIPLIER-ACCUMULATOR`
+- **Args**: `(OP A-TYPE B-TYPE C-TYPE LOCATION FAMILY)`
+
+  > Shared rules for the accumulator ops (op-fma: FAMILY :float; op-imad / op-imad-sat: :int).  >    a and b must be the same type of FAMILY; c must be the same family, the same lane count, and at  >    least as wide. For :int, c must also have the same signedness. For 16-bit floats, a c of  >    equal width must be the SAME format (half and bfloat16 are not interchangeable).
+
+
+---
+### DEFUN `%HW-OP-RESULT-TYPE`
+- **Args**: `(OP ARG-TYPES LOCATION)`
+
+  > The result type of endeavour-170 OP applied to ARG-TYPES, or a crisp-type-error.
+
+
+---
+### DEFUN `%HW-SAT-INTERIOR-RESULT-TYPE`
+- **Args**: `(ARG-TYPES LOCATION)`
+
+  > Result type of the internal (%hw-sat-interior R): float for an integer scalar R, floatN for an  >    integer device vector with N lanes.
+
+
+---
+### DEFUN `ANALYZE-HW-OP-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes an endeavour-170 hardware math op form, e.g. (op-fma a b c), or an internal  >    AD helper form such as (%hw-sat-interior r).
 
 
 ---
@@ -2440,6 +2496,27 @@ Generated on 2026-09-12T05:22:00.094916Z
 - **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)`
 
   > Handles %CONSTRUCT-STRUCT backward rule.
+
+
+---
+### DEFUN `%HW-OP-FORM-OP`
+- **Args**: `(EXPR)`
+
+  > The endeavour-170 op symbol (public or internal) if EXPR is a hardware math op form, else NIL.  >    Matched by symbol name, so it works whichever package the kernel's reader interned into.
+
+
+---
+### DEFUN `%HW-SPLIT-SINCOS-BINDINGS`
+- **Args**: `(FORM)`
+
+  > Rewrite every multi-value binding (S C (op-sincos-approx X)) in FORM -- at any depth, since  >    ANF leaves nested bodies (if / let / dotimes) inside the flat list -- into the two single  >    bindings (S (op-sin-approx X)) and (C (op-cos-approx X)), spliced in its place. A form whose  >    head is an operator (set!, let, ...) is never mistaken for a binding.
+
+
+---
+### DEFUN `%HW-OP-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN)`
+
+  > Backward rules for the endeavour-170 hardware math ops (v := EXPR). Each operand's adjoint  >    accumulates d(op)/d(operand) * v_adj. Integer operands get promoted adjoints like any integer  >    input. Kinks and ties use the conventions recorded in the endeavour doc (D7-D10); the *-approx  >    derivatives are evaluated with the approx ops themselves (D20). Returns T.
 
 
 ---
@@ -3991,6 +4068,13 @@ Generated on 2026-09-12T05:22:00.094916Z
 
 
 ---
+### DEFUN `%ARITH-CATEGORY`
+- **Args**: `(TYPE-NAME)`
+
+  > Category that decides which ARITHMETIC instruction family applies to TYPE-NAME.  >    Scalars: their own crisp-type-category. Device vectors (float4, ushort2, half3 ...): the  >    category of their ELEMENT type, found by stripping the trailing lane count from the name --  >    the registry names every device vector <element><width> and does not record the element  >    category itself (BUG 060). Returns NIL when TYPE-NAME is unknown.
+
+
+---
 ### DEFMACRO `DEF-BINARY-OP-CODEGEN`
 - **Args**: `(NODE-TYPE INT-INST FLOAT-INST ACCESSOR-PREFIX)`
 
@@ -4008,6 +4092,122 @@ Generated on 2026-09-12T05:22:00.094916Z
               LIBDEVICE-FAST-BASE)`
 
   > Endeavor 128: codegen for a binary FP math intrinsic (pow, atan2). Precise  >    `llvm.*` under ieee; SPV fast f32 -> NATIVE-NAME (native_powr, base>=0); PTX ->  >    libdevice LIBDEVICE-BASE; PTX fast f32 -> LIBDEVICE-FAST-BASE. See %math-call-name.
+
+
+---
+### DEFUN `%HW-LLVM-INT-TYPE`
+- **Args**: `(BITS)`
+
+  > The LLVM integer type of BITS (8/16/32/64) bits.
+
+
+---
+### DEFUN `%HW-INTRINSIC-SUFFIX`
+- **Args**: `(CAT BITS LANES BASE-NAME)`
+
+  > LLVM intrinsic overload suffix for an element of CAT/BITS (BASE-NAME tells half from bfloat16),  >    with LANES lanes or NIL: f32, bf16, i8, v4f32, v4i8 ...
+
+
+---
+### DEFUN `%HW-TYPE-SUFFIX`
+- **Args**: `(TYPE-NAME)`
+
+  > LLVM intrinsic overload suffix for the Crisp scalar or device-vector TYPE-NAME.
+
+
+---
+### DEFUN `%HW-CALL`
+- **Args**: `(BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL hw_tmp))`
+
+  > Declare (once) the function NAME : RET-TYPE(types of ARGS) and build a call to it with ARGS.
+
+
+---
+### DEFUN `%HW-INTRINSIC`
+- **Args**: `(BUILDER MODULE BASE TYPE-NAME &REST ARGS)`
+
+  > Call the overloaded intrinsic llvm.BASE.<suffix of TYPE-NAME> (returning TYPE-NAME's LLVM type).
+
+
+---
+### DEFUN `%HW-WIDEN`
+- **Args**: `(BUILDER MODULE VALUE FROM-TYPE TO-TYPE)`
+
+  > Widen VALUE from FROM-TYPE to TO-TYPE (same family and lane count): fpext for floats, sext for  >    a signed source, zext for an unsigned source. Identity when the widths match.
+
+
+---
+### DEFUN `%HW-SPLAT`
+- **Args**: `(BUILDER ELEM-CONST LANES LLVM-TYPE)`
+
+  > ELEM-CONST as a value of LLVM-TYPE: the constant itself for a scalar (LANES NIL), else a vector  >    with ELEM-CONST in every lane (insert-element on constants folds to a constant vector).
+
+
+---
+### DEFUN `%HW-FLOAT-CONST`
+- **Args**: `(BUILDER MODULE TYPE-NAME VALUE)`
+
+  > VALUE as a constant of float scalar/vector TYPE-NAME.
+
+
+---
+### DEFUN `%HW-APPROX-FLAGS`
+- **Args**: `(INST)`
+
+  > Stamp the approximate-function fast-math flag on INST (all flags under :fast precision).  >    Endeavour 170: the *-approx ops grant approximation in EVERY precision context. Returns INST.
+
+
+---
+### DEFGENERIC `%HW-LOWER`
+- **Args**: `(OP BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)`
+
+---
+### DEFUN `%HW-INT-LLVM-TYPE`
+- **Args**: `(BITS LANES)`
+
+  > LLVM integer type of BITS bits, as a LANES-lane vector when LANES is non-NIL.
+
+
+---
+### DEFUN `%HW-INT-CONST`
+- **Args**: `(BUILDER BITS LANES VALUE SIGNED-P)`
+
+  > Integer VALUE as a constant of BITS bits (a LANES-lane splat when LANES is non-NIL).
+
+
+---
+### DEFUN `%HW-INT-INTRINSIC`
+- **Args**: `(BUILDER MODULE BASE CAT BITS LANES &REST ARGS)`
+
+  > Call the integer intrinsic llvm.<s|u>BASE.<iBITS or vLANESiBITS> (signedness from CAT),  >    returning that integer type. E.g. BASE "min" -> llvm.smin.i32 / llvm.umin.v4i8.
+
+
+---
+### DEFUN `%HW-ABS-DIFF-VALUE`
+- **Args**: `(BUILDER MODULE A B A-TYPE)`
+
+  > |a - b| as an unsigned value of A-TYPE's width: max(a,b) - min(a,b) with the signed or unsigned  >    min/max intrinsics (branch-free). The wrapping subtraction is exact because the true difference  >    always fits the unsigned result type.
+
+
+---
+### DEFUN `%HW-VIA-FLOAT`
+- **Args**: `(BUILDER MODULE X X-TYPE FN)`
+
+  > Call FN with (value type) of X as a float -- fpext from half / bfloat16 first -- and return FN's  >    result converted back to X-TYPE. Used by the library-routed *-approx ops, whose callees are  >    f32 / f64 only.
+
+
+---
+### DEFUN `%HW-APPROX-TRANSCENDENTAL`
+- **Args**: `(BUILDER MODULE X X-TYPE BASE NATIVE LIBDEVICE LIBDEVICE-FAST)`
+
+  > Lower an approximate transcendental (BASE is "sin", "cos" or "log2") of float X.  >    PTX f32 sin/cos: the llvm intrinsic + afn, which llc lowers to the NATIVE sin.approx.f32 /  >    cos.approx.f32 instruction (probed; no libdevice). Everything else: the endeavour-128  >    fast-precision callee (%math-call-name with precision bound to :fast): SPV f32 -> OpenCL  >    native_*, PTX -> libdevice __nv_fast_*f / __nv_*, otherwise the llvm intrinsic. The afn flag is  >    stamped in every case (the op grants approximation in every precision context).
+
+
+---
+### DEFUN `%HW-LOWER-MIN-MAX-3`
+- **Args**: `(BUILDER MODULE ARG-VALS TYPE-NAME FLOAT-BASE INT-BASE)`
+
+  > Shared op-min3 / op-max3 lowering: f(f(a, b), c) with minnum/maxnum for floats and  >    smin/umin (smax/umax) for integers.
 
 
 ---
@@ -6045,7 +6245,7 @@ Generated on 2026-09-12T05:22:00.094916Z
 ### DEFUN `%L0-EMIT-MMA-REFERENCE`
 - **Args**: `(STREAM ALLOCATIONS)`
 
-  > Emit a stride-agnostic host reference C = A·B and compare against the device C.
+  > Emit a stride-agnostic host reference C = A·B, checked on a STRIDED 64x64 sample of C.  >   >    2026-09-12: this used to check only the TOP-LEFT 64x64 corner of C.  That is the same cost as  >    a strided sample and blind to every tile it does not reach -- a kernel that wrote only its  >    first tile printed MMA_CORRECT.  It mattered more than it looked: on BMG six of the twelve  >    section-1 ladder kernels (chap1..chap3, tf32 and bf16) are measured through THIS harness,  >    because the reviewed fixture cannot bind SLM tensor arguments.  The strided form mirrors  >    benchmarks/matmul/crisp/bench_harness_l0.cpp, which made the same change for the same reason.  >   >    Cost is unchanged in kind: ~64x64 samples x K, well under a second at N=16384.  C is read back  >    over its whole extent, so the sample can land anywhere; the operands are still RECOMPUTED from  >    the fill formula rather than read (see endeavour 155: a host dereference of USM aborts on the  >    BMG/WSL driver).  The final line is still exactly MMA_CORRECT / MMA_WRONG, which is what  >    HOIST-EXPECT and matmul.py match; the sample count is printed on the line before it.
 
 
 ---
@@ -9170,6 +9370,21 @@ Generated on 2026-09-12T05:22:00.094916Z
 
 ---
 ### DEFSTRUCT `SEMANTIC-ATAN2`
+
+---
+### DEFSTRUCT `SEMANTIC-HW-OP`
+
+---
+### DEFPARAMETER `*HW-OP-SYMBOLS*`
+
+  > Endeavour 170: the hardware-supported math op symbols (exported from :crisp.compiler and  >    imported into :crisp-language by src/package.lisp).
+
+
+---
+### DEFPARAMETER `*HW-INTERNAL-OP-SYMBOLS*`
+
+  > Endeavour 170: INTERNAL hardware-op forms that only the autodiff emits (never exported).  >    (%hw-sat-interior R) => float mask, 1.0 where integer R lies STRICTLY inside its type's range.
+
 
 ---
 ### DEFSTRUCT `SEMANTIC-LT`

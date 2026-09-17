@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-21-rcp-approx
+;;
+;; Endeavour 170: op-rcp-approx = fdiv afn 1.0, x (PTX: native rcp.approx.f32).
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(f-c &out f-c))
+  (set! (~ res) (op-rcp-approx (~ x))))

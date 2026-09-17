@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee --differentiate] : validate-hw-32-imad-ad
+;;
+;; Endeavour 170 AD: op-imad on INTEGER operands differentiates (Crisp gives integers promoted
+;; adjoints, A6). VERIFY-AUTODIFF only feeds float cells, so this checks the backward IR instead:
+;; the chain-rule multiply converts the integer operand to float (sitofp) and multiplies the float adjoint.
+
+(def-type i-c (cell int :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(i-c i-c i-c &out i-c))
+  (set! (~ res) (op-imad (~ a) (~ b) (~ c))))

@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee --differentiate] : validate-hw-34-abs-diff-ad
+;;
+;; Endeavour 170 AD: d|a-b|/da = sign(a-b), d/db = -sign(a-b), with sign(0) = 0 at the kink
+;; (decision D9). sign is built from two comparisons: to-float(a > b) - to-float(a < b).
+;; Checked in the backward IR (integer operands).
+
+(def-type i-c (cell int :address-space :global))
+(def-type u-c (cell uint :address-space :global))
+
+(def-kernel k (a b &out res)
+  (declare #'(i-c i-c &out u-c))
+  (set! (~ res) (op-abs-diff (~ a) (~ b))))

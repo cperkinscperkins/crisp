@@ -16,6 +16,6 @@
 ;;;;     the prose becomes BODY FORMS -- the first bare word is then an unbound variable, and the
 ;;;;     build emits no warning.  It fails only when the function is CALLED.  Cost: a red CI.
 ;;;;
-;;;; Emptied 2026-09-08: everything folded into src/ (endeavour 165).
+;;;; Emptied 2026-09-16: everything folded into src/ (endeavour 170 + BUG 060).
 
 (in-package :crisp.compiler)

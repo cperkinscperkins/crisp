@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-abs-diff-add: accumulator c (CHAR) is too narrow for |a-b| of CHAR"
+;;
+
+;; Endeavour 170 (decision D4): |a-b| is unsigned, so a SIGNED accumulator must be strictly wider.
+
+(def-function bad (a b c)
+  (declare #'(char char char => char))
+  (op-abs-diff-add a b c))

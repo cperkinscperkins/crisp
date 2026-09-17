@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-23-exp2-approx
+;;
+;; Endeavour 170: op-exp2-approx = llvm.exp2 + afn (PTX f32/f16: native ex2.approx).
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(f-c &out f-c))
+  (set! (~ res) (op-exp2-approx (~ x))))

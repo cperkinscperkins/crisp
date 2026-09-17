@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-14-abs-diff-int
+;;
+;; Endeavour 170: op-abs-diff on int returns the UNSIGNED counterpart, uint (A4).
+;; Branch-free: smax(a,b) - smin(a,b), exact because |a-b| always fits in uint.
+
+(def-type i-c (cell int :address-space :global))
+(def-type u-c (cell uint :address-space :global))
+
+(def-kernel k (a b &out res)
+  (declare #'(i-c i-c &out u-c))
+  (set! (~ res) (op-abs-diff (~ a) (~ b))))

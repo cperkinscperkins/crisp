@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER res: 1
+;;
+;; Endeavour 170 ON-METAL: proves the fma is really FUSED (one rounding), not a*b then +c.
+;; a = 1 + 2^-23 (the float just above 1), c = -(1 + 2^-22). Exactly, a*a + c = 2^-46.
+;; Unfused, a*a rounds to 1 + 2^-22 (the 2^-46 is far below half an ulp), so a*a + c = 0.
+;; The result is scaled by 2^46: fused prints 1, unfused prints 0.
+;; x = gid + 1 = 1.0 at runtime keeps the constant folder away from the operands.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel fma_metal (&out res)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 1))
+  (let* ((x (to-float (+ (get-global-id 0) 1ul)))
+         (a (* x 1.0000001192092896))
+         (c (* x -1.0000002384185791)))
+    (set! (~ res) (* (op-fma a a c) 70368744177664.0))))

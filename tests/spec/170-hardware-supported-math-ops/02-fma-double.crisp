@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-fma-f64
+;;
+;; Endeavour 170: op-fma, double, non-widened. IR must call @llvm.fma.f64, no fmuladd.
+
+(def-type in-c  (cell double :address-space :global))
+(def-type out-c (cell double :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(in-c in-c in-c &out out-c))
+  (set! (~ res) (op-fma (~ a) (~ b) (~ c))))

@@ -489,6 +489,179 @@ set!  analyzer's behavior in analysis/structs.lisp."
     (analyze-mod-expression (list mod-sym x-form y-form) env context location)))
 
 
+;;; ---------------------------------------------------------------------------------------------
+;;; Endeavour 170: hardware-supported math ops (op-fma, op-saturate, op-imad, ... ).
+;;;
+;;; One analyzer for all of them; the per-op TYPE RULES are in %hw-op-result-type.  They are strict
+;;; on purpose (see docs/ideal_001.md "Hardware Supported Math Operations" and the endeavour doc
+;;; tests/spec/170-hardware-supported-math-ops/hardware-supported-math-ops.md):
+;;;   - a and b must be exactly the same type; c (the accumulator) decides the result type;
+;;;   - c must be the same family, same lane count, and at least as wide;
+;;;   - integer multiply-adds also require c to have the SAME SIGNEDNESS as a and b.
+;;; Everything else -- narrowing, mixed families, 64-bit op-imad-sat multipliers -- is a compile
+;;; error with its own message, each covered by a spec in 170-.../errors.
+;;; ---------------------------------------------------------------------------------------------
+
+;; NB: *hw-op-symbols* / *hw-internal-op-symbols* live in src/semantic.lisp, which loads BEFORE
+;; src/analysis/core.lisp -- core's %uni-analyze reads the list, and this file loads after core.
+
+(defun %hw-type-parts (type-name)
+  "Decompose TYPE-NAME for the endeavour-170 type rules. Returns
+   (values ELEMENT-CATEGORY ELEMENT-BITS LANES BASE-NAME): LANES is NIL for a scalar, the lane count
+   for a device vector; BASE-NAME is the element type's name string (\"HALF\", \"BFLOAT16\", ...).
+   Returns NIL for anything that is not a known scalar or device vector."
+  (let ((ct (and (symbolp type-name) type-name (gethash type-name *crisp-types*))))
+    (cond
+      ((null ct) nil)
+      ((member (crisp-type-category ct) '(:float :signed-int :unsigned-int))
+       (values (crisp-type-category ct) (crisp-type-size ct) nil (symbol-name type-name)))
+      ((eq (crisp-type-category ct) :device-vector)
+       (let* ((name (symbol-name type-name))
+              (end (or (position-if-not #'digit-char-p name :from-end t) -1))
+              (base-name (subseq name 0 (1+ end)))
+              (lanes (parse-integer name :start (1+ end)))
+              (base-sym (or (find-symbol base-name :crisp-language) (find-symbol base-name :crisp.compiler)))
+              (base-ct (and base-sym (gethash base-sym *crisp-types*))))
+         (when base-ct
+           (values (crisp-type-category base-ct) (crisp-type-size base-ct) lanes base-name))))
+      (t nil))))
+
+(defun %hw-type-named (base-name lanes)
+  "The registered type symbol for element BASE-NAME with LANES lanes (NIL = scalar), or NIL."
+  (let* ((name (if lanes (format nil "~a~a" base-name lanes) base-name))
+         (sym (or (find-symbol name :crisp-language) (find-symbol name :crisp.compiler))))
+    (and sym (gethash sym *crisp-types*) sym)))
+
+(defun %hw-unsigned-counterpart (type-name)
+  "Unsigned type with the same width and lane count as integer TYPE-NAME (char4 -> uchar4).
+   An unsigned TYPE-NAME is returned as-is."
+  (multiple-value-bind (cat bits lanes base) (%hw-type-parts type-name)
+    (declare (ignore bits))
+    (if (eq cat :unsigned-int)
+        type-name
+        (%hw-type-named (cdr (assoc base '(("CHAR" . "UCHAR") ("SHORT" . "USHORT")
+                                           ("INT" . "UINT") ("LONG" . "ULONG"))
+                                    :test #'string=))
+                        lanes))))
+
+(defun %hw-fail (location fmt &rest args)
+  "Signal the endeavour-170 type error: a crisp-type-error whose message is FMT applied to ARGS."
+  (error 'crisp-type-error :message (apply #'format nil fmt args) :source-location location))
+
+(defun %hw-check-multiplier-accumulator (op a-type b-type c-type location family)
+  "Shared rules for the accumulator ops (op-fma: FAMILY :float; op-imad / op-imad-sat: :int).
+   a and b must be the same type of FAMILY; c must be the same family, the same lane count, and at
+   least as wide. For :int, c must also have the same signedness. For 16-bit floats, a c of
+   equal width must be the SAME format (half and bfloat16 are not interchangeable)."
+  (multiple-value-bind (a-cat a-bits a-lanes a-base) (%hw-type-parts a-type)
+    (multiple-value-bind (c-cat c-bits c-lanes c-base) (%hw-type-parts c-type)
+      (let ((family-ok (lambda (cat) (if (eq family :float)
+                                         (eq cat :float)
+                                         (member cat '(:signed-int :unsigned-int)))))
+            (family-words (if (eq family :float)
+                              "floating point (half, bfloat16, float, double, or their vectors)"
+                              "integer (signed or unsigned, or their vectors)")))
+        (unless (funcall family-ok a-cat)
+          (%hw-fail location "~(~a~): operands must be ~a; got ~a" op family-words a-type))
+        (unless (eq a-type b-type)
+          (%hw-fail location "~(~a~): a and b must have the same type; got ~a and ~a" op a-type b-type))
+        (unless (funcall family-ok c-cat)
+          (%hw-fail location "~(~a~): accumulator c (~a) must be the same family as a and b (~a)" op c-type a-type))
+        (unless (eql a-lanes c-lanes)
+          (%hw-fail location "~(~a~): accumulator c (~a) must have the same lane count as a and b (~a)" op c-type a-type))
+        (when (< c-bits a-bits)
+          (%hw-fail location "~(~a~): accumulator c (~a) is narrower than a and b (~a); the accumulator must be at least as wide" op c-type a-type))
+        (when (and (= c-bits a-bits) (string/= a-base c-base) (eq family :float))
+          (%hw-fail location "~(~a~): accumulator c (~a) and a and b (~a) are different floating point formats" op c-type a-type))
+        (when (and (eq family :int) (not (eq a-cat c-cat)))
+          (%hw-fail location "~(~a~): accumulator c (~a) must have the same signedness as a and b (~a)" op c-type a-type))
+        c-type))))
+
+(defun %hw-op-result-type (op arg-types location)
+  "The result type of endeavour-170 OP applied to ARG-TYPES, or a crisp-type-error."
+  (let ((n (length arg-types))
+        (want (case op
+                ((op-saturate op-rsqrt-approx op-rcp-approx op-log2-approx op-exp2-approx
+                  op-sin-approx op-cos-approx op-sincos-approx) 1)
+                (op-abs-diff 2)
+                (t 3))))
+    (unless (= n want)
+      (%hw-fail location "~(~a~) takes ~a argument~:p; got ~a" op want n))
+    (destructuring-bind (a &optional b c) arg-types
+      (multiple-value-bind (a-cat a-bits a-lanes) (%hw-type-parts a)
+        (ecase op
+          (op-fma (%hw-check-multiplier-accumulator op a b c location :float))
+          ((op-imad op-imad-sat)
+           (%hw-check-multiplier-accumulator op a b c location :int)
+           (when (and (eq op 'op-imad-sat) (> (* 2 a-bits) 64))
+             (%hw-fail location "op-imad-sat: 64-bit multipliers (~a) are not supported; the exact intermediate product would need 128 bits" a))
+           c)
+          (op-saturate
+           (unless (eq a-cat :float)
+             (%hw-fail location "op-saturate: operand must be floating point (half, bfloat16, float, double, or their vectors); got ~a" a))
+           a)
+          ((op-rsqrt-approx op-rcp-approx op-log2-approx op-exp2-approx op-sin-approx op-cos-approx op-sincos-approx)
+           (unless (and (eq a-cat :float) (null a-lanes))
+             (%hw-fail location "~(~a~): operand must be a floating point scalar (half, bfloat16, float or double); got ~a" op a))
+           (if (eq op 'op-sincos-approx) (list a a) a))
+          ((op-abs-diff op-abs-diff-add op-sad)
+           (unless (member a-cat '(:signed-int :unsigned-int))
+             (%hw-fail location "~(~a~): operands must be integer (signed or unsigned, or their vectors); got ~a" op a))
+           (unless (eq a b)
+             (%hw-fail location "~(~a~): a and b must have the same type; got ~a and ~a" op a b))
+           (case op
+             (op-abs-diff (%hw-unsigned-counterpart a))
+             (op-abs-diff-add
+              (multiple-value-bind (c-cat c-bits c-lanes) (%hw-type-parts c)
+                (unless (member c-cat '(:signed-int :unsigned-int))
+                  (%hw-fail location "op-abs-diff-add: accumulator c (~a) must be an integer type" c))
+                (unless (eql c-lanes a-lanes)
+                  (%hw-fail location "op-abs-diff-add: accumulator c (~a) must have the same lane count as a and b (~a)" c a))
+                (when (or (< c-bits a-bits) (and (eq c-cat :signed-int) (= c-bits a-bits)))
+                  (%hw-fail location "op-abs-diff-add: accumulator c (~a) is too narrow for |a-b| of ~a; use an unsigned accumulator at least as wide, or a strictly wider signed one" c a))
+                c))
+             (op-sad
+              (multiple-value-bind (c-cat c-bits c-lanes) (%hw-type-parts c)
+                (unless a-lanes
+                  (%hw-fail location "op-sad: a and b must be integer device vectors (e.g. uchar4); got ~a" a))
+                (unless (and (member c-cat '(:signed-int :unsigned-int)) (null c-lanes))
+                  (%hw-fail location "op-sad: accumulator c (~a) must be an integer scalar" c))
+                (unless (> c-bits a-bits)
+                  (%hw-fail location "op-sad: accumulator c (~a) must be wider than the ~a-bit elements of ~a" c a-bits a))
+                c))))
+          ((op-min3 op-max3)
+           (unless (member a-cat '(:float :signed-int :unsigned-int))
+             (%hw-fail location "~(~a~): operands must be floating point or integer; got ~a" op a))
+           (unless (and (eq a b) (eq b c))
+             (%hw-fail location "~(~a~): all three operands must have the same type; got ~a, ~a and ~a" op a b c))
+           a))))))
+
+(defun %hw-sat-interior-result-type (arg-types location)
+  "Result type of the internal (%hw-sat-interior R): float for an integer scalar R, floatN for an
+   integer device vector with N lanes."
+  (multiple-value-bind (cat bits lanes) (%hw-type-parts (first arg-types))
+    (declare (ignore bits))
+    (unless (and (= (length arg-types) 1) (member cat '(:signed-int :unsigned-int)))
+      (%hw-fail location "%hw-sat-interior: expects one integer operand; got ~a" arg-types))
+    (%hw-type-named "FLOAT" lanes)))
+
+(defun analyze-hw-op-expression (expr env context location)
+  "Analyzes an endeavour-170 hardware math op form, e.g. (op-fma a b c), or an internal
+   AD helper form such as (%hw-sat-interior r)."
+  (let* ((name (symbol-name (first expr)))
+         (op (or (find name *hw-op-symbols* :key #'symbol-name :test #'string=)
+                 (find name *hw-internal-op-symbols* :key #'symbol-name :test #'string=)))
+         (arg-nodes (loop for arg in (rest expr)
+                          for i from 1
+                          collect (analyze-expression arg env context (append location (list i)))))
+         (arg-types (mapcar #'get-single-value-type arg-nodes))
+         (result-type (if (eq op '%hw-sat-interior)
+                          (%hw-sat-interior-result-type arg-types location)
+                          (%hw-op-result-type op arg-types location))))
+    (log:debug "analyze-hw-op-expression: ~a ~a -> ~a" op arg-types result-type)
+    (make-semantic-hw-op :op op :type result-type :args arg-nodes :source-location location)))
+
+
 ;; src/analysis/ops.lisp -- whole-function replacement of register-ops-analyzers
 ;; adding mod and rem registrations.
 (defun register-ops-analyzers ()
@@ -511,6 +684,9 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
   (def-expression-analyzer atan  analyze-atan-expression)
   (def-expression-analyzer pow   analyze-pow-expression)
   (def-expression-analyzer atan2 analyze-atan2-expression)
+  ;; Endeavour 170: the hardware math ops (and the internal AD helper ops) all share one analyzer.
+  (dolist (sym (append *hw-op-symbols* *hw-internal-op-symbols*))
+    (setf (gethash sym *expression-analyzers*) 'analyze-hw-op-expression))
   (def-expression-analyzer < analyze-lt-expression)
   (def-expression-analyzer > analyze-gt-expression)
   (def-expression-analyzer <= analyze-le-expression)

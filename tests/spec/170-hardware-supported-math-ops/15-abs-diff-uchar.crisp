@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-15-abs-diff-uchar
+;;
+;; Endeavour 170: op-abs-diff on uchar: unsigned in, unsigned out (umax - umin).
+
+(def-type uc-c (cell uchar :address-space :global))
+
+(def-kernel k (a b &out res)
+  (declare #'(uc-c uc-c &out uc-c))
+  (set! (~ res) (op-abs-diff (~ a) (~ b))))

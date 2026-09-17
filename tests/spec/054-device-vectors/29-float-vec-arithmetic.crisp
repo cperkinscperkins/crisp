@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-float-dvec-arithmetic
+;;
+;; (The ieee flag is only the vehicle: that extra pass hands the validator the IR string.)
+;; BUG 060 regression (found in endeavour 170). Arithmetic on FLOATING-POINT device vectors
+;; must emit fadd / fsub / fmul / fdiv. It used to emit the integer add / sub / mul / sdiv on
+;; <N x float>, which is invalid IR, because the device-vector type records only the
+;; :device-vector category and the codegen fell through to the integer instruction.
+;; 11-arithmetic covers ushort2 (integer lanes), which was always fine.
+;; Covers float4, double2 and half3 so one element type cannot hide another.
+
+(def-function f4-ops (a b)
+  (declare #'(float4 float4 => float4))
+  (/ (- (+ (* a b) a) b) b))
+
+(def-function d2-ops (a b)
+  (declare #'(double2 double2 => double2))
+  (/ (- (+ (* a b) a) b) b))
+
+(def-function h3-ops (a b)
+  (declare #'(half3 half3 => half3))
+  (/ (- (+ (* a b) a) b) b))

@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "op-imad: operands must be integer"
+;;
+
+;; Endeavour 170: op-imad is the integer multiply-add; floats belong to op-fma.
+
+(def-function bad (a b c)
+  (declare #'(float float float => float))
+  (op-imad a b c))

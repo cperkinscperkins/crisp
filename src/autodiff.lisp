@@ -668,12 +668,105 @@
   
 ;; Re-definition of the src/ original.  CHANGE: one added clause giving the fragment-level
 ;; MMA forms an actionable error instead of the generic "not differentiable" advice.
+;;; ---------------------------------------------------------------------------------------------
+;;; Endeavour 170: autodiff for the hardware-supported math ops.
+;;; Integer operands differentiate like any integer input (promoted adjoints).  The *-approx
+;;; derivatives are EVALUATED with the approx ops (decision D20): the rule is the ordinary calculus
+;;; (d sin = cos), but computing it exactly would call libdevice on PTX, which made AD of an
+;;; approx-trig kernel refuse to compile unless the user linked libdevice.10.bc.
+;;; ---------------------------------------------------------------------------------------------
+
+(defun %hw-op-form-op (expr)
+  "The endeavour-170 op symbol (public or internal) if EXPR is a hardware math op form, else NIL.
+   Matched by symbol name, so it works whichever package the kernel's reader interned into."
+  (and (consp expr) (car expr) (symbolp (car expr))
+       (let ((name (symbol-name (car expr))))
+         (or (find name *hw-op-symbols* :key #'symbol-name :test #'string=)
+             (find name *hw-internal-op-symbols* :key #'symbol-name :test #'string=)))))
+
+(defun %hw-split-sincos-bindings (form)
+  "Rewrite every multi-value binding (S C (op-sincos-approx X)) in FORM -- at any depth, since
+   ANF leaves nested bodies (if / let / dotimes) inside the flat list -- into the two single
+   bindings (S (op-sin-approx X)) and (C (op-cos-approx X)), spliced in its place. A form whose
+   head is an operator (set!, let, ...) is never mistaken for a binding."
+  (labels ((sincos-binding-p (f)
+             (and (consp f) (= (length f) 3)
+                  (symbolp (first f)) (symbolp (second f))
+                  (first f) (second f)
+                  (not (gethash (first f) *expression-analyzers*))
+                  (not (member (symbol-name (first f)) '("SET!" "LET" "LET*" "IF" "WHEN" "UNLESS" "PROGN")
+                               :test #'string=))
+                  (consp (third f))
+                  (eq (%hw-op-form-op (third f)) 'op-sincos-approx)))
+           (walk-list (lst)
+             (loop for f in lst
+                   if (sincos-binding-p f)
+                     append (let ((x (second (third f))))
+                              (log:debug "%hw-split-sincos-bindings: ~a -> sin/cos bindings" f)
+                              (list (list (first f) (list 'op-sin-approx x))
+                                    (list (second f) (list 'op-cos-approx x))))
+                   else collect (walk f)))
+           (walk (f)
+             (if (and (consp f) (null (cdr (last f))))   ; proper lists only
+                 (walk-list f)
+                 f)))
+    (if (listp form) (walk-list form) form)))
+
+(defun %hw-op-backward (v expr emit-fn local-adj-fn)
+  "Backward rules for the endeavour-170 hardware math ops (v := EXPR). Each operand's adjoint
+   accumulates d(op)/d(operand) * v_adj. Integer operands get promoted adjoints like any integer
+   input. Kinks and ties use the conventions recorded in the endeavour doc (D7-D10); the *-approx
+   derivatives are evaluated with the approx ops themselves (D20). Returns T."
+  (let ((op (%hw-op-form-op expr))
+        (args (cdr expr))
+        (g (funcall local-adj-fn v)))
+    (flet ((acc (x term)
+             (when (and x (symbolp x))
+               (funcall emit-fn `(set! ,(funcall local-adj-fn x) (+ ,(funcall local-adj-fn x) ,term))))))
+      (log:debug "%hw-op-backward: ~a := ~a" v expr)
+      (destructuring-bind (a &optional b c) args
+        (ecase op
+          ((op-fma op-imad)
+           (acc a `(* ,b ,g)) (acc b `(* ,a ,g)) (acc c g))
+          (op-imad-sat
+           (let ((mask `(%hw-sat-interior (op-imad-sat ,a ,b ,c))))
+             (acc a `(* (* ,b ,g) ,mask)) (acc b `(* (* ,a ,g) ,mask)) (acc c `(* ,g ,mask))))
+          (op-saturate
+           ;; gradient 1 wherever the clamp is the identity (0 <= x <= 1, endpoints included), else 0
+           (acc a `(* ,g (to-float (= (op-saturate ,a) ,a)))))
+          ((op-abs-diff op-abs-diff-add)
+           (let ((sign `(- (to-float (> ,a ,b)) (to-float (< ,a ,b)))))
+             (acc a `(* ,sign ,g)) (acc b `(* (* -1.0 ,sign) ,g))
+             (when (eq op 'op-abs-diff-add) (acc c g))))
+          ((op-min3 op-max3)
+           (let ((r `(,op ,a ,b ,c)))
+             (acc a `(* (to-float (= ,a ,r)) ,g))
+             (acc b `(* (to-float (* (= ,b ,r) (!= ,a ,r))) ,g))
+             (acc c `(* (to-float (* (= ,c ,r) (* (!= ,a ,r) (!= ,b ,r)))) ,g))))
+          ;; d/dx x^-1/2 = -0.5 * x^-3/2 = -0.5 * rsqrt(x) / x
+          (op-rsqrt-approx (acc a `(* (* -0.5 (/ (op-rsqrt-approx ,a) ,a)) ,g)))
+          ;; d/dx 1/x = -(1/x)^2
+          (op-rcp-approx (acc a `(* (* -1.0 (* (op-rcp-approx ,a) (op-rcp-approx ,a))) ,g)))
+          ;; d/dx log2(x) = 1/(x ln2) -- division only, no library call on any target
+          (op-log2-approx (acc a `(* (/ 1.4426950408889634 ,a) ,g)))
+          ;; d/dx 2^x = ln2 * 2^x
+          (op-exp2-approx (acc a `(* (* 0.6931471805599453 (op-exp2-approx ,a)) ,g)))
+          (op-sin-approx (acc a `(* (op-cos-approx ,a) ,g)))
+          (op-cos-approx (acc a `(* (* -1.0 (op-sin-approx ,a)) ,g)))
+          ((op-sad op-sincos-approx %hw-sat-interior)
+           (error "~(~a~): no backward rule yet (endeavour 170 gap -- see the endeavour doc)." op)))))
+    t))
+
 (defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
                                         &key hof-handler-fn (error-on-unknown t)
                                         tensor-inputs-ht
                                         scratch-tile-syms)
   "Generates backward-pass adjoint updates for a single ANF binding (v := expr)."
   (cond
+   ;; Endeavour 170: the hardware math ops carry their own backward rules.  First, because the
+   ;; clauses below key on operator names this one does not share.
+   ((%hw-op-form-op expr)
+     (%hw-op-backward v expr emit-fn local-adj-fn))
    ;; Endeavor 146 Gap 2: rem / mod.  Kept as its own clause rather than added to the
    ;; member list below because that list tests with #'eq against symbols read in THIS
    ;; package, and a kernel's reader may intern `rem` elsewhere.  Matching by symbol-name
@@ -1913,6 +2006,11 @@
    for the gap the fixup covers (the top-level adjoint collection below does not know the
    ring constructors, so a ring bound at kernel top level otherwise gets no adjoint)."
   (setf flat-anf (%ad-normalize-anf-for-backward flat-anf))
+  ;; Endeavour 170: (S C (op-sincos-approx X)) is a multi-value binding, and the multi-value clause
+  ;; in process-form only differentiates REGISTERED functions -- so it would contribute NOTHING and
+  ;; the gradient would be silently zero (BUG 063).  Splitting it into (S (op-sin-approx X)) and
+  ;; (C (op-cos-approx X)) hands it to the ordinary per-op rules: dx = cos(x)*s_adj - sin(x)*c_adj.
+  (setf flat-anf (%hw-split-sincos-bindings flat-anf))
   (let ((*ad-barrier-ring-syms* (%ad-collect-barrier-ring-syms flat-anf))
         (*ad-view-alias-map*    (%ad-collect-view-aliases flat-anf)))
   (let* ((record-temp-entries
@@ -3522,6 +3620,8 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
      (let ((name (and (symbolp (car expr)) (symbol-name (car expr)))))
        (cond
         ((null name) nil)
+        ;; Endeavour 170: every operand of a hardware math op propagates.
+        ((%hw-op-form-op expr) (%asv-union (cdr expr) env))
         ;; differentiable arithmetic — every operand propagates.
         ;; Endeavor 146 Gap 2: REM and MOD belong here, not in a skip list.  d(rem)/da = 1
         ;; and d(rem)/db = -trunc(a/b), so BOTH positions genuinely carry activeness.  An

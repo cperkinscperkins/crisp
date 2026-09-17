@@ -1507,6 +1507,29 @@
     (when uses-libdevice
       (%set-nvvm-reflect-ftz module (eq *denormal-handling* :ftz)))))
 
+(defun %arith-category (type-name)
+  "Category that decides which ARITHMETIC instruction family applies to TYPE-NAME.
+   Scalars: their own crisp-type-category. Device vectors (float4, ushort2, half3 ...): the
+   category of their ELEMENT type, found by stripping the trailing lane count from the name --
+   the registry names every device vector <element><width> and does not record the element
+   category itself (BUG 060). Returns NIL when TYPE-NAME is unknown."
+  (let ((ct (and type-name (gethash type-name *crisp-types*))))
+    (cond
+      ((null ct) nil)
+      ((not (eq (crisp-type-category ct) :device-vector))
+       (crisp-type-category ct))
+      (t
+       (let* ((name (symbol-name type-name))
+              (end (or (position-if-not #'digit-char-p name :from-end t) -1))
+              (base-name (subseq name 0 (1+ end)))
+              (base-ct (or (let ((s (find-symbol base-name :crisp-language)))
+                             (and s (gethash s *crisp-types*)))
+                           (let ((s (find-symbol base-name :crisp.compiler)))
+                             (and s (gethash s *crisp-types*))))))
+         (log:debug "%arith-category: device vector ~a -> element ~a -> ~a"
+                    type-name base-name (and base-ct (crisp-type-category base-ct)))
+         (and base-ct (crisp-type-category base-ct)))))))
+
 (defmacro def-binary-op-codegen (node-type int-inst float-inst accessor-prefix)
   (let ((left-accessor (intern (format nil "~a-LEFT-ARG" accessor-prefix)))
         (right-accessor (intern (format nil "~a-RIGHT-ARG" accessor-prefix)))
@@ -1525,8 +1548,11 @@
                   (rhs-raw (extract-primary-value builder rhs (semantic-node-type (,right-accessor node))))
                   (casted-lhs (build-cast-if-needed builder module lhs-raw lhs-type-name result-type-name))
                   (casted-rhs (build-cast-if-needed builder module rhs-raw rhs-type-name result-type-name))
-                  (crisp-type (gethash result-type-name *crisp-types*))
-                  (inst (if (eq (crisp-type-category crisp-type) :float)
+                  ;; BUG 060: dispatch on the ARITHMETIC category, which for a device vector is its
+                  ;; ELEMENT's category.  crisp-type-category alone says :device-vector for float4,
+                  ;; so every float-vector op used to take the integer instruction -- invalid IR.
+                  (crisp-type (%arith-category result-type-name))
+                  (inst (if (eq crisp-type :float)
                             (%apply-precision-fmf (,float-inst builder casted-lhs casted-rhs "fop_tmp"))
                             (,int-inst builder casted-lhs casted-rhs "iop_tmp")))
                   (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
@@ -1624,6 +1650,402 @@
 (def-binary-math-codegen semantic-pow   "llvm.pow"   "native_powr" "__nv_pow"   "__nv_fast_pow")
 ;; No native_atan2 / __nv_fast_atan2 — precise on both targets.
 (def-binary-math-codegen semantic-atan2 "llvm.atan2" nil           "__nv_atan2")
+;;; ---------------------------------------------------------------------------------------------
+;;; Endeavour 170: hardware-supported math ops -- lowering.
+;;;
+;;; Every op is one semantic-hw-op node; %hw-lower dispatches on its OP symbol.  Backend notes that
+;;; the probes established (see the endeavour doc): llvm.fma is the GUARANTEED-fused intrinsic on
+;;; both targets; PTX has native *.approx instructions reached by the afn flag alone (sin/cos/rsqrt/
+;;; rcp/ex2), needing no libdevice; SPIR-V maps min/max/add.sat and the native_* builtins cleanly.
+;;; ---------------------------------------------------------------------------------------------
+
+;; src/codegen.lisp
+(defun %hw-llvm-int-type (bits)
+  "The LLVM integer type of BITS (8/16/32/64) bits."
+  (ecase bits
+    (8 (llvm-int8-type)) (16 (llvm-int16-type)) (32 (llvm-int32-type)) (64 (llvm-int64-type))))
+
+;; src/codegen.lisp
+(defun %hw-intrinsic-suffix (cat bits lanes base-name)
+  "LLVM intrinsic overload suffix for an element of CAT/BITS (BASE-NAME tells half from bfloat16),
+   with LANES lanes or NIL: f32, bf16, i8, v4f32, v4i8 ..."
+  (let ((elem (if (eq cat :float)
+                  (if (string= base-name "BFLOAT16") "bf16" (format nil "f~a" bits))
+                  (format nil "i~a" bits))))
+    (if lanes (format nil "v~a~a" lanes elem) elem)))
+
+;; src/codegen.lisp
+(defun %hw-type-suffix (type-name)
+  "LLVM intrinsic overload suffix for the Crisp scalar or device-vector TYPE-NAME."
+  (multiple-value-bind (cat bits lanes base) (%hw-type-parts type-name)
+    (%hw-intrinsic-suffix cat bits lanes base)))
+
+;; src/codegen.lisp
+(defun %hw-call (builder module name ret-type args &optional (label "hw_tmp"))
+  "Declare (once) the function NAME : RET-TYPE(types of ARGS) and build a call to it with ARGS."
+  (let ((n (length args)))
+    (cffi:with-foreign-objects ((ptypes :pointer (max 1 n)) (avals :pointer (max 1 n)))
+      (loop for i from 0 for v in args
+            do (setf (cffi:mem-aref ptypes :pointer i) (llvm-type-of v)
+                     (cffi:mem-aref avals :pointer i) v))
+      (let* ((fnty (crisp.llvm-bindings::llvm-function-type ret-type ptypes n nil))
+             (existing (crisp.llvm-bindings::llvm-get-named-function module name))
+             (fn (if (cffi:null-pointer-p existing)
+                     (crisp.llvm-bindings::llvm-add-function module name fnty)
+                     existing)))
+        (log:debug "%hw-call: ~a (~a args)" name n)
+        (crisp.llvm-bindings::llvm-build-call2 builder fnty fn avals n label)))))
+
+;; src/codegen.lisp
+(defun %hw-intrinsic (builder module base type-name &rest args)
+  "Call the overloaded intrinsic llvm.BASE.<suffix of TYPE-NAME> (returning TYPE-NAME's LLVM type)."
+  (%hw-call builder module (format nil "llvm.~a.~a" base (%hw-type-suffix type-name))
+            (crisp-type-to-llvm-type type-name module) args))
+
+;; src/codegen.lisp
+(defun %hw-widen (builder module value from-type to-type)
+  "Widen VALUE from FROM-TYPE to TO-TYPE (same family and lane count): fpext for floats, sext for
+   a signed source, zext for an unsigned source. Identity when the widths match."
+  (multiple-value-bind (from-cat from-bits) (%hw-type-parts from-type)
+    (multiple-value-bind (to-cat to-bits) (%hw-type-parts to-type)
+      (declare (ignore to-cat))
+      (let ((to-llvm (crisp-type-to-llvm-type to-type module)))
+        (cond ((= from-bits to-bits) value)
+              ((eq from-cat :float) (llvm-build-fp-ext builder value to-llvm "hw_fpext"))
+              ((eq from-cat :signed-int) (llvm-build-sext builder value to-llvm "hw_sext"))
+              (t (llvm-build-zext builder value to-llvm "hw_zext")))))))
+
+;; src/codegen.lisp
+(defun %hw-splat (builder elem-const lanes llvm-type)
+  "ELEM-CONST as a value of LLVM-TYPE: the constant itself for a scalar (LANES NIL), else a vector
+   with ELEM-CONST in every lane (insert-element on constants folds to a constant vector)."
+  (if (null lanes)
+      elem-const
+      (let ((v (llvm-get-undef llvm-type)))
+        (dotimes (i lanes v)
+          (setf v (llvm-build-insert-element builder v elem-const
+                                             (llvm-const-int (llvm-int32-type) i 0) "hw_splat"))))))
+
+;; src/codegen.lisp
+(defun %hw-float-const (builder module type-name value)
+  "VALUE as a constant of float scalar/vector TYPE-NAME."
+  (multiple-value-bind (cat bits lanes base) (%hw-type-parts type-name)
+    (declare (ignore cat))
+    (let ((elem-llvm (cond ((string= base "BFLOAT16") (llvm-bfloat-type))
+                           ((= bits 16) (llvm-half-type))
+                           ((= bits 32) (llvm-float-type))
+                           (t (llvm-double-type)))))
+      (%hw-splat builder (llvm-const-real elem-llvm (coerce value 'double-float)) lanes
+                 (crisp-type-to-llvm-type type-name module)))))
+
+;; src/codegen.lisp
+(defun %hw-approx-flags (inst)
+  "Stamp the approximate-function fast-math flag on INST (all flags under :fast precision).
+   Endeavour 170: the *-approx ops grant approximation in EVERY precision context. Returns INST."
+  (when (and inst (not (cffi:null-pointer-p inst))
+             (/= 0 (llvm-can-value-use-fast-math-flags inst)))
+    (llvm-set-fast-math-flags inst (if (eq *math-precision* :fast)
+                                       +llvm-fast-math-all+
+                                       +llvm-fast-math-approx-func+)))
+  inst)
+
+;; src/codegen.lisp
+(defgeneric %hw-lower (op builder module arg-vals arg-types result-type)
+  (:documentation "Endeavour 170: emit the IR for hardware math OP. ARG-VALS are the argument LLVM
+   values, ARG-TYPES their Crisp types, RESULT-TYPE the node's type. Returns the result value."))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-hw-op) builder module var-env di-builder di-scope location-map)
+  "Generates IR for an endeavour-170 hardware math op by dispatching %hw-lower on its op."
+  (let* ((args (semantic-hw-op-args node))
+         (arg-vals (mapcar (lambda (a)
+                             (extract-primary-value
+                              builder
+                              (generate-node-ir a builder module var-env di-builder di-scope location-map)
+                              (semantic-node-type a)))
+                           args))
+         (arg-types (mapcar #'get-single-value-type args))
+         (op (semantic-hw-op-op node))
+         (result (%hw-lower op builder module arg-vals arg-types (semantic-hw-op-type node))))
+    (log:debug "generate-node-ir semantic-hw-op: ~a ~a -> ~a" op arg-types (semantic-hw-op-type node))
+    (values result (%attach-debug-loc result node module di-builder di-scope location-map))))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-fma)) builder module arg-vals arg-types result-type)
+  "op-fma: widen a and b to the accumulator's type, then ONE llvm.fma call (guaranteed fused; never
+   llvm.fmuladd, and no fast-math flags -- the op means the same in every precision context)."
+  (destructuring-bind (a b c) arg-vals
+    (destructuring-bind (a-type b-type c-type) arg-types
+      (%hw-intrinsic builder module "fma" result-type
+                     (%hw-widen builder module a a-type c-type)
+                     (%hw-widen builder module b b-type c-type)
+                     c))))
+
+;; src/codegen.lisp
+(defun %hw-int-llvm-type (bits lanes)
+  "LLVM integer type of BITS bits, as a LANES-lane vector when LANES is non-NIL."
+  (let ((elem (%hw-llvm-int-type bits)))
+    (if lanes (llvm-vector-type elem lanes) elem)))
+
+;; src/codegen.lisp
+(defun %hw-int-const (builder bits lanes value signed-p)
+  "Integer VALUE as a constant of BITS bits (a LANES-lane splat when LANES is non-NIL)."
+  (%hw-splat builder
+             (llvm-const-int (%hw-llvm-int-type bits) (ldb (byte 64 0) value) (if signed-p 1 0))
+             lanes
+             (%hw-int-llvm-type bits lanes)))
+
+;; src/codegen.lisp
+(defun %hw-int-intrinsic (builder module base cat bits lanes &rest args)
+  "Call the integer intrinsic llvm.<s|u>BASE.<iBITS or vLANESiBITS> (signedness from CAT),
+   returning that integer type. E.g. BASE \"min\" -> llvm.smin.i32 / llvm.umin.v4i8."
+  (%hw-call builder module
+            (format nil "llvm.~a~a.~a" (if (eq cat :signed-int) "s" "u") base
+                    (%hw-intrinsic-suffix cat bits lanes nil))
+            (%hw-int-llvm-type bits lanes)
+            args))
+
+;; src/codegen.lisp
+(defun %hw-abs-diff-value (builder module a b a-type)
+  "|a - b| as an unsigned value of A-TYPE's width: max(a,b) - min(a,b) with the signed or unsigned
+   min/max intrinsics (branch-free). The wrapping subtraction is exact because the true difference
+   always fits the unsigned result type."
+  (multiple-value-bind (cat bits lanes) (%hw-type-parts a-type)
+    (llvm-build-sub builder
+                    (%hw-int-intrinsic builder module "max" cat bits lanes a b)
+                    (%hw-int-intrinsic builder module "min" cat bits lanes a b)
+                    "hw_absdiff")))
+
+;; src/codegen.lisp
+(defun %hw-via-float (builder module x x-type fn)
+  "Call FN with (value type) of X as a float -- fpext from half / bfloat16 first -- and return FN's
+   result converted back to X-TYPE. Used by the library-routed *-approx ops, whose callees are
+   f32 / f64 only."
+  (multiple-value-bind (cat bits) (%hw-type-parts x-type)
+    (declare (ignore cat))
+    (if (/= bits 16)
+        (funcall fn x x-type)
+        (let* ((float-type (%hw-type-named "FLOAT" nil))
+               (wide (llvm-build-fp-ext builder x (crisp-type-to-llvm-type float-type module) "hw_fpext"))
+               (r (funcall fn wide float-type)))
+          (llvm-build-fp-trunc builder r (crisp-type-to-llvm-type x-type module) "hw_fptrunc")))))
+
+;; src/codegen.lisp
+(defun %hw-approx-transcendental (builder module x x-type base native libdevice libdevice-fast)
+  "Lower an approximate transcendental (BASE is \"sin\", \"cos\" or \"log2\") of float X.
+   PTX f32 sin/cos: the llvm intrinsic + afn, which llc lowers to the NATIVE sin.approx.f32 /
+   cos.approx.f32 instruction (probed; no libdevice). Everything else: the endeavour-128
+   fast-precision callee (%math-call-name with precision bound to :fast): SPV f32 -> OpenCL
+   native_*, PTX -> libdevice __nv_fast_*f / __nv_*, otherwise the llvm intrinsic. The afn flag is
+   stamped in every case (the op grants approximation in every precision context)."
+  (%hw-via-float
+   builder module x x-type
+   (lambda (xv xt)
+     (multiple-value-bind (cat bits) (%hw-type-parts xt)
+       (declare (ignore cat))
+       (let* ((ty (crisp-type-to-llvm-type xt module))
+              (name (if (and (eq *target-backend* :ptx) (= bits 32)
+                             (member base '("sin" "cos") :test #'string=))
+                        (format nil "llvm.~a.f32" base)
+                        (let ((*math-precision* :fast))
+                          (%math-call-name (format nil "llvm.~a" base) native libdevice libdevice-fast 1 bits)))))
+         (log:debug "%hw-approx-transcendental: ~a ~a-bit on ~a -> ~a" base bits *target-backend* name)
+         (%hw-approx-flags (%hw-call builder module name ty (list xv))))))))
+
+;;; --- per-op lowering -------------------------------------------------------------------------
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-saturate)) builder module arg-vals arg-types result-type)
+  "op-saturate: minnum(maxnum(x, 0), 1). maxnum returns the non-NaN operand, so a NaN input
+   saturates to 0.0 (endeavour 170 decision D6)."
+  (let* ((x (first arg-vals))
+         (lo (%hw-intrinsic builder module "maxnum" result-type x (%hw-float-const builder module result-type 0.0))))
+    (%hw-intrinsic builder module "minnum" result-type lo (%hw-float-const builder module result-type 1.0))))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-imad)) builder module arg-vals arg-types result-type)
+  "op-imad: widen a and b to the accumulator's type (sext / zext), multiply, add c. Wraps in c's
+   type like ordinary integer arithmetic."
+  (destructuring-bind (a b c) arg-vals
+    (destructuring-bind (a-type b-type c-type) arg-types
+      (declare (ignore result-type))
+      (llvm-build-add builder
+                      (llvm-build-mul builder
+                                      (%hw-widen builder module a a-type c-type)
+                                      (%hw-widen builder module b b-type c-type)
+                                      "hw_imad_mul")
+                      c "hw_imad"))))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-imad-sat)) builder module arg-vals arg-types result-type)
+  "op-imad-sat, reading (a) of the endeavour doc: the EXACT a*b+c, clamped once to c's range.
+   W = max(2 * width(a), width(c)) bits (<= 64; the analyzer refuses 64-bit multipliers). a and b
+   are extended to W, so their product is exact; c is extended to W; a saturating add in W is then
+   the exact sum clamped to W's range; finally, if W is wider than c, clamp to c's range and
+   truncate."
+  (destructuring-bind (a b c) arg-vals
+    (destructuring-bind (a-type b-type c-type) arg-types
+      (declare (ignore b-type result-type))
+      (multiple-value-bind (cat a-bits lanes) (%hw-type-parts a-type)
+        (multiple-value-bind (c-cat c-bits) (%hw-type-parts c-type)
+          (declare (ignore c-cat))
+          (let* ((signed-p (eq cat :signed-int))
+                 (w (max (* 2 a-bits) c-bits))
+                 (wty (%hw-int-llvm-type w lanes))
+                 (ext (lambda (v from-bits)
+                        (cond ((= from-bits w) v)
+                              (signed-p (llvm-build-sext builder v wty "hw_sext"))
+                              (t (llvm-build-zext builder v wty "hw_zext")))))
+                 (prod (llvm-build-mul builder (funcall ext a a-bits) (funcall ext b a-bits) "hw_sat_mul"))
+                 (sum (%hw-int-intrinsic builder module "add.sat" cat w lanes prod (funcall ext c c-bits))))
+            (log:debug "op-imad-sat lowering: ~a*~a+~a in W=~a bits" a-type a-type c-type w)
+            (if (= w c-bits)
+                sum
+                (let* ((c-max (if signed-p (1- (expt 2 (1- c-bits))) (1- (expt 2 c-bits))))
+                       (c-min (if signed-p (- (expt 2 (1- c-bits))) 0))
+                       (clamped (%hw-int-intrinsic builder module "min" cat w lanes sum
+                                                   (%hw-int-const builder w lanes c-max signed-p)))
+                       (clamped (if signed-p
+                                    (%hw-int-intrinsic builder module "max" cat w lanes clamped
+                                                       (%hw-int-const builder w lanes c-min t))
+                                    clamped)))
+                  (llvm-build-trunc builder clamped (%hw-int-llvm-type c-bits lanes) "hw_sat_trunc")))))))))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-abs-diff)) builder module arg-vals arg-types result-type)
+  "op-abs-diff: |a - b| as the unsigned counterpart of a's type (A4)."
+  (declare (ignore result-type))
+  (%hw-abs-diff-value builder module (first arg-vals) (second arg-vals) (first arg-types)))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-abs-diff-add)) builder module arg-vals arg-types result-type)
+  "op-abs-diff-add: |a - b| (unsigned), zero-extended to c's width, plus c."
+  (destructuring-bind (a b c) arg-vals
+    (multiple-value-bind (cat bits lanes) (%hw-type-parts (first arg-types))
+      (declare (ignore cat))
+      (multiple-value-bind (c-cat c-bits) (%hw-type-parts result-type)
+        (declare (ignore c-cat))
+        (let* ((d (%hw-abs-diff-value builder module a b (first arg-types)))
+               (d (if (= c-bits bits) d (llvm-build-zext builder d (%hw-int-llvm-type c-bits lanes) "hw_zext"))))
+          (llvm-build-add builder d c "hw_absdiffadd"))))))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-sad)) builder module arg-vals arg-types result-type)
+  "op-sad: per-lane |a_i - b_i| (unsigned), zero-extended to c's width, summed lane by lane into c.
+   Lane extraction (not llvm.vector.reduce.add) keeps the IR in forms both translators accept."
+  (destructuring-bind (a b c) arg-vals
+    (multiple-value-bind (cat bits lanes) (%hw-type-parts (first arg-types))
+      (declare (ignore cat))
+      (multiple-value-bind (c-cat c-bits) (%hw-type-parts result-type)
+        (declare (ignore c-cat))
+        (let* ((d (%hw-abs-diff-value builder module a b (first arg-types)))
+               (d (llvm-build-zext builder d (%hw-int-llvm-type c-bits lanes) "hw_zext"))
+               (sum c))
+          (declare (ignore bits))
+          (dotimes (i lanes sum)
+            (setf sum (llvm-build-add builder sum
+                                      (llvm-build-extract-element builder d (llvm-const-int (llvm-int32-type) i 0) "hw_lane")
+                                      "hw_sad"))))))))
+
+;; src/codegen.lisp
+(defun %hw-lower-min-max-3 (builder module arg-vals type-name float-base int-base)
+  "Shared op-min3 / op-max3 lowering: f(f(a, b), c) with minnum/maxnum for floats and
+   smin/umin (smax/umax) for integers."
+  (destructuring-bind (a b c) arg-vals
+    (multiple-value-bind (cat bits lanes) (%hw-type-parts type-name)
+      (flet ((f (x y)
+               (if (eq cat :float)
+                   (%hw-intrinsic builder module float-base type-name x y)
+                   (%hw-int-intrinsic builder module int-base cat bits lanes x y))))
+        (f (f a b) c)))))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-min3)) builder module arg-vals arg-types result-type)
+  "op-min3: minnum (floats; returns the non-NaN operand) or smin/umin (integers)."
+  (declare (ignore arg-types))
+  (%hw-lower-min-max-3 builder module arg-vals result-type "minnum" "min"))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-max3)) builder module arg-vals arg-types result-type)
+  "op-max3: maxnum (floats; returns the non-NaN operand) or smax/umax (integers)."
+  (declare (ignore arg-types))
+  (%hw-lower-min-max-3 builder module arg-vals result-type "maxnum" "max"))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-rsqrt-approx)) builder module arg-vals arg-types result-type)
+  "op-rsqrt-approx: 1.0 / sqrt(x) with the afn flag on both instructions. On PTX llc fuses this
+   into the native rsqrt.approx.f32 (probed); elsewhere it is an exact-ish value, which the op permits."
+  (declare (ignore arg-types))
+  (let ((s (%hw-approx-flags (%hw-intrinsic builder module "sqrt" result-type (first arg-vals)))))
+    (%hw-approx-flags (llvm-build-fdiv builder (%hw-float-const builder module result-type 1.0) s "hw_rsqrt"))))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-rcp-approx)) builder module arg-vals arg-types result-type)
+  "op-rcp-approx: 1.0 / x with the afn flag (PTX: native rcp.approx.f32, probed)."
+  (declare (ignore arg-types))
+  (%hw-approx-flags (llvm-build-fdiv builder (%hw-float-const builder module result-type 1.0)
+                                     (first arg-vals) "hw_rcp")))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-exp2-approx)) builder module arg-vals arg-types result-type)
+  "op-exp2-approx: llvm.exp2 + afn (PTX f32/f16: native ex2.approx, probed). PTX f64 has no native
+   lowering (llc: no libcall for fexp2), so it calls libdevice __nv_exp2."
+  (declare (ignore arg-types))
+  (multiple-value-bind (cat bits) (%hw-type-parts result-type)
+    (declare (ignore cat))
+    (if (and (eq *target-backend* :ptx) (= bits 64))
+        (%hw-call builder module "__nv_exp2" (crisp-type-to-llvm-type result-type module) (list (first arg-vals)))
+        (%hw-approx-flags (%hw-intrinsic builder module "exp2" result-type (first arg-vals))))))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-log2-approx)) builder module arg-vals arg-types result-type)
+  "op-log2-approx: the fast-precision log2 callee (SPV native_log2, PTX __nv_fast_log2f) + afn."
+  (declare (ignore arg-types))
+  (%hw-approx-transcendental builder module (first arg-vals) result-type
+                             "log2" "native_log2" "__nv_log2" "__nv_fast_log2"))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-sin-approx)) builder module arg-vals arg-types result-type)
+  "op-sin-approx: PTX f32 native sin.approx; else the fast-precision sin callee; afn flag."
+  (declare (ignore arg-types))
+  (%hw-approx-transcendental builder module (first arg-vals) result-type
+                             "sin" "native_sin" "__nv_sin" "__nv_fast_sin"))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-cos-approx)) builder module arg-vals arg-types result-type)
+  "op-cos-approx: PTX f32 native cos.approx; else the fast-precision cos callee; afn flag."
+  (declare (ignore arg-types))
+  (%hw-approx-transcendental builder module (first arg-vals) result-type
+                             "cos" "native_cos" "__nv_cos" "__nv_fast_cos"))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql 'op-sincos-approx)) builder module arg-vals arg-types result-type)
+  "op-sincos-approx: both approximations, packed into the two-value aggregate a multi-value
+   return uses (so `(let ((s c (op-sincos-approx x))) ...)` destructures it). RESULT-TYPE is the
+   list (T T)."
+  (let* ((x (first arg-vals))
+         (x-type (first arg-types))
+         (s (%hw-approx-transcendental builder module x x-type "sin" "native_sin" "__nv_sin" "__nv_fast_sin"))
+         (c (%hw-approx-transcendental builder module x x-type "cos" "native_cos" "__nv_cos" "__nv_fast_cos"))
+         (agg (llvm-get-undef (get-llvm-return-type module result-type))))
+    (setf agg (llvm-build-insert-value builder agg s 0 "hw_sincos_0"))
+    (llvm-build-insert-value builder agg c 1 "hw_sincos_1")))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql '%hw-sat-interior)) builder module arg-vals arg-types result-type)
+  "Internal AD helper: 1.0 where integer R lies strictly inside its type's range, else 0.0, as
+   RESULT-TYPE (float / floatN). Used as the gradient mask for op-imad-sat."
+  (multiple-value-bind (cat bits lanes) (%hw-type-parts (first arg-types))
+    (let* ((r (first arg-vals))
+           (signed-p (eq cat :signed-int))
+           (hi (if signed-p (1- (expt 2 (1- bits))) (1- (expt 2 bits))))
+           (lo (if signed-p (- (expt 2 (1- bits))) 0))
+           (above (llvm-build-icmp builder (if signed-p +llvm-int-sgt+ +llvm-int-ugt+)
+                                   r (%hw-int-const builder bits lanes lo signed-p) "hw_above_min"))
+           (below (llvm-build-icmp builder (if signed-p +llvm-int-slt+ +llvm-int-ult+)
+                                   r (%hw-int-const builder bits lanes hi signed-p) "hw_below_max"))
+           (inside (crisp.llvm-bindings::llvm-build-and builder above below "hw_interior")))
+      (llvm-build-ui-to-fp builder inside (crisp-type-to-llvm-type result-type module) "hw_mask"))))
 
 ;; -- comparisons --
 (defun generate-comparison-ir (builder module var-env di-builder di-scope location-map node op-node-int op-node-float)

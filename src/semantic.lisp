@@ -154,6 +154,27 @@
 (defstruct semantic-atan2
   type left-arg right-arg source-location)
 
+;; Endeavour 170: ONE node for every hardware-supported math op (op-fma, op-imad-sat,
+;; op-sin-approx ...).  OP is the op symbol, TYPE the result type (a type symbol, or a list of two
+;; for op-sincos-approx), ARGS the analyzed argument nodes in source order.  Codegen dispatches on
+;; OP via the %hw-lower generic; the type rules live in %hw-op-result-type (src/analysis/ops.lisp).
+(defstruct semantic-hw-op
+  type op args source-location)
+
+;; Defined here, not in src/analysis/ops.lisp where the rest of the endeavour-170 analyzer lives:
+;; src/analysis/core.lisp reads this list (%uni-analyze) and is compiled BEFORE ops.lisp.
+(defparameter *hw-op-symbols*
+  '(op-fma op-saturate op-imad op-imad-sat
+    op-abs-diff op-abs-diff-add op-sad op-min3 op-max3
+    op-rsqrt-approx op-rcp-approx op-log2-approx op-exp2-approx
+    op-sin-approx op-cos-approx op-sincos-approx)
+  "Endeavour 170: the hardware-supported math op symbols (exported from :crisp.compiler and
+   imported into :crisp-language by src/package.lisp).")
+
+(defparameter *hw-internal-op-symbols* '(%hw-sat-interior)
+  "Endeavour 170: INTERNAL hardware-op forms that only the autodiff emits (never exported).
+   (%hw-sat-interior R) => float mask, 1.0 where integer R lies STRICTLY inside its type's range.")
+
 (defstruct semantic-lt
   type left-arg right-arg source-location)
 

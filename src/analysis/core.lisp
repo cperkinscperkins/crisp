@@ -1209,12 +1209,15 @@ runs infer-param-uniformity once the call graph is complete."
        ((string-equal (symbol-name op) "LET")
         (%uni-analyze-let form env))
        ;; arithmetic / comparison contagion
-       ((member (symbol-name op)
-                '("+" "-" "*" "/" "SIN" "COS"
-                  ;; Endeavor 128: transcendentals combine uniformity like arithmetic
-                  "EXP" "LOG" "LOG2" "TAN" "ASIN" "ACOS" "ATAN" "POW" "ATAN2"
-                  "<" ">" "<=" ">=" "=" "/=" "MOD" "REM")
-                :test #'string=)
+       ((or (member (symbol-name op)
+                    '("+" "-" "*" "/" "SIN" "COS"
+                      ;; Endeavor 128: transcendentals combine uniformity like arithmetic
+                      "EXP" "LOG" "LOG2" "TAN" "ASIN" "ACOS" "ATAN" "POW" "ATAN2"
+                      "<" ">" "<=" ">=" "=" "/=" "MOD" "REM")
+                    :test #'string=)
+            ;; Endeavour 170: the hardware math ops do too.  Matched by NAME against the op list
+            ;; (not by symbol), so a kernel's reader may have interned them in any package.
+            (member (symbol-name op) *hw-op-symbols* :key #'symbol-name :test #'string=))
         (%uni-combine (mapcar (lambda (a) (%uni-analyze a env)) (cdr form))))
        ;; Endeavor 124: memory read (~ src [idx]) is uniform when every thread
        ;; reads the SAME location — a uniform handle at a uniform index. A
@@ -1932,6 +1935,14 @@ in single-pass mode."
        (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
              ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
              (t :unknown))))
+    ;; Endeavour 170: a hardware math op combines its arguments exactly like arithmetic --
+    ;; divergent if any argument is, uniform only if all of them are.
+    (semantic-hw-op
+     (let ((states (mapcar (lambda (a) (calculate-uniformity-state a env))
+                           (semantic-hw-op-args node))))
+       (cond ((member :divergent states) :divergent)
+             ((every (lambda (s) (eq s :uniform)) states) :uniform)
+             (t :unknown))))
     ;; Endeavor 120: casts/conversions (to-*, as-*) are passthrough. Covers all
     ;; semantic-cast subtypes (value-cast, bitcast, fp-truncate-cast, truncate).
     (semantic-cast
@@ -2229,6 +2240,9 @@ in single-pass mode."
     (semantic-atan  (semantic-atan-type node))
     (semantic-pow   (semantic-pow-type node))
     (semantic-atan2 (semantic-atan2-type node))
+    ;; Endeavour 170: hardware math ops.  TYPE is the result type the analyzer computed
+    ;; (a list of two for op-sincos-approx, which returns two values).
+    (semantic-hw-op (semantic-hw-op-type node))
     (semantic-lt 'int)
     (semantic-gt 'int)
     (semantic-le 'int)
@@ -2309,6 +2323,7 @@ in single-pass mode."
     (semantic-atan  (semantic-atan-source-location node))
     (semantic-pow   (semantic-pow-source-location node))
     (semantic-atan2 (semantic-atan2-source-location node))
+    (semantic-hw-op (semantic-hw-op-source-location node))   ; Endeavour 170
     (semantic-lt (semantic-lt-source-location node))
     (semantic-gt (semantic-gt-source-location node))
     (semantic-le (semantic-le-source-location node))

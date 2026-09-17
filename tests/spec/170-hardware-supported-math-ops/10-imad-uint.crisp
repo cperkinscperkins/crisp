@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-10-imad-uint
+;;
+;; Endeavour 170: op-imad, uint, non-widened.
+
+(def-type u-c (cell uint :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(u-c u-c u-c &out u-c))
+  (set! (~ res) (op-imad (~ a) (~ b) (~ c))))

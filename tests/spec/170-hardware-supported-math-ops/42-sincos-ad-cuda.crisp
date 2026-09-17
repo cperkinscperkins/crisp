@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: x=0.5 atol=5e-2 expect.x=-0.08126
+;;
+;; Endeavour 170 AD ON-METAL, NVIDIA: the CUDA twin of 38-sincos-ad -- the multi-value binding split
+;; (decision D19) through PTX's native sin.approx / cos.approx.
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(f-c &out f-c))
+  (let ((s c (op-sincos-approx (~ x))))
+    (set! (~ res) (+ s (* 2.0 c)))))

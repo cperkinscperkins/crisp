@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-fma-widen-half-float
+;;
+;; Endeavour 170: op-fma widening, the doc example `(op-fma 40.1h 30.2h 0.0f) => float`.
+;; The accumulator's type decides the result. a and b (half) are fpext'd to float FIRST,
+;; then one float @llvm.fma.f32 -- still a single rounding. There must be no half-width
+;; multiply: that would round the product at 16 bits before the widening.
+;; Inputs are cells (not literals) so nothing constant-folds away.
+
+(def-type half-c  (cell half  :address-space :global))
+(def-type float-c (cell float :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(half-c half-c float-c &out float-c))
+  (set! (~ res) (op-fma (~ a) (~ b) (~ c))))

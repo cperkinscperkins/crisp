@@ -340,6 +340,64 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%GENERATE-SCALAR-LITERAL-IR BUILDER VALUE LLVM-TYPE CRISP-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%GET-DI-LOCATION NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - (%HW-LOWER (OP (EQL '%HW-SAT-INTERIOR)) BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC BUILDER MODULE BASE TYPE-NAME &REST ARGS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                 hw_tmp))  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-SUFFIX TYPE-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%HW-WIDEN BUILDER MODULE VALUE FROM-TYPE TO-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%HW-FLOAT-CONST BUILDER MODULE TYPE-NAME VALUE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-SPLAT BUILDER ELEM-CONST LANES LLVM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%HW-INT-LLVM-TYPE BITS LANES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-LLVM-INT-TYPE BITS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%HW-INT-INTRINSIC BUILDER MODULE BASE CAT BITS LANES &REST ARGS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                 hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-INT-LLVM-TYPE BITS LANES)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%HW-INT-CONST BUILDER BITS LANES VALUE SIGNED-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-SPLAT BUILDER ELEM-CONST LANES LLVM-TYPE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-LLVM-INT-TYPE BITS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-INT-LLVM-TYPE BITS LANES)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%HW-ABS-DIFF-VALUE BUILDER MODULE A B A-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-INT-INTRINSIC BUILDER MODULE BASE CAT BITS LANES &REST ARGS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%HW-LOWER-MIN-MAX-3 BUILDER MODULE ARG-VALS TYPE-NAME FLOAT-BASE INT-BASE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC BUILDER MODULE BASE TYPE-NAME &REST ARGS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-INT-INTRINSIC BUILDER MODULE BASE CAT BITS LANES &REST ARGS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%HW-APPROX-FLAGS INST)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                               hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%HW-APPROX-TRANSCENDENTAL BUILDER MODULE X X-TYPE BASE NATIVE LIBDEVICE LIBDEVICE-FAST)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-VIA-FLOAT BUILDER MODULE X X-TYPE FN)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-NAMED BASE-NAME LANES)  analysis/ops.lisp
+- - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%MATH-CALL-NAME INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE ARITY SIZE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%LIBDEVICE-FN-NAME BASE F32-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%NATIVE-BUILTIN-MANGLED-NAME BASE-NAME ARITY)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-APPROX-FLAGS INST)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                 hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%GET-DI-LOCATION NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%HANDLE-DIE-INTRINSIC BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%BUILD-LLVM-FUNCTION-TYPE MODULE RETURN-TYPE-NAMES PARAM-TYPES)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
@@ -348,17 +406,15 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
                                                              SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%GET-DI-LOCATION NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%GENERATE-LET-BINDING BINDING BUILDER MODULE LET-ENV DI-BUILDER DI-SCOPE LOCATION-MAP MEMOIZED-AGGREGATES)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp
@@ -370,9 +426,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (TERMINATOR-P BLOCK)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
@@ -381,7 +435,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -538,7 +591,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE-IMPL (LOWERING
                                                           (EQL XE-NATIVE)) ELEM-LLVM ROWS COLS USE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
+- - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%XE-NATIVE-SUBGROUP-WIDTH)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%XE-NOTE-OPERAND-ELEM KIND)  codegen.lisp
@@ -669,6 +722,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-PARAM-SET PARAMS BODY-FORMS)  autodiff.lisp
 - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp
+- - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp
 - - - - - - - - - - - - - - - - - (%ASV-UNION EXPRS ENV)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp [RECURSION]
@@ -724,6 +778,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL TENSOR-INPUTS-HT ANY-DOUBLE RETURN-ADJ-TYPES)  autodiff.lisp
 - - - - - - - - - - - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
                                                                                                                               T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%HW-OP-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%AD-REM-OR-MOD-FORM-P EXPR)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%AD-HANDLE-REM-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%AD-WIDENING-CONVERSION-FORM-P EXPR)  autodiff.lisp
@@ -1290,6 +1347,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%AD-NORMALIZE-REGISTER-EXTENTS FORM REG-DIMS)  autodiff.lisp
 - - - - (%AD-REGISTER-TILE-DIMS-MAP FLAT-ANF)  autodiff.lisp
 - - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
+- - - (%HW-SPLIT-SINCOS-BINDINGS FORM)  autodiff.lisp
+- - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
 - - - (%AD-COLLECT-BARRIER-RING-SYMS FLAT-ANF)  autodiff.lisp
 - - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp [See above]
 - - - (%AD-COLLECT-VIEW-ALIASES FLAT-ANF)  autodiff.lisp
@@ -1734,6 +1793,22 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%TENSOR-STRIDE-RESOLVE-CT EXPR TYPE-RESOLVER-FN LOCATION)  macros.lisp [See above]
 - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp [See above]
 - - (%EXPAND-HARDWARE-STRIDE-FORM EXPR CT LOCATION)  analysis/control.lisp [See above]
+
+- (ANALYZE-HW-OP-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%HW-SAT-INTERIOR-RESULT-TYPE ARG-TYPES LOCATION)  analysis/ops.lisp
+- - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - (%HW-FAIL LOCATION FMT &REST ARGS)  analysis/ops.lisp
+- - - (%HW-TYPE-NAMED BASE-NAME LANES)  analysis/ops.lisp [See above]
+- - (%HW-OP-RESULT-TYPE OP ARG-TYPES LOCATION)  analysis/ops.lisp
+- - - (%HW-FAIL LOCATION FMT &REST ARGS)  analysis/ops.lisp [See above]
+- - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - (%HW-CHECK-MULTIPLIER-ACCUMULATOR OP A-TYPE B-TYPE C-TYPE LOCATION FAMILY)  analysis/ops.lisp
+- - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - (%HW-FAIL LOCATION FMT &REST ARGS)  analysis/ops.lisp [See above]
+- - - (%HW-UNSIGNED-COUNTERPART TYPE-NAME)  analysis/ops.lisp
+- - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - (%HW-TYPE-NAMED BASE-NAME LANES)  analysis/ops.lisp [See above]
 
 - (ANALYZE-INC!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 
@@ -2355,9 +2430,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GENERATE-NODE-IR (NODE SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - (%MATH-CALL-NAME INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE ARITY SIZE)  codegen.lisp
-- - - (%LIBDEVICE-FN-NAME BASE F32-P)  codegen.lisp
-- - - (%NATIVE-BUILTIN-MANGLED-NAME BASE-NAME ARITY)  codegen.lisp
+- - (%MATH-CALL-NAME INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE ARITY SIZE)  codegen.lisp [See above]
 - - (%APPLY-PRECISION-FMF INST)  codegen.lisp
 - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 
@@ -2377,6 +2450,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (GET-TYPE-CAT-SAFE TYPE-NAME TYPE-OBJ)  codegen.lisp
 - - - (%BF16-AS-I16-P VAL FROM-TYPE)  codegen.lisp
 - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - (%ARITH-CATEGORY TYPE-NAME)  codegen.lisp
 - - (%APPLY-PRECISION-FMF INST)  codegen.lisp [See above]
 - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 

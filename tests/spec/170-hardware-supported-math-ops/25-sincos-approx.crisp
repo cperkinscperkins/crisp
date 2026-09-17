@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-25-sincos-approx
+;;
+;; Endeavour 170: op-sincos-approx returns TWO values (A5.5), bound with the multi-value let.
+;; Lowered as sin + cos (both afn) packed into the { float, float } aggregate a multi-value return uses.
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (x &out s c)
+  (declare #'(f-c &out f-c f-c))
+  (let ((sv cv (op-sincos-approx (~ x))))
+    (set! (~ s) sv)
+    (set! (~ c) cv)))

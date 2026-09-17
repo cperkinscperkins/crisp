@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-09-imad-int
+;;
+;; Endeavour 170: op-imad, int, non-widened: (a*b)+c wrapping in int, like ordinary arithmetic.
+
+(def-type i-c (cell int :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(i-c i-c i-c &out i-c))
+  (set! (~ res) (op-imad (~ a) (~ b) (~ c))))

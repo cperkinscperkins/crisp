@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--force-math-precision=ieee] : validate-hw-07-saturate-half
+;;
+;; Endeavour 170: op-saturate on half -- the intrinsics are overloaded at f16, no widening.
+
+(def-type h-c (cell half :address-space :global))
+
+(def-kernel k (x &out res)
+  (declare #'(h-c &out h-c))
+  (set! (~ res) (op-saturate (~ x))))
