@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-17T04:15:22.787978Z
+Generated on 2026-09-17T04:19:16.034130Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
