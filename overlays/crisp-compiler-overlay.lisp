@@ -255,17 +255,6 @@
              (%hw-fail location "~(~a~): all three operands must have the same type; got ~a, ~a and ~a" op a b c))
            a))))))
 
-;; src/analysis/ops.lisp
-(defun analyze-hw-op-expression (expr env context location)
-  "Analyzes an endeavour-170 hardware math op form, e.g. (op-fma a b c)."
-  (let* ((op (find (symbol-name (first expr)) *hw-op-symbols* :key #'symbol-name :test #'string=))
-         (arg-nodes (loop for arg in (rest expr)
-                          for i from 1
-                          collect (analyze-expression arg env context (append location (list i)))))
-         (arg-types (mapcar #'get-single-value-type arg-nodes))
-         (result-type (%hw-op-result-type op arg-types location)))
-    (log:debug "analyze-hw-op-expression: ~a ~a -> ~a" op arg-types result-type)
-    (make-semantic-hw-op :op op :type result-type :args arg-nodes :source-location location)))
 
 ;; src/analysis/ops.lisp  (fold: add the dolist to register-ops-analyzers)
 ;; NB: the original is captured in a DEFVAR via FDEFINITION. `(let ((original #'f)) (defun f ...))`
@@ -778,46 +767,6 @@
          (or (find name *hw-op-symbols* :key #'symbol-name :test #'string=)
              (find name *hw-internal-op-symbols* :key #'symbol-name :test #'string=)))))
 
-;; src/autodiff.lisp
-(defun %hw-op-backward (v expr emit-fn local-adj-fn)
-  "Backward rules for the endeavour-170 hardware math ops (v := EXPR). Each operand's adjoint
-   accumulates d(op)/d(operand) * v_adj. Integer operands get promoted adjoints like any integer
-   input. Kinks and ties use the conventions recorded in the endeavour doc (D7-D10). Returns T."
-  (let ((op (%hw-op-form-op expr))
-        (args (cdr expr))
-        (g (funcall local-adj-fn v)))
-    (flet ((acc (x term)
-             (when (and x (symbolp x))
-               (funcall emit-fn `(set! ,(funcall local-adj-fn x) (+ ,(funcall local-adj-fn x) ,term))))))
-      (log:debug "%hw-op-backward: ~a := ~a" v expr)
-      (destructuring-bind (a &optional b c) args
-        (ecase op
-          ((op-fma op-imad)
-           (acc a `(* ,b ,g)) (acc b `(* ,a ,g)) (acc c g))
-          (op-imad-sat
-           (let ((mask `(%hw-sat-interior (op-imad-sat ,a ,b ,c))))
-             (acc a `(* (* ,b ,g) ,mask)) (acc b `(* (* ,a ,g) ,mask)) (acc c `(* ,g ,mask))))
-          (op-saturate
-           ;; gradient 1 wherever the clamp is the identity (0 <= x <= 1, endpoints included), else 0
-           (acc a `(* ,g (to-float (= (op-saturate ,a) ,a)))))
-          ((op-abs-diff op-abs-diff-add)
-           (let ((sign `(- (to-float (> ,a ,b)) (to-float (< ,a ,b)))))
-             (acc a `(* ,sign ,g)) (acc b `(* (* -1.0 ,sign) ,g))
-             (when (eq op 'op-abs-diff-add) (acc c g))))
-          ((op-min3 op-max3)
-           (let ((r `(,op ,a ,b ,c)))
-             (acc a `(* (to-float (= ,a ,r)) ,g))
-             (acc b `(* (to-float (* (= ,b ,r) (!= ,a ,r))) ,g))
-             (acc c `(* (to-float (* (= ,c ,r) (* (!= ,a ,r) (!= ,b ,r)))) ,g))))
-          (op-rsqrt-approx (acc a `(* (* -0.5 (pow ,a -1.5)) ,g)))
-          (op-rcp-approx (acc a `(* (* -1.0 (/ 1.0 (* ,a ,a))) ,g)))
-          (op-log2-approx (acc a `(* (/ 1.4426950408889634 ,a) ,g)))
-          (op-exp2-approx (acc a `(* (* 0.6931471805599453 (pow 2.0 ,a)) ,g)))
-          (op-sin-approx (acc a `(* (cos ,a) ,g)))
-          (op-cos-approx (acc a `(* (* -1.0 (sin ,a)) ,g)))
-          ((op-sad op-sincos-approx %hw-sat-interior)
-           (error "~(~a~): no backward rule yet (endeavour 170 gap -- see the endeavour doc)." op)))))
-    t))
 
 ;; src/autodiff.lisp  (fold: a clause near the top of %handle-single-value-backward's cond)
 (defvar *hw-original-%handle-single-value-backward* (fdefinition '%handle-single-value-backward))
