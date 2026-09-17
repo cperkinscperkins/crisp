@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: a=1.0 b=3.0 c=2.0 atol=1e-2 expect.a=1.0 expect.b=2.0 expect.c=0.0
+;;
+;; Endeavour 170 AD ON-METAL, NVIDIA: the CUDA twin of 35-min3-max3-ad. The gradient must reach the
+;; SELECTED operand on PTX's min.f32 / max.f32 exactly as it does on the SPIR-V fmin / fmax.
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(f-c f-c f-c &out f-c))
+  (set! (~ res) (+ (op-min3 (~ a) (~ b) (~ c))
+                   (* 2.0 (op-max3 (~ a) (~ b) (~ c))))))

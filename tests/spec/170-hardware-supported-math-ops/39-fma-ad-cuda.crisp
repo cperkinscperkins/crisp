@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: a=1.5 b=2.0 c=0.25 atol=1e-2 expect.a=2.0 expect.b=1.5 expect.c=1.0
+;;
+;; Endeavour 170 AD ON-METAL, NVIDIA: the CUDA twin of 31-fma-ad. VERIFY-AUTODIFF auto-selects among the
+;; SPIR-V runtimes only, so the CUDA path needs its own pinned spec (endeavour 147). SKIPs as a pass
+;; where no NVIDIA device is present.
+
+(def-type f-c (cell float :address-space :global))
+
+(def-kernel k (a b c &out res)
+  (declare #'(f-c f-c f-c &out f-c))
+  (set! (~ res) (op-fma (~ a) (~ b) (~ c))))
