@@ -47,12 +47,17 @@ Maybe reading the spec is a big ask. Understood. Here are two examples of Crisp 
 The first is a MMA kernel that is optimized for Intel hardware. For matrices around 1024x1024 or 2048x2048, the code below will compile and execute FASTER than Intel's MKL on a BattleMage GPU.  As the matrix size increases the Crisp advantage will decrease. 
 
 ```
-;; Note: `bmg` is a Crisp BUILTIN hardware profile so this definition is optional, 
+
+;; Note: `bmg` is a Crisp BUILTIN hardware profile so this definition is optional,
+
 ;; but shown here explicitly to illustrate how profiles are defined.
+
 (def-hardware-profile bmg
   :simd-width 16
   :compute-units 20
-  :max-registers-per-thread 128
+
+  :max-registers-per-thread '(128 256)     ; GRF modes (32 B each) — selectable
+
   :max-total-threads-per-block 1024
   :max-work-group-dims '(1024 1024 1024)
   :max-shared-memory-per-block 128KB
@@ -75,47 +80,59 @@ The first is a MMA kernel that is optimized for Intel hardware. For matrices aro
   (declare #'(a-mat b-mat &out c-mat)
            (global-size :derive-from C :strategy :strided)
            (local-size :set-to 16))                       ; Intel MMA wants a subgroup of 16
-  (let ((n-k-steps (/ (inner-dimension A B) (to-ulong 8))))
 
-    (tile-stride C (32 32) (grid-y grid-x)
-      ;; Ping-pong REGISTER double buffering — make-register-tile-ring, not a scratch ring.
-      ;; Operand tiles are M x K and K x N, so A and B have different shapes.
-      (let ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
+  (let ((K         (inner-dimension A B))
+        (n-k-steps (/ (inner-dimension A B) (to-ulong 8))))
+    ;; The macro owns the output-tile stride AND the K loop, so the kernel below never
+    ;; writes either.  Its four sections say when each piece of work runs.
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      ;; :let — entered once per OUTPUT TILE, scoping the prologue, the K loop and the
+      ;; epilogue.  Ping-pong REGISTER double buffering: make-register-tile-ring, not a
+      ;; scratch ring.  Operand tiles are M x K and K x N, so A and B differ in shape.
+
+      :let ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
             (B-ring (make-register-tile-ring float (8 32) :ring-count 2 :operand :b))
             (C-tile (make-register-tile float (32 32) 0.0)))
 
-        ;; --- prologue: prime the pump for k=0 and k=1 ---
-        (prefetch-tile A (grid-y 0) :size (32 8))
-        (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (8 16))
-        (prefetch-tile A (grid-y 1) :size (32 8))
-        (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (8 16))
-        (load-tile A (ring-get A-ring 0) (grid-y 0))
-        (load-tile B (ring-get B-ring 0) (0 grid-x))
+      ;; :prologue — once per output tile, BEFORE the K loop: prime the pump for k=0 and k=1.
+      :prologue
+      (prefetch-tile A (grid-y 0) :size (32 8))
+      (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (8 16))
+      (prefetch-tile A (grid-y 1) :size (32 8))
+      (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (8 16))
+      (load-tile A (ring-get A-ring 0) (grid-y 0))
+      (load-tile B (ring-get B-ring 0) (0 grid-x))
 
-        (dotimes (grid-k n-k-steps)
-          (let ((next-k     (+ grid-k (to-ulong 1)))
-                (prefetch-k (+ grid-k (to-ulong 2))))
+      ;; :body — once per K-step.  grid-k is bound by the macro and changes fastest.
+      :body
+      (let ((next-k     (+ grid-k (to-ulong 1)))
+            (prefetch-k (+ grid-k (to-ulong 2))))
 
-            ;; 1. prefetch a future K — lowers to OpSubgroup2DBlockPrefetchINTEL (into L1).
-            ;;    The guard is asserted uniform: a barrier lands inside it in the backward pass.
-            (let ((more-prefetch? (to-workgroup-uniform (< prefetch-k n-k-steps))))
-              (when more-prefetch?
-                (prefetch-tile A (grid-y prefetch-k) :size (32 8))
-                (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (8 16))))
+        ;; 1. prefetch a future K — lowers to OpSubgroup2DBlockPrefetchINTEL (into L1).
+        ;;    The guard is asserted uniform: a barrier lands inside it in the backward pass.
+        (let ((more-prefetch? (to-workgroup-uniform (< prefetch-k n-k-steps))))
+          (when more-prefetch?
+            (prefetch-tile A (grid-y prefetch-k) :size (32 8))
+            (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (8 16))))
 
-            ;; 2. register load for the NEXT k — OpSubgroup2DBlockLoadINTEL (L1 -> GRF).
-            (let ((more-k? (to-workgroup-uniform (< next-k n-k-steps))))
-              (when more-k?
-                (load-tile A (ring-get A-ring (mod next-k (to-ulong 2))) (grid-y next-k))
-                (load-tile B (ring-get B-ring (mod next-k (to-ulong 2))) (next-k grid-x))))
+        ;; 2. register load for the NEXT k — OpSubgroup2DBlockLoadINTEL (L1 -> GRF).
+        (let ((more-k? (to-workgroup-uniform (< next-k n-k-steps))))
+          (when more-k?
+            ;; The ring slot must fold at compile time, so it is written against the LOOP
+            ;; variable directly -- (mod next-k ...) does not fold, next-k being let-bound.
+            (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
+            (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x))))
 
-            ;; 3. DPAS on the CURRENT k while the other slot is still loading.
-            (mma-accumulate-via-tile (8 16 8) C-tile
-                                     (ring-get A-ring (mod grid-k (to-ulong 2)))
-                                     (ring-get B-ring (mod grid-k (to-ulong 2))))))
-        :epilogue
-        (store-tile C-tile C (grid-y grid-x))))))
 
+        ;; 3. DPAS on the CURRENT k while the other slot is still loading.
+        (mma-accumulate-via-tile (8 16 8) C-tile
+                                 (ring-get A-ring (mod grid-k (to-ulong 2)))
+                                 (ring-get B-ring (mod grid-k (to-ulong 2)))))
+
+
+      ;; :epilogue — once per output tile, after the reduction.  You own the store.
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))
 ```
 
 #### NVIdia MMA

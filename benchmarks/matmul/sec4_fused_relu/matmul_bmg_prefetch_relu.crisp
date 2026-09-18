@@ -36,34 +36,34 @@
         (n-k-steps (/ (inner-dimension A B) (to-ulong 8))))
 
     (matrix-multiply-tile-stride C C-tile (inner-dimension A B) 8 (grid-y grid-x grid-k)
-      :let ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
-            (B-ring (make-register-tile-ring float (8 32) :ring-count 2 :operand :b))
+      :let ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
+            (B-ring (make-register-tile-ring float (8 32) :ring-count 2 :operand :b))
             (C-tile (make-register-tile float (32 32) 0.0)))
       :prologue
-      (prefetch-tile A (grid-y 0) :size (32 8))
-      (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (8 16))
-      (prefetch-tile B (0 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16))
-      (prefetch-tile A (grid-y 1) :size (32 8))
-      (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (8 16))
-      (prefetch-tile B (1 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16))
-      (load-tile A (ring-get A-ring 0) (grid-y 0))
+      (prefetch-tile A (grid-y 0) :size (32 8))
+      (prefetch-tile B (0 (* grid-x (to-ulong 2))) :size (8 16))
+      (prefetch-tile B (0 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16))
+      (prefetch-tile A (grid-y 1) :size (32 8))
+      (prefetch-tile B (1 (* grid-x (to-ulong 2))) :size (8 16))
+      (prefetch-tile B (1 (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16))
+      (load-tile A (ring-get A-ring 0) (grid-y 0))
       (load-tile B (ring-get B-ring 0) (0 grid-x))
       :body
-      (let ((next-k (+ grid-k (to-ulong 1)))
-          (prefetch-k (+ grid-k (to-ulong 2))))
-      
-      (when (< prefetch-k n-k-steps)
-        (prefetch-tile A (grid-y prefetch-k) :size (32 8))
-        (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (8 16))
-        (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16)))
+      (let ((next-k (+ grid-k (to-ulong 1)))
+          (prefetch-k (+ grid-k (to-ulong 2))))
+      
+      (when (< prefetch-k n-k-steps)
+        (prefetch-tile A (grid-y prefetch-k) :size (32 8))
+        (prefetch-tile B (prefetch-k (* grid-x (to-ulong 2))) :size (8 16))
+        (prefetch-tile B (prefetch-k (+ (* grid-x (to-ulong 2)) (to-ulong 1))) :size (8 16)))
 
-      (when (< next-k n-k-steps)
-        (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
-        (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
+      (when (< next-k n-k-steps)
+        (load-tile A (ring-get A-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (grid-y next-k))
+        (load-tile B (ring-get B-ring (mod (+ grid-k (to-ulong 1)) (to-ulong 2))) (next-k grid-x)))
 
-      (mma-accumulate-via-tile (8 16 8) C-tile
-                               (ring-get A-ring (mod grid-k (to-ulong 2)))
+      (mma-accumulate-via-tile (8 16 8) C-tile
+                               (ring-get A-ring (mod grid-k (to-ulong 2)))
                                (ring-get B-ring (mod grid-k (to-ulong 2)))))
       :epilogue
-      (map-elements! C-tile #'relu)                       ; <-- the entire chapter
+      (map-elements! C-tile #'relu)                       ; <-- the entire chapter
       (store-tile C-tile C (grid-y grid-x)))))
