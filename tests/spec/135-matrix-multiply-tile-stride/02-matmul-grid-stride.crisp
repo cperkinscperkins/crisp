@@ -13,7 +13,8 @@
 ;; grid==#tiles case.  K=8, k-step=4 => 2 grid-k reduction steps per tile.
 ;;
 ;; ASSUMPTION (endeavor 135 design): grid-y/grid-x/grid-k are ulong tile indices, and the
-;; macro does NOT auto-reset a scratch accumulator — the body clears C-tile on grid-k==0
+;; macro did NOT auto-reset a scratch accumulator — the body clears C-tile on grid-k==0
+;; (endeavour 167 gave the macro that job, so this hand reset is now redundant but harmless)
 ;; via (fill-tile C-tile 0.0) (the accumulator-reset sugar).
 ;;
 ;;   (145 / BUG 037: differentiates. Staged-tile primals are read back from their

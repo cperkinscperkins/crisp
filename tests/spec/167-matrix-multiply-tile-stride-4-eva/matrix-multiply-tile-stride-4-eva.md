@@ -53,9 +53,9 @@ Decide whether warp specialization is a gap in the macro or a deliberate boundar
 Plan
 ====
 
-[ ] measure    — does a :let-bound register tile re-init per output tile?
-[ ] write tests — ~10 positive specs, ~5 negative, 1 unit (135 has a .unit.lisp precedent)
-[ ] implement  — %mmts-parse sections + %mmts-lower; finish the scratch reset + sync
-[ ] pilot      — convert 3 files (one plain, one :prologue, one :let+ring); benchmark before/after
-[ ] convert    — the remaining ~77, if the pilot is clean
-[ ] document   — ideal_001.md + emoji, split-docs, reference.md, call-graph
+[x] measure    — does a :let-bound register tile re-init per output tile?
+[x] write tests — ~10 positive specs, ~5 negative, 1 unit (135 has a .unit.lisp precedent)
+[x] implement  — %mmts-parse sections + %mmts-lower; finish the scratch reset + sync
+[x] pilot      — convert 3 files (one plain, one :prologue, one :let+ring); benchmark before/after
+[x] convert    — the remaining ~77, if the pilot is clean
+[x] document   — ideal_001.md + emoji, split-docs, reference.md, call-graph

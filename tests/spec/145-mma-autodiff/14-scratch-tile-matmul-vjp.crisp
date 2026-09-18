@@ -49,7 +49,7 @@
         (C-tile (make-scratch-matrix float (4 4)))
         (K      (inner-dimension A B)))
     (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
-      ;; The macro does NOT auto-reset a SCRATCH C-tile — the user owns init (135/01's
+      ;; The macro did NOT auto-reset a SCRATCH C-tile when this spec was written (135/01's
       ;; documented contract, and why BUG 036's fix is register-tile-only).
       (when (= grid-k (to-ulong 0))
         (dotimes (i 4)
