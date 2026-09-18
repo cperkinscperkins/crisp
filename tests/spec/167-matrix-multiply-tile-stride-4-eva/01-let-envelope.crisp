@@ -1,0 +1,43 @@
+;; Endeavor 167 — :let FRONT-END / ENVELOPE smoke test.
+;;
+;; The sibling of 135/01, and deliberately the same shape: a plain scalar accumulate, no
+;; MMA, no register tiles, single-tile, single-thread, generic default pass.  The ONE
+;; difference is that the staging tiles and the accumulator are bound by the macro's own
+;; :let section instead of the enclosing let.
+;;
+;; All this proves is that the new grammar parses and scopes:
+;;   - :let accepts a binding group and those names are visible in :prologue/:body/:epilogue,
+;;   - the C-tile named as argument 2 resolves to a :let binding (not just an enclosing one),
+;;   - :body holds the reduction, :epilogue still runs once per tile after the K loop,
+;;   - and it reaches codegen with no target needed.
+;;
+;; Correctness across MORE THAN ONE output tile is 02's job; the register path is 03's.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mm_let_envelope (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      :let ((A-tile (make-scratch-matrix float (4 4)))
+            (B-tile (make-scratch-matrix float (4 4)))
+            (C-tile (make-scratch-matrix float (4 4))))
+      :prologue
+      ;; A scratch tile carries no declared init, so it does not self-zero the way a
+      ;; register tile does.  Until the macro owns that (07), the prologue is where it goes
+      ;; -- and this is exactly the per-output-tile slot, run once before the K loop.
+      (fill-tile C-tile 0.0)
+      (sync-workgroup)
+      :body
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (dotimes (i 4)
+        (dotimes (j 4)
+          (dotimes (kk 4)
+            (set! (~ C-tile i j)
+                  (+ (~ C-tile i j)
+                     (* (~ A-tile i kk) (~ B-tile kk j)))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

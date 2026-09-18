@@ -1,0 +1,50 @@
+;; Endeavor 167 — ORDER: the per-tile reset happens BEFORE :prologue, so a prologue can
+;; deliberately seed the accumulator.
+;;
+;; The lowering is  :let bindings -> reset -> :prologue -> K loop -> :epilogue.  Reset-first
+;; is what makes a bias-initialised matmul expressible: the tile starts at its declared
+;; init, then the prologue overwrites it with whatever the kernel actually wants.  Were the
+;; order reversed the macro would clobber the seed and the pattern would be impossible.
+;;
+;; Here C-tile declares an init of 0.0 and the prologue fills it with 5.0.  The prologue
+;; must win, so every element of C is  5.0 + (A dot B).  With A and B the harness fixtures
+;; that give the 135/04 twin a reference of 30 per element, this kernel's reference is 35.
+;;
+;; A fill-tile of a plain constant is the smallest thing that proves the ordering; the real
+;; use is a bias TILE loaded from global memory, which is the same position in the form.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;;
+;; MMA-DIMS: 8 16 16
+;; MMA-SCALE: 5.0
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel reset_precedes_prologue (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      :let ((A-tile (make-scratch-matrix float (8 8)))
+            (B-tile (make-scratch-matrix float (8 16)))
+            (C-tile (make-register-tile float (8 16) 0.0)))
+      :prologue
+      ;; Seeds the accumulator AFTER the macro's reset. If this ran first it would be lost.
+      (fill-tile C-tile 5.0)
+      :body
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

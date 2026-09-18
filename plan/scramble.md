@@ -835,7 +835,7 @@ benchmarking
 - [x] 16-bit SYCL controls are computing the wrong matmul.  
 - [x] chap1_handrolled_mma/cuda_apples.cu crashes with illegal memory access. everywhere.
 - [x] BMG Chapter 3 (OpGroupAsyncCopy) is reporting 0.0
-
+- [ ] we didn't use matrix-multiply-tile-stride much. investigate
 
 
 
@@ -843,8 +843,8 @@ benchmarking
 
 FMA
 ===
-[ ] needs definition (where)
-[ ] is this even useful if mma-accumulate-via-tile / accum-op exist?
+[x] needs definition (where)
+[x] is this even useful if mma-accumulate-via-tile / accum-op exist?
     A: Yes, but it's worth mentioning that the GEMM macros take a lot of the oxygen
 issues having it explicit avoid:
 - precision ( ieee / fast )

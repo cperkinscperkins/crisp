@@ -1,0 +1,24 @@
+;; Endeavor 167 — negative: the sections must appear in order.
+;;
+;; WHY THIS IS AN ERROR AND NOT A STYLE NOTE.  The sections are split positionally -- the
+;; pre-167 macro finds its epilogue with (position :epilogue body).  With four sections, a
+;; :prologue written AFTER :epilogue still lowers to code that runs BEFORE the K loop.  The
+;; text would read one way and execute another, with nothing to warn you.
+;;
+;; Here :epilogue precedes :body, which must be refused rather than silently reordered.
+;;
+;; CHECK-FAIL: "order"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel sections_out_of_order (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      :let ((C-tile (make-scratch-matrix float (4 4))))
+      :epilogue                                  ; <-- before :body
+      (store-tile C-tile C (grid-y grid-x))
+      :body
+      (set! (~ C-tile 0 0) (+ (~ C-tile 0 0) 1.0)))))

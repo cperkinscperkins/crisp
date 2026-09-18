@@ -1,0 +1,45 @@
+;; Endeavor 167 — :let binds a REGISTER accumulator; single output tile, on metal.
+;;
+;; The twin of 135/04, with the register C-tile moved from the enclosing let into the
+;; macro's :let section.  Single tile, so this does NOT exercise the per-tile reset (03
+;; does) -- it proves the plainer thing first: that a register tile declared in :let is
+;; still seen by the register-tile pre-lowering, explodes into C-tile$Fi as before, and
+;; the generated store-tile / mma see the exploded fragments.
+;;
+;; That pre-lowering (%expand-matmul-tile-stride-register-forms) is reached from
+;; analyze-let-with-tile-explosion, i.e. it is triggered by a LET that binds register
+;; tiles.  With :let the macro emits that let itself, so this spec is the check that the
+;; hook still fires when the macro owns the binding rather than the user.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;;
+;; MMA-DIMS: 8 16 16
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel let_register_tile (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))          ; one sub-group
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      :let ((A-tile (make-scratch-matrix float (8 8)))     ; SLM: M x 8
+            (B-tile (make-scratch-matrix float (8 16)))    ; SLM: 8 x N
+            (C-tile (make-register-tile float (8 16) 0.0)))
+      :body
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

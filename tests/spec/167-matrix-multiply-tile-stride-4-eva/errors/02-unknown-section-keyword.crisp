@@ -1,0 +1,26 @@
+;; Endeavor 167 — negative: an unrecognised keyword in section position is an error.
+;;
+;; Before 167 a typo'd marker was silent.  (position :epilogue body) simply found nothing,
+;; the whole body became the reduction, and the store-tile ran on EVERY K-step instead of
+;; once per tile.  The only signal was the "C-tile is computed but never stored" warning,
+;; which points at the wrong thing entirely.
+;;
+;; This is not hypothetical drift: 84 of the 128 matmul benchmark kernels carry a literal
+;; :epilogue inside a plain tile-stride, where it is an inert self-evaluating keyword that
+;; nothing reads.  Closing the marker set is what makes that class of mistake loud.
+;;
+;; CHECK-FAIL: "epilog"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel unknown_section (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      :let ((C-tile (make-scratch-matrix float (4 4))))
+      :body
+      (set! (~ C-tile 0 0) (+ (~ C-tile 0 0) 1.0))
+      :epilog                                    ; <-- typo for :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

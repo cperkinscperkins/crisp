@@ -1,0 +1,27 @@
+;; Endeavor 167 — negative: :prologue requires an explicit :body.
+;;
+;; The body is the only section that may go unmarked, and only in the legacy shape where
+;; neither :let nor :prologue appears (that is what keeps the 41 existing call sites
+;; compiling).  Once :prologue is present there is no way to tell where the prologue stops
+;; and the reduction begins -- both are bare form sequences.
+;;
+;; Guessing the split is exactly the wrong move here: putting a prefetch warm-up inside the
+;; K loop, or a load inside the prologue, are both silently plausible and both wrong.
+;;
+;; CHECK-FAIL: ":body"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel prologue_without_body (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      :let ((C-tile (make-scratch-matrix float (4 4))))
+      :prologue
+      (fill-tile C-tile 0.0)
+      ;; no :body marker -- where does the prologue end?
+      (set! (~ C-tile 0 0) (+ (~ C-tile 0 0) 1.0))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

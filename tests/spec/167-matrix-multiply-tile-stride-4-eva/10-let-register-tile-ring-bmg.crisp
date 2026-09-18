@@ -1,0 +1,45 @@
+;; Endeavor 167 — :let binds a REGISTER TILE RING.
+;;
+;; 22 of the 84 single-K-loop matmul benchmarks bind their tiles inside tile-stride, and
+;; between them they bind make-register-tile-ring 22 times -- the Intel pipelined kernels
+;; (sec2_top, chap5_multistage_ring, sec3_mma_lowering, sec4_fused_custom).  A ring cannot
+;; move to the enclosing let the way a plain register tile can without changing what it
+;; means, so :let is the only thing that brings this group in.
+;;
+;; The C accumulator here is still a plain register tile -- it is the A/B staging that
+;; rings.  That matters for the reset rule: %mmts-register-dims-map recognises a
+;; make-register-tile binding by its positional INIT, and a ring constructor deliberately
+;; has none (its slots are load targets).  So a ring in :let must be bound and ignored by
+;; the reset logic, not mistaken for an accumulator.
+;;
+;; COMPILE-ONLY.  A 2-deep ring is only CORRECT if the pipeline indexes it correctly, and
+;; that is the pipelining kernels' business, not this spec's -- here the ring exists to
+;; prove :let accepts and scopes it.  Metal correctness for a ring lives in 142.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel let_register_ring (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      :let ((A-ring (make-register-tile-ring float (8 8) :ring-count 2 :operand :a))
+            (B-ring (make-register-tile-ring float (8 16) :ring-count 2 :operand :b))
+            (C-tile (make-register-tile float (8 16) 0.0)))
+      :prologue
+      (load-tile A (ring-get A-ring 0) (grid-y 0))
+      (load-tile B (ring-get B-ring 0) (0 grid-x))
+      :body
+      (mma-accumulate-via-tile (8 16 8) C-tile
+                               (ring-get A-ring (mod grid-k (to-ulong 2)))
+                               (ring-get B-ring (mod grid-k (to-ulong 2))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))
