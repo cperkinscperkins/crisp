@@ -9,6 +9,15 @@
 ;; shape must work in :let exactly as it does in an ordinary let, and the later bindings
 ;; must see the earlier ones.
 ;;
+;;
+;; SKIP-WITH[--differentiate] : "scratch tiles bound in a NESTED let are not yet differentiable --
+;;   a PRE-167 gap, reproduced with no macro at all (put_temp_files_here/167/ad-c.crisp: a plain
+;;   tile-stride whose scratch tiles sit in a plain user let inside it fails identically with
+;;   'Expected (TENSOR FLOAT 2 LOCAL COMPACT LAST) but inferred FLOAT').  The adjoint allocator
+;;   collects <var>_ADJ scratch pairs by scanning flat-anf, which does not reach a nested body,
+;;   so C-tile gets a scalar 0.0 adjoint where the backward wants a tensor.  Moving the same
+;;   bindings to the ENCLOSING let differentiates fine, and so does a REGISTER tile in :let
+;;   (02/03/11), which is why this is narrow.  Filed as BUG 064."
 ;; Front-end only, generic pass, scalar body -- nothing here needs a target.
 
 (def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))

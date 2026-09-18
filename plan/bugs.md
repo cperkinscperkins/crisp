@@ -2347,3 +2347,39 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         instead of NIL, then give each real producer a rule.  (Note the 038 comment just above it: a void
         statement is shaped exactly like a binding after ANF, so the error must not fire on statements the
         earlier clauses already handle.)
+
+[ ] 064 SCRATCH TILES BOUND IN A NESTED LET ARE NOT DIFFERENTIABLE: THE ADJOINT IS MINTED AS A
+        SCALAR float WHERE THE BACKWARD WANTS A TENSOR.
+
+        A `make-scratch-matrix` bound in a let INSIDE `tile-stride` (rather than in the
+        kernel's top-level let) fails under `--differentiate`:
+
+            Type mismatch! Expected (TENSOR FLOAT 2 LOCAL COMPACT LAST) but inferred FLOAT.
+
+        or, where the tile is read in an arithmetic position:
+
+            Type mismatch for operator '+'. Cannot operate on
+            (TENSOR FLOAT 2 LOCAL COMPACT LAST) and FLOAT.
+
+        REPRO (no macro involved -- plain tile-stride, plain user let):
+          put_temp_files_here/167/ad-c.crisp.  Moving the SAME bindings to the enclosing let
+          (ad-b.crisp) differentiates fine, so it is the binding POSITION, not the kernel.
+
+        SCOPE.  Narrow.  A REGISTER tile in the same position is fine (167 specs 02/03/11
+        differentiate clean), because the register path pre-lowers and explodes before the AD
+        walk.  Only scratch is affected.
+
+        LIKELY CAUSE (hypothesis, not verified -- see the standing note that bug CAUSE lines
+        here have been wrong before).  There are two mechanisms that pair a `<var>_ADJ` with a
+        scratch binding: the `scratch-adj-bindings` collection in `generate-backward-walk`
+        (src/autodiff.lisp ~2506) which loops over FLAT-ANF, and `%augment-scratch-adj-bindings`
+        (~1177) reached from the LET clause of the backward walk (~2303).  The flat-anf scan
+        does not reach a nested body -- the same shape as the endeavour 163 finding -- so the
+        nested tile falls through to the generic scalar adjoint (`0.0`).  Worth checking
+        whether the backward walk descends into `tile-stride` at all before assuming the LET
+        clause is reached.
+
+        FOUND BY.  Endeavour 167.  `:let` on matrix-multiply-tile-stride made this shape
+        reachable from the macro, which is how it surfaced -- but it PREDATES 167 and is
+        reproducible with no macro at all.  167 specs 01 and 09 carry
+        `SKIP-WITH[--differentiate]` naming this bug; remove those skips when it is fixed.

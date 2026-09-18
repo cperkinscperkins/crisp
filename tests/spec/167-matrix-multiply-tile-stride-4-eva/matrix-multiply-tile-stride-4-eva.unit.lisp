@@ -25,7 +25,15 @@
   ;; --- 1. the :let shape compiles end-to-end on the generic pass -------------------
   (let ((file "tests/spec/167-matrix-multiply-tile-stride-4-eva/01-let-envelope.crisp"))
     (setf crisp.compiler::*function-table* (make-hash-table))
-    (let ((ir (crisp.spec-runner::compile-crisp-file-to-ir-string file)))
+    ;; Pinned forward-only.  compile-crisp-file-to-ir-string forwards the RUNNER's
+    ;; *compile-differentiate*, so under `run-specs --differentiate` this compile would
+    ;; differentiate -- and 01 carries a SKIP-WITH[--differentiate] for a pre-167 gap
+    ;; (scratch tiles in a nested let get a scalar adjoint; see BUG 064).  Inheriting the
+    ;; flag made this unit file fail the whole run and mask the spec results.  The claim
+    ;; here is about FORWARD lowering, so it says so rather than depending on how the
+    ;; suite happened to be invoked.
+    (let* ((crisp.spec-runner::*compile-differentiate* nil)
+           (ir (crisp.spec-runner::compile-crisp-file-to-ir-string file)))
       (true (and (stringp ir) (plusp (length ir)))
             ":let envelope kernel should compile to IR.")
       ;; Source is read in :crisp-language, so the kernel name interns there.
@@ -82,6 +90,19 @@
    WHY NOT A SPEC VALIDATOR.  A TEST-WITH validator on a target pass is handed the emitted
    MODULE PATH, and with --ir-target=spv that is a binary .spv -- the LLVM IR these claims
    are about is never written to disk.  In process the IR string is simply available."
+  ;; RESTORE THE PROFILE AFTERWARDS.  initialize-compiler SETFs the global
+  ;; crisp.compiler::*requested-hardware-profile* (src/compiler.lisp:1138); it is a defvar,
+  ;; not something rebound per compile.  Unit tests run BEFORE the specs, so leaving "bmg"
+  ;; set here leaks into every spec that follows -- which showed up as four unrelated
+  ;; 048-record-at-kernel-boundary/*-meta failures in the full --use-binary --differentiate
+  ;; run while 048 passed in isolation.  It only appeared once this file started passing far
+  ;; enough to reach these calls at all.
+  (let ((prior crisp.compiler::*requested-hardware-profile*))
+    (unwind-protect (%167-compile-bmg-ir-1 spec)
+      (crisp.compiler:initialize-compiler :log-level :warn :hardware-profile prior))))
+
+(defun %167-compile-bmg-ir-1 (spec)
+  "Compile SPEC for the bmg profile on the SPIR-V backend; see %167-compile-bmg-ir."
   (crisp.compiler:initialize-compiler :log-level :warn :hardware-profile "bmg")
   (let* ((crisp.compiler:*target-backend* :spirv)
          (path (format nil "tests/spec/167-matrix-multiply-tile-stride-4-eva/~a.crisp" spec))
