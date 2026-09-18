@@ -43,11 +43,9 @@
         (B-tile (make-register-tile bfloat16 (16 64) 0.0 :operand :b))
         (C-tile (make-register-tile float (32 64) 0.0))
         (K (inner-dimension A B)))
-    (tile-stride C (32 64) (grid-y grid-x)
-      (progn
-        (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
-          (load-tile A A-tile (grid-y grid-k))
-          (load-tile B B-tile (grid-k grid-x))
-          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
-        :epilogue
-        (store-tile C-tile C (grid-y grid-x))))))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))
