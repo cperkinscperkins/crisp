@@ -25,10 +25,10 @@
             (B-tile (make-scratch-matrix float (4 4)))
             (C-tile (make-scratch-matrix float (4 4))))
       :prologue
-      ;; A scratch tile carries no declared init, so it does not self-zero the way a
-      ;; register tile does.  Until the macro owns that (07), the prologue is where it goes
-      ;; -- and this is exactly the per-output-tile slot, run once before the K loop.
-      (fill-tile C-tile 0.0)
+      ;; Per-output-tile setup, run once before the K loop.  The ACCUMULATOR is not reset
+      ;; here -- 07 made that the macro's job for a scratch C-tile -- so this clears the
+      ;; staging tile instead, which is the same slot a prefetch warm-up would occupy.
+      (fill-tile A-tile 0.0)
       (sync-workgroup)
       :body
       (load-tile A A-tile (grid-y grid-k))

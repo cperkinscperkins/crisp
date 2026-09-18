@@ -13,14 +13,17 @@
 ;; A fill-tile of a plain constant is the smallest thing that proves the ordering; the real
 ;; use is a bias TILE loaded from global memory, which is the same position in the form.
 ;;
+;; NOT CHECKED ON METAL, deliberately.  The hoist harness computes its reference as a plain
+;; A*B matmul, optionally scaled by MMA-SCALE -- an integer multiplier for kernels that fire
+;; the MMA more than once.  There is no way to tell it about an ADDITIVE 5.0 seed, so a
+;; correct kernel reports MMA_WRONG against a reference of 30 where the answer is 35.
+;;
+;; The ORDER claim is in any case an IR claim, and a stronger one there: the unit test
+;; asserts the 0.0 reset is emitted BEFORE the 5.0 seed, and both before the MMA.  Metal
+;; could only ever have shown the sum, not the sequence.
+;;
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; SKIP-DEFAULT-PASS
-;;
-;; MMA-DIMS: 8 16 16
-;; MMA-SCALE: 5.0
-;; HOIST-HARDWARE-PROFILE: bmg
-;; TEST-HOIST[L0]: validate-l0-mma-run
-;; HOIST-EXPECT: MMA_CORRECT
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
 

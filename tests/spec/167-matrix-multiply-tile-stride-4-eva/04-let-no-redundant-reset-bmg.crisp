@@ -8,11 +8,14 @@
 ;; carry a redundant full-tile zero-write on the hot path -- correct, invisible to
 ;; MMA_CORRECT, and pure cost.  Metal cannot catch it, so this is an IR assertion.
 ;;
-;; The validator counts the accumulator's zero-init in the emitted LLVM IR and requires
-;; exactly one.  Two means the macro double-reset a tile that resets itself.
+;; THE ASSERTION LIVES IN THE UNIT TEST, not here.  A spec validator on this path is handed
+;; the emitted MODULE PATH, and with --ir-target=spv that is a BINARY .spv -- the LLVM IR the
+;; claim is about is never written to disk.  The unit test compiles this same kernel in
+;; process and counts the zero-init in the IR string directly.  This spec's job is to keep
+;; the kernel compiling; see matrix-multiply-tile-stride-4-eva.unit.lisp for the count.
 ;;
 ;; SKIP-DEFAULT-PASS
-;; TEST-WITH[--hardware-profile=bmg --ir-target=spv] : validate-let-single-reset
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 
 (def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
 

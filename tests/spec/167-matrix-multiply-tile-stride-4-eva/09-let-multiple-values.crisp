@@ -25,7 +25,7 @@
             ;; multiple-value binding: truncate yields (quotient remainder)
             (quot rem (truncate (~ A 0 0))))
       :prologue
-      (fill-tile C-tile 0.0)
+      (fill-tile A-tile 0.0)
       (sync-workgroup)
       :body
       (load-tile A A-tile (grid-y grid-k))
