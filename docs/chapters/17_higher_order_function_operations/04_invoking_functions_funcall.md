@@ -26,3 +26,5 @@ If a variable `f` holds a function (or a compile-time resolvable entity like an 
 The use of `funcall` does NOT imply dynamic runtime dispatch. The restriction that all functions must be resolvable at compile-time remains in effect. The compiler uses `funcall` as the insertion point for the specialized, inlined logic derived from the variable's definition.
 
 
+
+
