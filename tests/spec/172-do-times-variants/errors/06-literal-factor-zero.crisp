@@ -1,0 +1,11 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must be greater than 1"
+;; Endeavour 172: Literal factor 0 is a compile error (D3): i never shrinks, and it is a divide by zero.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel k_literal_factor_zero (&out out)
+  (declare #'(&out u-c => nil)
+           (global-size :set-to 1))
+  (dec-times-by-factor (i 64 0)
+    (set! (~ out) (+ (~ out) i))))

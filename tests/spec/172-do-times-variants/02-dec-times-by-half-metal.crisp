@@ -1,0 +1,50 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER s1: 64321608040201
+;; HOIST-EXPECT: BUFFER c1: 7
+;; HOIST-EXPECT: BUFFER s2: 502512060301
+;; HOIST-EXPECT: BUFFER c2: 6
+;; HOIST-EXPECT: BUFFER s3: 1
+;; HOIST-EXPECT: BUFFER c3: 1
+;; HOIST-EXPECT: BUFFER s4: 0
+;; HOIST-EXPECT: BUFFER c4: 0
+;; HOIST-EXPECT: BUFFER s5: 96482412060301
+;; HOIST-EXPECT: BUFFER c5: 7
+;;
+;; Endeavour 172 ON-METAL: dec-times-by-half / dec-times-by-half+ iteration sequence.
+;; i starts at N, halves by integer division, and is never bound to 0.
+;;
+;; sN = sN*100 + i  (two decimal digits per value),  cN = iteration count.
+;;   1: (dec-times-by-half  (i 64))   64 32 16 8 4 2 1   c=7
+;;   2: (dec-times-by-half  (i 50))   50 25 12 6 3 1     c=6   (non-power-of-2; same tail as the doc's 100)
+;;   3: (dec-times-by-half  (i 1))    1                  c=1
+;;   4: (dec-times-by-half  (i 0))    --                 c=0
+;;   5: (dec-times-by-half+ (i 96))   96 48 24 12 6 3 1  c=7
+;; z = workgroup id = 0 at runtime (uniform, not constant-foldable).
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel dec_times_by_half_metal (&out s1 c1 s2 c2 s3 c3 s4 c4 s5 c5)
+  (declare #'(&out u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c => nil)
+           (global-size :set-to 1))
+  (let ((z (get-workgroup-id 0)))
+    (set! (~ s1) 0ul) (set! (~ c1) 0ul)
+    (set! (~ s2) 0ul) (set! (~ c2) 0ul)
+    (set! (~ s3) 0ul) (set! (~ c3) 0ul)
+    (set! (~ s4) 0ul) (set! (~ c4) 0ul)
+    (set! (~ s5) 0ul) (set! (~ c5) 0ul)
+    (dec-times-by-half (i (+ z 64ul))
+      (set! (~ s1) (+ (* (~ s1) 100ul) i))
+      (set! (~ c1) (+ (~ c1) 1ul)))
+    (dec-times-by-half (i (+ z 50ul))
+      (set! (~ s2) (+ (* (~ s2) 100ul) i))
+      (set! (~ c2) (+ (~ c2) 1ul)))
+    (dec-times-by-half (i (+ z 1ul))
+      (set! (~ s3) (+ (* (~ s3) 100ul) i))
+      (set! (~ c3) (+ (~ c3) 1ul)))
+    (dec-times-by-half (i z)
+      (set! (~ s4) (+ (* (~ s4) 100ul) i))
+      (set! (~ c4) (+ (~ c4) 1ul)))
+    (dec-times-by-half+ (i (+ z 96ul))
+      (set! (~ s5) (+ (* (~ s5) 100ul) i))
+      (set! (~ c5) (+ (~ c5) 1ul)))))

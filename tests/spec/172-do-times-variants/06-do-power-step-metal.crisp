@@ -1,0 +1,51 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER s1: 1020408163264
+;; HOIST-EXPECT: BUFFER c1: 7
+;; HOIST-EXPECT: BUFFER s2: 10204081632
+;; HOIST-EXPECT: BUFFER c2: 6
+;; HOIST-EXPECT: BUFFER s3: 0
+;; HOIST-EXPECT: BUFFER c3: 0
+;; HOIST-EXPECT: BUFFER s4: 1
+;; HOIST-EXPECT: BUFFER c4: 1
+;; HOIST-EXPECT: BUFFER s5: 10204
+;; HOIST-EXPECT: BUFFER c5: 3
+;;
+;; Endeavour 172 ON-METAL: do-power-step / do-power-step+ iteration sequence (decision D6).
+;; i = 1, 2, 4, ... while i < limit.  Equivalently: powers of 2 up to HALF the padded limit,
+;; log2(padded-limit) steps.
+;;
+;; sN = sN*100 + i,  cN = iteration count.
+;;   1: (do-power-step  (i 100))   1 2 4 8 16 32 64   c=7   (doc example; padded 128)
+;;   2: (do-power-step  (i 64))    1 2 4 8 16 32      c=6   (exact power: padded 64, NOT 128)
+;;   3: (do-power-step  (i 1))     --                 c=0   (log2 1 = 0 steps)
+;;   4: (do-power-step  (i 2))     1                  c=1
+;;   5: (do-power-step+ (i 5))     1 2 4              c=3   (padded 8)
+;; z = workgroup id = 0 at runtime (uniform, not constant-foldable).
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel do_power_step_metal (&out s1 c1 s2 c2 s3 c3 s4 c4 s5 c5)
+  (declare #'(&out u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c => nil)
+           (global-size :set-to 1))
+  (let ((z (get-workgroup-id 0)))
+    (set! (~ s1) 0ul) (set! (~ c1) 0ul)
+    (set! (~ s2) 0ul) (set! (~ c2) 0ul)
+    (set! (~ s3) 0ul) (set! (~ c3) 0ul)
+    (set! (~ s4) 0ul) (set! (~ c4) 0ul)
+    (set! (~ s5) 0ul) (set! (~ c5) 0ul)
+    (do-power-step (i (+ z 100ul))
+      (set! (~ s1) (+ (* (~ s1) 100ul) i))
+      (set! (~ c1) (+ (~ c1) 1ul)))
+    (do-power-step (i (+ z 64ul))
+      (set! (~ s2) (+ (* (~ s2) 100ul) i))
+      (set! (~ c2) (+ (~ c2) 1ul)))
+    (do-power-step (i (+ z 1ul))
+      (set! (~ s3) (+ (* (~ s3) 100ul) i))
+      (set! (~ c3) (+ (~ c3) 1ul)))
+    (do-power-step (i (+ z 2ul))
+      (set! (~ s4) (+ (* (~ s4) 100ul) i))
+      (set! (~ c4) (+ (~ c4) 1ul)))
+    (do-power-step+ (i (+ z 5ul))
+      (set! (~ s5) (+ (* (~ s5) 100ul) i))
+      (set! (~ c5) (+ (~ c5) 1ul)))))

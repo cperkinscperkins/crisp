@@ -1,0 +1,11 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must be greater than 1"
+;; Endeavour 172: Literal factor 1 is a compile error (D3): i never grows.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel k_literal_factor_one (&out out)
+  (declare #'(&out u-c => nil)
+           (global-size :set-to 1))
+  (do-times-by-multiply (i 1 64 1)
+    (set! (~ out) (+ (~ out) i))))

@@ -1,0 +1,51 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER s1: 64160401
+;; HOIST-EXPECT: BUFFER c1: 4
+;; HOIST-EXPECT: BUFFER s2: 2404
+;; HOIST-EXPECT: BUFFER c2: 2
+;; HOIST-EXPECT: BUFFER s3: 1
+;; HOIST-EXPECT: BUFFER c3: 1
+;; HOIST-EXPECT: BUFFER s4: 0
+;; HOIST-EXPECT: BUFFER c4: 0
+;; HOIST-EXPECT: BUFFER s5: 8127090301
+;; HOIST-EXPECT: BUFFER c5: 5
+;;
+;; Endeavour 172 ON-METAL: dec-times-by-factor / dec-times-by-factor+ iteration sequence.
+;; i starts at N, is divided by FACTOR (integer division) each pass, never bound to 0.
+;;
+;; sN = sN*100 + i,  cN = iteration count.
+;;   1: (dec-times-by-factor  (i 64 4))   64 16 4 1       c=4   (doc example #1)
+;;   2: (dec-times-by-factor  (i 24 5))   24 4            c=2   (doc example #2)
+;;   3: (dec-times-by-factor  (i 1 3))    1               c=1
+;;   4: (dec-times-by-factor  (i 0 2))    --              c=0
+;;   5: (dec-times-by-factor+ (i 81 3))   81 27 9 3 1     c=5   (N and factor both uniform)
+;; z = workgroup id = 0 at runtime (uniform, not constant-foldable).  The factor is
+;; runtime too in case 5, so the + check has to prove BOTH operands uniform.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel dec_times_by_factor_metal (&out s1 c1 s2 c2 s3 c3 s4 c4 s5 c5)
+  (declare #'(&out u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c => nil)
+           (global-size :set-to 1))
+  (let ((z (get-workgroup-id 0)))
+    (set! (~ s1) 0ul) (set! (~ c1) 0ul)
+    (set! (~ s2) 0ul) (set! (~ c2) 0ul)
+    (set! (~ s3) 0ul) (set! (~ c3) 0ul)
+    (set! (~ s4) 0ul) (set! (~ c4) 0ul)
+    (set! (~ s5) 0ul) (set! (~ c5) 0ul)
+    (dec-times-by-factor (i (+ z 64ul) 4)
+      (set! (~ s1) (+ (* (~ s1) 100ul) i))
+      (set! (~ c1) (+ (~ c1) 1ul)))
+    (dec-times-by-factor (i (+ z 24ul) 5)
+      (set! (~ s2) (+ (* (~ s2) 100ul) i))
+      (set! (~ c2) (+ (~ c2) 1ul)))
+    (dec-times-by-factor (i (+ z 1ul) 3)
+      (set! (~ s3) (+ (* (~ s3) 100ul) i))
+      (set! (~ c3) (+ (~ c3) 1ul)))
+    (dec-times-by-factor (i z 2)
+      (set! (~ s4) (+ (* (~ s4) 100ul) i))
+      (set! (~ c4) (+ (~ c4) 1ul)))
+    (dec-times-by-factor+ (i (+ z 81ul) (+ z 3ul))
+      (set! (~ s5) (+ (* (~ s5) 100ul) i))
+      (set! (~ c5) (+ (~ c5) 1ul)))))

@@ -1,0 +1,50 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER s1: 1004016064
+;; HOIST-EXPECT: BUFFER c1: 4
+;; HOIST-EXPECT: BUFFER s2: 2006018054
+;; HOIST-EXPECT: BUFFER c2: 4
+;; HOIST-EXPECT: BUFFER s3: 1
+;; HOIST-EXPECT: BUFFER c3: 1
+;; HOIST-EXPECT: BUFFER s4: 0
+;; HOIST-EXPECT: BUFFER c4: 0
+;; HOIST-EXPECT: BUFFER s5: 1007049343
+;; HOIST-EXPECT: BUFFER c5: 4
+;;
+;; Endeavour 172 ON-METAL: do-times-by-multiply / do-times-by-multiply+ iteration sequence.
+;; i starts at INIT and is multiplied by FACTOR while i <= N.
+;;
+;; sN = sN*1000 + i  (THREE decimal digits per value),  cN = iteration count.
+;;   1: (do-times-by-multiply  (i 1 64 4))    1 4 16 64      c=4   (doc example)
+;;   2: (do-times-by-multiply  (i 2 100 3))   2 6 18 54      c=4   (N not reached exactly)
+;;   3: (do-times-by-multiply  (i 1 1 2))     1              c=1
+;;   4: (do-times-by-multiply  (i 7 6 2))     --             c=0   (init > N)
+;;   5: (do-times-by-multiply+ (i 1 500 7))   1 7 49 343     c=4   (init, N, factor all uniform)
+;; z = workgroup id = 0 at runtime (uniform, not constant-foldable).
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel do_times_by_multiply_metal (&out s1 c1 s2 c2 s3 c3 s4 c4 s5 c5)
+  (declare #'(&out u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c => nil)
+           (global-size :set-to 1))
+  (let ((z (get-workgroup-id 0)))
+    (set! (~ s1) 0ul) (set! (~ c1) 0ul)
+    (set! (~ s2) 0ul) (set! (~ c2) 0ul)
+    (set! (~ s3) 0ul) (set! (~ c3) 0ul)
+    (set! (~ s4) 0ul) (set! (~ c4) 0ul)
+    (set! (~ s5) 0ul) (set! (~ c5) 0ul)
+    (do-times-by-multiply (i 1 (+ z 64ul) 4)
+      (set! (~ s1) (+ (* (~ s1) 1000ul) i))
+      (set! (~ c1) (+ (~ c1) 1ul)))
+    (do-times-by-multiply (i 2 (+ z 100ul) 3)
+      (set! (~ s2) (+ (* (~ s2) 1000ul) i))
+      (set! (~ c2) (+ (~ c2) 1ul)))
+    (do-times-by-multiply (i 1 (+ z 1ul) 2)
+      (set! (~ s3) (+ (* (~ s3) 1000ul) i))
+      (set! (~ c3) (+ (~ c3) 1ul)))
+    (do-times-by-multiply (i (+ z 7ul) (+ z 6ul) 2)
+      (set! (~ s4) (+ (* (~ s4) 1000ul) i))
+      (set! (~ c4) (+ (~ c4) 1ul)))
+    (do-times-by-multiply+ (i (+ z 1ul) (+ z 500ul) (+ z 7ul))
+      (set! (~ s5) (+ (* (~ s5) 1000ul) i))
+      (set! (~ c5) (+ (~ c5) 1ul)))))

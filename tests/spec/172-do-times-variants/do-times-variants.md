@@ -25,7 +25,9 @@ I've excerpted the docs for these from the design doc. It is below:
 Plan
 ====
 
-[ ] Write tests, including auto-diff
+[x] Write tests, including auto-diff  (2026-09-19: 01-08 on-metal sequences + gates,
+    09-15 VERIFY-AUTODIFF, errors/01-12; expected values cross-checked against a Python
+    reference model of D2-D6)
 [ ] implement
 [ ] bump docs (docs/ideal_001.md) 
 
@@ -60,8 +62,11 @@ accepting signed types.)
 D3. Termination gates (humorless)
 ---------------------------------
 Crisp promises bounded loops, and init=0 or factor<=1 would loop forever.
-- Literal `init` = 0 or literal `factor` <= 1  =>  compile error.
-- Runtime `init` = 0 or runtime `factor` <= 1  =>  the loop runs ZERO iterations.
+- Literal `init` = 0, `stride` = 0 or `factor` <= 1  =>  compile error.
+- Runtime `init` = 0, `stride` = 0 or `factor` <= 1  =>  the loop runs ZERO iterations.
+  (stride 0 matters for dec-times: its start ((N-1)/s)*s would divide by zero.)
+  NOTE: plain `dotimes` has the same hole today -- `(dotimes (i n 0) ...)` never
+  terminates.  Not fixed in 172; candidate bug to file.
 - Multiplicative steps are overflow-safe: the loop exits when `i > N / factor` rather than
   computing `i * factor` past ULONG_MAX.  Invisible to users; it keeps termination a
   guarantee rather than a hope.

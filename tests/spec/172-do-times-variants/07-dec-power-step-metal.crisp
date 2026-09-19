@@ -1,0 +1,64 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER f1: 128
+;; HOIST-EXPECT: BUFFER c1: 8
+;; HOIST-EXPECT: BUFFER t1: 255
+;; HOIST-EXPECT: BUFFER f2: 128
+;; HOIST-EXPECT: BUFFER c2: 8
+;; HOIST-EXPECT: BUFFER t2: 255
+;; HOIST-EXPECT: BUFFER f3: 256
+;; HOIST-EXPECT: BUFFER c3: 9
+;; HOIST-EXPECT: BUFFER t3: 511
+;; HOIST-EXPECT: BUFFER f4: 0
+;; HOIST-EXPECT: BUFFER c4: 0
+;; HOIST-EXPECT: BUFFER t4: 0
+;; HOIST-EXPECT: BUFFER f5: 4
+;; HOIST-EXPECT: BUFFER c5: 3
+;; HOIST-EXPECT: BUFFER t5: 7
+;;
+;; Endeavour 172 ON-METAL: dec-power-step / dec-power-step+ iteration sequence (decision D6).
+;; i starts at the largest power of 2 STRICTLY below the limit (half the padded limit) and
+;; halves down to 1.
+;;
+;; These sequences run to 9 values up to 256, too long for a positional signature in a
+;; ulong.  A descending run of powers of 2 ending at 1 is fully determined by its FIRST value
+;; and its COUNT, so each case records fN = first i, cN = count, tN = sum (the sum is a
+;; cross-check: 2*first - 1 when the run is complete).
+;;   1: (dec-power-step  (i 230))   128 64 32 16 8 4 2 1       f=128 c=8 t=255   (doc example)
+;;   2: (dec-power-step  (i 256))   128 64 32 16 8 4 2 1       f=128 c=8 t=255   (exact power: NOT 256)
+;;   3: (dec-power-step  (i 257))   256 128 ... 2 1            f=256 c=9 t=511   (one past the power)
+;;   4: (dec-power-step  (i 1))     --                         c=0               (padded 1, 0 steps)
+;;   5: (dec-power-step+ (i 5))     4 2 1                      f=4   c=3 t=7
+;; z = workgroup id = 0 at runtime (uniform, not constant-foldable).
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel dec_power_step_metal (&out f1 c1 t1 f2 c2 t2 f3 c3 t3 f4 c4 t4 f5 c5 t5)
+  (declare #'(&out u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c => nil)
+           (global-size :set-to 1))
+  (let ((z (get-workgroup-id 0)))
+    (set! (~ f1) 0ul) (set! (~ c1) 0ul) (set! (~ t1) 0ul)
+    (set! (~ f2) 0ul) (set! (~ c2) 0ul) (set! (~ t2) 0ul)
+    (set! (~ f3) 0ul) (set! (~ c3) 0ul) (set! (~ t3) 0ul)
+    (set! (~ f4) 0ul) (set! (~ c4) 0ul) (set! (~ t4) 0ul)
+    (set! (~ f5) 0ul) (set! (~ c5) 0ul) (set! (~ t5) 0ul)
+    (dec-power-step (i (+ z 230ul))
+      (when (= (~ c1) 0ul) (set! (~ f1) i))
+      (set! (~ c1) (+ (~ c1) 1ul))
+      (set! (~ t1) (+ (~ t1) i)))
+    (dec-power-step (i (+ z 256ul))
+      (when (= (~ c2) 0ul) (set! (~ f2) i))
+      (set! (~ c2) (+ (~ c2) 1ul))
+      (set! (~ t2) (+ (~ t2) i)))
+    (dec-power-step (i (+ z 257ul))
+      (when (= (~ c3) 0ul) (set! (~ f3) i))
+      (set! (~ c3) (+ (~ c3) 1ul))
+      (set! (~ t3) (+ (~ t3) i)))
+    (dec-power-step (i (+ z 1ul))
+      (when (= (~ c4) 0ul) (set! (~ f4) i))
+      (set! (~ c4) (+ (~ c4) 1ul))
+      (set! (~ t4) (+ (~ t4) i)))
+    (dec-power-step+ (i (+ z 5ul))
+      (when (= (~ c5) 0ul) (set! (~ f5) i))
+      (set! (~ c5) (+ (~ c5) 1ul))
+      (set! (~ t5) (+ (~ t5) i)))))

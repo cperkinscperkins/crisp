@@ -1,0 +1,11 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "uniform"
+;; Endeavour 172: dec-times+ checks the STRIDE too, not just N (D5).
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel k_stride (&out out)
+  (declare #'(&out u-c => nil)
+           (global-size :set-to 1))
+  (dec-times+ (i 64 (+ (get-local-id 0) 1ul))
+    (set! (~ out) (+ (~ out) i))))

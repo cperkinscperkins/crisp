@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv --differentiate]
+;; VERIFY-AUTODIFF: x=1.0 n=7 atol=5e-3 expect.x=12.0
+;;
+;; Endeavour 172 AD: (dec-times (i n 2) ...) under --differentiate, on metal.
+;; result = sum over the loop of x * i.  With n=7, i => 6 4 2 0, so
+;; f(x) = 12*x and df/dx = 12.0.
+;;
+;; Accumulation shape (decision D7): the backward replays the loop in forward order, which
+;; is correct here because every iteration's adjoint contribution is independent.  A tree
+;; reduction (reverse-order backward) is NOT covered by 172 -- it is a 175 prerequisite.
+;; Exercises:
+;;  - ANF / AD recognising the new loop head as a loop (not hoisting its body out)
+;;  - the integer loop variable as an inactive value feeding an active product
+;; Input shapes as 092/07: x is (cell float), n is ulong (no expect.n).
+
+(def-type in-cell  (cell float :address-space :global))
+(def-type out-cell (cell float :address-space :global))
+
+(def-kernel diff_dec_times (x n &out result)
+  (declare #'(in-cell ulong &out out-cell => nil)
+           (global-size :set-to 1))
+  (dec-times (i n 2)
+    (set! (~ result) (+ (~ result) (* (~ x) (to-float i))))))
