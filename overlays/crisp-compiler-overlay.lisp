@@ -1348,3 +1348,127 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%spirv-async-copy-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%spirv-async-copy-expression))))
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 172 follow-on: plain dotimes had the same unbounded-loop hole the variants
+;;; gate against -- (dotimes (i n 0) ...) spun forever, as did a negative stride on a signed
+;;; dotimes.  Same rule as decision D3: literal is a compile error, runtime runs zero times.
+;;; ---------------------------------------------------------------------------
+
+;; src/analysis/control.lisp  (whole-function copy of line 1901; adds the literal stride gate)
+(defun analyze-dotimes-expression (expr env context location)
+  "Analyzes (dotimes (var limit [stride]) body...).
+   VAR is bound as the limit's type (int, ulong, etc.) in the body.
+   STRIDE is optional; defaults to literal 1 of the limit's type.
+   Returns a semantic-dotimes node (type void)."
+  (unless (and (>= (length expr) 2) (listp (second expr)) (>= (length (second expr)) 2))
+    (error 'crisp-compiler-error
+      :message "Malformed dotimes: expected (dotimes (var limit [stride]) body...)"
+      :source-location location))
+  (let* ((binding (second expr))
+         (var-name (first binding))
+         (limit-form (second binding))
+         (stride-form (third binding)) ;; NIL when omitted
+         (body-forms (cddr expr))
+         ;; Analyze limit
+         (limit-node (analyze-expression limit-form env context (append location '(0))))
+         (limit-type (get-single-value-type limit-node))
+         (limit-ct (gethash limit-type *crisp-types*)))
+    ;; Validate: limit must be a registered integer type
+    (unless (and limit-ct (member (crisp-type-category limit-ct)
+                                  '(:signed-int :unsigned-int)))
+      (error 'crisp-compiler-error
+        :message (format nil "dotimes limit must be an integer type, got ~a" limit-type)
+        :source-location location))
+    ;; Analyze stride if provided
+    ;; Analyze stride if provided
+    (let ((stride-node (when stride-form
+                             (analyze-expression stride-form env context (append location '(0 1))))))
+      ;; Endeavour 172: a literal stride of 0 (or negative) can never advance the loop variable
+      ;; -- that is an unbounded loop, which Crisp forbids.  (A stride computed at runtime is
+      ;; caught by the codegen guard instead: it runs ZERO iterations.)
+      (when (and stride-node (semantic-literal-p stride-node)
+                 (integerp (semantic-literal-value stride-node))
+                 (< (semantic-literal-value stride-node) 1))
+        (error 'crisp-compiler-error
+          :message (format nil "dotimes: stride must be greater than 0, got ~a"
+                           (semantic-literal-value stride-node))
+          :source-location location))
+      ;; Check uniformity
+      (let* ((limit-uniformity (calculate-uniformity-state limit-node env))
+             (stride-uniformity (if stride-node (calculate-uniformity-state stride-node env) :uniform))
+             (is-divergent (or (eq limit-uniformity :divergent) (eq stride-uniformity :divergent)
+                               (eq limit-uniformity :unknown) (eq stride-uniformity :unknown))))
+        ;; Extend env: bind var as the limit's type, inheriting uniformity from the limit
+        (let* ((body-env (cons (make-parameter-def :name var-name :type limit-type :kind :local :uniformity limit-uniformity) env))
+               (*divergent-scope-depth* (if is-divergent (1+ *divergent-scope-depth*) *divergent-scope-depth*))
+               (body-nodes (analyze-body-expressions body-forms body-env context (append location '(1)))))
+          (make-semantic-dotimes :type 'void
+                                 :var-name var-name
+                                 :limit-node limit-node
+                                 :stride-node stride-node
+                                 :body body-nodes
+                                 :source-location location))))))
+
+;; src/codegen.lisp  (whole-function copy of line 4003; adds the stride-ok entry guard)
+(defmethod generate-node-ir ((node semantic-dotimes) builder module var-env di-builder di-scope location-map)
+  "Generates IR for (dotimes (var limit [stride]) body...).
+   Uses alloca+branch loop pattern (consistent with semantic-if).
+   LLVM mem2reg promotes the alloca to a phi node during optimization."
+  (let* ((limit-node  (semantic-dotimes-limit-node node))
+         (stride-node (semantic-dotimes-stride-node node))
+         (var-name    (semantic-dotimes-var-name node))
+         (body        (semantic-dotimes-body node))
+         ;; Determine LLVM type and signed/unsigned comparison from limit type
+         (limit-type  (get-single-value-type limit-node))
+         (limit-ct    (gethash limit-type *crisp-types*))
+         (is-unsigned (and limit-ct (eq (crisp-type-category limit-ct) :unsigned-int)))
+         (cmp-pred    (if is-unsigned +llvm-int-ult+ +llvm-int-slt+))
+         (llvm-type   (crisp-type-to-llvm-type limit-type module))
+         ;; Current function
+         (current-fn  (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         ;; Generate limit value in current block
+         (limit-val   (generate-node-ir limit-node builder module var-env di-builder di-scope location-map))
+         ;; Generate stride value (or constant 1)
+         (stride-val  (if stride-node
+                          (generate-node-ir stride-node builder module var-env di-builder di-scope location-map)
+                          (llvm-const-int llvm-type 1 0)))
+         ;; Endeavour 172 -- BUG: (dotimes (i n 0) ...) never terminated.  A stride that cannot
+         ;; advance the loop variable runs ZERO iterations rather than spinning forever.  Folds
+         ;; away for the constant strides that every existing dotimes has.
+         (stride-ok   (llvm-build-icmp builder (if is-unsigned +llvm-int-ne+ +llvm-int-sgt+)
+                                       stride-val (llvm-const-int llvm-type 0 0) "dt_stride_ok"))
+         ;; Alloca for the loop variable; initialize to 0
+         (i-alloca    (llvm-build-alloca builder llvm-type (string-downcase (symbol-name var-name))))
+         (_           (llvm-build-store builder (llvm-const-int llvm-type 0 0) i-alloca))
+         ;; Basic blocks
+         (check-block (llvm-append-basic-block current-fn "dt_check"))
+         (body-block  (llvm-append-basic-block current-fn "dt_body"))
+         (exit-block  (llvm-append-basic-block current-fn "dt_exit")))
+    (declare (ignore _))
+    ;; Branch from current block into loop check -- but only if the stride can advance it
+    (llvm-build-cond-br builder stride-ok check-block exit-block)
+    ;; --- Check Block: if i < limit goto body else goto exit ---
+    (llvm-position-builder-at-end builder check-block)
+    (let* ((i-val   (llvm-build-load2 builder llvm-type i-alloca "i"))
+           (cond-v  (llvm-build-icmp builder cmp-pred i-val limit-val "dt_cond")))
+      (llvm-build-cond-br builder cond-v body-block exit-block))
+    ;; --- Body Block ---
+    (llvm-position-builder-at-end builder body-block)
+    (let ((body-env (alexandria:copy-hash-table var-env)))
+      ;; Expose the loop variable via the alloca so var-read loads from it
+      (setf (gethash var-name body-env) i-alloca)
+      ;; Generate body expressions
+      (dolist (body-node body)
+        (generate-node-ir body-node builder module body-env di-builder di-scope location-map))
+      ;; Increment: i += stride
+      (let* ((i-cur  (llvm-build-load2 builder llvm-type i-alloca "i_cur"))
+             (i-next (llvm-build-add builder i-cur stride-val "i_next")))
+        (llvm-build-store builder i-next i-alloca)))
+    ;; Branch back to check (unless body already terminated, e.g. explicit return)
+    (unless (terminator-p (llvm-get-insert-block builder))
+      (llvm-build-br builder check-block))
+    ;; --- Exit Block ---
+    (llvm-position-builder-at-end builder exit-block)
+    ;; dotimes returns void
+    (values nil nil)))

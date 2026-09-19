@@ -66,8 +66,11 @@ Crisp promises bounded loops, and init=0 or factor<=1 would loop forever.
 - Literal `init` = 0, `stride` = 0 or `factor` <= 1  =>  compile error.
 - Runtime `init` = 0, `stride` = 0 or `factor` <= 1  =>  the loop runs ZERO iterations.
   (stride 0 matters for dec-times: its start ((N-1)/s)*s would divide by zero.)
-  NOTE: plain `dotimes` has the same hole today -- `(dotimes (i n 0) ...)` never
-  terminates.  Not fixed in 172; candidate bug to file.
+  NOTE: plain `dotimes` had the same hole -- `(dotimes (i n 0) ...)` never terminated,
+  and so did a negative stride on a signed dotimes.  FIXED in 172 under the same rule
+  (BUG 065): literal -> compile error, runtime -> zero iterations.  The codegen guard
+  folds to `br i1 true` for constant strides, so no existing loop changed shape.
+  Specs: 092-dotimes/errors/02-zero-stride.crisp and 092-dotimes/08-runtime-stride-gate.crisp.
 - Multiplicative steps are overflow-safe: the loop exits when `i > N / factor` rather than
   computing `i * factor` past ULONG_MAX.  Invisible to users; it keeps termination a
   guarantee rather than a hope.

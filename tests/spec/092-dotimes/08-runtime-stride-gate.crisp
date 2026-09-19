@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c1: 0
+;; HOIST-EXPECT: BUFFER c2: 0
+;; HOIST-EXPECT: BUFFER c3: 32
+;;
+;; Endeavour 172 follow-on, ON METAL: a dotimes stride computed at runtime that cannot advance
+;; the loop variable runs ZERO iterations instead of spinning forever (the literal case is a
+;; compile error -- see errors/02-zero-stride).  A regression here HANGS the GPU, it does not
+;; return a wrong number.
+;;   c1: stride 0, unsigned loop variable          -> 0 iterations
+;;   c2: stride -1 (negative), signed loop variable -> 0 iterations (i would run away from N)
+;;   c3: stride 2, the control: 64/2               -> 32 iterations
+;; z = workgroup id = 0 at runtime, so none of these strides are literals.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel dotimes_runtime_stride_gate (&out c1 c2 c3)
+  (declare #'(&out u-c u-c u-c => nil)
+           (global-size :set-to 1))
+  (let* ((z (get-workgroup-id 0))
+         (zi (to-int z)))
+    (set! (~ c1) 0ul) (set! (~ c2) 0ul) (set! (~ c3) 0ul)
+    (dotimes (i (+ z 64ul) z)
+      (set! (~ c1) (+ (~ c1) 1ul)))
+    (dotimes (i (+ zi 64) (- zi 1))
+      (set! (~ c2) (+ (~ c2) 1ul)))
+    (dotimes (i (+ z 64ul) (+ z 2ul))
+      (set! (~ c3) (+ (~ c3) 1ul)))))

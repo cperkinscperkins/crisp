@@ -2383,3 +2383,24 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         reachable from the macro, which is how it surfaced -- but it PREDATES 167 and is
         reproducible with no macro at all.  167 specs 01 and 09 carry
         `SKIP-WITH[--differentiate]` naming this bug; remove those skips when it is fixed.
+
+[x] 065 (dotimes (i N 0) ...) NEVER TERMINATED -- AN UNBOUNDED LOOP IN A LANGUAGE THAT FORBIDS THEM.
+        The dotimes codegen tested only `i < limit` and stepped `i += stride`, so a stride of 0
+        left the loop variable unchanged and the kernel spun until the GPU watchdog killed it.
+        A NEGATIVE stride on a signed dotimes did the same thing: i ran away from the limit and
+        the test never went false.  Nothing rejected either one: no analyzer check, no codegen
+        guard, no spec.
+
+        FOUND BY.  Endeavour 172, while writing the termination gates (decision D3) for the
+        dotimes VARIANTS.  The variants had to gate init / stride / factor to keep Crisp's
+        no-unbounded-loops promise; plain dotimes turned out to have the same hole all along.
+
+        FIXED.  Endeavour 172, same rule as D3:
+          - literal stride < 1  -> compile error ("dotimes: stride must be greater than 0")
+          - runtime stride that cannot advance the variable -> the loop runs ZERO iterations
+            (an entry guard: `ne stride 0` unsigned, `sgt stride 0` signed).
+        The guard folds to `br i1 true` for the constant strides every existing dotimes has,
+        so no loop in the suite changed shape.
+        Specs: tests/spec/092-dotimes/errors/02-zero-stride.crisp (compile error) and
+        tests/spec/092-dotimes/08-runtime-stride-gate.crisp (on metal: stride 0 and stride -1
+        both run 0 iterations; a regression HANGS the GPU rather than returning a wrong number).

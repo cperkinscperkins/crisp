@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "stride must be greater than 0"
+;; Endeavour 172 follow-on: a literal stride of 0 can never advance the loop variable, so
+;; (dotimes (i 64 0) ...) is an unbounded loop -- which Crisp forbids.  Compile error.
+;; (Before the fix this compiled happily and hung the GPU.)
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel k_zero_stride (&out out)
+  (declare #'(&out u-c => nil)
+           (global-size :set-to 1))
+  (dotimes (i 64 0)
+    (set! (~ out) (+ (~ out) i))))

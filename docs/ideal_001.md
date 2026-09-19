@@ -5247,8 +5247,9 @@ this will both compile just fine, but it'll execute quickly without stalling. Bu
 detects that this is not workgroup-level uniform it will emit an error.
 
 #### Operand rules ✅
-These apply to every construct in this section except `dotimes` / `dotimes+`, which keep their
-original, more permissive typing.
+These apply to every construct in this section. `dotimes` / `dotimes+` are the one exception to
+the typing rule: they keep their original, more permissive typing, accepting signed as well as
+unsigned integers. The termination rule below binds them too.
 
 **Unsigned only.** `N`, `init`, `stride` and `factor` must be unsigned integer types. A
 non-negative integer literal is accepted and treated as a `ulong`, so `(dec-times (i 10) ...)`
@@ -5261,6 +5262,8 @@ grows or shrinks `i`.  So:
 
 - As a literal, `init` or `stride` of 0, or a `factor` less than 2, is a compile error.
 - Computed at runtime, those same values run the loop ZERO times.
+- This includes `dotimes`: `(dotimes (i n 0) ...)` is rejected, and so is a negative literal
+  stride on a signed `dotimes` — in both cases the loop variable would never reach the limit.
 - The multiplying forms step in a way that cannot overflow: the loop ends rather than letting
   `i * factor` wrap past the top of the type. `(do-times-by-doubling (i 1 N) ...)` with `N` at
   `ULONG_MAX` runs 64 times and stops.
