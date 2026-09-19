@@ -116,27 +116,63 @@
             (values temp (append new-bindings hoisted-decls `((,temp ,anf-progn)))))
           (values anf-progn (append new-bindings hoisted-decls))))))
 
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 172 -- the dotimes family: dec-times, dec-times-by-half / -by-factor,
+;;; do-times-by-doubling / -by-multiply, do-power-step, dec-power-step, each with a +
+;;; variant.  Decisions D1-D7: tests/spec/172-do-times-variants/do-times-variants.md
+;;; ---------------------------------------------------------------------------
+(defparameter *dotimes-family-names*
+  '("DOTIMES" "DOTIMES+"
+    "DEC-TIMES" "DEC-TIMES+"
+    "DEC-TIMES-BY-HALF" "DEC-TIMES-BY-HALF+"
+    "DEC-TIMES-BY-FACTOR" "DEC-TIMES-BY-FACTOR+"
+    "DO-TIMES-BY-DOUBLING" "DO-TIMES-BY-DOUBLING+"
+    "DO-TIMES-BY-MULTIPLY" "DO-TIMES-BY-MULTIPLY+"
+    "DO-POWER-STEP" "DO-POWER-STEP+"
+    "DEC-POWER-STEP" "DEC-POWER-STEP+")
+  "Endeavour 172: the head names of the counted-loop family.  Every member has the shape
+   (HEAD (VAR OPERAND...) BODY...): VAR is bound in BODY, the operands are evaluated once
+   before the loop.  ANF and the AD walker treat all of them exactly like dotimes.")
+
+(defun %dotimes-family-head-p (head)
+  "True when HEAD names a counted-loop family member (dotimes, dec-times, ... and their
+   + variants), compared by symbol name so the reading package does not matter."
+  (and head (symbolp head)
+       (member (symbol-name head) *dotimes-family-names* :test #'string-equal)
+       t))
+
+(defun %dotimes-backward-head (head)
+  "The head the AD backward walk emits for a forward counted loop HEAD: the plain (non +)
+   form, since the backward kernel re-checks nothing about uniformity.  DOTIMES and DOTIMES+
+   map to the dotimes symbol exactly as before endeavour 172."
+  (let* ((nm (symbol-name head))
+         (base (string-right-trim "+" nm)))
+    (if (string-equal base "DOTIMES")
+        'dotimes
+        (intern base (symbol-package head)))))
+
 (defun %anf-normalize-dotimes (op expr is-nested?)
+  "ANF-normalizes a counted-loop family form (OP (VAR OPERAND...) BODY...).  Each operand is
+   normalized to an atom (its bindings hoisted ahead of the loop, in order); the body is
+   transformed in place, never hoisted.  When IS-NESTED? the loop is bound to a fresh temp."
   (let* ((binding (cadr expr))
          (var (car binding))
-         (limit (cadr binding))
-         (stride (third binding))
-         (body (cddr expr)))
-    (multiple-value-bind (new-limit limit-bindings) (anf-normalize limit t)
-      (if stride
-          (multiple-value-bind (new-stride stride-bindings) (anf-normalize stride t)
-            (let* ((anf-body (mapcar #'%anf-transform body))
-                   (anf-dotimes `(,op (,var ,new-limit ,new-stride) ,@anf-body)))
-              (if is-nested?
-                  (let ((temp (anf-fresh-temp)))
-                    (values temp (append limit-bindings stride-bindings `((,temp ,anf-dotimes)))))
-                  (values anf-dotimes (append limit-bindings stride-bindings)))))
-          (let* ((anf-body (mapcar #'%anf-transform body))
-                 (anf-dotimes `(,op (,var ,new-limit) ,@anf-body)))
-            (if is-nested?
-                (let ((temp (anf-fresh-temp)))
-                  (values temp (append limit-bindings `((,temp ,anf-dotimes)))))
-                (values anf-dotimes limit-bindings)))))))
+         (operands (cdr binding))
+         (body (cddr expr))
+         (new-operands nil)
+         (hoisted nil))
+    (dolist (o operands)
+      (multiple-value-bind (new-o o-bindings) (anf-normalize o t)
+        (push new-o new-operands)
+        (setf hoisted (append hoisted o-bindings))))
+    (let* ((anf-body (mapcar #'%anf-transform body))
+           (anf-loop `(,op (,var ,@(nreverse new-operands)) ,@anf-body)))
+      (log:debug "ANF counted loop ~a: ~d operand(s), ~d hoisted binding(s)"
+                 op (length operands) (length hoisted))
+      (if is-nested?
+          (let ((temp (anf-fresh-temp)))
+            (values temp (append hoisted `((,temp ,anf-loop)))))
+          (values anf-loop hoisted)))))
 
 (defun %anf-normalize-while (op expr is-nested?)
   (let* ((condition (cadr expr))
@@ -291,8 +327,7 @@
                 (anf-normalize (car body) is-nested?)
                 ;; Multi-form body: fall back to progn semantics.
                 (anf-normalize (cons 'progn body) is-nested?))))
-        ((and (symbolp op) (or (string-equal (symbol-name op) "DOTIMES")
-                               (string-equal (symbol-name op) "DOTIMES+")))
+        ((and (symbolp op) (%dotimes-family-head-p op))
           (%anf-normalize-dotimes op expr is-nested?))
         ((and (symbolp op) (string-equal (symbol-name op) "WHILE"))
           (%anf-normalize-while op expr is-nested?))

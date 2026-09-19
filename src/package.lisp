@@ -385,6 +385,14 @@
 
    ;; Macros
    #:when #:unless #:cond #:if+ #:when+ #:unless+ #:else #:dotimes+
+   ;; Endeavour 172 -- the dotimes family (plain and + variants)
+   #:dec-times #:dec-times+
+   #:dec-times-by-half #:dec-times-by-half+
+   #:dec-times-by-factor #:dec-times-by-factor+
+   #:do-times-by-doubling #:do-times-by-doubling+
+   #:do-times-by-multiply #:do-times-by-multiply+
+   #:do-power-step #:do-power-step+
+   #:dec-power-step #:dec-power-step+
    #:provably-uniform? #:provably-divergent? #:uniformity-state
    #:to-workgroup-uniform #:to-warp-uniform
    #:c-t-assert #:c-t-output #:compiler-no-op
@@ -439,6 +447,14 @@
                 #:marshall-matrix
                 #:%make-ct-array
                 #:when #:unless #:if+ #:when+ #:unless+ #:dotimes+
+                ;; Endeavour 172 -- the dotimes family (plain and + variants)
+                #:dec-times #:dec-times+
+                #:dec-times-by-half #:dec-times-by-half+
+                #:dec-times-by-factor #:dec-times-by-factor+
+                #:do-times-by-doubling #:do-times-by-doubling+
+                #:do-times-by-multiply #:do-times-by-multiply+
+                #:do-power-step #:do-power-step+
+                #:dec-power-step #:dec-power-step+
                 #:provably-uniform? #:provably-divergent? #:uniformity-state
                 #:to-workgroup-uniform #:to-warp-uniform
                 #:def-struct
@@ -602,6 +618,14 @@
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
    #:if+ #:when+ #:unless+ #:else #:dotimes+
+   ;; Endeavour 172 -- the dotimes family (plain and + variants)
+   #:dec-times #:dec-times+
+   #:dec-times-by-half #:dec-times-by-half+
+   #:dec-times-by-factor #:dec-times-by-factor+
+   #:do-times-by-doubling #:do-times-by-doubling+
+   #:do-times-by-multiply #:do-times-by-multiply+
+   #:do-power-step #:do-power-step+
+   #:dec-power-step #:dec-power-step+
    #:provably-uniform? #:provably-divergent? #:uniformity-state
    #:to-workgroup-uniform #:to-warp-uniform
    #:c-t-assert #:c-t-output

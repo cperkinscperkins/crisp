@@ -563,6 +563,22 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   body
   source-location)
 
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 172 -- the dotimes family: dec-times, dec-times-by-half / -by-factor,
+;;; do-times-by-doubling / -by-multiply, do-power-step, dec-power-step, each with a +
+;;; variant.  Decisions D1-D7: tests/spec/172-do-times-variants/do-times-variants.md
+;;; ---------------------------------------------------------------------------
+(defstruct (semantic-loop-variant (:include semantic-dotimes))
+  "Endeavour 172: a dotimes-family loop other than dotimes itself.
+   KIND is one of :dec-times :dec-by-factor :multiply :power-up :power-down.
+   Inherited slots: LIMIT-NODE is N (or the limit), STRIDE-NODE the dec-times stride (NIL = 1).
+   INIT-NODE is the multiply start (NIL = 1), FACTOR-NODE the factor (NIL = 2).
+   VAR-TYPE is the loop variable's type: N's type."
+  kind
+  init-node
+  factor-node
+  var-type)
+
 (defstruct semantic-while
   "Represents (while condition body...).
    Returns void."

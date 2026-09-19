@@ -1080,8 +1080,7 @@
                         (when (and (consp b) (symbolp (car b)))
                               (push-var (car b))))
                       (dolist (b (cddr form)) (scan b)))
-                    ((or (string-equal (symbol-name (car form)) "DOTIMES")
-                         (string-equal (symbol-name (car form)) "DOTIMES+"))
+                    ((%dotimes-family-head-p (car form))
                       (let ((binding (cadr form)))
                         (when (and (consp binding) (symbolp (car binding)))
                               (push-var (car binding))))
@@ -1474,8 +1473,10 @@
    ENDEAVOUR 149: a tile re-staged each iteration has no single primal value, so its replay
    belongs HERE -- inside the loop body, ahead of the consumers, evaluated afresh for each
    value of the loop variable.  That falls out of emitting at this scope: the replayed
-   statements close over BINDING exactly as the forward's did."
-  (declare (ignore form))
+   statements close over BINDING exactly as the forward's did.
+
+   ENDEAVOUR 172: emits the forward loop's own head (less any +), so a dec-times / by-factor /
+   power-step loop replays with its own iteration sequence rather than as a dotimes."
   (let ((local-forms nil)
         (inherited-replay-requests (copy-list *ad-replay-pending*))
         (*ad-loop-vars* (if (and (consp binding) (symbolp (car binding)))
@@ -1490,7 +1491,7 @@
                    when adv
                  collect `(set! ,adv ,intermediate-zero)))
           (replay (%ad-replay-forms-for-scope body inherited-replay-requests)))
-      (funcall emit-fn `(dotimes ,binding ,@zero-resets ,@replay ,@(nreverse local-forms))))))
+      (funcall emit-fn `(,(%dotimes-backward-head (car form)) ,binding ,@zero-resets ,@replay ,@(nreverse local-forms))))))
 
 
 (defun %gfw-process-if (form emit-fn process-form-fn cond-form then-form else-form)
@@ -2307,8 +2308,7 @@
                                         (%gfw-process-let form emit-fn #'process-form bindings augmented-bindings body)))
 
                                     ((and (consp form) (symbolp (car form))
-                                          (or (string-equal (symbol-name (car form)) "DOTIMES")
-                                              (string-equal (symbol-name (car form)) "DOTIMES+")))
+                                          (%dotimes-family-head-p (car form)))
                                       (let* ((binding (cadr form))
                                              (body (cddr form))
                                              (local-vars (%collect-locally-bound-vars body)))
